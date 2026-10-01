@@ -1,0 +1,4 @@
+# Layered on top of ArduPilot's built-in quadplane defaults.
+WP_LOITER_RAD 150
+# No RC transmitter in this sim; don't treat missing RC as a failsafe.
+THR_FAILSAFE 0

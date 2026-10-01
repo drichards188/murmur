@@ -73,6 +73,20 @@ function draftFeatures(d: Draft): FC {
   return { type: 'FeatureCollection', features }
 }
 
+// antenna trackers: a beam along the yaw the tracker reports (where it is actually pointing)
+function beamFeatures(vehicles: Vehicle[]): FC {
+  const features: GeoJSON.Feature[] = []
+  for (const v of vehicles) {
+    if (v.kind !== 'tracker' || !v.position || v.yaw == null) continue
+    const [lon, lat] = v.position
+    const len = 4000
+    const a = (v.yaw * Math.PI) / 180
+    const end: LngLat = [lon + (len * Math.sin(a)) / (111_320 * Math.cos((lat * Math.PI) / 180)), lat + (len * Math.cos(a)) / 111_320]
+    features.push({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [v.position, end] } })
+  }
+  return { type: 'FeatureCollection', features }
+}
+
 function trailFeatures(vehicles: Vehicle[]): FC {
   return {
     type: 'FeatureCollection',
@@ -114,6 +128,13 @@ export function MapView({ vehicles, taskings, selected, draft, onToggle, onMapCl
     m.on('click', (e: maplibregl.MapMouseEvent) => clickRef.current([e.lngLat.lng, e.lngLat.lat]))
     m.on('load', () => {
       m.addSource('trails', { type: 'geojson', data: empty })
+      m.addSource('beams', { type: 'geojson', data: empty })
+      m.addLayer({
+        id: 'beams',
+        type: 'line',
+        source: 'beams',
+        paint: { 'line-color': '#f4f1de', 'line-width': 1.5, 'line-opacity': 0.55, 'line-dasharray': [4, 3] },
+      })
       m.addSource('taskings', { type: 'geojson', data: empty })
       m.addSource('draft', { type: 'geojson', data: empty })
       m.addLayer({
@@ -121,7 +142,7 @@ export function MapView({ vehicles, taskings, selected, draft, onToggle, onMapCl
         type: 'line',
         source: 'trails',
         paint: {
-          'line-color': ['match', ['get', 'kind'], 'plane', '#7fb8ff', '#6fe0c4'],
+          'line-color': ['match', ['get', 'kind'], ['plane', 'vtol', 'copter', 'blimp'], '#7fb8ff', '#6fe0c4'],
           'line-opacity': 0.45,
           'line-width': 1.5,
         },
@@ -223,7 +244,10 @@ export function MapView({ vehicles, taskings, selected, draft, onToggle, onMapCl
         markers.current.delete(sysid)
       }
     }
-    if (ready.current) (m.getSource('trails') as maplibregl.GeoJSONSource).setData(trailFeatures(vehicles))
+    if (ready.current) {
+      ;(m.getSource('trails') as maplibregl.GeoJSONSource).setData(trailFeatures(vehicles))
+      ;(m.getSource('beams') as maplibregl.GeoJSONSource).setData(beamFeatures(vehicles))
+    }
 
     const pts = vehicles.flatMap((v) => (v.position ? [v.position] : []))
     if (pts.length) {

@@ -14,9 +14,24 @@ AUTOPILOT_COMPID = 1
 
 KIND_BY_MAV_TYPE = {
     mavlink.MAV_TYPE_FIXED_WING: "plane",
+    mavlink.MAV_TYPE_VTOL_DUOROTOR: "vtol",
+    mavlink.MAV_TYPE_VTOL_QUADROTOR: "vtol",
+    mavlink.MAV_TYPE_VTOL_TILTROTOR: "vtol",
+    mavlink.MAV_TYPE_QUADROTOR: "copter",
+    mavlink.MAV_TYPE_HEXAROTOR: "copter",
+    mavlink.MAV_TYPE_OCTOROTOR: "copter",
+    mavlink.MAV_TYPE_TRICOPTER: "copter",
+    mavlink.MAV_TYPE_COAXIAL: "copter",
+    mavlink.MAV_TYPE_HELICOPTER: "copter",
+    mavlink.MAV_TYPE_AIRSHIP: "blimp",
     mavlink.MAV_TYPE_SURFACE_BOAT: "boat",
     mavlink.MAV_TYPE_GROUND_ROVER: "boat",
+    mavlink.MAV_TYPE_SUBMARINE: "sub",
+    mavlink.MAV_TYPE_ANTENNA_TRACKER: "tracker",
 }
+FLYING_KINDS = {"plane", "vtol", "copter", "blimp"}
+# height above home that counts as "in the air"
+AIRBORNE_ALT = {"plane": 15.0, "vtol": 10.0, "copter": 5.0, "blimp": 3.0}
 
 LOSS_WINDOW_S = 10
 
@@ -88,6 +103,7 @@ class Vehicle:
         self.lat = self.lon = None
         self.alt_rel = self.alt_msl = None
         self.heading = None
+        self.yaw = None
         self.groundspeed = None
         self.airspeed = None
         self.battery_pct = None
@@ -99,6 +115,14 @@ class Vehicle:
         self.trail = deque(maxlen=120)
         self._last_trail = 0.0
         self._waiters = []
+        # links that get a copy of this vehicle's position (antenna trackers pointed at it)
+        self.forward_to = set()
+        self.tracking = None  # for trackers: sysid being tracked
+        self.is_vtol = None  # planes only: None until Q_ENABLE is read
+        self.ekf_flags = None
+        self.nav_bearing = None
+        self.target_dist = None
+        self._fix_since = None
 
     # ---- inbound -------------------------------------------------------
     def handle(self, msg):
@@ -108,6 +132,9 @@ class Vehicle:
                 return
             self.mav_type = msg.type
             self.kind = KIND_BY_MAV_TYPE.get(msg.type, "unknown")
+            # ArduPlane reports FIXED_WING even as a QuadPlane; Q_ENABLE tells them apart
+            if self.kind == "plane" and self.is_vtol:
+                self.kind = "vtol"
             self.custom_mode = msg.custom_mode
             self.mode = mavutil.mode_mapping_bynumber(msg.type).get(msg.custom_mode, str(msg.custom_mode))
             self.armed = bool(msg.base_mode & mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
@@ -125,6 +152,17 @@ class Vehicle:
             if now - self._last_trail > 1.0:
                 self._last_trail = now
                 self.trail.append((round(self.lon, 6), round(self.lat, 6)))
+            for link in self.forward_to:
+                link.send_raw(msg.get_msgbuf())
+        elif t == "PARAM_VALUE" and msg.param_id == "Q_ENABLE":
+            self.is_vtol = msg.param_value > 0
+            if self.kind == "plane" and self.is_vtol:
+                self.kind = "vtol"
+        elif t == "NAV_CONTROLLER_OUTPUT":
+            self.nav_bearing = msg.nav_bearing
+            self.target_dist = msg.wp_dist
+        elif t == "ATTITUDE":
+            self.yaw = math.degrees(msg.yaw) % 360
         elif t == "HOME_POSITION":
             self.home = (msg.latitude / 1e7, msg.longitude / 1e7)
         elif t == "VFR_HUD":
@@ -135,6 +173,10 @@ class Vehicle:
         elif t == "GPS_RAW_INT":
             self.gps_fix = msg.fix_type
             self.satellites = msg.satellites_visible
+            if self.gps_fix >= 3 and self._fix_since is None:
+                self._fix_since = time.monotonic()
+        elif t == "EKF_STATUS_REPORT":
+            self.ekf_flags = msg.flags
         elif t == "MISSION_CURRENT":
             self.mission_seq = msg.seq
         elif t == "STATUSTEXT":
@@ -163,11 +205,27 @@ class Vehicle:
     # ---- derived -------------------------------------------------------
     @property
     def has_position(self):
-        return self.lat is not None and self.gps_fix >= 3
+        """Ready to navigate: GPS fix AND the autopilot's EKF trusts its absolute position.
+        The fix arrives seconds before the EKF sets its origin; AUTO is refused until then."""
+        if self.lat is None or self.gps_fix < 3:
+            return False
+        if self.kind == "tracker":
+            return True  # trackers don't navigate; a GPS fix is enough to know where they stand
+        if self.ekf_flags is None:
+            # firmware that doesn't report EKF status: give it a grace period after the fix
+            return time.monotonic() - self._fix_since > 15
+        f = self.ekf_flags
+        return bool(f & mavlink.EKF_POS_HORIZ_ABS) and not f & mavlink.EKF_CONST_POS_MODE
 
     @property
     def airborne(self):
-        return self.kind == "plane" and self.alt_rel is not None and self.alt_rel > 15
+        return self.kind in FLYING_KINDS and self.alt_rel is not None and self.alt_rel > AIRBORNE_ALT[self.kind]
+
+    def mode_number(self, name):
+        for num, n in mavutil.mode_mapping_bynumber(self.mav_type).items():
+            if n == name:
+                return num
+        raise KeyError(f"{self.kind} has no {name} mode")
 
     def distance_to(self, lat, lon):
         if self.lat is None:
@@ -190,10 +248,14 @@ class Vehicle:
             "position": None if self.lat is None else [self.lon, self.lat],
             "alt_rel": self.alt_rel,
             "heading": self.heading,
+            "yaw": self.yaw,
+            "tracking": self.tracking,
+            "nav_bearing": self.nav_bearing,
             "groundspeed": self.groundspeed,
             "airspeed": self.airspeed,
             "battery_pct": self.battery_pct,
             "gps_fix": self.gps_fix,
+            "nav_ready": self.has_position,
             "satellites": self.satellites,
             "mission_seq": self.mission_seq,
             "home": None if self.home is None else [self.home[1], self.home[0]],
@@ -247,6 +309,12 @@ class VehicleLink(asyncio.DatagramProtocol):
         self.mav.seq = (self.mav.seq + 1) % 256
         self.transport.sendto(buf, self.remote)
         self.stats.tx_total += 1
+
+    def send_raw(self, buf):
+        """Relay bytes as-is (keeps the original sender's sysid), e.g. positions to a tracker."""
+        if self.transport is not None and self.remote is not None:
+            self.transport.sendto(bytes(buf), self.remote)
+            self.stats.tx_total += 1
 
     def send_timesync(self):
         ts1 = time.time_ns()

@@ -3,7 +3,7 @@ import { FleetPanel } from './FleetPanel'
 import { MapView, type Draft } from './MapView'
 import { TaskPanel } from './TaskPanel'
 import type { LngLat } from './types'
-import { STALE_MS } from './types'
+import { AIR_KINDS, STALE_MS } from './types'
 import { useBridge } from './useBridge'
 
 function useUtcClock() {
@@ -42,13 +42,16 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <span className="brand">MURMUR</span>
-        <span className="sub">air · surface swarm C2</span>
+        <span className="sub">multi-domain swarm C2</span>
         <span className="spacer" />
         <span className="stat">
-          <b>{vehicles.filter((v) => v.kind === 'plane').length}</b> air
+          <b>{vehicles.filter((v) => v.kind && AIR_KINDS.includes(v.kind)).length}</b> air
         </span>
         <span className="stat">
-          <b>{vehicles.filter((v) => v.kind !== 'plane').length}</b> surface
+          <b>{vehicles.filter((v) => v.kind === 'boat').length}</b> surface
+        </span>
+        <span className="stat">
+          <b>{vehicles.filter((v) => v.kind === 'sub').length}</b> subsurface
         </span>
         <span className={`stat ${lost ? 'alert' : ''}`}>
           <b>{lost}</b> lost link

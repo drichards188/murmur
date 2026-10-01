@@ -48,6 +48,7 @@ export interface TaskRequest {
   center?: LngLat
   radius?: number
   route?: LngLat[]
+  target?: number
 }
 
 export async function sendTask(req: TaskRequest) {

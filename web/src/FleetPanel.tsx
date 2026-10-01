@@ -1,6 +1,6 @@
 import { symbolSvg } from './symbols'
 import type { Vehicle } from './types'
-import { callsign, STALE_MS } from './types'
+import { AIR_KINDS, callsign, SEA_KINDS, STALE_MS } from './types'
 
 interface Props {
   vehicles: Vehicle[]
@@ -39,7 +39,13 @@ function Row({ v, selected, onToggle }: { v: Vehicle; selected: boolean; onToggl
         </span>
       </span>
       <span className="vrow-kin">
-        {v.kind === 'plane' ? <span>{fmt(v.alt_rel, 0, ' m')}</span> : <span>&nbsp;</span>}
+        {v.kind === 'sub' ? (
+          <span title="depth">{v.alt_rel == null ? '–' : `${Math.max(0, -v.alt_rel).toFixed(1)} m dp`}</span>
+        ) : v.kind && AIR_KINDS.includes(v.kind) ? (
+          <span title="height above home">{fmt(v.alt_rel, 0, ' m')}</span>
+        ) : (
+          <span>&nbsp;</span>
+        )}
         <span>{fmt(v.groundspeed, 1, ' m/s')}</span>
       </span>
       <span className={`vrow-link ${lc}`}>
@@ -51,17 +57,23 @@ function Row({ v, selected, onToggle }: { v: Vehicle; selected: boolean; onToggl
   )
 }
 
+const GROUPS: { title: string; match: (v: Vehicle) => boolean }[] = [
+  { title: 'Air', match: (v) => !!v.kind && AIR_KINDS.includes(v.kind) },
+  { title: 'Surface', match: (v) => v.kind === 'boat' },
+  { title: 'Subsurface', match: (v) => v.kind === 'sub' },
+  { title: 'Ground', match: (v) => v.kind === 'tracker' || v.kind === 'unknown' || v.kind == null },
+]
+
 export function FleetPanel({ vehicles, selected, onToggle, onSelect }: Props) {
-  const air = vehicles.filter((v) => v.kind === 'plane')
-  const sea = vehicles.filter((v) => v.kind !== 'plane')
+  const ids = (pred: (v: Vehicle) => boolean) => vehicles.filter(pred).map((v) => v.sysid)
   return (
     <aside className="panel fleet">
       <header className="panel-head">
         <h2>Fleet</h2>
         <div className="seg">
-          <button onClick={() => onSelect(vehicles.map((v) => v.sysid))}>All</button>
-          <button onClick={() => onSelect(air.map((v) => v.sysid))}>Air</button>
-          <button onClick={() => onSelect(sea.map((v) => v.sysid))}>Sea</button>
+          <button onClick={() => onSelect(ids(() => true))}>All</button>
+          <button onClick={() => onSelect(ids((v) => !!v.kind && AIR_KINDS.includes(v.kind)))}>Air</button>
+          <button onClick={() => onSelect(ids((v) => !!v.kind && SEA_KINDS.includes(v.kind)))}>Sea</button>
           <button onClick={() => onSelect([])}>None</button>
         </div>
       </header>
@@ -72,10 +84,20 @@ export function FleetPanel({ vehicles, selected, onToggle, onSelect }: Props) {
         </p>
       ) : (
         <div className="vlist">
-          <h3>Air <span>{air.length}</span></h3>
-          {air.map((v) => <Row key={v.sysid} v={v} selected={selected.has(v.sysid)} onToggle={onToggle} />)}
-          <h3>Surface <span>{sea.length}</span></h3>
-          {sea.map((v) => <Row key={v.sysid} v={v} selected={selected.has(v.sysid)} onToggle={onToggle} />)}
+          {GROUPS.map(({ title, match }) => {
+            const group = vehicles.filter(match)
+            if (!group.length) return null
+            return (
+              <div key={title}>
+                <h3>
+                  {title} <span>{group.length}</span>
+                </h3>
+                {group.map((v) => (
+                  <Row key={v.sysid} v={v} selected={selected.has(v.sysid)} onToggle={onToggle} />
+                ))}
+              </div>
+            )
+          })}
         </div>
       )}
     </aside>

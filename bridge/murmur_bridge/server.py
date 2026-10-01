@@ -15,13 +15,13 @@ from .tasks import TaskManager
 from .vehicle import VehicleLink
 
 BASE_PORT = int(os.environ.get("MURMUR_BASE_PORT", 14560))
-MAX_VEHICLES = int(os.environ.get("MURMUR_MAX_VEHICLES", 10))
+MAX_VEHICLES = int(os.environ.get("MURMUR_MAX_VEHICLES", 16))
 STREAM_HZ = int(os.environ.get("MURMUR_STREAM_HZ", 4))
 PUSH_HZ = 5
 
 links = []
 vehicles = {}
-tasks = TaskManager()
+tasks = TaskManager(vehicles)
 clients = set()
 
 
@@ -41,6 +41,8 @@ async def housekeeping():
             link.send(link.mav.heartbeat_encode(
                 mavlink.MAV_TYPE_GCS, mavlink.MAV_AUTOPILOT_INVALID, 0, 0, mavlink.MAV_STATE_ACTIVE))
             link.send_timesync()
+            if v.kind == "plane" and v.is_vtol is None:
+                link.send(link.mav.param_request_read_encode(v.sysid, 1, b"Q_ENABLE", -1))
             # re-request streams every 10s; cheap, and recovers from a vehicle reboot
             if tick % 10 == 0:
                 link.send(link.mav.request_data_stream_encode(
@@ -99,6 +101,7 @@ class TaskRequest(BaseModel):
     center: list[float] | None = None  # [lon, lat]
     radius: float | None = None
     route: list[list[float]] | None = None  # [[lon, lat], ...]
+    target: int | None = None  # sysid, for "track"
 
 
 @app.get("/api/state")
@@ -113,7 +116,7 @@ async def post_task(req: TaskRequest):
         raise HTTPException(404, f"unknown vehicles {missing}")
     if not req.sysids:
         raise HTTPException(400, "select at least one vehicle")
-    params = {k: v for k, v in req.model_dump().items() if k in ("center", "radius", "route") and v is not None}
+    params = {k: v for k, v in req.model_dump().items() if k in ("center", "radius", "route", "target") and v is not None}
     try:
         tasking = tasks.submit(req.task, [vehicles[s] for s in req.sysids], params)
     except ValueError as e:

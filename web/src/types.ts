@@ -1,5 +1,10 @@
 export type LngLat = [number, number]
 
+export type Kind = 'plane' | 'vtol' | 'copter' | 'blimp' | 'boat' | 'sub' | 'tracker' | 'unknown'
+
+export const AIR_KINDS: Kind[] = ['plane', 'vtol', 'copter', 'blimp']
+export const SEA_KINDS: Kind[] = ['boat', 'sub']
+
 export interface LinkHealth {
   since_last_ms: number | null
   loss_pct: number | null
@@ -10,12 +15,15 @@ export interface LinkHealth {
 
 export interface Vehicle {
   sysid: number
-  kind: 'plane' | 'boat' | 'unknown' | null
+  kind: Kind | null
   mode: string | null
   armed: boolean
   position: LngLat | null
   alt_rel: number | null
   heading: number | null
+  yaw: number | null
+  tracking: number | null
+  nav_ready: boolean
   groundspeed: number | null
   airspeed: number | null
   battery_pct: number | null
@@ -41,12 +49,12 @@ export interface Op {
   history: { state: OpState; t: number }[]
 }
 
-export type TaskKind = 'orbit' | 'patrol' | 'hold' | 'rtl'
+export type TaskKind = 'orbit' | 'patrol' | 'hold' | 'rtl' | 'track'
 
 export interface Tasking {
   id: number
   task: TaskKind
-  params: { center?: LngLat; radius?: number; route?: LngLat[] }
+  params: { center?: LngLat; radius?: number; route?: LngLat[]; target?: number }
   created: number
   ops: Op[]
 }
@@ -60,9 +68,19 @@ export interface BridgeState {
 
 export const LIFECYCLE: OpState[] = ['queued', 'sent', 'acked', 'active', 'done']
 
+const PREFIX: Record<Kind, string> = {
+  plane: 'AIR',
+  vtol: 'VTL',
+  copter: 'ROT',
+  blimp: 'LTA',
+  boat: 'SEA',
+  sub: 'SUB',
+  tracker: 'TRK',
+  unknown: 'UNK',
+}
+
 export function callsign(v: Pick<Vehicle, 'sysid' | 'kind'>) {
-  const n = String(v.sysid).padStart(2, '0')
-  return v.kind === 'plane' ? `AIR ${n}` : v.kind === 'boat' ? `SEA ${n}` : `UNK ${n}`
+  return `${PREFIX[v.kind ?? 'unknown']} ${String(v.sysid).padStart(2, '0')}`
 }
 
 export const STALE_MS = 3000

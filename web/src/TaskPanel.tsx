@@ -17,6 +17,7 @@ const TASKS: { kind: TaskKind; label: string; hint: string }[] = [
   { kind: 'patrol', label: 'Patrol', hint: 'Click the map to add waypoints. The route loops.' },
   { kind: 'hold', label: 'Hold', hint: 'Planes loiter in place, boats hold position.' },
   { kind: 'rtl', label: 'RTL', hint: 'Return to launch.' },
+  { kind: 'track', label: 'Track', hint: 'Select one antenna tracker and the one vehicle it should point at.' },
 ]
 
 function age(t: number) {
@@ -51,9 +52,19 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings }: Pro
     setDraft({ ...draft, mode: k === 'orbit' || k === 'patrol' ? k : null })
   }
 
+  const trackers = sel.filter((s) => bySysid.get(s)?.kind === 'tracker')
+  const others = sel.filter((s) => bySysid.get(s)?.kind !== 'tracker')
+  const trackPair = trackers.length === 1 && others.length === 1
+
   const ready =
     sel.length > 0 &&
-    (kind === 'orbit' ? draft.center != null : kind === 'patrol' ? draft.route.length >= 2 : true)
+    (kind === 'orbit'
+      ? draft.center != null
+      : kind === 'patrol'
+        ? draft.route.length >= 2
+        : kind === 'track'
+          ? trackPair
+          : true)
 
   const submit = async () => {
     setBusy(true)
@@ -61,7 +72,8 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings }: Pro
     try {
       await sendTask({
         task: kind,
-        sysids: sel,
+        sysids: kind === 'track' ? trackers : sel,
+        ...(kind === 'track' ? { target: others[0] } : {}),
         ...(kind === 'orbit' ? { center: draft.center!, radius: draft.radius } : {}),
         ...(kind === 'patrol' ? { route: draft.route } : {}),
       })
@@ -114,7 +126,13 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings }: Pro
           </div>
         )}
         <button className="primary" disabled={!ready || busy} onClick={submit}>
-          {sel.length === 0 ? 'Select vehicles first' : `Send ${kind.toUpperCase()} to ${sel.length} vehicle${sel.length > 1 ? 's' : ''}`}
+          {sel.length === 0
+            ? 'Select vehicles first'
+            : kind === 'track'
+              ? trackPair
+                ? `Point ${callsign(bySysid.get(trackers[0])!)} at ${callsign(bySysid.get(others[0])!)}`
+                : 'Select 1 tracker + 1 vehicle'
+              : `Send ${kind.toUpperCase()} to ${sel.length} vehicle${sel.length > 1 ? 's' : ''}`}
         </button>
         {error && <p className="error">{error}</p>}
       </div>

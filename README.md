@@ -1,7 +1,9 @@
 # Murmur
 
-Mixed air and sea swarm command console. Six ArduPilot fixed-wing planes and four motorboats
-run in SITL over San Diego Bay. A Python bridge speaks MAVLink to each vehicle over its own
+Multi-domain swarm command console. Thirteen simulated vehicles covering every ArduPilot
+firmware run in SITL: 4 fixed-wing planes and 1 VTOL QuadPlane (Plane), 2 quadcopters (Copter),
+1 airship (Blimp), 3 motorboats (Rover), 1 ROV/sub (Sub) and 1 antenna tracker
+(AntennaTracker). A Python bridge speaks MAVLink to each vehicle over its own
 UDP link and streams JSON over a WebSocket to a React + MapLibre console with MIL-STD-2525
 symbols (milsymbol).
 
@@ -32,8 +34,21 @@ in three terminals.
    waypoints (the route loops). **Hold** and **RTL** need no geometry.
 3. Send. The command log tracks every vehicle through `sent → acked → active → done`.
 
-Planes on the ground take off automatically as part of orbit and patrol. Planes in the same
-task are stacked 15 m apart in altitude; boats sharing an orbit spread out around the circle.
+Aircraft on the ground take off automatically as part of orbit and patrol (runway takeoff for
+planes, vertical for the VTOL and copters). Vehicles of one kind sharing a task are stacked in
+altitude (or depth, for subs) and spread around orbit circles.
+
+| Kind | Firmware | Tasks | Notes |
+|---|---|---|---|
+| plane, vtol | ArduPlane | orbit, patrol, hold, RTL | orbit = autopilot loiter circle; VTOL detected via `Q_ENABLE` |
+| copter | ArduCopter | orbit, patrol, hold, RTL | `AUTO_OPTIONS=3` so AUTO takes off without an RC stick |
+| blimp | Blimp | orbit, patrol, hold, RTL | slow: ~0.3 m/s in SITL |
+| boat | ArduRover (motorboat) | orbit, patrol, hold, RTL | |
+| sub | ArduSub | orbit, patrol, hold, RTL | 5 m depth; no RTL mode, so RTL is a mission home |
+| tracker | AntennaTracker | track, hold | **Track**: select the tracker + one vehicle; the bridge relays that vehicle's position to it. Known issue `murmur-9bf`: stalls for some bearings. |
+
+Tasks wait in `queued` until the vehicle's EKF has a usable position (a GPS fix arrives seconds
+earlier, and autopilots refuse AUTO until the EKF is ready). `make down` stops a running stack.
 
 ## How the command lifecycle is judged
 

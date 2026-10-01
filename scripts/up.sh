@@ -4,8 +4,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p logs
 export PYTHONUNBUFFERED=1
+echo $$ > logs/up.pid
 pids=()
-cleanup() { trap - INT TERM EXIT; kill "${pids[@]}" 2>/dev/null || true; wait 2>/dev/null || true; }
+cleanup() { trap - INT TERM EXIT; kill "${pids[@]}" 2>/dev/null || true; wait 2>/dev/null || true; rm -f logs/up.pid; }
 trap cleanup INT TERM EXIT
 
 # exec in each subshell so the tracked pid is the real process and cleanup reaches it

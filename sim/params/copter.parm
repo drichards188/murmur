@@ -1,0 +1,4 @@
+# Layered on top of ArduPilot's built-in copter defaults.
+# Bit 0: allow arming in AUTO. Bit 1: start an AUTO takeoff without raising RC throttle
+# (there is no RC transmitter in this sim).
+AUTO_OPTIONS 3
