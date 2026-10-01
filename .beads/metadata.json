@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_database": "murmur",
+  "project_id": "bd122fc0-9f7f-47bb-ab42-42dabf6f3310"
+}
