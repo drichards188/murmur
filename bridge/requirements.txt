@@ -1,0 +1,10 @@
+pymavlink>=2.4.40
+fastapi>=0.115
+uvicorn[standard]>=0.30
+# ArduPilot SITL build deps (waf runs under this venv)
+empy==3.3.4
+future
+pexpect
+dronecan
+setuptools
+lxml

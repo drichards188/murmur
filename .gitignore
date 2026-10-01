@@ -2,3 +2,11 @@
 # Dolt database files (added by bd init)
 .dolt/
 *.db
+.playwright-mcp/
+.venv/
+logs/
+sim/run/
+web/node_modules/
+web/dist/
+__pycache__/
+*.tsbuildinfo

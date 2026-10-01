@@ -1,0 +1,2 @@
+# Layered on top of ArduPilot's built-in rover + motorboat defaults.
+WP_RADIUS 8
