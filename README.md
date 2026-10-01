@@ -17,6 +17,10 @@ make setup   # once: .venv, clone + build ArduPilot SITL in ~/ardupilot, npm ins
 make up      # swarm + bridge + web; open http://127.0.0.1:5173
 ```
 
+Pick a location with `make up LOCATION=canaveral` (Cape Canaveral Skid Strip + Atlantic) or
+the default `sandiego` (NAS North Island + San Diego Bay). Presets live in `sim/swarm.py`;
+the map zooms to wherever the swarm is.
+
 Vehicles appear within a few seconds and get a GPS fix about 20 to 30 seconds after start.
 Logs go to `./logs`. To run the pieces separately use `make sim`, `make bridge` and `make web`
 in three terminals.

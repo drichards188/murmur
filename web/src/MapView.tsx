@@ -2,7 +2,7 @@
 import * as maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import { useEffect, useRef } from 'react'
-import { circle } from './geo'
+import { circle, distanceM } from './geo'
 import { symbolSvg } from './symbols'
 import type { LngLat, Tasking, Vehicle } from './types'
 import { STALE_MS } from './types'
@@ -90,6 +90,8 @@ export function MapView({ vehicles, taskings, selected, draft, onToggle, onMapCl
   const container = useRef<HTMLDivElement>(null)
   const map = useRef<maplibregl.Map | null>(null)
   const ready = useRef(false)
+  // centroid we last zoomed to; refit when the swarm shows up somewhere else (new --location)
+  const fitAt = useRef<LngLat | null>(null)
   const markers = useRef(new Map<number, { marker: maplibregl.Marker; el: HTMLDivElement; key: string }>())
   const clickRef = useRef(onMapClick)
   const toggleRef = useRef(onToggle)
@@ -222,6 +224,17 @@ export function MapView({ vehicles, taskings, selected, draft, onToggle, onMapCl
       }
     }
     if (ready.current) (m.getSource('trails') as maplibregl.GeoJSONSource).setData(trailFeatures(vehicles))
+
+    const pts = vehicles.flatMap((v) => (v.position ? [v.position] : []))
+    if (pts.length) {
+      const c: LngLat = [pts.reduce((a, p) => a + p[0], 0) / pts.length, pts.reduce((a, p) => a + p[1], 0) / pts.length]
+      if (!fitAt.current || distanceM(fitAt.current, c) > 50_000) {
+        const b = new maplibregl.LngLatBounds(pts[0], pts[0])
+        pts.forEach((p) => b.extend(p))
+        m.fitBounds(b, { padding: 120, maxZoom: 13.5, duration: fitAt.current ? 1500 : 0 })
+        fitAt.current = c
+      }
+    }
   }, [vehicles, selected])
 
   useEffect(() => {

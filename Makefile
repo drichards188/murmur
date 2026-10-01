@@ -1,13 +1,15 @@
 .PHONY: setup up sim bridge web check
 
+LOCATION ?= sandiego   # or canaveral
+
 setup:   ## one-time: venv, ArduPilot SITL build, npm install
 	./scripts/setup.sh
 
 up:      ## swarm + bridge + web, all at once
-	./scripts/up.sh
+	./scripts/up.sh --location $(LOCATION) $(ARGS)
 
 sim:     ## 6 planes + 4 boats (pass ARGS="--planes 3 --boats 2" to change)
-	.venv/bin/python sim/swarm.py $(ARGS)
+	.venv/bin/python sim/swarm.py --location $(LOCATION) $(ARGS)
 
 bridge:  ## MAVLink <-> WebSocket bridge on :8765
 	cd bridge && ../.venv/bin/python -m murmur_bridge
