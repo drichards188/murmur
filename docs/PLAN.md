@@ -12,6 +12,10 @@ meaningful, and how would you know?** Context: the US announced the Autonomous W
 (AutoWarCom) on 2026-09-30; its public framing is scale, with nothing said about how human
 judgment survives scale. This is about C2 decision and command, not weapons.
 
+Why defense first: it is the hardest, highest-stakes setting for supervising autonomy (contested
+links, adversaries, irreversible decisions). Practices proven there carry over to easier
+commercial settings such as delivery fleets; the reverse doesn't hold.
+
 The pitch is depth and rigor in the open, not novelty: the ideas exist in government labs and
 proprietary C2, and several 2026 open projects implement shallow pieces (AMOS, AeroMind, Pharos,
 SandTable). The full pressure test is in the "Murmur: Measuring Meaningful Human Control in

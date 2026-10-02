@@ -8,6 +8,10 @@ group. Dates are 2026.
 - **Open-source passion project exploring C2 at AutoWarCom scale** (10-02). Goal: show how human
   judgment over consequential decisions can stay meaningful, measurably, when one operator
   supervises ~100 nodes. Not commercial.
+- **Why defense first** (10-02, user's reason): defense is the highest-stakes environment for
+  autonomy and C2 practices (contested links, adversaries, irreversible consequential
+  decisions). Practices that hold up there transfer more easily to commercial uses such as
+  delivery fleets; the reverse is not true. Defense is the proving ground, not the end goal.
 - **C2 decision and command, not weapons** (10-02). Engagement decisions are in scope as a
   decision-system problem; effects are abstract events. No autonomous engagement: agents
   nominate and explain, the authorize step is closed to them in code. Armed platforms always
