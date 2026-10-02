@@ -10,30 +10,85 @@
 //! descend WP_SPD_DN.
 
 use mavlink::dialects::ardupilotmega::{
-    COMMAND_LONG_DATA, MavCmd, MavModeFlag, MavResult, MavSeverity, MavType,
+    MavCmd, MavModeFlag, MavParamType, MavResult, MavSeverity, MavType,
 };
 
 use super::auto::{Auto, Nav};
-use super::{Behavior, Ctx, Tick, modes};
+use super::{Behavior, Command, Ctx, Tick, modes};
 use crate::config::Spec;
 use crate::geo::{M_PER_DEG, wrap180};
 use crate::kinematics::{Out, State};
 use crate::mission::Mission;
+use crate::params::Params;
 
-// ArduCopter 4.8 defaults (and Murmur's copter.parm)
-const WP_ACC: f64 = 2.5;
-const WP_SPD_UP: f64 = 2.5;
-const WP_SPD_DN: f64 = 1.5;
-const WP_RADIUS_M: f64 = 2.0;
-const RTL_ALT_M: f64 = 15.0;
-const RTL_LOIT_TIME_S: f64 = 5.0;
-const LAND_ALT_LOW_M: f64 = 10.0;
-const LAND_SPD_MS: f64 = 0.5;
-/// PILOT_SPD_DN 0 means PILOT_SPD_UP
-const PILOT_SPD_DN: f64 = 2.5;
+// ArduCopter 4.8 parameters this behavior flies by, with their defaults (extra_params puts
+// them in the parameter store under these names; WP_SPD is the catalog cruise speed)
+const DEFAULTS: &[(&str, MavParamType, f32)] = &[
+    ("WP_SPD_UP", F32, 2.5),
+    ("WP_SPD_DN", F32, 1.5),
+    ("WP_ACC", F32, 2.5),
+    ("WP_RADIUS_M", F32, 2.0),
+    ("RTL_ALT_M", F32, 15.0),
+    ("RTL_LOIT_TIME", I32, 5000.0),
+    ("LAND_SPD_MS", F32, 0.5),
+    ("LAND_ALT_LOW_M", F32, 10.0),
+    ("PILOT_SPD_UP", F32, 2.5),
+    ("PILOT_SPD_DN", F32, 0.0),
+    ("DISARM_DELAY", I8, 10.0),
+];
+const F32: MavParamType = MavParamType::MAV_PARAM_TYPE_REAL32;
+const I32: MavParamType = MavParamType::MAV_PARAM_TYPE_INT32;
+const I8: MavParamType = MavParamType::MAV_PARAM_TYPE_INT8;
+
+/// The parameters as this tick reads them.
+#[derive(Debug, Clone, Copy)]
+struct Tune {
+    wp_spd: f64,
+    spd_up: f64,
+    spd_dn: f64,
+    wp_acc: f64,
+    wp_radius: f64,
+    rtl_alt: f64,
+    rtl_loit_s: f64,
+    land_spd: f64,
+    land_alt_low: f64,
+    /// PILOT_SPD_DN, 0 meaning PILOT_SPD_UP
+    pilot_dn: f64,
+    disarm_delay: f64,
+}
+
+impl Tune {
+    fn read(p: &Params, spec: &Spec) -> Tune {
+        let d = |name: &str| {
+            let fallback = DEFAULTS
+                .iter()
+                .find(|(n, _, _)| *n == name)
+                .map_or(0.0, |x| x.2);
+            p.f(name, f64::from(fallback))
+        };
+        let pilot_dn = d("PILOT_SPD_DN");
+        Tune {
+            wp_spd: p.f("WP_SPD", spec.cruise_mps).max(0.5),
+            spd_up: d("WP_SPD_UP").max(0.1),
+            spd_dn: d("WP_SPD_DN").max(0.1),
+            wp_acc: d("WP_ACC").max(0.1),
+            wp_radius: d("WP_RADIUS_M").max(0.05),
+            rtl_alt: d("RTL_ALT_M"),
+            rtl_loit_s: d("RTL_LOIT_TIME") / 1000.0,
+            land_spd: d("LAND_SPD_MS").max(0.1),
+            land_alt_low: d("LAND_ALT_LOW_M"),
+            pilot_dn: if pilot_dn > 0.0 {
+                pilot_dn
+            } else {
+                d("PILOT_SPD_UP").max(0.1)
+            },
+            disarm_delay: d("DISARM_DELAY"),
+        }
+    }
+}
+
 /// how fast a pilot descent builds up, as SITL shows it
 const PILOT_ACCEL_Z: f64 = 0.8;
-const DISARM_DELAY_S: f64 = 10.0;
 /// the land detector: on the ground this long before "landed"
 const LAND_DETECT_S: f64 = 1.0;
 /// ATC_SLEW_YAW
@@ -88,6 +143,9 @@ pub struct Copter {
     /// a waypoint's hold time left (param1)
     delay_s: Option<f64>,
     vel: (f64, f64),
+    k: Tune,
+    /// the mode the behavior last saw (a failsafe changes modes behind its back)
+    mode_seen: &'static str,
 }
 
 impl Default for Copter {
@@ -108,6 +166,20 @@ impl Copter {
             hold_alt: 0.0,
             delay_s: None,
             vel: (0.0, 0.0),
+            k: Tune {
+                wp_spd: 10.0,
+                spd_up: 2.5,
+                spd_dn: 1.5,
+                wp_acc: 2.5,
+                wp_radius: 2.0,
+                rtl_alt: 15.0,
+                rtl_loit_s: 5.0,
+                land_spd: 0.5,
+                land_alt_low: 10.0,
+                pilot_dn: 2.5,
+                disarm_delay: 10.0,
+            },
+            mode_seen: "STABILIZE",
         }
     }
 }
@@ -274,11 +346,17 @@ impl Copter {
     ) {
         st.mode = name;
         st.hold_point = (st.lat, st.lon);
+        self.on_mode(st, mission, out);
+    }
+
+    /// Entering `st.mode`, whoever set it (a command, a failsafe).
+    fn on_mode(&mut self, st: &mut State, mission: &mut Mission, out: &mut Vec<Out>) {
+        self.mode_seen = st.mode;
         self.hold_alt = st.alt;
         self.guided = None;
         self.delay_s = None;
         self.rtl = Rtl::Climb;
-        if name == "AUTO" {
+        if st.mode == "AUTO" {
             self.auto.enter(mission, out);
         }
     }
@@ -297,8 +375,8 @@ impl Copter {
         }
     }
 
-    fn arm_disarm(&mut self, c: &mut Ctx, m: &COMMAND_LONG_DATA) -> MavResult {
-        if m.param1 == 1.0 {
+    fn arm_disarm(&mut self, c: &mut Ctx, m: &Command) -> MavResult {
+        if m.p[0] == 1.0 {
             if c.st.armed {
                 return MavResult::MAV_RESULT_ACCEPTED;
             }
@@ -313,19 +391,20 @@ impl Copter {
             c.st.armed = true;
             self.landed = Self::rel(c.st) < 0.5;
             if self.landed {
-                // ArduPilot sets home to where it arms
+                // ArduPilot sets home to where it arms (and says so: HOME_POSITION)
                 c.st.home = (c.st.lat, c.st.lon, c.st.alt);
+                c.mission.new_home = Some(c.st.home);
             }
             self.idle_s = 0.0;
             self.hold_alt = c.st.alt;
             text(c.out, MavSeverity::MAV_SEVERITY_INFO, "Arming motors");
             return MavResult::MAV_RESULT_ACCEPTED;
         }
-        if m.param1 == 0.0 {
+        if m.p[0] == 0.0 {
             if !c.st.armed {
                 return MavResult::MAV_RESULT_ACCEPTED;
             }
-            if !self.landed && m.param2 != FORCE_DISARM {
+            if !self.landed && m.p[1] != FORCE_DISARM {
                 return MavResult::MAV_RESULT_FAILED; // "do not allow disarm via mavlink if we think we are flying"
             }
             self.disarm(c.st, c.mission, c.out);
@@ -334,11 +413,11 @@ impl Copter {
         MavResult::MAV_RESULT_UNSUPPORTED
     }
 
-    fn takeoff(&mut self, c: &mut Ctx, m: &COMMAND_LONG_DATA) -> MavResult {
-        let alt = f64::from(m.param7);
+    fn takeoff(&mut self, c: &mut Ctx, m: &Command) -> MavResult {
+        let alt = f64::from(m.z);
         if !c.st.armed
             || !self.landed
-            || !has_user_takeoff(c.st.mode, m.param3 == 0.0)
+            || !has_user_takeoff(c.st.mode, m.p[2] == 0.0)
             || alt <= Self::rel(c.st)
         {
             return MavResult::MAV_RESULT_FAILED;
@@ -385,7 +464,7 @@ impl Copter {
                     Goal {
                         to: Some(st.hold_point),
                         stop: true,
-                        vert: Vert::Descend(PILOT_SPD_DN),
+                        vert: Vert::Descend(self.k.pilot_dn),
                     }
                 }
             },
@@ -395,11 +474,11 @@ impl Copter {
 
     fn rtl_goal(&mut self, st: &State) -> Goal {
         let (hlat, hlon, halt) = st.home;
-        let rtl_alt = (halt + RTL_ALT_M).max(st.alt);
+        let rtl_alt = (halt + self.k.rtl_alt).max(st.alt);
         loop {
             match self.rtl {
                 Rtl::Climb => {
-                    if st.alt >= halt + RTL_ALT_M - 0.5 {
+                    if st.alt >= halt + self.k.rtl_alt - 0.5 {
                         self.hold_alt = rtl_alt;
                         self.rtl = Rtl::Return;
                         continue;
@@ -407,13 +486,13 @@ impl Copter {
                     return Goal {
                         to: Some(st.hold_point),
                         stop: true,
-                        vert: Vert::Alt(halt + RTL_ALT_M),
+                        vert: Vert::Alt(halt + self.k.rtl_alt),
                     };
                 }
                 Rtl::Return => {
                     let (e, n) = offset_m(st, hlat, hlon);
-                    if e.hypot(n) < WP_RADIUS_M && st.speed < 0.5 {
-                        self.rtl = Rtl::Loiter(RTL_LOIT_TIME_S);
+                    if e.hypot(n) < self.k.wp_radius && st.speed < 0.5 {
+                        self.rtl = Rtl::Loiter(self.k.rtl_loit_s);
                         continue;
                     }
                     return Goal {
@@ -474,7 +553,7 @@ impl Copter {
             MavCmd::MAV_CMD_NAV_LAND | MavCmd::MAV_CMD_NAV_VTOL_LAND => {
                 let to = nav.pos.unwrap_or(st.hold_point);
                 let (e, n) = offset_m(st, to.0, to.1);
-                let over = e.hypot(n) < WP_RADIUS_M && st.speed < 0.5;
+                let over = e.hypot(n) < self.k.wp_radius && st.speed < 0.5;
                 Goal {
                     to: Some(to),
                     stop: true,
@@ -519,9 +598,9 @@ impl Copter {
         };
         let stop = hold_s > 0.0 || !next_is_wp;
         let reach = if stop {
-            WP_RADIUS_M
+            self.k.wp_radius
         } else {
-            WP_RADIUS_M.max(st.speed * 1.5)
+            self.k.wp_radius.max(st.speed * 1.5)
         };
         let arrived = e.hypot(n) < reach && (st.alt - alt).abs() < 1.0;
         if arrived {
@@ -545,23 +624,23 @@ impl Copter {
     /// Velocity toward the goal within WP_SPD / WP_ACC, climb and descent limits.
     fn fly(&mut self, t: &mut Tick, g: Goal) -> bool {
         let dt = t.dt;
-        let cruise = t.spec.cruise_mps.max(1.0);
+        let k = self.k;
         let st = &mut *t.st;
         let to = if self.landed { None } else { g.to };
-        hover(st, &mut self.vel, to, g.stop, cruise, WP_ACC, dt);
+        hover(st, &mut self.vel, to, g.stop, k.wp_spd, k.wp_acc, dt);
         // vertical
         let ground = st.home.2;
         let touched = match g.vert {
             Vert::Alt(alt) => {
                 let alt = alt.max(ground);
-                st.vz = (alt - st.alt).clamp(-WP_SPD_DN, WP_SPD_UP);
+                st.vz = (alt - st.alt).clamp(-k.spd_dn, k.spd_up);
                 false
             }
             Vert::Land => {
-                let rate = if st.alt - ground > LAND_ALT_LOW_M {
-                    WP_SPD_DN
+                let rate = if st.alt - ground > k.land_alt_low {
+                    k.spd_dn
                 } else {
-                    LAND_SPD_MS
+                    k.land_spd
                 };
                 st.vz = -rate;
                 st.alt + st.vz * dt <= ground
@@ -604,18 +683,25 @@ impl Behavior for Copter {
         !self.landed
     }
 
-    fn command(&mut self, c: &mut Ctx, m: &COMMAND_LONG_DATA) -> Option<MavResult> {
+    fn extra_params(&self, spec: &Spec) -> Vec<(&'static str, MavParamType, f32)> {
+        let mut v = vec![("WP_SPD", F32, spec.cruise_mps as f32)];
+        v.extend_from_slice(DEFAULTS);
+        v
+    }
+
+    fn command(&mut self, c: &mut Ctx, m: &Command) -> Option<MavResult> {
+        self.k = Tune::read(c.params, c.spec);
         Some(match m.command {
             MavCmd::MAV_CMD_COMPONENT_ARM_DISARM => self.arm_disarm(c, m),
             MavCmd::MAV_CMD_DO_SET_MODE => {
                 let custom = MavModeFlag::MAV_MODE_FLAG_CUSTOM_MODE_ENABLED.bits();
-                if !m.param1.is_finite() || (m.param1 as u32 as u8) & custom == 0 {
+                if !m.p[0].is_finite() || (m.p[0] as u32 as u8) & custom == 0 {
                     return Some(MavResult::MAV_RESULT_UNSUPPORTED);
                 }
-                if !m.param2.is_finite() || m.param2 < 0.0 {
+                if !m.p[1].is_finite() || m.p[1] < 0.0 {
                     return Some(MavResult::MAV_RESULT_FAILED);
                 }
-                self.set_mode(c, m.param2 as u32)
+                self.set_mode(c, m.p[1] as u32)
             }
             MavCmd::MAV_CMD_NAV_TAKEOFF => self.takeoff(c, m),
             MavCmd::MAV_CMD_NAV_LAND => self.set_mode(c, 9),
@@ -625,6 +711,10 @@ impl Behavior for Copter {
     }
 
     fn step(&mut self, t: &mut Tick) {
+        self.k = Tune::read(t.params, t.spec);
+        if t.st.mode != self.mode_seen {
+            self.on_mode(t.st, t.mission, t.out);
+        }
         if !t.st.armed {
             self.vel = (0.0, 0.0);
             t.st.speed = 0.0;
@@ -646,7 +736,7 @@ impl Behavior for Copter {
         if self.landed {
             // armed on the ground and not taking off: auto-disarm after DISARM_DELAY
             self.idle_s += t.dt;
-            if self.idle_s >= DISARM_DELAY_S {
+            if self.k.disarm_delay > 0.0 && self.idle_s >= self.k.disarm_delay {
                 self.disarm(t.st, t.mission, t.out);
             }
             return;

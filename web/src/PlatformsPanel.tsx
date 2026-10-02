@@ -1,9 +1,8 @@
 import ms from 'milsymbol'
 import { Fragment, useEffect, useState } from 'react'
 import type { Domain } from './types'
+import { LINKS, PROTOCOLS, type Protocol } from './catalogLabels'
 
-/** How a C2 reaches the real platform (sim/platforms.toml, docs/AUTHENTICITY.md). */
-export type Protocol = 'mavlink' | 'stanag4586' | 'uci' | 'jaus' | 'umaa' | 'proprietary' | 'rc' | 'telemetry'
 
 export interface Platform {
   id: string
@@ -31,28 +30,11 @@ export interface Platform {
 const DOMAINS: { id: Domain; title: string }[] = [
   { id: 'air', title: 'Air' },
   { id: 'ground', title: 'Ground' },
-  { id: 'surface', title: 'Surface' },
+  { id: 'surface', title: 'Water' },
   { id: 'subsurface', title: 'Subsurface' },
 ]
 
-const LINKS: Record<string, string> = {
-  los: 'Line-of-sight radio',
-  mesh: 'Mesh radio',
-  satcom: 'SATCOM',
-  acoustic: 'Acoustic modem; SATCOM when surfaced',
-  tether: 'Tether',
-}
 
-const PROTOCOLS: Record<Protocol, string> = {
-  mavlink: 'MAVLink',
-  stanag4586: 'STANAG 4586',
-  uci: 'UCI',
-  jaus: 'JAUS',
-  umaa: 'UMAA/DDS',
-  proprietary: 'Proprietary',
-  rc: 'RC link',
-  telemetry: 'Telemetry only',
-}
 
 const icons = new Map<string, string>()
 function icon(sidc: string) {

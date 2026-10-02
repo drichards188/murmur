@@ -14,6 +14,8 @@ export interface Identity {
   link: string
   sidc: string
   sim: 'sitl' | 'standin'
+  /** Carries an effect (`armed = true` in the catalog): any task needs a human. Not the MAVLink arm state. */
+  armed?: boolean | null
 }
 
 export const AIR_KINDS: Kind[] = ['plane', 'vtol', 'copter', 'blimp']
@@ -114,6 +116,9 @@ const DOMAIN_BY_KIND: Record<Kind, Domain> = {
   tracker: 'ground',
   unknown: 'ground',
 }
+
+/** Display names: "surface" reads like ground, so the UI says water (the catalog key stays surface). */
+export const DOMAIN_LABEL: Record<Domain, string> = { air: 'Air', ground: 'Ground', surface: 'Water', subsurface: 'Subsurface' }
 
 export function domainOf(v: Pick<Vehicle, 'kind' | 'identity'>): Domain {
   return v.identity?.domain ?? DOMAIN_BY_KIND[v.kind ?? 'unknown']

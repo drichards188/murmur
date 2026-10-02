@@ -6,6 +6,10 @@ after warm-up, and the message rate the sink receives (should be 7.5 msg/s per v
 sink listens on --sink-ports ports (vehicle i sends to port + i % sink_ports), so one socket's
 receive buffer does not overflow when every vehicle's telemetry lands in the same tick.
 
+Like ArduPilot with Murmur's common.parm, a Rust stand-in sends only its heartbeat until a
+GCS asks for more, so the sink answers each new vehicle with the bridge's telemetry plan
+(SET_MESSAGE_INTERVAL, position at 2 Hz: 7.5 msg/s with the heartbeat).
+
     .venv/bin/python sim/tests/standins_scale.py --engine rust --vehicles 1000
 """
 
@@ -40,7 +44,19 @@ def fleet(n, port, ports):
     return {"bridge_host": "127.0.0.1", "vehicles": vs}
 
 
+def telemetry_plan():
+    """The bridge's plan for an aircraft (world.rs telemetry_plan), as COMMAND_LONG frames to
+    any system (target 0)."""
+    from pymavlink.dialects.v20 import ardupilotmega as mavlink
+    mav = mavlink.MAVLink(None, srcSystem=255, srcComponent=190)
+    rates = [(33, 2.0), (30, 1.0), (74, 1.0), (42, 1.0), (1, 0.5), (24, 0.5), (193, 0.5)]
+    return [mav.command_long_encode(0, 0, mavlink.MAV_CMD_SET_MESSAGE_INTERVAL, 0, msg_id, 1e6 / hz,
+                                    0, 0, 0, 0, 0).pack(mav) for msg_id, hz in rates]
+
+
 def sink(ports, counter, ready, stop):
+    plan = telemetry_plan()
+    asked = set()
     sel = selectors.DefaultSelector()
     for p in ports:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -54,10 +70,14 @@ def sink(ports, counter, ready, stop):
         for key, _ in sel.select(0.2):
             while True:
                 try:
-                    key.fileobj.recv(4096)
+                    _, addr = key.fileobj.recvfrom(4096)
                     n += 1
                 except BlockingIOError:
                     break
+                if addr not in asked:
+                    asked.add(addr)
+                    for frame in plan:
+                        key.fileobj.sendto(frame, addr)
         counter.value = n
 
 

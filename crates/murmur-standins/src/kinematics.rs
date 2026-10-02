@@ -5,7 +5,9 @@ use crate::geo::{M_PER_DEG, bearing_deg, distance_m, wrap180};
 use crate::mission::Mission;
 use mavlink::dialects::ardupilotmega::MavSeverity;
 
-/// What the autopilot knows about itself. Truth and reported state are the same today.
+/// What the autopilot knows about itself: its navigation estimate. For most vehicles that is
+/// the truth; a submerged AUV's estimate drifts from it (nav.rs keeps the difference, and
+/// truth = estimate - error). Physics steps move it by the vehicle's true velocity.
 #[derive(Debug, Clone)]
 pub struct State {
     pub lat: f64,
@@ -23,6 +25,9 @@ pub struct State {
     pub mode: &'static str,
     pub hold_point: (f64, f64),
     pub aground: bool,
+    /// speed demand of the last physics step, m/s (`turn_and_accelerate` records it; VFR_HUD
+    /// throttle and the battery load come from it)
+    pub demand: f64,
 }
 
 impl State {
@@ -38,6 +43,8 @@ pub enum TargetKind {
     Rtl,
     Waypoint,
     Hold,
+    /// fixed wing NAV_LAND: glide down to `alt` at the point; the behavior detects touchdown
+    Land,
 }
 
 /// Where the current mode or mission item wants the vehicle. `radius` 0 = go straight to the
@@ -58,6 +65,8 @@ pub enum Out {
     Text(MavSeverity, String),
     MissionCurrent(u16),
     ItemReached(u16),
+    /// the autopilot changes its own mode (mission end, an RTL item, SURFACE complete)
+    SetMode(&'static str),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -67,8 +76,9 @@ pub struct Want {
     pub alt: f64,
 }
 
-/// Steering toward `tgt`. `reach_m` is the waypoint acceptance radius; `stop_at_rtl` makes a
-/// vehicle that can stop (boat, sub) do so on reaching home.
+/// Steering toward `tgt`. `reach_m` is the waypoint acceptance radius; `stop_at_rtl` marks a
+/// vehicle that can stop (boat, sub): it brakes into a point it holds at (home, a hold or
+/// loiter point) and stops there, as Rover and Sub do, instead of circling it.
 pub fn guide(
     st: &State,
     tgt: Option<&Target>,
@@ -91,16 +101,31 @@ pub fn guide(
         if st.alt >= t.alt - 5.0 {
             mission.advance(out);
         }
+    } else if t.kind == TargetKind::Land {
+        // a ~4.6 degree glide path to the touchdown point
+        want.heading = btc;
+        want.alt = (t.alt + (dist - reach_m).max(0.0) * 0.08).min(st.alt);
     } else if t.radius != 0.0 {
         // loiter / orbit, clockwise
         let corr = clamp((dist - t.radius) / t.radius.max(1.0) * 90.0, 90.0);
         want.heading = btc - 90.0 + corr;
     } else {
         want.heading = btc;
+        let holds = matches!(
+            t.kind,
+            TargetKind::Rtl | TargetKind::Hold | TargetKind::Loiter
+        );
         if dist < reach_m && t.kind == TargetKind::Waypoint {
-            mission.reached(out);
-        } else if dist < reach_m && t.kind == TargetKind::Rtl && stop_at_rtl {
-            want.speed = 0.0;
+            mission.reached_at(out, dist);
+        } else if holds && stop_at_rtl {
+            if dist < reach_m {
+                want.speed = 0.0;
+                want.heading = st.heading;
+            } else {
+                // brake at 0.4 m/s2 so it stops near the point instead of overshooting
+                let brake = (2.0 * 0.4 * (dist - reach_m * 0.5).max(0.0)).sqrt();
+                want.speed = want.speed.min(brake);
+            }
         }
     }
     want
@@ -112,6 +137,7 @@ pub fn turn_and_accelerate(st: &mut State, want: &Want, dt: f64, turn_dps: f64, 
     st.heading = (st.heading + clamp(wrap180(want.heading - st.heading), turn)).rem_euclid(360.0);
     let accel = accel_mps2 * dt;
     st.speed += clamp(want.speed - st.speed, accel);
+    st.demand = want.speed;
 }
 
 /// Climb or dive toward `want.alt`, at most `climb_mps`.

@@ -56,6 +56,7 @@ pub fn router(app: App) -> Router {
         .route("/api/stats", get(stats))
         .route("/ws", get(ws))
         .merge(crate::space::router(app.world.clone()))
+        .merge(crate::cot::router())
         .with_state(app)
 }
 

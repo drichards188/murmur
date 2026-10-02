@@ -14,36 +14,88 @@
 //! stand-in (catalog cruise, turn rate, TECS climb limits, a glide slope to the next altitude).
 
 use mavlink::dialects::ardupilotmega::{
-    COMMAND_LONG_DATA, MavCmd, MavModeFlag, MavResult, MavSeverity, MavType,
+    MavCmd, MavModeFlag, MavParamType, MavResult, MavSeverity, MavType,
 };
 
 use super::auto::Auto;
 use super::copter::{hover, offset_m};
-use super::{Behavior, Ctx, Tick, modes};
+use super::{Behavior, Command, Ctx, Tick, modes};
 use crate::config::Spec;
 use crate::geo::{bearing_deg, distance_m};
 use crate::kinematics::{Out, State, Want, integrate, turn_and_accelerate};
 use crate::mission::Mission;
+use crate::params::Params;
 
-// ArduPlane 4.8 QuadPlane defaults, the SITL quadplane model's defaults and Murmur's vtol.parm
-const Q_WP_SPD: f64 = 10.0;
-const Q_WP_ACC: f64 = 2.5;
-const Q_WP_SPD_UP: f64 = 2.5;
-const Q_WP_SPD_DN: f64 = 1.5;
-const Q_LAND_FINAL_ALT: f64 = 6.0;
-const Q_LAND_FINAL_SPD: f64 = 0.5;
-const Q_RTL_ALT: f64 = 15.0;
-const Q_TRANS_DECEL: f64 = 2.0;
-const Q_TRANSITION_S: f64 = 5.0;
-const Q_ASSIST_SPEED: f64 = 18.0;
+// ArduPlane 4.8 QuadPlane parameters this behavior flies by, with their defaults (the SITL
+// quadplane model's where it sets them; extra_params puts them in the parameter store)
+const DEFAULTS: &[(&str, MavParamType, f32)] = &[
+    ("Q_WP_SPD", F32, 10.0),
+    ("Q_WP_SPD_UP", F32, 2.5),
+    ("Q_WP_SPD_DN", F32, 1.5),
+    ("Q_WP_ACC", F32, 2.5),
+    ("Q_LAND_FINAL_ALT", F32, 6.0),
+    ("Q_LAND_FINAL_SPD", F32, 0.5),
+    ("Q_RTL_ALT", F32, 15.0),
+    ("Q_RTL_MODE", I8, 0.0),
+    ("Q_TRANSITION_MS", I16, 5000.0),
+    ("Q_TRANS_DECEL", F32, 2.0),
+    ("Q_ASSIST_SPEED", F32, 18.0),
+    // the SITL quadplane model's RTL_ALTITUDE (ArduPlane's own default is 100)
+    ("RTL_ALTITUDE", F32, 20.0),
+];
+const F32: MavParamType = MavParamType::MAV_PARAM_TYPE_REAL32;
+const I16: MavParamType = MavParamType::MAV_PARAM_TYPE_INT16;
+const I8: MavParamType = MavParamType::MAV_PARAM_TYPE_INT8;
+
+/// The parameters as this tick reads them.
+#[derive(Debug, Clone, Copy)]
+struct Tune {
+    q_wp_spd: f64,
+    q_up: f64,
+    q_dn: f64,
+    q_acc: f64,
+    land_final_alt: f64,
+    land_final_spd: f64,
+    q_rtl_alt: f64,
+    transition_s: f64,
+    trans_decel: f64,
+    assist: f64,
+    rtl_altitude: f64,
+    loiter_rad: f64,
+    wp_radius: f64,
+}
+
+impl Tune {
+    fn read(p: &Params) -> Tune {
+        let d = |name: &str| {
+            let fallback = DEFAULTS
+                .iter()
+                .find(|(n, _, _)| *n == name)
+                .map_or(0.0, |x| x.2);
+            p.f(name, f64::from(fallback))
+        };
+        Tune {
+            q_wp_spd: d("Q_WP_SPD").max(0.5),
+            q_up: d("Q_WP_SPD_UP").max(0.1),
+            q_dn: d("Q_WP_SPD_DN").max(0.1),
+            q_acc: d("Q_WP_ACC").max(0.1),
+            land_final_alt: d("Q_LAND_FINAL_ALT"),
+            land_final_spd: d("Q_LAND_FINAL_SPD").max(0.1),
+            q_rtl_alt: d("Q_RTL_ALT"),
+            transition_s: d("Q_TRANSITION_MS") / 1000.0,
+            trans_decel: d("Q_TRANS_DECEL").max(0.1),
+            assist: d("Q_ASSIST_SPEED"),
+            rtl_altitude: d("RTL_ALTITUDE"),
+            loiter_rad: p.f("self.k.loiter_rad", 150.0).abs().max(1.0),
+            wp_radius: p.f("WP_RADIUS", 90.0).max(1.0),
+        }
+    }
+}
+
 /// Q_PILOT_SPD_DN 0 means Q_PILOT_SPD_UP
 const Q_PILOT_SPD_DN: f64 = 2.5;
 /// forward acceleration in a transition (lift and forward motors together), from SITL
 const TRANSITION_ACC: f64 = 4.2;
-/// the SITL quadplane model's RTL_ALTITUDE (ArduPlane's own default is 100)
-const RTL_ALTITUDE: f64 = 20.0;
-const WP_LOITER_RAD: f64 = 150.0;
-const WP_RADIUS: f64 = 90.0;
 const TECS_CLMB_MAX: f64 = 5.0;
 const TECS_SINK_MAX: f64 = 5.0;
 /// the landing detector: on the ground this long before "Land complete"
@@ -91,6 +143,9 @@ pub struct Vtol {
     vel: (f64, f64),
     /// seconds since the pre-arm failure was last shown (PREARM_DISPLAY_PERIOD)
     prearm_s: f64,
+    k: Tune,
+    /// the mode the behavior last saw (a failsafe changes modes behind its back)
+    mode_seen: &'static str,
 }
 
 /// PREARM_DISPLAY_PERIOD: a failing pre-arm check is reported this often while disarmed.
@@ -186,6 +241,22 @@ impl Vtol {
             takeoff: None,
             vel: (0.0, 0.0),
             prearm_s: 0.0,
+            k: Tune {
+                q_wp_spd: 10.0,
+                q_up: 2.5,
+                q_dn: 1.5,
+                q_acc: 2.5,
+                land_final_alt: 6.0,
+                land_final_spd: 0.5,
+                q_rtl_alt: 15.0,
+                transition_s: 5.0,
+                trans_decel: 2.0,
+                assist: 18.0,
+                rtl_altitude: 20.0,
+                loiter_rad: 150.0,
+                wp_radius: 90.0,
+            },
+            mode_seen: "FBWA",
         }
     }
 
@@ -202,6 +273,13 @@ impl Vtol {
     ) {
         st.mode = name;
         st.hold_point = (st.lat, st.lon);
+        self.on_mode(st, mission, out);
+    }
+
+    /// Entering `st.mode`, whoever set it (a command, a failsafe).
+    fn on_mode(&mut self, st: &mut State, mission: &mut Mission, out: &mut Vec<Out>) {
+        let name = st.mode;
+        self.mode_seen = name;
         self.hold_alt = st.alt;
         self.landing = None;
         self.takeoff = None;
@@ -218,7 +296,7 @@ impl Vtol {
             "GUIDED" => out.push(Out::ItemReached(0)), // at the guided point already
             "QLAND" | "LOITERALTQLAND" => self.land_here(st, true),
             "QRTL" => self.qrtl(st, out),
-            "RTL" => self.hold_alt = st.home.2 + RTL_ALTITUDE,
+            "RTL" => self.hold_alt = st.home.2 + self.k.rtl_altitude,
             _ => {}
         }
     }
@@ -240,7 +318,7 @@ impl Vtol {
 
     fn qrtl(&mut self, st: &State, out: &mut Vec<Out>) {
         let at = (st.home.0, st.home.1);
-        let alt = (st.home.2 + Q_RTL_ALT).max(st.alt.min(st.home.2 + RTL_ALTITUDE));
+        let alt = (st.home.2 + self.k.q_rtl_alt).max(st.alt.min(st.home.2 + self.k.rtl_altitude));
         self.start_landing(st, out, at, alt);
     }
 
@@ -279,8 +357,8 @@ impl Vtol {
         MavResult::MAV_RESULT_ACCEPTED
     }
 
-    fn arm_disarm(&mut self, c: &mut Ctx, m: &COMMAND_LONG_DATA) -> MavResult {
-        if m.param1 == 1.0 {
+    fn arm_disarm(&mut self, c: &mut Ctx, m: &Command) -> MavResult {
+        if m.p[0] == 1.0 {
             if c.st.armed {
                 return MavResult::MAV_RESULT_ACCEPTED;
             }
@@ -294,19 +372,20 @@ impl Vtol {
             c.st.armed = true;
             self.landed = Self::rel(c.st) < 0.5;
             if self.landed {
-                // ArduPilot sets home to where it arms
+                // ArduPilot sets home to where it arms (and says so: HOME_POSITION)
                 c.st.home = (c.st.lat, c.st.lon, c.st.alt);
+                c.mission.new_home = Some(c.st.home);
             }
             self.hovering = true;
             self.hold_alt = c.st.alt;
             text(c.out, "Throttle armed");
             return MavResult::MAV_RESULT_ACCEPTED;
         }
-        if m.param1 == 0.0 {
+        if m.p[0] == 0.0 {
             if !c.st.armed {
                 return MavResult::MAV_RESULT_ACCEPTED;
             }
-            if !self.landed && m.param2 != FORCE_DISARM {
+            if !self.landed && m.p[1] != FORCE_DISARM {
                 return MavResult::MAV_RESULT_FAILED;
             }
             self.disarm(c.st, c.mission, c.out);
@@ -326,7 +405,7 @@ impl Vtol {
         self.auto.reset(mission, out);
     }
 
-    fn user_takeoff(&mut self, c: &mut Ctx, m: &COMMAND_LONG_DATA) -> MavResult {
+    fn user_takeoff(&mut self, c: &mut Ctx, m: &Command) -> MavResult {
         let refusal = if c.st.mode != "GUIDED" {
             Some("User Takeoff only in GUIDED mode")
         } else if !c.st.armed {
@@ -340,7 +419,7 @@ impl Vtol {
             text(c.out, why);
             return MavResult::MAV_RESULT_FAILED;
         }
-        let alt = c.st.home.2 + f64::from(m.param7);
+        let alt = c.st.home.2 + f64::from(m.z);
         self.takeoff = Some(alt);
         self.hold_alt = alt;
         self.landed = false;
@@ -359,14 +438,14 @@ impl Vtol {
             "GUIDED" => match self.takeoff {
                 Some(alt) => Goal::Hover(st.hold_point, alt),
                 None if self.hovering => Goal::Hover(hold.0, hold.1),
-                None => Goal::Fly(hold.0, WP_LOITER_RAD, hold.1),
+                None => Goal::Fly(hold.0, self.k.loiter_rad, hold.1),
             },
-            "RTL" => Goal::Fly((st.home.0, st.home.1), WP_LOITER_RAD, self.hold_alt),
+            "RTL" => Goal::Fly((st.home.0, st.home.1), self.k.loiter_rad, self.hold_alt),
             m if pilot_throttle(m) && !self.landed => Goal::Sink(hold.0, Q_PILOT_SPD_DN),
             m if is_q(m) => Goal::Hover(hold.0, hold.1),
             // LOITER, CIRCLE and the manual modes (no RC in this sim): circle the hold point
             _ if self.landed => Goal::Idle,
-            _ => Goal::Fly(hold.0, WP_LOITER_RAD, hold.1),
+            _ => Goal::Fly(hold.0, self.k.loiter_rad, hold.1),
         }
     }
 
@@ -399,17 +478,17 @@ impl Vtol {
                 Goal::Land
             }
             MavCmd::MAV_CMD_NAV_RETURN_TO_LAUNCH => {
-                self.hold_alt = st.home.2 + RTL_ALTITUDE;
-                Goal::Fly((st.home.0, st.home.1), WP_LOITER_RAD, self.hold_alt)
+                self.hold_alt = st.home.2 + self.k.rtl_altitude;
+                Goal::Fly((st.home.0, st.home.1), self.k.loiter_rad, self.hold_alt)
             }
             MavCmd::MAV_CMD_NAV_LOITER_UNLIM => {
                 let r = f64::from(nav.item.param3).abs();
-                let r = if r > 0.0 { r } else { WP_LOITER_RAD };
+                let r = if r > 0.0 { r } else { self.k.loiter_rad };
                 Goal::Fly(at, r, nav_alt(st, nav.item.z, nav.alt))
             }
             _ => {
                 let d = distance_m(st.lat, st.lon, at.0, at.1);
-                if d <= WP_RADIUS && !self.hovering {
+                if d <= self.k.wp_radius && !self.hovering {
                     let text = format!("Reached waypoint #{} dist {}m", nav.seq, d.round() as i64);
                     self.hold_alt = nav_alt(st, nav.item.z, nav.alt);
                     t.st.hold_point = at;
@@ -424,7 +503,7 @@ impl Vtol {
     /// Wing-borne (or transitioning) toward `at`, circling it if `radius` > 0.
     fn fly_wing(&mut self, t: &mut Tick, at: (f64, f64), radius: f64, alt: f64) {
         let dt = t.dt;
-        let cruise = t.spec.cruise_mps.max(Q_ASSIST_SPEED + 1.0);
+        let cruise = t.spec.cruise_mps.max(self.k.assist + 1.0);
         let st = &mut *t.st;
         if self.hovering && self.transition.is_none() {
             text(
@@ -454,7 +533,7 @@ impl Vtol {
         turn_and_accelerate(st, &want, dt, t.spec.turn_dps(), accel);
         if let Some(tr) = &mut self.transition {
             match &mut tr.timer {
-                None if st.speed > Q_ASSIST_SPEED => {
+                None if st.speed > self.k.assist => {
                     text(
                         t.out,
                         format!("Transition airspeed reached {:.1}", st.speed),
@@ -463,7 +542,7 @@ impl Vtol {
                 }
                 Some(s) => {
                     *s += dt;
-                    if *s >= Q_TRANSITION_S {
+                    if *s >= self.k.transition_s {
                         text(t.out, "Transition done");
                         self.transition = None;
                         self.hovering = false;
@@ -497,7 +576,7 @@ impl Vtol {
         match l.phase {
             Phase::Approach => {
                 let v = t.st.speed;
-                let sd = v * v / (2.0 * Q_TRANS_DECEL) + 2.0 * v;
+                let sd = v * v / (2.0 * self.k.trans_decel) + 2.0 * v;
                 if d < sd {
                     text(
                         t.out,
@@ -512,7 +591,7 @@ impl Vtol {
             Phase::Airbrake(left) => {
                 if left <= 0.0 {
                     let v = t.st.speed;
-                    let dc = v.min((2.0 * Q_TRANS_DECEL * d).sqrt());
+                    let dc = v.min((2.0 * self.k.trans_decel * d).sqrt());
                     text(
                         t.out,
                         format!("VTOL position1 v={v:.1} d={d:.1} h={h:.1} dc={dc:.1}"),
@@ -552,16 +631,16 @@ impl Vtol {
         self.hovering = true;
         self.transition = None;
         let decel = if l.phase == Phase::Position1 {
-            Q_TRANS_DECEL
+            self.k.trans_decel
         } else {
-            Q_WP_ACC
+            self.k.q_acc
         };
         hover(
             t.st,
             &mut self.vel,
             Some(l.at),
             true,
-            Q_WP_SPD.max(t.st.speed),
+            self.k.q_wp_spd.max(t.st.speed),
             decel,
             dt,
         );
@@ -569,18 +648,18 @@ impl Vtol {
         let ground = st.home.2;
         st.vz = match l.phase {
             Phase::Descend => {
-                if h <= Q_LAND_FINAL_ALT {
+                if h <= self.k.land_final_alt {
                     if !l.quiet {
                         text(t.out, "Land final started");
                     }
                     l.phase = Phase::Final;
-                    -Q_LAND_FINAL_SPD
+                    -self.k.land_final_spd
                 } else {
-                    -Q_WP_SPD_DN
+                    -self.k.q_dn
                 }
             }
-            Phase::Final => -Q_LAND_FINAL_SPD,
-            _ => (l.alt - st.alt).clamp(-Q_WP_SPD_DN, Q_WP_SPD_UP),
+            Phase::Final => -self.k.land_final_spd,
+            _ => (l.alt - st.alt).clamp(-self.k.q_dn, self.k.q_up),
         };
         st.alt += st.vz * dt;
         if st.alt <= ground {
@@ -633,22 +712,23 @@ impl Behavior for Vtol {
         !self.landed
     }
 
-    fn param(&self, name: &str) -> Option<f32> {
-        (name == "Q_ENABLE").then_some(1.0)
+    fn extra_params(&self, _spec: &Spec) -> Vec<(&'static str, MavParamType, f32)> {
+        DEFAULTS.to_vec()
     }
 
-    fn command(&mut self, c: &mut Ctx, m: &COMMAND_LONG_DATA) -> Option<MavResult> {
+    fn command(&mut self, c: &mut Ctx, m: &Command) -> Option<MavResult> {
+        self.k = Tune::read(c.params);
         Some(match m.command {
             MavCmd::MAV_CMD_COMPONENT_ARM_DISARM => self.arm_disarm(c, m),
             MavCmd::MAV_CMD_DO_SET_MODE => {
                 let custom = MavModeFlag::MAV_MODE_FLAG_CUSTOM_MODE_ENABLED.bits();
-                if !m.param1.is_finite() || (m.param1 as u32 as u8) & custom == 0 {
+                if !m.p[0].is_finite() || (m.p[0] as u32 as u8) & custom == 0 {
                     return Some(MavResult::MAV_RESULT_UNSUPPORTED);
                 }
-                if !m.param2.is_finite() || m.param2 < 0.0 {
+                if !m.p[1].is_finite() || m.p[1] < 0.0 {
                     return Some(MavResult::MAV_RESULT_FAILED);
                 }
-                self.set_mode(c, m.param2 as u32)
+                self.set_mode(c, m.p[1] as u32)
             }
             MavCmd::MAV_CMD_NAV_TAKEOFF => self.user_takeoff(c, m),
             MavCmd::MAV_CMD_NAV_VTOL_TAKEOFF => MavResult::MAV_RESULT_UNSUPPORTED,
@@ -658,6 +738,10 @@ impl Behavior for Vtol {
     }
 
     fn step(&mut self, t: &mut Tick) {
+        self.k = Tune::read(t.params);
+        if t.st.mode != self.mode_seen {
+            self.on_mode(t.st, t.mission, t.out);
+        }
         // AP_Arming::update: the pre-arm checks are shown every PREARM_DISPLAY_PERIOD from boot
         self.prearm_s += t.dt;
         let show = self.prearm_s >= PREARM_DISPLAY_S;
@@ -693,7 +777,7 @@ impl Behavior for Vtol {
         let dt = t.dt;
         let touched = match goal {
             Goal::Idle => {
-                hover(t.st, &mut self.vel, None, true, 0.0, Q_WP_ACC, dt);
+                hover(t.st, &mut self.vel, None, true, 0.0, self.k.q_acc, dt);
                 t.st.vz = 0.0;
                 false
             }
@@ -706,9 +790,17 @@ impl Behavior for Vtol {
                     Goal::Hover(p, _) => p,
                     _ => t.st.hold_point,
                 };
-                hover(t.st, &mut self.vel, Some(to), true, Q_WP_SPD, Q_WP_ACC, dt);
+                hover(
+                    t.st,
+                    &mut self.vel,
+                    Some(to),
+                    true,
+                    self.k.q_wp_spd,
+                    self.k.q_acc,
+                    dt,
+                );
                 let st = &mut *t.st;
-                st.vz = (alt.max(st.home.2) - st.alt).clamp(-Q_WP_SPD_DN, Q_WP_SPD_UP);
+                st.vz = (alt.max(st.home.2) - st.alt).clamp(-self.k.q_dn, self.k.q_up);
                 st.alt += st.vz * dt;
                 false
             }
@@ -722,7 +814,15 @@ impl Behavior for Vtol {
                 if !self.hovering {
                     self.enter_hover(t.st);
                 }
-                hover(t.st, &mut self.vel, Some(at), true, Q_WP_SPD, Q_WP_ACC, dt);
+                hover(
+                    t.st,
+                    &mut self.vel,
+                    Some(at),
+                    true,
+                    self.k.q_wp_spd,
+                    self.k.q_acc,
+                    dt,
+                );
                 let st = &mut *t.st;
                 st.vz = -rate;
                 st.alt += st.vz * dt;
@@ -776,7 +876,7 @@ mod tests {
     fn says_it_is_a_plane_with_q_enable() {
         let s = vtol();
         assert_eq!(s.b.mav_type(), MavType::MAV_TYPE_FIXED_WING);
-        assert_eq!(s.b.param("Q_ENABLE"), Some(1.0));
+        assert_eq!(s.params.get("Q_ENABLE"), Some(1.0));
         assert_eq!(s.st.mode, "FBWA");
     }
 

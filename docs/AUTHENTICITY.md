@@ -28,6 +28,29 @@ A stand-in may simplify how a vehicle moves. It may not simplify how the vehicle
 What stand-ins drop: aerodynamics and hydrodynamics detail, autopilot control loops, sensor
 simulation beyond detection models.
 
+### How the Rust engine meets it (`crates/murmur-standins`)
+
+Shared machinery, keyed by the ArduPilot firmware a behavior imitates (from its mode table),
+so a new behavior inherits it:
+
+- **Parameters** (`params.rs`): ArduPilot names and types, seeded from ArduPilot defaults,
+  Murmur's `sim/params/*.parm` and the catalog; PARAM_SET / READ / LIST as GCS_Param.cpp.
+  Only the parameters a C2 touches, not all ~1,000.
+- **Rates** (`telemetry.rs`): heartbeat only until the GCS sets intervals, as ArduPilot with
+  `common.parm`. An acoustic-linked vehicle under water sends HEARTBEAT + HIGH_LATENCY2 every
+  20 s instead of streaming.
+- **Missions** (`mission.rs`): upload and download for mission, fence and rally; DO_ items run,
+  never flown; loiter, delay, RTL and land items per firmware; each firmware's mission end.
+- **Failures**: battery drained by load over the catalog endurance, battery and GCS-loss
+  failsafes per firmware with ArduPilot's texts (`battery.rs`, `failsafe.rs`).
+- **Truth vs reported** (`nav.rs`): without GPS the estimate drifts (INS heading and DVL scale
+  errors, unseen current beyond DVL range; figures are estimates in the 0.1-0.5 % of
+  distance class), EKF flags drop to relative position, and a fix after surfacing resets it.
+  The truth goes only to `MURMUR_STANDINS_TRUTH` (JSON lines), never on the wire.
+
+Murmur-chosen settings where ArduPilot ships a feature off (GCS failsafes, battery
+thresholds) are marked in `params.rs`.
+
 ## Protocol groups (most realistic way a C2 reaches each platform)
 
 | Group | Platforms | Openly implementable? |

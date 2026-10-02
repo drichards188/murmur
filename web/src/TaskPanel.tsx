@@ -1,8 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { Draft } from './MapView'
 import type { TaskKind, Tasking, Vehicle } from './types'
 import { callsign, LIFECYCLE } from './types'
-import { sendTask } from './useBridge'
+import { TaskResult, type TaskOutcome } from './TaskResult'
+import { sendTask, TaskRefused } from './useBridge'
+import { availableTasks, orbitRange, usePlatformLimits } from './taskDefaults'
 
 interface Props {
   vehicles: Vehicle[]
@@ -10,6 +12,9 @@ interface Props {
   draft: Draft
   setDraft: (d: Draft) => void
   taskings: Tasking[]
+  /** intents waiting in the inbox, and a way to open one (or its Decisions entry) */
+  pendingIds?: Set<number>
+  onInbox?: (intentId: number) => void
 }
 
 const TASKS: { kind: TaskKind; label: string; hint: string }[] = [
@@ -39,12 +44,29 @@ function Lifecycle({ state }: { state: string }) {
   )
 }
 
-export function TaskPanel({ vehicles, selected, draft, setDraft, taskings }: Props) {
+export function TaskPanel({ vehicles, selected, draft, setDraft, taskings, pendingIds, onInbox }: Props) {
   const [kind, setKind] = useState<TaskKind>('orbit')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [outcome, setOutcome] = useState<TaskOutcome | null>(null)
   const byUid = new Map(vehicles.map((v) => [v.uid, v]))
   const sel = [...selected].sort((a, b) => a - b)
+  const limits = usePlatformLimits()
+  const selVehicles = sel.map((s) => byUid.get(s)).filter((v): v is Vehicle => v != null)
+  const orbit = orbitRange(selVehicles, limits)
+  const offered = availableTasks(selVehicles, limits)
+  const selKey = sel.join(',')
+
+  // a new selection gets that platform's own defaults: its typical orbit, and a task it can do
+  useEffect(() => {
+    setDraft({ ...draft, radius: orbit.value })
+    if (offered && !offered.has(kind)) {
+      const next = TASKS.find((t) => offered.has(t.kind))?.kind
+      if (next) choose(next)
+    }
+    // only when the selection (or the catalog) changes, not on every draft edit
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selKey, limits])
 
   const choose = (k: TaskKind) => {
     setKind(k)
@@ -56,8 +78,11 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings }: Pro
   const others = sel.filter((s) => byUid.get(s)?.kind !== 'tracker')
   const trackPair = trackers.length === 1 && others.length === 1
 
+  const radiusOk = draft.radius >= orbit.min
   const ready =
     sel.length > 0 &&
+    (offered == null || offered.has(kind)) &&
+    (kind !== 'orbit' || radiusOk) &&
     (kind === 'orbit'
       ? draft.center != null
       : kind === 'patrol'
@@ -69,17 +94,23 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings }: Pro
   const submit = async () => {
     setBusy(true)
     setError(null)
+    setOutcome(null)
     try {
-      await sendTask({
+      const answer = await sendTask({
         task: kind,
         uids: kind === 'track' ? trackers : sel,
         ...(kind === 'track' ? { target: others[0] } : {}),
         ...(kind === 'orbit' ? { center: draft.center!, radius: draft.radius } : {}),
         ...(kind === 'patrol' ? { route: draft.route } : {}),
       })
+      if (answer.status === 202 && answer.intent_id != null) {
+        setOutcome({ kind: 'wait', intentId: answer.intent_id, detail: answer.detail ?? '', expires_t: answer.expires_t ?? null })
+      }
       setDraft({ ...draft, center: null, route: [] })
     } catch (e) {
-      setError((e as Error).message)
+      // a refusal keeps the draft, so it can be adjusted and sent again
+      if (e instanceof TaskRefused) setOutcome({ kind: 'refused', intent: e.intent, detail: e.message })
+      else setError((e as Error).message)
     } finally {
       setBusy(false)
     }
@@ -94,7 +125,13 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings }: Pro
       <div className="taskform">
         <div className="seg wide">
           {TASKS.map((t) => (
-            <button key={t.kind} className={kind === t.kind ? 'on' : ''} onClick={() => choose(t.kind)}>
+            <button
+              key={t.kind}
+              className={kind === t.kind ? 'on' : ''}
+              disabled={offered != null && !offered.has(t.kind)}
+              title={offered != null && !offered.has(t.kind) ? 'Not every selected vehicle can do this' : undefined}
+              onClick={() => choose(t.kind)}
+            >
               {t.label}
             </button>
           ))}
@@ -105,14 +142,19 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings }: Pro
             <span>Radius</span>
             <input
               type="range"
-              min={100}
-              max={800}
-              step={25}
-              value={draft.radius}
+              min={orbit.min}
+              max={orbit.max}
+              step={orbit.step}
+              value={Math.min(orbit.max, Math.max(orbit.min, draft.radius))}
               onChange={(e) => setDraft({ ...draft, radius: Number(e.target.value) })}
             />
-            <output>{draft.radius} m</output>
+            <output>{draft.radius >= 10000 ? `${(draft.radius / 1000).toFixed(1)} km` : `${draft.radius} m`}</output>
           </label>
+        )}
+        {kind === 'orbit' && orbit.limitedBy && (
+          <p className={`hint ${radiusOk ? '' : 'error'}`}>
+            Minimum {orbit.min} m ({orbit.limitedBy} x {1.1}).
+          </p>
         )}
         {kind === 'patrol' && (
           <div className="row">
@@ -135,6 +177,15 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings }: Pro
               : `Send ${kind.toUpperCase()} to ${sel.length} vehicle${sel.length > 1 ? 's' : ''}`}
         </button>
         {error && <p className="error">{error}</p>}
+        {outcome && (
+          <TaskResult
+            outcome={outcome}
+            vehicles={vehicles}
+            stillPending={outcome.kind === 'wait' && (pendingIds?.has(outcome.intentId) ?? false)}
+            onInbox={(id) => onInbox?.(id)}
+            onDismiss={() => setOutcome(null)}
+          />
+        )}
       </div>
 
       <header className="panel-head sub">

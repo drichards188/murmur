@@ -58,6 +58,19 @@ async fn request(api: &Api, req: Request<Body>) -> (StatusCode, Value) {
 }
 
 #[test]
+fn satcom_classes_come_from_the_platform_catalog() {
+    let api = api("2026-06-14T10:00:00Z", false);
+    let c = |p: &str| api.satcom_classes(Some(p));
+    assert_eq!(c("buoy"), ["iridium"]);
+    assert_eq!(c("saildrone"), ["starlink", "iridium"]);
+    assert_eq!(c("magura"), ["starlink"]);
+    assert_eq!(c("rq4"), ["wgs", "ku-geo"]);
+    assert_eq!(c("mq9b"), ["wgs", "ku-geo"]);
+    assert!(c("puma").is_empty());
+    assert!(api.satcom_classes(None).is_empty());
+}
+
+#[test]
 fn parses_the_time_forms_people_type() {
     let want = parse_time("2026-06-14T10:00:00Z").expect("rfc3339");
     assert_eq!(parse_time("2026-06-14T10:00Z").expect("short"), want);

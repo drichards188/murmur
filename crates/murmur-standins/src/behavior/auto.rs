@@ -91,6 +91,7 @@ impl Auto {
     pub fn reset(&mut self, m: &mut Mission, out: &mut Vec<Out>) {
         m.seq = 0;
         m.jumps.clear();
+        m.complete = false;
         self.seen = 0;
         self.started = None;
         self.finished = false;
@@ -107,6 +108,7 @@ impl Auto {
         self.started = None;
         if self.finished || usize::from(m.seq) >= m.items.len() || m.seq == 0 {
             self.finished = false;
+            m.complete = false;
             m.seq = 1;
             m.jumps.clear();
             out.push(Out::MissionCurrent(m.seq));
@@ -211,6 +213,7 @@ impl Auto {
         } else {
             // ArduPilot keeps reporting the last item once the mission is complete
             self.finished = true;
+            m.complete = true;
         }
         self.seen = m.seq;
     }
@@ -220,14 +223,15 @@ impl Auto {
 #[cfg(test)]
 pub(super) mod testkit {
     use mavlink::dialects::ardupilotmega::{
-        COMMAND_LONG_DATA, MISSION_ITEM_INT_DATA, MavCmd, MavFrame, MavModeFlag, MavResult,
+        MISSION_ITEM_INT_DATA, MavCmd, MavFrame, MavModeFlag, MavResult,
     };
 
-    use crate::behavior::{Behavior, Ctx, Tick};
+    use crate::behavior::{Behavior, Command, Ctx, Tick};
     use crate::config::Spec;
     use crate::geo::Gauss;
     use crate::kinematics::{Out, State};
     use crate::mission::Mission;
+    use crate::params::Params;
 
     pub const LAT: f64 = 37.795;
     pub const LON: f64 = -122.465;
@@ -235,6 +239,7 @@ pub(super) mod testkit {
     pub struct Sim {
         pub b: Box<dyn Behavior>,
         pub spec: Spec,
+        pub params: Params,
         pub st: State,
         pub mission: Mission,
         pub said: Vec<String>,
@@ -254,7 +259,10 @@ pub(super) mod testkit {
                 turn_dps,
                 loiter_radius_m: None,
                 endurance_h: None,
+                link: None,
             };
+            let mut params = Params::seed(b.firmware(), &spec, 1);
+            params.extend(b.extra_params(&spec));
             let mut st = State {
                 lat: LAT,
                 lon: LON,
@@ -269,11 +277,13 @@ pub(super) mod testkit {
                 mode: b.hold_mode(),
                 hold_point: (LAT, LON),
                 aground: false,
+                demand: 0.0,
             };
             b.spawn(&spec, &mut st);
             Sim {
                 b,
                 spec,
+                params,
                 st,
                 mission: Mission::default(),
                 said: Vec::new(),
@@ -288,26 +298,27 @@ pub(super) mod testkit {
                     Out::Text(_, s) => self.said.push(s),
                     Out::ItemReached(seq) => self.reached.push(seq),
                     Out::MissionCurrent(_) => {}
+                    Out::SetMode(name) => {
+                        self.st.mode = name;
+                        self.st.hold_point = (self.st.lat, self.st.lon);
+                    }
                 }
             }
         }
 
         pub fn command(&mut self, command: MavCmd, p: [f32; 7]) -> Option<MavResult> {
-            let m = COMMAND_LONG_DATA {
+            let m = Command {
                 command,
-                param1: p[0],
-                param2: p[1],
-                param3: p[2],
-                param4: p[3],
-                param5: p[4],
-                param6: p[5],
-                param7: p[6],
-                ..Default::default()
+                p: [p[0], p[1], p[2], p[3]],
+                x: f64::from(p[4]),
+                y: f64::from(p[5]),
+                z: p[6],
             };
             let mut out = Vec::new();
             let r = self.b.command(
                 &mut Ctx {
                     spec: &self.spec,
+                    params: &self.params,
                     st: &mut self.st,
                     mission: &mut self.mission,
                     out: &mut out,
@@ -339,6 +350,7 @@ pub(super) mod testkit {
                 let mut out = Vec::new();
                 self.b.step(&mut Tick {
                     spec: &self.spec,
+                    params: &self.params,
                     st: &mut self.st,
                     mission: &mut self.mission,
                     water: None,

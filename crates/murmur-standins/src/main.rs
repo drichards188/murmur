@@ -93,8 +93,14 @@ async fn stats(n: usize, period: Duration) {
         let sent = link::SENT.load(Ordering::Relaxed);
         let err = link::SEND_ERRORS.load(Ordering::Relaxed);
         let secs = period.as_secs_f64();
+        let worst = murmur_standins::truth::WORST_CM.swap(0, Ordering::Relaxed);
+        let nav = if worst > 0 {
+            format!(", worst navigation error {:.1} m", worst as f64 / 100.0)
+        } else {
+            String::new()
+        };
         println!(
-            "{n} stand-ins: {:.0} msg/s sent, {:.0} send errors/s",
+            "{n} stand-ins: {:.0} msg/s sent, {:.0} send errors/s{nav}",
             (sent - sent0) as f64 / secs,
             (err - err0) as f64 / secs
         );
