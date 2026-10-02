@@ -1,0 +1,249 @@
+# Space segment catalog: what each class of satellite can do for the operator, and where its
+# public element sets come from. Read by crates/murmur-space.
+#
+# Like sim/platforms.toml, names use "-class": approximate public figures for the named kind
+# of system, not models of a real constellation's tasking system. Figures are rounded. Unknown
+# figures are left out (blank), never invented. Values that are our own estimates are listed
+# in `guessed` so tools can flag them; `sources` says where the rest come from.
+#
+# celestrak: CelesTrak GP queries (https://celestrak.org/NORAD/elements/gp.php?<query>&FORMAT=json).
+#            `murmur-space fetch` caches them in sim/space/cache/ (never more than once per
+#            CelesTrak's 2-hour update cycle).
+# include:   keep objects whose name starts with one of these; exclude: drop names containing.
+# sensor:    imaging model. gsd_nadir_m (optical) / resolution_m (SAR), swath_km,
+#            max_off_nadir_deg, min_sun_elevation_deg (optical), incidence_min/max_deg (SAR),
+#            taskable (false: fixed nadir strip, routine collects only).
+# comms:     min_elevation_deg (terminal mask), optional min_elevation_steps by satellite
+#            altitude, network_latency_ms (one-way, beyond speed of light in the space
+#            segment), path (bent-pipe | crosslink), band, user_down/up_mbps.
+# timing:    tasking_lead_min (request to earliest collect), downlink_latency_min (collect to
+#            data on the ground), processing_min (ground to usable product).
+
+[defaults]
+# Element sets older than this at the propagation time are skipped (and reported).
+max_element_age_days = 14
+exclude = [" DEB", "R/B", "AKM", "PKM", "PLATFORM"]
+
+# ---------------------------------------------------------------- SATCOM
+[[class]]
+id = "starlink"
+name = "Starlink-class LEO broadband"
+capability = "satcom"
+role = "Proliferated LEO broadband (Ku/Ka), thousands of satellites"
+orbit = "LEO ~340-570 km, 43/53/70/97 deg planes"
+celestrak = ["GROUP=starlink"]
+include = ["STARLINK"]
+guessed = ["network_latency_ms"]
+sources = [
+  "Minimum elevation 25 deg: FCC grant of SpaceX modification, April 2021 (Gen1 and Gen2)",
+  "Lower masks by altitude (10 deg below 400 km, 20 deg 400-500 km): FCC approval, April 2026 (reported; DA 26-36)",
+  "User rates: Starlink residential specifications, typical 25-220 Mbit/s down, 5-20 up",
+]
+notes = "Military variants (Starshield) are not in public element sets. Gateway assumed within ~1000 km (bent pipe); laser crosslinks ignored for latency."
+[class.comms]
+min_elevation_deg = 25
+min_elevation_steps = [
+  { below_alt_km = 400, min_elevation_deg = 10 },
+  { below_alt_km = 500, min_elevation_deg = 20 },
+]
+network_latency_ms = 8
+path = "bent-pipe"
+band = "Ku/Ka"
+user_down_mbps = 100
+user_up_mbps = 10
+
+[[class]]
+id = "iridium"
+name = "Iridium-class LEO voice/data"
+capability = "satcom"
+role = "Global L-band voice and low-rate data with crosslinks (66 active + spares)"
+orbit = "LEO ~780 km, 86.4 deg, 6 planes"
+celestrak = ["GROUP=iridium-NEXT"]
+include = ["IRIDIUM"]
+sources = [
+  "Minimum elevation 8.2 deg: Iridium system design value",
+  "Rates: Iridium Certus 700 (704 kbit/s down, 352 up); Short Burst Data messages are far smaller",
+]
+notes = "Network latency not published in a form we trust: left blank. The drifting buoy's Iridium-style SBD is a message service, not a stream."
+[class.comms]
+min_elevation_deg = 8.2
+path = "crosslink"
+band = "L"
+user_down_mbps = 0.704
+user_up_mbps = 0.352
+
+[[class]]
+id = "wgs"
+name = "WGS-class GEO military SATCOM"
+capability = "satcom"
+role = "Wideband X/Ka-band GEO military communications"
+orbit = "GEO 35,786 km"
+celestrak = ["NAME=WGS"]
+include = ["WGS"]
+guessed = ["min_elevation_deg"]
+sources = ["Constellation membership: CelesTrak objects named WGS F1-F9, WGS 10"]
+notes = "Terminal rates depend on terminal and allocation; left blank. Minimum elevation is terminal dependent (5 deg assumed)."
+[class.comms]
+min_elevation_deg = 5
+path = "bent-pipe"
+band = "X/Ka"
+
+# ---------------------------------------------------------------- imaging, optical
+[[class]]
+id = "worldview"
+name = "WorldView-class high-resolution optical"
+capability = "optical"
+role = "Very high resolution (~0.3-0.5 m) agile optical imaging"
+orbit = "LEO ~450-770 km, sun-synchronous (Legion 3-6 mid-inclination)"
+celestrak = ["NAME=WORLDVIEW", "NAME=LEGION", "NAME=GEOEYE"]
+include = ["WORLDVIEW", "LEGION", "GEOEYE"]
+guessed = ["max_off_nadir_deg", "min_sun_elevation_deg", "tasking_lead_min", "downlink_latency_min", "processing_min"]
+sources = [
+  "WorldView-3: 0.31 m pan at nadir, 0.34 m at 20 deg off-nadir, 13.1 km swath (Maxar/Vantor datasheet)",
+  "WorldView-1 0.50 m / 17.7 km, WorldView-2 0.46 m / 16.4 km, GeoEye-1 0.41 m / 15.2 km (datasheets)",
+  "Legion: ~0.3 m class (Maxar announcements); swath not used here",
+]
+notes = "Operator is now Vantor (formerly Maxar). The spacecraft can slew past 30 deg; 30 deg is a typical standard-order limit."
+[class.sensor]
+max_off_nadir_deg = 30
+min_sun_elevation_deg = 15
+[class.timing]
+tasking_lead_min = 120
+downlink_latency_min = 45
+processing_min = 60
+[[class.overrides]]
+name_prefix = "WORLDVIEW-1"
+label = "WV-1"
+gsd_nadir_m = 0.50
+swath_km = 17.7
+[[class.overrides]]
+name_prefix = "WORLDVIEW-2"
+label = "WV-2"
+gsd_nadir_m = 0.46
+swath_km = 16.4
+[[class.overrides]]
+name_prefix = "WORLDVIEW-3"
+label = "WV-3"
+gsd_nadir_m = 0.31
+swath_km = 13.1
+[[class.overrides]]
+name_prefix = "GEOEYE"
+label = "GE-1"
+gsd_nadir_m = 0.41
+swath_km = 15.2
+[[class.overrides]]
+name_prefix = "LEGION"
+label = "Legion"
+gsd_nadir_m = 0.30
+
+[[class]]
+id = "skysat"
+name = "SkySat-class agile smallsat optical"
+capability = "optical"
+role = "Sub-metre agile smallsat imaging and video"
+orbit = "LEO ~400-500 km, sun-synchronous and 53 deg"
+celestrak = ["GROUP=planet"]
+include = ["SKYSAT"]
+guessed = ["max_off_nadir_deg", "min_sun_elevation_deg", "tasking_lead_min", "downlink_latency_min", "processing_min"]
+sources = ["Planet SkySat: 0.5 m orthorectified product, ~5.5 km swath (Planet imagery product specification)"]
+[class.sensor]
+gsd_nadir_m = 0.5
+swath_km = 5.5
+max_off_nadir_deg = 30
+min_sun_elevation_deg = 15
+[class.timing]
+tasking_lead_min = 180
+downlink_latency_min = 60
+processing_min = 60
+
+[[class]]
+id = "dove"
+name = "Dove-class nadir monitoring optical"
+capability = "optical"
+role = "Medium-resolution daily monitoring (fixed nadir strip, not taskable)"
+orbit = "LEO ~475-525 km, sun-synchronous"
+celestrak = ["GROUP=planet"]
+include = ["FLOCK"]
+guessed = ["max_off_nadir_deg", "min_sun_elevation_deg", "downlink_latency_min", "processing_min"]
+sources = ["Planet SuperDove (PlanetScope): ~3.7 m GSD, ~32.5 km swath (Planet imagery product specification)"]
+notes = "Not taskable: it images whatever passes under its strip. max_off_nadir_deg is half the swath seen from ~475 km."
+[class.sensor]
+gsd_nadir_m = 3.7
+swath_km = 32.5
+max_off_nadir_deg = 1.9
+min_sun_elevation_deg = 10
+taskable = false
+[class.timing]
+downlink_latency_min = 120
+processing_min = 120
+
+# ---------------------------------------------------------------- imaging, SAR
+[[class]]
+id = "capella"
+name = "Capella-class X-band SAR"
+capability = "sar"
+role = "Sub-metre spotlight SAR, day/night, through cloud"
+orbit = "LEO ~500-640 km, 45/53/97 deg"
+celestrak = ["NAME=CAPELLA"]
+include = ["CAPELLA"]
+guessed = ["tasking_lead_min", "downlink_latency_min", "processing_min"]
+sources = [
+  "Spotlight: 0.5 m azimuth x 0.25 m slant range, 5 x 5 km scene; standard incidence 25-40 deg, extended 15-45 (Capella SAR imagery products guide, 2020)",
+]
+[class.sensor]
+resolution_m = 0.5
+swath_km = 5
+incidence_min_deg = 25
+incidence_max_deg = 40
+[class.timing]
+tasking_lead_min = 60
+downlink_latency_min = 30
+processing_min = 30
+
+[[class]]
+id = "iceye"
+name = "ICEYE-class X-band SAR"
+capability = "sar"
+role = "Smallsat SAR constellation, frequent revisit"
+orbit = "LEO ~500-580 km, sun-synchronous and mid-inclination"
+celestrak = ["NAME=ICEYE"]
+include = ["ICEYE"]
+guessed = ["tasking_lead_min", "downlink_latency_min", "processing_min"]
+sources = [
+  "Spot mode: 0.5 m slant range, 1 m ground range, 5 x 5 km; performant incidence 20-40 deg, up to 5-45 (ICEYE product documentation)",
+]
+[class.sensor]
+resolution_m = 1.0
+swath_km = 5
+incidence_min_deg = 20
+incidence_max_deg = 40
+[class.timing]
+tasking_lead_min = 120
+downlink_latency_min = 60
+processing_min = 60
+
+# ---------------------------------------------------------------- navigation
+[[class]]
+id = "gps"
+name = "GPS (operational)"
+capability = "gnss"
+role = "Navigation signals: visible count and dilution of precision"
+orbit = "MEO ~20,200 km, 55 deg, 6 planes"
+celestrak = ["GROUP=gps-ops"]
+include = ["GPS"]
+sources = ["5 deg mask: GPS SPS Performance Standard (2020) convention"]
+notes = "GPS only (no Galileo/GLONASS/BeiDou yet); geometry only, no signal or jamming model."
+[class.comms]
+min_elevation_deg = 5
+
+# ---------------------------------------------------------------- reference
+[[class]]
+id = "iss"
+name = "ISS (reference only)"
+capability = "reference"
+role = "Used to cross-check pass predictions against public predictors"
+orbit = "LEO ~420 km, 51.6 deg"
+celestrak = ["CATNR=25544"]
+include = ["ISS"]
+[class.comms]
+min_elevation_deg = 10
