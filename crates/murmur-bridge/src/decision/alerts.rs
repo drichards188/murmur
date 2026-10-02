@@ -1,5 +1,7 @@
 //! Inbox alerts, from what the bridge already detects: a lost link (no telemetry for more
-//! than 3 s), NOT MOVING, a vehicle that left its task, a failed task, an ACK timeout.
+//! than 3 expected intervals: 3 s when streaming, 60 s for an AUV reporting by
+//! HIGH_LATENCY2 over its acoustic link; see `link::STALE_INTERVALS`), NOT MOVING, a vehicle
+//! that left its task, a failed task, an ACK timeout.
 //!
 //! Derived from the current state on every read, so an alert clears itself when its cause
 //! does (the link comes back, the vehicle gets a new task). Op alerts look only at each
@@ -10,8 +12,6 @@ use serde::Serialize;
 
 use crate::tasks::{OpSnapshot, OpState};
 use crate::vehicle::{Uid, VehicleCell};
-
-pub const LOST_LINK_S: f64 = 3.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -72,7 +72,7 @@ pub fn alerts(
     for cell in vehicles {
         let link = cell.link_snapshot(crate::clock::mono());
         if let Some(last) = link.last_rx_t
-            && now_wall - last > LOST_LINK_S
+            && now_wall - last > link.stale_after_s()
         {
             out.push(Alert {
                 id: format!("link:{}", cell.uid),

@@ -389,6 +389,34 @@ async fn the_world_voids_waiting_intents() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_low_rate_link_is_lost_only_after_missed_reports() {
+    use crate::mav::MavMessage;
+    let r = waiting_rig();
+    r.vehicle(7, Firmware::Copter, "switchblade", (LAT, LON));
+    sleep(Duration::from_millis(500)).await;
+    let cell = r
+        .world
+        .vehicles()
+        .into_iter()
+        .find(|c| c.uid == 7)
+        .expect("cell");
+    // an acoustic link: reports every 20 s, so 60 s of silence is the limit
+    cell.link_on_message(&MavMessage::HIGH_LATENCY2(Default::default()));
+    let waiting = r.d.submit(&op1(), orbit(7)).await.expect("submit").id;
+    assert_eq!(r.state(waiting), State::PendingApproval);
+    // between reports (45 s, past max_fact_age_s but under 3 intervals): not voided
+    cell.write(|v| v.seen.heartbeat = Some(clock::wall() - 45.0));
+    r.d.tick();
+    assert_eq!(r.state(waiting), State::PendingApproval);
+    // three missed reports: voided
+    cell.write(|v| v.seen.heartbeat = Some(clock::wall() - 65.0));
+    r.d.tick();
+    assert_eq!(r.state(waiting), State::Voided);
+    assert!(r.reason(waiting).contains("lost"), "{}", r.reason(waiting));
+    r.replays();
+}
+
+#[tokio::test(start_paused = true)]
 async fn the_rules_reject_land_waypoints_and_no_go_crossings() {
     let r = rig();
     r.vehicle(8, Firmware::Rover, "magura", SEA);

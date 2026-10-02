@@ -1,6 +1,6 @@
 import { symbolSvg } from './symbols'
 import type { Vehicle } from './types'
-import { callsign, domainOf, STALE_MS } from './types'
+import { callsign, domainOf, isStale, staleMs } from './types'
 
 interface Props {
   vehicles: Vehicle[]
@@ -17,8 +17,8 @@ interface Props {
 function linkClass(v: Vehicle) {
   const since = v.link.since_last_ms ?? Infinity
   const loss = v.link.loss_pct ?? 0
-  if (since > STALE_MS) return 'bad'
-  if (since > 1000 || loss > 10) return 'warn'
+  if (since > staleMs(v)) return 'bad'
+  if (since > (v.link.expected_interval_ms ?? 1000) || loss > 10) return 'warn'
   return 'ok'
 }
 
@@ -37,7 +37,7 @@ interface RowProps {
 
 /** Two controls: the left strip selects the vehicle for tasking; the rest opens its details. */
 function Row({ v, selected, open, onToggle, onDeselect, onDetails }: RowProps) {
-  const stale = (v.link.since_last_ms ?? 0) > STALE_MS
+  const stale = isStale(v)
   const lc = linkClass(v)
   return (
     <div
@@ -74,6 +74,11 @@ function Row({ v, selected, open, onToggle, onDeselect, onDetails }: RowProps) {
               STAND-IN
             </span>
           )}
+          {v.nav_source === 'dead_reckoning' && (
+            <span className="vrow-standin" title="Dead reckoning: no GNSS fix, position from inertial navigation and DVL, error growing with distance">
+              DR
+            </span>
+          )}
         </span>
         {v.identity && (
           <span className="vrow-model" title={`${v.identity.name} · ${v.identity.role}`}>
@@ -100,7 +105,7 @@ function Row({ v, selected, open, onToggle, onDeselect, onDetails }: RowProps) {
         <span>{fmt(v.groundspeed, 1, ' m/s')}</span>
       </span>
       <span className={`vrow-link ${lc}`}>
-        <span title="time since last message">{stale ? `${Math.floor((v.link.since_last_ms ?? 0) / 1000)}s` : fmt(v.link.since_last_ms, 0, 'ms')}</span>
+        <span title="time since last message">{stale || (v.link.since_last_ms ?? 0) >= 1000 ? `${Math.floor((v.link.since_last_ms ?? 0) / 1000)}s` : fmt(v.link.since_last_ms, 0, 'ms')}</span>
         <span title="packet loss, last 10 s">{fmt(v.link.loss_pct, 0, '%')} loss</span>
         <span title="round trip time (TIMESYNC)">{fmt(v.link.rtt_ms, 0, 'ms')} rtt</span>
       </span>

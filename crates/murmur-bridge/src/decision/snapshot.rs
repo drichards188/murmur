@@ -42,7 +42,12 @@ fn autopilot(kind: Kind) -> Option<AutopilotKind> {
 /// reports itself as a boat (its stand-in imitates ArduRover), so when the catalog says the
 /// platform is a drifter and the heartbeat says boat, the fact is "drifter" (as Q_ENABLE
 /// turns a plane heartbeat into a VTOL).
-pub fn vehicle_facts(v: &Vehicle, catalog: &Catalog, now_mono: f64) -> VehicleFacts {
+pub fn vehicle_facts(
+    v: &Vehicle,
+    catalog: &Catalog,
+    now_mono: f64,
+    report_interval_ms: u32,
+) -> VehicleFacts {
     let platform = v
         .identity
         .as_ref()
@@ -73,6 +78,10 @@ pub fn vehicle_facts(v: &Vehicle, catalog: &Catalog, now_mono: f64) -> VehicleFa
         battery_pct: v
             .battery_pct
             .and_then(|b| fact(f64::from(b), v.seen.battery)),
+        nav_source: v
+            .nav_source_fact(now_mono)
+            .map(|(source, t)| Fact::new(source, ms(t))),
+        report_interval_ms: Some(report_interval_ms),
         platform,
     }
 }
@@ -82,7 +91,8 @@ pub fn build(world: &World, catalog: &Catalog, areas: &AreaSet, t: Time) -> Worl
     let now = clock::mono();
     let mut snap = WorldSnapshot::new(t);
     for cell in world.vehicles() {
-        let facts = cell.read(|v| vehicle_facts(v, catalog, now));
+        let interval = cell.link_snapshot(now).expected_interval_ms;
+        let facts = cell.read(|v| vehicle_facts(v, catalog, now, interval));
         snap.vehicles.insert(duid(cell.uid), facts);
     }
     snap.areas = Some(areas.clone());
