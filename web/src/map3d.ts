@@ -34,7 +34,7 @@ function iconFor(v: Vehicle) {
   const sym = symbolSvg(v, { stale, heading: false })
   return {
     url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(sym.svg)}`,
-    id: `${v.sysid}|${stale}`,
+    id: `${v.uid}|${stale}`,
     width: Math.ceil(sym.size.width),
     height: Math.ceil(sym.size.height),
     anchorX: sym.anchor.x,
@@ -120,7 +120,7 @@ export function build3dLayers(vehicles: Vehicle[], selected: Set<number>, visibl
     new ScatterplotLayer<Vehicle>({
       id: 'selection',
       visible,
-      data: placed.filter((v) => selected.has(v.sysid)),
+      data: placed.filter((v) => selected.has(v.uid)),
       getPosition: at,
       getRadius: 24,
       radiusUnits: 'pixels',
@@ -140,7 +140,7 @@ export function build3dLayers(vehicles: Vehicle[], selected: Set<number>, visibl
       getIcon: iconFor,
       getSize: (v) => iconFor(v).height,
       sizeUnits: 'pixels',
-      updateTriggers: { getIcon: placed.map((v) => `${v.sysid}|${(v.link.since_last_ms ?? 0) > STALE_MS}`).join() },
+      updateTriggers: { getIcon: placed.map((v) => `${v.uid}|${(v.link.since_last_ms ?? 0) > STALE_MS}`).join() },
     }),
   ]
 }

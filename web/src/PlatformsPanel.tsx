@@ -18,7 +18,7 @@ export interface Platform {
   alt_m: number | null
   min_turn_radius_m: number | null
   tasks: string[]
-  in_fleet: { sysid: number; callsign: string }[]
+  in_fleet: { uid: number; sysid: number | null; callsign: string }[]
 }
 
 const DOMAINS: { id: Domain; title: string }[] = [
@@ -66,7 +66,7 @@ function endurance(h: number | null) {
 
 interface Props {
   onClose: () => void
-  onFocus: (sysid: number) => void
+  onFocus: (uid: number) => void
 }
 
 export function PlatformsPanel({ onClose, onFocus }: Props) {
@@ -159,7 +159,7 @@ export function PlatformsPanel({ onClose, onFocus }: Props) {
                       <td>
                         {p.in_fleet.length ? (
                           p.in_fleet.map((m) => (
-                            <button key={m.sysid} className="cschip" onClick={() => onFocus(m.sysid)}>
+                            <button key={m.uid} className="cschip" onClick={() => onFocus(m.uid)}>
                               {m.callsign}
                             </button>
                           ))

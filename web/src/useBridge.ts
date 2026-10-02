@@ -14,16 +14,16 @@ interface Delta {
 
 function applyDelta(prev: BridgeState, d: Delta): BridgeState {
   if (!d.vehicles.length && !d.taskings) return { ...prev, t: d.t }
-  const bySysid = new Map(prev.vehicles.map((v) => [v.sysid, v]))
+  const byUid = new Map(prev.vehicles.map((v) => [v.uid, v]))
   for (const { trail_add, ...v } of d.vehicles) {
-    const old = bySysid.get(v.sysid)
+    const old = byUid.get(v.uid)
     const trail = [...(old?.trail ?? []), ...trail_add].slice(-TRAIL_MAX)
-    bySysid.set(v.sysid, { ...(v as Omit<Vehicle, 'trail'>), trail } as Vehicle)
+    byUid.set(v.uid, { ...(v as Omit<Vehicle, 'trail'>), trail } as Vehicle)
   }
   return {
     ...prev,
     t: d.t,
-    vehicles: [...bySysid.values()].sort((a, b) => a.sysid - b.sysid),
+    vehicles: [...byUid.values()].sort((a, b) => a.uid - b.uid),
     taskings: d.taskings ?? prev.taskings,
   }
 }
@@ -90,7 +90,7 @@ export function useBridge() {
 
 export interface TaskRequest {
   task: TaskKind
-  sysids: number[]
+  uids: number[]
   center?: LngLat
   radius?: number
   route?: LngLat[]

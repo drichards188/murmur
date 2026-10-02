@@ -27,7 +27,8 @@ export interface LinkHealth {
 }
 
 export interface Vehicle {
-  sysid: number
+  uid: number // fleet-unique; what the console keys on
+  sysid: number // MAVLink system ID: unique per link only, wraps in fleets over 250
   identity: Identity | null
   kind: Kind | null
   mode: string | null
@@ -39,7 +40,7 @@ export interface Vehicle {
   pitch: number | null
   heading: number | null
   yaw: number | null
-  tracking: number | null
+  tracking: number | null // uid
   nav_ready: boolean
   groundspeed: number | null
   airspeed: number | null
@@ -59,6 +60,7 @@ export interface Op {
   id: number
   tasking: number
   task: TaskKind
+  uid: number
   sysid: number
   state: OpState
   detail: string
@@ -71,7 +73,7 @@ export type TaskKind = 'orbit' | 'patrol' | 'hold' | 'rtl' | 'track'
 export interface Tasking {
   id: number
   task: TaskKind
-  params: { center?: LngLat; radius?: number; route?: LngLat[]; target?: number }
+  params: { center?: LngLat; radius?: number; route?: LngLat[]; target?: number /* uid */ }
   created: number
   ops: Op[]
 }
@@ -97,8 +99,8 @@ const PREFIX: Record<Kind, string> = {
   unknown: 'UNK',
 }
 
-export function callsign(v: Pick<Vehicle, 'sysid' | 'kind'> & { identity?: Identity | null }) {
-  return v.identity?.callsign ?? `${PREFIX[v.kind ?? 'unknown']} ${String(v.sysid).padStart(2, '0')}`
+export function callsign(v: Pick<Vehicle, 'uid' | 'kind'> & { sysid?: number; identity?: Identity | null }) {
+  return v.identity?.callsign ?? `${PREFIX[v.kind ?? 'unknown']} ${String(v.sysid ?? v.uid).padStart(2, '0')}`
 }
 
 const DOMAIN_BY_KIND: Record<Kind, Domain> = {

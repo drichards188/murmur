@@ -22,10 +22,10 @@ interface Props {
   taskings: Tasking[]
   selected: Set<number>
   draft: Draft
-  onToggle: (sysid: number) => void
+  onToggle: (uid: number) => void
   onMapClick: (p: LngLat) => void
   /** fly to this vehicle (n changes on every request, so repeat clicks work) */
-  focus?: { sysid: number; n: number } | null
+  focus?: { uid: number; n: number } | null
 }
 
 const STYLE = 'https://tiles.openfreemap.org/styles/dark'
@@ -201,7 +201,7 @@ export function MapView({ vehicles, taskings, selected, draft, focus, onToggle, 
       if (viewRef.current === '3d') {
         const hit = deck.pickObject({ x: e.point.x, y: e.point.y, radius: 6, layerIds: ['vehicles-3d'] })
         if (hit?.object) {
-          toggleRef.current((hit.object as Vehicle).sysid)
+          toggleRef.current((hit.object as Vehicle).uid)
           return
         }
       }
@@ -379,23 +379,23 @@ export function MapView({ vehicles, taskings, selected, draft, focus, onToggle, 
     const seen = new Set<number>()
     for (const v of vehicles) {
       if (!v.position) continue
-      seen.add(v.sysid)
+      seen.add(v.uid)
       const stale = (v.link.since_last_ms ?? 0) > STALE_MS
       const sym = symbolSvg(v, { stale })
-      const isSel = selected.has(v.sysid)
+      const isSel = selected.has(v.uid)
       const staleS = stale ? Math.floor((v.link.since_last_ms ?? 0) / 1000) : 0
       const key = `${sym.svg.length}|${sym.anchor.x}|${sym.anchor.y}|${isSel}|${staleS}|${v.heading}`
-      let entry = markers.current.get(v.sysid)
+      let entry = markers.current.get(v.uid)
       if (!entry) {
         const el = document.createElement('div')
         el.className = 'vmarker'
         el.addEventListener('click', (e) => {
           e.stopPropagation()
-          toggleRef.current(v.sysid)
+          toggleRef.current(v.uid)
         })
         const marker = new maplibregl.Marker({ element: el, anchor: 'top-left' }).setLngLat(v.position).addTo(m)
         entry = { marker, el, key: '' }
-        markers.current.set(v.sysid, entry)
+        markers.current.set(v.uid, entry)
       }
       if (entry.key !== key) {
         entry.el.innerHTML =
@@ -408,10 +408,10 @@ export function MapView({ vehicles, taskings, selected, draft, focus, onToggle, 
       }
       entry.marker.setLngLat(v.position)
     }
-    for (const [sysid, entry] of markers.current) {
-      if (!seen.has(sysid)) {
+    for (const [uid, entry] of markers.current) {
+      if (!seen.has(uid)) {
         entry.marker.remove()
-        markers.current.delete(sysid)
+        markers.current.delete(uid)
       }
     }
     for (const { el } of markers.current.values()) el.style.display = view === '3d' ? 'none' : ''
@@ -447,7 +447,7 @@ export function MapView({ vehicles, taskings, selected, draft, focus, onToggle, 
   }, [vehicles])
   useEffect(() => {
     if (!focus || !map.current) return
-    const v = vehiclesRef.current.find((x) => x.sysid === focus.sysid)
+    const v = vehiclesRef.current.find((x) => x.uid === focus.uid)
     if (v?.position) map.current.flyTo({ center: v.position, zoom: Math.max(map.current.getZoom(), 13), duration: 1200 })
   }, [focus])
 

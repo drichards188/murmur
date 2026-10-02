@@ -27,12 +27,16 @@ FLEET_MANIFEST = Path(os.environ.get("MURMUR_FLEET_MANIFEST",
 PUSH_HZ = 4
 
 links = {}  # udp port -> VehicleLink
-vehicles = {}
+vehicles = {}  # uid -> Vehicle
 tasks = TaskManager(vehicles)
 clients = set()
 
 
-identities = {}  # sysid -> identity from the launcher's fleet manifest
+identities = {}  # uid -> identity from the launcher's fleet manifest
+port_uids = {}  # udp port -> (uid, sysid) from the manifest
+# A vehicle the manifest doesn't list (a stray MAVLink source on one of our ports) still shows
+# up, under a uid that can't collide with the launcher's 1..N.
+SYNTHETIC_UID_BASE = 1_000_000
 _manifest_mtime = None
 _wanted_ports = set()  # ports the current manifest uses; housekeeping opens any missing
 
@@ -69,20 +73,34 @@ def load_manifest():
     except (OSError, ValueError):
         return
     identities.clear()
+    port_uids.clear()
     _wanted_ports.update(v["port"] for v in data.get("vehicles", []) if "port" in v)
     for v in data.get("vehicles", []):
-        identities[v["sysid"]] = {k: v.get(k) for k in
-                                  ("callsign", "platform", "name", "short", "role", "domain", "link", "sidc", "sim",
-                                   "cruise_alt_m", "min_turn_radius_m")}
-    for sysid, veh in vehicles.items():
-        veh.identity = identities.get(sysid)
+        uid = v.get("uid", v["sysid"])  # manifests from before uid existed: sysid was unique
+        identities[uid] = {k: v.get(k) for k in
+                           ("callsign", "platform", "name", "short", "role", "domain", "link", "sidc", "sim",
+                            "cruise_alt_m", "min_turn_radius_m")}
+        if "port" in v:
+            port_uids[v["port"]] = (uid, v["sysid"])
+    for uid, veh in vehicles.items():
+        veh.identity = identities.get(uid)
+
+
+def resolve_uid(port, sysid):
+    """The manifest entry for the port a vehicle talks on, if its sysid matches; else a
+    synthetic uid (stable per port)."""
+    entry = port_uids.get(port)
+    if entry and entry[1] == sysid:
+        return entry[0]
+    return SYNTHETIC_UID_BASE + port
 
 
 def on_vehicle(v):
-    vehicles[v.sysid] = v
     load_manifest()
-    v.identity = identities.get(v.sysid)
-    who = v.identity["callsign"] if v.identity else f"sysid {v.sysid}"
+    v.uid = resolve_uid(v.link.port, v.sysid)
+    vehicles[v.uid] = v
+    v.identity = identities.get(v.uid)
+    who = v.identity["callsign"] if v.identity else f"sysid {v.sysid} (uid {v.uid})"
     print(f"{who} connected on udp {v.link.port}")
 
 
@@ -149,23 +167,23 @@ class Client:
 
     def __init__(self, ws):
         self.ws = ws
-        self.sent = {}  # sysid -> json of last sent snapshot (without trail)
-        self.trail = {}  # sysid -> trail_count already sent
+        self.sent = {}  # uid -> json of last sent snapshot (without trail)
+        self.trail = {}  # uid -> trail_count already sent
         self.taskings = None
 
 
 def delta_for(c, snaps, taskings_json):
     changed = []
-    for sysid, (snap, js) in snaps.items():
-        v = vehicles[sysid]
-        add = v.trail_since(c.trail.get(sysid, 0))
-        if js == c.sent.get(sysid) and not add:
+    for uid, (snap, js) in snaps.items():
+        v = vehicles[uid]
+        add = v.trail_since(c.trail.get(uid, 0))
+        if js == c.sent.get(uid) and not add:
             continue
         item = dict(snap)
         item["trail_add"] = add
         changed.append(item)
-        c.sent[sysid] = js
-        c.trail[sysid] = v.trail_count
+        c.sent[uid] = js
+        c.trail[uid] = v.trail_count
     msg = {"type": "delta", "t": round(time.time(), 2), "vehicles": changed}
     if taskings_json != c.taskings:
         msg["taskings"] = json.loads(taskings_json)
@@ -177,9 +195,9 @@ async def pusher():
     while True:
         if clients:
             snaps = {}
-            for sysid in sorted(vehicles):
-                snap = vehicles[sysid].snapshot(trail=False)
-                snaps[sysid] = (snap, json.dumps(snap, separators=(",", ":")))
+            for uid in sorted(vehicles):
+                snap = vehicles[uid].snapshot(trail=False)
+                snaps[uid] = (snap, json.dumps(snap, separators=(",", ":")))
             taskings_json = json.dumps(tasks.snapshot(), separators=(",", ":"))
             for c in list(clients):
                 try:
@@ -208,11 +226,11 @@ app = FastAPI(title="murmur bridge", lifespan=lifespan)
 
 class TaskRequest(BaseModel):
     task: str
-    sysids: list[int]
+    uids: list[int]
     center: list[float] | None = None  # [lon, lat]
     radius: float | None = None
     route: list[list[float]] | None = None  # [[lon, lat], ...]
-    target: int | None = None  # sysid, for "track"
+    target: int | None = None  # uid, for "track"
 
 
 @app.get("/api/state")
@@ -222,14 +240,14 @@ async def get_state():
 
 @app.post("/api/tasks")
 async def post_task(req: TaskRequest):
-    missing = [s for s in req.sysids if s not in vehicles]
+    missing = [u for u in req.uids if u not in vehicles]
     if missing:
         raise HTTPException(404, f"unknown vehicles {missing}")
-    if not req.sysids:
+    if not req.uids:
         raise HTTPException(400, "select at least one vehicle")
     params = {k: v for k, v in req.model_dump().items() if k in ("center", "radius", "route", "target") and v is not None}
     try:
-        tasking = tasks.submit(req.task, [vehicles[s] for s in req.sysids], params)
+        tasking = tasks.submit(req.task, [vehicles[u] for u in req.uids], params)
     except ValueError as e:
         raise HTTPException(400, str(e))
     return tasking.snapshot()
@@ -248,8 +266,10 @@ async def get_platforms():
     load_manifest()
     catalog = tomllib.loads(PLATFORMS.read_text())
     members = {}
-    for sysid, ident in identities.items():
-        members.setdefault(ident.get("platform"), []).append({"sysid": sysid, "callsign": ident.get("callsign")})
+    sysids = {uid: sysid for uid, sysid in port_uids.values()}
+    for uid, ident in identities.items():
+        members.setdefault(ident.get("platform"), []).append(
+            {"uid": uid, "sysid": sysids.get(uid), "callsign": ident.get("callsign")})
     out = []
     for pid, spec in catalog.items():
         kind = SITL_KIND.get(spec.get("vehicle")) if spec["sim"] == "sitl" else STANDIN_KIND.get(spec.get("behavior"))
@@ -264,7 +284,7 @@ async def get_platforms():
             "alt_m": spec.get("alt_m", spec.get("typical_alt_m")),
             "min_turn_radius_m": min_r,
             "tasks": sorted(caps.get("tasks", [])),
-            "in_fleet": sorted(members.get(pid, []), key=lambda m: m["sysid"]),
+            "in_fleet": sorted(members.get(pid, []), key=lambda m: m["uid"]),
         })
     return {"platforms": out}
 
@@ -272,7 +292,7 @@ async def get_platforms():
 @app.get("/api/stats")
 async def get_stats():
     """Per-vehicle packet counters (for load tests; kept out of the UI stream)."""
-    return {"t": time.time(), "vehicles": {s: vehicles[s].link.stats.counters() for s in sorted(vehicles)}}
+    return {"t": time.time(), "vehicles": {u: vehicles[u].link.stats.counters() for u in sorted(vehicles)}}
 
 
 @app.websocket("/ws")
@@ -283,8 +303,8 @@ async def ws_endpoint(ws: WebSocket):
     # everything in the full state counts as sent
     for v in full["vehicles"]:
         snap = {k: val for k, val in v.items() if k != "trail"}
-        c.sent[v["sysid"]] = json.dumps(snap, separators=(",", ":"))
-        c.trail[v["sysid"]] = vehicles[v["sysid"]].trail_count
+        c.sent[v["uid"]] = json.dumps(snap, separators=(",", ":"))
+        c.trail[v["uid"]] = vehicles[v["uid"]].trail_count
     c.taskings = json.dumps(full["taskings"], separators=(",", ":"))
     clients.add(c)
     try:

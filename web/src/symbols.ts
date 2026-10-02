@@ -29,7 +29,7 @@ export function symbolSvg(v: Vehicle, opts: { stale: boolean; size?: number; lab
   const kind: Kind = v.kind ?? 'unknown'
   const heading = v.heading == null || opts.heading === false ? undefined : Math.round(v.heading / 5) * 5
   const labels = opts.labels ?? true
-  const key = `${kind}|${heading}|${opts.stale}|${opts.size}|${labels}|${v.sysid}|${v.identity?.callsign}`
+  const key = `${kind}|${heading}|${opts.stale}|${opts.size}|${labels}|${v.uid}|${v.identity?.callsign}`
   const hit = cache.get(key)
   if (hit) return hit
   // stale tracks get status "A" (anticipated), which milsymbol draws with a dashed frame
