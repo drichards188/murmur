@@ -26,7 +26,12 @@ export interface LinkHealth {
   since_last_ms: number | null // computed in the browser from last_rx_t and the message time
   loss_pct: number | null
   rtt_ms: number | null
+  /** How often the link should be heard from: 1000 streaming, 20000 on HIGH_LATENCY2 (Rust bridge only). */
+  expected_interval_ms?: number
 }
+
+/** What a vehicle's position rests on (Rust bridge only). A submerged AUV dead-reckons: ready, but drifting. */
+export type NavSource = 'gnss' | 'dead_reckoning' | 'none'
 
 export interface Vehicle {
   uid: number // fleet-unique; what the console keys on
@@ -44,6 +49,7 @@ export interface Vehicle {
   yaw: number | null
   tracking: number | null // uid
   nav_ready: boolean
+  nav_source?: NavSource
   groundspeed: number | null
   airspeed: number | null
   battery_pct: number | null
@@ -125,3 +131,15 @@ export function domainOf(v: Pick<Vehicle, 'kind' | 'identity'>): Domain {
 }
 
 export const STALE_MS = 3000
+
+/** Silence after which a vehicle's link counts as lost: 3 of its expected intervals (the
+ *  bridge's rule: 3 s when streaming, 60 s for an AUV reporting by HIGH_LATENCY2 over its
+ *  acoustic link). STALE_MS when the bridge doesn't say. */
+export function staleMs(v: Pick<Vehicle, 'link'>): number {
+  const every = v.link.expected_interval_ms
+  return every == null ? STALE_MS : 3 * every
+}
+
+export function isStale(v: Pick<Vehicle, 'link'>): boolean {
+  return (v.link.since_last_ms ?? 0) > staleMs(v)
+}

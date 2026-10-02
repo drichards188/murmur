@@ -73,6 +73,9 @@ pub fn vehicle_facts(v: &Vehicle, catalog: &Catalog, now_mono: f64) -> VehicleFa
         battery_pct: v
             .battery_pct
             .and_then(|b| fact(f64::from(b), v.seen.battery)),
+        nav_source: v
+            .nav_source_fact(now_mono)
+            .map(|(source, t)| Fact::new(source, ms(t))),
         platform,
     }
 }
