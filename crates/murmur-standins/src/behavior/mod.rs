@@ -9,12 +9,17 @@ use crate::geo::Gauss;
 use crate::kinematics::{Out, State};
 use crate::mission::Mission;
 
+mod apmission;
+mod blimp;
 mod boat;
 mod drifter;
 mod marine;
 pub mod modes;
 mod plane;
+mod rover;
+mod sailboat;
 mod sub;
+mod ugv;
 
 /// Everything a physics tick may read or change.
 pub struct Tick<'a> {
@@ -87,6 +92,9 @@ pub fn create(name: &str) -> Option<Box<dyn Behavior>> {
         "boat" => Box::new(boat::Boat),
         "drifter" => Box::new(drifter::Drifter),
         "sub" => Box::new(sub::Sub),
+        "blimp" => Box::new(blimp::Blimp::new()),
+        "ugv" => Box::new(ugv::Ugv::new()),
+        "sailboat" => Box::new(sailboat::Sailboat::new()),
         _ => return None,
     })
 }
