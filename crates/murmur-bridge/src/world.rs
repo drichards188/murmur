@@ -45,6 +45,7 @@ impl Config {
         let root = std::env::var_os("MURMUR_ROOT")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+        let root = root.canonicalize().unwrap_or(root);
         Config {
             base_port: num("MURMUR_BASE_PORT", 14560),
             http_port: num("MURMUR_HTTP_PORT", 8765),

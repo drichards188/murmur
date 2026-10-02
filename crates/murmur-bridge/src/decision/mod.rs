@@ -63,6 +63,9 @@ use crate::world::World;
 
 /// An orbit request without a radius gets this (as the task layer always flew it).
 pub const DEFAULT_ORBIT_RADIUS_M: f64 = 200.0;
+/// Satellite tasking intents exist in the engine but the bridge doesn't execute them yet.
+const SPACE_NOT_WIRED: &str = "satellite tasking (collect, cover) is not wired into the bridge \
+    yet: no intent was created; only vehicle tasks (orbit, patrol, hold, rtl, track) are accepted";
 /// The WebSocket inbox message lists this many recent intents.
 const PUSH_INTENTS: usize = 50;
 
@@ -140,7 +143,10 @@ fn engine_err(e: EngineError) -> DecisionError {
         EngineError::NotOwner { .. } => 403,
         EngineError::Illegal { .. }
         | EngineError::Expired(_)
-        | EngineError::ChecksFailedAtApproval(_) => 409,
+        | EngineError::ChecksFailedAtApproval(_)
+        | EngineError::SpaceIntent(_)
+        | EngineError::NotDispatchable { .. }
+        | EngineError::NotACollect(_) => 409,
         _ => 500,
     };
     DecisionError::new(status, e.to_string())
@@ -381,6 +387,9 @@ impl Decision {
         by: &OperatorId,
         req: IntentRequest,
     ) -> Result<Outcome, DecisionError> {
+        if matches!(req.task.as_str(), "collect" | "cover") {
+            return Err(DecisionError::new(501, SPACE_NOT_WIRED));
+        }
         let fleet = self.fleet();
         let order = TaskRequest {
             task: req.task.clone(),
@@ -931,6 +940,7 @@ fn task_request(task: &Task, uids: &[DUid]) -> Result<TaskRequest, String> {
             params.target = Some(uid(target)?);
             "track"
         }
+        Task::Collect { .. } | Task::Cover { .. } => return Err(SPACE_NOT_WIRED.into()),
     };
     Ok(TaskRequest {
         task: name.into(),

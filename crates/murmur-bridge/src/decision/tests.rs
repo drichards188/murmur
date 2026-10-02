@@ -363,6 +363,13 @@ async fn the_rules_reject_land_waypoints_and_no_go_crossings() {
             .await
             .expect_err("404");
     assert_eq!(unknown.status, 404);
+    // satellite tasking isn't executed by the bridge yet: refused before any intent
+    let space =
+        r.d.submit(&op1(), simple("collect", 9))
+            .await
+            .expect_err("501");
+    assert_eq!(space.status, 501);
+    assert!(space.detail.contains("satellite"), "{}", space.detail);
     r.replays();
 }
 
