@@ -20,6 +20,9 @@ export interface Vehicle {
   armed: boolean
   position: LngLat | null
   alt_rel: number | null
+  alt_msl: number | null
+  roll: number | null
+  pitch: number | null
   heading: number | null
   yaw: number | null
   tracking: number | null
@@ -32,7 +35,7 @@ export interface Vehicle {
   mission_seq: number | null
   home: LngLat | null
   link: LinkHealth
-  trail: LngLat[]
+  trail: [number, number, number][] // lon, lat, metres above mean sea level
   statustext: { t: number; severity: number; text: string }[]
 }
 

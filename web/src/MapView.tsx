@@ -1,8 +1,10 @@
 /// <reference types="geojson" />
 import * as maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
-import { useEffect, useRef } from 'react'
+import { MapboxOverlay } from '@deck.gl/mapbox'
+import { useEffect, useRef, useState } from 'react'
 import { circle, distanceM } from './geo'
+import { build3dLayers, DEM_TILES, HEIGHT_EXAGGERATION } from './map3d'
 import { symbolSvg } from './symbols'
 import type { LngLat, Tasking, Vehicle } from './types'
 import { STALE_MS } from './types'
@@ -95,12 +97,45 @@ function trailFeatures(vehicles: Vehicle[]): FC {
       .map((v) => ({
         type: 'Feature' as const,
         properties: { kind: v.kind },
-        geometry: { type: 'LineString' as const, coordinates: v.position ? [...v.trail, v.position] : v.trail },
+        geometry: {
+          type: 'LineString' as const,
+          coordinates: [...v.trail.map(([lon, lat]) => [lon, lat]), ...(v.position ? [v.position] : [])],
+        },
       })),
   }
 }
 
+type ViewMode = '2d' | '3d'
+const VIEW_KEY = 'murmur.view'
+
+function savedView(): ViewMode {
+  try {
+    return localStorage.getItem(VIEW_KEY) === '3d' ? '3d' : '2d'
+  } catch {
+    return '2d'
+  }
+}
+
+/** 2D: flat map, HTML symbol markers. 3D: terrain + seabed, tilted camera, vehicles drawn by
+ *  deck.gl at their true altitude/depth. Tasking and drafting work the same in both. */
+function applyView(m: maplibregl.Map, view: ViewMode) {
+  if (view === '3d') {
+    m.setTerrain({ source: 'dem', exaggeration: HEIGHT_EXAGGERATION })
+    m.setLayoutProperty('hillshade', 'visibility', 'visible')
+    m.setLayoutProperty('trails', 'visibility', 'none')
+    m.easeTo({ pitch: 62, bearing: m.getBearing() || -25, duration: 900 })
+  } else {
+    m.setTerrain(null)
+    m.setLayoutProperty('hillshade', 'visibility', 'none')
+    m.setLayoutProperty('trails', 'visibility', 'visible')
+    m.easeTo({ pitch: 0, bearing: 0, duration: 700 })
+  }
+}
+
 export function MapView({ vehicles, taskings, selected, draft, onToggle, onMapClick }: Props) {
+  const [view, setView] = useState<ViewMode>(savedView)
+  const viewRef = useRef(view)
+  const overlay = useRef<MapboxOverlay | null>(null)
   const container = useRef<HTMLDivElement>(null)
   const map = useRef<maplibregl.Map | null>(null)
   const ready = useRef(false)
@@ -122,11 +157,47 @@ export function MapView({ vehicles, taskings, selected, draft, onToggle, onMapCl
       center: START,
       zoom: 12.6,
       attributionControl: { compact: true },
+      maxPitch: 80,
     })
+    if (import.meta.env.DEV) (window as unknown as { murmurMap: maplibregl.Map }).murmurMap = m
+    const deck = new MapboxOverlay({ interleaved: true, layers: [] })
+    m.addControl(deck)
+    overlay.current = deck
     m.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'bottom-right')
     m.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left')
-    m.on('click', (e: maplibregl.MapMouseEvent) => clickRef.current([e.lngLat.lng, e.lngLat.lat]))
+    m.on('click', (e: maplibregl.MapMouseEvent) => {
+      // in 3D, vehicles are deck.gl objects: a click on one selects it instead of drafting
+      if (viewRef.current === '3d') {
+        const hit = deck.pickObject({ x: e.point.x, y: e.point.y, radius: 6, layerIds: ['vehicles-3d'] })
+        if (hit?.object) {
+          toggleRef.current((hit.object as Vehicle).sysid)
+          return
+        }
+      }
+      clickRef.current([e.lngLat.lng, e.lngLat.lat])
+    })
     m.on('load', () => {
+      m.addSource('dem', {
+        type: 'raster-dem',
+        tiles: [DEM_TILES],
+        encoding: 'terrarium',
+        tileSize: 256,
+        maxzoom: 15,
+        attribution: 'Terrain: Mapzen/AWS Terrain Tiles',
+      })
+      // MapLibre renders better with separate sources for 3D terrain and hillshade
+      m.addSource('dem-shade', { type: 'raster-dem', tiles: [DEM_TILES], encoding: 'terrarium', tileSize: 256, maxzoom: 15 })
+      const firstSymbol = m.getStyle().layers.find((l) => l.type === 'symbol')?.id
+      m.addLayer(
+        {
+          id: 'hillshade',
+          type: 'hillshade',
+          source: 'dem-shade',
+          layout: { visibility: 'none' },
+          paint: { 'hillshade-exaggeration': 0.35, 'hillshade-shadow-color': '#000000' },
+        },
+        firstSymbol,
+      )
       m.addSource('trails', { type: 'geojson', data: empty })
       m.addSource('beams', { type: 'geojson', data: empty })
       m.addLayer({
@@ -192,10 +263,12 @@ export function MapView({ vehicles, taskings, selected, draft, onToggle, onMapCl
         paint: { 'text-color': '#0b0f14' },
       })
       ready.current = true
+      if (viewRef.current === '3d') applyView(m, '3d')
     })
     map.current = m
     return () => {
       ready.current = false
+      overlay.current = null
       live.forEach(({ marker }) => marker.remove())
       live.clear()
       m.remove()
@@ -244,6 +317,9 @@ export function MapView({ vehicles, taskings, selected, draft, onToggle, onMapCl
         markers.current.delete(sysid)
       }
     }
+    for (const { el } of markers.current.values()) el.style.display = view === '3d' ? 'none' : ''
+    overlay.current?.setProps({ layers: build3dLayers(vehicles, selected, view === '3d') })
+
     if (ready.current) {
       ;(m.getSource('trails') as maplibregl.GeoJSONSource).setData(trailFeatures(vehicles))
       ;(m.getSource('beams') as maplibregl.GeoJSONSource).setData(beamFeatures(vehicles))
@@ -259,7 +335,17 @@ export function MapView({ vehicles, taskings, selected, draft, onToggle, onMapCl
         fitAt.current = c
       }
     }
-  }, [vehicles, selected])
+  }, [vehicles, selected, view])
+
+  useEffect(() => {
+    viewRef.current = view
+    try {
+      localStorage.setItem(VIEW_KEY, view)
+    } catch {
+      // private mode / blocked storage: the toggle still works for this session
+    }
+    if (map.current && ready.current) applyView(map.current, view)
+  }, [view])
 
   useEffect(() => {
     if (ready.current) (map.current?.getSource('taskings') as maplibregl.GeoJSONSource | undefined)?.setData(taskingFeatures(taskings))
@@ -270,5 +356,18 @@ export function MapView({ vehicles, taskings, selected, draft, onToggle, onMapCl
     if (map.current) map.current.getCanvas().style.cursor = draft.mode ? 'crosshair' : ''
   }, [draft])
 
-  return <div ref={container} className="map" />
+  return (
+    <>
+      <div ref={container} className="map" />
+      <div className="viewtoggle" role="group" aria-label="Map view">
+        <button className={view === '2d' ? 'on' : ''} onClick={() => setView('2d')}>
+          2D
+        </button>
+        <button className={view === '3d' ? 'on' : ''} onClick={() => setView('3d')}>
+          3D
+        </button>
+        {view === '3d' && <span className="viewnote">heights ×{HEIGHT_EXAGGERATION} · right-drag to orbit</span>}
+      </div>
+    </>
+  )
 }

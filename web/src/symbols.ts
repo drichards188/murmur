@@ -19,13 +19,14 @@ const SIDC: Record<Kind, { code: string; type?: string }> = {
 export interface RenderedSymbol {
   svg: string
   anchor: { x: number; y: number }
+  size: { width: number; height: number }
 }
 
 const cache = new Map<string, RenderedSymbol>()
 
-export function symbolSvg(v: Vehicle, opts: { stale: boolean; size?: number; labels?: boolean }): RenderedSymbol {
+export function symbolSvg(v: Vehicle, opts: { stale: boolean; size?: number; labels?: boolean; heading?: boolean }): RenderedSymbol {
   const kind: Kind = v.kind ?? 'unknown'
-  const heading = v.heading == null ? undefined : Math.round(v.heading / 5) * 5
+  const heading = v.heading == null || opts.heading === false ? undefined : Math.round(v.heading / 5) * 5
   const labels = opts.labels ?? true
   const key = `${kind}|${heading}|${opts.stale}|${opts.size}|${labels}|${v.sysid}`
   const hit = cache.get(key)
@@ -42,7 +43,7 @@ export function symbolSvg(v: Vehicle, opts: { stale: boolean; size?: number; lab
     outlineColor: '#0b0f14',
     outlineWidth: 3,
   } as Record<string, unknown>)
-  const out = { svg: sym.asSVG(), anchor: sym.getAnchor() }
+  const out = { svg: sym.asSVG(), anchor: sym.getAnchor(), size: sym.getSize() }
   cache.set(key, out)
   return out
 }

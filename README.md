@@ -55,6 +55,18 @@ altitude (or depth, for subs) and spread around orbit circles.
 Tasks wait in `queued` until the vehicle's EKF has a usable position (a GPS fix arrives seconds
 earlier, and autopilots refuse AUTO until the EKF is ready). `make down` stops a running stack.
 
+## 2D and 3D
+
+The **2D / 3D** toggle on the map switches views; the choice is remembered. 3D tilts the
+camera over real terrain and seabed (Terrarium elevation tiles, which include bathymetry) and
+draws every vehicle at its true altitude or depth with a stem to sea level, 3D trails and a
+translucent sea surface, so submerged vehicles show through the water. Heights are exaggerated
+×2 (terrain and vehicles alike) so 80 m altitudes read at bay scale. Right-drag to orbit the
+camera. Tasking works the same in both views; in 3D, clicking a vehicle selects it.
+
+The 3D layers use deck.gl on MapLibre. MapLibre is pinned to v5 because deck.gl 9.4's adapter
+relies on map internals (`map.transform`, `getFreeCameraOptions`) that MapLibre v6 removed.
+
 ## How the command lifecycle is judged
 
 | State | Meaning | Evidence |

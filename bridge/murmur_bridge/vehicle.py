@@ -104,6 +104,8 @@ class Vehicle:
         self.alt_rel = self.alt_msl = None
         self.heading = None
         self.yaw = None
+        self.roll = None
+        self.pitch = None
         self.groundspeed = None
         self.airspeed = None
         self.battery_pct = None
@@ -151,7 +153,8 @@ class Vehicle:
             now = time.monotonic()
             if now - self._last_trail > 1.0:
                 self._last_trail = now
-                self.trail.append((round(self.lon, 6), round(self.lat, 6)))
+                # 3D trail: altitude above mean sea level, for the 3D map
+                self.trail.append((round(self.lon, 6), round(self.lat, 6), round(self.alt_msl, 1)))
             for link in self.forward_to:
                 link.send_raw(msg.get_msgbuf())
         elif t == "PARAM_VALUE" and msg.param_id == "Q_ENABLE":
@@ -163,6 +166,8 @@ class Vehicle:
             self.target_dist = msg.wp_dist
         elif t == "ATTITUDE":
             self.yaw = math.degrees(msg.yaw) % 360
+            self.roll = math.degrees(msg.roll)
+            self.pitch = math.degrees(msg.pitch)
         elif t == "HOME_POSITION":
             self.home = (msg.latitude / 1e7, msg.longitude / 1e7)
         elif t == "VFR_HUD":
@@ -247,6 +252,9 @@ class Vehicle:
             "armed": self.armed,
             "position": None if self.lat is None else [self.lon, self.lat],
             "alt_rel": self.alt_rel,
+            "alt_msl": self.alt_msl,
+            "roll": None if self.roll is None else round(self.roll, 1),
+            "pitch": None if self.pitch is None else round(self.pitch, 1),
             "heading": self.heading,
             "yaw": self.yaw,
             "tracking": self.tracking,
