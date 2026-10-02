@@ -100,6 +100,7 @@ impl Fake {
         self.emit(MavMessage::COMMAND_ACK(apm::COMMAND_ACK_DATA {
             command,
             result,
+            ..Default::default()
         }));
     }
 
@@ -138,6 +139,7 @@ impl Fake {
                         target_system: 255,
                         target_component: 190,
                         mavtype: apm::MavMissionResult::MAV_MISSION_ACCEPTED,
+                        ..Default::default()
                     }));
                 } else {
                     self.request(self.mission.len() as u16);
@@ -164,6 +166,7 @@ impl Fake {
                 seq,
                 target_system: 255,
                 target_component: 190,
+                ..Default::default()
             },
         ));
     }
@@ -227,6 +230,7 @@ impl Fake {
             self.emit(MavMessage::STATUSTEXT(apm::STATUSTEXT_DATA {
                 severity: apm::MavSeverity::MAV_SEVERITY_WARNING,
                 text: mav::char_array(&text),
+                ..Default::default()
             }));
         }
         let base = if self.armed {
@@ -258,6 +262,7 @@ impl Fake {
         }));
         self.emit(MavMessage::MISSION_CURRENT(apm::MISSION_CURRENT_DATA {
             seq: self.seq,
+            ..Default::default()
         }));
         self.emit(MavMessage::ATTITUDE(apm::ATTITUDE_DATA {
             yaw: self.yaw.to_radians() as f32,

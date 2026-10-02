@@ -166,7 +166,11 @@ impl Link {
     pub fn send_timesync(&self) {
         let ts1 = (clock::wall() * 1e9) as i64;
         self.stats().ping(ts1, clock::mono());
-        self.send(&MavMessage::TIMESYNC(apm::TIMESYNC_DATA { tc1: 0, ts1 }));
+        self.send(&MavMessage::TIMESYNC(apm::TIMESYNC_DATA {
+            tc1: 0,
+            ts1,
+            ..Default::default()
+        }));
     }
 
     /// Receive loop: link stats for every autopilot packet, then the packet to its vehicle.

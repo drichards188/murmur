@@ -159,6 +159,12 @@ def main():
     for b in {VEHICLES[platforms[v["platform"]]["vehicle"]][0] for v in sitl}:
         if not (BIN / b).exists():
             sys.exit(f"missing {BIN / b}; build with: make setup")
+    # MURMUR_STANDINS=rust runs the Rust engine (conditions via MURMUR_TIDEWATER_URL)
+    engine = [sys.executable, str(ROOT / "standins.py")]
+    if os.environ.get("MURMUR_STANDINS", "python") == "rust":
+        engine = [str(ROOT.parent / "target" / "release" / "murmur-standins")]
+        if standins and not Path(engine[0]).exists():
+            sys.exit(f"missing {engine[0]}; build with: cargo build --release")
 
     RUN.mkdir(exist_ok=True)
     (RUN / "fleet.json").write_text(json.dumps({"vehicles": vehicles}, indent=1))
@@ -178,7 +184,7 @@ def main():
         cfg.write_text(json.dumps({"bridge_host": args.bridge_host,
                                    "vehicles": [{**v, "spec": platforms[v["platform"]]} for v in standins]}))
         log = open(RUN / "standins.log", "w")
-        procs.append(subprocess.Popen([sys.executable, str(ROOT / "standins.py"), str(cfg)],
+        procs.append(subprocess.Popen([*engine, str(cfg)],
                                       stdout=log, stderr=subprocess.STDOUT, start_new_session=True))
         for v in standins:
             print(f"sysid {v['sysid']:3d}  {v['callsign']:12s} {v['name']}  (stand-in, udp {v['port']})")

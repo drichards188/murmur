@@ -1,0 +1,33 @@
+# One of each stand-in platform and nothing else: runs without ArduPilot SITL, for testing
+# the stand-in engines (MURMUR_STANDINS=python|rust) against the bridge.
+# make goldengate GG_FLEET=standins-only
+title = "Stand-ins only (7 platforms)"
+
+[[unit]]
+platform = "rq4"
+count = 1
+spawn = [37.7500, -122.7500, 18000, 0]    # offshore, on station
+[[unit]]
+platform = "mq9b"
+count = 1
+spawn = [37.8800, -122.6000, 7600, 90]    # over Marin
+[[unit]]
+platform = "cca"
+count = 1
+spawn = [37.7000, -122.6500, 11000, 45]
+[[unit]]
+platform = "seahunter"
+count = 1
+spawn = [37.8000, -122.5600, 0, 90]       # outside the Gate
+[[unit]]
+platform = "buoy"
+count = 1
+spawn = [37.8150, -122.4900, 0, 0]        # in the Gate: drifts with the tide
+[[unit]]
+platform = "remus"
+count = 1
+spawn = [37.8250, -122.4400, 0, 90]       # west of Alcatraz
+[[unit]]
+platform = "orca"
+count = 1
+spawn = [37.7800, -122.5500, 0, 0]        # offshore, deeper water

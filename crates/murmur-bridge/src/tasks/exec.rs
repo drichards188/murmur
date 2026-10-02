@@ -153,6 +153,7 @@ impl Item {
             frame: self.frame,
             current: 0,
             autocontinue: 1,
+            ..Default::default()
         })
     }
 }
@@ -275,6 +276,7 @@ impl Task<'_> {
             count,
             target_system: sysid,
             target_component: mav::AUTOPILOT_COMPID,
+            ..Default::default()
         });
         self.v().send(&last);
         let mut timeouts = 0;
