@@ -19,6 +19,8 @@ end = "2026-06-16T00:00:00Z"
 station = "9414290"
 # must match the terrain's vertical datum (NCEI coastal DEMs are NAVD88)
 datum = "NAVD"
+# replay measured water level (includes weather/river effects); "predicted" for astronomy only
+source = "observed"
 
 [currents]
 # NOAA CO-OPS harmonic/subordinate current predictions, every station in the area, all depth bins

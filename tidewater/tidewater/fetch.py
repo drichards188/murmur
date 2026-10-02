@@ -83,16 +83,34 @@ def fetch_terrain(sc: Scenario, log=print):
 
 
 def fetch_tide(sc: Scenario, log=print):
+    """Water level. source "observed" (default for past windows) replays what was measured,
+    which includes weather and river effects that astronomical predictions miss (18 cm
+    at the Golden Gate in June 2026); gaps fall back to predictions."""
     out = sc.cache_dir / "tide.json"
     if out.exists():
         return out
     begin, end = _days(sc)
-    log(f"tide: station {sc.tide['station']} predictions, datum {sc.tide['datum']}")
-    data = _coops({"product": "predictions", "station": sc.tide["station"], "datum": sc.tide["datum"],
+    st, datum = sc.tide["station"], sc.tide["datum"]
+    pred = _coops({"product": "predictions", "station": st, "datum": datum,
                    "interval": 6, "begin_date": begin, "end_date": end})
-    series = [[p["t"], float(p["v"])] for p in data["predictions"]]
-    out.write_text(json.dumps({"station": sc.tide["station"], "datum": sc.tide["datum"], "series": series}))
+    series = {p["t"]: float(p["v"]) for p in pred["predictions"]}
+    source = sc.tide.get("source", "observed" if sc.end < _now() else "predicted")
+    filled = 0
+    if source == "observed":
+        obs = _coops({"product": "water_level", "station": st, "datum": datum, "begin_date": begin, "end_date": end})
+        got = {r["t"]: float(r["v"]) for r in obs.get("data", []) if r.get("v") not in (None, "")}
+        filled = sum(1 for t in series if t not in got)
+        series.update(got)
+    log(f"tide: station {st} {source}, datum {datum}" + (f" ({filled} gaps filled from predictions)" if filled else ""))
+    out.write_text(json.dumps({"station": st, "datum": datum, "source": source,
+                               "series": [[t, v] for t, v in sorted(series.items())]}))
     return out
+
+
+def _now():
+    import datetime as dt
+
+    return dt.datetime.now(dt.timezone.utc)
 
 
 def fetch_currents(sc: Scenario, log=print):

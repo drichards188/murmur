@@ -44,6 +44,12 @@ conditions at its own position, every 2 s, on the scenario clock.
   **1.78 m/s toward 249°**; tidewater's prediction for that spot was **1.80 m/s toward 250°**.
   That checks the plumbing (data → driver → SITL physics), not the realism of the boat model.
 
+- `tidewater validate` compares the forcing with NOAA observations for the window
+  ([report](docs/validation-golden-gate-2026-06.md)): tide timing is exact but astronomical
+  predictions ran 18 cm low, so past windows now replay the **observed** water level. HRRR
+  wind averages 1.1 m/s high at the San Francisco station, with peaks 1.1 m/s low and a 22°
+  direction offset. No current meter operates inside the area, so currents are unvalidated.
+
 ## Limits (v0)
 
 - **Currents between stations** use inverse-distance weighting, which doesn't know where

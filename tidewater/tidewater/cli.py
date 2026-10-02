@@ -37,6 +37,17 @@ def cmd_probe(args):
               f"current {cs:4.2f} m/s toward {cd:3.0f} | wind {ws:4.1f} m/s toward {wd:3.0f}")
 
 
+def cmd_validate(args):
+    from .validate import report
+
+    sc = Scenario.load(args.scenario)
+    text, _ = report(sc)
+    out = sc.path.parent.parent / "docs" / f"validation-{sc.name}.md"
+    out.write_text(text)
+    print(text)
+    print(f"written to {out}")
+
+
 def cmd_drive(args):
     from .drivers.ardupilot import run
 
@@ -59,6 +70,10 @@ def main(argv=None):
     p.add_argument("--depth", type=float, default=0.0, help="metres below the surface (subs)")
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_probe)
+
+    p = sub.add_parser("validate", help="compare forcing to NOAA observations; writes docs/validation-<name>.md")
+    p.add_argument("scenario")
+    p.set_defaults(fn=cmd_validate)
 
     p = sub.add_parser("drive", help="push conditions into running ArduPilot SITL vehicles")
     p.add_argument("scenario")
