@@ -39,8 +39,8 @@ meaningful. Decision and command, not weapons.
 - MapLibre is pinned to **v5** (deck.gl 9.4 breaks on v6). Don't upgrade.
 - After changing SITL code or its param table, rebuild all firmwares:
   `cd ~/ardupilot && PATH=~/murmur/.venv/bin:$PATH ./waf plane copter rover sub blimp antennatracker`.
-- ArduPilot stream-rate params are `MAV1_*` here (not `SR0_*`). ArduPlane still sends ~22 extra
-  msg/s (open bug).
+- ArduPilot stream-rate params are `MAV1_*` here (not `SR0_*`). Pass SITL one defaults file, not a
+  comma list: ArduPilot drops `MAV1_*` from an earlier file in the list (murmur-yjq; `swarm.py` merges).
 - In SITL, stop vehicles with forces the IMU feels, never by zeroing velocity or clamping
   position (the EKF diverges).
 - tidewater is installed editable in `.venv`; a scenario needs `tidewater fetch` once.

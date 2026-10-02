@@ -21,6 +21,7 @@ fn every_transition_legal_and_illegal() {
         (S::Checked, T::ChecksFailed, S::Rejected),
         (S::Checked, T::AutoApprove, S::AutoApproved),
         (S::Checked, T::RequireApproval, S::PendingApproval),
+        (S::Checked, T::AuthorizeAtSubmission, S::Approved),
         (S::PendingApproval, T::Approve, S::Approved),
         (S::PendingApproval, T::Reject, S::Rejected),
         (S::PendingApproval, T::Expire, S::Expired),
@@ -47,7 +48,7 @@ fn every_transition_legal_and_illegal() {
             checked += 1;
         }
     }
-    assert_eq!(checked, 121);
+    assert_eq!(checked, 132);
     for s in State::ALL {
         if s.is_terminal() {
             assert!(
@@ -56,7 +57,8 @@ fn every_transition_legal_and_illegal() {
             );
         }
     }
-    // Approved has exactly one way in.
+    // Approved has exactly two ways in, both needing a HumanAuthority: an inbox approval,
+    // and a human's own submission in a tier that lets the submitter authorize.
     let into_approved: Vec<_> = State::ALL
         .iter()
         .flat_map(|f| Transition::ALL.iter().map(move |t| (*f, *t)))
@@ -64,12 +66,18 @@ fn every_transition_legal_and_illegal() {
         .collect();
     assert_eq!(
         into_approved,
-        vec![(State::PendingApproval, Transition::Approve)]
+        vec![
+            (State::Checked, Transition::AuthorizeAtSubmission),
+            (State::PendingApproval, Transition::Approve),
+        ]
     );
 }
 
 // ---- engine paths -----------------------------------------------------------------------
 
+/// The inbox-mechanics fixture: on [`waiting_policy`], so op-1's own intents in human tiers
+/// wait for an approval (a `submitter_authorizes = false` tier). The default, where they
+/// are approved at submission, has its own tests below ([`fx_default`]).
 struct Fx {
     clock: ManualClock,
     engine: Engine,
@@ -79,7 +87,18 @@ struct Fx {
 
 fn fx() -> Fx {
     let clock = ManualClock::new(T0);
-    let (mut engine, log) = engine(&clock);
+    let (engine, log) = waiting_engine(&clock);
+    fx_with(clock, engine, log)
+}
+
+/// On the sim policy as shipped (`submitter_authorizes = true` on every human tier).
+fn fx_default() -> Fx {
+    let clock = ManualClock::new(T0);
+    let (engine, log) = engine(&clock);
+    fx_with(clock, engine, log)
+}
+
+fn fx_with(clock: ManualClock, mut engine: Engine, log: MemorySink) -> Fx {
     let session = engine
         .open_operator_session(OperatorId::new("op-1"))
         .unwrap();
@@ -264,7 +283,7 @@ fn approving_after_the_deadline_expires_instead() {
 #[test]
 fn expiry_is_configurable() {
     let clock = ManualClock::new(T0);
-    let mut p = policy();
+    let mut p = waiting_policy();
     p.approval.expire_s = 5;
     let mut e = Engine::new(p, Box::new(clock.clone()), Box::new(MemorySink::new())).unwrap();
     let s = e.open_operator_session(OperatorId::new("op")).unwrap();
@@ -371,6 +390,220 @@ fn self_approval_is_allowed_but_flagged() {
     let r = replay::replay_str(&text).unwrap();
     assert!(r.ok(), "{:#?}", r.mismatches);
     assert_eq!((r.approvals, r.self_approvals), (2, 1));
+}
+
+// ---- the submitter authorizes (the sim policy as shipped) ----------------------------------
+
+#[test]
+fn a_humans_own_submission_in_a_human_tier_is_approved_at_submission() {
+    let mut f = fx_default();
+    // armed-platform, outside-approved-area and endurance-unknown tiers.
+    for (p, rule) in [
+        (orbit(NEAR_CRISSY, 150.0, &["blade-1"]), "armed-platform"),
+        (
+            orbit(OUTSIDE_APPROVED, 5000.0, &["hawk-1"]),
+            "outside-approved-area",
+        ),
+        (orbit(NEAR_CRISSY, 100.0, &["mule-1"]), "endurance-unknown"),
+    ] {
+        let id = f.submit(p);
+        let i = f.engine.intent(id).unwrap();
+        assert_eq!(i.state(), State::Approved, "{rule}: {:?}", i.history());
+        let pol = i.policy().unwrap();
+        assert_eq!((pol.tier, pol.rule.as_str()), (Tier::Human, rule));
+        assert!(pol.submitter_authorizes);
+        let a = i.approval().unwrap();
+        assert_eq!(a.by, OperatorId::new("op-1"));
+        assert!(a.at_submission && a.self_approved);
+        assert!(i.expires_t().is_none(), "never in the inbox");
+        let states: Vec<_> = i.history().iter().map(|h| h.state).collect();
+        assert_eq!(
+            states,
+            vec![State::Proposed, State::Checked, State::Approved]
+        );
+        assert!(
+            i.history()
+                .last()
+                .unwrap()
+                .reason
+                .ends_with("authorized at submission by op-1"),
+            "{:?}",
+            i.history().last()
+        );
+        f.engine.dispatch(id).unwrap();
+    }
+    assert!(f.engine.inbox().is_empty());
+    // Explicit in the log: its own event, not auto_approved, not approval.granted.
+    let text = f.log.text();
+    assert_eq!(
+        text.matches(r#""type":"approval.at_submission""#).count(),
+        3
+    );
+    assert!(!text.contains("approval.granted"));
+    assert!(!text.contains("approval.requested"));
+    assert!(!text.contains(r#""to":"auto_approved""#));
+    let r = replay::replay_str(&text).unwrap();
+    assert!(r.ok(), "{:#?}", r.mismatches);
+    assert_eq!(
+        (r.approvals, r.self_approvals, r.approvals_at_submission),
+        (0, 0, 3)
+    );
+}
+
+#[test]
+fn an_agent_proposal_in_the_same_tier_still_waits_for_a_human() {
+    let mut f = fx_default();
+    let human = f.submit(orbit(NEAR_CRISSY, 150.0, &["blade-1"]));
+    assert_eq!(f.state(human), State::Approved);
+    let agent_id = f
+        .engine
+        .agent_port(AgentId::new("planner"))
+        .propose(
+            orbit(NEAR_CRISSY, 150.0, &["blade-1"]),
+            rationale("loiter over the landing zone"),
+            &world(),
+            &terrain(),
+        )
+        .unwrap()
+        .id();
+    let i = f.engine.intent(agent_id).unwrap();
+    assert_eq!(i.state(), State::PendingApproval);
+    let pol = i.policy().unwrap();
+    assert_eq!(pol.rule, "armed-platform");
+    assert!(!pol.submitter_authorizes, "never for an agent's proposal");
+    assert!(i.approval().is_none());
+    assert_eq!(f.engine.inbox().len(), 1);
+    // Only a human approve moves it, and that approval re-checks as before.
+    f.clock.advance_ms(30_000);
+    assert_eq!(f.state(agent_id), State::PendingApproval);
+    f.engine
+        .approve(agent_id, f.session.authority(), None, &world(), &terrain())
+        .unwrap();
+    let a = f.engine.intent(agent_id).unwrap().approval().unwrap();
+    assert!(!a.at_submission && !a.self_approved);
+    let r = replay::replay_str(&f.log.text()).unwrap();
+    assert!(r.ok(), "{:#?}", r.mismatches);
+    assert_eq!((r.approvals, r.approvals_at_submission), (1, 1));
+}
+
+#[test]
+fn checks_still_fail_closed_before_an_at_submission_approval() {
+    let mut f = fx_default();
+    // blade-1 not nav ready: a failing check rejects it; no approval of any kind.
+    let mut w = world();
+    w.vehicles.get_mut(&uid("blade-1")).unwrap().nav_ready = Some(Fact::new(false, T0));
+    let id = f
+        .engine
+        .submit(
+            f.session.authority(),
+            orbit(NEAR_CRISSY, 150.0, &["blade-1"]),
+            &w,
+            &terrain(),
+        )
+        .unwrap()
+        .id();
+    let i = f.engine.intent(id).unwrap();
+    assert_eq!(i.state(), State::Rejected);
+    assert!(i.approval().is_none() && i.policy().is_none());
+    assert!(!f.log.text().contains("approval.at_submission"));
+}
+
+#[test]
+fn an_at_submission_approval_can_still_be_voided_or_cancelled() {
+    let mut f = fx_default();
+    let a = f.submit(orbit(NEAR_CRISSY, 150.0, &["blade-1"]));
+    f.engine.void(a, "vehicle lost").unwrap();
+    assert_eq!(f.state(a), State::Voided);
+    let b = f.submit(orbit(NEAR_CRISSY, 150.0, &["blade-1"]));
+    f.engine
+        .cancel(b, f.session.authority(), "changed my mind")
+        .unwrap();
+    assert_eq!(f.state(b), State::Voided);
+    // Already decided: there is nothing left to approve.
+    assert_illegal(
+        f.engine
+            .approve(b, f.session.authority(), None, &world(), &terrain())
+            .map(|i| i.id()),
+    );
+    assert!(replay::replay_str(&f.log.text()).unwrap().ok());
+}
+
+#[test]
+fn a_tier_with_submitter_authorizes_false_makes_the_submitter_wait() {
+    let clock = ManualClock::new(T0);
+    let mut p = policy();
+    for t in &mut p.tiers {
+        if t.name == "armed-platform" {
+            t.submitter_authorizes = Some(false);
+        }
+    }
+    let log = MemorySink::new();
+    let mut e = Engine::new(p, Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    let s = e.open_operator_session(OperatorId::new("op-1")).unwrap();
+    let armed = e
+        .submit(
+            s.authority(),
+            orbit(NEAR_CRISSY, 150.0, &["blade-1"]),
+            &world(),
+            &terrain(),
+        )
+        .unwrap()
+        .id();
+    assert_eq!(e.intent(armed).unwrap().state(), State::PendingApproval);
+    assert!(
+        !e.intent(armed)
+            .unwrap()
+            .policy()
+            .unwrap()
+            .submitter_authorizes
+    );
+    // Another tier still lets the submitter authorize.
+    let outside = e
+        .submit(
+            s.authority(),
+            orbit(OUTSIDE_APPROVED, 5000.0, &["hawk-1"]),
+            &world(),
+            &terrain(),
+        )
+        .unwrap()
+        .id();
+    assert_eq!(e.intent(outside).unwrap().state(), State::Approved);
+    // A second person approves the armed one.
+    let other = e.open_operator_session(OperatorId::new("op-2")).unwrap();
+    e.approve(armed, other.authority(), None, &world(), &terrain())
+        .unwrap();
+    let r = replay::replay_str(&log.text()).unwrap();
+    assert!(r.ok(), "{:#?}", r.mismatches);
+    assert_eq!((r.approvals, r.approvals_at_submission), (1, 1));
+}
+
+#[test]
+fn the_policy_file_default_is_submitter_authorizes_and_old_logs_mean_false() {
+    // Left out of a file: true (written out, so the logged copy says so).
+    let p = Policy::from_toml(
+        r#"
+        [[tier]]
+        name = "all"
+        tier = "human"
+        reason = "r"
+    "#,
+    )
+    .unwrap();
+    assert_eq!(p.approval.submitter_authorizes, Some(true));
+    assert!(p.submitter_authorizes(p.tiers.first()));
+    // A policy as logged before the key existed: unset, which means false.
+    let old: Policy = serde_json::from_str(
+        r#"{"approval":{"expire_s":120},"rules":{},"tier":[{"name":"all","when":{},"tier":"human","reason":"r"}]}"#,
+    )
+    .unwrap();
+    assert!(!old.submitter_authorizes(old.tiers.first()));
+    assert!(!old.submitter_authorizes(None));
+    assert!(
+        !serde_json::to_string(&old)
+            .unwrap()
+            .contains("submitter_authorizes"),
+        "re-serializes without the new keys"
+    );
 }
 
 #[test]
@@ -578,7 +811,7 @@ impl AuditSink for FlakySink {
 fn no_audit_record_no_change() {
     let budget = Arc::new(AtomicUsize::new(2)); // run.started + session.opened
     let mut e = Engine::new(
-        policy(),
+        waiting_policy(),
         Box::new(ManualClock::new(T0)),
         Box::new(FlakySink(budget.clone())),
     )

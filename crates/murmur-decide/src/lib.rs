@@ -8,6 +8,7 @@
 //! ```text
 //! proposed -> checked -> auto_approved | pending_approval
 //!          -> approved | rejected | expired | voided -> dispatched -> done | failed
+//! checked -> approved   (a human's own intent in a human tier that lets the submitter authorize)
 //! ```
 //!
 //! The crate is a library with no I/O beyond the audit sink and file loaders, no network,
@@ -18,11 +19,17 @@
 //! ## The authorization guarantee
 //!
 //! Murmur's central claim is that agents can nominate and explain but never authorize.
-//! Here that is a property of the types:
+//! A human's own submission is a human decision by construction. Here that is a property
+//! of the types:
 //!
-//! - [`Engine::approve`] takes a `&`[`HumanAuthority`]. There is no other way to move an
-//!   intent to `approved` ([`next_state`] is the only transition table, and the engine
-//!   performs `Approve` only inside `approve`).
+//! - Both ways into `approved` need a `&`[`HumanAuthority`]: [`Engine::approve`] (an inbox
+//!   approval), and [`Engine::submit`] (or [`Engine::amend_collect`]) for the submitter's
+//!   own intent when its policy tier has `submitter_authorizes` (logged as
+//!   `approval.at_submission`, with approval `{by, at_submission: true, self_approved:
+//!   true}`; the engine checks the authority is the intent's own human source).
+//!   [`next_state`] is the only transition table; the engine performs `Approve` only inside
+//!   `approve` and `AuthorizeAtSubmission` only on the human submit path. An agent's
+//!   proposal in a human tier always waits in the inbox.
 //! - A `HumanAuthority` exists only inside an [`OperatorSession`], and an `OperatorSession`
 //!   comes only from [`Engine::open_operator_session`], which logs the opening. Neither type
 //!   has public fields, `Clone`, `Default`, `Deserialize`, or a conversion from an
@@ -36,8 +43,10 @@
 //! `compile_fail` doctests on [`HumanAuthority`] (module `authority`) and [`AgentPort`]
 //! prove the forbidden programs don't compile. The replay also checks the property from
 //! the other side: no `approved` state in a log without an `approval.granted` by an
-//! operator before the deadline. A human approving their own proposal is allowed (two-person
-//! approval is Phase E) and flagged `self_approved` on the approval.
+//! operator before the deadline, or an `approval.at_submission` by the intent's own human
+//! source in a tier that allows it (never on an agent's intent). A human approving their
+//! own proposal in the inbox is allowed (two-person approval is Phase E) and flagged
+//! `self_approved` on the approval.
 //!
 //! **Limits, stated plainly.** Rust privacy is a code-structure guarantee, not a security
 //! boundary. It stops agent-facing code that holds only an `AgentPort` (or only JSON) from
@@ -72,7 +81,8 @@
 //!    (`proposal.task.path()`) and answer from a cache.
 //! 4. **Operators.** On an authenticated operator request, use (or open once, with
 //!    [`Engine::open_operator_session`]) that operator's [`OperatorSession`]. `POST
-//!    /api/intents` and the legacy `POST /api/tasks` call [`Engine::submit`];
+//!    /api/intents` and the legacy `POST /api/tasks` call [`Engine::submit`] (in a tier
+//!    with `submitter_authorizes`, the intent comes back `approved`: dispatch it);
 //!    `.../approve` and `.../reject` call [`Engine::approve`] / [`Engine::reject`];
 //!    `GET /api/inbox` is [`Engine::inbox`]. [`Intent`] serializes to JSON for the API.
 //! 5. **Agents (Phase F).** The MCP server gets an [`AgentPort`] per agent and nothing
@@ -166,6 +176,8 @@
 //!     position: Some(Fact::new(LonLat::new(-122.45, 37.81), t)),
 //!     home: Some(Fact::new(LonLat::new(-122.45, 37.81), t)),
 //!     battery_pct: Some(Fact::new(95.0, t)),
+//!     nav_source: None,
+//!     report_interval_ms: None,
 //! });
 //!
 //! // An agent proposes; policy sends it to the inbox.

@@ -3,7 +3,7 @@ import { LINKS, PROTOCOLS, type Protocol } from './catalogLabels'
 import { symbolSvg } from './symbols'
 import { orbitRange, usePlatformLimits } from './taskDefaults'
 import type { Tasking, Vehicle } from './types'
-import { callsign, DOMAIN_LABEL, domainOf } from './types'
+import { callsign, DOMAIN_LABEL, domainOf, isStale } from './types'
 
 interface Props {
   v: Vehicle
@@ -15,8 +15,6 @@ interface Props {
   following: boolean
   onFollow: () => void
 }
-
-const STALE_MS = 3000
 
 function fmt(n: number | null | undefined, digits = 0, unit = '') {
   return n == null || Number.isNaN(n) ? '–' : `${n.toFixed(digits)}${unit}`
@@ -36,7 +34,7 @@ function Item({ k, children, title }: { k: string; children: React.ReactNode; ti
 export function VehicleDetails({ v, taskings, selected, onToggleSelect, onClose, following, onFollow }: Props) {
   const limits = usePlatformLimits()
   const p = v.identity ? limits?.get(v.identity.platform) : undefined
-  const stale = (v.link.since_last_ms ?? 0) > STALE_MS
+  const stale = isStale(v)
   const domain = domainOf(v)
   const orbit = orbitRange([v], limits)
   const op = taskings.flatMap((t) => t.ops.filter((o) => o.uid === v.uid).map((o) => ({ o, t }))).sort((a, b) => b.t.created - a.t.created)[0]
@@ -86,7 +84,12 @@ export function VehicleDetails({ v, taskings, selected, onToggleSelect, onClose,
             {v.mode ?? '–'}
             {v.armed ? <em className="motors-on"> motors on</em> : null}
           </Item>
-          <Item k="Navigation">{v.nav_ready ? 'ready' : 'not ready'} · GPS {v.gps_fix >= 3 ? '3D fix' : v.gps_fix === 2 ? '2D fix' : 'no fix'}{v.satellites ? `, ${v.satellites} sats` : ''}</Item>
+          <Item k="Navigation">
+            {v.nav_ready ? 'ready' : 'not ready'}
+            {v.nav_source === 'dead_reckoning' ? (
+              <b title="No GNSS: position from inertial navigation and DVL, error growing with distance travelled"> on dead reckoning</b>
+            ) : null}{' '}
+            · GPS {v.gps_fix >= 3 ? '3D fix' : v.gps_fix === 2 ? '2D fix' : 'no fix'}{v.satellites ? `, ${v.satellites} sats` : ''}</Item>
           <Item k="Position">{v.position ? `${v.position[1].toFixed(5)}, ${v.position[0].toFixed(5)}` : '–'}</Item>
           {domain === 'subsurface' ? (
             <Item k="Depth">{v.alt_msl == null ? '–' : `${Math.max(0, -v.alt_msl).toFixed(1)} m`}</Item>
@@ -109,7 +112,9 @@ export function VehicleDetails({ v, taskings, selected, onToggleSelect, onClose,
         <h4>Link</h4>
         <dl>
           <Item k="Type">{v.identity ? (LINKS[v.identity.link] ?? v.identity.link) : '–'}{p?.space_class ? ` (${p.space_class})` : ''}</Item>
-          <Item k="Last message">{stale ? <b className="bad">{Math.floor((v.link.since_last_ms ?? 0) / 1000)} s ago</b> : fmt(v.link.since_last_ms, 0, ' ms ago')}</Item>
+          <Item k="Last message">{stale ? <b className="bad">{Math.floor((v.link.since_last_ms ?? 0) / 1000)} s ago</b> : fmt(v.link.since_last_ms, 0, ' ms ago')}
+            {(v.link.expected_interval_ms ?? 0) > 1000 ? ` (low-rate link: reports every ${Math.round((v.link.expected_interval_ms ?? 0) / 1000)} s)` : ''}
+          </Item>
           <Item k="Loss / RTT">
             {fmt(v.link.loss_pct, 0, '%')} · {fmt(v.link.rtt_ms, 0, ' ms')}
           </Item>

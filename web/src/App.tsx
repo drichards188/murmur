@@ -12,7 +12,7 @@ import { SpacePanel, type SpaceSelection } from './SpacePanel'
 import { TaskPanel } from './TaskPanel'
 import { VehicleDetails } from './VehicleDetails'
 import type { LngLat, Vehicle } from './types'
-import { DOMAIN_LABEL, domainOf, STALE_MS } from './types'
+import { DOMAIN_LABEL, domainOf, isStale } from './types'
 import { useBridge } from './useBridge'
 
 /** ?perf in the URL shows a frame-rate readout (to check 3D on a real GPU). */
@@ -104,7 +104,7 @@ export default function App() {
     [pending, state?.vehicles, selIntent],
   )
   const taskings = state?.taskings ?? []
-  const lost = vehicles.filter((v) => (v.link.since_last_ms ?? 0) > STALE_MS).length
+  const lost = vehicles.filter(isStale).length
 
   /** an inbox item was clicked: highlight its vehicles and frame them with the task's preview */
   const focusInbox = useCallback(

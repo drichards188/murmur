@@ -205,6 +205,7 @@ role = "Lighter-than-air persistent ISR"
 domain = "air"
 sim = "sitl"
 vehicle = "blimp"
+behavior = "blimp"
 callsign = "ZEP"
 link = "los"
 sidc = "SFAPML---------"
@@ -212,6 +213,10 @@ protocol = "mavlink"
 protocol_note = "Small airships run ArduPilot Blimp, which speaks MAVLink natively"
 authenticity = "ArduPilot Blimp SITL (already authentic for small airships)"
 typical_alt_m = 20
+# stand-in kinematics (a small outdoor airship; Blimp SITL's defaults fly at 0.25-0.5 m/s)
+cruise_mps = 3
+max_mps = 5
+climb_mps = 1
 # ---------------------------------------------------------------- ground
 [ugv_logistics]
 name = "Tracked logistics UGV"
@@ -220,6 +225,7 @@ role = "Logistics / casualty evacuation UGV"
 domain = "ground"
 sim = "sitl"
 vehicle = "ugv"
+behavior = "ugv"
 callsign = "MULE"
 link = "mesh"
 sidc = "SFGPEV---------"
@@ -238,6 +244,7 @@ armed = true
 domain = "ground"
 sim = "sitl"
 vehicle = "ugv"
+behavior = "ugv"
 callsign = "BULL"
 link = "mesh"
 sidc = "SFGPEV---------"
@@ -255,6 +262,7 @@ role = "Mine-laying UGV"
 domain = "ground"
 sim = "sitl"
 vehicle = "ugv"
+behavior = "ugv"
 callsign = "MOLE"
 link = "mesh"
 sidc = "SFGPEV---------"
@@ -272,6 +280,7 @@ role = "Recon UGV"
 domain = "ground"
 sim = "sitl"
 vehicle = "ugv"
+behavior = "ugv"
 callsign = "FERRET"
 link = "mesh"
 sidc = "SFGPEV---------"
@@ -294,7 +303,7 @@ link = "tether"
 sidc = "SFGPE----------"
 protocol = "mavlink"
 protocol_note = "ArduPilot AntennaTracker speaks MAVLink natively"
-authenticity = "ArduPilot AntennaTracker SITL (already authentic; open stall bug murmur-9bf)"
+authenticity = "ArduPilot AntennaTracker SITL (already authentic; mount reaches +/-170 deg about its start heading)"
 
 # ---------------------------------------------------------------- surface
 [magura]
@@ -362,6 +371,7 @@ role = "Unpowered (wind) ocean USV"
 domain = "surface"
 sim = "sitl"
 vehicle = "sailboat"
+behavior = "sailboat"
 callsign = "ALBATROSS"
 link = "satcom"
 space_class = "starlink"
@@ -372,6 +382,8 @@ protocol_note = "Vendor cloud API is proprietary; MAVLink in the sim, labelled a
 authenticity = "ArduPilot sailboat SITL with real wind (already close) plus an Iridium/Starlink link"
 authenticity_blocker = "Vendor cloud API proprietary"
 cruise_mps = 2
+max_mps = 4   # about 8 kt top speed; the polar gives less in light wind
+turn_dps = 20
 typical_alt_m = 0
 endurance_h = 8760
 [buoy]

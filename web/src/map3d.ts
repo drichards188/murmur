@@ -2,7 +2,7 @@ import { IconLayer, LineLayer, PathLayer, ScatterplotLayer, SolidPolygonLayer } 
 import type { LiftedBridge } from './bridges'
 import { symbolSvg } from './symbols'
 import type { Vehicle } from './types'
-import { domainOf, STALE_MS } from './types'
+import { domainOf, isStale } from './types'
 
 // Heights are exaggerated in 3D so 80 m altitudes and 5 m depths read at bay scale.
 // Terrain uses the same factor, so vehicles stay in the right place relative to hills and seabed.
@@ -33,7 +33,7 @@ export function drawnHeight(v: Vehicle) {
 }
 
 function iconFor(v: Vehicle, labels = true) {
-  const stale = (v.link.since_last_ms ?? 0) > STALE_MS
+  const stale = isStale(v)
   // no heading arrow in 3D: the 3D trail shows direction, and a stable icon per vehicle
   // keeps deck.gl from rebuilding its icon texture on every turn
   const sym = symbolSvg(v, { stale, heading: false, labels })
@@ -153,7 +153,7 @@ export function build3dLayers(
       getSize: (v) => iconFor(v, !bare.has(v.uid)).height,
       sizeUnits: 'pixels',
       updateTriggers: {
-        getIcon: placed.map((v) => `${v.uid}|${(v.link.since_last_ms ?? 0) > STALE_MS}|${bare.has(v.uid)}`).join(),
+        getIcon: placed.map((v) => `${v.uid}|${isStale(v)}|${bare.has(v.uid)}`).join(),
         getSize: placed.map((v) => bare.has(v.uid)).join(),
       },
     }),

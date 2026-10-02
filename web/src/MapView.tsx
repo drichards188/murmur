@@ -12,7 +12,7 @@ import { EMPTY_OVERLAY } from './space'
 import { linkStubs, spaceFeatures, spaceLinkLayers } from './spaceLayers'
 import { symbolSvg } from './symbols'
 import type { LngLat, Tasking, Vehicle } from './types'
-import { callsign, STALE_MS } from './types'
+import { callsign, isStale } from './types'
 
 export interface Draft {
   mode: 'orbit' | 'patrol' | null
@@ -531,7 +531,7 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
     for (const v of vehicles) {
       if (!v.position) continue
       seen.add(v.uid)
-      const stale = (v.link.since_last_ms ?? 0) > STALE_MS
+      const stale = isStale(v)
       const labels = !bare.has(v.uid)
       const sym = symbolSvg(v, { stale, labels })
       const isSel = selected.has(v.uid)

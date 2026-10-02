@@ -11,6 +11,16 @@
 //! auto-approved. If the first matching tier is `auto`, the decision becomes `human` with
 //! rule `"(unverified)"`. The `unverified = [...]` condition lets the file route such
 //! intents explicitly, with its own reason.
+//!
+//! **Who authorizes a human tier.** A human tier sends an agent's proposal to the inbox,
+//! where only a human approves it. A human operator's own submission is already a human
+//! decision: when `submitter_authorizes` holds for the matched tier (per tier, else
+//! `[approval] submitter_authorizes`, default true), the submission itself is the approval
+//! ([`PolicyDecision::submitter_authorizes`]; the engine records it as
+//! `approval.at_submission`). Set it false on a tier to make even the submitter's own intent
+//! wait in the inbox (the hook for Phase E's two-person engagement; that the inbox approver
+//! is a different person is not enforced yet). It never applies to an agent-sourced intent. In a logged policy without the key (logs written before it
+//! existed) it reads as false, which is how those runs behaved.
 
 use std::path::Path;
 
@@ -67,6 +77,11 @@ pub struct TierRule {
     pub when: When,
     pub tier: Tier,
     pub reason: String,
+    /// Human tiers: does a human's own submission authorize it (true), or does it wait for
+    /// an approval like an agent's proposal (false)? Unset: `[approval]
+    /// submitter_authorizes`. Ignored on auto tiers and for agent-sourced intents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submitter_authorizes: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -74,11 +89,19 @@ pub struct TierRule {
 pub struct ApprovalConfig {
     /// Pending approvals expire after this many seconds.
     pub expire_s: u32,
+    /// Default for tiers that don't set `submitter_authorizes`, and for the `(unverified)`
+    /// and `(none)` fallbacks. [`Policy::from_toml`] fills in true when the file leaves it
+    /// out; a policy deserialized from an old log keeps it unset, which means false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub submitter_authorizes: Option<bool>,
 }
 
 impl Default for ApprovalConfig {
     fn default() -> Self {
-        ApprovalConfig { expire_s: 120 }
+        ApprovalConfig {
+            expire_s: 120,
+            submitter_authorizes: None,
+        }
     }
 }
 
@@ -106,7 +129,10 @@ pub enum PolicyError {
 
 impl Policy {
     pub fn from_toml(text: &str) -> Result<Self, PolicyError> {
-        let p: Policy = toml::from_str(text)?;
+        let mut p: Policy = toml::from_str(text)?;
+        // The file default: a human's own submission authorizes it. Written out explicitly
+        // so the logged copy says so (an unset value in a log means false).
+        p.approval.submitter_authorizes.get_or_insert(true);
         if p.tiers.is_empty() {
             return Err(PolicyError::Invalid("no [[tier]] rules".into()));
         }
@@ -135,6 +161,14 @@ impl Policy {
             .map_err(|e| PolicyError::Io(path.display().to_string(), e))?;
         Self::from_toml(&text)
     }
+
+    /// Whether a human's own submission authorizes an intent routed to `tier` (`None`: the
+    /// `(unverified)` and `(none)` fallbacks, which use the `[approval]` default).
+    pub fn submitter_authorizes(&self, tier: Option<&TierRule>) -> bool {
+        tier.and_then(|t| t.submitter_authorizes)
+            .or(self.approval.submitter_authorizes)
+            .unwrap_or(false)
+    }
 }
 
 /// The facts the policy conditions were evaluated on, kept with the decision so the
@@ -161,6 +195,11 @@ pub struct PolicyDecision {
     pub rule: String,
     pub reason: String,
     pub facts: PolicyFacts,
+    /// Tier human, a human submitted it, and the tier lets the submitter authorize: the
+    /// submission is the approval (`approval.at_submission`), no inbox. Always false for
+    /// auto tiers and agent-sourced intents. Absent (false) in logs written before it existed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub submitter_authorizes: bool,
 }
 
 /// Does any vehicle's route (transit leg, task path, return leg; see [`crate::route`])
@@ -284,6 +323,7 @@ pub fn decide(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> Poli
         .filter(|c| c.outcome == Outcome::Unverified)
         .map(|c| c.rule)
         .collect();
+    let human_source = facts.source == SourceKind::Human;
     for rule in &policy.tiers {
         let w = &rule.when;
         let matches = w.kind.as_ref().is_none_or(|ks| ks.contains(&facts.kind))
@@ -304,6 +344,7 @@ pub fn decide(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> Poli
                         rule.name
                     ),
                     facts,
+                    submitter_authorizes: human_source && policy.submitter_authorizes(None),
                 };
             }
             return PolicyDecision {
@@ -311,6 +352,9 @@ pub fn decide(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> Poli
                 rule: rule.name.clone(),
                 reason: rule.reason.clone(),
                 facts,
+                submitter_authorizes: rule.tier == Tier::Human
+                    && human_source
+                    && policy.submitter_authorizes(Some(rule)),
             };
         }
     }
@@ -319,5 +363,6 @@ pub fn decide(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> Poli
         rule: "(none)".into(),
         reason: "no policy rule matched; fail closed to a human".into(),
         facts,
+        submitter_authorizes: human_source && policy.submitter_authorizes(None),
     }
 }

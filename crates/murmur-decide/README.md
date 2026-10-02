@@ -14,6 +14,7 @@ constraints, why (required for agents), from whom. It moves through one state ma
 ```
 proposed -> checked -> auto_approved | pending_approval
          -> approved | rejected | expired | voided -> dispatched -> done | failed
+checked -> approved   (authorize_at_submission: a human's own intent in a human tier)
 ```
 
 The full table is `intent::next_state`; anything else is a typed `IllegalTransition`.
@@ -24,7 +25,10 @@ The full table is `intent::next_state`; anything else is a typed `IllegalTransit
    and subs on water, UGVs on land, via a `TerrainOracle`), geofence (no-go polygons from
    `sim/areas/*.geojson`), reserves (endurance left after the task). **Fail-closed**: a rule
    that can't evaluate (unknown vehicle, missing or stale fact, no area file, unanswered
-   terrain point) fails and says why. Two recorded exceptions:
+   terrain point) fails and says why. Freshness is link-aware: a vehicle's limit is
+   `max(max_fact_age_s, fact_age_intervals x its report interval)`, the interval being the
+   `report_interval_ms` world fact (20 s for an acoustic AUV, so 60 s); the check detail names
+   the limit, and a policy without `fact_age_intervals` keeps the flat limit. Two recorded exceptions:
    - `not_evaluated`: deliberately skipped, blocks only consequential kinds (engage). The
      domain rule with no terrain oracle (PLAN.md), and an rtl whose way home can't be
      checked (no fresh position, no area file): rtl is the safety command and must not be
@@ -51,11 +55,33 @@ The full table is `intent::next_state`; anything else is a typed `IllegalTransit
    leaving. One floor holds whatever the file says: an intent with any `unverified` check is
    never auto-approved (an auto match becomes human, rule `(unverified)`). The decision's
    `facts.unverified` lists those checks, so the inbox can show why a human is needed.
-4. **Approval**: pending intents wait in the inbox and expire (default 120 s). Approving
-   re-runs the checks against the current world; if the picture no longer holds, the intent
-   is voided instead. A human may approve an intent they proposed (two-person approval is
-   Phase E); the approval then records `self_approved: true` (on the intent's `approval`
-   and the `approval.granted` event) so evaluation can measure it.
+4. **Approval**: a human tier needs a human decision, and who that is depends on where
+   the intent came from.
+   - **A human's own submission** (`Engine::submit`, `amend_collect`; the console's
+     `POST /api/tasks`) is a human decision by construction: it comes with the submitter's
+     `HumanAuthority`. If the matched tier has `submitter_authorizes = true` (per tier in
+     `sim/policy.toml`, else `[approval] submitter_authorizes`, default true; the
+     `(unverified)` and `(none)` fallbacks use the default), the intent goes from `checked`
+     straight to `approved` (transition `authorize_at_submission`), logged as its own event
+     `approval.at_submission {by, session, self_approved: true, rule}` and recorded on the
+     intent as `approval {by, at_submission: true, self_approved: true}`. Not
+     `auto_approved` and not `approval.granted`, so evaluation can tell "policy, no human",
+     "a human decided by submitting" and "a human approved in the inbox" apart. The checks
+     run first and still fail closed: a rejected intent stays rejected. The approval-time
+     re-check doesn't apply (the checks just ran); voiding (vehicle lost, superseded,
+     cancel) applies afterwards as before. The policy decision records it
+     (`submitter_authorizes: true`).
+   - **An agent's proposal** (`AgentPort`) in a human tier always waits in the inbox,
+     whatever the policy says: the at-submission path needs a `HumanAuthority`, which the
+     agent path doesn't have.
+   - **`submitter_authorizes = false`** on a tier makes the submitter's own intent wait in
+     the inbox too (the hook for Phase E's two-person engagement; that the inbox approver
+     is someone else is not enforced yet).
+   Pending intents expire (default 120 s). Approving re-runs the checks against the
+   current world; if the picture no longer holds, the intent is voided instead. A human
+   may approve an intent they proposed; the approval then records `self_approved: true`
+   (on the intent's `approval` and the `approval.granted` event) so evaluation can
+   measure it.
 5. **Audit**: every step is a JSONL event `{seq, t, prev, type, ...}` written before the
    change it records (a failed write means no change). Decision events carry the exact
    world facts they read, each with its observation time; the policy file is logged at run
@@ -129,7 +155,14 @@ head.
 
 ## The guarantee: agents nominate, only humans authorize
 
-- `Engine::approve` requires a `&HumanAuthority`; it is the only path to `approved`.
+An agent can never authorize. A human's submission is a human decision by construction, so
+a human tier can let it stand as the approval; an agent's proposal can't be one.
+
+- Two paths lead to `approved`, and both need a `&HumanAuthority`: `Engine::approve` (the
+  inbox), and `Engine::submit` / `Engine::amend_collect` for the submitter's own intent in a
+  tier with `submitter_authorizes` (the engine checks that the authority is the intent's
+  own human source). `AgentPort::propose` and `amend_collect` pass no authority, so their
+  intents in a human tier always go to `pending_approval`.
 - A `HumanAuthority` lives only inside an `OperatorSession`, which only
   `Engine::open_operator_session` creates (and logs). Neither type has public fields,
   `Clone`, `Default`, `Deserialize`, or a conversion from an agent id, so no JSON (an MCP tool
@@ -141,8 +174,11 @@ head.
   deserializing an authority, calling approve through an `AgentPort`, reaching its engine, and
   passing an agent id as an authority all fail to compile. Stable rustdoc only checks that
   they fail, not the error code; each was checked by hand to fail with exactly the code noted.
-- Replay checks the same property from the log: no `approved` without an `approval.granted`
-  by an operator before the deadline and a passing re-check.
+- Replay checks the same property from the log: no `approved` without either an
+  `approval.granted` by an operator before the deadline and a passing re-check, or an
+  `approval.at_submission` by the intent's own human source, on passing checks, in a human
+  tier whose recomputed decision lets the submitter authorize. An agent-sourced intent with
+  an `approval.at_submission` is a mismatch.
 
 **Limits.** Rust privacy is a code-structure guarantee, not a security boundary. It keeps
 code that holds only an `AgentPort` (or only JSON) from authorizing, and it leaves one
@@ -163,8 +199,12 @@ cargo run -p murmur-decide --bin murmur-replay -- logs/audit/<run-id>.jsonl \
 Re-runs every `check.result` and `policy.decision` from its logged inputs and the logged
 policy (resolving `areas_sha256` to the logged set in force, whose own hash must match its
 content), checks every `intent.state` is legal and backed by its evidence, checks `seq`,
-`t`, the hash chain and every `self_approved` flag, and prints the approval and
-self-approval counts and the head hash. Exit 0 if everything reproduces, 1 on mismatch, 2
+`t`, the hash chain and every `self_approved` flag, checks every at-submission approval
+(the approver is the submitting human, the tier allowed it, never an agent's intent, and no
+intent whose decision let the submitter authorize was sent to the inbox instead), and
+prints the approval, self-approval and at-submission counts and the head hash. Logs written
+before `submitter_authorizes` existed still replay: the key is additive, and unset in a
+logged policy means false (how those runs behaved). Exit 0 if everything reproduces, 1 on mismatch, 2
 if the log can't be read, 3 if the decisions reproduce but some space queries ran on a
 different space segment (cache mismatch).
 Determinism: injected clock, integer-millisecond times, `BTreeMap`s, fixed output order and
@@ -193,6 +233,9 @@ The full contract is in the crate docs (`src/lib.rs`). In short:
 6. Any `Err` from the engine means nothing changed; never dispatch on an error.
 7. The inbox shows `checks` (look for `unverified`), `policy.facts.unverified` and
    `policy.facts.area_detail` as the reason a human is needed, and `approval.self_approved`.
+   It holds agent proposals in human tiers, and human intents only from tiers with
+   `submitter_authorizes = false`; a human's own intent elsewhere comes back `approved` with
+   `approval.at_submission` (dispatch it like any approved intent).
    For a collect, show the intent's `space.result.options` (and `exclusions`) and the
    `space_query` detail (it says `TIME-SHIFTED` when the answer is time-shifted).
 8. Space segment: load `murmur_space::Space` (`sim/space/constellations.toml`,
@@ -226,7 +269,9 @@ The full contract is in the crate docs (`src/lib.rs`). In short:
   chain, or a cut tail, is not detected by replay alone (see the hash chain section).
 - Cross-platform replay: trigonometry goes through the platform libm. Same machine is exact;
   across machines a last-bit difference could in principle flip a boundary case.
-- Phase E pieces: engage, two-person approval, approval holding a track snapshot.
+- Phase E pieces: engage, two-person approval (`submitter_authorizes = false` makes the
+  submitter wait, but nothing yet requires the inbox approver to be a different person),
+  approval holding a track snapshot.
 - Satellite tasking: no cloud model (optical options note it), no sensitive-area or
   cost/priority tiers yet (every collect needs a human), no competing demand or agility
   model, one collect per intent. Cover reads the area's centroid only. The segment identity

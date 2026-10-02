@@ -17,14 +17,19 @@ use crate::kinematics::{Out, State};
 use crate::mission::Mission;
 use crate::params::Params;
 
+mod apmission;
 mod auto;
+mod blimp;
 mod boat;
 mod copter;
 mod drifter;
 mod marine;
 pub mod modes;
 mod plane;
+mod rover;
+mod sailboat;
 mod sub;
+mod ugv;
 mod vtol;
 
 /// Everything a physics tick may read or change.
@@ -192,6 +197,9 @@ pub fn create(name: &str) -> Option<Box<dyn Behavior>> {
         "sub" => Box::new(sub::Sub),
         "copter" => Box::new(copter::Copter::new()),
         "vtol" => Box::new(vtol::Vtol::new()),
+        "blimp" => Box::new(blimp::Blimp::new()),
+        "ugv" => Box::new(ugv::Ugv::new()),
+        "sailboat" => Box::new(sailboat::Sailboat::new()),
         _ => return None,
     })
 }
