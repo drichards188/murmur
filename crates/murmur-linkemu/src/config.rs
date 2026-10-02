@@ -731,7 +731,7 @@ mod tests {
         let e = Config::parse(
             "[class.satcom]\nspace_class = \"wgs\"\n[space_class_profile]\nstarlink = \"satcom\"\n",
         )
-        .unwrap_err();
+        .expect_err("must be rejected");
         assert!(e.contains("starlink"), "{e}");
     }
 
