@@ -12,6 +12,11 @@ protocol, STATUSTEXTs, heartbeat mode sequences, and trajectories within a toler
 --tidewater runs both engines in the Golden Gate with conditions: Python imports tidewater,
 Rust asks `tidewater serve` (started here on --tidewater-port).
 Exit status 0 = parity, 1 = a difference outside tolerance.
+
+Since the Rust engine follows the stand-in contract (docs/AUTHENTICITY.md: parameter store,
+heartbeat-only until SET_MESSAGE_INTERVAL, MISSION_REQUEST, ArduPilot's texts and result
+codes, failsafes), it deliberately differs from standins.py on the wire; this test now
+documents R.1's port and is expected to report those differences.
 """
 
 import argparse
