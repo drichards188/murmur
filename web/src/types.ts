@@ -28,6 +28,9 @@ export interface LinkHealth {
   rtt_ms: number | null
   /** How often the link should be heard from: 1000 streaming, 20000 on HIGH_LATENCY2 (Rust bridge only). */
   expected_interval_ms?: number
+  /** The link emulator's state for this link, when one runs: degraded or down and why
+   *  (a linkemu drop cause, or `event`). Details from /api/links/{uid} (linkEmu.ts). */
+  emu?: { state: 'ok' | 'degraded' | 'down'; cause: string | null }
 }
 
 /** What a vehicle's position rests on (Rust bridge only). A submerged AUV dead-reckons: ready, but drifting. */

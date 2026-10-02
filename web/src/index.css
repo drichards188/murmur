@@ -105,6 +105,9 @@ code { font-family: var(--mono); font-size: 12px; background: var(--panel-2); pa
 .vrow-link.ok { color: var(--muted); }
 .vrow-link.warn { color: var(--warn); }
 .vrow-link.bad { color: var(--bad); }
+.vrow-emu { margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.vrow-emu.degraded { color: var(--warn); }
+.vrow-emu.down { color: var(--bad); font-weight: 600; }
 .vrow.stale .vrow-main, .vrow.stale .vrow-kin { opacity: 0.55; }
 
 /* map */

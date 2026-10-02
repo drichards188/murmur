@@ -10,7 +10,11 @@ conditions from MURMUR_TIDEWATER_URL, MURMUR_AT and MURMUR_RATE in the environme
 
 Every vehicle gets its own UDP link to the bridge on base_port + index (so per-vehicle
 link stats and link emulation stay honest) and a callsign ("PUMA 1"). The launcher writes
-sim/run/fleet.json, the manifest the bridge uses to show each vehicle's identity.
+sim/run/fleet.json, the manifest the bridge uses to show each vehicle's identity. Behind the
+link emulator (scripts/up.sh, the default) the vehicles send to the emulator on base_port + i
+and the bridge reads the emulator's rewritten copy (sim/run/bridge-fleet.json, bridge-side
+ports); `--manifest-only` writes the manifest and exits, so the emulator can bind the
+vehicle ports before any vehicle starts.
 """
 
 import argparse
@@ -175,6 +179,8 @@ def main():
     ap.add_argument("--speedup", type=float, default=1.0)
     ap.add_argument("--keep-eeprom", action="store_true", help="keep params/missions between runs")
     ap.add_argument("--count-only", action="store_true", help="print the number of vehicles and exit")
+    ap.add_argument("--manifest-only", action="store_true",
+                    help="write sim/run/fleet.json and exit (for the link emulator, before the vehicles start)")
     ap.add_argument("--sitl-instances", action="store_true",
                     help="print SITL instance numbers (comma list) and exit; for tidewater drive")
     args = ap.parse_args()
@@ -200,13 +206,15 @@ def main():
         print(",".join(str(v["instance"]) for v in sitl))
         return
 
+    RUN.mkdir(exist_ok=True)
+    (RUN / "fleet.json").write_text(json.dumps({"vehicles": vehicles}, indent=1))
+    if args.manifest_only:
+        return
+
     for b in {VEHICLES[platforms[v["platform"]]["vehicle"]][0] for v in sitl}:
         if not (BIN / b).exists():
             sys.exit(f"missing {BIN / b}; build with: make setup")
     engine = standins_engine() if standins else None
-
-    RUN.mkdir(exist_ok=True)
-    (RUN / "fleet.json").write_text(json.dumps({"vehicles": vehicles}, indent=1))
 
     procs = []
     for v in sitl:
