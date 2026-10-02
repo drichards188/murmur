@@ -13,6 +13,7 @@
 
 mod api;
 mod clock;
+mod cot;
 mod decision;
 mod geo;
 mod link;
@@ -52,6 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let frames = Arc::new(watch::channel(None).0);
     tokio::spawn(push::pusher(world.clone(), frames.clone()));
+    cot::spawn(world.clone());
 
     let listener = TcpListener::bind(("127.0.0.1", http_port)).await?;
     println!("murmur-bridge on http://127.0.0.1:{http_port}");
