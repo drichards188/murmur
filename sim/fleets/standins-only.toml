@@ -1,5 +1,5 @@
 # One of each stand-in platform and nothing else: runs without ArduPilot SITL, for testing
-# the stand-in engines (MURMUR_STANDINS=python|rust) against the bridge.
+# the stand-in engine against the bridge (sim/tests/standins_e2e.py).
 # make goldengate GG_FLEET=standins-only
 title = "Stand-ins only (7 platforms)"
 

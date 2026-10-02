@@ -25,7 +25,7 @@ Autonomous C2" doc (link in DECISIONS.md).
 
 Three layers. **Agents decide, they don't drive.**
 
-1. **Vehicle autonomy**: ArduPilot SITL (15 platform types) and stand-ins (`sim/standins.py`).
+1. **Vehicle autonomy**: ArduPilot SITL (15 platform types) and stand-ins (`crates/murmur-standins`).
    They fly, drive and avoid. Built.
 2. **Deterministic mission layer** (bridge): every action arrives as an **intent**, passes
    **fail-closed checks** (invariants), then a **risk-tier policy** routes it to auto-execute or
@@ -33,12 +33,13 @@ Three layers. **Agents decide, they don't drive.**
 3. **Agent layer**: AI agents (via MCP) and humans use the same intent API. Agents can nominate
    and explain; the authorize step is closed to them in code.
 
-Today the bridge goes straight from a REST task to MAVLink (`bridge/murmur_bridge/tasks.py`,
-`TaskManager.submit`). Phase C inserts the intent, check, policy and audit steps in front of it.
+Before Phase C the bridge went straight from a REST task to MAVLink (the Python bridge's
+`TaskManager.submit`). Phase C inserts the intent, check, policy and audit steps in front of it
+(`crates/murmur-bridge/src/decision/`).
 
 ## Done
 
-- **Foundation**: bridge (`bridge/murmur_bridge/`), console (`web/`), sim launcher
+- **Foundation**: bridge (Python at first, Rust since R.4/R.5), console (`web/`), sim launcher
   (`sim/swarm.py`). Command lifecycle sent -> acked -> active -> done judged from telemetry;
   "left task" and "NOT MOVING" detection; link health per vehicle; 2D/3D map.
 - **Tidewater** (sibling repo `~/tidewater`): real tide, current, depth, wind for a place and
@@ -63,6 +64,9 @@ Decision in DECISIONS.md. Cargo workspace at the repo root, crates in `crates/`.
   telemetry plan, link stats, task lifecycle (port of `bridge/murmur_bridge/`). Parity: the
   same fleet behaves the same against both bridges; the console notices no difference.
 - **R.5 Retire the Python bridge and stand-ins**; Makefile, scripts and docs point at Rust.
+  Done: `bridge/` and `sim/standins.py` deleted (in git history); `scripts/up.sh` builds and runs
+  the Rust bridge and stand-ins and starts `tidewater serve` with a scenario; 300, 1,000 and
+  3,000-node stand-in fleets measured in `docs/load-test.md`.
 - **Authenticity fields**: real-world protocol per platform in `platforms.toml`, shown in the
   Platforms panel.
 
@@ -197,7 +201,7 @@ Exit: every invariant has a scenario that tries to break it.
 
 ## Phase F: AI agents via MCP
 
-- MCP server (`bridge/murmur_bridge/mcp_server.py` or a separate process) exposing the world
+- MCP server (in the Rust bridge or a separate process) exposing the world
   model (vehicles, tracks, areas, intents, staleness on every fact) and intent tools
   (`propose_intent`, `explain`). No approve tool exists.
 - Agent runner for scenarios; prompts in `agents/`. Read AeroMind's and Pharos's agent

@@ -57,7 +57,7 @@ def main():
     base = f"http://127.0.0.1:{args.http_port}"
     logs = ROOT / "logs"
     logs.mkdir(exist_ok=True)
-    env = {**os.environ, "MURMUR_STANDINS": "rust", "MURMUR_BASE_PORT": str(args.base_port),
+    env = {**os.environ, "MURMUR_BASE_PORT": str(args.base_port),
            "MURMUR_HTTP_PORT": str(args.http_port), "MURMUR_ROOT": str(ROOT), "PYTHONUNBUFFERED": "1"}
     for k in ("MURMUR_SCENARIO", "MURMUR_AT", "MURMUR_TIDEWATER_URL"):
         env.pop(k, None)

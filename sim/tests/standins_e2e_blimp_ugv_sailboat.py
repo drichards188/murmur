@@ -2,7 +2,7 @@
 """E2E: the blimp, UGV and sailboat stand-ins through the Rust bridge, tasked over its REST API.
 
 Starts the Rust bridge and `swarm.py` with a fleet of lta, the four ugv_* platforms and
-saildrone forced to `sim = "standin"` (MURMUR_STANDINS=rust), waits for them to be ready, then
+saildrone forced to `sim = "standin"`, waits for them to be ready, then
 runs a chain of tasks per vehicle (patrol, rtl, orbit, hold); a task that waits for a human
 (HTTP 202) is approved as op-1. Each op must end "done". Ports: vehicles UDP 19100+,
 HTTP 8877, so it runs beside `make goldengate`.
@@ -95,7 +95,7 @@ def main():
     fleet.write_text(FLEET)
     logs = HERE / "e2e"
     logs.mkdir(exist_ok=True)
-    env = {**os.environ, "MURMUR_STANDINS": "rust", "MURMUR_BASE_PORT": str(BASE_PORT),
+    env = {**os.environ, "MURMUR_BASE_PORT": str(BASE_PORT),
            "MURMUR_HTTP_PORT": str(HTTP), "PYTHONUNBUFFERED": "1", "CARGO_BUILD_JOBS": "4"}
     for k in ("MURMUR_SCENARIO", "MURMUR_AT", "MURMUR_TIDEWATER_URL"):
         env.pop(k, None)

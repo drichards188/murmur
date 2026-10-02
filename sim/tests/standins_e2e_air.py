@@ -95,7 +95,7 @@ def main():
         if not b.exists():
             sys.exit(f"missing {b}; cargo build --release -p murmur-standins -p murmur-bridge")
 
-    env = {**os.environ, "MURMUR_STANDINS": "rust", "MURMUR_BASE_PORT": str(args.base_port),
+    env = {**os.environ, "MURMUR_BASE_PORT": str(args.base_port),
            "MURMUR_HTTP_PORT": str(args.http_port), "MURMUR_ROOT": str(ROOT),
            "MURMUR_FLEET_MANIFEST": str(run / "fleet.json"), "MURMUR_RUN_ID": "e2e-air",
            "MURMUR_STANDINS_STATS": "0", "PYTHONUNBUFFERED": "1"}

@@ -25,10 +25,10 @@ back to it. Packets are never modified. Nothing crosses between links.
 3. Start the bridge on `B` and point it at the rewritten manifest:
    `MURMUR_BASE_PORT=B MURMUR_FLEET_MANIFEST=sim/run/bridge-fleet.json`.
 
-Step 3's manifest matters: the Python bridge opens exactly the ports its manifest lists, so
-reading the launcher's manifest it would bind the vehicle-facing ports and fight the emulator.
-`--manifest-out` writes a copy with `port` replaced by the bridge-side port (the original is
-kept as `vehicle_port`). The Rust bridge should do the same, or take the port as `B + (uid-1)`.
+Step 3's manifest matters: the bridge opens the ports its manifest lists (plus
+`MURMUR_MAX_VEHICLES` ports from its base), so reading the launcher's manifest it would bind
+the vehicle-facing ports and fight the emulator. `--manifest-out` writes a copy with `port`
+replaced by the bridge-side port (the original is kept as `vehicle_port`).
 
 Terrain and scenario time: `--tidewater URL` (or `MURMUR_TIDEWATER_URL`) turns on terrain line of
 sight; `--at ISO` / `--rate X` (or `MURMUR_AT` / `MURMUR_RATE`) set the scenario clock. Other

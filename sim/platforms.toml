@@ -6,7 +6,7 @@
 #
 # sim = "sitl"     a real ArduPilot SITL vehicle; `vehicle` picks the firmware/model in
 #                  swarm.py's VEHICLES table, `params` tune it toward the platform.
-# sim = "standin"  a lightweight MAVLink-speaking kinematic model (sim/standins.py) for
+# sim = "standin"  a lightweight MAVLink-speaking kinematic model (crates/murmur-standins) for
 #                  platforms ArduPilot SITL can't credibly fly (HALE at 18 km, AUVs, ships).
 #                  `behavior` picks which ArduPilot autopilot it imitates (mode numbers,
 #                  MAV_TYPE), so the C2 bridge needs no special cases. SITL platforms with a
@@ -135,6 +135,7 @@ protocol_note = "AV's ground station and datalink are proprietary; MAVLink in th
 authenticity = "ArduPilot SITL tuned to the airframe, plus AV's DDL link profile"
 authenticity_blocker = "AV ground station and datalink proprietary"
 params = { AIRSPEED_CRUISE = 20 }
+behavior = "plane"
 cruise_mps = 20
 typical_alt_m = 80
 endurance_h = 2.5
@@ -154,6 +155,7 @@ protocol_note = "AV's fire-control system is proprietary; MAVLink in the sim, la
 authenticity = "ArduPilot SITL tuned to loiter and dash speeds"
 authenticity_blocker = "AV fire-control system proprietary"
 params = { AIRSPEED_CRUISE = 28 }
+behavior = "plane"
 cruise_mps = 28
 typical_alt_m = 80
 endurance_h = 0.7
@@ -324,6 +326,7 @@ protocol_note = "Control software is proprietary; MAVLink in the sim, labelled a
 authenticity = "Planing-hull dynamics (Gazebo/VRX) plus a satellite link model"
 authenticity_blocker = "Control software proprietary"
 params = { CRUISE_SPEED = 12, WP_SPEED = 12 }
+behavior = "boat"
 cruise_mps = 12
 typical_alt_m = 0
 [corsair]
@@ -342,6 +345,7 @@ protocol_note = "Proprietary unless Navy-procured, in which case UMAA; MAVLink i
 authenticity = "UMAA over DDS plus VRX hydrodynamics"
 authenticity_blocker = "Proprietary unless Navy UMAA"
 params = { CRUISE_SPEED = 8, WP_SPEED = 8 }
+behavior = "boat"
 cruise_mps = 8
 typical_alt_m = 0
 [seahunter]
@@ -422,6 +426,7 @@ sidc = "SFUP-----------"
 protocol = "mavlink"
 protocol_note = "ArduSub speaks MAVLink natively"
 authenticity = "ArduSub SITL (already authentic) plus Gazebo for camera and sonar"
+behavior = "sub"
 cruise_mps = 1
 typical_alt_m = -5
 endurance_h = 3

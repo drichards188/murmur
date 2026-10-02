@@ -3,13 +3,14 @@
 Multi-domain swarm command console. Thirteen simulated vehicles covering every ArduPilot
 firmware run in SITL: 4 fixed-wing planes and 1 VTOL QuadPlane (Plane), 2 quadcopters (Copter),
 1 airship (Blimp), 3 motorboats (Rover), 1 ROV/sub (Sub) and 1 antenna tracker
-(AntennaTracker). A Python bridge speaks MAVLink to each vehicle over its own
+(AntennaTracker). A Rust bridge speaks MAVLink to each vehicle over its own
 UDP link and streams JSON over a WebSocket to a React + MapLibre console with MIL-STD-2525
 symbols (milsymbol).
 
 ```
- SITL x10 ──UDP 14560..14569──▶ bridge (FastAPI, pymavlink) ──/ws, /api──▶ web (Vite, React, MapLibre)
- arduplane / ardurover            :8765                                   :5173
+ SITL vehicles  ──UDP 14560+i──▶ murmur-bridge (Rust) ──/ws, /api──▶ web (Vite, React, MapLibre)
+ Rust stand-ins                   :8765                               :5173
+ tidewater serve :8770 ──conditions──▶ bridge, stand-ins;  tidewater drive ──▶ SITL
 ```
 
 ## Fleets and platforms
@@ -21,9 +22,11 @@ AUVs and Orca XLUUV-class. Names say "-class": they're simulated stand-ins tuned
 public figures, not models of the real systems.
 
 Platforms ArduPilot can fly run as real SITL vehicles. The rest (HALE/MALE/CCA aircraft,
-large ships, AUVs, drifters) run as **stand-ins** (`sim/standins.py`): lightweight kinematic
-models that speak MAVLink exactly like ArduPilot (modes, missions, acks), at ~0.1% CPU each
-versus ~16% for a SITL process. Stand-in boats, buoys and subs get real currents, drift and
+large ships, AUVs, drifters) run as **stand-ins** (`crates/murmur-standins`, one Rust process
+for all of them): lightweight kinematic models that speak MAVLink exactly like ArduPilot
+(modes, missions, acks), at well under 0.1% CPU each versus ~16% for a SITL process. Every
+platform has a stand-in behavior, so a fleet can force any unit to `sim = "standin"` (the
+load-test fleets do). Stand-in boats, buoys and subs get real currents, drift and
 seabed from tidewater. Stand-ins are badged STAND-IN in the console.
 
 Fleets (`sim/fleets/*.toml`) say which platforms, how many and where they start:
@@ -38,19 +41,21 @@ make goldengate GG_FLEET=full-spectrum AT=2026-06-14T10:00Z   # with real tide/c
 ## Run it
 
 ```bash
-make setup   # once: .venv, clone + build ArduPilot SITL in ~/ardupilot, npm install (~10 min)
+make setup   # once: .venv, Rust release build, ArduPilot SITL in ~/ardupilot, npm install (~10 min)
 make up      # swarm + bridge + web; open http://127.0.0.1:5173
 ```
 
 **Real conditions:** `make goldengate AT=2026-06-14T10:00Z` starts the swarm at the Golden
-Gate from the [tidewater](../tidewater) sibling repo's scenario, and runs its driver so each
-vehicle gets the real tide current and wind at its position for that date and time (run
-`tidewater fetch` there first).
+Gate from the [tidewater](../tidewater) sibling repo's scenario. `scripts/up.sh` starts
+`tidewater serve` on :8770 (or reuses one already there) for the bridge and the stand-ins, and
+`tidewater drive` so each SITL vehicle gets the real tide current and wind at its position for
+that date and time (run `tidewater fetch` there first). Both stop with the stack.
 
 Vehicles appear within a few seconds and get a GPS fix about 20 to 30 seconds after start.
 Logs go to `./logs`. To run the pieces separately use `make sim`, `make bridge` and `make web`
-in three terminals. `MURMUR_BRIDGE=rust make up` (or `make bridge-rs`) runs the Rust port of the
-bridge instead; same API, same console.
+in three terminals. A second stack can run beside the default one: `scripts/up.sh` takes its
+ports from `MURMUR_BASE_PORT`, `MURMUR_HTTP_PORT`, `MURMUR_WEB_PORT`, `MURMUR_TIDEWATER_PORT`
+and `MURMUR_SITL_INSTANCE_BASE` (see the script's header).
 
 ## Operating
 
@@ -109,9 +114,10 @@ After 3 s of silence a track is drawn with a dashed frame and a `LOST` tag.
 
 ## Layout
 
-- `sim/swarm.py`: launches SITL binaries directly (one UDP link per vehicle); `sim/params/` layers params on ArduPilot defaults.
-- `bridge/murmur_bridge/`: `vehicle.py` (UDP link, state, link stats), `tasks.py` (tasking and lifecycle), `server.py` (REST + WebSocket).
-- `crates/murmur-bridge/`: the Rust port of the bridge (same API); `scripts/parity.py` compares the two on a live fleet.
+- `sim/swarm.py`: launches SITL binaries directly (one UDP link per vehicle) and the stand-in engine; `sim/params/` layers params on ArduPilot defaults.
+- `crates/murmur-bridge/`: the bridge: UDP links and link stats, tasking and lifecycle, the decision layer (rules, policy, audit log, inbox), REST + WebSocket.
+- `crates/murmur-standins/`: the stand-in engine, one behavior per imitated ArduPilot autopilot.
+- `scripts/`: `up.sh` (the stack), `measure.py` (load numbers), `scale_fleet.py` (load-test fleets).
 - `web/src/`: `MapView.tsx`, `FleetPanel.tsx`, `TaskPanel.tsx`, `useBridge.ts`.
 
 REST is usable without the UI. Vehicles are addressed by `uid` (fleet-unique, from

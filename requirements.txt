@@ -1,0 +1,11 @@
+# Python side of Murmur: the fleet launcher (sim/swarm.py), test and measurement scripts.
+# The bridge and the stand-in engine are Rust (crates/); tidewater has its own venv.
+pymavlink>=2.4.40
+websockets>=12
+# ArduPilot SITL build deps (waf runs under this venv)
+empy==3.3.4
+future
+pexpect
+dronecan
+setuptools
+lxml
