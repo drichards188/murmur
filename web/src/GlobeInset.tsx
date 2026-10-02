@@ -36,6 +36,10 @@ export function GlobeInset({ center, area, links, norad, onClose }: Props) {
   const container = useRef<HTMLDivElement>(null)
   const map = useRef<maplibregl.Map | null>(null)
   const [ready, setReady] = useState(false)
+  // WebGL context lost (murmur-s8w): paused until the browser restores it
+  const [lost, setLost] = useState(false)
+  // bumped on restore: a fresh map on a fresh canvas (as the main map does, see MapView)
+  const [gen, setGen] = useState(0)
   const positions = usePoll<Positions>('/api/space/positions?limit=250', 5000)
   const [track, setTrack] = useState<Track | null>(null)
   // follow the theater map until the operator spins the globe themselves
@@ -63,6 +67,11 @@ export function GlobeInset({ center, area, links, norad, onClose }: Props) {
     m.on('pitchstart', grab)
     m.on('zoomstart', grab)
     if (import.meta.env.DEV) (window as unknown as { murmurGlobe: maplibregl.Map }).murmurGlobe = m
+    m.on('webglcontextlost', () => {
+      setReady(false)
+      setLost(true)
+    })
+    m.on('webglcontextrestored', () => setGen((n) => n + 1))
     m.on('style.load', () => {
       m.setProjection({ type: 'globe' })
       // the base style is busy at this scale: keep land, water and boundaries only
@@ -93,11 +102,17 @@ export function GlobeInset({ center, area, links, norad, onClose }: Props) {
     map.current = m
     return () => {
       map.current = null
-      m.remove()
+      setReady(false)
+      setLost(false)
+      try {
+        m.remove()
+      } catch (err) {
+        console.warn('[murmur] removing the globe after context loss', err)
+      }
     }
-    // the centre follows props below; creating the map once is intended
+    // the centre follows props below; the map is created once (again after a context loss)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [gen])
 
   useEffect(() => {
     if (follow && center && map.current) map.current.jumpTo({ center })
@@ -173,6 +188,7 @@ export function GlobeInset({ center, area, links, norad, onClose }: Props) {
   return (
     <div className={`globe${big ? ' big' : ''}`} aria-label="Globe inset">
       <div ref={container} className="globe-map" />
+      {lost && <div className="globe-lost">Globe paused: graphics context lost</div>}
       <div className="globe-head">
         <span>GLOBE</span>
         {positions.data?.time_shifted && (

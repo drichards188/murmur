@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { symbolSvg } from './symbols'
 import type { Vehicle } from './types'
 import { callsign, domainOf, isStale, staleMs } from './types'
@@ -121,8 +122,77 @@ const GROUPS: { title: string; match: (v: Vehicle) => boolean }[] = [
   { title: 'Subsurface', match: (v) => domainOf(v) === 'subsurface' },
 ]
 
+// Windowed list (murmur-ica): every row and group header has a fixed height (index.css keeps
+// them in step), so only the rows in view, plus a margin, are in the DOM, whatever the fleet size.
+export const ROW_H = 84
+export const HEAD_H = 32
+const OVERSCAN_PX = 400
+
+type Item = { kind: 'head'; title: string; count: number; top: number } | { kind: 'row'; v: Vehicle; top: number }
+
+function layout(vehicles: Vehicle[]): { items: Item[]; height: number } {
+  const items: Item[] = []
+  let top = 0
+  for (const { title, match } of GROUPS) {
+    const group = vehicles.filter(match)
+    if (!group.length) continue
+    items.push({ kind: 'head', title, count: group.length, top })
+    top += HEAD_H
+    for (const v of group) {
+      items.push({ kind: 'row', v, top })
+      top += ROW_H
+    }
+  }
+  return { items, height: top }
+}
+
+/** first item whose bottom is below y (items are sorted by top) */
+function firstBelow(items: Item[], y: number) {
+  let lo = 0
+  let hi = items.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    const it = items[mid]
+    if (it.top + (it.kind === 'head' ? HEAD_H : ROW_H) <= y) lo = mid + 1
+    else hi = mid
+  }
+  return lo
+}
+
 export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails, detailsUid, onSelect }: Props) {
   const ids = (pred: (v: Vehicle) => boolean) => vehicles.filter(pred).map((v) => v.uid)
+  const list = useRef<HTMLDivElement>(null)
+  const [scroll, setScroll] = useState({ top: 0, height: 800 })
+  const { items, height } = useMemo(() => layout(vehicles), [vehicles])
+  // the list element exists only once there are vehicles
+  const hasList = vehicles.length > 0
+
+  useEffect(() => {
+    const el = list.current
+    if (!el) return
+    let raf = 0
+    const read = () => {
+      raf = 0
+      setScroll((s) => (s.top === el.scrollTop && s.height === el.clientHeight ? s : { top: el.scrollTop, height: el.clientHeight }))
+    }
+    const onScroll = () => {
+      if (!raf) raf = requestAnimationFrame(read)
+    }
+    read()
+    el.addEventListener('scroll', onScroll, { passive: true })
+    const ro = new ResizeObserver(onScroll)
+    ro.observe(el)
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      ro.disconnect()
+      cancelAnimationFrame(raf)
+    }
+  }, [hasList])
+
+  const from = firstBelow(items, scroll.top - OVERSCAN_PX)
+  const shown: Item[] = []
+  for (let i = from; i < items.length && items[i].top < scroll.top + scroll.height + OVERSCAN_PX; i++) shown.push(items[i])
+
   return (
     <aside className="panel fleet">
       <header className="panel-head">
@@ -141,29 +211,27 @@ export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails
           arrives.
         </p>
       ) : (
-        <div className="vlist">
-          {GROUPS.map(({ title, match }) => {
-            const group = vehicles.filter(match)
-            if (!group.length) return null
-            return (
-              <div key={title}>
-                <h3>
-                  {title} <span>{group.length}</span>
+        <div className="vlist" ref={list}>
+          <div className="vlist-inner" style={{ height }}>
+            {shown.map((it) =>
+              it.kind === 'head' ? (
+                <h3 key={`h:${it.title}`} className="vlist-head" style={{ top: it.top }}>
+                  {it.title} <span>{it.count}</span>
                 </h3>
-                {group.map((v) => (
+              ) : (
+                <div key={it.v.uid} className="vlist-item" style={{ top: it.top }}>
                   <Row
-                    key={v.uid}
-                    v={v}
-                    selected={selected.has(v.uid)}
-                    open={detailsUid === v.uid}
+                    v={it.v}
+                    selected={selected.has(it.v.uid)}
+                    open={detailsUid === it.v.uid}
                     onToggle={onToggle}
                     onDeselect={onDeselect}
                     onDetails={onDetails}
                   />
-                ))}
-              </div>
-            )
-          })}
+                </div>
+              ),
+            )}
+          </div>
         </div>
       )}
     </aside>
