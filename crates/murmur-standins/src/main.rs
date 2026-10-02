@@ -40,6 +40,12 @@ async fn run(path: &str) -> Result<(), String> {
     let fleet = Fleet::load(path)?;
     let tidewater = conditions::Config::from_env();
     let host = fleet.bridge_host.clone();
+    let homes: Vec<(f64, f64)> = fleet
+        .vehicles
+        .iter()
+        .map(|v| (v.home[0], v.home[1]))
+        .collect();
+    let gnss = Arc::new(murmur_standins::gnss::Env::from_env(&homes));
 
     let mut vehicles = Vec::with_capacity(fleet.vehicles.len());
     let mut slots = Vec::new();
@@ -51,6 +57,7 @@ async fn run(path: &str) -> Result<(), String> {
             cfg.callsign, cfg.sysid, cfg.spec.name, cfg.port
         );
         let mut v = Vehicle::new(cfg, sock, None)?;
+        v.gnss = Some(gnss.clone());
         if tidewater.is_some() && v.behavior.wants_conditions() {
             let slot = Arc::new(Slot::default());
             slot.report(v.st.lat, v.st.lon, v.st.depth());

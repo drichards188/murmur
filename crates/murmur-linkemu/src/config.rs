@@ -263,6 +263,11 @@ pub struct EventCfg {
     pub cut: bool,
     #[serde(default)]
     pub extra_latency_ms: f64,
+    /// GNSS effect (jam or spoof) for the stand-in engine, which reads the same file
+    /// (crates/murmur-standins/src/gnss.rs). Not used here, except that an event with one
+    /// and a circle no longer defaults to loss 1: a GNSS jammer leaves the datalink alone
+    /// unless `loss` or `cut` says otherwise.
+    pub gnss: Option<toml::Value>,
 }
 
 fn default_dir() -> DirSel {
@@ -594,6 +599,18 @@ mod tests {
         let b = c.resolve("b").expect("resolve");
         assert_eq!(b.loss, Some(0.2));
         assert_eq!(b.latency_ms, Some(50.0));
+    }
+
+    /// The example GNSS scenario (shared with the stand-in engine) is a valid scenario file.
+    #[test]
+    fn gnss_example_scenario_loads() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut cfg = Config::load(&dir.join("sim/links.toml")).expect("links.toml");
+        let before = cfg.event.len();
+        cfg.merge_scenario(&dir.join("sim/events/golden-gate-gnss.toml"))
+            .expect("scenario");
+        assert_eq!(cfg.event.len(), before + 1);
+        assert!(cfg.event.iter().any(|e| e.gnss.is_some()));
     }
 
     #[test]

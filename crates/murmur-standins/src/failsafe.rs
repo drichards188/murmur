@@ -1,4 +1,4 @@
-//! Failsafes as each firmware runs them: GCS heartbeat loss and the battery.
+//! Failsafes as each firmware runs them: GCS heartbeat loss, the battery and the EKF.
 //!
 //! GCS: only heartbeats from MAV_GCS_SYSID count, and nothing triggers before the first one
 //! (GCS_MAVLINK::handle_heartbeat, sysid_mygcs_seen). Then, per firmware:
@@ -12,6 +12,25 @@
 //!
 //! Battery (AP_BattMonitor::check_failsafes): "Battery 1 is low|critical <V>V used <mAh> mAh",
 //! then the firmware's handle_battery_failsafe for BATT_FS_LOW_ACT / BATT_FS_CRT_ACT.
+//!
+//! EKF (navigation lost, e.g. GNSS jammed: nav.rs), each firmware's ekf_check.cpp at 10 Hz:
+//! 10 failing checks in a row (EKF_CHECK_ITERATIONS_MAX, 1 s) trigger, as many passing ones
+//! clear it. A check fails when the EKF has neither absolute nor relative horizontal
+//! position (the variance tests are not modelled), only while FS_EKF_THRESH > 0.
+//! - Copter (ArduCopter/ekf_check.cpp; runs disarmed too, acts only armed): "EKF variance:
+//!   position lost"; in a mode that requires a position, FS_EKF_ACTION 1 or 3 -> LAND, 2 ->
+//!   ALT_HOLD, "EKF Failsafe: changed to <mode> Mode"; else "EKF Failsafe". Cleared: "EKF
+//!   Failsafe Cleared" (it stays in LAND). gpsglitch_check: "GPS Glitch or Compass error" /
+//!   "Glitch cleared" while the EKF rejects GPS.
+//! - Rover (Rover/ekf_check.cpp; armed only, and const_pos_mode fails it too): "EKF
+//!   variance"; in a mode that requires a position, FS_EKF_ACTION 1 -> HOLD with "EKF
+//!   failsafe" (2: the text only); "EKF failsafe cleared".
+//! - Blimp (Blimp/ekf_check.cpp; armed only): "EKF variance"; LAND in a mode that requires
+//!   GPS (or always with FS_EKF_ACTION 3); no text on clearing.
+//! - Plane: ArduPlane/ekf_check.cpp only acts for a quadplane in a VTOL position mode
+//!   (QLAND / QHOVER); a fixed-wing flies on, dead reckoning on airspeed. The stand-in's
+//!   VTOL is treated as a fixed-wing here (gap: no Q-mode EKF failsafe). Sub and
+//!   AntennaTracker: none (a sub keeps relative position on its DVL).
 
 use mavlink::dialects::ardupilotmega::MavSeverity;
 
@@ -29,6 +48,49 @@ pub struct Failsafes {
     rover_since: Option<f64>,
     /// Sub: last "heartbeat lost" warning
     sub_warned: Option<f64>,
+    /// EKF check: consecutive failures (capped at EKF_CHECK_ITERATIONS), bad variance
+    /// declared, ever passed, the failsafe on, last warning, GPS glitch reported
+    ekf_count: u8,
+    ekf_bad: bool,
+    ekf_passed: bool,
+    pub ekf: bool,
+    ekf_warned: Option<f64>,
+    /// Copter: AP_Notify's failsafe_ekf (set when it triggered armed; gates the clear text)
+    ekf_notify: bool,
+    glitch: bool,
+}
+
+/// ArduPilot's EKF_CHECK_ITERATIONS_MAX (1 s at 10 Hz) and EKF_CHECK_WARNING_TIME.
+pub const EKF_CHECK_ITERATIONS: u8 = 10;
+pub const EKF_CHECK_WARNING_S: f64 = 30.0;
+
+/// Modes whose Mode::requires_position() (Copter, Rover) or requires_GPS() (Blimp) is true.
+fn requires_position(fw: Firmware, mode: &str) -> bool {
+    match fw {
+        Firmware::Copter => matches!(
+            mode,
+            "AUTO"
+                | "GUIDED"
+                | "LOITER"
+                | "RTL"
+                | "CIRCLE"
+                | "DRIFT"
+                | "POSHOLD"
+                | "BRAKE"
+                | "THROW"
+                | "AVOID_ADSB"
+                | "SMART_RTL"
+                | "FOLLOW"
+                | "ZIGZAG"
+                | "AUTO_RTL"
+        ),
+        Firmware::Rover => !matches!(
+            mode,
+            "MANUAL" | "ACRO" | "STEERING" | "HOLD" | "INITIALISING"
+        ),
+        Firmware::Blimp => matches!(mode, "VELOCITY" | "LOITER" | "RTL" | "AUTO"),
+        _ => false,
+    }
 }
 
 const WARN: MavSeverity = MavSeverity::MAV_SEVERITY_WARNING;
@@ -39,7 +101,8 @@ impl Vehicle {
     pub fn failsafe_active(&self) -> bool {
         let battery = self.battery.level > Level::Ok;
         match self.firmware {
-            Firmware::Rover => self.fs.gcs,
+            Firmware::Rover => self.fs.gcs || self.fs.ekf,
+            Firmware::Copter | Firmware::Blimp => self.fs.gcs || battery || self.fs.ekf,
             _ => self.fs.gcs || battery,
         }
     }
@@ -47,6 +110,135 @@ impl Vehicle {
     pub(crate) fn check_failsafes(&mut self, now: f64) {
         self.gcs_failsafe(now);
         self.battery_failsafe();
+        self.ekf_failsafe(now);
+    }
+
+    /// One 10 Hz EKF check (see the module doc).
+    fn ekf_failsafe(&mut self, now: f64) {
+        let fw = self.firmware;
+        if !matches!(fw, Firmware::Copter | Firmware::Rover | Firmware::Blimp) {
+            return;
+        }
+        if fw == Firmware::Copter {
+            let glitch = self.nav.ekf == crate::nav::Ekf::Glitch;
+            if glitch != self.fs.glitch {
+                self.fs.glitch = glitch;
+                let t = if glitch {
+                    "GPS Glitch or Compass error"
+                } else {
+                    "Glitch cleared"
+                };
+                self.text(MavSeverity::MAV_SEVERITY_CRITICAL, t);
+            }
+        }
+        let disabled = self.params.f("FS_EKF_THRESH", 0.8) <= 0.0;
+        if disabled || (fw != Firmware::Copter && !self.st.armed) {
+            self.fs.ekf_count = 0;
+            self.fs.ekf_bad = false;
+            self.ekf_failsafe_off();
+            return;
+        }
+        let passed = self.nav.ekf.rel();
+        self.fs.ekf_passed |= passed;
+        if !self.fs.ekf_passed {
+            return;
+        }
+        if passed {
+            if self.fs.ekf_count > 0 {
+                self.fs.ekf_count -= 1;
+                if self.fs.ekf_bad && self.fs.ekf_count == 0 {
+                    self.fs.ekf_bad = false;
+                    self.ekf_failsafe_off();
+                }
+            }
+            return;
+        }
+        if self.fs.ekf_bad {
+            return;
+        }
+        self.fs.ekf_count += 1;
+        if self.fs.ekf_count < EKF_CHECK_ITERATIONS {
+            return;
+        }
+        self.fs.ekf_bad = true;
+        if self
+            .fs
+            .ekf_warned
+            .is_none_or(|t| now - t > EKF_CHECK_WARNING_S)
+        {
+            self.fs.ekf_warned = Some(now);
+            let t = if fw == Firmware::Copter {
+                "EKF variance: position lost"
+            } else {
+                "EKF variance"
+            };
+            self.text(MavSeverity::MAV_SEVERITY_CRITICAL, t);
+        }
+        self.ekf_failsafe_on();
+    }
+
+    fn ekf_failsafe_on(&mut self) {
+        const CRIT: MavSeverity = MavSeverity::MAV_SEVERITY_CRITICAL;
+        let action = self.params.f("FS_EKF_ACTION", 1.0) as i64;
+        let needs = requires_position(self.firmware, self.st.mode);
+        match self.firmware {
+            Firmware::Copter => {
+                self.fs.ekf = true;
+                if !self.st.armed {
+                    return;
+                }
+                self.fs.ekf_notify = true;
+                if action == 0 || (!needs && action != 3) {
+                    self.text(CRIT, "EKF Failsafe");
+                    return;
+                }
+                if action != 2 || !self.try_mode("ALT_HOLD") {
+                    self.try_mode("LAND");
+                }
+                let t = format!("EKF Failsafe: changed to {} Mode", self.st.mode);
+                self.text(CRIT, &t);
+            }
+            Firmware::Rover => {
+                if self.fs.ekf {
+                    return;
+                }
+                self.fs.ekf = true;
+                if !needs || action == 0 {
+                    return;
+                }
+                if action != 2 {
+                    self.try_mode("HOLD");
+                }
+                self.text(CRIT, "EKF failsafe");
+            }
+            Firmware::Blimp => {
+                if self.fs.ekf {
+                    return;
+                }
+                self.fs.ekf = true;
+                if needs || action == 3 {
+                    self.try_mode("LAND");
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn ekf_failsafe_off(&mut self) {
+        if !self.fs.ekf {
+            return;
+        }
+        self.fs.ekf = false;
+        match self.firmware {
+            Firmware::Copter if self.fs.ekf_notify => {
+                self.fs.ekf_notify = false;
+                self.text(MavSeverity::MAV_SEVERITY_CRITICAL, "EKF Failsafe Cleared");
+            }
+            Firmware::Rover => {
+                self.text(MavSeverity::MAV_SEVERITY_CRITICAL, "EKF failsafe cleared");
+            }
+            _ => {}
+        }
     }
 
     fn gcs_lost(&self, now: f64, timeout: f64) -> bool {

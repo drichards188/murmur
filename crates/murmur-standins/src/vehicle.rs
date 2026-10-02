@@ -14,10 +14,11 @@ use crate::conditions::{Sample, Slot};
 use crate::config::VehicleConfig;
 use crate::failsafe::Failsafes;
 use crate::geo::{Gauss, M_PER_DEG, wrap180};
+use crate::gnss::{self, Reception};
 use crate::kinematics::{Out, State};
 use crate::link::{self, Inbound, Link};
 use crate::mission::{Mission, NavCfg};
-use crate::nav::Nav;
+use crate::nav::{Aid, Nav};
 use crate::params::Params;
 use crate::telemetry::Streams;
 use crate::{messages, telemetry, truth};
@@ -40,6 +41,10 @@ pub struct Vehicle {
     pub started: Instant,
     pub tick: u64,
     pub water: Option<Arc<Slot>>,
+    /// GNSS geometry, jammers and spoofers (None: open sky, `Sky::LEGACY`)
+    pub gnss: Option<Arc<gnss::Env>>,
+    /// what the GPS receiver sees this tick (GPS_RAW_INT)
+    pub rx: Reception,
     /// rad/s over the last tick (ATTITUDE)
     pub yaw_rate: f64,
     /// came down without power
@@ -94,7 +99,14 @@ impl Vehicle {
         let firmware = behavior.firmware();
         let mut params = Params::seed(firmware, &cfg.spec, cfg.sysid());
         params.extend(behavior.extra_params(&cfg.spec));
-        let nav = Nav::new(&mut rng, (lat, lon, alt));
+        let fix = behavior.gps(&st).0 as u8
+            >= mavlink::dialects::ardupilotmega::GpsFixType::GPS_FIX_TYPE_3D_FIX as u8;
+        let nav = Nav::new(&mut rng, (lat, lon, alt), Aid::for_firmware(firmware), fix);
+        let rx = if fix {
+            gnss::receive(gnss::Sky::LEGACY, true, 0.0, true)
+        } else {
+            Reception::none()
+        };
         let link = Link::new(sock, cfg.sysid());
         let mut mission = Mission::default();
         mission.cfg.firmware = firmware;
@@ -113,6 +125,8 @@ impl Vehicle {
             started: Instant::now(),
             tick: 0,
             water,
+            gnss: None,
+            rx,
             yaw_rate: 0.0,
             crashed: false,
             acoustic_next: 0.0,
@@ -246,6 +260,7 @@ impl Vehicle {
             self.st.armed = false;
         }
         let heading = self.st.heading;
+        let before = (self.st.lat, self.st.lon);
         let mut out = std::mem::take(&mut self.out);
         self.behavior.step(&mut Tick {
             spec: &self.cfg.spec,
@@ -273,7 +288,11 @@ impl Vehicle {
             self.streams.once.push(HOME_POSITION_DATA::ID);
         }
 
-        self.navigate(dt, now, sample.as_ref(), &mut out);
+        let moved = (
+            (self.st.lat - before.0) * M_PER_DEG,
+            (self.st.lon - before.1) * M_PER_DEG * self.st.lat.to_radians().cos(),
+        );
+        self.navigate(dt, now, sample.as_ref(), moved, &mut out);
         self.emit(&mut out);
         self.out = out;
         if let Some(w) = &self.water {
@@ -309,22 +328,40 @@ impl Vehicle {
         }
     }
 
-    /// Navigation error while there's no GPS; the estimate (self.st) carries it.
-    fn navigate(&mut self, dt: f64, now: f64, sample: Option<&Sample>, out: &mut Vec<Out>) {
-        let sky = self.behavior.gps(&self.st).0 as u8
+    /// The GPS receiver and the EKF: what the vehicle believes (self.st) against the truth.
+    fn navigate(
+        &mut self,
+        dt: f64,
+        now: f64,
+        sample: Option<&Sample>,
+        moved: (f64, f64),
+        out: &mut Vec<Out>,
+    ) {
+        let open_sky = self.behavior.gps(&self.st).0 as u8
             >= mavlink::dialects::ardupilotmega::GpsFixType::GPS_FIX_TYPE_3D_FIX as u8;
         let truth = self.truth();
-        let (dn, de) = self.nav.step(
+        let (sky, hit) = match &self.gnss {
+            Some(env) => (
+                env.sky_at(truth.0, truth.1, now)
+                    .unwrap_or(gnss::Sky::LEGACY),
+                env.interference(&self.cfg, now, truth),
+            ),
+            None => (gnss::Sky::LEGACY, gnss::Interference::default()),
+        };
+        self.rx = gnss::receive(sky, open_sky, hit.js, self.nav.fix);
+        let input = crate::nav::Input {
             dt,
             now,
-            sky,
-            (self.st.ve, self.st.vn),
-            self.st.depth(),
-            sample,
+            signal: self.rx.fix3d(),
+            spoof: hit.spoof,
+            vel: (self.st.ve, self.st.vn),
+            moved,
+            depth_m: self.st.depth(),
+            water: sample,
             truth,
-            &mut self.rng,
-            out,
-        );
+            airborne: self.airborne(),
+        };
+        let (dn, de) = self.nav.step(&input, &mut self.rng, out);
         if dn != 0.0 || de != 0.0 {
             self.st.lat += dn / M_PER_DEG;
             self.st.lon += de / (M_PER_DEG * self.st.lat.to_radians().cos());

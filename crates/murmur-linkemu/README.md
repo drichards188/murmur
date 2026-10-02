@@ -109,6 +109,12 @@ Selectors (all must match): `class`, `profile`, `platform`, `domain`, `uid`, `ui
 `loss` (extra, independent), `cut`, `extra_latency_ms`; `dir = both|up|down`. A circle with no
 `loss` jams (loss 1.0), counted as cause `jam`.
 
+GNSS effects share the file: a `gnss = { effect = "jam" | "spoof", ... }` table is read by
+the stand-in engine (`MURMUR_EVENTS`, `crates/murmur-standins/src/gnss.rs`) and ignored
+here, except that a circle event with a `gnss` table no longer defaults to loss 1.0 (a GNSS
+jammer leaves the datalink alone unless the event also gives `loss` or `cut`). Example:
+`sim/events/golden-gate-gnss.toml`.
+
 ```toml
 [[event]]                      # the 30%-loss study, on the scenario clock
 at_scenario = "2026-06-14T10:05:00Z"

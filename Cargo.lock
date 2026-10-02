@@ -1003,13 +1003,16 @@ dependencies = [
 name = "murmur-standins"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "jiff",
  "mavlink",
+ "murmur-space",
  "reqwest",
  "serde",
  "serde_json",
  "socket2",
  "tokio",
+ "toml",
 ]
 
 [[package]]

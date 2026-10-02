@@ -18,8 +18,9 @@ A stand-in may simplify how a vehicle moves. It may not simplify how the vehicle
    command acknowledgements, what it refuses (a drifting buoy rejects missions; a fixed-wing
    can't hover or disarm in flight).
 4. **Real message rates and sizes**, because the link emulator (Phase D) charges for bandwidth.
-5. **Real failure modes:** no GPS underwater with navigation drift, running aground, endurance
-   running out, link-loss failsafe behavior per platform.
+5. **Real failure modes:** no GPS underwater with navigation drift, GNSS jammed or spoofed,
+   running aground, endurance running out, link-loss and navigation-loss failsafe behavior
+   per platform.
 6. **Truth vs reported state.** The stand-in knows where it really is; it reports where its own
    navigation thinks it is (they diverge for a submerged AUV until it surfaces and gets a fix).
 7. **Kinematic limits from the catalog:** speed, climb, turn rate (minimum turn radius),
@@ -57,6 +58,26 @@ so a new behavior inherits it:
   errors, unseen current beyond DVL range; figures are estimates in the 0.1-0.5 % of
   distance class), EKF flags drop to relative position, and a fix after surfacing resets it.
   The truth goes only to `MURMUR_STANDINS_TRUTH` (JSON lines), never on the wire.
+- **GNSS** (`gnss.rs`, `nav.rs`, `failsafe.rs`): satellites in view and HDOP/VDOP from the
+  real GPS constellation (murmur-space's cached element sets, a 0.1 degree grid over the
+  fleet, 30 s steps, computed ahead of the scenario clock in the background; without the
+  cache, 14 satellites and HDOP 1.0 as before). GPS_RAW_INT carries the satellites used,
+  HDOP/VDOP x100 (as AP_GPS) and h_acc/v_acc = DOP x a UERE that grows as C/N0 drops
+  (estimates: 3 m plus code-tracking noise). Jammers and spoofers are `[[event]]`s with a
+  `gnss` table (the link emulator's event file; example `sim/events/golden-gate-gnss.toml`):
+  J/S from EIRP, free-space loss at L1, radio horizon and an upward antenna's pattern;
+  satellites drop below a tracking threshold (28 dB-Hz) and come back only above an
+  acquisition one (33 dB-Hz). EKF3 as NavEKF3_core runs it: flags still absolute for
+  posRetryTime (7 s, 10 s with velocity aiding), then relative only for a plane (airspeed)
+  or a sub (DVL), nothing for a copter, rover, boat or blimp, and "EKF3 IMU0 stopped
+  aiding" (constant position mode) at 15 s. EKF failsafes per ekf_check.cpp: Copter "EKF
+  variance: position lost", LAND; Rover "EKF variance", HOLD, "EKF failsafe"; Blimp LAND;
+  a fixed-wing flies on. Spoofing walks the reported position off the truth with every flag
+  good; when it ends the true fix fails the innovation gate (gps_glitching, Copter's "GPS
+  Glitch or Compass error") for 10 s, then the EKF resets. Not modelled: terrain, building
+  and bridge masking (a uniform elevation mask, `MURMUR_GNSS_MASK_DEG`, stands in), GNSS
+  other than GPS, altitude in the geometry, multipath, position noise under degraded
+  accuracy, the quadplane's Q-mode EKF failsafe, second EKF lanes.
 
 Murmur-chosen settings where ArduPilot ships a feature off (GCS failsafes, battery
 thresholds) are marked in `params.rs`.
