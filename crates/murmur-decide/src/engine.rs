@@ -10,10 +10,11 @@ use crate::hash::{GENESIS, sha256_hex};
 use crate::ids::{AgentId, IntentId, OperatorId, SessionId, Uid};
 use crate::intent::{
     Approval, IllegalTransition, Intent, IntentSpec, Proposal, ProposalError, Rationale, Source,
-    State, Task, Transition, next_state,
+    State, Task, TaskKind, Transition, next_state,
 };
-use crate::policy::{self, Policy, Tier};
+use crate::policy::{self, Policy, PolicyDecision, Tier};
 use crate::rules::{self, CheckResult, Outcome};
+use serde::Serialize;
 use crate::space::{
     ChosenCollect, CollectOrder, CoverOrder, ScenarioMap, SegmentId, SpaceOracle, SpaceOrder,
     from_utc, matched_option, query_for,
@@ -897,10 +898,30 @@ fn summarize_failures(results: &[CheckResult]) -> String {
         .join("; ")
 }
 
+/// What a dry run of a proposal would decide ([`AgentPort::preview`]): the checks, the
+/// policy decision and the state the intent would reach if proposed now. Nothing is
+/// created; the engine logs the preview as `agent.action intent.preview`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Preview {
+    pub kind: TaskKind,
+    pub uids: Vec<Uid>,
+    pub checks: Vec<CheckResult>,
+    pub passed: bool,
+    /// Absent when the checks fail (policy never runs on a rejected intent).
+    pub policy: Option<PolicyDecision>,
+    /// `rejected`, `auto_approved` or `pending_approval`: never `approved`, because an
+    /// agent's proposal in a human tier waits for a human.
+    pub would_reach: State,
+    /// Collect and cover: the space segment's answer the checks read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space: Option<Box<crate::space::SpaceAnswer>>,
+}
+
 /// What agent code is given (Phase F's MCP server holds one per agent). It can propose
-/// (with a mandatory [`Rationale`]), withdraw its own intents, and read. It has no method
-/// that approves, rejects on a human's behalf, or yields an operator session, and its
-/// engine reference is private.
+/// (with a mandatory [`Rationale`]), preview a proposal (the checks and policy without an
+/// intent), withdraw its own intents, note what it did, and read. It has no method that
+/// approves, rejects on a human's behalf, or yields an operator session, and its engine
+/// reference is private.
 ///
 /// ```compile_fail,E0599
 /// use murmur_decide::{AgentPort, IntentId};
@@ -935,6 +956,8 @@ impl AgentPort<'_> {
     }
 
     /// Nominate an action. Policy decides whether it runs on its own or waits for a human.
+    /// Logged as `agent.action intent.propose` (the kind, the vehicles and the rationale)
+    /// before the intent's own events.
     pub fn propose(
         &mut self,
         mut proposal: Proposal,
@@ -942,6 +965,16 @@ impl AgentPort<'_> {
         world: &WorldSnapshot,
         terrain: &dyn TerrainOracle,
     ) -> Result<&Intent, EngineError> {
+        proposal.validate()?;
+        self.engine.emit(EventBody::AgentAction {
+            agent: self.agent.clone(),
+            action: "intent.propose".into(),
+            detail: format!(
+                "{}: {}",
+                describe(&proposal.task, &proposal.uids),
+                rationale.as_str()
+            ),
+        })?;
         proposal.rationale = Some(rationale);
         let source = Source::Agent {
             id: self.agent.clone(),
@@ -950,6 +983,78 @@ impl AgentPort<'_> {
             .engine
             .submit_inner(source, None, proposal, world, terrain)?;
         self.engine.get(id)
+    }
+
+    /// A dry run: the checks and the policy decision a proposal would get right now,
+    /// without creating an intent (nothing to withdraw, nothing in the inbox). The same
+    /// rules and policy run on the same world view the real submission would read, so the
+    /// answer is what [`AgentPort::propose`] would do a moment later, as long as the world
+    /// holds still. Logged as `agent.action intent.preview`; the decision inputs are not
+    /// logged (there is no decision to replay).
+    pub fn preview(
+        &mut self,
+        proposal: Proposal,
+        world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
+    ) -> Result<Preview, EngineError> {
+        proposal.validate()?;
+        let spec = IntentSpec {
+            id: IntentId(0),
+            created_t: self.engine.now(),
+            source: Source::Agent {
+                id: self.agent.clone(),
+            },
+            task: proposal.task,
+            uids: proposal.uids,
+            constraints: proposal.constraints,
+            rationale: proposal.rationale,
+        };
+        let mut inputs = world.for_intent(&spec, terrain);
+        if spec.task.is_space() {
+            inputs.space = self.engine.ask_space(&spec.task, inputs.t)?;
+        }
+        let checks = rules::evaluate(&spec, &inputs, &self.engine.policy.rules);
+        let passed = rules::passed(&checks, spec.kind());
+        let policy = passed.then(|| policy::decide(&spec, &inputs, &self.engine.policy));
+        let would_reach = match &policy {
+            None => State::Rejected,
+            Some(d) if d.tier == Tier::Auto => State::AutoApproved,
+            Some(_) => State::PendingApproval,
+        };
+        let verdict = match &policy {
+            None => format!("checks fail ({})", summarize_failures(&checks)),
+            Some(d) => format!("checks pass; policy {}: {}", d.rule, d.reason),
+        };
+        self.engine.emit(EventBody::AgentAction {
+            agent: self.agent.clone(),
+            action: "intent.preview".into(),
+            detail: format!(
+                "{}: {verdict}; would reach {}",
+                describe(&spec.task, &spec.uids),
+                state_name(would_reach)
+            ),
+        })?;
+        Ok(Preview {
+            kind: spec.kind(),
+            uids: spec.uids,
+            checks,
+            passed,
+            policy,
+            would_reach,
+            space: inputs.space.answer().map(|a| Box::new(a.clone())),
+        })
+    }
+
+    /// Log something this agent did that isn't a proposal (connected, read the inbox).
+    /// Logged as `agent.action <action>`, like [`Engine::record_operator_action`] for
+    /// operators.
+    pub fn record_action(&mut self, action: &str, detail: &str) -> Result<(), EngineError> {
+        self.engine.emit(EventBody::AgentAction {
+            agent: self.agent.clone(),
+            action: action.into(),
+            detail: detail.into(),
+        })?;
+        Ok(())
     }
 
     /// Withdraw one of this agent's own intents before dispatch.
@@ -1017,7 +1122,26 @@ impl AgentPort<'_> {
         self.engine.intent(id)
     }
 
+    /// Every intent, any source, in id order (read-only).
+    pub fn intents(&self) -> impl Iterator<Item = &Intent> {
+        self.engine.intents()
+    }
+
     pub fn inbox(&self) -> Vec<&Intent> {
         self.engine.inbox()
     }
+}
+
+/// `orbit on [sky-1, sky-2]`, for agent action details.
+fn describe(task: &Task, uids: &[Uid]) -> String {
+    let uids: Vec<&str> = uids.iter().map(Uid::as_str).collect();
+    format!("{} on [{}]", task.kind().as_str(), uids.join(", "))
+}
+
+/// The state's name as logged (`pending_approval`).
+fn state_name(state: State) -> String {
+    serde_json::to_value(state)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_else(|| format!("{state:?}"))
 }

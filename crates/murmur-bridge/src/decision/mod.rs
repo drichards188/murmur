@@ -25,8 +25,8 @@
 //! real authentication: anyone who can reach the port can claim any listed id. The legacy
 //! `POST /api/tasks` (the console, which sends no header) acts as the first listed operator.
 //! Each operator gets one engine session, opened (and logged) on first use; nothing else
-//! calls `Engine::open_operator_session`. There is no agent path yet (Phase F's MCP server
-//! gets an `AgentPort`, never a session).
+//! calls `Engine::open_operator_session`. The agent path (Phase F's MCP server,
+//! `crate::mcp`) is [`agent`]: it gets an `AgentPort` per agent, never a session.
 //!
 //! **The loop** ([`Decision::run`], once a second): expire overdue approvals, write vehicle
 //! events (mode changes, failsafes, STATUSTEXT) to the audit log, void waiting intents the
@@ -40,6 +40,7 @@
 //! longer support the decision), or when another intent is dispatched to one of its vehicles
 //! (superseded: approving it later would silently undo the newer order).
 
+pub mod agent;
 mod alerts;
 mod civil;
 pub mod snapshot;
@@ -63,7 +64,7 @@ use serde_json::{Value, json};
 use tokio::sync::watch;
 
 use self::snapshot::{bridge_uid, duid};
-use self::terrain::Terrain;
+pub use self::terrain::Terrain;
 use crate::clock;
 use crate::tasks::{
     OpState, OrderError, TaskKind, TaskOrder, TaskParams, TaskRequest, Tasking, TaskingSnapshot,
@@ -263,6 +264,8 @@ pub struct Decision {
     audit_path: PathBuf,
     core: Mutex<Core>,
     updates: watch::Sender<Arc<String>>,
+    /// Vehicle events the loop logged, for agents (`agent::RecentEvents`).
+    recent: agent::RecentEvents,
 }
 
 /// Everything [`Decision::from_parts`] needs (tests pass a memory sink and a manual clock).
@@ -334,6 +337,7 @@ impl Decision {
                 space_runs: BTreeMap::new(),
             }),
             updates: watch::channel(Arc::new(String::new())).0,
+            recent: agent::RecentEvents::default(),
         });
         d.publish();
         Ok(d)
@@ -835,7 +839,7 @@ impl Decision {
     fn log_vehicle_events(&self, core: &mut Core) {
         for cell in self.world.vehicles() {
             let events: Vec<_> = cell.write(|v| v.events.drain(..).collect());
-            for e in events {
+            for e in &events {
                 if let Err(err) = core
                     .engine
                     .record_vehicle_event(&duid(cell.uid), e.kind, &e.text)
@@ -843,6 +847,7 @@ impl Decision {
                     eprintln!("decision: vehicle event: {err}");
                 }
             }
+            self.remember_events(&cell, &events);
         }
     }
 

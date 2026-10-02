@@ -18,7 +18,8 @@ meaningful. Decision and command, not weapons.
 - `make goldengate` runs the default fleet (one of each of 22 platform types) at the Golden
   Gate with tidewater conditions; `make up FLEET=<name>` for other fleets; `make down` stops.
   Console http://127.0.0.1:5173, bridge http://127.0.0.1:8765 (`/api/state`, `/api/tasks`,
-  `/api/platforms`, `/api/stats`). Vehicles ready in ~30-60 s.
+  `/api/platforms`, `/api/stats`; MCP server for agents at `/mcp`, header `X-Murmur-Agent`,
+  ids in `MURMUR_AGENTS`; `agents/README.md`). Vehicles ready in ~30-60 s.
 - Live path is Rust: `crates/murmur-bridge`, `crates/murmur-standins`. `scripts/up.sh` builds
   their release binaries (`make build` does too) and, with a scenario, starts `tidewater serve`
   (reused if one answers) and `tidewater drive`, and stops them with the stack.
