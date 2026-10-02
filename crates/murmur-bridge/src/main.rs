@@ -10,6 +10,9 @@
 //! MURMUR_OPERATORS (operator ids accepted in X-Murmur-Operator, comma-separated; default
 //! op-1), MURMUR_TIDEWATER_URL (tidewater serve, for the domain rule; unset: "not
 //! evaluated"), MURMUR_AT and MURMUR_RATE (scenario time for tidewater, as `make goldengate`).
+//! Agents (Phase F, the MCP server at /mcp): MURMUR_AGENTS (agent ids accepted in
+//! X-Murmur-Agent or as the MCP clientInfo.name, comma-separated; default
+//! agent-planner,agent-watch).
 
 mod api;
 mod clock;
@@ -18,6 +21,7 @@ mod decision;
 mod geo;
 mod link;
 mod mav;
+mod mcp;
 mod platforms;
 mod push;
 mod space;
@@ -57,14 +61,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let listener = TcpListener::bind(("127.0.0.1", http_port)).await?;
     println!("murmur-bridge on http://127.0.0.1:{http_port}");
-    axum::serve(
-        listener,
-        api::router(api::App {
-            world,
-            frames,
-            decision,
-        }),
-    )
-    .await?;
+    let api = api::router(api::App {
+        world: world.clone(),
+        frames,
+        decision: decision.clone(),
+    });
+    // the MCP server for agents: in-process AgentPorts, read-only reuse of the API above
+    let agents = mcp::Settings::from_env();
+    println!(
+        "mcp for agents at http://127.0.0.1:{http_port}/mcp (X-Murmur-Agent: {})",
+        agents
+            .agents
+            .iter()
+            .map(|a| a.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let router = api
+        .clone()
+        .nest_service("/mcp", mcp::service(agents, world, decision, api));
+    axum::serve(listener, router).await?;
     Ok(())
 }

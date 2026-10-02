@@ -15,10 +15,13 @@ tokio = { version = "1.53.1", features = ["full"] }
 toml = { version = "1.1.6", features = ["preserve_order"] }
 quick-xml = "0.42.0"
 socket2 = { version = "0.6.5", features = ["all"] }
+# The MCP server for AI agents (Phase F): the official Rust SDK, streamable HTTP at /mcp.
+rmcp = { version = "3.5", features = ["transport-streamable-http-server"] }
+schemars = "1"
+tower = { version = "0.5", features = ["util"] }
 
 [lints]
 workspace = true
 
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["test-util", "macros", "rt-multi-thread"] }
-tower = { version = "0.5", features = ["util"] }

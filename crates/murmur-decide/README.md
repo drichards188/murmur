@@ -167,8 +167,10 @@ a human tier can let it stand as the approval; an agent's proposal can't be one.
   `Engine::open_operator_session` creates (and logs). Neither type has public fields,
   `Clone`, `Default`, `Deserialize`, or a conversion from an agent id, so no JSON (an MCP tool
   call, say) can become one.
-- Agent code gets an `AgentPort`: propose (a non-empty `Rationale` is a required argument),
-  withdraw its own intents, read. No approve method; its engine reference is private.
+- Agent code gets an `AgentPort`: propose (a non-empty `Rationale` is a required argument;
+  logged first as `agent.action intent.propose`), preview (the checks and policy as a dry
+  run, no intent created, logged as `agent.action intent.preview`), withdraw its own
+  intents, record an action, read. No approve method; its engine reference is private.
 - An intent's source is set by the path it came in on, never by the request body.
 - `compile_fail` doctests (in `authority.rs` and `engine.rs`) show that forging, cloning or
   deserializing an authority, calling approve through an `AgentPort`, reaching its engine, and
