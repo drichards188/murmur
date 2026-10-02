@@ -166,7 +166,9 @@ Built (first cut; see the module docs named here for the figures and the simplif
   10 s, dropped after 180 s. Hostile is never inferred: an operator declares it
   (`POST /api/tracks/{id}/declare`, logged as `operator.action`). Exposed on
   `GET /api/tracks`, the WebSocket `tracks` message, `WorldSnapshot.tracks` (additive; old
-  logs replay unchanged) and the CoT export with the estimated affiliation as the TAK type.
+  logs replay unchanged), the CoT export with the estimated affiliation as the TAK type,
+  and to agents as the read-only MCP tool `get_tracks` and resource `murmur://tracks`
+  (each track with `as_of`, `age_s`, `stale` and its uncertainty carried to now).
 - **Console**: tracks as 2525 symbols with the estimated affiliation (hostile red, suspect
   red dashed, unknown yellow, neutral green, assumed friend blue) in both views, an
   uncertainty ring that grows and a symbol that fades with age, a Tracks drawer ranked
