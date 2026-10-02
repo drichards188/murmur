@@ -15,8 +15,50 @@ use crate::vehicle::VehicleCell;
 use crate::world::World;
 
 pub const LOSS_WINDOW_S: i64 = 10;
-/// Pings that never came back are forgotten after this long.
+/// TIMESYNC pings that never came back are forgotten after this long on a fast link.
 const TIMESYNC_FORGET_S: f64 = 10.0;
+
+/// How often the bridge pings a link with TIMESYNC and how long it waits for the answer.
+/// A link class with a low rate or long queues (an acoustic modem: 300 bps, a 256-byte
+/// queue that alone holds ~7 s of airtime, sound at 1500 m/s) answers after more than the
+/// 10 s a radio link gets, and a ping every second would fill its downlink by itself, so slow
+/// classes are pinged less often and waited for longer (murmur-0nv.3).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TimesyncPolicy {
+    /// Seconds between pings (housekeeping ticks).
+    pub every_s: u64,
+    /// Seconds a ping is remembered for its answer.
+    pub forget_s: f64,
+}
+
+impl Default for TimesyncPolicy {
+    fn default() -> TimesyncPolicy {
+        TimesyncPolicy {
+            every_s: 1,
+            forget_s: TIMESYNC_FORGET_S,
+        }
+    }
+}
+
+impl TimesyncPolicy {
+    /// By the platform's link class from the fleet manifest (`link`).
+    pub fn for_class(class: Option<&str>) -> TimesyncPolicy {
+        match class {
+            // ~37 bytes/s of capacity: one ping (~30 bytes) every 30 s; queueing and
+            // propagation can take tens of seconds, so wait up to five minutes.
+            Some("acoustic") => TimesyncPolicy {
+                every_s: 30,
+                forget_s: 300.0,
+            },
+            // GEO and Iridium: ~0.6-2 s round trips plus queueing on the narrow classes.
+            Some("satcom") => TimesyncPolicy {
+                every_s: 2,
+                forget_s: 60.0,
+            },
+            _ => TimesyncPolicy::default(),
+        }
+    }
+}
 /// A streaming link hears at least the 1 Hz HEARTBEAT.
 pub const STREAMING_INTERVAL_MS: u32 = 1000;
 /// A link that has gone over to HIGH_LATENCY2 (an AUV on an acoustic modem under water)
@@ -48,6 +90,10 @@ pub struct LinkSnapshot {
     /// How often this link should be heard from: 1 s streaming, 20 s on HIGH_LATENCY2.
     /// Silence longer than `STALE_INTERVALS` of these is a lost link.
     pub expected_interval_ms: u32,
+    /// The link emulator's state for this link (absent without an emulator): whether it is
+    /// degrading the link now and why. Details at `GET /api/links/{uid}`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub emu: Option<crate::emu::EmuBrief>,
 }
 
 impl LinkSnapshot {
@@ -79,6 +125,10 @@ pub struct LinkStats {
     timesync_sent: HashMap<i64, f64>,
     /// The vehicle reports by HIGH_LATENCY2 instead of streaming (low-rate link).
     pub high_latency: bool,
+    /// Ping rate and answer timeout for this link's class.
+    pub timesync: TimesyncPolicy,
+    /// The link emulator's brief view of this link, when one runs (set by `crate::emu`).
+    pub emu: Option<crate::emu::EmuBrief>,
 }
 
 impl LinkStats {
@@ -146,6 +196,7 @@ impl LinkStats {
                 .then(|| round_int(100.0 * f64::from(expected - received) / f64::from(expected))),
             rtt_ms: self.rtt_ms.map(round_int),
             expected_interval_ms: self.expected_interval_ms(),
+            emu: self.emu.clone(),
         }
     }
 
@@ -160,8 +211,8 @@ impl LinkStats {
     /// Remember a TIMESYNC ping by its ts1.
     pub fn ping(&mut self, ts1: i64, now: f64) {
         self.timesync_sent.insert(ts1, now);
-        self.timesync_sent
-            .retain(|_, sent| *sent >= now - TIMESYNC_FORGET_S);
+        let forget = self.timesync.forget_s;
+        self.timesync_sent.retain(|_, sent| *sent >= now - forget);
     }
 
     /// A TIMESYNC reply (tc1 != 0) for one of our pings.
@@ -365,5 +416,27 @@ mod tests {
         s.ping(44, 13.0); // 43 is forgotten
         s.pong(43, 13.1);
         assert_eq!(s.snapshot(13.1).rtt_ms, Some(25));
+    }
+
+    #[test]
+    fn acoustic_rtt_survives_long_queueing() {
+        // An acoustic link answers after 40 s (queue plus sound): a radio link's 10 s window
+        // would have forgotten the ping; the acoustic policy waits long enough.
+        let mut radio = LinkStats::default();
+        radio.ping(1, 0.0);
+        radio.ping(2, 11.0); // housekeeping keeps pinging; 1 is forgotten
+        radio.pong(1, 40.0);
+        assert_eq!(radio.rtt_ms, None);
+        let mut s = LinkStats {
+            timesync: TimesyncPolicy::for_class(Some("acoustic")),
+            ..LinkStats::default()
+        };
+        assert_eq!(s.timesync.every_s, 30);
+        s.ping(1, 0.0);
+        s.ping(2, 30.0);
+        s.pong(1, 40.0);
+        assert_eq!(s.snapshot(40.0).rtt_ms, Some(40_000));
+        assert_eq!(TimesyncPolicy::for_class(Some("los")), TimesyncPolicy::default());
+        assert_eq!(TimesyncPolicy::for_class(None).forget_s, 10.0);
     }
 }
