@@ -99,11 +99,13 @@ impl Schedule {
                 start_ns: ns(start_s),
                 end_ns: end_s.map_or(u64::MAX, ns),
                 dir: e.dir,
-                loss: e.loss.unwrap_or(if e.circle.is_some() && !e.cut {
-                    1.0
-                } else {
-                    0.0
-                }),
+                loss: e
+                    .loss
+                    .unwrap_or(if e.circle.is_some() && !e.cut && e.gnss.is_none() {
+                        1.0
+                    } else {
+                        0.0
+                    }),
                 cut: e.cut,
                 extra_latency_ns: (e.extra_latency_ms.max(0.0) * 1e6) as u64,
                 circle: e.circle.as_ref().map(|c| {
@@ -606,6 +608,26 @@ mod tests {
         assert_eq!(lost_fraction(&mut unknown, Dir::Up, NS, 100), 0.0);
         // The jammer is a cause of its own in the counters.
         assert_eq!(inside.decide(Dir::Up, NS, 50, 0), Verdict::Drop(Cause::Jam));
+    }
+
+    /// A GNSS-only jammer event (the stand-in engine's `gnss` table) leaves the datalink
+    /// alone; with `loss` it jams both.
+    #[test]
+    fn gnss_jammer_event_spares_the_datalink_unless_told() {
+        let gnss_only = r#"
+            [class.los]
+            [[event]]
+            at_s = 0
+            circle = { lat = 37.8, lon = -122.4, radius_m = 1000 }
+            gnss = { effect = "jam", power_w = 1.0 }
+        "#;
+        let mut v = build(gnss_only, meta(1, "los", "air"));
+        v.observe_up(&position_frame(0, 37.801, -122.4, 10.0));
+        assert_eq!(lost_fraction(&mut v, Dir::Up, NS, 100), 0.0);
+        let both = gnss_only.replace("gnss =", "loss = 1.0\n            gnss =");
+        let mut v = build(&both, meta(1, "los", "air"));
+        v.observe_up(&position_frame(0, 37.801, -122.4, 10.0));
+        assert_eq!(lost_fraction(&mut v, Dir::Up, NS, 100), 1.0);
     }
 
     #[test]

@@ -330,7 +330,7 @@ fn sensors(v: &Vehicle) -> (MavSysStatusSensor, MavSysStatusSensor) {
         | S::MAV_SYS_STATUS_SENSOR_BATTERY
         | S::MAV_SYS_STATUS_PREARM_CHECK;
     let mut healthy = present;
-    if !v.nav.gps {
+    if !v.nav.fix {
         healthy.remove(S::MAV_SYS_STATUS_SENSOR_GPS);
     }
     if v.battery.level > crate::battery::Level::Ok {
@@ -389,17 +389,28 @@ fn battery_status(v: &Vehicle) -> MavMessage {
     })
 }
 
+/// AP_GPS::send_mavlink_gps_raw: fix, position, HDOP and VDOP (x100, UINT16_MAX unknown),
+/// satellites used, and the receiver's 1-sigma accuracies in the MAVLink 2 extension fields.
+/// The receiver model is gnss.rs.
 fn gps_raw_int(v: &Vehicle) -> MavMessage {
     let st = &v.st;
-    let (fix_type, satellites_visible) = if v.nav.gps {
-        v.behavior.gps(st)
-    } else if v.behavior.gps(st).0 as u8 >= GpsFixType::GPS_FIX_TYPE_3D_FIX as u8 {
-        // surfaced, still acquiring
-        (GpsFixType::GPS_FIX_TYPE_NO_FIX, 4)
+    let rx = &v.rx;
+    let fix_type = if !v.nav.fix && rx.fix3d() {
+        // signals back, still acquiring
+        GpsFixType::GPS_FIX_TYPE_NO_FIX
     } else {
-        v.behavior.gps(st)
+        rx.fix
     };
-    let fix = fix_type as u8 >= GpsFixType::GPS_FIX_TYPE_3D_FIX as u8;
+    let fix = fix_type as u8 >= GpsFixType::GPS_FIX_TYPE_2D_FIX as u8;
+    let dop = |d: Option<f64>| {
+        d.filter(|_| fix).map_or(u16::MAX, |d| {
+            (d * 100.0).round().min(f64::from(u16::MAX - 1)) as u16
+        })
+    };
+    let mm = |m: Option<f64>| {
+        m.filter(|_| fix)
+            .map_or(0, |m| (m * 1000.0).round().min(f64::from(u32::MAX)) as u32)
+    };
     // without a fix the GPS driver keeps its last position
     let (lat, lon, alt) = v.nav.last_fix;
     MavMessage::GPS_RAW_INT(GPS_RAW_INT_DATA {
@@ -408,30 +419,43 @@ fn gps_raw_int(v: &Vehicle) -> MavMessage {
         lat: (lat * 1e7) as i32,
         lon: (lon * 1e7) as i32,
         alt: (alt * 1000.0) as i32,
-        eph: if fix { 100 } else { u16::MAX },
-        epv: if fix { 100 } else { u16::MAX },
+        eph: dop(rx.hdop),
+        epv: dop(rx.vdop),
         vel: if fix {
             (st.ve.hypot(st.vn) * 100.0) as u16
         } else {
             0
         },
         cog: if fix { (st.heading * 100.0) as u16 } else { 0 },
-        satellites_visible,
+        satellites_visible: rx.tracked,
+        h_acc: mm(rx.h_acc_m),
+        v_acc: mm(rx.v_acc_m),
         ..Default::default()
     })
 }
 
-/// EKF3's flags (NavEKF3_core::updateFilterStatus): with GPS, absolute position; dead
-/// reckoning on inertial + DVL, relative position only.
+/// EKF3's flags (NavEKF3_core::updateFilterStatus, as nav.rs models it): absolute position
+/// while fusing GPS and for posRetryTime after losing it, then relative only on velocity
+/// aiding (DVL, airspeed), or nothing and finally constant position mode without it.
 pub fn ekf_flags(v: &Vehicle) -> EkfStatusFlags {
+    use crate::nav::Ekf;
+    let ekf = v.nav.ekf;
     let mut f = EkfStatusFlags::EKF_ATTITUDE
-        | EkfStatusFlags::EKF_VELOCITY_HORIZ
         | EkfStatusFlags::EKF_VELOCITY_VERT
-        | EkfStatusFlags::EKF_POS_HORIZ_REL
-        | EkfStatusFlags::EKF_POS_VERT_ABS
-        | EkfStatusFlags::EKF_PRED_POS_HORIZ_REL;
-    if v.nav.gps {
+        | EkfStatusFlags::EKF_POS_VERT_ABS;
+    if ekf.rel() {
+        f |= EkfStatusFlags::EKF_VELOCITY_HORIZ
+            | EkfStatusFlags::EKF_POS_HORIZ_REL
+            | EkfStatusFlags::EKF_PRED_POS_HORIZ_REL;
+    }
+    if ekf.abs() {
         f |= EkfStatusFlags::EKF_POS_HORIZ_ABS | EkfStatusFlags::EKF_PRED_POS_HORIZ_ABS;
+    }
+    if ekf == Ekf::Glitch {
+        f |= EkfStatusFlags::EKF_GPS_GLITCHING;
+    }
+    if ekf == Ekf::ConstPos {
+        f |= EkfStatusFlags::EKF_CONST_POS_MODE;
     }
     f
 }
@@ -439,9 +463,14 @@ pub fn ekf_flags(v: &Vehicle) -> EkfStatusFlags {
 fn ekf_status_report(v: &Vehicle) -> MavMessage {
     MavMessage::EKF_STATUS_REPORT(EKF_STATUS_REPORT_DATA {
         flags: ekf_flags(v),
+        // normalised innovation test ratios: nothing to test while dead reckoning; above 1
+        // while GPS is being rejected
         velocity_variance: 0.1,
-        // no position measurement to test against while dead reckoning
-        pos_horiz_variance: if v.nav.gps { 0.1 } else { 0.0 },
+        pos_horiz_variance: match v.nav.ekf {
+            crate::nav::Ekf::Gps => 0.1,
+            crate::nav::Ekf::Glitch => 1.5,
+            _ => 0.0,
+        },
         pos_vert_variance: 0.1,
         compass_variance: 0.1,
         terrain_alt_variance: 0.1,
@@ -493,7 +522,7 @@ fn autopilot_version(v: &Vehicle) -> MavMessage {
 pub fn high_latency2(v: &Vehicle) -> MavMessage {
     let st = &v.st;
     let mut failure = HlFailureFlag::empty();
-    if !v.nav.gps {
+    if !v.nav.fix {
         failure |= HlFailureFlag::HL_FAILURE_FLAG_GPS;
     }
     if v.battery.level > crate::battery::Level::Ok {

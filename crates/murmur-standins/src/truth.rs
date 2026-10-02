@@ -1,9 +1,12 @@
 //! The truth log: where vehicles really are versus what they report, for the evaluation.
 //! Never on the MAVLink wire. Set MURMUR_STANDINS_TRUTH to a file path to write JSON lines
-//! every `PERIOD_S` for each vehicle that has navigated without GPS:
+//! every `PERIOD_S` for each vehicle that has navigated without GPS or been spoofed:
 //!
 //! {"t": unix_s, "uid", "sysid", "callsign", "truth": [lat, lon, alt],
-//!  "reported": [lat, lon, alt], "error_m", "dead_reckoning_s", "gps"}
+//!  "reported": [lat, lon, alt], "error_m", "dead_reckoning_s", "gps",
+//!  "ekf": gps | glitch | coasting | dead_reckoning | no_position | const_pos,
+//!  "fix": receiver 3D fix, "sats": tracked, "js_db": jammer-to-signal or null,
+//!  "spoof_m": the spoofer's offset in the receiver's position}
 //!
 //! The engine's stats line also gives the worst current error.
 
@@ -49,6 +52,11 @@ pub fn record(v: &Vehicle) {
         "error_m": (err * 100.0).round() / 100.0,
         "dead_reckoning_s": v.nav.dead_reckoning_s.round(),
         "gps": v.nav.gps,
+        "ekf": v.nav.ekf.name(),
+        "fix": v.nav.fix,
+        "sats": v.rx.tracked,
+        "js_db": v.rx.js_db.map(|x| (x * 10.0).round() / 10.0),
+        "spoof_m": (v.nav.spoof_m() * 10.0).round() / 10.0,
     });
     if let Ok(mut w) = log.lock() {
         let _ = writeln!(w, "{line}");

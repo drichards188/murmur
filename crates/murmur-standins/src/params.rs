@@ -187,6 +187,9 @@ impl Params {
                 p.put("FS_OPTIONS", I32, 0.0, false);
                 p.put("BATT_FS_LOW_ACT", I8, 1.0, false); // RTL
                 p.put("BATT_FS_CRT_ACT", I8, 2.0, false); // Hold
+                // EKF failsafe (Rover/Parameters.cpp): Hold
+                p.put("FS_EKF_ACTION", I8, 1.0, false);
+                p.put("FS_EKF_THRESH", F32, 0.8, false);
             }
             Firmware::Sub => {
                 // ArduSub 4.8's waypoint controller (AC_WPNav) works in metres
@@ -210,11 +213,17 @@ impl Params {
                 p.put("AUTO_OPTIONS", I32, 3.0, false); // copter.parm
                 p.put("BATT_FS_LOW_ACT", I8, 2.0, false); // RTL
                 p.put("BATT_FS_CRT_ACT", I8, 1.0, false); // Land
+                // EKF failsafe (ArduCopter/config.h FS_EKF_ACTION_DEFAULT): Land
+                p.put("FS_EKF_ACTION", I8, 1.0, false);
+                p.put("FS_EKF_THRESH", F32, 0.8, false);
             }
             Firmware::Blimp => {
                 p.put("FS_GCS_ENABLE", I8, 1.0, false);
                 p.put("BATT_FS_LOW_ACT", I8, 1.0, false); // Land
                 p.put("BATT_FS_CRT_ACT", I8, 1.0, false);
+                // EKF failsafe (Blimp/config.h): Land
+                p.put("FS_EKF_ACTION", I8, 1.0, false);
+                p.put("FS_EKF_THRESH", F32, 0.8, false);
             }
             Firmware::Tracker => {
                 p.put("SYSID_TARGET", I16, 0.0, false);

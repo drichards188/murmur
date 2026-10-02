@@ -8,8 +8,9 @@
 //!
 //! Layout: `link` (UDP + MAVLink framing), `commands` (inbound protocol), `mission` (stores,
 //! upload/download, AUTO walker), `params` (parameter store), `telemetry` (what is sent
-//! when, link-aware), `failsafe` (GCS and battery), `battery`, `nav` (navigation error:
-//! truth vs reported), `truth` (the truth log), `kinematics` (shared physics steps),
+//! when, link-aware), `failsafe` (GCS, battery and EKF), `battery`, `gnss` (the GPS
+//! receiver: constellation geometry, jamming, spoofing), `nav` (the EKF and the navigation
+//! error: truth vs reported), `truth` (the truth log), `kinematics` (shared physics steps),
 //! `conditions` (tidewater client), `behavior/*` (one file per imitated autopilot).
 
 pub mod battery;
@@ -19,6 +20,7 @@ pub mod conditions;
 pub mod config;
 pub mod failsafe;
 pub mod geo;
+pub mod gnss;
 pub mod kinematics;
 pub mod link;
 pub mod messages;

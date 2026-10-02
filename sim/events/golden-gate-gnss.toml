@@ -1,0 +1,57 @@
+# GNSS jamming near the Golden Gate: an example scenario event file.
+#
+# One file drives both emulators: the link emulator reads it with `--scenario` (comms effects:
+# loss, cut, extra_latency_ms; crates/murmur-linkemu/README.md), the stand-in engine with
+# MURMUR_EVENTS=<this file> (the `gnss` table; crates/murmur-standins/src/gnss.rs). An event
+# with a `gnss` table and a circle leaves the datalink alone unless it also gives `loss` or
+# `cut` (without `gnss`, a circle means loss 1 to the link emulator, as before).
+#
+#   MURMUR_EVENTS=sim/events/golden-gate-gnss.toml make goldengate GG_FLEET=standins-only
+#
+# Times are on the scenario clock (MURMUR_AT, which make goldengate sets to 10:00Z), so the
+# jammer comes on five minutes in. Stand-ins only: SITL vehicles keep their simulated GPS.
+#
+# The `gnss` table:
+#   effect = "jam" | "spoof"
+#   jam:   power_w    EIRP in W. Omitted: no fix anywhere in the circle.
+#          height_m   antenna height above MSL (default 10)
+#          The circle is the footprint's outer limit; inside it the effect follows J/S from
+#          free-space loss at L1, the radio horizon and the vehicle's antenna pattern.
+#   spoof: walk_mps, bearing_deg, max_offset_m: inside the circle the receiver is captured
+#          and its position walks off the truth (default 1 m/s towards 090, no cap). Flags
+#          stay good: only a cross-check catches it.
+# Selectors as the link emulator's: class (los, mesh, satcom, acoustic, tether), uid, uids;
+# GNSS events can't use profile, platform or domain (the stand-in engine doesn't see them).
+
+# A 1.5 W (EIRP) broadband L1 jammer on Hawk Hill, Marin Headlands (ground about 280 m),
+# for 45 minutes. Figures from gnss.rs (estimates: 45 dB-Hz open-sky C/N0, tracking lost
+# below 28 dB-Hz, acquisition needs 33): no fix within about 22 km for boats and vehicles at
+# the surface, which then can't reacquire until about 40 km out (the circle's edge). An
+# aircraft at 7,600 m loses its fix between about 3 and 12 km from the jammer (its
+# upward-looking antenna shields it from straight below) and reacquires beyond about 32 km;
+# at 11,000 m and above it keeps a degraded fix. The datalink is not affected (no loss).
+[[event]]
+name = "GNSS jammer, Hawk Hill"
+at_scenario = "2026-06-14T10:05:00Z"
+duration_s = 2700
+circle = { lat = 37.8277, lon = -122.4995, radius_m = 40000 }
+gnss = { effect = "jam", power_w = 1.5, height_m = 280 }
+
+# Uncomment for a broadband jammer that also degrades the datalink within 5 km: the same
+# event with a comms effect for the link emulator (loss 0.5 is a guess, not derived).
+# [[event]]
+# name = "broadband jammer, Hawk Hill"
+# at_scenario = "2026-06-14T10:05:00Z"
+# duration_s = 2700
+# circle = { lat = 37.8277, lon = -122.4995, radius_m = 5000 }
+# loss = 0.5
+# gnss = { effect = "jam", power_w = 1.5, height_m = 280 }
+
+# A spoofer over the main shipping channel: a vessel inside 3 km is captured and its reported
+# position walks 0.5 m/s north-east, up to 800 m, with every flag still saying good.
+# [[event]]
+# name = "spoofer, main channel"
+# at_scenario = "2026-06-14T10:20:00Z"
+# duration_s = 1200
+# circle = { lat = 37.7900, lon = -122.5600, radius_m = 3000 }
+# gnss = { effect = "spoof", walk_mps = 0.5, bearing_deg = 45, max_offset_m = 800 }
