@@ -115,12 +115,7 @@ impl Vehicle {
             dt,
         });
         for o in out.drain(..) {
-            let msg = match o {
-                Out::Text(sev, s) => messages::statustext(sev, &s),
-                Out::MissionCurrent(seq) => messages::mission_current(seq),
-                Out::ItemReached(seq) => messages::mission_item_reached(seq),
-            };
-            self.link.send(&msg);
+            self.link.send(&messages::out(o));
         }
         self.out = out;
         if let Some(w) = &self.water {

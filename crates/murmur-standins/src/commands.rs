@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use mavlink::dialects::ardupilotmega::*;
 
+use crate::behavior::Ctx;
 use crate::messages;
 use crate::mission::Upload;
 use crate::telemetry::request_item;
@@ -35,8 +36,12 @@ pub fn handle(v: &mut Vehicle, msg: &MavMessage) {
             }
         }
         MavMessage::PARAM_REQUEST_READ(m) => {
-            // no parameter store: every read is 0 (e.g. Q_ENABLE: stand-in planes are not QuadPlanes)
-            let reply = messages::param_value(m.param_id, 0.0, MavParamType::MAV_PARAM_TYPE_REAL32);
+            // no parameter store: every read is 0 (e.g. Q_ENABLE: stand-in planes are not
+            // QuadPlanes) unless the behavior reports the parameter
+            let name = m.param_id.to_str().unwrap_or("");
+            let value = v.behavior.param(name).unwrap_or(0.0);
+            let reply =
+                messages::param_value(m.param_id, value, MavParamType::MAV_PARAM_TYPE_REAL32);
             v.link.send(&reply);
         }
         MavMessage::PARAM_SET(m) => {
@@ -74,6 +79,22 @@ fn ack(v: &mut Vehicle, command: MavCmd, result: MavResult) {
 
 fn command_long(v: &mut Vehicle, m: &COMMAND_LONG_DATA) {
     let c = m.command;
+    let mut out = Vec::new();
+    let own = v.behavior.command(
+        &mut Ctx {
+            spec: &v.cfg.spec,
+            st: &mut v.st,
+            mission: &mut v.mission,
+            out: &mut out,
+        },
+        m,
+    );
+    for o in out {
+        v.link.send(&messages::out(o));
+    }
+    if let Some(result) = own {
+        return ack(v, c, result);
+    }
     match c {
         MavCmd::MAV_CMD_COMPONENT_ARM_DISARM => {
             if m.param1 == 0.0 && v.airborne() {

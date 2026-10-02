@@ -2,6 +2,8 @@
 
 use mavlink::dialects::ardupilotmega::*;
 
+use crate::kinematics::Out;
+
 pub const GCS_SYSID: u8 = 255;
 pub const GCS_COMPID: u8 = 190;
 
@@ -68,4 +70,13 @@ pub fn param_value(
         param_id,
         param_type,
     })
+}
+
+/// The message for an event a tick or a command produced.
+pub fn out(o: Out) -> MavMessage {
+    match o {
+        Out::Text(sev, s) => statustext(sev, &s),
+        Out::MissionCurrent(seq) => mission_current(seq),
+        Out::ItemReached(seq) => mission_item_reached(seq),
+    }
 }

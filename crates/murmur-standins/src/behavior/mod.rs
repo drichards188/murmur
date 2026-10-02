@@ -1,7 +1,7 @@
 //! Behaviors: which ArduPilot autopilot a stand-in imitates (MAV_TYPE, mode table) and how it
 //! moves. Adding one = a file here plus a line in `create`.
 
-use mavlink::dialects::ardupilotmega::{GpsFixType, MavType};
+use mavlink::dialects::ardupilotmega::{COMMAND_LONG_DATA, GpsFixType, MavResult, MavType};
 
 use crate::conditions::Sample;
 use crate::config::Spec;
@@ -26,6 +26,15 @@ pub struct Tick<'a> {
     pub rng: &'a mut Gauss,
     pub out: &'a mut Vec<Out>,
     pub dt: f64,
+}
+
+/// What a behavior's own command handling may read or change.
+pub struct Ctx<'a> {
+    pub spec: &'a Spec,
+    pub st: &'a mut State,
+    pub mission: &'a mut Mission,
+    /// sent before the COMMAND_ACK, in order
+    pub out: &'a mut Vec<Out>,
 }
 
 pub trait Behavior: Send {
@@ -64,6 +73,18 @@ pub trait Behavior: Send {
     }
 
     fn step(&mut self, t: &mut Tick);
+
+    /// A COMMAND_LONG this autopilot handles itself (its own takeoff, arming checks, mode
+    /// refusals): Some(result) to ACK with, None for the shared handling in `commands`.
+    fn command(&mut self, _c: &mut Ctx, _m: &COMMAND_LONG_DATA) -> Option<MavResult> {
+        None
+    }
+
+    /// A parameter value this autopilot reports (e.g. Q_ENABLE = 1 on a QuadPlane); None for
+    /// the shared handling.
+    fn param(&self, _name: &str) -> Option<f32> {
+        None
+    }
 
     fn mode_number(&self, name: &str) -> Option<u32> {
         self.modes()
