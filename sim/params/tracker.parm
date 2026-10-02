@@ -14,3 +14,6 @@ PITCH_MAX 45
 SERVO2_MIN 1000
 SERVO2_MAX 2000
 SERVO2_TRIM 1500
+# Elevation from GPS altitudes. The default (0, barometer) needs SCALED_PRESSURE from the target,
+# which the bridge's relay doesn't send, so the mount never tilted toward aircraft.
+ALT_SOURCE 1
