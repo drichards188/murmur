@@ -18,6 +18,8 @@
 #        panel), matching how the sim flies them; tasking for SITL uses per-autopilot defaults.
 #        Endurance is left out where we don't have a figure we trust.
 # short: compact model label shown on the map symbol.
+# armed: true for platforms that carry an effect; any task on them needs a human
+#        (sim/policy.toml). Omitted means false.
 #
 # protocol: how a C2 reaches the real platform: mavlink | stanag4586 | uci | jaus | umaa |
 #        proprietary | rc | telemetry. Every node speaks MAVLink in the sim whatever this says;
@@ -132,6 +134,7 @@ endurance_h = 2.5
 name = "Switchblade 600-class"
 short = "LM"
 role = "Loitering munition"
+armed = true
 domain = "air"
 sim = "sitl"
 vehicle = "plane"
@@ -168,6 +171,7 @@ endurance_h = 0.65
 name = "FPV strike quadcopter"
 short = "FPV"
 role = "FPV strike drone"
+armed = true
 domain = "air"
 sim = "sitl"
 vehicle = "copter"
@@ -218,6 +222,7 @@ typical_alt_m = 0
 name = "Armed UGV (remote weapon station)"
 short = "UGV-A"
 role = "Armed UGV"
+armed = true
 domain = "ground"
 sim = "sitl"
 vehicle = "ugv"

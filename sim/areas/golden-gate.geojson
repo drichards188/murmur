@@ -1,0 +1,10 @@
+{
+ "type": "FeatureCollection",
+ "name": "golden-gate",
+ "description": "Example operator areas for the Golden Gate scenario. Illustrative only: not real airspace, navigation or restricted-area data.",
+ "features": [
+  {"type": "Feature", "properties": {"id": "gg-ops", "name": "Golden Gate operating area", "kind": "approved"}, "geometry": {"type": "Polygon", "coordinates": [[[-122.53, 37.77], [-122.39, 37.77], [-122.39, 37.87], [-122.53, 37.87], [-122.53, 37.77]]]}},
+  {"type": "Feature", "properties": {"id": "alcatraz", "name": "Alcatraz Island", "kind": "no_go"}, "geometry": {"type": "Polygon", "coordinates": [[[-122.42698, 37.82356], [-122.41902, 37.82356], [-122.41902, 37.82984], [-122.42698, 37.82984], [-122.42698, 37.82356]]]}},
+  {"type": "Feature", "properties": {"id": "gg-towers", "name": "Golden Gate Bridge towers", "kind": "no_go"}, "geometry": {"type": "MultiPolygon", "coordinates": [[[[-122.47818, 37.81076], [-122.47682, 37.81076], [-122.47682, 37.81184], [-122.47818, 37.81184], [-122.47818, 37.81076]]], [[[-122.47968, 37.82566], [-122.47832, 37.82566], [-122.47832, 37.82674], [-122.47968, 37.82674], [-122.47968, 37.82566]]]]}}
+ ]
+}

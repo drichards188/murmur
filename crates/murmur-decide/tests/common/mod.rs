@@ -1,0 +1,130 @@
+//! Shared fixtures: a Golden Gate world built from the real catalog, policy and area files.
+#![allow(dead_code, clippy::unwrap_used)]
+
+use std::path::PathBuf;
+
+use murmur_decide::*;
+
+pub const T0: Time = Time::from_secs(1_781_000_000);
+
+pub fn sim_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../sim")
+}
+
+pub fn catalog() -> Catalog {
+    Catalog::load(&sim_dir().join("platforms.toml")).unwrap()
+}
+
+pub fn policy() -> Policy {
+    Policy::load(&sim_dir().join("policy.toml")).unwrap()
+}
+
+pub fn areas() -> AreaSet {
+    AreaSet::load_dir(&sim_dir().join("areas"), T0).unwrap()
+}
+
+/// Land south of 37.808 (San Francisco), water north of it, coverage over the scenario box.
+pub fn terrain() -> PolygonTerrain {
+    let b = |w: f64, s: f64, e: f64, n: f64| {
+        Polygon::new(vec![
+            LonLat::new(w, s),
+            LonLat::new(e, s),
+            LonLat::new(e, n),
+            LonLat::new(w, n),
+        ])
+    };
+    PolygonTerrain {
+        coverage: b(-122.60, 37.70, -122.30, 37.95),
+        land: vec![b(-122.60, 37.70, -122.30, 37.808)],
+        water_depth_m: 20.0,
+    }
+}
+
+pub const CRISSY: LonLat = LonLat::new(-122.4460, 37.8068);
+pub const BAY: LonLat = LonLat::new(-122.4700, 37.8280);
+pub const NEAR_CRISSY: LonLat = LonLat::new(-122.4500, 37.8040);
+pub const ON_WATER: LonLat = LonLat::new(-122.4650, 37.8250);
+pub const OUTSIDE_APPROVED: LonLat = LonLat::new(-122.60, 37.80);
+
+/// A vehicle of catalog platform `platform`, healthy, with every fact fresh at `T0`.
+pub fn vehicle(platform: &str, at: LonLat) -> VehicleFacts {
+    let p = catalog().get(platform).cloned().unwrap();
+    let ap = p.autopilot.unwrap_or(AutopilotKind::Drifter);
+    VehicleFacts {
+        platform: Some(p),
+        autopilot: Some(Fact::new(ap, T0)),
+        nav_ready: Some(Fact::new(true, T0)),
+        position: Some(Fact::new(at, T0)),
+        home: Some(Fact::new(at, T0)),
+        battery_pct: Some(Fact::new(95.0, T0)),
+    }
+}
+
+/// sky-1 x10 copter, blade-1 switchblade, hawk-1 RQ-4 stand-in, boat-1 Sea Hunter stand-in,
+/// mule-1 logistics UGV, track-1 antenna tracker, buoy-1 drifter, remus-1 AUV.
+pub fn world() -> WorldSnapshot {
+    let mut w = WorldSnapshot::new(T0);
+    w.areas = Some(areas());
+    for (uid, platform, at) in [
+        ("sky-1", "x10", CRISSY),
+        ("blade-1", "switchblade", CRISSY),
+        ("hawk-1", "rq4", CRISSY),
+        ("boat-1", "seahunter", BAY),
+        ("mule-1", "ugv_logistics", CRISSY),
+        ("track-1", "tracker", CRISSY),
+        ("buoy-1", "buoy", BAY),
+        ("remus-1", "remus", BAY),
+    ] {
+        w.vehicles.insert(Uid::new(uid), vehicle(platform, at));
+    }
+    w
+}
+
+pub fn uid(s: &str) -> Uid {
+    Uid::new(s)
+}
+
+pub fn orbit(center: LonLat, radius_m: f64, uids: &[&str]) -> Proposal {
+    Proposal::new(
+        Task::Orbit { center, radius_m },
+        uids.iter().map(|u| uid(u)).collect(),
+    )
+}
+
+pub fn hold(uids: &[&str]) -> Proposal {
+    Proposal::new(Task::Hold {}, uids.iter().map(|u| uid(u)).collect())
+}
+
+pub fn spec(source: Source, p: Proposal) -> IntentSpec {
+    IntentSpec {
+        id: IntentId(1),
+        created_t: T0,
+        source,
+        task: p.task,
+        uids: p.uids,
+        constraints: p.constraints,
+        rationale: p.rationale,
+    }
+}
+
+pub fn human() -> Source {
+    Source::Human {
+        id: OperatorId::new("op-1"),
+    }
+}
+
+pub fn agent() -> Source {
+    Source::Agent {
+        id: AgentId::new("planner"),
+    }
+}
+
+pub fn engine(clock: &ManualClock) -> (Engine, MemorySink) {
+    let log = MemorySink::new();
+    let e = Engine::new(policy(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    (e, log)
+}
+
+pub fn rationale(s: &str) -> Rationale {
+    Rationale::new(s).unwrap()
+}

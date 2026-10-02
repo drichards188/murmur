@@ -1,0 +1,15 @@
+[package]
+name = "murmur-decide"
+version = "0.1.0"
+edition.workspace = true
+description = "Murmur's decision layer: intents, fail-closed rules, risk-tier policy, append-only audit log and deterministic replay"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+# float_roundtrip: logged inputs must parse back to the exact same f64, or replay drifts.
+serde_json = { version = "1", features = ["float_roundtrip"] }
+thiserror = "2"
+toml = "1"
+
+[lints]
+workspace = true
