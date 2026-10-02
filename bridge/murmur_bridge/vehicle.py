@@ -49,15 +49,18 @@ class LinkStats:
 
     def __init__(self):
         self.last_rx = None
+        self.last_rx_wall = None
         self.last_seq = None
         self.buckets = deque()  # (second, received, expected)
         self.rtt_ms = None
         self.rx_total = 0
         self.tx_total = 0
+        self.by_type = {}  # message type -> count (load diagnostics)
 
     def on_packet(self, seq):
         now = time.monotonic()
         self.last_rx = now
+        self.last_rx_wall = time.time()
         self.rx_total += 1
         if self.last_seq is None:
             expected = 1
@@ -79,16 +82,19 @@ class LinkStats:
             self.buckets.popleft()
 
     def snapshot(self):
+        """Changes only when a packet arrives or the loss/RTT estimate moves, so the
+        bridge can send it only on change. The client works out age from last_rx_t."""
         now = time.monotonic()
         received = sum(b[1] for b in self.buckets if b[0] > now - LOSS_WINDOW_S)
         expected = sum(b[2] for b in self.buckets if b[0] > now - LOSS_WINDOW_S)
         return {
-            "since_last_ms": None if self.last_rx is None else round((now - self.last_rx) * 1000),
-            "loss_pct": None if expected == 0 else round(100.0 * (expected - received) / expected, 1),
-            "rtt_ms": None if self.rtt_ms is None else round(self.rtt_ms, 1),
-            "rx_total": self.rx_total,
-            "tx_total": self.tx_total,
+            "last_rx_t": None if self.last_rx_wall is None else round(self.last_rx_wall, 1),
+            "loss_pct": None if expected == 0 else round(100.0 * (expected - received) / expected),
+            "rtt_ms": None if self.rtt_ms is None else round(self.rtt_ms),
         }
+
+    def counters(self):
+        return {"rx_total": self.rx_total, "tx_total": self.tx_total, "by_type": self.by_type}
 
 
 class Vehicle:
@@ -116,6 +122,7 @@ class Vehicle:
         self.home_alt = None
         self.statustext = deque(maxlen=8)
         self.trail = deque(maxlen=120)
+        self.trail_count = 0  # total points ever appended, so clients can ask for "new since n"
         self._last_trail = 0.0
         self._waiters = []
         # links that get a copy of this vehicle's position (antenna trackers pointed at it)
@@ -158,6 +165,7 @@ class Vehicle:
                 self._last_trail = now
                 # 3D trail: altitude above mean sea level, for the 3D map
                 self.trail.append((round(self.lon, 6), round(self.lat, 6), round(self.alt_msl, 1)))
+                self.trail_count += 1
             for link in self.forward_to:
                 link.send_raw(msg.get_msgbuf())
         elif t == "PARAM_VALUE" and msg.param_id == "Q_ENABLE":
@@ -256,34 +264,43 @@ class Vehicle:
     def mav(self):
         return self.link.mav
 
-    def snapshot(self):
-        return {
+    def snapshot(self, trail=True):
+        """Rounded so tiny jitter doesn't count as a change (see the bridge's delta push)."""
+        rnd = lambda x, n: None if x is None else round(x, n)  # noqa: E731
+        out = {
             "sysid": self.sysid,
             "identity": self.identity,
             "kind": self.kind,
             "mode": self.mode,
             "armed": self.armed,
-            "position": None if self.lat is None else [self.lon, self.lat],
-            "alt_rel": self.alt_rel,
-            "alt_msl": self.alt_msl,
-            "roll": None if self.roll is None else round(self.roll, 1),
-            "pitch": None if self.pitch is None else round(self.pitch, 1),
-            "heading": self.heading,
-            "yaw": self.yaw,
+            "position": None if self.lat is None else [round(self.lon, 6), round(self.lat, 6)],
+            "alt_rel": rnd(self.alt_rel, 1),
+            "alt_msl": rnd(self.alt_msl, 1),
+            "roll": rnd(self.roll, 0),
+            "pitch": rnd(self.pitch, 0),
+            "heading": rnd(self.heading, 0),
+            "yaw": rnd(self.yaw, 0),
             "tracking": self.tracking,
             "nav_bearing": self.nav_bearing,
-            "groundspeed": self.groundspeed,
-            "airspeed": self.airspeed,
+            "nav_ready": self.has_position,
+            "groundspeed": rnd(self.groundspeed, 1),
+            "airspeed": rnd(self.airspeed, 1),
             "battery_pct": self.battery_pct,
             "gps_fix": self.gps_fix,
-            "nav_ready": self.has_position,
             "satellites": self.satellites,
             "mission_seq": self.mission_seq,
-            "home": None if self.home is None else [self.home[1], self.home[0]],
+            "home": None if self.home is None else [round(self.home[1], 6), round(self.home[0], 6)],
             "link": self.link.stats.snapshot(),
-            "trail": list(self.trail),
             "statustext": list(self.statustext)[-3:],
         }
+        if trail:
+            out["trail"] = list(self.trail)
+        return out
+
+    def trail_since(self, count):
+        """Trail points appended after the client's last count (capped to what we keep)."""
+        new = min(self.trail_count - count, len(self.trail))
+        return list(self.trail)[-new:] if new > 0 else []
 
 
 class VehicleLink(asyncio.DatagramProtocol):
@@ -315,6 +332,8 @@ class VehicleLink(asyncio.DatagramProtocol):
             sysid, compid = msg.get_srcSystem(), msg.get_srcComponent()
             if compid == AUTOPILOT_COMPID:
                 self.stats.on_packet(msg.get_seq())
+            t = msg.get_type()
+            self.stats.by_type[t] = self.stats.by_type.get(t, 0) + 1
             if self.vehicle is None:
                 if msg.get_type() != "HEARTBEAT" or compid != AUTOPILOT_COMPID:
                     continue

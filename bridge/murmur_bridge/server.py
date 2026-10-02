@@ -12,15 +12,17 @@ from pydantic import BaseModel
 
 from pymavlink.dialects.v20 import ardupilotmega as mavlink
 
-from .tasks import TaskManager
+import tomllib
+
+from .tasks import KINDS, TaskManager
 from .vehicle import VehicleLink
 
 BASE_PORT = int(os.environ.get("MURMUR_BASE_PORT", 14560))
 MAX_VEHICLES = int(os.environ.get("MURMUR_MAX_VEHICLES", 128))
+PLATFORMS = Path(__file__).resolve().parents[2] / "sim" / "platforms.toml"
 FLEET_MANIFEST = Path(os.environ.get("MURMUR_FLEET_MANIFEST",
                                      Path(__file__).resolve().parents[2] / "sim" / "run" / "fleet.json"))
-STREAM_HZ = int(os.environ.get("MURMUR_STREAM_HZ", 4))
-PUSH_HZ = 5
+PUSH_HZ = 4
 
 links = []
 vehicles = {}
@@ -63,6 +65,26 @@ def on_vehicle(v):
     print(f"{who} connected on udp {v.link.port}")
 
 
+def telemetry_plan(v):
+    """(message id, Hz) per vehicle. Position fastest for aircraft; everything else slow.
+    Event messages (HEARTBEAT, STATUSTEXT, COMMAND_ACK, mission protocol) aren't streams.
+    Was REQUEST_DATA_STREAM ALL at 4 Hz: ~94 msg/s per ArduPilot vehicle."""
+    M = mavlink
+    air = (v.identity or {}).get("domain") == "air" or v.kind in ("plane", "vtol", "copter", "blimp")
+    plan = [
+        (M.MAVLINK_MSG_ID_GLOBAL_POSITION_INT, 2 if air else 1),
+        (M.MAVLINK_MSG_ID_ATTITUDE, 1),
+        (M.MAVLINK_MSG_ID_VFR_HUD, 1),
+        (M.MAVLINK_MSG_ID_MISSION_CURRENT, 1),
+        (M.MAVLINK_MSG_ID_SYS_STATUS, 0.5),
+        (M.MAVLINK_MSG_ID_GPS_RAW_INT, 0.5),
+        (M.MAVLINK_MSG_ID_EKF_STATUS_REPORT, 0.5),
+    ]
+    if v.kind == "tracker":
+        plan.append((M.MAVLINK_MSG_ID_NAV_CONTROLLER_OUTPUT, 1))
+    return plan
+
+
 async def housekeeping():
     """GCS heartbeat, telemetry stream requests, and RTT pings."""
     tick = 0
@@ -78,35 +100,69 @@ async def housekeeping():
             link.send_timesync()
             if v.kind == "plane" and v.is_vtol is None:
                 link.send(link.mav.param_request_read_encode(v.sysid, 1, b"Q_ENABLE", -1))
-            # re-request streams every 10s; cheap, and recovers from a vehicle reboot
-            if tick % 10 == 0:
-                link.send(link.mav.request_data_stream_encode(
-                    v.sysid, 1, mavlink.MAV_DATA_STREAM_ALL, STREAM_HZ, 1))
+            # telemetry plan: ask for exactly what the console uses, at rates by domain.
+            # Re-sent every 30 s (cheap) so a rebooted vehicle picks it up again.
+            if tick % 30 == 0 or (v.kind and not getattr(v, "_rates_sent", False)):
+                for msg_id, hz in telemetry_plan(v):
+                    link.send(link.mav.command_long_encode(
+                        v.sysid, 1, mavlink.MAV_CMD_SET_MESSAGE_INTERVAL, 0, msg_id, 1e6 / hz, 0, 0, 0, 0, 0))
+                v._rates_sent = True
         tick += 1
         await asyncio.sleep(1)
 
 
 def state_message():
+    """Full state: sent once when a client connects (and served by /api/state)."""
     return {
         "type": "state",
-        "t": time.time(),
+        "t": round(time.time(), 2),
         "vehicles": [vehicles[k].snapshot() for k in sorted(vehicles)],
         "taskings": tasks.snapshot(),
     }
 
 
+class Client:
+    """What one browser already has, so each push sends only what changed."""
+
+    def __init__(self, ws):
+        self.ws = ws
+        self.sent = {}  # sysid -> json of last sent snapshot (without trail)
+        self.trail = {}  # sysid -> trail_count already sent
+        self.taskings = None
+
+
+def delta_for(c, snaps, taskings_json):
+    changed = []
+    for sysid, (snap, js) in snaps.items():
+        v = vehicles[sysid]
+        add = v.trail_since(c.trail.get(sysid, 0))
+        if js == c.sent.get(sysid) and not add:
+            continue
+        item = dict(snap)
+        item["trail_add"] = add
+        changed.append(item)
+        c.sent[sysid] = js
+        c.trail[sysid] = v.trail_count
+    msg = {"type": "delta", "t": round(time.time(), 2), "vehicles": changed}
+    if taskings_json != c.taskings:
+        msg["taskings"] = json.loads(taskings_json)
+        c.taskings = taskings_json
+    return msg
+
+
 async def pusher():
     while True:
         if clients:
-            payload = json.dumps(state_message())
-            dead = []
-            for ws in list(clients):
+            snaps = {}
+            for sysid in sorted(vehicles):
+                snap = vehicles[sysid].snapshot(trail=False)
+                snaps[sysid] = (snap, json.dumps(snap, separators=(",", ":")))
+            taskings_json = json.dumps(tasks.snapshot(), separators=(",", ":"))
+            for c in list(clients):
                 try:
-                    await ws.send_text(payload)
+                    await c.ws.send_text(json.dumps(delta_for(c, snaps, taskings_json), separators=(",", ":")))
                 except Exception:
-                    dead.append(ws)
-            for ws in dead:
-                clients.discard(ws)
+                    clients.discard(c)
         await asyncio.sleep(1 / PUSH_HZ)
 
 
@@ -159,15 +215,63 @@ async def post_task(req: TaskRequest):
     return tasking.snapshot()
 
 
+# which bridge kind (capability table row) each platform runs as
+SITL_KIND = {"plane": "plane", "vtol": "vtol", "copter": "copter", "blimp": "blimp", "tracker": "tracker",
+             "boat": "boat", "sailboat": "boat", "ugv": "ugv", "sub": "sub"}
+STANDIN_KIND = {"plane": "plane", "boat": "boat", "sub": "sub", "drifter": None}
+
+
+@app.get("/api/platforms")
+async def get_platforms():
+    """The capability catalog: every platform type, what it can do, and which fleet vehicles
+    are that type. Tasks come from the same capability table that drives tasking."""
+    load_manifest()
+    catalog = tomllib.loads(PLATFORMS.read_text())
+    members = {}
+    for sysid, ident in identities.items():
+        members.setdefault(ident.get("platform"), []).append({"sysid": sysid, "callsign": ident.get("callsign")})
+    out = []
+    for pid, spec in catalog.items():
+        kind = SITL_KIND.get(spec.get("vehicle")) if spec["sim"] == "sitl" else STANDIN_KIND.get(spec.get("behavior"))
+        caps = KINDS.get(kind, {}) if kind else {}
+        min_r = None
+        if spec.get("turn_dps") and spec.get("cruise_mps"):
+            min_r = round(spec["cruise_mps"] / (spec["turn_dps"] * 3.141592653589793 / 180))
+        out.append({
+            "id": pid,
+            **{k: spec.get(k) for k in ("name", "short", "role", "domain", "sim", "link", "sidc", "callsign",
+                                        "cruise_mps", "max_mps", "endurance_h", "climb_mps", "turn_dps")},
+            "alt_m": spec.get("alt_m", spec.get("typical_alt_m")),
+            "min_turn_radius_m": min_r,
+            "tasks": sorted(caps.get("tasks", [])),
+            "in_fleet": sorted(members.get(pid, []), key=lambda m: m["sysid"]),
+        })
+    return {"platforms": out}
+
+
+@app.get("/api/stats")
+async def get_stats():
+    """Per-vehicle packet counters (for load tests; kept out of the UI stream)."""
+    return {"t": time.time(), "vehicles": {s: vehicles[s].link.stats.counters() for s in sorted(vehicles)}}
+
+
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
-    clients.add(ws)
+    c = Client(ws)
+    full = state_message()
+    # everything in the full state counts as sent
+    for v in full["vehicles"]:
+        snap = {k: val for k, val in v.items() if k != "trail"}
+        c.sent[v["sysid"]] = json.dumps(snap, separators=(",", ":"))
+        c.trail[v["sysid"]] = vehicles[v["sysid"]].trail_count
+    c.taskings = json.dumps(full["taskings"], separators=(",", ":"))
+    clients.add(c)
     try:
-        await ws.send_text(json.dumps(state_message()))
+        await ws.send_text(json.dumps(full, separators=(",", ":")))
         while True:
             await ws.receive_text()  # client->server traffic goes over REST; this just detects close
     except WebSocketDisconnect:
         pass
     finally:
-        clients.discard(ws)
+        clients.discard(c)

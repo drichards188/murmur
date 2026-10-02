@@ -1,0 +1,15 @@
+# Applied to every SITL vehicle, before its kind and platform params.
+# Silence the default telemetry stream groups on SERIAL0 (the bridge link): the bridge asks
+# for exactly the messages it uses with SET_MESSAGE_INTERVAL (its telemetry plan). Left on,
+# ArduPilot also streams AHRS, AHRS2, SERVO_OUTPUT_RAW, SYSTEM_TIME... (~30 msg/s per
+# vehicle; ~90 for Sub, which adds NAMED_VALUE_FLOAT and SIMSTATE at 10-18 Hz).
+MAV1_RAW_SENS 0
+MAV1_EXT_STAT 0
+MAV1_RC_CHAN 0
+MAV1_RAW_CTRL 0
+MAV1_POSITION 0
+MAV1_EXTRA1 0
+MAV1_EXTRA2 0
+MAV1_EXTRA3 0
+MAV1_PARAMS 0
+MAV1_ADSB 0

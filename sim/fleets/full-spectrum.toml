@@ -1,5 +1,5 @@
-# Every platform type in sim/platforms.toml, around the Golden Gate and its approaches.
-# 20 ArduPilot SITL vehicles + 11 stand-ins. HALE/MALE/CCA start airborne on station.
+# One node of every platform type in sim/platforms.toml, around the Golden Gate and its
+# approaches: 15 ArduPilot SITL vehicles + 7 stand-ins. HALE/MALE/CCA start airborne.
 # Run with tidewater conditions: make goldengate GG_FLEET=full-spectrum
 title = "Full spectrum: air, ground, surface, subsurface"
 
@@ -10,9 +10,8 @@ count = 1
 spawn = [37.7500, -122.7500, 18000, 0]    # offshore, on station
 [[unit]]
 platform = "mq9b"
-count = 2
+count = 1
 spawn = [37.8800, -122.6000, 7600, 90]    # over Marin
-spacing_m = 6000
 [[unit]]
 platform = "cca"
 count = 1
@@ -23,7 +22,7 @@ count = 1
 spawn = [37.8065, -122.4500, 4, 90]       # Crissy Field
 [[unit]]
 platform = "puma"
-count = 2
+count = 1
 spawn = [37.8068, -122.4460, 5, 90]
 [[unit]]
 platform = "switchblade"
@@ -31,11 +30,11 @@ count = 1
 spawn = [37.8062, -122.4440, 5, 90]
 [[unit]]
 platform = "x10"
-count = 2
+count = 1
 spawn = [37.8060, -122.4430, 5, 0]
 [[unit]]
 platform = "fpv"
-count = 2
+count = 1
 spawn = [37.8058, -122.4415, 5, 0]
 [[unit]]
 platform = "lta"
@@ -67,11 +66,11 @@ spawn = [37.8105, -122.4770, 10, 0]       # Fort Point
 # ---- surface
 [[unit]]
 platform = "magura"
-count = 2
+count = 1
 spawn = [37.8280, -122.4700, 0, 180]      # off Horseshoe Bay
 [[unit]]
 platform = "corsair"
-count = 2
+count = 1
 spawn = [37.8265, -122.4650, 0, 180]
 [[unit]]
 platform = "seahunter"
@@ -83,9 +82,8 @@ count = 1
 spawn = [37.8000, -122.5300, 0, 0]        # inside tidewater's area, so it gets wind
 [[unit]]
 platform = "buoy"
-count = 2
+count = 1
 spawn = [37.8150, -122.4900, 0, 0]        # in the Gate: drifts with the tide
-spacing_m = 300
 
 # ---- subsurface
 [[unit]]
@@ -94,9 +92,8 @@ count = 1
 spawn = [37.8300, -122.4690, 0, 180]
 [[unit]]
 platform = "remus"
-count = 2
+count = 1
 spawn = [37.8250, -122.4400, 0, 90]       # west of Alcatraz
-spacing_m = 300
 [[unit]]
 platform = "orca"
 count = 1

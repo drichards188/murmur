@@ -12,7 +12,11 @@
 #                  MAV_TYPE), so the C2 bridge needs no special cases.
 #
 # link: los | mesh | satcom | acoustic | tether   (used by the link emulator, phase D)
-# alt_m: cruise altitude above sea level; negative = operating depth for subs.
+# alt_m: cruise altitude above sea level; negative = operating depth for subs (stand-ins:
+#        the bridge tasks them at this altitude/depth).
+# typical_alt_m, cruise_mps, endurance_h on SITL platforms: display only (the Platforms
+#        panel), matching how the sim flies them; tasking for SITL uses per-autopilot defaults.
+#        Endurance is left out where we don't have a figure we trust.
 # short: compact model label shown on the map symbol.
 
 # ---------------------------------------------------------------- air
@@ -81,7 +85,8 @@ callsign = "KESTREL"
 link = "los"
 sidc = "SFAPMFQ--------"
 params = { AIRSPEED_CRUISE = 24 }
-
+cruise_mps = 24
+typical_alt_m = 70
 [puma]
 name = "Puma 3 AE-class"
 short = "PUMA"
@@ -93,7 +98,9 @@ callsign = "PUMA"
 link = "los"
 sidc = "SFAPMFQ--------"
 params = { AIRSPEED_CRUISE = 20 }
-
+cruise_mps = 20
+typical_alt_m = 80
+endurance_h = 2.5
 [switchblade]
 name = "Switchblade 600-class"
 short = "LM"
@@ -105,7 +112,9 @@ callsign = "BLADE"
 link = "los"
 sidc = "SFAPMFQ--------"
 params = { AIRSPEED_CRUISE = 28 }
-
+cruise_mps = 28
+typical_alt_m = 80
+endurance_h = 0.7
 [x10]
 name = "Skydio X10-class quadcopter"
 short = "QUAD"
@@ -117,7 +126,9 @@ callsign = "SKY"
 link = "mesh"
 sidc = "SFAPMHQ--------"
 params = { WP_SPD = 12 }
-
+cruise_mps = 12
+typical_alt_m = 30
+endurance_h = 0.65
 [fpv]
 name = "FPV strike quadcopter"
 short = "FPV"
@@ -129,7 +140,9 @@ callsign = "WASP"
 link = "mesh"
 sidc = "SFAPMHQ--------"
 params = { WP_SPD = 25 }
-
+cruise_mps = 25
+typical_alt_m = 30
+endurance_h = 0.15
 [lta]
 name = "Small airship (LTA)"
 short = "LTA"
@@ -140,7 +153,7 @@ vehicle = "blimp"
 callsign = "ZEP"
 link = "los"
 sidc = "SFAPML---------"
-
+typical_alt_m = 20
 # ---------------------------------------------------------------- ground
 [ugv_logistics]
 name = "Tracked logistics UGV"
@@ -153,7 +166,8 @@ callsign = "MULE"
 link = "mesh"
 sidc = "SFGPEV---------"
 params = { CRUISE_SPEED = 3, WP_SPEED = 3 }
-
+cruise_mps = 3
+typical_alt_m = 0
 [ugv_armed]
 name = "Armed UGV (remote weapon station)"
 short = "UGV-A"
@@ -165,7 +179,8 @@ callsign = "BULL"
 link = "mesh"
 sidc = "SFGPEV---------"
 params = { CRUISE_SPEED = 4, WP_SPEED = 4 }
-
+cruise_mps = 4
+typical_alt_m = 0
 [ugv_mines]
 name = "Mine-laying UGV"
 short = "UGV-M"
@@ -177,7 +192,8 @@ callsign = "MOLE"
 link = "mesh"
 sidc = "SFGPEV---------"
 params = { CRUISE_SPEED = 2, WP_SPEED = 2 }
-
+cruise_mps = 2
+typical_alt_m = 0
 [ugv_recon]
 name = "Small recon UGV"
 short = "UGV-R"
@@ -189,7 +205,8 @@ callsign = "FERRET"
 link = "mesh"
 sidc = "SFGPEV---------"
 params = { CRUISE_SPEED = 5, WP_SPEED = 5 }
-
+cruise_mps = 5
+typical_alt_m = 0
 [tracker]
 name = "Antenna tracker"
 short = "ANT"
@@ -213,7 +230,8 @@ callsign = "VIPER"
 link = "satcom"
 sidc = "SFSP-----------"
 params = { CRUISE_SPEED = 12, WP_SPEED = 12 }
-
+cruise_mps = 12
+typical_alt_m = 0
 [corsair]
 name = "Corsair-class autonomous surface vessel"
 short = "USV-M"
@@ -225,7 +243,8 @@ callsign = "MARLIN"
 link = "satcom"
 sidc = "SFSP-----------"
 params = { CRUISE_SPEED = 8, WP_SPEED = 8 }
-
+cruise_mps = 8
+typical_alt_m = 0
 [seahunter]
 name = "Sea Hunter-class MUSV"
 short = "MUSV"
@@ -253,7 +272,9 @@ vehicle = "sailboat"
 callsign = "ALBATROSS"
 link = "satcom"
 sidc = "SFSP-----------"
-
+cruise_mps = 2
+typical_alt_m = 0
+endurance_h = 8760
 [buoy]
 name = "Drifting sensor buoy"
 short = "BUOY"
@@ -281,7 +302,9 @@ vehicle = "sub"
 callsign = "EEL"
 link = "tether"
 sidc = "SFUP-----------"
-
+cruise_mps = 1
+typical_alt_m = -5
+endurance_h = 3
 [remus]
 name = "REMUS 600-class AUV"
 short = "AUV"

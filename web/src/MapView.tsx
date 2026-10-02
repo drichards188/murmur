@@ -24,6 +24,8 @@ interface Props {
   draft: Draft
   onToggle: (sysid: number) => void
   onMapClick: (p: LngLat) => void
+  /** fly to this vehicle (n changes on every request, so repeat clicks work) */
+  focus?: { sysid: number; n: number } | null
 }
 
 const STYLE = 'https://tiles.openfreemap.org/styles/dark'
@@ -159,7 +161,7 @@ function applyView(m: maplibregl.Map, view: ViewMode) {
   }
 }
 
-export function MapView({ vehicles, taskings, selected, draft, onToggle, onMapClick }: Props) {
+export function MapView({ vehicles, taskings, selected, draft, focus, onToggle, onMapClick }: Props) {
   const [view, setView] = useState<ViewMode>(savedView)
   const viewRef = useRef(view)
   const overlay = useRef<MapboxOverlay | null>(null)
@@ -340,7 +342,13 @@ export function MapView({ vehicles, taskings, selected, draft, onToggle, onMapCl
       window.clearTimeout(bridgeTimer)
       bridgeTimer = window.setTimeout(() => {
         if (viewRef.current !== '3d' || !m.getTerrain()) return
+        const t0 = performance.now()
         bridges.current = liftBridges(m)
+        if (import.meta.env.DEV) {
+          const w = window as unknown as { murmurPerf: Record<string, number[]> }
+          w.murmurPerf ??= {}
+          ;(w.murmurPerf.liftBridges ??= []).push(performance.now() - t0)
+        }
         if (import.meta.env.DEV) (window as unknown as { murmurBridges: LiftedBridge[] }).murmurBridges = bridges.current
         const { vehicles: vs, selected: sel } = latest.current
         deck.setProps({ layers: build3dLayers(vs, sel, true, bridges.current) })
@@ -408,7 +416,13 @@ export function MapView({ vehicles, taskings, selected, draft, onToggle, onMapCl
     }
     for (const { el } of markers.current.values()) el.style.display = view === '3d' ? 'none' : ''
     latest.current = { vehicles, selected }
+    const t1 = performance.now()
     overlay.current?.setProps({ layers: build3dLayers(vehicles, selected, view === '3d', bridges.current) })
+    if (import.meta.env.DEV) {
+      const w = window as unknown as { murmurPerf: Record<string, number[]> }
+      w.murmurPerf ??= {}
+      ;(w.murmurPerf.build3d ??= []).push(performance.now() - t1)
+    }
 
     if (ready.current) {
       ;(m.getSource('trails') as maplibregl.GeoJSONSource).setData(trailFeatures(vehicles))
@@ -426,6 +440,16 @@ export function MapView({ vehicles, taskings, selected, draft, onToggle, onMapCl
       }
     }
   }, [vehicles, selected, view])
+
+  const vehiclesRef = useRef(vehicles)
+  useEffect(() => {
+    vehiclesRef.current = vehicles
+  }, [vehicles])
+  useEffect(() => {
+    if (!focus || !map.current) return
+    const v = vehiclesRef.current.find((x) => x.sysid === focus.sysid)
+    if (v?.position) map.current.flyTo({ center: v.position, zoom: Math.max(map.current.getZoom(), 13), duration: 1200 })
+  }, [focus])
 
   useEffect(() => {
     viewRef.current = view

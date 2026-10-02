@@ -9,7 +9,7 @@ up:      ## swarm + bridge + web, all at once
 	./scripts/up.sh --fleet $(FLEET) $(ARGS)
 
 goldengate: ## Golden Gate with real tide/current/wind via ../tidewater (AT= scenario start time)
-	MURMUR_SCENARIO=$(HOME)/tidewater/scenarios/golden-gate-2026-06.toml MURMUR_AT=$(or $(AT),2026-06-14T10:00Z) ./scripts/up.sh --fleet $(or $(GG_FLEET),golden-gate) $(ARGS)
+	MURMUR_SCENARIO=$(HOME)/tidewater/scenarios/golden-gate-2026-06.toml MURMUR_AT=$(or $(AT),2026-06-14T10:00Z) ./scripts/up.sh --fleet $(or $(GG_FLEET),full-spectrum) $(ARGS)
 
 down:    ## stop a stack started with make up (e.g. from another terminal)
 	@if [ -f logs/up.pid ]; then kill -INT $$(cat logs/up.pid) && echo stopping; else echo "not running"; fi

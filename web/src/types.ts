@@ -20,11 +20,10 @@ export const AIR_KINDS: Kind[] = ['plane', 'vtol', 'copter', 'blimp']
 export const SEA_KINDS: Kind[] = ['boat', 'sub']
 
 export interface LinkHealth {
-  since_last_ms: number | null
+  last_rx_t: number | null // bridge clock, seconds
+  since_last_ms: number | null // computed in the browser from last_rx_t and the message time
   loss_pct: number | null
   rtt_ms: number | null
-  rx_total: number
-  tx_total: number
 }
 
 export interface Vehicle {

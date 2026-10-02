@@ -96,7 +96,7 @@ def plan(fleet, platforms):
 
 def sitl_command(v, spec, args, workdir):
     binary, model, _ = VEHICLES[spec["vehicle"]]
-    defaults = []
+    defaults = [str(ROOT / "params" / "common.parm")]
     kind_parm = ROOT / "params" / f"{spec['vehicle']}.parm"
     if kind_parm.exists():
         defaults.append(str(kind_parm))

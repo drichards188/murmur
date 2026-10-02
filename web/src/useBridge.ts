@@ -1,5 +1,44 @@
 import { useEffect, useRef, useState } from 'react'
-import type { BridgeState, LngLat, TaskKind } from './types'
+import type { BridgeState, LngLat, TaskKind, Tasking, Vehicle } from './types'
+
+const TRAIL_MAX = 120 // same cap as the bridge keeps
+
+/** After the initial full state, the bridge sends only vehicles that changed (with just
+ *  their new trail points) and the task list only when it changed. */
+interface Delta {
+  type: 'delta'
+  t: number
+  vehicles: (Omit<Vehicle, 'trail'> & { trail_add: Vehicle['trail'] })[]
+  taskings?: Tasking[]
+}
+
+function applyDelta(prev: BridgeState, d: Delta): BridgeState {
+  if (!d.vehicles.length && !d.taskings) return { ...prev, t: d.t }
+  const bySysid = new Map(prev.vehicles.map((v) => [v.sysid, v]))
+  for (const { trail_add, ...v } of d.vehicles) {
+    const old = bySysid.get(v.sysid)
+    const trail = [...(old?.trail ?? []), ...trail_add].slice(-TRAIL_MAX)
+    bySysid.set(v.sysid, { ...(v as Omit<Vehicle, 'trail'>), trail } as Vehicle)
+  }
+  return {
+    ...prev,
+    t: d.t,
+    vehicles: [...bySysid.values()].sort((a, b) => a.sysid - b.sysid),
+    taskings: d.taskings ?? prev.taskings,
+  }
+}
+
+/** The bridge sends when each vehicle was last heard from; age is relative to the
+ *  bridge's clock (in each message), not this browser's. */
+function withAges(s: BridgeState): BridgeState {
+  return {
+    ...s,
+    vehicles: s.vehicles.map((v) => ({
+      ...v,
+      link: { ...v.link, since_last_ms: v.link.last_rx_t == null ? null : Math.max(0, (s.t - v.link.last_rx_t) * 1000) },
+    })),
+  }
+}
 
 export type BridgeStatus = 'connecting' | 'live' | 'down'
 
@@ -10,6 +49,7 @@ export function useBridge() {
 
   useEffect(() => {
     let ws: WebSocket | null = null
+    let current: BridgeState | null = null
     let timer: number | undefined
     let closed = false
 
@@ -22,7 +62,13 @@ export function useBridge() {
       }
       ws.onmessage = (ev) => {
         const msg = JSON.parse(ev.data)
-        if (msg.type === 'state') setState(msg)
+        if (msg.type === 'state') {
+          current = withAges(msg as BridgeState)
+          setState(current)
+        } else if (msg.type === 'delta' && current) {
+          current = withAges(applyDelta(current, msg as Delta))
+          setState(current)
+        }
       }
       ws.onclose = () => {
         if (closed) return

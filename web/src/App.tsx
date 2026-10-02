@@ -1,10 +1,34 @@
 import { useCallback, useEffect, useState } from 'react'
 import { FleetPanel } from './FleetPanel'
 import { MapView, type Draft } from './MapView'
+import { PlatformsPanel } from './PlatformsPanel'
 import { TaskPanel } from './TaskPanel'
 import type { LngLat } from './types'
 import { domainOf, STALE_MS } from './types'
 import { useBridge } from './useBridge'
+
+/** ?perf in the URL shows a frame-rate readout (to check 3D on a real GPU). */
+function usePerfMeter() {
+  const [fps, setFps] = useState<number | null>(null)
+  useEffect(() => {
+    if (!new URLSearchParams(location.search).has('perf')) return
+    let frames = 0
+    let start = performance.now()
+    let raf = 0
+    const tick = (t: number) => {
+      frames++
+      if (t - start >= 1000) {
+        setFps(Math.round((frames * 1000) / (t - start)))
+        frames = 0
+        start = t
+      }
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [])
+  return fps
+}
 
 function useUtcClock() {
   const [now, setNow] = useState(() => new Date())
@@ -18,7 +42,10 @@ function useUtcClock() {
 export default function App() {
   const { state, status } = useBridge()
   const clock = useUtcClock()
+  const fps = usePerfMeter()
   const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [showPlatforms, setShowPlatforms] = useState(false)
+  const [focus, setFocus] = useState<{ sysid: number; n: number } | null>(null)
   const [draft, setDraft] = useState<Draft>({ mode: 'orbit', center: null, radius: 250, route: [] })
 
   const vehicles = state?.vehicles ?? []
@@ -53,11 +80,33 @@ export default function App() {
           <b>{lost}</b> lost link
         </span>
         <span className={`pill ${status}`}>{status === 'live' ? 'BRIDGE LIVE' : status === 'down' ? 'BRIDGE DOWN' : 'CONNECTING'}</span>
+        <button className="ghost platforms-btn" onClick={() => setShowPlatforms((v) => !v)}>
+          Platforms
+        </button>
+        {fps != null && <span className="stat" title="frames per second (?perf)"><b>{fps}</b> fps</span>}
         <span className="clock">{clock}</span>
       </header>
       <FleetPanel vehicles={vehicles} selected={selected} onToggle={toggle} onSelect={(ids) => setSelected(new Set(ids))} />
       <main className="mapwrap">
-        <MapView vehicles={vehicles} taskings={taskings} selected={selected} draft={draft} onToggle={toggle} onMapClick={onMapClick} />
+        <MapView
+          vehicles={vehicles}
+          taskings={taskings}
+          selected={selected}
+          draft={draft}
+          focus={focus}
+          onToggle={toggle}
+          onMapClick={onMapClick}
+        />
+        {showPlatforms && (
+          <PlatformsPanel
+            onClose={() => setShowPlatforms(false)}
+            onFocus={(sysid) => {
+              setSelected(new Set([sysid]))
+              setFocus((f) => ({ sysid, n: (f?.n ?? 0) + 1 }))
+              setShowPlatforms(false)
+            }}
+          />
+        )}
         {status !== 'live' && (
           <div className="banner">Bridge not reachable at /ws. Start it with <code>make bridge</code>. Retrying…</div>
         )}

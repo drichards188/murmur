@@ -1,0 +1,145 @@
+# LOAD TEST ONLY: deliberately many copies of the same types, to measure the bridge and
+# console at 100 nodes. For the normal one-of-each roster use full-spectrum.
+# make goldengate GG_FLEET=scale-100
+title = "Scale test: 100 nodes"
+
+# ---- full spectrum
+[[unit]]
+platform = "rq4"
+count = 1
+spawn = [37.7500, -122.7500, 18000, 0]    # offshore, on station
+[[unit]]
+platform = "mq9b"
+count = 2
+spawn = [37.8800, -122.6000, 7600, 90]    # over Marin
+spacing_m = 6000
+[[unit]]
+platform = "cca"
+count = 1
+spawn = [37.7000, -122.6500, 11000, 45]
+[[unit]]
+platform = "fvr90"
+count = 1
+spawn = [37.8065, -122.4500, 4, 90]       # Crissy Field
+[[unit]]
+platform = "puma"
+count = 2
+spawn = [37.8068, -122.4460, 5, 90]
+[[unit]]
+platform = "switchblade"
+count = 1
+spawn = [37.8062, -122.4440, 5, 90]
+[[unit]]
+platform = "x10"
+count = 2
+spawn = [37.8060, -122.4430, 5, 0]
+[[unit]]
+platform = "fpv"
+count = 2
+spawn = [37.8058, -122.4415, 5, 0]
+[[unit]]
+platform = "lta"
+count = 1
+spawn = [37.8330, -122.4830, 45, 0]       # Marin Headlands
+
+# ---- ground (Presidio, on land)
+[[unit]]
+platform = "ugv_logistics"
+count = 1
+spawn = [37.8035, -122.4540, 14, 90]
+[[unit]]
+platform = "ugv_armed"
+count = 1
+spawn = [37.8045, -122.4540, 9, 90]
+[[unit]]
+platform = "ugv_mines"
+count = 1
+spawn = [37.8050, -122.4500, 15, 90]
+[[unit]]
+platform = "ugv_recon"
+count = 1
+spawn = [37.8055, -122.4480, 7, 90]
+[[unit]]
+platform = "tracker"
+count = 1
+spawn = [37.8105, -122.4770, 10, 0]       # Fort Point
+
+# ---- surface
+[[unit]]
+platform = "magura"
+count = 2
+spawn = [37.8280, -122.4700, 0, 180]      # off Horseshoe Bay
+[[unit]]
+platform = "corsair"
+count = 2
+spawn = [37.8265, -122.4650, 0, 180]
+[[unit]]
+platform = "seahunter"
+count = 1
+spawn = [37.8000, -122.5600, 0, 90]       # outside the Gate
+[[unit]]
+platform = "saildrone"
+count = 1
+spawn = [37.8000, -122.5300, 0, 0]        # inside tidewater's area, so it gets wind
+[[unit]]
+platform = "buoy"
+count = 2
+spawn = [37.8150, -122.4900, 0, 0]        # in the Gate: drifts with the tide
+spacing_m = 300
+
+# ---- subsurface
+[[unit]]
+platform = "bluerov"
+count = 1
+spawn = [37.8300, -122.4690, 0, 180]
+[[unit]]
+platform = "remus"
+count = 2
+spawn = [37.8250, -122.4400, 0, 90]       # west of Alcatraz
+spacing_m = 300
+[[unit]]
+platform = "orca"
+count = 1
+spawn = [37.7800, -122.5500, 0, 0]        # offshore, deeper water
+
+[[unit]]
+platform = "mq9b"
+count = 10
+spawn = [37.95, -122.75, 7600, 90]
+spacing_m = 4000
+
+[[unit]]
+platform = "cca"
+count = 10
+spawn = [37.65, -122.8, 11000, 0]
+spacing_m = 3000
+
+[[unit]]
+platform = "rq4"
+count = 2
+spawn = [37.6, -122.9, 18000, 0]
+spacing_m = 20000
+
+[[unit]]
+platform = "seahunter"
+count = 12
+spawn = [37.76, -122.62, 0, 0]
+spacing_m = 1500
+
+[[unit]]
+platform = "buoy"
+count = 12
+spawn = [37.81, -122.52, 0, 0]
+spacing_m = 400
+
+[[unit]]
+platform = "remus"
+count = 16
+spawn = [37.8, -122.58, 0, 0]
+spacing_m = 800
+
+[[unit]]
+platform = "orca"
+count = 8
+spawn = [37.74, -122.65, 0, 0]
+spacing_m = 2000
