@@ -20,6 +20,7 @@ import signal
 import subprocess
 import sys
 import time
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -72,11 +73,20 @@ def offset(lat, lon, north_m, east_m):
     return lat + dlat, lon + dlon
 
 
-def vehicle_specs(location, counts):
+def scenario_spawn(path):
+    """Start points from a tidewater scenario file's [spawn] table."""
+    spawn = tomllib.loads(Path(path).expanduser().read_text()).get("spawn", {})
+    missing = sorted(set(VEHICLES) - set(spawn))
+    if missing:
+        sys.exit(f"scenario {path} has no [spawn] entry for: {', '.join(missing)}")
+    return {k: tuple(v) for k, v in spawn.items()}
+
+
+def vehicle_specs(spawn, counts):
     specs = []
     for kind, n in counts.items():
         binary, model, spacing = VEHICLES[kind]
-        lat0, lon0, alt, hdg = LOCATIONS[location][kind]
+        lat0, lon0, alt, hdg = spawn[kind]
         beam = math.radians(hdg + 90)
         for i in range(n):
             lat, lon = offset(lat0, lon0, spacing * i * math.cos(beam), spacing * i * math.sin(beam))
@@ -87,21 +97,27 @@ def vehicle_specs(location, counts):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--location", choices=sorted(LOCATIONS), default=os.environ.get("MURMUR_LOCATION", "sandiego"))
+    ap.add_argument("--scenario", default=os.environ.get("MURMUR_SCENARIO") or None,
+                    help="tidewater scenario .toml; its [spawn] table overrides --location")
     for kind, n in DEFAULT_COUNTS.items():
         ap.add_argument(f"--{kind}s", type=int, default=n, help=f"number of {kind}s (default {n})")
     ap.add_argument("--bridge-host", default="127.0.0.1")
     ap.add_argument("--base-port", type=int, default=14560, help="vehicle i sends to base_port + i")
     ap.add_argument("--speedup", type=float, default=1.0)
+    ap.add_argument("--count-only", action="store_true", help="print how many vehicles would launch and exit")
     ap.add_argument("--keep-eeprom", action="store_true", help="keep params/missions between runs")
     args = ap.parse_args()
 
     counts = {kind: getattr(args, f"{kind}s") for kind in DEFAULT_COUNTS}
+    if args.count_only:
+        print(sum(counts.values()))
+        return
     for b in {VEHICLES[k][0] for k, n in counts.items() if n}:
         if not (BIN / b).exists():
             sys.exit(f"missing {BIN / b}; build with: make setup")
 
     procs = []
-    for inst, (kind, binary, model, home) in enumerate(vehicle_specs(args.location, counts)):
+    for inst, (kind, binary, model, home) in enumerate(vehicle_specs(scenario_spawn(args.scenario) if args.scenario else LOCATIONS[args.location], counts)):
         sysid = inst + 1
         workdir = ROOT / "run" / f"{sysid:02d}-{kind}"
         workdir.mkdir(parents=True, exist_ok=True)

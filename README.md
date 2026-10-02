@@ -23,6 +23,11 @@ Pick a location with `make up LOCATION=canaveral` (Cape Canaveral Skid Strip + A
 the default `sandiego` (NAS North Island + San Diego Bay). Presets live in `sim/swarm.py`;
 the map zooms to wherever the swarm is.
 
+**Real conditions:** `make goldengate AT=2026-06-14T10:00Z` starts the swarm at the Golden
+Gate from the [tidewater](../tidewater) sibling repo's scenario, and runs its driver so each
+vehicle gets the real tide current and wind at its position for that date and time (run
+`tidewater fetch` there first).
+
 Vehicles appear within a few seconds and get a GPS fix about 20 to 30 seconds after start.
 Logs go to `./logs`. To run the pieces separately use `make sim`, `make bridge` and `make web`
 in three terminals.

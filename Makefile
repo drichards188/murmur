@@ -1,4 +1,4 @@
-.PHONY: setup up down sim bridge web check
+.PHONY: setup up goldengate down sim bridge web check
 
 LOCATION ?= sandiego   # or canaveral
 
@@ -7,6 +7,9 @@ setup:   ## one-time: venv, ArduPilot SITL build, npm install
 
 up:      ## swarm + bridge + web, all at once
 	./scripts/up.sh --location $(LOCATION) $(ARGS)
+
+goldengate: ## Golden Gate with real tide/current/wind via ../tidewater (AT= scenario start time)
+	MURMUR_SCENARIO=$(HOME)/tidewater/scenarios/golden-gate-2026-06.toml MURMUR_AT=$(or $(AT),2026-06-14T10:00Z) ./scripts/up.sh $(ARGS)
 
 down:    ## stop a stack started with make up (e.g. from another terminal)
 	@if [ -f logs/up.pid ]; then kill -INT $$(cat logs/up.pid) && echo stopping; else echo "not running"; fi
