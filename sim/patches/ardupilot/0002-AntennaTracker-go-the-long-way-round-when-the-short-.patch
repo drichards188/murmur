@@ -1,0 +1,152 @@
+From f955da01ce5784f0894ee26af6d7686fa9b530c9 Mon Sep 17 00:00:00 2001
+From: David Richards <50757879+drichards188@users.noreply.github.com>
+Date: Fri, 2 Oct 2026 15:00:37 -0400
+Subject: [PATCH 2/2] AntennaTracker: go the long way round when the short way
+ hits a yaw limit
+
+get_ef_yaw_direction() only reversed when the vehicle was outside the
+mount's range both ways. With YAW_RANGE under 360 and a target reachable
+only the long way round, it took the short way, drove the servo into its
+limit and stayed there.
+
+Choose the way round by score instead: reaching the target beats not
+reaching it, then the shorter turn; out of reach, the way that ends
+closest. Latch the choice with a 5 degree margin so it can't flip every
+loop near a limit.
+
+The limits were measured from the filtered servo output, which runs far
+ahead of a mount still slewing toward it, so the choice flipped during
+long slews and the mount crawled or stalled. Once the mount has been
+seen at rest, record the earth-frame yaw of the servo centre and derive
+the mount position from the AHRS yaw (the AHRS rides on the antenna).
+
+Also reverse the wrapped yaw error in calc_angle_error(); the unwrapped
+difference could produce errors beyond a full turn.
+---
+ AntennaTracker/Tracker.h |  3 ++
+ AntennaTracker/mode.cpp  | 69 ++++++++++++++++++++++++++++------------
+ 2 files changed, 52 insertions(+), 20 deletions(-)
+
+diff --git a/AntennaTracker/Tracker.h b/AntennaTracker/Tracker.h
+index 0bd79a9..dc73e1e 100644
+--- a/AntennaTracker/Tracker.h
++++ b/AntennaTracker/Tracker.h
+@@ -131,6 +131,9 @@ private:
+         bool need_altitude_calibration  : 1;// true if tracker altitude has not been determined (true after startup)
+         bool scan_reverse_pitch         : 1;// controls direction of pitch movement in SCAN mode
+         bool scan_reverse_yaw           : 1;// controls direction of yaw movement in SCAN mode
++        int8_t yaw_direction;           // way round chosen to the target: 1 clockwise, -1 counter-clockwise, 0 not chosen yet
++        bool mount_yaw_offset_valid;    // true once mount_yaw_offset has been measured
++        float mount_yaw_offset;         // earth-frame yaw of the yaw servo's centre in centi-degrees, measured while the mount is at rest
+     } nav_status;
+ 
+     // setup the var_info table
+diff --git a/AntennaTracker/mode.cpp b/AntennaTracker/mode.cpp
+index ff1f462..098d720 100644
+--- a/AntennaTracker/mode.cpp
++++ b/AntennaTracker/mode.cpp
+@@ -82,10 +82,11 @@ void Mode::calc_angle_error(float pitch, float yaw, bool direction_reversed)
+     int32_t ahrs_yaw_cd = wrap_180_cd(ahrs.yaw_sensor);
+     int32_t ef_yaw_angle_error = wrap_180_cd(yaw - ahrs_yaw_cd);
+     if (direction_reversed) {
++        // the long way round: the same error, the other side of the circle
+         if (ef_yaw_angle_error > 0) {
+-            ef_yaw_angle_error = (yaw - ahrs_yaw_cd) - 36000;
++            ef_yaw_angle_error -= 36000;
+         } else {
+-            ef_yaw_angle_error = 36000 + (yaw - ahrs_yaw_cd);
++            ef_yaw_angle_error += 36000;
+         }
+     }
+ 
+@@ -129,10 +130,29 @@ bool Mode::convert_bf_to_ef(float pitch, float yaw, float& ef_pitch, float& ef_y
+ // return value is true if taking the long road to the target, false if normal, shortest direction should be used
+ bool Mode::get_ef_yaw_direction()
+ {
++    const AP_AHRS &ahrs = AP::ahrs();
++    struct Tracker::NavStatus &nav_status = tracker.nav_status;
++
++    /*
++      where the yaw servo is now, in centi-degrees from its centre. The
++      filtered servo output stands in for it, but it runs well ahead of a
++      mount that is still slewing toward the output. The antenna carries the
++      AHRS, so once the mount has been seen at rest (servo output steady and
++      no yaw rate) the earth-frame yaw of the servo centre is known, and the
++      mount position follows from the AHRS yaw from then on.
++     */
++    const float yaw_out = SRV_Channels::get_output_scaled(SRV_Channel::k_tracker_yaw);
++    if (fabsf(yaw_out - tracker.yaw_servo_out_filt.get()) < 200 && fabsf(degrees(ahrs.get_gyro().z)) < 1.0f) {
++        nav_status.mount_yaw_offset = wrap_180_cd(ahrs.yaw_sensor - yaw_out);
++        nav_status.mount_yaw_offset_valid = true;
++    }
++    const float yaw_servo_pos = nav_status.mount_yaw_offset_valid ?
++        wrap_180_cd(ahrs.yaw_sensor - nav_status.mount_yaw_offset) : tracker.yaw_servo_out_filt.get();
++
+     // calculating distances from current pitch/yaw to lower and upper limits in centi-degrees
+     Parameters &g = tracker.g;
+-    float yaw_angle_limit_lower =   (-g.yaw_range * 100.0f / 2.0f) - tracker.yaw_servo_out_filt.get();
+-    float yaw_angle_limit_upper =   (g.yaw_range * 100.0f / 2.0f) - tracker.yaw_servo_out_filt.get();
++    float yaw_angle_limit_lower =   (-g.yaw_range * 100.0f / 2.0f) - yaw_servo_pos;
++    float yaw_angle_limit_upper =   (g.yaw_range * 100.0f / 2.0f) - yaw_servo_pos;
+     float pitch_angle_limit_lower = (g.pitch_min * 100.0f) - tracker.pitch_servo_out_filt.get();
+     float pitch_angle_limit_upper = (g.pitch_max * 100.0f) - tracker.pitch_servo_out_filt.get();
+ 
+@@ -144,9 +164,7 @@ bool Mode::get_ef_yaw_direction()
+     convert_bf_to_ef(pitch_angle_limit_lower, yaw_angle_limit_lower, ef_pitch_limit_lower, ef_yaw_limit_lower);
+     convert_bf_to_ef(pitch_angle_limit_upper, yaw_angle_limit_upper, ef_pitch_limit_upper, ef_yaw_limit_upper);
+ 
+-    const AP_AHRS &ahrs = AP::ahrs();
+     float ef_yaw_current = wrap_180_cd(ahrs.yaw_sensor);
+-    struct Tracker::NavStatus &nav_status = tracker.nav_status;
+     float ef_yaw_target = wrap_180_cd((nav_status.bearing+g.yaw_trim)*100);
+     float ef_yaw_angle_error = wrap_180_cd(ef_yaw_target - ef_yaw_current);
+ 
+@@ -161,20 +179,31 @@ bool Mode::get_ef_yaw_direction()
+         yaw_angle_error_lower = ef_yaw_angle_error;
+     }
+ 
+-    // checks that the vehicle is outside the tracker's range
+-    if ((yaw_angle_error_lower < ef_yaw_limit_lower) && (yaw_angle_error_upper > ef_yaw_limit_upper)) {
+-        // if the tracker is trying to move clockwise to reach the vehicle,
+-        // but the tracker could get closer to the vehicle by moving counter-clockwise then set direction_reversed to true
+-        if (ef_yaw_angle_error>0 && ((ef_yaw_limit_lower - yaw_angle_error_lower) < (yaw_angle_error_upper - ef_yaw_limit_upper))) {
+-            return true;
+-        }
+-        // if the tracker is trying to move counter-clockwise to reach the vehicle,
+-        // but the tracker could get closer to the vehicle by moving then set direction_reversed to true
+-        if (ef_yaw_angle_error<0 && ((ef_yaw_limit_lower - yaw_angle_error_lower) > (yaw_angle_error_upper - ef_yaw_limit_upper))) {
+-            return true;
+-        }
++    /*
++      choose which way round to go. Reaching the vehicle beats not reaching
++      it, then the shorter turn wins; with the vehicle out of reach, the way
++      that ends closest to it wins. The choice is latched and only changes
++      when the other way is better by a margin, so a target near a limit
++      can't flip it every loop and leave the mount stalled between the two.
++     */
++    const float margin_cd = 500;
++    const float overshoot_cw = yaw_angle_error_upper - ef_yaw_limit_upper;   // > 0: past the clockwise limit
++    const float overshoot_ccw = ef_yaw_limit_lower - yaw_angle_error_lower;  // > 0: past the counter-clockwise limit
++    const float score_cw = overshoot_cw > 0 ? 36000 + overshoot_cw : yaw_angle_error_upper;
++    const float score_ccw = overshoot_ccw > 0 ? 36000 + overshoot_ccw : -yaw_angle_error_lower;
++
++    int8_t &direction = nav_status.yaw_direction;
++    if (direction == 0) {
++        direction = score_cw <= score_ccw ? 1 : -1;
++    } else if (direction > 0 && score_ccw < score_cw - margin_cd) {
++        direction = -1;
++    } else if (direction < 0 && score_cw < score_ccw - margin_cd) {
++        direction = 1;
+     }
+ 
+-    // if we get this far we can use the regular, shortest path to the target
+-    return false;
++    if (is_zero(ef_yaw_angle_error)) {
++        return false;
++    }
++    // reversed when the chosen way is not the shorter one
++    return (direction > 0) != (ef_yaw_angle_error > 0);
+ }
+-- 
+2.43.0
+

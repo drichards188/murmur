@@ -98,16 +98,32 @@ def plan(fleet, platforms):
     return vehicles
 
 
+def parse_parm(text):
+    """name -> value from an ArduPilot .parm file (comments and blank lines skipped)."""
+    out = {}
+    for line in text.splitlines():
+        fields = line.split("#", 1)[0].replace(",", " ").split()
+        if len(fields) >= 2:
+            out[fields[0]] = fields[1]
+    return out
+
+
 def sitl_command(v, spec, args, workdir):
     binary, model, _ = VEHICLES[spec["vehicle"]]
-    defaults = [str(ROOT / "params" / "common.parm")]
-    kind_parm = ROOT / "params" / f"{spec['vehicle']}.parm"
-    if kind_parm.exists():
-        defaults.append(str(kind_parm))
-    if spec.get("params"):
-        extra = workdir / "platform.parm"
-        extra.write_text("".join(f"{k} {val}\n" for k, val in spec["params"].items()))
-        defaults.append(str(extra))
+    # One merged defaults file (common, then kind, then platform params; later layers win),
+    # not a comma list of files: ArduPilot keeps only the last file's "every name resolved"
+    # flag (AP_Param::read_param_defaults_file), so when the last file had no MAVn_* params
+    # the MAVLink channels, created later in boot, missed common.parm's stream rates and
+    # streamed their built-in defaults (ArduPlane: ~22 extra msg/s, murmur-yjq).
+    layers = [ROOT / "params" / "common.parm", ROOT / "params" / f"{spec['vehicle']}.parm"]
+    merged = {}
+    for layer in layers:
+        if layer.exists():
+            merged.update(parse_parm(layer.read_text()))
+    merged.update({k: str(val) for k, val in (spec.get("params") or {}).items()})
+    defaults_file = workdir / "defaults.parm"
+    defaults_file.write_text("".join(f"{k} {val}\n" for k, val in merged.items()))
+    defaults = [str(defaults_file)]
     lat, lon, alt, hdg = v["home"]
     cmd = [
         str(BIN / binary),

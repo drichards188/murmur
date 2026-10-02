@@ -70,7 +70,7 @@ altitude (or depth, for subs) and spread around orbit circles.
 | blimp | Blimp | orbit, patrol, hold, RTL | slow: ~0.3 m/s in SITL |
 | boat | ArduRover (motorboat) | orbit, patrol, hold, RTL | |
 | sub | ArduSub | orbit, patrol, hold, RTL | 5 m depth; no RTL mode, so RTL is a mission home |
-| tracker | AntennaTracker | track, hold | **Track**: select the tracker + one vehicle; the bridge relays that vehicle's position to it. Known issue `murmur-9bf`: stalls for some bearings. |
+| tracker | AntennaTracker | track, hold | **Track**: select the tracker + one vehicle; the bridge relays that vehicle's position to it. Needs the ArduPilot patches in `sim/patches/ardupilot/` and `~/tidewater/patches/ardupilot/`; the SITL mount then turns +/-170 deg about its spawn heading, and a target in the 20 deg gap behind it gets the nearest limit. |
 
 Tasks wait in `queued` until the vehicle's EKF has a usable position (a GPS fix arrives seconds
 earlier, and autopilots refuse AUTO until the EKF is ready). `make down` stops a running stack.

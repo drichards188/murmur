@@ -1,0 +1,16 @@
+# Layered on top of ArduPilot's built-in antenna tracker defaults.
+# Match the firmware's idea of the mount to the SITL tracker model (libraries/SITL/SIM_Tracker):
+# its servos map 1000-2000 us to +/-170 deg of yaw and +/-45 deg of pitch. With the stock
+# 1100-1900 us and YAW_RANGE 360 the sim only reached +/-136 deg, and the firmware, believing
+# it had +/-180, drove into that stop and stalled ~45 deg short of targets east of it
+# (murmur-9bf). The model can't reach a 20 deg gap behind the mount: due east with stock
+# ArduPilot, behind the start heading with ~/tidewater/patches/ardupilot/0002 (fleet spawn heading).
+YAW_RANGE 340
+SERVO1_MIN 1000
+SERVO1_MAX 2000
+SERVO1_TRIM 1500
+PITCH_MIN -45
+PITCH_MAX 45
+SERVO2_MIN 1000
+SERVO2_MAX 2000
+SERVO2_TRIM 1500
