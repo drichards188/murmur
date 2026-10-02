@@ -1,8 +1,7 @@
-import { IconLayer, LineLayer, PathLayer, ScatterplotLayer, SolidPolygonLayer } from '@deck.gl/layers'
+import { LineLayer, PathLayer, ScatterplotLayer, SolidPolygonLayer } from '@deck.gl/layers'
 import type { LiftedBridge } from './bridges'
-import { symbolSvg } from './symbols'
 import type { Vehicle } from './types'
-import { domainOf, isStale } from './types'
+import { domainOf } from './types'
 
 // Heights are exaggerated in 3D so 80 m altitudes and 5 m depths read at bay scale.
 // Terrain uses the same factor, so vehicles stay in the right place relative to hills and seabed.
@@ -32,21 +31,6 @@ export function drawnHeight(v: Vehicle) {
   return z(v.alt_msl)
 }
 
-function iconFor(v: Vehicle, labels = true) {
-  const stale = isStale(v)
-  // no heading arrow in 3D: the 3D trail shows direction, and a stable icon per vehicle
-  // keeps deck.gl from rebuilding its icon texture on every turn
-  const sym = symbolSvg(v, { stale, heading: false, labels })
-  return {
-    url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(sym.svg)}`,
-    id: `${v.uid}|${stale}|${labels}`,
-    width: Math.ceil(sym.size.width),
-    height: Math.ceil(sym.size.height),
-    anchorX: sym.anchor.x,
-    anchorY: sym.anchor.y,
-  }
-}
-
 /** A translucent sea-level plane around the swarm. Land above 0 m shows through it;
  *  the seabed and anything submerged are seen through the water. */
 function seaSurface(vehicles: Vehicle[]) {
@@ -66,16 +50,12 @@ function seaSurface(vehicles: Vehicle[]) {
   return [{ polygon }]
 }
 
-/** visible=false keeps the layers (and their GPU resources) alive while the 2D view is shown.
- *  `bare`: vehicles drawn without labels (crowded; see declutter.ts). */
-export function build3dLayers(
-  vehicles: Vehicle[],
-  selected: Set<number>,
-  visible = true,
-  bridges: LiftedBridge[] = [],
-  bare: Set<number> = new Set(),
-) {
-  const placed = vehicles.filter((v) => v.position && v.alt_msl != null)
+/** The 3D scene around the vehicles: bridge decks, sea surface, trails, height stems and
+ *  sea-level shadows. The vehicles themselves (both views) are in vehicleLayers.ts.
+ *  visible=false keeps the layers (and their GPU resources) alive while the 2D view is shown. */
+export function build3dLayers(vehicles: Vehicle[], visible = true, bridges: LiftedBridge[] = []) {
+  // nothing to compute while 2D is shown: the layers stay (hidden), their data is empty
+  const placed = visible ? vehicles.filter((v) => v.position && v.alt_msl != null) : []
   const at = (v: Vehicle): XYZ => [v.position![0], v.position![1], z(v.alt_msl)]
   return [
     // bridge decks at estimated height (see bridges.ts); drawn before the sea surface
@@ -128,34 +108,6 @@ export function build3dLayers(
       getRadius: 4,
       radiusUnits: 'pixels',
       getFillColor: [0, 0, 0, 110],
-    }),
-    new ScatterplotLayer<Vehicle>({
-      id: 'selection',
-      visible,
-      data: placed.filter((v) => selected.has(v.uid)),
-      getPosition: at,
-      getRadius: 24,
-      radiusUnits: 'pixels',
-      billboard: true,
-      stroked: true,
-      filled: false,
-      getLineColor: [255, 179, 71, 255],
-      getLineWidth: 2,
-      lineWidthUnits: 'pixels',
-    }),
-    new IconLayer<Vehicle>({
-      id: 'vehicles-3d',
-      visible,
-      data: placed,
-      pickable: true,
-      getPosition: at,
-      getIcon: (v) => iconFor(v, !bare.has(v.uid)),
-      getSize: (v) => iconFor(v, !bare.has(v.uid)).height,
-      sizeUnits: 'pixels',
-      updateTriggers: {
-        getIcon: placed.map((v) => `${v.uid}|${isStale(v)}|${bare.has(v.uid)}`).join(),
-        getSize: placed.map((v) => bare.has(v.uid)).join(),
-      },
     }),
   ]
 }

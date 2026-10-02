@@ -1,6 +1,7 @@
 /// <reference types="geojson" />
 import * as maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
+import type { LayersList, PickingInfo } from '@deck.gl/core'
 import { MapboxOverlay } from '@deck.gl/mapbox'
 import { useEffect, useRef, useState } from 'react'
 import { circle, distanceM } from './geo'
@@ -10,9 +11,9 @@ import { declutter } from './declutter'
 import type { SpaceOverlay } from './space'
 import { EMPTY_OVERLAY } from './space'
 import { linkStubs, spaceFeatures, spaceLinkLayers } from './spaceLayers'
-import { symbolSvg } from './symbols'
 import type { LngLat, Tasking, Vehicle } from './types'
-import { callsign, isStale } from './types'
+import { callsign } from './types'
+import { buildVehicleLayers, VEHICLE_PICK_LAYERS } from './vehicleLayers'
 
 export interface Draft {
   mode: 'orbit' | 'patrol' | null
@@ -44,7 +45,17 @@ interface Props {
   space?: SpaceOverlay
   /** the view after every move: centre and bounds (w, s, e, n) */
   onView?: (center: LngLat, bounds: [number, number, number, number]) => void
+  /** Extension point for more deck.gl layers (tracks, contacts, ...): called with the current
+   *  view whenever MapView rebuilds its layers, and again whenever this function changes, so
+   *  pass a memoised callback whose identity changes when its data does. Its layers draw above
+   *  the map and the 3D scene and below the vehicles; they survive a WebGL context loss (the
+   *  overlay is rebuilt from this callback). Hide 3D-only layers with `visible: view === '3d'`.
+   *  Pickable layers get deck.gl's own onClick/onHover. */
+  layers?: MapLayers
 }
+
+export type ViewMode = '2d' | '3d'
+export type MapLayers = (view: ViewMode) => LayersList
 
 /** pending-approval previews from the inbox: dashed violet, the one being read in bold */
 function addPreviewLayers(m: maplibregl.Map) {
@@ -153,7 +164,6 @@ function trailFeatures(vehicles: Vehicle[]): FC {
   }
 }
 
-type ViewMode = '2d' | '3d'
 const MAX_PITCH = 85
 // middle-drag orbit sensitivity, degrees per pixel
 const ORBIT_YAW = 0.35
@@ -168,7 +178,7 @@ function savedView(): ViewMode {
   }
 }
 
-/** 2D: flat map, HTML symbol markers. 3D: terrain + seabed, tilted camera, vehicles drawn by
+/** 2D: flat map, vehicles drawn flat by deck.gl. 3D: terrain + seabed, tilted camera, vehicles drawn by
  *  deck.gl at their true altitude/depth. Tasking and drafting work the same in both. */
 // original filters of the style's road layers, so 2D can restore them
 const roadFilters = new WeakMap<maplibregl.Map, Map<string, maplibregl.FilterSpecification | undefined>>()
@@ -191,18 +201,19 @@ function setDrapedBridges(m: maplibregl.Map, show: boolean) {
   }
 }
 
-function applyView(m: maplibregl.Map, view: ViewMode) {
+/** `animate`: tilt the camera into the view (a toggle); false keeps it (restoring a lost context) */
+function applyView(m: maplibregl.Map, view: ViewMode, animate = true) {
   setDrapedBridges(m, view === '2d')
   if (view === '3d') {
     m.setTerrain({ source: 'dem', exaggeration: HEIGHT_EXAGGERATION })
     m.setLayoutProperty('hillshade', 'visibility', 'visible')
     m.setLayoutProperty('trails', 'visibility', 'none')
-    m.easeTo({ pitch: 62, bearing: m.getBearing() || -25, duration: 900 })
+    if (animate) m.easeTo({ pitch: 62, bearing: m.getBearing() || -25, duration: 900 })
   } else {
     m.setTerrain(null)
     m.setLayoutProperty('hillshade', 'visibility', 'none')
     m.setLayoutProperty('trails', 'visibility', 'visible')
-    m.easeTo({ pitch: 0, bearing: 0, duration: 700 })
+    if (animate) m.easeTo({ pitch: 0, bearing: 0, duration: 700 })
   }
 }
 
@@ -273,7 +284,7 @@ function setSpaceData(m: maplibregl.Map, space: SpaceOverlay, view: ViewMode) {
 /** width of the vehicle details card (.vdetails) plus its margin */
 const FOLLOW_PAD_LEFT = 350
 
-export function MapView({ vehicles, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView }: Props) {
+export function MapView({ vehicles, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers }: Props) {
   const [view, setView] = useState<ViewMode>(savedView)
   const viewRef = useRef(view)
   const overlay = useRef<MapboxOverlay | null>(null)
@@ -281,15 +292,29 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
   const latest = useRef({ vehicles, selected, bare: new Set<number>() })
   const spaceRef = useRef(space)
   const previewRef = useRef(preview)
+  const layersRef = useRef(layers)
   const viewCb = useRef(onView)
   // bumped when the camera stops, so label declutter re-runs at the new scale
   const [moved, setMoved] = useState(0)
+  // WebGL context lost: the map and deck.gl are paused until the browser restores it
+  const [glLost, setGlLost] = useState(false)
+  // the same for map callbacks: no camera moves while lost (with terrain on, MapLibre draws
+  // a depth pass to unproject, and its painter is gone)
+  const lostRef = useRef(false)
+  // bumped to throw the map away and build a new one (context restored, or the Reload button)
+  const [mapGen, setMapGen] = useState(0)
+  // the camera to come back to after a rebuild
+  const camera = useRef<{ center: maplibregl.LngLat; zoom: number; bearing: number; pitch: number } | null>(null)
+  // bumped when the style is (re)loaded, first load or back from a context loss, so every
+  // source and layer is pushed again
+  const [styleGen, setStyleGen] = useState(0)
   const container = useRef<HTMLDivElement>(null)
+  const tooltip = useRef<HTMLDivElement>(null)
   const map = useRef<maplibregl.Map | null>(null)
   const ready = useRef(false)
   // centroid we last zoomed to; refit when the swarm shows up somewhere else (new --location)
   const fitAt = useRef<LngLat | null>(null)
-  const markers = useRef(new Map<number, { marker: maplibregl.Marker; el: HTMLDivElement; key: string }>())
+  const cursor = useRef('')
   const clickRef = useRef(onMapClick)
   const toggleRef = useRef(onToggle)
   const deselectRef = useRef(onDeselect)
@@ -300,41 +325,102 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
     viewCb.current = onView
   }, [onMapClick, onToggle, onDeselect, onView])
 
-  /** vehicles, bridges and SATCOM link lines for deck.gl (3D only; hidden layers in 2D) */
-  const deckLayers = (is3d: boolean) => {
+  /** everything deck.gl draws: the 3D scene (hidden in 2D), SATCOM links, extension layers
+   *  (the `layers` prop), then the vehicles on top */
+  const deckLayers = (is3d: boolean): LayersList => {
     const { vehicles: vs, selected: sel, bare } = latest.current
-    return [...build3dLayers(vs, sel, is3d, bridges.current, bare), ...spaceLinkLayers(spaceRef.current.links, is3d)]
+    return [
+      ...build3dLayers(vs, is3d, bridges.current),
+      ...spaceLinkLayers(spaceRef.current.links, is3d),
+      ...(layersRef.current?.(is3d ? '3d' : '2d') ?? []),
+      ...buildVehicleLayers({ vehicles: vs, selected: sel, bare, is3d }),
+    ]
   }
+  const pushLayers = () => overlay.current?.setProps({ layers: deckLayers(viewRef.current === '3d') })
 
   useEffect(() => {
-    const live = markers.current
+    const cam = camera.current
     const m = new maplibregl.Map({
       container: container.current!,
       style: STYLE,
-      center: START,
-      zoom: 12.6,
+      center: cam?.center ?? START,
+      zoom: cam?.zoom ?? 12.6,
+      bearing: cam?.bearing ?? 0,
+      pitch: cam?.pitch ?? 0,
       attributionControl: { compact: true },
       maxPitch: MAX_PITCH,
     })
     if (import.meta.env.DEV) (window as unknown as { murmurMap: maplibregl.Map }).murmurMap = m
-    const deck = new MapboxOverlay({ interleaved: true, layers: [] })
-    m.addControl(deck)
-    overlay.current = deck
+
+    // Bare symbols (decluttered) show their callsign on hover; any vehicle shows a pointer.
+    const onHover = (info: PickingInfo) => {
+      const v = info.layer && VEHICLE_PICK_LAYERS.includes(info.layer.id) ? (info.object as Vehicle | undefined) : undefined
+      m.getCanvas().style.cursor = v ? 'pointer' : cursor.current
+      const tip = tooltip.current
+      if (!tip) return
+      if (v && latest.current.bare.has(v.uid)) {
+        tip.textContent = `${callsign(v)}${v.identity?.short ? ` · ${v.identity.short}` : ''}`
+        tip.style.transform = `translate(${info.x}px, ${info.y - 14}px) translate(-50%, -100%)`
+        tip.hidden = false
+      } else tip.hidden = true
+    }
+    const attachDeck = () => {
+      const deck = new MapboxOverlay({ interleaved: true, layers: [], onHover })
+      m.addControl(deck)
+      overlay.current = deck
+    }
+    attachDeck()
     m.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'bottom-right')
     m.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left')
-    m.on('click', (e: maplibregl.MapMouseEvent) => {
-      // in 3D, vehicles are deck.gl objects: a click on one selects it instead of drafting
-      if (viewRef.current === '3d') {
-        const hit = deck.pickObject({ x: e.point.x, y: e.point.y, radius: 6, layerIds: ['vehicles-3d'] })
-        if (hit?.object) {
-          toggleRef.current((hit.object as Vehicle).uid)
-          return
+
+    // murmur-s8w: a lost WebGL context took the page down (deck.gl asked the map for its
+    // projection, but MapLibre drops its style on context loss). Detach deck.gl while the context
+    // is gone, and on restore build a fresh overlay and its layers on the restored style.
+    m.on('webglcontextlost', () => {
+      ready.current = false
+      lostRef.current = true
+      m.stop()
+      camera.current = { center: m.getCenter(), zoom: m.getZoom(), bearing: m.getBearing(), pitch: m.getPitch() }
+      // no gestures either (MapLibre owns the container's classes, so not through React)
+      m.getContainer().classList.add('gl-lost')
+      const deck = overlay.current
+      overlay.current = null
+      if (deck) {
+        try {
+          m.removeControl(deck)
+        } catch (err) {
+          console.warn('[murmur] removing the deck.gl overlay after context loss', err)
+          ;(m as unknown as { __deck?: unknown }).__deck = null
         }
       }
+      if (tooltip.current) tooltip.current.hidden = true
+      setGlLost(true)
+    })
+    // MapLibre can restore its own style in place, but not reliably with terrain on (its
+    // render-to-texture framebuffers belong to the dead context), and luma.gl caches its device
+    // on the context object. A fresh map on a fresh canvas is the dependable way back: same
+    // camera, same sources (pushed again on load), a new deck.gl overlay and layers.
+    m.on('webglcontextrestored', () => setMapGen((n) => n + 1))
+
+    /** the vehicle under a screen point, in either view */
+    const pickVehicle = (p: maplibregl.Point) => {
+      const deck = overlay.current
+      if (!deck || !ready.current) return null
+      try {
+        const hit = deck.pickObject({ x: p.x, y: p.y, radius: 6, layerIds: VEHICLE_PICK_LAYERS })
+        return (hit?.object as Vehicle | undefined) ?? null
+      } catch {
+        return null // deck.gl not initialised yet
+      }
+    }
+    m.on('click', (e: maplibregl.MapMouseEvent) => {
+      // vehicles are deck.gl objects: a click on one selects it instead of drafting
+      const v = pickVehicle(e.point)
+      if (v) return toggleRef.current(v.uid)
       clickRef.current([e.lngLat.lng, e.lngLat.lat])
     })
-    // Right click deselects: a vehicle in 3D, else everything. A right drag rotates the map
-    // instead, so only a press that barely moved counts as a click.
+    // Right click deselects: a vehicle under the pointer, else everything. A right drag rotates
+    // the map instead, so only a press that barely moved counts as a click.
     let rightDown: { x: number; y: number } | null = null
     m.on('mousedown', (e: maplibregl.MapMouseEvent) => {
       if (e.originalEvent.button === 2) rightDown = { x: e.point.x, y: e.point.y }
@@ -344,11 +430,8 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
       const d = rightDown ? Math.hypot(e.point.x - rightDown.x, e.point.y - rightDown.y) : 0
       rightDown = null
       if (d > 5) return
-      if (viewRef.current === '3d') {
-        const hit = deck.pickObject({ x: e.point.x, y: e.point.y, radius: 6, layerIds: ['vehicles-3d'] })
-        if (hit?.object) return deselectRef.current?.((hit.object as Vehicle).uid)
-      }
-      deselectRef.current?.(null)
+      const v = pickVehicle(e.point)
+      deselectRef.current?.(v ? v.uid : null)
     })
     // Middle-drag orbits the camera like a 3D modelling tool: left/right spins (bearing),
     // up/down tilts (pitch). In 2D only the spin applies, so the map stays flat.
@@ -362,7 +445,7 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
       surface.style.cursor = 'grabbing'
     }
     const onMove = (e: MouseEvent) => {
-      if (!orbit) return
+      if (!orbit || lostRef.current) return
       const bearing = orbit.bearing + (e.clientX - orbit.x) * ORBIT_YAW
       const pitch =
         viewRef.current === '3d' ? Math.max(0, Math.min(MAX_PITCH, orbit.pitch - (e.clientY - orbit.y) * ORBIT_TILT)) : 0
@@ -481,7 +564,9 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
       ready.current = true
       if (viewRef.current === '3d') applyView(m, '3d')
       setSpaceData(m, spaceRef.current, viewRef.current)
+      pushLayers()
       reportView()
+      setStyleGen((n) => n + 1)
     })
     // re-estimate bridge decks when the 3D camera stops or new map/terrain tiles arrive.
     // (Not 'idle': live vehicle updates repaint the map several times a second, so it never is.)
@@ -489,7 +574,7 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
     const refreshBridges = () => {
       window.clearTimeout(bridgeTimer)
       bridgeTimer = window.setTimeout(() => {
-        if (viewRef.current !== '3d' || !m.getTerrain()) return
+        if (!ready.current || viewRef.current !== '3d' || !m.getTerrain()) return
         const t0 = performance.now()
         bridges.current = liftBridges(m)
         if (import.meta.env.DEV) {
@@ -498,10 +583,11 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
           ;(w.murmurPerf.liftBridges ??= []).push(performance.now() - t0)
         }
         if (import.meta.env.DEV) (window as unknown as { murmurBridges: LiftedBridge[] }).murmurBridges = bridges.current
-        deck.setProps({ layers: deckLayers(true) })
+        pushLayers()
       }, 400)
     }
     const reportView = () => {
+      if (!ready.current) return
       const c = m.getCenter()
       const b = m.getBounds()
       viewCb.current?.([c.lng, c.lat], [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()])
@@ -520,17 +606,30 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
       surface.removeEventListener('auxclick', noAux)
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
-      live.forEach(({ marker }) => marker.remove())
-      live.clear()
-      m.remove()
+      window.clearTimeout(bridgeTimer)
+      if (map.current === m) map.current = null
+      if (following.current) {
+        following.current = null
+        followingCb.current?.(false)
+      }
+      try {
+        m.remove()
+      } catch (err) {
+        console.warn('[murmur] removing a map after context loss', err)
+      }
+      // a rebuilt map comes up without the paused state
+      lostRef.current = false
+      setGlLost(false)
     }
-  }, [])
+    // mapGen: rebuild after a WebGL context loss (see webglcontextrestored)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapGen])
 
-  // vehicle markers
+  // Vehicles: deck.gl layers rebuilt here only (a new state from the bridge, a selection, the
+  // view, or a zoom that changes the declutter), never per frame.
   useEffect(() => {
     const m = map.current
     if (!m) return
-    const seen = new Set<number>()
     // murmur-02g: where symbols bunch up (planes on a runway), only one keeps its labels;
     // the rest show the bare symbol and their callsign on hover
     const bare = declutter(
@@ -538,68 +637,25 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
       selected,
       m.getZoom(),
     )
-    for (const v of vehicles) {
-      if (!v.position) continue
-      seen.add(v.uid)
-      const stale = isStale(v)
-      const labels = !bare.has(v.uid)
-      const sym = symbolSvg(v, { stale, labels })
-      const isSel = selected.has(v.uid)
-      const staleS = stale ? Math.floor((v.link.since_last_ms ?? 0) / 1000) : 0
-      const key = `${sym.svg.length}|${sym.anchor.x}|${sym.anchor.y}|${isSel}|${staleS}|${v.heading}|${labels}`
-      let entry = markers.current.get(v.uid)
-      if (!entry) {
-        const el = document.createElement('div')
-        el.className = 'vmarker'
-        el.addEventListener('click', (e) => {
-          e.stopPropagation()
-          toggleRef.current(v.uid)
-        })
-        el.addEventListener('contextmenu', (e) => {
-          e.preventDefault()
-          e.stopPropagation()
-          deselectRef.current?.(v.uid)
-        })
-        const marker = new maplibregl.Marker({ element: el, anchor: 'top-left' }).setLngLat(v.position).addTo(m)
-        entry = { marker, el, key: '' }
-        markers.current.set(v.uid, entry)
-      }
-      if (entry.key !== key) {
-        entry.el.innerHTML =
-          sym.svg +
-          (isSel ? `<span class="vmarker-ring" style="left:${sym.anchor.x}px;top:${sym.anchor.y}px"></span>` : '') +
-          (stale ? `<span class="vmarker-lost" style="left:${sym.anchor.x}px;top:${sym.anchor.y + 22}px">LOST ${staleS}s</span>` : '')
-        entry.el.classList.toggle('stale', stale)
-        entry.el.classList.toggle('bare', !labels)
-        entry.el.dataset.callsign = labels ? '' : `${callsign(v)}${v.identity?.short ? ` · ${v.identity.short}` : ''}`
-        entry.marker.setOffset([-sym.anchor.x, -sym.anchor.y])
-        entry.key = key
-      }
-      entry.marker.setLngLat(v.position)
-    }
-    for (const [uid, entry] of markers.current) {
-      if (!seen.has(uid)) {
-        entry.marker.remove()
-        markers.current.delete(uid)
-      }
-    }
-    for (const { el } of markers.current.values()) el.style.display = view === '3d' ? 'none' : ''
     latest.current = { vehicles, selected, bare }
     const t1 = performance.now()
-    overlay.current?.setProps({ layers: deckLayers(view === '3d') })
+    pushLayers()
     if (import.meta.env.DEV) {
       const w = window as unknown as { murmurPerf: Record<string, number[]> }
       w.murmurPerf ??= {}
-      ;(w.murmurPerf.build3d ??= []).push(performance.now() - t1)
+      const a = (w.murmurPerf.vehicleLayers ??= [])
+      a.push(performance.now() - t1)
+      if (a.length > 200) a.splice(0, a.length - 200)
     }
 
     if (ready.current) {
-      ;(m.getSource('trails') as maplibregl.GeoJSONSource).setData(trailFeatures(vehicles))
+      // the 2D trails layer is hidden in 3D: skip rebuilding it there
+      if (view === '2d') (m.getSource('trails') as maplibregl.GeoJSONSource).setData(trailFeatures(vehicles))
       ;(m.getSource('beams') as maplibregl.GeoJSONSource).setData(beamFeatures(vehicles))
     }
 
     const pts = vehicles.flatMap((v) => (v.position ? [v.position] : []))
-    if (pts.length) {
+    if (pts.length && !lostRef.current) {
       const c: LngLat = [pts.reduce((a, p) => a + p[0], 0) / pts.length, pts.reduce((a, p) => a + p[1], 0) / pts.length]
       if (!fitAt.current || distanceM(fitAt.current, c) > 50_000) {
         const b = new maplibregl.LngLatBounds(pts[0], pts[0])
@@ -608,18 +664,26 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
         fitAt.current = c
       }
     }
-    // deckLayers reads refs; moved re-runs the declutter after a zoom
+    // pushLayers reads refs; moved re-runs the declutter after a zoom, styleGen after a (re)load
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vehicles, selected, view, moved])
+  }, [vehicles, selected, view, moved, styleGen])
 
   useEffect(() => {
     spaceRef.current = space
     const m = map.current
     if (!m || !ready.current) return
     setSpaceData(m, space, view)
-    overlay.current?.setProps({ layers: deckLayers(view === '3d') })
+    pushLayers()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [space, view])
+  }, [space, view, styleGen])
+
+  // extension layers changed (see the `layers` prop)
+  useEffect(() => {
+    if (layersRef.current === layers) return
+    layersRef.current = layers
+    pushLayers()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layers])
 
   const vehiclesRef = useRef(vehicles)
   useEffect(() => {
@@ -657,7 +721,7 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
         return
       }
       const v = vehiclesRef.current.find((x) => x.uid === uid)
-      if (v?.position && !m.isZooming() && !m.isRotating()) {
+      if (v?.position && !lostRef.current && !m.isZooming() && !m.isRotating()) {
         const k = 1 - Math.exp(-dt / 0.25)
         const c = m.getCenter()
         const elev = viewRef.current === '3d' ? drawnHeight(v) : 0
@@ -678,7 +742,7 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
 
   useEffect(() => {
     const m = map.current
-    if (!focus || !m) return
+    if (!focus || !m || lostRef.current) return
     const v = vehiclesRef.current.find((x) => x.uid === focus.uid)
     if (!v?.position) return
     if (follow === focus.uid) {
@@ -715,16 +779,18 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
 
   useEffect(() => {
     if (ready.current) (map.current?.getSource('taskings') as maplibregl.GeoJSONSource | undefined)?.setData(taskingFeatures(taskings))
-  }, [taskings])
+    // styleGen: push again after a (re)load
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskings, styleGen])
 
   useEffect(() => {
     previewRef.current = preview
     if (ready.current) (map.current?.getSource('inbox-preview') as maplibregl.GeoJSONSource | undefined)?.setData(preview)
-  }, [preview])
+  }, [preview, styleGen])
 
   useEffect(() => {
     const m = map.current
-    if (!fit || !m || fit.points.length === 0) return
+    if (!fit || !m || fit.points.length === 0 || lostRef.current) return
     const bounds = new maplibregl.LngLatBounds(fit.points[0], fit.points[0])
     for (const p of fit.points) bounds.extend(p)
     m.fitBounds(bounds, { padding: { top: 70, bottom: 70, left: 70, right: fit.padRight + 20 }, maxZoom: 13, duration: 1000 })
@@ -732,12 +798,22 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
 
   useEffect(() => {
     if (ready.current) (map.current?.getSource('draft') as maplibregl.GeoJSONSource | undefined)?.setData(draftFeatures(draft))
-    if (map.current) map.current.getCanvas().style.cursor = draft.mode ? 'crosshair' : ''
-  }, [draft])
+    cursor.current = draft.mode ? 'crosshair' : ''
+    if (map.current) map.current.getCanvas().style.cursor = cursor.current
+  }, [draft, styleGen])
 
   return (
     <>
       <div ref={container} className="map" />
+      <div ref={tooltip} className="vtip" hidden />
+      {glLost && (
+        <div className="banner gl-banner" role="status">
+          Map graphics paused: the browser lost the WebGL context. Waiting for it to come back…{' '}
+          <button className="ghost mini" onClick={() => setMapGen((n) => n + 1)}>
+            Reload map
+          </button>
+        </div>
+      )}
       <div className="viewtoggle" role="group" aria-label="Map view">
         <button className={view === '2d' ? 'on' : ''} onClick={() => setView('2d')}>
           2D
