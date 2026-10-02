@@ -28,7 +28,7 @@ Browser, 100 nodes, measured in a headless Chromium that renders WebGL in softwa
 - 3D: 2 fps, but terrain alone gives 2-3 fps in that renderer with or without vehicles, so
   this measures the test setup, not Murmur. Check on a real GPU with `?perf` in the URL.
 
-## Rust bridge, and past 255 vehicles (2026-10-03)
+## Rust bridge, and past 255 vehicles (2026-10-02)
 
 Same machine and method (`scripts/measure.py --seconds 30`, one WebSocket client), both bridges
 on the same fleet, measured back to back. `scale-300` is 300 stand-ins, so MAVLink sysids wrap
