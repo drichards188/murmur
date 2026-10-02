@@ -14,7 +14,8 @@ import urllib.request
 
 import websockets
 
-BRIDGE = os.environ.get("MURMUR_BRIDGE", "http://127.0.0.1:8765")
+PORT = int(os.environ.get("MURMUR_HTTP_PORT", 8765))
+BRIDGE = os.environ.get("MURMUR_BRIDGE_URL", f"http://127.0.0.1:{PORT}")
 
 
 def state():
@@ -27,12 +28,27 @@ def bridge_pid():
         if not pid.isdigit():
             continue
         try:
-            cmd = open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\0", b" ").decode()
+            argv = open(f"/proc/{pid}/cmdline", "rb").read().decode().split("\0")
         except OSError:
             continue
-        if "-m murmur_bridge" in cmd and "python" in cmd:
-            return int(pid)
+        cmd = " ".join(argv)
+        rust = os.path.basename(argv[0]) == "murmur-bridge"
+        if rust or ("-m murmur_bridge" in cmd and "python" in cmd):
+            if port_of(int(pid)) in (None, PORT):
+                return int(pid)
     return None
+
+
+def port_of(pid):
+    """The HTTP port a bridge process was started with (several stacks can run at once)."""
+    try:
+        env = open(f"/proc/{pid}/environ", "rb").read().decode(errors="replace").split("\0")
+    except OSError:
+        return None
+    for kv in env:
+        if kv.startswith("MURMUR_HTTP_PORT="):
+            return int(kv.split("=", 1)[1])
+    return 8765
 
 
 def cpu_seconds(pid):
