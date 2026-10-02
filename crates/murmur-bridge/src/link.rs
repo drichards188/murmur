@@ -17,6 +17,15 @@ use crate::world::World;
 pub const LOSS_WINDOW_S: i64 = 10;
 /// Pings that never came back are forgotten after this long.
 const TIMESYNC_FORGET_S: f64 = 10.0;
+/// A streaming link hears at least the 1 Hz HEARTBEAT.
+pub const STREAMING_INTERVAL_MS: u32 = 1000;
+/// A link that has gone over to HIGH_LATENCY2 (an AUV on an acoustic modem under water)
+/// reports this often: the stand-ins' `ACOUSTIC_STATUS_S`, from survey AUVs reporting status
+/// acoustically every few tens of seconds (see crates/murmur-standins/src/telemetry.rs).
+pub const HIGH_LATENCY_INTERVAL_MS: u32 = 20_000;
+/// A link counts as lost after this many expected intervals of silence: 3 s when streaming
+/// (the inbox's long-standing "no telemetry for more than 3 s"), 60 s on an acoustic link.
+pub const STALE_INTERVALS: f64 = 3.0;
 
 /// Somewhere MAVLink can be sent: a vehicle's UDP link, or a fake one in tests.
 pub trait Transmit: Send + Sync {
@@ -36,6 +45,16 @@ pub struct LinkSnapshot {
     pub last_rx_t: Option<f64>,
     pub loss_pct: Option<i64>,
     pub rtt_ms: Option<i64>,
+    /// How often this link should be heard from: 1 s streaming, 20 s on HIGH_LATENCY2.
+    /// Silence longer than `STALE_INTERVALS` of these is a lost link.
+    pub expected_interval_ms: u32,
+}
+
+impl LinkSnapshot {
+    /// Seconds of silence after which the link counts as lost.
+    pub fn stale_after_s(&self) -> f64 {
+        STALE_INTERVALS * f64::from(self.expected_interval_ms) / 1000.0
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -58,9 +77,29 @@ pub struct LinkStats {
     pub by_type: BTreeMap<&'static str, u64>,
     /// TIMESYNC ts1 -> monotonic send time
     timesync_sent: HashMap<i64, f64>,
+    /// The vehicle reports by HIGH_LATENCY2 instead of streaming (low-rate link).
+    pub high_latency: bool,
 }
 
 impl LinkStats {
+    /// What kind of reporting an autopilot message shows: HIGH_LATENCY2 means the vehicle
+    /// is on its low-rate link; a stream message (position) means it is streaming again.
+    pub fn on_message(&mut self, msg: &MavMessage) {
+        match msg {
+            MavMessage::HIGH_LATENCY2(_) => self.high_latency = true,
+            MavMessage::GLOBAL_POSITION_INT(_) => self.high_latency = false,
+            _ => {}
+        }
+    }
+
+    pub fn expected_interval_ms(&self) -> u32 {
+        if self.high_latency {
+            HIGH_LATENCY_INTERVAL_MS
+        } else {
+            STREAMING_INTERVAL_MS
+        }
+    }
+
     /// A packet from the autopilot component, with its MAVLink sequence number.
     pub fn on_packet(&mut self, seq: u8, now: f64, wall: f64) {
         self.last_rx_wall = Some(wall);
@@ -106,6 +145,7 @@ impl LinkStats {
             loss_pct: (expected > 0)
                 .then(|| round_int(100.0 * f64::from(expected - received) / f64::from(expected))),
             rtt_ms: self.rtt_ms.map(round_int),
+            expected_interval_ms: self.expected_interval_ms(),
         }
     }
 
@@ -194,6 +234,7 @@ impl Link {
                 for f in &frames {
                     if f.compid == mav::AUTOPILOT_COMPID {
                         stats.on_packet(f.seq, now, wall);
+                        stats.on_message(&f.msg);
                     }
                     *stats.by_type.entry(f.msg.message_name()).or_default() += 1;
                 }
@@ -295,6 +336,21 @@ mod tests {
         assert_eq!(s.snapshot(20.0).loss_pct, Some(0));
         // nothing heard for a while: no estimate rather than a stale one
         assert_eq!(s.snapshot(40.0).loss_pct, None);
+    }
+
+    #[test]
+    fn high_latency_link_is_stale_later() {
+        let mut s = LinkStats::default();
+        assert_eq!(s.snapshot(0.0).stale_after_s(), 3.0);
+        s.on_message(&MavMessage::HIGH_LATENCY2(Default::default()));
+        let snap = s.snapshot(0.0);
+        assert_eq!(snap.expected_interval_ms, 20_000);
+        assert_eq!(snap.stale_after_s(), 60.0);
+        // heartbeats come with the acoustic status and don't end it; streaming does
+        s.on_message(&MavMessage::HEARTBEAT(Default::default()));
+        assert!(s.high_latency);
+        s.on_message(&MavMessage::GLOBAL_POSITION_INT(Default::default()));
+        assert_eq!(s.snapshot(0.0).stale_after_s(), 3.0);
     }
 
     #[test]

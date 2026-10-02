@@ -3,11 +3,13 @@
 
 Starts the bridge (Python, or the Rust one with --bridge rust) and `swarm.py --fleet
 standins-only` with MURMUR_STANDINS=<engine>, waits for every vehicle to be
-navigation-ready, then issues orbit / patrol / hold / rtl tasks (and one the platform must
-refuse) and follows each op until it settles. Tasks the Rust bridge's decision layer holds
-for approval (202) are approved as operator op-1. --plane-rtl also sends a fixed wing home
-once its orbit is on station. Prints each op's state history; exit 0 when every op ends as
-expected.
+navigation-ready, then issues orbit / patrol / rtl tasks (and a hold and an orbit the
+drifting buoy must refuse) and follows each op until it settles. Tasks the Rust bridge's
+decision layer holds for approval (202) are approved as operator op-1. The surface vessel
+and the AUV are sent home after their patrols (the AUV submerged). --plane-rtl also sends a
+fixed wing home once its orbit is on station. With the Rust bridge it also checks that the
+submerged AUV's position keeps updating (HIGH_LATENCY2) and that no acoustic vehicle raises
+a lost-link alert. Prints each op's state history; exit 0 when everything ends as expected.
 
     .venv/bin/python sim/tests/standins_e2e.py --engine rust
     .venv/bin/python sim/tests/standins_e2e.py --engine rust --bridge rust --plane-rtl
@@ -127,7 +129,9 @@ def drive(base, args):
     sid = {c.split()[0]: v[key] for c, v in by_call.items()}
     pos = {c.split()[0]: v["position"] for c, v in by_call.items()}
 
-    # (task body, what each op must end as)
+    # (task body, what each op must end as). "refused": the bridge refuses it before dispatch
+    # (the Rust bridge's decision layer), or the vehicle rejects it (the Python bridge).
+    # A drifting buoy has no propulsion: it can't hold position, let alone orbit.
     plan = [
         ({"task": "orbit", f"{key}s": [sid["HAWK"], sid["REAPER"], sid["FURY"]], "center": [-122.68, 37.78],
           "radius": 5000}, "done"),
@@ -135,51 +139,70 @@ def drive(base, args):
           "route": [offset(*pos["HUNTER"], 250, 0), offset(*pos["HUNTER"], 250, 250)]}, "done"),
         ({"task": "patrol", f"{key}s": [sid["REMUS"]],
           "route": [offset(*pos["REMUS"], 60, 0), offset(*pos["REMUS"], 60, 60)]}, "done"),
-        ({"task": "hold", f"{key}s": [sid["DRIFT"]]}, "done"),
+        ({"task": "hold", f"{key}s": [sid["DRIFT"]]}, "refused"),
+        ({"task": "orbit", f"{key}s": [sid["DRIFT"]], "center": offset(*pos["DRIFT"], 100, 0), "radius": 200},
+         "refused"),
         ({"task": "rtl", f"{key}s": [sid["ORCA"]]}, "done"),
     ]
     taskings = []
     for body, want in plan:
         taskings.append((task(base, body), body["task"], want))
-    # a drifting buoy has no propulsion: an orbit must be refused by the vehicle itself, after
-    # the hold above has finished (a new task supersedes the vehicle's previous one)
-    pending_refusal = {"task": "orbit", f"{key}s": [sid["DRIFT"]], "center": offset(*pos["DRIFT"], 100, 0),
-                       "radius": 200}
-    rtl_after_patrol = {"task": "rtl", f"{key}s": [sid["HUNTER"]]}
+    # sent home once their patrols complete: HUNTER on the surface, REMUS submerged (its
+    # RTL must complete on dead reckoning, reported by HIGH_LATENCY2 over its acoustic link)
+    after_patrol = {1: {"task": "rtl", f"{key}s": [sid["HUNTER"]]},
+                    2: {"task": "rtl", f"{key}s": [sid["REMUS"]]}}
     plane_rtl = {"task": "rtl", f"{key}s": [sid["REAPER"]]} if args.plane_rtl else None
+    acoustic = {sid["REMUS"], sid["ORCA"]}
+    # REMUS positions while it reports by HIGH_LATENCY2, and lost-link alerts on acoustic vehicles
+    submerged_fixes, lost_alerts = set(), []
 
     deadline = time.monotonic() + args.timeout
     while time.monotonic() < deadline:
-        snap = {t["id"]: t for t in api(base, "/api/state")["taskings"]}
+        state = api(base, "/api/state")
+        for v in state["vehicles"]:
+            if v[key] == sid["REMUS"] and v["link"].get("expected_interval_ms", 0) > 1000 and v["position"]:
+                submerged_fixes.add(tuple(v["position"]))
+        if args.bridge == "rust":
+            lost_alerts += [a for a in api(base, "/api/inbox").get("alerts", [])
+                            if a["kind"] == "lost_link" and a["uid"] in acoustic]
+        snap = {t["id"]: t for t in state["taskings"]}
         ops = {tid: snap[tid]["ops"] for tid, _, _ in taskings if tid in snap}
-        hold = next(t for t in taskings if t[1] == "hold")
-        if pending_refusal and all(o["state"] == "done" for o in ops.get(hold[0], [])):
-            taskings.append((task(base, pending_refusal), "orbit (buoy)", "failed"))
-            pending_refusal = None
         reaper = [o for o in ops.get(taskings[0][0], []) if o[key] == sid["REAPER"]]
         if plane_rtl and reaper and reaper[0]["state"] == "done":
             taskings.append((task(base, plane_rtl), "rtl (plane)", "done"))
             plane_rtl = None
-        patrol = taskings[1]
-        if rtl_after_patrol and all(o["state"] == "done" for o in ops.get(patrol[0], [])):
-            taskings.append((task(base, rtl_after_patrol), "rtl (after patrol)", "done"))
-            rtl_after_patrol = None
+        for i in list(after_patrol):
+            patrol = taskings[i]
+            if all(o.get("state") == "done" for o in ops.get(patrol[0], [{}])):
+                body = after_patrol.pop(i)
+                taskings.append((task(base, body), f"rtl (after {patrol[1]})", "done"))
         settled = all(o.get("state") in ("done", "failed", "superseded")
                       for tid, _, _ in taskings if tid is not None for o in ops.get(tid, [{}]))
-        if settled and not pending_refusal and not rtl_after_patrol and not plane_rtl:
+        if settled and not after_patrol and not plane_rtl:
             break
         time.sleep(1)
 
     snap = {t["id"]: t for t in api(base, "/api/state")["taskings"]}
     names = {v[key]: c for c, v in by_call.items()}
     ok = True
+    if args.bridge == "rust":
+        good = len(submerged_fixes) >= 3
+        ok &= good
+        print(f"{'ok  ' if good else 'FAIL'} REMUS submerged: {len(submerged_fixes)} distinct positions "
+              "reported by HIGH_LATENCY2")
+        good = not lost_alerts
+        ok &= good
+        print(f"{'ok  ' if good else 'FAIL'} acoustic vehicles: {len(lost_alerts)} lost-link alert samples"
+              + (f" ({lost_alerts[0]['detail']})" if lost_alerts else ""))
     for tid, what, want in taskings:
         if tid is None:
             # refused by the bridge's decision layer before reaching the vehicle
-            good = want == "failed"
+            good = want == "refused"
             ok &= good
             print(f"{'ok  ' if good else 'FAIL'} {what:20s} refused by the bridge before dispatch")
             continue
+        if want == "refused":
+            want = "failed"  # the Python bridge has no decision layer: the vehicle refuses
         for op in snap[tid]["ops"]:
             # superseded is how an earlier task ends when a later one replaces it on purpose
             good = op["state"] == want or (op["state"] == "superseded" and want == "done")
