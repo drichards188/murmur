@@ -55,6 +55,7 @@ export default function App() {
   const fps = usePerfMeter()
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [detailsUid, setDetailsUid] = useState<number | null>(null)
+  const [following, setFollowing] = useState(true)
   const [showPlatforms, setShowPlatforms] = useState(false)
   const [focus, setFocus] = useState<{ uid: number; n: number } | null>(null)
   const [draft, setDraft] = useState<Draft>({ mode: 'orbit', center: null, radius: 250, route: [] })
@@ -202,7 +203,10 @@ export default function App() {
         onDetails={(uid) => {
           // a second click on the same row closes it; opening flies the map there
           setDetailsUid((d) => (d === uid ? null : uid))
-          if (detailsUid !== uid) setFocus((f) => ({ uid, n: (f?.n ?? 0) + 1 }))
+          if (detailsUid !== uid) {
+            setFollowing(true)
+            setFocus((f) => ({ uid, n: (f?.n ?? 0) + 1 }))
+          }
         }}
         onSelect={(ids) => setSelected(new Set(ids))}
       />
@@ -213,6 +217,8 @@ export default function App() {
           selected={selected}
           draft={draft}
           focus={focus}
+          follow={detailsUid}
+          onFollowing={setFollowing}
           preview={preview}
           fit={fit}
           onToggle={toggle}
@@ -268,6 +274,11 @@ export default function App() {
             selected={selected.has(detailsUid)}
             onToggleSelect={() => toggle(detailsUid)}
             onClose={() => setDetailsUid(null)}
+            following={following}
+            onFollow={() => {
+              setFollowing(true)
+              setFocus((f) => ({ uid: detailsUid, n: (f?.n ?? 0) + 1 }))
+            }}
           />
         )}
         {drawing && <div className="banner info">Click two opposite corners of the collection box. Esc cancels.</div>}

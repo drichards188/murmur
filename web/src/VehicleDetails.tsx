@@ -11,6 +11,9 @@ interface Props {
   selected: boolean
   onToggleSelect: () => void
   onClose: () => void
+  /** the camera is following this vehicle; onFollow resumes after the operator panned away */
+  following: boolean
+  onFollow: () => void
 }
 
 const STALE_MS = 3000
@@ -30,7 +33,7 @@ function Item({ k, children, title }: { k: string; children: React.ReactNode; ti
 
 /** Everything known about one vehicle: identity, live state, link, platform limits and its
  *  current task. Opened by clicking a fleet row; selecting for tasking is a separate control. */
-export function VehicleDetails({ v, taskings, selected, onToggleSelect, onClose }: Props) {
+export function VehicleDetails({ v, taskings, selected, onToggleSelect, onClose, following, onFollow }: Props) {
   const limits = usePlatformLimits()
   const p = v.identity ? limits?.get(v.identity.platform) : undefined
   const stale = (v.link.since_last_ms ?? 0) > STALE_MS
@@ -60,6 +63,13 @@ export function VehicleDetails({ v, taskings, selected, onToggleSelect, onClose 
             </div>
           )}
         </div>
+        <button
+          className={`ghost mini vd-follow ${following ? 'on' : ''}`}
+          onClick={onFollow}
+          title={following ? 'Camera follows this vehicle (pan the map to stop)' : 'Follow this vehicle with the camera'}
+        >
+          {following ? 'following' : 'follow'}
+        </button>
         <button className="ghost mini" onClick={onClose} aria-label="Close details">
           ✕
         </button>

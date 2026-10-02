@@ -5,7 +5,7 @@ import { MapboxOverlay } from '@deck.gl/mapbox'
 import { useEffect, useRef, useState } from 'react'
 import { circle, distanceM } from './geo'
 import { BRIDGE_FILTER, liftBridges, type LiftedBridge } from './bridges'
-import { build3dLayers, DEM_TILES, HEIGHT_EXAGGERATION } from './map3d'
+import { build3dLayers, drawnHeight, DEM_TILES, HEIGHT_EXAGGERATION } from './map3d'
 import { declutter } from './declutter'
 import type { SpaceOverlay } from './space'
 import { EMPTY_OVERLAY } from './space'
@@ -32,6 +32,10 @@ interface Props {
   onMapClick: (p: LngLat) => void
   /** fly to this vehicle (n changes on every request, so repeat clicks work) */
   focus?: { uid: number; n: number } | null
+  /** keep the camera on this vehicle (its details are open) until the operator pans away */
+  follow?: number | null
+  /** following stopped (the operator panned) or resumed */
+  onFollowing?: (following: boolean) => void
   /** inbox: where pending intents would send their vehicles (see inboxPreview.ts) */
   preview?: FC
   /** inbox: fit the view to these points (n changes on every request) */
@@ -256,7 +260,10 @@ function setSpaceData(m: maplibregl.Map, space: SpaceOverlay, view: ViewMode) {
   for (const id of SPACE_SOURCES) (m.getSource(id) as maplibregl.GeoJSONSource | undefined)?.setData(id === 'space-links' ? (view === '3d' ? empty : linkStubs(space.links)) : f[id])
 }
 
-export function MapView({ vehicles, taskings, selected, draft, focus, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView }: Props) {
+/** width of the vehicle details card (.vdetails) plus its margin */
+const FOLLOW_PAD_LEFT = 350
+
+export function MapView({ vehicles, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView }: Props) {
   const [view, setView] = useState<ViewMode>(savedView)
   const viewRef = useRef(view)
   const overlay = useRef<MapboxOverlay | null>(null)
@@ -608,11 +615,80 @@ export function MapView({ vehicles, taskings, selected, draft, focus, preview = 
   useEffect(() => {
     vehiclesRef.current = vehicles
   }, [vehicles])
+  // Aim at the vehicle itself, not the ground under it: in 3D aircraft are drawn at altitude x
+  // the exaggeration, so the camera centre gets that elevation. Only jumpTo honours a centre
+  // elevation (easeTo/flyTo drop it), so following is a per-frame glide built on jumpTo, which
+  // also smooths the 4 Hz position updates.
+  const following = useRef<{ uid: number; zoom: number | null } | null>(null)
+  const followingCb = useRef(onFollowing)
   useEffect(() => {
-    if (!focus || !map.current) return
+    followingCb.current = onFollowing
+  }, [onFollowing])
+
+  const startFollow = (uid: number, zoom: number | null) => {
+    const m = map.current
+    if (!m) return
+    following.current = { uid, zoom }
+    // the details card covers the map's left edge: centre the vehicle in what's left visible
+    m.setPadding({ top: 0, bottom: 0, right: 0, left: FOLLOW_PAD_LEFT })
+    let last = performance.now()
+    const step = (now: number) => {
+      const f = following.current
+      if (!f || f.uid !== uid || map.current !== m) return
+      // real elapsed time, so the glide keeps pace at any frame rate (capped after a stalled tab)
+      const dt = Math.min(1, (now - last) / 1000)
+      last = now
+      if (m.dragPan.isActive()) {
+        // the operator grabbed the map: stop following, let the terrain hold the centre again
+        following.current = null
+        m.setCenterClampedToGround(true)
+        m.setPadding({ top: 0, bottom: 0, right: 0, left: 0 })
+        followingCb.current?.(false)
+        return
+      }
+      const v = vehiclesRef.current.find((x) => x.uid === uid)
+      if (v?.position && !m.isZooming() && !m.isRotating()) {
+        const k = 1 - Math.exp(-dt / 0.25)
+        const c = m.getCenter()
+        const elev = viewRef.current === '3d' ? drawnHeight(v) : 0
+        m.setCenterClampedToGround(false)
+        const z = m.getZoom()
+        const zoom = f.zoom == null ? z : z + (f.zoom - z) * k
+        if (f.zoom != null && Math.abs(f.zoom - zoom) < 0.01) f.zoom = null
+        m.jumpTo({
+          center: [c.lng + (v.position[0] - c.lng) * k, c.lat + (v.position[1] - c.lat) * k],
+          elevation: m.getCenterElevation() + (elev - m.getCenterElevation()) * k,
+          zoom,
+        })
+      }
+      requestAnimationFrame(step)
+    }
+    requestAnimationFrame(step)
+  }
+
+  useEffect(() => {
+    const m = map.current
+    if (!focus || !m) return
     const v = vehiclesRef.current.find((x) => x.uid === focus.uid)
-    if (v?.position) map.current.flyTo({ center: v.position, zoom: Math.max(map.current.getZoom(), 13), duration: 1200 })
+    if (!v?.position) return
+    if (follow === focus.uid) {
+      followingCb.current?.(true)
+      startFollow(focus.uid, Math.max(m.getZoom(), 13))
+    } else {
+      m.setCenterClampedToGround(true)
+      m.flyTo({ center: v.position, zoom: Math.max(m.getZoom(), 13), duration: 1200 })
+    }
+    // startFollow reads refs only; a new focus request is the trigger
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus])
+
+  useEffect(() => {
+    if (follow == null && following.current) {
+      following.current = null
+      map.current?.setCenterClampedToGround(true)
+      map.current?.setPadding({ top: 0, bottom: 0, right: 0, left: 0 })
+    }
+  }, [follow])
 
   useEffect(() => {
     viewRef.current = view
