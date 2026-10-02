@@ -131,3 +131,40 @@ stand-ins could bind fixed ports like the bridge does). CPU and memory are far f
 at 3,000 the bridge used under a third of one core and the engine a sixth. The next limit
 after ports is the browser feed, 5 MB/s and an 8 MB initial state at 3,000, which would need
 viewport filtering or level of detail before 10,000 nodes.
+
+## Console at 1,000 and 3,000 nodes: GPU vehicles, windowed list (murmur-ica, murmur-s8w)
+
+Vehicles are now deck.gl layers in both views (`web/src/vehicleLayers.ts`): one icon atlas of
+bare 2525 frames shared by the fleet (one entry per symbol code and stale state, a few dozen
+in all), a single rotated heading arrow, the selection ring, and callsign and model text only
+for the decluttered labelled set. Layer data is rebuilt when the vehicles, the selection, the
+view or the declutter change, never per frame. The fleet list mounts only the rows in view.
+A lost WebGL context no longer blanks the page: the overlay is detached, a banner shows, and
+on restore the map is rebuilt on a fresh canvas with the same camera (the globe inset too);
+every panel and the map sit in their own error boundary.
+
+Measured with `?perf` (`web/src/perf.ts`) on production builds (`vite build`, `vite preview`),
+before and after on the same running fleet, 2D, 30 to 40 s windows after 25 to 30 s of
+warm-up, headless Chromium with software WebGL, 2026-10-02. "Render" is the main-thread work
+one bridge update causes (React render and commit plus the map and list effects); "latency" is
+from the message to the end of that work, waits included. Fleets from `scripts/scale_fleet.py`,
+stand-ins only, no tidewater.
+
+| | 1,000 before | 1,000 after | 3,000 before | 3,000 after |
+|---|---|---|---|---|
+| DOM elements | 27,415 | **787** | 81,995 | **787** |
+| JS heap (after a forced GC at 3,000) | 220 MB | 165 MB | 133 MB | **67 MB** |
+| Merge one update (applyDelta) | 1.1 ms | 0.6 ms | 3.5 ms | 2.8 to 4.0 ms |
+| Render per update, mean (p95) | 38.8 ms (64) | **7.6 ms (12.5)** | 112 ms (208) | **18.6 ms (29 to 32)** |
+| Latency per update, mean | 262 ms | 163 ms | 423 ms | 73 to 143 ms |
+| Updates handled in the window | 44 / 30 s | 93 / 30 s | 26 / 40 s | 32 to 53 / 40 s |
+
+The DOM is now constant in the fleet size (the windowed list keeps about 28 rows mounted).
+Render time per update falls about 5x and the console keeps up with the bridge at 1,000.
+Frame rate, frame time and long tasks are not in the table: in this renderer they measure
+SwiftShader (each frame of map tiles plus 3,000 icons is drawn on the CPU, and several other
+consoles shared the same software GPU process during the run), not Murmur. Heap readings
+without a forced GC swing by 2x run to run and include other same-site tabs in the process.
+On a real GPU, open the console with `?perf`: the overlay shows fps, p95 frame time, DOM size,
+heap, merge and render time per update, latency and long tasks; `window.murmurPerfStats()`
+returns the same numbers and `murmurPerfReset()` starts a new window.
