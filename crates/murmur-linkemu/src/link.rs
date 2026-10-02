@@ -6,6 +6,7 @@ use crate::config::{Config, DirSel, DownWhen, EventCfg};
 use crate::geo::{GeoPoint, Terrain, haversine_m, slant_m};
 use crate::mavpos::scan_position;
 use crate::model::{Cause, Cond, Dir, DirState, Params, Verdict};
+use crate::sat::SatShared;
 use crate::timeline::{Timeline, parse_iso_utc};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
@@ -169,7 +170,7 @@ impl Env {
             ground_station: cfg.ground_station.as_ref().map(|g| GeoPoint {
                 lat: g.lat,
                 lon: g.lon,
-                alt_m: g.alt_m,
+                alt_m: g.alt_m.metres(),
             }),
             terrain,
             timeline,
@@ -228,10 +229,16 @@ pub struct Link {
     obstruction_m: Option<f64>,
     /// Packets decided while no terrain answer existed.
     pub los_unknown_pkts: u64,
+    /// SATCOM state when the profile follows a constellation class (`space_class`).
+    sat: Option<Arc<SatShared>>,
 }
 
 impl Link {
     pub fn new(meta: LinkMeta, params: Params, env: Arc<Env>) -> Link {
+        let sat = params
+            .space_class
+            .as_ref()
+            .map(|c| Arc::new(SatShared::new(c, params.handover_outage_ns)));
         let sched_gen = env.generation.load(Ordering::Acquire);
         let sched = env.schedule();
         let events = sched.matching(&meta);
@@ -251,11 +258,17 @@ impl Link {
             gs_range_m: None,
             obstruction_m: None,
             los_unknown_pkts: 0,
+            sat,
         }
     }
 
     pub fn position(&self) -> Option<GeoPoint> {
         self.pos
+    }
+
+    /// The SATCOM state, for the satellite task and the stats.
+    pub fn sat_shared(&self) -> Option<Arc<SatShared>> {
+        self.sat.clone()
     }
 
     pub fn params(&self) -> &Params {
@@ -269,6 +282,9 @@ impl Link {
 
     pub fn set_position(&mut self, p: GeoPoint) {
         self.pos = Some(p);
+        if let Some(s) = &self.sat {
+            s.set_position(p);
+        }
         if let Some(gs) = &self.env.ground_station {
             self.gs_range_m = Some(slant_m(&p, gs));
             if let Some(t) = &self.params.terrain
@@ -321,6 +337,9 @@ impl Link {
             if down {
                 c.blocked = Some(Cause::Gate);
             }
+        }
+        if let Some(s) = &self.sat {
+            s.apply(now_ns, &mut c.blocked, &mut c.base_latency_ns);
         }
         for &i in &self.events {
             let e = &self.sched.events[i];
@@ -678,5 +697,90 @@ mod tests {
         };
         let delay_ms = (at_ns - NS) as f64 / 1e6;
         assert!(delay_ms > 1090.0 && delay_ms < 1110.0, "{delay_ms}");
+    }
+    struct Scripted(std::sync::Mutex<crate::sat::SatObs>);
+
+    impl crate::sat::SpaceSource for Scripted {
+        fn check(&self, _: &str, _: f64) -> Result<(), String> {
+            Ok(())
+        }
+        fn sample(&self, _: &str, _: &GeoPoint, _: f64) -> Result<crate::sat::SatObs, String> {
+            Ok(self.0.lock().expect("lock").clone())
+        }
+        fn outlook(
+            &self,
+            _: &str,
+            _: &GeoPoint,
+            _: f64,
+            _: f64,
+        ) -> Result<crate::sat::Outlook, String> {
+            Ok(crate::sat::Outlook::default())
+        }
+    }
+
+    #[test]
+    fn satcom_follows_the_constellation_on_the_packet_path() {
+        use crate::sat::{BestSat, SatObs, refresh};
+        let toml = r#"
+            [class.satcom_leo]
+            space_class = "starlink"
+            latency_ms = 25
+            handover_outage_ms = 100
+        "#;
+        let mut l = build(toml, meta(1, "satcom_leo", "surface"));
+        let sat = l.sat_shared().expect("a space_class link has SATCOM state");
+        let src = Scripted(std::sync::Mutex::new(SatObs {
+            visible: 3,
+            best: Some(BestSat {
+                norad_id: 1,
+                name: "A".into(),
+                elevation_deg: 50.0,
+                range_km: 600.0,
+            }),
+            latency_ms: Some(40.0),
+        }));
+        let cfg = crate::config::SpaceCfg::default();
+        let latency_of = |l: &mut Link, now: u64| match l.decide(Dir::Up, now, 50, 0) {
+            Verdict::Forward { at_ns, .. } => Some((at_ns - now) as f64 / 1e6),
+            Verdict::Drop(_) => None,
+        };
+        // Before any position and any answer: the static profile (25 ms).
+        assert_eq!(latency_of(&mut l, NS), Some(25.0));
+        l.observe_up(&position_frame(0, 37.8, -122.5, 0.0));
+        assert_eq!(latency_of(&mut l, 2 * NS), Some(25.0), "pending: static");
+        // Live: the satellite's latency replaces the profile's.
+        refresh(&src, &cfg, &sat, 100.0, 3 * NS);
+        assert_eq!(latency_of(&mut l, 3 * NS), Some(40.0));
+        // Handover to another satellite: dropped for 100 ms, then open again.
+        src.0
+            .lock()
+            .expect("lock")
+            .best
+            .as_mut()
+            .expect("best")
+            .norad_id = 2;
+        refresh(&src, &cfg, &sat, 105.0, 4 * NS);
+        assert_eq!(
+            l.decide(Dir::Up, 4 * NS + 50_000_000, 50, 0),
+            Verdict::Drop(Cause::Handover)
+        );
+        assert_eq!(latency_of(&mut l, 4 * NS + 100_000_000), Some(40.0));
+        // No satellite above the mask: down, both directions, until one rises.
+        *src.0.lock().expect("lock") = SatObs {
+            visible: 0,
+            best: None,
+            latency_ms: None,
+        };
+        refresh(&src, &cfg, &sat, 110.0, 5 * NS);
+        for dir in [Dir::Up, Dir::Down] {
+            assert_eq!(l.decide(dir, 5 * NS, 50, 0), Verdict::Drop(Cause::NoSat));
+        }
+        assert_eq!(l.blocked_now(5 * NS), Some(Cause::NoSat));
+    }
+
+    #[test]
+    fn a_profile_without_space_class_has_no_satcom_state() {
+        let l = build("[class.los]\n", meta(1, "los", "air"));
+        assert!(l.sat_shared().is_none());
     }
 }

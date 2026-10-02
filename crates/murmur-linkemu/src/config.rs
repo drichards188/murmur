@@ -85,6 +85,48 @@ pub struct RawProfile {
     /// Adds slant range to the ground station divided by this speed to the latency
     /// (1500 for sound in water).
     pub propagation_mps: Option<f64>,
+    /// SATCOM only: id of a murmur-space constellation class (`starlink`, `iridium`, `wgs`,
+    /// `ku-geo`). The link then follows real satellite visibility for the vehicle's position
+    /// on the scenario clock: down when no satellite is above the mask, one-way latency from
+    /// the best satellite's slant range plus the class's network latency, handovers when the
+    /// best satellite changes. The profile's own `latency_ms` is the fallback while there is
+    /// no answer (or no element sets), and where the class has no latency model (Iridium).
+    pub space_class: Option<String>,
+    /// SATCOM only: how long the link drops when the best satellite changes (a GUESS in the
+    /// shipped profiles; real figures are not public). 0 (default) means handovers are only
+    /// counted.
+    pub handover_outage_ms: Option<f64>,
+}
+
+/// The ground station's height above MSL: a number, or `"dem"` for the DEM height at the
+/// station (needs tidewater).
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum GsAlt {
+    Fixed(f64),
+    Named(GsAltName),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GsAltName {
+    Dem,
+}
+
+impl Default for GsAlt {
+    fn default() -> Self {
+        GsAlt::Fixed(0.0)
+    }
+}
+
+impl GsAlt {
+    /// The configured number; 0 for `"dem"` until it has been resolved.
+    pub fn metres(self) -> f64 {
+        match self {
+            GsAlt::Fixed(m) => m,
+            GsAlt::Named(_) => 0.0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -93,7 +135,93 @@ pub struct GroundStation {
     pub lat: f64,
     pub lon: f64,
     #[serde(default)]
-    pub alt_m: f64,
+    pub alt_m: GsAlt,
+}
+
+/// The ground station altitude check against the DEM, at startup.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GsAltCheck {
+    /// `alt_m = "dem"`: the DEM height was used.
+    UsedDem(f64),
+    /// A fixed altitude within the tolerance of the DEM.
+    Agrees { configured: f64, dem: f64 },
+    /// A fixed altitude that differs from the DEM by more than the tolerance.
+    Differs { configured: f64, dem: f64 },
+    /// `"dem"` asked for but no DEM answer: 0 is used.
+    DemUnavailable,
+    /// Fixed altitude and no DEM to compare with.
+    NotChecked,
+}
+
+impl GsAltCheck {
+    /// A log line, and whether it is a warning.
+    pub fn message(&self) -> (bool, String) {
+        match self {
+            GsAltCheck::UsedDem(d) => (
+                false,
+                format!("ground station altitude {d:.1} m from the DEM (alt_m = \"dem\")"),
+            ),
+            GsAltCheck::Agrees { configured, dem } => (
+                false,
+                format!(
+                    "ground station altitude {configured:.1} m agrees with the DEM ({dem:.1} m)"
+                ),
+            ),
+            GsAltCheck::Differs { configured, dem } => (
+                true,
+                format!(
+                    "[ground_station].alt_m = {configured:.1} m but the DEM at the station says {dem:.1} m (more than {GS_ALT_TOLERANCE_M} m apart): the terrain line of sight starts from the wrong height; set alt_m = \"dem\" or fix the number"
+                ),
+            ),
+            GsAltCheck::DemUnavailable => (
+                true,
+                "[ground_station].alt_m = \"dem\" but no DEM height is available (needs --tidewater and a point inside the DEM): using 0 m"
+                    .to_string(),
+            ),
+            GsAltCheck::NotChecked => (
+                false,
+                "ground station altitude not checked against the DEM (no tidewater answer)"
+                    .to_string(),
+            ),
+        }
+    }
+}
+
+/// Metres of difference between the configured station altitude and the DEM before a warning.
+pub const GS_ALT_TOLERANCE_M: f64 = 5.0;
+
+/// `[space]`: the SATCOM source (murmur-space) and its refresh cadence.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct SpaceCfg {
+    /// Constellation catalog and element-set cache (`murmur-space fetch` fills the cache).
+    pub catalog: String,
+    pub cache: String,
+    /// `auto` | `shift` | `direct`: see murmur-space's README (epoch honesty).
+    pub epoch: String,
+    /// Scenario seconds between recomputations per vehicle.
+    pub interval_s: f64,
+    /// Lower bound on wall seconds between recomputation rounds (at a high `MURMUR_RATE`
+    /// the scenario interval would otherwise be a busy loop).
+    pub min_wall_s: f64,
+    /// How far ahead (scenario seconds) to look for the next outage or pass, and how often
+    /// (scenario seconds) to refresh that. 0 disables the look-ahead.
+    pub outlook_s: f64,
+    pub outlook_every_s: f64,
+}
+
+impl Default for SpaceCfg {
+    fn default() -> Self {
+        SpaceCfg {
+            catalog: "sim/space/constellations.toml".into(),
+            cache: "sim/space/cache".into(),
+            epoch: "auto".into(),
+            interval_s: 5.0,
+            min_wall_s: 0.5,
+            outlook_s: 1800.0,
+            outlook_every_s: 60.0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -188,6 +316,8 @@ pub struct Config {
     #[serde(default)]
     pub terrain: TerrainCfg,
     #[serde(default)]
+    pub space: SpaceCfg,
+    #[serde(default)]
     pub seed: Option<u64>,
     /// Depth in metres below which a vehicle counts as submerged.
     #[serde(default = "default_submerged_depth")]
@@ -216,6 +346,35 @@ impl Config {
         let cfg: Config = toml::from_str(text).map_err(|e| e.to_string())?;
         cfg.validate()?;
         Ok(cfg)
+    }
+
+    /// Settles the ground station altitude against the DEM height at the station (`None`: no
+    /// DEM). With `alt_m = "dem"` the DEM height is used; with a number it is kept and the
+    /// result says whether it agrees within [`GS_ALT_TOLERANCE_M`]. The profiles' antenna
+    /// heights (`gs_antenna_m`, the mast) are added on top of whichever it is.
+    pub fn resolve_ground_alt(&mut self, dem_m: Option<f64>) -> Option<GsAltCheck> {
+        let gs = self.ground_station.as_mut()?;
+        Some(match (gs.alt_m, dem_m) {
+            (GsAlt::Named(_), Some(d)) => {
+                gs.alt_m = GsAlt::Fixed(d);
+                GsAltCheck::UsedDem(d)
+            }
+            (GsAlt::Named(_), None) => {
+                gs.alt_m = GsAlt::Fixed(0.0);
+                GsAltCheck::DemUnavailable
+            }
+            (GsAlt::Fixed(c), Some(d)) if (c - d).abs() > GS_ALT_TOLERANCE_M => {
+                GsAltCheck::Differs {
+                    configured: c,
+                    dem: d,
+                }
+            }
+            (GsAlt::Fixed(c), Some(d)) => GsAltCheck::Agrees {
+                configured: c,
+                dem: d,
+            },
+            (GsAlt::Fixed(_), None) => GsAltCheck::NotChecked,
+        })
     }
 
     /// Adds the events of a separate scenario file.
@@ -338,7 +497,9 @@ impl Config {
                 k_factor,
                 fresnel_mhz,
                 fresnel_clear,
-                propagation_mps
+                propagation_mps,
+                space_class,
+                handover_outage_ms
             );
         }
         Ok(out)
@@ -398,5 +559,123 @@ mod tests {
     fn rejects_unknown_fields_and_cycles() {
         assert!(Config::parse("[class.a]\nlosss = 1\n").is_err());
         assert!(Config::parse("[class.a]\nextends = \"b\"\n[class.b]\nextends = \"a\"\n").is_err());
+    }
+    #[test]
+    fn ground_station_altitude_number_or_dem() {
+        let num = Config::parse("[ground_station]\nlat = 1\nlon = 2\nalt_m = 5.0\n").expect("num");
+        assert_eq!(num.ground_station.expect("gs").alt_m, GsAlt::Fixed(5.0));
+        let none = Config::parse("[ground_station]\nlat = 1\nlon = 2\n").expect("none");
+        assert_eq!(none.ground_station.expect("gs").alt_m, GsAlt::Fixed(0.0));
+        assert!(Config::parse("[ground_station]\nlat = 1\nlon = 2\nalt_m = \"tall\"\n").is_err());
+
+        let toml = "[ground_station]\nlat = 1\nlon = 2\nalt_m = \"dem\"\n";
+        let mut dem = Config::parse(toml).expect("dem");
+        assert_eq!(
+            dem.resolve_ground_alt(Some(4.8)),
+            Some(GsAltCheck::UsedDem(4.8))
+        );
+        assert_eq!(dem.ground_station.as_ref().expect("gs").alt_m.metres(), 4.8);
+        let mut dem = Config::parse(toml).expect("dem");
+        assert_eq!(
+            dem.resolve_ground_alt(None),
+            Some(GsAltCheck::DemUnavailable)
+        );
+        assert_eq!(dem.ground_station.as_ref().expect("gs").alt_m.metres(), 0.0);
+        assert!(
+            Config::parse("seed = 1\n")
+                .expect("no gs")
+                .resolve_ground_alt(Some(1.0))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn ground_station_altitude_warns_beyond_five_metres() {
+        let mk = |alt: f64| {
+            Config::parse(&format!(
+                "[ground_station]\nlat = 1\nlon = 2\nalt_m = {alt}\n"
+            ))
+            .expect("cfg")
+        };
+        // Within 5 m: agrees, no warning, and the configured number is kept.
+        let mut c = mk(5.0);
+        let r = c.resolve_ground_alt(Some(4.8)).expect("check");
+        assert_eq!(
+            r,
+            GsAltCheck::Agrees {
+                configured: 5.0,
+                dem: 4.8
+            }
+        );
+        assert!(!r.message().0);
+        let r = mk(9.5).resolve_ground_alt(Some(4.8)).expect("check");
+        assert!(
+            matches!(r, GsAltCheck::Agrees { .. }),
+            "4.7 m apart is fine"
+        );
+        // More than 5 m: a warning, and the configured number is still what is used.
+        let mut c = mk(30.0);
+        let r = c.resolve_ground_alt(Some(4.8)).expect("check");
+        assert_eq!(
+            r,
+            GsAltCheck::Differs {
+                configured: 30.0,
+                dem: 4.8
+            }
+        );
+        assert!(r.message().0);
+        assert_eq!(c.ground_station.as_ref().expect("gs").alt_m.metres(), 30.0);
+        assert_eq!(
+            mk(30.0).resolve_ground_alt(None),
+            Some(GsAltCheck::NotChecked)
+        );
+    }
+
+    #[test]
+    fn space_keys_and_section_parse_and_inherit() {
+        let c = Config::parse(
+            r#"
+            [space]
+            interval_s = 10
+            [class.a]
+            space_class = "wgs"
+            handover_outage_ms = 5
+            [class.b]
+            extends = "a"
+            space_class = "starlink"
+            "#,
+        )
+        .expect("parse");
+        assert_eq!(c.space.interval_s, 10.0);
+        assert_eq!(c.space.outlook_every_s, 60.0);
+        let b = c.resolve("b").expect("b");
+        assert_eq!(b.space_class.as_deref(), Some("starlink"));
+        assert_eq!(b.handover_outage_ms, Some(5.0));
+    }
+
+    #[test]
+    fn shipped_links_file_maps_satcom_platforms_to_space_classes() {
+        let c = Config::parse(include_str!("../../../sim/links.toml")).expect("sim/links.toml");
+        let class_of = |plat: &str| {
+            let profile = c
+                .platform_profile
+                .get(plat)
+                .map_or("satcom", String::as_str);
+            c.resolve(profile).expect("profile").space_class
+        };
+        assert_eq!(class_of("buoy").as_deref(), Some("iridium"));
+        for p in ["magura", "corsair", "seahunter", "saildrone"] {
+            assert_eq!(class_of(p).as_deref(), Some("starlink"), "{p}");
+        }
+        for p in ["rq4", "mq9b"] {
+            assert_eq!(class_of(p).as_deref(), Some("wgs"), "{p}");
+        }
+        assert_eq!(
+            c.resolve("satcom_ku_geo")
+                .expect("ku")
+                .space_class
+                .as_deref(),
+            Some("ku-geo")
+        );
     }
 }

@@ -2,6 +2,7 @@
 //! Hand-rolled so the crate needs no web framework; it only ever answers GET.
 
 use crate::geo::Terrain;
+use crate::sat::SpaceInfo;
 use crate::stats::{LinkStats, summary_json};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -13,6 +14,7 @@ pub async fn serve(
     links: Arc<Vec<Arc<LinkStats>>>,
     start: Instant,
     terrain: Option<Arc<dyn Terrain>>,
+    space: Option<Arc<SpaceInfo>>,
 ) -> Result<(), String> {
     let listener = TcpListener::bind(addr)
         .await
@@ -24,12 +26,14 @@ pub async fn serve(
             };
             let links = links.clone();
             let terrain = terrain.clone();
+            let space = space.clone();
             tokio::spawn(async move {
                 let mut buf = [0u8; 1024];
                 let n = sock.read(&mut buf).await.unwrap_or(0);
                 let req = String::from_utf8_lossy(&buf[..n]);
                 let path = req.split_whitespace().nth(1).unwrap_or("/");
-                let (status, body) = route(path, &links, start, terrain.as_deref());
+                let (status, body) =
+                    route(path, &links, start, terrain.as_deref(), space.as_deref());
                 let resp = format!(
                     "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
@@ -46,13 +50,14 @@ fn route(
     links: &[Arc<LinkStats>],
     start: Instant,
     terrain: Option<&dyn Terrain>,
+    space: Option<&SpaceInfo>,
 ) -> (&'static str, String) {
     let path = path.split('?').next().unwrap_or(path);
     let up = start.elapsed().as_secs_f64();
     match path {
         "/health" => ("200 OK", "{\"ok\":true}".into()),
         "/stats" | "/stats/summary" => {
-            let mut v = summary_json(links, up, path == "/stats");
+            let mut v = summary_json(links, up, path == "/stats", space);
             if let Some(t) = terrain.and_then(Terrain::stats) {
                 v["terrain"] = t;
             }

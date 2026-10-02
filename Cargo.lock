@@ -737,7 +737,9 @@ dependencies = [
 name = "murmur-linkemu"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "mavlink",
+ "murmur-space",
  "rand",
  "rand_chacha",
  "serde",
