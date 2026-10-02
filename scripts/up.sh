@@ -44,7 +44,7 @@ fi
 # build first (a no-op when fresh), so vehicles don't wait on a bridge that is still compiling
 cargo="$(command -v cargo || echo "$HOME/.cargo/bin/cargo")"
 if [ -x "$cargo" ]; then
-  "$cargo" build --release -p murmur-bridge -p murmur-standins -p murmur-linkemu
+  "$cargo" build --release -p murmur-bridge -p murmur-standins -p murmur-linkemu -p murmur-decide
 elif [ ! -x target/release/murmur-bridge ] || [ ! -x target/release/murmur-standins ] \
   || { [ "$linkemu" = 1 ] && [ ! -x target/release/murmur-linkemu ]; }; then
   echo "no cargo and no release binaries in target/release; run make setup" >&2

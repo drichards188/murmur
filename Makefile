@@ -6,8 +6,8 @@ CARGO ?= $(shell command -v cargo || echo $(HOME)/.cargo/bin/cargo)
 setup:   ## one-time: venv, Rust release build, ArduPilot SITL build, npm install
 	./scripts/setup.sh
 
-build:   ## release builds of the Rust bridge, stand-in engine and link emulator (up.sh does this too)
-	$(CARGO) build --release -p murmur-bridge -p murmur-standins -p murmur-linkemu
+build:   ## release builds of the Rust bridge, stand-in engine, link emulator and murmur-replay (up.sh does this too)
+	$(CARGO) build --release -p murmur-bridge -p murmur-standins -p murmur-linkemu -p murmur-decide
 
 up:      ## swarm + link emulator + bridge + web (MURMUR_LINKEMU=0 bypasses the emulator; ports: scripts/up.sh)
 	./scripts/up.sh --fleet $(FLEET) $(ARGS)
