@@ -23,6 +23,11 @@ group. Dates are 2026.
   SandTable (metric definitions, maybe interop) and the TAK servers rather than compete.
   Full write-up: https://claude.ai/artifact/7CNdGEur8Qs5ns3ZE1naZ3 ("Murmur: Measuring
   Meaningful Human Control in Autonomous C2").
+- **A human's own command is the human decision; agents' proposals wait** (10-02, user
+  direction). Console commands from the operator dispatch immediately (checks still fail
+  closed), logged as approved at submission by that operator. AI agents act through the API
+  and their high-importance proposals wait in the inbox for a human. Per policy tier,
+  `submitter_authorizes = false` restores a second-person requirement (for Phase E).
 - **Agents decide, they don't drive** (10-02). Intents only, deterministic rules layer,
   risk-tier policy, append-only audit, preview before approve. Open MCP-to-MAVLink servers
   that let a model fly directly are the anti-pattern.
