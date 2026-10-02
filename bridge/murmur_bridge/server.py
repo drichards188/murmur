@@ -78,7 +78,7 @@ def load_manifest():
     for v in data.get("vehicles", []):
         uid = v.get("uid", v["sysid"])  # manifests from before uid existed: sysid was unique
         identities[uid] = {k: v.get(k) for k in
-                           ("callsign", "platform", "name", "short", "role", "domain", "link", "sidc", "sim",
+                           ("callsign", "platform", "name", "short", "role", "domain", "link", "sidc", "sim", "armed",
                             "cruise_alt_m", "min_turn_radius_m")}
         if "port" in v:
             port_uids[v["port"]] = (uid, v["sysid"])

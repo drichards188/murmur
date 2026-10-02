@@ -14,6 +14,8 @@ export interface Identity {
   link: string
   sidc: string
   sim: 'sitl' | 'standin'
+  /** Carries an effect (`armed = true` in the catalog): any task needs a human. Not the MAVLink arm state. */
+  armed?: boolean | null
 }
 
 export const AIR_KINDS: Kind[] = ['plane', 'vtol', 'copter', 'blimp']

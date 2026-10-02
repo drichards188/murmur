@@ -35,6 +35,11 @@ function Row({ v, selected, onToggle }: { v: Vehicle; selected: boolean; onToggl
         <span className="vrow-name">
           {callsign(v)}
           {v.identity && <span className="vrow-short">{v.identity.short}</span>}
+          {v.identity?.armed ? (
+            <span className="vrow-weapons" title="Weapons-carrying platform: any task on it needs a human decision">
+              WEAPONS
+            </span>
+          ) : null}
           {v.identity?.sim === 'standin' && (
             <span className="vrow-standin" title="Kinematic stand-in: speaks MAVLink, but not ArduPilot SITL">
               STAND-IN
@@ -48,7 +53,11 @@ function Row({ v, selected, onToggle }: { v: Vehicle; selected: boolean; onToggl
         )}
         <span className="vrow-mode">
           {v.mode ?? '–'}
-          {v.armed ? <em className="armed">ARMED</em> : null}
+          {v.armed ? (
+            <em className="motors-on" title="MAVLink arm state: motors enabled. Says nothing about weapons.">
+              motors on
+            </em>
+          ) : null}
         </span>
       </span>
       <span className="vrow-kin">
