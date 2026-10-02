@@ -27,3 +27,23 @@ Browser, 100 nodes, measured in a headless Chromium that renders WebGL in softwa
 - 2D: 57 fps, no long tasks.
 - 3D: 2 fps, but terrain alone gives 2-3 fps in that renderer with or without vehicles, so
   this measures the test setup, not Murmur. Check on a real GPU with `?perf` in the URL.
+
+## Rust bridge, and past 255 vehicles (2026-10-03)
+
+Same machine and method (`scripts/measure.py --seconds 30`, one WebSocket client), both bridges
+on the same fleet, measured back to back. `scale-300` is 300 stand-ins, so MAVLink sysids wrap
+(1..250, then 1 again) and only the uid tells vehicles apart; before uids the bridge crashed
+above 255.
+
+| | scale-100, Python | scale-100, Rust | scale-300, Python | scale-300, Rust |
+|---|---|---|---|---|
+| Bridge CPU | 3.1% of one core | **1.2%** | 6.1% | **2.7%** |
+| Telemetry received | 1,087 msg/s | 1,087 msg/s | 2,613 msg/s | 2,618 msg/s |
+| Bridge -> browser | 175 KB/s | 149 KB/s | 519 KB/s | 614 KB/s |
+| Initial full state | 184 KB | 185 KB | 355 KB | 345 KB |
+
+The Python column for scale-100 reads lower than the 5.6% above: same code path, a quieter
+machine that day. Browser bytes vary run to run with how many stand-ins moved between two
+pushes (the JSON per vehicle is identical, about 0.5 KB, mostly the identity); at 300 moving
+stand-ins nearly every vehicle changes every push. A task to uid 251 (sysid 1) moved only that
+vehicle, not uid 1 (also sysid 1).
