@@ -10,7 +10,8 @@
 # degraded per link class (sim/links.toml): loss, latency, bandwidth, terrain (with a
 # scenario), SATCOM from real satellites (with sim/space/cache, `murmur-space fetch`), depth.
 # MURMUR_LINKEMU=0 bypasses it (vehicles talk to the bridge on MURMUR_BASE_PORT directly).
-# MURMUR_LINK_EVENTS=<file> adds scripted [[event]]s (e.g. sim/link-events/golden-gate.toml);
+# MURMUR_LINK_EVENTS (or MURMUR_EVENTS)=<file> adds scripted [[event]]s for comms and GNSS
+# (e.g. sim/link-events/golden-gate.toml, sim/events/golden-gate-gnss.toml);
 # MURMUR_LINKS=<file> replaces sim/links.toml (profiles). Emulator log: logs/linkemu.log.
 #
 # Ports (env), so a second stack can run beside the default one:
@@ -39,6 +40,10 @@ case "${MURMUR_LINKEMU:-1}" in 0|off|false|no) linkemu=0 ;; *) linkemu=1 ;; esac
 vehicle_base="$MURMUR_BASE_PORT"
 bridge_base="${MURMUR_BRIDGE_BASE_PORT:-$((vehicle_base + 1000))}"
 emu_port="${MURMUR_LINKEMU_PORT:-8766}"
+# one scripted-events file drives both the link emulator (comms) and the stand-ins (GNSS
+# jamming/spoofing); either variable name works
+MURMUR_LINK_EVENTS="${MURMUR_LINK_EVENTS:-${MURMUR_EVENTS:-}}"
+export MURMUR_EVENTS="$MURMUR_LINK_EVENTS"
 if [ -n "${MURMUR_LINK_EVENTS:-}" ] && [ ! -f "$MURMUR_LINK_EVENTS" ]; then
   echo "MURMUR_LINK_EVENTS: no file $MURMUR_LINK_EVENTS" >&2
   exit 1
