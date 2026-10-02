@@ -19,6 +19,10 @@ pub struct Caps {
     pub auto: &'static str,
     /// None: no RTL mode (Sub); "rtl" is flown as a one-waypoint mission back to home
     pub rtl: Option<&'static str>,
+    /// The mode "hold" commands. It must keep the vehicle where it is with no RC transmitter
+    /// and no further commands: a mode whose climb rate or throttle is the pilot's stick
+    /// (ArduCopter LOITER, for one) descends and lands, and a mode that only stops the motors
+    /// (ArduRover HOLD) lets a boat drift off with the current. See the notes above `PLANE`.
     pub hold: &'static str,
     /// mission altitude: base, and step per vehicle of that kind in the same tasking (vertical
     /// separation); negative is depth
@@ -49,6 +53,19 @@ use TaskKind::{Hold, Orbit, Patrol, Rtl, Track};
 
 const MOVERS: &[TaskKind] = &[Orbit, Patrol, Hold, Rtl];
 
+// Hold modes, checked against ArduPilot 4.8 with no RC input:
+// - Plane, VTOL: LOITER circles the point where it was entered at the current altitude (the
+//   altitude comes from TECS; only the ENABLE_LOITER_ALT_CONTROL flight option puts it on the
+//   stick, and that is off). A fixed wing cannot stop, so circling is its hold.
+// - Copter: BRAKE (see COPTER). LOITER and POSHOLD take the climb rate from the throttle stick.
+// - Blimp: LOITER latches the position and yaw on entry and the pilot input only moves that
+//   target; with none it holds all four axes.
+// - Boat: LOITER holds station (it drives back inside LOIT_RADIUS and stops there); HOLD
+//   only zeroes throttle and steering, so a boat in a tidal current drifts away.
+// - UGV: HOLD stops the motors and centres the steering; a ground vehicle stays put.
+// - Sub: POSHOLD holds position and depth (no pilot input = zero rates). It needs a position
+//   estimate (refused otherwise); ALT_HOLD would keep depth only.
+// - Tracker: STOP holds the current pan and tilt.
 static PLANE: Caps = Caps {
     tasks: MOVERS,
     auto: "AUTO",
@@ -64,17 +81,26 @@ static VTOL: Caps = Caps {
     takeoff: Some(MavCmd::MAV_CMD_NAV_VTOL_TAKEOFF),
     ..PLANE
 };
+// ArduCopter has no RC here, so the throttle stick sits at the bottom: STABILIZE, ALT_HOLD,
+// LOITER, POSHOLD and the rest that read it descend at PILOT_SPD_DN, land and auto-disarm.
+// BRAKE (mode_brake.cpp) runs the position controller to a zero velocity target (it stops
+// within a few metres at BRAKE_MODE_DECEL_RATE) and holds that point, and its vertical
+// controller targets a zero climb rate (it holds the altitude it has). It reads no RC, has no
+// timeout (only the Solo pause button sets one) and nothing makes it exit but a mode change or
+// a failsafe. GUIDED would also hold, but needs a position target message sent after the
+// mode change; BRAKE needs nothing more. Like LOITER it requires a position estimate.
 static COPTER: Caps = Caps {
     tasks: MOVERS,
     auto: "AUTO",
     rtl: Some("RTL"),
-    hold: "LOITER",
+    hold: "BRAKE",
     alt: (30.0, 5.0),
     takeoff: Some(MavCmd::MAV_CMD_NAV_TAKEOFF),
     orbit: Some(OrbitStyle::Waypoints),
     home_tol: 15.0,
 };
 static BLIMP: Caps = Caps {
+    hold: "LOITER",
     alt: (20.0, 5.0),
     takeoff: None,
     home_tol: 30.0,
@@ -84,13 +110,14 @@ static BOAT: Caps = Caps {
     tasks: MOVERS,
     auto: "AUTO",
     rtl: Some("RTL"),
-    hold: "HOLD",
+    hold: "LOITER",
     alt: (0.0, 0.0),
     takeoff: None,
     orbit: Some(OrbitStyle::Waypoints),
     home_tol: 15.0,
 };
 static UGV: Caps = Caps {
+    hold: "HOLD",
     home_tol: 10.0,
     ..BOAT
 };

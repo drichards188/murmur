@@ -452,7 +452,7 @@ async fn hold_and_rtl() {
     let s = settle(&hold.ops[0], 60).await;
     assert_eq!(states(&s), [Queued, Sent, Acked, Done], "{s:?}");
     assert_eq!(s.detail, "holding");
-    assert_eq!(boat.read(|v| v.mode.clone()).as_deref(), Some("HOLD"));
+    assert_eq!(boat.read(|v| v.mode.clone()).as_deref(), Some("LOITER"));
     // RTL from exactly home: counts as home at once
     let rtl = tm.dispatch_unchecked(
         TaskOrder::new(request("rtl", &[3], TaskParams::default()), &fl)
@@ -643,7 +643,7 @@ async fn no_ack_fails_after_retries() {
         .unwrap_or_else(|e| panic!("{e}")),
     );
     sleep(Duration::from_secs(3)).await;
-    assert_eq!(t.ops[0].snapshot().detail, "commanding HOLD"); // still trying
+    assert_eq!(t.ops[0].snapshot().detail, "commanding LOITER"); // still trying
     let s = settle(&t.ops[0], 60).await;
     assert_eq!(
         (s.state, s.detail.as_str()),
