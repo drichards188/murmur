@@ -155,6 +155,9 @@ pub struct SpaceApi {
     pub clock: ScenarioClock,
     space: OnceLock<Result<Arc<Space>, String>>,
     areas: Vec<NamedArea>,
+    /// SATCOM classes per platform id, from `space_class` / `space_class_alt` in
+    /// sim/platforms.toml (read once at start).
+    satcom: HashMap<String, Vec<String>>,
     cache: Mutex<HashMap<String, (Instant, Arc<str>)>>,
 }
 
@@ -210,12 +213,17 @@ impl SpaceApi {
             eprintln!("space: no named areas: {e}");
             Vec::new()
         });
+        let satcom = load_satcom(&root.join("sim/platforms.toml")).unwrap_or_else(|e| {
+            eprintln!("space: no SATCOM classes: {e}");
+            HashMap::new()
+        });
         SpaceApi {
             world,
             root,
             clock,
             space: OnceLock::new(),
             areas,
+            satcom,
             cache: Mutex::new(HashMap::new()),
         }
     }
@@ -452,14 +460,34 @@ struct FleetNode {
     alt_m: f64,
 }
 
-/// SATCOM class per platform (the integration contract's suggestion; the link emulator may
-/// later own this). Anything else with `link = "satcom"` gets Starlink-class.
-pub fn satcom_classes(platform: Option<&str>) -> Vec<&'static str> {
-    match platform.unwrap_or("") {
-        "buoy" => vec!["iridium"],
-        "saildrone" => vec!["iridium", "starlink"],
-        "rq4" | "mq9b" => vec!["wgs"],
-        _ => vec!["starlink"],
+/// The SATCOM classes of every platform that names one: `space_class` first, then the
+/// optional `space_class_alt`, from the platform catalog (sim/platforms.toml). The link
+/// emulator reads the same field (through the fleet manifest), so the two cannot disagree.
+pub fn load_satcom(path: &std::path::Path) -> Result<HashMap<String, Vec<String>>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let table: toml::Table = text
+        .parse()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(table
+        .iter()
+        .filter_map(|(id, spec)| {
+            let spec = spec.as_table()?;
+            let classes: Vec<String> = ["space_class", "space_class_alt"]
+                .iter()
+                .filter_map(|k| spec.get(*k)?.as_str().map(String::from))
+                .collect();
+            (!classes.is_empty()).then(|| (id.clone(), classes))
+        })
+        .collect())
+}
+
+impl SpaceApi {
+    /// SATCOM classes of a platform (empty if the catalog names none: no SATCOM views).
+    pub fn satcom_classes(&self, platform: Option<&str>) -> Vec<String> {
+        platform
+            .and_then(|p| self.satcom.get(p))
+            .cloned()
+            .unwrap_or_default()
     }
 }
 
@@ -706,7 +734,7 @@ async fn catalog(State(api): State<Api>) -> Response {
             .map(|v| {
                 (
                     v.uid.to_string(),
-                    json!(satcom_classes(v.platform.as_deref())),
+                    json!(api.satcom_classes(v.platform.as_deref())),
                 )
             })
             .collect();
@@ -976,10 +1004,7 @@ impl SpaceApi {
                         format!("no vehicle {uid} with a position"),
                     )
                 })?;
-            let classes = satcom_classes(v.platform.as_deref())
-                .into_iter()
-                .map(String::from)
-                .collect();
+            let classes = self.satcom_classes(v.platform.as_deref());
             let who = json!({"uid": v.uid, "callsign": v.callsign, "platform": v.platform, "link": v.link});
             return Ok((
                 Geodetic::new(v.lat, v.lon, v.alt_m.max(0.0) / 1000.0),
@@ -1023,8 +1048,8 @@ async fn links_now(State(api): State<Api>) -> Response {
                 .filter(|v| v.link.as_deref() == Some("satcom"))
             {
                 let point = Geodetic::new(v.lat, v.lon, v.alt_m.max(0.0) / 1000.0);
-                for class in satcom_classes(v.platform.as_deref()) {
-                    let Ok(s) = space.link_at(class, point, now, &tm) else {
+                for class in api.satcom_classes(v.platform.as_deref()) {
+                    let Ok(s) = space.link_at(&class, point, now, &tm) else {
                         continue;
                     };
                     let best = s.best.as_ref().map(|b| {

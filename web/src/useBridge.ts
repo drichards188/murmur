@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { getOperator, type Decisions, type Intent, type Authorization } from './decisions'
 import type { BridgeState, LngLat, TaskKind, Tasking, Vehicle } from './types'
 
 const TRAIL_MAX = 120 // same cap as the bridge keeps
@@ -45,6 +46,7 @@ export type BridgeStatus = 'connecting' | 'live' | 'down'
 export function useBridge() {
   const [state, setState] = useState<BridgeState | null>(null)
   const [status, setStatus] = useState<BridgeStatus>('connecting')
+  const [decisions, setDecisions] = useState<Decisions | null>(null)
   const retry = useRef(0)
 
   useEffect(() => {
@@ -65,6 +67,8 @@ export function useBridge() {
         if (msg.type === 'state') {
           current = withAges(msg as BridgeState)
           setState(current)
+        } else if (msg.type === 'decisions') {
+          setDecisions({ inbox: msg.inbox, intents: msg.intents })
         } else if (msg.type === 'delta' && current) {
           current = withAges(applyDelta(current, msg as Delta))
           setState(current)
@@ -85,7 +89,7 @@ export function useBridge() {
     }
   }, [])
 
-  return { state, status }
+  return { state, status, decisions }
 }
 
 export interface TaskRequest {
@@ -97,15 +101,41 @@ export interface TaskRequest {
   target?: number
 }
 
-export async function sendTask(req: TaskRequest) {
+/** What POST /api/tasks answers: 200 dispatched (with `authorization` when the task was in
+ *  a human tier and sending it was the operator's own approval); 202 waiting for approval
+ *  (`dispatched` is false and `intent_id` names the inbox item; a tier where the sender may
+ *  not authorize their own task); 422 refused by the rules (TaskRefused). */
+export interface TaskAnswer {
+  /** the tasking (command log entry), when dispatched */
+  id?: number | null
+  intent_id?: number
+  authorization?: Authorization
+  state?: string
+  dispatched?: boolean
+  detail?: string
+  expires_t?: number | null
+  intent?: Intent
+}
+
+/** The rules rejected the task: `intent` holds the failed checks. */
+export class TaskRefused extends Error {
+  intent: Intent
+  constructor(message: string, intent: Intent) {
+    super(message)
+    this.intent = intent
+  }
+}
+
+export async function sendTask(req: TaskRequest): Promise<TaskAnswer & { status: number }> {
   const res = await fetch('/api/tasks', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'x-murmur-operator': getOperator() },
     body: JSON.stringify(req),
   })
+  const body = await res.json().catch(() => ({}))
   if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
+    if (res.status === 422 && body.intent) throw new TaskRefused(body.detail ?? 'refused', body.intent)
     throw new Error(body.detail ?? `bridge returned ${res.status}`)
   }
-  return res.json()
+  return { ...body, status: res.status }
 }

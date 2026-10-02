@@ -479,6 +479,10 @@ pub enum Transition {
     RequireApproval,
     /// A human approved (needs a `HumanAuthority`).
     Approve,
+    /// Policy tier human, and the human who submitted it is the authorizing human: the
+    /// submission itself is the approval (needs the submitter's `HumanAuthority`; never
+    /// for an agent's proposal).
+    AuthorizeAtSubmission,
     /// A human rejected.
     Reject,
     /// Nobody decided in time.
@@ -492,12 +496,13 @@ pub enum Transition {
 }
 
 impl Transition {
-    pub const ALL: [Transition; 11] = [
+    pub const ALL: [Transition; 12] = [
         Transition::Check,
         Transition::ChecksFailed,
         Transition::AutoApprove,
         Transition::RequireApproval,
         Transition::Approve,
+        Transition::AuthorizeAtSubmission,
         Transition::Reject,
         Transition::Expire,
         Transition::Void,
@@ -520,13 +525,15 @@ pub struct IllegalTransition {
 /// proposed -check-> checked -checks_failed-> rejected
 ///                           -auto_approve-> auto_approved
 ///                           -require_approval-> pending_approval
+///                           -authorize_at_submission-> approved
 /// pending_approval -approve-> approved | -reject-> rejected | -expire-> expired
 /// pending_approval | auto_approved | approved -void-> voided
 /// auto_approved | approved -dispatch-> dispatched -complete-> done | -fail-> failed
 /// ```
 ///
-/// Approved is reachable only through `Approve`, which the engine performs only with a
-/// `HumanAuthority`.
+/// Approved is reachable only through `Approve` and `AuthorizeAtSubmission`, which the
+/// engine performs only with a `HumanAuthority` (the second only for the submitter's own
+/// intent, on the human submit path).
 pub fn next_state(from: State, transition: Transition) -> Result<State, IllegalTransition> {
     use State as S;
     use Transition as T;
@@ -535,6 +542,7 @@ pub fn next_state(from: State, transition: Transition) -> Result<State, IllegalT
         (S::Checked, T::ChecksFailed) => S::Rejected,
         (S::Checked, T::AutoApprove) => S::AutoApproved,
         (S::Checked, T::RequireApproval) => S::PendingApproval,
+        (S::Checked, T::AuthorizeAtSubmission) => S::Approved,
         (S::PendingApproval, T::Approve) => S::Approved,
         (S::PendingApproval, T::Reject) => S::Rejected,
         (S::PendingApproval, T::Expire) => S::Expired,
@@ -555,6 +563,9 @@ pub struct Approval {
     pub t: Time,
     /// The approver proposed the intent too (no second person looked at it).
     pub self_approved: bool,
+    /// The approval is the submission itself: a human submitted the intent and its policy
+    /// tier lets the submitter authorize (`approval.at_submission`). Always self-approved.
+    pub at_submission: bool,
     pub note: Option<String>,
 }
 

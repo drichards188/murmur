@@ -30,7 +30,7 @@ const NO_EKF_GRACE_S: f64 = 15.0;
 pub struct Identity(pub Map<String, Value>);
 
 impl Identity {
-    const KEYS: [&str; 11] = [
+    const KEYS: [&str; 12] = [
         "callsign",
         "platform",
         "name",
@@ -40,6 +40,7 @@ impl Identity {
         "link",
         "sidc",
         "sim",
+        "armed",
         "cruise_alt_m",
         "min_turn_radius_m",
     ];

@@ -1,5 +1,12 @@
 //! The decision layer in the bridge (Phase C): every action, from the console, the API or
-//! (Phase F) an agent, goes intent -> checks -> policy -> (auto | pending human) -> dispatch.
+//! (Phase F) an agent, goes intent -> checks -> policy -> (auto | human) -> dispatch.
+//!
+//! **Who the human is.** A human tier needs a human decision. An operator's own request is
+//! one: when the tier has `submitter_authorizes = true` (the default in `sim/policy.toml`),
+//! the engine approves it at submission (`approval.at_submission`) and it is dispatched at
+//! once, with [`Outcome::authorization`] saying which tier the operator authorized. With
+//! `submitter_authorizes = false` it waits in the inbox (HTTP 202). An agent's proposal in a
+//! human tier always waits in the inbox for an operator.
 //!
 //! The bridge owns one [`murmur_decide::Engine`] (policy `sim/policy.toml`, catalog
 //! `sim/platforms.toml`, areas `sim/areas/`, audit log `logs/audit/<run-id>.jsonl`, the real
@@ -160,6 +167,9 @@ pub struct Outcome {
     pub intent: Value,
     /// Set once the intent was dispatched.
     pub tasking: Option<TaskingSnapshot>,
+    /// The submitting operator's request was itself the human decision a human tier asks
+    /// for: `{by, at_submission, tier, reason, why}` (see [`authorization_json`]).
+    pub authorization: Option<Value>,
 }
 
 /// Where things are, from the environment (see `main.rs`).
@@ -527,6 +537,7 @@ impl Decision {
                 .and_then(|i| serde_json::to_value(i).ok())
                 .unwrap_or(Value::Null),
             tasking: core.taskings.get(&id).map(|t| t.snapshot()),
+            authorization: intent.and_then(authorization_json),
         }
     }
 
@@ -864,7 +875,23 @@ fn intent_json(i: &Intent, tasking_id: Option<u64>) -> Value {
     v
 }
 
-/// Why an intent is waiting for a human, for the inbox.
+/// For an intent its submitter authorized at submission: who, which policy tier asked for
+/// a human, and why (the inbox's reasons). The console notes it in the command log
+/// ("authorized by you (armed platform)").
+pub fn authorization_json(i: &Intent) -> Option<Value> {
+    let a = i.approval().filter(|a| a.at_submission)?;
+    let p = i.policy()?;
+    Some(json!({
+        "by": a.by,
+        "at_submission": true,
+        "self_approved": a.self_approved,
+        "tier": p.rule,
+        "reason": p.reason,
+        "why": why_human(i),
+    }))
+}
+
+/// Why an intent needs a human, for the inbox (and an at-submission authorization).
 fn why_human(i: &Intent) -> Vec<String> {
     let mut why = Vec::new();
     if let Some(p) = i.policy() {

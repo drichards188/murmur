@@ -47,3 +47,20 @@ machine that day. Browser bytes vary run to run with how many stand-ins moved be
 pushes (the JSON per vehicle is identical, about 0.5 KB, mostly the identity); at 300 moving
 stand-ins nearly every vehicle changes every push. A task to uid 251 (sysid 1) moved only that
 vehicle, not uid 1 (also sysid 1).
+
+## Stand-in engine alone: Rust vs Python (R.1, 2026-10-02)
+
+Each vehicle sends to a dummy UDP sink (no bridge); 7 stand-in platforms round robin, planes
+airborne and loitering, marine idle. CPU is percent of one core on a shared host (approximate).
+`sim/tests/standins_scale.py`.
+
+| Engine | Vehicles | CPU | RSS | Delivered msg/s (expected) |
+|---|---|---|---|---|
+| Rust (1 worker thread) | 1,000 | 3.8% | 8.3 MB | 7,500 (7,500) |
+| Rust (1 worker thread) | 3,000 | 8.4% | 17.3 MB | 22,500 (22,500) |
+| Python | 1,000 | 7.1 to 8.2% | 59 MB | 7,500 (7,500) |
+| Python | 3,000 | 21.9% | 86 MB | 22,500 (22,500) |
+
+Host limits for "thousands of nodes": `net.ipv4.ip_local_port_range` (here 39160 to 43255,
+about 4,000 sockets per address) caps either engine near 4,000 vehicles unless widened; ticks
+are staggered across vehicles because lockstep sends lost ~20% of packets on WSL loopback.

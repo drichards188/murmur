@@ -40,6 +40,9 @@ pub struct Spec {
     pub turn_dps: Option<f64>,
     pub loiter_radius_m: Option<f64>,
     pub endurance_h: Option<f64>,
+    /// los | mesh | satcom | acoustic | tether: what carries its telemetry (telemetry.rs)
+    #[serde(default)]
+    pub link: Option<String>,
 }
 
 impl Spec {
@@ -53,6 +56,20 @@ impl Spec {
 
     pub fn endurance_h(&self) -> f64 {
         self.endurance_h.unwrap_or(10.0)
+    }
+
+    /// Cruise speed over turn rate: the tightest circle it can fly at cruise (0 if unknown).
+    /// Same formula as the bridge's `min_turn_radius_m`.
+    pub fn min_turn_radius_m(&self) -> f64 {
+        match self.turn_dps {
+            Some(t) if t > 0.0 && self.cruise_mps > 0.0 => self.cruise_mps / t.to_radians(),
+            _ => 0.0,
+        }
+    }
+
+    /// Talks over an acoustic modem while submerged (AUVs).
+    pub fn acoustic(&self) -> bool {
+        self.link.as_deref() == Some("acoustic")
     }
 }
 

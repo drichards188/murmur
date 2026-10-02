@@ -5,7 +5,7 @@ import { MapboxOverlay } from '@deck.gl/mapbox'
 import { useEffect, useRef, useState } from 'react'
 import { circle, distanceM } from './geo'
 import { BRIDGE_FILTER, liftBridges, type LiftedBridge } from './bridges'
-import { build3dLayers, DEM_TILES, HEIGHT_EXAGGERATION } from './map3d'
+import { build3dLayers, drawnHeight, DEM_TILES, HEIGHT_EXAGGERATION } from './map3d'
 import { declutter } from './declutter'
 import type { SpaceOverlay } from './space'
 import { EMPTY_OVERLAY } from './space'
@@ -27,13 +27,50 @@ interface Props {
   selected: Set<number>
   draft: Draft
   onToggle: (uid: number) => void
+  /** right click on a vehicle (uid) or on empty map (null): deselect */
+  onDeselect?: (uid: number | null) => void
   onMapClick: (p: LngLat) => void
   /** fly to this vehicle (n changes on every request, so repeat clicks work) */
   focus?: { uid: number; n: number } | null
+  /** keep the camera on this vehicle (its details are open) until the operator pans away */
+  follow?: number | null
+  /** following stopped (the operator panned) or resumed */
+  onFollowing?: (following: boolean) => void
+  /** inbox: where pending intents would send their vehicles (see inboxPreview.ts) */
+  preview?: FC
+  /** inbox: fit the view to these points (n changes on every request) */
+  fit?: { points: LngLat[]; n: number; padRight: number } | null
   /** space overlays: area, passes in progress, highlighted scene, SATCOM link lines */
   space?: SpaceOverlay
   /** the view after every move: centre and bounds (w, s, e, n) */
   onView?: (center: LngLat, bounds: [number, number, number, number]) => void
+}
+
+/** pending-approval previews from the inbox: dashed violet, the one being read in bold */
+function addPreviewLayers(m: maplibregl.Map) {
+  m.addSource('inbox-preview', { type: 'geojson', data: empty })
+  const w = ['case', ['get', 'sel'], 3, 1.5] as maplibregl.ExpressionSpecification
+  m.addLayer({
+    id: 'inbox-transit',
+    type: 'line',
+    source: 'inbox-preview',
+    filter: ['all', ['==', ['geometry-type'], 'LineString'], ['==', ['get', 'part'], 'transit']],
+    paint: { 'line-color': '#c49bff', 'line-width': w, 'line-dasharray': [0.5, 2], 'line-opacity': 0.8 },
+  })
+  m.addLayer({
+    id: 'inbox-path',
+    type: 'line',
+    source: 'inbox-preview',
+    filter: ['all', ['==', ['geometry-type'], 'LineString'], ['==', ['get', 'part'], 'path']],
+    paint: { 'line-color': '#c49bff', 'line-width': w, 'line-dasharray': [3, 2], 'line-opacity': 0.95 },
+  })
+  m.addLayer({
+    id: 'inbox-points',
+    type: 'circle',
+    source: 'inbox-preview',
+    filter: ['==', ['geometry-type'], 'Point'],
+    paint: { 'circle-radius': ['case', ['get', 'sel'], 7, 4], 'circle-color': '#c49bff', 'circle-stroke-color': '#0b0f14', 'circle-stroke-width': 1.5 },
+  })
 }
 
 const STYLE = 'https://tiles.openfreemap.org/styles/dark'
@@ -223,13 +260,17 @@ function setSpaceData(m: maplibregl.Map, space: SpaceOverlay, view: ViewMode) {
   for (const id of SPACE_SOURCES) (m.getSource(id) as maplibregl.GeoJSONSource | undefined)?.setData(id === 'space-links' ? (view === '3d' ? empty : linkStubs(space.links)) : f[id])
 }
 
-export function MapView({ vehicles, taskings, selected, draft, focus, onToggle, onMapClick, space = EMPTY_OVERLAY, onView }: Props) {
+/** width of the vehicle details card (.vdetails) plus its margin */
+const FOLLOW_PAD_LEFT = 350
+
+export function MapView({ vehicles, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView }: Props) {
   const [view, setView] = useState<ViewMode>(savedView)
   const viewRef = useRef(view)
   const overlay = useRef<MapboxOverlay | null>(null)
   const bridges = useRef<LiftedBridge[]>([])
   const latest = useRef({ vehicles, selected, bare: new Set<number>() })
   const spaceRef = useRef(space)
+  const previewRef = useRef(preview)
   const viewCb = useRef(onView)
   // bumped when the camera stops, so label declutter re-runs at the new scale
   const [moved, setMoved] = useState(0)
@@ -241,11 +282,13 @@ export function MapView({ vehicles, taskings, selected, draft, focus, onToggle, 
   const markers = useRef(new Map<number, { marker: maplibregl.Marker; el: HTMLDivElement; key: string }>())
   const clickRef = useRef(onMapClick)
   const toggleRef = useRef(onToggle)
+  const deselectRef = useRef(onDeselect)
   useEffect(() => {
     clickRef.current = onMapClick
     toggleRef.current = onToggle
+    deselectRef.current = onDeselect
     viewCb.current = onView
-  }, [onMapClick, onToggle, onView])
+  }, [onMapClick, onToggle, onDeselect, onView])
 
   /** vehicles, bridges and SATCOM link lines for deck.gl (3D only; hidden layers in 2D) */
   const deckLayers = (is3d: boolean) => {
@@ -279,6 +322,23 @@ export function MapView({ vehicles, taskings, selected, draft, focus, onToggle, 
         }
       }
       clickRef.current([e.lngLat.lng, e.lngLat.lat])
+    })
+    // Right click deselects: a vehicle in 3D, else everything. A right drag rotates the map
+    // instead, so only a press that barely moved counts as a click.
+    let rightDown: { x: number; y: number } | null = null
+    m.on('mousedown', (e: maplibregl.MapMouseEvent) => {
+      if (e.originalEvent.button === 2) rightDown = { x: e.point.x, y: e.point.y }
+    })
+    m.on('contextmenu', (e: maplibregl.MapMouseEvent) => {
+      e.preventDefault()
+      const d = rightDown ? Math.hypot(e.point.x - rightDown.x, e.point.y - rightDown.y) : 0
+      rightDown = null
+      if (d > 5) return
+      if (viewRef.current === '3d') {
+        const hit = deck.pickObject({ x: e.point.x, y: e.point.y, radius: 6, layerIds: ['vehicles-3d'] })
+        if (hit?.object) return deselectRef.current?.((hit.object as Vehicle).uid)
+      }
+      deselectRef.current?.(null)
     })
     // Middle-drag orbits the camera like a 3D modelling tool: left/right spins (bearing),
     // up/down tilts (pitch). In 2D only the spin applies, so the map stays flat.
@@ -405,6 +465,8 @@ export function MapView({ vehicles, taskings, selected, draft, focus, onToggle, 
         layout: { 'text-field': ['get', 'n'], 'text-size': 11, 'text-font': ['Noto Sans Bold'], 'text-allow-overlap': true },
         paint: { 'text-color': '#0b0f14' },
       })
+      addPreviewLayers(m)
+      ;(m.getSource('inbox-preview') as maplibregl.GeoJSONSource).setData(previewRef.current)
       addSpaceLayers(m)
       ready.current = true
       if (viewRef.current === '3d') applyView(m, '3d')
@@ -483,6 +545,11 @@ export function MapView({ vehicles, taskings, selected, draft, focus, onToggle, 
           e.stopPropagation()
           toggleRef.current(v.uid)
         })
+        el.addEventListener('contextmenu', (e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          deselectRef.current?.(v.uid)
+        })
         const marker = new maplibregl.Marker({ element: el, anchor: 'top-left' }).setLngLat(v.position).addTo(m)
         entry = { marker, el, key: '' }
         markers.current.set(v.uid, entry)
@@ -548,11 +615,80 @@ export function MapView({ vehicles, taskings, selected, draft, focus, onToggle, 
   useEffect(() => {
     vehiclesRef.current = vehicles
   }, [vehicles])
+  // Aim at the vehicle itself, not the ground under it: in 3D aircraft are drawn at altitude x
+  // the exaggeration, so the camera centre gets that elevation. Only jumpTo honours a centre
+  // elevation (easeTo/flyTo drop it), so following is a per-frame glide built on jumpTo, which
+  // also smooths the 4 Hz position updates.
+  const following = useRef<{ uid: number; zoom: number | null } | null>(null)
+  const followingCb = useRef(onFollowing)
   useEffect(() => {
-    if (!focus || !map.current) return
+    followingCb.current = onFollowing
+  }, [onFollowing])
+
+  const startFollow = (uid: number, zoom: number | null) => {
+    const m = map.current
+    if (!m) return
+    following.current = { uid, zoom }
+    // the details card covers the map's left edge: centre the vehicle in what's left visible
+    m.setPadding({ top: 0, bottom: 0, right: 0, left: FOLLOW_PAD_LEFT })
+    let last = performance.now()
+    const step = (now: number) => {
+      const f = following.current
+      if (!f || f.uid !== uid || map.current !== m) return
+      // real elapsed time, so the glide keeps pace at any frame rate (capped after a stalled tab)
+      const dt = Math.min(1, (now - last) / 1000)
+      last = now
+      if (m.dragPan.isActive()) {
+        // the operator grabbed the map: stop following, let the terrain hold the centre again
+        following.current = null
+        m.setCenterClampedToGround(true)
+        m.setPadding({ top: 0, bottom: 0, right: 0, left: 0 })
+        followingCb.current?.(false)
+        return
+      }
+      const v = vehiclesRef.current.find((x) => x.uid === uid)
+      if (v?.position && !m.isZooming() && !m.isRotating()) {
+        const k = 1 - Math.exp(-dt / 0.25)
+        const c = m.getCenter()
+        const elev = viewRef.current === '3d' ? drawnHeight(v) : 0
+        m.setCenterClampedToGround(false)
+        const z = m.getZoom()
+        const zoom = f.zoom == null ? z : z + (f.zoom - z) * k
+        if (f.zoom != null && Math.abs(f.zoom - zoom) < 0.01) f.zoom = null
+        m.jumpTo({
+          center: [c.lng + (v.position[0] - c.lng) * k, c.lat + (v.position[1] - c.lat) * k],
+          elevation: m.getCenterElevation() + (elev - m.getCenterElevation()) * k,
+          zoom,
+        })
+      }
+      requestAnimationFrame(step)
+    }
+    requestAnimationFrame(step)
+  }
+
+  useEffect(() => {
+    const m = map.current
+    if (!focus || !m) return
     const v = vehiclesRef.current.find((x) => x.uid === focus.uid)
-    if (v?.position) map.current.flyTo({ center: v.position, zoom: Math.max(map.current.getZoom(), 13), duration: 1200 })
+    if (!v?.position) return
+    if (follow === focus.uid) {
+      followingCb.current?.(true)
+      startFollow(focus.uid, Math.max(m.getZoom(), 13))
+    } else {
+      m.setCenterClampedToGround(true)
+      m.flyTo({ center: v.position, zoom: Math.max(m.getZoom(), 13), duration: 1200 })
+    }
+    // startFollow reads refs only; a new focus request is the trigger
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus])
+
+  useEffect(() => {
+    if (follow == null && following.current) {
+      following.current = null
+      map.current?.setCenterClampedToGround(true)
+      map.current?.setPadding({ top: 0, bottom: 0, right: 0, left: 0 })
+    }
+  }, [follow])
 
   useEffect(() => {
     viewRef.current = view
@@ -570,6 +706,19 @@ export function MapView({ vehicles, taskings, selected, draft, focus, onToggle, 
   useEffect(() => {
     if (ready.current) (map.current?.getSource('taskings') as maplibregl.GeoJSONSource | undefined)?.setData(taskingFeatures(taskings))
   }, [taskings])
+
+  useEffect(() => {
+    previewRef.current = preview
+    if (ready.current) (map.current?.getSource('inbox-preview') as maplibregl.GeoJSONSource | undefined)?.setData(preview)
+  }, [preview])
+
+  useEffect(() => {
+    const m = map.current
+    if (!fit || !m || fit.points.length === 0) return
+    const bounds = new maplibregl.LngLatBounds(fit.points[0], fit.points[0])
+    for (const p of fit.points) bounds.extend(p)
+    m.fitBounds(bounds, { padding: { top: 70, bottom: 70, left: 70, right: fit.padRight + 20 }, maxZoom: 13, duration: 1000 })
+  }, [fit])
 
   useEffect(() => {
     if (ready.current) (map.current?.getSource('draft') as maplibregl.GeoJSONSource | undefined)?.setData(draftFeatures(draft))

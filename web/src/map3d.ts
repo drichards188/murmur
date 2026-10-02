@@ -27,6 +27,11 @@ function z(metresMsl: number | null) {
   return (metresMsl ?? 0) * HEIGHT_EXAGGERATION
 }
 
+/** Where a vehicle is drawn in 3D, in rendered metres (the camera aims here to follow it). */
+export function drawnHeight(v: Vehicle) {
+  return z(v.alt_msl)
+}
+
 function iconFor(v: Vehicle, labels = true) {
   const stale = (v.link.since_last_ms ?? 0) > STALE_MS
   // no heading arrow in 3D: the 3D trail shows direction, and a stable icon per vehicle

@@ -12,10 +12,11 @@ use murmur_decide::replay::{ReplayReport, replay, replay_str};
 use murmur_decide::*;
 use serde_json::Value;
 
-/// A run that exercises every decision path. Returns the log text.
+/// A run that exercises every decision path, on [`waiting_policy`] (human tiers make even
+/// the submitter's own intent wait, so the inbox paths all run). Returns the log text.
 fn scenario() -> String {
     let clock = ManualClock::new(T0);
-    let (mut e, log) = engine(&clock);
+    let (mut e, log) = waiting_engine(&clock);
     let op = e.open_operator_session(OperatorId::new("op-1")).unwrap();
     let a = op.authority();
     let w = world();
@@ -597,4 +598,184 @@ fn replay_binary() {
         Some(2)
     );
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+// ---- approval at submission -------------------------------------------------------------------
+
+/// On the sim policy as shipped: op-1's own armed and outside-area orbits are approved at
+/// submission; the agent's armed orbit waits and op-1 approves it in the inbox.
+fn scenario_at_submission() -> String {
+    let clock = ManualClock::new(T0);
+    let (mut e, log) = engine(&clock);
+    let op = e.open_operator_session(OperatorId::new("op-1")).unwrap();
+    let a = op.authority();
+    let (w, tr) = (world(), terrain());
+    let armed = e
+        .submit(a, orbit(NEAR_CRISSY, 150.0, &["blade-1"]), &w, &tr)
+        .unwrap()
+        .id();
+    e.dispatch(armed).unwrap();
+    let outside = e
+        .submit(a, orbit(OUTSIDE_APPROVED, 5000.0, &["hawk-1"]), &w, &tr)
+        .unwrap()
+        .id();
+    assert_eq!(e.intent(outside).unwrap().state(), State::Approved);
+    let proposed = e
+        .agent_port(AgentId::new("planner"))
+        .propose(
+            orbit(NEAR_CRISSY, 150.0, &["blade-1"]),
+            rationale("cover the LZ"),
+            &w,
+            &tr,
+        )
+        .unwrap()
+        .id();
+    assert_eq!(e.intent(proposed).unwrap().state(), State::PendingApproval);
+    clock.advance_ms(1_000);
+    e.approve(proposed, a, None, &w, &tr).unwrap();
+    e.void(outside, "superseded").unwrap();
+    log.text()
+}
+
+const UNBACKED_AT_SUBMISSION: &str = "approved at submission without passing checks, a human tier that allows it, and the submitter's approval.at_submission";
+
+fn armed_tier(v: &[Value]) -> usize {
+    v[0]["policy"]["tier"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|t| t["name"] == "armed-platform")
+        .unwrap()
+}
+
+#[test]
+fn at_submission_approvals_replay() {
+    let text = scenario_at_submission();
+    let r = replay_str(&text).unwrap();
+    assert!(r.ok(), "{:#?}", r.mismatches);
+    assert_eq!(
+        (r.approvals, r.self_approvals, r.approvals_at_submission),
+        (1, 0, 2)
+    );
+    let v = lines(&text);
+    let ev = &v[find(&v, "approval.at_submission", |_| true)];
+    assert_eq!(ev["by"], "op-1");
+    assert_eq!(ev["self_approved"], true);
+    assert_eq!(ev["rule"], "armed-platform");
+    let dec = &v[find(&v, "policy.decision", |_| true)];
+    assert_eq!(dec["decision"]["submitter_authorizes"], true);
+    // The policy as logged says so explicitly.
+    assert_eq!(v[0]["policy"]["approval"]["submitter_authorizes"], true);
+    assert_eq!(
+        v[0]["policy"]["tier"][armed_tier(&v)]["submitter_authorizes"],
+        true
+    );
+}
+
+#[test]
+fn at_submission_approval_by_someone_else_is_detected() {
+    let mut v = lines(&scenario_at_submission());
+    let i = find(&v, "approval.at_submission", |_| true);
+    v[i]["by"] = Value::from("op-2");
+    rechain(&mut v);
+    let r = replay_str(&unlines(&v)).unwrap();
+    let w = whats(&r);
+    assert!(
+        w.contains(&"approval at submission by someone other than the submitter"),
+        "{r:#?}"
+    );
+    assert!(w.contains(&UNBACKED_AT_SUBMISSION));
+}
+
+#[test]
+fn an_agent_intent_forged_as_approved_at_submission_is_detected() {
+    // Rewrite the agent's proposal as if it had been approved at submission: its
+    // approval.requested becomes an approval.at_submission, its require_approval an
+    // authorize_at_submission, and the later inbox approval is dropped. Chain recomputed.
+    let mut v = lines(&scenario_at_submission());
+    let req = find(&v, "approval.requested", |_| true);
+    let id = v[req]["intent"].clone();
+    v[req] = serde_json::json!({
+        "seq": 0, "t": v[req]["t"], "prev": "", "type": "approval.at_submission",
+        "intent": id, "by": "op-1", "session": 1, "self_approved": true,
+        "rule": "armed-platform",
+    });
+    let st = find(&v, "intent.state", |e| {
+        e["intent"] == id && e["transition"] == "require_approval"
+    });
+    v[st]["transition"] = Value::from("authorize_at_submission");
+    v[st]["to"] = Value::from("approved");
+    let granted = find(&v, "approval.granted", |e| e["intent"] == id);
+    v.remove(granted);
+    let approve = find(&v, "intent.state", |e| {
+        e["intent"] == id && e["transition"] == "approve"
+    });
+    v.remove(approve);
+    renumber(&mut v);
+    rechain(&mut v);
+    let r = replay_str(&unlines(&v)).unwrap();
+    let w = whats(&r);
+    assert!(
+        w.contains(&"agent-sourced intent approved at submission"),
+        "{r:#?}"
+    );
+    assert!(w.contains(&"approval at submission in a tier that doesn't allow it"));
+    assert!(w.contains(&UNBACKED_AT_SUBMISSION));
+}
+
+#[test]
+fn at_submission_without_its_event_or_its_tier_is_detected() {
+    // Drop the approval.at_submission: the transition is unbacked.
+    let mut v = lines(&scenario_at_submission());
+    let i = find(&v, "approval.at_submission", |_| true);
+    v.remove(i);
+    renumber(&mut v);
+    rechain(&mut v);
+    let r = replay_str(&unlines(&v)).unwrap();
+    assert!(whats(&r).contains(&UNBACKED_AT_SUBMISSION), "{r:#?}");
+    // Claim the logged policy made the armed tier two-person: the decision no longer
+    // reproduces, and the at-submission approval is not allowed by it.
+    let mut v = lines(&scenario_at_submission());
+    let t = armed_tier(&v);
+    v[0]["policy"]["tier"][t]["submitter_authorizes"] = Value::from(false);
+    rechain(&mut v);
+    let r = replay_str(&unlines(&v)).unwrap();
+    let w = whats(&r);
+    assert!(w.contains(&"policy decision differs"), "{r:#?}");
+    assert!(w.contains(&"approval at submission in a tier that doesn't allow it"));
+}
+
+#[test]
+fn a_submitter_sent_to_the_inbox_in_a_self_authorizing_tier_is_detected() {
+    // The waiting scenario's decisions say the submitter does not authorize. Make the
+    // logged policy say it does: those intents should have been approved at submission,
+    // not sent to the inbox.
+    let mut v = lines(&scenario());
+    v[0]["policy"]["approval"]["submitter_authorizes"] = Value::from(true);
+    rechain(&mut v);
+    let r = replay_str(&unlines(&v)).unwrap();
+    let w = whats(&r);
+    assert!(w.contains(&"policy decision differs"), "{r:#?}");
+    assert!(w.contains(&"sent for approval, but the submitter authorizes this tier"));
+}
+
+#[test]
+fn logs_from_before_submitter_authorizes_still_replay() {
+    // An old log: no submitter_authorizes anywhere (the policy and decisions as they were
+    // written then). Unset reads as false, which is how that run behaved.
+    let mut v = lines(&scenario());
+    v[0]["policy"]["approval"]
+        .as_object_mut()
+        .unwrap()
+        .remove("submitter_authorizes");
+    for t in v[0]["policy"]["tier"].as_array_mut().unwrap() {
+        t.as_object_mut().unwrap().remove("submitter_authorizes");
+    }
+    rechain(&mut v);
+    let text = unlines(&v);
+    assert!(!text.contains("submitter_authorizes"));
+    assert!(!text.contains("at_submission"));
+    let r = replay_str(&text).unwrap();
+    assert!(r.ok(), "{:#?}", r.mismatches);
+    assert_eq!((r.approvals, r.approvals_at_submission), (3, 0));
 }

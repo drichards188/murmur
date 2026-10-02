@@ -1,4 +1,4 @@
-//! Constructors for the messages a stand-in sends, field for field as standins.py encodes them.
+//! Constructors for the event messages a stand-in sends (streams are in telemetry.rs).
 
 use mavlink::dialects::ardupilotmega::*;
 
@@ -35,6 +35,40 @@ pub fn command_ack(command: MavCmd, result: MavResult) -> MavMessage {
         result,
         ..Default::default()
     })
+}
+
+/// COMMAND_ACK addressed to the sender, as ArduPilot fills target_system/component.
+pub fn command_ack_to(command: MavCmd, result: MavResult, to: (u8, u8)) -> MavMessage {
+    MavMessage::COMMAND_ACK(COMMAND_ACK_DATA {
+        command,
+        result,
+        target_system: to.0,
+        target_component: to.1,
+        ..Default::default()
+    })
+}
+
+/// MISSION_ACK to the sender of the message it answers.
+pub fn mission_ack_to(
+    result: MavMissionResult,
+    mission_type: MavMissionType,
+    to: (u8, u8),
+) -> MavMessage {
+    MavMessage::MISSION_ACK(MISSION_ACK_DATA {
+        target_system: to.0,
+        target_component: to.1,
+        mavtype: result,
+        mission_type,
+        ..Default::default()
+    })
+}
+
+/// Wall clock, microseconds since the UNIX epoch (GPS time on a real vehicle).
+pub fn unix_usec() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_micros() as u64)
+        .unwrap_or(0)
 }
 
 pub fn mission_ack(result: MavMissionResult, mission_type: MavMissionType) -> MavMessage {

@@ -67,8 +67,8 @@ fn main() -> ExitCode {
         report.transitions_verified
     );
     println!(
-        "{} area set(s) logged; {} approval(s), {} self-approved",
-        report.area_sets, report.approvals, report.self_approvals
+        "{} area set(s) logged; {} approval(s), {} self-approved; {} authorized at submission",
+        report.area_sets, report.approvals, report.self_approvals, report.approvals_at_submission
     );
     if report.space_queries > 0 {
         let how = match &segment {
