@@ -1,4 +1,6 @@
 #!/usr/bin/env sh
+# Agent worktrees can't reach the bd database; issues are exported when the branch is merged.
+if [ "$(git rev-parse --git-dir)" != "$(git rev-parse --git-common-dir)" ]; then exit 0; fi
 # --- BEGIN BEADS INTEGRATION v0.60.0 ---
 # This section is managed by beads. Do not remove these markers.
 if command -v bd >/dev/null 2>&1; then
