@@ -718,10 +718,9 @@ impl Behavior for Copter {
         if !t.st.armed {
             self.vel = (0.0, 0.0);
             t.st.speed = 0.0;
-            t.st.vz = 0.0;
             t.st.ve = 0.0;
             t.st.vn = 0.0;
-            self.landed = Self::rel(t.st) < 0.5;
+            self.landed = super::auto::fall(t.st, t.dt);
             return;
         }
         if let Rtl::Loiter(left) = self.rtl {

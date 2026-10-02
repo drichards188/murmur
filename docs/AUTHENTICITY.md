@@ -69,9 +69,10 @@ Video metadata for all ISR aircraft: MISB ST 0601 / STANAG 4609 (open, well supp
 
 ## Per platform
 
-"Today" = how the node runs in the default fleet. Stand-in behaviors still missing from
-`sim/standins.py`:
-copter (hover), VTOL (vertical takeoff then fixed-wing), airship, ground vehicle (land only),
+"Today" = how the node runs in the default fleet. The Rust engine (`crates/murmur-standins`)
+has copter and VTOL (QuadPlane) behaviors, checked against ArduPilot SITL by
+`sim/tests/standins_vs_sitl_air.py`, so X10, FPV and FVR-90 can run as stand-ins with
+`sim = "standin"`. Stand-in behaviors still missing: airship, ground vehicle (land only),
 sailboat (wind-driven), antenna tracker.
 
 ### Air

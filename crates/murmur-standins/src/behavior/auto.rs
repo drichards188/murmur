@@ -22,6 +22,22 @@ pub struct Auto {
     seen: u16,
     /// the last item is done; the vehicle holds until the mission restarts
     pub finished: bool,
+    /// reset by a disarm: not running until AUTO is entered, the GCS sets an item, or a new
+    /// mission arrives
+    stopped: bool,
+}
+
+/// Motors off (disarmed, or a flat battery): an aircraft above the ground falls. Returns
+/// whether it is on the ground.
+pub fn fall(st: &mut State, dt: f64) -> bool {
+    let ground = st.home.2;
+    if st.alt - ground < 0.5 {
+        st.vz = 0.0;
+        return true;
+    }
+    st.vz = (st.vz - 9.8 * dt).max(-30.0);
+    st.alt = (st.alt + st.vz * dt).max(ground);
+    false
 }
 
 /// A navigation item, decoded.
@@ -95,7 +111,16 @@ impl Auto {
         self.seen = 0;
         self.started = None;
         self.finished = false;
+        self.stopped = true;
         out.push(Out::MissionCurrent(0));
+    }
+
+    /// Whether the mission runs (a disarm stops it until something restarts it).
+    pub fn running(&mut self, m: &Mission) -> bool {
+        if self.stopped && (fingerprint(m) != self.upload || m.seq != self.seen) {
+            self.stopped = false;
+        }
+        !self.stopped
     }
 
     /// Whether the mission has items to fly (AP_Mission::present: more than home).
@@ -106,6 +131,7 @@ impl Auto {
     /// Entering AUTO: a finished mission starts over, as ArduPilot's start_or_resume does.
     pub fn enter(&mut self, m: &mut Mission, out: &mut Vec<Out>) {
         self.started = None;
+        self.stopped = false;
         if self.finished || usize::from(m.seq) >= m.items.len() || m.seq == 0 {
             self.finished = false;
             m.complete = false;

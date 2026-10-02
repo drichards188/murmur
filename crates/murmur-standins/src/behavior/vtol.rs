@@ -283,7 +283,8 @@ impl Vtol {
         self.hold_alt = st.alt;
         self.landing = None;
         self.takeoff = None;
-        if is_q(name) && !self.hovering {
+        // QRTL keeps flying on the wing to its approach
+        if is_q(name) && name != "QRTL" && !self.hovering {
             self.enter_hover(st);
         }
         match name {
@@ -324,10 +325,19 @@ impl Vtol {
 
     /// A VTOL landing at `at`: wing-borne approach first if flying on the wing.
     fn start_landing(&mut self, st: &State, out: &mut Vec<Out>, at: (f64, f64), alt: f64) {
+        let d = distance_m(st.lat, st.lon, at.0, at.1);
+        let v = st.speed;
         let phase = if self.hovering && self.transition.is_none() {
             Phase::Position1
+        } else if d < self.stopping_distance(v) {
+            // already inside the stopping distance: straight to the airbrake
+            let (sd, h) = (self.stopping_distance(v), st.alt - st.home.2);
+            text(
+                out,
+                format!("VTOL airbrake v={v:.1} d={d:.0} sd={sd:.0} h={h:.1}"),
+            );
+            Phase::Airbrake(1.0)
         } else {
-            let d = distance_m(st.lat, st.lon, at.0, at.1);
             text(out, format!("VTOL approach d={d:.1}"));
             Phase::Approach
         };
@@ -337,6 +347,12 @@ impl Vtol {
             quiet: false,
             alt,
         });
+    }
+
+    /// Where the back-transition has to start: braking at Q_TRANS_DECEL plus 2 s at speed
+    /// (fits SITL's "sd=" in the airbrake text).
+    fn stopping_distance(&self, v: f64) -> f64 {
+        v * v / (2.0 * self.k.trans_decel) + 2.0 * v
     }
 
     fn set_mode(&mut self, c: &mut Ctx, number: u32) -> MavResult {
@@ -576,7 +592,7 @@ impl Vtol {
         match l.phase {
             Phase::Approach => {
                 let v = t.st.speed;
-                let sd = v * v / (2.0 * self.k.trans_decel) + 2.0 * v;
+                let sd = self.stopping_distance(v);
                 if d < sd {
                     text(
                         t.out,
@@ -672,6 +688,23 @@ impl Vtol {
     }
 }
 
+/// DO_SET_MISSION_CURRENT as the shared handler does it, then (in AUTO) the item starts at
+/// once, as ArduPlane's mission does, ahead of whatever the GCS sends next.
+pub(super) fn set_current(auto: &mut Auto, c: &mut Ctx, m: &Command) -> MavResult {
+    let seq = m.p[0].max(0.0) as u16;
+    if usize::from(seq) >= c.mission.items.len().max(1) {
+        return MavResult::MAV_RESULT_FAILED;
+    }
+    c.mission.set_current(seq);
+    if m.p[1] == 1.0 {
+        c.mission.jumps.clear();
+    }
+    if c.st.mode == "AUTO" {
+        auto.current(c.st, c.mission, c.out);
+    }
+    MavResult::MAV_RESULT_ACCEPTED
+}
+
 fn nav_alt(st: &State, z: f32, alt: f64) -> f64 {
     if z == 0.0 { st.alt } else { alt }
 }
@@ -731,6 +764,7 @@ impl Behavior for Vtol {
                 self.set_mode(c, m.p[1] as u32)
             }
             MavCmd::MAV_CMD_NAV_TAKEOFF => self.user_takeoff(c, m),
+            MavCmd::MAV_CMD_DO_SET_MISSION_CURRENT => set_current(&mut self.auto, c, m),
             MavCmd::MAV_CMD_NAV_VTOL_TAKEOFF => MavResult::MAV_RESULT_UNSUPPORTED,
             MavCmd::MAV_CMD_NAV_RETURN_TO_LAUNCH => self.set_mode(c, 11),
             _ => return None,
@@ -757,11 +791,15 @@ impl Behavior for Vtol {
                     format!("PreArm: {} {why}", display(t.st.mode)),
                 ));
             }
+            if t.st.mode == "AUTO" && self.auto.running(t.mission) {
+                // ArduPlane runs the mission disarmed too: items start (and say so)
+                self.auto.current(t.st, t.mission, t.out);
+            }
             self.vel = (0.0, 0.0);
             t.st.speed = 0.0;
-            t.st.vz = 0.0;
             t.st.ve = 0.0;
             t.st.vn = 0.0;
+            self.landed = super::auto::fall(t.st, t.dt);
             return;
         }
         let mut goal = self.goal(t);

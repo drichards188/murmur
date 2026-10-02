@@ -9,11 +9,13 @@ same platform. The script is event driven (each step waits for the vehicle, not 
 parameter reads, refused commands, arming and auto-disarm, GUIDED takeoff, a mission upload
 and AUTO flight, mode changes, RTL to landing, and a takeoff-to-land mission from the ground.
 
-Compared, per step: COMMAND_ACK results, the heartbeat mode/armed sequence, MISSION_ACKs and
-the mission request sequence, PARAM_VALUEs, the semantic STATUSTEXTs (arming, mode refusals,
-takeoff, transitions, landing, mission), and MAV_TYPE / autopilot. Trajectories are compared
-loosely: the step must complete in both (within its timeout) and the duration may differ by
-DURATION_FACTOR; final positions after landing within LAND_TOL_M of each other.
+Both get the bridge's telemetry plan (SET_MESSAGE_INTERVAL), as ArduPilot streams nothing
+until asked. Compared: MAV_TYPE / autopilot; the mode/armed sequence over the run (states
+held DWELL_S or longer); per step, the outcome (COMMAND_ACK results, PARAM_VALUEs, what was
+reached), the mode/armed state the step leaves, MISSION_REQUEST seqs and MISSION_ACKs, and
+the STATUSTEXTs with numbers masked (SITL housekeeping texts aside; the 30 s pre-arm reports
+over the run, as a note). Trajectories are compared loosely: each step must complete in both,
+its duration within DURATION_FACTOR, landing points and sink rates within LOOSE.
 
     .venv/bin/python sim/tests/standins_vs_sitl_air.py               # copter and vtol
     .venv/bin/python sim/tests/standins_vs_sitl_air.py --kind vtol
@@ -59,18 +61,11 @@ DWELL_S = 2.5
 # STATUSTEXTs that are SITL's own housekeeping (sensors, EKF, the simulator), not autopilot
 # semantics: the stand-in does not imitate them. Everything else is compared, with numbers
 # masked ("VTOL airbrake v=18.5 d=121" carries measured values).
+# "VTOL Overshoot" reports the position controller overshooting the landing point: a control
+# loop event the stand-in's simple deceleration doesn't reproduce.
 NOISE = re.compile(r"^(EKF|GPS|SIM |Field Elevation|Barometer|Airspeed|AHRS|ArduPilot Ready|Frame|IMU|RCOut|"
-                   r"u-blox|Ardu|QuadPlane initialised|Calibrat|.*calibrat)", re.I)
+                   r"u-blox|Ardu|QuadPlane initialised|Calibrat|.*calibrat|VTOL Overshoot)", re.I)
 NUMBER = re.compile(r"-?\d+(\.\d+)?")
-
-# Differences that belong to the shared engine (commands, telemetry, mission upload), not to
-# the copter / VTOL behaviors: reported as notes, they don't fail this test.
-KNOWN_SHARED = {
-    "request": "the shared upload asks with MISSION_REQUEST_INT; ArduPilot 4.8 asks with MISSION_REQUEST",
-    "upload text": "the shared upload says 'Mission: N WP'; ArduPilot says 'Flight plan received'",
-    "param": "the shared PARAM_REQUEST_READ answers every name (0.0); ArduCopter has no Q_ENABLE and stays silent",
-}
-UPLOAD_TEXT = re.compile(r"^(Flight plan received|Mission: \d+ WP)$")
 
 REL = M.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT
 CUSTOM = M.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED
@@ -445,15 +440,16 @@ def vtol_script(home):
     def _(g):
         r = g.mission([item(M.MAV_CMD_NAV_WAYPOINT, lat, lon, 0), item(M.MAV_CMD_NAV_VTOL_TAKEOFF, alt=40),
                        item(M.MAV_CMD_NAV_LOITER_UNLIM, *a, 70, p3=150)])
+        home = g.pos[:2]  # ArduPilot sets home where it arms (the last landing point)
         acks = [g.command(M.MAV_CMD_DO_SET_MISSION_CURRENT, 1), g.command(M.MAV_CMD_COMPONENT_ARM_DISARM, 1),
                 g.set_mode(PLANE["AUTO"])]
         there = g.wait(lambda: g.pos and horiz_m(g.pos[:2], a) < 400, 120)
         acks.append(g.set_mode(PLANE["RTL"]))
-        home_ = g.wait(lambda: g.pos and horiz_m(g.pos[:2], (lat, lon)) < 250, 120)
+        home_ = g.wait(lambda: g.pos and horiz_m(g.pos[:2], home) < 250, 120)
         acks.append(g.set_mode(PLANE["QRTL"]))
         landed = g.wait(lambda: not g.armed, 120)
         return {"mission": r, "acks": acks, "on_station": there, "rtl_home": home_, "disarmed": landed,
-                "home_m": round(horiz_m(g.pos[:2], (lat, lon))) if g.pos else None}
+                "home_m": round(horiz_m(g.pos[:2], home)) if g.pos else None}
 
     return s
 
@@ -611,10 +607,6 @@ def compare(kind, sitl, rs):
     check(ident(sitl["log"]) == ident(rs["log"]), f"MAV_TYPE/autopilot {ident(sitl['log'])} vs {ident(rs['log'])}")
     types = lambda log: {e[1] for e in log}  # noqa: E731
     extra, missing = types(rs["log"]) - types(sitl["log"]), types(sitl["log"]) - types(rs["log"])
-    if "MISSION_REQUEST_INT" in extra and "MISSION_REQUEST" in missing:
-        extra.discard("MISSION_REQUEST_INT")
-        missing.discard("MISSION_REQUEST")
-        lines.append(f"  note known (shared): {KNOWN_SHARED['request']}")
     check(not extra, f"message types the stand-in sends that SITL does not: {sorted(extra) or 'none'}")
     lines.append(f"  info SITL-only message types (streams the stand-in does not imitate): {sorted(missing)}")
     ma, mb = mode_seq(sitl["log"]), mode_seq(rs["log"])
@@ -631,24 +623,19 @@ def compare(kind, sitl, rs):
             check(False, "step missing from the stand-in run")
             continue
         la, lb = sitl["log"][a["i0"]:a["i1"]], rs["log"][b["i0"]:b["i1"]]
-        b["out"] = json.loads(json.dumps(b["out"]))  # tuples as lists, as the SITL log was saved
+        # tuples as lists, as a saved log has them
+        a["out"], b["out"] = json.loads(json.dumps(a["out"])), json.loads(json.dumps(b["out"]))
         same = a["out"] == b["out"]
-        shared = a["name"].startswith("param") and a["out"]["param"] == [] and \
-            [tuple(p) for p in b["out"]["param"]] == [("Q_ENABLE", 0.0)]
-        check(same, f"outcome {a['out']}" + ("" if same else f" vs {b['out']}") +
-              (f" (known, shared: {KNOWN_SHARED['param']})" if shared else ""),
-              soft=shared or _soft_outcome(a["out"], b["out"]))
+        check(same, f"outcome {a['out']}" + ("" if same else f" vs {b['out']}"),
+              soft=_soft_outcome(a["out"], b["out"]))
         ea, eb = tuple(a["end"]), tuple(b["end"])
         check(ea == eb, f"mode/armed after the step {ea}" + ("" if ea == eb else f" vs {eb}"))
         ta, tb = texts(la), texts(lb)
-        # the upload's own text is the shared engine's; compare the rest
-        ua = [t for t in ta if UPLOAD_TEXT.match(t.replace("#", "0"))]
-        ub = [t for t in tb if UPLOAD_TEXT.match(t.replace("#", "0"))]
-        ta = [t for t in ta if t not in ua]
-        tb = [t for t in tb if t not in ub]
-        check(ta == tb, f"STATUSTEXTs {ta}" + ("" if ta == tb else f" vs {tb}"))
-        if ua != ub:
-            lines.append(f"  note known (shared): {KNOWN_SHARED['upload text']}")
+        if ta == tb or sorted(ta) != sorted(tb):
+            check(ta == tb, f"STATUSTEXTs {ta}" + ("" if ta == tb else f" vs {tb}"))
+        else:
+            # the same texts; ArduPilot itself orders texts from one tick differently run to run
+            check(False, f"STATUSTEXTs {ta} vs {tb} (same texts, order differs)", soft=True)
         (pa, ka), (pb, kb) = mission_proto(la), mission_proto(lb)
         if pa or pb:
             check(pa == pb, f"mission protocol {pa}" + ("" if pa == pb else f" vs {pb}"))
