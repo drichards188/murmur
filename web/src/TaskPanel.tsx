@@ -2,7 +2,8 @@ import { useState } from 'react'
 import type { Draft } from './MapView'
 import type { TaskKind, Tasking, Vehicle } from './types'
 import { callsign, LIFECYCLE } from './types'
-import { sendTask } from './useBridge'
+import { TaskResult, type TaskOutcome } from './TaskResult'
+import { sendTask, TaskRefused } from './useBridge'
 
 interface Props {
   vehicles: Vehicle[]
@@ -10,6 +11,9 @@ interface Props {
   draft: Draft
   setDraft: (d: Draft) => void
   taskings: Tasking[]
+  /** intents waiting in the inbox, and a way to open one (or its Decisions entry) */
+  pendingIds?: Set<number>
+  onInbox?: (intentId: number) => void
 }
 
 const TASKS: { kind: TaskKind; label: string; hint: string }[] = [
@@ -39,10 +43,11 @@ function Lifecycle({ state }: { state: string }) {
   )
 }
 
-export function TaskPanel({ vehicles, selected, draft, setDraft, taskings }: Props) {
+export function TaskPanel({ vehicles, selected, draft, setDraft, taskings, pendingIds, onInbox }: Props) {
   const [kind, setKind] = useState<TaskKind>('orbit')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [outcome, setOutcome] = useState<TaskOutcome | null>(null)
   const byUid = new Map(vehicles.map((v) => [v.uid, v]))
   const sel = [...selected].sort((a, b) => a - b)
 
@@ -69,17 +74,23 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings }: Pro
   const submit = async () => {
     setBusy(true)
     setError(null)
+    setOutcome(null)
     try {
-      await sendTask({
+      const answer = await sendTask({
         task: kind,
         uids: kind === 'track' ? trackers : sel,
         ...(kind === 'track' ? { target: others[0] } : {}),
         ...(kind === 'orbit' ? { center: draft.center!, radius: draft.radius } : {}),
         ...(kind === 'patrol' ? { route: draft.route } : {}),
       })
+      if (answer.status === 202 && answer.intent_id != null) {
+        setOutcome({ kind: 'wait', intentId: answer.intent_id, detail: answer.detail ?? '', expires_t: answer.expires_t ?? null })
+      }
       setDraft({ ...draft, center: null, route: [] })
     } catch (e) {
-      setError((e as Error).message)
+      // a refusal keeps the draft, so it can be adjusted and sent again
+      if (e instanceof TaskRefused) setOutcome({ kind: 'refused', intent: e.intent, detail: e.message })
+      else setError((e as Error).message)
     } finally {
       setBusy(false)
     }
@@ -135,6 +146,15 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings }: Pro
               : `Send ${kind.toUpperCase()} to ${sel.length} vehicle${sel.length > 1 ? 's' : ''}`}
         </button>
         {error && <p className="error">{error}</p>}
+        {outcome && (
+          <TaskResult
+            outcome={outcome}
+            vehicles={vehicles}
+            stillPending={outcome.kind === 'wait' && (pendingIds?.has(outcome.intentId) ?? false)}
+            onInbox={(id) => onInbox?.(id)}
+            onDismiss={() => setOutcome(null)}
+          />
+        )}
       </div>
 
       <header className="panel-head sub">

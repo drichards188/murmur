@@ -30,10 +30,41 @@ interface Props {
   onMapClick: (p: LngLat) => void
   /** fly to this vehicle (n changes on every request, so repeat clicks work) */
   focus?: { uid: number; n: number } | null
+  /** inbox: where pending intents would send their vehicles (see inboxPreview.ts) */
+  preview?: FC
+  /** inbox: fit the view to these points (n changes on every request) */
+  fit?: { points: LngLat[]; n: number; padRight: number } | null
   /** space overlays: area, passes in progress, highlighted scene, SATCOM link lines */
   space?: SpaceOverlay
   /** the view after every move: centre and bounds (w, s, e, n) */
   onView?: (center: LngLat, bounds: [number, number, number, number]) => void
+}
+
+/** pending-approval previews from the inbox: dashed violet, the one being read in bold */
+function addPreviewLayers(m: maplibregl.Map) {
+  m.addSource('inbox-preview', { type: 'geojson', data: empty })
+  const w = ['case', ['get', 'sel'], 3, 1.5] as maplibregl.ExpressionSpecification
+  m.addLayer({
+    id: 'inbox-transit',
+    type: 'line',
+    source: 'inbox-preview',
+    filter: ['all', ['==', ['geometry-type'], 'LineString'], ['==', ['get', 'part'], 'transit']],
+    paint: { 'line-color': '#c49bff', 'line-width': w, 'line-dasharray': [0.5, 2], 'line-opacity': 0.8 },
+  })
+  m.addLayer({
+    id: 'inbox-path',
+    type: 'line',
+    source: 'inbox-preview',
+    filter: ['all', ['==', ['geometry-type'], 'LineString'], ['==', ['get', 'part'], 'path']],
+    paint: { 'line-color': '#c49bff', 'line-width': w, 'line-dasharray': [3, 2], 'line-opacity': 0.95 },
+  })
+  m.addLayer({
+    id: 'inbox-points',
+    type: 'circle',
+    source: 'inbox-preview',
+    filter: ['==', ['geometry-type'], 'Point'],
+    paint: { 'circle-radius': ['case', ['get', 'sel'], 7, 4], 'circle-color': '#c49bff', 'circle-stroke-color': '#0b0f14', 'circle-stroke-width': 1.5 },
+  })
 }
 
 const STYLE = 'https://tiles.openfreemap.org/styles/dark'
@@ -223,13 +254,14 @@ function setSpaceData(m: maplibregl.Map, space: SpaceOverlay, view: ViewMode) {
   for (const id of SPACE_SOURCES) (m.getSource(id) as maplibregl.GeoJSONSource | undefined)?.setData(id === 'space-links' ? (view === '3d' ? empty : linkStubs(space.links)) : f[id])
 }
 
-export function MapView({ vehicles, taskings, selected, draft, focus, onToggle, onMapClick, space = EMPTY_OVERLAY, onView }: Props) {
+export function MapView({ vehicles, taskings, selected, draft, focus, preview = empty, fit, onToggle, onMapClick, space = EMPTY_OVERLAY, onView }: Props) {
   const [view, setView] = useState<ViewMode>(savedView)
   const viewRef = useRef(view)
   const overlay = useRef<MapboxOverlay | null>(null)
   const bridges = useRef<LiftedBridge[]>([])
   const latest = useRef({ vehicles, selected, bare: new Set<number>() })
   const spaceRef = useRef(space)
+  const previewRef = useRef(preview)
   const viewCb = useRef(onView)
   // bumped when the camera stops, so label declutter re-runs at the new scale
   const [moved, setMoved] = useState(0)
@@ -405,6 +437,8 @@ export function MapView({ vehicles, taskings, selected, draft, focus, onToggle, 
         layout: { 'text-field': ['get', 'n'], 'text-size': 11, 'text-font': ['Noto Sans Bold'], 'text-allow-overlap': true },
         paint: { 'text-color': '#0b0f14' },
       })
+      addPreviewLayers(m)
+      ;(m.getSource('inbox-preview') as maplibregl.GeoJSONSource).setData(previewRef.current)
       addSpaceLayers(m)
       ready.current = true
       if (viewRef.current === '3d') applyView(m, '3d')
@@ -570,6 +604,19 @@ export function MapView({ vehicles, taskings, selected, draft, focus, onToggle, 
   useEffect(() => {
     if (ready.current) (map.current?.getSource('taskings') as maplibregl.GeoJSONSource | undefined)?.setData(taskingFeatures(taskings))
   }, [taskings])
+
+  useEffect(() => {
+    previewRef.current = preview
+    if (ready.current) (map.current?.getSource('inbox-preview') as maplibregl.GeoJSONSource | undefined)?.setData(preview)
+  }, [preview])
+
+  useEffect(() => {
+    const m = map.current
+    if (!fit || !m || fit.points.length === 0) return
+    const bounds = new maplibregl.LngLatBounds(fit.points[0], fit.points[0])
+    for (const p of fit.points) bounds.extend(p)
+    m.fitBounds(bounds, { padding: { top: 70, bottom: 70, left: 70, right: fit.padRight + 20 }, maxZoom: 13, duration: 1000 })
+  }, [fit])
 
   useEffect(() => {
     if (ready.current) (map.current?.getSource('draft') as maplibregl.GeoJSONSource | undefined)?.setData(draftFeatures(draft))
