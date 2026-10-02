@@ -12,6 +12,8 @@ serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 tokio = { version = "1.53.1", features = ["full"] }
 toml = { version = "1.1.6", features = ["preserve_order"] }
+quick-xml = "0.42.0"
+socket2 = { version = "0.6.5", features = ["all"] }
 
 [lints]
 workspace = true

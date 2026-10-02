@@ -661,7 +661,7 @@ checksum = "055c957f9fe541226e5b6f0a8aef09b81b9ac865bfc2d083bd6440ed1692602f"
 dependencies = [
  "crc-any",
  "proc-macro2",
- "quick-xml",
+ "quick-xml 0.39.4",
  "quote",
  "regex",
  "thiserror",
@@ -718,8 +718,10 @@ dependencies = [
  "chrono",
  "mavlink",
  "murmur-space",
+ "quick-xml 0.42.0",
  "serde",
  "serde_json",
+ "socket2",
  "tokio",
  "toml",
  "tower",
@@ -862,6 +864,15 @@ name = "quick-xml"
 version = "0.39.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdcc8dd4e2f670d309a5f0e83fe36dfdc05af317008fea29144da1a2ac858e5e"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
+name = "quick-xml"
+version = "0.42.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41b1177fdf999d2321d3fb46ff47159d9c1fb9ad66a4879f8c50a0b504615e9b"
 dependencies = [
  "memchr",
 ]
