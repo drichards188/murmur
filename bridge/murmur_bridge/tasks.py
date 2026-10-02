@@ -232,11 +232,54 @@ async def set_mode(op, name, patience_s=20):
             await asyncio.sleep(2)
 
 
-async def wait_until(op, cond, detail_fn=None, poll=0.5):
+async def wait_until(op, cond, detail_fn=None, poll=0.5, guard=None):
+    """Poll until cond(). guard() may return an error string to fail the op early."""
     while not cond():
+        if guard:
+            err = guard()
+            if err:
+                raise OpFailed(err)
         if detail_fn:
             op.set(op.state, detail_fn())
         await asyncio.sleep(poll)
+
+
+def with_stall_warning(v, detail_fn, after_s=10.0, min_speed=0.3):
+    """Wrap a progress message: if a vehicle that should be moving shows no ground speed
+    for after_s, say so. The autopilot can be in AUTO and still not going anywhere
+    (aground, fouled, stuck): that's what the operator needs to see."""
+    moving_at = time.monotonic()
+
+    def detail():
+        nonlocal moving_at
+        if (v.groundspeed or 0) >= min_speed:
+            moving_at = time.monotonic()
+        base = detail_fn() if detail_fn else ""
+        stalled = time.monotonic() - moving_at
+        if stalled >= after_s:
+            return f"NOT MOVING for {stalled:.0f}s (aground or stuck?) · {base}"
+        return base
+
+    return detail
+
+
+def stays_in_mode(v, mode, grace_s=3.0):
+    """Guard: fail if the vehicle leaves `mode` (failsafe, pilot, another GCS) for longer
+    than grace_s, quoting what the autopilot last said."""
+    left_at = None
+
+    def check():
+        nonlocal left_at
+        if v.custom_mode == mode:
+            left_at = None
+            return None
+        left_at = left_at or time.monotonic()
+        if time.monotonic() - left_at < grace_s:
+            return None
+        said = f": {v.statustext[-1]['text']}" if v.statustext else ""
+        return f"vehicle left the task, now in {v.mode}{said}"
+
+    return check
 
 
 # ---- geometry ---------------------------------------------------------------
@@ -291,7 +334,7 @@ async def run_mission_task(op, items, loop_from, done_cond, done_text, progress_
     op.progress = None
     await wait_until(op, lambda: v.custom_mode == auto and v.armed, lambda: f"mode {v.mode}")
     op.set("active", "executing")
-    await wait_until(op, done_cond, progress_fn)
+    await wait_until(op, done_cond, with_stall_warning(v, progress_fn), guard=stays_in_mode(v, auto))
     op.set("done", done_text)
 
 
