@@ -12,7 +12,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use murmur_decide::{
     AgentId, AreaSet, Catalog, Clock, IntentId, LonLat, ManualClock, MemorySink, OperatorId,
-    Policy, Polygon, PolygonTerrain, State, replay,
+    Policy, Polygon, PolygonTerrain, ScenarioMap, State, Time, replay,
 };
 use rmcp::model::CallToolResult;
 use serde_json::{Value, json};
@@ -58,6 +58,7 @@ struct Rig {
     d: Arc<Decision>,
     mcp: Arc<Mcp>,
     api: Router,
+    clock: ManualClock,
     log: MemorySink,
 }
 
@@ -87,7 +88,7 @@ fn rig() -> Rig {
             areas: AreaSet::load_dir(&root.join("sim/areas"), clock.now()).expect("areas"),
             sink: Box::new(log.clone()),
             audit_path: PathBuf::from("memory"),
-            clock: Arc::new(clock),
+            clock: Arc::new(clock.clone()),
             terrain,
             operators: vec![OperatorId::new("op-1")],
         },
@@ -111,8 +112,34 @@ fn rig() -> Rig {
         d,
         mcp,
         api,
+        clock,
         log,
     }
+}
+
+// The element-set fixture (CelesTrak GP data of 2026-10-02) the decision layer's own space
+// tests use, so a collect has real passes to choose from.
+const GP_FIXTURE: &str = include_str!("../../../murmur-space/tests/data/gp_fixture.json");
+
+fn fixture_space() -> Arc<murmur_space::Space> {
+    let catalog =
+        murmur_space::Catalog::parse(include_str!("../../../../sim/space/constellations.toml"))
+            .expect("catalog");
+    let sources: Vec<(String, String)> = catalog
+        .queries()
+        .into_iter()
+        .map(|q| (q, GP_FIXTURE.to_string()))
+        .collect();
+    Arc::new(murmur_space::Space::from_sources(catalog, &sources).expect("space"))
+}
+
+/// Scenario start, on the fixture's epoch.
+fn t0() -> Time {
+    Time(
+        chrono::DateTime::parse_from_rfc3339("2026-10-02T14:00:00Z")
+            .expect("time")
+            .timestamp_millis(),
+    )
 }
 
 /// A tool result as (is_error, structured content).
@@ -616,6 +643,112 @@ fn unlisted_agents_are_refused() {
     assert!(r.mcp.resolve("agent-watch").is_ok());
     let err = r.mcp.resolve("nobody").expect_err("not listed");
     assert!(err.message.contains("MURMUR_AGENTS"), "{}", err.message);
+}
+
+#[tokio::test]
+async fn an_agent_proposes_a_collect_and_a_cover() {
+    let r = rig();
+    r.d.install_space(
+        fixture_space(),
+        ScenarioMap {
+            engine_origin: r.clock.now(),
+            scenario_origin: t0(),
+            rate: 60.0,
+        },
+    );
+    let area = json!({ "kind": "circle", "center": [-122.47, 37.825], "radius_km": 5.0 });
+    let window = json!({ "from": t0().0, "to": t0().0 + 12 * 3600 * 1000 });
+
+    // a collect without a chosen option is a query: the preview lists the options and
+    // creates nothing
+    let query = r
+        .ok(
+            &planner(),
+            "preview_intent",
+            json!({ "task": "collect", "area": area, "window": window, "capability": "any" }),
+        )
+        .await;
+    assert_eq!(query["would_reach"], "rejected", "{query}");
+    let options = query["space"]["options"].as_array().expect("options");
+    assert!(!options.is_empty(), "{query}");
+    assert!(query["space"]["options_total"].as_u64().unwrap_or(0) >= options.len() as u64);
+    assert!(query["summary"].to_string().contains("query"), "{query}");
+    assert_eq!(r.events("intent.created"), 0);
+    let chosen = json!({
+        "norad_id": options[0]["norad_id"],
+        "collect_time": options[0]["collect_time"],
+    });
+
+    // vehicles on a satellite request are refused before any intent exists
+    let (err, v) = r
+        .call(
+            &planner(),
+            "propose_intent",
+            json!({
+                "task": "collect", "uids": [1], "area": area, "window": window,
+                "chosen": chosen, "rationale": "with a vehicle, by mistake",
+            }),
+        )
+        .await;
+    assert!(err, "{v}");
+    assert!(v["error"].to_string().contains("no uids"), "{v}");
+
+    // the chosen option: a human decides (satellite-collect tier), in the inbox
+    let out = r
+        .ok(
+            &planner(),
+            "propose_intent",
+            json!({
+                "task": "collect", "area": area, "window": window, "chosen": chosen,
+                "rationale": "image the anchorage on the next pass; the fleet picture is fresh",
+            }),
+        )
+        .await;
+    assert_eq!(out["state"], "pending_approval", "{out}");
+    assert_eq!(out["dispatched"], false);
+    let id = out["id"].as_u64().expect("id");
+    let inbox = r.ok(&planner(), "get_inbox", json!({})).await;
+    assert_eq!(inbox["pending"][0]["id"], id);
+    assert_eq!(inbox["pending"][0]["source"]["id"], "agent-planner");
+    assert!(inbox["pending"][0]["space"]["chosen"].is_object(), "{inbox}");
+    let explained = r.ok(&planner(), "explain_intent", json!({ "id": id })).await;
+    assert!(
+        explained["summary"]
+            .to_string()
+            .contains("a satellite request, no fleet vehicles"),
+        "{explained}"
+    );
+    let approved = r
+        .d
+        .approve(&OperatorId::new("op-1"), id, None)
+        .await
+        .expect("approve");
+    assert_eq!(approved.state, State::Dispatched);
+    assert!(approved.space.is_some(), "a space run, not a vehicle tasking");
+    let explained = r.ok(&planner(), "explain_intent", json!({ "id": id })).await;
+    assert_eq!(explained["space"]["intent_id"], id, "{explained}");
+    assert_eq!(explained["space"]["state"], "tasked");
+    let runs = read(&r.mcp, &planner(), "murmur://space/runs")
+        .await
+        .expect("resource");
+    assert_eq!(runs["runs"].as_array().map_or(0, Vec::len), 1);
+
+    // a GNSS cover commands nothing: auto, dispatched as a watch
+    let cover = r
+        .ok(
+            &planner(),
+            "propose_intent",
+            json!({
+                "task": "cover", "area": area, "window": window,
+                "service": { "type": "gnss" }, "min_level": 0.0,
+                "rationale": "is GNSS good enough over the anchorage for the AUV's surfacing fixes",
+            }),
+        )
+        .await;
+    assert_eq!(cover["state"], "dispatched", "{cover}");
+    assert_eq!(cover["dispatched"], true);
+    assert!(cover["space"].is_object(), "{cover}");
+    r.replays();
 }
 
 // ---- over HTTP --------------------------------------------------------------------------

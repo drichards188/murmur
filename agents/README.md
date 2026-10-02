@@ -77,14 +77,20 @@ Proposing:
 
 | tool | what |
 |---|---|
-| `preview_intent` | dry run: the checks and the policy tier now, no intent created (logged as `agent.action intent.preview`) |
-| `propose_intent` | task + uids + params + constraints + **required** rationale; auto tier dispatches, human tier waits in the inbox |
-| `explain_intent` | the checks, the tier, why a human, who decided and how, history, tasking, a plain summary |
+| `preview_intent` | dry run: the checks and the policy tier now, no intent created (logged as `agent.action intent.preview`); for a collect without `chosen`, a tasking query whose space answer lists the ranked options |
+| `propose_intent` | task + uids + params + constraints + **required** rationale; auto tier dispatches, human tier waits in the inbox. Vehicle tasks (orbit, patrol, hold, rtl, track) and satellite requests: `collect` (area, window, capability, `chosen` from the options) and `cover` (area, window, service), which go through the same `decision::space` path as an operator's |
+| `explain_intent` | the checks, the tier, why a human, who decided and how, history, tasking or space run, a plain summary |
 | `withdraw_intent` | the agent's own intents only, while they wait |
+
+A collect flows as: preview (or `get_satellite_tasking_options`) for the options, propose with
+`chosen = {norad_id, collect_time}` and a rationale, wait in the inbox (every collect needs a
+human; it expires when its pass can no longer be tasked), then the simulated run (`tasked`,
+`collected`, `product_ready`) in `explain_intent` and `murmur://space/runs`. A cover commands
+nothing and runs on its own.
 
 Resources mirror the reads: `murmur://fleet`, `murmur://fleet/{uid}`, `murmur://platforms`,
 `murmur://areas`, `murmur://policy`, `murmur://intents`, `murmur://intents/{id}`,
-`murmur://inbox`, `murmur://events`, `murmur://space/passes`.
+`murmur://inbox`, `murmur://events`, `murmur://space/passes`, `murmur://space/runs`.
 
 ## The guarantee, and how it is tested
 

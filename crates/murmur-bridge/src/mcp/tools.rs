@@ -14,7 +14,6 @@ use serde_json::{Value, json};
 
 use super::{Mcp, world};
 use crate::decision::{DecisionError, IntentRequest};
-use crate::tasks::TaskParams;
 
 /// Said on every read: how to treat the ages on each fact.
 pub const STALE_NOTE: &str = "Every fact carries as_of (wall-clock seconds when it was \
@@ -96,9 +95,13 @@ pub struct TaskingParams {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct IntentParams {
-    /// The task kind: orbit, patrol, hold, rtl or track.
+    /// The task kind: orbit, patrol, hold, rtl or track on fleet vehicles; collect (satellite
+    /// imagery or SAR of an area) or cover (is SATCOM or GNSS service good enough over an
+    /// area) on the space segment.
     pub task: String,
-    /// Fleet uids of the vehicles to task (from get_fleet). At least one.
+    /// Fleet uids of the vehicles to task (from get_fleet): at least one for a vehicle task,
+    /// none for collect and cover.
+    #[serde(default)]
     pub uids: Vec<u64>,
     /// orbit: the centre as [lon, lat].
     pub center: Option<[f64; 2]>,
@@ -115,6 +118,28 @@ pub struct IntentParams {
     /// Constraint: the time on task the reserves estimate assumes, seconds (can only
     /// lengthen the policy's assumption).
     pub duration_s: Option<u32>,
+    /// collect, cover: the area, as {"kind": "polygon", "ring": [[lon, lat], ...]},
+    /// {"kind": "circle", "center": [lon, lat], "radius_km": r} or {"bbox": [w, s, e, n]}.
+    pub area: Option<Value>,
+    /// collect, cover: the window as {"from": t, "to": t}, each RFC 3339 or integer
+    /// milliseconds, in scenario time (get_satellite_tasking_options says the scenario clock).
+    pub window: Option<Value>,
+    /// collect: optical, sar or any (default any).
+    pub capability: Option<String>,
+    /// collect: the coarsest acceptable ground resolution, metres.
+    pub min_resolution_m: Option<f64>,
+    /// collect: when the product must be ready (RFC 3339 or integer milliseconds, scenario
+    /// time).
+    pub product_deadline: Option<Value>,
+    /// collect: the option to commit to, as {"norad_id": n, "collect_time": t} from the
+    /// options of a preview or of get_satellite_tasking_options. Without it the collect is
+    /// a query: it ends rejected, with the ranked options in its space answer.
+    pub chosen: Option<Value>,
+    /// cover: {"type": "satcom", "class": "starlink"} or {"type": "gnss"} (class gps).
+    pub service: Option<Value>,
+    /// cover: the level required, a fraction of the window with SATCOM coverage (default
+    /// 0.99) or satellites in view at every GNSS sample (default 4).
+    pub min_level: Option<f64>,
     /// Why this task, on these vehicles, now. Required for propose_intent (the operator
     /// reads it in the inbox and it goes to the audit log); optional for preview_intent.
     /// Name the facts you relied on and any that were stale.
@@ -136,22 +161,37 @@ pub struct WithdrawParams {
 }
 
 impl IntentParams {
-    fn request(self) -> IntentRequest {
-        IntentRequest {
-            task: self.task,
-            uids: self.uids,
-            params: TaskParams {
-                center: self.center,
-                radius: self.radius_m,
-                route: self.route,
-                target: self.target,
-            },
-            constraints: Constraints {
+    /// The bridge's own request type, parsed from the same JSON the operator API takes.
+    fn request(self) -> Result<IntentRequest, String> {
+        let mut body = serde_json::Map::new();
+        let mut put = |k: &str, v: Option<Value>| {
+            if let Some(v) = v {
+                body.insert(k.into(), v);
+            }
+        };
+        put("task", Some(json!(self.task)));
+        put("uids", Some(json!(self.uids)));
+        put("center", self.center.map(|c| json!(c)));
+        put("radius", self.radius_m.map(|r| json!(r)));
+        put("route", self.route.map(|r| json!(r)));
+        put("target", self.target.map(|t| json!(t)));
+        put("area", self.area);
+        put("window", self.window);
+        put("capability", self.capability.map(Value::String));
+        put("min_resolution_m", self.min_resolution_m.map(|v| json!(v)));
+        put("product_deadline", self.product_deadline);
+        put("chosen", self.chosen);
+        put("service", self.service);
+        put("min_level", self.min_level.map(|v| json!(v)));
+        put(
+            "constraints",
+            Some(json!(Constraints {
                 reserve_pct: self.reserve_pct,
                 duration_s: self.duration_s,
-            },
-            rationale: self.rationale,
-        }
+            })),
+        );
+        put("rationale", self.rationale.map(Value::String));
+        serde_json::from_value(Value::Object(body)).map_err(|e| format!("bad arguments: {e}"))
     }
 }
 
@@ -255,21 +295,25 @@ pub fn tools() -> Vec<Tool> {
              detail (with a suggested fix when there is one), the policy tier and rule, why \
              a human would be needed, and the state the intent would reach: rejected, \
              auto_approved (policy lets it run) or pending_approval (an operator decides). \
-             Nothing is created and nothing moves; the preview is logged under your agent id. \
-             Use it before propose_intent."
+             For a collect without a chosen option it is a tasking query: the space answer \
+             lists the ranked options and nothing is created. Nothing moves; the preview is \
+             logged under your agent id. Use it before propose_intent."
                 .into(),
             true,
         ),
         tool::<IntentParams>(
             "propose_intent",
-            "Propose an intent: a task on one or more vehicles, with constraints and a \
-             required rationale. The engine checks it (fail closed) and the policy routes \
-             it: an auto tier runs it at once (the response says dispatched true); a human \
-             tier puts it in the operator's inbox with your id and rationale, where only a \
-             listed human operator can decide it, and it expires if nobody does. The \
-             response is the intent with its checks, policy decision and state. You cannot \
-             move it further yourself; follow it with explain_intent and withdraw it with \
-             withdraw_intent while it waits."
+            "Propose an intent: a task on one or more vehicles (orbit, patrol, hold, rtl, \
+             track), a satellite collection (collect: area, window, capability, and chosen \
+             from the options of a preview or get_satellite_tasking_options) or a coverage \
+             query (cover: area, window, service), with constraints and a required \
+             rationale. The engine checks it (fail closed) and the policy routes it: an auto \
+             tier runs it at once (the response says dispatched true); a human tier puts it \
+             in the operator's inbox with your id and rationale, where only a listed human \
+             operator can decide it, and it expires if nobody does (a collect, while its \
+             pass can still be tasked). The response is the intent with its checks, policy \
+             decision and state. You cannot move it further yourself; follow it with \
+             explain_intent and withdraw it with withdraw_intent while it waits."
                 .into(),
             false,
         ),
@@ -422,26 +466,30 @@ pub async fn call(
         }
         "preview_intent" => {
             let p = params!(IntentParams);
-            mcp.decision.agent_preview(agent, p.request()).await
+            match p.request() {
+                Ok(req) => mcp.decision.agent_preview(agent, req).await,
+                Err(e) => return Ok(CallToolResult::structured_error(json!({ "error": e }))),
+            }
         }
         "propose_intent" => {
             let p = params!(IntentParams);
-            mcp.decision
-                .agent_propose(agent, p.request())
-                .await
-                .map(|o| {
-                    let dispatched = o.tasking.is_some();
-                    let state = serde_json::to_value(o.state).unwrap_or(Value::Null);
-                    json!({
-                        "id": o.id.0,
-                        "state": state,
-                        "dispatched": dispatched,
-                        "intent": o.intent,
-                        "tasking": o.tasking,
-                        "summary": mcp.decision.explain_json(o.id.0)
-                            .and_then(|v| v["summary"].as_str().map(str::to_string)),
-                    })
+            let req = match p.request() {
+                Ok(req) => req,
+                Err(e) => return Ok(CallToolResult::structured_error(json!({ "error": e }))),
+            };
+            mcp.decision.agent_propose(agent, req).await.map(|o| {
+                let state = serde_json::to_value(o.state).unwrap_or(Value::Null);
+                json!({
+                    "id": o.id.0,
+                    "state": state,
+                    "dispatched": o.dispatched(),
+                    "intent": o.intent,
+                    "tasking": o.tasking,
+                    "space": o.space,
+                    "summary": mcp.decision.explain_json(o.id.0)
+                        .and_then(|v| v["summary"].as_str().map(str::to_string)),
                 })
+            })
         }
         "explain_intent" => {
             let p = params!(IdParams);

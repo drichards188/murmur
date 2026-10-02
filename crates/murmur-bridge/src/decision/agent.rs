@@ -10,7 +10,10 @@
 
 use std::collections::VecDeque;
 
-use murmur_decide::{AgentId, AreaSet, Outcome as CheckOutcome, Preview, Rationale};
+use murmur_decide::space::SpaceResult;
+use murmur_decide::{
+    AgentId, AreaSet, Outcome as CheckOutcome, Preview, Rationale, SpaceAnswer, Targets,
+};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -98,7 +101,7 @@ impl Decision {
                 .preview(proposal, &self.snapshot(), &self.terrain.oracle())
                 .map_err(engine_err)?
         };
-        Ok(preview_json(&preview))
+        Ok(preview_json(&preview, self.tol()))
     }
 
     /// Withdraw one of the agent's own intents before dispatch. Another agent's or a
@@ -146,11 +149,17 @@ impl Decision {
         let i = core.engine.intent(id)?;
         let tasking = core.taskings.get(&id).map(|t| t.snapshot());
         Some(json!({
-            "intent": intent_json(i, core.taskings.get(&id).map(|t| t.id)),
+            "intent": intent_json(i, core.taskings.get(&id).map(|t| t.id), self.tol()),
             "why_human": why_human(i),
             "summary": explain(i),
             "tasking": tasking,
+            "space": core.space_runs.get(&id).map(space::SpaceRun::json),
         }))
+    }
+
+    /// `GET /api/space/runs` for agents: every dispatched collect and cover, newest first.
+    pub fn space_runs(&self) -> Value {
+        self.space_runs_json()
     }
 
     /// The policy in force (tiers, approval expiry, rules configuration), as logged in
@@ -212,11 +221,17 @@ impl Decision {
         }
     }
 
-    /// The engine proposal for an agent's request, refused before any intent exists when
-    /// the task layer couldn't take it (as [`Decision::submit`] does).
+    /// The engine proposal for an agent's request: a collect or cover through
+    /// [`space::proposal`] (no vehicles), else a vehicle task, refused before any intent
+    /// exists when the task layer couldn't take it (as [`Decision::submit`] does).
     fn agent_proposal(&self, req: &IntentRequest) -> Result<Proposal, DecisionError> {
         if matches!(req.task.as_str(), "collect" | "cover") {
-            return Err(DecisionError::new(501, SPACE_NOT_WIRED));
+            return space::proposal(
+                &req.task,
+                !req.uids.is_empty(),
+                &req.space,
+                req.rationale.as_deref(),
+            );
         }
         let fleet = self.fleet();
         let order = TaskRequest {
@@ -245,6 +260,37 @@ fn state_name(state: State) -> String {
 fn uids_text(uids: &[DUid]) -> String {
     let v: Vec<&str> = uids.iter().map(DUid::as_str).collect();
     v.join(", ")
+}
+
+/// `on [sky-1, sky-2]`, or what a satellite request is on.
+fn targets_text(task: &Task, uids: &[DUid]) -> String {
+    match task.targets() {
+        Targets::Space => "(a satellite request, no fleet vehicles)".to_string(),
+        Targets::Vehicles => format!("on [{}]", uids_text(uids)),
+    }
+}
+
+/// The compact form of a space answer for agents (the full answer is in the audit log as
+/// `space.query`): the first ranked options, the exclusion counts, a cover's summary.
+fn compact_answer(a: &SpaceAnswer) -> Value {
+    let mut v = json!({ "time_map": a.time_map, "segment": a.segment.short() });
+    match &a.result {
+        SpaceResult::Tasking(r) => {
+            v["options"] = json!(r.options.iter().take(5).collect::<Vec<_>>());
+            v["options_total"] = json!(r.options.len());
+            v["exclusions_total"] = json!(r.exclusions.len());
+            v["exclusion_summary"] = json!(r.exclusion_summary);
+            v["classes_without_passes"] = json!(r.classes_without_passes);
+            v["now"] = json!(r.request.now);
+            v["note"] = json!(
+                "the first 5 of options_total ranked options; propose a collect with chosen \
+                 {norad_id, collect_time} from one of them"
+            );
+        }
+        SpaceResult::Links(l) => v["links"] = json!(l),
+        SpaceResult::Gnss(g) => v["gnss"] = json!(g),
+    }
+    v
 }
 
 /// One sentence per check outcome class: what failed, what a human must judge, what
@@ -291,11 +337,11 @@ fn explain(i: &Intent) -> String {
         murmur_decide::Source::Agent { id } => format!("agent {id}"),
     };
     let mut s = format!(
-        "Intent {} is {}: {} on [{}], proposed by {}.",
+        "Intent {} is {}: {} {}, proposed by {}.",
         i.id(),
         state_name(i.state()),
         spec.kind().as_str(),
-        uids_text(&spec.uids),
+        targets_text(&spec.task, &spec.uids),
         who
     );
     if !i.checks().is_empty() {
@@ -341,6 +387,16 @@ fn explain(i: &Intent) -> String {
             if let Some(h) = i.history().last() {
                 s.push_str(&format!(" Last change: {}.", h.reason));
             }
+            if i.state() == State::Rejected
+                && matches!(&spec.task, Task::Collect { chosen: None, .. })
+            {
+                s.push_str(
+                    " A collect without a chosen option is a query, not an order: its space \
+                     answer lists the ranked options; propose the collect again with chosen \
+                     {norad_id, collect_time} from one of them (preview_intent shows the \
+                     options without creating an intent).",
+                );
+            }
         }
         State::AutoApproved | State::Approved | State::Dispatched | State::Done => {
             match i.approval() {
@@ -370,10 +426,13 @@ fn explain(i: &Intent) -> String {
     s
 }
 
-/// A preview as the tool returns it: the engine's answer plus why a human would be needed
-/// and a summary sentence.
-fn preview_json(p: &Preview) -> Value {
+/// A preview as the tool returns it: the engine's answer (a space answer in its compact
+/// form) plus why a human would be needed and a summary sentence.
+fn preview_json(p: &Preview, _tolerance_s: Option<u32>) -> Value {
     let mut v = serde_json::to_value(p).unwrap_or(Value::Null);
+    if let Some(a) = &p.space {
+        v["space"] = compact_answer(a);
+    }
     let why: Vec<String> = p
         .policy
         .as_ref()
@@ -397,10 +456,23 @@ fn preview_json(p: &Preview) -> Value {
         State::AutoApproved => "policy would approve it and it would be dispatched at once (auto tier)".to_string(),
         _ => "it would wait in the operator's inbox for a human decision".to_string(),
     };
+    let query_note = match (p.space.as_deref(), p.would_reach) {
+        (Some(SpaceAnswer { result: SpaceResult::Tasking(r), .. }), State::Rejected)
+            if !r.options.is_empty() =>
+        {
+            format!(
+                " This collect has no chosen option, so it is a query: {} ranked options \
+                 are in space.options; propose again with chosen {{norad_id, collect_time}} \
+                 from one of them.",
+                r.options.len()
+            )
+        }
+        _ => String::new(),
+    };
     v["summary"] = json!(format!(
-        "Preview only, no intent was created. {} on [{}]: {}. If proposed now, {}.",
+        "Preview only, no intent was created. {} {}: {}. If proposed now, {}.{query_note}",
         p.kind.as_str(),
-        uids_text(&p.uids),
+        targets_text_kind(p),
         checks_text(&p.checks),
         outcome
     ));
@@ -408,4 +480,11 @@ fn preview_json(p: &Preview) -> Value {
         v["why_human"] = json!(why);
     }
     v
+}
+
+fn targets_text_kind(p: &Preview) -> String {
+    match p.kind.targets() {
+        Targets::Space => "(a satellite request, no fleet vehicles)".to_string(),
+        Targets::Vehicles => format!("on [{}]", uids_text(&p.uids)),
+    }
 }

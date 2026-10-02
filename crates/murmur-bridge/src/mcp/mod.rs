@@ -375,6 +375,11 @@ pub fn resources() -> Vec<Resource> {
             "satellite-passes",
             "Imaging satellite access windows over the scenario area for the next six hours (read-only; nothing is tasked).",
         ),
+        r(
+            "murmur://space/runs",
+            "satellite-runs",
+            "Every dispatched satellite collect and cover of this run, newest first, with its simulated progress (tasked, collected, product ready; watching, outages), and the scenario clock.",
+        ),
     ]
 }
 
@@ -416,6 +421,7 @@ async fn read(mcp: &Mcp, agent: &AgentId, uri: &str) -> Result<Value, ErrorData>
             .api(Method::GET, "/api/space/passes", None)
             .await
             .map_err(api_err)?,
+        "space/runs" => mcp.decision.space_runs(),
         _ => {
             if let Some(uid) = path.strip_prefix("fleet/") {
                 let uid: u64 = uid.parse().map_err(|_| not_found())?;

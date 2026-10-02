@@ -207,8 +207,10 @@ Exit: every invariant has a scenario that tries to break it.
   `clientInfo.name`; placeholder auth like the operator header). Reads with staleness on
   every fact (fleet, platforms, areas, policy, intents, inbox, recent vehicle events,
   satellite passes and tasking options, as tools and as `murmur://` resources); proposing
-  with `preview_intent` (a dry run the engine logs as `agent.action intent.preview`),
-  `propose_intent` (rationale required), `explain_intent`, `withdraw_intent` (own only).
+  with `preview_intent` (a dry run the engine logs as `agent.action intent.preview`; for a
+  collect without `chosen`, a tasking query with the options), `propose_intent` (rationale
+  required; vehicle tasks, and collect and cover through `decision::space`),
+  `explain_intent`, `withdraw_intent` (own only).
   No approve tool exists: `mcp/tests.rs` enumerates the tool list and fails on any name or
   description that implies approval or control, and calls every tool against a pending
   intent. Agent-sourced intents go through the engine: auto tiers dispatch, human tiers

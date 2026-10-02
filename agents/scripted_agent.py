@@ -14,12 +14,14 @@ A real model connects the same way (agents/README.md).
     .venv/bin/python agents/scripted_agent.py --url http://127.0.0.1:9865/mcp --agent agent-watch
     .venv/bin/python agents/scripted_agent.py --follow 180          # wait for the operator
     .venv/bin/python agents/scripted_agent.py --withdraw            # withdraw the pending one
+    .venv/bin/python agents/scripted_agent.py --task collect        # a satellite collection
 
 Needs the official Python MCP SDK: `pip install "mcp>=2"` (in requirements.txt).
 """
 
 import argparse
 import asyncio
+import datetime
 import json
 import math
 import sys
@@ -36,10 +38,17 @@ except ImportError:  # pragma: no cover
 AGENT_HEADER = "X-Murmur-Agent"
 
 
+def attr(obj, snake, camel):
+    """A result field by its SDK 2.x (snake_case) or 1.x (camelCase) name."""
+    v = getattr(obj, snake, None)
+    return v if v is not None else getattr(obj, camel, None)
+
+
 def content(result):
-    """A tool result's JSON (structuredContent, else the first text block parsed)."""
-    if getattr(result, "structuredContent", None) is not None:
-        return result.structuredContent
+    """A tool result's JSON (structured content, else the first text block parsed)."""
+    structured = attr(result, "structured_content", "structuredContent")
+    if structured is not None:
+        return structured
     for block in result.content:
         if getattr(block, "type", "") == "text":
             try:
@@ -52,7 +61,7 @@ def content(result):
 async def call(session, name, **args):
     result = await session.call_tool(name, args)
     body = content(result)
-    if getattr(result, "isError", False):
+    if attr(result, "is_error", "isError"):
         raise RuntimeError(f"{name}: {body.get('error', body)}")
     return body
 
@@ -146,7 +155,8 @@ async def run(args):
         info = types.Implementation(name=args.agent, version="0.1")
         async with ClientSession(read, write, client_info=info) as session:
             init = await session.initialize()
-            print(f"connected to {init.serverInfo.name} {init.serverInfo.version} as {args.agent}")
+            server = attr(init, "server_info", "serverInfo")
+            print(f"connected to {server.name} {server.version} as {args.agent}")
             tools = (await session.list_tools()).tools
             names = [t.name for t in tools]
             print(f"tools: {', '.join(names)}")
@@ -186,6 +196,39 @@ async def run(args):
                                           f"({fmt_age(v['position'])} old) so its sensor keeps the "
                                           f"approach in view; the orbit is around where it already is."))
 
+            if args.task == "collect":
+                # a satellite collection over the fleet's centre in the next 12 scenario hours:
+                # the preview is the tasking query (options, nothing created), then the
+                # proposal commits to the first option and waits for the operator
+                fixes = [v["position"] for v in fleet["vehicles"] if v["position"].get("lon") is not None]
+                if not fixes:
+                    sys.exit("no vehicle has a position to centre the collection on")
+                lon = sum(p["lon"] for p in fixes) / len(fixes)
+                lat = sum(p["lat"] for p in fixes) / len(fixes)
+                probe = await call(session, "get_satellite_tasking_options")
+                now = probe.get("scenario", {}).get("now")
+                if now is None:
+                    sys.exit(f"the space segment is not available: {probe.get('error', probe)}")
+                start = datetime.datetime.fromisoformat(now.replace("Z", "+00:00"))
+                window = {"from": start.isoformat(), "to": (start + datetime.timedelta(hours=12)).isoformat()}
+                req = {"task": "collect", "area": {"kind": "circle", "center": [lon, lat], "radius_km": 10.0},
+                       "window": window, "capability": "any"}
+                query = await call(session, "preview_intent", **req)
+                options = (query.get("space") or {}).get("options") or []
+                print(f"collect query: {len(options)} of {(query.get('space') or {}).get('options_total')} options"
+                      f" (scenario now {now}, window to {window['to']})")
+                for o in options[:5]:
+                    print(f"    {o['rank']}. {o['satellite']} ({o['class_id']}, {o['capability']}) collect "
+                          f"{o['collect_time']} product {o.get('product_time')} {o.get('resolution_m')} m")
+                if not options:
+                    sys.exit("no collection option in the window")
+                best = options[0]
+                req["chosen"] = {"norad_id": best["norad_id"], "collect_time": best["collect_time"]}
+                proposals.append(("collect", req,
+                                  f"image the fleet's area with {best['satellite']} at {best['collect_time']} "
+                                  f"(rank 1 of {len(options)}: {best.get('resolution_m')} m); the fleet's "
+                                  f"positions are fresh and the product is due {best.get('product_time')}."))
+
             ids = []
             for label, req, rationale in proposals:
                 show_preview(label, await call(session, "preview_intent", **req))
@@ -219,7 +262,8 @@ def main():
     ap.add_argument("--url", default="http://127.0.0.1:8765/mcp", help="the bridge's MCP endpoint")
     ap.add_argument("--agent", default="agent-planner", help="an id listed in MURMUR_AGENTS")
     ap.add_argument("--task", default="both",
-                    help="auto (a hold), human (an orbit for an aircraft), both, or a task kind with --uid")
+                    help="auto (a hold), human (an orbit for an aircraft), both, collect (a satellite "
+                         "collection, chosen from the options), or a task kind with --uid")
     ap.add_argument("--uid", type=int, help="task this vehicle instead of choosing one")
     ap.add_argument("--follow", type=float, default=60.0, help="seconds to follow the intents")
     ap.add_argument("--withdraw", action="store_true", help="withdraw a proposal still pending at the end")
