@@ -49,7 +49,8 @@ vehicle gets the real tide current and wind at its position for that date and ti
 
 Vehicles appear within a few seconds and get a GPS fix about 20 to 30 seconds after start.
 Logs go to `./logs`. To run the pieces separately use `make sim`, `make bridge` and `make web`
-in three terminals.
+in three terminals. `MURMUR_BRIDGE=rust make up` (or `make bridge-rs`) runs the Rust port of the
+bridge instead; same API, same console.
 
 ## Operating
 
@@ -110,13 +111,15 @@ After 3 s of silence a track is drawn with a dashed frame and a `LOST` tag.
 
 - `sim/swarm.py`: launches SITL binaries directly (one UDP link per vehicle); `sim/params/` layers params on ArduPilot defaults.
 - `bridge/murmur_bridge/`: `vehicle.py` (UDP link, state, link stats), `tasks.py` (tasking and lifecycle), `server.py` (REST + WebSocket).
+- `crates/murmur-bridge/`: the Rust port of the bridge (same API); `scripts/parity.py` compares the two on a live fleet.
 - `web/src/`: `MapView.tsx`, `FleetPanel.tsx`, `TaskPanel.tsx`, `useBridge.ts`.
 
-REST is usable without the UI:
+REST is usable without the UI. Vehicles are addressed by `uid` (fleet-unique, from
+`sim/run/fleet.json`); the MAVLink `sysid` is unique only per link and wraps above 250.
 
 ```bash
 curl -XPOST localhost:8765/api/tasks -H 'content-type: application/json' \
-  -d '{"task":"orbit","sysids":[7,8],"center":[-117.175,32.712],"radius":250}'
+  -d '{"task":"orbit","uids":[7,8],"center":[-117.175,32.712],"radius":250}'
 ```
 
 Work items are tracked in `bd` (`bd ready`).

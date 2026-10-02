@@ -99,6 +99,7 @@ class LinkStats:
 
 class Vehicle:
     def __init__(self, sysid, link):
+        self.uid = None  # fleet-unique; set by the server from the manifest (sysid is per link)
         self.sysid = sysid
         self.link = link
         self.kind = None
@@ -127,7 +128,7 @@ class Vehicle:
         self._waiters = []
         # links that get a copy of this vehicle's position (antenna trackers pointed at it)
         self.forward_to = set()
-        self.tracking = None  # for trackers: sysid being tracked
+        self.tracking = None  # for trackers: uid being tracked
         self.identity = None  # from the fleet manifest: callsign, platform, role, domain, link...
         self.is_vtol = None  # planes only: None until Q_ENABLE is read
         self.ekf_flags = None
@@ -268,6 +269,7 @@ class Vehicle:
         """Rounded so tiny jitter doesn't count as a change (see the bridge's delta push)."""
         rnd = lambda x, n: None if x is None else round(x, n)  # noqa: E731
         out = {
+            "uid": self.uid,
             "sysid": self.sysid,
             "identity": self.identity,
             "kind": self.kind,

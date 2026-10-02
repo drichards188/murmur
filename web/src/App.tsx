@@ -45,18 +45,18 @@ export default function App() {
   const fps = usePerfMeter()
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [showPlatforms, setShowPlatforms] = useState(false)
-  const [focus, setFocus] = useState<{ sysid: number; n: number } | null>(null)
+  const [focus, setFocus] = useState<{ uid: number; n: number } | null>(null)
   const [draft, setDraft] = useState<Draft>({ mode: 'orbit', center: null, radius: 250, route: [] })
 
   const vehicles = state?.vehicles ?? []
   const taskings = state?.taskings ?? []
   const lost = vehicles.filter((v) => (v.link.since_last_ms ?? 0) > STALE_MS).length
 
-  const toggle = useCallback((sysid: number) => {
+  const toggle = useCallback((uid: number) => {
     setSelected((prev) => {
       const next = new Set(prev)
-      if (next.has(sysid)) next.delete(sysid)
-      else next.add(sysid)
+      if (next.has(uid)) next.delete(uid)
+      else next.add(uid)
       return next
     })
   }, [])
@@ -100,9 +100,9 @@ export default function App() {
         {showPlatforms && (
           <PlatformsPanel
             onClose={() => setShowPlatforms(false)}
-            onFocus={(sysid) => {
-              setSelected(new Set([sysid]))
-              setFocus((f) => ({ sysid, n: (f?.n ?? 0) + 1 }))
+            onFocus={(uid) => {
+              setSelected(new Set([uid]))
+              setFocus((f) => ({ uid, n: (f?.n ?? 0) + 1 }))
               setShowPlatforms(false)
             }}
           />

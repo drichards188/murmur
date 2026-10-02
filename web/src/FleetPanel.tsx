@@ -5,8 +5,8 @@ import { callsign, domainOf, STALE_MS } from './types'
 interface Props {
   vehicles: Vehicle[]
   selected: Set<number>
-  onToggle: (sysid: number) => void
-  onSelect: (sysids: number[]) => void
+  onToggle: (uid: number) => void
+  onSelect: (uids: number[]) => void
 }
 
 function linkClass(v: Vehicle) {
@@ -27,7 +27,7 @@ function Row({ v, selected, onToggle }: { v: Vehicle; selected: boolean; onToggl
   return (
     <button
       className={`vrow ${selected ? 'sel' : ''} ${stale ? 'stale' : ''}`}
-      onClick={() => onToggle(v.sysid)}
+      onClick={() => onToggle(v.uid)}
     >
       <span className="vrow-check" aria-hidden>{selected ? '■' : '□'}</span>
       <span className="vrow-sym" dangerouslySetInnerHTML={{ __html: symbolSvg(v, { stale, size: 16, labels: false }).svg }} />
@@ -78,7 +78,7 @@ const GROUPS: { title: string; match: (v: Vehicle) => boolean }[] = [
 ]
 
 export function FleetPanel({ vehicles, selected, onToggle, onSelect }: Props) {
-  const ids = (pred: (v: Vehicle) => boolean) => vehicles.filter(pred).map((v) => v.sysid)
+  const ids = (pred: (v: Vehicle) => boolean) => vehicles.filter(pred).map((v) => v.uid)
   return (
     <aside className="panel fleet">
       <header className="panel-head">
@@ -107,7 +107,7 @@ export function FleetPanel({ vehicles, selected, onToggle, onSelect }: Props) {
                   {title} <span>{group.length}</span>
                 </h3>
                 {group.map((v) => (
-                  <Row key={v.sysid} v={v} selected={selected.has(v.sysid)} onToggle={onToggle} />
+                  <Row key={v.uid} v={v} selected={selected.has(v.uid)} onToggle={onToggle} />
                 ))}
               </div>
             )

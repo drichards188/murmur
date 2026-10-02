@@ -99,6 +99,7 @@ class Op:
             "id": self.id,
             "tasking": self.tasking.id,
             "task": self.tasking.kind,
+            "uid": self.vehicle.uid,
             "sysid": self.vehicle.sysid,
             "state": self.state,
             "detail": self.detail,
@@ -110,7 +111,7 @@ class Op:
 class Tasking:
     def __init__(self, kind, params, registry):
         self.id = next(_tasking_ids)
-        self.registry = registry  # sysid -> Vehicle, for tasks that involve other vehicles
+        self.registry = registry  # uid -> Vehicle, for tasks that involve other vehicles
         self.kind = kind
         self.params = params
         self.created = time.time()
@@ -423,13 +424,18 @@ async def task_rtl(op):
     def home_dist():
         return None if v.home is None else v.distance_to(*v.home)
 
+    def at_home():
+        # not `home_dist() or 1e9`: a vehicle exactly at home (0.0 m) must count as home
+        d = home_dist()
+        return d is not None and d < op.caps["home_tol"]
+
     if op.caps["rtl"] is None:
         # no RTL mode (Sub): fly a one-waypoint mission home at the current task depth
         if v.home is None:
             raise OpFailed("home position unknown")
         items = [item(0, mavlink.MAV_CMD_NAV_WAYPOINT, v.lat, v.lon, 0),
                  item(1, mavlink.MAV_CMD_NAV_WAYPOINT, v.home[0], v.home[1], task_alt(op))]
-        await run_mission_task(op, items, None, lambda: (home_dist() or 1e9) < op.caps["home_tol"], "home",
+        await run_mission_task(op, items, None, at_home, "home",
                                lambda: f"{home_dist():.0f} m from home" if home_dist() is not None else "")
         return
 
@@ -438,7 +444,7 @@ async def task_rtl(op):
     op.set("acked", "accepted")
     await wait_until(op, lambda: v.custom_mode == mode, lambda: f"mode {v.mode}")
     op.set("active", "returning")
-    await wait_until(op, lambda: (home_dist() or 1e9) < op.caps["home_tol"],
+    await wait_until(op, at_home,
                      lambda: f"{home_dist():.0f} m from home" if home_dist() is not None else "")
     op.set("done", "home")
 
@@ -460,11 +466,11 @@ async def task_track(op):
     target = op.tasking.registry.get(op.tasking.params["target"])
     if target is None or target is tracker:
         raise OpFailed("pick one other vehicle to track")
-    op.set("sent", f"pointing at sysid {target.sysid}")
+    op.set("sent", f"pointing at uid {target.uid}")
     for v in op.tasking.registry.values():
         v.forward_to.discard(tracker.link)
     target.forward_to.add(tracker.link)
-    tracker.tracking = target.sysid
+    tracker.tracking = target.uid
 
     name = b"SYSID_TARGET"
     for _ in range(ACK_RETRIES + 1):
@@ -521,11 +527,11 @@ class TaskManager:
             if kind not in KINDS.get(op.vehicle.kind, {}).get("tasks", ()):
                 op.set("failed", f"a {op.vehicle.kind} can't {kind}")
                 continue
-            prev = self.active_by_vehicle.get(op.vehicle.sysid)
+            prev = self.active_by_vehicle.get(op.vehicle.uid)
             if prev and not prev.finished:
                 prev.task.cancel()
                 prev.set("superseded", f"replaced by {kind} #{tasking.id}")
-            self.active_by_vehicle[op.vehicle.sysid] = op
+            self.active_by_vehicle[op.vehicle.uid] = op
             op.task = asyncio.create_task(self._run(op))
         self.taskings.append(tasking)
         del self.taskings[:-30]

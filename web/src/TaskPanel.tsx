@@ -43,7 +43,7 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings }: Pro
   const [kind, setKind] = useState<TaskKind>('orbit')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const bySysid = new Map(vehicles.map((v) => [v.sysid, v]))
+  const byUid = new Map(vehicles.map((v) => [v.uid, v]))
   const sel = [...selected].sort((a, b) => a - b)
 
   const choose = (k: TaskKind) => {
@@ -52,8 +52,8 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings }: Pro
     setDraft({ ...draft, mode: k === 'orbit' || k === 'patrol' ? k : null })
   }
 
-  const trackers = sel.filter((s) => bySysid.get(s)?.kind === 'tracker')
-  const others = sel.filter((s) => bySysid.get(s)?.kind !== 'tracker')
+  const trackers = sel.filter((s) => byUid.get(s)?.kind === 'tracker')
+  const others = sel.filter((s) => byUid.get(s)?.kind !== 'tracker')
   const trackPair = trackers.length === 1 && others.length === 1
 
   const ready =
@@ -72,7 +72,7 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings }: Pro
     try {
       await sendTask({
         task: kind,
-        sysids: kind === 'track' ? trackers : sel,
+        uids: kind === 'track' ? trackers : sel,
         ...(kind === 'track' ? { target: others[0] } : {}),
         ...(kind === 'orbit' ? { center: draft.center!, radius: draft.radius } : {}),
         ...(kind === 'patrol' ? { route: draft.route } : {}),
@@ -89,7 +89,7 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings }: Pro
     <aside className="panel tasking">
       <header className="panel-head">
         <h2>Task</h2>
-        <span className="muted">{sel.length ? sel.map((s) => callsign(bySysid.get(s) ?? { sysid: s, kind: null })).join(' · ') : 'no group selected'}</span>
+        <span className="muted">{sel.length ? sel.map((s) => callsign(byUid.get(s) ?? { uid: s, kind: null })).join(' · ') : 'no group selected'}</span>
       </header>
       <div className="taskform">
         <div className="seg wide">
@@ -130,7 +130,7 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings }: Pro
             ? 'Select vehicles first'
             : kind === 'track'
               ? trackPair
-                ? `Point ${callsign(bySysid.get(trackers[0])!)} at ${callsign(bySysid.get(others[0])!)}`
+                ? `Point ${callsign(byUid.get(trackers[0])!)} at ${callsign(byUid.get(others[0])!)}`
                 : 'Select 1 tracker + 1 vehicle'
               : `Send ${kind.toUpperCase()} to ${sel.length} vehicle${sel.length > 1 ? 's' : ''}`}
         </button>
@@ -151,11 +151,11 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings }: Pro
               <span className="muted right">{age(t.created)} ago</span>
             </div>
             {t.ops.map((o) => {
-              const v = bySysid.get(o.sysid)
+              const v = byUid.get(o.uid)
               return (
                 <div key={o.id} className={`op ${o.state}`}>
                   <span className="op-name" title={v?.identity ? `${v.identity.name} · ${v.identity.role}` : undefined}>
-                    {v ? callsign(v) : o.sysid}
+                    {v ? callsign(v) : o.uid}
                   </span>
                   <Lifecycle state={o.state} />
                   <span className="op-detail">
