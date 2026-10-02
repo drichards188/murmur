@@ -6,14 +6,15 @@ CARGO ?= $(shell command -v cargo || echo $(HOME)/.cargo/bin/cargo)
 setup:   ## one-time: venv, Rust release build, ArduPilot SITL build, npm install
 	./scripts/setup.sh
 
-build:   ## release builds of the Rust bridge and stand-in engine (up.sh does this too)
-	$(CARGO) build --release -p murmur-bridge -p murmur-standins
+build:   ## release builds of the Rust bridge, stand-in engine and link emulator (up.sh does this too)
+	$(CARGO) build --release -p murmur-bridge -p murmur-standins -p murmur-linkemu
 
-up:      ## swarm + bridge + web, all at once (ports: see scripts/up.sh)
+up:      ## swarm + link emulator + bridge + web (MURMUR_LINKEMU=0 bypasses the emulator; ports: scripts/up.sh)
 	./scripts/up.sh --fleet $(FLEET) $(ARGS)
 
-goldengate: ## Golden Gate with real tide/current/wind: starts tidewater serve + drive (AT= start time)
-	MURMUR_SCENARIO=$(HOME)/tidewater/scenarios/golden-gate-2026-06.toml MURMUR_AT=$(or $(AT),2026-06-14T10:00Z) ./scripts/up.sh --fleet $(or $(GG_FLEET),full-spectrum) $(ARGS)
+goldengate: ## Golden Gate with real tide/current/wind: starts tidewater serve + drive (AT= start time, EVENTS= link events file)
+	MURMUR_SCENARIO=$(HOME)/tidewater/scenarios/golden-gate-2026-06.toml MURMUR_AT=$(or $(AT),2026-06-14T10:00Z) \
+	  $(if $(EVENTS),MURMUR_LINK_EVENTS=$(EVENTS)) ./scripts/up.sh --fleet $(or $(GG_FLEET),full-spectrum) $(ARGS)
 
 down:    ## stop a stack started with make up (e.g. from another terminal)
 	@# TERM, not INT: a shell started in the background ignores SIGINT and can't trap it

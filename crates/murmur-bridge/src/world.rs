@@ -205,6 +205,9 @@ impl World {
             Some(cs) => cs.to_string(),
             None => format!("sysid {sysid} (uid {uid})"),
         };
+        let class = identity.as_ref().and_then(|i| i.str("link"));
+        link.stats.lock().unwrap_or_else(|e| e.into_inner()).timesync =
+            crate::link::TimesyncPolicy::for_class(class);
         let cell = Arc::new(VehicleCell::new(
             uid,
             sysid,
@@ -272,7 +275,16 @@ impl World {
                     continue;
                 };
                 v.send(&gcs_heartbeat());
-                link.send_timesync();
+                let every = link
+                    .stats
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .timesync
+                    .every_s
+                    .max(1);
+                if tick.is_multiple_of(every) {
+                    link.send_timesync();
+                }
                 let (kind, rates_sent, air, unread) = v.read(|s| {
                     let air = s.identity.as_ref().and_then(|i| i.str("domain")) == Some("air")
                         || s.kind.is_some_and(Kind::flying);

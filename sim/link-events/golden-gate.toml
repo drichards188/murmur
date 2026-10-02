@@ -1,0 +1,53 @@
+# Scripted link events for the Golden Gate scenario: an example for the link emulator
+# (crates/murmur-linkemu, "Scripted events"). Load it with
+#
+#   make goldengate EVENTS=sim/link-events/golden-gate.toml
+#   (or MURMUR_LINK_EVENTS=sim/link-events/golden-gate.toml with make up / scripts/up.sh)
+#
+# Times: `at_s` is seconds since the emulator started (a few seconds before the vehicles), so
+# the events land at the same point of every run whatever MURMUR_AT is. `at_scenario` (an ISO
+# time on the scenario clock, needs MURMUR_AT) is the alternative; see sim/links.toml.
+# The file is re-read while running when it changes (or on SIGHUP to murmur-linkemu, PID in
+# logs/linkemu.pid), so events can be added during a run; a past window never fires.
+#
+# Format: the emulator reads only the [[event]] tables of this file and ignores any other
+# top-level table, so other consumers (e.g. a GNSS jammer model for the stand-ins' navigation)
+# can keep their own tables in the same scenario file. Inside [[event]], unknown keys are an
+# error. Selectors: class, profile, platform, domain, uid, uids, circle {lat, lon, radius_m}
+# (all given must match). Effects: loss (extra, independent), cut, extra_latency_ms;
+# dir = both | up | down. A circle without `loss` jams (loss 1.0, cause "jam").
+
+# The 30%-loss study (murmur-t7d): every LOS link loses an extra 30% from minute 5, for two
+# minutes. Drops count as cause "event_loss".
+[[event]]
+name = "30% loss on LOS"
+at_s = 300
+duration_s = 120
+class = "los"
+loss = 0.30
+
+# A jammer at the Golden Gate (2 km around the middle of the span, over Fort Point, the
+# buoy's drift and the boats off Horseshoe Bay) from minute 8 for five minutes. Radio links
+# only: one event per jammable class (a tether or an acoustic modem is not jammed by RF).
+[[event]]
+name = "jammer at the Gate (LOS)"
+at_s = 480
+duration_s = 300
+class = "los"
+circle = { lat = 37.8180, lon = -122.4780, radius_m = 2000 }
+
+[[event]]
+name = "jammer at the Gate (mesh)"
+at_s = 480
+duration_s = 300
+class = "mesh"
+circle = { lat = 37.8180, lon = -122.4780, radius_m = 2000 }
+
+# SATCOM terminals are harder to jam from the ground (the antenna looks up): half loss, a GUESS.
+[[event]]
+name = "jammer at the Gate (SATCOM)"
+at_s = 480
+duration_s = 300
+class = "satcom"
+circle = { lat = 37.8180, lon = -122.4780, radius_m = 2000 }
+loss = 0.5

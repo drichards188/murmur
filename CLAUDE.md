@@ -26,9 +26,15 @@ meaningful. Decision and command, not weapons.
   toolchain in `~/.cargo/bin`). Tidewater: `cd ~/tidewater && .venv/bin/pytest`.
 - `scripts/measure.py` measures bridge and stand-in load; `scripts/scale_fleet.py N` writes an
   N-node stand-in fleet. Logs in `logs/`, SITL and stand-in logs in `sim/run/`.
-- Ports: vehicles UDP 14560+i -> bridge :8765; console :5173; tidewater serve :8770; SITL SERIAL1
-  TCP 5762+10*instance (tidewater driver). A second stack beside the default one: set
-  `MURMUR_BASE_PORT`, `MURMUR_HTTP_PORT`, `MURMUR_WEB_PORT`, `MURMUR_TIDEWATER_PORT`,
+- Links go through `crates/murmur-linkemu` by default (`MURMUR_LINKEMU=0` bypasses):
+  profiles `sim/links.toml`, events `make goldengate EVENTS=sim/link-events/golden-gate.toml`,
+  log `logs/linkemu.log`, PID `logs/linkemu.pid`; the bridge reads `sim/run/bridge-fleet.json`
+  and serves the emulator's view at `/api/links[/{uid}]`.
+- Ports: vehicles UDP 14560+i -> linkemu -> bridge UDP 15560+i (`MURMUR_BRIDGE_BASE_PORT`,
+  default base + 1000); linkemu stats HTTP :8766 (`MURMUR_LINKEMU_PORT`); bridge :8765; console
+  :5173; tidewater serve :8770; SITL SERIAL1 TCP 5762+10*instance (tidewater driver). A second
+  stack beside the default one: set `MURMUR_BASE_PORT`, `MURMUR_BRIDGE_BASE_PORT`,
+  `MURMUR_LINKEMU_PORT`, `MURMUR_HTTP_PORT`, `MURMUR_WEB_PORT`, `MURMUR_TIDEWATER_PORT`,
   `MURMUR_SITL_INSTANCE_BASE` (header of `scripts/up.sh`).
 
 ## Gotchas (each cost real time)
@@ -54,6 +60,13 @@ meaningful. Decision and command, not weapons.
 - tidewater is installed editable in `.venv`; a scenario needs `tidewater fetch` once.
 - Stand-ins each take one ephemeral UDP port (`net.ipv4.ip_local_port_range`, ~4,000 here,
   shared with everything else on the host): that, not CPU, caps a stand-in fleet near 4,000.
+- A stack uses two UDP ranges now (vehicle base + N and bridge base + N): pick both clear of
+  every other stack's ranges, including a large load test's (a 3,000-node test spans 3,000
+  ports from its base). A bridge that finds a port taken drops it for good.
+- With the emulator, ZEP 1 (the LTA on the Marin Headlands) is behind terrain from the Crissy
+  Field ground station at spawn: it never connects until moved. That is the model, not a bug.
+- The bridge's task layer times out at 1-1.5 s per exchange: missions do not upload over the
+  ~1.5 s RTT Iridium-class links (a surfaced AUV, the buoy) until that is fixed (Phase D).
 
 ## Conventions
 

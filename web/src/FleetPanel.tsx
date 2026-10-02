@@ -1,3 +1,4 @@
+import { emuCause } from './linkEmu'
 import { symbolSvg } from './symbols'
 import type { Vehicle } from './types'
 import { callsign, domainOf, isStale, staleMs } from './types'
@@ -108,6 +109,11 @@ function Row({ v, selected, open, onToggle, onDeselect, onDetails }: RowProps) {
         <span title="time since last message">{stale || (v.link.since_last_ms ?? 0) >= 1000 ? `${Math.floor((v.link.since_last_ms ?? 0) / 1000)}s` : fmt(v.link.since_last_ms, 0, 'ms')}</span>
         <span title="packet loss, last 10 s">{fmt(v.link.loss_pct, 0, '%')} loss</span>
         <span title="round trip time (TIMESYNC)">{fmt(v.link.rtt_ms, 0, 'ms')} rtt</span>
+        {v.link.emu && v.link.emu.state !== 'ok' && (
+          <span className={`vrow-emu ${v.link.emu.state}`} title={`Link emulator: ${v.link.emu.state}${v.link.emu.cause ? `, ${emuCause(v.link.emu.cause)}` : ''}`}>
+            {v.link.emu.state === 'down' ? 'link down' : 'degraded'}: {emuCause(v.link.emu.cause) || '?'}
+          </span>
+        )}
       </span>
       </button>
     </div>

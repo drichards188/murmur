@@ -51,11 +51,26 @@ Gate from the [tidewater](../tidewater) sibling repo's scenario. `scripts/up.sh`
 `tidewater drive` so each SITL vehicle gets the real tide current and wind at its position for
 that date and time (run `tidewater fetch` there first). Both stop with the stack.
 
+**Degraded links by default:** every vehicle's link runs through the link emulator
+([`crates/murmur-linkemu`](crates/murmur-linkemu/README.md)): vehicle i sends to
+`MURMUR_BASE_PORT`+i where the emulator listens, and the emulator forwards to the bridge on
+`MURMUR_BRIDGE_BASE_PORT`+i (default base + 1000), degraded per link class from
+`sim/links.toml`: loss, latency, bandwidth and queueing; with a scenario also terrain line of
+sight to the ground station at Crissy Field (tidewater's DEM); SATCOM following real satellite
+passes once `murmur-space fetch` has filled `sim/space/cache`; acoustic links only under
+water (a surfaced AUV falls back to an Iridium-like link). `MURMUR_LINKEMU=0` bypasses it.
+Scripted events: `make goldengate EVENTS=sim/link-events/golden-gate.toml` (30% extra loss
+on every LOS link from minute 5 for two minutes, a jammer at the Gate from minute 8), or
+`MURMUR_LINK_EVENTS=<file>` with `scripts/up.sh`; the file is re-read when it changes. The
+emulator's stats are on `MURMUR_LINKEMU_PORT` (8766, `/stats`), and through the bridge at
+`/api/links` and `/api/links/{uid}`.
+
 Vehicles appear within a few seconds and get a GPS fix about 20 to 30 seconds after start.
 Logs go to `./logs`. To run the pieces separately use `make sim`, `make bridge` and `make web`
-in three terminals. A second stack can run beside the default one: `scripts/up.sh` takes its
-ports from `MURMUR_BASE_PORT`, `MURMUR_HTTP_PORT`, `MURMUR_WEB_PORT`, `MURMUR_TIDEWATER_PORT`
-and `MURMUR_SITL_INSTANCE_BASE` (see the script's header).
+in three terminals (no emulator then). A second stack can run beside the default one:
+`scripts/up.sh` takes its ports from `MURMUR_BASE_PORT`, `MURMUR_BRIDGE_BASE_PORT`,
+`MURMUR_LINKEMU_PORT`, `MURMUR_HTTP_PORT`, `MURMUR_WEB_PORT`, `MURMUR_TIDEWATER_PORT` and
+`MURMUR_SITL_INSTANCE_BASE` (see the script's header).
 
 ## Operating
 
@@ -109,8 +124,16 @@ acknowledged it, solid after.
 ## Link health
 
 Each vehicle row shows time since last message, packet loss over the last 10 s (from MAVLink
-sequence gaps; reordered packets are not counted as loss) and round-trip time (`TIMESYNC`).
-After 3 s of silence a track is drawn with a dashed frame and a `LOST` tag.
+sequence gaps; reordered packets are not counted as loss) and round-trip time (`TIMESYNC`;
+slow classes are pinged less often and waited for longer: acoustic every 30 s, answers
+accepted for 5 minutes; SATCOM every 2 s, for a minute). After 3 of its expected intervals of
+silence a track is drawn with a dashed frame and a `LOST` tag. When the emulator degrades a
+link (recent loss of 20% or more, a block, or a scripted event acting on it) the row says so
+with the cause (`degraded: jammer`, `link down: terrain blocks line of sight`). The details
+card's Link section shows the emulator's view: profile and its nominal numbers, loss and added
+delay over the last 10 to 60 s per direction, the emulated round trip, drops by cause, active
+events, terrain clearance, depth, and for SATCOM the satellite, its elevation and latency, and
+the next outage or pass.
 
 ## Layout
 

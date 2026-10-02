@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { LINKS, PROTOCOLS, type Protocol } from './catalogLabels'
+import { type EmuDir, emuCause, fmtBps, fmtDuration, useEmuLink } from './linkEmu'
 import { symbolSvg } from './symbols'
 import { orbitRange, usePlatformLimits } from './taskDefaults'
 import type { Tasking, Vehicle } from './types'
@@ -25,6 +26,93 @@ function Item({ k, children, title }: { k: string; children: React.ReactNode; ti
     <>
       <dt title={title}>{k}</dt>
       <dd>{children}</dd>
+    </>
+  )
+}
+
+const pct = (x: number | null | undefined, digits = 0) => (x == null ? '–' : `${(x * 100).toFixed(digits)}%`)
+
+function dirLine(d: EmuDir) {
+  return d.pkts ? `${pct(d.loss)} loss, ${fmt(d.latency_ms, 0, ' ms')}` : 'no packets'
+}
+
+/** The link emulator's state for this vehicle's link (Link section rows), from the bridge's
+ *  /api/links/{uid}. Nothing when no emulator runs. */
+function EmuItems({ uid }: { uid: number }) {
+  const ans = useEmuLink(uid)
+  if (!ans || !ans.enabled) return null
+  const l = ans.link
+  if (!ans.ok || !l) {
+    return <Item k="Emulator">{ans.error ? <span className="warn">no answer ({ans.error})</span> : ans.detail ?? 'waiting'}</Item>
+  }
+  const n = l.nominal
+  const merged: Record<string, number> = {}
+  for (const d of [l.recent.up, l.recent.down]) for (const [k, c] of Object.entries(d.by_cause)) merged[k] = (merged[k] ?? 0) + c
+  const causes = Object.entries(merged).sort((a, b) => b[1] - a[1])
+  const sat = l.satcom
+  return (
+    <>
+      <Item k="Emulator" title="crates/murmur-linkemu: what the link model is doing to this link">
+        <b className={l.state === 'down' ? 'bad' : l.state === 'degraded' ? 'warn' : ''}>{l.state === 'down' ? 'link down' : l.state}</b>
+        {l.cause ? `: ${emuCause(l.cause, n?.down_when)}` : ''} · profile {l.profile}
+        {l.active_profile && l.active_profile !== l.profile ? (
+          <span title={`The ${l.profile} link is closed at this depth (${l.depth_state}); traffic goes over ${l.active_profile}`}> · now on {l.active_profile}</span>
+        ) : null}
+      </Item>
+      {n && (
+        <Item k="Profile" title="The profile's nominal numbers (sim/links.toml)">
+          {pct(n.loss, 1)} loss · {fmt(n.latency_ms, 0)} ±{fmt(n.jitter_ms, 0, ' ms')}
+          {n.propagation_mps ? ` + range/${n.propagation_mps} m/s` : ''} · {fmtBps(n.bandwidth_bps)}
+        </Item>
+      )}
+      <Item k="Now" title={`Over the last ${Math.round(l.recent.window_s)} s: uplink (vehicle to bridge), downlink; delay is the emulator's added one-way latency`}>
+        up {dirLine(l.recent.up)} · down {dirLine(l.recent.down)}
+        {l.emu_rtt_ms != null ? ` · RTT ${fmt(l.emu_rtt_ms, 0, ' ms')}` : ''} <span className="muted">({Math.round(l.recent.window_s)} s)</span>
+      </Item>
+      {causes.length > 0 && (
+        <Item k="Drops" title={`Packets dropped by cause, last ${Math.round(l.recent.window_s)} s`}>
+          {causes.map(([k, c]) => `${emuCause(k, n?.down_when)} ${c}`).join(' · ')}
+        </Item>
+      )}
+      {l.events.length > 0 && (
+        <Item k="Events">
+          <b className="warn">{l.events.join(', ')}</b>
+        </Item>
+      )}
+      {l.los && l.los.state !== 'off' && (
+        <Item k="Terrain" title="Line of sight to the ground station over tidewater's DEM">
+          {l.los.state === 'obstructed' ? (
+            <b className="bad">blocked by {fmt(l.los.obstruction_m, 0, ' m')} of terrain</b>
+          ) : l.los.state === 'clear' ? (
+            `clear by ${fmt(l.los.obstruction_m == null ? null : -l.los.obstruction_m, 0, ' m')}`
+          ) : (
+            'not known yet'
+          )}
+        </Item>
+      )}
+      {n?.down_when && (
+        <Item k="Depth">
+          {l.depth_state} ({l.profile} {n.down_when === 'surfaced' ? 'needs the vehicle submerged' : 'needs the vehicle surfaced'}
+          {n.gated_profile ? `; otherwise ${n.gated_profile}` : ''})
+        </Item>
+      )}
+      {sat && (
+        <Item k="Satellite" title={sat.mode === 'static' ? `Static profile numbers: ${sat.static_reason ?? ''}` : 'Best satellite of the class by elevation (murmur-space, real orbits)'}>
+          {sat.mode !== 'live' ? (
+            <span className="muted">{sat.mode === 'static' ? `static numbers (${sat.static_reason ?? 'no space data'})` : 'computing'}</span>
+          ) : sat.up ? (
+            <>
+              {sat.best_name ?? '?'} {sat.best_norad_id != null ? `(${sat.best_norad_id})` : ''} · el {fmt(sat.best_elevation_deg, 0, '°')} · {fmt(sat.latency_ms, 0, ' ms')} one way
+              {sat.latency_source === 'profile' ? ' (profile)' : ''} · {sat.visible ?? 0} in view · {sat.handovers} handovers
+              {sat.next_outage_in_s != null ? ` · next outage in ${fmtDuration(sat.next_outage_in_s)}` : ''}
+            </>
+          ) : (
+            <b className="bad">
+              no {sat.class} satellite in view{sat.next_pass_in_s != null ? `; next pass in ${fmtDuration(sat.next_pass_in_s)}` : ''}
+            </b>
+          )}
+        </Item>
+      )}
     </>
   )
 }
@@ -115,9 +203,10 @@ export function VehicleDetails({ v, taskings, selected, onToggleSelect, onClose,
           <Item k="Last message">{stale ? <b className="bad">{Math.floor((v.link.since_last_ms ?? 0) / 1000)} s ago</b> : fmt(v.link.since_last_ms, 0, ' ms ago')}
             {(v.link.expected_interval_ms ?? 0) > 1000 ? ` (low-rate link: reports every ${Math.round((v.link.expected_interval_ms ?? 0) / 1000)} s)` : ''}
           </Item>
-          <Item k="Loss / RTT">
+          <Item k="Loss / RTT" title="Measured by the bridge: MAVLink sequence gaps over 10 s, TIMESYNC round trip">
             {fmt(v.link.loss_pct, 0, '%')} · {fmt(v.link.rtt_ms, 0, ' ms')}
           </Item>
+          <EmuItems uid={v.uid} />
         </dl>
       </section>
 

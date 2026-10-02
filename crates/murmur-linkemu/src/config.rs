@@ -66,6 +66,11 @@ pub struct RawProfile {
     pub range_max_km: Option<f64>,
     pub range_exp: Option<f64>,
     pub down_when: Option<DownWhen>,
+    /// While `down_when` closes this link, carry the traffic on this other profile instead of
+    /// dropping it: the vehicle's second radio (an AUV's Iridium or RF link at the surface).
+    /// The other profile may not have `down_when`, `space_class` or a `gated_profile` of its
+    /// own; its terrain is checked only if this profile checks terrain too.
+    pub gated_profile: Option<String>,
     /// Terrain line of sight to the ground station (needs a tidewater URL). Default: `block`
     /// for profiles with a range model, `off` otherwise.
     pub terrain: Option<TerrainMode>,
@@ -408,8 +413,24 @@ impl Config {
 
     fn validate(&self) -> Result<(), String> {
         for (name, p) in &self.class {
-            self.resolve(name)?;
+            let r = self.resolve(name)?;
             let _ = p;
+            if let Some(g) = &r.gated_profile {
+                if r.down_when.is_none() {
+                    return Err(format!("profile {name}: gated_profile needs down_when"));
+                }
+                let gp = self
+                    .resolve(g)
+                    .map_err(|e| format!("profile {name}: gated_profile: {e}"))?;
+                if gp.down_when.is_some()
+                    || gp.gated_profile.is_some()
+                    || gp.space_class.as_deref().is_some_and(|s| !s.is_empty())
+                {
+                    return Err(format!(
+                        "profile {name}: gated_profile {g} may not have down_when, gated_profile or space_class"
+                    ));
+                }
+            }
         }
         for (plat, prof) in &self.platform_profile {
             if !self.class.contains_key(prof) {
@@ -508,6 +529,7 @@ impl Config {
                 range_max_km,
                 range_exp,
                 down_when,
+                gated_profile,
                 terrain,
                 terrain_ramp_m,
                 gs_antenna_m,
@@ -733,6 +755,19 @@ mod tests {
         )
         .expect_err("must be rejected");
         assert!(e.contains("starlink"), "{e}");
+    }
+
+    #[test]
+    fn shipped_event_example_loads() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut c = Config::load(&root.join("sim/links.toml")).expect("sim/links.toml");
+        c.merge_scenario(&root.join("sim/link-events/golden-gate.toml"))
+            .expect("sim/link-events/golden-gate.toml");
+        assert_eq!(c.event.len(), 4);
+        assert_eq!(
+            c.resolve("acoustic").expect("acoustic").gated_profile.as_deref(),
+            Some("acoustic_surface")
+        );
     }
 
     #[test]

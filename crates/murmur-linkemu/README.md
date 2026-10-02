@@ -16,6 +16,16 @@ back to it. Packets are never modified. Nothing crosses between links.
 
 ## Wiring
 
+`scripts/up.sh` (so `make up` and `make goldengate`) does all of this by default:
+`swarm.py --manifest-only` writes the manifest, the emulator starts and binds the vehicle
+ports (`MURMUR_BASE_PORT`+i), then the vehicles, then the bridge on `MURMUR_BRIDGE_BASE_PORT`
+(default vehicle base + 1000) with the rewritten manifest and `MURMUR_LINKEMU_URL`. The
+emulator gets tidewater (`MURMUR_TIDEWATER_URL`, set with a scenario), the scenario clock
+(`MURMUR_AT`, `MURMUR_RATE`), `--scenario $MURMUR_LINK_EVENTS` when set, `--config
+$MURMUR_LINKS` (default `sim/links.toml`) and `--http 127.0.0.1:$MURMUR_LINKEMU_PORT` (8766);
+it logs to `logs/linkemu.log` (PID in `logs/linkemu.pid`) and stops with the stack.
+`MURMUR_LINKEMU=0` leaves it out. By hand:
+
 1. Launch the vehicles with a base port the bridge does not use:
    `swarm.py --fleet <f> --base-port A` (writes `sim/run/fleet.json`, each vehicle with its
    `uid`, `sysid`, `port`, `link`, `domain`, `platform`).
@@ -70,7 +80,13 @@ concatenated frames work).
   `[ground_station]` grows.
 - **Depth gating**: submerged means depth `-alt` exceeds `submerged_depth_m` (altitude is MSL, negative is
   depth, matching the stand-ins). `down_when = "submerged"` for SATCOM, `"surfaced"` for
-  acoustic. Before the first position the link is open.
+  acoustic. Before the first position the link is open. With `gated_profile = "<profile>"` a
+  closed gate moves the traffic to that profile instead of dropping it (the vehicle's second
+  radio): the shipped acoustic profile hands a surfaced AUV to `acoustic_surface`
+  (Iridium-like, static). The gated profile may not have `down_when` or `space_class`.
+  `/stats` says which profile carries the traffic (`active_profile`).
+- **No fix**: a GLOBAL_POSITION_INT with lat = lon = 0 (ArduPilot before its first fix) is
+  not a position and is ignored.
 - **Terrain** (`terrain.rs`, needs `--tidewater URL`): the path from `[ground_station]` to the
   vehicle is sampled from tidewater's DEM and judged against the straight ray between the
   antennas, with Earth curvature at an effective radius of `k_factor` (default 4/3) Earth
@@ -190,7 +206,10 @@ printing the emulator's `/stats` view next to measured delay and loss, e.g.
 
 `GET /stats` returns a summary plus `per_link`: for each direction in/out packets and bytes,
 drops by cause (`loss event_loss jam cut range terrain gate queue no_peer socket no_sat handover`), duplicates,
-queued packets and bytes (gauges), mean and max added latency; per link the profile, blocked
+queued packets and bytes (gauges), mean and max added latency and the number of packets it
+averages (`latency_n`, so a reader can difference two polls); per link the profile,
+`active_profile`, `nominal` (the profile's average loss, latency, jitter, bandwidth, queue,
+depth rule and gated profile), `events` (names of the scripted events acting on it now), blocked
 cause, depth state, last position and `los`: `state` (`off`, `unknown`, `clear`, `obstructed`),
 `obstruction_m` (positive: terrain above the ray; negative: clear by that much),
 `unknown_pkts` (decided before any terrain answer) and `blocked_by_terrain_pkts`. `/stats/summary` omits `per_link`; the summary also has `los_links` (links per state),
@@ -210,6 +229,30 @@ loopback round trip. `src/bin/losprobe.rs` asks a running
 `losprobe --gs 37.8068,-122.4460,5 --gs-antenna 10 37.875,-122.405,30 ...`.
 `src/bin/loadgen.rs` is the synthetic load generator (fake vehicles and
 fake bridge ports, writes its own manifest): `loadgen --vehicles 440 --rate 8 --duration 30`.
+
+## In the bridge and the console
+
+The bridge (`crates/murmur-bridge/src/emu.rs`) polls `/stats` every 2 s when
+`MURMUR_LINKEMU_URL` is set, keeps a minute of history per link and serves `/api/links` and
+`/api/links/{uid}`: the per-link record plus `recent` loss, drops by cause and added latency
+per direction over the shortest of 10, 30 or 60 s with at least 5 uplink packets, `total`, and
+`emu_rtt_ms` (added delay up plus down). Each vehicle's pushed `link.emu` is `{state: ok |
+degraded | down, cause}`: down while blocked or with 95% recent loss, degraded at 20% or while
+an event acts on the link. The fleet row shows it; the details card shows the full view.
+
+The bridge's own measurements stay independent: loss from MAVLink sequence gaps and RTT from
+TIMESYNC. On slow classes the TIMESYNC bookkeeping is per link class (`TimesyncPolicy` in
+`crates/murmur-bridge/src/link.rs`): acoustic links are pinged every 30 s and answers accepted
+for 300 s (queueing alone on 300 bps with a 256-byte queue is ~7 s, plus sound at 1500 m/s and
+jitter; a ping a second would also fill the downlink by itself), SATCOM every 2 s for 60 s,
+everything else every second for 10 s (murmur-0nv.3). `emu_rtt_ms` is the fallback figure
+when no answer comes back at all.
+
+## Scenario files
+
+`--scenario FILE` (`MURMUR_LINK_EVENTS`) reads only the file's `[[event]]` tables and ignores
+other top-level tables, so other consumers (a GNSS jammer model for navigation, say) can keep
+their own tables in the same scenario file. Example: `sim/link-events/golden-gate.toml`.
 
 ## Not done
 
