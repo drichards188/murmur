@@ -9,21 +9,33 @@
 //!   backed by its evidence: auto approval by a recomputed `auto` tier and passing checks,
 //!   `approved` by an `approval.granted` from an operator before the deadline and a passing
 //!   re-check, rejection by failing checks or a human rejection, expiry by the deadline;
-//! - `seq` is contiguous and `t` never goes backwards.
+//! - `seq` is contiguous and `t` never goes backwards;
+//! - the hash chain: each event's `prev` is the SHA-256 of the previous line, and (from
+//!   text) each line is its event's canonical serialization;
+//! - area sets: each logged set's content hash matches its `sha256`, and every decision
+//!   references the set in force;
+//! - `self_approved` on every `approval.granted` matches who proposed the intent.
 //!
 //! Physics is not replayed; the decision layer is. What replay cannot know is whether the
-//! logged inputs were true of the world: it proves the decisions follow from them.
+//! logged inputs were true of the world: it proves the decisions follow from them. The
+//! chain is tamper-evident, not tamper-proof (see [`crate::audit`]): a full rewrite or a
+//! truncated tail needs the head hash ([`ReplayReport::head_sha256`]) checked against an
+//! external anchor.
 
 use std::collections::BTreeMap;
 
 use serde::Serialize;
 
+use crate::areas::AreaSet;
 use crate::audit::{Event, EventBody, LogError, parse_log};
+use crate::engine::is_self_approval;
+use crate::hash::{GENESIS, sha256_hex};
 use crate::ids::IntentId;
 use crate::intent::{IntentSpec, State, Transition, next_state};
 use crate::policy::{self, Policy, Tier};
 use crate::rules;
 use crate::time::Time;
+use crate::world::{LoggedInputs, WorldSnapshot};
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Mismatch {
@@ -41,6 +53,14 @@ pub struct ReplayReport {
     pub checks_recomputed: usize,
     pub policy_recomputed: usize,
     pub transitions_verified: usize,
+    /// Area sets logged (`run.started` and `areas.loaded`).
+    pub area_sets: usize,
+    pub approvals: usize,
+    /// Approvals where the approver also proposed the intent.
+    pub self_approvals: usize,
+    /// SHA-256 of the last event: compare with an external anchor to detect a rewritten
+    /// chain or a truncated tail.
+    pub head_sha256: Option<String>,
     pub mismatches: Vec<Mismatch>,
 }
 
@@ -61,20 +81,78 @@ struct Tracked {
     expired: bool,
 }
 
+/// Replay a JSONL log. The chain is checked over the lines exactly as they are in the
+/// text, and each line must be its event's canonical serialization (so an edit that the
+/// parser would ignore, such as an extra field, is still caught).
 pub fn replay_str(text: &str) -> Result<ReplayReport, LogError> {
-    Ok(replay(&parse_log(text)?))
+    let events = parse_log(text)?;
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let mut noncanonical = Vec::new();
+    for (e, line) in events.iter().zip(&lines) {
+        let canon = serde_json::to_string(e).map_err(|err| LogError {
+            line: usize::try_from(e.seq).unwrap_or(0),
+            err,
+        })?;
+        if canon != *line {
+            noncanonical.push(e.seq);
+        }
+    }
+    let hashes = lines.iter().map(|l| sha256_hex(l.as_bytes())).collect();
+    let mut r = replay_inner(&events, hashes);
+    for seq in noncanonical {
+        r.mismatches.push(Mismatch {
+            seq,
+            intent: None,
+            what: "line is not its event's canonical serialization".into(),
+            logged: String::new(),
+            recomputed: String::new(),
+        });
+    }
+    Ok(r)
 }
 
+/// Replay parsed events; the chain is checked over their canonical serialization.
 pub fn replay(events: &[Event]) -> ReplayReport {
+    let hashes = events
+        .iter()
+        .map(|e| match serde_json::to_string(e) {
+            Ok(line) => sha256_hex(line.as_bytes()),
+            Err(err) => format!("<unserializable: {err}>"),
+        })
+        .collect();
+    replay_inner(events, hashes)
+}
+
+/// The area set in force: its logged hash, and the set if that hash verified.
+type InForce = Option<(String, Option<AreaSet>)>;
+
+fn replay_inner(events: &[Event], hashes: Vec<String>) -> ReplayReport {
     let mut r = ReplayReport {
         events: events.len(),
+        head_sha256: hashes.last().cloned(),
         ..Default::default()
     };
     let mut policy: Option<Policy> = None;
+    let mut areas: InForce = None;
     let mut intents: BTreeMap<IntentId, Tracked> = BTreeMap::new();
     let mut prev: Option<&Event> = None;
 
-    for e in events {
+    for (i, e) in events.iter().enumerate() {
+        let want_prev = if i == 0 {
+            GENESIS
+        } else {
+            hashes[i - 1].as_str()
+        };
+        if e.prev != want_prev {
+            bad(
+                &mut r,
+                e,
+                None,
+                "hash chain broken: prev is not the hash of the previous event",
+                e.prev.clone(),
+                want_prev.to_string(),
+            );
+        }
         if let Some(p) = prev {
             if e.seq != p.seq + 1 {
                 bad(
@@ -100,7 +178,20 @@ pub fn replay(events: &[Event]) -> ReplayReport {
         prev = Some(e);
 
         match &e.body {
-            EventBody::RunStarted { policy: p, .. } => policy = Some(p.clone()),
+            EventBody::RunStarted {
+                policy: p,
+                areas: a,
+                ..
+            } => {
+                policy = Some(p.clone());
+                areas = None;
+                if let Some(a) = a {
+                    areas = Some(load_areas(&mut r, e, &a.sha256, &a.areas));
+                }
+            }
+            EventBody::AreasLoaded { sha256, areas: set } => {
+                areas = Some(load_areas(&mut r, e, sha256, set));
+            }
             EventBody::IntentCreated { intent } => {
                 if intents.contains_key(&intent.id) {
                     bad(
@@ -145,7 +236,22 @@ pub fn replay(events: &[Event]) -> ReplayReport {
                     );
                     continue;
                 };
-                let again = rules::evaluate(&tr.spec, inputs, &pol.rules);
+                let inputs = match resolve(inputs, &areas) {
+                    Ok(w) => w,
+                    Err(why) => {
+                        tr.last_check_passed = None;
+                        bad(
+                            &mut r,
+                            e,
+                            Some(*intent),
+                            why,
+                            json(&inputs.areas_sha256),
+                            json(&areas.as_ref().map(|a| &a.0)),
+                        );
+                        continue;
+                    }
+                };
+                let again = rules::evaluate(&tr.spec, &inputs, &pol.rules);
                 let again_passed = rules::passed(&again, tr.spec.kind());
                 r.checks_recomputed += 1;
                 if &again != results || again_passed != *passed {
@@ -176,7 +282,22 @@ pub fn replay(events: &[Event]) -> ReplayReport {
                     );
                     continue;
                 };
-                let again = policy::decide(&tr.spec, inputs, pol);
+                let inputs = match resolve(inputs, &areas) {
+                    Ok(w) => w,
+                    Err(why) => {
+                        tr.tier = None;
+                        bad(
+                            &mut r,
+                            e,
+                            Some(*intent),
+                            why,
+                            json(&inputs.areas_sha256),
+                            json(&areas.as_ref().map(|a| &a.0)),
+                        );
+                        continue;
+                    }
+                };
+                let again = policy::decide(&tr.spec, &inputs, pol);
                 r.policy_recomputed += 1;
                 if &again != decision {
                     bad(
@@ -217,7 +338,12 @@ pub fn replay(events: &[Event]) -> ReplayReport {
                 }
                 tr.expires_t = Some(*expires_t);
             }
-            EventBody::ApprovalGranted { intent, .. } => {
+            EventBody::ApprovalGranted {
+                intent,
+                by,
+                self_approved,
+                ..
+            } => {
                 let Some(tr) = intents.get_mut(intent) else {
                     bad(
                         &mut r,
@@ -249,6 +375,21 @@ pub fn replay(events: &[Event]) -> ReplayReport {
                         e.t.0.to_string(),
                         format!("< {:?}", other.map(|t| t.0)),
                     ),
+                }
+                let want = is_self_approval(&tr.spec.source, by);
+                if *self_approved != want {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "self_approved flag differs",
+                        self_approved.to_string(),
+                        want.to_string(),
+                    );
+                }
+                r.approvals += 1;
+                if want {
+                    r.self_approvals += 1;
                 }
                 tr.granted = true;
             }
@@ -354,6 +495,44 @@ pub fn replay(events: &[Event]) -> ReplayReport {
     }
     r.intents = intents.len();
     r
+}
+
+/// Verify a logged area set against its hash; the result is the new set in force.
+fn load_areas(
+    r: &mut ReplayReport,
+    e: &Event,
+    sha256: &str,
+    set: &AreaSet,
+) -> (String, Option<AreaSet>) {
+    r.area_sets += 1;
+    match set.content_hash() {
+        Ok(h) if h == sha256 => (sha256.to_string(), Some(set.clone())),
+        other => {
+            bad(
+                r,
+                e,
+                None,
+                "area set hash does not match its content",
+                sha256.to_string(),
+                other.unwrap_or_else(|err| format!("<unserializable: {err}>")),
+            );
+            (sha256.to_string(), None)
+        }
+    }
+}
+
+/// Decision inputs with the area reference resolved to the set in force.
+fn resolve(inputs: &LoggedInputs, in_force: &InForce) -> Result<WorldSnapshot, &'static str> {
+    let Some(want) = &inputs.areas_sha256 else {
+        return Ok(inputs.resolve(None));
+    };
+    match in_force {
+        Some((h, Some(set))) if h == want => Ok(inputs.resolve(Some(set.clone()))),
+        Some((h, None)) if h == want => {
+            Err("decision references an area set whose hash did not verify")
+        }
+        _ => Err("decision references an area set that is not the one in force"),
+    }
 }
 
 fn bad(

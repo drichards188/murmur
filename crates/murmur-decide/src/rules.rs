@@ -1,20 +1,27 @@
 //! Rules (Phase C.2): pure functions of `(intent, &WorldSnapshot, &RulesConfig)`.
 //!
 //! Fail-closed: a rule that can't evaluate (vehicle unknown, fact missing or stale, area
-//! file not loaded, terrain point unanswered) returns `Fail` and says why. The single
-//! exception is the one PLAN.md names: with no terrain oracle installed, the domain rule
-//! returns `NotEvaluated`, which is recorded and blocks only consequential kinds
-//! ([`TaskKind::is_consequential`], i.e. engage in Phase E).
+//! file not loaded, terrain point unanswered) returns `Fail` and says why. Two
+//! exceptions, both recorded in the intent's checks:
+//! - `NotEvaluated`: deliberately skipped. The domain rule with no terrain oracle
+//!   installed (PLAN.md), and an rtl whose return leg can't be checked (rtl is the safety
+//!   command, as in the readiness exemption). Blocks only consequential kinds
+//!   ([`TaskKind::is_consequential`], i.e. engage in Phase E).
+//! - `Unverified`: the rule can't verify the condition, and a human must judge it: the
+//!   reserves rule on a platform with no endurance figure. It doesn't block the rules
+//!   gate, but policy never auto-approves it ([`crate::policy::decide`]).
 //!
 //! Output order is fixed (rule order, then the intent's uid order) and detail strings use
 //! fixed precision, so recomputing a decision gives byte-identical results.
 
 use serde::{Deserialize, Serialize};
 
+use crate::areas::Area;
 use crate::catalog::{AutopilotKind, Domain};
-use crate::geo::{LonLat, haversine_m};
+use crate::geo::haversine_m;
 use crate::ids::Uid;
 use crate::intent::{IntentSpec, Task, TaskKind};
+use crate::route::{Segment, route_for};
 use crate::terrain::Surface;
 use crate::world::{Fact, TerrainInputs, VehicleFacts, WorldSnapshot};
 
@@ -47,8 +54,13 @@ impl RuleId {
 pub enum Outcome {
     Pass,
     Fail,
-    /// Deliberately skipped (no terrain oracle). Recorded; blocks consequential kinds only.
+    /// Deliberately skipped (no terrain oracle; an rtl's unchecked return leg). Recorded;
+    /// blocks consequential kinds only.
     NotEvaluated,
+    /// Could not be verified, and a human must judge it (endurance unknown). Doesn't block
+    /// the rules gate (except for consequential kinds); policy routes it to a human and
+    /// never auto-approves it.
+    Unverified,
 }
 
 /// A change that would make a failing intent pass. Suggested, never applied silently.
@@ -61,7 +73,7 @@ pub enum Fix {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CheckResult {
     pub rule: RuleId,
-    /// The vehicle this result is about; None for whole-intent rules (geofence).
+    /// The vehicle this result is about (every rule today is per vehicle).
     pub uid: Option<Uid>,
     pub outcome: Outcome,
     pub detail: String,
@@ -84,8 +96,12 @@ impl CheckResult {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UnknownEndurance {
-    /// No endurance figure: the reserves rule can't evaluate, so it fails.
+    /// No endurance figure: the result is `Unverified` ("not evaluated: endurance
+    /// unknown"), which policy routes to a human. A battery already below the reserve
+    /// still fails.
     #[default]
+    Human,
+    /// No endurance figure: the reserves rule can't evaluate, so it fails.
     Fail,
     /// No endurance figure: pass if the battery is above the reserve now (a weaker check,
     /// stated in the detail).
@@ -118,7 +134,7 @@ impl Default for RulesConfig {
             fixed_wing_default_min_turn_radius_m: 60.0,
             reserve_pct: 20.0,
             task_duration_s: 900,
-            unknown_endurance: UnknownEndurance::Fail,
+            unknown_endurance: UnknownEndurance::Human,
         }
     }
 }
@@ -130,7 +146,7 @@ pub fn evaluate(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
     out.extend(readiness(spec, world, cfg));
     out.extend(platform_limits(spec, world, cfg));
     out.extend(domain(spec, world));
-    out.push(geofence(spec, world));
+    out.extend(geofence(spec, world, cfg));
     out.extend(reserves(spec, world, cfg));
     out
 }
@@ -140,8 +156,20 @@ pub fn passed(results: &[CheckResult], kind: TaskKind) -> bool {
     results.iter().all(|r| match r.outcome {
         Outcome::Pass => true,
         Outcome::Fail => false,
-        Outcome::NotEvaluated => !kind.is_consequential(),
+        Outcome::NotEvaluated | Outcome::Unverified => !kind.is_consequential(),
     })
+}
+
+/// The results a human must judge (outcome `Unverified`), as `"rule uid: detail"`.
+pub fn unverified(results: &[CheckResult]) -> Vec<String> {
+    results
+        .iter()
+        .filter(|r| r.outcome == Outcome::Unverified)
+        .map(|r| match &r.uid {
+            Some(u) => format!("{} {u}: {}", r.rule.as_str(), r.detail),
+            None => format!("{}: {}", r.rule.as_str(), r.detail),
+        })
+        .collect()
 }
 
 fn per_vehicle(
@@ -165,7 +193,7 @@ fn per_vehicle(
 }
 
 /// A fact that exists and is fresh enough, or why not.
-fn fresh<'a, T>(
+pub(crate) fn fresh<'a, T>(
     fact: &'a Option<Fact<T>>,
     what: &str,
     world: &WorldSnapshot,
@@ -412,44 +440,102 @@ pub fn domain(spec: &IntentSpec, world: &WorldSnapshot) -> Vec<CheckResult> {
     })
 }
 
-/// No task path enters a no-go area.
-pub fn geofence(spec: &IntentSpec, world: &WorldSnapshot) -> CheckResult {
+/// No part of a vehicle's route enters a no-go area: the transit leg from its position to
+/// the task, the task path, and the return leg home (see [`crate::route`]). A leg that
+/// starts at the vehicle's position inside a no-go area is leaving it, which is allowed
+/// (otherwise a vehicle that strayed in could never be brought out). For rtl, a return leg
+/// that can't be checked is `NotEvaluated` rather than a failure: rtl is the safety command.
+pub fn geofence(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Vec<CheckResult> {
     let r = RuleId::Geofence;
-    let Some(path) = spec.task.path() else {
-        return CheckResult::new(r, None, Outcome::Pass, "no waypoints");
-    };
-    let Some(areas) = &world.areas else {
-        return CheckResult::new(
-            r,
-            None,
-            Outcome::Fail,
-            "cannot evaluate: no area set loaded",
-        );
-    };
-    let mut n = 0;
-    for area in areas.no_go() {
-        n += 1;
-        if let Some(why) = area.intrusion(&path) {
-            return CheckResult::new(
-                r,
-                None,
-                Outcome::Fail,
-                format!("{why} (no-go: {})", area.name),
-            );
+    let kind = spec.kind();
+    per_vehicle(spec, world, r, |uid, v| {
+        let res = |o, d: String| CheckResult::new(r, Some(uid), o, d);
+        let not_checked = |why: String| {
+            if kind == TaskKind::Rtl {
+                res(
+                    Outcome::NotEvaluated,
+                    format!("return leg not checked (rtl is a safety command): {why}"),
+                )
+            } else {
+                res(Outcome::Fail, why)
+            }
+        };
+        let route = match route_for(spec, v, world, cfg) {
+            Ok(route) => route,
+            Err(e) => return not_checked(e),
+        };
+        if route.is_empty() {
+            return res(Outcome::Pass, format!("no path for {}", kind.as_str()));
         }
-    }
-    CheckResult::new(r, None, Outcome::Pass, format!("clear of {n} no-go areas"))
+        let Some(areas) = &world.areas else {
+            return not_checked("cannot evaluate: no area set loaded".into());
+        };
+        let no_go: Vec<&Area> = areas.no_go().collect();
+        if let Some(path) = &route.task {
+            for area in &no_go {
+                if let Some(why) = area.intrusion(path) {
+                    return res(
+                        Outcome::Fail,
+                        format!("task path: {why} (no-go: {})", area.name),
+                    );
+                }
+            }
+        }
+        let mut leaving: Vec<&str> = Vec::new();
+        for seg in route.segments() {
+            for area in &no_go {
+                if let Some(why) = segment_enters(area, seg) {
+                    return res(Outcome::Fail, format!("{why} (no-go: {})", area.name));
+                }
+                if seg.from_vehicle
+                    && area.contains(seg.from)
+                    && !leaving.contains(&area.id.as_str())
+                {
+                    leaving.push(&area.id);
+                }
+            }
+        }
+        let mut detail = format!("clear of {} no-go areas ({})", no_go.len(), route.parts());
+        if !leaving.is_empty() {
+            detail.push_str(&format!(
+                "; starts inside {} and leaves it",
+                leaving.join(", ")
+            ));
+        }
+        res(Outcome::Pass, detail)
+    })
 }
 
-/// Endurance left after the task stays above the reserve. Estimate: transit to the task,
-/// time on task (at least one lap, at least the configured horizon), transit home, all at
-/// cruise speed, against battery x full endurance.
+/// Why a single leg enters a no-go area, naming the leg, or None.
+fn segment_enters(area: &Area, seg: &Segment) -> Option<String> {
+    let name = seg.name();
+    if area.contains(seg.to) {
+        return Some(format!("{name}: {} is inside {}", seg.to_label, area.id));
+    }
+    if area.contains(seg.from) {
+        if seg.from_vehicle {
+            // Already inside: the leg leaves it.
+            return None;
+        }
+        return Some(format!("{name}: {} is inside {}", seg.from_label, area.id));
+    }
+    if area.segment_touches_boundary(seg.from, seg.to) {
+        return Some(format!("{name} crosses {}", area.id));
+    }
+    None
+}
+
+/// Endurance left after the task stays above the reserve. Estimate: the transit leg to
+/// waypoint 1, time on task (at least one lap, at least the configured horizon), the return
+/// leg home (the same legs the geofence checks), all at cruise speed, against battery x
+/// full endurance. Hold and rtl are exempt. With no endurance figure the result depends on
+/// `unknown_endurance` (default: `Unverified`, routed to a human).
 pub fn reserves(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Vec<CheckResult> {
     let r = RuleId::Reserves;
     per_vehicle(spec, world, r, |uid, v| {
         let res = |o, d: String| CheckResult::new(r, Some(uid), o, d);
         let fail = |d: String| res(Outcome::Fail, d);
-        let Some(path) = spec.task.path() else {
+        let Some(path) = spec.task.path().filter(|_| !is_safety_command(spec.kind())) else {
             return res(
                 Outcome::Pass,
                 format!("not required for {}", spec.kind().as_str()),
@@ -468,6 +554,13 @@ pub fn reserves(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
         };
         let Some(endurance_h) = platform.endurance_h.filter(|e| *e > 0.0) else {
             return match cfg.unknown_endurance {
+                UnknownEndurance::Human if battery >= reserve_pct => res(
+                    Outcome::Unverified,
+                    format!(
+                        "not evaluated: endurance unknown for {}; battery {battery:.0}% >= reserve {reserve_pct:.0}% now, task cost not estimated; needs a human",
+                        platform.id
+                    ),
+                ),
                 UnknownEndurance::Fail => fail(format!(
                     "cannot evaluate: no endurance figure for {}",
                     platform.id
@@ -478,7 +571,7 @@ pub fn reserves(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
                         "battery {battery:.0}% >= reserve {reserve_pct:.0}% now (no endurance figure, task cost not estimated)"
                     ),
                 ),
-                UnknownEndurance::BatteryNow => fail(format!(
+                UnknownEndurance::Human | UnknownEndurance::BatteryNow => fail(format!(
                     "battery {battery:.0}% below reserve {reserve_pct:.0}%"
                 )),
             };
@@ -489,14 +582,11 @@ pub fn reserves(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
                 platform.id
             ));
         };
-        let pos = match fresh(&v.position, "position", world, cfg) {
-            Ok(p) => *p,
+        let route = match route_for(spec, v, world, cfg) {
+            Ok(route) => route,
             Err(e) => return fail(e),
         };
-        let Some(home) = &v.home else {
-            return fail("cannot evaluate: no home position".into());
-        };
-        let start = nearest(pos, &path.points);
+        let leg_m = |s: &Option<Segment>| s.as_ref().map_or(0.0, |s| haversine_m(s.from, s.to));
         let lap_m: f64 = path
             .legs()
             .iter()
@@ -505,8 +595,7 @@ pub fn reserves(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
         let on_task_s = (lap_m / cruise)
             .max(f64::from(cfg.task_duration_s))
             .max(f64::from(spec.constraints.duration_s.unwrap_or(0)));
-        let used_s =
-            haversine_m(pos, start) / cruise + on_task_s + haversine_m(start, home.value) / cruise;
+        let used_s = leg_m(&route.transit) / cruise + on_task_s + leg_m(&route.ret) / cruise;
         let full_s = endurance_h * 3600.0;
         let left_s = battery / 100.0 * full_s - used_s;
         let reserve_s = reserve_pct / 100.0 * full_s;
@@ -523,12 +612,4 @@ pub fn reserves(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
             fail(detail)
         }
     })
-}
-
-fn nearest(from: LonLat, points: &[LonLat]) -> LonLat {
-    points
-        .iter()
-        .copied()
-        .min_by(|a, b| haversine_m(from, *a).total_cmp(&haversine_m(from, *b)))
-        .unwrap_or(from)
 }

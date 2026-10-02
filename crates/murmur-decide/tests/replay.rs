@@ -1,4 +1,5 @@
-//! Replay: a generated log reproduces every decision; tampering is detected.
+//! Replay: a generated log reproduces every decision; tampering is detected, by the
+//! decisions themselves, by the area-set hash, and by the hash chain.
 #![allow(clippy::unwrap_used)]
 
 mod common;
@@ -6,7 +7,8 @@ mod common;
 use std::process::Command;
 
 use common::*;
-use murmur_decide::replay::{replay, replay_str};
+use murmur_decide::hash::{GENESIS, sha256_hex};
+use murmur_decide::replay::{ReplayReport, replay, replay_str};
 use murmur_decide::*;
 use serde_json::Value;
 
@@ -72,6 +74,37 @@ fn scenario() -> String {
     )
     .unwrap();
 
+    // a human approves their own proposal (allowed, flagged)
+    let own = e
+        .submit(a, orbit(NEAR_CRISSY, 150.0, &["blade-1"]), &w_later, &tr)
+        .unwrap()
+        .id();
+    e.approve(own, a, None, &w_later, &tr).unwrap();
+
+    // endurance unknown: waits for a human, who approves it
+    let mule = e
+        .submit(a, orbit(NEAR_CRISSY, 100.0, &["mule-1"]), &w_later, &tr)
+        .unwrap()
+        .id();
+    assert_eq!(e.intent(mule).unwrap().state(), State::PendingApproval);
+    e.approve(mule, a, None, &w_later, &tr).unwrap();
+
+    // rtl whose way home crosses a no-go area: rejected by the geofence (return leg)
+    let mut crossing = w_later.clone();
+    let v = crossing.vehicles.get_mut(&uid("sky-1")).unwrap();
+    v.position = Some(Fact::new(LonLat::new(-122.405, 37.8267), w_later.t));
+    v.home = Some(Fact::new(LonLat::new(-122.435, 37.8267), w_later.t));
+    let r = e.submit(a, rtl(&["sky-1"]), &crossing, &tr).unwrap();
+    assert_eq!(r.state(), State::Rejected);
+
+    // the area set changes mid-run: logged once more, as areas.loaded
+    let mut moved = w_later.clone();
+    moved.areas.as_mut().unwrap().loaded_t = w_later.t;
+    e.submit(a, orbit(NEAR_CRISSY, 150.0, &["sky-1"]), &moved, &tr)
+        .unwrap();
+    e.submit(a, orbit(NEAR_CRISSY, 160.0, &["sky-1"]), &moved, &tr)
+        .unwrap();
+
     // human rejects; leaves approved area; expires; voided at approval; withdrawn
     let i3 = e
         .submit(a, orbit(NEAR_CRISSY, 150.0, &["blade-1"]), &w_later, &tr)
@@ -127,10 +160,43 @@ fn lines(text: &str) -> Vec<Value> {
         .collect()
 }
 
+/// The line the engine would write for this event (field order, not Value's sorted keys).
+fn canon(v: &Value) -> String {
+    let e: Event = serde_json::from_value(v.clone()).unwrap();
+    serde_json::to_string(&e).unwrap()
+}
+
 fn unlines(v: &[Value]) -> String {
-    v.iter()
-        .map(|l| serde_json::to_string(l).unwrap() + "\n")
-        .collect()
+    v.iter().map(|l| canon(l) + "\n").collect()
+}
+
+fn renumber(v: &mut [Value]) {
+    for (n, e) in v.iter_mut().enumerate() {
+        e["seq"] = Value::from(n as u64 + 1);
+    }
+}
+
+/// Recompute every `prev`, as a forger who can write the file would.
+fn rechain(v: &mut [Value]) {
+    let mut prev = GENESIS.to_string();
+    for e in v.iter_mut() {
+        e["prev"] = Value::from(prev);
+        prev = sha256_hex(canon(e).as_bytes());
+    }
+}
+
+fn whats(r: &ReplayReport) -> Vec<&str> {
+    r.mismatches.iter().map(|m| m.what.as_str()).collect()
+}
+
+const CHAIN: &str = "hash chain broken: prev is not the hash of the previous event";
+
+/// The chain, and nothing else, objects; its first objection is at `seq`. (Renumbering
+/// rewrites every later event, so every later link breaks too.)
+fn only_chain_from(r: &ReplayReport, seq: u64) {
+    assert!(!r.mismatches.is_empty(), "undetected");
+    assert!(r.mismatches.iter().all(|m| m.what == CHAIN), "{r:#?}");
+    assert_eq!(r.mismatches[0].seq, seq);
 }
 
 #[test]
@@ -138,12 +204,19 @@ fn replay_reproduces_every_decision() {
     let text = scenario();
     let r = replay_str(&text).unwrap();
     assert!(r.ok(), "{:#?}", r.mismatches);
-    assert_eq!(r.intents, 11);
-    assert!(r.checks_recomputed >= 13, "{r:?}");
-    assert!(r.policy_recomputed >= 9, "{r:?}");
-    assert!(r.transitions_verified >= 30, "{r:?}");
+    assert_eq!(r.intents, 16);
+    assert!(r.checks_recomputed >= 19, "{r:?}");
+    assert!(r.policy_recomputed >= 13, "{r:?}");
+    assert!(r.transitions_verified >= 43, "{r:?}");
+    assert_eq!((r.approvals, r.self_approvals), (3, 2));
+    assert_eq!(r.area_sets, 3);
+    assert_eq!(
+        r.head_sha256.as_deref(),
+        Some(sha256_hex(text.lines().last().unwrap().as_bytes()).as_str())
+    );
     for kind in [
         "run.started",
+        "areas.loaded",
         "intent.created",
         "check.result",
         "policy.decision",
@@ -164,6 +237,8 @@ fn replay_reproduces_every_decision() {
         );
     }
     assert!(text.contains("\"outcome\":\"not_evaluated\""));
+    assert!(text.contains("\"outcome\":\"unverified\""));
+    assert!(text.contains("return leg (position to home) crosses alcatraz"));
 }
 
 #[test]
@@ -194,9 +269,14 @@ fn tampered_input_is_detected() {
     let i = find(&v, "check.result", |_| true);
     v[i]["inputs"]["vehicles"]["sky-1"]["battery_pct"]["value"] = Value::from(25.0);
     let r = replay_str(&unlines(&v)).unwrap();
-    assert!(!r.ok());
-    assert_eq!(r.mismatches[0].what, "check results differ");
+    assert_eq!(&whats(&r)[..2], &["check results differ", CHAIN]);
     assert_eq!(r.mismatches[0].seq, v[i]["seq"].as_u64().unwrap());
+    assert_eq!(r.mismatches[1].seq, v[i]["seq"].as_u64().unwrap() + 1);
+    // A forger who recomputes the chain is still caught by the decision itself.
+    rechain(&mut v);
+    let r = replay_str(&unlines(&v)).unwrap();
+    assert_eq!(whats(&r)[0], "check results differ");
+    assert!(!whats(&r).contains(&CHAIN));
 }
 
 #[test]
@@ -232,13 +312,17 @@ fn tampered_decision_is_detected() {
 #[test]
 fn approval_without_a_human_is_detected() {
     let mut v = lines(&scenario());
-    // Drop the human's approval.granted and renumber, as a forger would.
+    // Drop the human's approval.granted, renumber and recompute the chain, as a forger
+    // would: the approval is still unbacked.
     let i = find(&v, "approval.granted", |_| true);
     v.remove(i);
-    for (n, e) in v.iter_mut().enumerate() {
-        e["seq"] = Value::from(n as u64 + 1);
-    }
+    renumber(&mut v);
     let r = replay_str(&unlines(&v)).unwrap();
+    assert_eq!(r.mismatches[0].what, CHAIN);
+    assert_eq!(r.mismatches[0].seq, i as u64 + 1);
+    rechain(&mut v);
+    let r = replay_str(&unlines(&v)).unwrap();
+    assert!(!whats(&r).contains(&CHAIN));
     assert!(
         r.mismatches
             .iter()
@@ -268,6 +352,208 @@ fn late_approval_and_gaps_are_detected() {
     assert!(r.mismatches.iter().any(|m| m.what == "seq not contiguous"));
 }
 
+// ---- hash chain -------------------------------------------------------------------------
+
+#[test]
+fn chain_detects_edit_delete_and_reorder_of_any_event() {
+    let original = lines(&scenario());
+    // op.state carries no decision: only the chain can notice changes to it.
+    let i = find(&original, "op.state", |_| true);
+
+    let mut v = original.clone();
+    v[i]["detail"] = Value::from("never got there");
+    let r = replay_str(&unlines(&v)).unwrap();
+    assert_eq!(whats(&r), vec![CHAIN]);
+    assert_eq!(r.mismatches[0].seq, v[i + 1]["seq"].as_u64().unwrap());
+
+    let mut v = original.clone();
+    v.remove(i);
+    let r = replay_str(&unlines(&v)).unwrap();
+    assert!(whats(&r).contains(&CHAIN));
+    assert!(whats(&r).contains(&"seq not contiguous"));
+    // Renumbered to hide the gap: the chain still breaks where the event was.
+    renumber(&mut v);
+    let r = replay_str(&unlines(&v)).unwrap();
+    only_chain_from(&r, i as u64 + 1);
+
+    let mut v = original.clone();
+    v.swap(i, i - 1);
+    renumber(&mut v);
+    let r = replay_str(&unlines(&v)).unwrap();
+    assert!(whats(&r).contains(&CHAIN), "{r:#?}");
+
+    // An edit the parser would drop (an extra field) is still an edit.
+    let text = scenario();
+    let line = text.lines().nth(i).unwrap();
+    let edited = text.replacen(line, &line.replacen("{", r#"{"x":1,"#, 1), 1);
+    let r = replay_str(&edited).unwrap();
+    assert!(
+        whats(&r).contains(&"line is not its event's canonical serialization"),
+        "{r:#?}"
+    );
+}
+
+#[test]
+fn chain_detects_a_whole_intent_deleted_and_renumbered() {
+    let text = scenario();
+    let original = lines(&text);
+    let head = replay_str(&text).unwrap().head_sha256;
+    // Delete every event of one intent (the boat orbit with no terrain oracle) and
+    // renumber seq: every remaining decision is still consistent.
+    let created = original
+        .iter()
+        .filter(|e| e["type"] == "intent.created")
+        .nth(4)
+        .unwrap();
+    let id = created["intent"]["id"].clone();
+    let mut v: Vec<Value> = original
+        .iter()
+        .filter(|e| e["intent"] != id && e["intent"]["id"] != id)
+        .cloned()
+        .collect();
+    assert!(original.len() - v.len() >= 4);
+    let first_gone = original
+        .iter()
+        .position(|e| e["intent"]["id"] == id)
+        .unwrap();
+    renumber(&mut v);
+    let r = replay_str(&unlines(&v)).unwrap();
+    // Only the chain sees it, starting where the intent's first event was.
+    only_chain_from(&r, first_gone as u64 + 1);
+
+    // The limit, stated as a test: someone who can rewrite the file can recompute the
+    // whole chain, and replay passes. Only the head hash differs, which is why it has to
+    // be anchored outside the writer's reach (future work).
+    rechain(&mut v);
+    let r = replay_str(&unlines(&v)).unwrap();
+    assert!(r.ok(), "{r:#?}");
+    assert_ne!(r.head_sha256, head);
+    // Same for a truncated tail: a valid, shorter chain with a different head.
+    let short: String = text.lines().take(10).map(|l| format!("{l}\n")).collect();
+    let r = replay_str(&short).unwrap();
+    assert!(r.ok());
+    assert_ne!(r.head_sha256, head);
+}
+
+#[test]
+fn first_event_must_start_the_chain() {
+    let mut v = lines(&scenario());
+    v.remove(0);
+    renumber(&mut v);
+    let r = replay_str(&unlines(&v)).unwrap();
+    assert_eq!(r.mismatches[0].what, CHAIN);
+    assert_eq!(r.mismatches[0].recomputed, GENESIS);
+}
+
+// ---- area set, logged once ----------------------------------------------------------------
+
+#[test]
+fn area_set_is_logged_once_and_referenced_by_hash() {
+    let text = scenario();
+    let v = lines(&text);
+    let loaded: Vec<&Value> = v.iter().filter(|e| e["type"] == "areas.loaded").collect();
+    // Engine::new had no area set: logged at first use, then once each time it changed
+    // (to the moved set, and back), never per decision.
+    assert_eq!(loaded.len(), 3);
+    let hashes: Vec<&str> = loaded
+        .iter()
+        .map(|e| e["sha256"].as_str().unwrap())
+        .collect();
+    assert_ne!(hashes[0], hashes[1]);
+    assert_eq!(hashes[0], hashes[2]);
+    for e in v
+        .iter()
+        .filter(|e| e["type"] == "check.result" || e["type"] == "policy.decision")
+    {
+        assert!(e["inputs"].get("areas").is_none(), "{e}");
+        let h = e["inputs"]["areas_sha256"].as_str().unwrap();
+        assert!(hashes.contains(&h));
+    }
+    // The hash is of the canonical serialization of the set.
+    let set: AreaSet = serde_json::from_value(loaded[0]["areas"].clone()).unwrap();
+    assert_eq!(set.content_hash().unwrap(), hashes[0]);
+    assert_eq!(
+        hashes[0],
+        sha256_hex(serde_json::to_string(&set).unwrap().as_bytes())
+    );
+    // Decision events no longer carry ~700 bytes of polygons each.
+    let check = text
+        .lines()
+        .find(|l| l.contains(r#""type":"check.result""#))
+        .unwrap();
+    assert!(!check.contains("alcatraz"), "{check}");
+}
+
+#[test]
+fn area_set_given_at_start_is_in_run_started() {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = Engine::with_areas(
+        policy(),
+        Some(areas()),
+        Box::new(clock.clone()),
+        Box::new(log.clone()),
+    )
+    .unwrap();
+    let op = e.open_operator_session(OperatorId::new("op-1")).unwrap();
+    e.submit(
+        op.authority(),
+        orbit(NEAR_CRISSY, 150.0, &["sky-1"]),
+        &world(),
+        &terrain(),
+    )
+    .unwrap();
+    let v = lines(&log.text());
+    assert_eq!(v[0]["type"], "run.started");
+    assert_eq!(
+        v[0]["areas"]["sha256"],
+        Value::from(areas().content_hash().unwrap())
+    );
+    assert!(v.iter().all(|e| e["type"] != "areas.loaded"));
+    let r = replay_str(&log.text()).unwrap();
+    assert!(r.ok(), "{:#?}", r.mismatches);
+    assert_eq!(r.area_sets, 1);
+    assert_eq!(r.head_sha256.as_deref(), Some(e.head_hash()));
+}
+
+#[test]
+fn area_hash_mismatch_is_detected() {
+    // Shrink Alcatraz in the logged set but keep its hash, and recompute the chain.
+    let mut v = lines(&scenario());
+    let i = find(&v, "areas.loaded", |_| true);
+    let areas = v[i]["areas"]["areas"].as_array_mut().unwrap();
+    let alcatraz = areas.iter_mut().find(|a| a["id"] == "alcatraz").unwrap();
+    alcatraz["polygons"][0]["exterior"][0][0] = Value::from(-122.42);
+    rechain(&mut v);
+    let r = replay_str(&unlines(&v)).unwrap();
+    let w = whats(&r);
+    assert_eq!(w[0], "area set hash does not match its content");
+    assert!(w.contains(&"decision references an area set whose hash did not verify"));
+
+    // A decision pointing at a set that isn't the one in force.
+    let mut v = lines(&scenario());
+    let i = find(&v, "check.result", |_| true);
+    v[i]["inputs"]["areas_sha256"] = Value::from(GENESIS);
+    rechain(&mut v);
+    let r = replay_str(&unlines(&v)).unwrap();
+    assert!(
+        whats(&r).contains(&"decision references an area set that is not the one in force"),
+        "{r:#?}"
+    );
+}
+
+// ---- self-approval --------------------------------------------------------------------------
+
+#[test]
+fn self_approval_flag_is_verified() {
+    let mut v = lines(&scenario());
+    let i = find(&v, "approval.granted", |e| e["self_approved"] == true);
+    v[i]["self_approved"] = Value::from(false);
+    rechain(&mut v);
+    let r = replay_str(&unlines(&v)).unwrap();
+    assert_eq!(whats(&r), vec!["self_approved flag differs"]);
+}
+
 #[test]
 fn replay_binary() {
     let dir = std::env::temp_dir().join(format!("murmur-decide-replay-{}", std::process::id()));
@@ -288,7 +574,13 @@ fn replay_binary() {
         "{}",
         String::from_utf8_lossy(&out.stdout)
     );
-    assert!(String::from_utf8_lossy(&out.stdout).contains("OK: every decision reproduced exactly"));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("OK: every decision reproduced exactly"));
+    assert!(
+        stdout.contains("3 approval(s), 2 self-approved"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("head "), "{stdout}");
 
     let mut v = lines(&std::fs::read_to_string(&good).unwrap());
     let i = find(&v, "check.result", |_| true);

@@ -80,7 +80,7 @@ impl Task {
     }
 
     /// The waypoints the task commits a vehicle to; None for tasks flown in place.
-    /// Transit to the first waypoint is not included (see the README's "not done").
+    /// The transit leg to them and the return leg home are added by [`crate::route`].
     pub fn path(&self) -> Option<TaskPath> {
         match self {
             Task::Orbit { center, radius_m } => Some(TaskPath {
@@ -392,6 +392,8 @@ pub struct Approval {
     pub by: OperatorId,
     pub session: SessionId,
     pub t: Time,
+    /// The approver proposed the intent too (no second person looked at it).
+    pub self_approved: bool,
     pub note: Option<String>,
 }
 

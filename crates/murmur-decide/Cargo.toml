@@ -8,6 +8,7 @@ description = "Murmur's decision layer: intents, fail-closed rules, risk-tier po
 serde = { version = "1", features = ["derive"] }
 # float_roundtrip: logged inputs must parse back to the exact same f64, or replay drifts.
 serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2 = "0.10"
 thiserror = "2"
 toml = "1"
 

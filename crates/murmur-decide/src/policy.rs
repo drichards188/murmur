@@ -3,17 +3,24 @@
 //! A `[[tier]]` entry matches when every condition in its `when` table holds (an empty
 //! `when` always matches). If nothing matches, the decision is `human`: fail closed.
 //! Conditions that can't be evaluated resolve in the conservative direction: a vehicle
-//! with unknown platform counts as armed, and with no area set loaded every path counts
-//! as leaving the approved area.
+//! with unknown platform counts as armed, and with no area set loaded (or no fresh
+//! position or home) every route counts as leaving the approved area.
+//!
+//! One floor holds whatever the file says: an intent with an `Unverified` check (a rule
+//! that couldn't verify its condition, such as reserves with unknown endurance) is never
+//! auto-approved. If the first matching tier is `auto`, the decision becomes `human` with
+//! rule `"(unverified)"`. The `unverified = [...]` condition lets the file route such
+//! intents explicitly, with its own reason.
 
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::geo::TaskPath;
+use crate::areas::Area;
 use crate::ids::Uid;
 use crate::intent::{IntentSpec, Source, TaskKind};
-use crate::rules::RulesConfig;
+use crate::route::{Segment, route_for};
+use crate::rules::{self, Outcome, RuleId, RulesConfig};
 use crate::world::WorldSnapshot;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,6 +53,10 @@ pub struct When {
     pub leaves_approved_area: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceKind>,
+    /// Some check of one of these rules came out `unverified` (e.g. `["reserves"]`:
+    /// endurance unknown).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unverified: Option<Vec<RuleId>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -133,6 +144,9 @@ pub struct PolicyFacts {
     pub armed: Vec<Uid>,
     pub leaves_approved_area: bool,
     pub area_detail: String,
+    /// Checks a human must judge (outcome `unverified`), as `"rule uid: detail"`. Shown in
+    /// the inbox as the reason the intent needs a human.
+    pub unverified: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -144,40 +158,93 @@ pub struct PolicyDecision {
     pub facts: PolicyFacts,
 }
 
-/// Does the path leave the approved area, and why.
-pub fn leaves_approved_area(path: Option<&TaskPath>, world: &WorldSnapshot) -> (bool, String) {
-    let Some(path) = path else {
-        return (false, "no waypoints".into());
-    };
+/// Does any vehicle's route (transit leg, task path, return leg; see [`crate::route`])
+/// leave the approved area, and why. Every point must be inside an approved area and no
+/// leg may touch an approved boundary. A vehicle whose route can't be built (no fresh
+/// position, no home) counts as leaving.
+pub fn leaves_approved_area(
+    spec: &IntentSpec,
+    world: &WorldSnapshot,
+    cfg: &RulesConfig,
+) -> (bool, String) {
+    let mut routes = Vec::new();
+    for uid in &spec.uids {
+        let Some(v) = world.vehicles.get(uid) else {
+            return (
+                true,
+                format!("{uid}: not in the world model (counted as leaving)"),
+            );
+        };
+        match route_for(spec, v, world, cfg) {
+            Ok(route) if route.is_empty() => {}
+            Ok(route) => routes.push((uid, route)),
+            Err(e) => return (true, format!("{uid}: {e} (counted as leaving)")),
+        }
+    }
+    if routes.is_empty() {
+        return (false, "no path".into());
+    }
     let Some(areas) = &world.areas else {
         return (true, "no area set loaded (counted as leaving)".into());
     };
-    let approved: Vec<_> = areas.approved().collect();
+    let approved: Vec<&Area> = areas.approved().collect();
     if approved.is_empty() {
         return (true, "no approved area defined (counted as leaving)".into());
     }
-    for (i, p) in path.points.iter().enumerate() {
-        if !approved.iter().any(|a| a.contains(*p)) {
-            return (
-                true,
-                format!("waypoint {} is outside the approved area", i + 1),
-            );
-        }
-    }
+    let inside = |p| approved.iter().any(|a| a.contains(p));
     // Conservative: a leg touching any approved boundary counts as leaving, even if it
     // passes into an adjoining approved area.
-    for (i, a, b) in path.legs() {
-        if approved.iter().any(|ar| ar.segment_touches_boundary(a, b)) {
-            return (
-                true,
-                format!(
-                    "leg from waypoint {} crosses the approved-area boundary",
-                    i + 1
-                ),
-            );
+    let crosses = |a, b| approved.iter().any(|ar| ar.segment_touches_boundary(a, b));
+    // The task path is the same for every vehicle: check it once.
+    if let Some(path) = routes.first().and_then(|(_, r)| r.task.as_ref()) {
+        for (i, p) in path.points.iter().enumerate() {
+            if !inside(*p) {
+                return (
+                    true,
+                    format!("task path: waypoint {} is outside the approved area", i + 1),
+                );
+            }
+        }
+        for (i, a, b) in path.legs() {
+            if crosses(a, b) {
+                return (
+                    true,
+                    format!(
+                        "task path: leg from waypoint {} crosses the approved-area boundary",
+                        i + 1
+                    ),
+                );
+            }
         }
     }
-    (false, "inside the approved area".into())
+    for (uid, route) in &routes {
+        for seg in route.segments() {
+            if let Some(why) = segment_leaves(seg, &inside, &crosses) {
+                return (true, format!("{uid}: {why}"));
+            }
+        }
+    }
+    (
+        false,
+        "inside the approved area (transit, task path, return)".into(),
+    )
+}
+
+fn segment_leaves(
+    seg: &Segment,
+    inside: &dyn Fn(crate::geo::LonLat) -> bool,
+    crosses: &dyn Fn(crate::geo::LonLat, crate::geo::LonLat) -> bool,
+) -> Option<String> {
+    let name = seg.name();
+    for (p, label) in [(seg.from, &seg.from_label), (seg.to, &seg.to_label)] {
+        if !inside(p) {
+            return Some(format!("{name}: {label} is outside the approved area"));
+        }
+    }
+    if crosses(seg.from, seg.to) {
+        return Some(format!("{name} crosses the approved-area boundary"));
+    }
+    None
 }
 
 pub fn decide(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> PolicyDecision {
@@ -193,7 +260,9 @@ pub fn decide(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> Poli
         })
         .cloned()
         .collect();
-    let (leaves, area_detail) = leaves_approved_area(spec.task.path().as_ref(), world);
+    let (leaves, area_detail) = leaves_approved_area(spec, world, &policy.rules);
+    // The same pure rules the engine ran on the same inputs: which checks need a human.
+    let checks = rules::evaluate(spec, world, &policy.rules);
     let facts = PolicyFacts {
         kind: spec.kind(),
         source: match spec.source {
@@ -203,15 +272,35 @@ pub fn decide(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> Poli
         armed,
         leaves_approved_area: leaves,
         area_detail,
+        unverified: rules::unverified(&checks),
     };
+    let unverified_rules: Vec<RuleId> = checks
+        .iter()
+        .filter(|c| c.outcome == Outcome::Unverified)
+        .map(|c| c.rule)
+        .collect();
     for rule in &policy.tiers {
         let w = &rule.when;
         let matches = w.kind.as_ref().is_none_or(|ks| ks.contains(&facts.kind))
             && w.armed.is_none_or(|a| a == !facts.armed.is_empty())
             && w.leaves_approved_area
                 .is_none_or(|l| l == facts.leaves_approved_area)
-            && w.source.is_none_or(|s| s == facts.source);
+            && w.source.is_none_or(|s| s == facts.source)
+            && w.unverified
+                .as_ref()
+                .is_none_or(|rs| rs.iter().any(|r| unverified_rules.contains(r)));
         if matches {
+            if rule.tier == Tier::Auto && !facts.unverified.is_empty() {
+                return PolicyDecision {
+                    tier: Tier::Human,
+                    rule: "(unverified)".into(),
+                    reason: format!(
+                        "tier {} is auto, but a check could not be verified; a human must judge it",
+                        rule.name
+                    ),
+                    facts,
+                };
+            }
             return PolicyDecision {
                 tier: rule.tier,
                 rule: rule.name.clone(),

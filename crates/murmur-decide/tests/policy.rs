@@ -98,6 +98,128 @@ fn a_leg_leaving_a_concave_approved_area_needs_a_human() {
 }
 
 #[test]
+fn transit_and_return_legs_leaving_the_approved_area_need_a_human() {
+    // The task is inside, but sky-1 is outside the approved area now.
+    let mut w = world();
+    let v = w.vehicles.get_mut(&uid("sky-1")).unwrap();
+    v.position = Some(Fact::new(OUTSIDE_APPROVED, T0));
+    let d = decision(human(), orbit(NEAR_CRISSY, 150.0, &["sky-1"]), &w);
+    assert_eq!(
+        (d.tier, d.rule.as_str()),
+        (Tier::Human, "outside-approved-area")
+    );
+    assert_eq!(
+        d.facts.area_detail,
+        "sky-1: transit leg (position to waypoint 1): position is outside the approved area"
+    );
+
+    // Starts inside, but home is outside: the return leg leaves.
+    let mut w = world();
+    let v = w.vehicles.get_mut(&uid("sky-1")).unwrap();
+    v.home = Some(Fact::new(OUTSIDE_APPROVED, T0));
+    let d = decision(human(), orbit(NEAR_CRISSY, 150.0, &["sky-1"]), &w);
+    assert_eq!(d.tier, Tier::Human);
+    assert_eq!(
+        d.facts.area_detail,
+        "sky-1: return leg (waypoint 1 to home): home is outside the approved area"
+    );
+
+    // rtl is only the return leg; it stays auto (safety commands first) but the fact shows.
+    let d = decision(human(), rtl(&["sky-1"]), &w);
+    assert_eq!((d.tier, d.rule.as_str()), (Tier::Auto, "safety-commands"));
+    assert!(d.facts.leaves_approved_area);
+    assert_eq!(
+        d.facts.area_detail,
+        "sky-1: return leg (position to home): home is outside the approved area"
+    );
+
+    // Both ends inside a concave area, the transit leg crosses its notch.
+    let u = r#"{"type":"FeatureCollection","features":[{"type":"Feature",
+        "properties":{"id":"u","kind":"approved"},
+        "geometry":{"type":"Polygon","coordinates":[[[0,0],[3,0],[3,3],[2,3],[2,1],[1,1],[1,3],[0,3],[0,0]]]}}]}"#;
+    let mut w = world();
+    w.areas = Some(AreaSet::from_geojson("u", u, T0).unwrap());
+    let v = w.vehicles.get_mut(&uid("sky-1")).unwrap();
+    v.position = Some(Fact::new(LonLat::new(0.5, 2.5), T0));
+    v.home = Some(Fact::new(LonLat::new(2.5, 0.5), T0));
+    let route = vec![LonLat::new(2.5, 2.5), LonLat::new(2.5, 2.0)];
+    let d = decision(
+        human(),
+        Proposal::new(Task::Patrol { route }, vec![uid("sky-1")]),
+        &w,
+    );
+    assert_eq!(
+        d.facts.area_detail,
+        "sky-1: transit leg (position to waypoint 1) crosses the approved-area boundary"
+    );
+
+    // No fresh position: can't tell, counted as leaving.
+    let mut w = world();
+    w.vehicles.get_mut(&uid("sky-1")).unwrap().position = None;
+    let d = decision(human(), orbit(NEAR_CRISSY, 150.0, &["sky-1"]), &w);
+    assert!(d.facts.leaves_approved_area);
+    assert!(d.facts.area_detail.contains("counted as leaving"), "{d:?}");
+}
+
+#[test]
+fn unknown_endurance_routes_to_a_human_with_a_visible_reason() {
+    // mule-1 (logistics UGV) has no endurance figure: reserves is unverified.
+    for src in [human(), agent()] {
+        let d = decision(src, orbit(NEAR_CRISSY, 100.0, &["mule-1"]), &world());
+        assert_eq!(
+            (d.tier, d.rule.as_str()),
+            (Tier::Human, "endurance-unknown")
+        );
+        assert_eq!(d.facts.unverified.len(), 1);
+        assert!(
+            d.facts.unverified[0].starts_with("reserves mule-1: not evaluated: endurance unknown"),
+            "{d:?}"
+        );
+    }
+    // Hold and rtl stay auto (reserves is not required for them).
+    let d = decision(human(), hold(&["mule-1"]), &world());
+    assert_eq!((d.tier, d.rule.as_str()), (Tier::Auto, "safety-commands"));
+    assert!(d.facts.unverified.is_empty());
+    // A platform with an endurance figure is unaffected.
+    let d = decision(human(), orbit(NEAR_CRISSY, 150.0, &["sky-1"]), &world());
+    assert_eq!((d.tier, d.rule.as_str()), (Tier::Auto, "default"));
+}
+
+#[test]
+fn an_unverified_check_is_never_auto_approved_whatever_the_file_says() {
+    let p = Policy::from_toml(
+        r#"
+        [[tier]]
+        name = "everything-auto"
+        tier = "auto"
+        reason = "careless file"
+        "#,
+    )
+    .unwrap();
+    let w = world();
+    let s = spec(agent(), orbit(NEAR_CRISSY, 100.0, &["mule-1"]));
+    let d = decide(&s, &w.subset_for(&s), &p);
+    assert_eq!((d.tier, d.rule.as_str()), (Tier::Human, "(unverified)"));
+    assert!(d.reason.contains("everything-auto"), "{d:?}");
+    // The condition only matches the rules it lists.
+    let p = Policy::from_toml(
+        r#"
+        [[tier]]
+        name = "unverified-domain"
+        when = { unverified = ["domain"] }
+        tier = "human"
+        reason = "r"
+        [[tier]]
+        name = "rest"
+        tier = "human"
+        reason = "r"
+        "#,
+    )
+    .unwrap();
+    assert_eq!(decide(&s, &w.subset_for(&s), &p).rule, "rest");
+}
+
+#[test]
 fn no_area_loaded_counts_as_leaving() {
     let mut w = world();
     w.areas = None;
@@ -168,5 +290,5 @@ fn policy_file_validation() {
     assert!(Policy::from_toml(bad_tier).is_err());
     let p = policy();
     assert_eq!(p.approval.expire_s, 120);
-    assert_eq!(p.tiers.len(), 4);
+    assert_eq!(p.tiers.len(), 5);
 }

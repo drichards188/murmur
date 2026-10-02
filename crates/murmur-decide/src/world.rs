@@ -95,6 +95,41 @@ pub struct WorldSnapshot {
     pub terrain: TerrainInputs,
 }
 
+/// A decision's inputs as logged: the [`WorldSnapshot`] with the area set replaced by its
+/// content hash ([`AreaSet::content_hash`]). The set itself is logged once, in
+/// `run.started` or `areas.loaded`, and replay resolves the reference.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct LoggedInputs {
+    pub t: Time,
+    pub vehicles: BTreeMap<Uid, VehicleFacts>,
+    /// None: no area set was loaded.
+    pub areas_sha256: Option<String>,
+    #[serde(default)]
+    pub terrain: TerrainInputs,
+}
+
+impl LoggedInputs {
+    /// `world` with its area set replaced by `areas_sha256` (the caller hashed it).
+    pub fn from_world(world: &WorldSnapshot, areas_sha256: Option<String>) -> Self {
+        LoggedInputs {
+            t: world.t,
+            vehicles: world.vehicles.clone(),
+            areas_sha256,
+            terrain: world.terrain.clone(),
+        }
+    }
+
+    /// The snapshot again, with `areas` the set the reference resolved to.
+    pub fn resolve(&self, areas: Option<AreaSet>) -> WorldSnapshot {
+        WorldSnapshot {
+            t: self.t,
+            vehicles: self.vehicles.clone(),
+            areas,
+            terrain: self.terrain.clone(),
+        }
+    }
+}
+
 impl WorldSnapshot {
     pub fn new(t: Time) -> Self {
         WorldSnapshot {
@@ -104,7 +139,8 @@ impl WorldSnapshot {
     }
 
     /// The part of the world an intent's rules can read: its vehicles (and a track target),
-    /// the areas, and terrain. This is what gets logged.
+    /// the areas, and terrain. This is what gets logged (as [`LoggedInputs`], the area set
+    /// replaced by its hash).
     pub fn subset_for(&self, spec: &IntentSpec) -> WorldSnapshot {
         let mut wanted: Vec<&Uid> = spec.uids.iter().collect();
         if let Task::Track { target } = &spec.task {
