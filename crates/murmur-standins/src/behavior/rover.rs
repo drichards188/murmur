@@ -1,10 +1,9 @@
 //! ArduRover mode semantics shared by the ground vehicle and the sailboat: what each mode asks
-//! the vehicle to do (a goal), the mission walk with ArduRover's messages ("Reached waypoint
-//! #N", "Mission Complete", "Reached destination"), and AR_WPNav's waypoint acceptance (inside
-//! WP_RADIUS, or past the line through the waypoint square to the leg).
-
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+//! the vehicle to do (a goal), and what ArduRover adds on top of the shared mission walker
+//! (mission.rs): AP_Mission's "Mission: N WP" as each command starts and its DO_JUMP counts,
+//! "Reached waypoint #N" with MISSION_ITEM_REACHED, "Reached destination" in RTL, AR_WPNav's
+//! waypoint acceptance (inside WP_RADIUS, or past the line through the waypoint square to the
+//! leg), the mission reset on a disarm outside AUTO, and MIS_DONE_BEHAVE at the end.
 
 use mavlink::dialects::ardupilotmega::{MavCmd, MavSeverity};
 
@@ -12,15 +11,13 @@ use super::Tick;
 use super::apmission::{self, Jumps};
 use crate::geo::{M_PER_DEG, bearing_deg, distance_m, wrap180};
 use crate::kinematics::{Out, Target, TargetKind};
+use crate::mission;
 
 /// Modes ArduRover refuses here: LEARNING (2) is gone from the firmware, INITIALISING is not
 /// selectable, DOCK needs precision landing, FOLLOW needs FOLL_ENABLE (default 0).
 pub fn accepts_mode(name: &str) -> bool {
     !matches!(name, "LEARNING" | "INITIALISING" | "DOCK" | "FOLLOW")
 }
-
-/// CIRC_RADIUS default: CIRCLE mode circles a point this far ahead, clockwise (CIRC_DIR 0).
-const CIRCLE_RADIUS_M: f64 = 20.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Goal {
@@ -46,91 +43,61 @@ pub enum Goal {
 
 /// Per-vehicle ArduRover navigation state.
 pub struct Nav {
-    /// metres: AR_WPNav acceptance radius
-    pub wp_radius: f64,
     /// boats loiter where rovers stop (RTL at home, LOITER mode)
-    pub boat: bool,
-    pub loiter_radius: f64,
+    boat: bool,
+    /// the parameter holding the loiter radius (LOIT_RADIUS, or SAIL_LOIT_RADIUS)
+    loiter_param: &'static str,
     mode: &'static str,
     armed: bool,
-    seq: u16,
     /// start of the current leg (for "passed the waypoint" and cross-track)
     pub origin: (f64, f64),
     rtl_reached: bool,
-    complete: bool,
     circle: Option<(f64, f64)>,
     /// the mission item whose start AP_Mission has announced
     announced: Option<u16>,
     jumps: Jumps,
-    /// the mission (and current item) as it finished, to notice a new one
-    finished: u64,
+    wp_radius: f64,
 }
 
 impl Nav {
-    pub fn new(wp_radius: f64, boat: bool, loiter_radius: f64) -> Nav {
+    pub fn new(boat: bool, loiter_param: &'static str) -> Nav {
         Nav {
-            wp_radius,
             boat,
-            loiter_radius,
+            loiter_param,
             mode: "",
             armed: false,
-            seq: u16::MAX,
             origin: (0.0, 0.0),
             rtl_reached: false,
-            complete: false,
             circle: None,
             announced: None,
             jumps: Jumps::default(),
-            finished: 0,
+            wp_radius: 2.0,
         }
+    }
+
+    fn loiter_radius(&self, t: &Tick) -> f64 {
+        t.params.f(self.loiter_param, 2.0)
     }
 
     /// What the current mode wants this tick. Emits the mode's events into `t.out`.
     pub fn goal(&mut self, t: &mut Tick) -> Goal {
         let (lat, lon) = (t.st.lat, t.st.lon);
-        if t.st.mode == "AUTO" && self.mode != "AUTO" && t.mission.items.len() <= 1 {
-            // ArduRover refuses AUTO without a mission (AP_Mission::present: more than home).
-            // The refusal belongs in the DO_SET_MODE handler (MAV_RESULT_FAILED); behaviors
-            // have no hook there yet, so the mode change is undone here, within one tick.
-            t.st.mode = if self.mode.is_empty() {
-                "MANUAL"
-            } else {
-                self.mode
-            };
-            for (sev, text) in [
-                (
-                    MavSeverity::MAV_SEVERITY_NOTICE,
-                    "No Mission. Can't set AUTO.",
-                ),
-                (
-                    MavSeverity::MAV_SEVERITY_WARNING,
-                    "Flight mode change failed",
-                ),
-            ] {
-                t.out.push(Out::Text(sev, text.into()));
-            }
-        }
-        if t.st.mode != self.mode {
-            self.announced = None; // entering AUTO starts (or resumes) the mission
-            if t.st.mode == "AUTO" && self.complete {
-                self.restart(t); // MIS_RESTART 0 resumes, but a finished mission starts over
-            }
-        }
+        self.wp_radius = t.params.f("WP_RADIUS", 2.0);
         if self.armed && !t.st.armed && t.st.mode != "AUTO" {
-            // ArduRover resets the mission on a disarm outside AUTO
-            self.restart(t);
-            t.mission.seq = 0;
-        }
-        if self.complete && fingerprint(t) != self.finished {
-            self.restart(t); // a new mission, or DO_SET_MISSION_CURRENT: run it
+            // ArduRover resets the mission on a disarm outside AUTO (AP_Arming_Rover::disarm)
+            t.mission.set_current(0);
+            t.mission.jumps.clear();
+            self.jumps.clear();
         }
         if t.st.mode != self.mode || t.st.armed != self.armed {
+            if t.st.mode != self.mode {
+                self.announced = None; // entering AUTO starts (or resumes) the mission
+            }
             self.mode = t.st.mode;
             self.armed = t.st.armed;
             self.origin = (lat, lon);
             self.rtl_reached = false;
             self.circle = None;
-            self.seq = u16::MAX;
         }
         if !t.st.armed {
             return Goal::Stop;
@@ -149,7 +116,7 @@ impl Nav {
                     ));
                 }
                 if self.rtl_reached {
-                    return self.rest(hlat, hlon);
+                    return self.rest(t, hlat, hlon);
                 }
                 Goal::Go {
                     lat: hlat,
@@ -160,16 +127,18 @@ impl Nav {
             }
             "LOITER" => {
                 let (plat, plon) = t.st.hold_point;
-                self.rest(plat, plon)
+                self.rest(t, plat, plon)
             }
             "CIRCLE" => {
+                // CIRC_RADIUS ahead of the vehicle, clockwise (CIRC_DIR 0)
+                let r = t.params.f("CIRC_RADIUS", 20.0);
                 let (clat, clon) = *self
                     .circle
-                    .get_or_insert_with(|| ahead(lat, lon, t.st.heading, CIRCLE_RADIUS_M));
+                    .get_or_insert_with(|| ahead(lat, lon, t.st.heading, r));
                 Goal::Circle {
                     lat: clat,
                     lon: clon,
-                    radius: CIRCLE_RADIUS_M,
+                    radius: r,
                     speed: cruise,
                 }
             }
@@ -180,12 +149,12 @@ impl Nav {
     }
 
     /// Rovers stop at a point they have reached; boats hold station within the loiter radius.
-    fn rest(&self, lat: f64, lon: f64) -> Goal {
+    fn rest(&self, t: &Tick, lat: f64, lon: f64) -> Goal {
         if self.boat {
             Goal::Loiter {
                 lat,
                 lon,
-                radius: self.loiter_radius,
+                radius: self.loiter_radius(t),
             }
         } else {
             Goal::Stop
@@ -194,61 +163,62 @@ impl Nav {
 
     fn auto(&mut self, t: &mut Tick) -> Goal {
         let (lat, lon) = (t.st.lat, t.st.lon);
-        let cruise = t.spec.cruise_mps;
-        if t.mission.items.len() <= 1 || self.complete {
-            return Goal::Stop; // MIS_DONE_BEHAVE 0: hold where it finished
-        }
-        let Some(tgt) = self.walk(t) else {
+        if !t.mission.present() {
             return Goal::Stop;
-        };
+        }
+        let tgt = self.walk(t);
         let seq = t.mission.seq;
-        let done = match tgt.kind {
-            TargetKind::Waypoint | TargetKind::Rtl => self.arrived(lat, lon, tgt.lat, tgt.lon),
-            TargetKind::Takeoff => true, // nothing to take off from: on to the next
-            TargetKind::Loiter | TargetKind::Hold => false,
-        };
-        if done {
-            if tgt.kind != TargetKind::Takeoff {
+        match tgt.kind {
+            TargetKind::Hold => {
+                // the mission is over: MIS_DONE_BEHAVE 0 holds, 1 loiters (boats)
+                if t.params.f("MIS_DONE_BEHAVE", 0.0) == 1.0 {
+                    self.rest(t, tgt.lat, tgt.lon)
+                } else {
+                    Goal::Stop
+                }
+            }
+            TargetKind::Waypoint if self.arrived(lat, lon, tgt.lat, tgt.lon) => {
                 // on the wire MISSION_ITEM_REACHED arrives before the text (seen in SITL)
                 t.out.push(Out::ItemReached(seq));
-                if tgt.kind == TargetKind::Waypoint {
+                let is_wp = t
+                    .mission
+                    .items
+                    .get(usize::from(seq))
+                    .is_some_and(|it| it.command == MavCmd::MAV_CMD_NAV_WAYPOINT);
+                if is_wp {
                     t.out.push(Out::Text(
                         MavSeverity::MAV_SEVERITY_INFO,
                         format!("Reached waypoint #{seq}"),
                     ));
                 }
-            }
-            self.origin = (tgt.lat, tgt.lon);
-            if usize::from(seq) + 1 >= t.mission.items.len() {
-                self.finish(t);
-            } else {
+                self.origin = (tgt.lat, tgt.lon);
                 t.mission.seq = seq + 1;
-                if self.walk(t).is_some() {
+                self.walk(t);
+                if !t.mission.complete {
                     t.out.push(Out::MissionCurrent(t.mission.seq));
                 }
+                Goal::Stop
             }
-            return Goal::Stop;
-        }
-        match tgt.kind {
             TargetKind::Loiter if distance_m(lat, lon, tgt.lat, tgt.lon) <= self.wp_radius => {
-                // LOITER_UNLIM: stay (boats loiter around it)
-                self.rest(tgt.lat, tgt.lon)
+                // LOITER_UNLIM / a waypoint's hold time: stay (boats loiter around it)
+                self.rest(t, tgt.lat, tgt.lon)
             }
             _ => Goal::Go {
                 lat: tgt.lat,
                 lon: tgt.lon,
-                speed: cruise,
+                speed: tgt.speed,
                 stop: tgt.kind != TargetKind::Waypoint || !has_nav_after(t, seq),
             },
         }
     }
 
-    /// AP_Mission's walk to the current navigation command: the shared walker takes DO_JUMPs
-    /// (and says so, as AP_Mission does from a jump's second run), then the start of a new
-    /// command is announced. None = the mission has run out (completed here).
-    fn walk(&mut self, t: &mut Tick) -> Option<Target> {
+    /// The shared walker to the current navigation command, plus what AP_Mission says on the
+    /// way: a DO_JUMP running again, and the start of each command. A finished mission keeps
+    /// its last item as the current one, as AP_Mission reports it.
+    fn walk(&mut self, t: &mut Tick) -> Target {
         let s0 = t.mission.seq;
-        if let Some(it) = t.mission.items.get(usize::from(s0))
+        if !t.mission.complete
+            && let Some(it) = t.mission.items.get(usize::from(s0))
             && it.command == MavCmd::MAV_CMD_DO_JUMP
             && t.mission
                 .jumps
@@ -259,12 +229,12 @@ impl Nav {
         {
             self.jumps.ran(s0, it.param2 as i32, t.out);
         }
-        let tgt = t
-            .mission
-            .auto_target(t.st, t.spec.cruise_mps, 0.0, self.loiter_radius);
-        if tgt.kind == TargetKind::Hold {
-            self.finish(t);
-            return None;
+        let cruise = t.spec.cruise_mps;
+        let loiter = self.loiter_radius(t);
+        let tgt = t.mission.auto_target(t.st, cruise, 0.0, loiter);
+        if t.mission.complete {
+            t.mission.seq = t.mission.items.len().saturating_sub(1) as u16;
+            return tgt;
         }
         let seq = t.mission.seq;
         if self.announced != Some(seq)
@@ -273,30 +243,7 @@ impl Nav {
             self.announced = Some(seq);
             apmission::started(seq, it.command, t.out);
         }
-        Some(tgt)
-    }
-
-    /// Mission done: "Mission Complete", and the current item stays the last one (as AP_Mission
-    /// reports it) until a disarm outside AUTO resets the mission.
-    fn finish(&mut self, t: &mut Tick) {
-        let last = t.mission.items.len().saturating_sub(1) as u16;
-        t.mission.seq = last;
-        self.finished = fingerprint(t);
-        if !self.complete {
-            self.complete = true;
-            t.out.push(Out::Text(
-                MavSeverity::MAV_SEVERITY_NOTICE,
-                "Mission Complete".into(),
-            ));
-        }
-    }
-
-    fn restart(&mut self, t: &mut Tick) {
-        self.complete = false;
-        self.announced = None;
-        self.jumps.clear();
-        t.mission.jumps.clear();
-        t.mission.seq = 1;
+        tgt
     }
 
     /// AR_WPNav: within WP_RADIUS, or past the waypoint (beyond the line through it square to
@@ -324,31 +271,14 @@ impl Nav {
     }
 }
 
-/// The mission's content and current item, hashed.
-pub fn fingerprint(t: &Tick) -> u64 {
-    let mut h = DefaultHasher::new();
-    t.mission.seq.hash(&mut h);
-    for it in &t.mission.items {
-        (
-            it.command as u32,
-            it.x,
-            it.y,
-            it.z.to_bits(),
-            it.param1.to_bits(),
-        )
-            .hash(&mut h);
-    }
-    h.finish()
-}
-
-/// Is there more to drive after item `seq`: a navigation command (ids below 100) or a DO_JUMP
-/// that repeats? Decides whether the vehicle slows to stop at this waypoint.
+/// Is there more to drive after item `seq`: a navigation command or a DO_JUMP that repeats?
+/// Decides whether the vehicle slows to stop at this waypoint.
 fn has_nav_after(t: &Tick, seq: u16) -> bool {
     t.mission.items.iter().skip(usize::from(seq) + 1).any(|it| {
         if it.command == MavCmd::MAV_CMD_DO_JUMP {
             it.param2 != 0.0
         } else {
-            (it.command as u32) < 100
+            mission::is_nav(it.command)
         }
     })
 }

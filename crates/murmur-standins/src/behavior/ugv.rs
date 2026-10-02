@@ -3,10 +3,13 @@
 //!
 //! Wire: MAV_TYPE_GROUND_ROVER, Rover mode numbers, ArduRover's mission messages (rover.rs).
 //!
-//! Movement: skid steering turns at up to ATC_STR_RAT_MAX (120 deg/s), limited at speed by
-//! ATC_TURN_MAX_G (0.6 g lateral); forward speed scales with cos(heading error), so a large
-//! heading error turns it on the spot before it drives (pivot turns, WP_PIVOT_ANGLE, are off by
-//! default in ArduRover and here). WP_RADIUS 3 m, as the rover-skid SITL frame.
+//! Movement, from the parameter store (ArduPilot names, rover-skid SITL values): skid steering
+//! turns at up to ATC_STR_RAT_MAX (120 deg/s), limited at speed by ATC_TURN_MAX_G (0.6 g
+//! lateral), and accelerates at ATC_ACCEL_MAX (1 m/s/s); forward speed scales with cos(heading
+//! error), so a large heading error turns it on the spot before it drives. Pivot turns
+//! (AR_PivotTurn): with WP_PIVOT_ANGLE set (0 = off, ArduRover's default), a heading error
+//! beyond it stops the vehicle and turns it in place at WP_PIVOT_RATE until within 5 deg.
+//! WP_RADIUS 3 m, as the rover-skid SITL frame.
 //!
 //! Land only (with tidewater conditions): the latest sample is where the vehicle was up to a
 //! poll ago. A wet sample (water depth > 0) is a shoreline: the vehicle stops, backs up to the
@@ -22,18 +25,17 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use mavlink::dialects::ardupilotmega::{MavSeverity, MavType};
+use mavlink::dialects::ardupilotmega::{MavParamType, MavSeverity, MavType};
 
 use super::rover::{self, Goal, Nav};
 use super::{Behavior, Tick, modes};
 use crate::conditions::Sample;
+use crate::config::Spec;
 use crate::geo::{bearing_deg, distance_m, wrap180};
 use crate::kinematics::{Out, State, integrate};
 
-const WP_RADIUS_M: f64 = 3.0;
-const STR_RAT_MAX_DPS: f64 = 120.0;
-const TURN_MAX_G: f64 = 0.6;
-const ACCEL_MPS2: f64 = 1.0;
+/// AR_PivotTurn: a pivot ends within this many degrees of the target heading
+const PIVOT_ACCURACY_DEG: f64 = 5.0;
 /// reversing off the shoreline
 const BACKUP_MPS: f64 = 1.0;
 const BLOCK_CONE_DEG: f64 = 60.0;
@@ -70,18 +72,20 @@ pub struct Ugv {
     /// DEM elevation at the first sample, for terrain-following altitude
     elev0: Option<f64>,
     looked: bool,
+    pivoting: bool,
 }
 
 impl Ugv {
     pub fn new() -> Ugv {
         Ugv {
-            nav: Nav::new(WP_RADIUS_M, false, 2.0),
+            nav: Nav::new(false, "LOIT_RADIUS"),
             last_dry: None,
             block: None,
             prev: None,
             grade: 0.0,
             elev0: None,
             looked: false,
+            pivoting: false,
         }
     }
 
@@ -184,9 +188,28 @@ impl Behavior for Ugv {
         true
     }
 
+    /// rover-skid SITL's values (read from it), and the AR_PivotTurn / attitude parameters
+    /// the movement uses
+    fn extra_params(&self, _spec: &Spec) -> Vec<(&'static str, MavParamType, f32)> {
+        use MavParamType::{MAV_PARAM_TYPE_INT16 as I16, MAV_PARAM_TYPE_REAL32 as F32};
+        vec![
+            ("WP_RADIUS", F32, 3.0),
+            ("WP_PIVOT_ANGLE", I16, 0.0),
+            ("WP_PIVOT_RATE", I16, 60.0),
+            ("ATC_STR_RAT_MAX", F32, 120.0),
+            ("ATC_TURN_MAX_G", F32, 0.6),
+            ("ATC_ACCEL_MAX", F32, 1.0),
+        ]
+    }
+
     fn step(&mut self, t: &mut Tick) {
         self.terrain(t);
         let goal = self.nav.goal(t);
+        let accel = t.params.f("ATC_ACCEL_MAX", 1.0).max(0.1);
+        let str_rate = t.params.f("ATC_STR_RAT_MAX", 120.0).max(1.0);
+        let turn_g = t.params.f("ATC_TURN_MAX_G", 0.6).max(0.01);
+        let pivot_angle = t.params.f("WP_PIVOT_ANGLE", 0.0);
+        let pivot_rate = t.params.f("WP_PIVOT_RATE", 60.0).max(1.0);
         let st = &mut *t.st;
         let dt = t.dt;
 
@@ -198,6 +221,7 @@ impl Behavior for Ugv {
                     let away = bearing_deg(st.lat, st.lon, dlat, dlon);
                     st.heading = (away + 180.0).rem_euclid(360.0);
                     st.speed = -BACKUP_MPS;
+                    st.demand = BACKUP_MPS;
                     integrate(st, dt, 0.0, 0.0);
                     return;
                 }
@@ -216,7 +240,7 @@ impl Behavior for Ugv {
                 let d = distance_m(st.lat, st.lon, lat, lon);
                 let mut v = speed;
                 if stop {
-                    v = v.min((2.0 * ACCEL_MPS2 * (d - 0.5).max(0.0)).sqrt());
+                    v = v.min((2.0 * accel * (d - 0.5).max(0.0)).sqrt());
                 }
                 (bearing_deg(st.lat, st.lon, lat, lon), v)
             }
@@ -234,13 +258,28 @@ impl Behavior for Ugv {
             want_speed = 0.0; // turning in place is still allowed
         }
         // skid steer: turn rate limited by the steering rate and, at speed, lateral accel
-        let v = st.speed.abs().max(0.1);
-        let rate = STR_RAT_MAX_DPS.min((TURN_MAX_G * 9.81 / v).to_degrees());
         let err = wrap180(want_heading - st.heading);
+        if pivot_angle > PIVOT_ACCURACY_DEG && want_speed > 0.0 && err.abs() > pivot_angle {
+            self.pivoting = true;
+        }
+        if self.pivoting && (err.abs() < PIVOT_ACCURACY_DEG || want_speed == 0.0) {
+            self.pivoting = false;
+        }
+        let v = st.speed.abs().max(0.1);
+        let rate = if self.pivoting && st.speed.abs() < 0.1 {
+            pivot_rate
+        } else {
+            str_rate.min((turn_g * 9.81 / v).to_degrees())
+        };
         st.heading = (st.heading + err.clamp(-rate * dt, rate * dt)).rem_euclid(360.0);
         let err = wrap180(want_heading - st.heading);
-        let v_cmd = want_speed * err.to_radians().cos().max(0.0);
-        let dv = (v_cmd - st.speed).clamp(-ACCEL_MPS2 * dt, ACCEL_MPS2 * dt);
+        let v_cmd = if self.pivoting {
+            0.0 // stop, then turn on the spot
+        } else {
+            want_speed * err.to_radians().cos().max(0.0)
+        };
+        st.demand = v_cmd;
+        let dv = (v_cmd - st.speed).clamp(-accel * dt, accel * dt);
         st.speed += dv;
         if st.speed.abs() < 1e-3 {
             st.speed = 0.0;
@@ -262,9 +301,11 @@ mod tests {
         assert_eq!(slope_factor(2.0), 0.3);
     }
 
+    use crate::behavior::Firmware;
     use crate::config::Spec;
     use crate::geo::{Gauss, M_PER_DEG};
     use crate::mission::Mission;
+    use crate::params::Params;
     use mavlink::dialects::ardupilotmega::{MISSION_ITEM_INT_DATA, MavCmd, MavFrame};
 
     #[allow(deprecated)]
@@ -297,7 +338,10 @@ mod tests {
             turn_dps: None,
             loiter_radius_m: None,
             endurance_h: None,
+            link: None,
         };
+        let mut params = Params::seed(Firmware::Rover, &spec, 1);
+        params.extend(ugv.extra_params(&spec));
         let mut rng = Gauss::new(1);
         let mut out = Vec::new();
         let mut trail = std::collections::VecDeque::new();
@@ -319,6 +363,7 @@ mod tests {
             };
             ugv.step(&mut Tick {
                 spec: &spec,
+                params: &params,
                 st,
                 mission: m,
                 water: Some(&sample),
@@ -347,6 +392,7 @@ mod tests {
             mode: "MANUAL",
             hold_point: (37.8, -122.45),
             aground: false,
+            demand: 0.0,
         };
         let mut m = Mission::default();
         m.install(vec![wp(0, 0.0), wp(1, 100.0)]);

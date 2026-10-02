@@ -8,26 +8,26 @@
 //! pass). Waypoints are not reported reached (no text, no MISSION_ITEM_REACHED): the mission
 //! just moves on. At the end: "Mission complete.", holding at the last target. Blimp has no
 //! in-flight disarm check, so a GCS disarm in the air is accepted (the envelope floats on).
-//! RTL flies to home and down to it (its target is the home position, altitude included).
+//! RTL flies to home and down to it (its target is the home position, altitude included, so
+//! from far away it reaches the ground first and skims the rest of the way).
 //!
-//! Movement: the autopilot commands a ground velocity toward the target (at most cruise_mps,
-//! slowing as it closes in) and the fins supply whatever air velocity that takes against the
-//! wind, up to max_mps. When the wind is stronger than that it cannot make headway and drifts
+//! Movement: the autopilot commands a ground velocity toward the target (at most WP_VEL in
+//! AUTO, LOIT_MAX_VEL_X otherwise, both seeded from the catalog's cruise speed; slowing as it
+//! closes in) and the fins supply whatever air velocity that takes against the wind, up to the
+//! catalog's max_mps. When the wind is stronger than that it cannot make headway and drifts
 //! downwind while pushing. MANUAL and HOLD give no thrust (no RC), and a disarmed blimp in
-//! the air drifts with the wind. Wind from tidewater (marine() gives the samples); without
-//! it, still air. Climb at climb_mps; LAND descends at half of it (as LOIT_MAX_VEL_Z / 2).
+//! the air drifts with the wind; on the ground without thrust it stays put (moored). Wind from
+//! tidewater (marine() gives the samples); without it, still air. Climbs at LOIT_MAX_VEL_Z
+//! (the catalog's climb_mps); LAND descends at half of it, as Blimp's ModeLand.
 
-use mavlink::dialects::ardupilotmega::{MavCmd, MavFrame, MavSeverity, MavType};
+use mavlink::dialects::ardupilotmega::{MavCmd, MavFrame, MavParamType, MavSeverity, MavType};
 
 use super::apmission::{self, Jumps};
-use super::rover::fingerprint;
 use super::{Behavior, Tick, modes};
 use crate::config::Spec;
 use crate::geo::{M_PER_DEG, bearing_deg, distance_m};
 use crate::kinematics::{Out, State};
 
-/// WP_RADIUS default
-const WP_RADIUS_M: f64 = 1.0;
 /// position loop gain: commanded speed = gain x distance, capped at cruise
 const POS_GAIN: f64 = 0.5;
 const ACCEL_MPS2: f64 = 0.5;
@@ -40,11 +40,10 @@ pub struct Blimp {
     started: Option<u16>,
     /// AP_Mission's jump tracking: times each DO_JUMP has run
     jumps: Jumps,
-    complete: bool,
+    /// the mission had finished as of the last step (entering AUTO then starts it over)
+    was_complete: bool,
     /// air velocity (east, north) the fins are giving it
     air: (f64, f64),
-    /// the mission (and current item) as it finished, to notice a new one
-    finished: u64,
     /// AUTO's target once the mission is done, or while it has none
     last_target: Option<(f64, f64, f64)>,
 }
@@ -56,9 +55,8 @@ impl Blimp {
             hold_alt: 0.0,
             started: None,
             jumps: Jumps::default(),
-            complete: false,
+            was_complete: false,
             air: (0.0, 0.0),
-            finished: 0,
             last_target: None,
         }
     }
@@ -69,9 +67,10 @@ impl Blimp {
     fn auto_target(&mut self, t: &mut Tick) -> Option<(f64, f64, f64)> {
         let n = t.mission.items.len();
         let mut budget = 4 * n + 16;
-        if self.complete {
+        if t.mission.complete {
             return None;
         }
+        let wp_radius = t.params.f("WP_RADIUS", 1.0);
         if t.mission.seq == 0 {
             t.mission.seq = 1; // item 0 is home
         }
@@ -81,8 +80,7 @@ impl Blimp {
             let Some(it) = t.mission.items.get(usize::from(seq)).cloned() else {
                 // done: AP_Mission keeps the last command as the current one
                 t.mission.seq = n.saturating_sub(1) as u16;
-                self.finished = fingerprint(t);
-                self.complete = true;
+                t.mission.complete = true;
                 t.out.push(Out::Text(
                     MavSeverity::MAV_SEVERITY_INFO,
                     "Mission complete.".into(),
@@ -131,7 +129,7 @@ impl Blimp {
                 f64::from(it.z)
             };
             let dist = distance_m(st.lat, st.lon, lat, lon).hypot(st.alt - alt);
-            if dist <= WP_RADIUS_M {
+            if dist <= wp_radius {
                 t.mission.seq = seq + 1; // reached: Blimp says nothing, the next one starts
                 continue;
             }
@@ -191,10 +189,26 @@ impl Behavior for Blimp {
         true
     }
 
+    /// Blimp's waypoint and loiter limits, seeded from the catalog (SITL Blimp's defaults are
+    /// for a small indoor envelope: WP_VEL 0.4, LOIT_MAX_VEL_* 0.5 / 0.4 m/s)
+    fn extra_params(&self, spec: &Spec) -> Vec<(&'static str, MavParamType, f32)> {
+        use MavParamType::MAV_PARAM_TYPE_REAL32 as F32;
+        let cruise = spec.cruise_mps as f32;
+        let climb = spec.climb_mps().max(0.1) as f32;
+        vec![
+            ("WP_RADIUS", F32, 1.0),
+            ("WP_VEL", F32, cruise),
+            ("WP_ACCEL", F32, ACCEL_MPS2 as f32),
+            ("LOIT_MAX_VEL_X", F32, cruise),
+            ("LOIT_MAX_VEL_Y", F32, cruise),
+            ("LOIT_MAX_VEL_Z", F32, climb),
+        ]
+    }
+
     fn step(&mut self, t: &mut Tick) {
-        if self.complete && fingerprint(t) != self.finished {
-            // a new mission, or DO_SET_MISSION_CURRENT: run it
-            self.complete = false;
+        if self.was_complete && !t.mission.complete {
+            // a new mission, DO_SET_MISSION_CURRENT, or AUTO again after the end (the shared
+            // store starts it over): AP_Mission's jump counts start over too
             self.started = None;
             self.jumps.clear();
         }
@@ -202,26 +216,19 @@ impl Behavior for Blimp {
             self.mode = t.st.mode;
             self.hold_alt = t.st.alt;
             if self.mode == "AUTO" {
-                // MIS_RESTART 0: resume, unless it had finished (then start over)
-                if self.complete {
-                    t.mission.seq = 1;
-                    t.mission.jumps.clear();
-                    self.jumps.clear();
-                }
-                self.complete = false;
-                self.started = None;
+                self.started = None; // the current command is announced again
                 self.last_target = Some((t.st.lat, t.st.lon, t.st.alt));
             }
         }
         let (we, wn) = wind(t);
         let floor = ground(t);
-        let cruise = t.spec.cruise_mps;
-        let max_air = if t.spec.max_mps > 0.0 {
-            t.spec.max_mps
+        let cruise = if self.mode == "AUTO" {
+            t.params.f("WP_VEL", t.spec.cruise_mps)
         } else {
-            cruise
+            t.params.f("LOIT_MAX_VEL_X", t.spec.cruise_mps)
         };
-        let climb = t.spec.climb_mps().max(0.1);
+        let max_air = t.spec.max_mps.max(t.spec.cruise_mps);
+        let climb = t.params.f("LOIT_MAX_VEL_Z", t.spec.climb_mps()).max(0.1);
         // what the autopilot asks for: a ground velocity (east, north, up), or no thrust at all
         let mut want: Option<(f64, f64, f64)> = None;
         let mut goto = |st: &State, lat: f64, lon: f64, alt: f64| {
@@ -240,6 +247,7 @@ impl Behavior for Blimp {
                 self.last_target = Some(tgt);
             }
         }
+        self.was_complete = t.mission.complete;
         let st = &*t.st;
         if st.armed {
             match self.mode {
@@ -256,6 +264,7 @@ impl Behavior for Blimp {
         }
         let st = &mut *t.st;
         let on_ground = st.alt <= floor + 0.2;
+        let thrust = want.is_some_and(|(ge, gn, _)| ge.hypot(gn) > 0.05);
         // air velocity the fins must supply, within what they can
         let (ae, an, vz) = match want {
             Some((ge, gn, vz)) => {
@@ -277,6 +286,7 @@ impl Behavior for Blimp {
         self.air = (ce + de * k, cn + dn * k);
         let (ne, nn) = self.air;
         st.speed = ne.hypot(nn);
+        st.demand = ae.hypot(an);
         if st.speed > 0.2 {
             st.heading = ne.atan2(nn).to_degrees().rem_euclid(360.0); // nose into the airflow
         }
@@ -285,8 +295,8 @@ impl Behavior for Blimp {
         if st.alt <= floor {
             st.vz = 0.0;
         }
-        // on the ground it sits (moored); in the air the wind carries it
-        let (ve, vn) = if on_ground && vz <= 0.0 {
+        // on the ground without thrust it sits (moored); otherwise the wind carries it
+        let (ve, vn) = if on_ground && vz <= 0.0 && !thrust {
             self.air = (0.0, 0.0);
             st.speed = 0.0;
             (0.0, 0.0)
@@ -303,9 +313,11 @@ impl Behavior for Blimp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::behavior::Firmware;
     use crate::conditions::Sample;
     use crate::geo::Gauss;
     use crate::mission::Mission;
+    use crate::params::Params;
     use mavlink::dialects::ardupilotmega::MISSION_ITEM_INT_DATA;
 
     fn spec() -> Spec {
@@ -318,6 +330,7 @@ mod tests {
             turn_dps: None,
             loiter_radius_m: None,
             endurance_h: None,
+            link: None,
         }
     }
 
@@ -336,6 +349,7 @@ mod tests {
             mode,
             hold_point: (37.8, -122.5),
             aground: false,
+            demand: 0.0,
         }
     }
 
@@ -347,11 +361,14 @@ mod tests {
         secs: f64,
     ) -> Vec<Out> {
         let spec = spec();
+        let mut params = Params::seed(Firmware::Blimp, &spec, 1);
+        params.extend(b.extra_params(&spec));
         let mut rng = Gauss::new(1);
         let mut out = Vec::new();
         for _ in 0..(secs * 10.0) as usize {
             b.step(&mut Tick {
                 spec: &spec,
+                params: &params,
                 st,
                 mission: m,
                 water,

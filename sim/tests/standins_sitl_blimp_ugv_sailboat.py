@@ -327,34 +327,18 @@ def horiz_m(a, b):
     return math.hypot(dn, de)
 
 
-# Differences that come from the shared stand-in modules (commands.rs, messages.rs), not from a
-# behavior: reported as SHARED, listed, and not counted against the behavior. Each maps what
-# SITL sends to what the shared code sends today (None: the shared code sends nothing).
+# Differences that come from the shared stand-in modules (commands.rs, mission.rs), not from a
+# behavior: reported as SHARED, listed, and not counted against the behavior. These are texts
+# SITL sends that the shared handlers don't.
 SHARED_TEXT = [
-    (re.compile(r"^Throttle armed$"), "Arming motors"),  # Rover's arming texts
-    (re.compile(r"^Throttle disarmed$"), "Disarming motors"),
-    (re.compile(r"^Flight plan received$"), None),  # the stand-in says "Mission: N WP" instead
-    (re.compile(r"^No such mode \d+$"), None),  # unknown mode: no text
+    re.compile(r"^No such mode \d+$"),  # DO_SET_MODE to an unknown mode
+    re.compile(r"^Flight mode change failed$"),  # ArduRover, after any refused mode change
 ]
-SHARED_UPLOAD_TEXT = re.compile(r"^Mission: -?\d+ WP$")
 
 
 def shared_view(sitl_texts, standin_texts):
-    """Both STATUSTEXT lists [(sev, text, right_after_mission_ack)] with the shared gaps mapped."""
-    out = []
-    for sev, text, _ in sitl_texts:
-        for pat, repl in SHARED_TEXT:
-            if pat.match(text):
-                if repl is not None:
-                    out.append((sev, repl))
-                break
-        else:
-            out.append((sev, text))
-    # the shared upload text looks like AP_Mission's "Mission: 2 WP": drop only the one that
-    # follows a MISSION_ACK
-    keep = [(sev, text) for sev, text, after_ack in standin_texts
-            if not (after_ack and SHARED_UPLOAD_TEXT.match(text))]
-    return out, keep
+    """Both STATUSTEXT lists [(sev, text)] with the texts only the shared handlers lack dropped."""
+    return ([t for t in sitl_texts if not any(p.match(t[1]) for p in SHARED_TEXT)], standin_texts)
 
 
 def compare(kind, a, b):
@@ -390,21 +374,14 @@ def compare(kind, a, b):
     acks = lambda log: [(e[2]["command"], e[2]["result"]) for e in ev(log, "COMMAND_ACK")  # noqa: E731
                         if e[2]["command"] != M.MAV_CMD_SET_MESSAGE_INTERVAL]
     aa, ab = acks(a), acks(b)
-    # ArduPilot answers a refused DO_SET_MODE with MAV_RESULT_FAILED; the shared handler says
-    # UNSUPPORTED (unknown mode) or ACCEPTED (a refusal the behavior undoes within a tick)
-    # Blimp accepts a NAV_TAKEOFF command (and does nothing); the shared handler has no per-vehicle
-    # command table, so it answers UNSUPPORTED
-    refused = lambda xs: [(c, "refused" if c == M.MAV_CMD_DO_SET_MODE and r == 4 else r) for c, r in xs]  # noqa: E731
-    mapped_b = [(c, "refused" if c == M.MAV_CMD_DO_SET_MODE and i < len(aa) and aa[i] == (c, 4) and r in (0, 3)
-                 else 0 if kind == "blimp" and (c, r) == (M.MAV_CMD_NAV_TAKEOFF, 3) else r)
-                for i, (c, r) in enumerate(ab)]
-    check(aa == ab, f"COMMAND_ACKs {aa}" + ("" if aa == ab else f" vs {ab}"), shared=refused(aa) == mapped_b)
+    # Blimp accepts a NAV_TAKEOFF command (and does nothing); the shared command handler has
+    # no per-firmware table for it and answers UNSUPPORTED
+    mapped_b = [(c, 0 if kind == "blimp" and (c, r) == (M.MAV_CMD_NAV_TAKEOFF, 3) else r) for c, r in ab]
+    check(aa == ab, f"COMMAND_ACKs {aa}" + ("" if aa == ab else f" vs {ab}"), shared=aa == mapped_b)
     macks = lambda log: [(e[2]["type"], e[2]["mission_type"]) for e in ev(log, "MISSION_ACK")]  # noqa: E731
     check(macks(a) == macks(b), f"MISSION_ACKs {macks(a)}" + ("" if macks(a) == macks(b) else f" vs {macks(b)}"))
     reqs = lambda log: [(e[1], e[2]["seq"]) for e in log if e[1] in ("MISSION_REQUEST_INT", "MISSION_REQUEST")]  # noqa: E731
-    seqs = lambda xs: [q for _, q in xs]  # noqa: E731
-    check(reqs(a) == reqs(b), f"mission requests {reqs(a)}" + ("" if reqs(a) == reqs(b) else f" vs {reqs(b)}"),
-          shared=seqs(reqs(a)) == seqs(reqs(b)))
+    check(reqs(a) == reqs(b), f"mission requests {reqs(a)}" + ("" if reqs(a) == reqs(b) else f" vs {reqs(b)}"))
     reached = lambda log: [e[2]["seq"] for e in ev(log, "MISSION_ITEM_REACHED")]  # noqa: E731
     check(reached(a) == reached(b), f"MISSION_ITEM_REACHED {reached(a)}" + ("" if reached(a) == reached(b) else f" vs {reached(b)}"))
     cur = lambda log: [x[2]["seq"] for x in ev(log, "MISSION_CURRENT")]  # noqa: E731
@@ -421,28 +398,18 @@ def compare(kind, a, b):
           shared=dedup(since_auto(a)) == dedup(since_auto(b)))
 
     def texts(log):
-        """[(severity, text, right after a MISSION_ACK)] for the texts an operator acts on."""
-        out, after_ack = [], False
-        for e in log:
-            if e[1] == "MISSION_ACK":
-                after_ack = True
-            elif e[1] == "STATUSTEXT" and SEMANTIC.search(e[2]["text"]):
-                out.append((e[2]["severity"], e[2]["text"], after_ack))
-                after_ack = False
-        return out
+        """[(severity, text)] for the texts an operator acts on."""
+        return [(e[2]["severity"], e[2]["text"]) for e in ev(log, "STATUSTEXT") if SEMANTIC.search(e[2]["text"])]
     # Tacking is a navigation event whose count depends on the trajectory: compare the rest exactly
-    ta = [t for t in texts(a) if "Tacking" not in t[1]]
-    tb = [t for t in texts(b) if "Tacking" not in t[1]]
-    pa, pb = [t[:2] for t in ta], [t[:2] for t in tb]
-    sa, sb = shared_view(ta, tb)
+    pa = [t for t in texts(a) if "Tacking" not in t[1]]
+    pb = [t for t in texts(b) if "Tacking" not in t[1]]
+    sa, sb = shared_view(pa, pb)
     check(pa == pb, f"STATUSTEXTs {pa}" + ("" if pa == pb else f"\n           vs {pb}"), shared=sa == sb)
     tack = lambda log: sum("Tacking" in e[2]["text"] for e in ev(log, "STATUSTEXT"))  # noqa: E731
     if kind == "sailboat":
         check(tack(a) > 0 and tack(b) > 0, f"tacked upwind: SITL {tack(a)} tacks, stand-in {tack(b)}")
     types_a, types_b = {e[1] for e in a}, {e[1] for e in b}
-    # ArduPilot asks for mission items with MISSION_REQUEST here; the shared upload uses _INT
-    check(types_b <= types_a, f"stand-in message types all sent by SITL too: {sorted(types_b - types_a) or 'yes'}",
-          shared=types_b - types_a == {"MISSION_REQUEST_INT"})
+    check(types_b <= types_a, f"stand-in message types all sent by SITL too: {sorted(types_b - types_a) or 'yes'}")
     track = lambda log: [(e[0], e[2]["lat"] / 1e7, e[2]["lon"] / 1e7, e[2]["relative_alt"] / 1000) for e in ev(log, "GLOBAL_POSITION_INT")]  # noqa: E731
     tra, trb = track(a), track(b)
     if tra and trb:

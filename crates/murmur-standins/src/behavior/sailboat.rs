@@ -20,20 +20,18 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use mavlink::dialects::ardupilotmega::{MavSeverity, MavType};
+use mavlink::dialects::ardupilotmega::{MavParamType, MavSeverity, MavType};
 
 use super::marine::{self, Hull};
 use super::rover::{self, Goal, Nav};
 use super::{Behavior, Tick, modes};
+use crate::config::Spec;
 use crate::geo::{bearing_deg, distance_m, wrap180};
 use crate::kinematics::{Out, integrate};
 
-const WP_RADIUS_M: f64 = 3.0;
-/// SAIL_LOIT_RADIUS
-const LOIT_RADIUS_M: f64 = 5.0;
-const NO_GO_DEG: f64 = 45.0;
+/// SAILBOAT_NOGO_PAD: the no-go zone is padded by this much before the sailing heading
+/// controller takes over
 const NO_GO_PAD_DEG: f64 = 10.0;
-const XTRACK_MAX_M: f64 = 10.0;
 const TACK_ACCURACY_DEG: f64 = 10.0;
 const TACK_TIMEOUT_S: f64 = 5.0;
 const TACK_RETRY_S: f64 = 5.0;
@@ -87,6 +85,9 @@ fn tack_of(twd: f64, heading: f64) -> Tack {
 
 pub struct Sailboat {
     nav: Nav,
+    /// SAIL_NO_GO_ANGLE, SAIL_XTRACK_MAX (refreshed from the parameters each step)
+    no_go: f64,
+    xtrack_max: f64,
     now: f64,
     tacking: bool,
     tack_heading: f64,
@@ -97,7 +98,9 @@ pub struct Sailboat {
 impl Sailboat {
     pub fn new() -> Sailboat {
         Sailboat {
-            nav: Nav::new(WP_RADIUS_M, true, LOIT_RADIUS_M),
+            nav: Nav::new(true, "SAIL_LOIT_RADIUS"),
+            no_go: 45.0,
+            xtrack_max: 10.0,
             now: 0.0,
             tacking: false,
             tack_heading: 0.0,
@@ -122,12 +125,13 @@ impl Sailboat {
         out: &mut Vec<Out>,
     ) -> f64 {
         let off_wind = wrap180(twd - desired);
-        if !self.tacking && off_wind.abs() > NO_GO_DEG + NO_GO_PAD_DEG {
+        let no_go = self.no_go;
+        if !self.tacking && off_wind.abs() > no_go + NO_GO_PAD_DEG {
             return desired; // can sail straight there
         }
         let current = tack_of(twd, heading);
         let mut should_tack = false;
-        if off_wind.abs() > NO_GO_DEG && !self.tacking {
+        if off_wind.abs() > no_go && !self.tacking {
             let new = if off_wind < 0.0 {
                 Tack::Port
             } else {
@@ -141,12 +145,12 @@ impl Sailboat {
                 return desired;
             }
         }
-        if xte.abs() >= XTRACK_MAX_M && !should_tack && !self.tacking {
+        if xte.abs() >= self.xtrack_max && self.xtrack_max > 0.0 && !should_tack && !self.tacking {
             should_tack =
                 (xte > 0.0 && current == Tack::Starboard) || (xte < 0.0 && current == Tack::Port);
         }
-        let left = (twd + NO_GO_DEG).rem_euclid(360.0);
-        let right = (twd - NO_GO_DEG).rem_euclid(360.0);
+        let left = (twd + no_go).rem_euclid(360.0);
+        let right = (twd - no_go).rem_euclid(360.0);
         if should_tack && self.now - self.tack_clear > TACK_RETRY_S {
             out.push(Out::Text(
                 MavSeverity::MAV_SEVERITY_INFO,
@@ -226,8 +230,24 @@ impl Behavior for Sailboat {
         true
     }
 
+    /// The sailboat SITL frame's values (read from it) and the Sailboat library's parameters
+    fn extra_params(&self, _spec: &Spec) -> Vec<(&'static str, MavParamType, f32)> {
+        use MavParamType::{MAV_PARAM_TYPE_INT8 as I8, MAV_PARAM_TYPE_REAL32 as F32};
+        vec![
+            ("WP_RADIUS", F32, 3.0),
+            ("SAIL_ENABLE", I8, 1.0),
+            ("SAIL_NO_GO_ANGLE", F32, 45.0),
+            ("SAIL_XTRACK_MAX", F32, 10.0),
+            ("SAIL_LOIT_RADIUS", F32, 5.0),
+            ("SAIL_WNDSPD_MIN", F32, 0.0),
+            ("SAIL_HEEL_MAX", F32, 15.0),
+        ]
+    }
+
     fn step(&mut self, t: &mut Tick) {
         self.now += t.dt;
+        self.no_go = t.params.f("SAIL_NO_GO_ANGLE", 45.0).clamp(0.0, 90.0);
+        self.xtrack_max = t.params.f("SAIL_XTRACK_MAX", 10.0);
         let (tws, twd) = true_wind(t);
         let goal = self.nav.goal(t);
         let (lat, lon) = (t.st.lat, t.st.lon);
@@ -287,6 +307,7 @@ impl Behavior for Sailboat {
         // the sail can only drive the boat at what this heading allows
         let can = polar_speed(twd - st.heading, tws);
         let target = want_speed.min(can.max(0.0));
+        st.demand = target;
         let dv = if target > st.speed {
             (target - st.speed).min(ACCEL_MPS2 * t.dt)
         } else {
