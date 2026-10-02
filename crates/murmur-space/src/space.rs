@@ -222,8 +222,20 @@ impl Space {
     /// Link windows from a terminal position for each SATCOM (or reference) class, with
     /// coverage, outages and latency sampled every `sample_step_s`.
     pub fn links(&self, q: &LinkQuery) -> Result<LinkReport, SpaceError> {
-        let started = std::time::Instant::now();
         let tm = self.time_map(q.epoch_mode, q.from, q.to);
+        self.links_with_time_map(q, tm)
+    }
+
+    /// As [`Space::links`] with the scenario-to-propagation time map given instead of derived
+    /// from the query window (`q.epoch_mode` is ignored). A caller that also uses
+    /// [`Space::link_at`] over a long run passes one fixed map to both, so a short look-ahead
+    /// window cannot round to a different day shift than the instantaneous samples.
+    pub fn links_with_time_map(
+        &self,
+        q: &LinkQuery,
+        tm: TimeMap,
+    ) -> Result<LinkReport, SpaceError> {
+        let started = std::time::Instant::now();
         let obs = Observer::new(q.point);
         let (pfrom, pto) = (tm.to_prop(q.from), tm.to_prop(q.to));
         let mut classes = Vec::new();
