@@ -231,6 +231,9 @@ pub struct Link {
     pub los_unknown_pkts: u64,
     /// SATCOM state when the profile follows a constellation class (`space_class`).
     sat: Option<Arc<SatShared>>,
+    /// The profile that carries the traffic while `down_when` closes this one
+    /// (`gated_profile`): its name and parameters.
+    gated: Option<(String, Params)>,
 }
 
 impl Link {
@@ -259,6 +262,39 @@ impl Link {
             obstruction_m: None,
             los_unknown_pkts: 0,
             sat,
+            gated: None,
+        }
+    }
+
+    /// Carries the traffic on `params` (profile `name`) while the depth gate closes this
+    /// link's own profile.
+    pub fn with_gated(mut self, name: &str, params: Params) -> Link {
+        self.gated = Some((name.to_string(), params));
+        self
+    }
+
+    /// Whether `down_when` closes the link's own profile now.
+    fn gate_closed(&self) -> bool {
+        match (self.params.down_when, self.submerged()) {
+            (Some(DownWhen::Submerged), Some(sub)) => sub,
+            (Some(DownWhen::Surfaced), Some(sub)) => !sub,
+            _ => false,
+        }
+    }
+
+    /// The profile carrying the traffic now: the gated profile while the gate is closed.
+    pub fn active_profile(&self) -> &str {
+        match &self.gated {
+            Some((name, _)) if self.gate_closed() => name,
+            _ => &self.meta.profile,
+        }
+    }
+
+    /// The parameters in effect now (see `active_profile`).
+    fn active(&self) -> &Params {
+        match &self.gated {
+            Some((_, g)) if self.gate_closed() => g,
+            _ => &self.params,
         }
     }
 
@@ -329,18 +365,15 @@ impl Link {
 
     pub fn cond(&self, dir: Dir, now_ns: u64) -> Cond {
         let mut c = Cond::default();
-        if let (Some(rule), Some(sub)) = (self.params.down_when, self.submerged()) {
-            let down = match rule {
-                DownWhen::Submerged => sub,
-                DownWhen::Surfaced => !sub,
-            };
-            if down {
-                c.blocked = Some(Cause::Gate);
-            }
+        let gated = self.gate_closed();
+        if gated && self.gated.is_none() {
+            c.blocked = Some(Cause::Gate);
         }
-        if let Some(s) = &self.sat {
+        // The primary profile's satellites; a gated profile has none (checked at load).
+        if !gated && let Some(s) = &self.sat {
             s.apply(now_ns, &mut c.blocked, &mut c.base_latency_ns);
         }
+        let p = self.active();
         for &i in &self.events {
             let e = &self.sched.events[i];
             if now_ns < e.start_ns || now_ns >= e.end_ns {
@@ -370,7 +403,7 @@ impl Link {
             }
             c.extra_latency_ns += e.extra_latency_ns;
         }
-        if let (Some((ok, max, exp)), Some(d)) = (self.params.range, self.gs_range_m) {
+        if let (Some((ok, max, exp)), Some(d)) = (p.range, self.gs_range_m) {
             c.range_loss = if d <= ok {
                 0.0
             } else if d >= max {
@@ -379,7 +412,7 @@ impl Link {
                 ((d - ok) / (max - ok)).powf(exp)
             };
         }
-        if let (Some(t), Some(o)) = (&self.params.terrain, self.obstruction_m)
+        if let (Some(t), Some(o)) = (&p.terrain, self.obstruction_m)
             && self.env.ground_station.is_some()
             && o > 0.0
         {
@@ -391,7 +424,7 @@ impl Link {
                 TerrainMode::Off => {}
             }
         }
-        if let (Some(mps), Some(d)) = (self.params.propagation_mps, self.gs_range_m) {
+        if let (Some(mps), Some(d)) = (p.propagation_mps, self.gs_range_m) {
             c.extra_latency_ns += (d / mps * 1e9) as u64;
         }
         c
@@ -403,11 +436,44 @@ impl Link {
             self.los_unknown_pkts += 1;
         }
         let c = self.cond(dir, now_ns);
-        self.dirs[dir.idx()].decide(&self.params, dir, &c, now_ns, len, inflight)
+        let use_gated = self.gate_closed();
+        let p = match &self.gated {
+            Some((_, g)) if use_gated => g,
+            _ => &self.params,
+        };
+        self.dirs[dir.idx()].decide(p, dir, &c, now_ns, len, inflight)
     }
 
     pub fn backlog_bytes(&self, dir: Dir, now_ns: u64) -> u64 {
-        self.dirs[dir.idx()].backlog_bytes(now_ns, self.params.bw_bps[dir.idx()])
+        self.dirs[dir.idx()].backlog_bytes(now_ns, self.active().bw_bps[dir.idx()])
+    }
+
+    /// Names of the scripted events acting on this link at `now_ns` in either direction
+    /// (inside the window, selectors and circle matching), for the stats view.
+    pub fn active_events(&mut self, now_ns: u64) -> Vec<String> {
+        self.refresh_events();
+        self.events
+            .iter()
+            .map(|&i| &self.sched.events[i])
+            .filter(|e| now_ns >= e.start_ns && now_ns < e.end_ns)
+            .filter(|e| match (&e.circle, &self.pos) {
+                (None, _) => true,
+                (Some((centre, r)), Some(p)) => haversine_m(p, centre) <= *r,
+                (Some(_), None) => false,
+            })
+            .map(|e| e.name.clone())
+            .collect()
+    }
+
+    /// The profile's nominal numbers for the stats view: long-run average loss (of the
+    /// Gilbert-Elliott chain), one-way base latency and jitter, uplink bandwidth and queue.
+    pub fn nominal_json(&self) -> serde_json::Value {
+        let mut v = nominal_of(&self.params);
+        if let Some((name, g)) = &self.gated {
+            v["gated_profile"] = name.clone().into();
+            v["gated"] = nominal_of(g);
+        }
+        v
     }
 
     /// Whether a scripted event or physics currently blocks the link (for the stats view).
@@ -415,6 +481,31 @@ impl Link {
         self.refresh_events();
         self.cond(Dir::Up, now_ns).blocked
     }
+}
+
+/// A profile's nominal numbers: long-run average loss of its Gilbert-Elliott chain, one-way
+/// base latency and jitter, uplink bandwidth and queue, and its physics switches.
+fn nominal_of(p: &Params) -> serde_json::Value {
+    let pi_bad = if p.p_gb + p.p_bg > 0.0 {
+        p.p_gb / (p.p_gb + p.p_bg)
+    } else {
+        0.0
+    };
+    let loss = p.loss_good * (1.0 - pi_bad) + p.loss_bad * pi_bad;
+    serde_json::json!({
+        "loss": (loss * 1e4).round() / 1e4,
+        "latency_ms": p.latency_ns as f64 / 1e6,
+        "jitter_ms": p.jitter_ns as f64 / 1e6,
+        "bandwidth_bps": p.bw_bps[Dir::Up.idx()],
+        "queue_bytes": p.queue_bytes[Dir::Up.idx()],
+        "propagation_mps": p.propagation_mps,
+        "space_class": p.space_class,
+        "down_when": p.down_when.map(|d| match d {
+            DownWhen::Submerged => "submerged",
+            DownWhen::Surfaced => "surfaced",
+        }),
+        "terrain": p.terrain.is_some(),
+    })
 }
 
 #[cfg(test)]
@@ -518,6 +609,38 @@ mod tests {
     }
 
     #[test]
+    fn active_events_name_what_acts_on_a_link_now() {
+        let toml = r#"
+            [class.los]
+            loss = 0.1
+            latency_ms = 15
+            bandwidth_bps = 1000
+            queue_bytes = 256
+            [[event]]
+            name = "jammer"
+            at_s = 0
+            duration_s = 100
+            circle = { lat = 37.8, lon = -122.4, radius_m = 1000 }
+            [[event]]
+            name = "loss window"
+            at_s = 50
+            duration_s = 10
+            class = "los"
+            loss = 0.3
+        "#;
+        let mut l = build(toml, meta(1, "los", "air"));
+        assert!(l.active_events(NS).is_empty()); // no position yet: outside every circle
+        l.observe_up(&position_frame(0, 37.801, -122.4, 10.0));
+        assert_eq!(l.active_events(NS), ["jammer"]);
+        assert_eq!(l.active_events(55 * NS), ["jammer", "loss window"]);
+        assert!(l.active_events(100 * NS).is_empty());
+        let n = l.nominal_json();
+        assert!((n["loss"].as_f64().unwrap_or(0.0) - 0.1).abs() < 1e-3, "{n}");
+        assert_eq!(n["latency_ms"], 15.0);
+        assert_eq!(n["bandwidth_bps"], 1000);
+    }
+
+    #[test]
     fn range_loss_rises_with_distance_from_the_ground_station() {
         let toml = r#"
             [ground_station]
@@ -565,6 +688,40 @@ mod tests {
         }
         assert_eq!(a.decide(Dir::Down, NS, 50, 0), Verdict::Drop(Cause::Gate));
         assert_eq!(lost_fraction(&mut s, Dir::Down, NS, 10), 0.0);
+    }
+
+    #[test]
+    fn gated_profile_carries_the_traffic_at_the_surface() {
+        let toml = r#"
+            [class.acoustic]
+            down_when = "surfaced"
+            gated_profile = "surface"
+            latency_ms = 100
+            [class.surface]
+            latency_ms = 700
+        "#;
+        let cfg = Config::parse(toml).expect("cfg");
+        let p = |n: &str| Params::from_profile(&cfg.resolve(n).expect("p")).expect("params");
+        let mut l = Link::new(
+            meta(1, "acoustic", "subsurface"),
+            p("acoustic"),
+            Arc::new(Env::new(&cfg, Arc::new(NoTerrain), 9).expect("env")),
+        )
+        .with_gated("surface", p("surface"));
+        let delay = |l: &mut Link, t: u64| match l.decide(Dir::Up, t, 50, 0) {
+            Verdict::Forward { at_ns, .. } => (at_ns - t) / 1_000_000,
+            Verdict::Drop(c) => panic!("dropped: {c:?}"),
+        };
+        l.observe_up(&position_frame(0, 37.8, -122.4, 0.0)); // surfaced: not dropped
+        assert_eq!(l.active_profile(), "surface");
+        assert_eq!(delay(&mut l, NS), 700);
+        l.observe_up(&position_frame(1, 37.8, -122.4, -20.0));
+        assert_eq!(l.active_profile(), "acoustic");
+        assert_eq!(delay(&mut l, 10 * NS), 100);
+        assert_eq!(l.nominal_json()["gated"]["latency_ms"], 700.0);
+        // a gated profile may not be gated itself
+        let bad = "[class.a]\ndown_when = \"surfaced\"\ngated_profile = \"b\"\n[class.b]\ndown_when = \"submerged\"\n";
+        assert!(Config::parse(bad).is_err());
     }
 
     /// A terrain whose answer the test can change.

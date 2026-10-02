@@ -22,6 +22,8 @@
 #                 0 up to ok, rising as ((d-ok)/(max-ok))^exp to 1 at max. Also turns on the
 #                 terrain line-of-sight check.
 #   down_when     "submerged" or "surfaced": link is down for vehicles in that state
+#   gated_profile while down_when closes the link, carry the traffic on this profile instead
+#                 (the vehicle's second radio); it may not have down_when or space_class
 #   terrain       "block" (default for profiles with a range), "ramp" or "off": what an
 #                 obstructed path to the ground station does. Needs `--tidewater URL` (or
 #                 MURMUR_TIDEWATER_URL) on the emulator; without it terrain is not checked.
@@ -103,6 +105,13 @@ range_max_km = 25
 range_exp = 2
 gs_antenna_m = 10          # GUESS: a mast on the ground station
 antenna_m = 0
+# Terrain "ramp", not "block": loss rises from 0 at grazing to 1 at 20 m of obstruction. A
+# crude stand-in for diffraction loss (GUESS), and kinder to the check's own coarseness (DEM
+# about 15 m, structures in it, one answer per 250 m cell): vehicles parked next to the ground
+# station read as 1-5 m "behind" terrain. A ridge between (the Marin Headlands seen from
+# Crissy Field: tens of metres) still blocks.
+terrain = "ramp"
+terrain_ramp_m = 20
 
 # ---- Mesh (relay-dependent: FPV, tactical UGVs). Several hops at ~5-10 ms each; capacity
 # shared across the mesh. All GUESS apart from the per-hop latency.
@@ -118,6 +127,8 @@ range_max_km = 12
 range_exp = 2
 gs_antenna_m = 10          # GUESS
 antenna_m = 1.5            # GUESS: a whip on a ground vehicle or boat
+terrain = "ramp"           # as for los; a mesh can also route around a shallow obstruction
+terrain_ramp_m = 20
 
 # ---- SATCOM, GEO (default for the satcom class: Global Hawk, Reaper). Follows WGS-class
 # military GEO satellites (space_class "wgs"): up while one is above the 5 deg mask, latency
@@ -195,6 +206,20 @@ bandwidth_bps = 300
 queue_bytes = 256
 down_when = "surfaced"
 propagation_mps = 1500
+# At the surface the modem is useless but the mast is out of the water: survey AUVs (REMUS
+# class) carry Iridium SBD and RF for exactly that, and the catalog says "acoustic modem;
+# SATCOM when surfaced". The surfaced vehicle uses this profile instead of going dark.
+gated_profile = "acoustic_surface"
+
+# ---- An AUV at the surface (the acoustic profile's gated_profile): Iridium-like numbers,
+# static (a gated profile does not follow satellites). GUESS throughout, as satcom_iridium.
+[class.acoustic_surface]
+loss = 0.02
+burst_len = 3
+latency_ms = 700
+jitter_ms = 200
+bandwidth_bps = 22000
+queue_bytes = 4096
 
 # ---- Tether (ROV cable, antenna tracker mast): near perfect. GUESS.
 [class.tether]

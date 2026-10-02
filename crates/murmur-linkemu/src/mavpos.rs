@@ -35,8 +35,12 @@ pub fn scan_position(buf: &[u8]) -> Option<GeoPoint> {
         if msgid == GLOBAL_POSITION_INT {
             let mut frame = &buf[i..i + total];
             let mut reader = PeekReader::new(&mut frame);
+            // lat = lon = 0 is an autopilot without a position yet (ArduPilot sends zeros
+            // before its first fix), not a vehicle off West Africa: range and terrain would
+            // judge it thousands of kilometres out.
             if let Ok((_, MavMessage::GLOBAL_POSITION_INT(d))) =
                 mavlink::read_versioned_msg::<MavMessage, _>(&mut reader, ReadVersion::Any)
+                && (d.lat != 0 || d.lon != 0)
             {
                 found = Some(GeoPoint {
                     lat: f64::from(d.lat) * 1e-7,
@@ -95,5 +99,11 @@ mod tests {
         f.extend(position_frame(2, 11.0, 21.0, 0.0));
         let p = scan_position(&f).expect("position");
         assert!((p.lat - 11.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn no_fix_zeros_are_not_a_position() {
+        assert!(scan_position(&position_frame(1, 0.0, 0.0, 0.0)).is_none());
+        assert!(scan_position(&position_frame(1, 0.0, 1.0, 0.0)).is_some());
     }
 }
