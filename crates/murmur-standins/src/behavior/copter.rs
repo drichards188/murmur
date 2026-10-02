@@ -944,6 +944,7 @@ mod tests {
             (MavCmd::MAV_CMD_NAV_LAND, -60.0, 60.0, 0.0),
         ]);
         assert_eq!(s.mode(LOITER), OK);
+        s.mission.set_current(1);
         assert_eq!(s.arm(true), OK);
         assert_eq!(s.mode(AUTO), OK);
         s.until(120.0, |s| !s.st.armed).expect("lands and disarms");
