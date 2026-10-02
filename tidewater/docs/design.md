@@ -33,12 +33,14 @@ SITL source that shape this:
 - `SIM_Submarine` has no current model. Subs need level 2.
 - Nothing in SITL knows about land.
 
-### ArduPilot, level 2: grounding and current hook (planned)
+### ArduPilot, level 2: grounding and current (done, `patches/ardupilot/`)
 
-A small, generic C++ hook in SITL so the boat and sub models can ask an outside source for
-local depth and current (e.g. over the existing JSON/UDP sim interfaces or a shared
-lookup grid), and stop when aground. Written to be upstreamable rather than Golden Gate
-specific.
+One new param, `SIM_WATER_DEPTH`, that the driver updates per vehicle every 0.5 s (a 5 m/s
+boat moves ~2.5 m between samples). Boats ground below their draft; the sub's existing
+`calculate_sea_floor_depth()` TODO returns it; the sub's drag uses the water current. Kept
+generic so it can be offered upstream. A param is the smallest possible interface; a
+higher-rate alternative (a depth grid loaded by SITL, or the JSON backend) is only worth it
+if 2 Hz sampling proves too coarse.
 
 ### Gazebo (planned)
 

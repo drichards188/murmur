@@ -12,6 +12,11 @@ What stock SITL does with them (checked in libraries/SITL, ArduPilot master 2026
     Subs and ground rovers ignore it.
   - both directions are "coming FROM"; tidewater vectors point where things are GOING.
 
+With the tidewater SITL patch (patches/ardupilot/, adds SIM_WATER_DEPTH) the driver also
+sends the local water depth: boats run aground when it's shallower than their draft, and
+subs get a real sea floor plus the current at their depth. Without the patch those
+params don't exist and ArduPilot ignores them.
+
 Connects to each instance's SERIAL1 TCP port (5762 + 10 * instance by default), so it
 runs alongside a GCS or bridge on SERIAL0 without interfering.
 """
@@ -31,8 +36,9 @@ SUB_TYPES = {mavutil.mavlink.MAV_TYPE_SUBMARINE}
 # change thresholds before re-sending a param (keeps the link quiet)
 MIN_SPEED_CHANGE = 0.05
 MIN_DIR_CHANGE = 3.0
-# keel depth for the "would be aground" warning (SITL motorboat is a small RC-scale hull)
-BOAT_DRAFT_M = 0.5
+MIN_DEPTH_CHANGE = 0.05
+# keel depth for the AGROUND status; matches the patched SITL motorboat's draft
+BOAT_DRAFT_M = 0.3
 
 
 def from_dir(east, north):
@@ -140,9 +146,14 @@ def apply(feed: VehicleFeed, cond: Conditions, t):
         feed.set_param("SIM_TIDE_SPEED", cs, MIN_SPEED_CHANGE)
         feed.set_param("SIM_TIDE_DIR", cfrom, MIN_DIR_CHANGE)
         if not s.navigable(BOAT_DRAFT_M):
-            notes.append("AGROUND (not enforced in stock SITL)")
+            notes.append("AGROUND")
     elif feed.kind == "sub":
-        notes.append("current not modelled for subs in stock SITL")
+        cs, cfrom = from_dir(s.current_east, s.current_north)  # sampled at the sub's depth
+        feed.set_param("SIM_TIDE_SPEED", cs, MIN_SPEED_CHANGE)
+        feed.set_param("SIM_TIDE_DIR", cfrom, MIN_DIR_CHANGE)
+    if feed.kind in ("boat", "sub"):
+        # needs the tidewater SITL patch; stock SITL ignores the unknown param
+        feed.set_param("SIM_WATER_DEPTH", max(0.0, s.water_depth_m), MIN_DEPTH_CHANGE)
     feed.status = " ".join(notes) or "ok"
 
 

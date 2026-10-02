@@ -1,0 +1,167 @@
+From b4a13710fde1d4de25aa746eda4146192bc7fe31 Mon Sep 17 00:00:00 2001
+From: David Richards <50757879+drichards188@users.noreply.github.com>
+Date: Thu, 1 Oct 2026 20:21:11 -0400
+Subject: [PATCH] SITL: SIM_WATER_DEPTH for marine models
+
+Adds SIM_WATER_DEPTH, the depth of water at the vehicle, for an external
+environment source (bathymetry plus tide) to update as the vehicle moves.
+
+- Sailboat/MotorBoat: run aground when shallower than the hull draft.
+  The stop is a felt deceleration (up to 2g) so the EKF sees consistent
+  IMU and GPS; the boat stays put until refloated.
+- Submarine: calculate_sea_floor_depth() returns it when set (was a fixed
+  50 m TODO), so the sea floor and rangefinder use real depth.
+- Submarine: the sea floor pushes back as a stiff spring-damper. The old
+  limit only cancelled further acceleration, so a descending sub sank
+  ~1 m into the floor and kept creeping. Acting through forces keeps the
+  simulated IMU consistent (clamping position diverged the EKF).
+- Submarine: drag acts relative to the water current (SIM_TIDE_*), not
+  the wind, since the surrounding fluid is water.
+
+Default -1 keeps existing behaviour.
+---
+ libraries/SITL/SIM_Sailboat.cpp  | 25 +++++++++++++++++++++++++
+ libraries/SITL/SIM_Sailboat.h    |  2 ++
+ libraries/SITL/SIM_Submarine.cpp | 25 ++++++++++++++++++++++---
+ libraries/SITL/SITL.cpp          |  7 +++++++
+ libraries/SITL/SITL.h            |  3 +++
+ 5 files changed, 59 insertions(+), 3 deletions(-)
+
+diff --git a/libraries/SITL/SIM_Sailboat.cpp b/libraries/SITL/SIM_Sailboat.cpp
+index ab777ec..ec2640c 100644
+--- a/libraries/SITL/SIM_Sailboat.cpp
++++ b/libraries/SITL/SIM_Sailboat.cpp
+@@ -316,9 +316,34 @@ void Sailboat::update(const struct sitl_input &input)
+      }
+ 
+     // new velocity vector
++    const Vector3f velocity_prev = velocity_ef;
+     velocity_ef_water += accel_earth * delta_time;
+     velocity_ef = velocity_ef_water + tide_velocity_ef;
+ 
++    // run aground when the water under the keel is too shallow (SIM_WATER_DEPTH is set by
++    // an external environment source as the boat moves). Stays put until refloated.
++    const bool shallow = sitl->water_depth >= 0 && sitl->water_depth < draft;
++    if (shallow != aground) {
++        aground = shallow;
++        ::printf("SIM: %s (water %.2fm, draft %.2fm)\n", aground ? "aground" : "afloat",
++                 sitl->water_depth.get(), draft);
++    }
++    if (aground) {
++        // hull is on the bottom: thrust and tide no longer move it. Stop hard (up to 2g)
++        // and let the accelerometers feel the impact, so the EKF sees a consistent stop
++        // rather than GPS and IMU disagreeing.
++        Vector3f decel = velocity_prev * (-1.0f / delta_time);
++        decel.z = 0;
++        const float max_decel = 2 * GRAVITY_MSS;
++        if (decel.length() > max_decel) {
++            decel = decel.normalized() * max_decel;
++        }
++        velocity_ef = velocity_prev + decel * delta_time;
++        velocity_ef.z = 0;
++        velocity_ef_water = velocity_ef;
++        accel_body = dcm.transposed() * (decel + Vector3f(0, 0, -GRAVITY_MSS));
++    }
++
+     // new position vector
+     position += (velocity_ef * delta_time).todouble();
+ 
+diff --git a/libraries/SITL/SIM_Sailboat.h b/libraries/SITL/SIM_Sailboat.h
+index e17d2c0..950feaf 100644
+--- a/libraries/SITL/SIM_Sailboat.h
++++ b/libraries/SITL/SIM_Sailboat.h
+@@ -70,6 +70,8 @@ private:
+     const float drag_curve[18] = {0.10f, 0.10f, 0.20f, 0.40f, 0.80f, 1.20f, 1.50f, 1.70f, 1.90f, 1.95f,  1.90f,  1.70f,  1.50f,  1.20f,  0.80f,  0.40f,  0.20f,  0.10f};
+ 
+     const float mass = 2.0f;
++    const float draft = 0.3f;   // m, keel depth for running aground (SIM_WATER_DEPTH)
++    bool aground = false;
+ 
+     Vector3f velocity_ef_water; // m/s
+     Vector3f wave_gyro;         // rad/s
+diff --git a/libraries/SITL/SIM_Submarine.cpp b/libraries/SITL/SIM_Submarine.cpp
+index cf0e434..b4ea3a0 100644
+--- a/libraries/SITL/SIM_Submarine.cpp
++++ b/libraries/SITL/SIM_Submarine.cpp
+@@ -100,10 +100,18 @@ void Submarine::calculate_forces(const struct sitl_input &input, Vector3f &rot_a
+         rot_accel += t.rotational * thrust * frame_property.thruster_mount_radius / frame_property.moment_of_inertia;
+     }
+ 
+-    // Limit movement at the sea floor
++    // Limit movement at the sea floor. The seabed pushes back like a stiff spring-damper,
++    // so a descending sub stops at the floor instead of sinking into it. Acting through
++    // the forces (not by moving the vehicle) keeps the simulated IMU consistent.
+     const float floor_depth = calculate_sea_floor_depth(position);
+-    if (position.z > floor_depth && body_accel.z > -GRAVITY_MSS) {
+-    	body_accel.z = -GRAVITY_MSS;
++    const float penetration = position.z - floor_depth;
++    if (penetration > 0) {
++        const float stiffness = 50.0f;  // 1/s^2
++        const float damping = 10.0f;    // 1/s
++        const float floor_accel = -GRAVITY_MSS - stiffness * penetration - damping * MAX(velocity_ef.z, 0.0f);
++        if (body_accel.z > floor_accel) {
++            body_accel.z = floor_accel;
++        }
+     }
+ 
+     // Calculate linear drag forces
+@@ -165,6 +173,11 @@ void Submarine::calculate_buoyancy_torque(Vector3f &torque)
+  */
+ float Submarine::calculate_sea_floor_depth(const Vector3d &/*position*/) const
+ {
++    // SIM_WATER_DEPTH, when an external environment source provides it, is the real depth
++    // under the vehicle; otherwise keep the default flat floor
++    if (sitl->water_depth >= 0) {
++        return sitl->water_depth;
++    }
+     return 50;
+ }
+ 
+@@ -250,6 +263,12 @@ void Submarine::update(const struct sitl_input &input)
+     // get wind vector setup
+     update_wind(input);
+ 
++    // a submarine's surrounding fluid is water, so drag acts relative to the water
++    // current (SIM_TIDE_*, direction it comes from), not the wind
++    wind_ef = Vector3f(-cosf(radians(sitl->tide.direction)),
++                       -sinf(radians(sitl->tide.direction)),
++                       0) * sitl->tide.speed;
++
+     Vector3f rot_accel;
+ 
+     calculate_forces(input, rot_accel, accel_body);
+diff --git a/libraries/SITL/SITL.cpp b/libraries/SITL/SITL.cpp
+index 75a1f79..6f5661f 100644
+--- a/libraries/SITL/SITL.cpp
++++ b/libraries/SITL/SITL.cpp
+@@ -452,6 +452,13 @@ const AP_Param::GroupInfo SIM::var_info2[] = {
+     // @Units: m/s
+     AP_GROUPINFO("TIDE_SPEED",  50, SIM,  tide.speed, 0.0f),
+ 
++    // @Param: WATER_DEPTH
++    // @DisplayName: Water depth at the vehicle
++    // @Description: Depth of water at the vehicle's current position, for marine models. Boats run aground (stop) when it is less than their draft; submarines rest on a sea floor at this depth. Intended to be updated by an external environment source as the vehicle moves (e.g. from bathymetry and tide). Negative means unknown: no grounding for boats, the default sea floor for submarines.
++    // @Units: m
++    // @User: Advanced
++    AP_GROUPINFO("WATER_DEPTH", 43, SIM,  water_depth, -1.0f),
++
+     // the following coordinates are for CMAC, in Canberra
+     // @Param: OPOS_LAT
+     // @DisplayName: Original Position (Latitude)
+diff --git a/libraries/SITL/SITL.h b/libraries/SITL/SITL.h
+index 808c5b1..4502d16 100644
+--- a/libraries/SITL/SITL.h
++++ b/libraries/SITL/SITL.h
+@@ -539,6 +539,9 @@ public:
+         AP_Float speed;     // m/s
+     } tide;
+ 
++    // depth of water at the vehicle (m), from an external environment source; <0 = unknown
++    AP_Float water_depth;
++
+     // original simulated position
+     struct {
+         AP_Float lat;
+-- 
+2.43.0
+

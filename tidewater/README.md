@@ -50,6 +50,21 @@ conditions at its own position, every 2 s, on the scenario clock.
   wind averages 1.1 m/s high at the San Francisco station, with peaks 1.1 m/s low and a 22°
   direction offset. No current meter operates inside the area, so currents are unvalidated.
 
+### ArduPilot SITL patch (`SIM_WATER_DEPTH`)
+
+59 lines in `libraries/SITL`, default off. With it, the driver also sends local water depth:
+
+- **Boats run aground:** a boat sent at 5 m/s toward the Horseshoe Bay beach stopped where
+  tidewater's data says the water runs out (`SIM: aground (water 0.00m, draft 0.30m)`).
+- **Subs drift with the current:** an idle sub drifted 1.78 m/s toward 247° vs a predicted
+  1.79 m/s toward 248° (stock SITL has no current model for subs).
+- **Subs have a real seabed:** in 3 m of water at full downward thrust a sub holds at
+  3.02-3.03 m (the stock limit let it sink ~1 m into the floor and keep creeping).
+
+Lesson from both: the vehicle has to be stopped by forces the simulated IMU feels. Stopping
+it kinematically (zeroing velocity, clamping position) made the autopilot's EKF disagree
+with GPS: an EKF failsafe for the boat, a diverging depth estimate for the sub.
+
 ## Limits (v0)
 
 - **Currents between stations** use inverse-distance weighting, which doesn't know where
@@ -57,7 +72,8 @@ conditions at its own position, every 2 s, on the scenario clock.
 - **Tide** comes from one station and is applied across the area; real tides lag and
   change size across a bay.
 - **Stock SITL** applies current only to the motorboat model, only while armed, and never
-  enforces land. Subs ignore current. Fixing both needs the grounding hook (C++).
+  enforces land; subs ignore current. The patch in `patches/ardupilot/` fixes this (apply with
+  `scripts/patch-ardupilot.sh`); without it, tidewater still drives wind and boat currents.
 - **Vertical datums** are assumed consistent (NAVD88 DEM, NAVD tide predictions). True for
   US coastal DEMs in the NCEI mosaic; verify for new areas.
 - Predictions, not observations: NOAA current predictions are harmonic forecasts.

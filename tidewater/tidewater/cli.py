@@ -82,7 +82,8 @@ def main(argv=None):
     p.add_argument("--instances", default="0", help="SITL instance numbers, e.g. 0-12 or 9,10,11")
     p.add_argument("--base-port", type=int, default=5762, help="SITL SERIAL1 TCP port for instance 0")
     p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--period", type=float, default=2.0, help="seconds between updates")
+    p.add_argument("--period", type=float, default=0.5,
+                   help="seconds between updates (0.5 s keeps a 5 m/s boat within ~2.5 m of its depth sample)")
     p.set_defaults(fn=cmd_drive)
 
     args = ap.parse_args(argv)
