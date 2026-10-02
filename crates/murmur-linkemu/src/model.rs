@@ -1,7 +1,8 @@
 //! The per-direction link model. Pure: time is passed in as nanoseconds, so a fixed seed and
 //! the same input timing give the same decisions, with no sockets or clocks involved.
 
-use crate::config::{DownWhen, RawProfile};
+use crate::config::{DownWhen, RawProfile, TerrainMode};
+use crate::geo::LosParams;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
@@ -79,6 +80,14 @@ impl Cause {
     }
 }
 
+/// Terrain handling of a profile.
+#[derive(Clone, Copy, Debug)]
+pub struct TerrainParams {
+    pub mode: TerrainMode,
+    pub ramp_m: f64,
+    pub los: LosParams,
+}
+
 /// A resolved link profile.
 #[derive(Clone, Debug)]
 pub struct Params {
@@ -97,6 +106,8 @@ pub struct Params {
     /// (ok_m, max_m, exponent)
     pub range: Option<(f64, f64, f64)>,
     pub down_when: Option<DownWhen>,
+    /// None when the profile does no terrain check.
+    pub terrain: Option<TerrainParams>,
     pub propagation_mps: Option<f64>,
 }
 
@@ -133,6 +144,25 @@ impl Params {
             (None, None) => None,
             _ => return Err("range_ok_km and range_max_km must both be set, max > ok".into()),
         };
+        let mode = p.terrain.unwrap_or(if range.is_some() {
+            TerrainMode::Block
+        } else {
+            TerrainMode::Off
+        });
+        let d = LosParams::default();
+        let los = LosParams {
+            gs_antenna_m: p.gs_antenna_m.unwrap_or(d.gs_antenna_m),
+            antenna_m: p.antenna_m.unwrap_or(d.antenna_m),
+            k: p.k_factor.unwrap_or(d.k),
+            fresnel_mhz: p.fresnel_mhz.unwrap_or(d.fresnel_mhz),
+            fresnel_clear: p.fresnel_clear.unwrap_or(d.fresnel_clear),
+        };
+        let ramp_m = p.terrain_ramp_m.unwrap_or(30.0);
+        if los.k <= 0.0 || ramp_m <= 0.0 || los.fresnel_mhz < 0.0 || los.fresnel_clear < 0.0 {
+            return Err(
+                "k_factor, terrain_ramp_m must be positive; fresnel values not negative".into(),
+            );
+        }
         Ok(Params {
             loss_good: good,
             loss_bad: bad,
@@ -147,6 +177,7 @@ impl Params {
             max_inflight: p.max_inflight.unwrap_or(2048),
             range,
             down_when: p.down_when,
+            terrain: (mode != TerrainMode::Off).then_some(TerrainParams { mode, ramp_m, los }),
             propagation_mps: p.propagation_mps,
         })
     }
@@ -182,6 +213,8 @@ pub struct Cond {
     pub event_loss: f64,
     pub jam_loss: f64,
     pub range_loss: f64,
+    /// Loss from terrain obstruction in `ramp` mode.
+    pub terrain_loss: f64,
     pub extra_latency_ns: u64,
 }
 
@@ -225,7 +258,7 @@ impl DirState {
         (u128::from(ns) * u128::from(bw_bps) / 8_000_000_000u128) as u64
     }
 
-    /// Decide the fate of one packet of `len` bytes arriving at `now_ns`. Exactly seven random
+    /// Decide the fate of one packet of `len` bytes arriving at `now_ns`. Exactly eight random
     /// numbers are consumed per call whatever the outcome, so one packet's fate does not
     /// shift the random stream seen by the next.
     pub fn decide(
@@ -237,7 +270,8 @@ impl DirState {
         len: usize,
         inflight: usize,
     ) -> Verdict {
-        let r: [f64; 7] = [
+        let r: [f64; 8] = [
+            self.rng.random(),
             self.rng.random(),
             self.rng.random(),
             self.rng.random(),
@@ -283,6 +317,9 @@ impl DirState {
         }
         if r[4] < c.range_loss {
             return Verdict::Drop(Cause::Range);
+        }
+        if r[7] < c.terrain_loss {
+            return Verdict::Drop(Cause::Terrain);
         }
         let jitter = (r[5] * 2.0 - 1.0) * p.jitter_ns as f64;
         let delay = (p.latency_ns as f64 + c.extra_latency_ns as f64 + jitter).max(0.0) as u64;

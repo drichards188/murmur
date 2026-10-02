@@ -2,7 +2,7 @@
 //! and a delay queue per direction.
 
 use crate::config::{Config, VehicleSpec};
-use crate::link::{Env, Link, LinkMeta};
+use crate::link::{Env, Link, LinkMeta, LosState};
 use crate::model::{Cause, Dir, Params, Verdict};
 use crate::stats::LinkStats;
 use std::cmp::Ordering;
@@ -251,6 +251,15 @@ async fn run_link(
             );
             let b = link.blocked_now(now).map_or(0, |c| c.idx() as u64 + 1);
             stats.blocked.store(b, Relaxed);
+            let (los, obs) = match link.los_state() {
+                LosState::Off => (0, f64::NAN),
+                LosState::Unknown => (1, f64::NAN),
+                LosState::Clear(m) => (2, -m),
+                LosState::Obstructed(m) => (3, m),
+            };
+            stats.los_state.store(los, Relaxed);
+            stats.los_obstruction.store(obs.to_bits(), Relaxed);
+            stats.terrain_unknown.store(link.los_unknown_pkts, Relaxed);
         }
     }
 }

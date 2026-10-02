@@ -26,17 +26,74 @@ pub fn slant_m(a: &GeoPoint, b: &GeoPoint) -> f64 {
     (g * g + dz * dz).sqrt()
 }
 
-/// Line-of-sight oracle. The real implementation will sample tidewater's DEM; until then
-/// `NoTerrain` says everything can see everything.
-pub trait Terrain: Send + Sync {
-    fn line_of_sight(&self, from: &GeoPoint, to: &GeoPoint) -> bool;
+/// How a radio path is judged: antenna heights above the reported altitudes, the effective
+/// Earth radius factor and an optional Fresnel-zone clearance.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LosParams {
+    pub gs_antenna_m: f64,
+    pub antenna_m: f64,
+    /// Effective Earth radius factor (4/3 for a standard atmosphere).
+    pub k: f64,
+    /// Carrier frequency; 0 means a bare line of sight with no Fresnel clearance.
+    pub fresnel_mhz: f64,
+    /// Fraction of the first Fresnel radius to keep clear.
+    pub fresnel_clear: f64,
 }
 
+impl Default for LosParams {
+    fn default() -> Self {
+        LosParams {
+            gs_antenna_m: 0.0,
+            antenna_m: 0.0,
+            k: 4.0 / 3.0,
+            fresnel_mhz: 0.0,
+            fresnel_clear: 0.6,
+        }
+    }
+}
+
+impl LosParams {
+    pub fn key(&self) -> [u64; 5] {
+        [
+            self.gs_antenna_m.to_bits(),
+            self.antenna_m.to_bits(),
+            self.k.to_bits(),
+            self.fresnel_mhz.to_bits(),
+            self.fresnel_clear.to_bits(),
+        ]
+    }
+}
+
+/// Terrain oracle. It must never block: the real implementation answers from a cache that a
+/// background task fills from tidewater's DEM.
+pub trait Terrain: Send + Sync {
+    /// How far the terrain (plus Earth bulge and any Fresnel clearance) sticks up above the
+    /// straight ray from the ground station to the vehicle, in metres: positive means
+    /// obstructed by that much, negative means clear by that much. `None` means no answer
+    /// yet (the caller treats the path as open and counts it).
+    fn obstruction_m(&self, vehicle: &GeoPoint, gs: &GeoPoint, p: &LosParams) -> Option<f64>;
+
+    /// False for the no-op terrain: links then report the check as off.
+    fn enabled(&self) -> bool {
+        true
+    }
+
+    /// Counters for `/stats`, if the implementation keeps any.
+    fn stats(&self) -> Option<serde_json::Value> {
+        None
+    }
+}
+
+/// No terrain data configured: everything can see everything.
 pub struct NoTerrain;
 
 impl Terrain for NoTerrain {
-    fn line_of_sight(&self, _from: &GeoPoint, _to: &GeoPoint) -> bool {
-        true
+    fn obstruction_m(&self, _: &GeoPoint, _: &GeoPoint, _: &LosParams) -> Option<f64> {
+        None
+    }
+
+    fn enabled(&self) -> bool {
+        false
     }
 }
 

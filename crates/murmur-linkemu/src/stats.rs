@@ -1,7 +1,7 @@
 //! Lock-free counters, read by the HTTP endpoint and the periodic log line.
 
 use crate::link::LinkMeta;
-use crate::model::{CAUSES, Dir};
+use crate::model::{CAUSES, Cause, Dir};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
@@ -61,7 +61,15 @@ pub struct LinkStats {
     pub blocked: AtomicU64,
     /// f64 bits of lat, lon, alt; NaN until the first position.
     pub pos: [AtomicU64; 3],
+    /// Terrain line of sight: 0 not checked, 1 unknown (no answer yet), 2 clear, 3 obstructed.
+    pub los_state: AtomicU64,
+    /// f64 bits: metres the terrain sticks up above the ray (negative: clear by that much).
+    pub los_obstruction: AtomicU64,
+    /// Packets decided while the terrain answer was unknown (treated as open).
+    pub terrain_unknown: AtomicU64,
 }
+
+pub const LOS_NAMES: [&str; 4] = ["off", "unknown", "clear", "obstructed"];
 
 impl LinkStats {
     pub fn new(meta: LinkMeta) -> LinkStats {
@@ -76,6 +84,9 @@ impl LinkStats {
                 AtomicU64::new(nan),
                 AtomicU64::new(nan),
             ],
+            los_state: AtomicU64::new(0),
+            los_obstruction: AtomicU64::new(nan),
+            terrain_unknown: AtomicU64::new(0),
         }
     }
 
@@ -99,6 +110,12 @@ impl LinkStats {
             0 => Value::Null,
             n => json!(CAUSES[(n - 1) as usize].name()),
         };
+        let obstruction = f64::from_bits(self.los_obstruction.load(Relaxed));
+        let terrain_blocked: u64 = self
+            .dir
+            .iter()
+            .map(|d| d.dropped[Cause::Terrain.idx()].load(Relaxed))
+            .sum();
         let depth =
             ["unknown", "surfaced", "submerged"][self.depth_state.load(Relaxed).min(2) as usize];
         json!({
@@ -111,6 +128,12 @@ impl LinkStats {
             "platform": self.meta.platform,
             "blocked": blocked,
             "depth_state": depth,
+            "los": {
+                "state": LOS_NAMES[self.los_state.load(Relaxed).min(3) as usize],
+                "obstruction_m": if obstruction.is_nan() { Value::Null } else { json!(obstruction) },
+                "unknown_pkts": self.terrain_unknown.load(Relaxed),
+                "blocked_by_terrain_pkts": terrain_blocked,
+            },
             "pos": { "lat": f(0), "lon": f(1), "alt_m": f(2) },
             "up": self.dir[0].json(),
             "down": self.dir[1].json(),
@@ -180,8 +203,15 @@ pub fn summary_json(links: &[std::sync::Arc<LinkStats>], uptime_s: f64, with_lin
             by.insert(c.name().into(), t.by_cause[c.idx()].into());
         }
     }
+    let mut los = [0u64; 4];
+    for l in links {
+        los[l.los_state.load(Relaxed).min(3) as usize] += 1;
+    }
     let mut v = json!({
         "uptime_s": uptime_s,
+        "los_links": { "unknown": los[1], "clear": los[2], "obstructed": los[3] },
+        "terrain_blocked_pkts": t.by_cause[Cause::Terrain.idx()],
+        "terrain_unknown_pkts": links.iter().map(|l| l.terrain_unknown.load(Relaxed)).sum::<u64>(),
         "links": links.len(),
         "in_pkts": t.in_pkts,
         "out_pkts": t.out_pkts,

@@ -16,6 +16,16 @@
 #                 0 up to ok, rising as ((d-ok)/(max-ok))^exp to 1 at max. Also turns on the
 #                 terrain line-of-sight check.
 #   down_when     "submerged" or "surfaced": link is down for vehicles in that state
+#   terrain       "block" (default for profiles with a range), "ramp" or "off": what an
+#                 obstructed path to the ground station does. Needs `--tidewater URL` (or
+#                 MURMUR_TIDEWATER_URL) on the emulator; without it terrain is not checked.
+#                 block: drop everything; ramp: loss rises from 0 at the ray to 1 at
+#                 terrain_ramp_m (default 30) of obstruction.
+#   gs_antenna_m / antenna_m   antenna heights above the ground station altitude and above the
+#                 vehicle's reported altitude (default 0)
+#   k_factor      effective Earth radius factor for the radio horizon (default 4/3)
+#   fresnel_mhz / fresnel_clear   if fresnel_mhz is set, also keep fresnel_clear (default 0.6)
+#                 of the first Fresnel zone clear of terrain
 #   propagation_mps  adds slant range to the ground station / this speed to the latency
 
 seed = 1
@@ -24,11 +34,24 @@ seed = 1
 # as submerged. 1 m matches the stand-ins' own definition.
 submerged_depth_m = 1.0
 
-# Where the operator's radios are: Crissy Field, the Golden Gate fleets' launch site.
+# Where the operator's radios are: Crissy Field, the Golden Gate fleets' launch site. alt_m is
+# the ground height there in metres above MSL (the DEM says 4.8 m at this spot); the antenna
+# heights in the profiles are added to it.
 [ground_station]
 lat = 37.8068
 lon = -122.4460
 alt_m = 5.0
+
+# Terrain line of sight client (tidewater's DEM over HTTP). The packet path never waits for
+# it: each vehicle's position is rounded to a cell_m grid cell and an altitude band, one
+# profile per cell is sampled every interval_s (all cells in few requests) and cached, and
+# until the first answer a link counts as open (counted in /stats as unknown_pkts).
+[terrain]
+interval_s = 1.0
+cell_m = 250
+alt_step_m = 10
+sample_spacing_m = 50      # the DEM is about 15 m
+max_points = 500
 
 # ---- LOS radio (small UAS datalinks: Puma, Switchblade, FVR-90, CCA control link)
 # Latency 5-30 ms is typical of digital datalinks (vendor sheets for Microhard, Silvus,
@@ -43,6 +66,8 @@ queue_bytes = 16384
 range_ok_km = 15           # GUESS, from the ~20 km figure above
 range_max_km = 25
 range_exp = 2
+gs_antenna_m = 10          # GUESS: a mast on the ground station
+antenna_m = 0
 
 # ---- Mesh (relay-dependent: FPV, tactical UGVs). Several hops at ~5-10 ms each; capacity
 # shared across the mesh. All GUESS apart from the per-hop latency.
@@ -56,6 +81,8 @@ queue_bytes = 16384
 range_ok_km = 5
 range_max_km = 12
 range_exp = 2
+gs_antenna_m = 10          # GUESS
+antenna_m = 1.5            # GUESS: a whip on a ground vehicle or boat
 
 # ---- SATCOM, GEO (default for the satcom class: Global Hawk, Reaper, USVs on Ku/Ka).
 # Physics: ground -> GEO (35,786 km) -> vehicle is about 240 ms one way before modem and
@@ -118,10 +145,13 @@ queue_bytes = 65536
 magura = "satcom_leo"      # Magura V5 uses Starlink in the field
 # saildrone = "satcom_iridium"   # Saildrone uses Iridium; uncomment to see the narrow link
 
-# ---- Scripted events. All times are seconds since the emulator started. Selectors (class,
-# profile, platform, domain, uid, uids, circle) all must match; effects are loss (extra,
-# independent of the profile's loss), cut, extra_latency_ms; dir = both | up | down.
-# More events can live in a separate file passed as --scenario.
+# ---- Scripted events. `at_s` is seconds since the emulator started; `at_scenario` is an ISO
+# time on the scenario clock (MURMUR_AT at emulator start, plus elapsed x MURMUR_RATE, as
+# the stand-ins do), with duration_s in scenario seconds or `until_scenario`. Selectors
+# (class, profile, platform, domain, uid, uids, circle) all must match; effects are loss
+# (extra, independent of the profile's loss), cut, extra_latency_ms; dir = both | up | down.
+# More events can live in a separate file passed as --scenario. Events are re-read while
+# running on SIGHUP or when this file or the scenario file changes (profiles are not).
 #
 # [[event]]                  # the 30%-loss study: every LOS link, two minutes
 # name = "30% loss on LOS"
@@ -142,3 +172,10 @@ magura = "satcom_leo"      # Magura V5 uses Starlink in the field
 # at_s = 120
 # duration_s = 300
 # circle = { lat = 37.82, lon = -122.48, radius_m = 3000 }
+#
+# [[event]]                  # the same study, timed on the scenario clock
+# name = "30% loss on LOS at 10:05"
+# at_scenario = "2026-06-14T10:05:00Z"
+# duration_s = 120           # scenario seconds
+# class = "los"
+# loss = 0.30

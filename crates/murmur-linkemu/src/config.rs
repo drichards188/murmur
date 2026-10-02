@@ -15,6 +15,17 @@ pub enum DownWhen {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
+pub enum TerrainMode {
+    /// No terrain check for this profile.
+    Off,
+    /// Drop everything while the path is obstructed.
+    Block,
+    /// Loss rises with obstruction depth: 0 at the ray, 1 at `terrain_ramp_m` deep.
+    Ramp,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum DirSel {
     Both,
     Up,
@@ -55,6 +66,22 @@ pub struct RawProfile {
     pub range_max_km: Option<f64>,
     pub range_exp: Option<f64>,
     pub down_when: Option<DownWhen>,
+    /// Terrain line of sight to the ground station (needs a tidewater URL). Default: `block`
+    /// for profiles with a range model, `off` otherwise.
+    pub terrain: Option<TerrainMode>,
+    /// `ramp` mode: obstruction depth in metres at which loss reaches 1 (default 30).
+    pub terrain_ramp_m: Option<f64>,
+    /// Ground station antenna height above `[ground_station].alt_m`, metres (default 0).
+    pub gs_antenna_m: Option<f64>,
+    /// Vehicle antenna height above its reported altitude, metres (default 0).
+    pub antenna_m: Option<f64>,
+    /// Effective Earth radius factor for radio refraction (default 4/3).
+    pub k_factor: Option<f64>,
+    /// Carrier frequency in MHz; with it the path must also clear `fresnel_clear` of the
+    /// first Fresnel zone. Omitted means a bare line of sight.
+    pub fresnel_mhz: Option<f64>,
+    /// Fraction of the first Fresnel radius to keep clear (default 0.6).
+    pub fresnel_clear: Option<f64>,
     /// Adds slant range to the ground station divided by this speed to the latency
     /// (1500 for sound in water).
     pub propagation_mps: Option<f64>,
@@ -81,10 +108,15 @@ pub struct Circle {
 #[serde(deny_unknown_fields)]
 pub struct EventCfg {
     pub name: Option<String>,
-    /// Start, seconds since the emulator started.
-    pub at_s: f64,
-    /// Duration in seconds; omitted means until the end of the run.
+    /// Start, seconds since the emulator started. Give this or `at_scenario`.
+    pub at_s: Option<f64>,
+    /// Start in scenario time, ISO 8601 (`2026-06-14T10:05:00Z`); needs `MURMUR_AT`.
+    pub at_scenario: Option<String>,
+    /// Duration; omitted means until the end of the run. Seconds of the same clock as the
+    /// start: emulator seconds with `at_s`, scenario seconds with `at_scenario`.
     pub duration_s: Option<f64>,
+    /// End in scenario time (alternative to `duration_s` with `at_scenario`).
+    pub until_scenario: Option<String>,
     // Selectors (all that are present must match).
     pub class: Option<String>,
     pub profile: Option<String>,
@@ -109,9 +141,52 @@ fn default_dir() -> DirSel {
     DirSel::Both
 }
 
+/// Settings of the tidewater terrain service client (`[terrain]` in the links file).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct TerrainCfg {
+    /// How often pending paths are sent to tidewater, seconds.
+    pub interval_s: f64,
+    /// Size of the grid cell a vehicle position is rounded to, metres. One profile is
+    /// computed per cell (and altitude band) and cached for good.
+    pub cell_m: f64,
+    /// Altitude band height, metres.
+    pub alt_step_m: f64,
+    /// Distance between profile samples, metres (the DEM is about 15 m).
+    pub sample_spacing_m: f64,
+    /// Cap on samples per profile.
+    pub max_points: usize,
+    /// Most cells computed per interval; the rest wait.
+    pub max_cells_per_tick: usize,
+    /// Points per HTTP request.
+    pub max_points_per_request: usize,
+    /// Cache size limit in cells (the cache is cleared when it is exceeded).
+    pub cache_max: usize,
+    /// Seconds before a request to tidewater is given up.
+    pub timeout_s: f64,
+}
+
+impl Default for TerrainCfg {
+    fn default() -> Self {
+        TerrainCfg {
+            interval_s: 1.0,
+            cell_m: 250.0,
+            alt_step_m: 10.0,
+            sample_spacing_m: 50.0,
+            max_points: 500,
+            max_cells_per_tick: 400,
+            max_points_per_request: 20_000,
+            cache_max: 500_000,
+            timeout_s: 10.0,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    #[serde(default)]
+    pub terrain: TerrainCfg,
     #[serde(default)]
     pub seed: Option<u64>,
     /// Depth in metres below which a vehicle counts as submerged.
@@ -153,7 +228,18 @@ impl Config {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let s: Scenario = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
         self.event.extend(s.event);
-        Ok(())
+        self.validate()
+            .map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// The config's events followed by the scenario file's, read fresh from disk (for
+    /// reloading while running; profiles are not reloaded).
+    pub fn load_events(config: &Path, scenario: Option<&Path>) -> Result<Vec<EventCfg>, String> {
+        let mut cfg = Config::load(config)?;
+        if let Some(s) = scenario {
+            cfg.merge_scenario(s)?;
+        }
+        Ok(cfg.event)
     }
 
     fn validate(&self) -> Result<(), String> {
@@ -172,8 +258,33 @@ impl Config {
             {
                 return Err(format!("event {:?}: loss {l} outside 0..1", e.name));
             }
-            if e.at_s < 0.0 || e.duration_s.is_some_and(|d| d < 0.0) {
+            match (&e.at_s, &e.at_scenario) {
+                (Some(_), Some(_)) | (None, None) => {
+                    return Err(format!(
+                        "event {:?}: give exactly one of at_s and at_scenario",
+                        e.name
+                    ));
+                }
+                _ => {}
+            }
+            if e.at_s.is_some_and(|a| a < 0.0) || e.duration_s.is_some_and(|d| d < 0.0) {
                 return Err(format!("event {:?}: negative time", e.name));
+            }
+            if e.at_scenario.is_none() && e.until_scenario.is_some() {
+                return Err(format!(
+                    "event {:?}: until_scenario needs at_scenario",
+                    e.name
+                ));
+            }
+            if e.duration_s.is_some() && e.until_scenario.is_some() {
+                return Err(format!(
+                    "event {:?}: give duration_s or until_scenario, not both",
+                    e.name
+                ));
+            }
+            for t in [&e.at_scenario, &e.until_scenario].into_iter().flatten() {
+                crate::timeline::parse_iso_utc(t)
+                    .map_err(|m| format!("event {:?}: {m}", e.name))?;
             }
         }
         Ok(())
@@ -220,6 +331,13 @@ impl Config {
                 range_max_km,
                 range_exp,
                 down_when,
+                terrain,
+                terrain_ramp_m,
+                gs_antenna_m,
+                antenna_m,
+                k_factor,
+                fresnel_mhz,
+                fresnel_clear,
                 propagation_mps
             );
         }
