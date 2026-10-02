@@ -1,0 +1,51 @@
+From 6a538892f531c04f352402409e198171d1fb6a0d Mon Sep 17 00:00:00 2001
+From: David Richards <50757879+drichards188@users.noreply.github.com>
+Date: Fri, 2 Oct 2026 15:00:37 -0400
+Subject: [PATCH 1/2] AP_Param: keep defaults pending when any file in a list
+ has unknown params
+
+A defaults list can name several files (--defaults a.parm,b.parm).
+read_param_defaults_file() assigned done_all_default_params per file,
+so the last file decided it. When an earlier file set parameters of a
+subtree created later in boot (e.g. MAVn_ stream rates on GCS channels)
+and the last file only had parameters that already existed, the flag
+ended up true, load_object_from_eeprom() skipped reloading the defaults
+for the new subtree, and the channel initialised its streams from the
+built-in rates. The final reload then set the parameters, so the
+vehicle reported MAVn_EXTRA1 0 while still streaming at 1 Hz.
+
+Start the list as done and let any file with an unresolved name clear it.
+---
+ libraries/AP_Param/AP_Param.cpp | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/libraries/AP_Param/AP_Param.cpp b/libraries/AP_Param/AP_Param.cpp
+index a0c097c..5225033 100644
+--- a/libraries/AP_Param/AP_Param.cpp
++++ b/libraries/AP_Param/AP_Param.cpp
+@@ -2449,7 +2449,13 @@ bool AP_Param::read_param_defaults_file(const char *filename, bool last_pass, ui
+     }
+     AP::FS().close(file_apfs);
+ 
+-    done_all_default_params = done_all;
++    // a defaults list can name several files: one file with a
++    // parameter that doesn't exist yet (e.g. in a subtree created
++    // later, like the MAVn_ stream rates) must keep the overrides
++    // pending for load_object_from_eeprom, whatever the later files hold
++    if (!done_all) {
++        done_all_default_params = false;
++    }
+ 
+     return true;
+ }
+@@ -2502,6 +2508,7 @@ bool AP_Param::load_defaults_file(const char *filename, bool last_pass)
+         AP_HAL::panic("AP_Param: Failed to allocate mutable string");
+     }
+     uint16_t idx = 0;
++    done_all_default_params = true;  // each file clears this if it names an unknown parameter
+     for (char *pname = strtok_r(mutable_filename, ",", &saveptr);
+          pname != nullptr;
+          pname = strtok_r(nullptr, ",", &saveptr)) {
+-- 
+2.43.0
+

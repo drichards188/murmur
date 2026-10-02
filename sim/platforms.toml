@@ -286,7 +286,7 @@ link = "tether"
 sidc = "SFGPE----------"
 protocol = "mavlink"
 protocol_note = "ArduPilot AntennaTracker speaks MAVLink natively"
-authenticity = "ArduPilot AntennaTracker SITL (already authentic; open stall bug murmur-9bf)"
+authenticity = "ArduPilot AntennaTracker SITL (already authentic; mount reaches +/-170 deg about its start heading)"
 
 # ---------------------------------------------------------------- surface
 [magura]
