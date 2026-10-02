@@ -4,7 +4,7 @@
 //! WP_LOITER_RAD; RTL circles home at RTL_RADIUS, or WP_LOITER_RAD when that is 0
 //! (ArduPlane::update_navigation, mode_rtl). No circle is tighter than the airframe can turn
 //! at cruise (catalog cruise / turn rate), as the L1 controller widens a loiter it can't fly.
-//! RTL returns at ALT_HOLD_RTL (cm above home; -1 = the current altitude).
+//! RTL returns at RTL_ALTITUDE (m above home; -1 = the current altitude).
 
 use mavlink::dialects::ardupilotmega::{MavSeverity, MavType};
 
@@ -49,12 +49,8 @@ impl Plane {
             return Some(t.mission.auto_target(st, cruise, loiter, loiter));
         }
         let (lat, lon, radius, kind, alt) = if st.mode == "RTL" {
-            let a = t.params.f("ALT_HOLD_RTL", -1.0);
-            let alt = if a < 0.0 {
-                st.alt
-            } else {
-                st.home.2 + a / 100.0
-            };
+            let a = t.params.f("RTL_ALTITUDE", -1.0);
+            let alt = if a < 0.0 { st.alt } else { st.home.2 + a };
             (st.home.0, st.home.1, rtl_r, TargetKind::Rtl, alt)
         } else {
             // planes can't stop: every other mode circles the hold point

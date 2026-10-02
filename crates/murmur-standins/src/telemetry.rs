@@ -475,8 +475,8 @@ fn autopilot_version(v: &Vehicle) -> MavMessage {
             | C::MAV_PROTOCOL_CAPABILITY_MISSION_RALLY
             | C::MAV_PROTOCOL_CAPABILITY_MAVLINK2,
         uid: u64::from(v.cfg.uid()),
-        // 4.7.0, FIRMWARE_VERSION_TYPE_DEV
-        flight_sw_version: 0x0407_0000,
+        // 4.8.0, FIRMWARE_VERSION_TYPE_DEV
+        flight_sw_version: 0x0408_0000,
         middleware_sw_version: 0,
         os_sw_version: 0,
         board_version: 0,

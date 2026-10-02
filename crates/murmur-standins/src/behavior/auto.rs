@@ -6,11 +6,11 @@
 
 use mavlink::dialects::ardupilotmega::{MISSION_ITEM_INT_DATA, MavCmd, MavFrame, MavSeverity};
 
+use super::apmission;
 use crate::kinematics::{Out, State};
 use crate::mission::Mission;
 
-/// MAV_CMD ids below this are navigation commands (MAV_CMD_NAV_LAST).
-const NAV_LAST: u32 = 95;
+pub use crate::mission::is_nav;
 
 #[derive(Debug, Default)]
 pub struct Auto {
@@ -50,36 +50,6 @@ pub struct Nav {
     /// metres above MSL
     pub alt: f64,
     pub item: MISSION_ITEM_INT_DATA,
-}
-
-pub fn is_nav(c: MavCmd) -> bool {
-    (c as u32) < NAV_LAST
-}
-
-/// AP_Mission::Mission_Command::type() for the commands the stand-ins see.
-pub fn type_name(c: MavCmd) -> &'static str {
-    use MavCmd::*;
-    match c {
-        MAV_CMD_NAV_WAYPOINT => "WP",
-        MAV_CMD_NAV_SPLINE_WAYPOINT => "SplineWP",
-        MAV_CMD_NAV_RETURN_TO_LAUNCH => "RTL",
-        MAV_CMD_NAV_LOITER_UNLIM => "LoitUnlim",
-        MAV_CMD_NAV_LOITER_TIME => "LoitTime",
-        MAV_CMD_NAV_LOITER_TURNS => "LoitTurns",
-        MAV_CMD_NAV_LOITER_TO_ALT => "LoitAltitude",
-        MAV_CMD_NAV_TAKEOFF => "Takeoff",
-        MAV_CMD_NAV_LAND => "Land",
-        MAV_CMD_NAV_VTOL_TAKEOFF => "VTOLTakeoff",
-        MAV_CMD_NAV_VTOL_LAND => "VTOLLand",
-        MAV_CMD_NAV_DELAY => "Delay",
-        MAV_CMD_DO_CHANGE_SPEED => "ChangeSpeed",
-        MAV_CMD_DO_SET_HOME => "SetHome",
-        MAV_CMD_DO_JUMP => "Jump",
-        MAV_CMD_DO_LAND_START => "LandStart",
-        MAV_CMD_DO_VTOL_TRANSITION => "VTOLTransition",
-        MAV_CMD_CONDITION_DELAY => "CondDelay",
-        _ => "?",
-    }
 }
 
 /// Altitude of a mission item, metres above MSL.
@@ -179,11 +149,7 @@ impl Auto {
                 let run = m.jumps.entry(m.seq).or_insert(0);
                 if times < 0 || *run < times {
                     *run += 1;
-                    let text = if times < 0 {
-                        format!("Mission: {} Jump {}/unlimited", m.seq, *run)
-                    } else {
-                        format!("Mission: {} Jump {}/{}", m.seq, *run, times)
-                    };
+                    let text = apmission::jump_text(m.seq, *run, times);
                     out.push(Out::Text(MavSeverity::MAV_SEVERITY_INFO, text));
                     m.seq = target;
                 } else {
@@ -196,10 +162,7 @@ impl Auto {
             }
             if !is_nav(it.command) {
                 if self.started != Some(m.seq) {
-                    out.push(Out::Text(
-                        MavSeverity::MAV_SEVERITY_INFO,
-                        format!("Mission: {} {}", m.seq, type_name(it.command)),
-                    ));
+                    apmission::started(m.seq, it.command, out);
                 }
                 m.seq += 1;
                 self.started = None;
@@ -207,10 +170,7 @@ impl Auto {
             }
             if self.started != Some(m.seq) {
                 self.started = Some(m.seq);
-                out.push(Out::Text(
-                    MavSeverity::MAV_SEVERITY_INFO,
-                    format!("Mission: {} {}", m.seq, type_name(it.command)),
-                ));
+                apmission::started(m.seq, it.command, out);
             }
             let pos =
                 (it.x != 0 || it.y != 0).then(|| (f64::from(it.x) / 1e7, f64::from(it.y) / 1e7));

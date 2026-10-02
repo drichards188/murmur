@@ -101,6 +101,10 @@ pub fn is_nav(cmd: MavCmd) -> bool {
 /// Navigation commands each firmware's start_command handles; the rest are skipped.
 fn supported(fw: Firmware, cmd: MavCmd) -> bool {
     use MavCmd::*;
+    if fw == Firmware::Blimp {
+        // ModeAuto::start_command: waypoints only; everything else is "Command not supported"
+        return cmd == MAV_CMD_NAV_WAYPOINT;
+    }
     let common = matches!(
         cmd,
         MAV_CMD_NAV_WAYPOINT
@@ -122,7 +126,7 @@ fn supported(fw: Firmware, cmd: MavCmd) -> bool {
                     | MAV_CMD_NAV_VTOL_TAKEOFF
                     | MAV_CMD_NAV_VTOL_LAND
             ),
-            Firmware::Copter | Firmware::Blimp => matches!(
+            Firmware::Copter => matches!(
                 cmd,
                 MAV_CMD_NAV_TAKEOFF
                     | MAV_CMD_NAV_LAND
@@ -132,7 +136,7 @@ fn supported(fw: Firmware, cmd: MavCmd) -> bool {
             ),
             // ArduSub: NAV_LAND = surface at the location
             Firmware::Sub => matches!(cmd, MAV_CMD_NAV_LAND),
-            Firmware::Rover | Firmware::Tracker => false,
+            Firmware::Rover | Firmware::Tracker | Firmware::Blimp => false,
         }
 }
 
@@ -166,7 +170,14 @@ impl Mission {
     pub fn advance(&mut self, out: &mut Vec<Out>) {
         self.seq = self.seq.saturating_add(1);
         self.loiter = None;
-        out.push(Out::MissionCurrent(self.seq));
+        // past the last item the mission is over, and AP_Mission keeps reporting the last one
+        // (the walker settles on it in `finish`)
+        out.push(Out::MissionCurrent(self.seq.min(self.last())));
+    }
+
+    /// The last item's seq (0 when the mission is empty).
+    fn last(&self) -> u16 {
+        self.items.len().saturating_sub(1) as u16
     }
 
     pub fn reached(&mut self, out: &mut Vec<Out>) {
@@ -185,9 +196,10 @@ impl Mission {
         self.advance(out);
     }
 
-    /// Install a completed upload. Same bookkeeping as ArduPilot: start at item 1 (0 is home).
+    /// Install a completed upload. Same bookkeeping as ArduPilot: the current item stays 0
+    /// (home) until the mission starts; AUTO then begins at item 1.
     pub fn install(&mut self, items: Vec<MISSION_ITEM_INT_DATA>) {
-        self.seq = if items.len() > 1 { 1 } else { 0 };
+        self.seq = 0;
         self.items = items;
         self.restart_state();
     }
@@ -491,9 +503,11 @@ impl Mission {
         }
     }
 
-    /// The mission ran out (exit_mission / exit_mission_callback).
+    /// The mission ran out (exit_mission / exit_mission_callback). The current item stays the
+    /// last one, as AP_Mission keeps reporting it.
     fn finish(&mut self, st: &State) {
         self.complete = true;
+        self.seq = self.last();
         self.end_point = self.last_nav.or(Some((st.lat, st.lon, st.alt)));
         match self.cfg.firmware {
             Firmware::Plane => {
@@ -799,6 +813,31 @@ mod tests {
         // entering AUTO again restarts a finished mission
         m.start_or_resume(false);
         assert_eq!((m.seq, m.complete), (1, false));
+    }
+
+    #[test]
+    fn a_mission_is_at_item_0_until_it_starts_and_keeps_its_last_item_at_the_end() {
+        let items = || vec![wp(0, NAV, 0., 0.), wp(1, NAV, 0., 0.), wp(2, NAV, 0., 0.)];
+        let st = state();
+        let mut m = mission(Firmware::Rover, items());
+        assert_eq!(
+            m.seq, 0,
+            "installed, not started: AP_Mission has no current command"
+        );
+        m.auto_target(&st, 5.0, 0.0, 200.0);
+        assert_eq!(m.seq, 1, "AUTO starts at item 1");
+        assert!(m.out.contains(&Out::MissionCurrent(1)));
+        // both items done: the walker runs off the end, the current item stays the last one
+        let mut out = Vec::new();
+        m.advance(&mut out);
+        m.advance(&mut out);
+        assert_eq!(
+            out.last(),
+            Some(&Out::MissionCurrent(2)),
+            "never reports past the end"
+        );
+        let t = m.auto_target(&st, 5.0, 0.0, 200.0);
+        assert_eq!((m.seq, m.complete, t.kind), (2, true, TargetKind::Hold));
     }
 
     #[test]

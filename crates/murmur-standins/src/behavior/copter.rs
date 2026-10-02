@@ -95,6 +95,8 @@ const LAND_DETECT_S: f64 = 1.0;
 const YAW_RATE_DPS: f64 = 60.0;
 /// AUTO_OPTIONS bit 0: arming in AUTO allowed (Murmur sets AUTO_OPTIONS 3)
 const AUTO_ALLOWS_ARMING: bool = true;
+/// BRAKE_MODE_DECEL_RATE_MSS (config.h)
+const BRAKE_DECEL: f64 = 7.5;
 /// MAV_CMD_COMPONENT_ARM_DISARM param2 that forces a disarm
 const FORCE_DISARM: f32 = 21196.0;
 
@@ -450,6 +452,13 @@ impl Copter {
                 stop: true,
                 vert: Vert::Land,
             },
+            // BRAKE: a zero velocity target, so it stops where the braking ends (not back at
+            // the entry point), at the altitude it had; the stick plays no part
+            "BRAKE" => Goal {
+                to: None,
+                stop: true,
+                vert: Vert::Alt(self.hold_alt),
+            },
             "RTL" | "SMART_RTL" => self.rtl_goal(st),
             "AUTO" => self.auto_goal(t),
             m if pilot_throttle(m) => match self.guided {
@@ -627,7 +636,12 @@ impl Copter {
         let k = self.k;
         let st = &mut *t.st;
         let to = if self.landed { None } else { g.to };
-        hover(st, &mut self.vel, to, g.stop, k.wp_spd, k.wp_acc, dt);
+        let acc = if st.mode == "BRAKE" {
+            BRAKE_DECEL
+        } else {
+            k.wp_acc
+        };
+        hover(st, &mut self.vel, to, g.stop, k.wp_spd, acc, dt);
         // vertical
         let ground = st.home.2;
         let touched = match g.vert {
@@ -817,6 +831,7 @@ mod tests {
     const GUIDED: u32 = 4;
     const LOITER: u32 = 5;
     const RTL: u32 = 6;
+    const BRAKE: u32 = 17;
 
     fn copter() -> Sim {
         Sim::new("copter", 12.0, None)
@@ -897,6 +912,30 @@ mod tests {
     }
 
     #[test]
+    fn brake_stops_where_it_is_and_holds_altitude_with_no_throttle() {
+        let mut s = copter();
+        s.mission(&[
+            (TAKEOFF, 0.0, 0.0, 20.0),
+            (MavCmd::MAV_CMD_NAV_WAYPOINT, 400.0, 0.0, 20.0),
+        ]);
+        s.arm(true);
+        s.mode(AUTO);
+        s.until(60.0, |s| s.st.speed > 5.0 && s.rel_alt() > 19.0)
+            .expect("under way");
+        assert_eq!(s.mode(BRAKE), OK);
+        s.until(10.0, |s| s.st.speed < 0.1).expect("stops");
+        let (lat, lon, alt) = (s.st.lat, s.st.lon, s.st.alt);
+        assert!(
+            s.dist_to(400.0, 0.0) > 20.0,
+            "it stopped short of the waypoint"
+        );
+        s.run(60.0);
+        assert!(s.st.armed, "BRAKE never lands or disarms");
+        assert_eq!((s.st.lat, s.st.lon, s.st.alt), (lat, lon, alt));
+        assert_eq!(s.st.mode, "BRAKE");
+    }
+
+    #[test]
     fn mission_from_the_ground_takes_off_flies_and_lands() {
         let mut s = copter();
         s.mission(&[
@@ -905,6 +944,7 @@ mod tests {
             (MavCmd::MAV_CMD_NAV_LAND, -60.0, 60.0, 0.0),
         ]);
         assert_eq!(s.mode(LOITER), OK);
+        s.mission.set_current(1);
         assert_eq!(s.arm(true), OK);
         assert_eq!(s.mode(AUTO), OK);
         s.until(120.0, |s| !s.st.armed).expect("lands and disarms");

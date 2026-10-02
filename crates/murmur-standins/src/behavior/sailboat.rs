@@ -27,7 +27,7 @@ use super::rover::{self, Goal, Nav};
 use super::{Behavior, Tick, modes};
 use crate::config::Spec;
 use crate::geo::{bearing_deg, distance_m, wrap180};
-use crate::kinematics::{Out, integrate};
+use crate::kinematics::{Out, State, integrate};
 
 /// SAILBOAT_NOGO_PAD: the no-go zone is padded by this much before the sailing heading
 /// controller takes over
@@ -226,7 +226,11 @@ impl Behavior for Sailboat {
         rover::accepts_mode(name)
     }
 
-    fn marine(&self) -> bool {
+    fn arming_refusal(&self, st: &State) -> Option<&'static str> {
+        rover::arming_refusal(st.mode)
+    }
+
+    fn wants_conditions(&self) -> bool {
         true
     }
 

@@ -12,12 +12,12 @@
 //! from far away it reaches the ground first and skims the rest of the way).
 //!
 //! Movement: the autopilot commands a ground velocity toward the target (at most WP_VEL in
-//! AUTO, LOIT_MAX_VEL_X otherwise, both seeded from the catalog's cruise speed; slowing as it
+//! AUTO, LOIT_MAX_VELX otherwise, both seeded from the catalog's cruise speed; slowing as it
 //! closes in) and the fins supply whatever air velocity that takes against the wind, up to the
 //! catalog's max_mps. When the wind is stronger than that it cannot make headway and drifts
 //! downwind while pushing. MANUAL and HOLD give no thrust (no RC), and a disarmed blimp in
 //! the air drifts with the wind; on the ground without thrust it stays put (moored). Wind from
-//! tidewater (marine() gives the samples); without it, still air. Climbs at LOIT_MAX_VEL_Z
+//! tidewater (wants_conditions() gives the samples); without it, still air. Climbs at LOIT_MAX_VELZ
 //! (the catalog's climb_mps); LAND descends at half of it, as Blimp's ModeLand.
 
 use mavlink::dialects::ardupilotmega::{MavCmd, MavFrame, MavParamType, MavSeverity, MavType};
@@ -184,13 +184,13 @@ impl Behavior for Blimp {
         false
     }
 
-    /// Not marine: it needs tidewater's wind, and `marine()` is what gives a behavior samples.
-    fn marine(&self) -> bool {
+    /// It needs tidewater's wind.
+    fn wants_conditions(&self) -> bool {
         true
     }
 
     /// Blimp's waypoint and loiter limits, seeded from the catalog (SITL Blimp's defaults are
-    /// for a small indoor envelope: WP_VEL 0.4, LOIT_MAX_VEL_* 0.5 / 0.4 m/s)
+    /// for a small indoor envelope: WP_VEL 0.4, LOIT_MAX_VEL* 0.5 / 0.4 m/s)
     fn extra_params(&self, spec: &Spec) -> Vec<(&'static str, MavParamType, f32)> {
         use MavParamType::MAV_PARAM_TYPE_REAL32 as F32;
         let cruise = spec.cruise_mps as f32;
@@ -199,9 +199,9 @@ impl Behavior for Blimp {
             ("WP_RADIUS", F32, 1.0),
             ("WP_VEL", F32, cruise),
             ("WP_ACCEL", F32, ACCEL_MPS2 as f32),
-            ("LOIT_MAX_VEL_X", F32, cruise),
-            ("LOIT_MAX_VEL_Y", F32, cruise),
-            ("LOIT_MAX_VEL_Z", F32, climb),
+            ("LOIT_MAX_VELX", F32, cruise),
+            ("LOIT_MAX_VELY", F32, cruise),
+            ("LOIT_MAX_VELZ", F32, climb),
         ]
     }
 
@@ -225,10 +225,10 @@ impl Behavior for Blimp {
         let cruise = if self.mode == "AUTO" {
             t.params.f("WP_VEL", t.spec.cruise_mps)
         } else {
-            t.params.f("LOIT_MAX_VEL_X", t.spec.cruise_mps)
+            t.params.f("LOIT_MAX_VELX", t.spec.cruise_mps)
         };
         let max_air = t.spec.max_mps.max(t.spec.cruise_mps);
-        let climb = t.params.f("LOIT_MAX_VEL_Z", t.spec.climb_mps()).max(0.1);
+        let climb = t.params.f("LOIT_MAX_VELZ", t.spec.climb_mps()).max(0.1);
         // what the autopilot asks for: a ground velocity (east, north, up), or no thrust at all
         let mut want: Option<(f64, f64, f64)> = None;
         let mut goto = |st: &State, lat: f64, lon: f64, alt: f64| {

@@ -476,7 +476,7 @@ async fn vehicle_events_reach_the_audit_log() {
     assert_eq!(r.run_until_finished(out.id, 60).await, State::Done);
     assert!(
         r.events("vehicle.event") >= 1,
-        "the mode change to LOITER is logged"
+        "the mode change to BRAKE is logged"
     );
     r.replays();
 }

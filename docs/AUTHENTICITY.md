@@ -33,14 +33,24 @@ simulation beyond detection models.
 Shared machinery, keyed by the ArduPilot firmware a behavior imitates (from its mode table),
 so a new behavior inherits it:
 
-- **Parameters** (`params.rs`): ArduPilot names and types, seeded from ArduPilot defaults,
-  Murmur's `sim/params/*.parm` and the catalog; PARAM_SET / READ / LIST as GCS_Param.cpp.
+- **Parameters** (`params.rs`): ArduPilot 4.8 names and types (`WP_RADIUS_M`, `RTL_ALTITUDE`,
+  `LOIT_MAX_VELX`; never the pre-4.8 `WPNAV_*`, `ALT_HOLD_RTL`), seeded from ArduPilot
+  defaults, Murmur's `sim/params/*.parm` and the catalog; PARAM_SET / READ / LIST as
+  GCS_Param.cpp; the version banner and AUTOPILOT_VERSION say 4.8.0-dev, as the SITL build.
   Only the parameters a C2 touches, not all ~1,000.
 - **Rates** (`telemetry.rs`): heartbeat only until the GCS sets intervals, as ArduPilot with
   `common.parm`. An acoustic-linked vehicle under water sends HEARTBEAT + HIGH_LATENCY2 every
   20 s instead of streaming.
+- **Commands and refusals** (`commands.rs`): COMMAND_LONG and COMMAND_INT through one table
+  that knows which commands each firmware handles (Blimp has no MISSION_START, RTL or
+  DO_CHANGE_SPEED and ACKs NAV_TAKEOFF ACCEPTED), mode changes that fail with the firmware's
+  words ("No such mode N"; ArduRover's "Flight mode change failed"), and arming refusals a
+  behavior supplies (ArduRover: "Arm: Mode not armable" in RTL, SMART_RTL, INITIALISING).
 - **Missions** (`mission.rs`): upload and download for mission, fence and rally; DO_ items run,
   never flown; loiter, delay, RTL and land items per firmware; each firmware's mission end.
+  A new mission sits at item 0 until AUTO starts, and a finished one keeps its last item
+  as the current one, as AP_Mission reports. The "Mission: N Type" texts come from one
+  helper (`behavior/apmission.rs`).
 - **Failures**: battery drained by load over the catalog endurance, battery and GCS-loss
   failsafes per firmware with ArduPilot's texts (`battery.rs`, `failsafe.rs`).
 - **Truth vs reported** (`nav.rs`): without GPS the estimate drifts (INS heading and DVL scale
@@ -59,6 +69,11 @@ thresholds) are marked in `params.rs`.
 - **Dead reckoning**: a sub with relative position only (EKF_POS_HORIZ_REL without ABS, or
   HIGH_LATENCY2's GPS failure flag) is navigation-ready with `nav_source = dead_reckoning`,
   shown as DR in the console and recorded by the readiness rule. Other kinds need GNSS.
+- **Hold** commands the mode that keeps a vehicle where it is with no RC transmitter and no
+  further messages (`tasks/caps.rs` has the reasoning per kind): BRAKE for a copter (LOITER
+  and POSHOLD read the throttle stick, so with no RC they descend, land and disarm), LOITER
+  for a boat (HOLD only stops the motors, so a current carries it off), a plane, a VTOL and
+  a blimp, HOLD for a ground vehicle, POSHOLD for a sub, STOP for a tracker.
 - **Fixed-wing RTL** is done within its RTL circle plus 250 m: RTL_RADIUS (or WP_LOITER_RAD
   when 0), read at link-up, never tighter than the catalog's minimum turn radius.
 
@@ -81,12 +96,22 @@ Video metadata for all ISR aircraft: MISB ST 0601 / STANAG 4609 (open, well supp
 ## Per platform
 
 "Today" = how the node runs in the default fleet. The Rust engine (`crates/murmur-standins`)
-has copter and VTOL (QuadPlane) behaviors, checked against ArduPilot SITL by
-`sim/tests/standins_vs_sitl_air.py`, so X10, FPV and FVR-90 can run as stand-ins with
-`sim = "standin"`. Airship, ground vehicle and sailboat behaviors are there too; still
-the antenna tracker too (`behavior/tracker.rs`: AntennaTracker modes, SYSID_TARGET, slew
-and range limits, the long way round, checked by `sim/tests/standins_vs_sitl_tracker.py`).
-Nothing is missing now.
+has a behavior for each of these, named as `behavior` in `sim/platforms.toml`:
+
+| Behavior | Imitates | Checked by |
+|---|---|---|
+| `plane` | ArduPlane | parity with the Python stand-in it was ported from (that check retired with it in R.5); not yet against SITL |
+| `boat` | ArduRover, boat frame | same |
+| `drifter` | no autopilot: an Iridium-style buoy | same |
+| `sub` | ArduSub | same |
+| `copter` | ArduCopter | `sim/tests/standins_vs_sitl_air.py` |
+| `vtol` | ArduPlane QuadPlane | `sim/tests/standins_vs_sitl_air.py` |
+| `blimp` | ArduPilot Blimp | `sim/tests/standins_sitl_blimp_ugv_sailboat.py` |
+| `ugv` | ArduRover, skid-steer | `sim/tests/standins_sitl_blimp_ugv_sailboat.py` |
+| `sailboat` | ArduRover, sailboat frame | `sim/tests/standins_sitl_blimp_ugv_sailboat.py` |
+| `tracker` | ArduPilot AntennaTracker | `sim/tests/standins_vs_sitl_tracker.py` |
+
+Every platform in the catalog can run as a stand-in with `sim = "standin"`.
 
 ### Air
 
