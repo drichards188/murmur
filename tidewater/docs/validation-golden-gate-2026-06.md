@@ -32,4 +32,101 @@ Caveat: station anemometers are not at the model's 10 m height or exposure.
 
 ## Currents
 
-No active NOAA current meter (PORTS) inside the area for this window, so currents are **not validated against observations** here. They are NOAA harmonic predictions, interpolated between stations.
+No active NOAA current meter (PORTS) sits inside the scenario area, so the current layers are
+scored at the three active meters in central San Francisco Bay (scenario `sf-bay-currents-2026-06`,
+same window): Oakland Outer Harbor, Oakland Inner Harbor and Southampton Shoal. Each layer is
+sampled at the meter's position and real-time bin depth and compared with the 6-minute observations.
+
+- **NOAA prediction at the meter**: the harmonic prediction for that meter's own station and bin.
+  Not available at a place without a station; it is the reference for how good a prediction can be.
+- **station IDW, meter's own station left out**: the default layer where no station exists,
+  which is the interpolation error the model is meant to remove.
+- **SFBOFS model**: the nowcast layer (hourly, mesh interpolation), without the station fallback.
+
+Speed RMSE and bias compare speed magnitudes. Direction error is the circular difference of
+direction toward, over samples where the observed speed exceeds 0.3 m/s (direction is noise near
+slack). Phase lag is the time shift of the layer that best fits the observed along-channel
+(principal axis) velocity, searched over +-3 h in 6-minute steps; positive means the layer's tide
+turns later than observed.
+
+### Meter Southampton Shoal Channel LB6 (s08010), bin 4 at 6.7 m
+
+Observed 622 samples at 37.9162, -122.4223: mean speed 0.56 m/s, max 1.24 m/s, principal axis 163 deg.
+
+| layer | speed RMSE | speed bias | vector RMSE | direction error (MAE / bias) | phase lag |
+|---|---|---|---|---|---|
+| NOAA prediction at the meter | 0.14 m/s | +0.04 m/s | 0.21 m/s | 13 / +13 deg | +0 min |
+| station IDW, meter's own station left out | 0.16 m/s | -0.05 m/s | 0.20 m/s | 10 / -9 deg | +12 min |
+| SFBOFS model | 0.11 m/s | -0.05 m/s | 0.13 m/s | 5 / +3 deg | -6 min |
+
+### Meter Oakland Outer Harbor LB3 (s09010), bin 2 at 4.3 m
+
+Observed 123 samples at 37.8082, -122.3443: mean speed 0.39 m/s, max 0.85 m/s, principal axis 4 deg.
+
+| layer | speed RMSE | speed bias | vector RMSE | direction error (MAE / bias) | phase lag |
+|---|---|---|---|---|---|
+| NOAA prediction at the meter | 0.14 m/s | -0.07 m/s | 0.17 m/s | 11 / +2 deg | +6 min |
+| station IDW, meter's own station left out | 0.27 m/s | +0.12 m/s | 0.35 m/s | 19 / -19 deg | +54 min |
+| SFBOFS model | 0.20 m/s | -0.08 m/s | 0.24 m/s | 11 / -4 deg | +24 min |
+
+### Meter Oakland Inner Harbor LB4 (s10010), bin 2 at 4.3 m
+
+Observed 720 samples at 37.8010, -122.3477: mean speed 0.50 m/s, max 0.95 m/s, principal axis 163 deg.
+
+| layer | speed RMSE | speed bias | vector RMSE | direction error (MAE / bias) | phase lag |
+|---|---|---|---|---|---|
+| NOAA prediction at the meter | 0.14 m/s | +0.02 m/s | 0.18 m/s | 9 / +5 deg | +6 min |
+| station IDW, meter's own station left out | 0.24 m/s | -0.20 m/s | 0.25 m/s | 9 / +4 deg | +0 min |
+| SFBOFS model | 0.11 m/s | +0.01 m/s | 0.15 m/s | 9 / -7 deg | +12 min |
+
+### Summary over the meters
+
+| layer | speed RMSE (rms over meters) | vector RMSE | mean abs phase lag |
+|---|---|---|---|
+| NOAA prediction at the meter | 0.14 m/s | 0.19 m/s | 4 min |
+| station IDW, meter's own station left out | 0.23 m/s | 0.28 m/s | 22 min |
+| SFBOFS model | 0.15 m/s | 0.18 m/s | 14 min |
+
+### SFBOFS against NOAA predictions at prediction stations
+
+| station | depth | peak predicted | speed RMSE | speed bias | direction error (MAE / bias) | phase lag |
+|---|---|---|---|---|---|---|
+| SFB1201 | 6 m | 2.43 m/s | 0.31 m/s | -0.12 m/s | 11 / +8 deg | +20 min |
+| SFB1201 | 18 m | 2.42 m/s | 0.24 m/s | -0.08 m/s | 7 / +5 deg | +10 min |
+| SFB1201 | 38 m | 2.32 m/s | 0.16 m/s | -0.04 m/s | 7 / +7 deg | +0 min |
+| SFB1202 | 6 m | 1.80 m/s | 0.23 m/s | -0.05 m/s | 12 / -5 deg | +20 min |
+| SFB1202 | 16 m | 1.86 m/s | 0.19 m/s | -0.07 m/s | 4 / -1 deg | +10 min |
+| SFB1202 | 38 m | 1.54 m/s | 0.15 m/s | -0.07 m/s | 8 / +3 deg | +0 min |
+| SFB1203 | 9 m | 1.70 m/s | 0.15 m/s | -0.03 m/s | 13 / +7 deg | +10 min |
+| SFB1203 | 21 m | 1.77 m/s | 0.14 m/s | -0.08 m/s | 8 / +4 deg | +10 min |
+| SFB1203 | 61 m | 1.62 m/s | 0.25 m/s | +0.11 m/s | 6 / +1 deg | +10 min |
+| SFB1204 | 1 m | 1.41 m/s | 0.13 m/s | -0.00 m/s | 8 / -5 deg | +20 min |
+| SFB1204 | 6 m | 1.28 m/s | 0.10 m/s | -0.02 m/s | 8 / -8 deg | +10 min |
+| SFB1204 | 17 m | 0.90 m/s | 0.09 m/s | +0.03 m/s | 11 / -11 deg | +10 min |
+| SFB1205 | 4 m | 1.80 m/s | 0.18 m/s | -0.09 m/s | 6 / +3 deg | +10 min |
+| SFB1205 | 8 m | 1.70 m/s | 0.19 m/s | -0.12 m/s | 4 / -1 deg | +10 min |
+| SFB1205 | 17 m | 1.30 m/s | 0.18 m/s | -0.11 m/s | 5 / +1 deg | +10 min |
+| SFB1206 | 1 m | 1.47 m/s | 0.17 m/s | -0.07 m/s | 10 / +6 deg | +20 min |
+| SFB1206 | 5 m | 1.38 m/s | 0.17 m/s | -0.09 m/s | 4 / +3 deg | +20 min |
+| SFB1206 | 11 m | 1.09 m/s | 0.13 m/s | -0.08 m/s | 3 / +0 deg | +20 min |
+| SFB1209 | 4 m | 1.51 m/s | 0.24 m/s | +0.13 m/s | 10 / +2 deg | +20 min |
+| SFB1209 | 12 m | 1.39 m/s | 0.16 m/s | +0.09 m/s | 9 / +4 deg | +20 min |
+| SFB1209 | 26 m | 1.14 m/s | 0.10 m/s | +0.02 m/s | 14 / +10 deg | +10 min |
+| SFB1210 | 1 m | 0.87 m/s | 0.19 m/s | +0.11 m/s | 17 / -11 deg | +40 min |
+| SFB1210 | 4 m | 0.68 m/s | 0.12 m/s | +0.06 m/s | 8 / -4 deg | +40 min |
+| SFB1210 | 7 m | 0.50 m/s | 0.10 m/s | +0.06 m/s | 4 / +0 deg | +40 min |
+| SFB1211 | 2 m | 1.38 m/s | 0.26 m/s | +0.22 m/s | 7 / +5 deg | +10 min |
+| SFB1211 | 9 m | 1.20 m/s | 0.09 m/s | +0.05 m/s | 8 / +7 deg | +10 min |
+| SFB1211 | 23 m | 1.09 m/s | 0.10 m/s | -0.03 m/s | 11 / +10 deg | +0 min |
+| SFB1220 | 5 m | 1.95 m/s | 0.18 m/s | +0.07 m/s | 8 / -0 deg | +10 min |
+| SFB1220 | 13 m | 1.79 m/s | 0.15 m/s | +0.05 m/s | 6 / +1 deg | +10 min |
+| SFB1220 | 29 m | 1.47 m/s | 0.14 m/s | +0.05 m/s | 9 / -1 deg | +0 min |
+
+Across 30 station bins: speed RMSE 0.17 m/s (rms over bins), median phase lag +10 min.
+
+Caveats: three meters in three days is a small sample, and all are in harbors and channels of the
+central and north bay, not at the Golden Gate, so Gate-scale accuracy is inferred, not measured.
+The Oakland Inner Harbor channel is narrower than the SFBOFS cells there. Observations come from
+ADCP bins with their own noise (a few cm/s), and the SFBOFS nowcast is one hourly record per hour,
+so the comparison cannot separate model error from sub-hour structure. The prediction-station
+table compares two models of the tide, not a model with the truth.

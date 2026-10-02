@@ -25,6 +25,7 @@ import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import numpy as np
 from scipy.spatial import cKDTree
@@ -87,10 +88,13 @@ class SfbofsCurrents:
         def mm(a):  # int16 millimetres per second, as the fetch stores it
             return a if a.dtype.kind == "i" else np.clip(np.rint(a / VEL_SCALE), -32767, 32767).astype(np.int16)
 
-        np.savez_compressed(path, lon=self.lon.astype(np.float32), lat=self.lat.astype(np.float32),
+        path = Path(path)
+        tmp = path.with_name(path.stem + ".partial.npz")  # an interrupted write must not look like a cache
+        np.savez_compressed(tmp, lon=self.lon.astype(np.float32), lat=self.lat.astype(np.float32),
                             h=self.h.astype(np.float32), tri=self.tri.astype(np.int32),
                             sigma=self.sigma.astype(np.float32), times=self.times, u=mm(self.u), v=mm(self.v),
                             zeta=self.zeta.astype(np.float32), source=source, files=files)
+        tmp.replace(path)
 
     @property
     def time_range(self):

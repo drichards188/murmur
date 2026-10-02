@@ -13,6 +13,7 @@ adapters translate.
 | terrain | NOAA NCEI DEM mosaic image service | ~15 m in the Golden Gate scenario | One topobathy grid gives both land mask and depth. NAVD88 for US coastal DEMs. |
 | tide | NOAA CO-OPS predictions, one station | 6 min | Datum requested to match the DEM. |
 | currents | NOAA CO-OPS current predictions, all stations and depth bins in the area | 6 min (harmonic) or slack/max events (subordinate) | Subordinate events interpolated with a half-cosine. IDW between stations. Stations with no published flood/ebb axis are skipped. |
+| currents (model) | NOAA SFBOFS nowcast (FVCOM mesh, 20 layers), AWS Open Data, subset by range request | hourly, 150 to 260 m cells at the Gate | `[currents] source = "sfbofs"`. Barycentric on the mesh, linear in depth and time; station IDW is the fallback outside the mesh and fetched hours. |
 | wind | Open-Meteo historical forecast API, NOAA HRRR | 3 km, hourly | Reanalysis (~25 km) was tried and badly under-reads the Golden Gate gap wind. |
 
 Everything is cached under `data/cache/<scenario>/` so a scenario runs offline after one
