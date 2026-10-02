@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { getOperator, type Decisions, type Intent } from './decisions'
+import { getOperator, type Decisions, type Intent, type Authorization } from './decisions'
 import type { BridgeState, LngLat, TaskKind, Tasking, Vehicle } from './types'
 
 const TRAIL_MAX = 120 // same cap as the bridge keeps
@@ -101,10 +101,15 @@ export interface TaskRequest {
   target?: number
 }
 
-/** What POST /api/tasks answers: 200 dispatched; 202 waiting for approval (`dispatched` is
- *  false and `intent_id` names the inbox item); 422 refused by the rules (TaskRefused). */
+/** What POST /api/tasks answers: 200 dispatched (with `authorization` when the task was in
+ *  a human tier and sending it was the operator's own approval); 202 waiting for approval
+ *  (`dispatched` is false and `intent_id` names the inbox item; a tier where the sender may
+ *  not authorize their own task); 422 refused by the rules (TaskRefused). */
 export interface TaskAnswer {
+  /** the tasking (command log entry), when dispatched */
+  id?: number | null
   intent_id?: number
+  authorization?: Authorization
   state?: string
   dispatched?: boolean
   detail?: string

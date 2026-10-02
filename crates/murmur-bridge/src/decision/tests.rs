@@ -44,7 +44,24 @@ struct Rig {
     log: MemorySink,
 }
 
+/// The sim policy as shipped (a human's own request in a human tier is approved at
+/// submission).
 fn rig() -> Rig {
+    rig_with(Policy::load(&root().join("sim/policy.toml")).expect("policy"))
+}
+
+/// The sim policy with `submitter_authorizes = false` everywhere: an operator's own request
+/// in a human tier waits in the inbox (as a two-person tier would), so the inbox paths run.
+fn waiting_rig() -> Rig {
+    let mut p = Policy::load(&root().join("sim/policy.toml")).expect("policy");
+    p.approval.submitter_authorizes = Some(false);
+    for t in &mut p.tiers {
+        t.submitter_authorizes = None;
+    }
+    rig_with(p)
+}
+
+fn rig_with(policy: Policy) -> Rig {
     let root = root();
     let world = World::new(Config {
         base_port: 0,
@@ -65,7 +82,7 @@ fn rig() -> Rig {
     let d = Decision::from_parts(
         world.clone(),
         Parts {
-            policy: Policy::load(&root.join("sim/policy.toml")).expect("policy"),
+            policy,
             catalog: Catalog::load(&root.join("sim/platforms.toml")).expect("catalog"),
             areas: AreaSet::load_dir(&root.join("sim/areas"), clock.now()).expect("areas"),
             sink: Box::new(log.clone()),
@@ -198,7 +215,7 @@ async fn auto_path_dispatches_and_finishes() {
 
 #[tokio::test(start_paused = true)]
 async fn human_path_waits_then_runs_once_approved() {
-    let r = rig();
+    let r = waiting_rig();
     r.vehicle(2, Firmware::Copter, "switchblade", (LAT, LON)); // armed
     sleep(Duration::from_millis(500)).await;
     let out = r.d.submit(&op1(), orbit(2)).await.expect("submit");
@@ -226,8 +243,57 @@ async fn human_path_waits_then_runs_once_approved() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn rejected_and_expired_intents_never_reach_a_vehicle() {
+async fn an_operators_own_human_tier_task_runs_at_once_an_agents_waits() {
     let r = rig();
+    r.vehicle(11, Firmware::Copter, "switchblade", (LAT, LON)); // armed
+    r.vehicle(12, Firmware::Copter, "switchblade", (LAT, LON + 0.001));
+    sleep(Duration::from_millis(500)).await;
+
+    // The operator's own request: the submission is the human decision.
+    let out = r.d.submit(&op1(), orbit(11)).await.expect("submit");
+    assert_eq!(out.state, State::Dispatched, "{}", r.reason(out.id));
+    assert!(out.tasking.is_some(), "dispatched now");
+    let auth = out.authorization.expect("authorized at submission");
+    assert_eq!(auth["by"], "op-1");
+    assert_eq!(auth["tier"], "armed-platform");
+    assert!(auth["why"].to_string().contains("armed"), "{auth}");
+    assert_eq!(out.intent["approval"]["at_submission"], true);
+    assert_eq!(out.intent["approval"]["self_approved"], true);
+    assert_eq!(r.events("approval.at_submission"), 1);
+    assert_eq!(r.events("approval.requested"), 0);
+
+    // An agent's proposal in the same tier waits in the inbox for an operator.
+    let proposal = proposal(&orbit(12)).expect("proposal");
+    let id = {
+        let mut guard = r.d.lock();
+        let world = r.d.snapshot();
+        let core = &mut *guard;
+        core.engine
+            .agent_port(AgentId::new("planner"))
+            .propose(
+                proposal,
+                Rationale::new("cover the east approach").expect("rationale"),
+                &world,
+                &r.d.terrain.oracle(),
+            )
+            .expect("propose")
+            .id()
+    };
+    assert_eq!(r.state(id), State::PendingApproval);
+    let inbox = r.d.inbox_json();
+    assert_eq!(inbox["counts"]["pending"], 1);
+    assert_eq!(inbox["pending"][0]["id"], id.0);
+    assert_eq!(inbox["pending"][0]["source"]["kind"], "agent");
+    let approved = r.d.approve(&op1(), id.0, None).await.expect("approve");
+    assert_eq!(approved.state, State::Dispatched);
+    assert!(approved.authorization.is_none(), "an inbox approval");
+    let report = r.replays();
+    assert_eq!((report.approvals, report.approvals_at_submission), (1, 1));
+}
+
+#[tokio::test(start_paused = true)]
+async fn rejected_and_expired_intents_never_reach_a_vehicle() {
+    let r = waiting_rig();
     r.vehicle(3, Firmware::Copter, "switchblade", (LAT, LON));
     r.vehicle(4, Firmware::Copter, "switchblade", (LAT, LON + 0.001));
     sleep(Duration::from_millis(500)).await;
@@ -291,7 +357,7 @@ async fn agents_propose_but_only_listed_operators_approve() {
 
 #[tokio::test(start_paused = true)]
 async fn the_world_voids_waiting_intents() {
-    let r = rig();
+    let r = waiting_rig();
     r.vehicle(6, Firmware::Copter, "switchblade", (LAT, LON));
     r.vehicle(7, Firmware::Copter, "switchblade", (LAT, LON + 0.001));
     sleep(Duration::from_millis(500)).await;

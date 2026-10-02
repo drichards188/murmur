@@ -26,6 +26,12 @@ group. Dates are 2026.
 - **Agents decide, they don't drive** (10-02). Intents only, deterministic rules layer,
   risk-tier policy, append-only audit, preview before approve. Open MCP-to-MAVLink servers
   that let a model fly directly are the anti-pattern.
+- **The operator's own command is the human decision** (10-02, user direction: "im the only
+  one who is clicking the UI ... the ai will interface through an api. those are the ones
+  that need human approval"). A console (or any operator-authenticated) submission in a
+  human tier is approved at submission (`approval.at_submission`, not `auto_approved`), so
+  the operator never waits on themselves; agent proposals in those tiers still wait in the
+  inbox. `submitter_authorizes = false` on a tier restores the wait (Phase E two-person).
 - **Space as taskable infrastructure** (10-02, user direction): request coverage and
   capabilities from satellites when needed; don't fly or command satellite buses (no CCSDS).
   One theater map for earthbound nodes, plus a space timeline and a globe inset; one camera

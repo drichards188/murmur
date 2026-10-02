@@ -15,6 +15,11 @@
 //! - area sets: each logged set's content hash matches its `sha256`, and every decision
 //!   references the set in force;
 //! - `self_approved` on every `approval.granted` matches who proposed the intent;
+//! - every `approval.at_submission` (a human's submission that is itself the approval):
+//!   the intent was just checked and passed, its recomputed policy decision is a human tier
+//!   that lets the submitter authorize, the source is a human (never an agent) and the
+//!   approver is that human; and an intent whose decision says the submitter authorizes is
+//!   not sent to the inbox instead;
 //! - space answers (collect, cover): each `space.query`'s content hash matches its
 //!   `sha256`, every decision references a logged answer, and a dispatched collect is the
 //!   chosen option. Rules re-decide from the logged answers, so this needs no space cache.
@@ -41,7 +46,7 @@ use crate::audit::{Event, EventBody, LogError, parse_log};
 use crate::engine::is_self_approval;
 use crate::hash::{GENESIS, sha256_hex};
 use crate::ids::IntentId;
-use crate::intent::{IntentSpec, State, Transition, next_state};
+use crate::intent::{IntentSpec, Source, State, Transition, next_state};
 use crate::policy::{self, Policy, Tier};
 use crate::rules;
 use crate::space::{SpaceAnswer, SpaceOracle, SpaceOrder};
@@ -69,6 +74,9 @@ pub struct ReplayReport {
     pub approvals: usize,
     /// Approvals where the approver also proposed the intent.
     pub self_approvals: usize,
+    /// Human submissions that were themselves the approval (`approval.at_submission`). Not
+    /// counted in `approvals` or `self_approvals`, which are inbox approvals.
+    pub approvals_at_submission: usize,
     /// SHA-256 of the last event: compare with an external anchor to detect a rewritten
     /// chain or a truncated tail.
     pub head_sha256: Option<String>,
@@ -101,8 +109,12 @@ struct Tracked {
     state: State,
     last_check_passed: Option<bool>,
     tier: Option<Tier>,
+    /// The recomputed decision's rule name and `submitter_authorizes`.
+    rule: Option<String>,
+    submitter_authorizes: bool,
     expires_t: Option<Time>,
     granted: bool,
+    granted_at_submission: bool,
     rejected_by_human: bool,
     expired: bool,
 }
@@ -283,8 +295,11 @@ fn replay_inner(
                         state: State::Proposed,
                         last_check_passed: None,
                         tier: None,
+                        rule: None,
+                        submitter_authorizes: false,
                         expires_t: None,
                         granted: false,
+                        granted_at_submission: false,
                         rejected_by_human: false,
                         expired: false,
                     },
@@ -382,6 +397,8 @@ fn replay_inner(
                     );
                 }
                 tr.tier = Some(again.tier);
+                tr.submitter_authorizes = again.submitter_authorizes;
+                tr.rule = Some(again.rule);
             }
             EventBody::ApprovalRequested { intent, expires_t } => {
                 let Some(tr) = intents.get_mut(intent) else {
@@ -464,6 +481,92 @@ fn replay_inner(
                     r.self_approvals += 1;
                 }
                 tr.granted = true;
+            }
+            EventBody::ApprovalAtSubmission {
+                intent,
+                by,
+                self_approved,
+                rule,
+                ..
+            } => {
+                let Some(tr) = intents.get_mut(intent) else {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "unknown intent",
+                        String::new(),
+                        String::new(),
+                    );
+                    continue;
+                };
+                if tr.state != State::Checked {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "approval at submission outside checked",
+                        json(&tr.state),
+                        json(&State::Checked),
+                    );
+                }
+                let submitter_ok = match &tr.spec.source {
+                    Source::Agent { id } => {
+                        bad(
+                            &mut r,
+                            e,
+                            Some(*intent),
+                            "agent-sourced intent approved at submission",
+                            by.to_string(),
+                            format!("agent {id}: only a human approves it, in the inbox"),
+                        );
+                        false
+                    }
+                    Source::Human { id } if id != by => {
+                        bad(
+                            &mut r,
+                            e,
+                            Some(*intent),
+                            "approval at submission by someone other than the submitter",
+                            by.to_string(),
+                            id.to_string(),
+                        );
+                        false
+                    }
+                    Source::Human { .. } => true,
+                };
+                if !*self_approved {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "self_approved flag differs",
+                        self_approved.to_string(),
+                        "true".into(),
+                    );
+                }
+                let allowed = tr.tier == Some(Tier::Human) && tr.submitter_authorizes;
+                if !allowed {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "approval at submission in a tier that doesn't allow it",
+                        rule.clone(),
+                        json(&(&tr.tier, &tr.rule, tr.submitter_authorizes)),
+                    );
+                } else if tr.rule.as_deref() != Some(rule.as_str()) {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "approval at submission names another tier",
+                        rule.clone(),
+                        json(&tr.rule),
+                    );
+                }
+                r.approvals_at_submission += 1;
+                tr.granted_at_submission = submitter_ok && allowed;
             }
             EventBody::ApprovalRejected { intent, .. } => {
                 if let Some(tr) = intents.get_mut(intent) {
@@ -724,6 +827,18 @@ fn unbacked(tr: &Tracked, t: Transition) -> Option<&'static str> {
         }
         Transition::RequireApproval if tr.tier != Some(Tier::Human) || tr.expires_t.is_none() => {
             Some("sent for approval without a human tier and a deadline")
+        }
+        Transition::RequireApproval if tr.submitter_authorizes => {
+            Some("sent for approval, but the submitter authorizes this tier")
+        }
+        Transition::AuthorizeAtSubmission
+            if !tr.granted_at_submission
+                || tr.last_check_passed != Some(true)
+                || tr.tier != Some(Tier::Human) =>
+        {
+            Some(
+                "approved at submission without passing checks, a human tier that allows it, and the submitter's approval.at_submission",
+            )
         }
         Transition::Approve if !tr.granted || tr.last_check_passed != Some(true) => {
             Some("approved without a human approval and a passing re-check")

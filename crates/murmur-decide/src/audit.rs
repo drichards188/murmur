@@ -140,6 +140,21 @@ pub enum EventBody {
         note: Option<String>,
     },
 
+    /// A human submitted an intent whose policy tier needs a human and lets the submitter
+    /// authorize (`submitter_authorizes`): the submission is the human decision. Distinct
+    /// from `approval.granted` (an inbox approval) and from `auto_approved` (no human), so
+    /// evaluation can tell the three apart. Never for an agent-sourced intent.
+    #[serde(rename = "approval.at_submission")]
+    ApprovalAtSubmission {
+        intent: IntentId,
+        by: OperatorId,
+        session: SessionId,
+        /// The approver is the submitter: always true, recorded like `approval.granted`'s.
+        self_approved: bool,
+        /// The policy tier that allowed it (`policy.decision`'s `rule`).
+        rule: String,
+    },
+
     #[serde(rename = "approval.rejected")]
     ApprovalRejected {
         intent: IntentId,

@@ -19,6 +19,18 @@ pub fn policy() -> Policy {
     Policy::load(&sim_dir().join("policy.toml")).unwrap()
 }
 
+/// The sim policy with every human tier set to `submitter_authorizes = false`: a human's own
+/// intent waits in the inbox like an agent's (how every run behaved before the switch, and
+/// what a two-person tier does). Tests of the inbox mechanics use it.
+pub fn waiting_policy() -> Policy {
+    let mut p = policy();
+    p.approval.submitter_authorizes = Some(false);
+    for t in &mut p.tiers {
+        t.submitter_authorizes = None;
+    }
+    p
+}
+
 pub fn areas() -> AreaSet {
     AreaSet::load_dir(&sim_dir().join("areas"), T0).unwrap()
 }
@@ -126,6 +138,18 @@ pub fn agent() -> Source {
 pub fn engine(clock: &ManualClock) -> (Engine, MemorySink) {
     let log = MemorySink::new();
     let e = Engine::new(policy(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    (e, log)
+}
+
+/// [`engine`] on [`waiting_policy`].
+pub fn waiting_engine(clock: &ManualClock) -> (Engine, MemorySink) {
+    let log = MemorySink::new();
+    let e = Engine::new(
+        waiting_policy(),
+        Box::new(clock.clone()),
+        Box::new(log.clone()),
+    )
+    .unwrap();
     (e, log)
 }
 

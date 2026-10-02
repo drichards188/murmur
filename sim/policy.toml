@@ -2,7 +2,19 @@
 #
 # Every intent that passes the rules is routed by the first [[tier]] whose `when` matches:
 #   tier = "auto"   approved by policy, dispatched without a human
-#   tier = "human"  waits in the operator's inbox; expires after approval.expire_s
+#   tier = "human"  needs a human decision. An agent's proposal waits in the operator's
+#                   inbox (expires after approval.expire_s). A human operator's own
+#                   submission IS a human decision: with submitter_authorizes = true it is
+#                   approved at submission (logged as approval.at_submission, approval
+#                   {by: the submitter, at_submission: true, self_approved: true}) and
+#                   dispatched; with submitter_authorizes = false it waits in the inbox too.
+# submitter_authorizes (on a human tier; default from [approval], which defaults to true)
+#   true   the submitting operator authorizes their own intent (one-operator console: no
+#          waiting on yourself). The checks still run first and still fail closed.
+#   false  even the submitter's own intent waits in the inbox for an approval (the hook for
+#          Phase E's two-person engagement; today the same operator may still approve it
+#          there, flagged self_approved). Neither value lets an agent authorize anything: an
+#          agent's proposal in a human tier always waits for a human, whatever this key says.
 # A `when` matches if every condition in it holds; an empty `when` matches everything.
 # Conditions:
 #   kind = [...]                  task kind is one of: orbit, patrol, hold, rtl, track,
@@ -28,6 +40,7 @@
 
 [approval]
 expire_s = 120
+submitter_authorizes = true                 # default for human tiers that don't set it
 
 [rules]
 max_fact_age_s = 10                         # older telemetry can't support a decision
@@ -67,6 +80,7 @@ name = "satellite-collect"
 when = { kind = ["collect"] }
 tier = "human"
 reason = "a satellite collection is tasked on a human's say-so"
+submitter_authorizes = true
 
 # A cover asks whether SATCOM or GNSS service holds over an area; it commands nothing, so it
 # runs on its own (an unverified check still sends it to a human).
@@ -81,18 +95,21 @@ name = "armed-platform"
 when = { armed = true }
 tier = "human"
 reason = "armed platforms always need a human (DoD Directive 3000.09)"
+submitter_authorizes = true
 
 [[tier]]
 name = "outside-approved-area"
 when = { leaves_approved_area = true }
 tier = "human"
 reason = "leaves the operator's approved area"
+submitter_authorizes = true
 
 [[tier]]
 name = "endurance-unknown"
 when = { unverified = ["reserves"] }
 tier = "human"
 reason = "endurance unknown: reserves after the task could not be estimated"
+submitter_authorizes = true
 
 [[tier]]
 name = "default"

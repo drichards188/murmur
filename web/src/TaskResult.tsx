@@ -1,9 +1,12 @@
-import type { Intent } from './decisions'
+import type { Authorization, Intent } from './decisions'
+import { tierLabel } from './decisions'
 import type { Vehicle } from './types'
 import { callsign } from './types'
 
-/** What the task panel shows after sending: waiting for approval (202), or refused (422). */
+/** What the task panel shows after sending: sent on the operator's own authority (200, a
+ *  human tier), waiting for approval (202), or refused (422). */
 export type TaskOutcome =
+  | { kind: 'authorized'; intentId: number; authorization: Authorization }
   | { kind: 'wait'; intentId: number; detail: string; expires_t: number | null }
   | { kind: 'refused'; intent: Intent; detail: string }
 
@@ -27,6 +30,25 @@ export function TaskResult({
   onInbox: (intentId: number) => void
   onDismiss: () => void
 }) {
+  if (outcome.kind === 'authorized') {
+    const a = outcome.authorization
+    return (
+      <div className="tr" role="status">
+        <strong>Sent: authorized by you ({tierLabel(a.tier)})</strong>
+        <span>
+          This task needs a human decision ({a.reason}); sending it was yours, so it was dispatched (intent i{outcome.intentId}).
+        </span>
+        <div className="row">
+          <button className="ghost" onClick={() => onInbox(outcome.intentId)}>
+            See i{outcome.intentId} in Decisions
+          </button>
+          <button className="ghost" onClick={onDismiss}>
+            Dismiss
+          </button>
+        </div>
+      </div>
+    )
+  }
   if (outcome.kind === 'wait') {
     return (
       <div className="tr wait" role="status">

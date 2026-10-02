@@ -3,6 +3,7 @@ import type { Draft } from './MapView'
 import type { TaskKind, Tasking, Vehicle } from './types'
 import { callsign, LIFECYCLE } from './types'
 import { TaskResult, type TaskOutcome } from './TaskResult'
+import { tierLabel } from './decisions'
 import { sendTask, TaskRefused } from './useBridge'
 import { availableTasks, orbitRange, usePlatformLimits } from './taskDefaults'
 
@@ -49,6 +50,8 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings, pendi
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [outcome, setOutcome] = useState<TaskOutcome | null>(null)
+  /** command log notes: tasking id -> the human tier its sender authorized */
+  const [authorized, setAuthorized] = useState<Map<number, string>>(new Map())
   const byUid = new Map(vehicles.map((v) => [v.uid, v]))
   const sel = [...selected].sort((a, b) => a - b)
   const limits = usePlatformLimits()
@@ -105,6 +108,10 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings, pendi
       })
       if (answer.status === 202 && answer.intent_id != null) {
         setOutcome({ kind: 'wait', intentId: answer.intent_id, detail: answer.detail ?? '', expires_t: answer.expires_t ?? null })
+      } else if (answer.authorization && answer.intent_id != null) {
+        const a = answer.authorization
+        setOutcome({ kind: 'authorized', intentId: answer.intent_id, authorization: a })
+        if (answer.id != null) setAuthorized((m) => new Map(m).set(answer.id!, tierLabel(a.tier)))
       }
       setDraft({ ...draft, center: null, route: [] })
     } catch (e) {
@@ -201,6 +208,7 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings, pendi
               <span className="muted">#{t.id}</span>
               <span className="muted right">{age(t.created)} ago</span>
             </div>
+            {authorized.has(t.id) && <p className="muted">authorized by you ({authorized.get(t.id)})</p>}
             {t.ops.map((o) => {
               const v = byUid.get(o.uid)
               return (

@@ -121,6 +121,7 @@ async fn tasks(
         state,
         intent,
         tasking,
+        authorization,
     } = match app.decision.submit(&op, IntentRequest::from(req)).await {
         Ok(o) => o,
         Err(e) => return decision_error(e),
@@ -131,6 +132,10 @@ async fn tasks(
         v["intent_id"] = json!(id.0);
         v["state"] = state_name;
         v["dispatched"] = json!(true);
+        // A human-tier task the operator authorized by sending it: say which tier and why.
+        if let Some(a) = authorization {
+            v["authorization"] = a;
+        }
         return Json(v).into_response();
     }
     let reason = last_reason(&intent);
@@ -183,6 +188,7 @@ async fn create_intent(
                 "intent": o.intent,
                 "tasking": o.tasking,
                 "dispatched": o.tasking.is_some(),
+                "authorization": o.authorization,
             })),
         )
             .into_response(),

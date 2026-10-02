@@ -90,10 +90,11 @@ fn cover(service: CoverService, min_level: Option<f64>) -> Proposal {
 }
 
 /// The sim policy with a long approval deadline, so a test can move time hours ahead
-/// before approving.
+/// before approving, and the submitter's own collects waiting for that approval.
 fn patient_policy() -> Policy {
-    let text = std::fs::read_to_string(sim_dir().join("policy.toml")).unwrap();
-    Policy::from_toml(&text.replace("expire_s = 120", "expire_s = 86400")).unwrap()
+    let mut p = waiting_policy();
+    p.approval.expire_s = 86400;
+    p
 }
 
 struct Run {
@@ -243,7 +244,7 @@ fn collect_fails_closed_without_a_space_segment() {
 
 #[test]
 fn chosen_option_is_approved_by_a_human_and_dispatched() {
-    let mut run = run(policy(), true);
+    let mut run = run(waiting_policy(), true);
     let (query, chosen) = first_option(&mut run);
     let session = run
         .engine
@@ -762,7 +763,7 @@ fn june_scenario_is_time_shifted_and_murmur_replay_recomputes_from_the_cache() {
     let clock = ManualClock::new(start);
     let log_path = tmp.join("audit.jsonl");
     let mut engine = Engine::new(
-        policy(),
+        waiting_policy(),
         Box::new(clock.clone()),
         Box::new(JsonlFile::open(&log_path).unwrap()),
     )
@@ -834,4 +835,31 @@ fn june_scenario_is_time_shifted_and_murmur_replay_recomputes_from_the_cache() {
     );
     assert!(out.contains("CACHE MISMATCH"), "{out}");
     let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn an_operators_own_chosen_collect_is_approved_at_submission() {
+    // The sim policy as shipped: the operator who commits a collect to an option is the
+    // human the satellite-collect tier asks for.
+    let mut run = run(policy(), true);
+    let (query, chosen) = first_option(&mut run);
+    let session = run
+        .engine
+        .open_operator_session(OperatorId::new("op-1"))
+        .unwrap();
+    let world = run.world();
+    let id = run
+        .engine
+        .amend_collect(session.authority(), query, chosen, &world, &NoTerrain)
+        .unwrap()
+        .id();
+    let i = run.engine.intent(id).unwrap();
+    assert_eq!(i.state(), State::Approved);
+    assert_eq!(i.policy().unwrap().rule, "satellite-collect");
+    assert!(i.approval().unwrap().at_submission);
+    assert!(matches!(
+        run.engine.dispatch_order(id).unwrap(),
+        Order::Collect(_)
+    ));
+    assert_replays(&run.log);
 }
