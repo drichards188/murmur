@@ -7,8 +7,9 @@ small binary (`murmur-replay`). It does not depend on the bridge; the bridge cal
 ## The model
 
 Every action, from a human or an AI agent, is an **intent**: what (orbit, patrol, hold, rtl,
-track; engage arrives in Phase E), to which vehicles (by `uid`), with what constraints, why
-(required for agents), from whom. It moves through one state machine:
+track; collect and cover for satellites; engage arrives in Phase E), to which vehicles (by
+`uid`; none for collect and cover, which request satellites, not fleet vehicles), with what
+constraints, why (required for agents), from whom. It moves through one state machine:
 
 ```
 proposed -> checked -> auto_approved | pending_approval
@@ -64,6 +65,52 @@ The full table is `intent::next_state`; anything else is a typed `IllegalTransit
    declaration order, no maps). Decision inputs carry `areas_sha256` instead of the
    polygons (about 700 bytes saved per decision event).
 
+## Satellite tasking: collect and cover
+
+Satellites are requested, not flown (DECISIONS.md, "Space as taskable infrastructure"). Two
+intent kinds use `crates/murmur-space`; both target no vehicle (`Task::targets()` is `space`,
+`uids` is empty, and a proposal with uids is refused), and the vehicle rules don't run for
+them.
+
+- **collect** `{area, window, capability: optical|sar|any, min_resolution_m?,
+  product_deadline?, chosen?: {norad_id, collect_time}}`: imagery or SAR of an area (polygon
+  or circle, `[lon, lat]`) in a window (times are scenario time, integer ms).
+- **cover** `{area, window, service: {type: satcom, class} | {type: gnss, class}, min_level?}`:
+  is SATCOM coverage (fraction of the window, default 0.99) or GNSS visibility (satellites in
+  view at every sample, default 4) good enough over the area's centroid.
+
+The flow for a collect:
+
+1. **Query**: propose it without `chosen`. Rules `space_query` (the segment answered this
+   intent's question; fail-closed without a segment) and `feasibility` run; `feasibility`
+   fails with the first ranked options in its detail, and the intent's `space` field holds
+   the whole answer (ranked `options[]` and `exclusions[]` with reasons). The intent ends
+   `rejected`: it is a query, not an order.
+2. **Choose**: a human (`Engine::amend_collect`, or `submit`) or an agent
+   (`AgentPort::amend_collect`, or `propose`, with a rationale) proposes the same collect
+   with `chosen` from one option. `feasibility` checks it against a fresh answer: the same
+   satellite has a feasible pass within `collect_match_tolerance_s` of the chosen time, the
+   pass is still in the future and in the window, the tasking lead time is met, and the
+   product meets the deadline (unknown product timing with a deadline is `unverified`).
+3. **Approve**: policy sends collects to a human (`satellite-collect` tier). Approval re-runs
+   the query at the approval time and voids the intent if the option is gone.
+4. **Dispatch**: `Engine::dispatch_order` gives `Order::Collect(CollectOrder)` (see the
+   bridge contract below); `Engine::dispatch` refuses space intents, so an empty-uid task
+   never reaches the vehicle task manager.
+
+A cover runs on its own (`coverage-query` tier) unless a check is unverified, and dispatches
+an `Order::Cover`.
+
+**Replay.** Each space query is logged once as `space.query`: the query, the answer
+(`compute_ms` zeroed, the one non-deterministic field), its `time_map`, and the segment
+identity (`SegmentId`: SHA-256 over the catalog and every satellite's identity, epoch, mean
+elements and SGP4 state at two instants, plus `cache_meta`). Decision inputs reference it by
+content hash, like the area set. Rules read only the logged answer, so `murmur-replay`
+re-decides every collect and cover without a cache. With `--space <constellations.toml>
+<cache-dir>` it also re-runs every query: same segment, the answer must be identical
+(else a mismatch, exit 1); a different segment is a **cache mismatch**, listed separately
+(exit 3; the decisions still reproduced).
+
 ## The hash chain: tamper-evident, not tamper-proof
 
 Every event's `prev` is the SHA-256 of the previous event's line as written (the first
@@ -109,7 +156,8 @@ human decision to measure.
 ## Replay
 
 ```
-cargo run -p murmur-decide --bin murmur-replay -- logs/audit/<run-id>.jsonl
+cargo run -p murmur-decide --bin murmur-replay -- logs/audit/<run-id>.jsonl \
+    [--space sim/space/constellations.toml sim/space/cache]
 ```
 
 Re-runs every `check.result` and `policy.decision` from its logged inputs and the logged
@@ -117,7 +165,8 @@ policy (resolving `areas_sha256` to the logged set in force, whose own hash must
 content), checks every `intent.state` is legal and backed by its evidence, checks `seq`,
 `t`, the hash chain and every `self_approved` flag, and prints the approval and
 self-approval counts and the head hash. Exit 0 if everything reproduces, 1 on mismatch, 2
-if the log can't be read.
+if the log can't be read, 3 if the decisions reproduce but some space queries ran on a
+different space segment (cache mismatch).
 Determinism: injected clock, integer-millisecond times, `BTreeMap`s, fixed output order and
 fixed-precision detail strings, `serde_json` with `float_roundtrip`, terrain samples keyed at
 1e-7 degree. Replay proves decisions follow from the logged inputs; it can't prove the inputs
@@ -144,6 +193,22 @@ The full contract is in the crate docs (`src/lib.rs`). In short:
 6. Any `Err` from the engine means nothing changed; never dispatch on an error.
 7. The inbox shows `checks` (look for `unverified`), `policy.facts.unverified` and
    `policy.facts.area_detail` as the reason a human is needed, and `approval.self_approved`.
+   For a collect, show the intent's `space.result.options` (and `exclusions`) and the
+   `space_query` detail (it says `TIME-SHIFTED` when the answer is time-shifted).
+8. Space segment: load `murmur_space::Space` (`sim/space/constellations.toml`,
+   `sim/space/cache`, after `murmur-space fetch`), wrap it in `SpaceSegment::new(Arc::new(..))`
+   (`with_scenario_offset_ms` if the scenario clock is offset from the engine clock), and
+   `Engine::set_space` it. Dispatch with `dispatch_order`:
+   - `Order::Vehicles(DispatchOrder)`: as before.
+   - `Order::Collect(CollectOrder)`: a simulated tasking request (no real satellite operator
+     API). Schedule an abstract "collection" event at `collect_time` and a "product ready"
+     event at `product_time` (scenario time; `None` if the class's timing is unknown). Report
+     `record_op_state(id, &order.resource, state, detail)` with `resource` = `norad:<id>` and
+     `state` in `tasked`, `collected`, `product_ready` (or `missed`), then `finish(Done)` at
+     product ready or `finish(Failed)` if missed. Show `scene` (a `[lon, lat]` ring) on the
+     map.
+   - `Order::Cover(CoverOrder)`: report outages from the answer as op states under
+     `satcom:<class>` or `gnss:<class>`, and `finish` at the window end.
 
 ## Not done yet
 
@@ -162,3 +227,8 @@ The full contract is in the crate docs (`src/lib.rs`). In short:
 - Cross-platform replay: trigonometry goes through the platform libm. Same machine is exact;
   across machines a last-bit difference could in principle flip a boundary case.
 - Phase E pieces: engage, two-person approval, approval holding a track snapshot.
+- Satellite tasking: no cloud model (optical options note it), no sensitive-area or
+  cost/priority tiers yet (every collect needs a human), no competing demand or agility
+  model, one collect per intent. Cover reads the area's centroid only. The segment identity
+  is computed here from public `Satellite` fields and propagated states; a content hash of
+  the raw cached files in murmur-space would be stronger.

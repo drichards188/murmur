@@ -290,5 +290,15 @@ fn policy_file_validation() {
     assert!(Policy::from_toml(bad_tier).is_err());
     let p = policy();
     assert_eq!(p.approval.expire_s, 120);
-    assert_eq!(p.tiers.len(), 5);
+    assert_eq!(p.tiers.len(), 7);
+    assert_eq!(p.rules.space_rules(), SpaceRules::default());
+    let bad_space = r#"
+        [rules.space]
+        cover_min_fraction = 1.5
+        [[tier]]
+        name = "x"
+        tier = "human"
+        reason = "r"
+    "#;
+    assert!(Policy::from_toml(bad_space).is_err());
 }

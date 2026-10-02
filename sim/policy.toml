@@ -5,7 +5,8 @@
 #   tier = "human"  waits in the operator's inbox; expires after approval.expire_s
 # A `when` matches if every condition in it holds; an empty `when` matches everything.
 # Conditions:
-#   kind = [...]                  task kind is one of: orbit, patrol, hold, rtl, track
+#   kind = [...]                  task kind is one of: orbit, patrol, hold, rtl, track,
+#                                 collect (satellite imagery/SAR), cover (SATCOM or GNSS)
 #   armed = true|false            some target / no target is on a platform with armed = true
 #                                 in sim/platforms.toml (unknown platform counts as armed)
 #   leaves_approved_area = bool   some vehicle's route leaves the "approved" areas in
@@ -14,8 +15,11 @@
 #                                 home, counts as leaving)
 #   source = "human"|"agent"
 #   unverified = [rule, ...]      some check of these rules came out "unverified": it could
-#                                 not be verified and a human must judge it (today only
-#                                 "reserves", for a platform with no endurance_h)
+#                                 not be verified and a human must judge it ("reserves",
+#                                 for a platform with no endurance_h; "feasibility", for a
+#                                 collect whose product timing is unknown but has a deadline)
+# collect and cover target no fleet vehicle: for them armed is never true and
+# leaves_approved_area is false, so route them by kind (below, before those tiers).
 # If nothing matches, the intent goes to a human (fail closed). An intent with any
 # unverified check never gets an auto tier, whatever this file says. Agent-sourced intents
 # can only reach "approved" through a human; this file can make them auto, never
@@ -35,11 +39,42 @@ unknown_endurance = "human"                 # no endurance_h: "unverified", rout
                                             # below reserve still fails); or "fail", or "battery_now"
                                             # (check the battery against the reserve only)
 
+[rules.space]
+# Satellite tasking (collect, cover), on crates/murmur-space and sim/space/.
+epoch_mode = "auto"                         # scenario time vs element epoch: "auto" shifts whole days
+                                            # when the window is > 2 days from the elements (see the
+                                            # murmur-space README); "shift" always, "direct" never
+collect_match_tolerance_s = 120             # at approval, a fresh option of the chosen satellite within
+                                            # this of the chosen collect time is the same opportunity
+cover_min_fraction = 0.99                   # satcom cover: fraction of the window with a satellite above
+                                            # the mask, when the intent gives no min_level
+gnss_min_visible = 4                        # gnss cover: satellites in view at every sample (4 = 3D fix)
+link_step_s = 60                            # satcom coverage sample step
+gnss_step_s = 300                           # gnss visibility sample step
+
 [[tier]]
 name = "safety-commands"
 when = { kind = ["hold", "rtl"] }
 tier = "auto"
 reason = "hold and rtl reduce risk"
+
+# Satellite collection is someone else's asset pointed at a place on our behalf: it costs
+# (money, priority against other customers) and shows interest in that place. Start simple:
+# every collect needs a human. Later tiers can split this by sensitive area or by
+# cost/priority (e.g. auto for a routine, low-priority collect over the approved area).
+[[tier]]
+name = "satellite-collect"
+when = { kind = ["collect"] }
+tier = "human"
+reason = "a satellite collection is tasked on a human's say-so"
+
+# A cover asks whether SATCOM or GNSS service holds over an area; it commands nothing, so it
+# runs on its own (an unverified check still sends it to a human).
+[[tier]]
+name = "coverage-query"
+when = { kind = ["cover"] }
+tier = "auto"
+reason = "a coverage query commands nothing"
 
 [[tier]]
 name = "armed-platform"

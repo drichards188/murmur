@@ -12,6 +12,9 @@ use crate::geo::{LonLat, TaskPath, circle_points};
 use crate::ids::{AgentId, IntentId, OperatorId, SessionId, Uid};
 use crate::policy::PolicyDecision;
 use crate::rules::CheckResult;
+use crate::space::{
+    ChosenCollect, CollectCapability, CoverService, SpaceAnswer, SpaceArea, Window,
+};
 use crate::time::Time;
 
 /// Waypoints in an orbit ring for non-fixed-wing vehicles (as the Python bridge flies it).
@@ -25,6 +28,10 @@ pub enum TaskKind {
     Hold,
     Rtl,
     Track,
+    /// Satellite collection (imagery or SAR) over an area in a window. No fleet vehicle.
+    Collect,
+    /// SATCOM coverage or GNSS assurance over an area for a window. No fleet vehicle.
+    Cover,
     // Phase E adds Engage. When it lands, `is_consequential` returns true for it, which makes
     // "not evaluated" rule outcomes blocking.
 }
@@ -37,6 +44,16 @@ impl TaskKind {
             TaskKind::Hold => "hold",
             TaskKind::Rtl => "rtl",
             TaskKind::Track => "track",
+            TaskKind::Collect => "collect",
+            TaskKind::Cover => "cover",
+        }
+    }
+
+    /// What the kind acts on: fleet vehicles (by uid) or the space segment.
+    pub fn targets(self) -> Targets {
+        match self {
+            TaskKind::Collect | TaskKind::Cover => Targets::Space,
+            _ => Targets::Vehicles,
         }
     }
 
@@ -44,6 +61,16 @@ impl TaskKind {
     pub fn is_consequential(self) -> bool {
         false
     }
+}
+
+/// What an intent acts on. Vehicle kinds name their vehicles in `uids` (at least one);
+/// space kinds (collect, cover) request a capability from satellites, which are not fleet
+/// vehicles, and must name none. Rules, policy facts and dispatch all branch on this.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Targets {
+    Vehicles,
+    Space,
 }
 
 /// The task and its parameters (today's task params). The kind is the variant, so a kind
@@ -66,6 +93,33 @@ pub enum Task {
     Track {
         target: Uid,
     },
+    /// Task a satellite collection: optical or SAR imagery of `area` within `window`.
+    /// Without `chosen`, the intent is a query: its checks list the ranked options and
+    /// why other passes were excluded, and it cannot be approved. With `chosen` (an option
+    /// from such a query), approval re-checks that the option is still feasible.
+    Collect {
+        area: SpaceArea,
+        window: Window,
+        capability: CollectCapability,
+        /// Coarsest acceptable ground resolution, metres (smaller is finer).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        min_resolution_m: Option<f64>,
+        /// The product must be in hand by then (scenario time).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        product_deadline: Option<Time>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        chosen: Option<ChosenCollect>,
+    },
+    /// Ask for SATCOM coverage or GNSS assurance over `area` for `window`.
+    Cover {
+        area: SpaceArea,
+        window: Window,
+        service: CoverService,
+        /// SATCOM: minimum fraction of the window covered (0..1). GNSS: minimum satellites
+        /// in view at every sample. Default from `[rules.space]`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        min_level: Option<f64>,
+    },
 }
 
 impl Task {
@@ -76,6 +130,40 @@ impl Task {
             Task::Hold {} => TaskKind::Hold,
             Task::Rtl {} => TaskKind::Rtl,
             Task::Track { .. } => TaskKind::Track,
+            Task::Collect { .. } => TaskKind::Collect,
+            Task::Cover { .. } => TaskKind::Cover,
+        }
+    }
+
+    /// Fleet vehicles or the space segment.
+    pub fn targets(&self) -> Targets {
+        self.kind().targets()
+    }
+
+    pub fn is_space(&self) -> bool {
+        self.targets() == Targets::Space
+    }
+
+    /// For a collect: the same request committed to `chosen` (how a query intent is
+    /// amended to one of its options). None for other kinds.
+    pub fn with_chosen(&self, chosen: ChosenCollect) -> Option<Task> {
+        match self {
+            Task::Collect {
+                area,
+                window,
+                capability,
+                min_resolution_m,
+                product_deadline,
+                ..
+            } => Some(Task::Collect {
+                area: area.clone(),
+                window: *window,
+                capability: *capability,
+                min_resolution_m: *min_resolution_m,
+                product_deadline: *product_deadline,
+                chosen: Some(chosen),
+            }),
+            _ => None,
         }
     }
 
@@ -91,7 +179,11 @@ impl Task {
                 points: route.clone(),
                 closed: true,
             }),
-            Task::Hold {} | Task::Rtl {} | Task::Track { .. } => None,
+            Task::Hold {}
+            | Task::Rtl {}
+            | Task::Track { .. }
+            | Task::Collect { .. }
+            | Task::Cover { .. } => None,
         }
     }
 
@@ -116,6 +208,58 @@ impl Task {
             }
             Task::Track { target } if target.as_str().is_empty() => {
                 return bad("track needs a target uid");
+            }
+            Task::Collect {
+                area,
+                window,
+                min_resolution_m,
+                product_deadline,
+                chosen,
+                ..
+            } => {
+                area.validate().or_else(|e| bad(&e))?;
+                window.validate().or_else(|e| bad(&e))?;
+                if let Some(r) = min_resolution_m
+                    && !(r.is_finite() && *r > 0.0)
+                {
+                    return bad("min_resolution_m must be a positive number of metres");
+                }
+                if let Some(d) = product_deadline
+                    && *d <= window.from
+                {
+                    return bad("product_deadline must be after the window start");
+                }
+                if let Some(c) = chosen
+                    && !window.contains(c.collect_time)
+                {
+                    return bad("chosen collect_time is outside the window");
+                }
+            }
+            Task::Cover {
+                area,
+                window,
+                service,
+                min_level,
+            } => {
+                area.validate().or_else(|e| bad(&e))?;
+                window.validate().or_else(|e| bad(&e))?;
+                if service.class().trim().is_empty() {
+                    return bad("cover needs a service class");
+                }
+                match (service, min_level) {
+                    (_, None) => {}
+                    (CoverService::Satcom { .. }, Some(l))
+                        if !(l.is_finite() && (0.0..=1.0).contains(l)) =>
+                    {
+                        return bad("satcom min_level is a fraction of the window, 0..1");
+                    }
+                    (CoverService::Gnss { .. }, Some(l))
+                        if !(l.is_finite() && *l >= 0.0 && l.fract() == 0.0) =>
+                    {
+                        return bad("gnss min_level is a whole number of satellites");
+                    }
+                    _ => {}
+                }
             }
             _ => {}
         }
@@ -189,6 +333,9 @@ impl Source {
 pub struct Proposal {
     #[serde(flatten)]
     pub task: Task,
+    /// The vehicles, for vehicle kinds. Space kinds (collect, cover) take none; the field
+    /// may then be omitted.
+    #[serde(default)]
     pub uids: Vec<Uid>,
     #[serde(default)]
     pub constraints: Constraints,
@@ -206,9 +353,21 @@ impl Proposal {
         }
     }
 
+    /// A collect or cover: no vehicles.
+    pub fn space(task: Task) -> Self {
+        Proposal::new(task, Vec::new())
+    }
+
     pub fn validate(&self) -> Result<(), ProposalError> {
-        if self.uids.is_empty() {
-            return Err(ProposalError::NoVehicles);
+        match self.task.targets() {
+            Targets::Space if !self.uids.is_empty() => {
+                return Err(ProposalError::VehiclesOnSpaceTask(self.task.kind()));
+            }
+            Targets::Space => return self.task.validate(),
+            Targets::Vehicles if self.uids.is_empty() => {
+                return Err(ProposalError::NoVehicles);
+            }
+            Targets::Vehicles => {}
         }
         let mut seen = self.uids.clone();
         seen.sort();
@@ -244,6 +403,8 @@ pub enum ProposalError {
     EmptyRationale,
     #[error("bad params: {0}")]
     BadParams(String),
+    #[error("{} requests satellites, not fleet vehicles: uids must be empty", .0.as_str())]
+    VehiclesOnSpaceTask(TaskKind),
 }
 
 /// The immutable request, as logged in `intent.created`.
@@ -416,6 +577,10 @@ pub struct Intent {
     /// For pending approvals: when it expires.
     expires_t: Option<Time>,
     history: Vec<StateChange>,
+    /// Collect and cover: the space answer the last check read (ranked options and
+    /// exclusions for a collect; coverage for a cover). Also in the log as `space.query`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    space: Option<Box<SpaceAnswer>>,
 }
 
 impl Intent {
@@ -433,6 +598,7 @@ impl Intent {
                 t,
                 reason: "created".into(),
             }],
+            space: None,
         }
     }
 
@@ -460,6 +626,10 @@ impl Intent {
     pub fn history(&self) -> &[StateChange] {
         &self.history
     }
+    /// Collect and cover: the space answer the last check read.
+    pub fn space_answer(&self) -> Option<&SpaceAnswer> {
+        self.space.as_deref()
+    }
 
     pub(crate) fn apply(
         &mut self,
@@ -485,6 +655,9 @@ impl Intent {
     }
     pub(crate) fn set_approval(&mut self, a: Approval) {
         self.approval = Some(a);
+    }
+    pub(crate) fn set_space(&mut self, a: Option<Box<SpaceAnswer>>) {
+        self.space = a;
     }
     pub(crate) fn set_expires(&mut self, t: Time) {
         self.expires_t = Some(t);
