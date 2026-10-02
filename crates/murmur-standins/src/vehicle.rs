@@ -162,6 +162,9 @@ impl Vehicle {
         if name != self.st.mode {
             self.st.mode = name;
             self.st.hold_point = (self.st.lat, self.st.lon);
+            if let Some(armed) = self.behavior.mode_arms(name) {
+                self.st.armed = armed;
+            }
             if name == "AUTO" {
                 let restart = self.params.get("MIS_RESTART") == Some(1.0);
                 self.mission.start_or_resume(restart);

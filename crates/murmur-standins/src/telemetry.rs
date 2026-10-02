@@ -174,7 +174,8 @@ pub fn build(v: &Vehicle, id: u32) -> Option<MavMessage> {
 }
 
 pub fn heartbeat(v: &Vehicle) -> MavMessage {
-    let mut base = MavModeFlag::MAV_MODE_FLAG_CUSTOM_MODE_ENABLED;
+    let mut base =
+        MavModeFlag::MAV_MODE_FLAG_CUSTOM_MODE_ENABLED | v.behavior.base_mode_flags(v.st.mode);
     if v.st.armed {
         base |= MavModeFlag::MAV_MODE_FLAG_SAFETY_ARMED;
     }
@@ -196,7 +197,9 @@ pub fn heartbeat(v: &Vehicle) -> MavMessage {
 fn attitude(v: &Vehicle) -> MavMessage {
     let st = &v.st;
     // a coordinated turn banks atan(v * omega / g); climbing pitches up
-    let (roll, pitch) = if v.airborne() {
+    let (roll, pitch) = if let Some(rp) = v.behavior.attitude(st) {
+        rp
+    } else if v.airborne() {
         let roll = (st.speed * v.yaw_rate / 9.81).atan();
         let pitch = st.vz.atan2(st.speed.max(1.0));
         (roll, pitch)
@@ -296,6 +299,9 @@ fn nav_target(v: &Vehicle) -> Option<(f64, f64)> {
 }
 
 fn nav_controller_output(v: &Vehicle) -> Option<MavMessage> {
+    if let Some(m) = v.behavior.nav_controller_output(&v.st) {
+        return Some(MavMessage::NAV_CONTROLLER_OUTPUT(m));
+    }
     let (lat, lon) = nav_target(v)?;
     let st = &v.st;
     let bearing = bearing_deg(st.lat, st.lon, lat, lon);

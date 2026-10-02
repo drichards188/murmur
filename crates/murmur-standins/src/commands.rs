@@ -8,7 +8,7 @@ use mavlink::MavHeader;
 use mavlink::MessageData;
 use mavlink::dialects::ardupilotmega::*;
 
-use crate::behavior::Firmware;
+use crate::behavior::{Firmware, Observe};
 use crate::link::Inbound;
 use crate::messages;
 use crate::mission::{Mission, UPLOAD_RETRY_S, UPLOAD_TIMEOUT_S, Upload};
@@ -23,6 +23,19 @@ const PARAMS_PER_TICK: usize = 10;
 // GCSs send (and MISSION_REQUEST is what ArduPilot itself asks for items with)
 #[allow(deprecated)]
 pub fn handle(v: &mut Vehicle, h: &MavHeader, msg: &MavMessage) {
+    // behaviors that eavesdrop (an antenna tracker on its target's position) see everything
+    let mut seen = Observe {
+        from: h,
+        sysid: v.sysid(),
+        msg,
+        params: &mut v.params,
+        st: &v.st,
+        send: Vec::new(),
+    };
+    v.behavior.observe(&mut seen);
+    for m in seen.send {
+        v.link.send(&m);
+    }
     if let Some(target) = target_system(msg)
         && target != 0
         && target != v.sysid()
@@ -264,6 +277,11 @@ fn command(v: &mut Vehicle, from: (u8, u8), c: Cmd) {
             }
         }
         MAV_CMD_MISSION_START => request_mode(v, "AUTO"),
+        MAV_CMD_DO_SET_SERVO if v.firmware == Firmware::Tracker => {
+            // AntennaTracker enters SERVOTEST first, even when the servo is refused
+            v.set_mode("SERVOTEST");
+            v.behavior.set_servo(&v.params, c.p[0], c.p[1])
+        }
         MAV_CMD_NAV_RETURN_TO_LAUNCH => match v.behavior.mode_number("RTL") {
             Some(_) if v.firmware != Firmware::Sub => request_mode(v, "RTL"),
             _ => MavResult::MAV_RESULT_UNSUPPORTED,
@@ -327,6 +345,9 @@ fn command(v: &mut Vehicle, from: (u8, u8), c: Cmd) {
 }
 
 fn arm(v: &mut Vehicle, c: &Cmd) -> MavResult {
+    if let Some(r) = v.behavior.arm_command(&mut v.st, c.p[0], c.p[1]) {
+        return r;
+    }
     let arm = c.p[0] == 1.0;
     if !arm && v.airborne() && c.p[1] != 21196.0 {
         return MavResult::MAV_RESULT_FAILED; // no disarming in flight (unless forced)
@@ -433,6 +454,24 @@ fn busy(v: &Vehicle, from: (u8, u8), ty: MavMissionType) -> bool {
 
 fn mission_count(v: &mut Vehicle, from: (u8, u8), m: &MISSION_COUNT_DATA) {
     let ty = m.mission_type;
+    if v.firmware == Firmware::Tracker {
+        // an AntennaTracker keeps no waypoints: an empty upload is accepted, a non-empty one
+        // has no space (MissionItemProtocol::handle_mission_count with max_items 0)
+        if ty != MavMissionType::MAV_MISSION_TYPE_MISSION {
+            return mission_ack(v, MavMissionResult::MAV_MISSION_UNSUPPORTED, ty, from);
+        }
+        if m.count == 0 {
+            mission_ack(v, MavMissionResult::MAV_MISSION_ACCEPTED, ty, from);
+            v.text(MavSeverity::MAV_SEVERITY_INFO, "Flight plan received");
+        } else {
+            mission_ack(v, MavMissionResult::MAV_MISSION_NO_SPACE, ty, from);
+            v.text(
+                MavSeverity::MAV_SEVERITY_WARNING,
+                "Only 0 items are supported",
+            );
+        }
+        return;
+    }
     if !v.behavior.accepts_missions() || !supported_type(ty) {
         return mission_ack(v, MavMissionResult::MAV_MISSION_UNSUPPORTED, ty, from);
     }
@@ -548,6 +587,18 @@ pub fn upload_tick(v: &mut Vehicle, now: f64) {
 }
 
 fn request_list(v: &mut Vehicle, from: (u8, u8), ty: MavMissionType) {
+    if v.firmware == Firmware::Tracker {
+        if ty != MavMissionType::MAV_MISSION_TYPE_MISSION {
+            return mission_ack(v, MavMissionResult::MAV_MISSION_UNSUPPORTED, ty, from);
+        }
+        return v.link.send(&MavMessage::MISSION_COUNT(MISSION_COUNT_DATA {
+            count: 0,
+            target_system: from.0,
+            target_component: from.1,
+            mission_type: ty,
+            opaque_id: 0,
+        }));
+    }
     if v.mission
         .upload
         .as_ref()

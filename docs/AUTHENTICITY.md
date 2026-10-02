@@ -72,7 +72,8 @@ Video metadata for all ISR aircraft: MISB ST 0601 / STANAG 4609 (open, well supp
 "Today" = how the node runs in the default fleet. Stand-in behaviors still missing from
 `sim/standins.py`:
 copter (hover), VTOL (vertical takeoff then fixed-wing), airship, ground vehicle (land only),
-sailboat (wind-driven), antenna tracker.
+sailboat (wind-driven). The Rust engine has the antenna tracker (`behavior/tracker.rs`:
+AntennaTracker modes, SYSID_TARGET, slew and range limits, the long way round).
 
 ### Air
 

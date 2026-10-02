@@ -1,0 +1,13 @@
+# An antenna tracker stand-in and an aircraft stand-in to track: no ArduPilot needed.
+# Used by sim/tests/standins_tracker_e2e.py (the Rust bridge's track task on a stand-in tracker).
+title = "Tracker stand-in and a target"
+
+[[unit]]
+platform = "tracker"
+count = 1
+sim = "standin"                          # the catalog says SITL; force the stand-in
+spawn = [37.8105, -122.4770, 10, 0]      # Fort Point
+[[unit]]
+platform = "mq9b"
+count = 1
+spawn = [37.8300, -122.4000, 7600, 90]   # NE of the tracker, on station

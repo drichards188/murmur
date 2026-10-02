@@ -6,7 +6,11 @@
 //! which defaults from the mode table, so a new behavior gets the right ArduPilot semantics
 //! by picking its `modes::` table.
 
-use mavlink::dialects::ardupilotmega::{GpsFixType, MavParamType, MavState, MavType};
+use mavlink::MavHeader;
+use mavlink::dialects::ardupilotmega::{
+    GpsFixType, MavMessage, MavModeFlag, MavParamType, MavResult, MavState, MavType,
+    NAV_CONTROLLER_OUTPUT_DATA,
+};
 
 use crate::conditions::Sample;
 use crate::config::Spec;
@@ -21,6 +25,7 @@ mod marine;
 pub mod modes;
 mod plane;
 mod sub;
+mod tracker;
 
 /// Everything a physics tick may read or change.
 pub struct Tick<'a> {
@@ -34,6 +39,21 @@ pub struct Tick<'a> {
     pub rng: &'a mut Gauss,
     pub out: &'a mut Vec<Out>,
     pub dt: f64,
+}
+
+/// A message the vehicle received, for behaviors that act on traffic that is not addressed to
+/// them (an antenna tracker listens to its target's GLOBAL_POSITION_INT). Seen before the
+/// target-system filter, as ArduPilot's `packetReceived` sees it.
+pub struct Observe<'a> {
+    pub from: &'a MavHeader,
+    /// this vehicle's own system id
+    pub sysid: u8,
+    pub msg: &'a MavMessage,
+    /// the vehicle's parameter store (a behavior may change its own, e.g. SYSID_TARGET)
+    pub params: &'a mut Params,
+    pub st: &'a State,
+    /// messages to send in reply, on the vehicle's own link
+    pub send: Vec<MavMessage>,
 }
 
 /// The ArduPilot firmware a behavior imitates. Picks the parameter table, the failsafe
@@ -106,6 +126,44 @@ pub trait Behavior: Send {
 
     fn step(&mut self, t: &mut Tick);
 
+    /// Every message that arrives, before the target-system filter (default: ignore).
+    fn observe(&mut self, _o: &mut Observe) {}
+
+    /// (roll, pitch) in radians for ATTITUDE when the vehicle is not a free-flying body (a
+    /// tracker's mount). None: the generic estimate (level on the ground, banked in turns).
+    fn attitude(&self, _st: &State) -> Option<(f64, f64)> {
+        None
+    }
+
+    /// The firmware's own NAV_CONTROLLER_OUTPUT, when it differs from the generic one.
+    fn nav_controller_output(&self, _st: &State) -> Option<NAV_CONTROLLER_OUTPUT_DATA> {
+        None
+    }
+
+    /// HEARTBEAT base_mode flags for a mode, besides CUSTOM_MODE_ENABLED and SAFETY_ARMED
+    /// (each firmware's `base_mode()` sets its own).
+    fn base_mode_flags(&self, _mode: &str) -> MavModeFlag {
+        MavModeFlag::empty()
+    }
+
+    /// Whether entering this mode arms or disarms the vehicle (AntennaTracker: modes that
+    /// drive the servos arm them). None: a mode change leaves arming alone.
+    fn mode_arms(&self, _mode: &str) -> Option<bool> {
+        None
+    }
+
+    /// COMMAND_COMPONENT_ARM_DISARM when the firmware answers it its own way (param1, param2).
+    /// None: the common rules (no disarm in flight, an arming text).
+    fn arm_command(&mut self, _st: &mut State, _p1: f32, _p2: f32) -> Option<MavResult> {
+        None
+    }
+
+    /// MAV_CMD_DO_SET_SERVO: (servo number, pwm). The default is what a firmware without
+    /// the command answers.
+    fn set_servo(&mut self, _params: &Params, _servo: f32, _pwm: f32) -> MavResult {
+        MavResult::MAV_RESULT_UNSUPPORTED
+    }
+
     /// Which ArduPilot firmware this imitates. Default: from the mode table.
     fn firmware(&self) -> Firmware {
         Firmware::from_modes(self.modes())
@@ -159,6 +217,7 @@ pub fn create(name: &str) -> Option<Box<dyn Behavior>> {
         "boat" => Box::new(boat::Boat),
         "drifter" => Box::new(drifter::Drifter),
         "sub" => Box::new(sub::Sub),
+        "tracker" => Box::new(tracker::Tracker::default()),
         _ => return None,
     })
 }

@@ -107,6 +107,7 @@ pub const TRACKER: &[(u32, &str)] = &[
     (0, "MANUAL"),
     (1, "STOP"),
     (2, "SCAN"),
+    (3, "SERVOTEST"), // in the firmware, though pymavlink's table lacks it
     (4, "GUIDED"),
     (10, "AUTO"),
     (16, "INITIALISING"),
