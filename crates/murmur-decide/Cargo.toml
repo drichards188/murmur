@@ -5,6 +5,9 @@ edition.workspace = true
 description = "Murmur's decision layer: intents, fail-closed rules, risk-tier policy, append-only audit log and deterministic replay"
 
 [dependencies]
+# Satellite tasking (collect, cover intents): orbits, access windows, tasking options.
+murmur-space = { path = "../murmur-space" }
+chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
 serde = { version = "1", features = ["derive"] }
 # float_roundtrip: logged inputs must parse back to the exact same f64, or replay drifts.
 serde_json = { version = "1", features = ["float_roundtrip"] }

@@ -89,6 +89,48 @@
 //! 9. **Head hash.** [`Engine::head_hash`] is the hash of the last event written. The log
 //!    is hash-chained (see [`audit`]); publishing the head somewhere the bridge can't
 //!    rewrite is what would make a full rewrite or a cut tail detectable (future work).
+//! 10. **Space segment (collect, cover).** At start, load `murmur_space::Space::load(
+//!     "sim/space/constellations.toml", "sim/space/cache")` (run `murmur-space fetch` first;
+//!     it is polite to CelesTrak and does nothing when the cache is fresh), wrap it in
+//!     [`SpaceSegment::new`]`(Arc::new(space))` (add [`SpaceSegment::with_scenario_offset_ms`]
+//!     if the scenario clock runs at an offset from the engine clock), and pass it to
+//!     [`Engine::set_space`] (logged as `space.loaded`). Without it, collect and cover
+//!     intents fail their `space_query` check (fail closed). See "Satellite tasking" below.
+//!
+//! ## Satellite tasking: collect and cover
+//!
+//! Satellites are requested, not flown ([`space`]). [`Task::Collect`] (imagery or SAR over
+//! an area in a window) and [`Task::Cover`] (SATCOM coverage or GNSS assurance) target no
+//! vehicle: [`Task::targets`] is [`Targets::Space`], their [`Proposal`] has no uids
+//! ([`Proposal::space`]), and the vehicle rules don't run for them.
+//!
+//! 1. **Query.** Propose a collect without `chosen`. Its `feasibility` check fails with the
+//!    ranked options in its detail, and the intent's `space` field (and the `space.query`
+//!    event) holds the whole answer: `options[]` (rank, satellite, `norad_id`,
+//!    `collect_time`, product time, resolution, geometry, notes) and `exclusions[]` with
+//!    reasons. It ends `rejected`: a query, not an order.
+//! 2. **Choose.** A human ([`Engine::amend_collect`] or [`Engine::submit`]) or an agent
+//!    ([`AgentPort::amend_collect`] or [`AgentPort::propose`], with a rationale) proposes the
+//!    collect with `chosen = {norad_id, collect_time}` from one option
+//!    ([`ChosenCollect::from_option`]). Policy routes it (default: a human approves).
+//! 3. **Approve.** [`Engine::approve`] re-runs the query at the approval time; if the pass
+//!    is over, the lead time can no longer be met, or the product would miss the deadline,
+//!    the intent is voided ([`EngineError::ChecksFailedAtApproval`]).
+//! 4. **Dispatch.** [`Engine::dispatch_order`] returns [`Order::Collect`] with a
+//!    [`CollectOrder`]: a simulated tasking request (there is no real satellite operator
+//!    API). The bridge schedules a "collection" event at `collect_time` and a "product
+//!    ready" event at `product_time` (scenario time) and reports them with
+//!    [`Engine::record_op_state`]`(id, &order.resource, state, detail)`, where `resource`
+//!    is `norad:<id>` and `state` is `tasked` (request sent), `collected` and
+//!    `product_ready` (or `missed`); then [`Engine::finish`] with `Done` at product ready,
+//!    or `Failed` if the collect was missed. A cover gives [`Order::Cover`]: report service
+//!    outages from the answer as op states under `satcom:<class>` or `gnss:<class>`, and
+//!    `finish` at the window end. [`Engine::dispatch`] refuses both (they have no
+//!    vehicles), so a bridge that only knows vehicle orders never sends an empty-uid task.
+//! 5. **Replay.** The rules read only the logged answer, so `murmur-replay` re-decides
+//!    every collect and cover from the log. With `--space` it also re-runs each query on the
+//!    loaded segment and compares; a different segment is reported as a cache mismatch,
+//!    not a decision mismatch ([`replay::replay_str_with_space`]).
 //!
 //! ## Example
 //!
@@ -161,6 +203,7 @@ pub mod policy;
 pub mod replay;
 pub mod route;
 pub mod rules;
+pub mod space;
 pub mod terrain;
 pub mod time;
 pub mod world;
@@ -169,16 +212,22 @@ pub use areas::{Area, AreaKind, AreaSet};
 pub use audit::{AuditSink, Event, EventBody, JsonlFile, LoggedAreas, MemorySink, parse_log};
 pub use authority::{HumanAuthority, OperatorSession};
 pub use catalog::{AutopilotKind, Catalog, Domain, PlatformFacts};
-pub use engine::{AgentPort, DispatchOrder, Engine, EngineError, TaskOutcome};
+pub use engine::{AgentPort, DispatchOrder, Engine, EngineError, Order, TaskOutcome};
 pub use geo::{LonLat, Polygon};
 pub use ids::{AgentId, IntentId, OperatorId, SessionId, Uid};
 pub use intent::{
     Constraints, IllegalTransition, Intent, IntentSpec, Proposal, ProposalError, Rationale, Source,
-    State, Task, TaskKind, Transition, next_state,
+    State, Targets, Task, TaskKind, Transition, next_state,
 };
 pub use policy::{Policy, PolicyDecision, Tier};
 pub use route::{LegKind, Route, Segment};
 pub use rules::{CheckResult, Outcome, RuleId, RulesConfig, UnknownEndurance};
+pub use space::{
+    ChosenCollect, CollectCapability, CollectOrder, CoverOrder, CoverService, SegmentId,
+    SpaceAnswer, SpaceArea, SpaceOracle, SpaceOrder, SpaceQuery, SpaceRules, SpaceSegment, Window,
+};
 pub use terrain::{NoTerrain, PolygonTerrain, Surface, TerrainOracle};
 pub use time::{Clock, ManualClock, SystemClock, Time};
-pub use world::{Fact, LoggedInputs, TerrainInputs, VehicleFacts, WorldSnapshot};
+pub use world::{
+    Fact, LoggedInputs, LoggedSpace, SpaceInputs, TerrainInputs, VehicleFacts, WorldSnapshot,
+};

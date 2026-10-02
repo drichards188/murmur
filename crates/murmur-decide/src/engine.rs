@@ -1,7 +1,7 @@
 //! The engine: owns the intents, applies rules and policy, enforces the state machine, and
 //! writes every step to the audit log before taking it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::areas::AreaSet;
 use crate::audit::{AuditSink, CheckPhase, Event, EventBody, LoggedAreas};
@@ -14,9 +14,13 @@ use crate::intent::{
 };
 use crate::policy::{self, Policy, Tier};
 use crate::rules::{self, CheckResult, Outcome};
+use crate::space::{
+    ChosenCollect, CollectOrder, CoverOrder, SegmentId, SpaceOracle, SpaceOrder, from_utc,
+    matched_option, query_for,
+};
 use crate::terrain::TerrainOracle;
 use crate::time::{Clock, Time};
-use crate::world::{LoggedInputs, WorldSnapshot};
+use crate::world::{LoggedInputs, SpaceInputs, WorldSnapshot};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -39,6 +43,12 @@ pub enum EngineError {
     Audit(#[from] std::io::Error),
     #[error("audit event failed to serialize: {0}")]
     Serialize(#[from] serde_json::Error),
+    #[error("intent {0} requests satellites, not vehicles: dispatch it with dispatch_order")]
+    SpaceIntent(IntentId),
+    #[error("intent {id} can't be dispatched: {why}")]
+    NotDispatchable { id: IntentId, why: String },
+    #[error("intent {0} is not a collect")]
+    NotACollect(IntentId),
 }
 
 /// What the task layer should execute for an approved intent.
@@ -47,6 +57,15 @@ pub struct DispatchOrder {
     pub intent: IntentId,
     pub task: Task,
     pub uids: Vec<Uid>,
+}
+
+/// What [`Engine::dispatch_order`] hands the bridge: vehicle work for the task manager, or
+/// a simulated satellite request (collect) or service watch (cover).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Order {
+    Vehicles(DispatchOrder),
+    Collect(CollectOrder),
+    Cover(CoverOrder),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,6 +87,10 @@ pub struct Engine {
     next_intent: u64,
     next_session: u64,
     intents: BTreeMap<IntentId, Intent>,
+    /// The space segment collect and cover intents query (none: they fail closed).
+    space: Option<Box<dyn SpaceOracle + Send>>,
+    /// Space answers already logged as `space.query`, by hash.
+    logged_space: BTreeSet<String>,
 }
 
 impl std::fmt::Debug for Engine {
@@ -118,6 +141,8 @@ impl Engine {
             next_intent: 1,
             next_session: 1,
             intents: BTreeMap::new(),
+            space: None,
+            logged_space: BTreeSet::new(),
         };
         let policy = e.policy.clone();
         e.emit(EventBody::RunStarted {
@@ -138,6 +163,21 @@ impl Engine {
 
     pub fn policy(&self) -> &Policy {
         &self.policy
+    }
+
+    /// Give the engine a space segment for collect and cover intents (logged as
+    /// `space.loaded` with its identity). Without one, their space check fails closed.
+    pub fn set_space(&mut self, oracle: Box<dyn SpaceOracle + Send>) -> Result<(), EngineError> {
+        self.emit(EventBody::SpaceLoaded {
+            segment: oracle.segment().clone(),
+        })?;
+        self.space = Some(oracle);
+        Ok(())
+    }
+
+    /// The loaded space segment's identity, if any.
+    pub fn space_segment(&self) -> Option<&SegmentId> {
+        self.space.as_ref().map(|o| o.segment())
     }
 
     pub fn intent(&self, id: IntentId) -> Option<&Intent> {
@@ -274,6 +314,37 @@ impl Engine {
         self.get(id)
     }
 
+    /// Commit a collect to one of its options: a new collect intent with the same request
+    /// and `chosen`, proposed by this operator and checked and routed like any other. The
+    /// old intent is voided if it is still open (a query intent, the usual case, is
+    /// already terminal: rejected by its feasibility check). Logged as
+    /// `operator.action intent.amend`.
+    pub fn amend_collect(
+        &mut self,
+        by: &HumanAuthority,
+        id: IntentId,
+        chosen: ChosenCollect,
+        world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
+    ) -> Result<&Intent, EngineError> {
+        let (proposal, old_state) = self.amended(id, chosen)?;
+        let new_id = IntentId(self.next_intent);
+        self.emit(EventBody::OperatorAction {
+            operator: by.operator().clone(),
+            session: by.session(),
+            action: "intent.amend".into(),
+            detail: amend_detail(id, new_id, &chosen),
+        })?;
+        let source = Source::Human {
+            id: by.operator().clone(),
+        };
+        let new_id = self.submit_inner(source, proposal, world, terrain)?;
+        if next_state(old_state, Transition::Void).is_ok() {
+            self.transition(id, Transition::Void, format!("superseded by {new_id}"))?;
+        }
+        self.get(new_id)
+    }
+
     /// An operator withdraws an intent before dispatch (pending or approved).
     pub fn cancel(
         &mut self,
@@ -349,26 +420,112 @@ impl Engine {
         Ok(due)
     }
 
-    /// Hand an approved (or auto-approved) intent to the task layer.
+    /// Hand an approved (or auto-approved) vehicle intent to the task layer. A collect or
+    /// cover is refused ([`EngineError::SpaceIntent`], nothing changes): it has no vehicles,
+    /// so use [`Engine::dispatch_order`].
     pub fn dispatch(&mut self, id: IntentId) -> Result<DispatchOrder, EngineError> {
+        if self.get(id)?.spec().task.is_space() {
+            return Err(EngineError::SpaceIntent(id));
+        }
+        match self.dispatch_order(id)? {
+            Order::Vehicles(o) => Ok(o),
+            Order::Collect(_) | Order::Cover(_) => Err(EngineError::SpaceIntent(id)),
+        }
+    }
+
+    /// Hand any approved (or auto-approved) intent on: a [`DispatchOrder`] for vehicle
+    /// tasks, a [`CollectOrder`] (the chosen option, as the last check found it) or a
+    /// [`CoverOrder`] for space tasks. Logged as `intent.dispatched` (with `space` for
+    /// collect and cover).
+    pub fn dispatch_order(&mut self, id: IntentId) -> Result<Order, EngineError> {
         let intent = self.get(id)?;
         next_state(intent.state(), Transition::Dispatch)
             .map_err(|err| EngineError::Illegal { id, err })?;
-        let order = DispatchOrder {
-            intent: id,
-            task: intent.spec().task.clone(),
-            uids: intent.spec().uids.clone(),
+        let spec = intent.spec();
+        let order = match &spec.task {
+            Task::Collect { area, chosen, .. } => {
+                let not = |why: &str| EngineError::NotDispatchable {
+                    id,
+                    why: why.to_string(),
+                };
+                let chosen = chosen.ok_or_else(|| not("no option chosen"))?;
+                let answer = intent
+                    .space_answer()
+                    .ok_or_else(|| not("no space answer recorded"))?;
+                let result = answer
+                    .tasking()
+                    .ok_or_else(|| not("the space answer is not a tasking answer"))?;
+                let tol = self.policy.rules.space_rules().collect_match_tolerance_s;
+                let opt = matched_option(result, &chosen, tol)
+                    .ok_or_else(|| not("the chosen option is not in the last answer"))?;
+                let product_time = opt.product_time.map(|p| {
+                    chosen
+                        .collect_time
+                        .plus_ms(from_utc(p).ms_since(from_utc(opt.collect_time)))
+                });
+                Order::Collect(CollectOrder {
+                    intent: id,
+                    resource: Uid::new(format!("norad:{}", chosen.norad_id)),
+                    norad_id: chosen.norad_id,
+                    satellite: opt.satellite.clone(),
+                    class_id: opt.class_id.clone(),
+                    capability: opt.capability,
+                    collect_time: chosen.collect_time,
+                    product_time,
+                    resolution_m: opt.resolution_m,
+                    area: area.clone(),
+                    scene: opt
+                        .scene
+                        .as_ref()
+                        .map(|r| r.iter().map(|p| (*p).into()).collect()),
+                    answer_sha256: answer.content_hash()?,
+                })
+            }
+            Task::Cover {
+                area,
+                window,
+                service,
+                ..
+            } => {
+                let answer = intent
+                    .space_answer()
+                    .ok_or_else(|| EngineError::NotDispatchable {
+                        id,
+                        why: "no space answer recorded".into(),
+                    })?;
+                Order::Cover(CoverOrder {
+                    intent: id,
+                    resource: service.resource(),
+                    service: service.clone(),
+                    area: area.clone(),
+                    window: *window,
+                    answer_sha256: answer.content_hash()?,
+                })
+            }
+            _ => Order::Vehicles(DispatchOrder {
+                intent: id,
+                task: spec.task.clone(),
+                uids: spec.uids.clone(),
+            }),
+        };
+        let (task, uids) = (spec.task.clone(), spec.uids.clone());
+        let space = match &order {
+            Order::Vehicles(_) => None,
+            Order::Collect(c) => Some(SpaceOrder::Collect(c.clone())),
+            Order::Cover(c) => Some(SpaceOrder::Cover(c.clone())),
+        };
+        let reason = match &order {
+            Order::Vehicles(_) => "dispatched to the task layer",
+            Order::Collect(_) => "dispatched: satellite tasking request",
+            Order::Cover(_) => "dispatched: coverage watch",
         };
         self.emit(EventBody::IntentDispatched {
             intent: id,
-            task: order.task.clone(),
-            uids: order.uids.clone(),
+            task,
+            uids,
+            space,
         })?;
-        self.transition(
-            id,
-            Transition::Dispatch,
-            "dispatched to the task layer".into(),
-        )?;
+        self.transition(id, Transition::Dispatch, reason.into())?;
         Ok(order)
     }
 
@@ -450,9 +607,19 @@ impl Engine {
         Ok(t)
     }
 
-    /// The decision inputs as logged: the area set replaced by its hash. Logs the set as
-    /// `areas.loaded` first if it isn't the one last logged.
+    /// The decision inputs as logged: the area set and any space answer replaced by their
+    /// hashes. Logs the answer as `space.query`, and the set as `areas.loaded`, first if
+    /// they haven't been logged yet.
     fn log_inputs(&mut self, inputs: &WorldSnapshot) -> Result<LoggedInputs, EngineError> {
+        if let SpaceInputs::Answered { sha256, answer } = &inputs.space
+            && !self.logged_space.contains(sha256)
+        {
+            self.emit(EventBody::SpaceQuery {
+                sha256: sha256.clone(),
+                answer: answer.clone(),
+            })?;
+            self.logged_space.insert(sha256.clone());
+        }
         let Some(set) = &inputs.areas else {
             return Ok(LoggedInputs::from_world(inputs, None));
         };
@@ -516,7 +683,10 @@ impl Engine {
         world: &WorldSnapshot,
         terrain: &dyn TerrainOracle,
     ) -> Result<(WorldSnapshot, LoggedInputs, Vec<CheckResult>, bool), EngineError> {
-        let inputs = world.for_intent(spec, terrain);
+        let mut inputs = world.for_intent(spec, terrain);
+        if spec.task.is_space() {
+            inputs.space = self.ask_space(&spec.task, inputs.t)?;
+        }
         let results = rules::evaluate(spec, &inputs, &self.policy.rules);
         let passed = rules::passed(&results, spec.kind());
         let logged = self.log_inputs(&inputs)?;
@@ -527,8 +697,58 @@ impl Engine {
             results: results.clone(),
             passed,
         })?;
-        self.get_mut(spec.id)?.set_checks(results.clone());
+        let intent = self.get_mut(spec.id)?;
+        intent.set_checks(results.clone());
+        if spec.task.is_space() {
+            intent.set_space(inputs.space.answer().map(|a| Box::new(a.clone())));
+        }
         Ok((inputs, logged, results, passed))
+    }
+
+    /// Ask the space segment this task's question at snapshot time `t`. Failures become
+    /// `Unavailable` (the space rule then fails, saying why); only a hashing error is an
+    /// engine error.
+    fn ask_space(&self, task: &Task, t: Time) -> Result<SpaceInputs, EngineError> {
+        let Some(oracle) = &self.space else {
+            return Ok(SpaceInputs::Unavailable {
+                reason: "no space segment loaded".into(),
+            });
+        };
+        let now = oracle.scenario_time(t);
+        let query = match query_for(task, now, &self.policy.rules.space_rules()) {
+            Some(Ok(q)) => q,
+            Some(Err(reason)) => return Ok(SpaceInputs::Unavailable { reason }),
+            None => return Ok(SpaceInputs::NotQueried),
+        };
+        Ok(match oracle.answer(&query) {
+            Ok(answer) => SpaceInputs::Answered {
+                sha256: answer.content_hash()?,
+                answer: Box::new(answer),
+            },
+            Err(reason) => SpaceInputs::Unavailable { reason },
+        })
+    }
+
+    /// The proposal that commits collect `id` to `chosen`, and `id`'s current state.
+    fn amended(
+        &self,
+        id: IntentId,
+        chosen: ChosenCollect,
+    ) -> Result<(Proposal, State), EngineError> {
+        let old = self.get(id)?;
+        let task = old
+            .spec()
+            .task
+            .with_chosen(chosen)
+            .ok_or(EngineError::NotACollect(id))?;
+        let proposal = Proposal {
+            task,
+            uids: Vec::new(),
+            constraints: old.spec().constraints.clone(),
+            rationale: old.spec().rationale.clone(),
+        };
+        proposal.validate()?;
+        Ok((proposal, old.state()))
     }
 
     fn submit_inner(
@@ -596,6 +816,14 @@ impl Engine {
 /// The approving operator is the human who proposed the intent.
 pub(crate) fn is_self_approval(source: &Source, approver: &OperatorId) -> bool {
     matches!(source, Source::Human { id } if id == approver)
+}
+
+fn amend_detail(old: IntentId, new: IntentId, chosen: &ChosenCollect) -> String {
+    format!(
+        "{old} -> {new}: NORAD {} at {}",
+        chosen.norad_id,
+        crate::space::fmt_time(chosen.collect_time)
+    )
 }
 
 fn summarize_failures(results: &[CheckResult]) -> String {
@@ -685,6 +913,41 @@ impl AgentPort<'_> {
             format!("withdrawn by agent {}: {reason}", self.agent),
         )?;
         self.engine.get(id)
+    }
+
+    /// Commit a collect (any source's) to one of its options: a new collect proposed by
+    /// this agent, with a mandatory rationale, routed by policy (collect: a human
+    /// approves). The old intent is voided only if it is this agent's own and still open.
+    /// Logged as `agent.action intent.amend`.
+    pub fn amend_collect(
+        &mut self,
+        id: IntentId,
+        chosen: ChosenCollect,
+        rationale: Rationale,
+        world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
+    ) -> Result<&Intent, EngineError> {
+        let (mut proposal, old_state) = self.engine.amended(id, chosen)?;
+        proposal.rationale = Some(rationale);
+        let mine = matches!(&self.engine.get(id)?.spec().source, Source::Agent { id: a } if *a == self.agent);
+        let new_id = IntentId(self.engine.next_intent);
+        self.engine.emit(EventBody::AgentAction {
+            agent: self.agent.clone(),
+            action: "intent.amend".into(),
+            detail: amend_detail(id, new_id, &chosen),
+        })?;
+        let source = Source::Agent {
+            id: self.agent.clone(),
+        };
+        let new_id = self.engine.submit_inner(source, proposal, world, terrain)?;
+        if mine && next_state(old_state, Transition::Void).is_ok() {
+            self.engine.transition(
+                id,
+                Transition::Void,
+                format!("superseded by {new_id} (agent {})", self.agent),
+            )?;
+        }
+        self.engine.get(new_id)
     }
 
     pub fn intent(&self, id: IntentId) -> Option<&Intent> {

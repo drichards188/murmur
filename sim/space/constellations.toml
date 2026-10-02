@@ -88,6 +88,26 @@ min_elevation_deg = 5
 path = "bent-pipe"
 band = "X/Ka"
 
+[[class]]
+id = "ku-geo"
+name = "Commercial Ku-band GEO SATCOM (Intelsat-class)"
+capability = "satcom"
+role = "Commercial geostationary Ku/C-band capacity, the SATCOM RQ-4 and MQ-9B-class aircraft also use (beyond-line-of-sight Ku terminals)"
+orbit = "GEO 35,786 km"
+celestrak = ["GROUP=intelsat"]
+include = ["INTELSAT"]
+guessed = ["min_elevation_deg", "network_latency_ms"]
+sources = [
+  "Element sets: CelesTrak supplemental group 'intelsat' (the Intelsat fleet; Intelsat is one representative commercial GEO operator, SES would serve the same purpose)",
+  "Ku-band use on large UAS: MQ-9 Block 5 and Global Hawk beyond-line-of-sight links through commercial Ku capacity (public programme descriptions)",
+]
+notes = "Representative of commercial GEO capacity, not a model of any one operator or of the aircraft's actual transponder lease. Only the operator's satellites that are above the terminal's mask count, so coverage depends on which longitudes the fleet occupies. Terminal rates depend on terminal and allocation; left blank. Mask and gateway/processing allowance are our estimates (a bent pipe through a teleport adds a few tens of ms beyond the two space legs)."
+[class.comms]
+min_elevation_deg = 5
+network_latency_ms = 20
+path = "bent-pipe"
+band = "Ku"
+
 # ---------------------------------------------------------------- imaging, optical
 [[class]]
 id = "worldview"

@@ -13,6 +13,13 @@
 //!
 //! Output order is fixed (rule order, then the intent's uid order) and detail strings use
 //! fixed precision, so recomputing a decision gives byte-identical results.
+//!
+//! Space kinds (collect, cover) target no vehicle, so the vehicle rules don't apply to them;
+//! they get their own, which read only the logged space answer ([`crate::space`]):
+//! `space_query` (the segment answered this intent's question), then `feasibility` for a
+//! collect (an option is chosen and still feasible: pass in the future, lead time and
+//! deadline met) or `coverage` for a cover. A rule set that produced no result at all
+//! fails ("no rule evaluated"): an empty check list never passes.
 
 use serde::{Deserialize, Serialize};
 
@@ -20,10 +27,14 @@ use crate::areas::Area;
 use crate::catalog::{AutopilotKind, Domain};
 use crate::geo::haversine_m;
 use crate::ids::Uid;
-use crate::intent::{IntentSpec, Task, TaskKind};
+use crate::intent::{IntentSpec, Targets, Task, TaskKind};
 use crate::route::{Segment, route_for};
+use crate::space::{
+    ChosenCollect, CoverService, SpaceAnswer, SpaceResult, SpaceRules, Window, fmt_time, fmt_utc,
+    from_utc, matched_option, query_for,
+};
 use crate::terrain::Surface;
-use crate::world::{Fact, TerrainInputs, VehicleFacts, WorldSnapshot};
+use crate::world::{Fact, SpaceInputs, TerrainInputs, VehicleFacts, WorldSnapshot};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -34,6 +45,12 @@ pub enum RuleId {
     Domain,
     Geofence,
     Reserves,
+    /// Collect, cover: the space segment answered this intent's question.
+    SpaceQuery,
+    /// Collect: a chosen option that is still feasible.
+    Feasibility,
+    /// Cover: the service holds over the window.
+    Coverage,
 }
 
 impl RuleId {
@@ -45,6 +62,9 @@ impl RuleId {
             RuleId::Domain => "domain",
             RuleId::Geofence => "geofence",
             RuleId::Reserves => "reserves",
+            RuleId::SpaceQuery => "space_query",
+            RuleId::Feasibility => "feasibility",
+            RuleId::Coverage => "coverage",
         }
     }
 }
@@ -124,6 +144,16 @@ pub struct RulesConfig {
     /// otherwise, so the estimate needs a horizon).
     pub task_duration_s: u32,
     pub unknown_endurance: UnknownEndurance,
+    /// Space rules (`[rules.space]`); defaults when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space: Option<SpaceRules>,
+}
+
+impl RulesConfig {
+    /// `[rules.space]`, or its defaults.
+    pub fn space_rules(&self) -> SpaceRules {
+        self.space.clone().unwrap_or_default()
+    }
 }
 
 impl Default for RulesConfig {
@@ -135,6 +165,7 @@ impl Default for RulesConfig {
             reserve_pct: 20.0,
             task_duration_s: 900,
             unknown_endurance: UnknownEndurance::Human,
+            space: None,
         }
     }
 }
@@ -142,12 +173,29 @@ impl Default for RulesConfig {
 /// All rules, in order.
 pub fn evaluate(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Vec<CheckResult> {
     let mut out = Vec::new();
-    out.extend(capability(spec, world));
-    out.extend(readiness(spec, world, cfg));
-    out.extend(platform_limits(spec, world, cfg));
-    out.extend(domain(spec, world));
-    out.extend(geofence(spec, world, cfg));
-    out.extend(reserves(spec, world, cfg));
+    match spec.task.targets() {
+        Targets::Vehicles => {
+            out.extend(capability(spec, world));
+            out.extend(readiness(spec, world, cfg));
+            out.extend(platform_limits(spec, world, cfg));
+            out.extend(domain(spec, world));
+            out.extend(geofence(spec, world, cfg));
+            out.extend(reserves(spec, world, cfg));
+        }
+        Targets::Space => {
+            out.extend(space_query(spec, world, cfg));
+            out.extend(feasibility(spec, world, cfg));
+            out.extend(coverage(spec, world, cfg));
+        }
+    }
+    if out.is_empty() {
+        out.push(CheckResult::new(
+            RuleId::Capability,
+            None,
+            Outcome::Fail,
+            "no rule evaluated (no target)",
+        ));
+    }
     out
 }
 
@@ -612,4 +660,327 @@ pub fn reserves(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
             fail(detail)
         }
     })
+}
+
+// ---- space kinds (collect, cover) -------------------------------------------------------
+
+/// An enum's serde name (`sar`, `off_nadir`), for details.
+fn tag<T: Serialize>(v: &T) -> String {
+    match serde_json::to_value(v) {
+        Ok(serde_json::Value::String(s)) => s,
+        _ => "?".into(),
+    }
+}
+
+fn space_check(rule: RuleId, outcome: Outcome, detail: impl Into<String>) -> CheckResult {
+    CheckResult::new(rule, None, outcome, detail)
+}
+
+/// The space answer the rules may read: present, and the answer to this intent's question
+/// (the query rebuilt from the spec at the answer's "now" equals the logged query).
+fn checked_answer<'a>(
+    spec: &IntentSpec,
+    world: &'a WorldSnapshot,
+    cfg: &RulesConfig,
+) -> Result<&'a SpaceAnswer, String> {
+    let answer = match &world.space {
+        SpaceInputs::NotQueried => {
+            return Err("cannot evaluate: the space segment was not queried".into());
+        }
+        SpaceInputs::Unavailable { reason } => return Err(format!("cannot evaluate: {reason}")),
+        SpaceInputs::Answered { answer, .. } => answer,
+    };
+    let now = answer.now().unwrap_or(world.t);
+    let want = match query_for(&spec.task, now, &cfg.space_rules()) {
+        Some(Ok(q)) => q,
+        Some(Err(e)) => return Err(format!("cannot evaluate: {e}")),
+        None => return Err("cannot evaluate: not a space task".into()),
+    };
+    let same = match (
+        serde_json::to_string(&want),
+        serde_json::to_string(&answer.query),
+    ) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    };
+    if !same {
+        return Err("cannot evaluate: the space answer is not for this intent's query".into());
+    }
+    Ok(answer)
+}
+
+/// The space segment answered this intent's question (collect, cover). Fail-closed: no
+/// segment loaded, a failed query, or an answer to a different question fails. The detail
+/// says what was asked of which segment, and flags a time-shifted answer.
+pub fn space_query(
+    spec: &IntentSpec,
+    world: &WorldSnapshot,
+    cfg: &RulesConfig,
+) -> Vec<CheckResult> {
+    let r = RuleId::SpaceQuery;
+    if spec.task.targets() != Targets::Space {
+        return Vec::new();
+    }
+    let answer = match checked_answer(spec, world, cfg) {
+        Ok(a) => a,
+        Err(e) => return vec![space_check(r, Outcome::Fail, e)],
+    };
+    let what = match &answer.result {
+        SpaceResult::Tasking(t) => format!(
+            "tasking: {} feasible options, {} excluded passes",
+            t.options.len(),
+            t.exclusions.len()
+        ),
+        SpaceResult::Links(l) => format!(
+            "satcom {}: {} windows from {} satellites",
+            l.class_id, l.windows, l.satellites
+        ),
+        SpaceResult::Gnss(g) => format!(
+            "gnss {}: {} samples from {} satellites",
+            g.class_id, g.samples, g.satellites
+        ),
+    };
+    let tm = &answer.time_map;
+    let shift = if tm.shift_days == 0 {
+        String::new()
+    } else {
+        format!(
+            "; TIME-SHIFTED {:+} d (passes are representative, not the scenario date's)",
+            tm.shift_days
+        )
+    };
+    vec![space_check(
+        r,
+        Outcome::Pass,
+        format!(
+            "{what}; elements reference {}; {}{shift}",
+            fmt_utc(tm.reference),
+            answer.segment.short()
+        ),
+    )]
+}
+
+/// A collect commits to a chosen option that is still feasible against the latest answer:
+/// the same satellite has a feasible pass within `collect_match_tolerance_s` of the chosen
+/// collect time, the collect is still in the future, in the window, after the tasking lead
+/// time, and its product meets the deadline. Without a chosen option the intent is a query:
+/// it fails, listing the ranked options (the full answer is the intent's `space` and the
+/// `space.query` event). Unknown product timing with a deadline is `unverified`.
+pub fn feasibility(
+    spec: &IntentSpec,
+    world: &WorldSnapshot,
+    cfg: &RulesConfig,
+) -> Vec<CheckResult> {
+    let r = RuleId::Feasibility;
+    let Task::Collect {
+        window,
+        product_deadline,
+        chosen,
+        ..
+    } = &spec.task
+    else {
+        return Vec::new();
+    };
+    let fail = |d: String| vec![space_check(r, Outcome::Fail, d)];
+    let answer = match checked_answer(spec, world, cfg) {
+        Ok(a) => a,
+        Err(e) => return fail(e),
+    };
+    let Some(result) = answer.tasking() else {
+        return fail("cannot evaluate: the answer is not a tasking answer".into());
+    };
+    let Some(chosen) = chosen else {
+        return fail(options_summary(result));
+    };
+    collect_feasible(
+        result,
+        chosen,
+        window,
+        *product_deadline,
+        &cfg.space_rules(),
+    )
+}
+
+fn collect_feasible(
+    result: &murmur_space::tasking::TaskingResult,
+    chosen: &ChosenCollect,
+    window: &Window,
+    deadline: Option<crate::time::Time>,
+    cfg: &SpaceRules,
+) -> Vec<CheckResult> {
+    let r = RuleId::Feasibility;
+    let fail = |d: String| vec![space_check(r, Outcome::Fail, d)];
+    let at = fmt_time(chosen.collect_time);
+    let who = format!("NORAD {} at {at}", chosen.norad_id);
+    let now = from_utc(result.request.now);
+    if chosen.collect_time <= now {
+        return fail(format!("{who}: the pass is over (now {})", fmt_time(now)));
+    }
+    if !window.contains(chosen.collect_time) {
+        return fail(format!("{who}: outside the collection window"));
+    }
+    let Some(opt) = matched_option(result, chosen, cfg.collect_match_tolerance_s) else {
+        // Say why, from the exclusions of the same satellite near that time.
+        let near = result
+            .exclusions
+            .iter()
+            .filter(|e| e.norad_id == chosen.norad_id)
+            .min_by_key(|e| from_utc(e.pass_time).ms_since(chosen.collect_time).abs());
+        let why = match near {
+            Some(e) => format!(
+                "nearest pass {} excluded ({}: {})",
+                fmt_utc(e.pass_time),
+                tag(&e.reason),
+                e.detail
+            ),
+            None => "no pass of that satellite in the window".into(),
+        };
+        return fail(format!("{who}: no longer feasible; {why}"));
+    };
+    let earliest = from_utc(opt.earliest_collect);
+    if chosen.collect_time < earliest {
+        return fail(format!(
+            "{who}: tasking lead time not met (earliest collect {})",
+            fmt_time(earliest)
+        ));
+    }
+    // The product delay is the class's downlink + processing, the same for every collect.
+    let product = opt.product_time.map(|p| {
+        chosen
+            .collect_time
+            .plus_ms(from_utc(p).ms_since(from_utc(opt.collect_time)))
+    });
+    let res = opt
+        .resolution_m
+        .map_or("resolution unknown".to_string(), |m| format!("{m:.2} m"));
+    let detail = format!(
+        "{} {} ({}, {}) collect {at}, product {}, {res}, off-nadir {:.1} deg, incidence {:.1} deg; earliest collect {}",
+        opt.satellite,
+        opt.norad_id,
+        opt.class_id,
+        tag(&opt.capability),
+        product.map_or("time unknown".to_string(), fmt_time),
+        opt.geometry.off_nadir_deg,
+        opt.geometry.incidence_deg,
+        fmt_time(earliest),
+    );
+    match (deadline, product) {
+        (Some(d), Some(p)) if p > d => fail(format!(
+            "{who}: product {} after the deadline {}",
+            fmt_time(p),
+            fmt_time(d)
+        )),
+        (Some(d), None) => vec![space_check(
+            r,
+            Outcome::Unverified,
+            format!(
+                "{detail}; product timing unknown for {}, deadline {} not checked; needs a human",
+                opt.class_id,
+                fmt_time(d)
+            ),
+        )],
+        _ => vec![space_check(r, Outcome::Pass, detail)],
+    }
+}
+
+/// "no option chosen: ..." with the first ranked options and the exclusion summary.
+fn options_summary(result: &murmur_space::tasking::TaskingResult) -> String {
+    const SHOWN: usize = 5;
+    let mut s = if result.options.is_empty() {
+        "no option chosen: no feasible option in the window".to_string()
+    } else {
+        format!(
+            "no option chosen: {} feasible options; propose or amend to one (norad_id, collect_time):",
+            result.options.len()
+        )
+    };
+    for o in result.options.iter().take(SHOWN) {
+        s.push_str(&format!(
+            " #{} {} {} {} collect {} product {} {};",
+            o.rank,
+            o.satellite,
+            o.norad_id,
+            tag(&o.capability),
+            fmt_utc(o.collect_time),
+            o.product_time.map_or("unknown".to_string(), fmt_utc),
+            o.resolution_m
+                .map_or("res unknown".to_string(), |m| format!("{m:.2} m")),
+        ));
+    }
+    if !result.exclusion_summary.is_empty() {
+        let ex: Vec<String> = result
+            .exclusion_summary
+            .iter()
+            .map(|e| format!("{} {} {}", e.class_id, tag(&e.reason), e.passes))
+            .collect();
+        s.push_str(&format!(" excluded: {}", ex.join(", ")));
+    }
+    s
+}
+
+/// A cover's service holds over the window: SATCOM coverage fraction at least `min_level`
+/// (default `cover_min_fraction`), or GNSS satellites in view at every sample at least
+/// `min_level` (default `gnss_min_visible`).
+pub fn coverage(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Vec<CheckResult> {
+    let r = RuleId::Coverage;
+    let Task::Cover {
+        service, min_level, ..
+    } = &spec.task
+    else {
+        return Vec::new();
+    };
+    let res = |o, d: String| vec![space_check(r, o, d)];
+    let answer = match checked_answer(spec, world, cfg) {
+        Ok(a) => a,
+        Err(e) => return res(Outcome::Fail, e),
+    };
+    let sc = cfg.space_rules();
+    match (service, &answer.result) {
+        (CoverService::Satcom { .. }, SpaceResult::Links(l)) => {
+            let need = min_level.unwrap_or(sc.cover_min_fraction);
+            let lat = l
+                .latency_ms_median
+                .map_or("latency unknown".to_string(), |m| {
+                    format!("latency median {m:.0} ms")
+                });
+            let mut d = format!(
+                "{}: covered {:.1}% of the window (needs {:.1}%), longest outage {:.0} s, {}-{} in view, {lat}",
+                l.class_id,
+                l.coverage_fraction * 100.0,
+                need * 100.0,
+                l.longest_outage_s,
+                l.visible_min,
+                l.visible_max,
+            );
+            if let Some(o) = l.outages.first() {
+                d.push_str(&format!(
+                    "; first outage {} to {} ({} outages)",
+                    fmt_utc(o.start),
+                    fmt_utc(o.end),
+                    l.outages.len()
+                ));
+            }
+            let ok = l.coverage_fraction >= need;
+            res(if ok { Outcome::Pass } else { Outcome::Fail }, d)
+        }
+        (CoverService::Gnss { .. }, SpaceResult::Gnss(g)) => {
+            let need = min_level.unwrap_or(f64::from(sc.gnss_min_visible));
+            let pdop = g
+                .pdop_max
+                .map_or("PDOP unknown".to_string(), |p| format!("PDOP max {p:.2}"));
+            let mut d = format!(
+                "{}: {}-{} satellites in view over {} samples (needs {need:.0} at every sample), {pdop}",
+                g.class_id, g.visible_min, g.visible_max, g.samples,
+            );
+            if let Some(t) = g.visible_min_at {
+                d.push_str(&format!("; fewest at {}", fmt_utc(t)));
+            }
+            let ok = g.samples > 0 && g.visible_min as f64 >= need;
+            res(if ok { Outcome::Pass } else { Outcome::Fail }, d)
+        }
+        _ => res(
+            Outcome::Fail,
+            "cannot evaluate: the answer is not for this service".into(),
+        ),
+    }
 }

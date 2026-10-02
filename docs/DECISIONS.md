@@ -50,6 +50,10 @@ group. Dates are 2026.
 - **User-space link emulator instead of tc/netem** (10-02): no sudo, and it can model range,
   terrain masking, acoustic and surfaced-only links. netem only as a cross-check.
 - **Area: Golden Gate scenario, widen to Bay + approaches (~100 km) when needed** (10-02).
+- **Golden Gate currents from NOAA's SFBOFS model, not station interpolation** (10-02). Against
+  three harbor current meters SFBOFS scored 0.15 m/s speed RMSE vs 0.23 for station IDW (leave
+  one out). Needs `tidewater fetch` with the `sfbofs` extra (~730 MB download, 26 MB cache);
+  `source = "coops-predictions"` in the scenario reverts. No meter exists at the Gate itself.
 - **Tidewater is a separate repo** (10-01): a simulator-agnostic conditions engine; Murmur is
   its first consumer. Golden Gate, 13-16 June 2026 spring tides. Past windows replay
   **observed** water level (predictions ran 18 cm low).

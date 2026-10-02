@@ -1,8 +1,10 @@
 use murmur_linkemu::config::{Config, load_fleet};
 use murmur_linkemu::geo::{NoTerrain, Terrain};
-use murmur_linkemu::link::Env;
+use murmur_linkemu::link::{Env, Link};
 use murmur_linkemu::proxy::{Options, build_links, start, write_bridge_manifest};
+use murmur_linkemu::sat::{self, RealSpace, SatShared, SpaceSource};
 use murmur_linkemu::stats::{cpu_seconds, totals};
+use murmur_linkemu::terrain::dem_height;
 use murmur_linkemu::terrain::{HttpSampler, TidewaterTerrain};
 use murmur_linkemu::timeline::Timeline;
 use murmur_linkemu::{http, model::CAUSES};
@@ -35,6 +37,7 @@ USAGE: murmur-linkemu --bridge-base PORT [options]
   --at ISO             what the scenario clock reads when the emulator starts (env MURMUR_AT);
                        needed for at_scenario events; also the time sent to tidewater
   --rate X             scenario seconds per wall second (env MURMUR_RATE, default 1)
+  --no-space           SATCOM profiles keep their static parameters (no murmur-space data)
 
 Scripted events are reloaded on SIGHUP or when the config/scenario file changes.
 ";
@@ -55,6 +58,7 @@ struct Args {
     tidewater: Option<String>,
     at: Option<String>,
     rate: Option<String>,
+    no_space: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -76,6 +80,7 @@ fn parse_args() -> Result<Args, String> {
             .filter(|s| !s.is_empty()),
         at: std::env::var("MURMUR_AT").ok(),
         rate: std::env::var("MURMUR_RATE").ok(),
+        no_space: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -104,6 +109,7 @@ fn parse_args() -> Result<Args, String> {
             "--tidewater" => a.tidewater = Some(val()?),
             "--at" => a.at = Some(val()?),
             "--rate" => a.rate = Some(val()?),
+            "--no-space" => a.no_space = true,
             _ => return Err(format!("unknown option {flag}\n\n{USAGE}")),
         }
     }
@@ -150,14 +156,40 @@ fn real_main() -> Result<(), String> {
         Some(url) => Some(Arc::new(HttpSampler::new(url, cfg.terrain.timeout_s)?)),
         None => None,
     };
-    let env = Arc::new(Env::with_timeline(&cfg, terrain.clone(), seed, timeline)?);
-    let links = build_links(&fleet, &cfg, &env)?;
-
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(args.threads.max(1))
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
+
+    // The terrain check measures against [ground_station].alt_m, so it has to match the DEM
+    // ground there: compare (or take it from the DEM) before any link is built.
+    if let Some(gs) = cfg.ground_station.clone() {
+        let dem = match &sampler {
+            Some(s) => match rt.block_on(dem_height(
+                s.as_ref(),
+                timeline.scenario_unix(0.0),
+                gs.lat,
+                gs.lon,
+            )) {
+                Ok(h) => h,
+                Err(e) => {
+                    eprintln!("linkemu: WARNING cannot read the DEM at the ground station: {e}");
+                    None
+                }
+            },
+            None => None,
+        };
+        if let Some(check) = cfg.resolve_ground_alt(dem) {
+            let (warn, msg) = check.message();
+            eprintln!("linkemu: {}{msg}", if warn { "WARNING " } else { "" });
+        }
+    }
+
+    let env = Arc::new(Env::with_timeline(&cfg, terrain.clone(), seed, timeline)?);
+    let links = build_links(&fleet, &cfg, &env)?;
+    let sats: Vec<Arc<SatShared>> = links.iter().filter_map(Link::sat_shared).collect();
+    let space_cfg = cfg.space.clone();
     rt.block_on(async move {
         let t0 = Instant::now();
         let opts = Options {
@@ -167,8 +199,36 @@ fn real_main() -> Result<(), String> {
             vehicle_base,
         };
         let stats = Arc::new(start(links, &opts, t0).await?);
+        // SATCOM links that follow satellite visibility: load the element sets (or say why
+        // not) and start the background refresh.
+        let space_info = if sats.is_empty() {
+            None
+        } else {
+            let loaded = if args.no_space {
+                Err("disabled by --no-space".to_string())
+            } else {
+                RealSpace::load(&space_cfg, timeline.scenario_unix(0.0))
+            };
+            let tm = loaded.as_ref().ok().map(RealSpace::time_map);
+            if let Some(tm) = &tm {
+                eprintln!(
+                    "linkemu: space data loaded; elements reference {}, scenario shifted {:+} d for propagation",
+                    tm.reference.to_rfc3339(),
+                    tm.shift_days
+                );
+            }
+            let source = loaded.map(|r| Arc::new(r) as Arc<dyn SpaceSource>);
+            Some(sat::spawn(source, space_cfg, timeline, t0, sats, tm))
+        };
         if args.http != "off" {
-            http::serve(&args.http, stats.clone(), t0, Some(terrain.clone())).await?;
+            http::serve(
+                &args.http,
+                stats.clone(),
+                t0,
+                Some(terrain.clone()),
+                space_info,
+            )
+            .await?;
         }
         if let (Some(t), Some(s)) = (tidewater_terrain, sampler) {
             let clock = Arc::new(move || timeline.scenario_unix(t0.elapsed().as_secs_f64()));

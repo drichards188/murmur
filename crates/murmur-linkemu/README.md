@@ -129,12 +129,63 @@ Profiles are `[class.<name>]`, with `extends` for variants. A vehicle uses the p
 by its platform's `link` class unless `[platform_profile]` maps its platform elsewhere
 (`magura = "satcom_leo"` ships on). Shipped profiles: `los`, `mesh`, `satcom` (GEO, 300 ms
 each way for the ~600 ms RTT), `satcom_leo`, `satcom_iridium`, `acoustic` (300 bps, 1500 m/s),
-`tether`. Each has a comment with where its numbers come from and which are guesses.
+`satcom_ku_geo`, `tether`. Each has a comment with where its numbers come from and which are guesses.
+
+## SATCOM from real satellites (`space_class`)
+
+A profile with `space_class = "starlink" | "iridium" | "wgs" | "ku-geo"` (classes of
+`sim/space/constellations.toml`, computed by the `murmur-space` library) follows real satellite
+visibility instead of fixed numbers. For each vehicle, from its reported position and the
+scenario clock (`MURMUR_AT` + elapsed x `MURMUR_RATE`), a background task refreshes every
+`[space].interval_s` scenario seconds (never less than `min_wall_s` of wall time apart; SGP4
+runs on a blocking thread) and the packet path reads the latest answer:
+
+- **Up/down**: no satellite above the class's mask means every packet is dropped (cause `no_sat`).
+- **Latency**: one-way, from the best (highest elevation) satellite's slant range plus the
+  class's network latency (a bent pipe counts the user leg twice). It replaces `latency_ms`;
+  jitter still applies. Iridium has no published network latency, so its profile `latency_ms`
+  stays the total (`latency_source = "profile"` in `/stats`).
+- **Handover**: the best satellite changes while the link stays up. Always counted; with
+  `handover_outage_ms > 0` the link also drops that long (cause `handover`, a GUESS in the
+  shipped profiles). The outage is wall time, so at a high `MURMUR_RATE` handovers cost
+  proportionally more packets than at rate 1. "Best by elevation" changes about as often as,
+  or more often than, a real terminal's satellite (Starlink: every 15-20 s here).
+- **Time**: public element sets are current, scenarios are dated; `[space].epoch = "auto"` uses
+  murmur-space's whole-day time shift (its README, "Epoch honesty"). The map is fixed at start
+  and reported in the log and `/stats`.
+- **No data**: if `murmur-space fetch` has not been run (no `sim/space/cache`), a class has no
+  usable satellites, the source errors, or `--no-space` is given, the profile's static numbers
+  apply, stated in the log, in `/stats` (`space.classes.<class>.static_reason`) and per vehicle
+  (`satcom.mode = "static"`).
+- **Bandwidth** stays the profile's: Iridium (22 kbps) cannot carry the stand-ins' telemetry
+  rates and drops most of it. That mismatch is deliberate and visible; link-aware telemetry is
+  a separate issue.
+
+`/stats/<uid>` has `satcom`: `class`, `mode` (`pending`, `live`, `static`), `up`, `visible`,
+`best_norad_id`, `best_name`, `best_elevation_deg`, `slant_range_km`, `latency_ms` and
+`latency_source`, `handovers`, `last_handover_scenario`, and `next_outage_scenario` /
+`next_outage_in_s` (link up now) or `next_pass_scenario` / `next_pass_in_s` (link down now),
+looked ahead `outlook_s` scenario seconds (null if none in the horizon; GEO has none).
+`/stats` also has `space` (per class live or static, element reference, time shift, refresh
+round times).
+
+Platform mapping (`[platform_profile]`): buoy to Iridium; magura, corsair, seahunter and
+saildrone to Starlink-class; rq4 and mq9b to WGS-class GEO (`satcom`), with the commercial Ku
+GEO (`satcom_ku_geo`, Intelsat-class) as the documented alternative.
+
+Ground station altitude: with `--tidewater` the DEM is sampled at `[ground_station]` at
+startup; if `alt_m` differs by more than 5 m a warning is logged, and `alt_m = "dem"` uses the
+DEM height (the profiles' `gs_antenna_m` mast height is added on top either way).
+
+`src/bin/satprobe.rs` is the live check: fake vehicles at given positions and a fake bridge,
+printing the emulator's `/stats` view next to measured delay and loss, e.g.
+`satprobe --vehicle magura:37.82:-122.51:0 --vehicle rq4:80:-100:0 --duration 60` (first with
+`--write-only` for the manifest, then the emulator with `MURMUR_AT` and `MURMUR_RATE`).
 
 ## Observability
 
 `GET /stats` returns a summary plus `per_link`: for each direction in/out packets and bytes,
-drops by cause (`loss event_loss jam cut range terrain gate queue no_peer socket`), duplicates,
+drops by cause (`loss event_loss jam cut range terrain gate queue no_peer socket no_sat handover`), duplicates,
 queued packets and bytes (gauges), mean and max added latency; per link the profile, blocked
 cause, depth state, last position and `los`: `state` (`off`, `unknown`, `clear`, `obstructed`),
 `obstruction_m` (positive: terrain above the ray; negative: clear by that much),

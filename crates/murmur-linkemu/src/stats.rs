@@ -2,7 +2,9 @@
 
 use crate::link::LinkMeta;
 use crate::model::{CAUSES, Cause, Dir};
+use crate::sat::SatShared;
 use serde_json::{Value, json};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
 #[derive(Default)]
@@ -67,6 +69,9 @@ pub struct LinkStats {
     pub los_obstruction: AtomicU64,
     /// Packets decided while the terrain answer was unknown (treated as open).
     pub terrain_unknown: AtomicU64,
+    /// SATCOM state (and the profile's static one-way latency, ms) for links that follow a
+    /// constellation class.
+    pub sat: Option<(Arc<SatShared>, f64)>,
 }
 
 pub const LOS_NAMES: [&str; 4] = ["off", "unknown", "clear", "obstructed"];
@@ -87,7 +92,13 @@ impl LinkStats {
             los_state: AtomicU64::new(0),
             los_obstruction: AtomicU64::new(nan),
             terrain_unknown: AtomicU64::new(0),
+            sat: None,
         }
+    }
+
+    pub fn with_sat(mut self, sat: Option<Arc<SatShared>>, static_latency_ms: f64) -> LinkStats {
+        self.sat = sat.map(|s| (s, static_latency_ms));
+        self
     }
 
     pub fn d(&self, dir: Dir) -> &DirStats {
@@ -134,6 +145,7 @@ impl LinkStats {
                 "unknown_pkts": self.terrain_unknown.load(Relaxed),
                 "blocked_by_terrain_pkts": terrain_blocked,
             },
+            "satcom": self.sat.as_ref().map(|(s, ms)| s.json(*ms)),
             "pos": { "lat": f(0), "lon": f(1), "alt_m": f(2) },
             "up": self.dir[0].json(),
             "down": self.dir[1].json(),
@@ -195,7 +207,12 @@ pub fn rss_mb() -> f64 {
         / 1e6
 }
 
-pub fn summary_json(links: &[std::sync::Arc<LinkStats>], uptime_s: f64, with_links: bool) -> Value {
+pub fn summary_json(
+    links: &[std::sync::Arc<LinkStats>],
+    uptime_s: f64,
+    with_links: bool,
+    space: Option<&crate::sat::SpaceInfo>,
+) -> Value {
     let t = totals(links);
     let mut by = serde_json::Map::new();
     for c in CAUSES {
@@ -220,6 +237,24 @@ pub fn summary_json(links: &[std::sync::Arc<LinkStats>], uptime_s: f64, with_lin
         "cpu_seconds": cpu_seconds(),
         "rss_mb": rss_mb(),
     });
+    let sat_links: Vec<&Arc<LinkStats>> = links.iter().filter(|l| l.sat.is_some()).collect();
+    if !sat_links.is_empty() {
+        let (mut live, mut down) = (0u64, 0u64);
+        for l in &sat_links {
+            if let Some((s, _)) = &l.sat {
+                let snap = s.snapshot();
+                if snap.mode == crate::sat::SatMode::Live {
+                    live += 1;
+                    down += u64::from(!snap.up);
+                }
+            }
+        }
+        let mut sp = space.map_or_else(|| json!({}), crate::sat::SpaceInfo::json);
+        sp["satcom_links"] = sat_links.len().into();
+        sp["live_links"] = live.into();
+        sp["links_without_satellite"] = down.into();
+        v["space"] = sp;
+    }
     if with_links {
         v["per_link"] = links.iter().map(|l| l.json()).collect::<Vec<_>>().into();
     }

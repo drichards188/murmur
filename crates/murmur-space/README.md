@@ -65,6 +65,7 @@ lists our estimates, `sources` says where the rest come from.
 | Starlink-class | satcom | `GROUP=starlink` | mask 25 deg (20 below 500 km, 10 below 400 km: FCC, April 2026), bent pipe, network latency 8 ms one way (guess), ~100/10 Mbit/s |
 | Iridium-class | satcom | `GROUP=iridium-NEXT` | mask 8.2 deg, crosslinks, Certus 700 rates, latency unknown |
 | WGS-class | satcom | `NAME=WGS` | GEO, mask 5 deg (guess), rates blank |
+| Ku GEO-class (Intelsat) | satcom | `GROUP=intelsat` | GEO, mask 5 deg and network latency 20 ms (guesses), commercial Ku bent pipe, rates blank |
 | WorldView-class | optical | `NAME=WORLDVIEW`, `LEGION`, `GEOEYE` | per-satellite GSD 0.30-0.50 m and swath from datasheets; off-nadir 30 deg, sun >= 15 deg, lead 120 min, downlink 45, processing 60 (guesses) |
 | SkySat-class | optical | `GROUP=planet`, `SKYSAT*` | 0.5 m, 5.5 km; off-nadir 30 deg (guess) |
 | Dove-class | optical | `GROUP=planet`, `FLOCK*` | 3.7 m, 32.5 km nadir strip, not taskable |
@@ -367,8 +368,8 @@ nothing filters on it yet (a rule could).
 
 Platforms with `link = "satcom"` need a class mapping, which is a linkemu (or `platforms.toml`)
 decision; suggested: drifting buoy -> `iridium` (SBD messages); Saildrone-class -> `iridium` or
-`starlink`; Magura/Corsair/Sea Hunter-class -> `starlink`; RQ-4 / MQ-9B-class -> `wgs` (GEO; the
-commercial Ku GEO they also use is not in the catalog). Underwater: no SATCOM unless surfaced
+`starlink`; Magura/Corsair/Sea Hunter-class -> `starlink`; RQ-4 / MQ-9B-class -> `wgs` (GEO) or `ku-geo`
+(the commercial Ku GEO capacity they also use). Underwater: no SATCOM unless surfaced
 (linkemu's rule).
 
 **GNSS availability.** `space.gnss(&GnssQuery { point, from, to, step_s, class: "gps", mask_deg, epoch_mode })`

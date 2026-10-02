@@ -9,6 +9,7 @@ pub mod mavpos;
 pub mod model;
 pub mod proxy;
 pub mod reload;
+pub mod sat;
 pub mod stats;
 pub mod terrain;
 pub mod timeline;

@@ -124,6 +124,9 @@ impl Policy {
                 "rules.reserve_pct must be 0..100".into(),
             ));
         }
+        if let Some(s) = &r.space {
+            s.validate().map_err(PolicyError::Invalid)?;
+        }
         Ok(p)
     }
 
@@ -138,6 +141,8 @@ impl Policy {
 /// inbox can show why a human is needed.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PolicyFacts {
+    /// For collect and cover (no vehicles): `armed` is empty and `leaves_approved_area`
+    /// false ("no path"); a satellite collect over any area is routed by `kind`.
     pub kind: TaskKind,
     pub source: SourceKind,
     /// Targets on armed platforms (or with unknown platform, counted as armed).
