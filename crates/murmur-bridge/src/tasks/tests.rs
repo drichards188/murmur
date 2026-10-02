@@ -36,7 +36,7 @@ impl Transmit for FakeTx {
 }
 
 #[derive(Clone, Copy)]
-enum Firmware {
+pub(crate) enum Firmware {
     Copter,
     Rover,
     Sub,
@@ -59,7 +59,7 @@ impl Firmware {
 
 /// How the fake misbehaves.
 #[derive(Clone, Default)]
-struct Quirks {
+pub(crate) struct Quirks {
     /// never answer DO_SET_MODE
     ignore_mode: bool,
     /// metres per second (0: stuck)
@@ -272,11 +272,29 @@ impl Fake {
             flags: apm::EkfStatusFlags::EKF_POS_HORIZ_ABS,
             ..Default::default()
         }));
+        self.emit(MavMessage::SYS_STATUS(apm::SYS_STATUS_DATA {
+            battery_remaining: 90,
+            ..Default::default()
+        }));
+    }
+}
+
+impl TaskManager {
+    /// The task layer on its own, without the decision engine in front (these tests are
+    /// about the MAVLink side; `crate::decision::tests` covers the whole path).
+    fn dispatch_unchecked(&self, order: TaskOrder) -> Arc<Tasking> {
+        self.dispatch(AuthorizedOrder::unchecked(order))
     }
 }
 
 /// A fake vehicle at (lat, lon), running until the test ends.
-fn spawn_fake(uid: Uid, fw: Firmware, lat: f64, lon: f64, q: Quirks) -> Arc<VehicleCell> {
+pub(crate) fn spawn_fake(
+    uid: Uid,
+    fw: Firmware,
+    lat: f64,
+    lon: f64,
+    q: Quirks,
+) -> Arc<VehicleCell> {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let port = 20000 + uid as u16;
     let sysid = (uid % 250 + 1) as u8;
@@ -319,7 +337,7 @@ fn spawn_fake(uid: Uid, fw: Firmware, lat: f64, lon: f64, q: Quirks) -> Arc<Vehi
     cell
 }
 
-fn quick() -> Quirks {
+pub(crate) fn quick() -> Quirks {
     Quirks {
         speed: 20.0,
         ..Quirks::default()
@@ -338,7 +356,7 @@ fn request(task: &str, uids: &[Uid], params: TaskParams) -> TaskRequest {
     }
 }
 
-async fn settle(op: &OpCell, limit_s: u64) -> OpSnapshot {
+pub(crate) async fn settle(op: &OpCell, limit_s: u64) -> OpSnapshot {
     for _ in 0..limit_s * 10 {
         if op.finished() {
             break;
@@ -374,7 +392,7 @@ async fn copter_orbit_walks_the_whole_lifecycle() {
         ),
         &fleet(&[&copter]),
     );
-    let tasking = tm.dispatch(order.unwrap_or_else(|e| panic!("{e}")));
+    let tasking = tm.dispatch_unchecked(order.unwrap_or_else(|e| panic!("{e}")));
     let s = settle(&tasking.ops[0], 300).await;
     assert_eq!(states(&s), [Queued, Sent, Acked, Active, Done], "{s:?}");
     assert_eq!(s.detail, "on station");
@@ -409,7 +427,7 @@ async fn boat_patrol_completes_a_lap() {
         ),
         &fleet(&[&boat]),
     );
-    let tasking = tm.dispatch(order.unwrap_or_else(|e| panic!("{e}")));
+    let tasking = tm.dispatch_unchecked(order.unwrap_or_else(|e| panic!("{e}")));
     let s = settle(&tasking.ops[0], 300).await;
     assert_eq!(states(&s), [Queued, Sent, Acked, Active, Done], "{s:?}");
     assert_eq!(s.detail, "first lap complete, patrolling");
@@ -422,7 +440,7 @@ async fn hold_and_rtl() {
     sleep(Duration::from_millis(500)).await;
     let tm = TaskManager::default();
     let fl = fleet(&[&boat]);
-    let hold = tm.dispatch(
+    let hold = tm.dispatch_unchecked(
         TaskOrder::new(request("hold", &[3], TaskParams::default()), &fl)
             .unwrap_or_else(|e| panic!("{e}")),
     );
@@ -431,7 +449,7 @@ async fn hold_and_rtl() {
     assert_eq!(s.detail, "holding");
     assert_eq!(boat.read(|v| v.mode.clone()).as_deref(), Some("HOLD"));
     // RTL from exactly home: counts as home at once
-    let rtl = tm.dispatch(
+    let rtl = tm.dispatch_unchecked(
         TaskOrder::new(request("rtl", &[3], TaskParams::default()), &fl)
             .unwrap_or_else(|e| panic!("{e}")),
     );
@@ -446,7 +464,7 @@ async fn sub_rtl_is_a_mission_home() {
     sleep(Duration::from_millis(500)).await;
     sub.write(|v| v.home = Some((LAT + 0.002, LON))); // away from home
     let tm = TaskManager::default();
-    let rtl = tm.dispatch(
+    let rtl = tm.dispatch_unchecked(
         TaskOrder::new(request("rtl", &[4], TaskParams::default()), &fleet(&[&sub]))
             .unwrap_or_else(|e| panic!("{e}")),
     );
@@ -470,7 +488,7 @@ async fn leaving_the_task_fails_the_op_with_the_autopilots_words() {
         radius: Some(300.0),
         ..TaskParams::default()
     };
-    let t = tm.dispatch(
+    let t = tm.dispatch_unchecked(
         TaskOrder::new(request("orbit", &[5], params), &fleet(&[&copter]))
             .unwrap_or_else(|e| panic!("{e}")),
     );
@@ -497,7 +515,7 @@ async fn a_stuck_vehicle_says_not_moving() {
     sleep(Duration::from_millis(500)).await;
     let tm = TaskManager::default();
     let route = vec![[LON + 0.01, LAT], [LON + 0.01, LAT + 0.01]];
-    let t = tm.dispatch(
+    let t = tm.dispatch_unchecked(
         TaskOrder::new(
             request(
                 "patrol",
@@ -529,7 +547,7 @@ async fn a_new_task_supersedes_the_running_one() {
     let tm = TaskManager::default();
     let fl = fleet(&[&boat]);
     let route = vec![[LON + 0.05, LAT], [LON + 0.05, LAT + 0.05]];
-    let first = tm.dispatch(
+    let first = tm.dispatch_unchecked(
         TaskOrder::new(
             request(
                 "patrol",
@@ -545,7 +563,7 @@ async fn a_new_task_supersedes_the_running_one() {
     );
     sleep(Duration::from_secs(10)).await;
     assert_eq!(first.ops[0].state(), Active);
-    let second = tm.dispatch(
+    let second = tm.dispatch_unchecked(
         TaskOrder::new(request("hold", &[7], TaskParams::default()), &fl)
             .unwrap_or_else(|e| panic!("{e}")),
     );
@@ -569,7 +587,7 @@ async fn incapable_vehicles_fail_the_rest_go() {
     let boat = spawn_fake(9, Firmware::Rover, LAT, LON + 0.001, quick());
     sleep(Duration::from_millis(500)).await;
     let tm = TaskManager::default();
-    let t = tm.dispatch(
+    let t = tm.dispatch_unchecked(
         TaskOrder::new(
             request("hold", &[8, 9], TaskParams::default()),
             &fleet(&[&tracker, &boat]),
@@ -589,7 +607,7 @@ async fn incapable_vehicles_fail_the_rest_go() {
         ),
         &fleet(&[&tracker, &boat]),
     );
-    let t = tm.dispatch(o.unwrap_or_else(|e| panic!("{e}")));
+    let t = tm.dispatch_unchecked(o.unwrap_or_else(|e| panic!("{e}")));
     let s = t.ops[0].snapshot();
     assert_eq!(
         (s.state, s.detail.as_str()),
@@ -612,7 +630,7 @@ async fn no_ack_fails_after_retries() {
     );
     sleep(Duration::from_millis(500)).await;
     let tm = TaskManager::default();
-    let t = tm.dispatch(
+    let t = tm.dispatch_unchecked(
         TaskOrder::new(
             request("hold", &[10], TaskParams::default()),
             &fleet(&[&boat]),
@@ -635,7 +653,7 @@ async fn tracker_locks_on_its_target() {
     sleep(Duration::from_millis(500)).await;
     let tm = TaskManager::default();
     let fl = fleet(&[&tracker, &boat]);
-    let t = tm.dispatch(
+    let t = tm.dispatch_unchecked(
         TaskOrder::new(
             request(
                 "track",
@@ -658,7 +676,7 @@ async fn tracker_locks_on_its_target() {
     assert_eq!(tracker.read(|v| v.tracking), Some(12));
     assert!(boat.read(|v| v.forward_to.contains_key(&tracker.tx.port())));
     // pointing a vehicle at itself is refused
-    let t = tm.dispatch(
+    let t = tm.dispatch_unchecked(
         TaskOrder::new(
             request(
                 "track",

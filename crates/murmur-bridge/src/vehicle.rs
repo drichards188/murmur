@@ -16,6 +16,9 @@ use crate::mav::{self, Kind, MavMessage, apm};
 pub type Uid = u64;
 
 const STATUSTEXT_KEEP: usize = 8;
+/// Vehicle events (mode changes, failsafes, STATUSTEXT) waiting for the audit log; the
+/// decision loop drains them about once a second. Bounded so a silent consumer can't grow it.
+const EVENTS_KEEP: usize = 256;
 pub const TRAIL_KEEP: usize = 120;
 /// Firmware that doesn't report EKF status gets this long after a 3D fix before it counts as
 /// ready to navigate.
@@ -146,6 +149,32 @@ pub struct Vehicle {
     fix_since: Option<f64>,
     /// the telemetry plan went out at least once
     pub rates_sent: bool,
+    /// When each fact the decision layer reads last arrived (wall clock, seconds): every
+    /// fact in a decision's world snapshot carries its age.
+    pub seen: FactTimes,
+    /// Events for the audit log (`vehicle.event`), oldest first.
+    pub events: VecDeque<VehicleEvent>,
+    system_status: Option<apm::MavState>,
+}
+
+/// Arrival times (wall clock, seconds) of the messages behind each decision fact.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct FactTimes {
+    /// autopilot HEARTBEAT (kind, mode)
+    pub heartbeat: Option<f64>,
+    pub position: Option<f64>,
+    pub home: Option<f64>,
+    pub battery: Option<f64>,
+    pub gps: Option<f64>,
+    pub ekf: Option<f64>,
+}
+
+/// Something the vehicle did or said that belongs in the audit log.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VehicleEvent {
+    /// "mode", "failsafe" or "statustext"
+    pub kind: &'static str,
+    pub text: String,
 }
 
 impl Vehicle {
@@ -165,7 +194,28 @@ impl Vehicle {
                 }
                 self.kind = Some(kind);
                 self.custom_mode = Some(m.custom_mode);
-                self.mode = Some(mav::mode_name(m.mavtype, m.custom_mode));
+                let mode = mav::mode_name(m.mavtype, m.custom_mode);
+                if let Some(prev) = &self.mode
+                    && *prev != mode
+                {
+                    let text = format!("{prev} -> {mode}");
+                    self.push_event("mode", text);
+                }
+                self.mode = Some(mode);
+                let critical = |s: Option<apm::MavState>| {
+                    matches!(
+                        s,
+                        Some(
+                            apm::MavState::MAV_STATE_CRITICAL | apm::MavState::MAV_STATE_EMERGENCY
+                        )
+                    )
+                };
+                let now_critical = critical(Some(m.system_status));
+                if self.system_status.is_some() && now_critical != critical(self.system_status) {
+                    self.push_event("failsafe", format!("system status {:?}", m.system_status));
+                }
+                self.system_status = Some(m.system_status);
+                self.seen.heartbeat = Some(clock::wall());
                 self.armed = m
                     .base_mode
                     .contains(apm::MavModeFlag::MAV_MODE_FLAG_SAFETY_ARMED);
@@ -180,6 +230,8 @@ impl Vehicle {
                     f64::from(m.alt) / 1000.0,
                 );
                 self.pos = Some((lat, lon));
+                let wall = clock::wall();
+                self.seen.position = Some(wall);
                 self.alt_rel = Some(alt_rel);
                 self.alt_msl = Some(alt_msl);
                 if m.hdg != u16::MAX {
@@ -188,6 +240,7 @@ impl Vehicle {
                 if self.home.is_none() {
                     self.home = Some((lat, lon));
                     self.home_alt = Some(alt_msl - alt_rel);
+                    self.seen.home = Some(wall);
                 }
                 if self.last_trail.is_none_or(|t| now - t > 1.0) {
                     self.last_trail = Some(now);
@@ -220,6 +273,7 @@ impl Vehicle {
             }
             MavMessage::HOME_POSITION(m) => {
                 self.home = Some((f64::from(m.latitude) / 1e7, f64::from(m.longitude) / 1e7));
+                self.seen.home = Some(clock::wall());
             }
             MavMessage::VFR_HUD(m) => {
                 self.groundspeed = Some(f64::from(m.groundspeed));
@@ -227,24 +281,36 @@ impl Vehicle {
             }
             MavMessage::SYS_STATUS(m) => {
                 self.battery_pct = (m.battery_remaining >= 0).then_some(m.battery_remaining);
+                self.seen.battery = self.battery_pct.map(|_| clock::wall());
             }
             MavMessage::GPS_RAW_INT(m) => {
                 self.gps_fix = m.fix_type as u8;
                 self.satellites = m.satellites_visible;
+                self.seen.gps = Some(clock::wall());
                 if self.gps_fix >= 3 && self.fix_since.is_none() {
                     self.fix_since = Some(now);
                 }
             }
-            MavMessage::EKF_STATUS_REPORT(m) => self.ekf_flags = Some(m.flags),
+            MavMessage::EKF_STATUS_REPORT(m) => {
+                self.ekf_flags = Some(m.flags);
+                self.seen.ekf = Some(clock::wall());
+            }
             MavMessage::MISSION_CURRENT(m) => self.mission_seq = Some(m.seq),
             MavMessage::STATUSTEXT(m) => {
                 if self.statustext.len() == STATUSTEXT_KEEP {
                     self.statustext.pop_front();
                 }
+                let text = mav::chars_to_string(&m.text);
+                let kind = if text.to_ascii_lowercase().contains("failsafe") {
+                    "failsafe"
+                } else {
+                    "statustext"
+                };
+                self.push_event(kind, format!("[severity {}] {text}", m.severity as u8));
                 self.statustext.push_back(StatusText {
                     t: clock::wall(),
                     severity: m.severity as u8,
-                    text: mav::chars_to_string(&m.text),
+                    text,
                 });
             }
             _ => {}
@@ -280,6 +346,23 @@ impl Vehicle {
             (Some(since), None) => now - since > NO_EKF_GRACE_S,
             (Some(_), Some(f)) => ekf_ok(f),
         }
+    }
+
+    fn push_event(&mut self, kind: &'static str, text: String) {
+        if self.events.len() == EVENTS_KEEP {
+            self.events.pop_front();
+        }
+        self.events.push_back(VehicleEvent { kind, text });
+    }
+
+    /// Navigation readiness as a fact: the value and when the message it rests on arrived
+    /// (the EKF report when the vehicle sends one, else the GPS report). None before either.
+    pub fn nav_ready_fact(&self, now: f64) -> Option<(bool, f64)> {
+        let t = match self.ekf_flags {
+            Some(_) if self.kind != Some(Kind::Tracker) => self.seen.ekf,
+            _ => self.seen.gps,
+        }?;
+        Some((self.has_position(now), t))
     }
 
     pub fn airborne(&self) -> bool {

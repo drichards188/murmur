@@ -4,15 +4,17 @@
 //! one op per vehicle (see `op` for the lifecycle each walks through).
 //!
 //! The boundary: a request becomes a [`TaskOrder`] (parsed and checked against the world),
-//! and [`TaskManager::dispatch`] is the only way an order reaches the vehicles. Phase C puts
-//! intents, rules, the risk-tier policy and the audit log in front of `dispatch`; nothing
-//! below it needs to change.
+//! and [`TaskManager::dispatch`] is the only way an order reaches the vehicles. It takes an
+//! [`AuthorizedOrder`], which only the decision layer (`crate::decision`) can make, from the
+//! `DispatchOrder` the engine hands out for an auto-approved or human-approved intent. So
+//! every action passes intent, rules, policy and the audit log first; nothing below
+//! `dispatch` changed.
 
 mod caps;
 mod exec;
 mod op;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::str::FromStr;
@@ -21,9 +23,12 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 
 pub use caps::{caps, platform_kind};
+#[cfg(test)]
+pub use op::HistoryEntry;
 pub use op::{OpCell, OpSnapshot, OpState};
 
 use crate::clock;
+use crate::decision::AuthorizedOrder;
 use crate::mav::Kind;
 use crate::vehicle::{Uid, VehicleCell};
 
@@ -171,6 +176,8 @@ impl TaskOrder {
 
 pub struct Tasking {
     pub id: u64,
+    /// the intent this tasking carries out
+    pub intent_id: u64,
     pub kind: TaskKind,
     pub params: TaskParams,
     pub created: f64,
@@ -180,6 +187,7 @@ pub struct Tasking {
 #[derive(Debug, Clone, Serialize)]
 pub struct TaskingSnapshot {
     pub id: u64,
+    pub intent_id: u64,
     pub task: TaskKind,
     pub params: TaskParams,
     pub created: f64,
@@ -190,6 +198,7 @@ impl Tasking {
     pub fn snapshot(&self) -> TaskingSnapshot {
         TaskingSnapshot {
             id: self.id,
+            intent_id: self.intent_id,
             task: self.kind,
             params: self.params.clone(),
             created: self.created,
@@ -223,7 +232,11 @@ impl TaskManager {
 
     /// Send an order to its vehicles: one op each, run concurrently. A vehicle that can't do
     /// the task gets a failed op; one that was busy has its previous op superseded.
-    pub fn dispatch(&self, order: TaskOrder) -> Arc<Tasking> {
+    ///
+    /// The only path to the vehicles, and it takes only an [`AuthorizedOrder`]: an order the
+    /// decision engine released for an approved intent (see `crate::decision`).
+    pub fn dispatch(&self, order: AuthorizedOrder) -> Arc<Tasking> {
+        let (intent_id, order) = order.into_parts();
         let mut inner = self.lock();
         inner.last_tasking += 1;
         let tasking_id = inner.last_tasking;
@@ -236,6 +249,7 @@ impl TaskManager {
             ops.push(Arc::new(OpCell::new(
                 inner.last_op,
                 tasking_id,
+                intent_id,
                 order.kind,
                 v.uid,
                 v.sysid,
@@ -270,6 +284,7 @@ impl TaskManager {
         }
         let tasking = Arc::new(Tasking {
             id: tasking_id,
+            intent_id,
             kind: order.kind,
             params: order.params,
             created: clock::wall(),
@@ -286,5 +301,12 @@ impl TaskManager {
     pub fn snapshot(&self) -> Vec<TaskingSnapshot> {
         let taskings: Vec<Arc<Tasking>> = self.lock().taskings.iter().rev().cloned().collect();
         taskings.iter().map(|t| t.snapshot()).collect()
+    }
+
+    /// Each vehicle's latest op, in uid order.
+    pub fn current_ops(&self) -> Vec<OpSnapshot> {
+        let mut ops: Vec<Arc<OpCell>> = self.lock().active.values().cloned().collect();
+        ops.sort_by_key(|o| o.uid);
+        ops.iter().map(|o| o.snapshot()).collect()
     }
 }

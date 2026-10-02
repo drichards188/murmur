@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 axum = { version = "0.8.9", features = ["ws"] }
+murmur-decide = { path = "../murmur-decide" }
 mavlink = { version = "0.18", default-features = false, features = ["std", "dialect-ardupilotmega"] }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
