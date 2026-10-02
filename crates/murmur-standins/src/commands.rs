@@ -232,7 +232,7 @@ fn banner(v: &mut Vehicle) {
     };
     v.text(
         MavSeverity::MAV_SEVERITY_INFO,
-        &format!("{name} V4.7.0-dev (stand-in)"),
+        &format!("{name} V4.8.0-dev (stand-in)"),
     );
 }
 
@@ -275,22 +275,18 @@ fn command(v: &mut Vehicle, from: (u8, u8), c: Cmd) {
         v.link.send(&messages::command_ack_to(c.command, r, from));
         return;
     }
+    if !firmware_handles(v.firmware, c.command) {
+        let r = firmware_command(v.firmware, c.command);
+        v.link.send(&messages::command_ack_to(c.command, r, from));
+        return;
+    }
     let r = match c.command {
         MAV_CMD_COMPONENT_ARM_DISARM => arm(v, &c),
-        MAV_CMD_DO_SET_MODE => {
-            let number = c.p[1].is_finite().then(|| c.p[1].trunc() as i64);
-            match number
-                .and_then(|n| u32::try_from(n).ok())
-                .and_then(|n| v.behavior.mode_name(n))
-            {
-                Some(name) => request_mode(v, name),
-                None => MavResult::MAV_RESULT_FAILED,
-            }
-        }
+        MAV_CMD_DO_SET_MODE => set_mode_command(v, &c),
         MAV_CMD_MISSION_START => request_mode(v, "AUTO"),
         MAV_CMD_NAV_RETURN_TO_LAUNCH => match v.behavior.mode_number("RTL") {
-            Some(_) if v.firmware != Firmware::Sub => request_mode(v, "RTL"),
-            _ => MavResult::MAV_RESULT_UNSUPPORTED,
+            Some(_) => request_mode(v, "RTL"),
+            None => MavResult::MAV_RESULT_UNSUPPORTED,
         },
         MAV_CMD_DO_SET_MISSION_CURRENT => {
             let seq = c.p[0].max(0.0) as u16;
@@ -350,10 +346,43 @@ fn command(v: &mut Vehicle, from: (u8, u8), c: Cmd) {
     v.link.send(&messages::command_ack_to(c.command, r, from));
 }
 
+/// The commands that only some firmwares' GCS_MAVLINK subclasses handle
+/// (handle_command_int_packet in each vehicle's GCS_MAVLink_*.cpp, ArduPilot 4.8); all else
+/// in this file is the common GCS_MAVLINK table. A COMMAND_LONG goes through the same table.
+fn firmware_handles(fw: Firmware, cmd: MavCmd) -> bool {
+    use Firmware::*;
+    use MavCmd::*;
+    match cmd {
+        // Blimp's own table is DO_REPOSITION and NAV_TAKEOFF (see `firmware_command`)
+        MAV_CMD_MISSION_START | MAV_CMD_NAV_TAKEOFF => fw != Blimp,
+        MAV_CMD_NAV_RETURN_TO_LAUNCH => matches!(fw, Plane | Copter | Rover),
+        MAV_CMD_DO_CHANGE_SPEED => matches!(fw, Plane | Copter | Rover | Sub),
+        _ => true,
+    }
+}
+
+/// What a firmware answers to a command in its own table it does not handle, or handles
+/// without doing anything: Blimp ACKs NAV_TAKEOFF ACCEPTED whatever its state (it has no
+/// takeoff; GCS_MAVLINK_Blimp::handle_command_int_packet), the rest is UNSUPPORTED.
+fn firmware_command(fw: Firmware, cmd: MavCmd) -> MavResult {
+    if fw == Firmware::Blimp && cmd == MavCmd::MAV_CMD_NAV_TAKEOFF {
+        return MavResult::MAV_RESULT_ACCEPTED;
+    }
+    MavResult::MAV_RESULT_UNSUPPORTED
+}
+
 fn arm(v: &mut Vehicle, c: &Cmd) -> MavResult {
     let arm = c.p[0] == 1.0;
     if !arm && v.airborne() && c.p[1] != 21196.0 {
         return MavResult::MAV_RESULT_FAILED; // no disarming in flight (unless forced)
+    }
+    if arm
+        && !v.st.armed
+        && let Some(why) = v.behavior.arming_refusal(&v.st)
+    {
+        // the pre-arm checks run for the arm command: "Arm: <reason>" (AP_Arming::check_failed)
+        v.text(MavSeverity::MAV_SEVERITY_CRITICAL, &format!("Arm: {why}"));
+        return MavResult::MAV_RESULT_FAILED;
     }
     if arm != v.st.armed {
         v.st.armed = arm;
@@ -363,8 +392,41 @@ fn arm(v: &mut Vehicle, c: &Cmd) -> MavResult {
     MavResult::MAV_RESULT_ACCEPTED
 }
 
+/// MAV_CMD_DO_SET_MODE: the custom mode number is a uint32 that set_mode(uint8_t) narrows. A
+/// number the firmware has no mode for is "No such mode N" (AP_Vehicle::notify_no_such_mode;
+/// AntennaTracker says nothing).
+fn set_mode_command(v: &mut Vehicle, c: &Cmd) -> MavResult {
+    if !c.p[1].is_finite() {
+        return MavResult::MAV_RESULT_FAILED;
+    }
+    let number = (c.p[1].trunc() as i64 as u32) & 0xff;
+    let known = v
+        .behavior
+        .mode_name(number)
+        .filter(|n| !firmware_lacks_mode(v.firmware, n));
+    match known {
+        Some(name) => request_mode(v, name),
+        None => {
+            if v.firmware != Firmware::Tracker {
+                v.text(
+                    MavSeverity::MAV_SEVERITY_WARNING,
+                    &format!("No such mode {number}"),
+                );
+            }
+            MavResult::MAV_RESULT_FAILED
+        }
+    }
+}
+
+/// Modes in pymavlink's table that the firmware's mode_from_mode_num has no object for.
+fn firmware_lacks_mode(fw: Firmware, name: &str) -> bool {
+    // ArduRover dropped LEARNING
+    fw == Firmware::Rover && name == "LEARNING"
+}
+
 /// A mode change asked for by the GCS. Refusals are MAV_RESULT_FAILED, as
-/// GCS_MAVLINK::_set_mode_common returns when the vehicle's set_mode fails.
+/// GCS_MAVLINK::_set_mode_common returns when the vehicle's set_mode fails; ArduRover (and
+/// ArduSub, with the mode's name) say so as well: "Flight mode change failed".
 fn request_mode(v: &mut Vehicle, name: &'static str) -> MavResult {
     let Some(name) = v
         .behavior
@@ -374,7 +436,7 @@ fn request_mode(v: &mut Vehicle, name: &'static str) -> MavResult {
         return MavResult::MAV_RESULT_FAILED;
     };
     if !v.behavior.accepts_mode(name) {
-        return MavResult::MAV_RESULT_FAILED; // e.g. a drifter has no propulsion
+        return refused(v, name); // e.g. a drifter has no propulsion
     }
     if name == "AUTO" && !v.mission.present() {
         match v.firmware {
@@ -383,15 +445,46 @@ fn request_mode(v: &mut Vehicle, name: &'static str) -> MavResult {
                     MavSeverity::MAV_SEVERITY_NOTICE,
                     "No Mission. Can't set AUTO.",
                 );
-                return MavResult::MAV_RESULT_FAILED;
+                return refused(v, name);
             }
-            Firmware::Sub | Firmware::Copter => return MavResult::MAV_RESULT_FAILED,
+            Firmware::Sub => return refused(v, name),
+            Firmware::Copter => return MavResult::MAV_RESULT_FAILED,
             // ArduPlane takes AUTO with no mission and finishes it at once (RTL)
             _ => {}
         }
     }
     v.set_mode(name);
     MavResult::MAV_RESULT_ACCEPTED
+}
+
+/// A mode whose entry failed: Rover's set_mode says "Flight mode change failed", ArduSub's
+/// "Flight mode change failed <Name>".
+fn refused(v: &mut Vehicle, name: &str) -> MavResult {
+    let text = match v.firmware {
+        Firmware::Rover => Some("Flight mode change failed".to_string()),
+        Firmware::Sub => Some(format!("Flight mode change failed {}", sub_mode_name(name))),
+        _ => None,
+    };
+    if let Some(text) = text {
+        v.text(MavSeverity::MAV_SEVERITY_WARNING, &text);
+    }
+    MavResult::MAV_RESULT_FAILED
+}
+
+/// ArduSub's Mode::name().
+fn sub_mode_name(name: &str) -> &str {
+    match name {
+        "MANUAL" => "Manual",
+        "ACRO" => "Acro",
+        "STABILIZE" => "Stabilize",
+        "ALT_HOLD" => "Depth Hold",
+        "GUIDED" => "Guided",
+        "AUTO" => "Auto",
+        "POSHOLD" => "Position Hold",
+        "CIRCLE" => "Circle",
+        "SURFACE" => "Surface",
+        n => n,
+    }
 }
 
 /// SET_MESSAGE_INTERVAL (GCS_MAVLINK::set_message_interval): param2 in us; -1 stops, 0 the

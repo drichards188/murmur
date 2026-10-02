@@ -91,6 +91,42 @@ impl Gcs {
         .await
     }
 
+    /// A command's ACK result and the STATUSTEXTs sent ahead of it.
+    async fn command_with_texts(
+        &mut self,
+        command: MavCmd,
+        p: [f32; 3],
+    ) -> (MavResult, Vec<String>) {
+        let msg = COMMAND_LONG_DATA {
+            target_system: SYSID,
+            target_component: 1,
+            command,
+            param1: p[0],
+            param2: p[1],
+            param3: p[2],
+            ..Default::default()
+        };
+        self.send(MavMessage::COMMAND_LONG(msg)).await;
+        let mut texts = Vec::new();
+        let result = self
+            .expect(|m| match m {
+                MavMessage::STATUSTEXT(t) => {
+                    texts.push(t.text.to_str().unwrap_or("").to_owned());
+                    None
+                }
+                MavMessage::COMMAND_ACK(a) if a.command == command => Some(a.result),
+                _ => None,
+            })
+            .await;
+        (result, texts)
+    }
+
+    async fn set_mode(&mut self, number: f32) -> (MavResult, Vec<String>) {
+        let custom = f32::from(MavModeFlag::MAV_MODE_FLAG_CUSTOM_MODE_ENABLED.bits());
+        self.command_with_texts(MavCmd::MAV_CMD_DO_SET_MODE, [custom, number, 0.0])
+            .await
+    }
+
     async fn read_param(&mut self, name: &str, index: i16) -> MavMessage {
         let msg = PARAM_REQUEST_READ_DATA {
             param_index: index,
@@ -441,6 +477,81 @@ async fn unknown_command_ids_are_acked_unsupported() {
 }
 
 #[tokio::test]
+async fn refused_mode_changes_and_commands_follow_each_firmware() {
+    use MavResult::*;
+    // ArduPlane: an unknown mode number says so
+    let mut g = start(spec("plane"), 0.0).await;
+    let (r, texts) = g.set_mode(99.0).await;
+    assert_eq!(
+        (r, texts),
+        (MAV_RESULT_FAILED, vec!["No such mode 99".to_string()])
+    );
+    // the number is a uint8 by the time it reaches set_mode: 258 is mode 2
+    let (r, texts) = g.set_mode(258.0).await;
+    assert_eq!(r, MAV_RESULT_ACCEPTED, "{texts:?}");
+
+    // ArduRover: LEARNING is gone; AUTO with no mission says "Flight mode change failed"
+    // after the refusal's own text; no arming in RTL, SMART_RTL or INITIALISING
+    let mut g = start(spec("ugv"), 0.0).await;
+    let (r, texts) = g.set_mode(2.0).await;
+    assert_eq!(
+        (r, texts),
+        (MAV_RESULT_FAILED, vec!["No such mode 2".to_string()])
+    );
+    let (r, texts) = g.set_mode(10.0).await;
+    assert_eq!(r, MAV_RESULT_FAILED);
+    assert_eq!(
+        texts,
+        ["No Mission. Can't set AUTO.", "Flight mode change failed"]
+    );
+    let (r, texts) = g.set_mode(6.0).await; // FOLLOW needs FOLL_ENABLE
+    assert_eq!(r, MAV_RESULT_FAILED);
+    assert_eq!(texts, ["Flight mode change failed"]);
+    let arm = MavCmd::MAV_CMD_COMPONENT_ARM_DISARM;
+    assert_eq!(g.set_mode(11.0).await.0, MAV_RESULT_ACCEPTED);
+    let (r, texts) = g.command_with_texts(arm, [1.0, 0.0, 0.0]).await;
+    assert_eq!(
+        (r, texts),
+        (MAV_RESULT_FAILED, vec!["Arm: Mode not armable".to_string()])
+    );
+    assert_eq!(g.set_mode(4.0).await.0, MAV_RESULT_ACCEPTED); // HOLD
+    assert_eq!(
+        g.command_with_texts(arm, [1.0, 0.0, 0.0]).await.0,
+        MAV_RESULT_ACCEPTED
+    );
+
+    // ArduSub: AUTO with no mission is refused with the mode's name
+    let mut g = start(spec("sub"), 0.0).await;
+    let (r, texts) = g.set_mode(3.0).await;
+    assert_eq!(r, MAV_RESULT_FAILED);
+    assert_eq!(texts, ["Flight mode change failed Auto"]);
+
+    // Blimp handles NAV_TAKEOFF (ACCEPTED, disarmed, doing nothing) and has none of
+    // MISSION_START, NAV_RETURN_TO_LAUNCH or DO_CHANGE_SPEED
+    let mut g = start(spec("blimp"), 20.0).await;
+    let takeoff = MavCmd::MAV_CMD_NAV_TAKEOFF;
+    assert_eq!(g.command(takeoff, [0.0; 3]).await, MAV_RESULT_ACCEPTED);
+    for c in [
+        MavCmd::MAV_CMD_MISSION_START,
+        MavCmd::MAV_CMD_NAV_RETURN_TO_LAUNCH,
+        MavCmd::MAV_CMD_DO_CHANGE_SPEED,
+    ] {
+        assert_eq!(
+            g.command(c, [0.0, 1.0, 0.0]).await,
+            MAV_RESULT_UNSUPPORTED,
+            "{c:?}"
+        );
+    }
+    // a plane has DO_CHANGE_SPEED
+    let mut g = start(spec("plane"), 0.0).await;
+    let change = MavCmd::MAV_CMD_DO_CHANGE_SPEED;
+    assert_eq!(
+        g.command(change, [0.0, 3.0, 0.0]).await,
+        MAV_RESULT_ACCEPTED
+    );
+}
+
+#[tokio::test]
 async fn gcs_heartbeat_loss_triggers_the_rover_failsafe() {
     let mut g = start(spec("boat"), 0.0).await;
     let arm = MavCmd::MAV_CMD_COMPONENT_ARM_DISARM;
@@ -530,7 +641,7 @@ async fn plane_rtl_circles_home_at_the_turn_bounded_radius() {
     );
     assert!(
         (v.st.alt - 7600.0).abs() < 1.0,
-        "ALT_HOLD_RTL -1: same altitude"
+        "RTL_ALTITUDE -1: same altitude"
     );
 }
 

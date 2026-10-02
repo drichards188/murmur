@@ -134,8 +134,11 @@ impl Params {
         p.put("BATT_LOW_MAH", F32, 2_000.0, false);
         p.put("BATT_CRT_MAH", F32, 1_000.0, false);
         p.put("BATT_LOW_TIMER", I8, 10.0, false);
-        p.put("RALLY_TOTAL", I8, 0.0, false);
-        p.put("FENCE_ENABLE", I8, 0.0, false);
+        // no rally points or fence in Blimp or AntennaTracker
+        if !matches!(fw, Firmware::Blimp | Firmware::Tracker) {
+            p.put("RALLY_TOTAL", I8, 0.0, false);
+            p.put("FENCE_ENABLE", I8, 0.0, false);
+        }
         match fw {
             Firmware::Plane => {
                 let loiter = spec.loiter_radius_m.unwrap_or(150.0).min(32_767.0) as f32;
@@ -144,9 +147,9 @@ impl Params {
                 p.put("WP_LOITER_RAD", I16, loiter, false);
                 // 0 = loiter at WP_LOITER_RAD around home
                 p.put("RTL_RADIUS", I16, 0.0, false);
-                // -1 = return at the current altitude (ArduPlane's default is 100 m, which
-                // would bring a HALE aircraft down from 18 km)
-                p.put("ALT_HOLD_RTL", I32, -1.0, false);
+                // m above home, -1 = return at the current altitude (ArduPlane's default is
+                // 100 m, which would bring a HALE aircraft down from 18 km)
+                p.put("RTL_ALTITUDE", F32, -1.0, false);
                 p.put("AIRSPEED_CRUISE", F32, cruise, false);
                 p.put("AIRSPEED_MIN", I16, (cruise * 0.6).round(), false);
                 p.put("AIRSPEED_MAX", I16, max.round(), false);
@@ -159,7 +162,6 @@ impl Params {
                 p.put("FS_LONG_ACTN", I8, 1.0, false);
                 p.put("FS_LONG_TIMEOUT", F32, 5.0, false);
                 p.put("FS_SHORT_ACTN", I8, 0.0, false);
-                p.put("FS_SHORT_TIMEOUT", F32, 1.5, false);
                 let vtol = spec.behavior == "vtol";
                 p.put("Q_ENABLE", I8, if vtol { 1.0 } else { 0.0 }, false);
                 // low: RTL; critical: Land (no landing sequence in a stand-in: RTL)
@@ -170,7 +172,7 @@ impl Params {
                 p.put("WP_RADIUS", F32, 10.0, false);
                 p.put("WP_SPEED", F32, cruise, false);
                 p.put("CRUISE_SPEED", F32, cruise, false);
-                p.put("CRUISE_THROTTLE", F32, 50.0, false);
+                p.put("CRUISE_THROTTLE", I8, 50.0, false);
                 p.put("LOIT_RADIUS", F32, 2.0, false);
                 // FRAME_CLASS 2 = boat; ArduRover then defaults MIS_DONE_BEHAVE to 1 (loiter)
                 let boat = spec.behavior != "ugv";
@@ -187,9 +189,9 @@ impl Params {
                 p.put("BATT_FS_CRT_ACT", I8, 2.0, false); // Hold
             }
             Firmware::Sub => {
-                // ArduSub's waypoint controller works in centimetres
-                p.put("WPNAV_RADIUS", F32, 1_000.0, false);
-                p.put("WPNAV_SPEED", F32, cruise * 100.0, false);
+                // ArduSub 4.8's waypoint controller (AC_WPNav) works in metres
+                p.put("WP_RADIUS_M", F32, 10.0, false);
+                p.put("WP_SPD", F32, cruise, false);
                 // An AUV on an acoustic link is out of contact by design: surface after two
                 // minutes without the GCS (to regain RF). ArduSub's default (2 = disarm) is
                 // for tethered ROVs and stays for anything else.
@@ -201,9 +203,8 @@ impl Params {
                 p.put("BATT_FS_CRT_ACT", I8, 3.0, false);
             }
             Firmware::Copter => {
-                p.put("WPNAV_RADIUS", F32, 200.0, false);
-                p.put("WPNAV_SPEED", F32, cruise * 100.0, false);
-                p.put("RTL_ALT", I16, 1_500.0, false);
+                // the waypoint, RTL and pilot parameters (WP_SPD, WP_RADIUS_M, RTL_ALT_M, ...)
+                // are the behavior's `extra_params`
                 p.put("FS_GCS_ENABLE", I8, 1.0, false); // RTL
                 p.put("FS_GCS_TIMEOUT", F32, 5.0, false);
                 p.put("AUTO_OPTIONS", I32, 3.0, false); // copter.parm

@@ -31,7 +31,7 @@ impl Behavior for Drifter {
         false
     }
 
-    fn marine(&self) -> bool {
+    fn wants_conditions(&self) -> bool {
         true
     }
 

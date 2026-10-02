@@ -182,9 +182,12 @@ impl Behavior for Ugv {
         rover::accepts_mode(name)
     }
 
-    /// Not marine, but it needs tidewater samples (elevation, water depth) for the land check;
-    /// `marine()` is what gives a behavior conditions.
-    fn marine(&self) -> bool {
+    fn arming_refusal(&self, st: &State) -> Option<&'static str> {
+        rover::arming_refusal(st.mode)
+    }
+
+    /// It needs tidewater samples (elevation, water depth) for the land check.
+    fn wants_conditions(&self) -> bool {
         true
     }
 

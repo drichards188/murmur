@@ -35,7 +35,7 @@ const DEFAULTS: &[(&str, MavParamType, f32)] = &[
     ("Q_WP_ACC", F32, 2.5),
     ("Q_LAND_FINAL_ALT", F32, 6.0),
     ("Q_LAND_FINAL_SPD", F32, 0.5),
-    ("Q_RTL_ALT", F32, 15.0),
+    ("Q_RTL_ALT", I16, 15.0),
     ("Q_RTL_MODE", I8, 0.0),
     ("Q_TRANSITION_MS", I16, 5000.0),
     ("Q_TRANS_DECEL", F32, 2.0),

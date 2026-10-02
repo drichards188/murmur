@@ -124,9 +124,22 @@ pub trait Behavior: Send {
         true
     }
 
-    /// Marine behaviors get tidewater conditions (currents, depth, grounding).
-    fn marine(&self) -> bool {
+    /// Why arming is refused in the current state, as the autopilot's arming checks word it
+    /// ("Mode not armable"); None = allowed. The shared arm command prefixes it "Arm: ".
+    fn arming_refusal(&self, _st: &State) -> Option<&'static str> {
+        None
+    }
+
+    /// Whether the behavior gets tidewater conditions: currents, depth and grounding for
+    /// boats and subs, elevation for a ground vehicle, wind for a sailboat or a blimp.
+    fn wants_conditions(&self) -> bool {
         false
+    }
+
+    /// Deprecated name of `wants_conditions`, kept so code written against it still builds;
+    /// the engine asks `wants_conditions`, so an override of this one has no effect.
+    fn marine(&self) -> bool {
+        self.wants_conditions()
     }
 
     /// GPS fix type and satellites in view.

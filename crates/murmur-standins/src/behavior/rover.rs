@@ -19,6 +19,11 @@ pub fn accepts_mode(name: &str) -> bool {
     !matches!(name, "LEARNING" | "INITIALISING" | "DOCK" | "FOLLOW")
 }
 
+/// AP_Arming_Rover::mode_checks: RTL, SMART_RTL and INITIALISING do not allow arming.
+pub fn arming_refusal(mode: &str) -> Option<&'static str> {
+    matches!(mode, "RTL" | "SMART_RTL" | "INITIALISING").then_some("Mode not armable")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Goal {
     /// stop (or drift, for a sailboat with its sail let out)
@@ -233,7 +238,6 @@ impl Nav {
         let loiter = self.loiter_radius(t);
         let tgt = t.mission.auto_target(t.st, cruise, 0.0, loiter);
         if t.mission.complete {
-            t.mission.seq = t.mission.items.len().saturating_sub(1) as u16;
             return tgt;
         }
         let seq = t.mission.seq;

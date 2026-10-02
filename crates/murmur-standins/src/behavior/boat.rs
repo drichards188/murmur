@@ -4,7 +4,7 @@ use mavlink::dialects::ardupilotmega::MavType;
 
 use super::marine::{self, Hull};
 use super::{Behavior, Tick, modes};
-use crate::kinematics::{climb, guide, integrate, turn_and_accelerate};
+use crate::kinematics::{State, climb, guide, integrate, turn_and_accelerate};
 
 pub struct Boat;
 
@@ -21,8 +21,12 @@ impl Behavior for Boat {
         "HOLD"
     }
 
-    fn marine(&self) -> bool {
+    fn wants_conditions(&self) -> bool {
         true
+    }
+
+    fn arming_refusal(&self, st: &State) -> Option<&'static str> {
+        super::rover::arming_refusal(st.mode)
     }
 
     fn step(&mut self, t: &mut Tick) {

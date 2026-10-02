@@ -23,7 +23,7 @@ impl Behavior for Sub {
         "POSHOLD"
     }
 
-    fn marine(&self) -> bool {
+    fn wants_conditions(&self) -> bool {
         true
     }
 
@@ -38,7 +38,7 @@ impl Behavior for Sub {
 
     fn step(&mut self, t: &mut Tick) {
         let tgt = marine::target(t);
-        let reach = t.params.f("WPNAV_RADIUS", 1000.0) / 100.0;
+        let reach = t.params.f("WP_RADIUS_M", 10.0);
         let mut want = guide(t.st, tgt.as_ref(), reach, true, t.mission, t.out);
         if t.st.mode == "SURFACE" && t.st.armed {
             want = Want {

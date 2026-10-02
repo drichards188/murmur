@@ -51,7 +51,7 @@ async fn run(path: &str) -> Result<(), String> {
             cfg.callsign, cfg.sysid, cfg.spec.name, cfg.port
         );
         let mut v = Vehicle::new(cfg, sock, None)?;
-        if tidewater.is_some() && v.behavior.marine() {
+        if tidewater.is_some() && v.behavior.wants_conditions() {
             let slot = Arc::new(Slot::default());
             slot.report(v.st.lat, v.st.lon, v.st.depth());
             slots.push(slot.clone());

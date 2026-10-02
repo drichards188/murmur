@@ -207,7 +207,7 @@ impl Vehicle {
     /// Acceptance radius for waypoints, from this firmware's parameter.
     pub fn wp_radius(&self) -> f64 {
         match self.firmware {
-            Firmware::Sub | Firmware::Copter => self.params.f("WPNAV_RADIUS", 200.0) / 100.0,
+            Firmware::Sub | Firmware::Copter => self.params.f("WP_RADIUS_M", 2.0),
             _ => self.params.f("WP_RADIUS", 10.0),
         }
     }
@@ -228,7 +228,7 @@ impl Vehicle {
             },
             max_speed: spec.max_mps.max(spec.cruise_mps),
         };
-        let sample = if self.behavior.marine() {
+        let sample = if self.behavior.wants_conditions() {
             self.water.as_ref().and_then(|w| w.latest())
         } else {
             None
