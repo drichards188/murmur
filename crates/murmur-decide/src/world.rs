@@ -48,6 +48,12 @@ pub struct VehicleFacts {
     /// readiness rule records it. Absent in logs written before it existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nav_source: Option<Fact<NavSource>>,
+    /// How often this vehicle's link is expected to report, in ms: 1000 streaming, 20000 on
+    /// an acoustic (HIGH_LATENCY2) link. Freshness limits scale with it
+    /// (`rules.fact_age_intervals`). Absent in logs written before it existed and for
+    /// vehicles whose cadence is unknown; both mean the plain `max_fact_age_s`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_interval_ms: Option<u32>,
 }
 
 /// Where a vehicle's horizontal position comes from.

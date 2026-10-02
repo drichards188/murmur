@@ -28,7 +28,16 @@ fn run(
 }
 
 fn one(rule: RuleId, p: Proposal, world: &WorldSnapshot) -> CheckResult {
-    let mut v = run(rule, p, world, &terrain());
+    one_with(&cfg(), rule, p, world)
+}
+
+fn one_with(c: &RulesConfig, rule: RuleId, p: Proposal, world: &WorldSnapshot) -> CheckResult {
+    let s = spec(human(), p);
+    let w = world.for_intent(&s, &terrain());
+    let mut v: Vec<_> = rules::evaluate(&s, &w, c)
+        .into_iter()
+        .filter(|r| r.rule == rule)
+        .collect();
     assert_eq!(v.len(), 1, "{v:?}");
     v.remove(0)
 }
@@ -158,8 +167,55 @@ fn readiness_cannot_evaluate_missing_or_stale() {
     assert_outcome(
         &r,
         Outcome::Fail,
-        "navigation status is 10.5 s old (max 10 s)",
+        "navigation status is 10.5 s old (limit 10 s)",
     );
+}
+
+fn old_behaviour() -> RulesConfig {
+    RulesConfig {
+        fact_age_intervals: None,
+        ..cfg()
+    }
+}
+
+#[test]
+fn readiness_limit_follows_the_link_cadence() {
+    let c = cfg();
+    assert_eq!(c.fact_age_intervals, Some(3));
+    let stale = Some(Fact::new(true, T0.plus_ms(-15_000)));
+    let spec = || orbit(BAY, 300.0, &["remus-1"]);
+    // an acoustic AUV reporting every 20 s: 15 s old facts are current (limit 60 s)
+    let mut w = world();
+    let v = w.vehicles.get_mut(&uid("remus-1")).unwrap();
+    v.nav_ready = stale.clone();
+    v.report_interval_ms = Some(20_000);
+    let r = one_with(&c, RuleId::Readiness, spec(), &w);
+    assert_eq!(r.outcome, Outcome::Pass, "{}", r.detail);
+    // a streaming vehicle with the same age fails, naming the plain limit
+    let mut w = world();
+    let v = w.vehicles.get_mut(&uid("remus-1")).unwrap();
+    v.nav_ready = stale.clone();
+    v.report_interval_ms = Some(1000);
+    let r = one_with(&c, RuleId::Readiness, spec(), &w);
+    assert_outcome(&r, Outcome::Fail, "15.0 s old (limit 10 s)");
+    // past 3 intervals the acoustic vehicle fails too, and the detail says why
+    let mut w = world();
+    let v = w.vehicles.get_mut(&uid("remus-1")).unwrap();
+    v.nav_ready = Some(Fact::new(true, T0.plus_ms(-61_000)));
+    v.report_interval_ms = Some(20_000);
+    let r = one_with(&c, RuleId::Readiness, spec(), &w);
+    assert_outcome(
+        &r,
+        Outcome::Fail,
+        "61.0 s old (limit 60 s: link reports every 20 s)",
+    );
+    // key absent: the old behaviour, whatever the interval fact says
+    let mut w = world();
+    let v = w.vehicles.get_mut(&uid("remus-1")).unwrap();
+    v.nav_ready = stale;
+    v.report_interval_ms = Some(20_000);
+    let r = one_with(&old_behaviour(), RuleId::Readiness, spec(), &w);
+    assert_outcome(&r, Outcome::Fail, "15.0 s old (limit 10 s)");
 }
 
 #[test]

@@ -34,7 +34,9 @@
 //! when every op has ended, then push the inbox to WebSocket clients if it changed.
 //!
 //! **Voiding.** A waiting intent (pending or approved, not yet dispatched) is voided when a
-//! target vehicle goes silent for longer than `rules.max_fact_age_s` (its facts could no
+//! target vehicle goes silent for longer than its freshness limit, `rules.max_fact_age_s` or
+//! `rules.fact_age_intervals` expected report intervals of its link if larger (60 s for an
+//! acoustic AUV reporting every 20 s; its facts could no
 //! longer support the decision), or when another intent is dispatched to one of its vehicles
 //! (superseded: approving it later would silently undo the newer order).
 
@@ -240,7 +242,7 @@ pub struct Decision {
     areas: AreaSet,
     operators: Vec<OperatorId>,
     terrain: Terrain,
-    max_fact_age_s: f64,
+    rules: murmur_decide::RulesConfig,
     audit_path: PathBuf,
     core: Mutex<Core>,
     updates: watch::Sender<Arc<String>>,
@@ -290,7 +292,7 @@ impl Decision {
 
     pub fn from_parts(world: Arc<World>, p: Parts) -> Result<Arc<Decision>, String> {
         let clock = SharedClock(p.clock);
-        let max_fact_age_s = f64::from(p.policy.rules.max_fact_age_s);
+        let rules = p.policy.rules.clone();
         let engine = Engine::with_areas(
             p.policy,
             Some(p.areas.clone()),
@@ -305,7 +307,7 @@ impl Decision {
             areas: p.areas,
             operators: p.operators,
             terrain: p.terrain,
-            max_fact_age_s,
+            rules,
             audit_path: p.audit_path,
             core: Mutex::new(Core {
                 engine,
@@ -692,10 +694,12 @@ impl Decision {
     }
 
     /// Void waiting intents whose vehicle has gone silent (its facts are past the policy's
-    /// `max_fact_age_s`, so the picture the decision rests on is gone).
+    /// freshness limit, link-aware: `max_fact_age_s` or `fact_age_intervals` report intervals,
+    /// so the picture the decision rests on is gone).
     fn void_lost(&self, core: &mut Core) {
         let fleet = self.fleet();
         let now = clock::wall();
+        let mono = clock::mono();
         let lost: Vec<(IntentId, String)> = core
             .engine
             .intents()
@@ -704,8 +708,10 @@ impl Decision {
                 i.spec().uids.iter().find_map(|u| {
                     let cell = fleet.get(&bridge_uid(u)?)?;
                     let seen = cell.read(|v| v.seen.heartbeat);
+                    let interval = cell.link_snapshot(mono).expected_interval_ms;
+                    let (limit_ms, _) = self.rules.fact_age_limit_ms(Some(interval));
                     match seen {
-                        Some(t) if now - t <= self.max_fact_age_s => None,
+                        Some(t) if now - t <= limit_ms as f64 / 1000.0 => None,
                         Some(t) => Some((
                             i.id(),
                             format!("vehicle {u} lost: no heartbeat for {:.0} s", now - t),

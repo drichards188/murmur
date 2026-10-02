@@ -134,6 +134,11 @@ pub enum UnknownEndurance {
 pub struct RulesConfig {
     /// A fact older than this (against the snapshot time) can't be relied on.
     pub max_fact_age_s: u32,
+    /// Link-aware freshness: a vehicle's limit is the larger of `max_fact_age_s` and this many
+    /// of its expected reporting intervals (3 x 20 s = 60 s on an acoustic link). Absent: no
+    /// scaling, `max_fact_age_s` for everyone (the behaviour before the key existed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fact_age_intervals: Option<u32>,
     /// Orbit radius must be at least this times the minimum turn radius.
     pub orbit_radius_margin: f64,
     /// For fixed-wing platforms with no catalog turn figures: ArduPlane's WP_LOITER_RAD default.
@@ -150,6 +155,18 @@ pub struct RulesConfig {
 }
 
 impl RulesConfig {
+    /// Freshness limit in ms for a vehicle reporting every `interval_ms` (None: unknown), and
+    /// whether the link-aware part set it.
+    pub fn fact_age_limit_ms(&self, interval_ms: Option<u32>) -> (i64, bool) {
+        let base = i64::from(self.max_fact_age_s) * 1000;
+        match (self.fact_age_intervals, interval_ms) {
+            (Some(n), Some(i)) if i64::from(n) * i64::from(i) > base => {
+                (i64::from(n) * i64::from(i), true)
+            }
+            _ => (base, false),
+        }
+    }
+
     /// `[rules.space]`, or its defaults.
     pub fn space_rules(&self) -> SpaceRules {
         self.space.clone().unwrap_or_default()
@@ -160,6 +177,7 @@ impl Default for RulesConfig {
     fn default() -> Self {
         RulesConfig {
             max_fact_age_s: 10,
+            fact_age_intervals: None,
             orbit_radius_margin: 1.1,
             fixed_wing_default_min_turn_radius_m: 60.0,
             reserve_pct: 20.0,
@@ -243,6 +261,7 @@ fn per_vehicle(
 /// A fact that exists and is fresh enough, or why not.
 pub(crate) fn fresh<'a, T>(
     fact: &'a Option<Fact<T>>,
+    v: &VehicleFacts,
     what: &str,
     world: &WorldSnapshot,
     cfg: &RulesConfig,
@@ -251,12 +270,19 @@ pub(crate) fn fresh<'a, T>(
         .as_ref()
         .ok_or_else(|| format!("cannot evaluate: no {what} reported"))?;
     let age_ms = world.t.ms_since(f.t);
-    let max_ms = i64::from(cfg.max_fact_age_s) * 1000;
+    let (max_ms, scaled) = cfg.fact_age_limit_ms(v.report_interval_ms);
     if age_ms > max_ms {
+        let why = match (scaled, v.report_interval_ms) {
+            (true, Some(i)) => format!(
+                ": link reports every {} s",
+                f64::from(i) / 1000.0
+            ),
+            _ => String::new(),
+        };
         return Err(format!(
-            "cannot evaluate: {what} is {:.1} s old (max {} s)",
+            "cannot evaluate: {what} is {:.1} s old (limit {} s{why})",
             age_ms as f64 / 1000.0,
-            cfg.max_fact_age_s
+            max_ms as f64 / 1000.0
         ));
     }
     Ok(&f.value)
@@ -319,7 +345,7 @@ pub fn readiness(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) ->
         if is_safety_command(kind) {
             return res(Outcome::Pass, format!("not required for {}", kind.as_str()));
         }
-        match fresh(&v.nav_ready, "navigation status", world, cfg) {
+        match fresh(&v.nav_ready, v, "navigation status", world, cfg) {
             Err(e) => return res(Outcome::Fail, e),
             Ok(false) => return res(Outcome::Fail, "navigation not ready (GPS/EKF)".into()),
             Ok(true) => {}
@@ -335,8 +361,8 @@ pub fn readiness(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) ->
             );
         }
         if let Task::Track { target } = &spec.task {
-            let target_pos = world.vehicles.get(target).map(|t| &t.position);
-            match target_pos.map(|p| fresh(p, "target position", world, cfg)) {
+            let tv = world.vehicles.get(target);
+            match tv.map(|t| fresh(&t.position, t, "target position", world, cfg)) {
                 None => return res(Outcome::Fail, format!("track target {target} unknown")),
                 Some(Err(e)) => return res(Outcome::Fail, e),
                 Some(Ok(_)) => {}
@@ -613,7 +639,7 @@ pub fn reserves(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
             .constraints
             .reserve_pct
             .map_or(cfg.reserve_pct, |c| c.max(cfg.reserve_pct));
-        let battery = match fresh(&v.battery_pct, "battery level", world, cfg) {
+        let battery = match fresh(&v.battery_pct, v, "battery level", world, cfg) {
             Ok(b) => *b,
             Err(e) => return fail(e),
         };

@@ -177,6 +177,7 @@
 //!     home: Some(Fact::new(LonLat::new(-122.45, 37.81), t)),
 //!     battery_pct: Some(Fact::new(95.0, t)),
 //!     nav_source: None,
+//!     report_interval_ms: None,
 //! });
 //!
 //! // An agent proposes; policy sends it to the inbox.

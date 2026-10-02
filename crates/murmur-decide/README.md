@@ -25,7 +25,10 @@ The full table is `intent::next_state`; anything else is a typed `IllegalTransit
    and subs on water, UGVs on land, via a `TerrainOracle`), geofence (no-go polygons from
    `sim/areas/*.geojson`), reserves (endurance left after the task). **Fail-closed**: a rule
    that can't evaluate (unknown vehicle, missing or stale fact, no area file, unanswered
-   terrain point) fails and says why. Two recorded exceptions:
+   terrain point) fails and says why. Freshness is link-aware: a vehicle's limit is
+   `max(max_fact_age_s, fact_age_intervals x its report interval)`, the interval being the
+   `report_interval_ms` world fact (20 s for an acoustic AUV, so 60 s); the check detail names
+   the limit, and a policy without `fact_age_intervals` keeps the flat limit. Two recorded exceptions:
    - `not_evaluated`: deliberately skipped, blocks only consequential kinds (engage). The
      domain rule with no terrain oracle (PLAN.md), and an rtl whose way home can't be
      checked (no fresh position, no area file): rtl is the safety command and must not be

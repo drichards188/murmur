@@ -612,6 +612,15 @@ impl VehicleCell {
         }
     }
 
+    /// Test hook: feed a message to the link statistics (the receive loop does this).
+    #[cfg(test)]
+    pub(crate) fn link_on_message(&self, msg: &MavMessage) {
+        self.stats
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .on_message(msg);
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<Arc<MavMessage>> {
         self.events.subscribe()
     }

@@ -150,7 +150,12 @@ def drive(base, args):
     # sent home once their patrols complete: HUNTER on the surface, REMUS submerged (its
     # RTL must complete on dead reckoning, reported by HIGH_LATENCY2 over its acoustic link)
     after_patrol = {1: {"task": "rtl", f"{key}s": [sid["HUNTER"]]},
-                    2: {"task": "rtl", f"{key}s": [sid["REMUS"]]}}
+                    2: {"task": "patrol", f"{key}s": [sid["REMUS"]],
+                        "route": [offset(*pos["REMUS"], 40, 40), offset(*pos["REMUS"], 40, 80)]}}
+    # a patrol sent while REMUS is submerged (reports every 20 s) must pass the link-aware
+    # freshness rules (rust bridge); its RTL follows when that patrol completes
+    rtl_remus = {"task": "rtl", f"{key}s": [sid["REMUS"]]}
+    submerged_now = False
     plane_rtl = {"task": "rtl", f"{key}s": [sid["REAPER"]]} if args.plane_rtl else None
     acoustic = {sid["REMUS"], sid["ORCA"]}
     # REMUS positions while it reports by HIGH_LATENCY2, and lost-link alerts on acoustic vehicles
@@ -160,6 +165,8 @@ def drive(base, args):
     while time.monotonic() < deadline:
         state = api(base, "/api/state")
         for v in state["vehicles"]:
+            if v[key] == sid["REMUS"]:
+                submerged_now = v["link"].get("expected_interval_ms", 0) > 1000
             if v[key] == sid["REMUS"] and v["link"].get("expected_interval_ms", 0) > 1000 and v["position"]:
                 submerged_fixes.add(tuple(v["position"]))
         if args.bridge == "rust":
@@ -174,8 +181,12 @@ def drive(base, args):
         for i in list(after_patrol):
             patrol = taskings[i]
             if all(o.get("state") == "done" for o in ops.get(patrol[0], [{}])):
+                if i == 2 and not submerged_now and args.bridge == "rust":
+                    continue
                 body = after_patrol.pop(i)
-                taskings.append((task(base, body), f"rtl (after {patrol[1]})", "done"))
+                taskings.append((task(base, body), f"{body['task']} (after {patrol[1]})", "done"))
+                if i == 2:
+                    after_patrol[len(taskings) - 1] = rtl_remus
         settled = all(o.get("state") in ("done", "failed", "superseded")
                       for tid, _, _ in taskings if tid is not None for o in ops.get(tid, [{}]))
         if settled and not after_patrol and not plane_rtl:
