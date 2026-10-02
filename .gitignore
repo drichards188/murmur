@@ -12,3 +12,4 @@ __pycache__/
 *.tsbuildinfo
 target/
 .claude/worktrees/
+sim/space/cache/
