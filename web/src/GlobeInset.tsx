@@ -6,7 +6,7 @@ import { CLASS_COLOR, getJson, usePoll } from './space'
 import type { LngLat } from './types'
 
 interface Props {
-  /** theater map centre; the globe follows it */
+  /** theater map centre; the globe follows it until the operator grabs it */
   center: LngLat | null
   area: AreaInfo | null
   links: LinkNow[]
@@ -38,6 +38,9 @@ export function GlobeInset({ center, area, links, norad, onClose }: Props) {
   const [ready, setReady] = useState(false)
   const positions = usePoll<Positions>('/api/space/positions?limit=250', 5000)
   const [track, setTrack] = useState<Track | null>(null)
+  // follow the theater map until the operator spins the globe themselves
+  const [follow, setFollow] = useState(true)
+  const [big, setBig] = useState(false)
 
   useEffect(() => {
     const m = new maplibregl.Map({
@@ -46,14 +49,19 @@ export function GlobeInset({ center, area, links, norad, onClose }: Props) {
       center: center ?? [-122.5, 37.8],
       zoom: 0.9,
       attributionControl: false,
-      dragPan: false,
-      dragRotate: false,
-      doubleClickZoom: false,
-      keyboard: false,
-      touchPitch: false,
+      // drag spins the globe; right-drag or ctrl-drag tilts and turns it; scroll zooms
+      maxPitch: 85,
       minZoom: 0,
-      maxZoom: 4,
+      maxZoom: 6,
     })
+    // only a gesture by the operator (it carries an originalEvent) stops the follow, not our jumpTo
+    const grab = (e: { originalEvent?: unknown }) => {
+      if (e.originalEvent) setFollow(false)
+    }
+    m.on('dragstart', grab)
+    m.on('rotatestart', grab)
+    m.on('pitchstart', grab)
+    m.on('zoomstart', grab)
     if (import.meta.env.DEV) (window as unknown as { murmurGlobe: maplibregl.Map }).murmurGlobe = m
     m.on('style.load', () => {
       m.setProjection({ type: 'globe' })
@@ -92,8 +100,17 @@ export function GlobeInset({ center, area, links, norad, onClose }: Props) {
   }, [])
 
   useEffect(() => {
-    if (center && map.current) map.current.jumpTo({ center })
-  }, [center])
+    if (follow && center && map.current) map.current.jumpTo({ center })
+  }, [center, follow])
+
+  useEffect(() => {
+    map.current?.resize()
+  }, [big])
+
+  const recenter = () => {
+    setFollow(true)
+    map.current?.easeTo({ center: center ?? undefined, bearing: 0, pitch: 0, zoom: 0.9, duration: 600 })
+  }
 
   useEffect(() => {
     if (norad == null) return
@@ -154,7 +171,7 @@ export function GlobeInset({ center, area, links, norad, onClose }: Props) {
 
   const counts = positions.data?.classes.map((c) => `${c.class_id} ${c.shown}${c.shown < c.total ? `/${c.total}` : ''}`).join(' · ')
   return (
-    <div className="globe" aria-label="Globe inset">
+    <div className={`globe${big ? ' big' : ''}`} aria-label="Globe inset">
       <div ref={container} className="globe-map" />
       <div className="globe-head">
         <span>GLOBE</span>
@@ -163,6 +180,16 @@ export function GlobeInset({ center, area, links, norad, onClose }: Props) {
             +{positions.data.time_map.shift_days} d
           </span>
         )}
+        <span className="globe-tools">
+          {!follow && (
+            <button className="ghost mini" onClick={recenter} title="Follow the theater map again (resets tilt and rotation)">
+              follow
+            </button>
+          )}
+          <button className="ghost mini" onClick={() => setBig((b) => !b)} title={big ? 'Shrink' : 'Enlarge'} aria-label={big ? 'Shrink globe' : 'Enlarge globe'}>
+            {big ? '–' : '+'}
+          </button>
+        </span>
         <button className="ghost mini" onClick={onClose} aria-label="Hide globe">
           ✕
         </button>
@@ -170,6 +197,7 @@ export function GlobeInset({ center, area, links, norad, onClose }: Props) {
       <div className="globe-foot" title={counts}>
         {positions.error ? positions.error : counts ? 'satellites by class, subsampled' : 'loading…'}
         {track && norad === track.norad_id ? ` · track: ${track.satellite}` : ''}
+        {' · drag to spin, right-drag to tilt'}
       </div>
     </div>
   )

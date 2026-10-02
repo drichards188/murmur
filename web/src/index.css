@@ -278,6 +278,10 @@ code { font-family: var(--mono); font-size: 12px; background: var(--panel-2); pa
 .globe { position: absolute; top: 12px; right: 12px; width: 280px; height: 300px; z-index: 2; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: #05080b; box-shadow: 0 8px 24px rgba(0,0,0,.45); }
 .globe > .globe-map { position: absolute; inset: 0; }
 .globe-head { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; gap: 8px; padding: 5px 8px; font: 600 10.5px var(--mono); letter-spacing: 0.14em; color: var(--muted); background: linear-gradient(rgba(5,8,11,.9), rgba(5,8,11,0)); z-index: 1; }
-.globe-head button { margin-left: auto; }
+.globe.big { width: min(640px, calc(100% - 24px)); height: min(620px, calc(100% - 24px)); }
+.globe-head, .globe-foot { pointer-events: none; }
+.globe-head button { pointer-events: auto; }
+.globe-tools { margin-left: auto; display: flex; gap: 4px; }
+.globe-tools + button { margin-left: 0; }
 .globe-foot { position: absolute; bottom: 0; left: 0; right: 0; padding: 4px 8px; font: 10px var(--mono); color: var(--muted); background: linear-gradient(rgba(5,8,11,0), rgba(5,8,11,.9)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; z-index: 1; }
 .space-head .seg button { white-space: nowrap; padding: 4px 8px; }
