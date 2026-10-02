@@ -23,14 +23,17 @@ group. Dates are 2026.
   SandTable (metric definitions, maybe interop) and the TAK servers rather than compete.
   Full write-up: https://claude.ai/artifact/7CNdGEur8Qs5ns3ZE1naZ3 ("Murmur: Measuring
   Meaningful Human Control in Autonomous C2").
-- **A human's own command is the human decision; agents' proposals wait** (10-02, user
-  direction). Console commands from the operator dispatch immediately (checks still fail
-  closed), logged as approved at submission by that operator. AI agents act through the API
-  and their high-importance proposals wait in the inbox for a human. Per policy tier,
-  `submitter_authorizes = false` restores a second-person requirement (for Phase E).
 - **Agents decide, they don't drive** (10-02). Intents only, deterministic rules layer,
   risk-tier policy, append-only audit, preview before approve. Open MCP-to-MAVLink servers
   that let a model fly directly are the anti-pattern.
+- **The operator's own command is the human decision** (10-02, user direction: "im the only
+  one who is clicking the UI ... the ai will interface through an api. those are the ones
+  that need human approval"). A console (or any operator-authenticated) submission in a
+  human tier is approved at submission (`approval.at_submission`, not `auto_approved`), so
+  the operator never waits on themselves; agent proposals in those tiers still wait in the
+  inbox. Checks still run first and fail closed. `submitter_authorizes = false` on a tier
+  restores the wait; a genuinely different second approver is Phase E work (today the same
+  operator could still approve it in the inbox).
 - **Space as taskable infrastructure** (10-02, user direction): request coverage and
   capabilities from satellites when needed; don't fly or command satellite buses (no CCSDS).
   One theater map for earthbound nodes, plus a space timeline and a globe inset; one camera

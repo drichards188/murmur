@@ -46,7 +46,23 @@ export interface Approval {
   by: string
   t: number
   self_approved: boolean
+  /** the approval was the submission itself (an operator's own task in a human tier) */
+  at_submission?: boolean
   note: string | null
+}
+
+/** A human-tier task the operator authorized by sending it (POST /api/tasks, 200). */
+export interface Authorization {
+  by: string
+  at_submission: true
+  tier: string
+  reason: string
+  why: string[]
+}
+
+/** "armed-platform" -> "armed platform", for "authorized by you (armed platform)". */
+export function tierLabel(tier: string) {
+  return tier.replace(/[()]/g, '').replace(/-/g, ' ')
 }
 
 export type IntentParams = {

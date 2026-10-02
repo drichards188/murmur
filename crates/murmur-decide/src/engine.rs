@@ -218,7 +218,12 @@ impl Engine {
         Ok(OperatorSession::mint(operator, session))
     }
 
-    /// A human's intent (also what `POST /api/tasks` becomes).
+    /// A human's intent (also what `POST /api/tasks` becomes). If its checks pass and policy
+    /// routes it to a human tier that lets the submitter authorize
+    /// ([`crate::PolicyDecision::submitter_authorizes`]), the submission is the human
+    /// decision: it goes straight to `approved` (`approval.at_submission`, approval
+    /// `{by: this operator, at_submission: true, self_approved: true}`). Otherwise it waits
+    /// in the inbox like any other.
     pub fn submit(
         &mut self,
         by: &HumanAuthority,
@@ -229,7 +234,7 @@ impl Engine {
         let source = Source::Human {
             id: by.operator().clone(),
         };
-        let id = self.submit_inner(source, proposal, world, terrain)?;
+        let id = self.submit_inner(source, Some(by), proposal, world, terrain)?;
         self.get(id)
     }
 
@@ -278,6 +283,7 @@ impl Engine {
             session: by.session(),
             t,
             self_approved,
+            at_submission: false,
             note,
         });
         let reason = if self_approved {
@@ -338,7 +344,7 @@ impl Engine {
         let source = Source::Human {
             id: by.operator().clone(),
         };
-        let new_id = self.submit_inner(source, proposal, world, terrain)?;
+        let new_id = self.submit_inner(source, Some(by), proposal, world, terrain)?;
         if next_state(old_state, Transition::Void).is_ok() {
             self.transition(id, Transition::Void, format!("superseded by {new_id}"))?;
         }
@@ -751,9 +757,13 @@ impl Engine {
         Ok((proposal, old.state()))
     }
 
+    /// Create, check and route an intent. `submitter` is the submitting human's authority on
+    /// the human paths and `None` on the agent paths: an at-submission approval needs it (and
+    /// needs it to be the intent's own source), so an agent's proposal can never get one.
     fn submit_inner(
         &mut self,
         source: Source,
+        submitter: Option<&HumanAuthority>,
         proposal: Proposal,
         world: &WorldSnapshot,
         terrain: &dyn TerrainOracle,
@@ -792,12 +802,41 @@ impl Engine {
         })?;
         let tier = decision.tier;
         let reason = format!("policy {}: {}", decision.rule, decision.reason);
+        // The submission is the human decision only for the submitter's own intent, with
+        // the submitter's authority in hand (never on an agent path, where it is None).
+        let at_submission = (decision.submitter_authorizes && tier == Tier::Human)
+            .then_some(submitter)
+            .flatten()
+            .filter(|by| is_self_approval(&spec.source, by.operator()));
+        let rule = decision.rule.clone();
         self.get_mut(id)?.set_policy(decision);
-        match tier {
-            Tier::Auto => {
+        match (tier, at_submission) {
+            (Tier::Auto, _) => {
                 self.transition(id, Transition::AutoApprove, reason)?;
             }
-            Tier::Human => {
+            (Tier::Human, Some(by)) => {
+                let t = self.emit(EventBody::ApprovalAtSubmission {
+                    intent: id,
+                    by: by.operator().clone(),
+                    session: by.session(),
+                    self_approved: true,
+                    rule,
+                })?;
+                self.get_mut(id)?.set_approval(Approval {
+                    by: by.operator().clone(),
+                    session: by.session(),
+                    t,
+                    self_approved: true,
+                    at_submission: true,
+                    note: None,
+                });
+                self.transition(
+                    id,
+                    Transition::AuthorizeAtSubmission,
+                    format!("{reason}; authorized at submission by {}", by.operator()),
+                )?;
+            }
+            (Tier::Human, None) => {
                 let expires_t = self
                     .now()
                     .plus_ms(i64::from(self.policy.approval.expire_s) * 1000);
@@ -887,7 +926,9 @@ impl AgentPort<'_> {
         let source = Source::Agent {
             id: self.agent.clone(),
         };
-        let id = self.engine.submit_inner(source, proposal, world, terrain)?;
+        let id = self
+            .engine
+            .submit_inner(source, None, proposal, world, terrain)?;
         self.engine.get(id)
     }
 
@@ -939,7 +980,9 @@ impl AgentPort<'_> {
         let source = Source::Agent {
             id: self.agent.clone(),
         };
-        let new_id = self.engine.submit_inner(source, proposal, world, terrain)?;
+        let new_id = self
+            .engine
+            .submit_inner(source, None, proposal, world, terrain)?;
         if mine && next_state(old_state, Transition::Void).is_ok() {
             self.engine.transition(
                 id,
