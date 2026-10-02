@@ -164,6 +164,15 @@ Exit: tracks visibly age and degrade in the console.
   (murmur-4y9); intents queued for unreachable vehicles with expiry (murmur-5p4); fallback
   rules per action class; telemetry priority under low bandwidth (murmur-f6q).
 
+- **Space segment** (`crates/murmur-space`, murmur-0nv.1): satellites as taskable
+  infrastructure, not flown nodes. The operator requests a capability over an area and time
+  (imagery/SAR collection, SATCOM coverage, GNSS assurance); real orbits (SGP4, public TLEs)
+  and sensor constraints give ranked options with timing (collect -> downlink -> product); a
+  human picks, through the Phase C intent pipeline (intent kinds `collect`, `cover`). SATCOM
+  passes drive the emulator's satcom class; GNSS availability feeds navigation. UI: footprints,
+  swaths and link lines on the theater map; an access-window **timeline** as the main space
+  view; a linked globe inset for orbits.
+
 Exit: the 30%-loss write-up (murmur-t7d), with numbers.
 
 ## Phase E: engagement decision chain

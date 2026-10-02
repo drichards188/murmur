@@ -26,6 +26,10 @@ group. Dates are 2026.
 - **Agents decide, they don't drive** (10-02). Intents only, deterministic rules layer,
   risk-tier policy, append-only audit, preview before approve. Open MCP-to-MAVLink servers
   that let a model fly directly are the anti-pattern.
+- **Space as taskable infrastructure** (10-02, user direction): request coverage and
+  capabilities from satellites when needed; don't fly or command satellite buses (no CCSDS).
+  One theater map for earthbound nodes, plus a space timeline and a globe inset; one camera
+  can't show LEO orbits and a sub at 30 m meaningfully.
 - **Not an "open Lattice"** (10-02). Sensor fusion and vendor integrations are out of reach
   solo; Open-RMF is the wrong base (indoor robots). Focus on the tasking and supervision layer.
 - **Stop 3D and Gazebo work here** (10-02). 3D is good enough to understand a scene; it is not
