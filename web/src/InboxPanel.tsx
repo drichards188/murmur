@@ -89,6 +89,14 @@ function taskSummary(i: Intent, vehicles: Vehicle[]) {
       return 'Return to launch'
     case 'hold':
       return 'Hold position'
+    case 'collect': {
+      const o = i.space?.chosen
+      return o ? `Satellite collection: ${o.label ?? o.satellite} (${o.class_name}, ${o.capability.toUpperCase()})` : 'Satellite collection (no option chosen)'
+    }
+    case 'cover': {
+      const s = p.service as { type?: string; class?: string } | undefined
+      return `Coverage: ${s?.type === 'gnss' ? `${(s.class ?? 'gps').toUpperCase()} GNSS` : `${s?.class ?? '?'} SATCOM`} over the area`
+    }
     default:
       return i.kind
   }
@@ -114,6 +122,49 @@ function Countdown({ intent, now }: { intent: Intent; now: () => number }) {
         <span style={{ width: `${frac * 100}%` }} />
       </span>
     </span>
+  )
+}
+
+/** A collect's chosen option, as the submission's checks found it, and what its deadline is. */
+function CollectDetails({ intent: i }: { intent: Intent }) {
+  const o = i.space?.chosen
+  if (!o) return null
+  const z = (t: string | number) => new Date(t).toISOString().slice(11, 19) + 'Z'
+  const lead = i.space?.tasking_lead_s
+  return (
+    <dl className="ix-collect">
+      <dt>Collect</dt>
+      <dd>
+        {z(o.collect_time)} · NORAD {o.norad_id}
+      </dd>
+      <dt>Product</dt>
+      <dd>{o.product_time ? z(o.product_time) : 'time unknown'}</dd>
+      <dt>Resolution</dt>
+      <dd>{o.resolution_m != null ? `${o.resolution_m.toFixed(2)} m` : 'unknown'}</dd>
+      <dt>Geometry</dt>
+      <dd>
+        off-nadir {o.geometry.off_nadir_deg.toFixed(1)}°, incidence {o.geometry.incidence_deg.toFixed(1)}°{o.covers_area === false ? ', partial area' : ''}
+      </dd>
+      <dt>Deadline</dt>
+      <dd>
+        {i.expires_t != null ? `${z(i.expires_t)} (bridge clock)` : 'none'}
+        {lead != null ? `: the last moment this pass can be tasked (collect minus ${Math.round(lead / 60)} min lead)` : ''}
+      </dd>
+      {o.notes.length > 0 && (
+        <>
+          <dt>Notes</dt>
+          <dd>{o.notes.join('; ')}</dd>
+        </>
+      )}
+      {(i.space?.options_total ?? 0) > 1 && (
+        <>
+          <dt>Others</dt>
+          <dd>
+            {(i.space?.options_total ?? 1) - 1} other feasible option{(i.space?.options_total ?? 2) === 2 ? '' : 's'}, {i.space?.exclusions_total ?? 0} passes excluded
+          </dd>
+        </>
+      )}
+    </dl>
   )
 }
 
@@ -181,6 +232,7 @@ function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone }: C
       )}
 
       <div className="ix-task">{taskSummary(i, vehicles)}</div>
+      {i.kind === 'collect' && <CollectDetails intent={i} />}
       <ul className="ix-vehicles">
         {i.uids.map((u) => {
           const v = vehicleOf(vehicles, u)

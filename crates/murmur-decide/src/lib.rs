@@ -231,12 +231,13 @@ pub use intent::{
     Constraints, IllegalTransition, Intent, IntentSpec, Proposal, ProposalError, Rationale, Source,
     State, Targets, Task, TaskKind, Transition, next_state,
 };
-pub use policy::{Policy, PolicyDecision, Tier};
+pub use policy::{DeadlineBasis, KindApproval, Policy, PolicyDecision, Tier, Until};
 pub use route::{LegKind, Route, Segment};
 pub use rules::{CheckResult, Outcome, RuleId, RulesConfig, UnknownEndurance};
 pub use space::{
-    ChosenCollect, CollectCapability, CollectOrder, CoverOrder, CoverService, SegmentId,
-    SpaceAnswer, SpaceArea, SpaceOracle, SpaceOrder, SpaceQuery, SpaceRules, SpaceSegment, Window,
+    ChosenCollect, CollectCapability, CollectOrder, CoverOrder, CoverService, ScenarioMap,
+    SegmentId, SpaceAnswer, SpaceArea, SpaceOracle, SpaceOrder, SpaceQuery, SpaceRules,
+    SpaceSegment, Window,
 };
 pub use terrain::{NoTerrain, PolygonTerrain, Surface, TerrainOracle};
 pub use time::{Clock, ManualClock, SystemClock, Time};

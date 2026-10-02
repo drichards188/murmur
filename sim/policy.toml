@@ -42,6 +42,17 @@
 expire_s = 120
 submitter_authorizes = true                 # default for human tiers that don't set it
 
+# Per task kind, [approval.kind.<kind>] replaces the fixed wait for intents of that kind:
+#   expire_s = <seconds>        a different fixed wait (also the fallback for `until`)
+#   until = "tasking_lead"      collect only: the approval expires when the chosen pass can
+#                               no longer be tasked (its collect time minus the class's
+#                               tasking lead time, scenario time, mapped to the bridge clock
+#                               at the scenario rate). An approval after that would fail the
+#                               lead-time check anyway; the inbox shows the real deadline.
+# approval.requested logs the deadline with its basis; replay recomputes it.
+[approval.kind.collect]
+until = "tasking_lead"
+
 [rules]
 max_fact_age_s = 10                         # older telemetry can't support a decision
 fact_age_intervals = 3                      # ...but a vehicle's limit is at least this many of its link's

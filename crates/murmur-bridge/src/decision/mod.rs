@@ -43,6 +43,7 @@
 mod alerts;
 mod civil;
 pub mod snapshot;
+pub mod space;
 mod terrain;
 #[cfg(test)]
 mod tests;
@@ -54,8 +55,8 @@ use std::time::Duration;
 
 use murmur_decide::{
     AreaSet, AuditSink, Catalog, Clock, Constraints, Engine, EngineError, Intent, IntentId,
-    JsonlFile, LonLat, OperatorId, OperatorSession, Policy, Proposal, Rationale, State, Task,
-    TaskOutcome, Time, Uid as DUid, rules,
+    JsonlFile, LonLat, OperatorId, OperatorSession, Order, Policy, Proposal, Rationale,
+    ScenarioMap, SpaceSegment, State, Task, TaskOutcome, Time, Uid as DUid, rules,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -72,9 +73,8 @@ use crate::world::World;
 
 /// An orbit request without a radius gets this (as the task layer always flew it).
 pub const DEFAULT_ORBIT_RADIUS_M: f64 = 200.0;
-/// Satellite tasking intents exist in the engine but the bridge doesn't execute them yet.
-const SPACE_NOT_WIRED: &str = "satellite tasking (collect, cover) is not wired into the bridge \
-    yet: no intent was created; only vehicle tasks (orbit, patrol, hold, rtl, track) are accepted";
+/// Collect and cover never reach the vehicle task layer.
+const SPACE_NOT_VEHICLES: &str = "collect and cover request satellites: they run in the space executor, not the vehicle task layer";
 /// The WebSocket inbox message lists this many recent intents.
 const PUSH_INTENTS: usize = 50;
 
@@ -106,9 +106,14 @@ impl AuthorizedOrder {
 #[derive(Debug, Clone, Deserialize)]
 pub struct IntentRequest {
     pub task: String,
+    /// Vehicle tasks: the vehicles. Collect and cover: none.
+    #[serde(default)]
     pub uids: Vec<Uid>,
     #[serde(flatten)]
     pub params: TaskParams,
+    /// Collect and cover: area, window, capability or service, ... (see [`space`]).
+    #[serde(flatten)]
+    pub space: space::SpaceParams,
     #[serde(default)]
     pub constraints: Constraints,
     #[serde(default)]
@@ -121,6 +126,7 @@ impl From<TaskRequest> for IntentRequest {
             task: r.task,
             uids: r.uids,
             params: r.params,
+            space: space::SpaceParams::default(),
             constraints: Constraints::default(),
             rationale: None,
         }
@@ -172,6 +178,15 @@ pub struct Outcome {
     /// The submitting operator's request was itself the human decision a human tier asks
     /// for: `{by, at_submission, tier, reason, why}` (see [`authorization_json`]).
     pub authorization: Option<Value>,
+    /// Collect and cover, once dispatched: the simulated run (see [`space::SpaceRun::json`]).
+    pub space: Option<Value>,
+}
+
+impl Outcome {
+    /// Handed on: to the vehicle task layer, or to the space executor.
+    pub fn dispatched(&self) -> bool {
+        self.tasking.is_some() || self.space.is_some()
+    }
 }
 
 /// Where things are, from the environment (see `main.rs`).
@@ -233,6 +248,8 @@ struct Core {
     running: BTreeMap<IntentId, Running>,
     /// every tasking an intent produced
     taskings: BTreeMap<IntentId, Arc<Tasking>>,
+    /// dispatched collects and covers (running, and the last finished ones)
+    space_runs: BTreeMap<IntentId, space::SpaceRun>,
 }
 
 pub struct Decision {
@@ -314,6 +331,7 @@ impl Decision {
                 sessions: BTreeMap::new(),
                 running: BTreeMap::new(),
                 taskings: BTreeMap::new(),
+                space_runs: BTreeMap::new(),
             }),
             updates: watch::channel(Arc::new(String::new())).0,
         });
@@ -327,6 +345,20 @@ impl Decision {
 
     pub fn terrain_configured(&self) -> bool {
         self.terrain.configured()
+    }
+
+    /// Give the engine the space segment (once `crate::space` has loaded it), with the
+    /// scenario clock as a map from the engine clock. Until then collects and covers fail
+    /// closed ("no space segment loaded").
+    pub fn install_space(&self, space: Arc<murmur_space::Space>, map: ScenarioMap) {
+        let seg = match SpaceSegment::new(space).and_then(|s| s.with_scenario_map(map)) {
+            Ok(s) => s,
+            Err(e) => return eprintln!("decision: space segment: {e}"),
+        };
+        if let Err(e) = self.lock().engine.set_space(Box::new(seg)) {
+            eprintln!("decision: space segment: {e}");
+        }
+        self.publish();
     }
 
     fn lock(&self) -> MutexGuard<'_, Core> {
@@ -400,7 +432,7 @@ impl Decision {
         req: IntentRequest,
     ) -> Result<Outcome, DecisionError> {
         if matches!(req.task.as_str(), "collect" | "cover") {
-            return Err(DecisionError::new(501, SPACE_NOT_WIRED));
+            return self.submit_space(by, &req);
         }
         let fleet = self.fleet();
         let order = TaskRequest {
@@ -417,6 +449,37 @@ impl Decision {
         }
         let proposal = proposal(&req)?;
         self.prefetch(&proposal.task, &proposal.uids).await;
+        let out = {
+            let mut guard = self.lock();
+            let core = &mut *guard;
+            let world = self.snapshot();
+            let session = Self::session(&mut core.engine, &mut core.sessions, by)?;
+            let id = core
+                .engine
+                .submit(
+                    session.authority(),
+                    proposal,
+                    &world,
+                    &self.terrain.oracle(),
+                )
+                .map_err(engine_err)?
+                .id();
+            self.after_decision(core, id)
+        };
+        self.publish();
+        out
+    }
+
+    /// A human's collect or cover. The space query runs under the decision lock (SGP4 over
+    /// the cached elements: well under a second for a collect at the scenario area, a few
+    /// seconds for a day of Starlink coverage).
+    fn submit_space(&self, by: &OperatorId, req: &IntentRequest) -> Result<Outcome, DecisionError> {
+        let proposal = space::proposal(
+            &req.task,
+            !req.uids.is_empty(),
+            &req.space,
+            req.rationale.as_deref(),
+        )?;
         let out = {
             let mut guard = self.lock();
             let core = &mut *guard;
@@ -535,11 +598,10 @@ impl Decision {
         Outcome {
             id,
             state: intent.map_or(State::Proposed, Intent::state),
-            intent: intent
-                .and_then(|i| serde_json::to_value(i).ok())
-                .unwrap_or(Value::Null),
+            intent: intent.map_or(Value::Null, |i| intent_json(i, None, self.tol())),
             tasking: core.taskings.get(&id).map(|t| t.snapshot()),
             authorization: intent.and_then(authorization_json),
+            space: core.space_runs.get(&id).map(space::SpaceRun::json),
         }
     }
 
@@ -561,6 +623,9 @@ impl Decision {
             .ok_or_else(|| DecisionError::new(404, format!("unknown intent {id}")))?
             .spec()
             .clone();
+        if spec.task.is_space() {
+            return self.dispatch_space(core, id);
+        }
         // the task layer must accept it before the engine marks it dispatched
         if let Err(e) = task_request(&spec.task, &spec.uids)
             .and_then(|r| TaskOrder::new(r, &fleet).map_err(|e| e.to_string()))
@@ -621,6 +686,93 @@ impl Decision {
         Ok(())
     }
 
+    /// A collect or cover: the engine releases its order (`intent.dispatched`), the space
+    /// executor reports its first state (`tasked` or `watching`) at once.
+    fn dispatch_space(&self, core: &mut Core, id: IntentId) -> Result<(), DecisionError> {
+        let answer = core
+            .engine
+            .intent(id)
+            .and_then(|i| i.space_answer().cloned());
+        let run = match core.engine.dispatch_order(id).map_err(engine_err)? {
+            Order::Collect(o) => space::SpaceRun::collect(o),
+            Order::Cover(o) => space::SpaceRun::cover(o, answer.as_ref()),
+            Order::Vehicles(_) => {
+                return Err(DecisionError::new(500, SPACE_NOT_VEHICLES));
+            }
+        };
+        core.space_runs.insert(id, run);
+        self.step_space(core, &[id]);
+        Ok(())
+    }
+
+    /// Advance space runs to the current scenario time: log what they report as op
+    /// states, finish the intents whose run ended, and keep the last finished ones.
+    fn step_space(&self, core: &mut Core, ids: &[IntentId]) {
+        let now = self.clock.now();
+        let map = core.engine.scenario_map();
+        let Core {
+            engine, space_runs, ..
+        } = core;
+        for id in ids {
+            let Some(run) = space_runs.get_mut(id) else {
+                continue;
+            };
+            if run.finished() {
+                continue;
+            }
+            let resource = run.resource().clone();
+            for r in run.step(now, &map) {
+                if let Err(e) = engine.record_op_state(*id, &resource, r.state, &r.detail) {
+                    eprintln!("decision: op state: {e}");
+                }
+            }
+            if let Some(outcome) = run.outcome().cloned()
+                && let Err(e) = engine.finish(*id, outcome)
+            {
+                eprintln!("decision: finish {id}: {e}");
+            }
+        }
+        let finished: Vec<IntentId> = space_runs
+            .iter()
+            .filter(|(_, r)| r.finished())
+            .map(|(id, _)| *id)
+            .collect();
+        for id in finished
+            .iter()
+            .take(finished.len().saturating_sub(space::KEEP_FINISHED))
+        {
+            space_runs.remove(id);
+        }
+    }
+
+    fn follow_space(&self, core: &mut Core) {
+        let ids: Vec<IntentId> = core
+            .space_runs
+            .iter()
+            .filter(|(_, r)| !r.finished())
+            .map(|(id, _)| *id)
+            .collect();
+        if !ids.is_empty() {
+            self.step_space(core, &ids);
+        }
+    }
+
+    /// The space part of the console's state: the scenario clock as a map from the
+    /// bridge clock, and every collect and cover run (newest first).
+    fn space_json(&self, core: &Core) -> Value {
+        json!({
+            "clock": core.engine.scenario_map(),
+            "loaded": core.engine.space_segment().is_some(),
+            "runs": core.space_runs.values().rev().map(space::SpaceRun::json).collect::<Vec<_>>(),
+        })
+    }
+
+    /// `GET /api/space/runs`.
+    pub fn space_runs_json(&self) -> Value {
+        let core = self.lock();
+        self.space_json(&core)
+    }
+
     // ---- world --------------------------------------------------------------------------
 
     fn snapshot(&self) -> murmur_decide::WorldSnapshot {
@@ -675,6 +827,7 @@ impl Decision {
             self.log_vehicle_events(core);
             self.void_lost(core);
             self.follow_ops(core);
+            self.follow_space(core);
         }
         self.publish();
     }
@@ -796,7 +949,7 @@ impl Decision {
         let intents: Vec<Value> = all
             .into_iter()
             .rev()
-            .map(|i| intent_json(i, core.taskings.get(&i.id()).map(|t| t.id)))
+            .map(|i| intent_json(i, core.taskings.get(&i.id()).map(|t| t.id), self.tol()))
             .collect();
         json!({
             "intents": intents,
@@ -804,13 +957,20 @@ impl Decision {
         })
     }
 
-    /// `GET /api/intents/{id}`: the intent and, once dispatched, its tasking with every op.
+    /// `GET /api/intents/{id}`: the intent (with a collect's or cover's whole space answer)
+    /// and, once dispatched, its tasking with every op or its space run.
     pub fn intent_json(&self, id: u64) -> Option<Value> {
         let core = self.lock();
         let id = IntentId(id);
         let i = core.engine.intent(id)?;
         let tasking = core.taskings.get(&id).map(|t| t.snapshot());
-        Some(json!({ "intent": intent_json(i, None), "tasking": tasking }))
+        let run = core.space_runs.get(&id).map(space::SpaceRun::json);
+        Some(json!({ "intent": intent_json(i, None, None), "tasking": tasking, "space": run }))
+    }
+
+    /// The collect match tolerance, for compact space answers.
+    fn tol(&self) -> Option<u32> {
+        Some(self.rules.space_rules().collect_match_tolerance_s)
     }
 
     /// `GET /api/inbox`: pending approvals (soonest expiry first, with why each needs a
@@ -822,7 +982,7 @@ impl Decision {
                 .inbox()
                 .into_iter()
                 .map(|i| {
-                    let mut v = intent_json(i, None);
+                    let mut v = intent_json(i, None, self.tol());
                     v["why"] = json!(why_human(i));
                     v
                 })
@@ -849,10 +1009,12 @@ impl Decision {
             all.into_iter()
                 .rev()
                 .take(PUSH_INTENTS)
-                .map(|i| intent_json(i, core.taskings.get(&i.id()).map(|t| t.id)))
+                .map(|i| intent_json(i, core.taskings.get(&i.id()).map(|t| t.id), self.tol()))
                 .collect()
         };
-        json!({ "type": "decisions", "inbox": inbox, "intents": intents }).to_string()
+        let space = self.space_runs_json();
+        json!({ "type": "decisions", "inbox": inbox, "intents": intents, "space": space })
+            .to_string()
     }
 
     /// Push the inbox to WebSocket clients if it changed.
@@ -873,10 +1035,18 @@ impl Decision {
     }
 }
 
-fn intent_json(i: &Intent, tasking_id: Option<u64>) -> Value {
+/// An intent for lists, the inbox and the WebSocket: a collect's or cover's space answer
+/// (thousands of exclusions, possibly) is cut down to [`space::compact`] when
+/// `compact_space` gives the match tolerance.
+fn intent_json(i: &Intent, tasking_id: Option<u64>, compact_space: Option<u32>) -> Value {
     let mut v = serde_json::to_value(i).unwrap_or(Value::Null);
     if let Some(t) = tasking_id {
         v["tasking_id"] = json!(t);
+    }
+    if let Some(tol) = compact_space
+        && let Some(s) = space::compact(i, tol)
+    {
+        v["space"] = s;
     }
     v
 }
@@ -973,7 +1143,7 @@ fn task_request(task: &Task, uids: &[DUid]) -> Result<TaskRequest, String> {
             params.target = Some(uid(target)?);
             "track"
         }
-        Task::Collect { .. } | Task::Cover { .. } => return Err(SPACE_NOT_WIRED.into()),
+        Task::Collect { .. } | Task::Cover { .. } => return Err(SPACE_NOT_VEHICLES.into()),
     };
     Ok(TaskRequest {
         task: name.into(),

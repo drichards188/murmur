@@ -206,7 +206,7 @@ function applyView(m: maplibregl.Map, view: ViewMode) {
   }
 }
 
-const SPACE_SOURCES = ['space-area', 'space-for', 'space-scenes', 'space-sel', 'space-links', 'space-box'] as const
+const SPACE_SOURCES = ['space-area', 'space-for', 'space-scenes', 'space-sel', 'space-links', 'space-box', 'space-tasked'] as const
 
 /** Space overlays, drawn subtly under the vehicles: the earthbound picture stays primary. */
 function addSpaceLayers(m: maplibregl.Map) {
@@ -252,6 +252,16 @@ function addSpaceLayers(m: maplibregl.Map) {
     filter: ['==', ['geometry-type'], 'Point'],
     layout: { 'text-field': ['get', 'label'], 'text-size': 10, 'text-font': ['Noto Sans Regular'], 'text-anchor': 'left', 'text-offset': [0.4, 0] },
     paint: { 'text-color': '#c49bff', 'text-opacity': 0.85, 'text-halo-color': '#0b0f14', 'text-halo-width': 1 },
+  })
+  // tasked satellite collections still running: their scene outline
+  m.addLayer({ id: 'space-tasked', type: 'line', source: 'space-tasked', filter: ['==', ['geometry-type'], 'LineString'], paint: { 'line-color': '#c49bff', 'line-width': 2, 'line-dasharray': [4, 2] } })
+  m.addLayer({
+    id: 'space-tasked-label',
+    type: 'symbol',
+    source: 'space-tasked',
+    filter: ['==', ['geometry-type'], 'Point'],
+    layout: { 'text-field': ['get', 'label'], 'text-size': 11, 'text-font': ['Noto Sans Bold'], 'text-anchor': 'bottom-left', 'text-allow-overlap': true },
+    paint: { 'text-color': '#c49bff', 'text-halo-color': '#0b0f14', 'text-halo-width': 1.2 },
   })
 }
 

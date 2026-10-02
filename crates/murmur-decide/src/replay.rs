@@ -20,6 +20,10 @@
 //!   that lets the submitter authorize, the source is a human (never an agent) and the
 //!   approver is that human; and an intent whose decision says the submitter authorizes is
 //!   not sent to the inbox instead;
+//! - every `approval.requested` deadline: `[approval] expire_s`, or the kind's
+//!   `[approval.kind.<kind>]` setting; a collect with `until = "tasking_lead"` from the
+//!   answer its policy decision read, mapped to engine time through the `space.loaded`
+//!   scenario map;
 //! - space answers (collect, cover): each `space.query`'s content hash matches its
 //!   `sha256`, every decision references a logged answer, and a dispatched collect is the
 //!   chosen option. Rules re-decide from the logged answers, so this needs no space cache.
@@ -49,7 +53,7 @@ use crate::ids::IntentId;
 use crate::intent::{IntentSpec, Source, State, Transition, next_state};
 use crate::policy::{self, Policy, Tier};
 use crate::rules;
-use crate::space::{SpaceAnswer, SpaceOracle, SpaceOrder};
+use crate::space::{ScenarioMap, SpaceAnswer, SpaceOracle, SpaceOrder};
 use crate::time::Time;
 use crate::world::{LoggedInputs, LoggedSpace, WorldSnapshot};
 
@@ -117,6 +121,8 @@ struct Tracked {
     granted_at_submission: bool,
     rejected_by_human: bool,
     expired: bool,
+    /// The space answer the policy decision read (a collect's deadline comes from it).
+    answer: Option<Box<SpaceAnswer>>,
 }
 
 /// Replay a JSONL log. The chain is checked over the lines exactly as they are in the
@@ -195,6 +201,9 @@ fn replay_inner(
     let mut intents: BTreeMap<IntentId, Tracked> = BTreeMap::new();
     let mut answers: Answers = BTreeMap::new();
     let mut prev: Option<&Event> = None;
+    // from the last `space.loaded`
+    let mut scenario_map = ScenarioMap::IDENTITY;
+    let mut pinned: Option<i64> = None;
 
     for (i, e) in events.iter().enumerate() {
         let want_prev = if i == 0 {
@@ -251,8 +260,18 @@ fn replay_inner(
             EventBody::AreasLoaded { sha256, areas: set } => {
                 areas = Some(load_areas(&mut r, e, sha256, set));
             }
-            EventBody::SpaceLoaded { .. } => {
+            EventBody::SpaceLoaded {
+                scenario,
+                pinned_shift_days,
+                ..
+            } => {
                 r.space_segments += 1;
+                let map = scenario.unwrap_or(ScenarioMap::IDENTITY);
+                if let Err(why) = map.validate() {
+                    bad(&mut r, e, None, "invalid scenario map", why, String::new());
+                }
+                scenario_map = map;
+                pinned = *pinned_shift_days;
             }
             EventBody::SpaceQuery { sha256, answer } => {
                 r.space_queries += 1;
@@ -273,7 +292,7 @@ fn replay_inner(
                     }
                 }
                 if let Some(oracle) = space {
-                    recompute_space(&mut r, e, answer, oracle);
+                    recompute_space(&mut r, e, answer, oracle, pinned);
                 }
             }
             EventBody::IntentCreated { intent } => {
@@ -302,6 +321,7 @@ fn replay_inner(
                         granted_at_submission: false,
                         rejected_by_human: false,
                         expired: false,
+                        answer: None,
                     },
                 );
             }
@@ -399,8 +419,13 @@ fn replay_inner(
                 tr.tier = Some(again.tier);
                 tr.submitter_authorizes = again.submitter_authorizes;
                 tr.rule = Some(again.rule);
+                tr.answer = inputs.space.answer().map(|a| Box::new(a.clone()));
             }
-            EventBody::ApprovalRequested { intent, expires_t } => {
+            EventBody::ApprovalRequested {
+                intent,
+                expires_t,
+                until,
+            } => {
                 let Some(tr) = intents.get_mut(intent) else {
                     bad(
                         &mut r,
@@ -413,15 +438,21 @@ fn replay_inner(
                     continue;
                 };
                 if let Some(pol) = &policy {
-                    let want = e.t.plus_ms(i64::from(pol.approval.expire_s) * 1000);
-                    if *expires_t != want {
+                    let (want, basis) = policy::approval_deadline(
+                        pol,
+                        &tr.spec.task,
+                        tr.answer.as_deref(),
+                        &scenario_map,
+                        e.t,
+                    );
+                    if *expires_t != want || *until != basis {
                         bad(
                             &mut r,
                             e,
                             Some(*intent),
                             "approval deadline differs from policy",
-                            expires_t.0.to_string(),
-                            want.0.to_string(),
+                            json(&(expires_t, until)),
+                            json(&(want, basis)),
                         );
                     }
                 }
@@ -716,6 +747,7 @@ fn recompute_space(
     e: &Event,
     logged: &SpaceAnswer,
     oracle: &dyn SpaceOracle,
+    pinned: Option<i64>,
 ) {
     let loaded = oracle.segment();
     if logged.segment.sha256 != loaded.sha256 {
@@ -725,6 +757,16 @@ fn recompute_space(
             what: "cache mismatch: the space segment given to replay is not the one this query ran on; query not recomputed (decisions were re-decided from the logged answer)".into(),
             logged: logged.segment.short(),
             recomputed: loaded.short(),
+        });
+        return;
+    }
+    if oracle.pinned_shift_days() != pinned {
+        r.cache_mismatches.push(Mismatch {
+            seq: e.seq,
+            intent: None,
+            what: "cache mismatch: the run pinned a different time shift on the segment (space.loaded pinned_shift_days); query not recomputed".into(),
+            logged: format!("{pinned:?}"),
+            recomputed: format!("{:?}", oracle.pinned_shift_days()),
         });
         return;
     }

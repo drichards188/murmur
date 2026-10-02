@@ -3,7 +3,9 @@ import type { Draft } from './MapView'
 import type { TaskKind, Tasking, Vehicle } from './types'
 import { callsign, LIFECYCLE } from './types'
 import { TaskResult, type TaskOutcome } from './TaskResult'
-import { tierLabel } from './decisions'
+import { tierLabel, type SpaceRuns } from './decisions'
+import { scenarioNow } from './decisions'
+import { SpaceRunCard } from './SpaceRuns'
 import { sendTask, TaskRefused } from './useBridge'
 import { availableTasks, orbitRange, usePlatformLimits } from './taskDefaults'
 
@@ -16,6 +18,9 @@ interface Props {
   /** intents waiting in the inbox, and a way to open one (or its Decisions entry) */
   pendingIds?: Set<number>
   onInbox?: (intentId: number) => void
+  /** satellite collects and covers, and the bridge clock (for their countdowns) */
+  space?: SpaceRuns
+  now?: () => number
 }
 
 const TASKS: { kind: TaskKind; label: string; hint: string }[] = [
@@ -45,7 +50,9 @@ function Lifecycle({ state }: { state: string }) {
   )
 }
 
-export function TaskPanel({ vehicles, selected, draft, setDraft, taskings, pendingIds, onInbox }: Props) {
+export function TaskPanel({ vehicles, selected, draft, setDraft, taskings, pendingIds, onInbox, space, now }: Props) {
+  const runs = space?.runs ?? []
+  const scen = now ? scenarioNow(space, now) : null
   const [kind, setKind] = useState<TaskKind>('orbit')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -200,7 +207,10 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings, pendi
         <span className="muted">sent → acked → active → done</span>
       </header>
       <div className="log">
-        {taskings.length === 0 && <p className="empty">Commands you send show up here and track each vehicle through to completion.</p>}
+        {taskings.length === 0 && runs.length === 0 && <p className="empty">Commands you send show up here and track each vehicle through to completion.</p>}
+        {space &&
+          scen != null &&
+          runs.map((r) => <SpaceRunCard key={`s${r.intent_id}`} run={r} map={space.clock} scen={scen} onOpen={onInbox} />)}
         {taskings.map((t) => (
           <section key={t.id} className="tcard">
             <div className="tcard-head">

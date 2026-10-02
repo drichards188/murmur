@@ -55,7 +55,11 @@ pub fn router(app: App) -> Router {
         .route("/api/platforms", get(platforms))
         .route("/api/stats", get(stats))
         .route("/ws", get(ws))
-        .merge(crate::space::router(app.world.clone()))
+        .route("/api/space/runs", get(space_runs))
+        .merge(crate::space::router(app.world.clone(), {
+            let d = app.decision.clone();
+            Some(Box::new(move |space, map| d.install_space(space, map)))
+        }))
         .merge(crate::cot::router())
         .with_state(app)
 }
@@ -122,6 +126,7 @@ async fn tasks(
         intent,
         tasking,
         authorization,
+        ..
     } = match app.decision.submit(&op, IntentRequest::from(req)).await {
         Ok(o) => o,
         Err(e) => return decision_error(e),
@@ -185,9 +190,10 @@ async fn create_intent(
         Ok(o) => (
             StatusCode::CREATED,
             Json(json!({
+                "dispatched": o.dispatched(),
                 "intent": o.intent,
                 "tasking": o.tasking,
-                "dispatched": o.tasking.is_some(),
+                "space": o.space,
                 "authorization": o.authorization,
             })),
         )
@@ -238,9 +244,10 @@ async fn intent_action(
     };
     match result {
         Ok(o) => Json(json!({
+            "dispatched": o.dispatched(),
             "intent": o.intent,
             "tasking": o.tasking,
-            "dispatched": o.tasking.is_some(),
+            "space": o.space,
         }))
         .into_response(),
         Err(e) => decision_error(e),
@@ -249,6 +256,12 @@ async fn intent_action(
 
 async fn inbox(State(app): State<App>) -> Response {
     Json(app.decision.inbox_json()).into_response()
+}
+
+/// Collect and cover runs: the scenario clock map and each run's states (also in the
+/// WebSocket `decisions` message as `space`).
+async fn space_runs(State(app): State<App>) -> Response {
+    Json(app.decision.space_runs_json()).into_response()
 }
 
 async fn platforms(State(app): State<App>) -> Response {
