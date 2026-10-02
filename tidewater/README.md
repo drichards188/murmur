@@ -12,7 +12,7 @@ gets pushed out to sea at 1.8 m/s; the same route at slack water doesn't.
                 ┌──────────── data core (simulator-agnostic) ────────────┐
  NOAA DEM  ───▶ │ terrain   land/water + depth (topobathy grid)          │
  NOAA tides ──▶ │ tide      water level → depth changes, grounding       │──▶ adapters
- NOAA currents▶ │ currents  per-station, per-depth predictions, interp.  │    • ArduPilot param driver  (done)
+ NOAA currents▶ │ currents  SFBOFS model mesh, or station predictions    │    • ArduPilot param driver  (done)
  HRRR wind ───▶ │ wind      3 km model on a grid, interp. in space+time  │    • ArduPilot grounding hook (planned)
                 └─────── Conditions.at(lat, lon, time, depth) ───────────┘    • Gazebo world + forcing   (planned)
 ```
@@ -35,6 +35,39 @@ cd ../murmur && make goldengate AT=2026-06-14T10:00Z
 That launches 13 ArduPilot SITL vehicles from the scenario's `[spawn]` points and runs
 `tidewater drive`, which sets each vehicle's simulated wind and current from the
 conditions at its own position, every 2 s, on the scenario clock.
+
+## Model currents (SFBOFS)
+
+By default currents are NOAA's harmonic predictions at the stations in the area, blended by
+inverse distance, which can't represent channels or eddies between stations. A scenario can
+instead use NOAA's San Francisco Bay Operational Forecast System (SFBOFS), a 3D hydrodynamic
+model (FVCOM, 54,000 nodes, 20 layers, 150 to 260 m cells around the Gate) with hourly output:
+
+```toml
+[currents]
+source = "sfbofs"     # default "coops-predictions"
+margin_deg = 0.02     # optional: mesh kept beyond the area box
+```
+
+```bash
+uv pip install --python .venv/bin/python -e ".[sfbofs]"      # h5py, only needed to fetch
+.venv/bin/tidewater fetch scenarios/golden-gate-2026-06.toml  # SFBOFS adds 10 to 20 min for 3 days
+```
+
+The fetch reads the hourly nowcast files from the AWS Open Data archive
+(`s3://noaa-nos-ofs-pds/sfbofs/netcdf/YYYY/MM/DD/`, public, no key). Each file is 56 MB but is
+chunked and uncompressed, so tidewater pulls only the `u`, `v`, `zeta` and wet-cell chunks over
+HTTP range requests, about 10 MB per hour, and keeps the mesh elements inside the scenario area:
+about 0.7 GB downloaded for the 3-day Golden Gate window and a 26 MB cache file
+(`data/cache/<scenario>/sfbofs_currents.npz`). After that the scenario runs offline, and
+running it needs no h5py. Current vectors are interpolated on the mesh (barycentric in the
+containing triangle), between layer centres in depth and linearly in time. Points outside the
+mesh, or times outside the fetched hours, fall back to the station layer, so the stations are
+still fetched too. A window the archive doesn't cover stops the fetch with a clear message.
+The archive in this layout runs from November 2024 to the present (March to December 2024 is
+filed under a different `YYYYMM/` layout that tidewater doesn't read), and a scenario for a
+future window can't use it until the hours exist.
+Accuracy against meters is in [the validation report](docs/validation-golden-gate-2026-06.md).
 
 ## Serving conditions over HTTP
 
@@ -70,7 +103,8 @@ computed once per request) and tested against `Conditions.at`. About 7 ms for 1,
   ([report](docs/validation-golden-gate-2026-06.md)): tide timing is exact but astronomical
   predictions ran 18 cm low, so past windows now replay the **observed** water level. HRRR
   wind averages 1.1 m/s high at the San Francisco station, with peaks 1.1 m/s low and a 22°
-  direction offset. No current meter operates inside the area, so currents are unvalidated.
+  direction offset. No current meter operates inside the Golden Gate area, so currents are
+  checked at three Bay meters instead (same report): station IDW vs SFBOFS error is there.
 
 ### ArduPilot SITL patch (`SIM_WATER_DEPTH`)
 
@@ -89,8 +123,10 @@ with GPS: an EKF failsafe for the boat, a diverging depth estimate for the sub.
 
 ## Limits (v0)
 
-- **Currents between stations** use inverse-distance weighting, which doesn't know where
-  channels are. NOAA's SFBOFS hydrodynamic model is the planned replacement.
+- **Currents** default to inverse-distance weighting between stations, which doesn't know where
+  channels are; `[currents] source = "sfbofs"` uses NOAA's hydrodynamic model instead (see
+  above). SFBOFS is hourly, so it has no sub-hour structure, and its nowcast is a model, not
+  an observation (see the validation report for its error).
 - **Tide** comes from one station and is applied across the area; real tides lag and
   change size across a bay.
 - **Stock SITL** applies current only to the motorboat model, only while armed, and never
@@ -98,8 +134,8 @@ with GPS: an EKF failsafe for the boat, a diverging depth estimate for the sub.
   `scripts/patch-ardupilot.sh`); without it, tidewater still drives wind and boat currents.
 - **Vertical datums** are assumed consistent (NAVD88 DEM, NAVD tide predictions). True for
   US coastal DEMs in the NCEI mosaic; verify for new areas.
-- Predictions, not observations: NOAA current predictions are harmonic forecasts.
-  Comparing against PORTS observations is on the roadmap.
+- The station layer is predictions, not observations (harmonic forecasts). The only current
+  meters nearby are inside the Bay, not at the Gate, so Gate accuracy is inferred.
 
 See [docs/design.md](docs/design.md) for the architecture and roadmap. Work is tracked
 in `bd` (`bd ready`).

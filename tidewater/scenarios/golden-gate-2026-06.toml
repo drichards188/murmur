@@ -23,9 +23,12 @@ datum = "NAVD"
 source = "observed"
 
 [currents]
-# NOAA CO-OPS harmonic/subordinate current predictions, every station in the area, all depth bins
-source = "coops-predictions"
-interval_min = 6
+# "sfbofs": NOAA's SFBOFS hydrodynamic model (3D, resolves the Gate's channel and eddies), hourly,
+# from the AWS Open Data archive. Station predictions (below) stay the fallback outside the mesh.
+# "coops-predictions": NOAA harmonic/subordinate predictions at every station in the area, all
+# depth bins, interpolated by inverse distance (the default; needs no extra install).
+source = "sfbofs"
+interval_min = 6  # station predictions
 
 [wind]
 # Archived NOAA HRRR (3 km) via Open-Meteo. The ~25 km reanalysis in "open-meteo-archive"
@@ -43,3 +46,8 @@ blimp = [37.8330, -122.4830, 30.0, 0.0]     # Marin Headlands
 tracker = [37.8105, -122.4770, 10.0, 0.0]   # Fort Point
 boat = [37.8280, -122.4700, 0.0, 180.0]     # off Horseshoe Bay, deep enough at low tide
 sub = [37.8300, -122.4690, 0.0, 180.0]
+
+[validation]
+# Active NOAA current meters aren't inside this area; `tidewater validate` compares the current
+# layers at the Bay meters of this wider scenario instead.
+current_meters_scenario = "sf-bay-currents-2026-06.toml"

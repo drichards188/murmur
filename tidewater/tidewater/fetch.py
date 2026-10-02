@@ -8,6 +8,8 @@ Sources (all free, no API key):
             Land > 0, water < 0. US coastal DEMs in the mosaic use NAVD88.
   tide      NOAA CO-OPS water level predictions at one station, metres in the same datum.
   currents  NOAA CO-OPS current predictions at every station in the area, every depth bin.
+            With `[currents] source = "sfbofs"` also the NOAA SFBOFS model's hourly 3D currents on
+            its own mesh (AWS Open Data), subset to the area; see sfbofs.py.
   wind      Open-Meteo: archived HRRR (3 km, US) or reanalysis, 10 m wind on a grid of points.
 """
 
@@ -150,6 +152,16 @@ def fetch_currents(sc: Scenario, log=print):
     return out
 
 
+def fetch_sfbofs(sc: Scenario, log=print):
+    out = sc.cache_dir / "sfbofs_currents.npz"
+    if out.exists():
+        return out
+    from .sfbofs import fetch_subset
+
+    return fetch_subset(sc.area, sc.start, sc.end, sc.cache_dir, margin_deg=sc.currents.get("margin_deg", 0.02),
+                        log=log)
+
+
 def fetch_wind(sc: Scenario, log=print):
     out = sc.cache_dir / "wind.json"
     if out.exists():
@@ -186,4 +198,7 @@ def fetch_wind(sc: Scenario, log=print):
 
 
 def fetch_all(sc: Scenario, log=print):
-    return [f(sc, log) for f in (fetch_terrain, fetch_tide, fetch_currents, fetch_wind)]
+    layers = [fetch_terrain, fetch_tide, fetch_currents]  # station predictions are also SFBOFS's fallback
+    if sc.currents.get("source", "coops-predictions") == "sfbofs":
+        layers.append(fetch_sfbofs)
+    return [f(sc, log) for f in layers + [fetch_wind]]

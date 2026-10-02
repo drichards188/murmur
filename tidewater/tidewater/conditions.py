@@ -64,11 +64,31 @@ class Conditions:
     @classmethod
     def for_scenario(cls, sc: Scenario):
         c = sc.cache_dir
-        missing = [n for n in ("terrain.npz", "tide.json", "currents.json", "wind.json") if not (c / n).exists()]
+        needed = ["terrain.npz", "tide.json", "currents.json", "wind.json"]
+        if sc.currents.get("source", "coops-predictions") == "sfbofs":
+            needed.append("sfbofs_currents.npz")
+        missing = [n for n in needed if not (c / n).exists()]
         if missing:
             raise FileNotFoundError(f"scenario data not fetched ({', '.join(missing)}); run: tidewater fetch {sc.path}")
         return cls(Terrain.load(c / "terrain.npz"), Tide.load(c / "tide.json"),
-                   Currents.load(c / "currents.json"), Wind.load(c / "wind.json"))
+                   cls._currents(sc), Wind.load(c / "wind.json"))
+
+    @staticmethod
+    def _currents(sc: Scenario, source=None):
+        """The scenario's current layer. Station IDW is the default; "sfbofs" uses the model mesh
+        and falls back to the stations outside the mesh and its time span."""
+        stations = Currents.load(sc.cache_dir / "currents.json")
+        source = source or sc.currents.get("source", "coops-predictions")
+        if source == "coops-predictions":
+            return stations
+        if source != "sfbofs":
+            raise ValueError(f"unknown currents source {source!r} (use 'coops-predictions' or 'sfbofs')")
+        path = sc.cache_dir / "sfbofs_currents.npz"
+        if not path.exists():
+            raise FileNotFoundError(f"SFBOFS currents not fetched; run: tidewater fetch {sc.path}")
+        from .sfbofs import SfbofsCurrents
+
+        return SfbofsCurrents.load(path, fallback=stations)
 
     def at(self, lat, lon, t, depth_m=0.0) -> Sample:
         elev = self.terrain.elevation(lat, lon)

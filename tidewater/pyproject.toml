@@ -6,7 +6,8 @@ requires-python = ">=3.11"
 dependencies = ["numpy", "scipy", "tifffile", "pymavlink"]
 
 [project.optional-dependencies]
-dev = ["pytest", "matplotlib"]
+sfbofs = ["h5py"]  # fetching SFBOFS model currents; a fetched scenario runs without it
+dev = ["pytest", "matplotlib", "h5py"]
 
 [project.scripts]
 tidewater = "tidewater.cli:main"

@@ -45,6 +45,7 @@ class Scenario:
     currents: dict
     wind: dict
     spawn: dict = field(default_factory=dict)
+    validation: dict = field(default_factory=dict)
     path: Path | None = None
 
     @classmethod
@@ -61,6 +62,7 @@ class Scenario:
             currents=raw["currents"],
             wind=raw["wind"],
             spawn={k: tuple(v) for k, v in raw.get("spawn", {}).items()},
+            validation=raw.get("validation", {}),
             path=path,
         )
 

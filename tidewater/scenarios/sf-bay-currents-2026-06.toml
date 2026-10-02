@@ -1,0 +1,30 @@
+# Central San Francisco Bay, same window as the Golden Gate scenario. Exists to hold the NOAA PORTS
+# current meters (Oakland Outer Harbor s09010, Oakland Inner Harbor s10010, Southampton Shoal s08010)
+# so the current layers can be compared with real observations (docs/validation-golden-gate-2026-06.md).
+name = "sf-bay-currents-2026-06"
+title = "Central San Francisco Bay, 13-16 June 2026 (current meter validation)"
+
+[area]
+west = -122.60
+south = 37.70
+east = -122.30
+north = 37.95
+resolution_m = 40
+
+[time]
+start = "2026-06-13T00:00:00Z"
+end = "2026-06-16T00:00:00Z"
+
+[tide]
+station = "9414290"
+datum = "NAVD"
+source = "observed"
+
+[currents]
+source = "sfbofs"
+interval_min = 6
+
+[wind]
+source = "open-meteo-historical-forecast"
+model = "gfs_hrrr"
+grid = [5, 4]

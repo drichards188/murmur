@@ -71,8 +71,11 @@ def test_sample_many_station_and_edge_cases():
     assert len(cond.sample_many([], [], 0.0)) == 0
 
 
+NEEDED = ["terrain.npz", "tide.json", "currents.json", "wind.json"]
+if SCENARIO.currents.get("source") == "sfbofs":
+    NEEDED.append("sfbofs_currents.npz")
 needs_cache = pytest.mark.skipif(
-    not all((CACHE_ROOT / SCENARIO.name / n).exists() for n in ("terrain.npz", "tide.json", "currents.json", "wind.json")),
+    not all((CACHE_ROOT / SCENARIO.name / n).exists() for n in NEEDED),
     reason="golden-gate scenario not fetched")
 
 
