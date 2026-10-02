@@ -1,0 +1,43 @@
+# Golden Gate, spring tides around the 14-15 June 2026 new moon.
+# Strong ebb/flood through the Gate, deep channel, shoals (Potato Patch, Richardson Bay).
+name = "golden-gate-2026-06"
+title = "Golden Gate, spring tides, 13-16 June 2026"
+
+[area]
+west = -122.56
+south = 37.77
+east = -122.38
+north = 37.88
+resolution_m = 15
+
+[time]
+start = "2026-06-13T00:00:00Z"
+end = "2026-06-16T00:00:00Z"
+
+[tide]
+# NOAA CO-OPS water level station: San Francisco (Golden Gate)
+station = "9414290"
+# must match the terrain's vertical datum (NCEI coastal DEMs are NAVD88)
+datum = "NAVD"
+
+[currents]
+# NOAA CO-OPS harmonic/subordinate current predictions, every station in the area, all depth bins
+source = "coops-predictions"
+interval_min = 6
+
+[wind]
+# Archived NOAA HRRR (3 km) via Open-Meteo. The ~25 km reanalysis in "open-meteo-archive"
+# misses the wind funnelling through the Gate (4 m/s vs HRRR's 7.6 m/s peak on 14 June).
+source = "open-meteo-historical-forecast"
+model = "gfs_hrrr"
+grid = [5, 4]
+
+# Suggested start points for simulators (lat, lon, alt_m, heading_deg). Murmur reads these.
+[spawn]
+plane = [37.8068, -122.4460, 5.0, 90.0]     # Crissy Field (former airfield), flat ~4 m strip
+vtol = [37.8065, -122.4500, 4.0, 90.0]
+copter = [37.8060, -122.4430, 5.0, 0.0]
+blimp = [37.8330, -122.4830, 30.0, 0.0]     # Marin Headlands
+tracker = [37.8105, -122.4770, 10.0, 0.0]   # Fort Point
+boat = [37.8280, -122.4700, 0.0, 180.0]     # off Horseshoe Bay, deep enough at low tide
+sub = [37.8300, -122.4690, 0.0, 180.0]

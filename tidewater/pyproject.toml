@@ -1,0 +1,19 @@
+[project]
+name = "tidewater"
+version = "0.1.0"
+description = "Real-world conditions for robot simulators: land, depth, tide, current and wind for a place and time."
+requires-python = ">=3.11"
+dependencies = ["numpy", "scipy", "tifffile", "pymavlink"]
+
+[project.optional-dependencies]
+dev = ["pytest", "matplotlib"]
+
+[project.scripts]
+tidewater = "tidewater.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["tidewater*"]

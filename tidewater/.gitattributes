@@ -1,0 +1,3 @@
+* text=auto eol=lf
+*.tif binary
+*.npz binary
