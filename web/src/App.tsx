@@ -10,8 +10,9 @@ import type { Catalog, LinksNow, Overhead, SpaceOverlay } from './space'
 import { usePoll } from './space'
 import { SpacePanel, type SpaceSelection } from './SpacePanel'
 import { TaskPanel } from './TaskPanel'
-import type { LngLat } from './types'
-import { domainOf, STALE_MS } from './types'
+import { VehicleDetails } from './VehicleDetails'
+import type { LngLat, Vehicle } from './types'
+import { DOMAIN_LABEL, domainOf, STALE_MS } from './types'
 import { useBridge } from './useBridge'
 
 /** ?perf in the URL shows a frame-rate readout (to check 3D on a real GPU). */
@@ -46,11 +47,14 @@ function useUtcClock() {
   return now.toISOString().slice(11, 19) + 'Z'
 }
 
+const byUidDetails = (vs: Vehicle[], uid: number) => vs.find((v) => v.uid === uid)
+
 export default function App() {
   const { state, status, decisions } = useBridge()
   const clock = useUtcClock()
   const fps = usePerfMeter()
   const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [detailsUid, setDetailsUid] = useState<number | null>(null)
   const [showPlatforms, setShowPlatforms] = useState(false)
   const [focus, setFocus] = useState<{ uid: number; n: number } | null>(null)
   const [draft, setDraft] = useState<Draft>({ mode: 'orbit', center: null, radius: 250, route: [] })
@@ -134,6 +138,17 @@ export default function App() {
     })
   }, [])
 
+  // right click: deselect one vehicle, or everything (uid null)
+  const deselect = useCallback((uid: number | null) => {
+    setSelected((prev) => {
+      if (uid == null) return prev.size ? new Set() : prev
+      if (!prev.has(uid)) return prev
+      const next = new Set(prev)
+      next.delete(uid)
+      return next
+    })
+  }, [])
+
   const onMapClick = useCallback(
     (p: LngLat) => {
       // drawing a collection box: two clicks, opposite corners
@@ -161,7 +176,7 @@ export default function App() {
         <span className="spacer" />
         {(['air', 'ground', 'surface', 'subsurface'] as const).map((d) => (
           <span className="stat" key={d}>
-            <b>{vehicles.filter((v) => domainOf(v) === d).length}</b> {d}
+            <b>{vehicles.filter((v) => domainOf(v) === d).length}</b> {DOMAIN_LABEL[d].toLowerCase()}
           </span>
         ))}
         <span className={`stat ${lost ? 'alert' : ''}`}>
@@ -181,7 +196,16 @@ export default function App() {
         {fps != null && <span className="stat" title="frames per second (?perf)"><b>{fps}</b> fps</span>}
         <span className="clock">{clock}</span>
       </header>
-      <FleetPanel vehicles={vehicles} selected={selected} onToggle={toggle} onSelect={(ids) => setSelected(new Set(ids))} />
+      <FleetPanel vehicles={vehicles} selected={selected} onToggle={toggle}
+        onDeselect={deselect}
+        detailsUid={detailsUid}
+        onDetails={(uid) => {
+          // a second click on the same row closes it; opening flies the map there
+          setDetailsUid((d) => (d === uid ? null : uid))
+          if (detailsUid !== uid) setFocus((f) => ({ uid, n: (f?.n ?? 0) + 1 }))
+        }}
+        onSelect={(ids) => setSelected(new Set(ids))}
+      />
       <main className={`mapwrap ${showSpace ? 'space-open' : ''}`}>
         <MapView
           vehicles={vehicles}
@@ -192,6 +216,7 @@ export default function App() {
           preview={preview}
           fit={fit}
           onToggle={toggle}
+          onDeselect={deselect}
           onMapClick={onMapClick}
           space={overlay}
           onView={onView}
@@ -234,6 +259,15 @@ export default function App() {
             onClose={() => setShowInbox(false)}
             mem={alertMem}
             hidden={hiddenAlerts}
+          />
+        )}
+        {detailsUid != null && byUidDetails(vehicles, detailsUid) && (
+          <VehicleDetails
+            v={byUidDetails(vehicles, detailsUid)!}
+            taskings={taskings}
+            selected={selected.has(detailsUid)}
+            onToggleSelect={() => toggle(detailsUid)}
+            onClose={() => setDetailsUid(null)}
           />
         )}
         {drawing && <div className="banner info">Click two opposite corners of the collection box. Esc cancels.</div>}

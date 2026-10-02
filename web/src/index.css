@@ -69,14 +69,27 @@ code { font-family: var(--mono); font-size: 12px; background: var(--panel-2); pa
 .vlist { overflow-y: auto; padding: 0 8px 12px; }
 .vlist h3 { margin: 12px 6px 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); }
 .vlist h3 span { font-family: var(--mono); color: var(--text); margin-left: 6px; }
-.vrow {
-  width: 100%; display: grid; grid-template-columns: 14px 26px 1fr auto; grid-template-rows: auto auto; column-gap: 8px; row-gap: 3px;
-  align-items: center; text-align: left; background: none; border: 1px solid transparent; border-radius: 4px; padding: 7px 8px;
+.vrow { display: flex; align-items: stretch; border: 1px solid transparent; border-radius: 4px; }
+.vrow-select {
+  flex: 0 0 30px; display: flex; align-items: center; justify-content: center; padding: 0;
+  background: none; border: none; border-right: 1px solid var(--line); border-radius: 4px 0 0 4px; cursor: pointer;
 }
-.vrow:hover { background: var(--panel-2); }
+.vrow-select:hover { background: #1d2a38; }
+.vrow-box {
+  width: 15px; height: 15px; border: 1.5px solid var(--muted); border-radius: 3px;
+  display: flex; align-items: center; justify-content: center; font: 700 11px var(--mono); color: #10161d;
+}
+.vrow-select:hover .vrow-box { border-color: var(--accent); }
+.vrow.sel .vrow-select { background: #2a2414; }
+.vrow.sel .vrow-box { background: var(--accent); border-color: var(--accent); }
+.vrow-body {
+  flex: 1; min-width: 0; display: grid; grid-template-columns: 26px 1fr auto; grid-template-rows: auto auto; column-gap: 8px; row-gap: 3px;
+  align-items: center; text-align: left; background: none; border: none; border-radius: 0 4px 4px 0; padding: 7px 8px; cursor: pointer;
+}
+.vrow-body:hover { background: var(--panel-2); }
+.vrow.open { border-color: #5b7088; }
+.vrow.open .vrow-body { background: var(--panel-2); }
 .vrow.sel { background: #1a2532; border-color: #33475d; }
-.vrow-check { color: var(--muted); font-size: 11px; }
-.vrow.sel .vrow-check { color: var(--accent); }
 .vrow-sym { display: flex; justify-content: center; }
 .vrow-sym svg { width: 26px; height: auto; }
 .vrow-main { display: flex; flex-direction: column; min-width: 0; }
@@ -285,3 +298,29 @@ code { font-family: var(--mono); font-size: 12px; background: var(--panel-2); pa
 .globe-tools + button { margin-left: 0; }
 .globe-foot { position: absolute; bottom: 0; left: 0; right: 0; padding: 4px 8px; font: 10px var(--mono); color: var(--muted); background: linear-gradient(rgba(5,8,11,0), rgba(5,8,11,.9)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; z-index: 1; }
 .space-head .seg button { white-space: nowrap; padding: 4px 8px; }
+
+/* vehicle details card: opened from a fleet row, over the map's left edge */
+.vdetails {
+  position: absolute; top: 12px; left: 12px; width: 330px; max-height: calc(100% - 24px); overflow-y: auto; z-index: 3;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.45);
+  padding: 10px 12px 12px; font-size: 12.5px;
+}
+.vd-head { display: flex; align-items: flex-start; gap: 10px; }
+.vd-sym svg { width: 34px; height: auto; }
+.vd-title { flex: 1; min-width: 0; }
+.vd-name { font: 600 14px var(--mono); display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.vd-select {
+  width: 100%; margin: 10px 0 4px; padding: 6px; border-radius: 4px; border: 1px solid var(--accent);
+  background: none; color: var(--accent); font: 600 12px var(--mono); cursor: pointer;
+}
+.vd-select.on { background: var(--accent); color: #10161d; }
+.vdetails section { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 8px; }
+.vdetails h4 { margin: 0 0 6px; font: 600 10.5px var(--mono); letter-spacing: 0.14em; color: var(--muted); text-transform: uppercase; }
+.vdetails dl { display: grid; grid-template-columns: 96px 1fr; gap: 3px 10px; margin: 0; }
+.vdetails dt { color: var(--muted); }
+.vdetails dd { margin: 0; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.vdetails p { margin: 6px 0 0; }
+.vdetails .bad { color: var(--bad); }
+.vdetails .warn { color: var(--warn); }
+.vd-msgs { list-style: none; margin: 0; padding: 0; font: 11.5px var(--mono); }
+.vd-msgs li { padding: 2px 0; }

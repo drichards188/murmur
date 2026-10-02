@@ -27,6 +27,8 @@ interface Props {
   selected: Set<number>
   draft: Draft
   onToggle: (uid: number) => void
+  /** right click on a vehicle (uid) or on empty map (null): deselect */
+  onDeselect?: (uid: number | null) => void
   onMapClick: (p: LngLat) => void
   /** fly to this vehicle (n changes on every request, so repeat clicks work) */
   focus?: { uid: number; n: number } | null
@@ -254,7 +256,7 @@ function setSpaceData(m: maplibregl.Map, space: SpaceOverlay, view: ViewMode) {
   for (const id of SPACE_SOURCES) (m.getSource(id) as maplibregl.GeoJSONSource | undefined)?.setData(id === 'space-links' ? (view === '3d' ? empty : linkStubs(space.links)) : f[id])
 }
 
-export function MapView({ vehicles, taskings, selected, draft, focus, preview = empty, fit, onToggle, onMapClick, space = EMPTY_OVERLAY, onView }: Props) {
+export function MapView({ vehicles, taskings, selected, draft, focus, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView }: Props) {
   const [view, setView] = useState<ViewMode>(savedView)
   const viewRef = useRef(view)
   const overlay = useRef<MapboxOverlay | null>(null)
@@ -273,11 +275,13 @@ export function MapView({ vehicles, taskings, selected, draft, focus, preview = 
   const markers = useRef(new Map<number, { marker: maplibregl.Marker; el: HTMLDivElement; key: string }>())
   const clickRef = useRef(onMapClick)
   const toggleRef = useRef(onToggle)
+  const deselectRef = useRef(onDeselect)
   useEffect(() => {
     clickRef.current = onMapClick
     toggleRef.current = onToggle
+    deselectRef.current = onDeselect
     viewCb.current = onView
-  }, [onMapClick, onToggle, onView])
+  }, [onMapClick, onToggle, onDeselect, onView])
 
   /** vehicles, bridges and SATCOM link lines for deck.gl (3D only; hidden layers in 2D) */
   const deckLayers = (is3d: boolean) => {
@@ -311,6 +315,23 @@ export function MapView({ vehicles, taskings, selected, draft, focus, preview = 
         }
       }
       clickRef.current([e.lngLat.lng, e.lngLat.lat])
+    })
+    // Right click deselects: a vehicle in 3D, else everything. A right drag rotates the map
+    // instead, so only a press that barely moved counts as a click.
+    let rightDown: { x: number; y: number } | null = null
+    m.on('mousedown', (e: maplibregl.MapMouseEvent) => {
+      if (e.originalEvent.button === 2) rightDown = { x: e.point.x, y: e.point.y }
+    })
+    m.on('contextmenu', (e: maplibregl.MapMouseEvent) => {
+      e.preventDefault()
+      const d = rightDown ? Math.hypot(e.point.x - rightDown.x, e.point.y - rightDown.y) : 0
+      rightDown = null
+      if (d > 5) return
+      if (viewRef.current === '3d') {
+        const hit = deck.pickObject({ x: e.point.x, y: e.point.y, radius: 6, layerIds: ['vehicles-3d'] })
+        if (hit?.object) return deselectRef.current?.((hit.object as Vehicle).uid)
+      }
+      deselectRef.current?.(null)
     })
     // Middle-drag orbits the camera like a 3D modelling tool: left/right spins (bearing),
     // up/down tilts (pitch). In 2D only the spin applies, so the map stays flat.
@@ -516,6 +537,11 @@ export function MapView({ vehicles, taskings, selected, draft, focus, preview = 
         el.addEventListener('click', (e) => {
           e.stopPropagation()
           toggleRef.current(v.uid)
+        })
+        el.addEventListener('contextmenu', (e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          deselectRef.current?.(v.uid)
         })
         const marker = new maplibregl.Marker({ element: el, anchor: 'top-left' }).setLngLat(v.position).addTo(m)
         entry = { marker, el, key: '' }

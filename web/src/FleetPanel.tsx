@@ -6,6 +6,11 @@ interface Props {
   vehicles: Vehicle[]
   selected: Set<number>
   onToggle: (uid: number) => void
+  /** right click: deselect this vehicle */
+  onDeselect: (uid: number) => void
+  /** row body click: show this vehicle's details */
+  onDetails: (uid: number) => void
+  detailsUid: number | null
   onSelect: (uids: number[]) => void
 }
 
@@ -21,15 +26,39 @@ function fmt(n: number | null | undefined, digits = 0, unit = '') {
   return n == null ? '–' : `${n.toFixed(digits)}${unit}`
 }
 
-function Row({ v, selected, onToggle }: { v: Vehicle; selected: boolean; onToggle: Props['onToggle'] }) {
+interface RowProps {
+  v: Vehicle
+  selected: boolean
+  open: boolean
+  onToggle: Props['onToggle']
+  onDeselect: Props['onDeselect']
+  onDetails: Props['onDetails']
+}
+
+/** Two controls: the left strip selects the vehicle for tasking; the rest opens its details. */
+function Row({ v, selected, open, onToggle, onDeselect, onDetails }: RowProps) {
   const stale = (v.link.since_last_ms ?? 0) > STALE_MS
   const lc = linkClass(v)
   return (
-    <button
-      className={`vrow ${selected ? 'sel' : ''} ${stale ? 'stale' : ''}`}
-      onClick={() => onToggle(v.uid)}
+    <div
+      className={`vrow ${selected ? 'sel' : ''} ${stale ? 'stale' : ''} ${open ? 'open' : ''}`}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        onDeselect(v.uid)
+      }}
     >
-      <span className="vrow-check" aria-hidden>{selected ? '■' : '□'}</span>
+      <button
+        className="vrow-select"
+        aria-pressed={selected}
+        aria-label={`${selected ? 'Deselect' : 'Select'} ${callsign(v)} for tasking`}
+        title={selected ? 'Selected for tasking (click or right-click to deselect)' : 'Select for tasking'}
+        onClick={() => onToggle(v.uid)}
+      >
+        <span className="vrow-box" aria-hidden>
+          {selected ? '✓' : ''}
+        </span>
+      </button>
+      <button className="vrow-body" aria-expanded={open} title="Show details" onClick={() => onDetails(v.uid)}>
       <span className="vrow-sym" dangerouslySetInnerHTML={{ __html: symbolSvg(v, { stale, size: 16, labels: false }).svg }} />
       <span className="vrow-main">
         <span className="vrow-name">
@@ -75,18 +104,19 @@ function Row({ v, selected, onToggle }: { v: Vehicle; selected: boolean; onToggl
         <span title="packet loss, last 10 s">{fmt(v.link.loss_pct, 0, '%')} loss</span>
         <span title="round trip time (TIMESYNC)">{fmt(v.link.rtt_ms, 0, 'ms')} rtt</span>
       </span>
-    </button>
+      </button>
+    </div>
   )
 }
 
 const GROUPS: { title: string; match: (v: Vehicle) => boolean }[] = [
   { title: 'Air', match: (v) => domainOf(v) === 'air' },
   { title: 'Ground', match: (v) => domainOf(v) === 'ground' },
-  { title: 'Surface', match: (v) => domainOf(v) === 'surface' },
+  { title: 'Water', match: (v) => domainOf(v) === 'surface' },
   { title: 'Subsurface', match: (v) => domainOf(v) === 'subsurface' },
 ]
 
-export function FleetPanel({ vehicles, selected, onToggle, onSelect }: Props) {
+export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails, detailsUid, onSelect }: Props) {
   const ids = (pred: (v: Vehicle) => boolean) => vehicles.filter(pred).map((v) => v.uid)
   return (
     <aside className="panel fleet">
@@ -116,7 +146,15 @@ export function FleetPanel({ vehicles, selected, onToggle, onSelect }: Props) {
                   {title} <span>{group.length}</span>
                 </h3>
                 {group.map((v) => (
-                  <Row key={v.uid} v={v} selected={selected.has(v.uid)} onToggle={onToggle} />
+                  <Row
+                    key={v.uid}
+                    v={v}
+                    selected={selected.has(v.uid)}
+                    open={detailsUid === v.uid}
+                    onToggle={onToggle}
+                    onDeselect={onDeselect}
+                    onDetails={onDetails}
+                  />
                 ))}
               </div>
             )

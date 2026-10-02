@@ -117,6 +117,9 @@ const DOMAIN_BY_KIND: Record<Kind, Domain> = {
   unknown: 'ground',
 }
 
+/** Display names: "surface" reads like ground, so the UI says water (the catalog key stays surface). */
+export const DOMAIN_LABEL: Record<Domain, string> = { air: 'Air', ground: 'Ground', surface: 'Water', subsurface: 'Subsurface' }
+
 export function domainOf(v: Pick<Vehicle, 'kind' | 'identity'>): Domain {
   return v.identity?.domain ?? DOMAIN_BY_KIND[v.kind ?? 'unknown']
 }

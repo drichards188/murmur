@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { Draft } from './MapView'
 import type { TaskKind, Tasking, Vehicle } from './types'
 import { callsign, LIFECYCLE } from './types'
 import { TaskResult, type TaskOutcome } from './TaskResult'
 import { sendTask, TaskRefused } from './useBridge'
+import { availableTasks, orbitRange, usePlatformLimits } from './taskDefaults'
 
 interface Props {
   vehicles: Vehicle[]
@@ -50,6 +51,22 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings, pendi
   const [outcome, setOutcome] = useState<TaskOutcome | null>(null)
   const byUid = new Map(vehicles.map((v) => [v.uid, v]))
   const sel = [...selected].sort((a, b) => a - b)
+  const limits = usePlatformLimits()
+  const selVehicles = sel.map((s) => byUid.get(s)).filter((v): v is Vehicle => v != null)
+  const orbit = orbitRange(selVehicles, limits)
+  const offered = availableTasks(selVehicles, limits)
+  const selKey = sel.join(',')
+
+  // a new selection gets that platform's own defaults: its typical orbit, and a task it can do
+  useEffect(() => {
+    setDraft({ ...draft, radius: orbit.value })
+    if (offered && !offered.has(kind)) {
+      const next = TASKS.find((t) => offered.has(t.kind))?.kind
+      if (next) choose(next)
+    }
+    // only when the selection (or the catalog) changes, not on every draft edit
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selKey, limits])
 
   const choose = (k: TaskKind) => {
     setKind(k)
@@ -61,8 +78,11 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings, pendi
   const others = sel.filter((s) => byUid.get(s)?.kind !== 'tracker')
   const trackPair = trackers.length === 1 && others.length === 1
 
+  const radiusOk = draft.radius >= orbit.min
   const ready =
     sel.length > 0 &&
+    (offered == null || offered.has(kind)) &&
+    (kind !== 'orbit' || radiusOk) &&
     (kind === 'orbit'
       ? draft.center != null
       : kind === 'patrol'
@@ -105,7 +125,13 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings, pendi
       <div className="taskform">
         <div className="seg wide">
           {TASKS.map((t) => (
-            <button key={t.kind} className={kind === t.kind ? 'on' : ''} onClick={() => choose(t.kind)}>
+            <button
+              key={t.kind}
+              className={kind === t.kind ? 'on' : ''}
+              disabled={offered != null && !offered.has(t.kind)}
+              title={offered != null && !offered.has(t.kind) ? 'Not every selected vehicle can do this' : undefined}
+              onClick={() => choose(t.kind)}
+            >
               {t.label}
             </button>
           ))}
@@ -116,14 +142,19 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings, pendi
             <span>Radius</span>
             <input
               type="range"
-              min={100}
-              max={800}
-              step={25}
-              value={draft.radius}
+              min={orbit.min}
+              max={orbit.max}
+              step={orbit.step}
+              value={Math.min(orbit.max, Math.max(orbit.min, draft.radius))}
               onChange={(e) => setDraft({ ...draft, radius: Number(e.target.value) })}
             />
-            <output>{draft.radius} m</output>
+            <output>{draft.radius >= 10000 ? `${(draft.radius / 1000).toFixed(1)} km` : `${draft.radius} m`}</output>
           </label>
+        )}
+        {kind === 'orbit' && orbit.limitedBy && (
+          <p className={`hint ${radiusOk ? '' : 'error'}`}>
+            Minimum {orbit.min} m ({orbit.limitedBy} x {1.1}).
+          </p>
         )}
         {kind === 'patrol' && (
           <div className="row">
