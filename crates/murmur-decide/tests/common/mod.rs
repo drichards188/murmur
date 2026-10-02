@@ -69,6 +69,8 @@ pub fn vehicle(platform: &str, at: LonLat) -> VehicleFacts {
         position: Some(Fact::new(at, T0)),
         home: Some(Fact::new(at, T0)),
         battery_pct: Some(Fact::new(95.0, T0)),
+        nav_source: None,
+        report_interval_ms: None,
     }
 }
 

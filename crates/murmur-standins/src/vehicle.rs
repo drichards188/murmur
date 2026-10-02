@@ -291,7 +291,7 @@ impl Vehicle {
         self.tick += 1;
     }
 
-    fn emit(&mut self, out: &mut Vec<Out>) {
+    pub(crate) fn emit(&mut self, out: &mut Vec<Out>) {
         for o in out.drain(..) {
             match o {
                 Out::Text(sev, s) => self.text(sev, &s),

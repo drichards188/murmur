@@ -8,7 +8,7 @@ use mavlink::MavHeader;
 use mavlink::MessageData;
 use mavlink::dialects::ardupilotmega::*;
 
-use crate::behavior::{Firmware, Observe};
+use crate::behavior::{Command, Ctx, Firmware, Observe};
 use crate::link::Inbound;
 use crate::messages;
 use crate::mission::{Mission, UPLOAD_RETRY_S, UPLOAD_TIMEOUT_S, Upload};
@@ -264,6 +264,30 @@ struct Cmd {
 #[allow(deprecated)]
 fn command(v: &mut Vehicle, from: (u8, u8), c: Cmd) {
     use MavCmd::*;
+    // the behavior's own handling first (arming checks, mode refusals, user takeoff); what
+    // it says goes out ahead of the ACK
+    let mut out = Vec::new();
+    let own = v.behavior.command(
+        &mut Ctx {
+            spec: &v.cfg.spec,
+            params: &v.params,
+            st: &mut v.st,
+            mission: &mut v.mission,
+            out: &mut out,
+        },
+        &Command {
+            command: c.command,
+            p: c.p,
+            x: c.x,
+            y: c.y,
+            z: c.z,
+        },
+    );
+    v.emit(&mut out);
+    if let Some(r) = own {
+        v.link.send(&messages::command_ack_to(c.command, r, from));
+        return;
+    }
     let r = match c.command {
         MAV_CMD_COMPONENT_ARM_DISARM => arm(v, &c),
         MAV_CMD_DO_SET_MODE => {
@@ -277,11 +301,6 @@ fn command(v: &mut Vehicle, from: (u8, u8), c: Cmd) {
             }
         }
         MAV_CMD_MISSION_START => request_mode(v, "AUTO"),
-        MAV_CMD_DO_SET_SERVO if v.firmware == Firmware::Tracker => {
-            // AntennaTracker enters SERVOTEST first, even when the servo is refused
-            v.set_mode("SERVOTEST");
-            v.behavior.set_servo(&v.params, c.p[0], c.p[1])
-        }
         MAV_CMD_NAV_RETURN_TO_LAUNCH => match v.behavior.mode_number("RTL") {
             Some(_) if v.firmware != Firmware::Sub => request_mode(v, "RTL"),
             _ => MavResult::MAV_RESULT_UNSUPPORTED,
@@ -345,9 +364,6 @@ fn command(v: &mut Vehicle, from: (u8, u8), c: Cmd) {
 }
 
 fn arm(v: &mut Vehicle, c: &Cmd) -> MavResult {
-    if let Some(r) = v.behavior.arm_command(&mut v.st, c.p[0], c.p[1]) {
-        return r;
-    }
     let arm = c.p[0] == 1.0;
     if !arm && v.airborne() && c.p[1] != 21196.0 {
         return MavResult::MAV_RESULT_FAILED; // no disarming in flight (unless forced)

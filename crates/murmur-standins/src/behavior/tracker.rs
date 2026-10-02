@@ -33,14 +33,14 @@
 //! A real tracker whose servos are faster would change only these constants.
 
 use mavlink::dialects::ardupilotmega::{
-    AttitudeTargetTypemask, MavMessage, MavModeFlag, MavParamType, MavResult, MavType,
+    AttitudeTargetTypemask, MavCmd, MavMessage, MavModeFlag, MavParamType, MavResult, MavType,
     NAV_CONTROLLER_OUTPUT_DATA,
 };
 // ArduPilot still asks its target for streams this way
 #[allow(deprecated)]
 use mavlink::dialects::ardupilotmega::REQUEST_DATA_STREAM_DATA;
 
-use super::{Behavior, Observe, Tick, modes};
+use super::{Behavior, Command, Ctx, Observe, Tick, modes};
 use crate::config::Spec;
 use crate::geo::{M_PER_DEG, bearing_deg, distance_m, wrap180};
 use crate::kinematics::State;
@@ -305,6 +305,24 @@ impl Tracker {
     }
 }
 
+impl Tracker {
+    /// DO_SET_SERVO: servo_num is a uint8 there, only 1 (yaw) and 2 (pitch) exist.
+    fn set_servo(&mut self, params: &Params, servo: f32, pwm: f32) -> MavResult {
+        let n = if (1.0..3.0).contains(&servo) {
+            servo as usize
+        } else {
+            0
+        };
+        if n == 0 || !pwm.is_finite() {
+            return MavResult::MAV_RESULT_FAILED;
+        }
+        let min = params.f(&format!("SERVO{n}_MIN"), 1000.0);
+        let max = params.f(&format!("SERVO{n}_MAX"), 2000.0);
+        self.servo[n - 1] = Some(f64::from(pwm).clamp(min, max));
+        MavResult::MAV_RESULT_ACCEPTED
+    }
+}
+
 impl Behavior for Tracker {
     fn mav_type(&self) -> MavType {
         MavType::MAV_TYPE_ANTENNA_TRACKER
@@ -349,32 +367,29 @@ impl Behavior for Tracker {
         Some(!matches!(mode, "STOP" | "INITIALISING"))
     }
 
-    fn arm_command(&mut self, st: &mut State, p1: f32, _p2: f32) -> Option<MavResult> {
-        Some(if p1 == 1.0 {
-            st.armed = true;
-            MavResult::MAV_RESULT_ACCEPTED
-        } else if p1 == 0.0 {
-            st.armed = false;
-            MavResult::MAV_RESULT_ACCEPTED
-        } else {
-            MavResult::MAV_RESULT_UNSUPPORTED
-        })
-    }
-
-    fn set_servo(&mut self, params: &Params, servo: f32, pwm: f32) -> MavResult {
-        // servo_num is a uint8 there: only 1 (yaw) and 2 (pitch) exist
-        let n = if (1.0..3.0).contains(&servo) {
-            servo as usize
-        } else {
-            0
-        };
-        if n == 0 || !pwm.is_finite() {
-            return MavResult::MAV_RESULT_FAILED;
+    /// COMMAND_COMPONENT_ARM_DISARM (1 and 0 only, no text) and DO_SET_SERVO, which enters
+    /// SERVOTEST first even when the servo is refused.
+    fn command(&mut self, c: &mut Ctx, cmd: &Command) -> Option<MavResult> {
+        match cmd.command {
+            MavCmd::MAV_CMD_COMPONENT_ARM_DISARM => Some(if cmd.p[0] == 1.0 {
+                c.st.armed = true;
+                MavResult::MAV_RESULT_ACCEPTED
+            } else if cmd.p[0] == 0.0 {
+                c.st.armed = false;
+                MavResult::MAV_RESULT_ACCEPTED
+            } else {
+                MavResult::MAV_RESULT_UNSUPPORTED
+            }),
+            MavCmd::MAV_CMD_DO_SET_SERVO => {
+                if c.st.mode != "SERVOTEST" {
+                    c.st.mode = "SERVOTEST";
+                    c.st.hold_point = (c.st.lat, c.st.lon);
+                    c.st.armed = true;
+                }
+                Some(self.set_servo(c.params, cmd.p[0], cmd.p[1]))
+            }
+            _ => None,
         }
-        let min = params.f(&format!("SERVO{n}_MIN"), 1000.0);
-        let max = params.f(&format!("SERVO{n}_MAX"), 2000.0);
-        self.servo[n - 1] = Some(f64::from(pwm).clamp(min, max));
-        MavResult::MAV_RESULT_ACCEPTED
     }
 
     fn attitude(&self, _st: &State) -> Option<(f64, f64)> {
@@ -701,6 +716,27 @@ mod tests {
             }
         }
 
+        fn arm(&mut self, p1: f32, p2: f32) -> Option<MavResult> {
+            let spec = spec();
+            let mut out = Vec::new();
+            self.b.command(
+                &mut Ctx {
+                    spec: &spec,
+                    params: &self.params,
+                    st: &mut self.st,
+                    mission: &mut self.mission,
+                    out: &mut out,
+                },
+                &Command {
+                    command: MavCmd::MAV_CMD_COMPONENT_ARM_DISARM,
+                    p: [p1, p2, 0.0, 0.0],
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            )
+        }
+
         fn yaw_error(&self, bearing: f64) -> f64 {
             wrap180(self.st.heading - bearing)
         }
@@ -871,19 +907,10 @@ mod tests {
     #[test]
     fn arm_command_takes_only_zero_and_one() {
         let mut r = Rig::new();
-        assert_eq!(
-            r.b.arm_command(&mut r.st, 0.0, 0.0),
-            Some(MavResult::MAV_RESULT_ACCEPTED)
-        );
+        assert_eq!(r.arm(0.0, 0.0), Some(MavResult::MAV_RESULT_ACCEPTED));
         assert!(!r.st.armed);
-        assert_eq!(
-            r.b.arm_command(&mut r.st, 2.0, 0.0),
-            Some(MavResult::MAV_RESULT_UNSUPPORTED)
-        );
-        assert_eq!(
-            r.b.arm_command(&mut r.st, 1.0, 0.0),
-            Some(MavResult::MAV_RESULT_ACCEPTED)
-        );
+        assert_eq!(r.arm(2.0, 0.0), Some(MavResult::MAV_RESULT_UNSUPPORTED));
+        assert_eq!(r.arm(1.0, 0.0), Some(MavResult::MAV_RESULT_ACCEPTED));
         assert!(r.st.armed);
     }
 

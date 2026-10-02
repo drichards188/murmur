@@ -9,7 +9,8 @@
 # sim = "standin"  a lightweight MAVLink-speaking kinematic model (sim/standins.py) for
 #                  platforms ArduPilot SITL can't credibly fly (HALE at 18 km, AUVs, ships).
 #                  `behavior` picks which ArduPilot autopilot it imitates (mode numbers,
-#                  MAV_TYPE), so the C2 bridge needs no special cases.
+#                  MAV_TYPE), so the C2 bridge needs no special cases. SITL platforms with a
+#                  stand-in behavior carry it too, for fleets that force `sim = "standin"`.
 #
 # link: los | mesh | satcom | acoustic | tether   (used by the link emulator, phase D)
 # alt_m: cruise altitude above sea level; negative = operating depth for subs (stand-ins:
@@ -114,7 +115,10 @@ protocol_note = "STANAG 4586 is plausible if Army or NATO; the real GCS is propr
 authenticity = "ArduPilot QuadPlane SITL tuned to the airframe (mass, speeds), plus 4586 if Army/NATO"
 authenticity_blocker = "Real GCS proprietary"
 params = { AIRSPEED_CRUISE = 24 }
+behavior = "vtol"
 cruise_mps = 24
+climb_mps = 5
+turn_dps = 23
 typical_alt_m = 70
 [puma]
 name = "Puma 3 AE-class"
@@ -168,7 +172,9 @@ protocol_note = "Skydio's stack is proprietary; MAVLink in the sim, labelled as 
 authenticity = "ArduPilot or PX4 SITL plus Gazebo for vision-based obstacle avoidance; CoT to TAK"
 authenticity_blocker = "Skydio's autonomy stack proprietary"
 params = { WP_SPD = 12 }
+behavior = "copter"
 cruise_mps = 12
+climb_mps = 2.5
 typical_alt_m = 30
 endurance_h = 0.65
 [fpv]
@@ -187,7 +193,9 @@ protocol_note = "Pilot RC link (ExpressLRS-style or fiber); no C2 protocol exist
 authenticity = "Betaflight SITL plus an RC link model (ExpressLRS-style, fiber); realistically human-piloted"
 authenticity_blocker = "No C2 protocol exists; C2 visibility only via relays"
 params = { WP_SPD = 25 }
+behavior = "copter"
 cruise_mps = 25
+climb_mps = 2.5
 typical_alt_m = 30
 endurance_h = 0.15
 [lta]
@@ -197,6 +205,7 @@ role = "Lighter-than-air persistent ISR"
 domain = "air"
 sim = "sitl"
 vehicle = "blimp"
+behavior = "blimp"
 callsign = "ZEP"
 link = "los"
 sidc = "SFAPML---------"
@@ -204,6 +213,10 @@ protocol = "mavlink"
 protocol_note = "Small airships run ArduPilot Blimp, which speaks MAVLink natively"
 authenticity = "ArduPilot Blimp SITL (already authentic for small airships)"
 typical_alt_m = 20
+# stand-in kinematics (a small outdoor airship; Blimp SITL's defaults fly at 0.25-0.5 m/s)
+cruise_mps = 3
+max_mps = 5
+climb_mps = 1
 # ---------------------------------------------------------------- ground
 [ugv_logistics]
 name = "Tracked logistics UGV"
@@ -212,6 +225,7 @@ role = "Logistics / casualty evacuation UGV"
 domain = "ground"
 sim = "sitl"
 vehicle = "ugv"
+behavior = "ugv"
 callsign = "MULE"
 link = "mesh"
 sidc = "SFGPEV---------"
@@ -230,6 +244,7 @@ armed = true
 domain = "ground"
 sim = "sitl"
 vehicle = "ugv"
+behavior = "ugv"
 callsign = "BULL"
 link = "mesh"
 sidc = "SFGPEV---------"
@@ -247,6 +262,7 @@ role = "Mine-laying UGV"
 domain = "ground"
 sim = "sitl"
 vehicle = "ugv"
+behavior = "ugv"
 callsign = "MOLE"
 link = "mesh"
 sidc = "SFGPEV---------"
@@ -264,6 +280,7 @@ role = "Recon UGV"
 domain = "ground"
 sim = "sitl"
 vehicle = "ugv"
+behavior = "ugv"
 callsign = "FERRET"
 link = "mesh"
 sidc = "SFGPEV---------"
@@ -356,6 +373,7 @@ role = "Unpowered (wind) ocean USV"
 domain = "surface"
 sim = "sitl"
 vehicle = "sailboat"
+behavior = "sailboat"
 callsign = "ALBATROSS"
 link = "satcom"
 space_class = "starlink"
@@ -366,6 +384,8 @@ protocol_note = "Vendor cloud API is proprietary; MAVLink in the sim, labelled a
 authenticity = "ArduPilot sailboat SITL with real wind (already close) plus an Iridium/Starlink link"
 authenticity_blocker = "Vendor cloud API proprietary"
 cruise_mps = 2
+max_mps = 4   # about 8 kt top speed; the polar gives less in light wind
+turn_dps = 20
 typical_alt_m = 0
 endurance_h = 8760
 [buoy]

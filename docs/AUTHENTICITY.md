@@ -51,6 +51,17 @@ so a new behavior inherits it:
 Murmur-chosen settings where ArduPilot ships a feature off (GCS failsafes, battery
 thresholds) are marked in `params.rs`.
 
+### How the Rust bridge reads it (`crates/murmur-bridge`)
+
+- **HIGH_LATENCY2** updates position, depth, heading, speed, battery, mode and waypoint, so a
+  submerged AUV's track keeps moving. A link reporting by it is low-rate: it counts as lost
+  after 3 expected intervals (60 s at 20 s) instead of 3 s (`link.expected_interval_ms`).
+- **Dead reckoning**: a sub with relative position only (EKF_POS_HORIZ_REL without ABS, or
+  HIGH_LATENCY2's GPS failure flag) is navigation-ready with `nav_source = dead_reckoning`,
+  shown as DR in the console and recorded by the readiness rule. Other kinds need GNSS.
+- **Fixed-wing RTL** is done within its RTL circle plus 250 m: RTL_RADIUS (or WP_LOITER_RAD
+  when 0), read at link-up, never tighter than the catalog's minimum turn radius.
+
 ## Protocol groups (most realistic way a C2 reaches each platform)
 
 | Group | Platforms | Openly implementable? |
@@ -69,11 +80,13 @@ Video metadata for all ISR aircraft: MISB ST 0601 / STANAG 4609 (open, well supp
 
 ## Per platform
 
-"Today" = how the node runs in the default fleet. Stand-in behaviors still missing from
-`sim/standins.py`:
-copter (hover), VTOL (vertical takeoff then fixed-wing), airship, ground vehicle (land only),
-sailboat (wind-driven). The Rust engine has the antenna tracker (`behavior/tracker.rs`:
-AntennaTracker modes, SYSID_TARGET, slew and range limits, the long way round).
+"Today" = how the node runs in the default fleet. The Rust engine (`crates/murmur-standins`)
+has copter and VTOL (QuadPlane) behaviors, checked against ArduPilot SITL by
+`sim/tests/standins_vs_sitl_air.py`, so X10, FPV and FVR-90 can run as stand-ins with
+`sim = "standin"`. Airship, ground vehicle and sailboat behaviors are there too; still
+the antenna tracker too (`behavior/tracker.rs`: AntennaTracker modes, SYSID_TARGET, slew
+and range limits, the long way round, checked by `sim/tests/standins_vs_sitl_tracker.py`).
+Nothing is missing now.
 
 ### Air
 

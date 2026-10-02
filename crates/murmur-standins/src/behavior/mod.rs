@@ -8,7 +8,7 @@
 
 use mavlink::MavHeader;
 use mavlink::dialects::ardupilotmega::{
-    GpsFixType, MavMessage, MavModeFlag, MavParamType, MavResult, MavState, MavType,
+    GpsFixType, MavCmd, MavMessage, MavModeFlag, MavParamType, MavResult, MavState, MavType,
     NAV_CONTROLLER_OUTPUT_DATA,
 };
 
@@ -19,13 +19,21 @@ use crate::kinematics::{Out, State};
 use crate::mission::Mission;
 use crate::params::Params;
 
+mod apmission;
+mod auto;
+mod blimp;
 mod boat;
+mod copter;
 mod drifter;
 mod marine;
 pub mod modes;
 mod plane;
+mod rover;
+mod sailboat;
 mod sub;
 mod tracker;
+mod ugv;
+mod vtol;
 
 /// Everything a physics tick may read or change.
 pub struct Tick<'a> {
@@ -54,6 +62,26 @@ pub struct Observe<'a> {
     pub st: &'a State,
     /// messages to send in reply, on the vehicle's own link
     pub send: Vec<MavMessage>,
+}
+
+/// What a behavior's own command handling may read or change.
+pub struct Ctx<'a> {
+    pub spec: &'a Spec,
+    pub params: &'a Params,
+    pub st: &'a mut State,
+    pub mission: &'a mut Mission,
+    /// sent before the COMMAND_ACK, in order
+    pub out: &'a mut Vec<Out>,
+}
+
+/// A COMMAND_LONG or COMMAND_INT: params 1-4, then x / y (degrees for COMMAND_INT) and z.
+#[derive(Debug, Clone, Copy)]
+pub struct Command {
+    pub command: MavCmd,
+    pub p: [f32; 4],
+    pub x: f64,
+    pub y: f64,
+    pub z: f32,
 }
 
 /// The ArduPilot firmware a behavior imitates. Picks the parameter table, the failsafe
@@ -152,16 +180,10 @@ pub trait Behavior: Send {
         None
     }
 
-    /// COMMAND_COMPONENT_ARM_DISARM when the firmware answers it its own way (param1, param2).
-    /// None: the common rules (no disarm in flight, an arming text).
-    fn arm_command(&mut self, _st: &mut State, _p1: f32, _p2: f32) -> Option<MavResult> {
+    /// A command this autopilot handles itself (its arming checks, mode refusals, user
+    /// takeoff): Some(result) to ACK with, None for the shared handling in `commands`.
+    fn command(&mut self, _c: &mut Ctx, _cmd: &Command) -> Option<MavResult> {
         None
-    }
-
-    /// MAV_CMD_DO_SET_SERVO: (servo number, pwm). The default is what a firmware without
-    /// the command answers.
-    fn set_servo(&mut self, _params: &Params, _servo: f32, _pwm: f32) -> MavResult {
-        MavResult::MAV_RESULT_UNSUPPORTED
     }
 
     /// Which ArduPilot firmware this imitates. Default: from the mode table.
@@ -218,6 +240,11 @@ pub fn create(name: &str) -> Option<Box<dyn Behavior>> {
         "drifter" => Box::new(drifter::Drifter),
         "sub" => Box::new(sub::Sub),
         "tracker" => Box::new(tracker::Tracker::default()),
+        "copter" => Box::new(copter::Copter::new()),
+        "vtol" => Box::new(vtol::Vtol::new()),
+        "blimp" => Box::new(blimp::Blimp::new()),
+        "ugv" => Box::new(ugv::Ugv::new()),
+        "sailboat" => Box::new(sailboat::Sailboat::new()),
         _ => return None,
     })
 }

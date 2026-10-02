@@ -44,6 +44,9 @@ submitter_authorizes = true                 # default for human tiers that don't
 
 [rules]
 max_fact_age_s = 10                         # older telemetry can't support a decision
+fact_age_intervals = 3                      # ...but a vehicle's limit is at least this many of its link's
+                                            # expected report intervals (acoustic AUV, 20 s: 60 s). The
+                                            # check detail names the limit. Absent: max_fact_age_s only
 orbit_radius_margin = 1.1                   # orbit radius >= 1.1 x minimum turn radius
 fixed_wing_default_min_turn_radius_m = 60   # ArduPlane WP_LOITER_RAD default, when the catalog has no turn rate
 reserve_pct = 20                            # endurance left after the task, % of full

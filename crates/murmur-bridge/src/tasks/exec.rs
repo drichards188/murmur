@@ -601,10 +601,10 @@ impl Task<'_> {
     }
 
     async fn rtl(&self) -> Result {
-        let home_tol = self.caps.home_tol;
+        let caps = self.caps;
         let home_dist = |v: &Vehicle| v.home.and_then(|(la, lo)| v.distance_to(la, lo));
         // exactly at home (a stand-in that never moved) counts as home
-        let at_home = move |v: &Vehicle| home_dist(v).unwrap_or(1e9) < home_tol;
+        let at_home = move |v: &Vehicle| home_dist(v).unwrap_or(1e9) < caps.home_radius(v);
         let progress = move |v: &Vehicle| {
             home_dist(v).map_or(String::new(), |d| format!("{d:.0} m from home"))
         };

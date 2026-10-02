@@ -104,7 +104,7 @@ pub fn route_for(
     if !moves {
         return Ok(Route::default());
     }
-    let pos = *fresh(&v.position, "position", world, cfg)?;
+    let pos = *fresh(&v.position, v, "position", world, cfg)?;
     let home = v
         .home
         .as_ref()

@@ -76,6 +76,11 @@
 //! has been silent for more than `MURMUR_COT_LOST_S` (default 5 s) is not published at all, so
 //! its last marker goes stale on every client rather than showing an invented position.
 //!
+//! Both limits follow the link. A vehicle on a low-rate link (an acoustic AUV reporting every
+//! 20 s) is lost after `max(MURMUR_COT_LOST_S, 3 x its report interval)` (60 s), the same
+//! rule the decision layer uses, and its events carry `stale = time + max(period, report
+//! interval) + pad`, so the TAK marker lasts a full report cycle instead of flickering.
+//!
 //! # Configuration (environment; every output is off unless set)
 //!
 //! | variable | meaning |
@@ -342,6 +347,15 @@ pub struct Sample {
     pub last_rx: Option<f64>,
     pub loss_pct: Option<i64>,
     pub rtt_ms: Option<i64>,
+    /// How often the link should report, ms (1000 streaming, 20000 acoustic); 0 = unknown,
+    /// which behaves as streaming.
+    pub expected_interval_ms: u32,
+}
+
+impl Sample {
+    fn interval_s(&self) -> f64 {
+        f64::from(self.expected_interval_ms) / 1000.0
+    }
 }
 
 pub fn xml_escape(s: &str) -> String {
@@ -510,7 +524,12 @@ impl Emitter {
         let min_gap = 1.0 / cfg.max_hz.max(cfg.rate_hz);
         let mut out = Vec::new();
         for s in samples {
-            let fresh = s.last_rx.is_some_and(|t| now - t <= cfg.lost_s);
+            // link-aware: 3 report intervals of silence (60 s on an acoustic link), never
+            // less than lost_s
+            let lost_s = cfg
+                .lost_s
+                .max(crate::link::STALE_INTERVALS * s.interval_s());
+            let fresh = s.last_rx.is_some_and(|t| now - t <= lost_s);
             if !fresh {
                 self.last.remove(&s.uid); // on return, send straight away
                 continue;
@@ -532,7 +551,7 @@ impl Emitter {
                 }
             };
             if due {
-                out.push(build_event(cfg, s, now, period));
+                out.push(build_event(cfg, s, now, period.max(s.interval_s())));
                 self.last.insert(
                     s.uid,
                     Last {
@@ -582,6 +601,7 @@ fn collect(world: &World) -> Vec<Sample> {
                     last_rx: link.last_rx_t,
                     loss_pct: link.loss_pct,
                     rtt_ms: link.rtt_ms,
+                    expected_interval_ms: link.expected_interval_ms,
                 })
             })
         })
@@ -989,6 +1009,7 @@ mod tests {
             last_rx: Some(1000.0),
             loss_pct: Some(2),
             rtt_ms: Some(40),
+            expected_interval_ms: 1000,
         }
     }
 
@@ -1189,6 +1210,29 @@ mod tests {
         // never heard from: nothing
         s.last_rx = None;
         assert!(em.step(&cfg, &[s], 1300.0).is_empty());
+    }
+
+    #[test]
+    fn low_rate_link_is_kept_and_stays_valid() {
+        let cfg = CotConfig::default();
+        let mut em = Emitter::default();
+        let mut s = sample();
+        s.expected_interval_ms = 20_000;
+        s.last_rx = Some(1000.0);
+        assert_eq!(em.step(&cfg, &[s.clone()], 1000.0).len(), 1);
+        // 50 s of silence is under 3 x 20 s: still published, unlike a streaming vehicle
+        let xml = em.step(&cfg, &[s.clone()], 1050.0);
+        assert_eq!(xml.len(), 1);
+        let mut st = s.clone();
+        st.expected_interval_ms = 1000;
+        assert!(Emitter::default().step(&cfg, &[st], 1050.0).is_empty());
+        // stale covers a whole report cycle plus the pad
+        let ev = attrs_of(&xml[0], "event");
+        let t = DateTime::parse_from_rfc3339(&ev["time"]).expect("time");
+        let stale = DateTime::parse_from_rfc3339(&ev["stale"]).expect("stale");
+        assert_eq!((stale - t).num_seconds(), 23);
+        // after 3 missed reports it goes quiet
+        assert!(em.step(&cfg, &[s], 1061.0).is_empty());
     }
 
     #[test]

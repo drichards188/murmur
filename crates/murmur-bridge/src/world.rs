@@ -13,7 +13,7 @@ use serde_json::Value;
 use crate::link::Link;
 use crate::mav::{self, Kind, MavMessage, apm};
 use crate::tasks::TaskManager;
-use crate::vehicle::{Identity, Uid, VehicleCell};
+use crate::vehicle::{Identity, Uid, Vehicle, VehicleCell};
 
 /// A vehicle the manifest doesn't list (a stray MAVLink source on one of our ports) still
 /// shows up, under a uid that can't collide with the launcher's 1..N.
@@ -255,7 +255,8 @@ impl World {
         }
     }
 
-    /// GCS heartbeat, TIMESYNC pings, Q_ENABLE reads and the telemetry plan, once a second.
+    /// GCS heartbeat, TIMESYNC pings, parameter reads (`params_to_read`) and the telemetry
+    /// plan, once a second.
     pub async fn housekeeping(self: Arc<Self>) {
         let mut tick: u64 = 0;
         let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -272,18 +273,18 @@ impl World {
                 };
                 v.send(&gcs_heartbeat());
                 link.send_timesync();
-                let (kind, is_vtol, rates_sent, air) = v.read(|s| {
+                let (kind, rates_sent, air, unread) = v.read(|s| {
                     let air = s.identity.as_ref().and_then(|i| i.str("domain")) == Some("air")
                         || s.kind.is_some_and(Kind::flying);
-                    (s.kind, s.is_vtol, s.rates_sent, air)
+                    (s.kind, s.rates_sent, air, params_to_read(s))
                 });
-                if kind == Some(Kind::Plane) && is_vtol.is_none() {
+                for id in unread {
                     v.send(&MavMessage::PARAM_REQUEST_READ(
                         apm::PARAM_REQUEST_READ_DATA {
                             param_index: -1,
                             target_system: v.sysid,
                             target_component: mav::AUTOPILOT_COMPID,
-                            param_id: mav::char_array("Q_ENABLE"),
+                            param_id: mav::char_array(id),
                         },
                     ));
                 }
@@ -303,6 +304,26 @@ impl World {
             tick += 1;
         }
     }
+}
+
+/// Parameters the bridge reads at link-up (and asks for again each second until answered):
+/// Q_ENABLE tells a QuadPlane from a plane; WP_LOITER_RAD and RTL_RADIUS give the circle a
+/// fixed wing flies around home in RTL (when the RTL task counts as done).
+fn params_to_read(v: &Vehicle) -> Vec<&'static str> {
+    let mut ids = Vec::new();
+    if !matches!(v.kind, Some(Kind::Plane | Kind::Vtol)) {
+        return ids;
+    }
+    if v.kind == Some(Kind::Plane) && v.is_vtol.is_none() {
+        ids.push("Q_ENABLE");
+    }
+    if v.loiter_radius_m.is_none() {
+        ids.push("WP_LOITER_RAD");
+    }
+    if v.rtl_radius_m.is_none() {
+        ids.push("RTL_RADIUS");
+    }
+    ids
 }
 
 fn gcs_heartbeat() -> MavMessage {
@@ -340,6 +361,25 @@ pub fn telemetry_plan(kind: Option<Kind>, air: bool) -> Vec<(u32, f64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixed_wing_params_read_until_answered() {
+        let mut v = Vehicle::default();
+        v.kind = Some(Kind::Plane);
+        assert_eq!(
+            params_to_read(&v),
+            ["Q_ENABLE", "WP_LOITER_RAD", "RTL_RADIUS"]
+        );
+        v.is_vtol = Some(false);
+        v.loiter_radius_m = Some(150.0);
+        assert_eq!(params_to_read(&v), ["RTL_RADIUS"]);
+        v.kind = Some(Kind::Vtol);
+        v.rtl_radius_m = Some(0.0);
+        assert!(params_to_read(&v).is_empty());
+        v.kind = Some(Kind::Sub);
+        v.loiter_radius_m = None;
+        assert!(params_to_read(&v).is_empty());
+    }
 
     #[test]
     fn manifest_resolves_uid_by_port_and_sysid() {

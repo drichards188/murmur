@@ -26,8 +26,23 @@ pub struct Caps {
     /// how it gets off the ground, if it has to
     pub takeoff: Option<MavCmd>,
     pub orbit: Option<OrbitStyle>,
-    /// how close to home counts as "home"
+    /// how close to home counts as "home" (for fixed wing: to its RTL circle, see
+    /// [`Caps::home_radius`])
     pub home_tol: f64,
+}
+
+impl Caps {
+    /// Distance from home that counts as "home". A fixed wing can't stop: RTL ends circling
+    /// home on its RTL loiter circle (an RQ-4-class aircraft 9 km out, a SITL plane 150 m),
+    /// so for it home is that circle's radius plus the tolerance.
+    pub fn home_radius(&self, v: &crate::vehicle::Vehicle) -> f64 {
+        let circle = if self.orbit == Some(OrbitStyle::Loiter) {
+            v.rtl_loiter_radius_m().unwrap_or(0.0)
+        } else {
+            0.0
+        };
+        circle + self.home_tol
+    }
 }
 
 use TaskKind::{Hold, Orbit, Patrol, Rtl, Track};
@@ -140,4 +155,26 @@ pub fn platform_kind(sim: &str, vehicle: Option<&str>, behavior: Option<&str>) -
         "sub" => Kind::Sub,
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vehicle::Vehicle;
+
+    #[test]
+    fn fixed_wing_home_is_its_rtl_circle() {
+        let mut v = Vehicle::default();
+        v.loiter_radius_m = Some(3_500.0);
+        v.rtl_radius_m = Some(0.0);
+        // an MQ-9B-class stand-in circles home 3.5 km out; a copter's home is a point
+        assert_eq!(PLANE.home_radius(&v), 3_750.0);
+        assert_eq!(VTOL.home_radius(&v), 3_750.0);
+        assert_eq!(COPTER.home_radius(&v), 15.0);
+        // SITL plane (plane.parm 150 m) and a plane whose parameters never came back
+        v.loiter_radius_m = Some(150.0);
+        assert_eq!(PLANE.home_radius(&v), 400.0);
+        let unknown = Vehicle::default();
+        assert_eq!(PLANE.home_radius(&unknown), 250.0);
+    }
 }
