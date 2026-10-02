@@ -1,0 +1,333 @@
+//! Satellite tasking through the bridge: collect and cover intents on the element-set
+//! fixture (CelesTrak GP data of 2026-10-02, murmur-space's `tests/data`), the scenario
+//! clock running 60 times faster than the manual engine clock, executed by the space
+//! executor and replayed with the same segment.
+
+use super::*;
+use murmur_decide::space::from_utc;
+use murmur_decide::{ChosenCollect, SpaceAnswer};
+
+const GP_FIXTURE: &str = include_str!("../../../../murmur-space/tests/data/gp_fixture.json");
+
+fn fixture_space() -> Arc<murmur_space::Space> {
+    let catalog =
+        murmur_space::Catalog::parse(include_str!("../../../../../sim/space/constellations.toml"))
+            .expect("catalog");
+    let sources: Vec<(String, String)> = catalog
+        .queries()
+        .into_iter()
+        .map(|q| (q, GP_FIXTURE.to_string()))
+        .collect();
+    Arc::new(murmur_space::Space::from_sources(catalog, &sources).expect("space"))
+}
+
+/// Scenario start, on the fixture's epoch.
+fn t0() -> Time {
+    Time(
+        chrono::DateTime::parse_from_rfc3339("2026-10-02T14:00:00Z")
+            .expect("time")
+            .timestamp_millis(),
+    )
+}
+
+/// The rig with the space segment installed: the scenario clock starts at `t0` now and runs
+/// `rate` times faster than the engine clock.
+fn space_rig(rate: f64) -> (Rig, ScenarioMap) {
+    let r = rig();
+    let map = ScenarioMap {
+        engine_origin: r.clock.now(),
+        scenario_origin: t0(),
+        rate,
+    };
+    r.d.install_space(fixture_space(), map);
+    (r, map)
+}
+
+fn space_req(body: Value) -> IntentRequest {
+    serde_json::from_value(body).expect("request")
+}
+
+fn area() -> Value {
+    json!({ "kind": "circle", "center": [-122.47, 37.825], "radius_km": 5.0 })
+}
+
+fn collect_req(chosen: Option<&ChosenCollect>) -> IntentRequest {
+    space_req(json!({
+        "task": "collect",
+        "area": area(),
+        "window": { "from": t0().0, "to": t0().0 + 12 * 3600 * 1000 },
+        "capability": "any",
+        "chosen": chosen.map(|c| json!({ "norad_id": c.norad_id, "collect_time": c.collect_time.0 })),
+    }))
+}
+
+struct Picked {
+    chosen: ChosenCollect,
+    product: Option<Time>,
+    lead_ms: i64,
+}
+
+impl Rig {
+    /// Query (a rejected intent with the options), then the first ranked option.
+    async fn first_option(&self) -> Picked {
+        let q = self
+            .d
+            .submit(&op1(), collect_req(None))
+            .await
+            .expect("query");
+        assert_eq!(
+            q.state,
+            State::Rejected,
+            "a collect without a choice is a query"
+        );
+        assert!(q.intent["space"]["options_total"].as_u64().unwrap_or(0) > 0);
+        let core = self.d.lock();
+        let r = core
+            .engine
+            .intent(q.id)
+            .and_then(Intent::space_answer)
+            .and_then(SpaceAnswer::tasking)
+            .expect("tasking answer")
+            .clone();
+        let o = &r.options[0];
+        let chosen = ChosenCollect::from_option(o);
+        let product = o.product_time.map(|p| {
+            chosen
+                .collect_time
+                .plus_ms(from_utc(p).ms_since(from_utc(o.collect_time)))
+        });
+        let lead_ms = from_utc(o.earliest_collect).ms_since(from_utc(r.request.now));
+        Picked {
+            chosen,
+            product,
+            lead_ms,
+        }
+    }
+
+    fn op_states(&self) -> Vec<String> {
+        self.log
+            .lines()
+            .iter()
+            .filter(|l| l.contains("\"type\":\"op.state\""))
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter_map(|v| v["state"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    fn agent_collect(&self, chosen: &ChosenCollect) -> IntentId {
+        let req = collect_req(Some(chosen));
+        let proposal = space::proposal(&req.task, false, &req.space, None).expect("proposal");
+        let mut guard = self.d.lock();
+        let world = self.d.snapshot();
+        let core = &mut *guard;
+        core.engine
+            .agent_port(AgentId::new("planner"))
+            .propose(
+                proposal,
+                Rationale::new("eyes on the bridge before the fog").expect("rationale"),
+                &world,
+                &self.d.terrain.oracle(),
+            )
+            .expect("propose")
+            .id()
+    }
+
+    fn replays_with_space(&self) {
+        self.replays();
+        let seg = SpaceSegment::new(fixture_space()).expect("segment");
+        let report =
+            replay::replay_str_with_space(&self.log.text(), Some(&seg)).expect("log parses");
+        assert!(report.ok(), "replay mismatches: {:?}", report.mismatches);
+        assert!(report.space_reproduced(), "{report:#?}");
+        assert!(report.space_queries > 0);
+    }
+}
+
+#[tokio::test]
+async fn an_operators_collect_is_tasked_collected_and_its_product_arrives() {
+    let (r, map) = space_rig(60.0);
+    let p = r.first_option().await;
+    let out =
+        r.d.submit(&op1(), collect_req(Some(&p.chosen)))
+            .await
+            .expect("collect");
+    // the operator's own collect: authorized at submission, handed to the executor
+    assert_eq!(out.state, State::Dispatched, "{}", out.intent);
+    assert!(out.dispatched());
+    assert_eq!(out.intent["approval"]["at_submission"], true);
+    let run = out.space.clone().expect("space run");
+    assert_eq!(run["state"], "tasked");
+    assert_eq!(run["resource"], format!("norad:{}", p.chosen.norad_id));
+    assert_eq!(r.events("approval.requested"), 0);
+
+    r.clock.set(map.engine(p.chosen.collect_time).plus_ms(-1));
+    r.d.tick();
+    assert_eq!(
+        r.state(out.id),
+        State::Dispatched,
+        "still tasked before the pass"
+    );
+    r.clock.set(map.engine(p.chosen.collect_time));
+    r.d.tick();
+    match p.product {
+        Some(t) => {
+            assert_eq!(r.state(out.id), State::Dispatched);
+            r.clock.set(map.engine(t));
+            r.d.tick();
+            assert_eq!(r.op_states(), ["tasked", "collected", "product_ready"]);
+        }
+        None => assert_eq!(r.op_states(), ["tasked", "collected"]),
+    }
+    assert_eq!(r.state(out.id), State::Done);
+    let runs = r.d.space_runs_json();
+    assert_eq!(runs["runs"][0]["outcome"], "done");
+    assert_eq!(runs["clock"]["rate"], 60.0);
+    assert!(r.d.message().contains("\"runs\""));
+    r.replays_with_space();
+}
+
+#[tokio::test]
+async fn a_collect_whose_pass_is_lost_reports_missed() {
+    let (r, map) = space_rig(60.0);
+    let p = r.first_option().await;
+    let out =
+        r.d.submit(&op1(), collect_req(Some(&p.chosen)))
+            .await
+            .expect("collect");
+    assert_eq!(out.state, State::Dispatched);
+    // the bridge next sees the scenario clock ten minutes (bridge time) after the pass
+    r.clock
+        .set(map.engine(p.chosen.collect_time).plus_ms(10 * 60 * 1000));
+    r.d.tick();
+    assert_eq!(r.state(out.id), State::Failed);
+    assert_eq!(r.op_states(), ["tasked", "missed"]);
+    assert!(
+        r.reason(out.id).contains("collection missed"),
+        "{}",
+        r.reason(out.id)
+    );
+    r.replays_with_space();
+}
+
+#[tokio::test]
+async fn an_agents_collect_waits_and_expires_at_its_tasking_lead_deadline() {
+    let (r, map) = space_rig(5.0);
+    let p = r.first_option().await;
+    let id = r.agent_collect(&p.chosen);
+    assert_eq!(r.state(id), State::PendingApproval);
+    let deadline = map.engine(p.chosen.collect_time.plus_ms(-p.lead_ms));
+    let inbox = r.d.inbox_json();
+    let pending = &inbox["pending"][0];
+    assert_eq!(pending["id"], id.0);
+    assert_eq!(pending["expires_t"], deadline.0);
+    assert_eq!(pending["space"]["chosen"]["norad_id"], p.chosen.norad_id);
+    assert_eq!(pending["space"]["tasking_lead_s"], p.lead_ms / 1000);
+    assert!(
+        pending["space"].get("exclusions").is_none(),
+        "compact answer"
+    );
+
+    // not the generic 120 s
+    r.clock.advance_ms(121_000);
+    assert!(r.clock.now() < deadline);
+    r.d.tick();
+    assert_eq!(r.state(id), State::PendingApproval);
+    r.clock.set(deadline.plus_ms(-1));
+    r.d.tick();
+    assert_eq!(r.state(id), State::PendingApproval);
+    r.clock.set(deadline);
+    r.d.tick();
+    assert_eq!(r.state(id), State::Expired);
+    assert!(r.op_states().is_empty(), "never dispatched");
+    r.replays_with_space();
+}
+
+#[tokio::test]
+async fn an_agents_collect_approved_in_the_inbox_runs() {
+    let (r, map) = space_rig(60.0);
+    let p = r.first_option().await;
+    let id = r.agent_collect(&p.chosen);
+    r.clock.advance_ms(5_000);
+    let out = r.d.approve(&op1(), id.0, None).await.expect("approve");
+    assert_eq!(out.state, State::Dispatched);
+    assert!(out.authorization.is_none(), "an inbox approval");
+    assert_eq!(out.space.expect("run")["state"], "tasked");
+    r.clock.set(map.engine(p.chosen.collect_time));
+    r.d.tick();
+    assert!(r.op_states().contains(&"collected".to_string()));
+    r.replays_with_space();
+}
+
+#[tokio::test]
+async fn covers_report_predicted_outages_and_end_with_the_window() {
+    let (r, map) = space_rig(60.0);
+    let window = json!({ "from": t0().0, "to": t0().0 + 2 * 3600 * 1000 });
+    let satcom =
+        r.d.submit(
+            &op1(),
+            space_req(json!({
+                "task": "cover", "area": area(), "window": window,
+                "service": { "type": "satcom", "class": "starlink" }, "min_level": 0.0,
+            })),
+        )
+        .await
+        .expect("satcom cover");
+    assert_eq!(satcom.state, State::Dispatched, "{}", satcom.intent);
+    let gnss =
+        r.d.submit(
+            &op1(),
+            space_req(json!({
+                "task": "cover", "area": area(), "window": window,
+                "service": { "type": "gnss" }, "min_level": 0.0,
+            })),
+        )
+        .await
+        .expect("gnss cover");
+    assert_eq!(gnss.state, State::Dispatched, "{}", gnss.intent);
+    let outages = satcom.space.expect("run")["cover"]["outages"]
+        .as_array()
+        .map_or(0, Vec::len);
+    // a tick a second: a scenario minute at a time
+    let end = map.engine(Time(t0().0 + 2 * 3600 * 1000));
+    while r.clock.now() < end {
+        r.clock.advance_ms(1_000);
+        r.d.tick();
+    }
+    assert_eq!(r.state(satcom.id), State::Done);
+    assert_eq!(r.state(gnss.id), State::Done);
+    let states = r.op_states();
+    let n = |s: &str| states.iter().filter(|x| *x == s).count();
+    assert_eq!(n("outage"), outages);
+    assert_eq!(n("restored"), outages);
+    assert_eq!(n("watching"), 2);
+    assert_eq!(n("ended"), 2);
+    assert_eq!(n("fewest_in_view"), 1);
+    let log = r.log.text();
+    assert!(log.contains("\"uid\":\"satcom:starlink\""));
+    assert!(log.contains("\"uid\":\"gnss:gps\""));
+    r.replays_with_space();
+}
+
+#[tokio::test]
+async fn a_cover_below_its_level_is_refused_with_the_outages() {
+    let (r, _) = space_rig(60.0);
+    let out =
+        r.d.submit(
+            &op1(),
+            space_req(json!({
+                "task": "cover", "area": area(),
+                "window": { "from": t0().0, "to": t0().0 + 2 * 3600 * 1000 },
+                "service": { "type": "gnss" }, "min_level": 40.0,
+            })),
+        )
+        .await
+        .expect("cover");
+    assert_eq!(out.state, State::Rejected);
+    assert!(out.space.is_none());
+    assert!(
+        r.reason(out.id).contains("coverage"),
+        "{}",
+        r.reason(out.id)
+    );
+    r.replays_with_space();
+}

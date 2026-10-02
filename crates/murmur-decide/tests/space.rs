@@ -10,6 +10,7 @@ use std::sync::{Arc, OnceLock};
 
 use common::*;
 use murmur_decide::replay::{replay_str, replay_str_with_space};
+use murmur_decide::space::from_utc;
 use murmur_decide::*;
 use murmur_space::{Catalog as SpaceCatalog, Space};
 
@@ -94,6 +95,8 @@ fn cover(service: CoverService, min_level: Option<f64>) -> Proposal {
 fn patient_policy() -> Policy {
     let mut p = waiting_policy();
     p.approval.expire_s = 86400;
+    // the fixed wait, not the collect's tasking-lead deadline
+    p.approval.kind.clear();
     p
 }
 
@@ -484,6 +487,153 @@ fn agents_propose_and_amend_collects_but_only_a_human_approves() {
     assert_eq!(i.state(), State::Approved);
     assert!(!i.approval().unwrap().self_approved);
     assert_replays(&run.log);
+}
+
+/// An agent's chosen collect, pending, its deadline under `[approval.kind.collect] until =
+/// "tasking_lead"` (the sim policy) and its scenario map.
+fn agent_collect(run: &mut Run) -> (IntentId, Time, Time) {
+    let world = run.world();
+    let planner = AgentId::new("planner");
+    let mut port = run.engine.agent_port(planner.clone());
+    let q = port
+        .propose(collect(None), rationale("eyes on"), &world, &NoTerrain)
+        .unwrap();
+    let result = q.space_answer().unwrap().tasking().unwrap();
+    let opt = result.options[0].clone();
+    let lead = from_utc(opt.earliest_collect).ms_since(from_utc(result.request.now));
+    let chosen = ChosenCollect::from_option(&opt);
+    let qid = q.id();
+    let mut port = run.engine.agent_port(planner);
+    let i = port
+        .amend_collect(qid, chosen, rationale("first"), &world, &NoTerrain)
+        .unwrap();
+    assert_eq!(i.state(), State::PendingApproval);
+    (
+        i.id(),
+        i.expires_t().unwrap(),
+        chosen.collect_time.plus_ms(-lead),
+    )
+}
+
+#[test]
+fn a_pending_collect_expires_at_the_tasking_lead_time_not_after_120_s() {
+    let mut run = run(policy(), true);
+    let (id, expires, last_tasking) = agent_collect(&mut run);
+    // identity scenario map: the deadline is the last moment the pass can be tasked
+    assert_eq!(expires, last_tasking);
+    assert!(
+        expires.ms_since(run.clock.now()) > 120_000,
+        "longer than the fixed wait"
+    );
+    let text = run.log.text();
+    assert!(
+        text.contains("\"until\":{\"until\":\"tasking_lead\""),
+        "{text}"
+    );
+
+    // still pending after the generic 120 s
+    run.advance_to(run.clock.now().plus_ms(121_000));
+    assert!(run.engine.expire_due().unwrap().is_empty());
+    // expires at the deadline
+    run.advance_to(expires.plus_ms(-1));
+    assert!(run.engine.expire_due().unwrap().is_empty());
+    run.advance_to(expires);
+    assert_eq!(run.engine.expire_due().unwrap(), vec![id]);
+    assert_eq!(run.engine.intent(id).unwrap().state(), State::Expired);
+    assert_replays(&run.log);
+
+    // a kind without its own setting keeps the fixed wait; tampering with the deadline is
+    // caught
+    let tampered = text.replacen(
+        &format!("\"expires_t\":{}", expires.0),
+        &format!("\"expires_t\":{}", expires.0 + 1),
+        1,
+    );
+    assert_ne!(tampered, text);
+    let r = replay_str(&tampered).unwrap();
+    assert!(
+        r.mismatches
+            .iter()
+            .any(|m| m.what.contains("approval deadline")),
+        "{:#?}",
+        r.mismatches
+    );
+}
+
+#[test]
+fn the_tasking_deadline_follows_a_fast_scenario_clock() {
+    // scenario runs 60 times faster than the engine clock, starting at t0
+    let engine_start = Time(1_000_000_000);
+    let map = ScenarioMap {
+        engine_origin: engine_start,
+        scenario_origin: t0(),
+        rate: 60.0,
+    };
+    let clock = ManualClock::new(engine_start);
+    let log = MemorySink::new();
+    let mut engine = Engine::new(policy(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    engine
+        .set_space(Box::new(segment().with_scenario_map(map).unwrap()))
+        .unwrap();
+    let mut run = Run { clock, engine, log };
+    let (id, expires, last_tasking) = agent_collect(&mut run);
+    assert_eq!(expires, map.engine(last_tasking));
+    assert!(map.scenario(expires) >= last_tasking);
+    assert!(map.scenario(expires.plus_ms(-1)) < last_tasking);
+    // the wait in engine time is the scenario wait / 60
+    let wait = expires.ms_since(engine_start);
+    let scen_wait = last_tasking.ms_since(t0());
+    assert!((wait - scen_wait / 60).abs() <= 1, "{wait} vs {scen_wait}");
+    let text = run.log.text();
+    assert!(
+        text.contains("\"rate\":60.0"),
+        "space.loaded carries the map"
+    );
+    run.advance_to(expires);
+    assert_eq!(run.engine.expire_due().unwrap(), vec![id]);
+    assert_replays(&run.log);
+}
+
+#[test]
+fn scenario_map_round_trips_at_any_rate() {
+    for rate in [1.0, 0.5, 3.0, 60.0, 1000.0, 7.3] {
+        let m = ScenarioMap {
+            engine_origin: Time(1_700_000_000_000),
+            scenario_origin: Time(1_780_000_000_000),
+            rate,
+        };
+        for d in [0_i64, 1, 999, 3_600_000, 86_400_000] {
+            let s = m.scenario_origin.plus_ms(d);
+            let t = m.engine(s);
+            assert!(m.scenario(t) >= s, "rate {rate} d {d}");
+            assert!(m.scenario(t.plus_ms(-1)) < s, "rate {rate} d {d}");
+        }
+    }
+    assert!(
+        ScenarioMap {
+            rate: 0.0,
+            ..ScenarioMap::IDENTITY
+        }
+        .validate()
+        .is_err()
+    );
+}
+
+#[test]
+fn approval_kind_settings_are_validated() {
+    let base = std::fs::read_to_string(sim_dir().join("policy.toml")).unwrap();
+    let bad = base.replace(
+        "[approval.kind.collect]\nuntil = \"tasking_lead\"",
+        "[approval.kind.orbit]\nuntil = \"tasking_lead\"",
+    );
+    assert_ne!(bad, base);
+    assert!(Policy::from_toml(&bad).is_err());
+    let fixed = base.replace(
+        "[approval.kind.collect]\nuntil = \"tasking_lead\"",
+        "[approval.kind.collect]\nexpire_s = 600",
+    );
+    let p = Policy::from_toml(&fixed).unwrap();
+    assert_eq!(p.approval.kind[&TaskKind::Collect].expire_s, Some(600));
 }
 
 // ---- cover --------------------------------------------------------------------------

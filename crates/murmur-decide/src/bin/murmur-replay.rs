@@ -36,9 +36,15 @@ fn main() -> ExitCode {
     let segment = match space {
         None => None,
         Some((catalog, cache)) => {
+            // the run's pinned time shift (space.loaded), so answers are recomputed on the
+            // same propagation day
+            let pin = murmur_decide::space::logged_pinned_shift(&text);
             let loaded = murmur_space::Space::load(Path::new(catalog), Path::new(cache))
                 .map_err(|e| e.to_string())
-                .and_then(|s| SpaceSegment::new(Arc::new(s)));
+                .and_then(|mut s| {
+                    s.pinned_shift_days = pin;
+                    SpaceSegment::new(Arc::new(s))
+                });
             match loaded {
                 Ok(s) => Some(s),
                 Err(e) => {
