@@ -1,0 +1,46 @@
+# LOAD TEST ONLY: 300 stand-ins, past the 255 a MAVLink system ID can count to, so sysids wrap
+# (1..250, then 1 again) and only the uid tells vehicles apart. Measures the bridge and console
+# above the one-byte limit. make up FLEET=scale-300
+title = "Scale test: 300 stand-ins"
+
+[[unit]]
+platform = "mq9b"
+count = 40
+spawn = [37.95, -122.95, 7600, 90]
+spacing_m = 2500
+
+[[unit]]
+platform = "cca"
+count = 40
+spawn = [37.62, -122.95, 11000, 0]
+spacing_m = 2000
+
+[[unit]]
+platform = "rq4"
+count = 20
+spawn = [37.55, -123.10, 18000, 0]
+spacing_m = 8000
+
+[[unit]]
+platform = "seahunter"
+count = 60
+spawn = [37.76, -122.70, 0, 0]
+spacing_m = 800
+
+[[unit]]
+platform = "buoy"
+count = 40
+spawn = [37.81, -122.53, 0, 0]
+spacing_m = 250
+
+[[unit]]
+platform = "remus"
+count = 60
+spawn = [37.79, -122.66, 0, 0]
+spacing_m = 500
+
+[[unit]]
+platform = "orca"
+count = 40
+spawn = [37.72, -122.72, 0, 0]
+spacing_m = 1000
