@@ -36,9 +36,9 @@ use serde::{Deserialize, Serialize};
 use crate::areas::AreaSet;
 use crate::ids::{AgentId, IntentId, OperatorId, SessionId, Uid};
 use crate::intent::{IntentSpec, State, Task, Transition};
-use crate::policy::{Policy, PolicyDecision};
+use crate::policy::{DeadlineBasis, Policy, PolicyDecision};
 use crate::rules::CheckResult;
-use crate::space::{SegmentId, SpaceAnswer, SpaceOrder};
+use crate::space::{ScenarioMap, SegmentId, SpaceAnswer, SpaceOrder};
 use crate::time::Time;
 use crate::world::LoggedInputs;
 
@@ -84,9 +84,17 @@ pub enum EventBody {
     #[serde(rename = "areas.loaded")]
     AreasLoaded { sha256: String, areas: AreaSet },
 
-    /// A space segment is in use from here on (`Engine::set_space`).
+    /// A space segment is in use from here on (`Engine::set_space`): its identity, how
+    /// scenario time follows engine time (absent: the same), and the time shift pinned on
+    /// the segment for the session (absent: none, the shift is chosen per window).
     #[serde(rename = "space.loaded")]
-    SpaceLoaded { segment: SegmentId },
+    SpaceLoaded {
+        segment: SegmentId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scenario: Option<ScenarioMap>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pinned_shift_days: Option<i64>,
+    },
 
     /// A space query and its answer (collect, cover), logged once before the first
     /// decision that reads it; decision inputs reference it by `sha256`, the SHA-256 of
@@ -126,8 +134,15 @@ pub enum EventBody {
         reason: String,
     },
 
+    /// A human must decide by `expires_t` (engine time). `until` says when the deadline
+    /// is not the plain `expire_s` (a collect's tasking lead time, in scenario time).
     #[serde(rename = "approval.requested")]
-    ApprovalRequested { intent: IntentId, expires_t: Time },
+    ApprovalRequested {
+        intent: IntentId,
+        expires_t: Time,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        until: Option<DeadlineBasis>,
+    },
 
     #[serde(rename = "approval.granted")]
     ApprovalGranted {
