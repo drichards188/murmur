@@ -1,0 +1,30 @@
+title = "San Diego: NAS North Island + San Diego Bay"
+
+[[unit]]
+platform = "puma"
+count = 4
+spawn = [32.699, -117.205, 5, 290]
+[[unit]]
+platform = "fvr90"
+count = 1
+spawn = [32.701, -117.2085, 5, 290]
+[[unit]]
+platform = "x10"
+count = 2
+spawn = [32.6962, -117.2, 5, 0]
+[[unit]]
+platform = "lta"
+count = 1
+spawn = [32.695, -117.211, 5, 0]
+[[unit]]
+platform = "tracker"
+count = 1
+spawn = [32.6975, -117.1985, 5, 0]
+[[unit]]
+platform = "corsair"
+count = 3
+spawn = [32.7115, -117.185, 0, 0]
+[[unit]]
+platform = "bluerov"
+count = 1
+spawn = [32.714, -117.187, 0, 0]

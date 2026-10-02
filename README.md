@@ -12,16 +12,35 @@ symbols (milsymbol).
  arduplane / ardurover            :8765                                   :5173
 ```
 
+## Fleets and platforms
+
+`sim/platforms.toml` is the platform catalog: 22 types from RQ-4 Global Hawk-class (HALE, 18 km)
+and MQ-9B SkyGuardian-class down to FPV quads, tracked UGVs, Magura V5-class naval drones,
+a wind-powered Saildrone-class USV, drifting buoys, BlueROV2-class ROVs, REMUS 600-class
+AUVs and Orca XLUUV-class. Names say "-class": they're simulated stand-ins tuned to rounded
+public figures, not models of the real systems.
+
+Platforms ArduPilot can fly run as real SITL vehicles. The rest (HALE/MALE/CCA aircraft,
+large ships, AUVs, drifters) run as **stand-ins** (`sim/standins.py`): lightweight kinematic
+models that speak MAVLink exactly like ArduPilot (modes, missions, acks), at ~0.1% CPU each
+versus ~16% for a SITL process. Stand-in boats, buoys and subs get real currents, drift and
+seabed from tidewater. Stand-ins are badged STAND-IN in the console.
+
+Fleets (`sim/fleets/*.toml`) say which platforms, how many and where they start:
+`sandiego`, `canaveral`, `golden-gate`, `full-spectrum` (30 vehicles, every type). Every
+vehicle gets a callsign (HAWK 1, VIPER 2...) and the console shows callsign, model and role.
+
+```bash
+make up FLEET=canaveral
+make goldengate GG_FLEET=full-spectrum AT=2026-06-14T10:00Z   # with real tide/current/wind
+```
+
 ## Run it
 
 ```bash
 make setup   # once: .venv, clone + build ArduPilot SITL in ~/ardupilot, npm install (~10 min)
 make up      # swarm + bridge + web; open http://127.0.0.1:5173
 ```
-
-Pick a location with `make up LOCATION=canaveral` (Cape Canaveral Skid Strip + Atlantic) or
-the default `sandiego` (NAS North Island + San Diego Bay). Presets live in `sim/swarm.py`;
-the map zooms to wherever the swarm is.
 
 **Real conditions:** `make goldengate AT=2026-06-14T10:00Z` starts the swarm at the Golden
 Gate from the [tidewater](../tidewater) sibling repo's scenario, and runs its driver so each

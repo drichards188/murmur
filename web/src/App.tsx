@@ -3,7 +3,7 @@ import { FleetPanel } from './FleetPanel'
 import { MapView, type Draft } from './MapView'
 import { TaskPanel } from './TaskPanel'
 import type { LngLat } from './types'
-import { AIR_KINDS, STALE_MS } from './types'
+import { domainOf, STALE_MS } from './types'
 import { useBridge } from './useBridge'
 
 function useUtcClock() {
@@ -44,15 +44,11 @@ export default function App() {
         <span className="brand">MURMUR</span>
         <span className="sub">multi-domain swarm C2</span>
         <span className="spacer" />
-        <span className="stat">
-          <b>{vehicles.filter((v) => v.kind && AIR_KINDS.includes(v.kind)).length}</b> air
-        </span>
-        <span className="stat">
-          <b>{vehicles.filter((v) => v.kind === 'boat').length}</b> surface
-        </span>
-        <span className="stat">
-          <b>{vehicles.filter((v) => v.kind === 'sub').length}</b> subsurface
-        </span>
+        {(['air', 'ground', 'surface', 'subsurface'] as const).map((d) => (
+          <span className="stat" key={d}>
+            <b>{vehicles.filter((v) => domainOf(v) === d).length}</b> {d}
+          </span>
+        ))}
         <span className={`stat ${lost ? 'alert' : ''}`}>
           <b>{lost}</b> lost link
         </span>

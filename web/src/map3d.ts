@@ -2,7 +2,7 @@ import { IconLayer, LineLayer, PathLayer, ScatterplotLayer, SolidPolygonLayer } 
 import type { LiftedBridge } from './bridges'
 import { symbolSvg } from './symbols'
 import type { Vehicle } from './types'
-import { AIR_KINDS, STALE_MS } from './types'
+import { domainOf, STALE_MS } from './types'
 
 // Heights are exaggerated in 3D so 80 m altitudes and 5 m depths read at bay scale.
 // Terrain uses the same factor, so vehicles stay in the right place relative to hills and seabed.
@@ -16,9 +16,10 @@ type RGBA = [number, number, number, number]
 type XYZ = [number, number, number]
 const AIR: RGBA = [127, 184, 255, 255]
 const SEA: RGBA = [111, 224, 196, 255]
+const GROUND: RGBA = [214, 196, 140, 255]
 
 function colour(v: Vehicle, alpha = 255): RGBA {
-  const c = v.kind && AIR_KINDS.includes(v.kind) ? AIR : SEA
+  const c = domainOf(v) === 'air' ? AIR : domainOf(v) === 'ground' ? GROUND : SEA
   return [c[0], c[1], c[2], alpha]
 }
 

@@ -17,9 +17,10 @@ trap cleanup INT TERM EXIT
 # real-world conditions from a tidewater scenario (sibling repo), if one is set
 if [ -n "${MURMUR_SCENARIO:-}" ]; then
   TIDEWATER="${TIDEWATER_HOME:-$HOME/tidewater}/.venv/bin/tidewater"
-  n=$(.venv/bin/python sim/swarm.py "$@" --count-only)
+  # tidewater drives the SITL vehicles over their SERIAL1 ports (stand-ins aren't SITL)
+  instances=$(.venv/bin/python sim/swarm.py "$@" --sitl-instances)
   "$TIDEWATER" drive "$MURMUR_SCENARIO" --at "${MURMUR_AT:?set MURMUR_AT, e.g. 2026-06-14T10:00Z}" \
-    --rate "${MURMUR_RATE:-1}" --instances "0-$((n - 1))" > logs/tidewater.log 2>&1 & pids+=($!)
+    --rate "${MURMUR_RATE:-1}" --instances "$instances" > logs/tidewater.log 2>&1 & pids+=($!)
   echo "tidewater: $MURMUR_SCENARIO from $MURMUR_AT (logs/tidewater.log)"
 fi
 

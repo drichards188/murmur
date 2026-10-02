@@ -1,0 +1,319 @@
+# Platform catalog: what each kind of node is, how it's simulated, and how it talks.
+#
+# Names use "-class": these are simulated stand-ins tuned to approximate public figures
+# (speed, altitude, endurance) of the named platform type, not models of the real aircraft
+# or vessels. Figures are rounded and indicative only.
+#
+# sim = "sitl"     a real ArduPilot SITL vehicle; `vehicle` picks the firmware/model in
+#                  swarm.py's VEHICLES table, `params` tune it toward the platform.
+# sim = "standin"  a lightweight MAVLink-speaking kinematic model (sim/standins.py) for
+#                  platforms ArduPilot SITL can't credibly fly (HALE at 18 km, AUVs, ships).
+#                  `behavior` picks which ArduPilot autopilot it imitates (mode numbers,
+#                  MAV_TYPE), so the C2 bridge needs no special cases.
+#
+# link: los | mesh | satcom | acoustic | tether   (used by the link emulator, phase D)
+# alt_m: cruise altitude above sea level; negative = operating depth for subs.
+# short: compact model label shown on the map symbol.
+
+# ---------------------------------------------------------------- air
+[rq4]
+name = "RQ-4 Global Hawk-class"
+short = "RQ-4"
+role = "HALE ISR UAS"
+domain = "air"
+sim = "standin"
+behavior = "plane"
+callsign = "HAWK"
+cruise_mps = 160
+max_mps = 175
+alt_m = 18000
+climb_mps = 15
+turn_dps = 2.5
+loiter_radius_m = 9000
+endurance_h = 32
+link = "satcom"
+sidc = "SFAPMFQ--------"
+
+[mq9b]
+name = "MQ-9B SkyGuardian-class"
+short = "MQ-9B"
+role = "MALE ISR/strike UAS"
+domain = "air"
+sim = "standin"
+behavior = "plane"
+callsign = "REAPER"
+cruise_mps = 90
+max_mps = 105
+alt_m = 7600
+climb_mps = 10
+turn_dps = 3
+loiter_radius_m = 3500
+endurance_h = 35
+link = "satcom"
+sidc = "SFAPMFQ--------"
+
+[cca]
+name = "Collaborative Combat Aircraft (YFQ-42A/44A-class)"
+short = "CCA"
+role = "Jet combat UAS"
+domain = "air"
+sim = "standin"
+behavior = "plane"
+callsign = "FURY"
+cruise_mps = 230
+max_mps = 260
+alt_m = 11000
+climb_mps = 40
+turn_dps = 8
+loiter_radius_m = 6000
+endurance_h = 3
+link = "los"
+sidc = "SFAPMFQ--------"
+
+[fvr90]
+name = "FVR-90-class hybrid VTOL"
+short = "VTOL"
+role = "Tactical VTOL UAS"
+domain = "air"
+sim = "sitl"
+vehicle = "vtol"
+callsign = "KESTREL"
+link = "los"
+sidc = "SFAPMFQ--------"
+params = { AIRSPEED_CRUISE = 24 }
+
+[puma]
+name = "Puma 3 AE-class"
+short = "PUMA"
+role = "Small fixed-wing UAS"
+domain = "air"
+sim = "sitl"
+vehicle = "plane"
+callsign = "PUMA"
+link = "los"
+sidc = "SFAPMFQ--------"
+params = { AIRSPEED_CRUISE = 20 }
+
+[switchblade]
+name = "Switchblade 600-class"
+short = "LM"
+role = "Loitering munition"
+domain = "air"
+sim = "sitl"
+vehicle = "plane"
+callsign = "BLADE"
+link = "los"
+sidc = "SFAPMFQ--------"
+params = { AIRSPEED_CRUISE = 28 }
+
+[x10]
+name = "Skydio X10-class quadcopter"
+short = "QUAD"
+role = "Small ISR quadcopter"
+domain = "air"
+sim = "sitl"
+vehicle = "copter"
+callsign = "SKY"
+link = "mesh"
+sidc = "SFAPMHQ--------"
+params = { WP_SPD = 12 }
+
+[fpv]
+name = "FPV strike quadcopter"
+short = "FPV"
+role = "FPV strike drone"
+domain = "air"
+sim = "sitl"
+vehicle = "copter"
+callsign = "WASP"
+link = "mesh"
+sidc = "SFAPMHQ--------"
+params = { WP_SPD = 25 }
+
+[lta]
+name = "Small airship (LTA)"
+short = "LTA"
+role = "Lighter-than-air persistent ISR"
+domain = "air"
+sim = "sitl"
+vehicle = "blimp"
+callsign = "ZEP"
+link = "los"
+sidc = "SFAPML---------"
+
+# ---------------------------------------------------------------- ground
+[ugv_logistics]
+name = "Tracked logistics UGV"
+short = "UGV-L"
+role = "Logistics / casualty evacuation UGV"
+domain = "ground"
+sim = "sitl"
+vehicle = "ugv"
+callsign = "MULE"
+link = "mesh"
+sidc = "SFGPEV---------"
+params = { CRUISE_SPEED = 3, WP_SPEED = 3 }
+
+[ugv_armed]
+name = "Armed UGV (remote weapon station)"
+short = "UGV-A"
+role = "Armed UGV"
+domain = "ground"
+sim = "sitl"
+vehicle = "ugv"
+callsign = "BULL"
+link = "mesh"
+sidc = "SFGPEV---------"
+params = { CRUISE_SPEED = 4, WP_SPEED = 4 }
+
+[ugv_mines]
+name = "Mine-laying UGV"
+short = "UGV-M"
+role = "Mine-laying UGV"
+domain = "ground"
+sim = "sitl"
+vehicle = "ugv"
+callsign = "MOLE"
+link = "mesh"
+sidc = "SFGPEV---------"
+params = { CRUISE_SPEED = 2, WP_SPEED = 2 }
+
+[ugv_recon]
+name = "Small recon UGV"
+short = "UGV-R"
+role = "Recon UGV"
+domain = "ground"
+sim = "sitl"
+vehicle = "ugv"
+callsign = "FERRET"
+link = "mesh"
+sidc = "SFGPEV---------"
+params = { CRUISE_SPEED = 5, WP_SPEED = 5 }
+
+[tracker]
+name = "Antenna tracker"
+short = "ANT"
+role = "Ground antenna tracker"
+domain = "ground"
+sim = "sitl"
+vehicle = "tracker"
+callsign = "TRK"
+link = "tether"
+sidc = "SFGPE----------"
+
+# ---------------------------------------------------------------- surface
+[magura]
+name = "Magura V5-class naval drone"
+short = "USV-S"
+role = "Small fast attack USV"
+domain = "surface"
+sim = "sitl"
+vehicle = "boat"
+callsign = "VIPER"
+link = "satcom"
+sidc = "SFSP-----------"
+params = { CRUISE_SPEED = 12, WP_SPEED = 12 }
+
+[corsair]
+name = "Corsair-class autonomous surface vessel"
+short = "USV-M"
+role = "Medium USV"
+domain = "surface"
+sim = "sitl"
+vehicle = "boat"
+callsign = "MARLIN"
+link = "satcom"
+sidc = "SFSP-----------"
+params = { CRUISE_SPEED = 8, WP_SPEED = 8 }
+
+[seahunter]
+name = "Sea Hunter-class MUSV"
+short = "MUSV"
+role = "Large medium-displacement USV"
+domain = "surface"
+sim = "standin"
+behavior = "boat"
+callsign = "HUNTER"
+cruise_mps = 6
+max_mps = 13
+alt_m = 0
+turn_dps = 4
+loiter_radius_m = 400
+endurance_h = 1000
+link = "satcom"
+sidc = "SFSP-----------"
+
+[saildrone]
+name = "Saildrone Explorer-class (wind-powered)"
+short = "SAIL"
+role = "Unpowered (wind) ocean USV"
+domain = "surface"
+sim = "sitl"
+vehicle = "sailboat"
+callsign = "ALBATROSS"
+link = "satcom"
+sidc = "SFSP-----------"
+
+[buoy]
+name = "Drifting sensor buoy"
+short = "BUOY"
+role = "Unpowered drifter"
+domain = "surface"
+sim = "standin"
+behavior = "drifter"
+callsign = "DRIFT"
+cruise_mps = 0
+max_mps = 0
+alt_m = 0
+turn_dps = 0
+endurance_h = 2000
+link = "satcom"
+sidc = "SFSP-----------"
+
+# ---------------------------------------------------------------- subsurface
+[bluerov]
+name = "BlueROV2-class ROV (tethered)"
+short = "ROV"
+role = "Small tethered ROV"
+domain = "subsurface"
+sim = "sitl"
+vehicle = "sub"
+callsign = "EEL"
+link = "tether"
+sidc = "SFUP-----------"
+
+[remus]
+name = "REMUS 600-class AUV"
+short = "AUV"
+role = "Medium survey AUV"
+domain = "subsurface"
+sim = "standin"
+behavior = "sub"
+callsign = "REMUS"
+cruise_mps = 2
+max_mps = 2.6
+alt_m = -40
+climb_mps = 0.5
+turn_dps = 10
+loiter_radius_m = 150
+endurance_h = 24
+link = "acoustic"
+sidc = "SFUP-----------"
+
+[orca]
+name = "Orca XLUUV-class"
+short = "XLUUV"
+role = "Extra-large UUV"
+domain = "subsurface"
+sim = "standin"
+behavior = "sub"
+callsign = "ORCA"
+cruise_mps = 1.5
+max_mps = 4
+alt_m = -60
+climb_mps = 0.3
+turn_dps = 3
+loiter_radius_m = 600
+endurance_h = 1000
+link = "acoustic"
+sidc = "SFUP-----------"

@@ -1,0 +1,40 @@
+# Golden Gate: ArduPilot SITL vehicles only (no stand-ins), around Crissy Field and the Gate.
+# Pair with tidewater's golden-gate scenario for real tide/current/wind (make goldengate).
+title = "Golden Gate, SITL fleet"
+
+[[unit]]
+platform = "puma"
+count = 2
+spawn = [37.8068, -122.4460, 5, 90]     # Crissy Field, flat ~4 m strip
+[[unit]]
+platform = "switchblade"
+count = 1
+spawn = [37.8062, -122.4440, 5, 90]
+[[unit]]
+platform = "fvr90"
+count = 1
+spawn = [37.8065, -122.4500, 4, 90]
+[[unit]]
+platform = "x10"
+count = 2
+spawn = [37.8060, -122.4430, 5, 0]
+[[unit]]
+platform = "lta"
+count = 1
+spawn = [37.8330, -122.4830, 45, 0]     # Marin Headlands
+[[unit]]
+platform = "tracker"
+count = 1
+spawn = [37.8105, -122.4770, 10, 0]     # Fort Point
+[[unit]]
+platform = "magura"
+count = 1
+spawn = [37.8280, -122.4700, 0, 180]    # off Horseshoe Bay, deep at any tide
+[[unit]]
+platform = "corsair"
+count = 2
+spawn = [37.8265, -122.4650, 0, 180]
+[[unit]]
+platform = "bluerov"
+count = 1
+spawn = [37.8300, -122.4690, 0, 180]

@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
-"""Launch a mixed swarm of ArduPilot SITL vehicles, one or more of every firmware:
-Plane (fixed-wing and VTOL QuadPlane), Copter, Blimp, AntennaTracker, Rover (boats), Sub.
+"""Launch a fleet: ArduPilot SITL vehicles plus lightweight stand-ins.
 
-Each vehicle is a separate SITL process. Its primary MAVLink port (SERIAL0) is a
-UDP client that sends to the bridge on 127.0.0.1:<base_port + instance>, so every
-vehicle has its own UDP link. That keeps per-vehicle link stats honest and lets
-`tc netem` degrade one vehicle's link without touching the others.
+A fleet file (sim/fleets/*.toml) lists units: a platform from sim/platforms.toml, a count
+and a start point. Platforms ArduPilot can fly run as real SITL processes; the rest
+(HALE/MALE aircraft, AUVs, large ships, drifters) run as MAVLink-speaking stand-ins in
+one process (sim/standins.py).
 
-We launch the SITL binaries directly instead of going through sim_vehicle.py
-(`--count` / `--auto-sysid`) because sim_vehicle.py only launches one vehicle
-type per invocation and ties each instance to a MAVProxy console. The command
-line below is what sim_vehicle.py would run under the hood.
+Every vehicle gets its own UDP link to the bridge on base_port + index (so per-vehicle
+link stats and link emulation stay honest) and a callsign ("PUMA 1"). The launcher writes
+sim/run/fleet.json, the manifest the bridge uses to show each vehicle's identity.
 """
 
 import argparse
+import json
 import math
 import os
 import signal
@@ -24,37 +23,11 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+RUN = ROOT / "run"
 ARDUPILOT = Path(os.environ.get("ARDUPILOT_HOME", Path.home() / "ardupilot"))
 BIN = ARDUPILOT / "build" / "sitl" / "bin"
 
-# Start point per vehicle kind at each location: (lat, lon, alt_m, heading_deg).
-# Vehicles of one kind line up abreast, perpendicular to their heading.
-LOCATIONS = {
-    "sandiego": {
-        # NAS North Island, runway 29
-        "plane": (32.6990, -117.2050, 5.0, 290.0),
-        "vtol": (32.7010, -117.2085, 5.0, 290.0),
-        "copter": (32.6962, -117.2000, 5.0, 0.0),
-        "blimp": (32.6950, -117.2110, 5.0, 0.0),
-        "tracker": (32.6975, -117.1985, 5.0, 0.0),
-        # San Diego Bay, open water between North Island and downtown
-        "boat": (32.7115, -117.1850, 0.0, 0.0),
-        "sub": (32.7140, -117.1870, 0.0, 0.0),
-    },
-    "canaveral": {
-        # Cape Canaveral SFS Skid Strip, runway 13
-        "plane": (28.4676, -80.5669, 3.0, 130.0),
-        "vtol": (28.4700, -80.5640, 3.0, 130.0),
-        "copter": (28.4650, -80.5600, 3.0, 0.0),
-        "blimp": (28.4720, -80.5560, 3.0, 0.0),
-        "tracker": (28.4660, -80.5625, 3.0, 0.0),
-        # Atlantic, east of the cape
-        "boat": (28.4550, -80.4950, 0.0, 90.0),
-        "sub": (28.4500, -80.4900, 0.0, 90.0),
-    },
-}
-
-# kind -> (binary, SITL model, spacing between vehicles in m)
+# SITL vehicle -> (binary, SITL model, default spacing between vehicles of a unit in m)
 VEHICLES = {
     "plane": ("arduplane", "plane", 40.0),
     "vtol": ("arduplane", "quadplane", 40.0),
@@ -62,9 +35,11 @@ VEHICLES = {
     "blimp": ("blimp", "blimp", 40.0),
     "tracker": ("antennatracker", "tracker", 20.0),
     "boat": ("ardurover", "motorboat", 150.0),
+    "sailboat": ("ardurover", "sailboat", 150.0),
+    "ugv": ("ardurover", "rover-skid", 30.0),
     "sub": ("ardusub", "vectored", 60.0),
 }
-DEFAULT_COUNTS = {"plane": 4, "vtol": 1, "copter": 2, "blimp": 1, "tracker": 1, "boat": 3, "sub": 1}
+STANDIN_SPACING_M = 500.0
 
 
 def offset(lat, lon, north_m, east_m):
@@ -73,69 +48,136 @@ def offset(lat, lon, north_m, east_m):
     return lat + dlat, lon + dlon
 
 
-def scenario_spawn(path):
-    """Start points from a tidewater scenario file's [spawn] table."""
-    spawn = tomllib.loads(Path(path).expanduser().read_text()).get("spawn", {})
-    missing = sorted(set(VEHICLES) - set(spawn))
-    if missing:
-        sys.exit(f"scenario {path} has no [spawn] entry for: {', '.join(missing)}")
-    return {k: tuple(v) for k, v in spawn.items()}
+def load_platforms():
+    return tomllib.loads((ROOT / "platforms.toml").read_text())
 
 
-def vehicle_specs(spawn, counts):
-    specs = []
-    for kind, n in counts.items():
-        binary, model, spacing = VEHICLES[kind]
-        lat0, lon0, alt, hdg = spawn[kind]
-        beam = math.radians(hdg + 90)
-        for i in range(n):
+def load_fleet(name_or_path):
+    p = Path(name_or_path).expanduser()
+    if not p.suffix:
+        p = ROOT / "fleets" / f"{name_or_path}.toml"
+    if not p.exists():
+        sys.exit(f"no fleet {p}; available: {', '.join(f.stem for f in (ROOT / 'fleets').glob('*.toml'))}")
+    return tomllib.loads(p.read_text())
+
+
+def plan(fleet, platforms):
+    """Expand units into vehicles with callsign and start pose."""
+    vehicles = []
+    numbering = {}
+    for unit in fleet["unit"]:
+        pid = unit["platform"]
+        if pid not in platforms:
+            sys.exit(f"unknown platform {pid!r}; see sim/platforms.toml")
+        spec = platforms[pid]
+        sim = unit.get("sim", spec["sim"])  # a fleet may force stand-ins (load tests)
+        if sim == "sitl" and "vehicle" not in spec:
+            sys.exit(f"platform {pid!r} has no SITL vehicle; it can only run as a stand-in")
+        lat0, lon0, alt, hdg = unit["spawn"]
+        spacing = unit.get("spacing_m", VEHICLES[spec["vehicle"]][2] if sim == "sitl" else STANDIN_SPACING_M)
+        beam = math.radians(hdg + 90)  # line abreast, perpendicular to heading
+        for i in range(unit.get("count", 1)):
             lat, lon = offset(lat0, lon0, spacing * i * math.cos(beam), spacing * i * math.sin(beam))
-            specs.append((kind, binary, model, (lat, lon, alt, hdg)))
-    return specs
+            prefix = spec["callsign"]
+            numbering[prefix] = numbering.get(prefix, 0) + 1
+            vehicles.append({
+                "platform": pid,
+                "callsign": f"{prefix} {numbering[prefix]}",
+                "sim": sim,
+                "home": [round(lat, 7), round(lon, 7), alt, hdg],
+                **{k: spec[k] for k in ("name", "short", "role", "domain", "link", "sidc")},
+                # what a C2 needs to task it sensibly (stand-ins; SITL platforms use defaults)
+                "cruise_alt_m": spec.get("alt_m"),
+                "min_turn_radius_m": (round(spec["cruise_mps"] / math.radians(spec["turn_dps"]))
+                                      if spec.get("turn_dps") and spec.get("cruise_mps") else None),
+            })
+    return vehicles
+
+
+def sitl_command(v, spec, args, workdir):
+    binary, model, _ = VEHICLES[spec["vehicle"]]
+    defaults = []
+    kind_parm = ROOT / "params" / f"{spec['vehicle']}.parm"
+    if kind_parm.exists():
+        defaults.append(str(kind_parm))
+    if spec.get("params"):
+        extra = workdir / "platform.parm"
+        extra.write_text("".join(f"{k} {val}\n" for k, val in spec["params"].items()))
+        defaults.append(str(extra))
+    lat, lon, alt, hdg = v["home"]
+    cmd = [
+        str(BIN / binary),
+        "--model", model,
+        "--home", f"{lat:.7f},{lon:.7f},{alt},{hdg}",
+        "--instance", str(v["instance"]),
+        "--sysid", str(v["sysid"]),
+        "--speedup", str(args.speedup),
+        "--serial0", f"udpclient:{args.bridge_host}:{v['port']}",
+    ]
+    if defaults:
+        cmd += ["--defaults", ",".join(defaults)]
+    if not args.keep_eeprom:
+        cmd.append("--wipe")
+    return cmd
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--location", choices=sorted(LOCATIONS), default=os.environ.get("MURMUR_LOCATION", "sandiego"))
-    ap.add_argument("--scenario", default=os.environ.get("MURMUR_SCENARIO") or None,
-                    help="tidewater scenario .toml; its [spawn] table overrides --location")
-    for kind, n in DEFAULT_COUNTS.items():
-        ap.add_argument(f"--{kind}s", type=int, default=n, help=f"number of {kind}s (default {n})")
+    ap.add_argument("--fleet", default=os.environ.get("MURMUR_FLEET", "sandiego"),
+                    help="fleet name in sim/fleets/ or a path to a fleet .toml")
+    ap.add_argument("--location", help="deprecated alias for --fleet")
     ap.add_argument("--bridge-host", default="127.0.0.1")
     ap.add_argument("--base-port", type=int, default=14560, help="vehicle i sends to base_port + i")
     ap.add_argument("--speedup", type=float, default=1.0)
-    ap.add_argument("--count-only", action="store_true", help="print how many vehicles would launch and exit")
     ap.add_argument("--keep-eeprom", action="store_true", help="keep params/missions between runs")
+    ap.add_argument("--count-only", action="store_true", help="print the number of vehicles and exit")
+    ap.add_argument("--sitl-instances", action="store_true",
+                    help="print SITL instance numbers (comma list) and exit; for tidewater drive")
     args = ap.parse_args()
 
-    counts = {kind: getattr(args, f"{kind}s") for kind in DEFAULT_COUNTS}
+    platforms = load_platforms()
+    vehicles = plan(load_fleet(args.location or args.fleet), platforms)
+    for i, v in enumerate(vehicles):
+        v["sysid"] = i + 1
+        v["port"] = args.base_port + i
+    sitl = [v for v in vehicles if v["sim"] == "sitl"]
+    standins = [v for v in vehicles if v["sim"] == "standin"]
+    for inst, v in enumerate(sitl):
+        v["instance"] = inst  # SITL -I: offsets its TCP/sim ports; SERIAL1 = 5762 + 10*inst
+
     if args.count_only:
-        print(sum(counts.values()))
+        print(len(vehicles))
         return
-    for b in {VEHICLES[k][0] for k, n in counts.items() if n}:
+    if args.sitl_instances:
+        print(",".join(str(v["instance"]) for v in sitl))
+        return
+
+    for b in {VEHICLES[platforms[v["platform"]]["vehicle"]][0] for v in sitl}:
         if not (BIN / b).exists():
             sys.exit(f"missing {BIN / b}; build with: make setup")
 
+    RUN.mkdir(exist_ok=True)
+    (RUN / "fleet.json").write_text(json.dumps({"vehicles": vehicles}, indent=1))
+
     procs = []
-    for inst, (kind, binary, model, home) in enumerate(vehicle_specs(scenario_spawn(args.scenario) if args.scenario else LOCATIONS[args.location], counts)):
-        sysid = inst + 1
-        workdir = ROOT / "run" / f"{sysid:02d}-{kind}"
+    for v in sitl:
+        spec = platforms[v["platform"]]
+        workdir = RUN / f"{v['sysid']:03d}-{v['platform']}"
         workdir.mkdir(parents=True, exist_ok=True)
-        cmd = [
-            str(BIN / binary),
-            "--model", model,
-            "--home", ",".join(f"{v:.7f}" for v in home),
-            "--instance", str(inst),
-            "--sysid", str(sysid),
-            "--speedup", str(args.speedup),
-            "--serial0", f"udpclient:{args.bridge_host}:{args.base_port + inst}",
-            *(["--defaults", str(ROOT / "params" / f"{kind}.parm")] if (ROOT / "params" / f"{kind}.parm").exists() else []),
-        ]
-        if not args.keep_eeprom:
-            cmd.append("--wipe")
         log = open(workdir / "sitl.log", "w")
-        procs.append(subprocess.Popen(cmd, cwd=workdir, stdout=log, stderr=subprocess.STDOUT, start_new_session=True))
-        print(f"sysid {sysid:2d}  {kind:7s}  udp -> {args.bridge_host}:{args.base_port + inst}  log {workdir / 'sitl.log'}")
+        procs.append(subprocess.Popen(sitl_command(v, spec, args, workdir), cwd=workdir, stdout=log,
+                                      stderr=subprocess.STDOUT, start_new_session=True))
+        print(f"sysid {v['sysid']:3d}  {v['callsign']:12s} {v['name']}  (SITL, udp {v['port']})")
+
+    if standins:
+        cfg = RUN / "standins.json"
+        cfg.write_text(json.dumps({"bridge_host": args.bridge_host,
+                                   "vehicles": [{**v, "spec": platforms[v["platform"]]} for v in standins]}))
+        log = open(RUN / "standins.log", "w")
+        procs.append(subprocess.Popen([sys.executable, str(ROOT / "standins.py"), str(cfg)],
+                                      stdout=log, stderr=subprocess.STDOUT, start_new_session=True))
+        for v in standins:
+            print(f"sysid {v['sysid']:3d}  {v['callsign']:12s} {v['name']}  (stand-in, udp {v['port']})")
 
     def shutdown(*_):
         for p in procs:
@@ -147,11 +189,11 @@ def main():
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
-    print(f"{len(procs)} vehicles running. Ctrl-C to stop.")
+    print(f"{len(vehicles)} vehicles ({len(sitl)} SITL, {len(standins)} stand-in). Ctrl-C to stop.")
     while True:
-        for i, p in enumerate(procs):
+        for p in procs:
             if p.poll() is not None:
-                print(f"vehicle sysid {i + 1} exited with {p.returncode}; see its sitl.log")
+                print(f"a simulator exited with {p.returncode}; see sim/run/*/sitl.log or sim/run/standins.log")
                 shutdown()
         time.sleep(1)
 

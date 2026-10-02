@@ -1,0 +1,30 @@
+title = "Cape Canaveral: Skid Strip + Atlantic"
+
+[[unit]]
+platform = "puma"
+count = 4
+spawn = [28.4676, -80.5669, 3, 130]
+[[unit]]
+platform = "fvr90"
+count = 1
+spawn = [28.47, -80.564, 3, 130]
+[[unit]]
+platform = "x10"
+count = 2
+spawn = [28.465, -80.56, 3, 0]
+[[unit]]
+platform = "lta"
+count = 1
+spawn = [28.472, -80.556, 3, 0]
+[[unit]]
+platform = "tracker"
+count = 1
+spawn = [28.466, -80.5625, 3, 0]
+[[unit]]
+platform = "corsair"
+count = 3
+spawn = [28.455, -80.495, 0, 90]
+[[unit]]
+platform = "bluerov"
+count = 1
+spawn = [28.45, -80.49, 0, 90]

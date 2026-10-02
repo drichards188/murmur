@@ -25,7 +25,7 @@ KIND_BY_MAV_TYPE = {
     mavlink.MAV_TYPE_HELICOPTER: "copter",
     mavlink.MAV_TYPE_AIRSHIP: "blimp",
     mavlink.MAV_TYPE_SURFACE_BOAT: "boat",
-    mavlink.MAV_TYPE_GROUND_ROVER: "boat",
+    mavlink.MAV_TYPE_GROUND_ROVER: "ugv",
     mavlink.MAV_TYPE_SUBMARINE: "sub",
     mavlink.MAV_TYPE_ANTENNA_TRACKER: "tracker",
 }
@@ -113,6 +113,7 @@ class Vehicle:
         self.satellites = 0
         self.mission_seq = None
         self.home = None
+        self.home_alt = None
         self.statustext = deque(maxlen=8)
         self.trail = deque(maxlen=120)
         self._last_trail = 0.0
@@ -120,6 +121,7 @@ class Vehicle:
         # links that get a copy of this vehicle's position (antenna trackers pointed at it)
         self.forward_to = set()
         self.tracking = None  # for trackers: sysid being tracked
+        self.identity = None  # from the fleet manifest: callsign, platform, role, domain, link...
         self.is_vtol = None  # planes only: None until Q_ENABLE is read
         self.ekf_flags = None
         self.nav_bearing = None
@@ -150,6 +152,7 @@ class Vehicle:
                 self.heading = msg.hdg / 100.0
             if self.home is None:
                 self.home = (self.lat, self.lon)
+                self.home_alt = self.alt_msl - self.alt_rel
             now = time.monotonic()
             if now - self._last_trail > 1.0:
                 self._last_trail = now
@@ -212,10 +215,19 @@ class Vehicle:
     def has_position(self):
         """Ready to navigate: GPS fix AND the autopilot's EKF trusts its absolute position.
         The fix arrives seconds before the EKF sets its origin; AUTO is refused until then."""
-        if self.lat is None or self.gps_fix < 3:
+        if self.lat is None:
+            return False
+        if self.ekf_flags is not None and self.kind != "tracker":
+            # the vehicle's own navigation filter is the authority: a submerged AUV has no GPS
+            # fix but navigates fine on inertial + DVL
+            f = self.ekf_flags
+            return bool(f & mavlink.EKF_POS_HORIZ_ABS) and not f & mavlink.EKF_CONST_POS_MODE
+        if self.gps_fix < 3:
             return False
         if self.kind == "tracker":
             return True  # trackers don't navigate; a GPS fix is enough to know where they stand
+        if self._fix_since is None:
+            return False
         if self.ekf_flags is None:
             # firmware that doesn't report EKF status: give it a grace period after the fix
             return time.monotonic() - self._fix_since > 15
@@ -247,6 +259,7 @@ class Vehicle:
     def snapshot(self):
         return {
             "sysid": self.sysid,
+            "identity": self.identity,
             "kind": self.kind,
             "mode": self.mode,
             "armed": self.armed,

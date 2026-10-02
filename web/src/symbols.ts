@@ -13,6 +13,7 @@ const SIDC: Record<Kind, { code: string; type?: string }> = {
   boat: { code: 'SFSP-----------', type: 'USV' },
   sub: { code: 'SFUP-----------', type: 'UUV' },
   tracker: { code: 'SFGPE----------', type: 'ANT TRK' },
+  ugv: { code: 'SFGPEV---------', type: 'UGV' },
   unknown: { code: 'SUPP-----------' },
 }
 
@@ -28,16 +29,17 @@ export function symbolSvg(v: Vehicle, opts: { stale: boolean; size?: number; lab
   const kind: Kind = v.kind ?? 'unknown'
   const heading = v.heading == null || opts.heading === false ? undefined : Math.round(v.heading / 5) * 5
   const labels = opts.labels ?? true
-  const key = `${kind}|${heading}|${opts.stale}|${opts.size}|${labels}|${v.sysid}`
+  const key = `${kind}|${heading}|${opts.stale}|${opts.size}|${labels}|${v.sysid}|${v.identity?.callsign}`
   const hit = cache.get(key)
   if (hit) return hit
   // stale tracks get status "A" (anticipated), which milsymbol draws with a dashed frame
-  const base = SIDC[kind].code
+  // the fleet manifest knows the platform; otherwise fall back to the autopilot type
+  const base = v.identity?.sidc ?? SIDC[kind].code
   const sidc = opts.stale ? base.slice(0, 3) + 'A' + base.slice(4) : base
   const sym = new ms.Symbol(sidc, {
     size: opts.size ?? 28,
     uniqueDesignation: labels ? callsign(v) : undefined,
-    type: labels ? SIDC[kind].type : undefined,
+    type: labels ? (v.identity?.short ?? SIDC[kind].type) : undefined,
     direction: labels ? heading : undefined,
     infoColor: '#d7dde4',
     outlineColor: '#0b0f14',

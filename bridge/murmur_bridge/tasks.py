@@ -43,6 +43,8 @@ KINDS = {
                   alt=(20.0, 5.0), takeoff=None, orbit="waypoints", home_tol=30.0),
     "boat": dict(tasks={"orbit", "patrol", "hold", "rtl"}, auto="AUTO", rtl="RTL", hold="HOLD",
                  alt=(0.0, 0.0), takeoff=None, orbit="waypoints", home_tol=15.0),
+    "ugv": dict(tasks={"orbit", "patrol", "hold", "rtl"}, auto="AUTO", rtl="RTL", hold="HOLD",
+                alt=(0.0, 0.0), takeoff=None, orbit="waypoints", home_tol=10.0),
     # ArduSub has no RTL mode; "rtl" is flown as a one-waypoint mission back to home.
     "sub": dict(tasks={"orbit", "patrol", "hold", "rtl"}, auto="AUTO", rtl=None, hold="POSHOLD",
                 alt=(-5.0, -2.0), takeoff=None, orbit="waypoints", home_tol=20.0),
@@ -305,7 +307,16 @@ def bearing_deg(lat1, lon1, lat2, lon2):
 # ---- task implementations ---------------------------------------------------
 
 def task_alt(op):
+    """Mission altitude (relative to home; negative = depth). The platform's own cruise
+    altitude when the fleet manifest knows it (a Global Hawk at 18 km, an AUV at 40 m depth),
+    else the per-autopilot default. Same-kind vehicles in one tasking are stacked apart."""
     base, step = op.caps["alt"]
+    ident = op.vehicle.identity or {}
+    cruise = ident.get("cruise_alt_m")
+    if cruise is not None and (cruise > 50 or cruise < 0):
+        home_alt = 0.0 if op.vehicle.home_alt is None else op.vehicle.home_alt
+        base = cruise - home_alt if cruise > 0 else cruise
+        step = math.copysign(max(abs(step), abs(cruise) * 0.02), step or 1)
     return base + step * op.slot
 
 
@@ -342,6 +353,11 @@ async def task_orbit(op):
     v = op.vehicle
     lon, lat = op.tasking.params["center"]
     radius = float(op.tasking.params.get("radius", 200))
+    min_r = (v.identity or {}).get("min_turn_radius_m")
+    widened = None
+    if min_r and radius < min_r * 1.1:
+        widened = radius
+        radius = round(min_r * 1.1)  # a 160 m/s HALE can't fly a 250 m circle
     alt = task_alt(op)
     items = mission_prefix(op, alt)
     if op.caps["orbit"] == "loiter":
@@ -366,7 +382,9 @@ async def task_orbit(op):
         d = v.distance_to(lat, lon)
         return f"{d:.0f} m from center" if d is not None else ""
 
-    await run_mission_task(op, items, loop_from, on_station, "on station", progress)
+    await run_mission_task(op, items, loop_from, on_station,
+                           f"on station (radius widened to {radius:.0f} m, platform minimum)" if widened else "on station",
+                           progress)
     op.progress = "orbiting"
 
 

@@ -154,7 +154,9 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings }: Pro
               const v = bySysid.get(o.sysid)
               return (
                 <div key={o.id} className={`op ${o.state}`}>
-                  <span className="op-name">{v ? callsign(v) : o.sysid}</span>
+                  <span className="op-name" title={v?.identity ? `${v.identity.name} · ${v.identity.role}` : undefined}>
+                    {v ? callsign(v) : o.sysid}
+                  </span>
                   <Lifecycle state={o.state} />
                   <span className="op-detail">
                     {o.state === 'failed' || o.state === 'superseded' ? <b>{o.state}: </b> : null}

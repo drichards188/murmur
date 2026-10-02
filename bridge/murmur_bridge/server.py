@@ -5,6 +5,7 @@ import json
 import os
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
@@ -15,7 +16,9 @@ from .tasks import TaskManager
 from .vehicle import VehicleLink
 
 BASE_PORT = int(os.environ.get("MURMUR_BASE_PORT", 14560))
-MAX_VEHICLES = int(os.environ.get("MURMUR_MAX_VEHICLES", 16))
+MAX_VEHICLES = int(os.environ.get("MURMUR_MAX_VEHICLES", 128))
+FLEET_MANIFEST = Path(os.environ.get("MURMUR_FLEET_MANIFEST",
+                                     Path(__file__).resolve().parents[2] / "sim" / "run" / "fleet.json"))
 STREAM_HZ = int(os.environ.get("MURMUR_STREAM_HZ", 4))
 PUSH_HZ = 5
 
@@ -25,15 +28,47 @@ tasks = TaskManager(vehicles)
 clients = set()
 
 
+identities = {}  # sysid -> identity from the launcher's fleet manifest
+_manifest_mtime = None
+
+
+def load_manifest():
+    """Re-read sim/run/fleet.json when it changes (a new fleet was launched)."""
+    global _manifest_mtime
+    try:
+        mtime = FLEET_MANIFEST.stat().st_mtime
+    except FileNotFoundError:
+        return
+    if mtime == _manifest_mtime:
+        return
+    _manifest_mtime = mtime
+    try:
+        data = json.loads(FLEET_MANIFEST.read_text())
+    except (OSError, ValueError):
+        return
+    identities.clear()
+    for v in data.get("vehicles", []):
+        identities[v["sysid"]] = {k: v.get(k) for k in
+                                  ("callsign", "platform", "name", "short", "role", "domain", "link", "sidc", "sim",
+                                   "cruise_alt_m", "min_turn_radius_m")}
+    for sysid, veh in vehicles.items():
+        veh.identity = identities.get(sysid)
+
+
 def on_vehicle(v):
     vehicles[v.sysid] = v
-    print(f"vehicle sysid {v.sysid} connected on udp {v.link.port}")
+    load_manifest()
+    v.identity = identities.get(v.sysid)
+    who = v.identity["callsign"] if v.identity else f"sysid {v.sysid}"
+    print(f"{who} connected on udp {v.link.port}")
 
 
 async def housekeeping():
     """GCS heartbeat, telemetry stream requests, and RTT pings."""
     tick = 0
     while True:
+        if tick % 5 == 0:
+            load_manifest()
         for link in links:
             v = link.vehicle
             if v is None:

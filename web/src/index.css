@@ -79,8 +79,11 @@ code { font-family: var(--mono); font-size: 12px; background: var(--panel-2); pa
 .vrow.sel .vrow-check { color: var(--accent); }
 .vrow-sym { display: flex; justify-content: center; }
 .vrow-sym svg { width: 26px; height: auto; }
-.vrow-main { display: flex; flex-direction: column; }
-.vrow-name { font: 600 13px var(--mono); }
+.vrow-main { display: flex; flex-direction: column; min-width: 0; }
+.vrow-name { font: 600 13px var(--mono); display: flex; align-items: baseline; gap: 6px; }
+.vrow-short { font: 500 10.5px var(--mono); color: var(--accent); border: 1px solid #4a3a1f; border-radius: 3px; padding: 0 4px; }
+.vrow-standin { font: 600 9px var(--mono); color: var(--muted); border: 1px dashed var(--line); border-radius: 3px; padding: 0 3px; letter-spacing: 0.06em; }
+.vrow-model { font-size: 11.5px; color: #aab6c3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 185px; }
 .vrow-mode { font-size: 12px; color: var(--muted); }
 .armed { font-style: normal; font: 600 10px var(--mono); color: var(--warn); margin-left: 6px; letter-spacing: 0.06em; }
 .vrow-kin { display: flex; flex-direction: column; align-items: flex-end; font: 12px var(--mono); color: var(--text); }
@@ -123,8 +126,8 @@ code { font-family: var(--mono); font-size: 12px; background: var(--panel-2); pa
 .tcard { background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 8px 10px; }
 .tcard-head { display: flex; gap: 8px; align-items: baseline; margin-bottom: 6px; font-size: 13px; letter-spacing: 0.06em; }
 .tcard-head .right { margin-left: auto; font: 11px var(--mono); }
-.op { display: grid; grid-template-columns: 52px 1fr; column-gap: 8px; row-gap: 2px; padding: 4px 0; border-top: 1px solid #1c2733; }
-.op-name { font: 600 12px var(--mono); }
+.op { display: grid; grid-template-columns: 96px 1fr; column-gap: 8px; row-gap: 2px; padding: 4px 0; border-top: 1px solid #1c2733; }
+.op-name { font: 600 12px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .op-detail { grid-column: 2; font-size: 12px; color: var(--muted); }
 .op.failed .op-detail b { color: var(--bad); }
 .op.superseded .op-detail b { color: var(--muted); }

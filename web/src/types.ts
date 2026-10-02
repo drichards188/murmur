@@ -1,6 +1,20 @@
 export type LngLat = [number, number]
 
-export type Kind = 'plane' | 'vtol' | 'copter' | 'blimp' | 'boat' | 'sub' | 'tracker' | 'unknown'
+export type Kind = 'plane' | 'vtol' | 'copter' | 'blimp' | 'boat' | 'ugv' | 'sub' | 'tracker' | 'unknown'
+export type Domain = 'air' | 'ground' | 'surface' | 'subsurface'
+
+/** What a node is, from the launcher's fleet manifest (sim/platforms.toml). */
+export interface Identity {
+  callsign: string
+  platform: string
+  name: string // e.g. "MQ-9B SkyGuardian-class"
+  short: string // compact model label for the map, e.g. "MQ-9B"
+  role: string // e.g. "MALE ISR/strike UAS"
+  domain: Domain
+  link: string
+  sidc: string
+  sim: 'sitl' | 'standin'
+}
 
 export const AIR_KINDS: Kind[] = ['plane', 'vtol', 'copter', 'blimp']
 export const SEA_KINDS: Kind[] = ['boat', 'sub']
@@ -15,6 +29,7 @@ export interface LinkHealth {
 
 export interface Vehicle {
   sysid: number
+  identity: Identity | null
   kind: Kind | null
   mode: string | null
   armed: boolean
@@ -72,6 +87,7 @@ export interface BridgeState {
 export const LIFECYCLE: OpState[] = ['queued', 'sent', 'acked', 'active', 'done']
 
 const PREFIX: Record<Kind, string> = {
+  ugv: 'UGV',
   plane: 'AIR',
   vtol: 'VTL',
   copter: 'ROT',
@@ -82,8 +98,24 @@ const PREFIX: Record<Kind, string> = {
   unknown: 'UNK',
 }
 
-export function callsign(v: Pick<Vehicle, 'sysid' | 'kind'>) {
-  return `${PREFIX[v.kind ?? 'unknown']} ${String(v.sysid).padStart(2, '0')}`
+export function callsign(v: Pick<Vehicle, 'sysid' | 'kind'> & { identity?: Identity | null }) {
+  return v.identity?.callsign ?? `${PREFIX[v.kind ?? 'unknown']} ${String(v.sysid).padStart(2, '0')}`
+}
+
+const DOMAIN_BY_KIND: Record<Kind, Domain> = {
+  plane: 'air',
+  vtol: 'air',
+  copter: 'air',
+  blimp: 'air',
+  boat: 'surface',
+  ugv: 'ground',
+  sub: 'subsurface',
+  tracker: 'ground',
+  unknown: 'ground',
+}
+
+export function domainOf(v: Pick<Vehicle, 'kind' | 'identity'>): Domain {
+  return v.identity?.domain ?? DOMAIN_BY_KIND[v.kind ?? 'unknown']
 }
 
 export const STALE_MS = 3000
