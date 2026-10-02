@@ -4,6 +4,15 @@ version = "0.1.0"
 edition.workspace = true
 
 [dependencies]
+axum = { version = "0.8.9", features = ["ws"] }
+mavlink = { version = "0.18", default-features = false, features = ["std", "dialect-ardupilotmega"] }
+serde = { version = "1.0.229", features = ["derive", "rc"] }
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
+tokio = { version = "1.53.1", features = ["full"] }
+toml = { version = "1.1.6", features = ["preserve_order"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["test-util", "macros", "rt-multi-thread"] }

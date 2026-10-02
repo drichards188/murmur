@@ -1,0 +1,481 @@
+//! Vehicle state decoded from its MAVLink link, and the cell that shares it.
+
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::{Arc, Mutex, MutexGuard};
+
+use serde::Serialize;
+use serde_json::{Map, Value};
+use tokio::sync::broadcast;
+
+use crate::clock::{self, round};
+use crate::link::{LinkCounters, LinkSnapshot, LinkStats, Transmit};
+use crate::mav::{self, Kind, MavMessage, apm};
+
+/// Fleet-unique vehicle id (the launcher's manifest), what the API and console key on.
+/// The MAVLink sysid is one byte and unique only per link.
+pub type Uid = u64;
+
+const STATUSTEXT_KEEP: usize = 8;
+pub const TRAIL_KEEP: usize = 120;
+/// Firmware that doesn't report EKF status gets this long after a 3D fix before it counts as
+/// ready to navigate.
+const NO_EKF_GRACE_S: f64 = 15.0;
+
+/// What the launcher's fleet manifest says a node is: callsign, platform, role, domain, link...
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct Identity(pub Map<String, Value>);
+
+impl Identity {
+    const KEYS: [&str; 11] = [
+        "callsign",
+        "platform",
+        "name",
+        "short",
+        "role",
+        "domain",
+        "link",
+        "sidc",
+        "sim",
+        "cruise_alt_m",
+        "min_turn_radius_m",
+    ];
+
+    pub fn from_manifest(entry: &Map<String, Value>) -> Identity {
+        Identity(
+            Self::KEYS
+                .iter()
+                .map(|k| {
+                    (
+                        (*k).to_string(),
+                        entry.get(*k).cloned().unwrap_or(Value::Null),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    pub fn str(&self, key: &str) -> Option<&str> {
+        self.0.get(key).and_then(Value::as_str)
+    }
+
+    pub fn num(&self, key: &str) -> Option<f64> {
+        self.0.get(key).and_then(Value::as_f64)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct StatusText {
+    pub t: f64,
+    pub severity: u8,
+    pub text: String,
+}
+
+/// The vehicle as the console sees it. Rounded so tiny jitter doesn't count as a change
+/// (see the change-only push).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct VehicleSnapshot {
+    pub uid: Uid,
+    pub sysid: u8,
+    pub identity: Option<Arc<Identity>>,
+    pub kind: Option<Kind>,
+    pub mode: Option<String>,
+    pub armed: bool,
+    pub position: Option<[f64; 2]>,
+    pub alt_rel: Option<f64>,
+    pub alt_msl: Option<f64>,
+    pub roll: Option<f64>,
+    pub pitch: Option<f64>,
+    pub heading: Option<f64>,
+    pub yaw: Option<f64>,
+    pub tracking: Option<Uid>,
+    pub nav_bearing: Option<i16>,
+    pub nav_ready: bool,
+    pub groundspeed: Option<f64>,
+    pub airspeed: Option<f64>,
+    pub battery_pct: Option<i8>,
+    pub gps_fix: u8,
+    pub satellites: u8,
+    pub mission_seq: Option<u16>,
+    pub home: Option<[f64; 2]>,
+    pub link: LinkSnapshot,
+    pub statustext: Vec<StatusText>,
+}
+
+/// Decoded state of one vehicle. Plain data: only its cell's lock guards it.
+#[derive(Default)]
+pub struct Vehicle {
+    pub identity: Option<Arc<Identity>>,
+    pub kind: Option<Kind>,
+    pub mav_type: Option<apm::MavType>,
+    pub mode: Option<String>,
+    pub custom_mode: Option<u32>,
+    pub armed: bool,
+    /// (lat, lon)
+    pub pos: Option<(f64, f64)>,
+    pub alt_rel: Option<f64>,
+    pub alt_msl: Option<f64>,
+    pub heading: Option<f64>,
+    pub yaw: Option<f64>,
+    pub roll: Option<f64>,
+    pub pitch: Option<f64>,
+    pub groundspeed: Option<f64>,
+    pub airspeed: Option<f64>,
+    pub battery_pct: Option<i8>,
+    pub gps_fix: u8,
+    pub satellites: u8,
+    pub mission_seq: Option<u16>,
+    /// (lat, lon)
+    pub home: Option<(f64, f64)>,
+    pub home_alt: Option<f64>,
+    pub statustext: VecDeque<StatusText>,
+    /// (lon, lat, metres above mean sea level), one point a second at most
+    pub trail: VecDeque<[f64; 3]>,
+    /// total points ever appended, so clients can ask for "new since n"
+    pub trail_count: u64,
+    last_trail: Option<f64>,
+    /// links that get a copy of this vehicle's position (antenna trackers pointed at it)
+    pub forward_to: BTreeMap<u16, Arc<dyn Transmit>>,
+    /// for trackers: the uid being tracked
+    pub tracking: Option<Uid>,
+    /// planes only: None until Q_ENABLE is read
+    pub is_vtol: Option<bool>,
+    pub ekf_flags: Option<apm::EkfStatusFlags>,
+    pub nav_bearing: Option<i16>,
+    pub target_dist: Option<u16>,
+    fix_since: Option<f64>,
+    /// the telemetry plan went out at least once
+    pub rates_sent: bool,
+}
+
+impl Vehicle {
+    /// Apply one message. False when the message carries nothing usable (a GCS heartbeat, a
+    /// zero position), in which case nobody waiting on the vehicle hears about it either.
+    pub fn apply(&mut self, msg: &MavMessage, raw: &[u8], now: f64) -> bool {
+        match msg {
+            MavMessage::HEARTBEAT(m) => {
+                if m.autopilot == apm::MavAutopilot::MAV_AUTOPILOT_INVALID {
+                    return false;
+                }
+                self.mav_type = Some(m.mavtype);
+                let mut kind = Kind::from_mav_type(m.mavtype);
+                // ArduPlane reports FIXED_WING even as a QuadPlane; Q_ENABLE tells them apart
+                if kind == Kind::Plane && self.is_vtol == Some(true) {
+                    kind = Kind::Vtol;
+                }
+                self.kind = Some(kind);
+                self.custom_mode = Some(m.custom_mode);
+                self.mode = Some(mav::mode_name(m.mavtype, m.custom_mode));
+                self.armed = m
+                    .base_mode
+                    .contains(apm::MavModeFlag::MAV_MODE_FLAG_SAFETY_ARMED);
+            }
+            MavMessage::GLOBAL_POSITION_INT(m) => {
+                if m.lat == 0 && m.lon == 0 {
+                    return false;
+                }
+                let (lat, lon) = (f64::from(m.lat) / 1e7, f64::from(m.lon) / 1e7);
+                let (alt_rel, alt_msl) = (
+                    f64::from(m.relative_alt) / 1000.0,
+                    f64::from(m.alt) / 1000.0,
+                );
+                self.pos = Some((lat, lon));
+                self.alt_rel = Some(alt_rel);
+                self.alt_msl = Some(alt_msl);
+                if m.hdg != u16::MAX {
+                    self.heading = Some(f64::from(m.hdg) / 100.0);
+                }
+                if self.home.is_none() {
+                    self.home = Some((lat, lon));
+                    self.home_alt = Some(alt_msl - alt_rel);
+                }
+                if self.last_trail.is_none_or(|t| now - t > 1.0) {
+                    self.last_trail = Some(now);
+                    if self.trail.len() == TRAIL_KEEP {
+                        self.trail.pop_front();
+                    }
+                    self.trail
+                        .push_back([round(lon, 6), round(lat, 6), round(alt_msl, 1)]);
+                    self.trail_count += 1;
+                }
+                for link in self.forward_to.values() {
+                    link.send_raw(raw);
+                }
+            }
+            MavMessage::PARAM_VALUE(m) if mav::chars_to_string(&m.param_id) == "Q_ENABLE" => {
+                let vtol = m.param_value > 0.0;
+                self.is_vtol = Some(vtol);
+                if self.kind == Some(Kind::Plane) && vtol {
+                    self.kind = Some(Kind::Vtol);
+                }
+            }
+            MavMessage::NAV_CONTROLLER_OUTPUT(m) => {
+                self.nav_bearing = Some(m.nav_bearing);
+                self.target_dist = Some(m.wp_dist);
+            }
+            MavMessage::ATTITUDE(m) => {
+                self.yaw = Some(f64::from(m.yaw).to_degrees().rem_euclid(360.0));
+                self.roll = Some(f64::from(m.roll).to_degrees());
+                self.pitch = Some(f64::from(m.pitch).to_degrees());
+            }
+            MavMessage::HOME_POSITION(m) => {
+                self.home = Some((f64::from(m.latitude) / 1e7, f64::from(m.longitude) / 1e7));
+            }
+            MavMessage::VFR_HUD(m) => {
+                self.groundspeed = Some(f64::from(m.groundspeed));
+                self.airspeed = Some(f64::from(m.airspeed));
+            }
+            MavMessage::SYS_STATUS(m) => {
+                self.battery_pct = (m.battery_remaining >= 0).then_some(m.battery_remaining);
+            }
+            MavMessage::GPS_RAW_INT(m) => {
+                self.gps_fix = m.fix_type as u8;
+                self.satellites = m.satellites_visible;
+                if self.gps_fix >= 3 && self.fix_since.is_none() {
+                    self.fix_since = Some(now);
+                }
+            }
+            MavMessage::EKF_STATUS_REPORT(m) => self.ekf_flags = Some(m.flags),
+            MavMessage::MISSION_CURRENT(m) => self.mission_seq = Some(m.seq),
+            MavMessage::STATUSTEXT(m) => {
+                if self.statustext.len() == STATUSTEXT_KEEP {
+                    self.statustext.pop_front();
+                }
+                self.statustext.push_back(StatusText {
+                    t: clock::wall(),
+                    severity: m.severity as u8,
+                    text: mav::chars_to_string(&m.text),
+                });
+            }
+            _ => {}
+        }
+        true
+    }
+
+    /// Ready to navigate: GPS fix AND the autopilot's EKF trusts its absolute position.
+    /// The fix arrives seconds before the EKF sets its origin; AUTO is refused until then.
+    pub fn has_position(&self, now: f64) -> bool {
+        if self.pos.is_none() {
+            return false;
+        }
+        let ekf_ok = |f: apm::EkfStatusFlags| {
+            f.contains(apm::EkfStatusFlags::EKF_POS_HORIZ_ABS)
+                && !f.contains(apm::EkfStatusFlags::EKF_CONST_POS_MODE)
+        };
+        if let Some(f) = self.ekf_flags
+            && self.kind != Some(Kind::Tracker)
+        {
+            // the vehicle's own navigation filter is the authority: a submerged AUV has no GPS
+            // fix but navigates fine on inertial + DVL
+            return ekf_ok(f);
+        }
+        if self.gps_fix < 3 {
+            return false;
+        }
+        if self.kind == Some(Kind::Tracker) {
+            return true; // trackers don't navigate; a GPS fix is enough to know where they stand
+        }
+        match (self.fix_since, self.ekf_flags) {
+            (None, _) => false,
+            (Some(since), None) => now - since > NO_EKF_GRACE_S,
+            (Some(_), Some(f)) => ekf_ok(f),
+        }
+    }
+
+    pub fn airborne(&self) -> bool {
+        match (self.kind.and_then(Kind::airborne_alt), self.alt_rel) {
+            (Some(min), Some(alt)) => alt > min,
+            _ => false,
+        }
+    }
+
+    pub fn distance_to(&self, lat: f64, lon: f64) -> Option<f64> {
+        self.pos
+            .map(|(la, lo)| crate::geo::haversine_m(la, lo, lat, lon))
+    }
+
+    pub fn last_statustext(&self) -> Option<&str> {
+        self.statustext.back().map(|s| s.text.as_str())
+    }
+
+    pub fn snapshot(&self, uid: Uid, sysid: u8, link: LinkSnapshot, now: f64) -> VehicleSnapshot {
+        let r = |x: Option<f64>, n| x.map(|v| round(v, n));
+        VehicleSnapshot {
+            uid,
+            sysid,
+            identity: self.identity.clone(),
+            kind: self.kind,
+            mode: self.mode.clone(),
+            armed: self.armed,
+            position: self.pos.map(|(lat, lon)| [round(lon, 6), round(lat, 6)]),
+            alt_rel: r(self.alt_rel, 1),
+            alt_msl: r(self.alt_msl, 1),
+            roll: r(self.roll, 0),
+            pitch: r(self.pitch, 0),
+            heading: r(self.heading, 0),
+            yaw: r(self.yaw, 0),
+            tracking: self.tracking,
+            nav_bearing: self.nav_bearing,
+            nav_ready: self.has_position(now),
+            groundspeed: r(self.groundspeed, 1),
+            airspeed: r(self.airspeed, 1),
+            battery_pct: self.battery_pct,
+            gps_fix: self.gps_fix,
+            satellites: self.satellites,
+            mission_seq: self.mission_seq,
+            home: self.home.map(|(lat, lon)| [round(lon, 6), round(lat, 6)]),
+            link,
+            statustext: self
+                .statustext
+                .iter()
+                .rev()
+                .take(3)
+                .rev()
+                .cloned()
+                .collect(),
+        }
+    }
+}
+
+/// One vehicle in the world model. Its link's receive task is the only writer; readers
+/// (the push loop, the API, the task layer, later the rules layer) take the lock briefly
+/// to copy what they need. There is no global lock on the packet path.
+pub struct VehicleCell {
+    pub uid: Uid,
+    pub sysid: u8,
+    pub tx: Arc<dyn Transmit>,
+    stats: Arc<Mutex<LinkStats>>,
+    state: Mutex<Vehicle>,
+    /// every message from the vehicle, for the task layer waiting on ACKs and mission requests
+    events: broadcast::Sender<Arc<MavMessage>>,
+}
+
+impl VehicleCell {
+    pub fn new(
+        uid: Uid,
+        sysid: u8,
+        tx: Arc<dyn Transmit>,
+        stats: Arc<Mutex<LinkStats>>,
+        identity: Option<Arc<Identity>>,
+    ) -> VehicleCell {
+        let state = Vehicle {
+            identity,
+            ..Vehicle::default()
+        };
+        VehicleCell {
+            uid,
+            sysid,
+            tx,
+            stats,
+            state: Mutex::new(state),
+            events: broadcast::channel(256).0,
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Vehicle> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn read<R>(&self, f: impl FnOnce(&Vehicle) -> R) -> R {
+        f(&self.lock())
+    }
+
+    pub fn write<R>(&self, f: impl FnOnce(&mut Vehicle) -> R) -> R {
+        f(&mut self.lock())
+    }
+
+    /// A message from this vehicle (any component). `raw` is the frame as received.
+    pub fn handle(&self, msg: &MavMessage, raw: &[u8], now: f64) {
+        if let MavMessage::TIMESYNC(m) = msg
+            && m.tc1 != 0
+        {
+            self.stats
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .pong(m.ts1, now);
+        }
+        let notify = self.write(|v| v.apply(msg, raw, now));
+        if notify && self.events.receiver_count() > 0 {
+            let _ = self.events.send(Arc::new(msg.clone()));
+        }
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<Arc<MavMessage>> {
+        self.events.subscribe()
+    }
+
+    pub fn send(&self, msg: &MavMessage) {
+        self.tx.send(msg);
+    }
+
+    pub fn link_snapshot(&self, now: f64) -> LinkSnapshot {
+        self.stats
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .snapshot(now)
+    }
+
+    pub fn link_counters(&self) -> LinkCounters {
+        self.stats
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .counters()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn gpi(lat: f64, lon: f64, alt: f64, rel: f64) -> MavMessage {
+        MavMessage::GLOBAL_POSITION_INT(apm::GLOBAL_POSITION_INT_DATA {
+            lat: (lat * 1e7) as i32,
+            lon: (lon * 1e7) as i32,
+            alt: (alt * 1000.0) as i32,
+            relative_alt: (rel * 1000.0) as i32,
+            hdg: 9000,
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn trail_one_point_a_second_capped() {
+        let mut v = Vehicle::default();
+        for i in 0..400 {
+            v.apply(&gpi(37.8, -122.4, 10.0, 5.0), &[], f64::from(i) * 0.5);
+        }
+        assert_eq!(v.trail_count, 134); // a point when more than 1 s has passed: every 1.5 s
+        assert_eq!(v.trail.len(), TRAIL_KEEP);
+        assert_eq!(v.home, Some((37.8, -122.4)));
+        assert_eq!(v.heading, Some(90.0));
+    }
+
+    #[test]
+    fn readiness_trusts_ekf() {
+        let mut v = Vehicle {
+            kind: Some(Kind::Sub),
+            ..Vehicle::default()
+        };
+        v.apply(&gpi(37.8, -122.4, -5.0, -5.0), &[], 0.0);
+        assert!(!v.has_position(0.0));
+        // no GPS fix at all, but the EKF has an absolute position: ready
+        v.ekf_flags = Some(apm::EkfStatusFlags::EKF_POS_HORIZ_ABS);
+        assert!(v.has_position(0.0));
+        v.ekf_flags =
+            Some(apm::EkfStatusFlags::EKF_POS_HORIZ_ABS | apm::EkfStatusFlags::EKF_CONST_POS_MODE);
+        assert!(!v.has_position(0.0));
+        // no EKF report: a grace period after the fix
+        let mut w = Vehicle {
+            kind: Some(Kind::Boat),
+            ..Vehicle::default()
+        };
+        w.apply(&gpi(37.8, -122.4, 0.0, 0.0), &[], 0.0);
+        let fix = MavMessage::GPS_RAW_INT(apm::GPS_RAW_INT_DATA {
+            fix_type: apm::GpsFixType::GPS_FIX_TYPE_3D_FIX,
+            ..Default::default()
+        });
+        w.apply(&fix, &[], 1.0);
+        assert!(!w.has_position(10.0));
+        assert!(w.has_position(16.5));
+    }
+}
