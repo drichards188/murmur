@@ -1,0 +1,50 @@
+# Risk-tier policy (Phase C.3), read by crates/murmur-decide.
+#
+# Every intent that passes the rules is routed by the first [[tier]] whose `when` matches:
+#   tier = "auto"   approved by policy, dispatched without a human
+#   tier = "human"  waits in the operator's inbox; expires after approval.expire_s
+# A `when` matches if every condition in it holds; an empty `when` matches everything.
+# Conditions:
+#   kind = [...]                  task kind is one of: orbit, patrol, hold, rtl, track
+#   armed = true|false            some target / no target is on a platform with armed = true
+#                                 in sim/platforms.toml (unknown platform counts as armed)
+#   leaves_approved_area = bool   the task path leaves the "approved" areas in sim/areas/
+#                                 (no area loaded counts as leaving)
+#   source = "human"|"agent"
+# If nothing matches, the intent goes to a human (fail closed). Agent-sourced intents can
+# only reach "approved" through a human; this file can make them auto, never self-approved.
+# The whole file is logged at the start of every run, and replay decides with that copy.
+
+[approval]
+expire_s = 120
+
+[rules]
+max_fact_age_s = 10                         # older telemetry can't support a decision
+orbit_radius_margin = 1.1                   # orbit radius >= 1.1 x minimum turn radius
+fixed_wing_default_min_turn_radius_m = 60   # ArduPlane WP_LOITER_RAD default, when the catalog has no turn rate
+reserve_pct = 20                            # endurance left after the task, % of full
+task_duration_s = 900                       # time on task assumed by the reserves estimate
+unknown_endurance = "fail"                  # or "battery_now": check the battery against the reserve only
+
+[[tier]]
+name = "safety-commands"
+when = { kind = ["hold", "rtl"] }
+tier = "auto"
+reason = "hold and rtl reduce risk"
+
+[[tier]]
+name = "armed-platform"
+when = { armed = true }
+tier = "human"
+reason = "armed platforms always need a human (DoD Directive 3000.09)"
+
+[[tier]]
+name = "outside-approved-area"
+when = { leaves_approved_area = true }
+tier = "human"
+reason = "leaves the operator's approved area"
+
+[[tier]]
+name = "default"
+tier = "auto"
+reason = "routine task inside the approved area (tunable; approval fatigue is measured in Phase G)"

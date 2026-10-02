@@ -1,0 +1,214 @@
+//! Append-only audit log (Phase C.4): one JSON object per line, `{seq, t, type, ...}`.
+//!
+//! Decision events (`check.result`, `policy.decision`) carry the exact inputs they read,
+//! the world facts with their timestamps, so [`crate::replay`] can recompute them. The
+//! engine writes an event before applying the change it records; if the write fails, the
+//! change doesn't happen.
+
+use std::fs::{File, OpenOptions};
+use std::io::Write;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+
+use serde::{Deserialize, Serialize};
+
+use crate::ids::{AgentId, IntentId, OperatorId, SessionId, Uid};
+use crate::intent::{IntentSpec, State, Task, Transition};
+use crate::policy::{Policy, PolicyDecision};
+use crate::rules::CheckResult;
+use crate::time::Time;
+use crate::world::WorldSnapshot;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Event {
+    pub seq: u64,
+    pub t: Time,
+    #[serde(flatten)]
+    pub body: EventBody,
+}
+
+/// When a check ran: at submission, or again at approval against the then-current world.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckPhase {
+    Submit,
+    Approve,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum EventBody {
+    /// The engine started; the policy in force for every decision that follows.
+    #[serde(rename = "run.started")]
+    RunStarted {
+        crate_version: String,
+        policy: Policy,
+    },
+
+    #[serde(rename = "intent.created")]
+    IntentCreated { intent: IntentSpec },
+
+    #[serde(rename = "check.result")]
+    CheckResult {
+        intent: IntentId,
+        phase: CheckPhase,
+        inputs: WorldSnapshot,
+        results: Vec<CheckResult>,
+        passed: bool,
+    },
+
+    #[serde(rename = "policy.decision")]
+    PolicyDecision {
+        intent: IntentId,
+        inputs: WorldSnapshot,
+        decision: PolicyDecision,
+    },
+
+    /// Every state change of every intent.
+    #[serde(rename = "intent.state")]
+    IntentState {
+        intent: IntentId,
+        transition: Transition,
+        from: State,
+        to: State,
+        reason: String,
+    },
+
+    #[serde(rename = "approval.requested")]
+    ApprovalRequested { intent: IntentId, expires_t: Time },
+
+    #[serde(rename = "approval.granted")]
+    ApprovalGranted {
+        intent: IntentId,
+        by: OperatorId,
+        session: SessionId,
+        note: Option<String>,
+    },
+
+    #[serde(rename = "approval.rejected")]
+    ApprovalRejected {
+        intent: IntentId,
+        by: OperatorId,
+        session: SessionId,
+        note: Option<String>,
+    },
+
+    #[serde(rename = "approval.expired")]
+    ApprovalExpired { intent: IntentId, expires_t: Time },
+
+    #[serde(rename = "intent.dispatched")]
+    IntentDispatched {
+        intent: IntentId,
+        task: Task,
+        uids: Vec<Uid>,
+    },
+
+    /// Per-vehicle task progress from the task layer (sent, acked, active, done, failed).
+    #[serde(rename = "op.state")]
+    OpState {
+        intent: IntentId,
+        uid: Uid,
+        state: String,
+        detail: String,
+    },
+
+    /// Mode change, failsafe, STATUSTEXT and the like.
+    #[serde(rename = "vehicle.event")]
+    VehicleEvent {
+        uid: Uid,
+        kind: String,
+        text: String,
+    },
+
+    #[serde(rename = "operator.action")]
+    OperatorAction {
+        operator: OperatorId,
+        session: SessionId,
+        action: String,
+        detail: String,
+    },
+
+    #[serde(rename = "agent.action")]
+    AgentAction {
+        agent: AgentId,
+        action: String,
+        detail: String,
+    },
+}
+
+/// Where events go. Implementations must append, never rewrite.
+pub trait AuditSink {
+    fn append(&mut self, line: &str) -> std::io::Result<()>;
+}
+
+/// In-memory log; clones share the buffer, so a test can read what the engine wrote.
+#[derive(Clone, Debug, Default)]
+pub struct MemorySink(Arc<Mutex<Vec<String>>>);
+
+impl MemorySink {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn lines(&self) -> Vec<String> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn text(&self) -> String {
+        let mut s = self.lines().join("\n");
+        s.push('\n');
+        s
+    }
+}
+
+impl AuditSink for MemorySink {
+    fn append(&mut self, line: &str) -> std::io::Result<()> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(line.to_string());
+        Ok(())
+    }
+}
+
+/// A JSONL file opened in append mode (e.g. `logs/audit/<run-id>.jsonl`). Each event is
+/// written and flushed before the engine acts on it.
+#[derive(Debug)]
+pub struct JsonlFile(File);
+
+impl JsonlFile {
+    pub fn open(path: &Path) -> std::io::Result<Self> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        Ok(JsonlFile(
+            OpenOptions::new().create(true).append(true).open(path)?,
+        ))
+    }
+}
+
+impl AuditSink for JsonlFile {
+    fn append(&mut self, line: &str) -> std::io::Result<()> {
+        let mut buf = Vec::with_capacity(line.len() + 1);
+        buf.extend_from_slice(line.as_bytes());
+        buf.push(b'\n');
+        self.0.write_all(&buf)?;
+        self.0.flush()
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("line {line}: {err}")]
+pub struct LogError {
+    pub line: usize,
+    pub err: serde_json::Error,
+}
+
+/// Parse a JSONL log. Blank lines are skipped.
+pub fn parse_log(text: &str) -> Result<Vec<Event>, LogError> {
+    text.lines()
+        .enumerate()
+        .filter(|(_, l)| !l.trim().is_empty())
+        .map(|(i, l)| serde_json::from_str(l).map_err(|err| LogError { line: i + 1, err }))
+        .collect()
+}
