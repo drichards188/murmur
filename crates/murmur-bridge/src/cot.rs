@@ -70,6 +70,22 @@
 //! `ce` is 10 m with a 3D GPS fix and 100 m otherwise (inertial navigation); `le` 15 m and
 //! 100 m. Those are conservative nominal figures, not measured accuracy.
 //!
+//! # Tracks (Phase C2)
+//!
+//! Contacts that are not ours go out too, one event per bridge track (`tracks` module),
+//! uid `murmur-<tag>-track-<n>`. The type comes from the track's own 2525 SIDC through the
+//! same table, so the affiliation the tracker estimated (or an operator declared) is the
+//! TAK affiliation: `a-h-S` hostile surface, `a-s-S` suspect, `a-n-S` neutral, `a-u-S`
+//! unknown, `a-a-S` assumed friend; `A` air, `U` subsurface, `G` ground. `how` is `m-f`
+//! (machine fused: the bridge fuses detections over time and, when it has them, across
+//! sensors). `ce` is the track's 1-sigma position uncertainty at that moment, growing with
+//! age; `le` is 50 m (or unknown for a bearing-only or surface track where height isn't
+//! estimated). The remarks carry the estimated kind, confidence, sources and age; `_murmur`
+//! the same as attributes, plus `predicted="1"` once the track is stale and the point is
+//! dead-reckoned from its last fix, and `fused="1"` when more than one sensor feeds it. A
+//! track is published until the bridge drops it, going stale on the client (`stale = time
+//! + period + pad`) when the bridge stops sending it.
+//!
 //! # Staleness and lost links
 //!
 //! `stale = time + period + MURMUR_COT_STALE_PAD_S` (default 1 s + 3 s). A vehicle whose link
@@ -501,6 +517,123 @@ pub fn build_event(cfg: &CotConfig, s: &Sample, now: f64, period: f64) -> String
     x
 }
 
+/// A bridge track (a contact that is not ours) as the exporter reads it.
+#[derive(Debug, Clone, Default)]
+pub struct TrackSample {
+    pub no: u64,
+    pub id: String,
+    pub sidc: String,
+    /// predicted position at the sample time
+    pub lat: f64,
+    pub lon: f64,
+    pub alt_m: Option<f64>,
+    /// 1-sigma horizontal uncertainty now, metres
+    pub sigma_m: f64,
+    pub course: Option<f64>,
+    pub speed: f64,
+    pub confidence: f64,
+    pub affiliation: &'static str,
+    pub reason: String,
+    pub kind: Option<String>,
+    pub identity_confidence: f64,
+    pub ais_name: Option<String>,
+    pub sources: Vec<String>,
+    pub last_seen_t: f64,
+    pub stale: bool,
+    pub fused: bool,
+}
+
+/// CoT type for a track: its SIDC through the table, else an unknown atom in the dimension
+/// the SIDC names (the tracker always writes a dimension).
+pub fn track_type(sidc: &str) -> String {
+    type_from_sidc(sidc).unwrap_or_else(|| {
+        let dim = sidc.chars().nth(2).unwrap_or('X');
+        format!("a-u-{dim}")
+    })
+}
+
+/// One CoT event for a track. Same envelope as a vehicle's; see the module doc.
+pub fn build_track_event(cfg: &CotConfig, t: &TrackSample, now: f64, period: f64) -> String {
+    let uid = format!("murmur-{}-track-{}", xml_escape(&cfg.tag), t.no);
+    let callsign = t.id.clone();
+    let how = "m-f";
+    let hae = t.alt_m.map(|a| a + cfg.geoid_m);
+    let le = if t.alt_m.is_some() { 50.0 } else { UNKNOWN_ERR };
+    let time = iso(now);
+    let stale = iso(now + period + cfg.stale_pad_s);
+    let age = (now - t.last_seen_t).max(0.0);
+
+    let mut x = String::with_capacity(900);
+    x.push_str(&format!(
+        "<event version=\"2.0\" uid=\"{uid}\" type=\"{}\" how=\"{how}\" time=\"{time}\" start=\"{time}\" stale=\"{stale}\">",
+        track_type(&t.sidc)
+    ));
+    x.push_str(&format!(
+        "<point lat=\"{:.7}\" lon=\"{:.7}\" hae=\"{}\" ce=\"{:.1}\" le=\"{le:.1}\"/>",
+        t.lat,
+        t.lon,
+        hae.map_or_else(|| format!("{UNKNOWN_ERR:.1}"), |h| format!("{h:.1}")),
+        t.sigma_m.max(1.0),
+    ));
+    x.push_str("<detail>");
+    x.push_str(&format!(
+        "<contact callsign=\"{c}\"/><uid Droid=\"{c}\"/>",
+        c = xml_escape(&callsign)
+    ));
+    if t.course.is_some() || t.speed > 0.0 {
+        x.push_str(&format!(
+            "<track course=\"{:.1}\" speed=\"{:.2}\"/>",
+            t.course.unwrap_or(0.0).rem_euclid(360.0),
+            t.speed.max(0.0)
+        ));
+    }
+    let mut r: Vec<String> = Vec::new();
+    r.push(format!(
+        "{} {}",
+        t.affiliation.replace('_', " "),
+        t.kind.as_deref().unwrap_or("unclassified")
+    ));
+    if let Some(n) = &t.ais_name {
+        r.push(format!("AIS {n}"));
+    }
+    r.push(format!(
+        "track conf {:.0}% id conf {:.0}%",
+        100.0 * t.confidence,
+        100.0 * t.identity_confidence
+    ));
+    r.push(format!(
+        "sources {}",
+        if t.sources.is_empty() {
+            "none".into()
+        } else {
+            t.sources.join(" ")
+        }
+    ));
+    r.push(format!("seen {age:.0} s ago, 1-sigma {:.0} m", t.sigma_m));
+    r.push(t.reason.clone());
+    x.push_str(&format!("<remarks>{}</remarks>", xml_escape(&r.join(" | "))));
+    x.push_str(&format!(
+        "<_murmur track=\"{}\" affiliation=\"{}\" confidence=\"{:.2}\" identity_confidence=\"{:.2}\" age_s=\"{age:.1}\" sigma_m=\"{:.0}\" sources=\"{}\"",
+        xml_escape(&t.id),
+        t.affiliation,
+        t.confidence,
+        t.identity_confidence,
+        t.sigma_m,
+        xml_escape(&t.sources.join(" "))
+    ));
+    if let Some(k) = &t.kind {
+        x.push_str(&format!(" kind=\"{}\"", xml_escape(k)));
+    }
+    if t.stale {
+        x.push_str(" predicted=\"1\"");
+    }
+    if t.fused {
+        x.push_str(" fused=\"1\"");
+    }
+    x.push_str("/></detail></event>");
+    x
+}
+
 /// Per-vehicle send state: decides when an event is due.
 #[derive(Default)]
 pub struct Emitter {
@@ -564,6 +697,47 @@ impl Emitter {
                 );
             }
         }
+        out
+    }
+
+    /// Track events due at `now`: the same rate and change rules as vehicles, keyed by
+    /// track number (a separate `Emitter` from the vehicles' keeps the key spaces apart).
+    pub fn step_tracks(
+        &mut self,
+        cfg: &CotConfig,
+        tracks: &[TrackSample],
+        now: f64,
+    ) -> Vec<String> {
+        let period = 1.0 / cfg.rate_hz;
+        let min_gap = 1.0 / cfg.max_hz.max(cfg.rate_hz);
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for t in tracks {
+            seen.insert(t.no);
+            let due = match self.last.get(&t.no) {
+                None => true,
+                Some(l) => {
+                    let dt = now - l.t;
+                    let moved = crate::geo::haversine_m(l.lat, l.lon, t.lat, t.lon) > cfg.move_m;
+                    dt >= period - 1e-6 || (moved && dt >= min_gap)
+                }
+            };
+            if due {
+                out.push(build_track_event(cfg, t, now, period));
+                self.last.insert(
+                    t.no,
+                    Last {
+                        t: now,
+                        lat: t.lat,
+                        lon: t.lon,
+                        heading: t.course,
+                        loss: None,
+                    },
+                );
+            }
+        }
+        // dropped tracks are forgotten, so a later track starts fresh
+        self.last.retain(|k, _| seen.contains(k));
         out
     }
 }
@@ -710,11 +884,16 @@ async fn build_sinks(cfg: &CotConfig, inbound: Option<Arc<Inbound>>) -> Vec<Sink
 
 async fn export_loop(world: Arc<World>, cfg: CotConfig, sinks: Vec<Sink>) {
     let mut emitter = Emitter::default();
+    let mut track_emitter = Emitter::default();
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tick.tick().await;
-        let events = emitter.step(&cfg, &collect(&world), clock::wall());
+        let now = clock::wall();
+        let mut events = emitter.step(&cfg, &collect(&world), now);
+        if let Some(tracks) = crate::tracks::store() {
+            events.extend(track_emitter.step_tracks(&cfg, &tracks.cot_samples(now), now));
+        }
         for ev in &events {
             for sink in &sinks {
                 match sink {

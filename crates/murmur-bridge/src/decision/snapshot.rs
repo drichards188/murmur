@@ -86,7 +86,8 @@ pub fn vehicle_facts(
     }
 }
 
-/// Every vehicle the bridge knows, at engine time `t`.
+/// Every vehicle the bridge knows, at engine time `t`, and the track picture (Phase C2:
+/// contacts that are not ours, as our sensors see them; absent before `tracks::init`).
 pub fn build(world: &World, catalog: &Catalog, areas: &AreaSet, t: Time) -> WorldSnapshot {
     let now = clock::mono();
     let mut snap = WorldSnapshot::new(t);
@@ -96,5 +97,8 @@ pub fn build(world: &World, catalog: &Catalog, areas: &AreaSet, t: Time) -> Worl
         snap.vehicles.insert(duid(cell.uid), facts);
     }
     snap.areas = Some(areas.clone());
+    if let Some(tracks) = crate::tracks::store() {
+        snap.tracks = tracks.facts(t.0 as f64 / 1000.0);
+    }
     snap
 }

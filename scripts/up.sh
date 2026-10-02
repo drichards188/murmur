@@ -10,6 +10,8 @@
 #   MURMUR_WEB_PORT        5173   console (vite)
 #   MURMUR_TIDEWATER_PORT  8770   tidewater serve (reused if one already answers there)
 # MURMUR_TIDEWATER_URL overrides the port with any running `tidewater serve`.
+# MURMUR_CONTACTS=sim/scenarios/<name>.toml also runs the contacts process (contacts that
+# are not ours, Phase C2; truth to the bridge's simulation channel and logs/contacts-truth.jsonl).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p logs
@@ -23,7 +25,7 @@ export MURMUR_BRIDGE_URL="http://127.0.0.1:$MURMUR_HTTP_PORT"  # vite proxies he
 # build first (a no-op when fresh), so vehicles don't wait on a bridge that is still compiling
 cargo="$(command -v cargo || echo "$HOME/.cargo/bin/cargo")"
 if [ -x "$cargo" ]; then
-  "$cargo" build --release -p murmur-bridge -p murmur-standins
+  "$cargo" build --release -p murmur-bridge -p murmur-standins -p murmur-contacts
 elif [ ! -x target/release/murmur-bridge ] || [ ! -x target/release/murmur-standins ]; then
   echo "no cargo and no release binaries in target/release; run make setup" >&2
   exit 1
@@ -68,6 +70,11 @@ fi
 .venv/bin/python sim/swarm.py --base-port "$MURMUR_BASE_PORT" "$@" > logs/sim.log 2>&1 & pids+=($!)
 target/release/murmur-bridge > logs/bridge.log 2>&1 & pids+=($!)
 (cd web && exec node_modules/.bin/vite --host 127.0.0.1 --port "$web_port" --strictPort) > logs/web.log 2>&1 & pids+=($!)
+if [ -n "${MURMUR_CONTACTS:-}" ]; then
+  # contacts that are not ours: truth goes only to the bridge's simulation channel
+  target/release/murmur-contacts "$MURMUR_CONTACTS" > logs/contacts.log 2>&1 & pids+=($!)
+  echo "contacts: $MURMUR_CONTACTS (logs/contacts.log, truth in logs/contacts-truth.jsonl)"
+fi
 
 if [ -n "${MURMUR_SCENARIO:-}" ]; then
   # tidewater drive pushes conditions into the SITL vehicles over their SERIAL1 ports

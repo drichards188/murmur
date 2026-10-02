@@ -1,0 +1,206 @@
+//! murmur-contacts [sim/scenarios/<name>.toml]: move the scenario's contacts and publish
+//! their truth to the bridge's simulation channel and to the evaluation log.
+//!
+//! Environment:
+//!   MURMUR_BRIDGE_URL        the bridge (default http://127.0.0.1:$MURMUR_HTTP_PORT or 8765)
+//!   MURMUR_AT, MURMUR_RATE   scenario clock, as the stand-ins (default: now, x1)
+//!   MURMUR_TIDEWATER_URL     tidewater serve, so drifting contacts follow the real current
+//!   MURMUR_CONTACTS_TRUTH    evaluation log path (default $MURMUR_ROOT/logs/contacts-truth.jsonl)
+//!   MURMUR_CONTACTS_HZ       ticks per wall second (default 1)
+//!   MURMUR_CONTACTS_SEED     overrides the scenario's seed
+
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use murmur_contacts::motion::Mover;
+use murmur_contacts::scenario::{Motion, Scenario};
+use murmur_contacts::truth::TruthMessage;
+use murmur_standins::conditions::{self, Slot};
+
+fn env(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|s| !s.trim().is_empty())
+}
+
+fn main() {
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("murmur-contacts: runtime: {e}");
+            std::process::exit(1);
+        }
+    };
+    if let Err(e) = rt.block_on(run()) {
+        eprintln!("murmur-contacts: {e}");
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<(), String> {
+    let root = env("MURMUR_ROOT").map(PathBuf::from);
+    let path = std::env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {
+        root.clone()
+            .unwrap_or_default()
+            .join("sim/scenarios/golden-gate.toml")
+    });
+    let scenario = Scenario::load(&path)?;
+    let seed = env("MURMUR_CONTACTS_SEED")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(scenario.seed);
+    let contacts = scenario.contacts()?;
+    if contacts.is_empty() {
+        return Err(format!("{}: no contacts", path.display()));
+    }
+
+    // scenario clock: MURMUR_AT at MURMUR_RATE, as the stand-ins; else the wall clock
+    let rate: f64 = env("MURMUR_RATE")
+        .and_then(|r| r.parse().ok())
+        .filter(|r: &f64| r.is_finite() && *r > 0.0)
+        .unwrap_or(1.0);
+    let t0 = match env("MURMUR_AT") {
+        Some(at) => conditions::parse_time(&at)?,
+        None => SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0.0, |d| d.as_secs_f64()),
+    };
+    let wall0 = Instant::now();
+
+    let bridge = env("MURMUR_BRIDGE_URL").unwrap_or_else(|| {
+        format!(
+            "http://127.0.0.1:{}",
+            env("MURMUR_HTTP_PORT").unwrap_or_else(|| "8765".into())
+        )
+    });
+    let endpoint = format!("{}/api/sim/contacts", bridge.trim_end_matches('/'));
+    let log_path = env("MURMUR_CONTACTS_TRUTH").map(PathBuf::from).unwrap_or_else(|| {
+        root.clone()
+            .unwrap_or_default()
+            .join("logs/contacts-truth.jsonl")
+    });
+    if let Some(dir) = log_path.parent()
+        && !dir.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    let mut log = BufWriter::new(
+        File::create(&log_path).map_err(|e| format!("{}: {e}", log_path.display()))?,
+    );
+    let hz: f64 = env("MURMUR_CONTACTS_HZ")
+        .and_then(|s| s.parse().ok())
+        .filter(|h: &f64| *h > 0.0 && *h <= 20.0)
+        .unwrap_or(1.0);
+
+    let mut movers: Vec<Mover> = contacts
+        .into_iter()
+        .enumerate()
+        .map(|(i, c)| Mover::new(c, seed, i as u64))
+        .collect();
+    // drifting surface contacts get a conditions slot (the water at their position)
+    let mut slots: Vec<Option<Arc<Slot>>> = Vec::with_capacity(movers.len());
+    for m in &movers {
+        if matches!(m.contact.motion, Motion::Drift { .. }) {
+            let slot = Arc::new(Slot::default());
+            slot.report(m.st.lat, m.st.lon, 0.0);
+            slots.push(Some(slot));
+        } else {
+            slots.push(None);
+        }
+    }
+    let wanted: Vec<Arc<Slot>> = slots.iter().flatten().cloned().collect();
+    if let Some(cfg) = conditions::Config::from_env()
+        && !wanted.is_empty()
+    {
+        conditions::start(cfg, wanted).await;
+    }
+
+    println!(
+        "{}: {} contacts, seed {seed}, scenario clock {t0:.0} x{rate}, truth -> {} and {}",
+        scenario.title,
+        movers.len(),
+        endpoint,
+        log_path.display()
+    );
+    for m in &movers {
+        println!(
+            "  {:24} {:14} {:9} {:16} {}",
+            m.contact.id,
+            m.contact.kind,
+            format!("{:?}", m.contact.affiliation).to_lowercase(),
+            format!("{:?}", m.contact.motion).split_whitespace().next().unwrap_or(""),
+            m.contact.name
+        );
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let period = Duration::from_secs_f64(1.0 / hz);
+    let mut every = tokio::time::interval(period);
+    every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut last_wall = wall0;
+    let mut seq: u64 = 0;
+    let mut last_error: Option<String> = None;
+    loop {
+        tokio::select! {
+            _ = every.tick() => {}
+            _ = tokio::signal::ctrl_c() => {
+                let _ = log.flush();
+                return Ok(());
+            }
+        }
+        let now = Instant::now();
+        let dt = now.duration_since(last_wall).as_secs_f64() * rate;
+        last_wall = now;
+        let s = now.duration_since(wall0).as_secs_f64() * rate;
+        for (m, slot) in movers.iter_mut().zip(&slots) {
+            let current = slot
+                .as_ref()
+                .and_then(|s| s.latest())
+                .map(|c| (c.current_east(), c.current_north()));
+            m.step(s, dt, current);
+            if let Some(slot) = slot {
+                slot.report(m.st.lat, m.st.lon, 0.0);
+            }
+        }
+        seq += 1;
+        let msg = TruthMessage::build(
+            t0 + s,
+            s,
+            seq,
+            &scenario.title,
+            seed,
+            scenario.sensing,
+            &movers,
+        );
+        if let Ok(line) = serde_json::to_string(&msg) {
+            let _ = writeln!(log, "{line}");
+            let _ = log.flush();
+        }
+        let r = client.post(&endpoint).json(&msg).send().await;
+        let outcome = match r {
+            Ok(resp) if resp.status().is_success() => Ok(()),
+            Ok(resp) => Err(format!("bridge answered {}", resp.status())),
+            Err(e) => Err(format!("bridge unreachable: {e}")),
+        };
+        match outcome {
+            Ok(()) => {
+                if last_error.take().is_some() {
+                    println!("bridge: back");
+                }
+            }
+            Err(e) => {
+                if last_error.as_deref() != Some(e.as_str()) {
+                    println!("{e} (truth still goes to the log)");
+                    last_error = Some(e);
+                }
+            }
+        }
+    }
+}

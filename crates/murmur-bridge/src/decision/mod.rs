@@ -518,6 +518,22 @@ impl Decision {
         out
     }
 
+    /// Log something an operator did outside the intent flow (a track declaration, an
+    /// acknowledgement) as `operator.action`, under their session.
+    pub fn record_action(
+        &self,
+        by: &OperatorId,
+        action: &str,
+        detail: &str,
+    ) -> Result<(), DecisionError> {
+        let mut guard = self.lock();
+        let core = &mut *guard;
+        let session = Self::session(&mut core.engine, &mut core.sessions, by)?;
+        core.engine
+            .record_operator_action(session.authority(), action, detail)
+            .map_err(engine_err)
+    }
+
     fn with_intent(&self, core: &Core, id: IntentId, mut e: DecisionError) -> DecisionError {
         if let Some(i) = core.engine.intent(id) {
             if let Some(last) = i.history().last()

@@ -56,6 +56,84 @@ pub struct VehicleFacts {
     pub report_interval_ms: Option<u32>,
 }
 
+/// The standard identity (MIL-STD-2525 affiliation) a track is estimated or declared to
+/// have. Perception, never truth: the bridge's tracker derives it from what our sensors
+/// reported, and an operator may declare one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Affiliation {
+    /// Nothing supports a judgment yet (2525 "unknown", yellow).
+    Unknown,
+    /// Not cooperative or inconsistent: a civilian identity that doesn't fit, a dark fast
+    /// boat, an unidentified UAS or submarine (2525 "suspect", red dashed).
+    Suspect,
+    /// Declared hostile by an operator (2525 "hostile", red). Never derived automatically.
+    Hostile,
+    /// Civilian or cooperative (2525 "neutral", green).
+    Neutral,
+    /// Cooperative and friendly by its identity (a coast guard cutter on AIS) but not one
+    /// of ours (2525 "assumed friend").
+    AssumedFriend,
+}
+
+impl Affiliation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Affiliation::Unknown => "unknown",
+            Affiliation::Suspect => "suspect",
+            Affiliation::Hostile => "hostile",
+            Affiliation::Neutral => "neutral",
+            Affiliation::AssumedFriend => "assumed_friend",
+        }
+    }
+
+    /// The 2525 affiliation letter (second SIDC character).
+    pub fn sidc_char(self) -> char {
+        match self {
+            Affiliation::Unknown => 'U',
+            Affiliation::Suspect => 'S',
+            Affiliation::Hostile => 'H',
+            Affiliation::Neutral => 'N',
+            Affiliation::AssumedFriend => 'A',
+        }
+    }
+}
+
+/// What the bridge's tracker knows about one contact that is not ours (Phase C2). Every
+/// field is an estimate from our own sensors; staleness (`last_seen_t` against the
+/// snapshot's `t`) and `pos_sigma_m` are first class so engagement checks (Phase E) can
+/// refuse an old or loose picture. Absent in logs written before tracks existed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TrackFacts {
+    /// Last estimated position and when it was observed.
+    pub position: Fact<LonLat>,
+    /// Estimated altitude (negative: depth), metres, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alt_m: Option<f64>,
+    /// Estimated velocity east, north in m/s, when the track has enough history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub velocity_mps: Option<[f64; 2]>,
+    /// 1-sigma horizontal position uncertainty at `t`, metres; grows with age.
+    pub pos_sigma_m: f64,
+    /// Track existence confidence, 0..1.
+    pub confidence: f64,
+    pub affiliation: Fact<Affiliation>,
+    /// Confidence in the affiliation, 0..1.
+    pub affiliation_confidence: f64,
+    /// Estimated kind (e.g. "ferry", "small_fast_boat") and confidence, when classified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<String>,
+    pub identity_confidence: f64,
+    /// Our sensors behind the track, as "<uid>:<sensor>" (e.g. "3:radar").
+    pub sources: Vec<String>,
+    pub domain: crate::catalog::Domain,
+    /// When the track was last updated by a detection.
+    pub last_seen_t: Time,
+    /// An operator declared the affiliation (`by`), overriding the estimate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declared_by: Option<String>,
+}
+
 /// Where a vehicle's horizontal position comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -181,6 +259,10 @@ pub struct WorldSnapshot {
     /// Collect and cover only; engine-filled like `terrain`.
     #[serde(default, skip_serializing_if = "SpaceInputs::is_not_queried")]
     pub space: SpaceInputs,
+    /// Tracks of contacts that are not ours, keyed by track id (Phase C2). Perception
+    /// only. Empty (and absent in the log) when there are none or in logs from before.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tracks: BTreeMap<String, TrackFacts>,
 }
 
 /// A decision's inputs as logged: the [`WorldSnapshot`] with the area set replaced by its
@@ -197,6 +279,9 @@ pub struct LoggedInputs {
     /// Collect and cover only (absent otherwise, so vehicle decisions log as before).
     #[serde(default, skip_serializing_if = "LoggedSpace::is_not_queried")]
     pub space: LoggedSpace,
+    /// The track picture the decision was taken against (absent when empty).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tracks: BTreeMap<String, TrackFacts>,
 }
 
 impl LoggedInputs {
@@ -216,6 +301,7 @@ impl LoggedInputs {
                     sha256: sha256.clone(),
                 },
             },
+            tracks: world.tracks.clone(),
         }
     }
 
@@ -253,6 +339,7 @@ impl LoggedInputs {
             areas,
             terrain: self.terrain.clone(),
             space,
+            tracks: self.tracks.clone(),
         }
     }
 }
@@ -266,8 +353,8 @@ impl WorldSnapshot {
     }
 
     /// The part of the world an intent's rules can read: its vehicles (and a track target),
-    /// the areas, and terrain. This is what gets logged (as [`LoggedInputs`], the area set
-    /// replaced by its hash).
+    /// the areas, terrain and the track picture. This is what gets logged (as
+    /// [`LoggedInputs`], the area set replaced by its hash).
     pub fn subset_for(&self, spec: &IntentSpec) -> WorldSnapshot {
         let mut wanted: Vec<&Uid> = spec.uids.iter().collect();
         if let Task::Track { target } = &spec.task {
@@ -284,6 +371,9 @@ impl WorldSnapshot {
             terrain: self.terrain.clone(),
             // Engine-owned: filled from the space oracle for collect and cover.
             space: SpaceInputs::NotQueried,
+            // The whole track picture: few tracks, and an engagement decision (Phase E)
+            // must be replayable against exactly the picture it saw.
+            tracks: self.tracks.clone(),
         }
     }
 

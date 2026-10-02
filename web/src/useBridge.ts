@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { getOperator, type Decisions, type Intent, type Authorization } from './decisions'
+import type { TracksMessage } from './tracks'
 import type { BridgeState, LngLat, TaskKind, Tasking, Vehicle } from './types'
 
 const TRAIL_MAX = 120 // same cap as the bridge keeps
@@ -47,6 +48,8 @@ export function useBridge() {
   const [state, setState] = useState<BridgeState | null>(null)
   const [status, setStatus] = useState<BridgeStatus>('connecting')
   const [decisions, setDecisions] = useState<Decisions | null>(null)
+  // tracks of contacts that are not ours (Phase C2): sent whole whenever one changes
+  const [tracks, setTracks] = useState<TracksMessage | null>(null)
   const retry = useRef(0)
 
   useEffect(() => {
@@ -69,6 +72,8 @@ export function useBridge() {
           setState(current)
         } else if (msg.type === 'decisions') {
           setDecisions({ inbox: msg.inbox, intents: msg.intents })
+        } else if (msg.type === 'tracks') {
+          setTracks(msg as TracksMessage)
         } else if (msg.type === 'delta' && current) {
           current = withAges(applyDelta(current, msg as Delta))
           setState(current)
@@ -89,7 +94,7 @@ export function useBridge() {
     }
   }, [])
 
-  return { state, status, decisions }
+  return { state, status, decisions, tracks }
 }
 
 export interface TaskRequest {

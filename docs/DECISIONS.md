@@ -45,6 +45,25 @@ group. Dates are 2026.
 
 ## Fleet and simulation
 
+- **Truth and perception in separate processes, on a labelled channel** (10-02, Phase C2).
+  Contacts that are not ours run in `crates/murmur-contacts`, not in the stand-in engine:
+  stand-ins are our vehicles and speak their real protocol; contacts have none, and the
+  C2 must learn about them only through the sensing model. The contacts process posts
+  truth to `POST /api/sim/contacts`; the bridge keeps it in the `tracks` module, reads it
+  only for sensing, and serves it back only on `GET /api/sim/truth` with
+  `MURMUR_EVAL_TRUTH=1` (evaluation). A unit test asserts no truth field reaches
+  `/api/tracks`, the WebSocket, the decision snapshot or CoT.
+- **Hostile is declared, never inferred** (10-02). The tracker derives unknown, suspect,
+  neutral and assumed friend from identity evidence (AIS, classification, speed
+  plausibility, conflicts); hostile takes an operator's declaration, logged as an
+  `operator.action`. The same discipline as "agents don't authorize": the consequential
+  label is a human act.
+- **Sensing runs in the bridge, association is by contact id** (10-02). One seeded model
+  in the bridge (which already loads the catalog and knows our vehicles) rather than in the
+  contacts process; detections are associated to tracks by the simulation's contact id
+  (private, never serialized) as a stated simplification; a dropped track seen again
+  gets a new id. A gating tracker, terrain masking and clutter are future work.
+
 - **Default fleet: one node of each platform type** (`full-spectrum`, 22 nodes) (10-02). The
   user wants the whole capability list shown, not copies. `scale-100` exists only for load
   tests.

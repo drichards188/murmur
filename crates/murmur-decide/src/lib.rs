@@ -241,5 +241,6 @@ pub use space::{
 pub use terrain::{NoTerrain, PolygonTerrain, Surface, TerrainOracle};
 pub use time::{Clock, ManualClock, SystemClock, Time};
 pub use world::{
-    Fact, LoggedInputs, LoggedSpace, SpaceInputs, TerrainInputs, VehicleFacts, WorldSnapshot,
+    Affiliation, Fact, LoggedInputs, LoggedSpace, SpaceInputs, TerrainInputs, TrackFacts,
+    VehicleFacts, WorldSnapshot,
 };

@@ -1,0 +1,200 @@
+# Golden Gate traffic: contacts that are not ours, for the Phase C2 sensing and tracks work.
+# Run by crates/murmur-contacts (up.sh starts it when MURMUR_CONTACTS names this file).
+# Format: crates/murmur-contacts/src/scenario.rs. Points are [lon, lat] (GeoJSON order, as
+# tasks and areas), unlike fleet spawns. Routes approximate the real ferry runs and the
+# deep-water shipping lane through the Gate; identities (names, MMSIs) are fictional.
+# Everything here is truth: the console and agents only ever see what our sensors make of it.
+title = "Golden Gate traffic"
+seed = 7
+
+[sensing]
+misclassification_rate = 0.05    # a classifier is wrong this often, per track
+
+# ---------------------------------------------------------------- ferries (AIS, neutral)
+[[contact]]
+id = "ferry-sausalito"
+name = "Sausalito ferry (Ferry Building to Sausalito)"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 10
+motion = "route"
+route = [[-122.3905, 37.7960], [-122.4120, 37.8130], [-122.4400, 37.8220], [-122.4620, 37.8390], [-122.4770, 37.8560]]
+reverse = true
+dwell_s = 600
+ais = { mmsi = "366999101", name = "MV GOLDEN BEAR", ship_type = "passenger" }
+
+[[contact]]
+id = "ferry-larkspur"
+name = "Larkspur ferry (Ferry Building to Larkspur via Raccoon Strait)"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 12
+motion = "route"
+route = [[-122.3905, 37.7960], [-122.4120, 37.8180], [-122.4170, 37.8380], [-122.4500, 37.8600], [-122.4480, 37.8740], [-122.4700, 37.8880], [-122.4950, 37.9300], [-122.5070, 37.9440]]
+reverse = true
+dwell_s = 600
+start_s = 240
+ais = { mmsi = "366999102", name = "MV MARIN CREST", ship_type = "passenger" }
+
+[[contact]]
+id = "ferry-oakland"
+name = "Oakland ferry (Ferry Building to Jack London Square)"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 11
+motion = "route"
+route = [[-122.3905, 37.7960], [-122.3750, 37.7990], [-122.3550, 37.7980], [-122.3300, 37.7950], [-122.2900, 37.7900]]
+reverse = true
+dwell_s = 480
+ais = { mmsi = "366999103", name = "MV ESTUARY", ship_type = "passenger" }
+
+# ---------------------------------------------------------------- shipping lane (AIS, neutral)
+[[contact]]
+id = "cargo-inbound"
+name = "Container ship inbound to Oakland"
+affiliation = "neutral"
+domain = "surface"
+kind = "cargo_ship"
+speed_mps = 7
+motion = "transit"
+route = [[-122.5600, 37.7900], [-122.5100, 37.8060], [-122.4790, 37.8180], [-122.4300, 37.8360], [-122.4000, 37.8220], [-122.3830, 37.8030], [-122.3550, 37.8080], [-122.3420, 37.8100]]
+ais = { mmsi = "366999201", name = "MSC AURELIA", ship_type = "cargo" }
+
+[[contact]]
+id = "cargo-outbound"
+name = "Bulk carrier outbound from Richmond"
+affiliation = "neutral"
+domain = "surface"
+kind = "cargo_ship"
+speed_mps = 6
+motion = "transit"
+route = [[-122.4100, 37.9200], [-122.4150, 37.8780], [-122.4200, 37.8450], [-122.4600, 37.8260], [-122.4790, 37.8170], [-122.5500, 37.7950], [-122.6800, 37.7500]]
+ais = { mmsi = "366999202", name = "PACIFIC HARVESTER", ship_type = "cargo" }
+
+[[contact]]
+id = "cargo-anchored"
+name = "Car carrier at anchor south of the Bay Bridge"
+affiliation = "neutral"
+domain = "surface"
+kind = "cargo_ship"
+motion = "station"
+at = [-122.3700, 37.7850]
+ais = { mmsi = "366999203", name = "GLOVIS SONATA", ship_type = "cargo" }
+
+# ---------------------------------------------------------------- fishing and leisure
+[[contact]]
+id = "fishing-bonita"
+name = "Crab boat drifting off Point Bonita (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+motion = "drift"
+at = [-122.5400, 37.8050]
+
+[[contact]]
+id = "fishing-milerock"
+name = "Sport fishing boat drifting off Mile Rock (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+motion = "drift"
+at = [-122.5200, 37.7850]
+
+[[contact]]
+id = "fishing-wharf"
+name = "Trawler from Fisherman's Wharf to the grounds (AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+speed_mps = 5
+motion = "route"
+route = [[-122.4150, 37.8120], [-122.4600, 37.8230], [-122.4790, 37.8190], [-122.5500, 37.7800]]
+reverse = true
+dwell_s = 900
+ais = { mmsi = "366999301", name = "F/V ANNA MARIE", ship_type = "fishing" }
+
+[[contact]]
+id = "sailboat-bay"
+name = "Sailing yacht on a lap of the central bay (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "sailboat"
+speed_mps = 3
+motion = "route"
+route = [[-122.4500, 37.8150], [-122.4650, 37.8300], [-122.4400, 37.8400], [-122.4200, 37.8180]]
+
+# ---------------------------------------------------------------- air
+[[contact]]
+id = "cessna-sightseeing"
+name = "Light aircraft on a sightseeing loop (transponder on)"
+affiliation = "neutral"
+domain = "air"
+kind = "light_aircraft"
+speed_mps = 55
+alt_m = 450
+motion = "route"
+route = [[-122.3700, 37.7600], [-122.4500, 37.8100], [-122.5200, 37.8300], [-122.4400, 37.8700]]
+
+[[contact]]
+id = "uas-headlands"
+name = "Small UAS loitering by the north tower (no transponder)"
+affiliation = "unknown"
+domain = "air"
+kind = "unknown_uas"
+speed_mps = 15
+alt_m = 120
+motion = "loiter"
+center = [-122.4790, 37.8260]
+radius_m = 300
+start_s = 120
+
+# ---------------------------------------------------------------- unknowns and the suspect
+[[contact]]
+id = "dark-boat-baker"
+name = "Small craft holding off Baker Beach, no AIS, no lights"
+affiliation = "unknown"
+domain = "surface"
+kind = "small_fast_boat"
+motion = "station"
+at = [-122.4900, 37.7950]
+
+[[contact]]
+id = "fastboat-richardson"
+name = "Fast boat out of Richardson Bay with a spoofed fishing-vessel AIS"
+affiliation = "hostile"
+domain = "surface"
+kind = "small_fast_boat"
+speed_mps = 15
+motion = "route"
+route = [[-122.4760, 37.8560], [-122.4740, 37.8360], [-122.4790, 37.8230], [-122.4900, 37.8100]]
+reverse = true
+dwell_s = 240
+start_s = 300
+ais = { mmsi = "366999302", name = "F/V PACIFIC DAWN", ship_type = "fishing", spoofed = true }
+
+[[contact]]
+id = "sub-approach"
+name = "Submerged contact entering the Gate at 40 m"
+affiliation = "suspect"
+domain = "subsurface"
+kind = "submarine"
+speed_mps = 3
+alt_m = -40
+motion = "transit"
+route = [[-122.5600, 37.8000], [-122.5000, 37.8080], [-122.4850, 37.8150], [-122.4700, 37.8220]]
+
+# ---------------------------------------------------------------- not ours but friendly
+[[contact]]
+id = "uscg-cutter"
+name = "Coast guard patrol boat on station in the central bay (AIS)"
+affiliation = "assumed_friend"
+domain = "surface"
+kind = "patrol_boat"
+speed_mps = 6
+motion = "loiter"
+center = [-122.4350, 37.8200]
+radius_m = 1200
+ais = { mmsi = "366999401", name = "CGC TERN", ship_type = "law_enforcement" }

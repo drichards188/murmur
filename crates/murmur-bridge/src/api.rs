@@ -11,8 +11,9 @@
 //! /api/intents/{id}/approve|reject|cancel` (optional body `{"note": "..."}`), `GET
 //! /api/inbox`. These name the operator in the `X-Murmur-Operator` header, which must be one
 //! of `MURMUR_OPERATORS`: a placeholder for real authentication. The WebSocket also sends
-//! `{"type": "decisions", "inbox": ..., "intents": [...]}` on connect and whenever it changes
-//! (existing clients ignore message types they don't know).
+//! `{"type": "decisions", "inbox": ..., "intents": [...]}` and `{"type": "tracks", ...}`
+//! (Phase C2, see `tracks`) on connect and whenever they change (existing clients ignore
+//! message types they don't know).
 
 use std::sync::Arc;
 
@@ -33,6 +34,7 @@ use crate::decision::{Decision, DecisionError, IntentRequest, Outcome};
 use crate::platforms;
 use crate::push::{self, ClientView, PushFrame, TrailCache};
 use crate::tasks::TaskRequest;
+use crate::tracks::Tracks;
 use crate::world::World;
 
 pub const OPERATOR_HEADER: &str = "x-murmur-operator";
@@ -42,6 +44,8 @@ pub struct App {
     pub world: Arc<World>,
     pub frames: Arc<watch::Sender<Option<Arc<PushFrame>>>>,
     pub decision: Arc<Decision>,
+    /// contacts that are not ours, as our sensors see them (Phase C2)
+    pub tracks: Arc<Tracks>,
 }
 
 pub fn router(app: App) -> Router {
@@ -57,6 +61,11 @@ pub fn router(app: App) -> Router {
         .route("/ws", get(ws))
         .merge(crate::space::router(app.world.clone()))
         .merge(crate::cot::router())
+        .merge(crate::tracks::router(
+            app.tracks.clone(),
+            app.world.clone(),
+            app.decision.clone(),
+        ))
         .with_state(app)
 }
 
@@ -297,6 +306,16 @@ async fn client(mut socket: WebSocket, app: App) {
     {
         return;
     }
+    // tracks: another message type, sent whole whenever a track changes
+    let mut tracks = app.tracks.subscribe();
+    let first = tracks.borrow_and_update().clone();
+    if socket
+        .send(Message::Text(first.as_str().into()))
+        .await
+        .is_err()
+    {
+        return;
+    }
     loop {
         tokio::select! {
             changed = decisions.changed() => {
@@ -304,6 +323,15 @@ async fn client(mut socket: WebSocket, app: App) {
                     break;
                 }
                 let msg = decisions.borrow_and_update().clone();
+                if socket.send(Message::Text(msg.as_str().into())).await.is_err() {
+                    break;
+                }
+            }
+            changed = tracks.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let msg = tracks.borrow_and_update().clone();
                 if socket.send(Message::Text(msg.as_str().into())).await.is_err() {
                     break;
                 }

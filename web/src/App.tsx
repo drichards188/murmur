@@ -10,6 +10,9 @@ import type { Catalog, LinksNow, Overhead, SpaceOverlay } from './space'
 import { usePoll } from './space'
 import { SpacePanel, type SpaceSelection } from './SpacePanel'
 import { TaskPanel } from './TaskPanel'
+import type { TrackView } from './trackLayers'
+import { TracksButton, TracksPanel } from './TracksPanel'
+import { type Track, trackPredicted } from './tracks'
 import { VehicleDetails } from './VehicleDetails'
 import type { LngLat, Vehicle } from './types'
 import { DOMAIN_LABEL, domainOf, isStale } from './types'
@@ -50,8 +53,10 @@ function useUtcClock() {
 const byUidDetails = (vs: Vehicle[], uid: number) => vs.find((v) => v.uid === uid)
 
 export default function App() {
-  const { state, status, decisions } = useBridge()
+  const { state, status, decisions, tracks } = useBridge()
   const clock = useUtcClock()
+  const [showTracks, setShowTracks] = useState(false)
+  const [selectedTrack, setSelectedTrack] = useState<string | null>(null)
   const fps = usePerfMeter()
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [detailsUid, setDetailsUid] = useState<number | null>(null)
@@ -95,6 +100,21 @@ export default function App() {
 
   const vehicles = state?.vehicles ?? []
   const now = useBridgeClock(state?.t)
+  // tracks on the map: ages advance with the bridge clock (useBridgeClock re-renders twice a second)
+  const trackTick = tracks?.tracks.length ? Math.floor(now() / 500) : 0
+  const trackView = useMemo<TrackView>(
+    () => ({ tracks: tracks?.tracks ?? [], nowMs: now(), selected: selectedTrack, staleAfterS: tracks?.stale_after_s ?? 10 }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tracks, selectedTrack, trackTick],
+  )
+  const onTrackClick = useCallback((id: string) => {
+    setSelectedTrack((cur) => (cur === id ? null : id))
+    setShowTracks(true)
+  }, [])
+  const focusTrack = useCallback(
+    (t: Track) => setFit((f) => ({ points: [trackPredicted(t, now())], n: (f?.n ?? 0) + 1, padRight: 400 })),
+    [now],
+  )
   const { mem: alertMem, hidden: hiddenAlerts } = useHiddenAlerts(decisions)
   const pending = decisions?.inbox.pending
   const pendingIds = useMemo(() => new Set((pending ?? []).map((i) => i.id)), [pending])
@@ -185,6 +205,7 @@ export default function App() {
         </span>
         <span className={`pill ${status}`}>{status === 'live' ? 'BRIDGE LIVE' : status === 'down' ? 'BRIDGE DOWN' : 'CONNECTING'}</span>
         <InboxButton decisions={decisions} open={showInbox} hiddenAlerts={hiddenAlerts} onClick={() => setShowInbox((v) => !v)} />
+        <TracksButton tracks={tracks} open={showTracks} now={now} onClick={() => setShowTracks((v) => !v)} />
         <button className={`ghost platforms-btn ${showSpace ? 'on' : ''}`} onClick={() => setShowSpace((v) => !v)} title="Space timeline: imaging access, SATCOM, GNSS">
           Space
         </button>
@@ -226,7 +247,20 @@ export default function App() {
           onMapClick={onMapClick}
           space={overlay}
           onView={onView}
+          tracks={trackView}
+          onTrackClick={onTrackClick}
         />
+        {showTracks && (
+          <TracksPanel
+            tracks={tracks}
+            vehicles={vehicles}
+            now={now}
+            selected={selectedTrack}
+            onSelect={setSelectedTrack}
+            onFocus={focusTrack}
+            onClose={() => setShowTracks(false)}
+          />
+        )}
         {showGlobe && (
           <GlobeInset
             center={mapView?.center ?? null}

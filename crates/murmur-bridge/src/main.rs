@@ -22,6 +22,7 @@ mod platforms;
 mod push;
 mod space;
 mod tasks;
+mod tracks;
 mod vehicle;
 mod world;
 
@@ -46,10 +47,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !decision.terrain_configured() {
         println!("no MURMUR_TIDEWATER_URL: the domain rule records \"not evaluated\"");
     }
+    // tracks of contacts that are not ours (Phase C2): sensors from the catalog
+    let tracks = tracks::init(&world.cfg.platforms).map_err(|e| format!("tracks: {e}"))?;
+    if tracks.eval_truth_enabled() {
+        println!("MURMUR_EVAL_TRUTH=1: GET /api/sim/truth serves simulation truth (evaluation only)");
+    }
     world.load_manifest();
     world.ensure_ports().await;
     tokio::spawn(world.clone().housekeeping());
     tokio::spawn(decision.clone().run());
+    tokio::spawn(tracks.clone().run());
 
     let frames = Arc::new(watch::channel(None).0);
     tokio::spawn(push::pusher(world.clone(), frames.clone()));
@@ -63,6 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             world,
             frames,
             decision,
+            tracks,
         }),
     )
     .await?;

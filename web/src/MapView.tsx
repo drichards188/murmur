@@ -11,6 +11,8 @@ import type { SpaceOverlay } from './space'
 import { EMPTY_OVERLAY } from './space'
 import { linkStubs, spaceFeatures, spaceLinkLayers } from './spaceLayers'
 import { symbolSvg } from './symbols'
+import { EMPTY_TRACK_VIEW, trackLayers, type TrackView } from './trackLayers'
+import type { Track } from './tracks'
 import type { LngLat, Tasking, Vehicle } from './types'
 import { callsign, isStale } from './types'
 
@@ -44,6 +46,9 @@ interface Props {
   space?: SpaceOverlay
   /** the view after every move: centre and bounds (w, s, e, n) */
   onView?: (center: LngLat, bounds: [number, number, number, number]) => void
+  /** tracks of contacts that are not ours (Phase C2), drawn by trackLayers.ts */
+  tracks?: TrackView
+  onTrackClick?: (id: string) => void
 }
 
 /** pending-approval previews from the inbox: dashed violet, the one being read in bold */
@@ -263,13 +268,15 @@ function setSpaceData(m: maplibregl.Map, space: SpaceOverlay, view: ViewMode) {
 /** width of the vehicle details card (.vdetails) plus its margin */
 const FOLLOW_PAD_LEFT = 350
 
-export function MapView({ vehicles, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView }: Props) {
+export function MapView({ vehicles, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, tracks = EMPTY_TRACK_VIEW, onTrackClick }: Props) {
   const [view, setView] = useState<ViewMode>(savedView)
   const viewRef = useRef(view)
   const overlay = useRef<MapboxOverlay | null>(null)
   const bridges = useRef<LiftedBridge[]>([])
   const latest = useRef({ vehicles, selected, bare: new Set<number>() })
   const spaceRef = useRef(space)
+  const tracksRef = useRef(tracks)
+  const trackClickRef = useRef(onTrackClick)
   const previewRef = useRef(preview)
   const viewCb = useRef(onView)
   // bumped when the camera stops, so label declutter re-runs at the new scale
@@ -288,12 +295,14 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
     toggleRef.current = onToggle
     deselectRef.current = onDeselect
     viewCb.current = onView
-  }, [onMapClick, onToggle, onDeselect, onView])
+    trackClickRef.current = onTrackClick
+  }, [onMapClick, onToggle, onDeselect, onView, onTrackClick])
 
-  /** vehicles, bridges and SATCOM link lines for deck.gl (3D only; hidden layers in 2D) */
+  /** vehicles, bridges and SATCOM link lines for deck.gl (3D only; hidden layers in 2D), and
+   *  tracks (both views) */
   const deckLayers = (is3d: boolean) => {
     const { vehicles: vs, selected: sel, bare } = latest.current
-    return [...build3dLayers(vs, sel, is3d, bridges.current, bare), ...spaceLinkLayers(spaceRef.current.links, is3d)]
+    return [...build3dLayers(vs, sel, is3d, bridges.current, bare), ...spaceLinkLayers(spaceRef.current.links, is3d), ...trackLayers(tracksRef.current, is3d)]
   }
 
   useEffect(() => {
@@ -313,6 +322,12 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
     m.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'bottom-right')
     m.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left')
     m.on('click', (e: maplibregl.MapMouseEvent) => {
+      // tracks are deck.gl objects in both views: a click on one opens it
+      const track = deck.pickObject({ x: e.point.x, y: e.point.y, radius: 8, layerIds: ['tracks-icons'] })
+      if (track?.object) {
+        trackClickRef.current?.((track.object as Track).id)
+        return
+      }
       // in 3D, vehicles are deck.gl objects: a click on one selects it instead of drafting
       if (viewRef.current === '3d') {
         const hit = deck.pickObject({ x: e.point.x, y: e.point.y, radius: 6, layerIds: ['vehicles-3d'] })
@@ -610,6 +625,12 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
     overlay.current?.setProps({ layers: deckLayers(view === '3d') })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [space, view])
+
+  useEffect(() => {
+    tracksRef.current = tracks
+    if (map.current) overlay.current?.setProps({ layers: deckLayers(view === '3d') })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tracks, view])
 
   const vehiclesRef = useRef(vehicles)
   useEffect(() => {

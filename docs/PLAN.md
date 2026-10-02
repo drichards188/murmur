@@ -143,18 +143,40 @@ Exit: replay reproduces a run's decisions exactly from its log.
 
 ## Phase C2: tracks and sensing
 
-- Scenario contacts that are not ours: hostile, suspect, neutral shipping, civilian, unknown,
-  generated per scenario (start in `sim/contacts.py`, run with the stand-ins) with simple
-  motion. Keep **truth** (simulator) and **perception** (bridge tracks) separate: evaluation
-  needs both.
-- Sensing model: platforms get `sensor_range_m` and `sensor_type` in `platforms.toml`;
-  detection probability falls with range; identity confidence grows with dwell and number of
-  independent sensors; an injectable misclassification rate.
-- Tracks in the bridge world model with `confidence`, `sources`, `last_seen_t`, position
-  uncertainty that grows with age. Staleness is a first-class fact on everything agents read.
-- Map: 2525 affiliation symbols (hostile/neutral/unknown), fading with age.
+Built (first cut; see the module docs named here for the figures and the simplifications):
 
-Exit: tracks visibly age and degrade in the console.
+- **Contacts that are not ours** (`crates/murmur-contacts`, `sim/scenarios/golden-gate.toml`):
+  ferries on their routes, ships in the lane, fishing boats drifting on the tidewater
+  current, a light aircraft, an unknown UAS, a submarine, a suspect fast boat with a spoofed
+  AIS identity, a coast guard cutter. Simple motion (route, transit, loiter, station,
+  drift), seeded. **Truth** goes to the bridge only on the labelled simulation channel
+  (`POST /api/sim/contacts`) and to `logs/contacts-truth.jsonl` for evaluation; the bridge
+  serves it back only on `GET /api/sim/truth` with `MURMUR_EVAL_TRUTH=1`.
+  `MURMUR_CONTACTS=<scenario>` makes `up.sh` run it; `make goldengate` does by default.
+- **Sensing model** (`sim/platforms.toml` `sensors = [{type, range_m, guess}]`, `mast_m`;
+  `crates/murmur-bridge/src/tracks/sensing.rs`): detections only from our platforms' radar,
+  EO/IR, AIS receiver, sonar and ESM; probability falls with range (0.5 at the nominal range,
+  zero past 1.5x) and stops at the radio horizon; subsurface contacts are sonar-only; AIS
+  gives a cooperative identity (absent or spoofed for a suspect); EO/IR and sonar classify
+  slowly with dwell, radar and ESM give a class only; identity confidence combines across
+  independent sensors; a per-scenario misclassification rate; every draw seeded.
+- **Tracks** (`crates/murmur-bridge/src/tracks/`): position and velocity estimate, 1-sigma
+  uncertainty growing with age, existence confidence that decays in silence, identity and
+  affiliation estimates with confidence and the reason, sources, `last_seen_t`; stale after
+  10 s, dropped after 180 s. Hostile is never inferred: an operator declares it
+  (`POST /api/tracks/{id}/declare`, logged as `operator.action`). Exposed on
+  `GET /api/tracks`, the WebSocket `tracks` message, `WorldSnapshot.tracks` (additive; old
+  logs replay unchanged) and the CoT export with the estimated affiliation as the TAK type.
+- **Console**: tracks as 2525 symbols with the estimated affiliation (hostile red, suspect
+  red dashed, unknown yellow, neutral green, assumed friend blue) in both views, an
+  uncertainty ring that grows and a symbol that fades with age, a Tracks drawer ranked
+  hostile/suspect/unknown first, and per-track details (sources, confidence, age,
+  identity conflicts, declaration).
+
+Stated simplifications: association by the simulation's contact id (no gating tracker),
+no terrain masking (the link emulator's DEM line of sight could feed this), no clutter or
+false tracks, sensor figures are "-class" guesses. Exit met: tracks visibly age and degrade
+in the console (`sim/fleets/contacts-demo.toml` shows coverage gaps at the Gate).
 
 ## Phase D: degraded links
 

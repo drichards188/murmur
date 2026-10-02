@@ -28,6 +28,19 @@
 # protocol_note, authenticity, authenticity_blocker: one line each, shown in the Platforms
 #        panel: why that protocol, what maximum authenticity would take, and what stops it
 #        (omitted when nothing does). Source of truth: docs/AUTHENTICITY.md.
+#
+# sensors: what the platform can detect contacts with (Phase C2 sensing model, read by the
+#        bridge's tracker: crates/murmur-bridge/src/tracks/sensing.rs). One or more of
+#          { type = "radar"|"eo_ir"|"ais"|"sonar"|"esm", range_m = N, guess = true }
+#        range_m is the range at which a nominal contact (signature 1.0) is detected with
+#        probability 0.5; detection falls off steeply beyond it and is zero past 1.5x. Air,
+#        surface and ground contacts need radar, EO/IR or ESM (and a radio horizon); AIS
+#        hears cooperative ships only; subsurface contacts are heard by sonar alone. These
+#        are "-class" ballpark figures from public descriptions, rounded; guess = true marks
+#        the ones that are an estimate rather than a published number (most of them).
+#        No sensors: the platform sees nothing (antenna tracker).
+# mast_m: height of a surface vessel's sensors above the water, for the radio horizon
+#        (default 3 m; aircraft use their altitude, submerged vehicles have no horizon).
 
 # ---------------------------------------------------------------- air
 [rq4]
@@ -49,6 +62,7 @@ link = "satcom"
 space_class = "wgs"
 space_class_alt = "ku-geo"
 sidc = "SFAPMFQ--------"
+sensors = [{ type = "radar", range_m = 200000, guess = true }, { type = "eo_ir", range_m = 50000, guess = true }, { type = "esm", range_m = 300000, guess = true }]
 protocol = "stanag4586"
 protocol_note = "Interop path via a STANAG 4586 vehicle-specific module; the real ground segment is the manufacturer's own"
 authenticity = "JSBSim HALE airframe, a 4586 interface and SATCOM latency and bandwidth"
@@ -73,6 +87,7 @@ link = "satcom"
 space_class = "wgs"
 space_class_alt = "ku-geo"
 sidc = "SFAPMFQ--------"
+sensors = [{ type = "radar", range_m = 100000, guess = true }, { type = "eo_ir", range_m = 40000, guess = true }, { type = "ais", range_m = 150000, guess = true }]
 protocol = "stanag4586"
 protocol_note = "GA-ASI's ground control station is STANAG 4586-based"
 authenticity = "JSBSim MALE airframe plus 4586 (matches GA-ASI's 4586-based GCS)"
@@ -95,6 +110,7 @@ loiter_radius_m = 6000
 endurance_h = 3
 link = "los"
 sidc = "SFAPMFQ--------"
+sensors = [{ type = "radar", range_m = 150000, guess = true }, { type = "eo_ir", range_m = 30000, guess = true }, { type = "esm", range_m = 200000, guess = true }]
 protocol = "uci"
 protocol_note = "A-GRA, UCI and OMS are controlled distribution; stays on the generic intent API"
 authenticity = "A-GRA/UCI interface plus a JSBSim jet model"
@@ -110,6 +126,7 @@ vehicle = "vtol"
 callsign = "KESTREL"
 link = "los"
 sidc = "SFAPMFQ--------"
+sensors = [{ type = "eo_ir", range_m = 10000, guess = true }]
 protocol = "stanag4586"
 protocol_note = "STANAG 4586 is plausible if Army or NATO; the real GCS is proprietary"
 authenticity = "ArduPilot QuadPlane SITL tuned to the airframe (mass, speeds), plus 4586 if Army/NATO"
@@ -130,6 +147,7 @@ vehicle = "plane"
 callsign = "PUMA"
 link = "los"
 sidc = "SFAPMFQ--------"
+sensors = [{ type = "eo_ir", range_m = 4000, guess = true }]
 protocol = "proprietary"
 protocol_note = "AV's ground station and datalink are proprietary; MAVLink in the sim, labelled as such"
 authenticity = "ArduPilot SITL tuned to the airframe, plus AV's DDL link profile"
@@ -150,6 +168,7 @@ vehicle = "plane"
 callsign = "BLADE"
 link = "los"
 sidc = "SFAPMFQ--------"
+sensors = [{ type = "eo_ir", range_m = 3000, guess = true }]
 protocol = "proprietary"
 protocol_note = "AV's fire-control system is proprietary; MAVLink in the sim, labelled as such"
 authenticity = "ArduPilot SITL tuned to loiter and dash speeds"
@@ -169,6 +188,7 @@ vehicle = "copter"
 callsign = "SKY"
 link = "mesh"
 sidc = "SFAPMHQ--------"
+sensors = [{ type = "eo_ir", range_m = 1500, guess = true }]
 protocol = "proprietary"
 protocol_note = "Skydio's stack is proprietary; MAVLink in the sim, labelled as such"
 authenticity = "ArduPilot or PX4 SITL plus Gazebo for vision-based obstacle avoidance; CoT to TAK"
@@ -190,6 +210,7 @@ vehicle = "copter"
 callsign = "WASP"
 link = "mesh"
 sidc = "SFAPMHQ--------"
+sensors = [{ type = "eo_ir", range_m = 500, guess = true }]
 protocol = "rc"
 protocol_note = "Pilot RC link (ExpressLRS-style or fiber); no C2 protocol exists"
 authenticity = "Betaflight SITL plus an RC link model (ExpressLRS-style, fiber); realistically human-piloted"
@@ -211,6 +232,7 @@ behavior = "blimp"
 callsign = "ZEP"
 link = "los"
 sidc = "SFAPML---------"
+sensors = [{ type = "eo_ir", range_m = 8000, guess = true }, { type = "ais", range_m = 30000, guess = true }]
 protocol = "mavlink"
 protocol_note = "Small airships run ArduPilot Blimp, which speaks MAVLink natively"
 authenticity = "ArduPilot Blimp SITL (already authentic for small airships)"
@@ -231,6 +253,7 @@ behavior = "ugv"
 callsign = "MULE"
 link = "mesh"
 sidc = "SFGPEV---------"
+sensors = [{ type = "eo_ir", range_m = 1000, guess = true }]
 protocol = "jaus"
 protocol_note = "US program-of-record UGVs use JAUS (Army UGV IOP); Ukrainian builds often use MAVLink"
 authenticity = "JAUS/IOP interface plus Gazebo terrain and obstacles; or MAVLink plus a Starlink link profile for Ukrainian-style builds"
@@ -250,6 +273,7 @@ behavior = "ugv"
 callsign = "BULL"
 link = "mesh"
 sidc = "SFGPEV---------"
+sensors = [{ type = "eo_ir", range_m = 2000, guess = true }]
 protocol = "jaus"
 protocol_note = "US program-of-record UGVs use JAUS (Army UGV IOP); Ukrainian builds often use MAVLink"
 authenticity = "Same as the logistics UGV"
@@ -268,6 +292,7 @@ behavior = "ugv"
 callsign = "MOLE"
 link = "mesh"
 sidc = "SFGPEV---------"
+sensors = [{ type = "eo_ir", range_m = 800, guess = true }]
 protocol = "jaus"
 protocol_note = "US program-of-record UGVs use JAUS (Army UGV IOP); Ukrainian builds often use MAVLink"
 authenticity = "Same as the logistics UGV"
@@ -286,6 +311,7 @@ behavior = "ugv"
 callsign = "FERRET"
 link = "mesh"
 sidc = "SFGPEV---------"
+sensors = [{ type = "eo_ir", range_m = 2000, guess = true }]
 protocol = "jaus"
 protocol_note = "US program-of-record UGVs use JAUS (Army UGV IOP); Ukrainian builds often use MAVLink"
 authenticity = "Same as the logistics UGV"
@@ -305,6 +331,7 @@ cruise_mps = 0
 callsign = "TRK"
 link = "tether"
 sidc = "SFGPE----------"
+sensors = []
 protocol = "mavlink"
 protocol_note = "ArduPilot AntennaTracker speaks MAVLink natively"
 authenticity = "ArduPilot AntennaTracker SITL (already authentic; mount reaches +/-170 deg about its start heading)"
@@ -321,6 +348,8 @@ callsign = "VIPER"
 link = "satcom"
 space_class = "starlink"
 sidc = "SFSP-----------"
+sensors = [{ type = "eo_ir", range_m = 5000, guess = true }, { type = "radar", range_m = 8000, guess = true }, { type = "ais", range_m = 15000, guess = true }]
+mast_m = 1.5
 protocol = "proprietary"
 protocol_note = "Control software is proprietary; MAVLink in the sim, labelled as such"
 authenticity = "Planing-hull dynamics (Gazebo/VRX) plus a satellite link model"
@@ -340,6 +369,8 @@ callsign = "MARLIN"
 link = "satcom"
 space_class = "starlink"
 sidc = "SFSP-----------"
+sensors = [{ type = "radar", range_m = 20000, guess = true }, { type = "eo_ir", range_m = 8000, guess = true }, { type = "ais", range_m = 30000, guess = true }]
+mast_m = 4
 protocol = "proprietary"
 protocol_note = "Proprietary unless Navy-procured, in which case UMAA; MAVLink in the sim, labelled as such"
 authenticity = "UMAA over DDS plus VRX hydrodynamics"
@@ -365,6 +396,8 @@ endurance_h = 1000
 link = "satcom"
 space_class = "starlink"
 sidc = "SFSP-----------"
+sensors = [{ type = "radar", range_m = 40000, guess = true }, { type = "eo_ir", range_m = 15000, guess = true }, { type = "ais", range_m = 50000, guess = true }, { type = "sonar", range_m = 10000, guess = true }]
+mast_m = 10
 protocol = "umaa"
 protocol_note = "Navy programs use UMAA over DDS (public architecture description v1.1)"
 authenticity = "UMAA plus a ship maneuvering model (e.g. 3-DOF MMG) plus SATCOM"
@@ -383,6 +416,8 @@ link = "satcom"
 space_class = "starlink"
 space_class_alt = "iridium"
 sidc = "SFSP-----------"
+sensors = [{ type = "radar", range_m = 10000, guess = true }, { type = "eo_ir", range_m = 5000, guess = true }, { type = "ais", range_m = 30000, guess = true }]
+mast_m = 4
 protocol = "proprietary"
 protocol_note = "Vendor cloud API is proprietary; MAVLink in the sim, labelled as such"
 authenticity = "ArduPilot sailboat SITL with real wind (already close) plus an Iridium/Starlink link"
@@ -408,6 +443,8 @@ endurance_h = 2000
 link = "satcom"
 space_class = "iridium"
 sidc = "SFSP-----------"
+sensors = [{ type = "sonar", range_m = 3000, guess = true }]
+mast_m = 1
 protocol = "telemetry"
 protocol_note = "Iridium-style short messages; no commands exist"
 authenticity = "Drift = current + windage + waves, Iridium short-burst message format"
@@ -423,6 +460,7 @@ vehicle = "sub"
 callsign = "EEL"
 link = "tether"
 sidc = "SFUP-----------"
+sensors = [{ type = "sonar", range_m = 500, guess = true }]
 protocol = "mavlink"
 protocol_note = "ArduSub speaks MAVLink natively"
 authenticity = "ArduSub SITL (already authentic) plus Gazebo for camera and sonar"
@@ -447,6 +485,7 @@ loiter_radius_m = 150
 endurance_h = 24
 link = "acoustic"
 sidc = "SFUP-----------"
+sensors = [{ type = "sonar", range_m = 3000, guess = true }]
 protocol = "umaa"
 protocol_note = "Navy programs use UMAA over DDS; JANUS (STANAG 4748) for the acoustic link"
 authenticity = "UMAA over DDS, a JANUS acoustic link, an INS/DVL error model and ocean currents at depth (tidewater)"
@@ -469,6 +508,7 @@ loiter_radius_m = 600
 endurance_h = 1000
 link = "acoustic"
 sidc = "SFUP-----------"
+sensors = [{ type = "sonar", range_m = 8000, guess = true }]
 protocol = "umaa"
 protocol_note = "Navy programs use UMAA over DDS; JANUS (STANAG 4748) for the acoustic link"
 authenticity = "Same as REMUS"

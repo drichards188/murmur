@@ -1,0 +1,31 @@
+# Sensing and tracks demo (Phase C2): a small stand-in-only fleet around the Golden Gate
+# whose sensors cover only part of the bay, so the scenario's contacts (sim/scenarios/
+# golden-gate.toml) are picked up as they come into range and fade as they leave it.
+# No HALE/MALE aircraft here on purpose: their radars see the whole bay at once.
+#   MURMUR_CONTACTS=sim/scenarios/golden-gate.toml make goldengate GG_FLEET=contacts-demo
+title = "Contacts demo: partial sensor coverage at the Gate (stand-ins)"
+
+[[unit]]
+platform = "puma"                      # EO/IR, 4 km: classifies what passes the Gate
+sim = "standin"
+count = 1
+spawn = [37.8150, -122.4800, 80, 270]  # over the bridge
+[[unit]]
+platform = "x10"                       # EO/IR, 1.5 km
+sim = "standin"
+count = 1
+spawn = [37.8060, -122.4430, 5, 0]     # Crissy Field
+[[unit]]
+platform = "magura"                    # radar 8 km, EO/IR 5 km, AIS receiver
+sim = "standin"
+count = 1
+spawn = [37.8120, -122.4880, 0, 270]   # south side of the Gate
+[[unit]]
+platform = "remus"                     # sonar 3 km: the only way to hear the submarine
+sim = "standin"
+count = 1
+spawn = [37.8120, -122.5050, 0, 270]   # west of the Gate, at the surface until tasked
+[[unit]]
+platform = "buoy"                      # sonar 3 km, drifting with the tide
+count = 1
+spawn = [37.8150, -122.4900, 0, 0]
