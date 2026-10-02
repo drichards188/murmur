@@ -45,9 +45,13 @@ pub enum Cause {
     NoPeer,
     /// Socket send failed.
     Socket,
+    /// SATCOM: no satellite of the profile's constellation class above the terminal's mask.
+    NoSat,
+    /// SATCOM: the brief outage when the best satellite changes.
+    Handover,
 }
 
-pub const CAUSES: [Cause; 10] = [
+pub const CAUSES: [Cause; 12] = [
     Cause::Loss,
     Cause::EventLoss,
     Cause::Jam,
@@ -58,6 +62,8 @@ pub const CAUSES: [Cause; 10] = [
     Cause::Queue,
     Cause::NoPeer,
     Cause::Socket,
+    Cause::NoSat,
+    Cause::Handover,
 ];
 
 impl Cause {
@@ -73,6 +79,8 @@ impl Cause {
             Cause::Queue => "queue",
             Cause::NoPeer => "no_peer",
             Cause::Socket => "socket",
+            Cause::NoSat => "no_sat",
+            Cause::Handover => "handover",
         }
     }
     pub fn idx(self) -> usize {
@@ -109,6 +117,10 @@ pub struct Params {
     /// None when the profile does no terrain check.
     pub terrain: Option<TerrainParams>,
     pub propagation_mps: Option<f64>,
+    /// murmur-space constellation class this SATCOM link follows, if any.
+    pub space_class: Option<String>,
+    /// Outage when the best satellite changes.
+    pub handover_outage_ns: u64,
 }
 
 impl Params {
@@ -179,6 +191,8 @@ impl Params {
             down_when: p.down_when,
             terrain: (mode != TerrainMode::Off).then_some(TerrainParams { mode, ramp_m, los }),
             propagation_mps: p.propagation_mps,
+            space_class: p.space_class.clone().filter(|s| !s.is_empty()),
+            handover_outage_ns: ms_to_ns(p.handover_outage_ms.unwrap_or(0.0)),
         })
     }
 }
@@ -216,6 +230,8 @@ pub struct Cond {
     /// Loss from terrain obstruction in `ramp` mode.
     pub terrain_loss: f64,
     pub extra_latency_ns: u64,
+    /// Replaces the profile's `latency_ms` (SATCOM: latency from the best satellite).
+    pub base_latency_ns: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -322,7 +338,8 @@ impl DirState {
             return Verdict::Drop(Cause::Terrain);
         }
         let jitter = (r[5] * 2.0 - 1.0) * p.jitter_ns as f64;
-        let delay = (p.latency_ns as f64 + c.extra_latency_ns as f64 + jitter).max(0.0) as u64;
+        let base = c.base_latency_ns.unwrap_or(p.latency_ns);
+        let delay = (base as f64 + c.extra_latency_ns as f64 + jitter).max(0.0) as u64;
         let mut at = depart + delay;
         if !p.reorder {
             at = at.max(self.last_at_ns);

@@ -27,6 +27,16 @@
 #   fresnel_mhz / fresnel_clear   if fresnel_mhz is set, also keep fresnel_clear (default 0.6)
 #                 of the first Fresnel zone clear of terrain
 #   propagation_mps  adds slant range to the ground station / this speed to the latency
+#   space_class   SATCOM profiles only: a murmur-space constellation class (starlink, iridium,
+#                 wgs, ku-geo; see sim/space/constellations.toml). The link then follows real
+#                 satellite visibility for the vehicle's position on the scenario clock: down
+#                 when no satellite is above the mask (cause no_sat), one-way latency from the
+#                 best satellite's slant range plus the class's network latency, handovers
+#                 when the best satellite changes. latency_ms stays as the fallback (no element
+#                 sets, class unusable, no latency model). Needs `murmur-space fetch` once;
+#                 without it the profile uses its static numbers and says so in the log and
+#                 in /stats.
+#   handover_outage_ms   how long the link drops at a handover (default 0: only counted)
 
 seed = 1
 
@@ -36,11 +46,30 @@ submerged_depth_m = 1.0
 
 # Where the operator's radios are: Crissy Field, the Golden Gate fleets' launch site. alt_m is
 # the ground height there in metres above MSL (the DEM says 4.8 m at this spot); the antenna
-# heights in the profiles are added to it.
+# heights in the profiles (gs_antenna_m, the mast) are added to it. With tidewater configured
+# the emulator samples the DEM at the station at startup and warns if alt_m is more than 5 m
+# off; alt_m = "dem" uses the DEM height instead of a number.
 [ground_station]
 lat = 37.8068
 lon = -122.4460
 alt_m = 5.0
+
+# SATCOM from real satellites (murmur-space). Element sets: `murmur-space fetch` once (cached
+# in sim/space/cache, not in git). Each SATCOM vehicle is refreshed every interval_s scenario
+# seconds (at least min_wall_s wall seconds apart, so a high MURMUR_RATE does not spin) in a
+# background task; the packet path reads the latest answer. The look-ahead for the next
+# outage or pass (/stats/<uid>) covers outlook_s scenario seconds, refreshed every
+# outlook_every_s. `epoch` is murmur-space's epoch mode: public element sets are current but
+# scenarios are dated, so "auto" propagates on the same time of day of the day whose
+# satellites are known (see crates/murmur-space/README.md, "Epoch honesty").
+[space]
+catalog = "sim/space/constellations.toml"
+cache = "sim/space/cache"
+epoch = "auto"
+interval_s = 5.0
+min_wall_s = 0.5
+outlook_s = 1800.0
+outlook_every_s = 60.0
 
 # Terrain line of sight client (tidewater's DEM over HTTP). The packet path never waits for
 # it: each vehicle's position is rounded to a cell_m grid cell and an altitude band, one
@@ -84,12 +113,17 @@ range_exp = 2
 gs_antenna_m = 10          # GUESS
 antenna_m = 1.5            # GUESS: a whip on a ground vehicle or boat
 
-# ---- SATCOM, GEO (default for the satcom class: Global Hawk, Reaper, USVs on Ku/Ka).
-# Physics: ground -> GEO (35,786 km) -> vehicle is about 240 ms one way before modem and
-# processing; 300 ms one way gives the ~600 ms round trip operators quote. Loss from rain
-# fade and handover, GUESS. Bandwidth GUESS (Iridium Certus tops out near 700 kbps, Ku/Ka
-# MALE links reach Mbps). Down while a subsurface vehicle is submerged.
+# ---- SATCOM, GEO (default for the satcom class: Global Hawk, Reaper). Follows WGS-class
+# military GEO satellites (space_class "wgs"): up while one is above the 5 deg mask, latency
+# from the slant range (about 250-275 ms one way from the Golden Gate, bent pipe, no network
+# allowance known). latency_ms = 300 is the static fallback: ground -> GEO -> vehicle is about
+# 240 ms one way before modem and processing, 300 ms gives the ~600 ms round trip operators
+# quote. Loss from rain fade, GUESS. Bandwidth GUESS (Ku/Ka MALE links reach Mbps; WGS rates
+# are terminal dependent). Down while a subsurface vehicle is submerged. Handover outage 0:
+# a terminal stays on its GEO satellite, so changes of "best" (an aircraft moving between
+# footprints) are only counted.
 [class.satcom]
+space_class = "wgs"
 loss = 0.01
 burst_len = 5
 latency_ms = 300
@@ -98,23 +132,46 @@ bandwidth_bps = 256000
 queue_bytes = 16384
 down_when = "submerged"
 
-# ---- SATCOM, LEO (Starlink-like): 25-60 ms round trip is the commonly published range,
-# with a short glitch at satellite handover roughly every 15 s (modelled as bursty loss).
-# Map a platform to it under [platform_profile].
+# ---- SATCOM, commercial Ku-band GEO (Intelsat-class, "ku-geo" in the space catalog): what
+# RQ-4 and MQ-9B-class aircraft also use. Documented alternative to the WGS mapping: map
+# rq4 / mq9b to it under [platform_profile]. Only the operator's satellites above the mask
+# count, so coverage depends on where its fleet sits (from the Golden Gate about 8 are in
+# view). Latency includes the class's 20 ms gateway allowance (GUESS).
+[class.satcom_ku_geo]
+extends = "satcom"
+space_class = "ku-geo"
+
+# ---- SATCOM, LEO (Starlink-like, "starlink"): 25-60 ms round trip is the commonly published
+# range. Follows the real constellation: one-way latency is the bent pipe (user and gateway
+# legs at the user's range) plus 8 ms (GUESS) per direction, and a short outage at satellite
+# handover (handover_outage_ms, GUESS; operationally a handover comes roughly every 15 s, and
+# "best" here is the highest-elevation satellite, which changes at a similar or higher rate).
+# The handover glitch used to be modelled as bursty loss (loss 0.01, burst 10); with real
+# handovers that would count it twice, so the residual loss is small. Static fallback is
+# therefore a cleaner link than the old profile.
 [class.satcom_leo]
 extends = "satcom"
-loss = 0.01
-burst_len = 10             # GUESS
+space_class = "starlink"
+handover_outage_ms = 100   # GUESS
+loss = 0.003               # GUESS
+burst_len = 3              # GUESS
 latency_ms = 25
-jitter_ms = 15
+jitter_ms = 5              # GUESS
 bandwidth_bps = 2000000    # GUESS
 queue_bytes = 65536
 
-# ---- SATCOM, Iridium-like (SBD / PPP): low rate, ~1 s latency. GUESS throughout; unmapped
-# by default because the stand-ins do not decimate telemetry, so a 22 kbps link will drop
-# most of it (which is also the honest result).
+# ---- SATCOM, Iridium-like ("iridium", SBD / PPP): low rate, ~1 s latency. GUESS throughout.
+# Visibility is real (66 satellites, 8.2 deg mask: always at least one in view at the Golden
+# Gate, so the link seldom drops); the class has no published network latency, so latency_ms
+# = 700 stays as the total (GUESS) and /stats says latency_source = "profile". Handover
+# outage 250 ms is a GUESS (satellites pass in about 9 minutes). The buoy maps here. The
+# stand-ins do not decimate telemetry, so a 22 kbps link will drop most of what they send
+# (which is also the honest result); link-aware telemetry is a separate issue, this
+# mismatch is left visible on purpose.
 [class.satcom_iridium]
 extends = "satcom"
+space_class = "iridium"
+handover_outage_ms = 250   # GUESS
 latency_ms = 700
 jitter_ms = 200
 bandwidth_bps = 22000
@@ -141,9 +198,24 @@ jitter_ms = 0.3
 bandwidth_bps = 10000000
 queue_bytes = 65536
 
+# Platforms with `link = "satcom"` and the constellation they follow:
+#   buoy                        Iridium (SBD messages)
+#   magura, corsair, seahunter  Starlink-class (Magura V5 uses Starlink in the field)
+#   saildrone                   Starlink-class here (it carries Iridium and Starlink; uncomment
+#                               the Iridium line to see the narrow link)
+#   rq4, mq9b                   WGS-class military GEO (the "satcom" profile); the commercial
+#                               Ku GEO they also use is the documented alternative below
 [platform_profile]
-magura = "satcom_leo"      # Magura V5 uses Starlink in the field
-# saildrone = "satcom_iridium"   # Saildrone uses Iridium; uncomment to see the narrow link
+buoy = "satcom_iridium"
+magura = "satcom_leo"
+corsair = "satcom_leo"
+seahunter = "satcom_leo"
+saildrone = "satcom_leo"
+# saildrone = "satcom_iridium"
+rq4 = "satcom"
+mq9b = "satcom"
+# rq4 = "satcom_ku_geo"
+# mq9b = "satcom_ku_geo"
 
 # ---- Scripted events. `at_s` is seconds since the emulator started; `at_scenario` is an ISO
 # time on the scenario clock (MURMUR_AT at emulator start, plus elapsed x MURMUR_RATE, as

@@ -424,6 +424,18 @@ impl Sampler for HttpSampler {
     }
 }
 
+/// The surface height (metres above MSL; terrain, or the water level where that is higher) at
+/// one point, or `None` outside the DEM. Used at startup to check the ground station altitude.
+pub async fn dem_height(
+    sampler: &dyn Sampler,
+    t: f64,
+    lat: f64,
+    lon: f64,
+) -> Result<Option<f64>, String> {
+    let v = sampler.sample(t, &[(lat, lon)]).await?;
+    Ok(v.first().copied().flatten())
+}
+
 /// A minimal HTTP/1.1 client: one request, `Connection: close`, reads to the end.
 pub async fn http_request(
     addr: &str,

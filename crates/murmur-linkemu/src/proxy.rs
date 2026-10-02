@@ -150,7 +150,10 @@ pub async fn start(
             .connect((opts.bridge_host.as_str(), bport))
             .await
             .map_err(|e| format!("connect {}:{bport}: {e}", opts.bridge_host))?;
-        let stats = Arc::new(LinkStats::new(link.meta.clone()));
+        let stats = Arc::new(
+            LinkStats::new(link.meta.clone())
+                .with_sat(link.sat_shared(), link.params().latency_ns as f64 / 1e6),
+        );
         all.push(stats.clone());
         tokio::spawn(run_link(link, vsock, usock, stats, start));
     }
