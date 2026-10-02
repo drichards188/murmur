@@ -18,13 +18,15 @@ from .tasks import KINDS, TaskManager
 from .vehicle import VehicleLink
 
 BASE_PORT = int(os.environ.get("MURMUR_BASE_PORT", 14560))
-MAX_VEHICLES = int(os.environ.get("MURMUR_MAX_VEHICLES", 128))
+# No fixed vehicle cap: the bridge opens exactly the ports the fleet manifest lists, and more
+# when a bigger fleet is launched. MURMUR_MAX_VEHICLES (optional) pre-opens a fixed range.
+DEFAULT_PORTS = int(os.environ.get("MURMUR_MAX_VEHICLES", 32))
 PLATFORMS = Path(__file__).resolve().parents[2] / "sim" / "platforms.toml"
 FLEET_MANIFEST = Path(os.environ.get("MURMUR_FLEET_MANIFEST",
                                      Path(__file__).resolve().parents[2] / "sim" / "run" / "fleet.json"))
 PUSH_HZ = 4
 
-links = []
+links = {}  # udp port -> VehicleLink
 vehicles = {}
 tasks = TaskManager(vehicles)
 clients = set()
@@ -32,6 +34,24 @@ clients = set()
 
 identities = {}  # sysid -> identity from the launcher's fleet manifest
 _manifest_mtime = None
+_wanted_ports = set()  # ports the current manifest uses; housekeeping opens any missing
+
+
+async def ensure_ports(ports):
+    """Open a UDP link for every port not yet open (one per vehicle, so per-vehicle link
+    stats and link emulation stay honest)."""
+    loop = asyncio.get_running_loop()
+    new = sorted(p for p in ports if p not in links)
+    for port in new:
+        link = VehicleLink(port, on_vehicle)
+        try:
+            await loop.create_datagram_endpoint(lambda link=link: link, local_addr=("0.0.0.0", port))
+        except OSError as e:
+            print(f"cannot listen on udp {port}: {e}")
+            continue
+        links[port] = link
+    if new:
+        print(f"listening on {len(new)} more udp ports ({new[0]}-{new[-1]}); {len(links)} total")
 
 
 def load_manifest():
@@ -49,6 +69,7 @@ def load_manifest():
     except (OSError, ValueError):
         return
     identities.clear()
+    _wanted_ports.update(v["port"] for v in data.get("vehicles", []) if "port" in v)
     for v in data.get("vehicles", []):
         identities[v["sysid"]] = {k: v.get(k) for k in
                                   ("callsign", "platform", "name", "short", "role", "domain", "link", "sidc", "sim",
@@ -91,7 +112,9 @@ async def housekeeping():
     while True:
         if tick % 5 == 0:
             load_manifest()
-        for link in links:
+        if _wanted_ports - set(links):
+            await ensure_ports(_wanted_ports)
+        for link in list(links.values()):
             v = link.vehicle
             if v is None:
                 continue
@@ -168,17 +191,14 @@ async def pusher():
 
 @asynccontextmanager
 async def lifespan(app):
-    loop = asyncio.get_running_loop()
-    for i in range(MAX_VEHICLES):
-        link = VehicleLink(BASE_PORT + i, on_vehicle)
-        await loop.create_datagram_endpoint(lambda link=link: link, local_addr=("0.0.0.0", BASE_PORT + i))
-        links.append(link)
-    print(f"listening for vehicles on udp {BASE_PORT}-{BASE_PORT + MAX_VEHICLES - 1}")
+    _wanted_ports.update(range(BASE_PORT, BASE_PORT + DEFAULT_PORTS))
+    load_manifest()
+    await ensure_ports(_wanted_ports)
     bg = [asyncio.create_task(housekeeping()), asyncio.create_task(pusher())]
     yield
     for t in bg:
         t.cancel()
-    for link in links:
+    for link in links.values():
         if link.transport:
             link.transport.close()
 

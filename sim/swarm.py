@@ -138,7 +138,11 @@ def main():
     platforms = load_platforms()
     vehicles = plan(load_fleet(args.location or args.fleet), platforms)
     for i, v in enumerate(vehicles):
-        v["sysid"] = i + 1
+        # uid: unique across the fleet, what the API and console key on. sysid: the MAVLink system
+        # ID, one byte and unique only per link (each vehicle has its own port), so it wraps.
+        # 1..250 keeps clear of the bridge's GCS IDs (255, 190).
+        v["uid"] = i + 1
+        v["sysid"] = i % 250 + 1
         v["port"] = args.base_port + i
     sitl = [v for v in vehicles if v["sim"] == "sitl"]
     standins = [v for v in vehicles if v["sim"] == "standin"]

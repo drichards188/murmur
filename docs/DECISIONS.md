@@ -56,6 +56,19 @@ group. Dates are 2026.
 
 ## Engineering
 
+- **Rust for the live path, Python where its libraries and audience matter** (10-02). Rust:
+  bridge, protocol gateway, stand-in engine, link emulator, the Phase C decision layer, the MCP
+  server. Python: tidewater (scientific data, finished), evaluation analysis, small scripts.
+  Console stays TypeScript; ArduPilot patch C++. Why: Claude writes and reviews the code and the
+  user supervises, so Rust's writing cost mostly disappears while the compiler becomes a second,
+  tireless reviewer; "agents cannot authorize" can be enforced by types, not only tests; Rust
+  is strongest across MAVLink, DDS (UMAA) and wrapping the C protocol code (JAUS, 4586, JANUS).
+  Rust bridge port happens before Phase C so C isn't written twice.
+- **Vehicle identity: `uid` (fleet-unique) vs `sysid` (MAVLink, per link)** (10-02). A MAVLink
+  system ID is one byte; the 300-node test crashed above 255. The API and console key on
+  `uid`; `sysid` wraps 1..250 (clear of GCS IDs 255 and 190) and is unique per link.
+- **Stand-ins never simplify the interface** (10-02): see `docs/AUTHENTICITY.md` (the stand-in
+  contract and, per platform, what maximum authenticity would take).
 - **MapLibre pinned to v5** (10-02): deck.gl 9.4's adapter needs `map.transform` and
   `getFreeCameraOptions`, removed in v6 (crashed with terrain on). Revisit when deck.gl
   supports v6.

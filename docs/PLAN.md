@@ -47,12 +47,34 @@ Today the bridge goes straight from a REST task to MAVLink (`bridge/murmur_bridg
   (`sim/fleets/*.toml`, default `full-spectrum` = one of each), stand-ins, telemetry plan,
   change-only WebSocket, 100-node load test (`docs/load-test.md`), Platforms panel.
 
-## Phase C: intents, rules, risk tiers, audit log, inbox (next)
+## Phase R: Rust core (next, before C)
+
+Decision in DECISIONS.md. Cargo workspace at the repo root, crates in `crates/`.
+
+- **R.1 Stand-in engine** (`crates/murmur-standins`): port `sim/standins.py` (plane, boat,
+  drifter, sub) with parity tests against the Python one; same `sim/run/standins.json` input.
+  Thousands of nodes in one process. Follows the stand-in contract in `docs/AUTHENTICITY.md`.
+- **R.2 tidewater sampling service** (`tidewater serve`, Python): batch HTTP query of currents,
+  depth, wind for many points, so the Rust stand-ins get real conditions without
+  reimplementing tidewater.
+- **R.3 Six new stand-in behaviors**: copter, VTOL, airship, ground vehicle, sailboat, antenna
+  tracker. Then any platform can run light; `sim = "standin"|"sitl"` per fleet entry.
+- **R.4 Rust bridge** (`crates/murmur-bridge`): same HTTP/WebSocket API, keyed by `uid`;
+  telemetry plan, link stats, task lifecycle (port of `bridge/murmur_bridge/`). Parity: the
+  same fleet behaves the same against both bridges; the console notices no difference.
+- **R.5 Retire the Python bridge and stand-ins**; Makefile, scripts and docs point at Rust.
+- **Authenticity fields**: real-world protocol per platform in `platforms.toml`, shown in the
+  Platforms panel.
+
+Exit: `make goldengate` runs entirely on the Rust bridge and stand-ins, and a 1,000-node
+stand-in fleet runs with numbers in `docs/load-test.md`.
+
+## Phase C: intents, rules, risk tiers, audit log, inbox
 
 Goal: every action is an intent with a recorded decision trail; consequential ones wait for a
 human in one inbox. Usable on its own as an open "authorization layer for MAVLink fleets".
 
-**C.1 Intent model and API** (`bridge/murmur_bridge/intents.py`)
+**C.1 Intent model and API** (in the Rust bridge; module paths below predate Phase R)
 
 ```
 Intent {

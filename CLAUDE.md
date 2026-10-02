@@ -8,8 +8,8 @@ meaningful. Decision and command, not weapons.
 
 1. Read `docs/PLAN.md` (the plan, phase by phase) and `docs/DECISIONS.md` (what was decided
    and why; don't relitigate those).
-2. `bd ready` for open work (see AGENTS.md for bd usage). Current phase: **C** (intents, rules,
-   risk tiers, audit log, inbox).
+2. `bd ready` for open work (see AGENTS.md for bd usage). Current phase: **R** (Rust core: stand-ins,
+   bridge port), then **C** (intents, rules, risk tiers, audit log, inbox).
 3. Sibling repo `~/tidewater` (real-world conditions). ArduPilot at `~/ardupilot`, branch
    `tidewater-water-depth`.
 
@@ -19,7 +19,8 @@ meaningful. Decision and command, not weapons.
   Gate with tidewater conditions; `make up FLEET=<name>` for other fleets; `make down` stops.
   Console http://127.0.0.1:5173, bridge http://127.0.0.1:8765 (`/api/state`, `/api/tasks`,
   `/api/platforms`, `/api/stats`). Vehicles ready in ~30-60 s.
-- `make check` (typecheck, lint, py_compile). Tidewater: `cd ~/tidewater && .venv/bin/pytest`.
+- `make check` (typecheck, lint, py_compile). Rust: `cargo test` / `cargo clippy` at the repo
+  root (toolchain in `~/.cargo/bin`). Tidewater: `cd ~/tidewater && .venv/bin/pytest`.
 - `scripts/measure.py` measures bridge load. Logs in `logs/`, SITL logs in `sim/run/`.
 - Ports: vehicles UDP 14560+i -> bridge; SITL SERIAL1 TCP 5762+10*instance (tidewater driver).
 
