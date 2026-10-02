@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useBridgeClock, useHiddenAlerts, type Intent } from './decisions'
 import { FleetPanel } from './FleetPanel'
 import { GlobeInset } from './GlobeInset'
+import { InboxButton, InboxPanel, type InboxSelection, type InboxTab } from './InboxPanel'
+import { EMPTY_PREVIEW, intentPoints, previewFeatures } from './inboxPreview'
 import { MapView, type Draft } from './MapView'
 import { PlatformsPanel } from './PlatformsPanel'
 import type { Catalog, LinksNow, Overhead, SpaceOverlay } from './space'
@@ -44,7 +47,7 @@ function useUtcClock() {
 }
 
 export default function App() {
-  const { state, status } = useBridge()
+  const { state, status, decisions } = useBridge()
   const clock = useUtcClock()
   const fps = usePerfMeter()
   const [selected, setSelected] = useState<Set<number>>(new Set())
@@ -52,6 +55,10 @@ export default function App() {
   const [focus, setFocus] = useState<{ uid: number; n: number } | null>(null)
   const [draft, setDraft] = useState<Draft>({ mode: 'orbit', center: null, radius: 250, route: [] })
   const [showSpace, setShowSpace] = useState(false)
+  const [showInbox, setShowInbox] = useState(false)
+  const [inboxTab, setInboxTab] = useState<InboxTab>('inbox')
+  const [inboxSel, setInboxSel] = useState<InboxSelection>(null)
+  const [fit, setFit] = useState<{ points: LngLat[]; n: number; padRight: number } | null>(null)
   const [showGlobe, setShowGlobe] = useState(false)
   const [mapView, setMapView] = useState<{ center: LngLat; bounds: [number, number, number, number] } | null>(null)
   const [drawing, setDrawing] = useState<LngLat | 'start' | null>(null)
@@ -82,8 +89,41 @@ export default function App() {
   const onView = useCallback((center: LngLat, bounds: [number, number, number, number]) => setMapView({ center, bounds }), [])
 
   const vehicles = state?.vehicles ?? []
+  const now = useBridgeClock(state?.t)
+  const { mem: alertMem, hidden: hiddenAlerts } = useHiddenAlerts(decisions)
+  const pending = decisions?.inbox.pending
+  const pendingIds = useMemo(() => new Set((pending ?? []).map((i) => i.id)), [pending])
+  const selIntent = inboxSel?.kind === 'intent' ? inboxSel.id : null
+  const preview = useMemo(
+    () => (pending && pending.length ? previewFeatures(pending, state?.vehicles ?? [], selIntent) : EMPTY_PREVIEW),
+    [pending, state?.vehicles, selIntent],
+  )
   const taskings = state?.taskings ?? []
   const lost = vehicles.filter((v) => (v.link.since_last_ms ?? 0) > STALE_MS).length
+
+  /** an inbox item was clicked: highlight its vehicles and frame them with the task's preview */
+  const focusInbox = useCallback(
+    (sel: InboxSelection, uids: number[], intent: Intent | null) => {
+      setInboxSel(sel)
+      setSelected(new Set(uids))
+      const vs = state?.vehicles ?? []
+      const pts: LngLat[] = intent ? intentPoints(intent, vs) : uids.map((u) => vs.find((v) => v.uid === u)?.position).filter((p): p is LngLat => p != null)
+      if (pts.length) setFit((f) => ({ points: pts, n: (f?.n ?? 0) + 1, padRight: 430 }))
+    },
+    [state?.vehicles],
+  )
+  /** the task panel's link: the pending intent in the inbox, or a finished one in Decisions */
+  const openIntent = useCallback(
+    (id: number) => {
+      setShowInbox(true)
+      const i = (pending ?? []).find((x) => x.id === id)
+      if (i) {
+        setInboxTab('inbox')
+        focusInbox({ kind: 'intent', id }, i.uids.map(Number).filter(Number.isFinite), i)
+      } else setInboxTab('decisions')
+    },
+    [pending, focusInbox],
+  )
 
   const toggle = useCallback((uid: number) => {
     setSelected((prev) => {
@@ -128,6 +168,7 @@ export default function App() {
           <b>{lost}</b> lost link
         </span>
         <span className={`pill ${status}`}>{status === 'live' ? 'BRIDGE LIVE' : status === 'down' ? 'BRIDGE DOWN' : 'CONNECTING'}</span>
+        <InboxButton decisions={decisions} open={showInbox} hiddenAlerts={hiddenAlerts} onClick={() => setShowInbox((v) => !v)} />
         <button className={`ghost platforms-btn ${showSpace ? 'on' : ''}`} onClick={() => setShowSpace((v) => !v)} title="Space timeline: imaging access, SATCOM, GNSS">
           Space
         </button>
@@ -148,6 +189,8 @@ export default function App() {
           selected={selected}
           draft={draft}
           focus={focus}
+          preview={preview}
+          fit={fit}
           onToggle={toggle}
           onMapClick={onMapClick}
           space={overlay}
@@ -179,6 +222,20 @@ export default function App() {
             }}
           />
         )}
+        {showInbox && (
+          <InboxPanel
+            decisions={decisions}
+            vehicles={vehicles}
+            now={now}
+            tab={inboxTab}
+            setTab={setInboxTab}
+            selection={inboxSel}
+            onFocus={focusInbox}
+            onClose={() => setShowInbox(false)}
+            mem={alertMem}
+            hidden={hiddenAlerts}
+          />
+        )}
         {drawing && <div className="banner info">Click two opposite corners of the collection box. Esc cancels.</div>}
         {showPlatforms && (
           <PlatformsPanel
@@ -194,7 +251,7 @@ export default function App() {
           <div className="banner">Bridge not reachable at /ws. Start it with <code>make bridge</code>. Retrying…</div>
         )}
       </main>
-      <TaskPanel vehicles={vehicles} selected={selected} draft={draft} setDraft={setDraft} taskings={taskings} />
+      <TaskPanel vehicles={vehicles} selected={selected} draft={draft} setDraft={setDraft} taskings={taskings} pendingIds={pendingIds} onInbox={openIntent} />
     </div>
   )
 }
