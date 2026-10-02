@@ -34,7 +34,7 @@ use crate::space::{
     from_utc, matched_option, query_for,
 };
 use crate::terrain::Surface;
-use crate::world::{Fact, SpaceInputs, TerrainInputs, VehicleFacts, WorldSnapshot};
+use crate::world::{Fact, NavSource, SpaceInputs, TerrainInputs, VehicleFacts, WorldSnapshot};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -324,6 +324,16 @@ pub fn readiness(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) ->
             Ok(false) => return res(Outcome::Fail, "navigation not ready (GPS/EKF)".into()),
             Ok(true) => {}
         }
+        // dead reckoning (no GNSS) is how a submerged AUV navigates; anyone else needs a fix
+        let dead_reckoning =
+            v.nav_source.as_ref().map(|f| f.value) == Some(NavSource::DeadReckoning);
+        let is_sub = v.autopilot.as_ref().map(|f| f.value) == Some(AutopilotKind::Sub);
+        if dead_reckoning && !is_sub {
+            return res(
+                Outcome::Fail,
+                "navigation on dead reckoning only (no GNSS fix)".into(),
+            );
+        }
         if let Task::Track { target } = &spec.task {
             let target_pos = world.vehicles.get(target).map(|t| &t.position);
             match target_pos.map(|p| fresh(p, "target position", world, cfg)) {
@@ -331,6 +341,13 @@ pub fn readiness(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) ->
                 Some(Err(e)) => return res(Outcome::Fail, e),
                 Some(Ok(_)) => {}
             }
+        }
+        if dead_reckoning {
+            return res(
+                Outcome::Pass,
+                "navigation ready (dead reckoning, no GNSS fix: position error grows with distance)"
+                    .into(),
+            );
         }
         res(Outcome::Pass, "navigation ready".into())
     })

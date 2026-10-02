@@ -127,6 +127,24 @@ fn readiness_fail_not_ready() {
 }
 
 #[test]
+fn readiness_dead_reckoning_passes_for_subs_only() {
+    use murmur_decide::world::NavSource;
+    let mut w = world();
+    for u in ["remus-1", "boat-1"] {
+        w.vehicles.get_mut(&uid(u)).unwrap().nav_source =
+            Some(Fact::new(NavSource::DeadReckoning, T0));
+    }
+    let r = one(RuleId::Readiness, orbit(BAY, 300.0, &["remus-1"]), &w);
+    assert_outcome(&r, Outcome::Pass, "dead reckoning");
+    let r = one(RuleId::Readiness, orbit(BAY, 300.0, &["boat-1"]), &w);
+    assert_outcome(&r, Outcome::Fail, "dead reckoning only");
+    // the same sub on a satellite fix reads as plain ready
+    w.vehicles.get_mut(&uid("remus-1")).unwrap().nav_source = Some(Fact::new(NavSource::Gnss, T0));
+    let r = one(RuleId::Readiness, orbit(BAY, 300.0, &["remus-1"]), &w);
+    assert_eq!(r.detail, "navigation ready");
+}
+
+#[test]
 fn readiness_cannot_evaluate_missing_or_stale() {
     let mut w = world();
     w.vehicles.get_mut(&uid("sky-1")).unwrap().nav_ready = None;

@@ -43,6 +43,33 @@ pub struct VehicleFacts {
     pub home: Option<Fact<LonLat>>,
     /// 0..100.
     pub battery_pct: Option<Fact<f64>>,
+    /// What the position rests on. A submerged AUV navigates on dead reckoning (inertial +
+    /// DVL, no GNSS), which the bridge counts as navigation-ready for subs only; the
+    /// readiness rule records it. Absent in logs written before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nav_source: Option<Fact<NavSource>>,
+}
+
+/// Where a vehicle's horizontal position comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NavSource {
+    /// Satellite fix: the navigation filter has an absolute position.
+    Gnss,
+    /// Relative position only (inertial plus DVL or odometry), error growing with distance.
+    DeadReckoning,
+    /// No usable position estimate.
+    None,
+}
+
+impl NavSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NavSource::Gnss => "gnss",
+            NavSource::DeadReckoning => "dead_reckoning",
+            NavSource::None => "none",
+        }
+    }
 }
 
 /// Terrain answers for a task's waypoints. The engine fills this in from a
