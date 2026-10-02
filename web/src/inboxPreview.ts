@@ -32,6 +32,11 @@ export function previewFeatures(pending: Intent[], vehicles: Vehicle[], selected
       first = p.route[0]
     } else if (i.kind === 'track' && p.target) {
       first = byUid.get(p.target)?.position ?? null
+    } else if (i.kind === 'collect' || i.kind === 'cover') {
+      // the chosen scene, else the area: no vehicles go anywhere
+      const ring = spaceRing(i)
+      if (ring) line([...ring, ring[0]], 'path')
+      continue
     } else if (i.kind === 'rtl') {
       // the way home is the whole task
       for (const u of i.uids) {
@@ -64,5 +69,16 @@ export function intentPoints(i: Intent, vehicles: Vehicle[]): LngLat[] {
     pts.push(...circle(p.center, p.radius_m ?? 200).filter((_, k) => k % 8 === 0))
   }
   if (p.route) pts.push(...p.route)
+  const ring = spaceRing(i)
+  if (ring) pts.push(...ring)
   return pts
+}
+
+/** A collect's chosen scene, else a collect's or cover's area polygon (a circle's centre). */
+function spaceRing(i: Intent): LngLat[] | null {
+  if (i.space?.chosen?.scene) return i.space.chosen.scene
+  const a = i.params.area as { kind?: string; ring?: LngLat[]; center?: LngLat } | undefined
+  if (a?.ring?.length) return a.ring
+  if (a?.center) return [a.center]
+  return null
 }

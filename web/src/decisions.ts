@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import type { TaskOption } from './space'
 import type { LngLat } from './types'
 
 /** The decision layer as the bridge serves it: GET /api/inbox, GET /api/intents and the
@@ -91,6 +92,22 @@ export interface Intent {
   tasking_id?: number
   /** inbox only: why a human is needed, as plain lines */
   why?: string[]
+  /** collect and cover: the space answer the last check read, cut down */
+  space?: IntentSpace
+}
+
+export interface IntentSpace {
+  time_map: { shift_days: number }
+  segment: string
+  /** collect: the first ranked options, and the chosen one as the last check found it */
+  options?: TaskOption[]
+  options_total?: number
+  exclusions_total?: number
+  chosen?: TaskOption
+  tasking_lead_s?: number
+  /** cover */
+  links?: { class_id: string; coverage_fraction: number; outages: { start: string; end: string }[]; longest_outage_s: number }
+  gnss?: { class_id: string; visible_min: number; visible_max: number; pdop_max: number | null }
 }
 
 export type Severity = 'high' | 'medium'
@@ -116,6 +133,95 @@ export interface Inbox {
 export interface Decisions {
   inbox: Inbox
   intents: Intent[] // newest first, the latest 50
+  /** satellite collect and cover runs (absent from bridges without the space executor) */
+  space?: SpaceRuns
+}
+
+// ---- satellite tasking: collect and cover runs ----------------------------------------------
+
+/** Scenario time from the bridge clock: scenario_origin + (t - engine_origin) x rate (ms). */
+export interface ScenarioMap {
+  engine_origin: number
+  scenario_origin: number
+  rate: number
+}
+
+export function scenarioAt(m: ScenarioMap, bridgeMs: number) {
+  return m.scenario_origin + Math.floor((bridgeMs - m.engine_origin) * m.rate)
+}
+
+/** One reported state of a run (also an op.state in the audit log). t is bridge time,
+ *  scenario_t scenario time, both ms. */
+export interface SpaceRunEvent {
+  t: number
+  scenario_t: number
+  state: string
+  detail: string
+}
+
+export interface CollectRunInfo {
+  satellite: string
+  norad_id: number
+  class_id: string
+  capability: string
+  collect_time: number
+  product_time: number | null
+  resolution_m: number | null
+  scene: LngLat[] | null
+  area: LngLat[]
+}
+
+export interface CoverRunInfo {
+  service: { type: 'satcom' | 'gnss'; class: string }
+  window: { from: number; to: number }
+  area: LngLat[]
+  outages: [number, number][]
+  summary: string
+}
+
+/** A dispatched collect (tasked, collected, product_ready, or missed) or cover (watching,
+ *  outage, restored, fewest_in_view, ended). Simulated: no satellite operator behind it. */
+export interface SpaceRun {
+  intent_id: number
+  kind: 'collect' | 'cover'
+  resource: string
+  state: string | null
+  outcome: 'done' | 'failed' | null
+  outcome_detail: string | null
+  events: SpaceRunEvent[]
+  collect?: CollectRunInfo
+  cover?: CoverRunInfo
+}
+
+export interface SpaceRuns {
+  clock: ScenarioMap
+  loaded: boolean
+  runs: SpaceRun[] // newest first
+}
+
+/** HH:MM:SS UTC. */
+export function fmtZ(ms: number) {
+  return new Date(ms).toISOString().slice(11, 19) + 'Z'
+}
+
+/** Scenario now from the bridge clock, or null before the bridge has sent its map. */
+export function scenarioNow(space: SpaceRuns | undefined, now: () => number) {
+  return space ? scenarioAt(space.clock, now()) : null
+}
+
+export const hasProduct = (r: SpaceRun) => r.kind === 'collect' && r.events.some((e) => e.state === 'product_ready')
+
+/** POST /api/intents as the console's operator. 201 with the intent; a refused or waiting
+ *  intent is still a 201 (its state says so). Throws an Error with the bridge's reason. */
+export async function submitIntent(body: Record<string, unknown>): Promise<{ intent: Intent; dispatched: boolean; space: SpaceRun | null }> {
+  const res = await fetch('/api/intents', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-murmur-operator': getOperator() },
+    body: JSON.stringify(body),
+  })
+  const b = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(b.detail ?? `bridge returned ${res.status}`)
+  return b
 }
 
 export const ALERT_LABEL: Record<Alert['kind'], string> = {

@@ -68,7 +68,7 @@ export function useBridge() {
           current = withAges(msg as BridgeState)
           setState(current)
         } else if (msg.type === 'decisions') {
-          setDecisions({ inbox: msg.inbox, intents: msg.intents })
+          setDecisions({ inbox: msg.inbox, intents: msg.intents, space: msg.space })
         } else if (msg.type === 'delta' && current) {
           current = withAges(applyDelta(current, msg as Delta))
           setState(current)

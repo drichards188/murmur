@@ -21,6 +21,8 @@ export interface Envelope {
 export interface AreaInfo {
   name: string
   title: string
+  /** the area as the bridge's space segment takes it (what a collect or cover intent names) */
+  area?: { kind: 'polygon'; ring: LngLat[] } | { kind: 'circle'; center: LngLat; radius_km: number }
   ring: LngLat[]
   center: LngLat
   radius_km: number
@@ -199,6 +201,8 @@ export interface Exclusion {
 }
 
 export interface TaskingResult extends Envelope {
+  /** the query as run: its window and "now" (scenario time) */
+  request: { from: string; to: string; now: string }
   options: TaskOption[]
   exclusions: Exclusion[]
   exclusions_total: number
@@ -322,6 +326,8 @@ export function productTime(w: AccessWindow, cls: SatClassInfo | undefined) {
 /** Space overlays the theater map draws (all optional). */
 export interface SpaceOverlay {
   area: AreaInfo | null
+  /** tasked collections still running: their scene (or the area), labelled */
+  tasked?: { ring: LngLat[]; label: string }[]
   overhead: Overhead['overhead']
   /** highlighted scene (selected pass or option) */
   scene: { ring: LngLat[]; label: string } | null

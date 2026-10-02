@@ -77,7 +77,10 @@ The full table is `intent::next_state`; anything else is a typed `IllegalTransit
    - **`submitter_authorizes = false`** on a tier makes the submitter's own intent wait in
      the inbox too (the hook for Phase E's two-person engagement; that the inbox approver
      is someone else is not enforced yet).
-   Pending intents expire (default 120 s). Approving re-runs the checks against the
+   Pending intents expire (default 120 s; per kind `[approval.kind.<kind>]` with its own
+   `expire_s`, or for collect `until = "tasking_lead"`: the chosen pass's collect time minus
+   the class's tasking lead time, mapped to engine time through the segment's scenario map,
+   logged in `approval.requested` as `until {until, scenario_t}` and recomputed by replay). Approving re-runs the checks against the
    current world; if the picture no longer holds, the intent is voided instead. A human
    may approve an intent they proposed; the approval then records `self_approved: true`
    (on the intent's `approval` and the `approval.granted` event) so evaluation can
@@ -240,8 +243,10 @@ The full contract is in the crate docs (`src/lib.rs`). In short:
    `space_query` detail (it says `TIME-SHIFTED` when the answer is time-shifted).
 8. Space segment: load `murmur_space::Space` (`sim/space/constellations.toml`,
    `sim/space/cache`, after `murmur-space fetch`), wrap it in `SpaceSegment::new(Arc::new(..))`
-   (`with_scenario_offset_ms` if the scenario clock is offset from the engine clock), and
-   `Engine::set_space` it. Dispatch with `dispatch_order`:
+   (`with_scenario_offset_ms` if the scenario clock is offset from the engine clock,
+   `with_scenario_map` if it also runs at another rate), and `Engine::set_space` it. The
+   `space.loaded` event logs the scenario map and the segment's pinned time shift;
+   `murmur-replay --space` pins the same shift before re-running queries. Dispatch with `dispatch_order`:
    - `Order::Vehicles(DispatchOrder)`: as before.
    - `Order::Collect(CollectOrder)`: a simulated tasking request (no real satellite operator
      API). Schedule an abstract "collection" event at `collect_time` and a "product ready"
@@ -252,6 +257,10 @@ The full contract is in the crate docs (`src/lib.rs`). In short:
      map.
    - `Order::Cover(CoverOrder)`: report outages from the answer as op states under
      `satcom:<class>` or `gnss:<class>`, and `finish` at the window end.
+
+The bridge does all of this (`crates/murmur-bridge/src/decision/space.rs`): collects and
+covers come in through `POST /api/intents`, and a simulated executor reports their op states
+on the scenario clock.
 
 ## Not done yet
 
