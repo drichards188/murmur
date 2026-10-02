@@ -25,7 +25,7 @@ async fn latency_both_ways_and_reply_returns_to_the_vehicle() {
     let cfg =
         Config::parse("[class.slow]\nlatency_ms = 60\n[class.dead]\nloss = 1.0\n").expect("cfg");
     let fleet = vec![spec(1, 19901, "slow"), spec(2, 19902, "dead")];
-    let env = Arc::new(Env::new(&cfg, Arc::new(NoTerrain), 1));
+    let env = Arc::new(Env::new(&cfg, Arc::new(NoTerrain), 1).expect("env"));
     let links = build_links(&fleet, &cfg, &env).expect("links");
     let opts = Options {
         listen_host: "127.0.0.1".into(),

@@ -1,8 +1,10 @@
 use murmur_linkemu::config::{Config, load_fleet};
-use murmur_linkemu::geo::NoTerrain;
+use murmur_linkemu::geo::{NoTerrain, Terrain};
 use murmur_linkemu::link::Env;
 use murmur_linkemu::proxy::{Options, build_links, start, write_bridge_manifest};
 use murmur_linkemu::stats::{cpu_seconds, totals};
+use murmur_linkemu::terrain::{HttpSampler, TidewaterTerrain};
+use murmur_linkemu::timeline::Timeline;
 use murmur_linkemu::{http, model::CAUSES};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -28,6 +30,13 @@ USAGE: murmur-linkemu --bridge-base PORT [options]
   --seed N             overrides the config's seed
   --log-interval SEC   periodic log line (default 5; 0 disables)
   --threads N          tokio worker threads (default 1)
+  --tidewater URL      tidewater serve URL for terrain line of sight (env MURMUR_TIDEWATER_URL);
+                       without it terrain is not checked
+  --at ISO             what the scenario clock reads when the emulator starts (env MURMUR_AT);
+                       needed for at_scenario events; also the time sent to tidewater
+  --rate X             scenario seconds per wall second (env MURMUR_RATE, default 1)
+
+Scripted events are reloaded on SIGHUP or when the config/scenario file changes.
 ";
 
 struct Args {
@@ -43,6 +52,9 @@ struct Args {
     seed: Option<u64>,
     log_interval: u64,
     threads: usize,
+    tidewater: Option<String>,
+    at: Option<String>,
+    rate: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -59,6 +71,11 @@ fn parse_args() -> Result<Args, String> {
         seed: None,
         log_interval: 5,
         threads: 1,
+        tidewater: std::env::var("MURMUR_TIDEWATER_URL")
+            .ok()
+            .filter(|s| !s.is_empty()),
+        at: std::env::var("MURMUR_AT").ok(),
+        rate: std::env::var("MURMUR_RATE").ok(),
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -84,6 +101,9 @@ fn parse_args() -> Result<Args, String> {
             "--seed" => a.seed = Some(num(val()?)?),
             "--log-interval" => a.log_interval = num(val()?)?,
             "--threads" => a.threads = num(val()?)? as usize,
+            "--tidewater" => a.tidewater = Some(val()?),
+            "--at" => a.at = Some(val()?),
+            "--rate" => a.rate = Some(val()?),
             _ => return Err(format!("unknown option {flag}\n\n{USAGE}")),
         }
     }
@@ -117,7 +137,20 @@ fn real_main() -> Result<(), String> {
         write_bridge_manifest(&args.fleet, out, vehicle_base, args.bridge_base)?;
     }
     let seed = args.seed.or(cfg.seed).unwrap_or(1);
-    let env = Arc::new(Env::new(&cfg, Arc::new(NoTerrain), seed));
+    let timeline = Timeline::new(args.at.as_deref(), args.rate.as_deref())?;
+    let tidewater_terrain = args
+        .tidewater
+        .as_ref()
+        .map(|_| Arc::new(TidewaterTerrain::new(cfg.terrain.clone())));
+    let terrain: Arc<dyn Terrain> = match &tidewater_terrain {
+        Some(t) => t.clone(),
+        None => Arc::new(NoTerrain),
+    };
+    let sampler = match &args.tidewater {
+        Some(url) => Some(Arc::new(HttpSampler::new(url, cfg.terrain.timeout_s)?)),
+        None => None,
+    };
+    let env = Arc::new(Env::with_timeline(&cfg, terrain.clone(), seed, timeline)?);
     let links = build_links(&fleet, &cfg, &env)?;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -135,19 +168,29 @@ fn real_main() -> Result<(), String> {
         };
         let stats = Arc::new(start(links, &opts, t0).await?);
         if args.http != "off" {
-            http::serve(&args.http, stats.clone(), t0).await?;
+            http::serve(&args.http, stats.clone(), t0, Some(terrain.clone())).await?;
+        }
+        if let (Some(t), Some(s)) = (tidewater_terrain, sampler) {
+            let clock = Arc::new(move || timeline.scenario_unix(t0.elapsed().as_secs_f64()));
+            tokio::spawn(t.run(s, clock));
+        }
+        murmur_linkemu::reload::spawn(env.clone(), args.config.clone(), args.scenario.clone());
+        match &args.tidewater {
+            Some(u) => eprintln!("linkemu: terrain line of sight from tidewater at {u}"),
+            None => eprintln!("linkemu: no --tidewater URL, terrain is not checked"),
         }
         eprintln!(
             "linkemu: {} links bound in {:.1}s, seed {seed}, {} events, vehicles on {}+ -> bridge {}:{}+, stats http://{}/stats",
             stats.len(),
             t0.elapsed().as_secs_f64(),
-            env.schedule.names().len(),
+            env.schedule().names().len(),
             vehicle_base,
             args.bridge_host,
             args.bridge_base,
             args.http
         );
-        for (name, s, e) in env.schedule.names() {
+        let schedule = env.schedule();
+        for (name, s, e) in schedule.names() {
             let end = if e == u64::MAX { "end".to_string() } else { format!("{:.0}s", e as f64 / 1e9) };
             eprintln!("linkemu: event {name:?} from {:.0}s to {end}", s as f64 / 1e9);
         }

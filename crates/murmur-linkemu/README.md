@@ -30,7 +30,9 @@ reading the launcher's manifest it would bind the vehicle-facing ports and fight
 `--manifest-out` writes a copy with `port` replaced by the bridge-side port (the original is
 kept as `vehicle_port`). The Rust bridge should do the same, or take the port as `B + (uid-1)`.
 
-Other options: `--scenario FILE` (extra `[[event]]`s), `--seed N`, `--http ADDR` (default
+Terrain and scenario time: `--tidewater URL` (or `MURMUR_TIDEWATER_URL`) turns on terrain line of
+sight; `--at ISO` / `--rate X` (or `MURMUR_AT` / `MURMUR_RATE`) set the scenario clock. Other
+options: `--scenario FILE` (extra `[[event]]`s), `--seed N`, `--http ADDR` (default
 `127.0.0.1:8766`, `off` disables), `--log-interval SEC`, `--threads N` (default 1; one thread used less CPU than two at these rates),
 `--bridge-host`, `--listen-host`.
 
@@ -39,7 +41,7 @@ Other options: `--scenario FILE` (extra `[[event]]`s), `--seed N`, `--http ADDR`
 Per packet, per direction (the two directions have independent random streams and queues):
 
 1. **Blocked** (no airtime used): the link is down for the vehicle's depth (`down_when`), a
-   scripted `cut` is active, or terrain says no line of sight.
+   scripted `cut` is active, or terrain blocks the path (`terrain = "block"`).
 2. **Queue**: with a bandwidth cap the link is a virtual transmitter. A packet's airtime is
    `bytes*8/bw`; the backlog is the bytes still ahead of it, and a packet that would push the
    backlog (the one in service included) over `queue_bytes` is dropped (drop-tail). So low
@@ -47,13 +49,13 @@ Per packet, per direction (the two directions have independent random streams an
    2048 packets per direction) bounds memory.
 3. **Channel loss**: a Gilbert-Elliott chain. `loss` is the long-run average and `burst_len`
    the mean burst length in packets; lost packets still used their airtime. Then scripted
-   extra loss, jammer loss and range loss, each independent.
+   extra loss, jammer loss, range loss and terrain loss (`terrain = "ramp"`), each independent.
 4. **Delay**: queue wait + `latency_ms` + uniform `+-jitter_ms` + event latency
    + (slant range to the ground station / `propagation_mps`). Delivery times are made
    monotonic unless `reorder = true`, so jitter does not reorder.
 5. **Duplicate**: with probability `duplicate` the packet is delivered twice.
 
-Determinism: a ChaCha8 stream per (seed, uid, direction), exactly seven draws per packet
+Determinism: a ChaCha8 stream per (seed, uid, direction), exactly eight draws per packet
 whatever the outcome. The model is a pure function of arrival time and size
 (`model.rs`, `link.rs`), tested without sockets. The same seed and input timing give the same
 drop decisions. Real runs differ only through socket arrival timing.
@@ -69,26 +71,57 @@ concatenated frames work).
 - **Depth gating**: submerged means depth `-alt` exceeds `submerged_depth_m` (altitude is MSL, negative is
   depth, matching the stand-ins). `down_when = "submerged"` for SATCOM, `"surfaced"` for
   acoustic. Before the first position the link is open.
-- **Terrain**: `geo::Terrain::line_of_sight(from, to)`; `NoTerrain` is the default. Profiles
-  with a range model use it and drop with cause `terrain` when blocked. The tidewater DEM
-  implementation is not written.
+- **Terrain** (`terrain.rs`, needs `--tidewater URL`): the path from `[ground_station]` to the
+  vehicle is sampled from tidewater's DEM and judged against the straight ray between the
+  antennas, with Earth curvature at an effective radius of `k_factor` (default 4/3) Earth
+  radii. Antenna heights are per profile (`gs_antenna_m` above the station's `alt_m`,
+  `antenna_m` above the vehicle's altitude). The result is an obstruction depth: how far the
+  highest terrain point (raised by the Earth bulge, and by `fresnel_clear` of the first Fresnel
+  radius when `fresnel_mhz` is set) sticks up above the ray. `terrain = "block"` (default for
+  profiles with a range model) drops everything while it is positive (cause `terrain`);
+  `"ramp"` drops a share that rises from 0 at the ray to 1 at `terrain_ramp_m` deep;
+  `"off"` ignores it. The surface is the higher of the DEM and the water level, so a
+  vehicle below the sea surface is hidden. Points outside the DEM count as sea level.
+
+  The packet path never waits for HTTP. A link asks a cache keyed by grid cell (`[terrain]
+  cell_m`, 250 m), altitude band (`alt_step_m`, 10 m) and the profile's antenna parameters; the
+  profile is computed from the cell centre, so every vehicle in a cell gets the same answer. A
+  miss queues the cell and the link keeps its previous answer (open, and counted as
+  `unknown_pkts`, if it has none yet). Every `interval_s` (1 s) a background task takes the
+  queued cells, samples all their profiles (every `sample_spacing_m`, 50 m, at most
+  `max_points`) and sends them in as few `POST /v1/sample` requests as fit (20,000 points each).
+  Answers are kept for good (terrain does not move); a failed request is counted and retried.
+  The request time is the scenario clock, clamped into the scenario's range from `/v1/info`.
+  Without a tidewater URL nothing is checked and `los.state` is `off`.
 - **Propagation delay**: `propagation_mps = 1500` for sound.
 
 ### Scripted events
 
-`[[event]]` in `sim/links.toml` or a `--scenario` file; times are seconds since the emulator
-started. Selectors (all must match): `class`, `profile`, `platform`, `domain`, `uid`, `uids`,
+`[[event]]` in `sim/links.toml` or a `--scenario` file. Start with `at_s` (seconds since the
+emulator started) or `at_scenario` (ISO time on the scenario clock: `MURMUR_AT` at emulator
+start plus elapsed x `MURMUR_RATE`, the stand-ins' convention; it is an error without
+`MURMUR_AT`). `duration_s` is in the start's clock (scenario seconds with `at_scenario`;
+`until_scenario` gives an end time instead); omitted means until the end. Start the emulator
+with the same `MURMUR_AT` and `MURMUR_RATE` as the stand-ins and shortly after them: the
+emulator's clock starts at its own start. Events wholly in the past never fire.
+Selectors (all must match): `class`, `profile`, `platform`, `domain`, `uid`, `uids`,
 `circle = {lat, lon, radius_m}` (vehicle inside it, by its last known position). Effects:
-`loss` (extra, independent), `cut`, `extra_latency_ms`; `dir = both|up|down`; `duration_s`
-omitted means until the end. A circle with no `loss` jams (loss 1.0), counted as cause `jam`.
+`loss` (extra, independent), `cut`, `extra_latency_ms`; `dir = both|up|down`. A circle with no
+`loss` jams (loss 1.0), counted as cause `jam`.
 
 ```toml
-[[event]]                      # the 30%-loss study
-at_s = 300
+[[event]]                      # the 30%-loss study, on the scenario clock
+at_scenario = "2026-06-14T10:05:00Z"
 duration_s = 120
 class = "los"
 loss = 0.30
 ```
+
+Events are reloaded while running, on `SIGHUP` or when the config or scenario file changes
+(polled each second). Each link switches to the new schedule at its next packet, so the result
+is a function of the file contents and packet arrival order. A file that does not parse (or
+a scenario-time event without a scenario clock) is logged and the running events stay.
+Profiles, the ground station and `[terrain]` are not reloaded.
 
 ## Config: `sim/links.toml`
 
@@ -103,7 +136,11 @@ each way for the ~600 ms RTT), `satcom_leo`, `satcom_iridium`, `acoustic` (300 b
 `GET /stats` returns a summary plus `per_link`: for each direction in/out packets and bytes,
 drops by cause (`loss event_loss jam cut range terrain gate queue no_peer socket`), duplicates,
 queued packets and bytes (gauges), mean and max added latency; per link the profile, blocked
-cause, depth state and last position. `/stats/summary` omits `per_link`; `/stats/<uid>` is one
+cause, depth state, last position and `los`: `state` (`off`, `unknown`, `clear`, `obstructed`),
+`obstruction_m` (positive: terrain above the ray; negative: clear by that much),
+`unknown_pkts` (decided before any terrain answer) and `blocked_by_terrain_pkts`. `/stats/summary` omits `per_link`; the summary also has `los_links` (links per state),
+`terrain_blocked_pkts`, `terrain_unknown_pkts` and `terrain` (the client's cells cached and
+pending, requests, errors, points sampled, last request time and last error); `/stats/<uid>` is one
 link; `/health`. The summary also has the process CPU seconds and RSS. A one-line log prints
 every `--log-interval` seconds (rates and drops by cause since the last line).
 
@@ -111,18 +148,24 @@ every `--log-interval` seconds (rates and drops by cause since the last line).
 
 `cargo test -p murmur-linkemu`: loss convergence, burst length, determinism, jitter and
 reordering, bandwidth queuing and tail drop, duplicates, event windows and selectors, jammer
-circle, range loss, depth gating, terrain hook, propagation, MAVLink parsing, and a real
-loopback round trip. `src/bin/loadgen.rs` is the synthetic load generator (fake vehicles and
+circle, range loss, depth gating, terrain (ridge, curvature, Fresnel, unknown-then-answered, ramp,
+batching, an HTTP client against a fake server), scenario time and event reload, propagation, MAVLink parsing, and a real
+loopback round trip. `src/bin/losprobe.rs` asks a running
+`tidewater serve` whether given positions see a ground station:
+`losprobe --gs 37.8068,-122.4460,5 --gs-antenna 10 37.875,-122.405,30 ...`.
+`src/bin/loadgen.rs` is the synthetic load generator (fake vehicles and
 fake bridge ports, writes its own manifest): `loadgen --vehicles 440 --rate 8 --duration 30`.
 
 ## Not done
 
-- Terrain line of sight (trait only). No jitter model beyond uniform; no correlated fading
+- Terrain is judged to the ground station only (no relays or mesh hops), from a DEM cell
+  centre rather than the exact position, and the DEM may include structures (the Golden Gate
+  Bridge reads as 60 to 76 m at Fort Point). `[ground_station].alt_m` must match the ground
+  there. No jitter model beyond uniform; no correlated fading
   with range or weather; no per-packet-size loss. Loss does not depend on message type.
 - Telemetry priority under low bandwidth (murmur-f6q): the queue is a single FIFO.
 - Position comes from uplink only and lags by the link's own delay. No ICMP, MTU or
   fragmentation modelling (datagrams over 2048 bytes are truncated).
-- Events use time since emulator start, not scenario or simulation time, and cannot be
-  changed while running. No reload of `links.toml`.
+- `links.toml` profiles are not reloaded, only events.
 - Socket creation is slow in some sandboxes (about 10 ms per socket in this WSL2 harness), so
   1000 links take ~20 s to start there.
