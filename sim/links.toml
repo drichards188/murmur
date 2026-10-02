@@ -1,0 +1,144 @@
+# Link profiles for the user-space link emulator (crates/murmur-linkemu, Phase D).
+#
+# A vehicle's profile is its platform's `link` class from sim/platforms.toml (los, mesh,
+# satcom, acoustic, tether), unless [platform_profile] below names another profile for that
+# platform. Numbers are rough, plausible defaults, not measurements. Where a figure comes
+# from a public spec or physics it says so; everything marked GUESS is an invented starting
+# point to be tuned (the 30%-loss study varies loss, not these).
+#
+# Fields (all optional; `extends` inherits from another profile):
+#   loss          long-run average loss, 0..1, from a Gilbert-Elliott chain
+#   burst_len     mean consecutive packets lost per burst (<= 1/(1-loss) means independent)
+#   latency_ms    one-way base latency; jitter_ms is uniform +- around it (no reordering)
+#   bandwidth_bps per-direction cap, 0 = unlimited; queue_bytes is the drop-tail queue
+#   duplicate     chance a delivered packet arrives twice
+#   range_ok_km / range_max_km / range_exp   loss from the ground station position:
+#                 0 up to ok, rising as ((d-ok)/(max-ok))^exp to 1 at max. Also turns on the
+#                 terrain line-of-sight check.
+#   down_when     "submerged" or "surfaced": link is down for vehicles in that state
+#   propagation_mps  adds slant range to the ground station / this speed to the latency
+
+seed = 1
+
+# Vehicles at or below this depth (from GLOBAL_POSITION_INT altitude, negative = depth) count
+# as submerged. 1 m matches the stand-ins' own definition.
+submerged_depth_m = 1.0
+
+# Where the operator's radios are: Crissy Field, the Golden Gate fleets' launch site.
+[ground_station]
+lat = 37.8068
+lon = -122.4460
+alt_m = 5.0
+
+# ---- LOS radio (small UAS datalinks: Puma, Switchblade, FVR-90, CCA control link)
+# Latency 5-30 ms is typical of digital datalinks (vendor sheets for Microhard, Silvus,
+# Doodle Labs). Range: AeroVironment quotes ~20 km LOS for Puma 3 AE. The rest is GUESS.
+[class.los]
+loss = 0.005               # GUESS
+burst_len = 3              # GUESS
+latency_ms = 15
+jitter_ms = 5
+bandwidth_bps = 500000     # GUESS: between a SiK telemetry radio (250 kbps air rate) and a Mbps datalink
+queue_bytes = 16384
+range_ok_km = 15           # GUESS, from the ~20 km figure above
+range_max_km = 25
+range_exp = 2
+
+# ---- Mesh (relay-dependent: FPV, tactical UGVs). Several hops at ~5-10 ms each; capacity
+# shared across the mesh. All GUESS apart from the per-hop latency.
+[class.mesh]
+loss = 0.02
+burst_len = 4
+latency_ms = 25
+jitter_ms = 15
+bandwidth_bps = 300000
+queue_bytes = 16384
+range_ok_km = 5
+range_max_km = 12
+range_exp = 2
+
+# ---- SATCOM, GEO (default for the satcom class: Global Hawk, Reaper, USVs on Ku/Ka).
+# Physics: ground -> GEO (35,786 km) -> vehicle is about 240 ms one way before modem and
+# processing; 300 ms one way gives the ~600 ms round trip operators quote. Loss from rain
+# fade and handover, GUESS. Bandwidth GUESS (Iridium Certus tops out near 700 kbps, Ku/Ka
+# MALE links reach Mbps). Down while a subsurface vehicle is submerged.
+[class.satcom]
+loss = 0.01
+burst_len = 5
+latency_ms = 300
+jitter_ms = 40
+bandwidth_bps = 256000
+queue_bytes = 16384
+down_when = "submerged"
+
+# ---- SATCOM, LEO (Starlink-like): 25-60 ms round trip is the commonly published range,
+# with a short glitch at satellite handover roughly every 15 s (modelled as bursty loss).
+# Map a platform to it under [platform_profile].
+[class.satcom_leo]
+extends = "satcom"
+loss = 0.01
+burst_len = 10             # GUESS
+latency_ms = 25
+jitter_ms = 15
+bandwidth_bps = 2000000    # GUESS
+queue_bytes = 65536
+
+# ---- SATCOM, Iridium-like (SBD / PPP): low rate, ~1 s latency. GUESS throughout; unmapped
+# by default because the stand-ins do not decimate telemetry, so a 22 kbps link will drop
+# most of it (which is also the honest result).
+[class.satcom_iridium]
+extends = "satcom"
+latency_ms = 700
+jitter_ms = 200
+bandwidth_bps = 22000
+queue_bytes = 4096
+
+# ---- Acoustic (AUVs and XLUUVs, JANUS-style). Modems run from tens of bps (JANUS baseline is
+# 80 bps) to a few kbps (WHOI Micro-Modem 80-5400 bps); 300 bps is a GUESS in that band.
+# Sound travels at ~1500 m/s, hence propagation_mps. Only works while submerged.
+[class.acoustic]
+loss = 0.10                # GUESS
+burst_len = 4              # GUESS
+latency_ms = 100           # modem processing and framing, GUESS; propagation is added below
+jitter_ms = 150
+bandwidth_bps = 300
+queue_bytes = 256
+down_when = "surfaced"
+propagation_mps = 1500
+
+# ---- Tether (ROV cable, antenna tracker mast): near perfect. GUESS.
+[class.tether]
+loss = 0.0001
+latency_ms = 1
+jitter_ms = 0.3
+bandwidth_bps = 10000000
+queue_bytes = 65536
+
+[platform_profile]
+magura = "satcom_leo"      # Magura V5 uses Starlink in the field
+# saildrone = "satcom_iridium"   # Saildrone uses Iridium; uncomment to see the narrow link
+
+# ---- Scripted events. All times are seconds since the emulator started. Selectors (class,
+# profile, platform, domain, uid, uids, circle) all must match; effects are loss (extra,
+# independent of the profile's loss), cut, extra_latency_ms; dir = both | up | down.
+# More events can live in a separate file passed as --scenario.
+#
+# [[event]]                  # the 30%-loss study: every LOS link, two minutes
+# name = "30% loss on LOS"
+# at_s = 300
+# duration_s = 120
+# class = "los"
+# loss = 0.30
+#
+# [[event]]                  # one vehicle goes dark for a minute
+# name = "cut uid 7"
+# at_s = 60
+# duration_s = 60
+# uid = 7
+# cut = true
+#
+# [[event]]                  # a jammer: loss 1.0 inside the circle (default for a circle)
+# name = "jammer"
+# at_s = 120
+# duration_s = 300
+# circle = { lat = 37.82, lon = -122.48, radius_m = 3000 }

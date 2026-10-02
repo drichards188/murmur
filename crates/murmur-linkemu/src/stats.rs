@@ -1,0 +1,197 @@
+//! Lock-free counters, read by the HTTP endpoint and the periodic log line.
+
+use crate::link::LinkMeta;
+use crate::model::{CAUSES, Dir};
+use serde_json::{Value, json};
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+
+#[derive(Default)]
+pub struct DirStats {
+    pub in_pkts: AtomicU64,
+    pub in_bytes: AtomicU64,
+    pub out_pkts: AtomicU64,
+    pub out_bytes: AtomicU64,
+    pub duplicated: AtomicU64,
+    pub dropped: [AtomicU64; CAUSES.len()],
+    /// Gauges, refreshed by the link task.
+    pub queued_pkts: AtomicU64,
+    pub queued_bytes: AtomicU64,
+    /// Latency added to forwarded packets (queuing, base, jitter, events), microseconds.
+    pub lat_sum_us: AtomicU64,
+    pub lat_n: AtomicU64,
+    pub lat_max_us: AtomicU64,
+}
+
+impl DirStats {
+    pub fn drop_total(&self) -> u64 {
+        self.dropped.iter().map(|d| d.load(Relaxed)).sum()
+    }
+
+    fn json(&self) -> Value {
+        let mut dropped = serde_json::Map::new();
+        for c in CAUSES {
+            let n = self.dropped[c.idx()].load(Relaxed);
+            if n > 0 {
+                dropped.insert(c.name().into(), n.into());
+            }
+        }
+        let n = self.lat_n.load(Relaxed);
+        json!({
+            "in_pkts": self.in_pkts.load(Relaxed),
+            "in_bytes": self.in_bytes.load(Relaxed),
+            "out_pkts": self.out_pkts.load(Relaxed),
+            "out_bytes": self.out_bytes.load(Relaxed),
+            "duplicated": self.duplicated.load(Relaxed),
+            "dropped_total": self.drop_total(),
+            "dropped": dropped,
+            "queued_pkts": self.queued_pkts.load(Relaxed),
+            "queued_bytes": self.queued_bytes.load(Relaxed),
+            "latency_ms_mean": if n == 0 { Value::Null } else { json!(self.lat_sum_us.load(Relaxed) as f64 / n as f64 / 1000.0) },
+            "latency_ms_max": self.lat_max_us.load(Relaxed) as f64 / 1000.0,
+        })
+    }
+}
+
+pub struct LinkStats {
+    pub meta: LinkMeta,
+    pub dir: [DirStats; 2],
+    /// 0 unknown, 1 surfaced, 2 submerged.
+    pub depth_state: AtomicU64,
+    /// Cause name index + 1 while the link is blocked, 0 when open.
+    pub blocked: AtomicU64,
+    /// f64 bits of lat, lon, alt; NaN until the first position.
+    pub pos: [AtomicU64; 3],
+}
+
+impl LinkStats {
+    pub fn new(meta: LinkMeta) -> LinkStats {
+        let nan = f64::NAN.to_bits();
+        LinkStats {
+            meta,
+            dir: Default::default(),
+            depth_state: AtomicU64::new(0),
+            blocked: AtomicU64::new(0),
+            pos: [
+                AtomicU64::new(nan),
+                AtomicU64::new(nan),
+                AtomicU64::new(nan),
+            ],
+        }
+    }
+
+    pub fn d(&self, dir: Dir) -> &DirStats {
+        &self.dir[dir.idx()]
+    }
+
+    pub fn record_latency(&self, dir: Dir, us: u64) {
+        let d = self.d(dir);
+        d.lat_sum_us.fetch_add(us, Relaxed);
+        d.lat_n.fetch_add(1, Relaxed);
+        d.lat_max_us.fetch_max(us, Relaxed);
+    }
+
+    pub fn json(&self) -> Value {
+        let f = |i: usize| {
+            let v = f64::from_bits(self.pos[i].load(Relaxed));
+            if v.is_nan() { Value::Null } else { json!(v) }
+        };
+        let blocked = match self.blocked.load(Relaxed) {
+            0 => Value::Null,
+            n => json!(CAUSES[(n - 1) as usize].name()),
+        };
+        let depth =
+            ["unknown", "surfaced", "submerged"][self.depth_state.load(Relaxed).min(2) as usize];
+        json!({
+            "uid": self.meta.uid,
+            "sysid": self.meta.sysid,
+            "port": self.meta.port,
+            "class": self.meta.class,
+            "profile": self.meta.profile,
+            "domain": self.meta.domain,
+            "platform": self.meta.platform,
+            "blocked": blocked,
+            "depth_state": depth,
+            "pos": { "lat": f(0), "lon": f(1), "alt_m": f(2) },
+            "up": self.dir[0].json(),
+            "down": self.dir[1].json(),
+        })
+    }
+}
+
+pub struct Totals {
+    pub in_pkts: u64,
+    pub out_pkts: u64,
+    pub dropped: u64,
+    pub by_cause: [u64; CAUSES.len()],
+}
+
+pub fn totals(links: &[std::sync::Arc<LinkStats>]) -> Totals {
+    let mut t = Totals {
+        in_pkts: 0,
+        out_pkts: 0,
+        dropped: 0,
+        by_cause: [0; CAUSES.len()],
+    };
+    for l in links {
+        for d in &l.dir {
+            t.in_pkts += d.in_pkts.load(Relaxed);
+            t.out_pkts += d.out_pkts.load(Relaxed);
+            for (i, c) in d.dropped.iter().enumerate() {
+                let n = c.load(Relaxed);
+                t.by_cause[i] += n;
+                t.dropped += n;
+            }
+        }
+    }
+    t
+}
+
+/// User plus system CPU seconds of this process, from /proc (Linux only; 0 elsewhere).
+pub fn cpu_seconds() -> f64 {
+    let Ok(s) = std::fs::read_to_string("/proc/self/stat") else {
+        return 0.0;
+    };
+    let Some(rest) = s.rsplit_once(')').map(|x| x.1) else {
+        return 0.0;
+    };
+    let f: Vec<&str> = rest.split_whitespace().collect();
+    // After the comm field: state is index 0, utime 11, stime 12; clock ticks are 100 Hz.
+    let tick = |i: usize| f.get(i).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+    (tick(11) + tick(12)) / 100.0
+}
+
+pub fn rss_mb() -> f64 {
+    let Ok(s) = std::fs::read_to_string("/proc/self/statm") else {
+        return 0.0;
+    };
+    s.split_whitespace()
+        .nth(1)
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(0.0)
+        * 4096.0
+        / 1e6
+}
+
+pub fn summary_json(links: &[std::sync::Arc<LinkStats>], uptime_s: f64, with_links: bool) -> Value {
+    let t = totals(links);
+    let mut by = serde_json::Map::new();
+    for c in CAUSES {
+        if t.by_cause[c.idx()] > 0 {
+            by.insert(c.name().into(), t.by_cause[c.idx()].into());
+        }
+    }
+    let mut v = json!({
+        "uptime_s": uptime_s,
+        "links": links.len(),
+        "in_pkts": t.in_pkts,
+        "out_pkts": t.out_pkts,
+        "dropped_total": t.dropped,
+        "dropped": by,
+        "cpu_seconds": cpu_seconds(),
+        "rss_mb": rss_mb(),
+    });
+    if with_links {
+        v["per_link"] = links.iter().map(|l| l.json()).collect::<Vec<_>>().into();
+    }
+    v
+}
