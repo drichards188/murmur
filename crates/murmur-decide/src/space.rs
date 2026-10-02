@@ -34,7 +34,9 @@
 //! time**, as `murmur-space` reports it, in integer milliseconds like every [`Time`]. The
 //! query's "now" (tasking lead time counts from it) is [`SpaceOracle::scenario_time`] of the
 //! snapshot time: the same instant unless the bridge runs a scenario clock with an offset
-//! ([`SpaceSegment::with_scenario_offset_ms`]).
+//! ([`SpaceSegment::with_scenario_offset_ms`]) or at another rate
+//! ([`SpaceSegment::with_scenario_map`], a [`ScenarioMap`]). The map and the segment's
+//! pinned time shift are logged in `space.loaded`; replay reads both from there.
 
 use std::sync::Arc;
 
@@ -463,6 +465,84 @@ impl SpaceAnswer {
     }
 }
 
+/// How scenario time follows engine time: `scenario = scenario_origin + (t - engine_origin)
+/// x rate`, integer milliseconds. A bridge whose scenario clock starts at `MURMUR_AT` and
+/// runs at `MURMUR_RATE` is exactly this map; a fixed offset is rate 1. Logged in
+/// `space.loaded`, so replay can recompute what depends on it (a collect's approval
+/// deadline).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScenarioMap {
+    pub engine_origin: Time,
+    pub scenario_origin: Time,
+    /// Scenario milliseconds per engine millisecond (> 0).
+    pub rate: f64,
+}
+
+impl Default for ScenarioMap {
+    fn default() -> Self {
+        ScenarioMap::IDENTITY
+    }
+}
+
+impl ScenarioMap {
+    /// Scenario time is engine time.
+    pub const IDENTITY: ScenarioMap = ScenarioMap {
+        engine_origin: Time(0),
+        scenario_origin: Time(0),
+        rate: 1.0,
+    };
+
+    /// Scenario time = engine time + `ms`.
+    pub const fn offset(ms: i64) -> Self {
+        ScenarioMap {
+            engine_origin: Time(0),
+            scenario_origin: Time(ms),
+            rate: 1.0,
+        }
+    }
+
+    pub fn is_identity(&self) -> bool {
+        *self == ScenarioMap::IDENTITY
+    }
+
+    /// Scenario time at engine time `t` (rounded down to the millisecond).
+    pub fn scenario(&self, t: Time) -> Time {
+        let d = t.ms_since(self.engine_origin);
+        if self.rate == 1.0 {
+            return self.scenario_origin.plus_ms(d);
+        }
+        self.scenario_origin
+            .plus_ms((d as f64 * self.rate).floor() as i64)
+    }
+
+    /// The earliest engine time at which the scenario has reached `s`.
+    pub fn engine(&self, s: Time) -> Time {
+        let d = s.ms_since(self.scenario_origin);
+        if self.rate == 1.0 {
+            return self.engine_origin.plus_ms(d);
+        }
+        let mut t = self
+            .engine_origin
+            .plus_ms((d as f64 / self.rate).ceil() as i64);
+        // float rounding: settle on the exact boundary
+        while self.scenario(t) < s {
+            t = t.plus_ms(1);
+        }
+        while self.scenario(t.plus_ms(-1)) >= s {
+            t = t.plus_ms(-1);
+        }
+        t
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if !(self.rate.is_finite() && self.rate > 0.0) {
+            return Err(format!("scenario rate must be > 0 (got {})", self.rate));
+        }
+        Ok(())
+    }
+}
+
 /// Where space answers come from. The engine calls it while checking a collect or cover;
 /// replay calls it to recompute logged answers.
 pub trait SpaceOracle {
@@ -470,9 +550,19 @@ pub trait SpaceOracle {
     fn segment(&self) -> &SegmentId;
     /// Answer a query. Must be deterministic: same segment and query, same answer.
     fn answer(&self, query: &SpaceQuery) -> Result<SpaceAnswer, String>;
+    /// How scenario time follows engine time (logged in `space.loaded`).
+    fn scenario_map(&self) -> ScenarioMap {
+        ScenarioMap::IDENTITY
+    }
+    /// The time shift pinned on the segment for the session, if any (logged in
+    /// `space.loaded`; `murmur-replay --space` pins the same shift before re-running
+    /// queries).
+    fn pinned_shift_days(&self) -> Option<i64> {
+        None
+    }
     /// Scenario time at engine time `t`.
     fn scenario_time(&self, t: Time) -> Time {
-        t
+        self.scenario_map().scenario(t)
     }
 }
 
@@ -480,14 +570,14 @@ pub trait SpaceOracle {
 pub struct SpaceSegment {
     space: Arc<Space>,
     id: SegmentId,
-    scenario_offset_ms: i64,
+    map: ScenarioMap,
 }
 
 impl std::fmt::Debug for SpaceSegment {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SpaceSegment")
             .field("id", &self.id.sha256)
-            .field("scenario_offset_ms", &self.scenario_offset_ms)
+            .field("scenario_map", &self.map)
             .finish_non_exhaustive()
     }
 }
@@ -498,14 +588,22 @@ impl SpaceSegment {
         Ok(SpaceSegment {
             space,
             id,
-            scenario_offset_ms: 0,
+            map: ScenarioMap::IDENTITY,
         })
     }
 
-    /// Scenario time = engine time + `ms` (a bridge running a scenario clock).
+    /// Scenario time = engine time + `ms` (a scenario clock at rate 1).
     pub fn with_scenario_offset_ms(mut self, ms: i64) -> Self {
-        self.scenario_offset_ms = ms;
+        self.map = ScenarioMap::offset(ms);
         self
+    }
+
+    /// Scenario time follows `map` (a scenario clock at any rate). An invalid rate is
+    /// refused.
+    pub fn with_scenario_map(mut self, map: ScenarioMap) -> Result<Self, String> {
+        map.validate()?;
+        self.map = map;
+        Ok(self)
     }
 
     pub fn space(&self) -> &Space {
@@ -522,9 +620,49 @@ impl SpaceOracle for SpaceSegment {
         answer(&self.space, &self.id, query)
     }
 
-    fn scenario_time(&self, t: Time) -> Time {
-        t.plus_ms(self.scenario_offset_ms)
+    fn scenario_map(&self) -> ScenarioMap {
+        self.map
     }
+
+    fn pinned_shift_days(&self) -> Option<i64> {
+        self.space.pinned_shift_days
+    }
+}
+
+/// Replay with a segment that was pinned in the run: the shift `space.loaded` recorded.
+/// `murmur-replay --space` pins its freshly loaded segment with this before re-running
+/// queries (an unpinned segment picks the shift per window, which can differ by a day).
+pub fn logged_pinned_shift(text: &str) -> Option<i64> {
+    text.lines()
+        .filter(|l| l.contains("\"space.loaded\""))
+        .find_map(|l| {
+            let e: crate::audit::Event = serde_json::from_str(l).ok()?;
+            match e.body {
+                crate::audit::EventBody::SpaceLoaded {
+                    pinned_shift_days, ..
+                } => pinned_shift_days,
+                _ => None,
+            }
+        })
+}
+
+/// When a pending collect's approval expires under `[approval.kind.collect] until =
+/// "tasking_lead"`: the last moment the chosen pass can still be tasked, the collect time
+/// minus the class's tasking lead time (scenario time). Read from the answer the
+/// submission's checks used: the matched option's `earliest_collect - request now` is the
+/// lead. None when the intent is not a collect with a matched option.
+pub fn tasking_deadline(task: &Task, answer: &SpaceAnswer, tolerance_s: u32) -> Option<Time> {
+    let Task::Collect {
+        chosen: Some(chosen),
+        ..
+    } = task
+    else {
+        return None;
+    };
+    let result = answer.tasking()?;
+    let opt = matched_option(result, chosen, tolerance_s)?;
+    let lead = from_utc(opt.earliest_collect).ms_since(from_utc(result.request.now));
+    Some(chosen.collect_time.plus_ms(-lead.max(0)))
 }
 
 /// Run `query` on `space` and package the answer for the log.

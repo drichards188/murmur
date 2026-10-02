@@ -16,8 +16,8 @@ use crate::policy::{self, Policy, PolicyDecision, Tier};
 use crate::rules::{self, CheckResult, Outcome};
 use serde::Serialize;
 use crate::space::{
-    ChosenCollect, CollectOrder, CoverOrder, SegmentId, SpaceOracle, SpaceOrder, from_utc,
-    matched_option, query_for,
+    ChosenCollect, CollectOrder, CoverOrder, ScenarioMap, SegmentId, SpaceOracle, SpaceOrder,
+    from_utc, matched_option, query_for,
 };
 use crate::terrain::TerrainOracle;
 use crate::time::{Clock, Time};
@@ -169,8 +169,11 @@ impl Engine {
     /// Give the engine a space segment for collect and cover intents (logged as
     /// `space.loaded` with its identity). Without one, their space check fails closed.
     pub fn set_space(&mut self, oracle: Box<dyn SpaceOracle + Send>) -> Result<(), EngineError> {
+        let map = oracle.scenario_map();
         self.emit(EventBody::SpaceLoaded {
             segment: oracle.segment().clone(),
+            scenario: (!map.is_identity()).then_some(map),
+            pinned_shift_days: oracle.pinned_shift_days(),
         })?;
         self.space = Some(oracle);
         Ok(())
@@ -179,6 +182,13 @@ impl Engine {
     /// The loaded space segment's identity, if any.
     pub fn space_segment(&self) -> Option<&SegmentId> {
         self.space.as_ref().map(|o| o.segment())
+    }
+
+    /// How scenario time follows engine time (identity without a space segment).
+    pub fn scenario_map(&self) -> ScenarioMap {
+        self.space
+            .as_ref()
+            .map_or(ScenarioMap::IDENTITY, |o| o.scenario_map())
     }
 
     pub fn intent(&self, id: IntentId) -> Option<&Intent> {
@@ -838,13 +848,23 @@ impl Engine {
                 )?;
             }
             (Tier::Human, None) => {
-                let expires_t = self
-                    .now()
-                    .plus_ms(i64::from(self.policy.approval.expire_s) * 1000);
-                self.emit(EventBody::ApprovalRequested {
-                    intent: id,
-                    expires_t,
-                })?;
+                // one instant for the deadline and the event, so replay recomputes it from e.t
+                let now = self.now();
+                let (expires_t, until) = policy::approval_deadline(
+                    &self.policy,
+                    &spec.task,
+                    inputs.space.answer(),
+                    &self.scenario_map(),
+                    now,
+                );
+                self.emit_at(
+                    now,
+                    EventBody::ApprovalRequested {
+                        intent: id,
+                        expires_t,
+                        until,
+                    },
+                )?;
                 self.get_mut(id)?.set_expires(expires_t);
                 self.transition(id, Transition::RequireApproval, reason)?;
             }
