@@ -93,6 +93,15 @@ sailboat (wind-driven), antenna tracker.
 | REMUS 600-class AUV | Stand-in (sub) | **Navigation drift underwater** (INS/DVL error grows, fix on surfacing), JANUS acoustic messages, Iridium when surfaced, UMAA | UMAA over DDS + JANUS acoustic link + INS/DVL error model + ocean currents at depth (tidewater) | UMAA data-model availability |
 | Orca XLUUV-class | Stand-in (sub) | Same as REMUS, long endurance | Same | Same |
 
+## In the catalog and the console
+
+`sim/platforms.toml` carries this record per platform: `protocol` (the real-world C2 protocol
+from the groups table above), `protocol_note`, `authenticity` (what maximum authenticity would
+take) and `authenticity_blocker` (omitted when none). `/api/platforms` passes them through, and
+the Platforms panel shows the protocol as a badge (the note is its tooltip) with the authenticity
+line and blocker in an expandable row, next to whether the node runs as ArduPilot SITL or a
+stand-in. Edit the catalog and this document together.
+
 ## Choosing per node
 
 Each platform has a default backend (`sim` in `platforms.toml`); a fleet entry may override it

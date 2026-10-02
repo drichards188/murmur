@@ -1,6 +1,9 @@
 import ms from 'milsymbol'
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import type { Domain } from './types'
+
+/** How a C2 reaches the real platform (sim/platforms.toml, docs/AUTHENTICITY.md). */
+export type Protocol = 'mavlink' | 'stanag4586' | 'uci' | 'jaus' | 'umaa' | 'proprietary' | 'rc' | 'telemetry'
 
 export interface Platform {
   id: string
@@ -17,6 +20,10 @@ export interface Platform {
   endurance_h: number | null
   alt_m: number | null
   min_turn_radius_m: number | null
+  protocol?: Protocol
+  protocol_note?: string
+  authenticity?: string
+  authenticity_blocker?: string
   tasks: string[]
   in_fleet: { sysid: number; callsign: string }[]
 }
@@ -34,6 +41,17 @@ const LINKS: Record<string, string> = {
   satcom: 'SATCOM',
   acoustic: 'Acoustic modem; SATCOM when surfaced',
   tether: 'Tether',
+}
+
+const PROTOCOLS: Record<Protocol, string> = {
+  mavlink: 'MAVLink',
+  stanag4586: 'STANAG 4586',
+  uci: 'UCI',
+  jaus: 'JAUS',
+  umaa: 'UMAA/DDS',
+  proprietary: 'Proprietary',
+  rc: 'RC link',
+  telemetry: 'Telemetry only',
 }
 
 const icons = new Map<string, string>()
@@ -72,6 +90,13 @@ interface Props {
 export function PlatformsPanel({ onClose, onFocus }: Props) {
   const [platforms, setPlatforms] = useState<Platform[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [open, setOpen] = useState<Set<string>>(new Set())
+  const toggle = (id: string) =>
+    setOpen((o) => {
+      const n = new Set(o)
+      if (!n.delete(id)) n.add(id)
+      return n
+    })
 
   useEffect(() => {
     fetch('/api/platforms')
@@ -127,13 +152,26 @@ export function PlatformsPanel({ onClose, onFocus }: Props) {
                     </td>
                   </tr>
                   {rows.map((p) => (
-                    <tr key={p.id} className={p.in_fleet.length ? '' : 'absent'}>
+                    <Fragment key={p.id}>
+                    <tr className={p.in_fleet.length ? '' : 'absent'}>
                       <td className="sym" dangerouslySetInnerHTML={{ __html: icon(p.sidc) }} />
                       <td>
                         <div className="pname">
                           {p.name} <span className="vrow-short">{p.short}</span>
                         </div>
                         <div className="muted">{p.role}</div>
+                        {p.protocol && (
+                          <div className="protorow">
+                            <span className={`prototag ${p.protocol}`} title={p.protocol_note}>
+                              {PROTOCOLS[p.protocol] ?? p.protocol}
+                            </span>
+                            {p.authenticity && (
+                              <button className="ghost moretoggle" onClick={() => toggle(p.id)} aria-expanded={open.has(p.id)}>
+                                {open.has(p.id) ? 'hide authenticity' : 'authenticity'}
+                              </button>
+                            )}
+                          </div>
+                        )}
                       </td>
                       <td>
                         <span className={`simtag ${p.sim}`}>{p.sim === 'sitl' ? 'ArduPilot' : 'stand-in'}</span>
@@ -168,6 +206,27 @@ export function PlatformsPanel({ onClose, onFocus }: Props) {
                         )}
                       </td>
                     </tr>
+                    {open.has(p.id) && (
+                      <tr className={`detail${p.in_fleet.length ? '' : ' absent'}`}>
+                        <td />
+                        <td colSpan={8}>
+                          <div>
+                            <span className="dlabel">Max authenticity</span> {p.authenticity}
+                          </div>
+                          {p.authenticity_blocker && (
+                            <div>
+                              <span className="dlabel blocker">Blocker</span> {p.authenticity_blocker}
+                            </div>
+                          )}
+                          {p.protocol_note && (
+                            <div className="muted">
+                              <span className="dlabel">Protocol</span> {p.protocol_note}
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   ))}
                 </tbody>
               )
