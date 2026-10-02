@@ -54,6 +54,12 @@ def cmd_drive(args):
     run(args)
 
 
+def cmd_serve(args):
+    from .serve import serve
+
+    serve(args)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="tidewater", description="Real-world conditions for robot simulators.")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -85,6 +91,12 @@ def main(argv=None):
     p.add_argument("--period", type=float, default=0.5,
                    help="seconds between updates (0.5 s keeps a 5 m/s boat within ~2.5 m of its depth sample)")
     p.set_defaults(fn=cmd_drive)
+
+    p = sub.add_parser("serve", help="serve batch conditions sampling over HTTP (POST /v1/sample)")
+    p.add_argument("scenario")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8770)
+    p.set_defaults(fn=cmd_serve)
 
     args = ap.parse_args(argv)
     try:

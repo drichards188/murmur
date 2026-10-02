@@ -36,6 +36,28 @@ That launches 13 ArduPilot SITL vehicles from the scenario's `[spawn]` points an
 `tidewater drive`, which sets each vehicle's simulated wind and current from the
 conditions at its own position, every 2 s, on the scenario clock.
 
+## Serving conditions over HTTP
+
+For clients that can't import tidewater (Murmur's Rust engine):
+
+```bash
+.venv/bin/tidewater serve scenarios/golden-gate-2026-06.toml [--host 127.0.0.1] [--port 8770]
+curl -s localhost:8770/v1/info
+curl -s -XPOST localhost:8770/v1/sample -d '{"t": 1781431200, "points": [[37.828, -122.470, null], [37.830, -122.469, 20.0]]}'
+```
+
+`POST /v1/sample` takes `{"t": <unix seconds>, "points": [[lat, lon, depth_m_or_null], ...]}` and
+returns `{"t": ..., "samples": [...]}` in the same order. Each sample has `lat`, `lon`,
+`elevation_m` (null outside the area), `water_level_m`, `water_depth_m` (null outside the area),
+`current_east`, `current_north`, `wind_east`, `wind_north`, with the same meaning as
+`Conditions.at(lat, lon, t, depth_m)`; a null depth means the surface. `GET /v1/info` returns the
+scenario name, bounds and valid time range. Bad input or a time outside the scenario gives
+status 400 with `{"error": "..."}`. It binds to 127.0.0.1 by default and has no authentication.
+
+The batch path is `Conditions.sample_many`, vectorized over points (time-dependent values are
+computed once per request) and tested against `Conditions.at`. About 7 ms for 1,000 points and
+60 ms for 10,000, including HTTP and JSON.
+
 ## Verified so far
 
 - Slack water at the Golden Gate on 14 June 2026 comes out at 00:20 and 06:40 UTC; NOAA's

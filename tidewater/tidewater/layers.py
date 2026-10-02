@@ -71,6 +71,26 @@ class Terrain:
         bot = z[y0 + 1, x0] * (1 - tx) + z[y0 + 1, x0 + 1] * tx
         return float(top * (1 - ty) + bot * ty)
 
+    def elevation_many(self, lat, lon):
+        """Vectorized `elevation`: NaN outside the area. Same float32 arithmetic as the scalar path."""
+        lat = np.asarray(lat, dtype=float)
+        lon = np.asarray(lon, dtype=float)
+        inside = (self.south <= lat) & (lat <= self.north) & (self.west <= lon) & (lon <= self.east)
+        fx = (np.where(inside, lon, self.west) - self.west) / (self.east - self.west) * self.w - 0.5
+        fy = (self.north - np.where(inside, lat, self.north)) / (self.north - self.south) * self.h - 0.5
+        x0 = np.clip(np.floor(fx), 0, self.w - 2).astype(np.intp)
+        y0 = np.clip(np.floor(fy), 0, self.h - 2).astype(np.intp)
+        tx = np.clip(fx - x0, 0, 1)
+        ty = np.clip(fy - y0, 0, 1)
+        f32 = np.float32
+        z = self.z
+        # the scalar path multiplies float32 samples by Python floats, which numpy keeps in float32
+        top = z[y0, x0] * f32(1 - tx) + z[y0, x0 + 1] * f32(tx)
+        bot = z[y0 + 1, x0] * f32(1 - tx) + z[y0 + 1, x0 + 1] * f32(tx)
+        out = (top * f32(1 - ty) + bot * f32(ty)).astype(float)
+        out[~inside] = np.nan
+        return out
+
 
 class TimeSeries:
     """Values over time. `cosine=True` is for sparse tidal events (slack, max flood,
@@ -111,6 +131,7 @@ class Tide:
         return self.series.at(t)
 
 
+
 class CurrentStation:
     def __init__(self, sid, lat, lon, bins):
         """bins: list of (depth_m, flood_dir, ebb_dir, TimeSeries of signed speed m/s)."""
@@ -120,9 +141,40 @@ class CurrentStation:
         self.bins = sorted(bins, key=lambda b: b[0])
 
     def vector(self, t, depth_m=0.0):
-        depth, flood, ebb, ts = min(self.bins, key=lambda b: abs(b[0] - depth_m))
+        return self.vector_bin(min(self.bins, key=lambda b: abs(b[0] - depth_m)), t)
+
+    @staticmethod
+    def vector_bin(bin_, t):
+        _, flood, ebb, ts = bin_
         v = ts.at(t)
         return heading_vector(abs(v), flood if v >= 0 else ebb)
+
+
+def idw_many(points, values, lat, lon, k=4, power=2.0):
+    """Vectorized `idw` for arrays of query points. values: (S, C) shared by all queries,
+    or (N, S, C) per query. Returns (N, C)."""
+    lat = np.asarray(lat, dtype=float)
+    lon = np.asarray(lon, dtype=float)
+    plat = np.array([p[0] for p in points], dtype=float)
+    plon = np.array([p[1] for p in points], dtype=float)
+    values = np.asarray(values, dtype=float)
+    n, s = len(lat), len(plat)
+    if values.ndim == 2:
+        values = np.broadcast_to(values, (n,) + values.shape)
+    kc = np.cos(np.radians(lat))[:, None]
+    dx = (plon[None, :] - lon[:, None]) * EARTH_M_PER_DEG * kc
+    dy = (plat[None, :] - lat[:, None]) * EARTH_M_PER_DEG
+    d = np.hypot(dx, dy)  # (N, S)
+    idx = np.argsort(d, axis=1)[:, :min(k, s)]
+    dk = np.take_along_axis(d, idx, axis=1)
+    vk = np.take_along_axis(values, idx[:, :, None], axis=1)  # (N, k, C)
+    with np.errstate(divide="ignore"):
+        w = 1.0 / dk ** power
+    w = w / w.sum(axis=1, keepdims=True)
+    out = (w[:, :, None] * vk).sum(axis=1)
+    near = dk[:, 0] < 1.0
+    out[near] = vk[near, 0]
+    return out
 
 
 def idw(points, values, lat, lon, k=4, power=2.0):
@@ -168,6 +220,19 @@ class Currents:
         vals = [s.vector(t, depth_m) for s in self.stations]
         return idw(pts, vals, lat, lon)
 
+    def vector_many(self, lat, lon, t, depth_m):
+        """Vectorized `vector` at one time for arrays of points and per-point depths. -> (N, 2).
+        Each station's bins are evaluated once; each point then picks its nearest bin."""
+        depth_m = np.asarray(depth_m, dtype=float)
+        per_station = []
+        for st in self.stations:
+            bin_depths = np.array([b[0] for b in st.bins])
+            vecs = np.array([st.vector_bin(b, t) for b in st.bins])  # (B, 2)
+            pick = np.argmin(np.abs(bin_depths[None, :] - depth_m[:, None]), axis=1)  # first nearest, like min()
+            per_station.append(vecs[pick])
+        values = np.stack(per_station, axis=1)  # (N, S, 2)
+        return idw_many([(s.lat, s.lon) for s in self.stations], values, lat, lon)
+
 
 class Wind:
     """10 m wind from a grid of reanalysis points, interpolated in space and time."""
@@ -191,3 +256,8 @@ class Wind:
     def vector(self, lat, lon, t):
         vals = [(e.at(t), n.at(t)) for _, _, e, n in self.points]
         return idw([(p[0], p[1]) for p in self.points], vals, lat, lon)
+
+    def vector_many(self, lat, lon, t):
+        """Vectorized `vector` at one time for arrays of points. -> (N, 2)."""
+        vals = [(e.at(t), n.at(t)) for _, _, e, n in self.points]
+        return idw_many([(p[0], p[1]) for p in self.points], vals, lat, lon)
