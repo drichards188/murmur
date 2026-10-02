@@ -106,6 +106,8 @@ impl OpRecord {
 pub struct OpCell {
     pub id: u64,
     pub tasking: u64,
+    /// the decision engine's intent this op carries out (0 only in task-layer tests)
+    pub intent_id: u64,
     pub task: TaskKind,
     pub uid: Uid,
     pub sysid: u8,
@@ -119,6 +121,8 @@ pub struct OpCell {
 pub struct OpSnapshot {
     pub id: u64,
     pub tasking: u64,
+    /// the decision engine's intent this op carries out (0 only in task-layer tests)
+    pub intent_id: u64,
     pub task: TaskKind,
     pub uid: Uid,
     pub sysid: u8,
@@ -129,10 +133,19 @@ pub struct OpSnapshot {
 }
 
 impl OpCell {
-    pub fn new(id: u64, tasking: u64, task: TaskKind, uid: Uid, sysid: u8, slot: usize) -> OpCell {
+    pub fn new(
+        id: u64,
+        tasking: u64,
+        intent_id: u64,
+        task: TaskKind,
+        uid: Uid,
+        sysid: u8,
+        slot: usize,
+    ) -> OpCell {
         OpCell {
             id,
             tasking,
+            intent_id,
             task,
             uid,
             sysid,
@@ -186,6 +199,7 @@ impl OpCell {
         OpSnapshot {
             id: self.id,
             tasking: self.tasking,
+            intent_id: self.intent_id,
             task: self.task,
             uid: self.uid,
             sysid: self.sysid,

@@ -29,6 +29,8 @@ pub struct Config {
     pub default_ports: u16,
     pub manifest: PathBuf,
     pub platforms: PathBuf,
+    /// the repo (MURMUR_ROOT): sim/ and logs/ are under it
+    pub root: PathBuf,
 }
 
 impl Config {
@@ -43,6 +45,7 @@ impl Config {
         let root = std::env::var_os("MURMUR_ROOT")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+        let root = root.canonicalize().unwrap_or(root);
         Config {
             base_port: num("MURMUR_BASE_PORT", 14560),
             http_port: num("MURMUR_HTTP_PORT", 8765),
@@ -51,6 +54,7 @@ impl Config {
                 .map(PathBuf::from)
                 .unwrap_or_else(|| root.join("sim/run/fleet.json")),
             platforms: root.join("sim/platforms.toml"),
+            root,
         }
     }
 }
@@ -147,6 +151,15 @@ impl World {
             .values()
             .cloned()
             .collect()
+    }
+
+    /// Tests: a vehicle that didn't come in over a UDP link.
+    #[cfg(test)]
+    pub fn insert_vehicle(&self, cell: Arc<VehicleCell>) {
+        self.vehicles
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(cell.uid, cell);
     }
 
     pub fn manifest(&self) -> MutexGuard<'_, Manifest> {

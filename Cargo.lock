@@ -717,6 +717,7 @@ dependencies = [
  "axum",
  "chrono",
  "mavlink",
+ "murmur-decide",
  "murmur-space",
  "serde",
  "serde_json",

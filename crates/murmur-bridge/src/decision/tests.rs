@@ -1,0 +1,388 @@
+//! The whole path against a fake world: fake autopilots (the task layer's test doubles) in
+//! a real `World`, the real policy, catalog and areas from `sim/`, a fixed land/water map,
+//! a manual engine clock and an in-memory audit log that must replay.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use murmur_decide::{
+    AgentId, Catalog, ManualClock, MemorySink, Polygon, PolygonTerrain, Rationale, replay,
+};
+use serde_json::json;
+use tokio::time::sleep;
+
+use super::*;
+use crate::tasks::tests::{Firmware, quick, spawn_fake};
+use crate::vehicle::Identity;
+use crate::world::Config;
+
+// Inside the approved Golden Gate area, south of the strait.
+const LAT: f64 = 37.80;
+const LON: f64 = -122.45;
+/// On the water north of Crissy Field.
+const SEA: (f64, f64) = (37.825, -122.47);
+
+fn root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+fn ring(w: f64, s: f64, e: f64, n: f64) -> Polygon {
+    Polygon::new(vec![
+        LonLat::new(w, s),
+        LonLat::new(e, s),
+        LonLat::new(e, n),
+        LonLat::new(w, n),
+        LonLat::new(w, s),
+    ])
+}
+
+struct Rig {
+    world: Arc<World>,
+    d: Arc<Decision>,
+    clock: ManualClock,
+    log: MemorySink,
+}
+
+fn rig() -> Rig {
+    let root = root();
+    let world = World::new(Config {
+        base_port: 0,
+        http_port: 0,
+        default_ports: 0,
+        manifest: root.join("sim/run/no-such-manifest.json"),
+        platforms: root.join("sim/platforms.toml"),
+        root: root.clone(),
+    });
+    let clock = ManualClock::new(snapshot::ms(clock::wall()));
+    let log = MemorySink::new();
+    let terrain = Terrain::fixed(PolygonTerrain {
+        coverage: ring(-122.6, 37.7, -122.3, 37.9),
+        // the Presidio shore, south of the test boat
+        land: vec![ring(-122.48, 37.79, -122.44, 37.808)],
+        water_depth_m: 12.0,
+    });
+    let d = Decision::from_parts(
+        world.clone(),
+        Parts {
+            policy: Policy::load(&root.join("sim/policy.toml")).expect("policy"),
+            catalog: Catalog::load(&root.join("sim/platforms.toml")).expect("catalog"),
+            areas: AreaSet::load_dir(&root.join("sim/areas"), clock.now()).expect("areas"),
+            sink: Box::new(log.clone()),
+            audit_path: PathBuf::from("memory"),
+            clock: Arc::new(clock.clone()),
+            terrain,
+            operators: vec![OperatorId::new("op-1"), OperatorId::new("op-2")],
+        },
+    )
+    .expect("engine");
+    Rig {
+        world,
+        d,
+        clock,
+        log,
+    }
+}
+
+impl Rig {
+    fn vehicle(&self, uid: Uid, fw: Firmware, platform: &str, at: (f64, f64)) {
+        let cell = spawn_fake(uid, fw, at.0, at.1, quick());
+        let mut m = serde_json::Map::new();
+        m.insert("platform".into(), json!(platform));
+        m.insert("callsign".into(), json!(format!("{platform} {uid}")));
+        cell.write(|v| v.identity = Some(Arc::new(Identity::from_manifest(&m))));
+        self.world.insert_vehicle(cell);
+    }
+
+    fn state(&self, id: IntentId) -> State {
+        self.d
+            .lock()
+            .engine
+            .intent(id)
+            .map(Intent::state)
+            .expect("intent")
+    }
+
+    fn reason(&self, id: IntentId) -> String {
+        let core = self.d.lock();
+        let i = core.engine.intent(id).expect("intent");
+        i.history()
+            .last()
+            .map(|h| h.reason.clone())
+            .unwrap_or_default()
+    }
+
+    /// Tick once a second (tokio time) until the intent leaves `dispatched`.
+    async fn run_until_finished(&self, id: IntentId, limit_s: u64) -> State {
+        for _ in 0..limit_s {
+            self.d.tick();
+            let s = self.state(id);
+            if s.is_terminal() {
+                return s;
+            }
+            sleep(Duration::from_secs(1)).await;
+        }
+        self.state(id)
+    }
+
+    fn replays(&self) -> replay::ReplayReport {
+        let report = replay::replay_str(&self.log.text()).expect("log parses");
+        assert!(report.ok(), "replay mismatches: {:?}", report.mismatches);
+        report
+    }
+
+    fn events(&self, kind: &str) -> usize {
+        self.log
+            .lines()
+            .iter()
+            .filter(|l| l.contains(&format!("\"type\":\"{kind}\"")))
+            .count()
+    }
+}
+
+fn op1() -> OperatorId {
+    OperatorId::new("op-1")
+}
+
+fn orbit(uid: Uid) -> IntentRequest {
+    IntentRequest {
+        task: "orbit".into(),
+        uids: vec![uid],
+        params: TaskParams {
+            center: Some([LON + 0.004, LAT]),
+            radius: Some(150.0),
+            ..TaskParams::default()
+        },
+        constraints: Constraints::default(),
+        rationale: None,
+    }
+}
+
+fn simple(task: &str, uid: Uid) -> IntentRequest {
+    IntentRequest {
+        task: task.into(),
+        uids: vec![uid],
+        params: TaskParams::default(),
+        constraints: Constraints::default(),
+        rationale: None,
+    }
+}
+
+fn patrol(uid: Uid, route: Vec<[f64; 2]>) -> IntentRequest {
+    IntentRequest {
+        task: "patrol".into(),
+        uids: vec![uid],
+        params: TaskParams {
+            route: Some(route),
+            ..TaskParams::default()
+        },
+        constraints: Constraints::default(),
+        rationale: None,
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn auto_path_dispatches_and_finishes() {
+    let r = rig();
+    r.vehicle(1, Firmware::Copter, "x10", (LAT, LON));
+    sleep(Duration::from_millis(500)).await;
+    let out = r.d.submit(&op1(), orbit(1)).await.expect("submit");
+    assert_eq!(out.state, State::Dispatched, "{}", r.reason(out.id));
+    let tasking = out.tasking.expect("dispatched now");
+    assert_eq!(tasking.intent_id, out.id.0);
+    assert_eq!(r.run_until_finished(out.id, 300).await, State::Done);
+    assert!(r.events("op.state") >= 2); // sampled once a second, ending with done
+    let report = r.replays();
+    assert_eq!(report.approvals, 0); // policy, not a human
+}
+
+#[tokio::test(start_paused = true)]
+async fn human_path_waits_then_runs_once_approved() {
+    let r = rig();
+    r.vehicle(2, Firmware::Copter, "switchblade", (LAT, LON)); // armed
+    sleep(Duration::from_millis(500)).await;
+    let out = r.d.submit(&op1(), orbit(2)).await.expect("submit");
+    assert_eq!(out.state, State::PendingApproval);
+    assert!(out.tasking.is_none());
+    assert!(
+        r.d.world.tasks.snapshot().is_empty(),
+        "nothing reached the vehicles"
+    );
+    let inbox = r.d.inbox_json();
+    assert_eq!(inbox["counts"]["pending"], 1);
+    let why = inbox["pending"][0]["why"].to_string();
+    assert!(why.contains("armed"), "{why}");
+
+    // a second operator approves: dispatched, flown, done
+    let approved =
+        r.d.approve(&OperatorId::new("op-2"), out.id.0, Some("clear".into()))
+            .await
+            .expect("approve");
+    assert_eq!(approved.state, State::Dispatched);
+    assert!(approved.tasking.is_some());
+    assert_eq!(r.run_until_finished(out.id, 300).await, State::Done);
+    let report = r.replays();
+    assert_eq!((report.approvals, report.self_approvals), (1, 0));
+}
+
+#[tokio::test(start_paused = true)]
+async fn rejected_and_expired_intents_never_reach_a_vehicle() {
+    let r = rig();
+    r.vehicle(3, Firmware::Copter, "switchblade", (LAT, LON));
+    r.vehicle(4, Firmware::Copter, "switchblade", (LAT, LON + 0.001));
+    sleep(Duration::from_millis(500)).await;
+    let a = r.d.submit(&op1(), orbit(3)).await.expect("submit").id;
+    let b = r.d.submit(&op1(), orbit(4)).await.expect("submit").id;
+    assert_eq!(
+        r.d.reject(&op1(), a.0, Some("no".into()))
+            .expect("reject")
+            .state,
+        State::Rejected
+    );
+    // rejecting twice is a conflict, not a second decision
+    assert_eq!(
+        r.d.reject(&op1(), a.0, None).err().map(|e| e.status),
+        Some(409)
+    );
+
+    r.clock.advance_ms(121_000); // past approval.expire_s
+    r.d.tick();
+    assert_eq!(r.state(b), State::Expired);
+    let late = r.d.approve(&op1(), b.0, None).await.expect_err("too late");
+    assert_eq!(late.status, 409);
+    assert!(r.d.world.tasks.snapshot().is_empty());
+    r.replays();
+}
+
+#[tokio::test(start_paused = true)]
+async fn agents_propose_but_only_listed_operators_approve() {
+    let r = rig();
+    r.vehicle(5, Firmware::Copter, "switchblade", (LAT, LON));
+    sleep(Duration::from_millis(500)).await;
+    let proposal = proposal(&orbit(5)).expect("proposal");
+    let id = {
+        let mut guard = r.d.lock();
+        let world = r.d.snapshot();
+        let core = &mut *guard;
+        core.engine
+            .agent_port(AgentId::new("planner"))
+            .propose(
+                proposal,
+                Rationale::new("cover the east approach").expect("rationale"),
+                &world,
+                &r.d.terrain.oracle(),
+            )
+            .expect("propose")
+            .id()
+    };
+    assert_eq!(r.state(id), State::PendingApproval);
+    // the agent can't authenticate as an operator, and a request without one is refused
+    assert_eq!(
+        r.d.operator(Some("planner"), false).err().map(|e| e.status),
+        Some(403)
+    );
+    assert_eq!(r.d.operator(None, false).err().map(|e| e.status), Some(401));
+    assert_eq!(r.state(id), State::PendingApproval);
+    // a human can
+    let out = r.d.approve(&op1(), id.0, None).await.expect("approve");
+    assert_eq!(out.state, State::Dispatched);
+    r.replays();
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_world_voids_waiting_intents() {
+    let r = rig();
+    r.vehicle(6, Firmware::Copter, "switchblade", (LAT, LON));
+    r.vehicle(7, Firmware::Copter, "switchblade", (LAT, LON + 0.001));
+    sleep(Duration::from_millis(500)).await;
+
+    // superseded: a hold (auto) dispatched to the vehicle voids the orbit waiting for it
+    let waiting = r.d.submit(&op1(), orbit(6)).await.expect("submit").id;
+    let hold = r.d.submit(&op1(), simple("hold", 6)).await.expect("hold");
+    assert_eq!(hold.state, State::Dispatched);
+    assert_eq!(r.state(waiting), State::Voided);
+    assert!(
+        r.reason(waiting).contains("superseded"),
+        "{}",
+        r.reason(waiting)
+    );
+
+    // lost: no heartbeat for longer than max_fact_age_s
+    let lost = r.d.submit(&op1(), orbit(7)).await.expect("submit").id;
+    let cell = r
+        .world
+        .vehicles()
+        .into_iter()
+        .find(|c| c.uid == 7)
+        .expect("cell");
+    cell.write(|v| v.seen.heartbeat = Some(clock::wall() - 60.0));
+    r.d.tick();
+    assert_eq!(r.state(lost), State::Voided);
+    assert!(r.reason(lost).contains("lost"), "{}", r.reason(lost));
+    r.replays();
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_rules_reject_land_waypoints_and_no_go_crossings() {
+    let r = rig();
+    r.vehicle(8, Firmware::Rover, "magura", SEA);
+    r.vehicle(9, Firmware::Copter, "x10", (LAT, LON));
+    sleep(Duration::from_millis(500)).await;
+
+    // a boat patrol with its second waypoint on the Presidio
+    let boat =
+        r.d.submit(&op1(), patrol(8, vec![[SEA.1, SEA.0], [-122.46, 37.80]]))
+            .await
+            .expect("submit");
+    assert_eq!(boat.state, State::Rejected);
+    assert!(
+        r.reason(boat.id).contains("domain"),
+        "{}",
+        r.reason(boat.id)
+    );
+
+    // a patrol straight across Alcatraz
+    let across =
+        r.d.submit(
+            &op1(),
+            patrol(9, vec![[-122.432, 37.8265], [-122.414, 37.8265]]),
+        )
+        .await
+        .expect("submit");
+    assert_eq!(across.state, State::Rejected);
+    assert!(
+        r.reason(across.id).contains("alcatraz"),
+        "{}",
+        r.reason(across.id)
+    );
+    assert!(r.d.world.tasks.snapshot().is_empty());
+
+    // malformed requests never become intents
+    let unknown =
+        r.d.submit(&op1(), simple("hold", 99))
+            .await
+            .expect_err("404");
+    assert_eq!(unknown.status, 404);
+    // satellite tasking isn't executed by the bridge yet: refused before any intent
+    let space =
+        r.d.submit(&op1(), simple("collect", 9))
+            .await
+            .expect_err("501");
+    assert_eq!(space.status, 501);
+    assert!(space.detail.contains("satellite"), "{}", space.detail);
+    r.replays();
+}
+
+#[tokio::test(start_paused = true)]
+async fn vehicle_events_reach_the_audit_log() {
+    let r = rig();
+    r.vehicle(10, Firmware::Copter, "x10", (LAT, LON));
+    sleep(Duration::from_millis(500)).await;
+    let out = r.d.submit(&op1(), simple("hold", 10)).await.expect("hold");
+    assert_eq!(r.run_until_finished(out.id, 60).await, State::Done);
+    assert!(
+        r.events("vehicle.event") >= 1,
+        "the mode change to LOITER is logged"
+    );
+    r.replays();
+}

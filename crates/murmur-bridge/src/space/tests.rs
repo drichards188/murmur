@@ -26,6 +26,7 @@ fn world() -> Arc<World> {
         default_ports: 0,
         manifest: PathBuf::from("/nonexistent/fleet.json"),
         platforms: PathBuf::from("/nonexistent/platforms.toml"),
+        root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."),
     })
 }
 
