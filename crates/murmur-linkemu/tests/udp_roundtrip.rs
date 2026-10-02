@@ -17,6 +17,7 @@ fn spec(uid: u32, port: u16, class: &str) -> VehicleSpec {
         domain: "air".into(),
         platform: "t".into(),
         callsign: String::new(),
+        space_class: None,
     }
 }
 

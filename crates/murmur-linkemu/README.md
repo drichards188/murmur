@@ -125,9 +125,11 @@ Profiles, the ground station and `[terrain]` are not reloaded.
 
 ## Config: `sim/links.toml`
 
-Profiles are `[class.<name>]`, with `extends` for variants. A vehicle uses the profile named
-by its platform's `link` class unless `[platform_profile]` maps its platform elsewhere
-(`magura = "satcom_leo"` ships on). Shipped profiles: `los`, `mesh`, `satcom` (GEO, 300 ms
+Profiles are `[class.<name>]`, with `extends` for variants. A vehicle's profile is, in order:
+an explicit `[platform_profile]` entry (empty as shipped); for SATCOM vehicles, the profile
+that `[space_class_profile]` gives the platform's `space_class` (set in `sim/platforms.toml`,
+carried in the fleet manifest, and also what the bridge's space views read); else the
+platform's `link` class. Shipped profiles: `los`, `mesh`, `satcom` (GEO, 300 ms
 each way for the ~600 ms RTT), `satcom_leo`, `satcom_iridium`, `acoustic` (300 bps, 1500 m/s),
 `satcom_ku_geo`, `tether`. Each has a comment with where its numbers come from and which are guesses.
 
@@ -169,9 +171,11 @@ looked ahead `outlook_s` scenario seconds (null if none in the horizon; GEO has 
 `/stats` also has `space` (per class live or static, element reference, time shift, refresh
 round times).
 
-Platform mapping (`[platform_profile]`): buoy to Iridium; magura, corsair, seahunter and
-saildrone to Starlink-class; rq4 and mq9b to WGS-class GEO (`satcom`), with the commercial Ku
-GEO (`satcom_ku_geo`, Intelsat-class) as the documented alternative.
+Platform mapping (from `space_class` in `sim/platforms.toml`): buoy to Iridium; magura,
+corsair, seahunter and saildrone to Starlink-class; rq4 and mq9b to WGS-class GEO (`satcom`).
+`space_class_alt` (saildrone iridium, rq4 and mq9b ku-geo) is not used here: one link per
+vehicle. To run the alternative, add a `[platform_profile]` override (`saildrone =
+"satcom_iridium"`, `rq4 = "satcom_ku_geo"`).
 
 Ground station altitude: with `--tidewater` the DEM is sampled at `[ground_station]` at
 startup; if `alt_m` differs by more than 5 m a warning is logged, and `alt_m = "dem"` uses the

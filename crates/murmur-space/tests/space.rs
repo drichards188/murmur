@@ -22,7 +22,11 @@ fn launch_estimates() {
     assert_eq!(launch.format("%Y").to_string(), "1998");
     for cs in &sp.classes {
         for s in &cs.sats {
-            assert!(s.estimated_launch().is_some_and(|l| l <= s.epoch), "{}", s.name);
+            assert!(
+                s.estimated_launch().is_some_and(|l| l <= s.epoch),
+                "{}",
+                s.name
+            );
         }
     }
 }

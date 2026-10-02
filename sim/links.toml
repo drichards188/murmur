@@ -1,8 +1,14 @@
 # Link profiles for the user-space link emulator (crates/murmur-linkemu, Phase D).
 #
-# A vehicle's profile is its platform's `link` class from sim/platforms.toml (los, mesh,
-# satcom, acoustic, tether), unless [platform_profile] below names another profile for that
-# platform. Numbers are rough, plausible defaults, not measurements. Where a figure comes
+# A vehicle's profile is chosen in this order:
+#   1. [platform_profile] below, an explicit override for one platform;
+#   2. for `link = "satcom"` platforms, the platform's `space_class` from sim/platforms.toml
+#      (the single source of truth for which constellation it uses), mapped to a profile by
+#      [space_class_profile] below;
+#   3. its platform's `link` class from sim/platforms.toml (los, mesh, satcom, acoustic,
+#      tether).
+# (`space_class_alt` in the catalog is for the bridge's space views; the emulator runs one
+# link per vehicle and uses the primary class.) Numbers are rough, plausible defaults, not measurements. Where a figure comes
 # from a public spec or physics it says so; everything marked GUESS is an invented starting
 # point to be tuned (the 30%-loss study varies loss, not these).
 #
@@ -198,24 +204,21 @@ jitter_ms = 0.3
 bandwidth_bps = 10000000
 queue_bytes = 65536
 
-# Platforms with `link = "satcom"` and the constellation they follow:
-#   buoy                        Iridium (SBD messages)
-#   magura, corsair, seahunter  Starlink-class (Magura V5 uses Starlink in the field)
-#   saildrone                   Starlink-class here (it carries Iridium and Starlink; uncomment
-#                               the Iridium line to see the narrow link)
-#   rq4, mq9b                   WGS-class military GEO (the "satcom" profile); the commercial
-#                               Ku GEO they also use is the documented alternative below
+# SATCOM class -> profile. The class itself comes from each platform's `space_class` in
+# sim/platforms.toml (buoy iridium; magura, corsair, seahunter, saildrone starlink; rq4, mq9b
+# wgs), so this file and the bridge's space views cannot disagree about it. Each profile must
+# follow the class it is listed under (checked at load).
+[space_class_profile]
+starlink = "satcom_leo"
+iridium = "satcom_iridium"
+wgs = "satcom"
+ku-geo = "satcom_ku_geo"
+
+# Explicit per-platform overrides, taking precedence over the catalog class. Empty by default.
+# Example: put the saildrone on its narrow Iridium link, or the RQ-4 on commercial Ku GEO:
+#   saildrone = "satcom_iridium"
+#   rq4 = "satcom_ku_geo"
 [platform_profile]
-buoy = "satcom_iridium"
-magura = "satcom_leo"
-corsair = "satcom_leo"
-seahunter = "satcom_leo"
-saildrone = "satcom_leo"
-# saildrone = "satcom_iridium"
-rq4 = "satcom"
-mq9b = "satcom"
-# rq4 = "satcom_ku_geo"
-# mq9b = "satcom_ku_geo"
 
 # ---- Scripted events. `at_s` is seconds since the emulator started; `at_scenario` is an ISO
 # time on the scenario clock (MURMUR_AT at emulator start, plus elapsed x MURMUR_RATE, as

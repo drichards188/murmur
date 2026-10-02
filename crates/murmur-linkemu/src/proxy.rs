@@ -99,11 +99,7 @@ pub fn build_links(
     let mut out = Vec::new();
     let mut cache: std::collections::HashMap<String, Params> = Default::default();
     for v in fleet {
-        let profile = cfg
-            .platform_profile
-            .get(&v.platform)
-            .cloned()
-            .unwrap_or_else(|| v.link.clone());
+        let profile = cfg.profile_for(v);
         if !cache.contains_key(&profile) {
             let raw = cfg.resolve(&profile).map_err(|e| {
                 format!(
