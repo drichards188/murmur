@@ -27,7 +27,8 @@ impl Behavior for Boat {
 
     fn step(&mut self, t: &mut Tick) {
         let tgt = marine::target(t);
-        let want = guide(t.st, tgt.as_ref(), 10.0, true, t.mission, t.out);
+        let reach = t.params.f("WP_RADIUS", 10.0);
+        let want = guide(t.st, tgt.as_ref(), reach, true, t.mission, t.out);
         turn_and_accelerate(t.st, &want, t.dt, t.spec.turn_dps(), 0.5);
         climb(t.st, &want, t.dt, t.spec.climb_mps());
         let drift = marine::water(

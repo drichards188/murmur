@@ -73,6 +73,7 @@ fn spec(behavior: &str) -> Spec {
         turn_dps: Some(10.0),
         loiter_radius_m: Some(300.0),
         endurance_h: Some(10.0),
+        link: None,
     }
 }
 
@@ -117,11 +118,11 @@ async fn heartbeat_identity_and_modes() {
             .contains(MavModeFlag::MAV_MODE_FLAG_SAFETY_ARMED)
     );
 
-    // a fixed wing refuses to disarm in flight
+    // a fixed wing refuses to disarm in flight (AP_Arming_Plane::disarm -> FAILED)
     assert_eq!(
         g.command(MavCmd::MAV_CMD_COMPONENT_ARM_DISARM, 0.0, 0.0)
             .await,
-        MavResult::MAV_RESULT_DENIED
+        MavResult::MAV_RESULT_FAILED
     );
     assert_eq!(
         g.command(MavCmd::MAV_CMD_DO_SET_MODE, 1.0, 11.0).await,
@@ -134,9 +135,10 @@ async fn heartbeat_identity_and_modes() {
         })
         .await;
     assert_eq!(mode, 11, "RTL");
+    // no such mode: _set_mode_common returns FAILED
     assert_eq!(
         g.command(MavCmd::MAV_CMD_DO_SET_MODE, 1.0, 9.0).await,
-        MavResult::MAV_RESULT_UNSUPPORTED
+        MavResult::MAV_RESULT_FAILED
     );
     assert_eq!(
         g.command(MavCmd::MAV_CMD_NAV_LAND, 0.0, 0.0).await,
@@ -149,7 +151,7 @@ async fn drifter_refuses_missions_and_powered_modes() {
     let mut g = start("drifter", 0.0).await;
     assert_eq!(
         g.command(MavCmd::MAV_CMD_DO_SET_MODE, 1.0, 10.0).await,
-        MavResult::MAV_RESULT_UNSUPPORTED
+        MavResult::MAV_RESULT_FAILED
     );
     assert_eq!(
         g.command(MavCmd::MAV_CMD_DO_SET_MODE, 1.0, 4.0).await,
@@ -194,9 +196,10 @@ async fn mission_upload_then_auto() {
     };
     g.send(MavMessage::MISSION_COUNT(count)).await;
     for want in 0..3u16 {
+        // ArduPilot asks for items with (deprecated) MISSION_REQUEST
         let seq = g
             .expect(|_, m| match m {
-                MavMessage::MISSION_REQUEST_INT(r) => Some(r.seq),
+                MavMessage::MISSION_REQUEST(r) => Some(r.seq),
                 _ => None,
             })
             .await;
@@ -207,20 +210,20 @@ async fn mission_upload_then_auto() {
         )))
         .await;
     }
-    let ack = g
-        .expect(|_, m| match m {
-            MavMessage::MISSION_ACK(a) => Some(a.mavtype),
-            _ => None,
-        })
-        .await;
-    assert_eq!(ack, MavMissionResult::MAV_MISSION_ACCEPTED);
     let text = g
         .expect(|_, m| match m {
             MavMessage::STATUSTEXT(t) => t.text.to_str().ok().map(str::to_owned),
             _ => None,
         })
         .await;
-    assert_eq!(text, "Mission: 2 WP");
+    assert_eq!(text, "Flight plan received");
+    let ack = g
+        .expect(|_, m| match m {
+            MavMessage::MISSION_ACK(a) => Some((a.mavtype, a.target_system, a.target_component)),
+            _ => None,
+        })
+        .await;
+    assert_eq!(ack, (MavMissionResult::MAV_MISSION_ACCEPTED, 255, 190));
 
     assert_eq!(
         g.command(MavCmd::MAV_CMD_COMPONENT_ARM_DISARM, 1.0, 0.0)
