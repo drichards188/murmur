@@ -12,6 +12,7 @@ use crate::geo::LonLat;
 use crate::ids::Uid;
 use crate::intent::{IntentSpec, Task};
 use crate::rules::needs_terrain;
+use crate::space::SpaceAnswer;
 use crate::terrain::{Surface, TerrainOracle};
 use crate::time::Time;
 
@@ -82,6 +83,57 @@ impl TerrainInputs {
     }
 }
 
+/// The space segment's answer for a collect or cover. The engine fills this in from its
+/// [`crate::SpaceOracle`] before evaluating rules; the bridge leaves it `NotQueried`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum SpaceInputs {
+    /// Not a space task, or nobody asked: the space rule fails closed on it.
+    #[default]
+    NotQueried,
+    /// No segment loaded, or the query failed: the space rule fails, saying why.
+    Unavailable { reason: String },
+    /// The answer, and its content hash (how decision inputs reference it in the log).
+    Answered {
+        sha256: String,
+        answer: Box<SpaceAnswer>,
+    },
+}
+
+impl SpaceInputs {
+    pub fn is_not_queried(&self) -> bool {
+        matches!(self, SpaceInputs::NotQueried)
+    }
+
+    pub fn answer(&self) -> Option<&SpaceAnswer> {
+        match self {
+            SpaceInputs::Answered { answer, .. } => Some(answer),
+            _ => None,
+        }
+    }
+}
+
+/// [`SpaceInputs`] as logged in decision inputs: the answer replaced by its hash (the
+/// answer itself is logged once, as `space.query`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum LoggedSpace {
+    #[default]
+    NotQueried,
+    Unavailable {
+        reason: String,
+    },
+    Answered {
+        sha256: String,
+    },
+}
+
+impl LoggedSpace {
+    pub fn is_not_queried(&self) -> bool {
+        matches!(self, LoggedSpace::NotQueried)
+    }
+}
+
 /// The input to every rule and policy decision. Logged (reduced to what one intent can
 /// read) with each decision, so replay recomputes from exactly this.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -93,6 +145,9 @@ pub struct WorldSnapshot {
     pub areas: Option<AreaSet>,
     #[serde(default)]
     pub terrain: TerrainInputs,
+    /// Collect and cover only; engine-filled like `terrain`.
+    #[serde(default, skip_serializing_if = "SpaceInputs::is_not_queried")]
+    pub space: SpaceInputs,
 }
 
 /// A decision's inputs as logged: the [`WorldSnapshot`] with the area set replaced by its
@@ -106,6 +161,9 @@ pub struct LoggedInputs {
     pub areas_sha256: Option<String>,
     #[serde(default)]
     pub terrain: TerrainInputs,
+    /// Collect and cover only (absent otherwise, so vehicle decisions log as before).
+    #[serde(default, skip_serializing_if = "LoggedSpace::is_not_queried")]
+    pub space: LoggedSpace,
 }
 
 impl LoggedInputs {
@@ -116,16 +174,52 @@ impl LoggedInputs {
             vehicles: world.vehicles.clone(),
             areas_sha256,
             terrain: world.terrain.clone(),
+            space: match &world.space {
+                SpaceInputs::NotQueried => LoggedSpace::NotQueried,
+                SpaceInputs::Unavailable { reason } => LoggedSpace::Unavailable {
+                    reason: reason.clone(),
+                },
+                SpaceInputs::Answered { sha256, .. } => LoggedSpace::Answered {
+                    sha256: sha256.clone(),
+                },
+            },
         }
     }
 
-    /// The snapshot again, with `areas` the set the reference resolved to.
+    /// The snapshot again, with `areas` the set the reference resolved to. A space answer
+    /// reference can't be resolved here and becomes `Unavailable` (replay uses
+    /// [`Self::resolve_with_space`]).
     pub fn resolve(&self, areas: Option<AreaSet>) -> WorldSnapshot {
+        self.resolve_with_space(areas, |_| None)
+    }
+
+    /// [`Self::resolve`], with space answer references looked up by hash.
+    pub fn resolve_with_space<'a>(
+        &self,
+        areas: Option<AreaSet>,
+        answer: impl Fn(&str) -> Option<&'a SpaceAnswer>,
+    ) -> WorldSnapshot {
+        let space = match &self.space {
+            LoggedSpace::NotQueried => SpaceInputs::NotQueried,
+            LoggedSpace::Unavailable { reason } => SpaceInputs::Unavailable {
+                reason: reason.clone(),
+            },
+            LoggedSpace::Answered { sha256 } => match answer(sha256) {
+                Some(a) => SpaceInputs::Answered {
+                    sha256: sha256.clone(),
+                    answer: Box::new(a.clone()),
+                },
+                None => SpaceInputs::Unavailable {
+                    reason: format!("space answer {sha256} not resolved"),
+                },
+            },
+        };
         WorldSnapshot {
             t: self.t,
             vehicles: self.vehicles.clone(),
             areas,
             terrain: self.terrain.clone(),
+            space,
         }
     }
 }
@@ -155,6 +249,8 @@ impl WorldSnapshot {
             vehicles,
             areas: self.areas.clone(),
             terrain: self.terrain.clone(),
+            // Engine-owned: filled from the space oracle for collect and cover.
+            space: SpaceInputs::NotQueried,
         }
     }
 

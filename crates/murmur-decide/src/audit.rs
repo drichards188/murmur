@@ -4,7 +4,10 @@
 //! Decision events (`check.result`, `policy.decision`) carry the exact inputs they read,
 //! the world facts with their timestamps, so [`crate::replay`] can recompute them. The
 //! area set is logged once (in `run.started`, and as `areas.loaded` whenever it changes)
-//! with its SHA-256 content hash; decision inputs reference the hash. The engine writes an
+//! with its SHA-256 content hash; decision inputs reference the hash. Space answers
+//! (collect, cover) work the same way: each is logged once as `space.query` (query, answer,
+//! `time_map`, segment identity with `cache_meta`) and referenced by hash; the segment in
+//! use is logged as `space.loaded` when the engine is given one. The engine writes an
 //! event before applying the change it records; if the write fails, the change doesn't
 //! happen.
 //!
@@ -35,6 +38,7 @@ use crate::ids::{AgentId, IntentId, OperatorId, SessionId, Uid};
 use crate::intent::{IntentSpec, State, Task, Transition};
 use crate::policy::{Policy, PolicyDecision};
 use crate::rules::CheckResult;
+use crate::space::{SegmentId, SpaceAnswer, SpaceOrder};
 use crate::time::Time;
 use crate::world::LoggedInputs;
 
@@ -79,6 +83,19 @@ pub enum EventBody {
     /// change). Decision inputs after this reference it by hash.
     #[serde(rename = "areas.loaded")]
     AreasLoaded { sha256: String, areas: AreaSet },
+
+    /// A space segment is in use from here on (`Engine::set_space`).
+    #[serde(rename = "space.loaded")]
+    SpaceLoaded { segment: SegmentId },
+
+    /// A space query and its answer (collect, cover), logged once before the first
+    /// decision that reads it; decision inputs reference it by `sha256`, the SHA-256 of
+    /// the answer's canonical serialization.
+    #[serde(rename = "space.query")]
+    SpaceQuery {
+        sha256: String,
+        answer: Box<SpaceAnswer>,
+    },
 
     #[serde(rename = "intent.created")]
     IntentCreated { intent: IntentSpec },
@@ -139,6 +156,9 @@ pub enum EventBody {
         intent: IntentId,
         task: Task,
         uids: Vec<Uid>,
+        /// Collect and cover: the order handed to the bridge (absent for vehicle tasks).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<SpaceOrder>,
     },
 
     /// Per-vehicle task progress from the task layer (sent, acked, active, done, failed).

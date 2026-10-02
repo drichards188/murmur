@@ -14,7 +14,17 @@
 //!   text) each line is its event's canonical serialization;
 //! - area sets: each logged set's content hash matches its `sha256`, and every decision
 //!   references the set in force;
-//! - `self_approved` on every `approval.granted` matches who proposed the intent.
+//! - `self_approved` on every `approval.granted` matches who proposed the intent;
+//! - space answers (collect, cover): each `space.query`'s content hash matches its
+//!   `sha256`, every decision references a logged answer, and a dispatched collect is the
+//!   chosen option. Rules re-decide from the logged answers, so this needs no space cache.
+//!
+//! **Space recomputation.** [`replay_str_with_space`] also re-runs every logged space query
+//! on the segment given. If that segment is the one the query ran on (same
+//! [`crate::SegmentId`] hash), the new answer must equal the logged one, else it is a
+//! mismatch. If the segment differs (other element sets or catalog), the query is not
+//! recomputed and the event goes to [`ReplayReport::cache_mismatches`]: a cache mismatch,
+//! which says nothing about the decisions (they were re-decided from the logged answer).
 //!
 //! Physics is not replayed; the decision layer is. What replay cannot know is whether the
 //! logged inputs were true of the world: it proves the decisions follow from them. The
@@ -34,8 +44,9 @@ use crate::ids::IntentId;
 use crate::intent::{IntentSpec, State, Transition, next_state};
 use crate::policy::{self, Policy, Tier};
 use crate::rules;
+use crate::space::{SpaceAnswer, SpaceOracle, SpaceOrder};
 use crate::time::Time;
-use crate::world::{LoggedInputs, WorldSnapshot};
+use crate::world::{LoggedInputs, LoggedSpace, WorldSnapshot};
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Mismatch {
@@ -62,11 +73,26 @@ pub struct ReplayReport {
     /// chain or a truncated tail.
     pub head_sha256: Option<String>,
     pub mismatches: Vec<Mismatch>,
+    /// Space segments logged (`space.loaded`).
+    pub space_segments: usize,
+    /// Space answers logged (`space.query`).
+    pub space_queries: usize,
+    /// Space queries re-run on the given segment and found equal (or not: see mismatches).
+    pub space_recomputed: usize,
+    /// Space queries that could not be recomputed because the segment given to replay is
+    /// not the one they ran on. Not decision mismatches: [`Self::ok`] ignores them.
+    pub cache_mismatches: Vec<Mismatch>,
 }
 
 impl ReplayReport {
+    /// Every decision reproduced from the logged inputs (including logged space answers).
     pub fn ok(&self) -> bool {
         self.mismatches.is_empty()
+    }
+
+    /// Every logged space query was re-run on the same segment and reproduced.
+    pub fn space_reproduced(&self) -> bool {
+        self.cache_mismatches.is_empty() && self.space_recomputed == self.space_queries
     }
 }
 
@@ -85,6 +111,14 @@ struct Tracked {
 /// text, and each line must be its event's canonical serialization (so an edit that the
 /// parser would ignore, such as an extra field, is still caught).
 pub fn replay_str(text: &str) -> Result<ReplayReport, LogError> {
+    replay_str_with_space(text, None)
+}
+
+/// [`replay_str`], and re-run every logged space query on `space` (see the module docs).
+pub fn replay_str_with_space(
+    text: &str,
+    space: Option<&dyn SpaceOracle>,
+) -> Result<ReplayReport, LogError> {
     let events = parse_log(text)?;
     let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
     let mut noncanonical = Vec::new();
@@ -98,7 +132,7 @@ pub fn replay_str(text: &str) -> Result<ReplayReport, LogError> {
         }
     }
     let hashes = lines.iter().map(|l| sha256_hex(l.as_bytes())).collect();
-    let mut r = replay_inner(&events, hashes);
+    let mut r = replay_inner(&events, hashes, space);
     for seq in noncanonical {
         r.mismatches.push(Mismatch {
             seq,
@@ -113,6 +147,11 @@ pub fn replay_str(text: &str) -> Result<ReplayReport, LogError> {
 
 /// Replay parsed events; the chain is checked over their canonical serialization.
 pub fn replay(events: &[Event]) -> ReplayReport {
+    replay_with_space(events, None)
+}
+
+/// [`replay`], and re-run every logged space query on `space`.
+pub fn replay_with_space(events: &[Event], space: Option<&dyn SpaceOracle>) -> ReplayReport {
     let hashes = events
         .iter()
         .map(|e| match serde_json::to_string(e) {
@@ -120,13 +159,20 @@ pub fn replay(events: &[Event]) -> ReplayReport {
             Err(err) => format!("<unserializable: {err}>"),
         })
         .collect();
-    replay_inner(events, hashes)
+    replay_inner(events, hashes, space)
 }
 
 /// The area set in force: its logged hash, and the set if that hash verified.
 type InForce = Option<(String, Option<AreaSet>)>;
 
-fn replay_inner(events: &[Event], hashes: Vec<String>) -> ReplayReport {
+/// Logged space answers whose hash verified, by hash.
+type Answers = BTreeMap<String, SpaceAnswer>;
+
+fn replay_inner(
+    events: &[Event],
+    hashes: Vec<String>,
+    space: Option<&dyn SpaceOracle>,
+) -> ReplayReport {
     let mut r = ReplayReport {
         events: events.len(),
         head_sha256: hashes.last().cloned(),
@@ -135,6 +181,7 @@ fn replay_inner(events: &[Event], hashes: Vec<String>) -> ReplayReport {
     let mut policy: Option<Policy> = None;
     let mut areas: InForce = None;
     let mut intents: BTreeMap<IntentId, Tracked> = BTreeMap::new();
+    let mut answers: Answers = BTreeMap::new();
     let mut prev: Option<&Event> = None;
 
     for (i, e) in events.iter().enumerate() {
@@ -192,6 +239,31 @@ fn replay_inner(events: &[Event], hashes: Vec<String>) -> ReplayReport {
             EventBody::AreasLoaded { sha256, areas: set } => {
                 areas = Some(load_areas(&mut r, e, sha256, set));
             }
+            EventBody::SpaceLoaded { .. } => {
+                r.space_segments += 1;
+            }
+            EventBody::SpaceQuery { sha256, answer } => {
+                r.space_queries += 1;
+                match answer.content_hash() {
+                    Ok(h) if h == *sha256 => {
+                        answers.insert(sha256.clone(), (**answer).clone());
+                    }
+                    other => {
+                        bad(
+                            &mut r,
+                            e,
+                            None,
+                            "space answer hash does not match its content",
+                            sha256.clone(),
+                            other.unwrap_or_else(|err| format!("<unserializable: {err}>")),
+                        );
+                        continue;
+                    }
+                }
+                if let Some(oracle) = space {
+                    recompute_space(&mut r, e, answer, oracle);
+                }
+            }
             EventBody::IntentCreated { intent } => {
                 if intents.contains_key(&intent.id) {
                     bad(
@@ -236,7 +308,7 @@ fn replay_inner(events: &[Event], hashes: Vec<String>) -> ReplayReport {
                     );
                     continue;
                 };
-                let inputs = match resolve(inputs, &areas) {
+                let inputs = match resolve(inputs, &areas, &answers) {
                     Ok(w) => w,
                     Err(why) => {
                         tr.last_check_passed = None;
@@ -282,7 +354,7 @@ fn replay_inner(events: &[Event], hashes: Vec<String>) -> ReplayReport {
                     );
                     continue;
                 };
-                let inputs = match resolve(inputs, &areas) {
+                let inputs = match resolve(inputs, &areas, &answers) {
                     Ok(w) => w,
                     Err(why) => {
                         tr.tier = None;
@@ -473,18 +545,32 @@ fn replay_inner(events: &[Event], hashes: Vec<String>) -> ReplayReport {
                 }
                 tr.state = *to;
             }
-            EventBody::IntentDispatched { intent, .. } => {
-                if let Some(tr) = intents.get(intent)
-                    && !matches!(tr.state, State::AutoApproved | State::Approved)
-                {
-                    bad(
-                        &mut r,
-                        e,
-                        Some(*intent),
-                        "dispatched without approval",
-                        json(&tr.state),
-                        "auto_approved|approved".into(),
-                    );
+            EventBody::IntentDispatched {
+                intent,
+                space: order,
+                ..
+            } => {
+                if let Some(tr) = intents.get(intent) {
+                    if !matches!(tr.state, State::AutoApproved | State::Approved) {
+                        bad(
+                            &mut r,
+                            e,
+                            Some(*intent),
+                            "dispatched without approval",
+                            json(&tr.state),
+                            "auto_approved|approved".into(),
+                        );
+                    }
+                    if let Some(why) = order_mismatch(&tr.spec, order.as_ref()) {
+                        bad(
+                            &mut r,
+                            e,
+                            Some(*intent),
+                            why,
+                            json(order),
+                            json(&tr.spec.task),
+                        );
+                    }
                 }
             }
             EventBody::OpState { .. }
@@ -521,13 +607,83 @@ fn load_areas(
     }
 }
 
-/// Decision inputs with the area reference resolved to the set in force.
-fn resolve(inputs: &LoggedInputs, in_force: &InForce) -> Result<WorldSnapshot, &'static str> {
+/// Re-run one logged space query on `oracle` (same segment) or record a cache mismatch.
+fn recompute_space(
+    r: &mut ReplayReport,
+    e: &Event,
+    logged: &SpaceAnswer,
+    oracle: &dyn SpaceOracle,
+) {
+    let loaded = oracle.segment();
+    if logged.segment.sha256 != loaded.sha256 {
+        r.cache_mismatches.push(Mismatch {
+            seq: e.seq,
+            intent: None,
+            what: "cache mismatch: the space segment given to replay is not the one this query ran on; query not recomputed (decisions were re-decided from the logged answer)".into(),
+            logged: logged.segment.short(),
+            recomputed: loaded.short(),
+        });
+        return;
+    }
+    r.space_recomputed += 1;
+    match oracle.answer(&logged.query) {
+        Ok(again) if again == *logged => {}
+        Ok(again) => bad(
+            r,
+            e,
+            None,
+            "space answer differs on the same segment",
+            json(logged),
+            json(&again),
+        ),
+        Err(err) => bad(
+            r,
+            e,
+            None,
+            "space query failed on the same segment",
+            json(&logged.query),
+            err,
+        ),
+    }
+}
+
+/// Why a dispatched order doesn't fit the intent, if it doesn't.
+fn order_mismatch(spec: &IntentSpec, order: Option<&SpaceOrder>) -> Option<&'static str> {
+    use crate::intent::Task;
+    match (&spec.task, order) {
+        (Task::Collect { chosen, .. }, Some(SpaceOrder::Collect(o))) => match chosen {
+            Some(c) if c.norad_id == o.norad_id && c.collect_time == o.collect_time => None,
+            _ => Some("dispatched collect is not the chosen option"),
+        },
+        (Task::Cover { service, .. }, Some(SpaceOrder::Cover(o))) if *service == o.service => None,
+        (Task::Collect { .. } | Task::Cover { .. }, _) => {
+            Some("space intent dispatched without its order")
+        }
+        (_, Some(_)) => Some("vehicle intent dispatched with a space order"),
+        (_, None) => None,
+    }
+}
+
+/// Decision inputs with the area reference resolved to the set in force and any space
+/// answer reference to its logged answer.
+fn resolve(
+    inputs: &LoggedInputs,
+    in_force: &InForce,
+    answers: &Answers,
+) -> Result<WorldSnapshot, &'static str> {
+    if let LoggedSpace::Answered { sha256 } = &inputs.space
+        && !answers.contains_key(sha256)
+    {
+        return Err("decision references a space answer that was not logged or did not verify");
+    }
+    let space = |h: &str| answers.get(h);
     let Some(want) = &inputs.areas_sha256 else {
-        return Ok(inputs.resolve(None));
+        return Ok(inputs.resolve_with_space(None, space));
     };
     match in_force {
-        Some((h, Some(set))) if h == want => Ok(inputs.resolve(Some(set.clone()))),
+        Some((h, Some(set))) if h == want => {
+            Ok(inputs.resolve_with_space(Some(set.clone()), space))
+        }
         Some((h, None)) if h == want => {
             Err("decision references an area set whose hash did not verify")
         }

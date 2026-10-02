@@ -726,6 +726,8 @@ dependencies = [
 name = "murmur-decide"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "murmur-space",
  "serde",
  "serde_json",
  "sha2",
