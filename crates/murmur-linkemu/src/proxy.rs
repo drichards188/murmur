@@ -97,7 +97,9 @@ pub fn build_links(
     env: &Arc<Env>,
 ) -> Result<Vec<Link>, String> {
     let mut out = Vec::new();
-    let mut cache: std::collections::HashMap<String, Params> = Default::default();
+    // profile -> (params, gated profile name and params)
+    type Entry = (Params, Option<(String, Params)>);
+    let mut cache: std::collections::HashMap<String, Entry> = Default::default();
     for v in fleet {
         let profile = cfg.profile_for(v);
         if !cache.contains_key(&profile) {
@@ -107,9 +109,21 @@ pub fn build_links(
                     v.uid, v.platform
                 )
             })?;
+            let gated = match &raw.gated_profile {
+                Some(g) => {
+                    let graw = cfg.resolve(g).map_err(|e| format!("profile {profile}: {e}"))?;
+                    let gp = Params::from_profile(&graw)
+                        .map_err(|e| format!("profile {g} (gated_profile of {profile}): {e}"))?;
+                    Some((g.clone(), gp))
+                }
+                None => None,
+            };
             cache.insert(
                 profile.clone(),
-                Params::from_profile(&raw).map_err(|e| format!("profile {profile}: {e}"))?,
+                (
+                    Params::from_profile(&raw).map_err(|e| format!("profile {profile}: {e}"))?,
+                    gated,
+                ),
             );
         }
         let meta = LinkMeta {
@@ -121,7 +135,12 @@ pub fn build_links(
             domain: v.domain.clone(),
             platform: v.platform.clone(),
         };
-        out.push(Link::new(meta, cache[&profile].clone(), env.clone()));
+        let (params, gated) = cache[&profile].clone();
+        let link = Link::new(meta, params, env.clone());
+        out.push(match gated {
+            Some((name, gp)) => link.with_gated(&name, gp),
+            None => link,
+        });
     }
     Ok(out)
 }
@@ -148,7 +167,8 @@ pub async fn start(
             .map_err(|e| format!("connect {}:{bport}: {e}", opts.bridge_host))?;
         let stats = Arc::new(
             LinkStats::new(link.meta.clone())
-                .with_sat(link.sat_shared(), link.params().latency_ns as f64 / 1e6),
+                .with_sat(link.sat_shared(), link.params().latency_ns as f64 / 1e6)
+                .with_nominal(link.nominal_json()),
         );
         all.push(stats.clone());
         tokio::spawn(run_link(link, vsock, usock, stats, start));
@@ -250,6 +270,11 @@ async fn run_link(
             );
             let b = link.blocked_now(now).map_or(0, |c| c.idx() as u64 + 1);
             stats.blocked.store(b, Relaxed);
+            stats.set_events(link.active_events(now));
+            stats.on_gated.store(
+                u64::from(link.active_profile() != link.meta.profile),
+                Relaxed,
+            );
             let (los, obs) = match link.los_state() {
                 LosState::Off => (0, f64::NAN),
                 LosState::Unknown => (1, f64::NAN),

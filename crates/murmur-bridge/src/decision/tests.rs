@@ -170,6 +170,7 @@ fn orbit(uid: Uid) -> IntentRequest {
             radius: Some(150.0),
             ..TaskParams::default()
         },
+        space: space::SpaceParams::default(),
         constraints: Constraints::default(),
         rationale: None,
     }
@@ -180,6 +181,7 @@ fn simple(task: &str, uid: Uid) -> IntentRequest {
         task: task.into(),
         uids: vec![uid],
         params: TaskParams::default(),
+        space: space::SpaceParams::default(),
         constraints: Constraints::default(),
         rationale: None,
     }
@@ -193,6 +195,7 @@ fn patrol(uid: Uid, route: Vec<[f64; 2]>) -> IntentRequest {
             route: Some(route),
             ..TaskParams::default()
         },
+        space: space::SpaceParams::default(),
         constraints: Constraints::default(),
         rationale: None,
     }
@@ -457,13 +460,13 @@ async fn the_rules_reject_land_waypoints_and_no_go_crossings() {
             .await
             .expect_err("404");
     assert_eq!(unknown.status, 404);
-    // satellite tasking isn't executed by the bridge yet: refused before any intent
+    // a collect names no vehicles: refused before any intent
     let space =
         r.d.submit(&op1(), simple("collect", 9))
             .await
-            .expect_err("501");
-    assert_eq!(space.status, 501);
-    assert!(space.detail.contains("satellite"), "{}", space.detail);
+            .expect_err("400");
+    assert_eq!(space.status, 400);
+    assert!(space.detail.contains("satellites"), "{}", space.detail);
     r.replays();
 }
 
@@ -480,3 +483,6 @@ async fn vehicle_events_reach_the_audit_log() {
     );
     r.replays();
 }
+
+/// Collect and cover through the bridge (`tests/space_tasking.rs`).
+mod space_tasking;

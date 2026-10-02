@@ -4,7 +4,7 @@ use crate::link::LinkMeta;
 use crate::model::{CAUSES, Cause, Dir};
 use crate::sat::SatShared;
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
 #[derive(Default)]
@@ -48,6 +48,7 @@ impl DirStats {
             "dropped": dropped,
             "queued_pkts": self.queued_pkts.load(Relaxed),
             "queued_bytes": self.queued_bytes.load(Relaxed),
+            "latency_n": n,
             "latency_ms_mean": if n == 0 { Value::Null } else { json!(self.lat_sum_us.load(Relaxed) as f64 / n as f64 / 1000.0) },
             "latency_ms_max": self.lat_max_us.load(Relaxed) as f64 / 1000.0,
         })
@@ -72,6 +73,13 @@ pub struct LinkStats {
     /// SATCOM state (and the profile's static one-way latency, ms) for links that follow a
     /// constellation class.
     pub sat: Option<(Arc<SatShared>, f64)>,
+    /// The profile's nominal numbers (average loss, one-way latency, jitter, bandwidth), so a
+    /// viewer can compare what it measures with what the profile promises.
+    pub nominal: Value,
+    /// Names of the scripted events acting on this link now (refreshed with the gauges).
+    pub events: Mutex<Vec<String>>,
+    /// 1 while the depth gate has moved the traffic to the profile's `gated_profile`.
+    pub on_gated: AtomicU64,
 }
 
 pub const LOS_NAMES: [&str; 4] = ["off", "unknown", "clear", "obstructed"];
@@ -93,6 +101,21 @@ impl LinkStats {
             los_obstruction: AtomicU64::new(nan),
             terrain_unknown: AtomicU64::new(0),
             sat: None,
+            nominal: Value::Null,
+            events: Mutex::new(Vec::new()),
+            on_gated: AtomicU64::new(0),
+        }
+    }
+
+    pub fn with_nominal(mut self, nominal: Value) -> LinkStats {
+        self.nominal = nominal;
+        self
+    }
+
+    pub fn set_events(&self, names: Vec<String>) {
+        let mut g = self.events.lock().unwrap_or_else(|e| e.into_inner());
+        if *g != names {
+            *g = names;
         }
     }
 
@@ -146,6 +169,13 @@ impl LinkStats {
                 "blocked_by_terrain_pkts": terrain_blocked,
             },
             "satcom": self.sat.as_ref().map(|(s, ms)| s.json(*ms)),
+            "nominal": self.nominal,
+            "active_profile": if self.on_gated.load(Relaxed) == 1 {
+                self.nominal["gated_profile"].clone()
+            } else {
+                json!(self.meta.profile)
+            },
+            "events": self.events.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             "pos": { "lat": f(0), "lon": f(1), "alt_m": f(2) },
             "up": self.dir[0].json(),
             "down": self.dir[1].json(),

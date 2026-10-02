@@ -10,14 +10,22 @@
 //! MURMUR_OPERATORS (operator ids accepted in X-Murmur-Operator, comma-separated; default
 //! op-1), MURMUR_TIDEWATER_URL (tidewater serve, for the domain rule; unset: "not
 //! evaluated"), MURMUR_AT and MURMUR_RATE (scenario time for tidewater, as `make goldengate`).
+//! Link emulator: MURMUR_LINKEMU_URL (murmur-linkemu's stats endpoint, polled for
+//! `/api/links` and each link's `emu` state; unset: no emulator view). Behind the emulator
+//! MURMUR_BASE_PORT is the bridge-side base and MURMUR_FLEET_MANIFEST its rewritten manifest.
+//! Agents (Phase F, the MCP server at /mcp): MURMUR_AGENTS (agent ids accepted in
+//! X-Murmur-Agent or as the MCP clientInfo.name, comma-separated; default
+//! agent-planner,agent-watch).
 
 mod api;
 mod clock;
 mod cot;
 mod decision;
+mod emu;
 mod geo;
 mod link;
 mod mav;
+mod mcp;
 mod platforms;
 mod push;
 mod space;
@@ -61,18 +69,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let frames = Arc::new(watch::channel(None).0);
     tokio::spawn(push::pusher(world.clone(), frames.clone()));
     cot::spawn(world.clone());
+    let emu = emu::Emu::from_env();
+    if emu.enabled() {
+        tokio::spawn(emu.clone().run(world.clone()));
+    }
 
     let listener = TcpListener::bind(("127.0.0.1", http_port)).await?;
     println!("murmur-bridge on http://127.0.0.1:{http_port}");
-    axum::serve(
-        listener,
-        api::router(api::App {
-            world,
-            frames,
-            decision,
-            tracks,
-        }),
-    )
-    .await?;
+    let api = api::router(api::App {
+        world: world.clone(),
+        frames,
+        decision: decision.clone(),
+        tracks,
+    })
+    .merge(emu::router(emu));
+    // the MCP server for agents: in-process AgentPorts, read-only reuse of the API above
+    let agents = mcp::Settings::from_env();
+    println!(
+        "mcp for agents at http://127.0.0.1:{http_port}/mcp (X-Murmur-Agent: {})",
+        agents
+            .agents
+            .iter()
+            .map(|a| a.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let router = api
+        .clone()
+        .nest_service("/mcp", mcp::service(agents, world, decision, api));
+    axum::serve(listener, router).await?;
     Ok(())
 }

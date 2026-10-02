@@ -43,6 +43,12 @@ export function spaceFeatures(s: SpaceOverlay): Record<string, FC> {
     'space-scenes': fc(scenes),
     'space-sel': fc(sel),
     'space-box': fc(s.box ? [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: closed(s.box) } }] : []),
+    'space-tasked': fc(
+      (s.tasked ?? []).flatMap((t): GeoJSON.Feature[] => [
+        { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: closed(t.ring) } },
+        { type: 'Feature', properties: { label: t.label }, geometry: { type: 'Point', coordinates: topLeft(t.ring) } },
+      ]),
+    ),
   }
 }
 

@@ -1,6 +1,9 @@
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react'
-import type { AccessWindow, Catalog, Gnss, Links, Passes, SatClassInfo, TaskingResult, TaskOption, TaskQuery } from './space'
+import type { Intent, SpaceRun, SpaceRuns } from './decisions'
+import { fmtZ, hasProduct, scenarioAt, submitIntent } from './decisions'
+import type { AccessWindow, AreaInfo, Catalog, Gnss, Links, Passes, SatClassInfo, TaskingResult, TaskOption, TaskQuery } from './space'
 import { classColor, dayLabel, hhmm, offsetLabel, productTime, requestOptions, usePoll, useScenarioNow } from './space'
+import { ProductList, SpaceRunCard } from './SpaceRuns'
 import type { LngLat } from './types'
 
 /** What the panel highlights on the map and globe. */
@@ -20,6 +23,11 @@ interface Props {
   onClearBox: () => void
   onSelect: (s: SpaceSelection) => void
   onClose: () => void
+  /** tasked collects and cover watches (the bridge's space runs) and the bridge clock */
+  space?: SpaceRuns
+  bridgeNow: () => number
+  /** open an intent in the inbox or Decisions */
+  onIntent?: (id: number) => void
 }
 
 type Item = { kind: 'pass'; w: AccessWindow } | { kind: 'option'; o: TaskOption }
@@ -60,12 +68,16 @@ function deg(x: number) {
   return `${x.toFixed(1)}°`
 }
 
-export function SpacePanel({ catalog, catalogError, mapBounds, box, drawing, onDrawBox, onClearBox, onSelect, onClose }: Props) {
+type Tab = 'details' | 'request' | 'coverage' | 'products'
+
+export function SpacePanel({ catalog, catalogError, mapBounds, box, drawing, onDrawBox, onClearBox, onSelect, onClose, space, bridgeNow, onIntent }: Props) {
   const [spanH, setSpanH] = useState(6)
   const [panH, setPanH] = useState(0)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [item, setItem] = useState<Item | null>(null)
-  const [tab, setTab] = useState<'details' | 'request'>('request')
+  const [tab, setTab] = useState<Tab>('request')
+  const [runSel, setRunSel] = useState<number | null>(null)
+  const runs = space?.runs ?? []
 
   const area = catalog?.area ?? null
   const off = area?.utc_offset_h ?? 0
@@ -95,8 +107,19 @@ export function SpacePanel({ catalog, catalogError, mapBounds, box, drawing, onD
     width: `${((Math.max(0, Math.min(b, t1) - Math.max(a, t0)) / (t1 - t0)) * 100).toFixed(3)}%`,
   })
 
+  /** a tasked collect or a product: outline its scene (or the area) on the map */
+  const selectRun = (r: SpaceRun | null) => {
+    setItem(null)
+    setRunSel(r?.intent_id ?? null)
+    const c = r?.collect
+    if (!r || !c) return onSelect({ scene: null, norad: null })
+    const ring = c.scene ?? c.area
+    onSelect({ scene: { ring, label: `i${r.intent_id} ${c.satellite} ${hhmm(c.collect_time, off)}${c.scene ? '' : ' (area)'}` }, norad: c.norad_id })
+  }
+
   const select = (it: Item | null) => {
     setItem(it)
+    setRunSel(null)
     if (!it) return onSelect({ scene: null, norad: null })
     if (it.kind === 'pass') {
       setTab('details')
@@ -273,6 +296,67 @@ export function SpacePanel({ catalog, catalogError, mapBounds, box, drawing, onD
     </Fragment>
   )
 
+  // tasked collects: a diamond at the collect, a bar to the product; filled once collected
+  const scen = space ? scenarioAt(space.clock, bridgeNow()) : now
+  const collects = runs.filter((r) => r.kind === 'collect' && r.collect)
+  const taskedRow = collects.length > 0 && (
+    <Fragment key="tasked">
+      <div className="tl-label tasked" title="tasked collections (simulated): diamond at the collect, bar to the product">
+        <span className="tl-caret"> </span>Tasked collections
+        <span className="tl-count">{collects.filter((r) => !r.outcome).length} open</span>
+      </div>
+      <div className="tl-track tasked">
+        {collects.map((r) => {
+          const c = r.collect!
+          // only what falls inside the view
+          if (c.collect_time < t0 || c.collect_time > t1) return null
+          const ready = r.state === 'product_ready'
+          return (
+            <Fragment key={r.intent_id}>
+              {c.product_time != null && r.state !== 'missed' && (
+                <span className={`tl-tproduct ${ready ? 'ready' : ''}`} style={span(c.collect_time, c.product_time)} />
+              )}
+              <button
+                className={`tl-tasked ${r.state ?? ''} ${runSel === r.intent_id ? 'sel' : ''}`}
+                style={{ left: pct(c.collect_time) }}
+                title={`i${r.intent_id} ${c.satellite}: ${r.state ?? 'tasked'}, collect ${hhmm(c.collect_time, off, true)}${c.product_time != null ? `, product ${hhmm(c.product_time, off)}` : ''}`}
+                onClick={() => selectRun(runSel === r.intent_id ? null : r)}
+              />
+            </Fragment>
+          )
+        })}
+      </div>
+    </Fragment>
+  )
+  const watchRows = runs
+    .filter((r) => r.kind === 'cover' && r.cover)
+    .map((r) => {
+      const cv = r.cover!
+      const name = cv.service.type === 'gnss' ? cv.service.class.toUpperCase() : cv.service.class
+      return (
+        <Fragment key={`w-${r.intent_id}`}>
+          <div className="tl-label" title={`i${r.intent_id}: ${cv.summary}`}>
+            <span className="tl-caret"> </span>
+            <span className="tl-swatch" style={{ background: classColor(cv.service.class) }} />
+            i{r.intent_id} {name}
+            <span className="tl-count">{r.outcome ? 'ended' : r.state}</span>
+          </div>
+          <div className="tl-track">
+            <span className="tl-watch" style={span(cv.window.from, cv.window.to)} />
+            {cv.outages.map(([a, b], i) => (
+              <span
+                key={i}
+                className={`tl-watch-out ${scen != null && scen >= a ? 'seen' : ''}`}
+                style={span(a, b)}
+                title={`predicted outage ${hhmm(a, off, true)} to ${hhmm(b, off, true)}`}
+              />
+            ))}
+          </div>
+        </Fragment>
+      )
+    })
+  const products = runs.filter(hasProduct).length
+
   const shifted = catalog?.time_shifted
   const error = catalogError ?? passes.error
 
@@ -347,11 +431,14 @@ export function SpacePanel({ catalog, catalogError, mapBounds, box, drawing, onD
                   </span>
                 ))}
               </div>
+              {taskedRow}
               {rows}
               {satRows.length > 0 && <div className="tl-group">SATCOM at the area</div>}
               {satRows}
               {gnssRow && <div className="tl-group">GNSS</div>}
               {gnssRow}
+              {watchRows.length > 0 && <div className="tl-group">Coverage watches</div>}
+              {watchRows}
               {now != null && now >= t0 && now <= t1 && <span className="tl-now" style={{ left: `calc(170px + (100% - 170px) * ${(now - t0) / (t1 - t0)})` }} />}
             </div>
           )}
@@ -364,15 +451,36 @@ export function SpacePanel({ catalog, catalogError, mapBounds, box, drawing, onD
         </div>
         <aside className="space-side">
           <div className="seg wide">
-            <button className={tab === 'details' ? 'on' : ''} onClick={() => setTab('details')}>
-              Pass details
+            <button className={tab === 'details' ? 'on' : ''} onClick={() => setTab('details')} title="the pass or option selected on the timeline">
+              Pass
             </button>
-            <button className={tab === 'request' ? 'on' : ''} onClick={() => setTab('request')}>
-              Request collection
+            <button className={tab === 'request' ? 'on' : ''} onClick={() => setTab('request')} title="find collection options and task one">
+              Collect
+            </button>
+            <button className={tab === 'coverage' ? 'on' : ''} onClick={() => setTab('coverage')} title="request SATCOM or GNSS coverage over an area">
+              Coverage
+            </button>
+            <button className={tab === 'products' ? 'on' : ''} onClick={() => setTab('products')} title="products of tasked collections (simulated)">
+              Products{products ? ` (${products})` : ''}
             </button>
           </div>
           {tab === 'details' ? (
             <Details item={item} classes={classes} off={off} onClear={() => select(null)} />
+          ) : tab === 'products' ? (
+            <ProductList runs={runs} selected={runSel} onSelect={selectRun} />
+          ) : tab === 'coverage' ? (
+            <CoverageForm
+              catalog={catalog}
+              mapBounds={mapBounds}
+              box={box}
+              drawing={drawing}
+              onDrawBox={onDrawBox}
+              onClearBox={onClearBox}
+              now={now}
+              space={space}
+              scen={scen}
+              onIntent={onIntent}
+            />
           ) : (
             <RequestForm
               off={off}
@@ -384,6 +492,8 @@ export function SpacePanel({ catalog, catalogError, mapBounds, box, drawing, onD
               onClearBox={onClearBox}
               selected={selectedOption}
               onPick={(o) => select(o ? { kind: 'option', o } : null)}
+              onIntent={onIntent}
+              spaceLoaded={space?.loaded ?? false}
             />
           )}
         </aside>
@@ -493,6 +603,8 @@ function RequestForm({
   onClearBox,
   selected,
   onPick,
+  onIntent,
+  spaceLoaded,
 }: {
   off: number
   now: number | null
@@ -503,6 +615,9 @@ function RequestForm({
   onClearBox: () => void
   selected: TaskOption | null
   onPick: (o: TaskOption | null) => void
+  onIntent?: (id: number) => void
+  /** the decision layer has the space segment (else a collect fails closed) */
+  spaceLoaded: boolean
 }) {
   const [where, setWhere] = useState<'view' | 'box' | 'scenario'>('view')
   const [caps, setCaps] = useState({ optical: true, sar: true })
@@ -513,6 +628,8 @@ function RequestForm({
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<TaskingResult | null>(null)
   const [showExcl, setShowExcl] = useState(false)
+  const [tasking, setTasking] = useState(false)
+  const [tasked, setTasked] = useState<{ intent: Intent; dispatched: boolean } | null>(null)
 
   const bbox = (ring: LngLat[]): [number, number, number, number] => [
     Math.min(...ring.map((p) => p[0])),
@@ -538,10 +655,32 @@ function RequestForm({
     })
       .then((r) => {
         setResult(r)
+        setTasked(null)
         onPick(null)
       })
       .catch((e: Error) => setError(e.message))
       .finally(() => setBusy(false))
+  }
+
+  /** Task the selected option: a collect intent with the same request, committed to it. The
+   *  operator's own collect is authorized by sending it (DECISIONS.md: the operator's own
+   *  command is the human decision); an agent's would wait in the inbox. */
+  const taskIt = () => {
+    if (!result || !selected || !result.area.area) return
+    setTasking(true)
+    setError(null)
+    submitIntent({
+      task: 'collect',
+      area: result.area.area,
+      window: { from: result.request.from, to: result.request.to },
+      capability: capList.length === 2 ? 'any' : capList[0],
+      ...(maxRes ? { min_resolution_m: Number(maxRes) } : {}),
+      ...(deadline != null ? { product_deadline: new Date(deadline).toISOString() } : {}),
+      chosen: { norad_id: selected.norad_id, collect_time: selected.collect_time },
+    })
+      .then((r) => setTasked({ intent: r.intent, dispatched: r.dispatched }))
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setTasking(false))
   }
 
   const km = (b: [number, number, number, number]) => {
@@ -647,15 +786,21 @@ function RequestForm({
             ))}
           </ol>
           {selected && <OptionCard o={selected} off={off} />}
-          <span
-            className="submit-wrap"
-            title="Submitting a collection for approval arrives with the decision pipeline (Phase C). Nothing has been requested."
+          <button
+            className="primary"
+            disabled={!selected || !selected.taskable || tasking || !spaceLoaded}
+            onClick={taskIt}
+            title={
+              !spaceLoaded
+                ? 'The decision layer has no space segment yet'
+                : selected && !selected.taskable
+                  ? 'A routine collect: this sensor cannot be tasked'
+                  : 'Sends a collect intent. Your own command is the human decision: it is authorized as you send it, after the checks pass.'
+            }
           >
-            <button className="primary" disabled>
-              Submit for approval
-            </button>
-            <span className="muted small">arrives with the decision pipeline</span>
-          </span>
+            {tasking ? 'Tasking…' : selected ? `Task collection: #${selected.rank} ${selected.label ?? selected.satellite}` : 'Task collection (pick an option)'}
+          </button>
+          {tasked && <TaskedResult intent={tasked.intent} dispatched={tasked.dispatched} onIntent={onIntent} />}
           <div className="excl">
             <button className="ghost mini" onClick={() => setShowExcl((s) => !s)}>
               {showExcl ? '▾' : '▸'} Why not the others ({result.exclusions_total})
@@ -678,6 +823,187 @@ function RequestForm({
               </ul>
             )}
           </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** What came of a collect or cover the operator sent. */
+function TaskedResult({ intent: i, dispatched, onIntent }: { intent: Intent; dispatched: boolean; onIntent?: (id: number) => void }) {
+  const last = i.history[i.history.length - 1]
+  const failed = i.checks.filter((c) => c.outcome === 'fail')
+  const tone = i.state === 'pending_approval' ? 'wait' : dispatched && i.state !== 'failed' ? '' : 'bad'
+  const what = i.kind === 'collect' ? 'collection' : 'coverage watch'
+  return (
+    <div className={`sr-result ${tone}`} role="status">
+      {i.state === 'pending_approval' ? (
+        <strong>
+          Waiting for approval (i{i.id}){i.expires_t ? `: expires ${fmtZ(i.expires_t)} bridge time` : ''}
+        </strong>
+      ) : dispatched ? (
+        <strong>
+          {i.kind === 'collect' ? 'Tasked' : 'Watching'}:{' '}
+          {i.approval?.at_submission ? `authorized by you (${i.policy?.rule ?? 'policy'})` : i.state === 'dispatched' ? 'auto-approved by policy' : i.state} (i{i.id})
+        </strong>
+      ) : (
+        <strong>
+          Refused by the rules (i{i.id}): no {what} was requested.
+        </strong>
+      )}
+      {failed.length > 0 ? (
+        <ul>
+          {failed.map((c, k) => (
+            <li key={k}>
+              <b>{c.rule}</b>: {c.detail}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <span className="muted sr-why">{last?.reason}</span>
+      )}
+      {dispatched && <span className="muted sr-why">Follow it in the command log{i.kind === 'collect' ? '; its scene is outlined on the map until it is done' : ''}.</span>}
+      <button className="ghost mini" onClick={() => onIntent?.(i.id)}>
+        See i{i.id} in {i.state === 'pending_approval' ? 'the Inbox' : 'Decisions'}
+      </button>
+    </div>
+  )
+}
+
+const COVER_HOURS = [1, 2, 6, 12, 24]
+
+/** Ask for SATCOM coverage (one class) or GNSS visibility over an area for a window: a cover
+ *  intent. Its check passes when the service holds well enough (the minimum level); then it
+ *  runs as a watch that reports the predicted outages as they come. */
+function CoverageForm({
+  catalog,
+  mapBounds,
+  box,
+  drawing,
+  onDrawBox,
+  onClearBox,
+  now,
+  space,
+  scen,
+  onIntent,
+}: {
+  catalog: Catalog | null
+  mapBounds: [number, number, number, number] | null
+  box: LngLat[] | null
+  drawing: boolean
+  onDrawBox: () => void
+  onClearBox: () => void
+  now: number | null
+  space?: SpaceRuns
+  scen: number | null
+  onIntent?: (id: number) => void
+}) {
+  const services = useMemo(
+    () => (catalog?.classes ?? []).filter((c) => c.capability === 'satcom' || c.capability === 'gnss').map((c) => ({ id: c.id, cap: c.capability })),
+    [catalog],
+  )
+  const [service, setService] = useState('starlink')
+  const [where, setWhere] = useState<'view' | 'box' | 'scenario'>('scenario')
+  const [hours, setHours] = useState(2)
+  const [level, setLevel] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [sent, setSent] = useState<{ intent: Intent; dispatched: boolean } | null>(null)
+  const svc = services.find((s) => s.id === service) ?? services[0]
+  const gnss = svc?.cap === 'gnss'
+  const bbox = (ring: LngLat[]): [number, number, number, number] => [
+    Math.min(...ring.map((p) => p[0])),
+    Math.min(...ring.map((p) => p[1])),
+    Math.max(...ring.map((p) => p[0])),
+    Math.max(...ring.map((p) => p[1])),
+  ]
+  const scenarioArea: AreaInfo | null = catalog?.area ?? null
+  const area =
+    where === 'scenario' ? (scenarioArea?.area ?? null) : where === 'box' ? (box ? { bbox: bbox(box) } : null) : mapBounds ? { bbox: mapBounds } : null
+
+  const send = () => {
+    if (!svc || !area || now == null) return
+    setBusy(true)
+    setError(null)
+    const from = Math.floor(now / 60_000) * 60_000
+    const min = level.trim() === '' ? undefined : gnss ? Number(level) : Number(level) / 100
+    submitIntent({
+      task: 'cover',
+      area,
+      window: { from, to: from + hours * 3_600_000 },
+      service: gnss ? { type: 'gnss', class: svc.id } : { type: 'satcom', class: svc.id },
+      ...(min != null && Number.isFinite(min) ? { min_level: min } : {}),
+    })
+      .then((r) => setSent({ intent: r.intent, dispatched: r.dispatched }))
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setBusy(false))
+  }
+
+  const watches = (space?.runs ?? []).filter((r) => r.kind === 'cover')
+  return (
+    <div className="reqform pad">
+      <div className="reqrow">
+        <label>
+          Service
+          <select value={svc?.id ?? ''} onChange={(e) => setService(e.target.value)}>
+            {services.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.cap === 'gnss' ? `${s.id.toUpperCase()} (GNSS)` : `${s.id} (SATCOM)`}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          For
+          <select value={hours} onChange={(e) => setHours(Number(e.target.value))}>
+            {COVER_HOURS.map((h) => (
+              <option key={h} value={h}>
+                {h} h
+              </option>
+            ))}
+          </select>
+        </label>
+        <label title={gnss ? 'satellites in view at every sample (default 4, a 3D fix)' : 'percent of the window covered (default 99%)'}>
+          {gnss ? 'Min sats' : 'Min %'}
+          <input type="number" min={0} max={gnss ? 40 : 100} value={level} placeholder={gnss ? '4' : '99'} onChange={(e) => setLevel(e.target.value)} />
+        </label>
+      </div>
+      <fieldset>
+        <legend>Area (service at its centre)</legend>
+        <label>
+          <input type="radio" checked={where === 'scenario'} onChange={() => setWhere('scenario')} /> Scenario area
+        </label>
+        <label>
+          <input type="radio" checked={where === 'view'} onChange={() => setWhere('view')} /> Map view
+        </label>
+        <label>
+          <input type="radio" checked={where === 'box'} onChange={() => setWhere('box')} /> Drawn box
+          <button
+            className="ghost mini"
+            onClick={() => {
+              setWhere('box')
+              onDrawBox()
+            }}
+          >
+            {drawing ? 'click two corners…' : box ? 'redraw' : 'draw'}
+          </button>
+          {box && (
+            <button className="ghost mini" onClick={onClearBox}>
+              clear
+            </button>
+          )}
+        </label>
+      </fieldset>
+      <button className="primary" disabled={!svc || !area || busy || now == null || !(space?.loaded ?? false)} onClick={send}>
+        {busy ? 'Computing…' : 'Request coverage'}
+      </button>
+      {error && <p className="error">{error}</p>}
+      {sent && <TaskedResult intent={sent.intent} dispatched={sent.dispatched} onIntent={onIntent} />}
+      {space && scen != null && watches.length > 0 && (
+        <div className="sr-watches">
+          {watches.map((r) => (
+            <SpaceRunCard key={r.intent_id} run={r} map={space.clock} scen={scen} onOpen={onIntent} />
+          ))}
         </div>
       )}
     </div>

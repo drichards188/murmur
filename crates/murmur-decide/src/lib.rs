@@ -86,7 +86,10 @@
 //!    `.../approve` and `.../reject` call [`Engine::approve`] / [`Engine::reject`];
 //!    `GET /api/inbox` is [`Engine::inbox`]. [`Intent`] serializes to JSON for the API.
 //! 5. **Agents (Phase F).** The MCP server gets an [`AgentPort`] per agent and nothing
-//!    else from this crate. No approve tool exists.
+//!    else from this crate: [`AgentPort::propose`] (rationale required),
+//!    [`AgentPort::preview`] (the checks and policy as a dry run, no intent),
+//!    [`AgentPort::withdraw`] (its own intents), [`AgentPort::record_action`] and the
+//!    readers. No approve tool exists.
 //! 6. **Timer.** About once a second, [`Engine::expire_due`].
 //! 7. **Dispatch.** For each intent in `auto_approved` or `approved`, [`Engine::dispatch`]
 //!    returns a [`DispatchOrder`] (task, uids) for the existing task manager. Report
@@ -224,19 +227,20 @@ pub use areas::{Area, AreaKind, AreaSet};
 pub use audit::{AuditSink, Event, EventBody, JsonlFile, LoggedAreas, MemorySink, parse_log};
 pub use authority::{HumanAuthority, OperatorSession};
 pub use catalog::{AutopilotKind, Catalog, Domain, PlatformFacts};
-pub use engine::{AgentPort, DispatchOrder, Engine, EngineError, Order, TaskOutcome};
+pub use engine::{AgentPort, DispatchOrder, Engine, EngineError, Order, Preview, TaskOutcome};
 pub use geo::{LonLat, Polygon};
 pub use ids::{AgentId, IntentId, OperatorId, SessionId, Uid};
 pub use intent::{
     Constraints, IllegalTransition, Intent, IntentSpec, Proposal, ProposalError, Rationale, Source,
     State, Targets, Task, TaskKind, Transition, next_state,
 };
-pub use policy::{Policy, PolicyDecision, Tier};
+pub use policy::{DeadlineBasis, KindApproval, Policy, PolicyDecision, Tier, Until};
 pub use route::{LegKind, Route, Segment};
 pub use rules::{CheckResult, Outcome, RuleId, RulesConfig, UnknownEndurance};
 pub use space::{
-    ChosenCollect, CollectCapability, CollectOrder, CoverOrder, CoverService, SegmentId,
-    SpaceAnswer, SpaceArea, SpaceOracle, SpaceOrder, SpaceQuery, SpaceRules, SpaceSegment, Window,
+    ChosenCollect, CollectCapability, CollectOrder, CoverOrder, CoverService, ScenarioMap,
+    SegmentId, SpaceAnswer, SpaceArea, SpaceOracle, SpaceOrder, SpaceQuery, SpaceRules,
+    SpaceSegment, Window,
 };
 pub use terrain::{NoTerrain, PolygonTerrain, Surface, TerrainOracle};
 pub use time::{Clock, ManualClock, SystemClock, Time};

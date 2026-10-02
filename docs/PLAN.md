@@ -223,13 +223,31 @@ Exit: every invariant has a scenario that tries to break it.
 
 ## Phase F: AI agents via MCP
 
-- MCP server (in the Rust bridge or a separate process) exposing the world
-  model (vehicles, tracks, areas, intents, staleness on every fact) and intent tools
-  (`propose_intent`, `explain`). No approve tool exists.
-- Agent runner for scenarios; prompts in `agents/`. Read AeroMind's and Pharos's agent
-  layers first (DECISIONS.md, open-source neighbors).
+- **F.1 MCP server in the bridge** (`crates/murmur-bridge/src/mcp/`, done): served at `/mcp`
+  on the bridge's HTTP port (streamable HTTP, official Rust SDK `rmcp`), one in-process
+  `AgentPort` per agent id (`MURMUR_AGENTS`, header `X-Murmur-Agent` or the MCP
+  `clientInfo.name`; placeholder auth like the operator header). Reads with staleness on
+  every fact (fleet, platforms, areas, policy, intents, inbox, recent vehicle events,
+  satellite passes and tasking options, as tools and as `murmur://` resources); proposing
+  with `preview_intent` (a dry run the engine logs as `agent.action intent.preview`; for a
+  collect without `chosen`, a tasking query with the options), `propose_intent` (rationale
+  required; vehicle tasks, and collect and cover through `decision::space`),
+  `explain_intent`, `withdraw_intent` (own only).
+  No approve tool exists: `mcp/tests.rs` enumerates the tool list and fails on any name or
+  description that implies approval or control, and calls every tool against a pending
+  intent. Agent-sourced intents go through the engine: auto tiers dispatch, human tiers
+  wait in the inbox (the inbox shows the agent's id and rationale); replay passes.
+- **F.2 Agent runner** (`agents/scripted_agent.py`, done): a scripted agent on the official
+  Python SDK that reads the fleet, previews and proposes with a rationale, and follows the
+  result; `agents/README.md` says how a real model (Claude Code, other MCP clients)
+  connects. No model is called from tests.
+- Next: tracks in the agent's world view once C2 lands (`get_fleet` carries only our own
+  nodes today); prompts and scenario runs for Phase G; real agent authentication. Read
+  AeroMind's and Pharos's agent layers (DECISIONS.md, open-source neighbors) before the
+  prompts.
 
-Exit: agents never bypass a check in any test run.
+Exit: agents never bypass a check in any test run (every MCP test replays its log; the
+engine refuses an agent proposal without a rationale, and no tool reaches approval).
 
 ## Phase G: evaluation harness
 

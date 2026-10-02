@@ -39,7 +39,7 @@ spawn = [37.8058, -122.4415, 5, 0]
 [[unit]]
 platform = "lta"
 count = 1
-spawn = [37.8330, -122.4830, 45, 0]       # Marin Headlands
+spawn = [37.8050, -122.4560, 45, 0]       # over the Presidio, in line of sight of the Crissy Field station (the Headlands ridge hid it)
 
 # ---- ground (Presidio, on land)
 [[unit]]

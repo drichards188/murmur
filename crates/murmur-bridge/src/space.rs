@@ -8,8 +8,10 @@
 //! (see crates/murmur-space/README.md, "Epoch honesty"). The shift is pinned for the session
 //! so that every view describes the same propagation day.
 //!
-//! Read-only: tasking queries return options; approving a collection belongs to the
-//! decision pipeline.
+//! Read-only: tasking queries (`POST /api/space/task`) return options without creating an
+//! intent; tasking a collection (`POST /api/intents`, task `collect`) belongs to the
+//! decision pipeline, which gets the same loaded segment and scenario clock
+//! ([`OnLoaded`]).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -23,6 +25,7 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, SecondsFormat, Utc};
+use murmur_decide::{ScenarioMap, Time as DTime};
 use murmur_space::access;
 use murmur_space::area::{Area, NamedArea, load_areas};
 use murmur_space::catalog::Capability;
@@ -50,12 +53,16 @@ const FETCH_HINT: &str = "fetch the element sets once with `cargo run -p murmur-
 
 // ------------------------------------------------------------------ scenario clock
 
-/// `MURMUR_AT` + elapsed x `MURMUR_RATE`, else the wall clock.
+/// `MURMUR_AT` + elapsed x `MURMUR_RATE`, else the wall clock. Elapsed is wall-clock time
+/// since the bridge started, the clock the decision engine runs on, so the scenario clock is
+/// exactly the [`ScenarioMap`] the engine's space segment gets ([`ScenarioClock::map`]): a
+/// rate other than 1 is a linear map, not a fixed offset.
 #[derive(Debug, Clone)]
 pub struct ScenarioClock {
     pub at: Option<DateTime<Utc>>,
     pub rate: f64,
-    started: Instant,
+    /// Wall clock (ms) when the clock started.
+    started_ms: i64,
 }
 
 impl ScenarioClock {
@@ -67,7 +74,19 @@ impl ScenarioClock {
             } else {
                 1.0
             },
-            started: Instant::now(),
+            started_ms: Utc::now().timestamp_millis(),
+        }
+    }
+
+    /// Scenario time as a map from the wall clock (identity without `MURMUR_AT`).
+    pub fn map(&self) -> ScenarioMap {
+        match self.at {
+            Some(at) => ScenarioMap {
+                engine_origin: DTime(self.started_ms),
+                scenario_origin: DTime(at.timestamp_millis()),
+                rate: self.rate,
+            },
+            None => ScenarioMap::IDENTITY,
         }
     }
 
@@ -91,8 +110,8 @@ impl ScenarioClock {
     pub fn now(&self) -> DateTime<Utc> {
         match self.at {
             Some(at) => {
-                let ms = self.started.elapsed().as_secs_f64() * self.rate * 1000.0;
-                at + Duration::milliseconds(ms as i64)
+                let s = self.map().scenario(DTime(Utc::now().timestamp_millis()));
+                DateTime::from_timestamp_millis(s.0).unwrap_or(at)
             }
             None => Utc::now(),
         }
@@ -163,9 +182,16 @@ pub struct SpaceApi {
 
 type Api = Arc<SpaceApi>;
 
+/// Called once the segment has loaded, with the scenario clock as a map from the wall clock
+/// (the decision layer gives both to its engine, for collect and cover).
+pub type OnLoaded = Box<dyn FnOnce(Arc<Space>, ScenarioMap) + Send>;
+
 /// The routes, with their own state, mergeable into any router. Loading starts on a
 /// background thread; until it finishes the endpoints answer 503.
-pub fn router<S: Clone + Send + Sync + 'static>(world: Arc<World>) -> Router<S> {
+pub fn router<S: Clone + Send + Sync + 'static>(
+    world: Arc<World>,
+    on_loaded: Option<OnLoaded>,
+) -> Router<S> {
     let root = repo_root();
     let api = Arc::new(SpaceApi::new(world, root, ScenarioClock::from_env()));
     let loader = api.clone();
@@ -181,6 +207,9 @@ pub fn router<S: Clone + Send + Sync + 'static>(world: Arc<World>) -> Router<S> 
                 s.pinned_shift_days,
             ),
             Err(e) => eprintln!("space: {e}"),
+        }
+        if let (Ok(s), Some(f)) = (&result, on_loaded) {
+            f(s.clone(), loader.clock.map());
         }
         let _ = loader.space.set(result);
     });

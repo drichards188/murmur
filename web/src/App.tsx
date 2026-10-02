@@ -9,6 +9,7 @@ import { PlatformsPanel } from './PlatformsPanel'
 import type { Catalog, LinksNow, Overhead, SpaceOverlay } from './space'
 import { usePoll } from './space'
 import { SpacePanel, type SpaceSelection } from './SpacePanel'
+import { fmtZ } from './decisions'
 import { TaskPanel } from './TaskPanel'
 import type { TrackView } from './trackLayers'
 import { TracksButton, TracksPanel } from './TracksPanel'
@@ -80,6 +81,18 @@ export default function App() {
   const catalog = usePoll<Catalog>(spaceOn ? '/api/space/catalog' : null, 30_000)
   const overhead = usePoll<Overhead>(showSpace ? '/api/space/overhead' : null, 5_000)
   const linksNow = usePoll<LinksNow>(spaceOn ? '/api/space/links/now' : null, 10_000)
+  // tasked collections still running: outlined on the map whether or not the space panel is open
+  const spaceRuns = decisions?.space
+  const tasked = useMemo(
+    () =>
+      (spaceRuns?.runs ?? [])
+        .filter((r) => r.kind === 'collect' && r.collect && !r.outcome)
+        .map((r) => ({
+          ring: r.collect!.scene ?? r.collect!.area,
+          label: `COLLECT i${r.intent_id} ${r.collect!.satellite} ${fmtZ(r.collect!.collect_time)}${r.collect!.scene ? '' : ' (area)'}`,
+        })),
+    [spaceRuns],
+  )
   const overlay = useMemo<SpaceOverlay>(
     () => ({
       area: spaceOn ? (catalog.data?.area ?? null) : null,
@@ -87,8 +100,9 @@ export default function App() {
       scene: showSpace ? spaceSel.scene : null,
       links: spaceOn ? (linksNow.data?.links ?? []) : [],
       box: showSpace ? box : null,
+      tasked,
     }),
-    [spaceOn, showSpace, catalog.data, overhead.data, spaceSel, linksNow.data, box],
+    [spaceOn, showSpace, catalog.data, overhead.data, spaceSel, linksNow.data, box, tasked],
   )
   useEffect(() => {
     if (!drawing) return
@@ -280,6 +294,9 @@ export default function App() {
             onDrawBox={() => setDrawing('start')}
             onClearBox={() => setBox(null)}
             onSelect={setSpaceSel}
+            space={spaceRuns}
+            bridgeNow={now}
+            onIntent={openIntent}
             onClose={() => {
               setShowSpace(false)
               setDrawing(null)
@@ -330,7 +347,7 @@ export default function App() {
           <div className="banner">Bridge not reachable at /ws. Start it with <code>make bridge</code>. Retrying…</div>
         )}
       </main>
-      <TaskPanel vehicles={vehicles} selected={selected} draft={draft} setDraft={setDraft} taskings={taskings} pendingIds={pendingIds} onInbox={openIntent} />
+      <TaskPanel vehicles={vehicles} selected={selected} draft={draft} setDraft={setDraft} taskings={taskings} pendingIds={pendingIds} onInbox={openIntent} space={spaceRuns} now={now} />
     </div>
   )
 }

@@ -636,6 +636,11 @@ impl VehicleCell {
             .snapshot(now)
     }
 
+    /// The link emulator's brief view of this vehicle's link (`crate::emu`).
+    pub fn set_emu(&self, brief: Option<crate::emu::EmuBrief>) {
+        self.stats.lock().unwrap_or_else(|e| e.into_inner()).emu = brief;
+    }
+
     pub fn link_counters(&self) -> LinkCounters {
         self.stats
             .lock()

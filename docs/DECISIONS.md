@@ -91,6 +91,27 @@ group. Dates are 2026.
 
 ## Engineering
 
+- **The MCP server lives in the bridge, on in-process `AgentPort`s** (10-02, Phase F). Not a
+  separate process over HTTP: there is no agent HTTP path, so the only way for agent code to
+  reach the engine is the typed `AgentPort`, and "no approve tool" is the absence of a method,
+  not a route left unregistered. Official Rust SDK (`rmcp`, streamable HTTP at `/mcp`), hand-
+  written tool table (one place to audit, one test that enumerates it). Satellite reads reuse
+  the bridge's own `/api/space/*` handlers in process rather than a second copy of the space
+  API.
+- **Agent identity is a header, like the operator's** (10-02). `X-Murmur-Agent` (or the MCP
+  `clientInfo.name` inside a session) against `MURMUR_AGENTS`: placeholder authentication,
+  stated as such, so that evaluation can attribute proposals now and real auth can replace
+  it later without changing the tools.
+- **Preview is a logged dry run in the engine** (10-02). `AgentPort::preview` runs the rules
+  and policy on the same world view a submission would read and creates nothing; it is
+  logged as `agent.action intent.preview` (what the agent considered) but its inputs are
+  not, since there is no decision to replay. An agent's `propose` also logs
+  `agent.action intent.propose` with the rationale before the intent's own events.
+- **Every fact an agent reads carries its age** (10-02). The agent view is built from the
+  decision layer's own `WorldSnapshot` (the facts and timestamps the rules read), with
+  `as_of`, `age_s` and `stale` against that vehicle's link-aware freshness limit, so an
+  agent and the rules never disagree about what is fresh.
+
 - **Rust for the live path, Python where its libraries and audience matter** (10-02). Rust:
   bridge, protocol gateway, stand-in engine, link emulator, the Phase C decision layer, the MCP
   server. Python: tidewater (scientific data, finished), evaluation analysis, small scripts.

@@ -22,9 +22,12 @@
 //! is a different person is not enforced yet). It never applies to an agent-sourced intent. In a logged policy without the key (logs written before it
 //! existed) it reads as false, which is how those runs behaved.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+
+use crate::time::Time;
 
 use crate::areas::Area;
 use crate::ids::Uid;
@@ -94,6 +97,11 @@ pub struct ApprovalConfig {
     /// out; a policy deserialized from an old log keeps it unset, which means false.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub submitter_authorizes: Option<bool>,
+    /// Per task kind: `[approval.kind.<kind>]` overrides `expire_s` or sets another
+    /// deadline (`until = "tasking_lead"` for collect). Absent in logs written before it
+    /// existed, which is how those runs behaved.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub kind: BTreeMap<TaskKind, KindApproval>,
 }
 
 impl Default for ApprovalConfig {
@@ -101,8 +109,74 @@ impl Default for ApprovalConfig {
         ApprovalConfig {
             expire_s: 120,
             submitter_authorizes: None,
+            kind: BTreeMap::new(),
         }
     }
+}
+
+/// `[approval.kind.<kind>]`: how long a pending intent of that kind waits for a human.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KindApproval {
+    /// Seconds, instead of `[approval] expire_s` (also the fallback when `until` can't be
+    /// computed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expire_s: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<Until>,
+}
+
+/// A deadline set by the task rather than a fixed wait.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Until {
+    /// Collect: the last moment the chosen pass can still be tasked, the collect time minus
+    /// the class's tasking lead time ([`crate::space::tasking_deadline`]). An approval
+    /// after it would fail the lead-time check anyway; expiring there tells the operator
+    /// the real deadline.
+    TaskingLead,
+}
+
+/// Why a pending intent's deadline is what it is, when it is not a fixed wait (logged in
+/// `approval.requested`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeadlineBasis {
+    pub until: Until,
+    /// The deadline in scenario time (engine `expires_t` is this mapped back through the
+    /// segment's scenario map).
+    pub scenario_t: Time,
+}
+
+/// When an intent sent to the inbox at engine time `now` expires: `[approval.kind.<kind>]`
+/// if the policy has one, else `[approval] expire_s`. A collect with `until =
+/// "tasking_lead"` and a matched option in `answer` expires at the tasking deadline (scenario
+/// time, mapped to engine time through `map`); without one it falls back to the fixed wait.
+pub fn approval_deadline(
+    policy: &Policy,
+    task: &crate::intent::Task,
+    answer: Option<&crate::space::SpaceAnswer>,
+    map: &crate::space::ScenarioMap,
+    now: Time,
+) -> (Time, Option<DeadlineBasis>) {
+    let k = policy.approval.kind.get(&task.kind());
+    let secs = k
+        .and_then(|k| k.expire_s)
+        .unwrap_or(policy.approval.expire_s);
+    let fixed = now.plus_ms(i64::from(secs) * 1000);
+    if k.and_then(|k| k.until) == Some(Until::TaskingLead) {
+        let tol = policy.rules.space_rules().collect_match_tolerance_s;
+        if let Some(s) = answer.and_then(|a| crate::space::tasking_deadline(task, a, tol)) {
+            return (
+                map.engine(s),
+                Some(DeadlineBasis {
+                    until: Until::TaskingLead,
+                    scenario_t: s,
+                }),
+            );
+        }
+    }
+    (fixed, None)
 }
 
 /// The whole policy file. Logged in full at run start; replay decides with the logged copy.
@@ -138,6 +212,20 @@ impl Policy {
         }
         if p.approval.expire_s == 0 {
             return Err(PolicyError::Invalid("approval.expire_s must be > 0".into()));
+        }
+        for (kind, k) in &p.approval.kind {
+            if k.expire_s == Some(0) {
+                return Err(PolicyError::Invalid(format!(
+                    "approval.kind.{}.expire_s must be > 0",
+                    kind.as_str()
+                )));
+            }
+            if k.until == Some(Until::TaskingLead) && *kind != TaskKind::Collect {
+                return Err(PolicyError::Invalid(format!(
+                    "approval.kind.{}: until = \"tasking_lead\" applies to collect only",
+                    kind.as_str()
+                )));
+            }
         }
         let r = &p.rules;
         if !(r.orbit_radius_margin.is_finite() && r.orbit_radius_margin >= 1.0) {
