@@ -8,8 +8,8 @@ meaningful. Decision and command, not weapons.
 
 1. Read `docs/PLAN.md` (the plan, phase by phase) and `docs/DECISIONS.md` (what was decided
    and why; don't relitigate those).
-2. `bd ready` for open work (see AGENTS.md for bd usage). Current phase: **R** (Rust core: stand-ins,
-   bridge port), then **C** (intents, rules, risk tiers, audit log, inbox).
+2. `bd ready` for open work (see AGENTS.md for bd usage). Current phase: **R** (Rust core; since R.5
+   the bridge and stand-ins are Rust only), then **C** (intents, rules, risk tiers, audit log, inbox).
 3. Sibling repo `~/tidewater` (real-world conditions). ArduPilot at `~/ardupilot`, branch
    `tidewater-water-depth`.
 
@@ -19,15 +19,23 @@ meaningful. Decision and command, not weapons.
   Gate with tidewater conditions; `make up FLEET=<name>` for other fleets; `make down` stops.
   Console http://127.0.0.1:5173, bridge http://127.0.0.1:8765 (`/api/state`, `/api/tasks`,
   `/api/platforms`, `/api/stats`). Vehicles ready in ~30-60 s.
-- `make check` (typecheck, lint, py_compile). Rust: `cargo test` / `cargo clippy` at the repo
-  root (toolchain in `~/.cargo/bin`). Tidewater: `cd ~/tidewater && .venv/bin/pytest`.
-- `scripts/measure.py` measures bridge load. Logs in `logs/`, SITL logs in `sim/run/`.
-- Ports: vehicles UDP 14560+i -> bridge; SITL SERIAL1 TCP 5762+10*instance (tidewater driver).
+- Live path is Rust: `crates/murmur-bridge`, `crates/murmur-standins`. `scripts/up.sh` builds
+  their release binaries (`make build` does too) and, with a scenario, starts `tidewater serve`
+  (reused if one answers) and `tidewater drive`, and stops them with the stack.
+- `make check` (typecheck, lint, py_compile, `cargo clippy` and `cargo test` for the workspace;
+  toolchain in `~/.cargo/bin`). Tidewater: `cd ~/tidewater && .venv/bin/pytest`.
+- `scripts/measure.py` measures bridge and stand-in load; `scripts/scale_fleet.py N` writes an
+  N-node stand-in fleet. Logs in `logs/`, SITL and stand-in logs in `sim/run/`.
+- Ports: vehicles UDP 14560+i -> bridge :8765; console :5173; tidewater serve :8770; SITL SERIAL1
+  TCP 5762+10*instance (tidewater driver). A second stack beside the default one: set
+  `MURMUR_BASE_PORT`, `MURMUR_HTTP_PORT`, `MURMUR_WEB_PORT`, `MURMUR_TIDEWATER_PORT`,
+  `MURMUR_SITL_INSTANCE_BASE` (header of `scripts/up.sh`).
 
 ## Gotchas (each cost real time)
 
 - **Never `pkill -f <pattern>` with a pattern that appears in your own command line**: it kills
-  your shell (exit 144). Use `make down` (PID file `logs/up.pid`).
+  your shell (exit 144). Use `make down` (PID file `logs/up.pid`; it sends TERM, because an
+  `up.sh` started in the background ignores SIGINT).
 - Background tasks in this harness stop after 2 hours: restart with `make goldengate`.
 - Foreground `sleep` is blocked: wait with `until <check>; do sleep 2; done`.
 - Global git `core.autocrlf=true` (WSL): repos rely on `.gitattributes` (LF). A fresh ArduPilot
@@ -44,6 +52,8 @@ meaningful. Decision and command, not weapons.
 - In SITL, stop vehicles with forces the IMU feels, never by zeroing velocity or clamping
   position (the EKF diverges).
 - tidewater is installed editable in `.venv`; a scenario needs `tidewater fetch` once.
+- Stand-ins each take one ephemeral UDP port (`net.ipv4.ip_local_port_range`, ~4,000 here,
+  shared with everything else on the host): that, not CPU, caps a stand-in fleet near 4,000.
 
 ## Conventions
 

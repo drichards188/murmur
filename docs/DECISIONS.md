@@ -80,6 +80,13 @@ group. Dates are 2026.
   tireless reviewer; "agents cannot authorize" can be enforced by types, not only tests; Rust
   is strongest across MAVLink, DDS (UMAA) and wrapping the C protocol code (JAUS, 4586, JANUS).
   Rust bridge port happens before Phase C so C isn't written twice.
+- **Python bridge and stand-ins retired (R.5)** (10-02). The Rust bridge and stand-in engine are
+  the only implementations; `bridge/`, `sim/standins.py` and the Python-vs-Rust parity scripts
+  are deleted (in git history). Python stays for the fleet launcher (`sim/swarm.py`, which
+  still starts the SITL binaries), test and measurement scripts, and tidewater. `up.sh` builds
+  the release binaries (a no-op when fresh) and, with a scenario, starts `tidewater serve`
+  itself instead of relying on one started by hand. Every platform carries a stand-in
+  `behavior`, so any fleet can run without ArduPilot.
 - **Vehicle identity: `uid` (fleet-unique) vs `sysid` (MAVLink, per link)** (10-02). A MAVLink
   system ID is one byte; the 300-node test crashed above 255. The API and console key on
   `uid`; `sysid` wraps 1..250 (clear of GCS IDs 255 and 190) and is unique per link.
