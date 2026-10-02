@@ -197,6 +197,53 @@ export function trackSymbolSvg(t: Track, opts: { stale: boolean; size?: number; 
   return out
 }
 
+/** Icons are rasterised at this multiple of their on-screen size, so they stay sharp on HiDPI
+ *  (as symbols.ts does for vehicles). */
+const ICON_SCALE = 2
+const ICON_PX = 24
+
+/** A bare track frame (no labels) as a deck.gl IconLayer icon, one atlas entry per symbol
+ *  code and stale state, shared by every track with that estimate. */
+export interface TrackFrameIcon {
+  id: string
+  url: string
+  width: number
+  height: number
+  anchorX: number
+  anchorY: number
+  /** on-screen height in CSS pixels (getSize) */
+  size: number
+  /** half extents of the frame around its anchor, CSS pixels: where labels go */
+  halfW: number
+  halfH: number
+}
+
+const frames = new Map<string, TrackFrameIcon>()
+
+export function trackFrameIcon(t: Track, stale: boolean): TrackFrameIcon {
+  const sidc = stale ? t.sidc.slice(0, 3) + 'A' + t.sidc.slice(4) : t.sidc.slice(0, 3) + 'P' + t.sidc.slice(4)
+  const hit = frames.get(sidc)
+  if (hit) return hit
+  const sym = new ms.Symbol(sidc, { size: ICON_PX * ICON_SCALE, outlineColor: '#0b0f14', outlineWidth: 3 * ICON_SCALE } as Record<string, unknown>)
+  const size = sym.getSize()
+  const anchor = sym.getAnchor()
+  const width = Math.ceil(size.width)
+  const height = Math.ceil(size.height)
+  const icon: TrackFrameIcon = {
+    id: `track-${sidc}`,
+    url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(sym.asSVG())}`,
+    width,
+    height,
+    anchorX: anchor.x,
+    anchorY: anchor.y,
+    size: height / ICON_SCALE,
+    halfW: Math.max(anchor.x, width - anchor.x) / ICON_SCALE,
+    halfH: Math.max(anchor.y, height - anchor.y) / ICON_SCALE,
+  }
+  frames.set(sidc, icon)
+  return icon
+}
+
 /** Sorted for the operator: hostile, suspect, unknown first, then the freshest. */
 export function sortTracks(tracks: Track[]) {
   return [...tracks].sort((a, b) => AFFILIATION_RANK[a.affiliation] - AFFILIATION_RANK[b.affiliation] || b.last_seen_t - a.last_seen_t || a.id.localeCompare(b.id))

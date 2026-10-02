@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { getOperator, type Decisions, type Intent, type Authorization } from './decisions'
+import { perfPush, perfUpdateStart } from './perf'
 import type { TracksMessage } from './tracks'
 import type { BridgeState, LngLat, TaskKind, Tasking, Vehicle } from './types'
 
@@ -75,7 +76,10 @@ export function useBridge() {
         } else if (msg.type === 'tracks') {
           setTracks(msg as TracksMessage)
         } else if (msg.type === 'delta' && current) {
+          const t0 = performance.now()
           current = withAges(applyDelta(current, msg as Delta))
+          perfPush('applyDelta', performance.now() - t0)
+          perfUpdateStart()
           setState(current)
         }
       }

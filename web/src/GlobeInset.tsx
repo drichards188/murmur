@@ -19,6 +19,12 @@ const STYLE = 'https://tiles.openfreemap.org/styles/dark'
 type FC = GeoJSON.FeatureCollection
 const empty: FC = { type: 'FeatureCollection', features: [] }
 
+/** A GeoJSON source, or nothing while the map has no style (context lost, being removed):
+ *  MapLibre's getSource throws then instead of returning undefined. */
+function src(m: maplibregl.Map, id: string) {
+  return (m.style ? m.getSource(id) : undefined) as maplibregl.GeoJSONSource | undefined
+}
+
 /** Split a track where it crosses the antimeridian so lines don't wrap the globe. */
 function splitTrack(track: LngLat[]): LngLat[][] {
   const parts: LngLat[][] = [[]]
@@ -36,6 +42,10 @@ export function GlobeInset({ center, area, links, norad, onClose }: Props) {
   const container = useRef<HTMLDivElement>(null)
   const map = useRef<maplibregl.Map | null>(null)
   const [ready, setReady] = useState(false)
+  // WebGL context lost (murmur-s8w): paused until the browser restores it
+  const [lost, setLost] = useState(false)
+  // bumped on restore: a fresh map on a fresh canvas (as the main map does, see MapView)
+  const [gen, setGen] = useState(0)
   const positions = usePoll<Positions>('/api/space/positions?limit=250', 5000)
   const [track, setTrack] = useState<Track | null>(null)
   // follow the theater map until the operator spins the globe themselves
@@ -63,6 +73,11 @@ export function GlobeInset({ center, area, links, norad, onClose }: Props) {
     m.on('pitchstart', grab)
     m.on('zoomstart', grab)
     if (import.meta.env.DEV) (window as unknown as { murmurGlobe: maplibregl.Map }).murmurGlobe = m
+    m.on('webglcontextlost', () => {
+      setReady(false)
+      setLost(true)
+    })
+    m.on('webglcontextrestored', () => setGen((n) => n + 1))
     m.on('style.load', () => {
       m.setProjection({ type: 'globe' })
       // the base style is busy at this scale: keep land, water and boundaries only
@@ -93,15 +108,22 @@ export function GlobeInset({ center, area, links, norad, onClose }: Props) {
     map.current = m
     return () => {
       map.current = null
-      m.remove()
+      setReady(false)
+      setLost(false)
+      try {
+        m.remove()
+      } catch (err) {
+        console.warn('[murmur] removing the globe after context loss', err)
+      }
     }
-    // the centre follows props below; creating the map once is intended
+    // the centre follows props below; the map is created once (again after a context loss)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [gen])
 
   useEffect(() => {
-    if (follow && center && map.current) map.current.jumpTo({ center })
-  }, [center, follow])
+    // not while the context is lost (ready is false then): the map can't draw
+    if (follow && center && ready && map.current) map.current.jumpTo({ center })
+  }, [center, follow, ready])
 
   useEffect(() => {
     map.current?.resize()
@@ -136,14 +158,14 @@ export function GlobeInset({ center, area, links, norad, onClose }: Props) {
           geometry: { type: 'Point', coordinates: [lon, lat] },
         })
     }
-    ;(m.getSource('sats') as maplibregl.GeoJSONSource).setData({ type: 'FeatureCollection', features })
+    src(m, 'sats')?.setData({ type: 'FeatureCollection', features })
   }, [positions.data, norad, ready])
 
   useEffect(() => {
     const m = map.current
     if (!ready || !m) return
     const t = norad != null && track?.norad_id === norad ? track.track : []
-    ;(m.getSource('track') as maplibregl.GeoJSONSource).setData({
+    src(m, 'track')?.setData({
       type: 'FeatureCollection',
       features: splitTrack(t).map((coordinates) => ({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates } })),
     })
@@ -152,12 +174,12 @@ export function GlobeInset({ center, area, links, norad, onClose }: Props) {
   useEffect(() => {
     const m = map.current
     if (!ready || !m) return
-    ;(m.getSource('area') as maplibregl.GeoJSONSource).setData(
+    src(m, 'area')?.setData(
       area
         ? { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[...area.ring, area.ring[0]]] } }
         : empty,
     )
-    ;(m.getSource('glinks') as maplibregl.GeoJSONSource).setData({
+    src(m, 'glinks')?.setData({
       type: 'FeatureCollection',
       features: links
         .filter((l) => l.best?.position)
@@ -173,6 +195,7 @@ export function GlobeInset({ center, area, links, norad, onClose }: Props) {
   return (
     <div className={`globe${big ? ' big' : ''}`} aria-label="Globe inset">
       <div ref={container} className="globe-map" />
+      {lost && <div className="globe-lost">Globe paused: graphics context lost</div>}
       <div className="globe-head">
         <span>GLOBE</span>
         {positions.data?.time_shifted && (

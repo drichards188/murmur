@@ -1,46 +1,26 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import { useBridgeClock, useHiddenAlerts, type Intent } from './decisions'
 import { FleetPanel } from './FleetPanel'
 import { GlobeInset } from './GlobeInset'
 import { InboxButton, InboxPanel, type InboxSelection, type InboxTab } from './InboxPanel'
 import { EMPTY_PREVIEW, intentPoints, previewFeatures } from './inboxPreview'
-import { MapView, type Draft } from './MapView'
+import { MapView, type Draft, type MapLayers } from './MapView'
 import { PlatformsPanel } from './PlatformsPanel'
 import type { Catalog, LinksNow, Overhead, SpaceOverlay } from './space'
 import { usePoll } from './space'
 import { SpacePanel, type SpaceSelection } from './SpacePanel'
 import { fmtZ } from './decisions'
 import { TaskPanel } from './TaskPanel'
-import type { TrackView } from './trackLayers'
+import { buildTrackLayers } from './trackLayers'
 import { TracksButton, TracksPanel } from './TracksPanel'
 import { type Track, trackPredicted } from './tracks'
 import { VehicleDetails } from './VehicleDetails'
 import type { LngLat, Vehicle } from './types'
 import { DOMAIN_LABEL, domainOf, isStale } from './types'
 import { useBridge } from './useBridge'
-
-/** ?perf in the URL shows a frame-rate readout (to check 3D on a real GPU). */
-function usePerfMeter() {
-  const [fps, setFps] = useState<number | null>(null)
-  useEffect(() => {
-    if (!new URLSearchParams(location.search).has('perf')) return
-    let frames = 0
-    let start = performance.now()
-    let raf = 0
-    const tick = (t: number) => {
-      frames++
-      if (t - start >= 1000) {
-        setFps(Math.round((frames * 1000) / (t - start)))
-        frames = 0
-        start = t
-      }
-      raf = requestAnimationFrame(tick)
-    }
-    raf = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(raf)
-  }, [])
-  return fps
-}
+import { ErrorBoundary } from './ErrorBoundary'
+import { PERF_ON, perfCommitted, perfPassiveBegin, perfRenderBegin, perfUpdateEnd } from './perf'
+import { PerfOverlay } from './PerfOverlay'
 
 function useUtcClock() {
   const [now, setNow] = useState(() => new Date())
@@ -53,12 +33,19 @@ function useUtcClock() {
 
 const byUidDetails = (vs: Vehicle[], uid: number) => vs.find((v) => v.uid === uid)
 
+/** Renders nothing. Its effect is the first passive effect of the tree on every commit (it
+ *  is App's first child and has no children), so it marks where the effects' work begins. */
+function PerfMark() {
+  useEffect(() => perfPassiveBegin())
+  return null
+}
+
 export default function App() {
   const { state, status, decisions, tracks } = useBridge()
+  perfRenderBegin()
   const clock = useUtcClock()
   const [showTracks, setShowTracks] = useState(false)
   const [selectedTrack, setSelectedTrack] = useState<string | null>(null)
-  const fps = usePerfMeter()
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [detailsUid, setDetailsUid] = useState<number | null>(null)
   const [following, setFollowing] = useState(true)
@@ -114,17 +101,23 @@ export default function App() {
 
   const vehicles = state?.vehicles ?? []
   const now = useBridgeClock(state?.t)
-  // tracks on the map: ages advance with the bridge clock (useBridgeClock re-renders twice a second)
+  // tracks of contacts that are not ours (Phase C2), drawn through MapView's layers prop;
+  // ages advance with the bridge clock (useBridgeClock re-renders twice a second), so the
+  // callback's identity changes every tick while there are tracks: rings grow, symbols fade
   const trackTick = tracks?.tracks.length ? Math.floor(now() / 500) : 0
-  const trackView = useMemo<TrackView>(
-    () => ({ tracks: tracks?.tracks ?? [], nowMs: now(), selected: selectedTrack, staleAfterS: tracks?.stale_after_s ?? 10 }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tracks, selectedTrack, trackTick],
-  )
   const onTrackClick = useCallback((id: string) => {
     setSelectedTrack((cur) => (cur === id ? null : id))
     setShowTracks(true)
   }, [])
+  const trackLayers = useCallback<MapLayers>(
+    (view) =>
+      buildTrackLayers(
+        { tracks: tracks?.tracks ?? [], nowMs: now(), selected: selectedTrack, staleAfterS: tracks?.stale_after_s ?? 10, onClick: onTrackClick },
+        view,
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tracks, selectedTrack, trackTick, onTrackClick],
+  )
   const focusTrack = useCallback(
     (t: Track) => setFit((f) => ({ points: [trackPredicted(t, now())], n: (f?.n ?? 0) + 1, padRight: 400 })),
     [now],
@@ -203,8 +196,13 @@ export default function App() {
     [drawing],
   )
 
+  // last effect of the tree for this state: children's effects (map, list) have run
+  useLayoutEffect(() => perfCommitted(), [state])
+  useEffect(() => perfUpdateEnd(), [state])
+
   return (
     <div className="app">
+      <PerfMark />
       <header className="topbar">
         <span className="brand">MURMUR</span>
         <span className="sub">multi-domain swarm C2</span>
@@ -229,9 +227,9 @@ export default function App() {
         <button className="ghost platforms-btn" onClick={() => setShowPlatforms((v) => !v)}>
           Platforms
         </button>
-        {fps != null && <span className="stat" title="frames per second (?perf)"><b>{fps}</b> fps</span>}
         <span className="clock">{clock}</span>
       </header>
+      <ErrorBoundary name="Fleet list" className="slot fleet">
       <FleetPanel vehicles={vehicles} selected={selected} onToggle={toggle}
         onDeselect={deselect}
         detailsUid={detailsUid}
@@ -245,7 +243,9 @@ export default function App() {
         }}
         onSelect={(ids) => setSelected(new Set(ids))}
       />
+      </ErrorBoundary>
       <main className={`mapwrap ${showSpace ? 'space-open' : ''}`}>
+        <ErrorBoundary name="Map" className="floating">
         <MapView
           vehicles={vehicles}
           taskings={taskings}
@@ -261,10 +261,11 @@ export default function App() {
           onMapClick={onMapClick}
           space={overlay}
           onView={onView}
-          tracks={trackView}
-          onTrackClick={onTrackClick}
+          layers={trackLayers}
         />
+        </ErrorBoundary>
         {showTracks && (
+          <ErrorBoundary name="Tracks" className="floating">
           <TracksPanel
             tracks={tracks}
             vehicles={vehicles}
@@ -274,8 +275,10 @@ export default function App() {
             onFocus={focusTrack}
             onClose={() => setShowTracks(false)}
           />
+          </ErrorBoundary>
         )}
         {showGlobe && (
+          <ErrorBoundary name="Globe" className="floating">
           <GlobeInset
             center={mapView?.center ?? null}
             area={catalog.data?.area ?? null}
@@ -283,8 +286,10 @@ export default function App() {
             norad={spaceSel.norad}
             onClose={() => setShowGlobe(false)}
           />
+          </ErrorBoundary>
         )}
         {showSpace && (
+          <ErrorBoundary name="Space panel" className="floating">
           <SpacePanel
             catalog={catalog.data}
             catalogError={catalog.error}
@@ -303,8 +308,10 @@ export default function App() {
               setSpaceSel({ scene: null, norad: null })
             }}
           />
+          </ErrorBoundary>
         )}
         {showInbox && (
+          <ErrorBoundary name="Inbox" className="floating">
           <InboxPanel
             decisions={decisions}
             vehicles={vehicles}
@@ -317,8 +324,10 @@ export default function App() {
             mem={alertMem}
             hidden={hiddenAlerts}
           />
+          </ErrorBoundary>
         )}
         {detailsUid != null && byUidDetails(vehicles, detailsUid) && (
+          <ErrorBoundary name="Vehicle details" className="floating">
           <VehicleDetails
             v={byUidDetails(vehicles, detailsUid)!}
             taskings={taskings}
@@ -331,9 +340,11 @@ export default function App() {
               setFocus((f) => ({ uid: detailsUid, n: (f?.n ?? 0) + 1 }))
             }}
           />
+          </ErrorBoundary>
         )}
         {drawing && <div className="banner info">Click two opposite corners of the collection box. Esc cancels.</div>}
         {showPlatforms && (
+          <ErrorBoundary name="Platforms" className="floating">
           <PlatformsPanel
             onClose={() => setShowPlatforms(false)}
             onFocus={(uid) => {
@@ -342,12 +353,16 @@ export default function App() {
               setShowPlatforms(false)
             }}
           />
+          </ErrorBoundary>
         )}
         {status !== 'live' && (
           <div className="banner">Bridge not reachable at /ws. Start it with <code>make bridge</code>. Retrying…</div>
         )}
+        {PERF_ON && <PerfOverlay />}
       </main>
+      <ErrorBoundary name="Task panel" className="slot tasking">
       <TaskPanel vehicles={vehicles} selected={selected} draft={draft} setDraft={setDraft} taskings={taskings} pendingIds={pendingIds} onInbox={openIntent} space={spaceRuns} now={now} />
+      </ErrorBoundary>
     </div>
   )
 }
