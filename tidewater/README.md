@@ -132,6 +132,8 @@ with GPS: an EKF failsafe for the boat, a diverging depth estimate for the sub.
 - **Stock SITL** applies current only to the motorboat model, only while armed, and never
   enforces land; subs ignore current. The patch in `patches/ardupilot/` fixes this (apply with
   `scripts/patch-ardupilot.sh`); without it, tidewater still drives wind and boat currents.
+  `0002` (from Murmur) centres the SITL antenna tracker's mount on its start heading and applies
+  its limits after the rates; it doesn't touch the water model.
 - **Vertical datums** are assumed consistent (NAVD88 DEM, NAVD tide predictions). True for
   US coastal DEMs in the NCEI mosaic; verify for new areas.
 - The station layer is predictions, not observations (harmonic forecasts). The only current

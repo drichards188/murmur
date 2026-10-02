@@ -1,0 +1,85 @@
+From f0cce07867e77b307b1521886ac391654687a08e Mon Sep 17 00:00:00 2001
+From: David Richards <50757879+drichards188@users.noreply.github.com>
+Date: Fri, 2 Oct 2026 15:00:37 -0400
+Subject: [PATCH] SITL: centre the tracker mount on its start heading; apply
+ its limits
+
+The simulated tracker's yaw range (+/-170 deg) was centred on a fixed
+270 deg, leaving the 20 deg the mount can't reach due east whatever the
+start heading. Centre it on the start (home) heading so a site can put
+the gap behind it.
+
+The yaw and pitch limit checks ran before the servo rates were
+computed, so they never did anything; apply them afterwards.
+---
+ libraries/SITL/SIM_Tracker.cpp | 22 +++++++++++++++-------
+ libraries/SITL/SIM_Tracker.h   |  3 ++-
+ 2 files changed, 17 insertions(+), 8 deletions(-)
+
+diff --git a/libraries/SITL/SIM_Tracker.cpp b/libraries/SITL/SIM_Tracker.cpp
+index d70c124..b6a5da6 100644
+--- a/libraries/SITL/SIM_Tracker.cpp
++++ b/libraries/SITL/SIM_Tracker.cpp
+@@ -71,10 +71,16 @@ void Tracker::update(const struct sitl_input &input)
+     yaw_input = (input.servos[0]-1500)/500.0f;
+     pitch_input = (input.servos[1]-1500)/500.0f;
+ 
+-    // implement yaw and pitch limits
+     float r, p, y;
+     dcm.to_euler(&r, &p, &y);
+ 
++    if (!zero_yaw_set && home_is_set) {
++        // the mount's yaw range is centred on the direction it was set up
++        // facing (the start heading), so a site can put the gap behind it
++        zero_yaw = wrap_360(home_yaw);
++        zero_yaw_set = true;
++    }
++
+     pitch_current_relative = degrees(p) - zero_pitch;
+     yaw_current_relative = degrees(y) - zero_yaw;
+     float roll_current = degrees(r);
+@@ -84,6 +90,14 @@ void Tracker::update(const struct sitl_input &input)
+     if (yaw_current_relative < -180) {
+         yaw_current_relative += 360;
+     }
++
++    if (onoff) {
++        update_onoff_servos(yaw_rate, pitch_rate);
++    } else {
++        update_position_servos(delta_time, yaw_rate, pitch_rate);
++    }
++
++    // implement yaw and pitch limits (after the servos have asked for a rate)
+     if (yaw_rate > 0 && yaw_current_relative >= yaw_range) {
+         yaw_rate = 0;
+     }
+@@ -97,12 +111,6 @@ void Tracker::update(const struct sitl_input &input)
+         pitch_rate = 0;
+     }
+ 
+-    if (onoff) {
+-        update_onoff_servos(yaw_rate, pitch_rate);
+-    } else {
+-        update_position_servos(delta_time, yaw_rate, pitch_rate);
+-    }
+-
+ 
+     // keep it level
+     float roll_rate = 0 - roll_current;
+diff --git a/libraries/SITL/SIM_Tracker.h b/libraries/SITL/SIM_Tracker.h
+index 2ff7eca..0792b28 100644
+--- a/libraries/SITL/SIM_Tracker.h
++++ b/libraries/SITL/SIM_Tracker.h
+@@ -43,7 +43,8 @@ private:
+     const float pitchrate = 1.0f;
+     const float pitch_range = 45;
+     const float yaw_range = 170;
+-    const float zero_yaw = 270;  // yaw direction at startup
++    float zero_yaw = 270;        // mount centre: the start heading once home is set
++    bool zero_yaw_set = false;
+     const float zero_pitch = 10; // pitch at startup
+     uint64_t last_debug_us;
+ 
+-- 
+2.43.0
+
