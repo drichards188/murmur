@@ -87,6 +87,9 @@ def plan(fleet, platforms):
                 "home": [round(lat, 7), round(lon, 7), alt, hdg],
                 **{k: spec[k] for k in ("name", "short", "role", "domain", "link", "sidc")},
                 # what a C2 needs to task it sensibly (stand-ins; SITL platforms use defaults)
+                # SATCOM class(es) from the catalog, for the link emulator (None off satcom)
+                "space_class": spec.get("space_class"),
+                "space_class_alt": spec.get("space_class_alt"),
                 "armed": bool(spec.get("armed", False)),  # carries an effect (policy), not MAVLink arm state
                 "cruise_alt_m": spec.get("alt_m"),
                 "min_turn_radius_m": (round(spec["cruise_mps"] / math.radians(spec["turn_dps"]))

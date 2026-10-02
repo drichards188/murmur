@@ -328,6 +328,11 @@ pub struct Config {
     /// platform id -> profile name, to give one platform a different profile than its class.
     #[serde(default)]
     pub platform_profile: BTreeMap<String, String>,
+    /// SATCOM class (sim/platforms.toml `space_class`, carried in the fleet manifest) ->
+    /// profile name. Used for a `satcom` vehicle with no `platform_profile` entry, so the
+    /// platform catalog is the one place that says which constellation a platform uses.
+    #[serde(default)]
+    pub space_class_profile: BTreeMap<String, String>,
     #[serde(default)]
     pub event: Vec<EventCfg>,
 }
@@ -409,6 +414,19 @@ impl Config {
         for (plat, prof) in &self.platform_profile {
             if !self.class.contains_key(prof) {
                 return Err(format!("platform_profile {plat}: unknown profile {prof}"));
+            }
+        }
+        for (class, prof) in &self.space_class_profile {
+            if !self.class.contains_key(prof) {
+                return Err(format!(
+                    "space_class_profile {class}: unknown profile {prof}"
+                ));
+            }
+            let got = self.resolve(prof)?.space_class;
+            if got.as_deref() != Some(class.as_str()) {
+                return Err(format!(
+                    "space_class_profile {class}: profile {prof} follows {got:?}, not {class}"
+                ));
             }
         }
         for e in &self.event {
@@ -519,6 +537,29 @@ pub struct VehicleSpec {
     pub platform: String,
     #[serde(default)]
     pub callsign: String,
+    /// The platform's SATCOM class from the catalog (`space_class`); picks the profile of a
+    /// `satcom` vehicle through `[space_class_profile]`.
+    #[serde(default)]
+    pub space_class: Option<String>,
+}
+
+impl Config {
+    /// The profile a vehicle uses: an explicit `[platform_profile]` entry, else (SATCOM
+    /// vehicles) the profile for its catalog `space_class`, else its link class.
+    pub fn profile_for(&self, v: &VehicleSpec) -> String {
+        if let Some(p) = self.platform_profile.get(&v.platform) {
+            return p.clone();
+        }
+        if v.link == "satcom"
+            && let Some(p) = v
+                .space_class
+                .as_ref()
+                .and_then(|c| self.space_class_profile.get(c))
+        {
+            return p.clone();
+        }
+        v.link.clone()
+    }
 }
 
 #[derive(Deserialize)]
@@ -654,14 +695,66 @@ mod tests {
     }
 
     #[test]
+    fn explicit_platform_profile_beats_space_class() {
+        let c = Config::parse(
+            r#"
+            [class.satcom]
+            space_class = "wgs"
+            [class.satcom_leo]
+            extends = "satcom"
+            space_class = "starlink"
+            [space_class_profile]
+            wgs = "satcom"
+            starlink = "satcom_leo"
+            [platform_profile]
+            odd = "satcom"
+            "#,
+        )
+        .expect("parse");
+        let v = |platform: &str, class: Option<&str>| VehicleSpec {
+            uid: 1,
+            sysid: 1,
+            port: 1,
+            link: "satcom".into(),
+            domain: String::new(),
+            platform: platform.into(),
+            callsign: String::new(),
+            space_class: class.map(String::from),
+        };
+        assert_eq!(c.profile_for(&v("a", Some("starlink"))), "satcom_leo");
+        assert_eq!(c.profile_for(&v("a", None)), "satcom");
+        assert_eq!(c.profile_for(&v("odd", Some("starlink"))), "satcom");
+    }
+
+    #[test]
+    fn space_class_profile_must_follow_that_class() {
+        let e = Config::parse(
+            "[class.satcom]\nspace_class = \"wgs\"\n[space_class_profile]\nstarlink = \"satcom\"\n",
+        )
+        .unwrap_err();
+        assert!(e.contains("starlink"), "{e}");
+    }
+
+    #[test]
     fn shipped_links_file_maps_satcom_platforms_to_space_classes() {
         let c = Config::parse(include_str!("../../../sim/links.toml")).expect("sim/links.toml");
+        let platforms: toml::Table = include_str!("../../../sim/platforms.toml")
+            .parse()
+            .expect("sim/platforms.toml");
         let class_of = |plat: &str| {
-            let profile = c
-                .platform_profile
-                .get(plat)
-                .map_or("satcom", String::as_str);
-            c.resolve(profile).expect("profile").space_class
+            let spec = &platforms[plat];
+            assert_eq!(spec["link"].as_str(), Some("satcom"), "{plat}");
+            let v = VehicleSpec {
+                uid: 1,
+                sysid: 1,
+                port: 1,
+                link: "satcom".into(),
+                domain: String::new(),
+                platform: plat.into(),
+                callsign: String::new(),
+                space_class: spec["space_class"].as_str().map(String::from),
+            };
+            c.resolve(&c.profile_for(&v)).expect("profile").space_class
         };
         assert_eq!(class_of("buoy").as_deref(), Some("iridium"));
         for p in ["magura", "corsair", "seahunter", "saildrone"] {

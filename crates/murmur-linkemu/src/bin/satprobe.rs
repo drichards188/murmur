@@ -1,7 +1,7 @@
 //! Live check for SATCOM links: a few fake vehicles at chosen positions and a fake bridge on
 //! loopback, with the emulator's `/stats/<uid>` read back alongside what actually crossed.
 //!
-//! Writes a fleet manifest (platform names pick the profile through `[platform_profile]`),
+//! Writes a fleet manifest (a platform's `space_class` in sim/platforms.toml, read from the working directory, picks the profile through `[space_class_profile]`),
 //! sends a GLOBAL_POSITION_INT frame from each vehicle at `--rate` Hz, measures the one-way
 //! delay and loss of those frames at the fake bridge, and every `--report` seconds prints one
 //! line per vehicle with the emulator's own view (up/down, best satellite, latency, handovers,
@@ -100,6 +100,11 @@ async fn main() {
         eprint!("{USAGE}");
         std::process::exit(2);
     }
+    // The SATCOM class comes from the platform catalog, as in a real fleet manifest.
+    let catalog: toml::Table = std::fs::read_to_string("sim/platforms.toml")
+        .ok()
+        .and_then(|t| t.parse().ok())
+        .unwrap_or_default();
     let manifest: Vec<Value> = vehicles
         .iter()
         .enumerate()
@@ -107,6 +112,7 @@ async fn main() {
             serde_json::json!({
                 "uid": v.uid, "sysid": v.uid, "port": u32::from(vbase) + i as u32,
                 "link": v.link, "domain": "surface", "platform": v.platform,
+                "space_class": catalog.get(&v.platform).and_then(|p| p.get("space_class")).and_then(toml::Value::as_str),
             })
         })
         .collect();
