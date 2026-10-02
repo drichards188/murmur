@@ -259,8 +259,9 @@ async def get_platforms():
             min_r = round(spec["cruise_mps"] / (spec["turn_dps"] * 3.141592653589793 / 180))
         out.append({
             "id": pid,
-            **{k: spec.get(k) for k in ("name", "short", "role", "domain", "sim", "link", "sidc", "callsign",
-                                        "cruise_mps", "max_mps", "endurance_h", "climb_mps", "turn_dps")},
+            # numeric fields the panel formats read as null when absent
+            **{k: None for k in ("cruise_mps", "max_mps", "endurance_h", "climb_mps", "turn_dps")},
+            **spec,  # every catalog field passes through (protocol, authenticity, ...)
             "alt_m": spec.get("alt_m", spec.get("typical_alt_m")),
             "min_turn_radius_m": min_r,
             "tasks": sorted(caps.get("tasks", [])),
