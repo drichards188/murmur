@@ -6,9 +6,13 @@ import { useEffect, useRef, useState } from 'react'
 import { circle, distanceM } from './geo'
 import { BRIDGE_FILTER, liftBridges, type LiftedBridge } from './bridges'
 import { build3dLayers, DEM_TILES, HEIGHT_EXAGGERATION } from './map3d'
+import { declutter } from './declutter'
+import type { SpaceOverlay } from './space'
+import { EMPTY_OVERLAY } from './space'
+import { linkStubs, spaceFeatures, spaceLinkLayers } from './spaceLayers'
 import { symbolSvg } from './symbols'
 import type { LngLat, Tasking, Vehicle } from './types'
-import { STALE_MS } from './types'
+import { callsign, STALE_MS } from './types'
 
 export interface Draft {
   mode: 'orbit' | 'patrol' | null
@@ -26,6 +30,10 @@ interface Props {
   onMapClick: (p: LngLat) => void
   /** fly to this vehicle (n changes on every request, so repeat clicks work) */
   focus?: { uid: number; n: number } | null
+  /** space overlays: area, passes in progress, highlighted scene, SATCOM link lines */
+  space?: SpaceOverlay
+  /** the view after every move: centre and bounds (w, s, e, n) */
+  onView?: (center: LngLat, bounds: [number, number, number, number]) => void
 }
 
 const STYLE = 'https://tiles.openfreemap.org/styles/dark'
@@ -161,12 +169,70 @@ function applyView(m: maplibregl.Map, view: ViewMode) {
   }
 }
 
-export function MapView({ vehicles, taskings, selected, draft, focus, onToggle, onMapClick }: Props) {
+const SPACE_SOURCES = ['space-area', 'space-for', 'space-scenes', 'space-sel', 'space-links', 'space-box'] as const
+
+/** Space overlays, drawn subtly under the vehicles: the earthbound picture stays primary. */
+function addSpaceLayers(m: maplibregl.Map) {
+  for (const id of SPACE_SOURCES) m.addSource(id, { type: 'geojson', data: empty })
+  const before = m.getLayer('trails') ? 'trails' : undefined
+  m.addLayer({ id: 'space-for', type: 'fill', source: 'space-for', paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.035 } }, before)
+  m.addLayer(
+    { id: 'space-for-edge', type: 'line', source: 'space-for', paint: { 'line-color': ['get', 'color'], 'line-opacity': 0.35, 'line-width': 1, 'line-dasharray': [3, 3] } },
+    before,
+  )
+  m.addLayer(
+    { id: 'space-scenes', type: 'line', source: 'space-scenes', paint: { 'line-color': ['get', 'color'], 'line-opacity': 0.55, 'line-width': 1.2 } },
+    before,
+  )
+  m.addLayer(
+    { id: 'space-area', type: 'line', source: 'space-area', paint: { 'line-color': '#f4f1de', 'line-opacity': 0.35, 'line-width': 1, 'line-dasharray': [6, 4] } },
+    before,
+  )
+  m.addLayer({ id: 'space-sel-fill', type: 'fill', source: 'space-sel', paint: { 'fill-color': '#ffb347', 'fill-opacity': 0.12 } }, before)
+  m.addLayer({ id: 'space-sel', type: 'line', source: 'space-sel', paint: { 'line-color': '#ffb347', 'line-width': 2 } }, before)
+  m.addLayer({ id: 'space-box', type: 'line', source: 'space-box', paint: { 'line-color': '#f4f1de', 'line-width': 1.5, 'line-dasharray': [2, 2] } })
+  m.addLayer({ id: 'space-links', type: 'line', source: 'space-links', filter: ['==', ['geometry-type'], 'LineString'], paint: { 'line-color': '#c49bff', 'line-width': 1, 'line-opacity': 0.7, 'line-dasharray': [2, 2] } })
+  m.addLayer({
+    id: 'space-labels',
+    type: 'symbol',
+    source: 'space-scenes',
+    filter: ['==', ['geometry-type'], 'Point'],
+    layout: { 'text-field': ['get', 'label'], 'text-size': 10, 'text-font': ['Noto Sans Regular'], 'text-anchor': 'top-left', 'text-offset': [0.3, 0.2] },
+    paint: { 'text-color': ['get', 'color'], 'text-opacity': 0.8, 'text-halo-color': '#0b0f14', 'text-halo-width': 1 },
+  })
+  m.addLayer({
+    id: 'space-sel-label',
+    type: 'symbol',
+    source: 'space-sel',
+    filter: ['==', ['geometry-type'], 'Point'],
+    layout: { 'text-field': ['get', 'label'], 'text-size': 11, 'text-font': ['Noto Sans Bold'], 'text-anchor': 'bottom-left', 'text-allow-overlap': true },
+    paint: { 'text-color': '#ffb347', 'text-halo-color': '#0b0f14', 'text-halo-width': 1.2 },
+  })
+  m.addLayer({
+    id: 'space-link-labels',
+    type: 'symbol',
+    source: 'space-links',
+    filter: ['==', ['geometry-type'], 'Point'],
+    layout: { 'text-field': ['get', 'label'], 'text-size': 10, 'text-font': ['Noto Sans Regular'], 'text-anchor': 'left', 'text-offset': [0.4, 0] },
+    paint: { 'text-color': '#c49bff', 'text-opacity': 0.85, 'text-halo-color': '#0b0f14', 'text-halo-width': 1 },
+  })
+}
+
+function setSpaceData(m: maplibregl.Map, space: SpaceOverlay, view: ViewMode) {
+  const f = spaceFeatures(space)
+  for (const id of SPACE_SOURCES) (m.getSource(id) as maplibregl.GeoJSONSource | undefined)?.setData(id === 'space-links' ? (view === '3d' ? empty : linkStubs(space.links)) : f[id])
+}
+
+export function MapView({ vehicles, taskings, selected, draft, focus, onToggle, onMapClick, space = EMPTY_OVERLAY, onView }: Props) {
   const [view, setView] = useState<ViewMode>(savedView)
   const viewRef = useRef(view)
   const overlay = useRef<MapboxOverlay | null>(null)
   const bridges = useRef<LiftedBridge[]>([])
-  const latest = useRef({ vehicles, selected })
+  const latest = useRef({ vehicles, selected, bare: new Set<number>() })
+  const spaceRef = useRef(space)
+  const viewCb = useRef(onView)
+  // bumped when the camera stops, so label declutter re-runs at the new scale
+  const [moved, setMoved] = useState(0)
   const container = useRef<HTMLDivElement>(null)
   const map = useRef<maplibregl.Map | null>(null)
   const ready = useRef(false)
@@ -178,7 +244,14 @@ export function MapView({ vehicles, taskings, selected, draft, focus, onToggle, 
   useEffect(() => {
     clickRef.current = onMapClick
     toggleRef.current = onToggle
-  }, [onMapClick, onToggle])
+    viewCb.current = onView
+  }, [onMapClick, onToggle, onView])
+
+  /** vehicles, bridges and SATCOM link lines for deck.gl (3D only; hidden layers in 2D) */
+  const deckLayers = (is3d: boolean) => {
+    const { vehicles: vs, selected: sel, bare } = latest.current
+    return [...build3dLayers(vs, sel, is3d, bridges.current, bare), ...spaceLinkLayers(spaceRef.current.links, is3d)]
+  }
 
   useEffect(() => {
     const live = markers.current
@@ -332,8 +405,11 @@ export function MapView({ vehicles, taskings, selected, draft, focus, onToggle, 
         layout: { 'text-field': ['get', 'n'], 'text-size': 11, 'text-font': ['Noto Sans Bold'], 'text-allow-overlap': true },
         paint: { 'text-color': '#0b0f14' },
       })
+      addSpaceLayers(m)
       ready.current = true
       if (viewRef.current === '3d') applyView(m, '3d')
+      setSpaceData(m, spaceRef.current, viewRef.current)
+      reportView()
     })
     // re-estimate bridge decks when the 3D camera stops or new map/terrain tiles arrive.
     // (Not 'idle': live vehicle updates repaint the map several times a second, so it never is.)
@@ -350,11 +426,17 @@ export function MapView({ vehicles, taskings, selected, draft, focus, onToggle, 
           ;(w.murmurPerf.liftBridges ??= []).push(performance.now() - t0)
         }
         if (import.meta.env.DEV) (window as unknown as { murmurBridges: LiftedBridge[] }).murmurBridges = bridges.current
-        const { vehicles: vs, selected: sel } = latest.current
-        deck.setProps({ layers: build3dLayers(vs, sel, true, bridges.current) })
+        deck.setProps({ layers: deckLayers(true) })
       }, 400)
     }
+    const reportView = () => {
+      const c = m.getCenter()
+      const b = m.getBounds()
+      viewCb.current?.([c.lng, c.lat], [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()])
+    }
     m.on('moveend', refreshBridges)
+    m.on('moveend', reportView)
+    m.on('zoomend', () => setMoved((n) => n + 1))
     m.on('sourcedata', (e) => {
       if (e.isSourceLoaded && (e.sourceId === 'openmaptiles' || e.sourceId === 'dem')) refreshBridges()
     })
@@ -377,14 +459,22 @@ export function MapView({ vehicles, taskings, selected, draft, focus, onToggle, 
     const m = map.current
     if (!m) return
     const seen = new Set<number>()
+    // murmur-02g: where symbols bunch up (planes on a runway), only one keeps its labels;
+    // the rest show the bare symbol and their callsign on hover
+    const bare = declutter(
+      vehicles.flatMap((v) => (v.position ? [{ uid: v.uid, ...m.project(v.position) }] : [])),
+      selected,
+      m.getZoom(),
+    )
     for (const v of vehicles) {
       if (!v.position) continue
       seen.add(v.uid)
       const stale = (v.link.since_last_ms ?? 0) > STALE_MS
-      const sym = symbolSvg(v, { stale })
+      const labels = !bare.has(v.uid)
+      const sym = symbolSvg(v, { stale, labels })
       const isSel = selected.has(v.uid)
       const staleS = stale ? Math.floor((v.link.since_last_ms ?? 0) / 1000) : 0
-      const key = `${sym.svg.length}|${sym.anchor.x}|${sym.anchor.y}|${isSel}|${staleS}|${v.heading}`
+      const key = `${sym.svg.length}|${sym.anchor.x}|${sym.anchor.y}|${isSel}|${staleS}|${v.heading}|${labels}`
       let entry = markers.current.get(v.uid)
       if (!entry) {
         const el = document.createElement('div')
@@ -403,6 +493,8 @@ export function MapView({ vehicles, taskings, selected, draft, focus, onToggle, 
           (isSel ? `<span class="vmarker-ring" style="left:${sym.anchor.x}px;top:${sym.anchor.y}px"></span>` : '') +
           (stale ? `<span class="vmarker-lost" style="left:${sym.anchor.x}px;top:${sym.anchor.y + 22}px">LOST ${staleS}s</span>` : '')
         entry.el.classList.toggle('stale', stale)
+        entry.el.classList.toggle('bare', !labels)
+        entry.el.dataset.callsign = labels ? '' : `${callsign(v)}${v.identity?.short ? ` · ${v.identity.short}` : ''}`
         entry.marker.setOffset([-sym.anchor.x, -sym.anchor.y])
         entry.key = key
       }
@@ -415,9 +507,9 @@ export function MapView({ vehicles, taskings, selected, draft, focus, onToggle, 
       }
     }
     for (const { el } of markers.current.values()) el.style.display = view === '3d' ? 'none' : ''
-    latest.current = { vehicles, selected }
+    latest.current = { vehicles, selected, bare }
     const t1 = performance.now()
-    overlay.current?.setProps({ layers: build3dLayers(vehicles, selected, view === '3d', bridges.current) })
+    overlay.current?.setProps({ layers: deckLayers(view === '3d') })
     if (import.meta.env.DEV) {
       const w = window as unknown as { murmurPerf: Record<string, number[]> }
       w.murmurPerf ??= {}
@@ -439,7 +531,18 @@ export function MapView({ vehicles, taskings, selected, draft, focus, onToggle, 
         fitAt.current = c
       }
     }
-  }, [vehicles, selected, view])
+    // deckLayers reads refs; moved re-runs the declutter after a zoom
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vehicles, selected, view, moved])
+
+  useEffect(() => {
+    spaceRef.current = space
+    const m = map.current
+    if (!m || !ready.current) return
+    setSpaceData(m, space, view)
+    overlay.current?.setProps({ layers: deckLayers(view === '3d') })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [space, view])
 
   const vehiclesRef = useRef(vehicles)
   useEffect(() => {

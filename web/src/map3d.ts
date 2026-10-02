@@ -27,14 +27,14 @@ function z(metresMsl: number | null) {
   return (metresMsl ?? 0) * HEIGHT_EXAGGERATION
 }
 
-function iconFor(v: Vehicle) {
+function iconFor(v: Vehicle, labels = true) {
   const stale = (v.link.since_last_ms ?? 0) > STALE_MS
   // no heading arrow in 3D: the 3D trail shows direction, and a stable icon per vehicle
   // keeps deck.gl from rebuilding its icon texture on every turn
-  const sym = symbolSvg(v, { stale, heading: false })
+  const sym = symbolSvg(v, { stale, heading: false, labels })
   return {
     url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(sym.svg)}`,
-    id: `${v.uid}|${stale}`,
+    id: `${v.uid}|${stale}|${labels}`,
     width: Math.ceil(sym.size.width),
     height: Math.ceil(sym.size.height),
     anchorX: sym.anchor.x,
@@ -61,8 +61,15 @@ function seaSurface(vehicles: Vehicle[]) {
   return [{ polygon }]
 }
 
-/** visible=false keeps the layers (and their GPU resources) alive while the 2D view is shown. */
-export function build3dLayers(vehicles: Vehicle[], selected: Set<number>, visible = true, bridges: LiftedBridge[] = []) {
+/** visible=false keeps the layers (and their GPU resources) alive while the 2D view is shown.
+ *  `bare`: vehicles drawn without labels (crowded; see declutter.ts). */
+export function build3dLayers(
+  vehicles: Vehicle[],
+  selected: Set<number>,
+  visible = true,
+  bridges: LiftedBridge[] = [],
+  bare: Set<number> = new Set(),
+) {
   const placed = vehicles.filter((v) => v.position && v.alt_msl != null)
   const at = (v: Vehicle): XYZ => [v.position![0], v.position![1], z(v.alt_msl)]
   return [
@@ -137,10 +144,13 @@ export function build3dLayers(vehicles: Vehicle[], selected: Set<number>, visibl
       data: placed,
       pickable: true,
       getPosition: at,
-      getIcon: iconFor,
-      getSize: (v) => iconFor(v).height,
+      getIcon: (v) => iconFor(v, !bare.has(v.uid)),
+      getSize: (v) => iconFor(v, !bare.has(v.uid)).height,
       sizeUnits: 'pixels',
-      updateTriggers: { getIcon: placed.map((v) => `${v.uid}|${(v.link.since_last_ms ?? 0) > STALE_MS}`).join() },
+      updateTriggers: {
+        getIcon: placed.map((v) => `${v.uid}|${(v.link.since_last_ms ?? 0) > STALE_MS}|${bare.has(v.uid)}`).join(),
+        getSize: placed.map((v) => bare.has(v.uid)).join(),
+      },
     }),
   ]
 }

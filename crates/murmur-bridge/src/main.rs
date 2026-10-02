@@ -12,6 +12,7 @@ mod link;
 mod mav;
 mod platforms;
 mod push;
+mod space;
 mod tasks;
 mod vehicle;
 mod world;

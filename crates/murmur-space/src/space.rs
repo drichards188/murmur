@@ -42,6 +42,10 @@ pub struct Space {
     /// Median element epoch over all satellites: what "now" means for the elements.
     pub reference: DateTime<Utc>,
     pub cache_meta: Vec<CacheMeta>,
+    /// When set, every non-direct query uses this shift instead of choosing one per window.
+    /// A long-running caller (the bridge's console session) pins one so that passes,
+    /// positions and links all describe the same propagation day. See `pin_shift`.
+    pub pinned_shift_days: Option<i64>,
 }
 
 impl Space {
@@ -109,6 +113,7 @@ impl Space {
             classes,
             reference,
             cache_meta: Vec::new(),
+            pinned_shift_days: None,
         })
     }
 
@@ -120,7 +125,26 @@ impl Space {
     }
 
     pub fn time_map(&self, mode: EpochMode, from: DateTime<Utc>, to: DateTime<Utc>) -> TimeMap {
-        TimeMap::for_window(mode, self.reference, from, to)
+        match (mode, self.pinned_shift_days) {
+            (EpochMode::Direct, _) | (_, None) => {
+                TimeMap::for_window(mode, self.reference, from, to)
+            }
+            (_, Some(shift_days)) => TimeMap {
+                mode,
+                shift_days,
+                reference: self.reference,
+            },
+        }
+    }
+
+    /// Pin the time shift to the one `Auto` picks for [from, to] (or clear it with `None`).
+    /// Without a pin, two windows whose middles fall either side of a half-day boundary get
+    /// shifts one day apart, so a timeline and a globe would show different days.
+    pub fn pin_shift(&mut self, window: Option<(DateTime<Utc>, DateTime<Utc>)>) -> Option<i64> {
+        self.pinned_shift_days = window.map(|(from, to)| {
+            TimeMap::for_window(EpochMode::Auto, self.reference, from, to).shift_days
+        });
+        self.pinned_shift_days
     }
 
     /// Satellites of a class usable over the scenario interval [from, to]: elements recent

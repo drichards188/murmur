@@ -715,11 +715,14 @@ name = "murmur-bridge"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "chrono",
  "mavlink",
+ "murmur-space",
  "serde",
  "serde_json",
  "tokio",
  "toml",
+ "tower",
 ]
 
 [[package]]

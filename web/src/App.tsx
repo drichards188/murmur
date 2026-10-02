@@ -1,7 +1,11 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { FleetPanel } from './FleetPanel'
+import { GlobeInset } from './GlobeInset'
 import { MapView, type Draft } from './MapView'
 import { PlatformsPanel } from './PlatformsPanel'
+import type { Catalog, LinksNow, Overhead, SpaceOverlay } from './space'
+import { usePoll } from './space'
+import { SpacePanel, type SpaceSelection } from './SpacePanel'
 import { TaskPanel } from './TaskPanel'
 import type { LngLat } from './types'
 import { domainOf, STALE_MS } from './types'
@@ -47,6 +51,35 @@ export default function App() {
   const [showPlatforms, setShowPlatforms] = useState(false)
   const [focus, setFocus] = useState<{ uid: number; n: number } | null>(null)
   const [draft, setDraft] = useState<Draft>({ mode: 'orbit', center: null, radius: 250, route: [] })
+  const [showSpace, setShowSpace] = useState(false)
+  const [showGlobe, setShowGlobe] = useState(false)
+  const [mapView, setMapView] = useState<{ center: LngLat; bounds: [number, number, number, number] } | null>(null)
+  const [drawing, setDrawing] = useState<LngLat | 'start' | null>(null)
+  const [box, setBox] = useState<LngLat[] | null>(null)
+  const [spaceSel, setSpaceSel] = useState<SpaceSelection>({ scene: null, norad: null })
+
+  // space data is fetched only while a space view is open
+  const spaceOn = showSpace || showGlobe
+  const catalog = usePoll<Catalog>(spaceOn ? '/api/space/catalog' : null, 30_000)
+  const overhead = usePoll<Overhead>(showSpace ? '/api/space/overhead' : null, 5_000)
+  const linksNow = usePoll<LinksNow>(spaceOn ? '/api/space/links/now' : null, 10_000)
+  const overlay = useMemo<SpaceOverlay>(
+    () => ({
+      area: spaceOn ? (catalog.data?.area ?? null) : null,
+      overhead: showSpace ? (overhead.data?.overhead ?? []) : [],
+      scene: showSpace ? spaceSel.scene : null,
+      links: spaceOn ? (linksNow.data?.links ?? []) : [],
+      box: showSpace ? box : null,
+    }),
+    [spaceOn, showSpace, catalog.data, overhead.data, spaceSel, linksNow.data, box],
+  )
+  useEffect(() => {
+    if (!drawing) return
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setDrawing(null)
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [drawing])
+  const onView = useCallback((center: LngLat, bounds: [number, number, number, number]) => setMapView({ center, bounds }), [])
 
   const vehicles = state?.vehicles ?? []
   const taskings = state?.taskings ?? []
@@ -61,9 +94,24 @@ export default function App() {
     })
   }, [])
 
-  const onMapClick = useCallback((p: LngLat) => {
-    setDraft((d) => (d.mode === 'orbit' ? { ...d, center: p } : d.mode === 'patrol' ? { ...d, route: [...d.route, p] } : d))
-  }, [])
+  const onMapClick = useCallback(
+    (p: LngLat) => {
+      // drawing a collection box: two clicks, opposite corners
+      if (drawing === 'start') return setDrawing(p)
+      if (drawing) {
+        const [a, b] = [drawing, p]
+        setBox([
+          [Math.min(a[0], b[0]), Math.min(a[1], b[1])],
+          [Math.max(a[0], b[0]), Math.min(a[1], b[1])],
+          [Math.max(a[0], b[0]), Math.max(a[1], b[1])],
+          [Math.min(a[0], b[0]), Math.max(a[1], b[1])],
+        ])
+        return setDrawing(null)
+      }
+      setDraft((d) => (d.mode === 'orbit' ? { ...d, center: p } : d.mode === 'patrol' ? { ...d, route: [...d.route, p] } : d))
+    },
+    [drawing],
+  )
 
   return (
     <div className="app">
@@ -80,6 +128,12 @@ export default function App() {
           <b>{lost}</b> lost link
         </span>
         <span className={`pill ${status}`}>{status === 'live' ? 'BRIDGE LIVE' : status === 'down' ? 'BRIDGE DOWN' : 'CONNECTING'}</span>
+        <button className={`ghost platforms-btn ${showSpace ? 'on' : ''}`} onClick={() => setShowSpace((v) => !v)} title="Space timeline: imaging access, SATCOM, GNSS">
+          Space
+        </button>
+        <button className={`ghost platforms-btn ${showGlobe ? 'on' : ''}`} onClick={() => setShowGlobe((v) => !v)} title="Globe inset: satellites by class">
+          Globe
+        </button>
         <button className="ghost platforms-btn" onClick={() => setShowPlatforms((v) => !v)}>
           Platforms
         </button>
@@ -87,7 +141,7 @@ export default function App() {
         <span className="clock">{clock}</span>
       </header>
       <FleetPanel vehicles={vehicles} selected={selected} onToggle={toggle} onSelect={(ids) => setSelected(new Set(ids))} />
-      <main className="mapwrap">
+      <main className={`mapwrap ${showSpace ? 'space-open' : ''}`}>
         <MapView
           vehicles={vehicles}
           taskings={taskings}
@@ -96,7 +150,36 @@ export default function App() {
           focus={focus}
           onToggle={toggle}
           onMapClick={onMapClick}
+          space={overlay}
+          onView={onView}
         />
+        {showGlobe && (
+          <GlobeInset
+            center={mapView?.center ?? null}
+            area={catalog.data?.area ?? null}
+            links={linksNow.data?.links ?? []}
+            norad={spaceSel.norad}
+            onClose={() => setShowGlobe(false)}
+          />
+        )}
+        {showSpace && (
+          <SpacePanel
+            catalog={catalog.data}
+            catalogError={catalog.error}
+            mapBounds={mapView?.bounds ?? null}
+            box={drawing && drawing !== 'start' ? null : box}
+            drawing={drawing != null}
+            onDrawBox={() => setDrawing('start')}
+            onClearBox={() => setBox(null)}
+            onSelect={setSpaceSel}
+            onClose={() => {
+              setShowSpace(false)
+              setDrawing(null)
+              setSpaceSel({ scene: null, norad: null })
+            }}
+          />
+        )}
+        {drawing && <div className="banner info">Click two opposite corners of the collection box. Esc cancels.</div>}
         {showPlatforms && (
           <PlatformsPanel
             onClose={() => setShowPlatforms(false)}
