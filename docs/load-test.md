@@ -64,3 +64,70 @@ airborne and loitering, marine idle. CPU is percent of one core on a shared host
 Host limits for "thousands of nodes": `net.ipv4.ip_local_port_range` (here 39160 to 43255,
 about 4,000 sockets per address) caps either engine near 4,000 vehicles unless widened; ticks
 are staggered across vehicles because lockstep sends lost ~20% of packets on WSL loopback.
+
+## Phase R exit: 1,000 stand-ins, Rust only (R.5, 2026-10-02)
+
+The whole live path in Rust (`murmur-bridge`, `murmur-standins`), started by `scripts/up.sh` on
+alternate ports beside another running stack. Fleets from `scripts/scale_fleet.py N`: a fixed
+mix of all 22 platform types (per 1,000: 440 air, 140 ground, 280 surface, 140 subsurface),
+every unit forced to `sim = "standin"`, in units of 10 (30 at 3,000) spread over the Bay area:
+HALE/MALE/CCA on station over the whole area, small aircraft and ground vehicles on land around
+the Bay, boats in the Bay and offshore, AUVs offshore. `sim/fleets/scale-1000.toml` is
+committed; 22, 300 and 3,000 were generated into `sim/run/`. No tidewater (marine and ground
+stand-ins run without currents and land checks), no tasks: every vehicle idle on station or at
+home, the bridge's telemetry plan applied to all. Measured with `scripts/measure.py --seconds
+30` (one WebSocket client), two windows per size after everything was nav-ready plus 20 s;
+ranges are the two windows. CPU is percent of one core on a shared 28-core WSL2 host (other
+agents' SITL vehicles running; load average 2 to 10), so treat it as approximate.
+
+| | 22 | 300 | **1,000** | 3,000 |
+|---|---|---|---|---|
+| All nav-ready after start | not recorded | 13 s | **17 to 35 s** | 159 s |
+| Bridge CPU | 0.4% | 3.2 to 3.7% | **9.1 to 13.1%** | 23.4 to 29.2% |
+| Bridge RSS | 49 MB | 32 to 34 MB | **62 to 72 MB** | 314 to 327 MB |
+| Stand-in engine CPU (one process) | 0.7% | 3.3 to 3.4% | **7.1 to 8.8%** | 13.9 to 17.1% |
+| Stand-in engine RSS | 3.7 MB | 5.2 MB | **10.6 MB** | 24.6 MB |
+| Telemetry received | 180 msg/s | 2,460 msg/s | **8,100 to 8,180 msg/s** | 21,900 to 24,500 msg/s |
+| ... median per vehicle | 7.8 | 7.7 | **7.7 to 8.0** | 7.2 to 7.7 |
+| WebSocket to one client | 39 KB/s | 445 KB/s | **1.5 to 1.9 MB/s** | 5.0 to 5.5 MB/s |
+| Initial full state | 34 KB | 334 to 489 KB | **1.1 to 1.7 MB** | 7.2 to 8.6 MB |
+| WS pushes | 4/s | 4/s | 4/s | 4/s |
+
+Nothing was dropped: the engine logged 0 send errors, the bridge no errors, and the
+per-vehicle rate matches the plan (heartbeat plus position at 2 Hz for aircraft, 1 Hz
+otherwise, the rest at 0.5 to 1 Hz). The bridge's RSS and the initial state grow while it runs
+(trails fill up), which is why the second window reads higher. The slow start at 3,000 came in
+steps of a few hundred vehicles every ~30 s; not investigated.
+
+Console, opened at `?perf` in Playwright's headless Chromium (2D view, the default):
+
+| | 22 | 300 | 1,000 | 3,000 |
+|---|---|---|---|---|
+| 2D frame rate (20 s) | 16 fps | 10.5 fps | 9 fps | crashed |
+| Long tasks (share of the 20 s) | 92% | 82% | 86% | |
+| Map markers / DOM elements | 22 / 847 | 300 / 8,449 | 1,000 / 27,404 | |
+| JS heap | 72 MB | 83 MB | 160 MB | 168 MB |
+
+Caveats: this Chromium renders WebGL in software (SwiftShader), and the 2D basemap is WebGL
+too (MapLibre), so the main thread is saturated even at 22 nodes (16 fps, against 57 fps for
+100 nodes measured the same way earlier on a quieter host). The fps here mostly measures the
+renderer and the host, not the console; the number to trust is a real GPU with `?perf`. What
+does scale with the fleet is the DOM: one HTML marker per vehicle and an unvirtualized fleet
+list (about 27 elements per vehicle), 27,000 elements at 1,000 nodes. At 3,000 the software
+WebGL context was lost after about 90 s and MapView threw (`getProjection` of null in deck.gl's
+overlay) with no error boundary, so the whole page went blank. Both are console work for a
+real GPU check: a virtualized fleet list and canvas symbols at this scale, and surviving a
+lost WebGL context.
+
+### The node ceiling on this host
+
+Each stand-in has its own UDP socket on an ephemeral port, and `net.ipv4.ip_local_port_range`
+here is 39160 to 43255: 4,096 ports for every ephemeral socket on the host. With 3,000
+stand-ins running, 3,023 of them were in use, leaving about 1,070. The bridge binds one fixed
+port per vehicle from `MURMUR_BASE_PORT` (outside that range, so it doesn't compete as long as
+`base + N` stays below 39160). So the practical ceiling is about **4,000 stand-ins per host**
+without widening the range (not changed here; `sysctl net.ipv4.ip_local_port_range` would, or
+stand-ins could bind fixed ports like the bridge does). CPU and memory are far from limits:
+at 3,000 the bridge used under a third of one core and the engine a sixth. The next limit
+after ports is the browser feed, 5 MB/s and an 8 MB initial state at 3,000, which would need
+viewport filtering or level of detail before 10,000 nodes.
