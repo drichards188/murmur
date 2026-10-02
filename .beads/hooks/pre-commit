@@ -22,3 +22,9 @@ if command -v bd >/dev/null 2>&1; then
   if [ $_bd_exit -ne 0 ]; then exit $_bd_exit; fi
 fi
 # --- END BEADS INTEGRATION v0.60.0 ---
+
+# Keep the issue tracker in git: the Dolt database isn't tracked, so export every issue
+# to .beads/issues.jsonl on each commit (restore with: bd import .beads/issues.jsonl).
+if command -v bd >/dev/null 2>&1; then
+  bd export -o .beads/issues.jsonl >/dev/null 2>&1 && git add .beads/issues.jsonl
+fi
