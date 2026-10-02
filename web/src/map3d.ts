@@ -1,4 +1,5 @@
 import { IconLayer, LineLayer, PathLayer, ScatterplotLayer, SolidPolygonLayer } from '@deck.gl/layers'
+import type { LiftedBridge } from './bridges'
 import { symbolSvg } from './symbols'
 import type { Vehicle } from './types'
 import { AIR_KINDS, STALE_MS } from './types'
@@ -60,10 +61,23 @@ function seaSurface(vehicles: Vehicle[]) {
 }
 
 /** visible=false keeps the layers (and their GPU resources) alive while the 2D view is shown. */
-export function build3dLayers(vehicles: Vehicle[], selected: Set<number>, visible = true) {
+export function build3dLayers(vehicles: Vehicle[], selected: Set<number>, visible = true, bridges: LiftedBridge[] = []) {
   const placed = vehicles.filter((v) => v.position && v.alt_msl != null)
   const at = (v: Vehicle): XYZ => [v.position![0], v.position![1], z(v.alt_msl)]
   return [
+    // bridge decks at estimated height (see bridges.ts); drawn before the sea surface
+    new PathLayer<LiftedBridge>({
+      id: 'bridge-decks',
+      visible,
+      data: bridges,
+      getPath: (b) => b.path,
+      getColor: (b) => (b.major ? [58, 64, 74, 255] : [44, 49, 57, 255]),
+      getWidth: (b) => (b.major ? 14 : 8),
+      widthUnits: 'meters',
+      widthMinPixels: 2,
+      capRounded: true,
+      jointRounded: true,
+    }),
     new SolidPolygonLayer({
       id: 'sea-surface',
       visible,

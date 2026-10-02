@@ -4,6 +4,7 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import { MapboxOverlay } from '@deck.gl/mapbox'
 import { useEffect, useRef, useState } from 'react'
 import { circle, distanceM } from './geo'
+import { BRIDGE_FILTER, liftBridges, type LiftedBridge } from './bridges'
 import { build3dLayers, DEM_TILES, HEIGHT_EXAGGERATION } from './map3d'
 import { symbolSvg } from './symbols'
 import type { LngLat, Tasking, Vehicle } from './types'
@@ -106,6 +107,10 @@ function trailFeatures(vehicles: Vehicle[]): FC {
 }
 
 type ViewMode = '2d' | '3d'
+const MAX_PITCH = 85
+// middle-drag orbit sensitivity, degrees per pixel
+const ORBIT_YAW = 0.35
+const ORBIT_TILT = 0.25
 const VIEW_KEY = 'murmur.view'
 
 function savedView(): ViewMode {
@@ -118,7 +123,29 @@ function savedView(): ViewMode {
 
 /** 2D: flat map, HTML symbol markers. 3D: terrain + seabed, tilted camera, vehicles drawn by
  *  deck.gl at their true altitude/depth. Tasking and drafting work the same in both. */
+// original filters of the style's road layers, so 2D can restore them
+const roadFilters = new WeakMap<maplibregl.Map, Map<string, maplibregl.FilterSpecification | undefined>>()
+
+/** In 3D, draped bridges would dive to the seabed: drop them from the style's road layers
+ *  (they're redrawn at deck height by deck.gl). 2D restores the style's own filters. */
+function setDrapedBridges(m: maplibregl.Map, show: boolean) {
+  let saved = roadFilters.get(m)
+  if (!saved) {
+    saved = new Map()
+    for (const l of m.getStyle().layers) {
+      if ('source-layer' in l && l['source-layer'] === 'transportation') saved.set(l.id, l.filter)
+    }
+    roadFilters.set(m, saved)
+  }
+  for (const [id, filter] of saved) {
+    // the style's road filters are expression filters, so they combine with ours under 'all'
+    const combined = filter ? (['all', filter, BRIDGE_FILTER] as unknown as maplibregl.FilterSpecification) : BRIDGE_FILTER
+    m.setFilter(id, show ? filter : combined)
+  }
+}
+
 function applyView(m: maplibregl.Map, view: ViewMode) {
+  setDrapedBridges(m, view === '2d')
   if (view === '3d') {
     m.setTerrain({ source: 'dem', exaggeration: HEIGHT_EXAGGERATION })
     m.setLayoutProperty('hillshade', 'visibility', 'visible')
@@ -136,6 +163,8 @@ export function MapView({ vehicles, taskings, selected, draft, onToggle, onMapCl
   const [view, setView] = useState<ViewMode>(savedView)
   const viewRef = useRef(view)
   const overlay = useRef<MapboxOverlay | null>(null)
+  const bridges = useRef<LiftedBridge[]>([])
+  const latest = useRef({ vehicles, selected })
   const container = useRef<HTMLDivElement>(null)
   const map = useRef<maplibregl.Map | null>(null)
   const ready = useRef(false)
@@ -157,7 +186,7 @@ export function MapView({ vehicles, taskings, selected, draft, onToggle, onMapCl
       center: START,
       zoom: 12.6,
       attributionControl: { compact: true },
-      maxPitch: 80,
+      maxPitch: MAX_PITCH,
     })
     if (import.meta.env.DEV) (window as unknown as { murmurMap: maplibregl.Map }).murmurMap = m
     const deck = new MapboxOverlay({ interleaved: true, layers: [] })
@@ -176,6 +205,35 @@ export function MapView({ vehicles, taskings, selected, draft, onToggle, onMapCl
       }
       clickRef.current([e.lngLat.lng, e.lngLat.lat])
     })
+    // Middle-drag orbits the camera like a 3D modelling tool: left/right spins (bearing),
+    // up/down tilts (pitch). In 2D only the spin applies, so the map stays flat.
+    const surface = m.getCanvasContainer()
+    let orbit: { x: number; y: number; bearing: number; pitch: number } | null = null
+    const onDown = (e: MouseEvent) => {
+      if (e.button !== 1) return
+      e.preventDefault() // no browser autoscroll
+      m.stop()
+      orbit = { x: e.clientX, y: e.clientY, bearing: m.getBearing(), pitch: m.getPitch() }
+      surface.style.cursor = 'grabbing'
+    }
+    const onMove = (e: MouseEvent) => {
+      if (!orbit) return
+      const bearing = orbit.bearing + (e.clientX - orbit.x) * ORBIT_YAW
+      const pitch =
+        viewRef.current === '3d' ? Math.max(0, Math.min(MAX_PITCH, orbit.pitch - (e.clientY - orbit.y) * ORBIT_TILT)) : 0
+      m.jumpTo({ bearing, pitch })
+    }
+    const onUp = (e: MouseEvent) => {
+      if (e.button !== 1 || !orbit) return
+      orbit = null
+      surface.style.cursor = ''
+    }
+    const noAux = (e: MouseEvent) => e.button === 1 && e.preventDefault()
+    surface.addEventListener('mousedown', onDown)
+    surface.addEventListener('auxclick', noAux)
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+
     m.on('load', () => {
       m.addSource('dem', {
         type: 'raster-dem',
@@ -187,6 +245,16 @@ export function MapView({ vehicles, taskings, selected, draft, onToggle, onMapCl
       })
       // MapLibre renders better with separate sources for 3D terrain and hillshade
       m.addSource('dem-shade', { type: 'raster-dem', tiles: [DEM_TILES], encoding: 'terrarium', tileSize: 256, maxzoom: 15 })
+      // invisible layer that keeps bridge features indexed: MapLibre only lets you query
+      // features some layer uses, and in 3D the road layers drop bridges (see setDrapedBridges)
+      m.addLayer({
+        id: 'bridge-probe',
+        type: 'line',
+        source: 'openmaptiles',
+        'source-layer': 'transportation',
+        filter: ['==', ['get', 'brunnel'], 'bridge'],
+        paint: { 'line-opacity': 0 },
+      })
       const firstSymbol = m.getStyle().layers.find((l) => l.type === 'symbol')?.id
       m.addLayer(
         {
@@ -265,10 +333,31 @@ export function MapView({ vehicles, taskings, selected, draft, onToggle, onMapCl
       ready.current = true
       if (viewRef.current === '3d') applyView(m, '3d')
     })
+    // re-estimate bridge decks when the 3D camera stops or new map/terrain tiles arrive.
+    // (Not 'idle': live vehicle updates repaint the map several times a second, so it never is.)
+    let bridgeTimer: number | undefined
+    const refreshBridges = () => {
+      window.clearTimeout(bridgeTimer)
+      bridgeTimer = window.setTimeout(() => {
+        if (viewRef.current !== '3d' || !m.getTerrain()) return
+        bridges.current = liftBridges(m)
+        if (import.meta.env.DEV) (window as unknown as { murmurBridges: LiftedBridge[] }).murmurBridges = bridges.current
+        const { vehicles: vs, selected: sel } = latest.current
+        deck.setProps({ layers: build3dLayers(vs, sel, true, bridges.current) })
+      }, 400)
+    }
+    m.on('moveend', refreshBridges)
+    m.on('sourcedata', (e) => {
+      if (e.isSourceLoaded && (e.sourceId === 'openmaptiles' || e.sourceId === 'dem')) refreshBridges()
+    })
     map.current = m
     return () => {
       ready.current = false
       overlay.current = null
+      surface.removeEventListener('mousedown', onDown)
+      surface.removeEventListener('auxclick', noAux)
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
       live.forEach(({ marker }) => marker.remove())
       live.clear()
       m.remove()
@@ -318,7 +407,8 @@ export function MapView({ vehicles, taskings, selected, draft, onToggle, onMapCl
       }
     }
     for (const { el } of markers.current.values()) el.style.display = view === '3d' ? 'none' : ''
-    overlay.current?.setProps({ layers: build3dLayers(vehicles, selected, view === '3d') })
+    latest.current = { vehicles, selected }
+    overlay.current?.setProps({ layers: build3dLayers(vehicles, selected, view === '3d', bridges.current) })
 
     if (ready.current) {
       ;(m.getSource('trails') as maplibregl.GeoJSONSource).setData(trailFeatures(vehicles))
@@ -344,7 +434,10 @@ export function MapView({ vehicles, taskings, selected, draft, onToggle, onMapCl
     } catch {
       // private mode / blocked storage: the toggle still works for this session
     }
-    if (map.current && ready.current) applyView(map.current, view)
+    if (map.current && ready.current) {
+      applyView(map.current, view)
+      map.current.fire('moveend')
+    }
   }, [view])
 
   useEffect(() => {
@@ -366,7 +459,7 @@ export function MapView({ vehicles, taskings, selected, draft, onToggle, onMapCl
         <button className={view === '3d' ? 'on' : ''} onClick={() => setView('3d')}>
           3D
         </button>
-        {view === '3d' && <span className="viewnote">heights ×{HEIGHT_EXAGGERATION} · right-drag to orbit</span>}
+        {view === '3d' && <span className="viewnote">heights ×{HEIGHT_EXAGGERATION} · middle-drag: spin + tilt</span>}
       </div>
     </>
   )
