@@ -96,6 +96,16 @@ impl TaskPath {
         }
         legs
     }
+
+    /// Where the vehicle is when the task ends (and RTL starts): the first point for a
+    /// closed loop, the last for an open path. 1-based waypoint number and position.
+    pub fn end(&self) -> Option<(usize, LonLat)> {
+        if self.closed {
+            self.points.first().map(|p| (1, *p))
+        } else {
+            self.points.last().map(|p| (self.points.len(), *p))
+        }
+    }
 }
 
 /// A polygon with optional holes. Rings may or may not repeat their first point.

@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::geo::{LonLat, Polygon, TaskPath};
+use crate::hash::sha256_hex;
 use crate::time::Time;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +82,14 @@ impl AreaSet {
             loaded_t,
             areas: Vec::new(),
         }
+    }
+
+    /// SHA-256 (hex) of the canonical serialization: compact `serde_json` of this struct
+    /// (fields in declaration order, areas and points in file order, no maps, floats in
+    /// shortest round-trip form). The audit log stores the set once under this hash and
+    /// decision events reference it; replay re-serializes the logged set and checks it.
+    pub fn content_hash(&self) -> Result<String, serde_json::Error> {
+        Ok(sha256_hex(serde_json::to_string(self)?.as_bytes()))
     }
 
     pub fn approved(&self) -> impl Iterator<Item = &Area> {

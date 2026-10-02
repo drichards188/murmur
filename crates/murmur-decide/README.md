@@ -23,18 +23,62 @@ The full table is `intent::next_state`; anything else is a typed `IllegalTransit
    and subs on water, UGVs on land, via a `TerrainOracle`), geofence (no-go polygons from
    `sim/areas/*.geojson`), reserves (endurance left after the task). **Fail-closed**: a rule
    that can't evaluate (unknown vehicle, missing or stale fact, no area file, unanswered
-   terrain point) fails and says why. The one exception is PLAN.md's: with no terrain oracle
-   the domain rule records `not_evaluated`, which blocks only consequential kinds (engage).
-2. **Policy** (`sim/policy.toml`, first match wins): hold/rtl auto; any task on an
+   terrain point) fails and says why. Two recorded exceptions:
+   - `not_evaluated`: deliberately skipped, blocks only consequential kinds (engage). The
+     domain rule with no terrain oracle (PLAN.md), and an rtl whose way home can't be
+     checked (no fresh position, no area file): rtl is the safety command and must not be
+     blocked by missing facts.
+   - `unverified`: can't be verified, so a human must judge it. The reserves rule on a
+     platform with no `endurance_h` (fvr90, lta, the four UGVs, magura, corsair): "not
+     evaluated: endurance unknown ... needs a human". A battery already below the reserve
+     still fails. (`unknown_endurance = "fail"` or `"battery_now"` in `[rules]` restore the
+     old behaviors.)
+2. **Routes** (`route.rs`). The geofence, the approved-area condition and the reserves
+   estimate all look at the same three parts of each vehicle's route: the **transit** leg
+   from its current position to waypoint 1, the **task path**, and the **return** leg from
+   the task's end to home (what RTL flies). Orbit and patrol have all three (a loop ends at
+   waypoint 1); rtl is only the return leg (position to home); hold and track have none.
+   Geofence results are per vehicle, and details name the leg: `transit leg (position to
+   waypoint 1) crosses alcatraz`, `return leg (waypoint 1 to home): home is inside ...`,
+   `task path: leg 1-2 crosses ...`. A leg that starts at the vehicle inside a no-go area
+   is leaving it and is allowed, so a vehicle that strayed in can be brought out.
+3. **Policy** (`sim/policy.toml`, first match wins): hold/rtl auto; any task on an
    `armed = true` platform (switchblade, fpv, ugv_armed) needs a human; leaving the approved
-   area needs a human; else auto. No match means human. Unknown platform counts as armed; no
-   area file counts as leaving.
-3. **Approval**: pending intents wait in the inbox and expire (default 120 s). Approving
+   area (any leg of any vehicle's route) needs a human; an `unverified` reserves check
+   (`when = { unverified = ["reserves"] }`) needs a human; else auto. No match means human.
+   Unknown platform counts as armed; no area file, or no fresh position or home, counts as
+   leaving. One floor holds whatever the file says: an intent with any `unverified` check is
+   never auto-approved (an auto match becomes human, rule `(unverified)`). The decision's
+   `facts.unverified` lists those checks, so the inbox can show why a human is needed.
+4. **Approval**: pending intents wait in the inbox and expire (default 120 s). Approving
    re-runs the checks against the current world; if the picture no longer holds, the intent
-   is voided instead.
-4. **Audit**: every step is a JSONL event `{seq, t, type, ...}` written before the change it
-   records (a failed write means no change). Decision events carry the exact world facts
-   they read, each with its observation time, and the policy file is logged at run start.
+   is voided instead. A human may approve an intent they proposed (two-person approval is
+   Phase E); the approval then records `self_approved: true` (on the intent's `approval`
+   and the `approval.granted` event) so evaluation can measure it.
+5. **Audit**: every step is a JSONL event `{seq, t, prev, type, ...}` written before the
+   change it records (a failed write means no change). Decision events carry the exact
+   world facts they read, each with its observation time; the policy file is logged at run
+   start. The area set is logged once, in `run.started` (with `Engine::with_areas`) or as
+   `areas.loaded` the first time a decision reads it and again only when it changes, with
+   `sha256` = SHA-256 of its canonical serialization (compact `serde_json`, fields in
+   declaration order, no maps). Decision inputs carry `areas_sha256` instead of the
+   polygons (about 700 bytes saved per decision event).
+
+## The hash chain: tamper-evident, not tamper-proof
+
+Every event's `prev` is the SHA-256 of the previous event's line as written (the first
+event's is 64 zeros). `murmur-replay` recomputes the chain over the raw lines and checks
+that each line is its event's canonical serialization, so it detects deleting, inserting,
+reordering or editing any event that has a successor, including deleting a whole intent's
+events and renumbering `seq` (which otherwise leaves every decision consistent).
+
+What it doesn't protect against: anyone who can write the file can edit it and recompute
+the whole chain, and cutting the tail leaves a valid, shorter chain. Both change the head
+hash (`Engine::head_hash`, printed by `murmur-replay`), so the fix is to anchor the head
+outside the writer's reach (a second machine, signed checkpoints, a transparency log).
+That is future work; nothing here signs or anchors anything. Tests in `tests/replay.rs`
+show both sides: naive edits caught by the chain, a recomputed chain caught only by the
+head.
 
 ## The guarantee: agents nominate, only humans authorize
 
@@ -69,8 +113,11 @@ cargo run -p murmur-decide --bin murmur-replay -- logs/audit/<run-id>.jsonl
 ```
 
 Re-runs every `check.result` and `policy.decision` from its logged inputs and the logged
-policy, checks every `intent.state` is legal and backed by its evidence, and checks `seq` and
-`t`. Exit 0 if everything reproduces, 1 on mismatch, 2 if the log can't be read.
+policy (resolving `areas_sha256` to the logged set in force, whose own hash must match its
+content), checks every `intent.state` is legal and backed by its evidence, checks `seq`,
+`t`, the hash chain and every `self_approved` flag, and prints the approval and
+self-approval counts and the head hash. Exit 0 if everything reproduces, 1 on mismatch, 2
+if the log can't be read.
 Determinism: injected clock, integer-millisecond times, `BTreeMap`s, fixed output order and
 fixed-precision detail strings, `serde_json` with `float_roundtrip`, terrain samples keyed at
 1e-7 degree. Replay proves decisions follow from the logged inputs; it can't prove the inputs
@@ -81,8 +128,9 @@ were true of the world.
 The full contract is in the crate docs (`src/lib.rs`). In short:
 
 1. At start: `Policy::load("sim/policy.toml")`, `Catalog::load("sim/platforms.toml")`,
-   `AreaSet::load_dir("sim/areas")`, `Engine::new(policy, SystemClock, JsonlFile at
-   logs/audit/<run-id>.jsonl)`.
+   `AreaSet::load_dir("sim/areas")`, `Engine::with_areas(policy, Some(areas), SystemClock,
+   JsonlFile at logs/audit/<run-id>.jsonl)` (`Engine::new` works too; the set is then
+   logged at first use).
 2. Per decision call, build a `WorldSnapshot` keyed by `uid`: platform facts from the catalog,
    and timestamped facts from telemetry (autopilot kind, nav ready, position, home, battery).
    Unknown is `None`.
@@ -94,21 +142,23 @@ The full contract is in the crate docs (`src/lib.rs`). In short:
    the existing task manager; report back with `record_op_state` and `finish`; log vehicle
    events; `void` intents the world invalidates.
 6. Any `Err` from the engine means nothing changed; never dispatch on an error.
+7. The inbox shows `checks` (look for `unverified`), `policy.facts.unverified` and
+   `policy.facts.area_detail` as the reason a human is needed, and `approval.self_approved`.
 
 ## Not done yet
 
 - No HTTP endpoints, no tidewater client, no inbox UI (C.5): bridge and web work.
-- The geofence and approved-area checks cover the task's own path, not the transit leg from
-  the vehicle's position or the RTL path home. Areas are 2D (no altitude bands).
+- Routes are straight lines between the points the task commits to. An RTL commanded
+  mid-loop flies home from wherever the vehicle is, which sweeps a region the return-leg
+  check (from waypoint 1) doesn't cover. A leg starting inside a no-go area is allowed to
+  leave it; if a concave area makes that straight leg re-enter it, that isn't caught. The
+  domain rule checks waypoints only, not the legs between them. Areas are 2D (no altitude
+  bands).
 - Reserves assume cruise speed and a fixed time-on-task horizon (`task_duration_s`), because
   orbits and patrols loop until told otherwise; the bridge doesn't end tasks after a duration
-  yet, so `duration_s` can only lengthen the estimate. Platforms without an `endurance_h` in
-  the catalog (most SITL types) fail the reserves rule for orbit and patrol unless
-  `unknown_endurance = "battery_now"`.
-- Every decision event repeats the full area set; logging it once with a content hash would
-  shrink logs (about 700 bytes per event today).
-- The log isn't hash-chained, so a tamper that leaves every decision consistent (for example,
-  deleting a whole intent's events and renumbering) is not detected.
+  yet, so `duration_s` can only lengthen the estimate.
+- The head hash isn't anchored anywhere, so a full rewrite of the log with a recomputed
+  chain, or a cut tail, is not detected by replay alone (see the hash chain section).
 - Cross-platform replay: trigonometry goes through the platform libm. Same machine is exact;
   across machines a last-bit difference could in principle flip a boundary case.
 - Phase E pieces: engage, two-person approval, approval holding a track snapshot.

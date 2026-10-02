@@ -35,6 +35,13 @@ fn main() -> ExitCode {
         report.policy_recomputed,
         report.transitions_verified
     );
+    println!(
+        "{} area set(s) logged; {} approval(s), {} self-approved",
+        report.area_sets, report.approvals, report.self_approvals
+    );
+    if let Some(head) = &report.head_sha256 {
+        println!("head {head} (compare with an external anchor to detect a rewrite or truncation)");
+    }
     if report.ok() {
         println!("OK: every decision reproduced exactly");
         return ExitCode::SUCCESS;

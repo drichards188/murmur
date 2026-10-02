@@ -1,4 +1,5 @@
-//! Every rule: pass, fail, and cannot-evaluate (which fails closed).
+//! Every rule: pass, fail, and cannot-evaluate (which fails closed), plus the two
+//! recorded exceptions (not evaluated, unverified).
 #![allow(clippy::unwrap_used)]
 
 mod common;
@@ -306,8 +307,11 @@ fn geofence_pass() {
         &world(),
     );
     assert_outcome(&r, Outcome::Pass, "clear of 2 no-go areas");
+    assert!(r.detail.contains("(transit, task path, return)"), "{r:?}");
     let r = one(RuleId::Geofence, hold(&["sky-1"]), &world());
-    assert_outcome(&r, Outcome::Pass, "no waypoints");
+    assert_outcome(&r, Outcome::Pass, "no path for hold");
+    let r = one(RuleId::Geofence, rtl(&["sky-1"]), &world());
+    assert_outcome(&r, Outcome::Pass, "clear of 2 no-go areas (return)");
 }
 
 #[test]
@@ -317,14 +321,160 @@ fn geofence_fail_point_or_leg() {
         orbit(LonLat::new(-122.4230, 37.8267), 100.0, &["sky-1"]),
         &world(),
     );
-    assert_outcome(&r, Outcome::Fail, "waypoint 1 is inside alcatraz");
+    assert_outcome(
+        &r,
+        Outcome::Fail,
+        "task path: waypoint 1 is inside alcatraz",
+    );
     let route = vec![
         LonLat::new(-122.435, 37.8267),
         LonLat::new(-122.410, 37.8267),
     ];
     let p = Proposal::new(Task::Patrol { route }, vec![uid("sky-1")]);
     let r = one(RuleId::Geofence, p, &world());
-    assert_outcome(&r, Outcome::Fail, "leg 1-2 crosses alcatraz");
+    assert_outcome(&r, Outcome::Fail, "task path: leg 1-2 crosses alcatraz");
+}
+
+/// West and east of Alcatraz, on the same latitude: the straight line between crosses it.
+const WEST_OF_ALCATRAZ: LonLat = LonLat::new(-122.435, 37.8267);
+const EAST_OF_ALCATRAZ: LonLat = LonLat::new(-122.405, 37.8267);
+const IN_ALCATRAZ: LonLat = LonLat::new(-122.4230, 37.8267);
+
+fn placed(w: &mut WorldSnapshot, u: &str, pos: LonLat, home: LonLat) {
+    let v = w.vehicles.get_mut(&uid(u)).unwrap();
+    v.position = Some(Fact::new(pos, T0));
+    v.home = Some(Fact::new(home, T0));
+}
+
+#[test]
+fn geofence_transit_leg_is_checked_and_named() {
+    // sky-1 sits west of Alcatraz; the orbit is east of it. The task path is clear, the
+    // flight to it is not.
+    let mut w = world();
+    placed(&mut w, "sky-1", WEST_OF_ALCATRAZ, WEST_OF_ALCATRAZ);
+    let r = one(
+        RuleId::Geofence,
+        orbit(EAST_OF_ALCATRAZ, 150.0, &["sky-1"]),
+        &w,
+    );
+    assert_outcome(
+        &r,
+        Outcome::Fail,
+        "transit leg (position to waypoint 1) crosses alcatraz (no-go: Alcatraz Island)",
+    );
+    assert_eq!(r.uid, Some(uid("sky-1")));
+}
+
+#[test]
+fn geofence_return_leg_is_checked_and_named() {
+    // Starts next to the orbit (transit clear), but home is across Alcatraz.
+    let mut w = world();
+    placed(&mut w, "sky-1", EAST_OF_ALCATRAZ, WEST_OF_ALCATRAZ);
+    let r = one(
+        RuleId::Geofence,
+        orbit(EAST_OF_ALCATRAZ, 150.0, &["sky-1"]),
+        &w,
+    );
+    assert_outcome(
+        &r,
+        Outcome::Fail,
+        "return leg (waypoint 1 to home) crosses alcatraz",
+    );
+
+    // Home inside the no-go area.
+    placed(&mut w, "sky-1", EAST_OF_ALCATRAZ, IN_ALCATRAZ);
+    let r = one(
+        RuleId::Geofence,
+        orbit(EAST_OF_ALCATRAZ, 150.0, &["sky-1"]),
+        &w,
+    );
+    assert_outcome(
+        &r,
+        Outcome::Fail,
+        "return leg (waypoint 1 to home): home is inside alcatraz",
+    );
+
+    // A patrol (open in the sense of order, closed as flown) returns from waypoint 1 too.
+    placed(&mut w, "sky-1", EAST_OF_ALCATRAZ, WEST_OF_ALCATRAZ);
+    let route = vec![EAST_OF_ALCATRAZ, LonLat::new(-122.405, 37.835)];
+    let p = Proposal::new(Task::Patrol { route }, vec![uid("sky-1")]);
+    let r = one(RuleId::Geofence, p, &w);
+    assert_outcome(
+        &r,
+        Outcome::Fail,
+        "return leg (waypoint 1 to home) crosses alcatraz",
+    );
+}
+
+#[test]
+fn geofence_rtl_checks_only_the_way_home() {
+    let mut w = world();
+    placed(&mut w, "sky-1", EAST_OF_ALCATRAZ, WEST_OF_ALCATRAZ);
+    let r = one(RuleId::Geofence, rtl(&["sky-1"]), &w);
+    assert_outcome(
+        &r,
+        Outcome::Fail,
+        "return leg (position to home) crosses alcatraz",
+    );
+
+    // A vehicle that strayed into a no-go area can still be brought out.
+    placed(&mut w, "sky-1", IN_ALCATRAZ, WEST_OF_ALCATRAZ);
+    let r = one(RuleId::Geofence, rtl(&["sky-1"]), &w);
+    assert_outcome(&r, Outcome::Pass, "starts inside alcatraz and leaves it");
+    // ...but not sent home into one.
+    placed(&mut w, "sky-1", WEST_OF_ALCATRAZ, IN_ALCATRAZ);
+    let r = one(RuleId::Geofence, rtl(&["sky-1"]), &w);
+    assert_outcome(
+        &r,
+        Outcome::Fail,
+        "return leg (position to home): home is inside alcatraz",
+    );
+}
+
+#[test]
+fn geofence_rtl_that_cannot_be_checked_is_not_evaluated_not_blocked() {
+    // rtl is the safety command: an unknown position must not stop it.
+    let mut w = world();
+    w.vehicles.get_mut(&uid("sky-1")).unwrap().position = None;
+    let r = one(RuleId::Geofence, rtl(&["sky-1"]), &w);
+    assert_outcome(
+        &r,
+        Outcome::NotEvaluated,
+        "return leg not checked (rtl is a safety command): cannot evaluate: no position reported",
+    );
+    assert!(rules::passed(&[r], TaskKind::Rtl));
+    let mut w = world();
+    w.areas = None;
+    let r = one(RuleId::Geofence, rtl(&["sky-1"]), &w);
+    assert_outcome(&r, Outcome::NotEvaluated, "no area set loaded");
+
+    // Any other kind fails closed.
+    let mut w = world();
+    w.vehicles.get_mut(&uid("sky-1")).unwrap().position = None;
+    let r = one(RuleId::Geofence, orbit(NEAR_CRISSY, 150.0, &["sky-1"]), &w);
+    assert_outcome(&r, Outcome::Fail, "cannot evaluate: no position reported");
+    let mut w = world();
+    w.vehicles.get_mut(&uid("sky-1")).unwrap().home = None;
+    let r = one(RuleId::Geofence, orbit(NEAR_CRISSY, 150.0, &["sky-1"]), &w);
+    assert_outcome(&r, Outcome::Fail, "cannot evaluate: no home position");
+}
+
+#[test]
+fn geofence_is_per_vehicle() {
+    // Two vehicles on the same orbit: only the one whose transit crosses fails.
+    let mut w = world();
+    placed(&mut w, "sky-1", EAST_OF_ALCATRAZ, EAST_OF_ALCATRAZ);
+    placed(&mut w, "hawk-1", WEST_OF_ALCATRAZ, EAST_OF_ALCATRAZ);
+    let v = run(
+        RuleId::Geofence,
+        orbit(EAST_OF_ALCATRAZ, 150.0, &["sky-1", "hawk-1"]),
+        &w,
+        &terrain(),
+    );
+    assert_eq!(v.len(), 2);
+    assert_eq!(v[0].outcome, Outcome::Pass, "{v:?}");
+    assert_eq!(v[1].uid, Some(uid("hawk-1")));
+    assert_outcome(&v[1], Outcome::Fail, "transit leg (position to waypoint 1)");
 }
 
 #[test]
@@ -333,6 +483,33 @@ fn geofence_cannot_evaluate_without_areas() {
     w.areas = None;
     let r = one(RuleId::Geofence, orbit(NEAR_CRISSY, 150.0, &["sky-1"]), &w);
     assert_outcome(&r, Outcome::Fail, "cannot evaluate: no area set loaded");
+}
+
+#[test]
+fn reserves_count_the_transit_and_return_legs() {
+    // The same orbit costs more when the vehicle starts (and lives) far from it.
+    let near = one(
+        RuleId::Reserves,
+        orbit(NEAR_CRISSY, 150.0, &["sky-1"]),
+        &world(),
+    );
+    let mut w = world();
+    let far = LonLat::new(-122.52, 37.86);
+    let v = w.vehicles.get_mut(&uid("sky-1")).unwrap();
+    v.position = Some(Fact::new(far, T0));
+    v.home = Some(Fact::new(far, T0));
+    let r = one(RuleId::Reserves, orbit(NEAR_CRISSY, 150.0, &["sky-1"]), &w);
+    assert_ne!(near.detail, r.detail);
+    let task_min = |d: &str| -> f64 {
+        let i = d.find("(task ").unwrap() + 6;
+        d[i..].split(' ').next().unwrap().parse().unwrap()
+    };
+    assert!(
+        task_min(&r.detail) > task_min(&near.detail) + 10.0,
+        "{near:?} {r:?}"
+    );
+    let r = one(RuleId::Reserves, rtl(&["sky-1"]), &w);
+    assert_outcome(&r, Outcome::Pass, "not required for rtl");
 }
 
 // ---- reserves ---------------------------------------------------------------------------
@@ -374,8 +551,9 @@ fn reserves_constraints_only_tighten() {
 }
 
 #[test]
-fn reserves_cannot_evaluate() {
-    // the logistics UGV has no endurance figure in the catalog
+fn reserves_unknown_endurance_is_unverified_not_failed() {
+    // The logistics UGV has no endurance figure in the catalog. Default: a distinct
+    // "not evaluated: endurance unknown" result that policy routes to a human.
     let r = one(
         RuleId::Reserves,
         orbit(NEAR_CRISSY, 100.0, &["mule-1"]),
@@ -383,10 +561,46 @@ fn reserves_cannot_evaluate() {
     );
     assert_outcome(
         &r,
+        Outcome::Unverified,
+        "not evaluated: endurance unknown for ugv_logistics",
+    );
+    assert!(r.detail.contains("needs a human"));
+    assert!(rules::passed(std::slice::from_ref(&r), TaskKind::Orbit));
+    assert_eq!(
+        rules::unverified(&[r]),
+        vec![
+            "reserves mule-1: not evaluated: endurance unknown for ugv_logistics; battery 95% >= reserve 20% now, task cost not estimated; needs a human"
+        ]
+    );
+
+    // A battery already below the reserve is a plain failure.
+    let mut w = world();
+    w.vehicles.get_mut(&uid("mule-1")).unwrap().battery_pct = Some(Fact::new(10.0, T0));
+    let r = one(RuleId::Reserves, orbit(NEAR_CRISSY, 100.0, &["mule-1"]), &w);
+    assert_outcome(&r, Outcome::Fail, "battery 10% below reserve 20%");
+
+    // Hold and rtl stay exempt.
+    for p in [hold(&["mule-1"]), rtl(&["mule-1"])] {
+        let r = one(RuleId::Reserves, p, &world());
+        assert_outcome(&r, Outcome::Pass, "not required for");
+    }
+
+    // "fail" keeps the old fail-closed behavior.
+    let s = spec(human(), orbit(NEAR_CRISSY, 100.0, &["mule-1"]));
+    let w = world().for_intent(&s, &terrain());
+    let c = RulesConfig {
+        unknown_endurance: UnknownEndurance::Fail,
+        ..cfg()
+    };
+    assert_outcome(
+        &rules::reserves(&s, &w, &c)[0],
         Outcome::Fail,
         "cannot evaluate: no endurance figure for ugv_logistics",
     );
+}
 
+#[test]
+fn reserves_cannot_evaluate() {
     let mut w = world();
     w.vehicles.get_mut(&uid("sky-1")).unwrap().battery_pct = None;
     let r = one(RuleId::Reserves, orbit(NEAR_CRISSY, 150.0, &["sky-1"]), &w);

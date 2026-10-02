@@ -1,9 +1,27 @@
-//! Append-only audit log (Phase C.4): one JSON object per line, `{seq, t, type, ...}`.
+//! Append-only audit log (Phase C.4): one JSON object per line,
+//! `{seq, t, prev, type, ...}`.
 //!
 //! Decision events (`check.result`, `policy.decision`) carry the exact inputs they read,
 //! the world facts with their timestamps, so [`crate::replay`] can recompute them. The
-//! engine writes an event before applying the change it records; if the write fails, the
-//! change doesn't happen.
+//! area set is logged once (in `run.started`, and as `areas.loaded` whenever it changes)
+//! with its SHA-256 content hash; decision inputs reference the hash. The engine writes an
+//! event before applying the change it records; if the write fails, the change doesn't
+//! happen.
+//!
+//! ## Hash chain
+//!
+//! Every event's `prev` is the SHA-256 (hex) of the previous event's line as written (its
+//! canonical serialization: compact `serde_json` of [`Event`], without the newline); the
+//! first event's `prev` is [`crate::hash::GENESIS`]. Replay recomputes the chain, so
+//! deleting, inserting, reordering or editing any event that has a successor breaks it,
+//! including deleting a whole intent's events and renumbering `seq`.
+//!
+//! This makes the log **tamper-evident, not tamper-proof**. Whoever can write the file can
+//! recompute every hash after an edit and produce a consistent chain, and truncating the
+//! tail (dropping the last events) leaves a valid shorter chain. The fix for both is to
+//! anchor the head hash ([`crate::Engine::head_hash`], printed by `murmur-replay`) outside
+//! the writer's control: a second machine, a signed checkpoint, a transparency log. That
+//! is future work; nothing here signs or anchors anything.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -12,19 +30,29 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
+use crate::areas::AreaSet;
 use crate::ids::{AgentId, IntentId, OperatorId, SessionId, Uid};
 use crate::intent::{IntentSpec, State, Task, Transition};
 use crate::policy::{Policy, PolicyDecision};
 use crate::rules::CheckResult;
 use crate::time::Time;
-use crate::world::WorldSnapshot;
+use crate::world::LoggedInputs;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Event {
     pub seq: u64,
     pub t: Time,
+    /// SHA-256 of the previous event's line ([`crate::hash::GENESIS`] for the first).
+    pub prev: String,
     #[serde(flatten)]
     pub body: EventBody,
+}
+
+/// An area set and its content hash ([`AreaSet::content_hash`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LoggedAreas {
+    pub sha256: String,
+    pub areas: AreaSet,
 }
 
 /// When a check ran: at submission, or again at approval against the then-current world.
@@ -38,12 +66,19 @@ pub enum CheckPhase {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum EventBody {
-    /// The engine started; the policy in force for every decision that follows.
+    /// The engine started; the policy in force for every decision that follows, and the
+    /// area set if one was given at start.
     #[serde(rename = "run.started")]
     RunStarted {
         crate_version: String,
         policy: Policy,
+        areas: Option<LoggedAreas>,
     },
+
+    /// A new area set is in force (the first one, if none was given at start, or a
+    /// change). Decision inputs after this reference it by hash.
+    #[serde(rename = "areas.loaded")]
+    AreasLoaded { sha256: String, areas: AreaSet },
 
     #[serde(rename = "intent.created")]
     IntentCreated { intent: IntentSpec },
@@ -52,7 +87,7 @@ pub enum EventBody {
     CheckResult {
         intent: IntentId,
         phase: CheckPhase,
-        inputs: WorldSnapshot,
+        inputs: LoggedInputs,
         results: Vec<CheckResult>,
         passed: bool,
     },
@@ -60,7 +95,7 @@ pub enum EventBody {
     #[serde(rename = "policy.decision")]
     PolicyDecision {
         intent: IntentId,
-        inputs: WorldSnapshot,
+        inputs: LoggedInputs,
         decision: PolicyDecision,
     },
 
@@ -82,6 +117,9 @@ pub enum EventBody {
         intent: IntentId,
         by: OperatorId,
         session: SessionId,
+        /// The approver is the human who proposed the intent. Allowed (two-person approval
+        /// is Phase E) but recorded, so evaluation can measure it.
+        self_approved: bool,
         note: Option<String>,
     },
 

@@ -3,8 +3,10 @@
 
 use std::collections::BTreeMap;
 
-use crate::audit::{AuditSink, CheckPhase, Event, EventBody};
+use crate::areas::AreaSet;
+use crate::audit::{AuditSink, CheckPhase, Event, EventBody, LoggedAreas};
 use crate::authority::{HumanAuthority, OperatorSession};
+use crate::hash::{GENESIS, sha256_hex};
 use crate::ids::{AgentId, IntentId, OperatorId, SessionId, Uid};
 use crate::intent::{
     Approval, IllegalTransition, Intent, IntentSpec, Proposal, ProposalError, Rationale, Source,
@@ -14,7 +16,7 @@ use crate::policy::{self, Policy, Tier};
 use crate::rules::{self, CheckResult, Outcome};
 use crate::terrain::TerrainOracle;
 use crate::time::{Clock, Time};
-use crate::world::WorldSnapshot;
+use crate::world::{LoggedInputs, WorldSnapshot};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -59,6 +61,10 @@ pub struct Engine {
     sink: Box<dyn AuditSink + Send>,
     seq: u64,
     last_t: Time,
+    /// SHA-256 of the last line written: the next event's `prev`.
+    head: String,
+    /// The area set last logged (in `run.started` or `areas.loaded`) and its hash.
+    areas: Option<LoggedAreas>,
     next_intent: u64,
     next_session: u64,
     intents: BTreeMap<IntentId, Intent>,
@@ -74,18 +80,41 @@ impl std::fmt::Debug for Engine {
 }
 
 impl Engine {
-    /// Start a run: logs `run.started` with the full policy.
+    /// Start a run: logs `run.started` with the full policy. The area set is logged (as
+    /// `areas.loaded`) the first time a decision reads one; [`Engine::with_areas`] logs it
+    /// in `run.started` instead.
     pub fn new(
         policy: Policy,
         clock: Box<dyn Clock + Send>,
         sink: Box<dyn AuditSink + Send>,
     ) -> Result<Self, EngineError> {
+        Self::with_areas(policy, None, clock, sink)
+    }
+
+    /// Start a run with the area set known up front: `run.started` carries the policy and
+    /// the area set with its content hash. Decisions reference the hash; if a snapshot
+    /// later brings a different set, it is logged once as `areas.loaded`.
+    pub fn with_areas(
+        policy: Policy,
+        areas: Option<AreaSet>,
+        clock: Box<dyn Clock + Send>,
+        sink: Box<dyn AuditSink + Send>,
+    ) -> Result<Self, EngineError> {
+        let areas = match areas {
+            Some(a) => Some(LoggedAreas {
+                sha256: a.content_hash()?,
+                areas: a,
+            }),
+            None => None,
+        };
         let mut e = Engine {
             policy,
             clock,
             sink,
             seq: 0,
             last_t: Time(i64::MIN),
+            head: GENESIS.to_string(),
+            areas: None,
             next_intent: 1,
             next_session: 1,
             intents: BTreeMap::new(),
@@ -94,8 +123,17 @@ impl Engine {
         e.emit(EventBody::RunStarted {
             crate_version: env!("CARGO_PKG_VERSION").to_string(),
             policy,
+            areas: areas.clone(),
         })?;
+        e.areas = areas;
         Ok(e)
+    }
+
+    /// SHA-256 of the last event written: the head of the log's hash chain. Publishing it
+    /// somewhere the log writer can't rewrite (future work) is what turns the chain from
+    /// tamper-evident into evidence against a full rewrite or a truncated tail.
+    pub fn head_hash(&self) -> &str {
+        &self.head
     }
 
     pub fn policy(&self) -> &Policy {
@@ -175,7 +213,7 @@ impl Engine {
             self.expire(id)?;
             return Err(EngineError::Expired(id));
         }
-        let (_, results, ok) = self.run_checks(&spec, CheckPhase::Approve, world, terrain)?;
+        let (_, _, results, ok) = self.run_checks(&spec, CheckPhase::Approve, world, terrain)?;
         if !ok {
             let reason = format!(
                 "checks failed at approval: {}",
@@ -184,12 +222,14 @@ impl Engine {
             self.transition(id, Transition::Void, reason)?;
             return Err(EngineError::ChecksFailedAtApproval(id));
         }
+        let self_approved = is_self_approval(&spec.source, by.operator());
         let t = self.emit_at(
             now,
             EventBody::ApprovalGranted {
                 intent: id,
                 by: by.operator().clone(),
                 session: by.session(),
+                self_approved,
                 note: note.clone(),
             },
         )?;
@@ -197,13 +237,18 @@ impl Engine {
             by: by.operator().clone(),
             session: by.session(),
             t,
+            self_approved,
             note,
         });
-        self.transition(
-            id,
-            Transition::Approve,
-            format!("approved by {}", by.operator()),
-        )?;
+        let reason = if self_approved {
+            format!(
+                "approved by {} (self-approved: also the proposer)",
+                by.operator()
+            )
+        } else {
+            format!("approved by {}", by.operator())
+        };
+        self.transition(id, Transition::Approve, reason)?;
         self.get(id)
     }
 
@@ -394,13 +439,38 @@ impl Engine {
         let event = Event {
             seq: self.seq + 1,
             t,
+            prev: self.head.clone(),
             body,
         };
         let line = serde_json::to_string(&event)?;
         self.sink.append(&line)?;
         self.seq += 1;
         self.last_t = t;
+        self.head = sha256_hex(line.as_bytes());
         Ok(t)
+    }
+
+    /// The decision inputs as logged: the area set replaced by its hash. Logs the set as
+    /// `areas.loaded` first if it isn't the one last logged.
+    fn log_inputs(&mut self, inputs: &WorldSnapshot) -> Result<LoggedInputs, EngineError> {
+        let Some(set) = &inputs.areas else {
+            return Ok(LoggedInputs::from_world(inputs, None));
+        };
+        if let Some(cur) = &self.areas
+            && cur.areas == *set
+        {
+            return Ok(LoggedInputs::from_world(inputs, Some(cur.sha256.clone())));
+        }
+        let sha256 = set.content_hash()?;
+        self.emit(EventBody::AreasLoaded {
+            sha256: sha256.clone(),
+            areas: set.clone(),
+        })?;
+        self.areas = Some(LoggedAreas {
+            sha256: sha256.clone(),
+            areas: set.clone(),
+        });
+        Ok(LoggedInputs::from_world(inputs, Some(sha256)))
     }
 
     fn transition(
@@ -445,19 +515,20 @@ impl Engine {
         phase: CheckPhase,
         world: &WorldSnapshot,
         terrain: &dyn TerrainOracle,
-    ) -> Result<(WorldSnapshot, Vec<CheckResult>, bool), EngineError> {
+    ) -> Result<(WorldSnapshot, LoggedInputs, Vec<CheckResult>, bool), EngineError> {
         let inputs = world.for_intent(spec, terrain);
         let results = rules::evaluate(spec, &inputs, &self.policy.rules);
         let passed = rules::passed(&results, spec.kind());
+        let logged = self.log_inputs(&inputs)?;
         self.emit(EventBody::CheckResult {
             intent: spec.id,
             phase,
-            inputs: inputs.clone(),
+            inputs: logged.clone(),
             results: results.clone(),
             passed,
         })?;
         self.get_mut(spec.id)?.set_checks(results.clone());
-        Ok((inputs, results, passed))
+        Ok((inputs, logged, results, passed))
     }
 
     fn submit_inner(
@@ -484,7 +555,8 @@ impl Engine {
         self.next_intent += 1;
         self.intents.insert(id, Intent::new(spec.clone()));
 
-        let (inputs, results, ok) = self.run_checks(&spec, CheckPhase::Submit, world, terrain)?;
+        let (inputs, logged, results, ok) =
+            self.run_checks(&spec, CheckPhase::Submit, world, terrain)?;
         self.transition(id, Transition::Check, "rules evaluated".into())?;
         if !ok {
             self.transition(id, Transition::ChecksFailed, summarize_failures(&results))?;
@@ -495,7 +567,7 @@ impl Engine {
         let decision = policy::decide(&spec, &inputs, &self.policy);
         self.emit(EventBody::PolicyDecision {
             intent: id,
-            inputs,
+            inputs: logged,
             decision: decision.clone(),
         })?;
         let tier = decision.tier;
@@ -519,6 +591,11 @@ impl Engine {
         }
         Ok(id)
     }
+}
+
+/// The approving operator is the human who proposed the intent.
+pub(crate) fn is_self_approval(source: &Source, approver: &OperatorId) -> bool {
+    matches!(source, Source::Human { id } if id == approver)
 }
 
 fn summarize_failures(results: &[CheckResult]) -> String {

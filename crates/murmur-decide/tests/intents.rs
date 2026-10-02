@@ -150,6 +150,7 @@ fn human_path_approve_dispatch_fail() {
         .unwrap();
     let a = f.engine.intent(id).unwrap().approval().unwrap();
     assert_eq!(a.by, OperatorId::new("op-1"));
+    assert!(a.self_approved, "op-1 proposed and approved it");
     f.engine.dispatch(id).unwrap();
     f.engine
         .finish(
@@ -325,6 +326,110 @@ fn agents_nominate_and_humans_authorize() {
         .approve(id, f.session.authority(), None, &world(), &terrain())
         .unwrap();
     assert_eq!(f.state(id), State::Approved);
+    assert!(
+        !f.engine
+            .intent(id)
+            .unwrap()
+            .approval()
+            .unwrap()
+            .self_approved
+    );
+}
+
+#[test]
+fn self_approval_is_allowed_but_flagged() {
+    let mut f = fx();
+    let other = f
+        .engine
+        .open_operator_session(OperatorId::new("op-2"))
+        .unwrap();
+    let mine = f.submit(orbit(NEAR_CRISSY, 150.0, &["blade-1"]));
+    let theirs = f.submit(orbit(NEAR_CRISSY, 150.0, &["blade-1"]));
+    f.engine
+        .approve(mine, f.session.authority(), None, &world(), &terrain())
+        .unwrap();
+    f.engine
+        .approve(theirs, other.authority(), None, &world(), &terrain())
+        .unwrap();
+    let flag = |id| {
+        f.engine
+            .intent(id)
+            .unwrap()
+            .approval()
+            .unwrap()
+            .self_approved
+    };
+    assert!(flag(mine));
+    assert!(!flag(theirs));
+    // In the API JSON, in the log, and in the state-change reason.
+    let json = serde_json::to_value(f.engine.intent(mine).unwrap()).unwrap();
+    assert_eq!(json["approval"]["self_approved"], true);
+    let text = f.log.text();
+    assert!(text.contains(r#""self_approved":true"#));
+    assert!(text.contains(r#""self_approved":false"#));
+    assert!(text.contains("self-approved: also the proposer"));
+    let r = replay::replay_str(&text).unwrap();
+    assert!(r.ok(), "{:#?}", r.mismatches);
+    assert_eq!((r.approvals, r.self_approvals), (2, 1));
+}
+
+#[test]
+fn unknown_endurance_waits_for_a_human_and_says_why() {
+    let mut f = fx();
+    let id = f.submit(orbit(NEAR_CRISSY, 100.0, &["mule-1"]));
+    assert_eq!(f.state(id), State::PendingApproval);
+    let i = f.engine.intent(id).unwrap();
+    let reserves = i
+        .checks()
+        .iter()
+        .find(|c| c.rule == RuleId::Reserves)
+        .unwrap();
+    assert_eq!(reserves.outcome, Outcome::Unverified);
+    assert!(
+        reserves
+            .detail
+            .starts_with("not evaluated: endurance unknown")
+    );
+    let pol = i.policy().unwrap();
+    assert_eq!(pol.rule, "endurance-unknown");
+    assert_eq!(pol.facts.unverified.len(), 1);
+    // What the inbox serializes.
+    let json = serde_json::to_value(f.engine.inbox()[0]).unwrap();
+    assert!(
+        json["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["outcome"] == "unverified")
+    );
+    assert!(json["policy"]["facts"]["unverified"][0].is_string());
+    // A human can approve it; replay agrees.
+    f.engine
+        .approve(id, f.session.authority(), None, &world(), &terrain())
+        .unwrap();
+    assert_eq!(f.state(id), State::Approved);
+    assert!(replay::replay_str(&f.log.text()).unwrap().ok());
+}
+
+#[test]
+fn rtl_across_a_no_go_area_is_rejected_with_the_leg_named() {
+    let mut f = fx();
+    let mut w = world();
+    let v = w.vehicles.get_mut(&uid("sky-1")).unwrap();
+    v.position = Some(Fact::new(LonLat::new(-122.405, 37.8267), T0));
+    v.home = Some(Fact::new(LonLat::new(-122.435, 37.8267), T0));
+    let id = f
+        .engine
+        .submit(f.session.authority(), rtl(&["sky-1"]), &w, &terrain())
+        .unwrap()
+        .id();
+    assert_eq!(f.state(id), State::Rejected);
+    let last = f.engine.intent(id).unwrap().history().last().unwrap();
+    assert!(
+        last.reason
+            .contains("geofence sky-1: return leg (position to home) crosses alcatraz"),
+        "{last:?}"
+    );
 }
 
 #[test]
@@ -494,9 +599,10 @@ fn no_audit_record_no_change() {
         "no intent without its intent.created record"
     );
 
-    // Enough budget to reach pending (created, check, state, policy, requested, state),
+    // Enough budget to reach pending (created, areas.loaded, check, state, policy,
+    // requested, state),
     // then the approval record fails: the intent must stay pending.
-    budget.store(6, Ordering::SeqCst);
+    budget.store(7, Ordering::SeqCst);
     let id = e
         .submit(
             s.authority(),

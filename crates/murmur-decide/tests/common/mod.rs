@@ -95,6 +95,10 @@ pub fn hold(uids: &[&str]) -> Proposal {
     Proposal::new(Task::Hold {}, uids.iter().map(|u| uid(u)).collect())
 }
 
+pub fn rtl(uids: &[&str]) -> Proposal {
+    Proposal::new(Task::Rtl {}, uids.iter().map(|u| uid(u)).collect())
+}
+
 pub fn spec(source: Source, p: Proposal) -> IntentSpec {
     IntentSpec {
         id: IntentId(1),

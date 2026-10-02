@@ -36,7 +36,8 @@
 //! `compile_fail` doctests on [`HumanAuthority`] (module `authority`) and [`AgentPort`]
 //! prove the forbidden programs don't compile. The replay also checks the property from
 //! the other side: no `approved` state in a log without an `approval.granted` by an
-//! operator before the deadline.
+//! operator before the deadline. A human approving their own proposal is allowed (two-person
+//! approval is Phase E) and flagged `self_approved` on the approval.
 //!
 //! **Limits, stated plainly.** Rust privacy is a code-structure guarantee, not a security
 //! boundary. It stops agent-facing code that holds only an `AgentPort` (or only JSON) from
@@ -55,7 +56,9 @@
 //!
 //! 1. **Start of run.** Load [`Policy::load`]`("sim/policy.toml")`, [`Catalog::load`]`(
 //!    "sim/platforms.toml")`, [`AreaSet::load_dir`]`("sim/areas")`. Create the engine with
-//!    [`SystemClock`] and a [`JsonlFile`] at `logs/audit/<run-id>.jsonl`.
+//!    [`Engine::with_areas`] (policy, the area set, [`SystemClock`], a [`JsonlFile`] at
+//!    `logs/audit/<run-id>.jsonl`), so `run.started` carries the area set and its hash.
+//!    Pass the same set in every snapshot; a different one is logged once as `areas.loaded`.
 //! 2. **World snapshot.** Before each decision call, build a [`WorldSnapshot`] from the
 //!    world model, keyed by `uid`: `t` = now; per vehicle, [`PlatformFacts`] from the catalog
 //!    (via the fleet manifest's platform id), and [`Fact`]s stamped with the time the
@@ -83,6 +86,9 @@
 //!    (vehicle lost, superseded), call [`Engine::void`].
 //! 8. **Audit failures fail closed.** Every engine call returns `Err` without changing
 //!    state if the log write fails; the bridge must not dispatch on an `Err`.
+//! 9. **Head hash.** [`Engine::head_hash`] is the hash of the last event written. The log
+//!    is hash-chained (see [`audit`]); publishing the head somewhere the bridge can't
+//!    rewrite is what would make a full rewrite or a cut tail detectable (future work).
 //!
 //! ## Example
 //!
@@ -148,17 +154,19 @@ pub mod authority;
 pub mod catalog;
 pub mod engine;
 pub mod geo;
+pub mod hash;
 pub mod ids;
 pub mod intent;
 pub mod policy;
 pub mod replay;
+pub mod route;
 pub mod rules;
 pub mod terrain;
 pub mod time;
 pub mod world;
 
 pub use areas::{Area, AreaKind, AreaSet};
-pub use audit::{AuditSink, Event, EventBody, JsonlFile, MemorySink, parse_log};
+pub use audit::{AuditSink, Event, EventBody, JsonlFile, LoggedAreas, MemorySink, parse_log};
 pub use authority::{HumanAuthority, OperatorSession};
 pub use catalog::{AutopilotKind, Catalog, Domain, PlatformFacts};
 pub use engine::{AgentPort, DispatchOrder, Engine, EngineError, TaskOutcome};
@@ -169,7 +177,8 @@ pub use intent::{
     State, Task, TaskKind, Transition, next_state,
 };
 pub use policy::{Policy, PolicyDecision, Tier};
-pub use rules::{CheckResult, Outcome, RuleId, RulesConfig};
+pub use route::{LegKind, Route, Segment};
+pub use rules::{CheckResult, Outcome, RuleId, RulesConfig, UnknownEndurance};
 pub use terrain::{NoTerrain, PolygonTerrain, Surface, TerrainOracle};
 pub use time::{Clock, ManualClock, SystemClock, Time};
-pub use world::{Fact, TerrainInputs, VehicleFacts, WorldSnapshot};
+pub use world::{Fact, LoggedInputs, TerrainInputs, VehicleFacts, WorldSnapshot};
