@@ -19,6 +19,12 @@ const STYLE = 'https://tiles.openfreemap.org/styles/dark'
 type FC = GeoJSON.FeatureCollection
 const empty: FC = { type: 'FeatureCollection', features: [] }
 
+/** A GeoJSON source, or nothing while the map has no style (context lost, being removed):
+ *  MapLibre's getSource throws then instead of returning undefined. */
+function src(m: maplibregl.Map, id: string) {
+  return (m.style ? m.getSource(id) : undefined) as maplibregl.GeoJSONSource | undefined
+}
+
 /** Split a track where it crosses the antimeridian so lines don't wrap the globe. */
 function splitTrack(track: LngLat[]): LngLat[][] {
   const parts: LngLat[][] = [[]]
@@ -115,8 +121,9 @@ export function GlobeInset({ center, area, links, norad, onClose }: Props) {
   }, [gen])
 
   useEffect(() => {
-    if (follow && center && map.current) map.current.jumpTo({ center })
-  }, [center, follow])
+    // not while the context is lost (ready is false then): the map can't draw
+    if (follow && center && ready && map.current) map.current.jumpTo({ center })
+  }, [center, follow, ready])
 
   useEffect(() => {
     map.current?.resize()
@@ -151,14 +158,14 @@ export function GlobeInset({ center, area, links, norad, onClose }: Props) {
           geometry: { type: 'Point', coordinates: [lon, lat] },
         })
     }
-    ;(m.getSource('sats') as maplibregl.GeoJSONSource).setData({ type: 'FeatureCollection', features })
+    src(m, 'sats')?.setData({ type: 'FeatureCollection', features })
   }, [positions.data, norad, ready])
 
   useEffect(() => {
     const m = map.current
     if (!ready || !m) return
     const t = norad != null && track?.norad_id === norad ? track.track : []
-    ;(m.getSource('track') as maplibregl.GeoJSONSource).setData({
+    src(m, 'track')?.setData({
       type: 'FeatureCollection',
       features: splitTrack(t).map((coordinates) => ({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates } })),
     })
@@ -167,12 +174,12 @@ export function GlobeInset({ center, area, links, norad, onClose }: Props) {
   useEffect(() => {
     const m = map.current
     if (!ready || !m) return
-    ;(m.getSource('area') as maplibregl.GeoJSONSource).setData(
+    src(m, 'area')?.setData(
       area
         ? { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[...area.ring, area.ring[0]]] } }
         : empty,
     )
-    ;(m.getSource('glinks') as maplibregl.GeoJSONSource).setData({
+    src(m, 'glinks')?.setData({
       type: 'FeatureCollection',
       features: links
         .filter((l) => l.best?.position)
