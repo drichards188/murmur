@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use mavlink::Message;
 use serde::Serialize;
@@ -94,6 +95,12 @@ pub struct LinkSnapshot {
     /// degrading the link now and why. Details at `GET /api/links/{uid}`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub emu: Option<crate::emu::EmuBrief>,
+    /// The telemetry plan the bridge chose for this link (`crate::telemetry`): tier, the
+    /// profile it was chosen for, why, and what it costs.
+    pub telemetry: Option<crate::telemetry::PlanChoice>,
+    /// The task layer's command ACK timeout on this link now (`LinkTiming::ack_timeout`),
+    /// rounded to 100 ms.
+    pub ack_timeout_ms: u32,
 }
 
 impl LinkSnapshot {
@@ -125,25 +132,209 @@ pub struct LinkStats {
     timesync_sent: HashMap<i64, f64>,
     /// The vehicle reports by HIGH_LATENCY2 instead of streaming (low-rate link).
     pub high_latency: bool,
+    /// An AUV on an acoustic link that may dive at any moment (running a mission, or already
+    /// below the surface): its silence is first a dive, and it reports every 20 s from there,
+    /// so the link counts as lost only after missed reports (set by the world's housekeeping).
+    pub dive_expected: bool,
     /// Ping rate and answer timeout for this link's class.
     pub timesync: TimesyncPolicy,
     /// The link emulator's brief view of this link, when one runs (set by `crate::emu`).
     pub emu: Option<crate::emu::EmuBrief>,
+    /// The emulator's figures the timing and the telemetry plan use (set by `crate::emu`).
+    pub emu_link: Option<EmuLink>,
+    /// Smoothed TIMESYNC round trip and its mean deviation, s (RFC 6298).
+    pub srtt_s: Option<f64>,
+    pub rttvar_s: f64,
+    /// Last autopilot HEARTBEAT (monotonic s) and whether heartbeats are arriving at the
+    /// streaming rate (two within `STALE_INTERVALS` s).
+    last_heartbeat: Option<f64>,
+    heartbeat_streaming: bool,
+    /// The telemetry plan chosen for this link (`crate::telemetry::choose`) and what was
+    /// last requested from the vehicle.
+    pub plan: Option<crate::telemetry::PlanChoice>,
+    pub plan_sent: Option<Vec<(u32, f64)>>,
+    /// A queue demotion of the plan holds until this monotonic second.
+    pub queue_hold_until: Option<f64>,
+}
+
+/// What the link emulator says about a link that matters for timing and the telemetry plan
+/// (from its `/stats`, via `/api/links`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct EmuLink {
+    pub profile: Option<String>,
+    /// The profile carrying traffic now (differs from `profile` for a gated link: a surfaced
+    /// AUV on `acoustic_surface`).
+    pub active_profile: Option<String>,
+    /// `nominal.bandwidth_bps` of `profile`.
+    pub bandwidth_bps: Option<u32>,
+    /// Added delay up plus down over the recent window, ms.
+    pub rtt_ms: Option<f64>,
+    /// Recent uplink (vehicle to bridge) packets and the queue drops among them.
+    pub up_pkts: u64,
+    pub up_queue_drops: u64,
+}
+
+/// Floor of every timeout, s: RFC 6298's minimum RTO, and what the task layer always used on
+/// fast links.
+pub const MIN_TIMEOUT_S: f64 = 1.0;
+/// Ceiling of every single wait, s, however slow the link.
+pub const MAX_TIMEOUT_S: f64 = 30.0;
+/// Allowance for the autopilot to act on a message and answer (a mode change, a mission
+/// item written to storage), s. GUESS.
+pub const PROCESSING_S: f64 = 0.25;
+/// ArduPilot re-requests a mission item after 1 s without it (MissionItemProtocol.cpp
+/// `wp_recv_timeout_ms`; the stand-ins' `UPLOAD_RETRY_S`).
+pub const VEHICLE_REREQUEST_S: f64 = 1.0;
+/// The mission-item wait never drops below what the bridge always used.
+pub const MIN_ITEM_TIMEOUT_S: f64 = 1.5;
+/// Each retry of a command waits this much longer than the last (RFC 6298 doubles; a slow
+/// link loses packets more than it congests, so a gentler step).
+pub const BACKOFF: f64 = 1.5;
+/// NOT MOVING after this long without movement on a streaming link (`tasks::exec`).
+pub const STALL_AFTER_S: f64 = 10.0;
+
+/// Protocol timing for one link: how long the task layer waits for an answer.
+///
+/// The round trip `rtt` and its variation `var` come from, in order:
+/// 1. TIMESYNC, smoothed as TCP does (RFC 6298: `srtt = 7/8 srtt + 1/8 r`,
+///    `rttvar = 3/4 rttvar + 1/4 |srtt - r|`, the first sample sets `srtt = r, rttvar = r/2`),
+///    unless the emulator's figure is more than twice it (the link just changed, an AUV
+///    dived: TIMESYNC on a slow class answers every 30 s and has not caught up);
+/// 2. the link emulator's added delay up plus down (`emu_rtt_ms`), with `var = rtt/2`;
+/// 3. the link profile's typical round trip (`telemetry::LINKS`), with `var = rtt/2`;
+/// 4. nothing known: 0, and the floors apply.
+///
+/// Then, with `rto = rtt + 4 var` (RFC 6298's retransmission timeout; 3 x rtt before any
+/// variation is measured):
+/// - ACK timeout for try `n` (0-based) = `min(max(1 s, rto + 0.25 s) x 1.5^n, 30 s)`;
+/// - mission item timeout = `clamp(rto + 0.25 s + 1 s, 1.5 s, 30 s)`: the vehicle re-requests
+///   a missing item after 1 s itself, so silence for that long means the request, our item
+///   and its re-request were all lost;
+/// - an item is "in flight" (a re-request for it crossed it and is not answered again) for
+///   `rtt + var`;
+/// - NOT MOVING after `max(10 s, 2 x report + rto)`, `report` being the seconds between
+///   position/speed reports (1 s streaming, 5 s on HIGH_LATENCY2 at the minimal plan, 20 s
+///   from an AUV under water);
+/// - a state the vehicle reports back (armed) is waited for `max(5 s, 2 x report + rto)`.
+///
+/// On a LOS radio (30 ms) every figure is the floor, as before; on Iridium (1.4 s measured,
+/// ~0.15 s deviation) the ACK timeout is ~2.3 s, and ~4.5 s before the first TIMESYNC answer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LinkTiming {
+    pub rtt_s: f64,
+    pub var_s: f64,
+    /// timesync | emulator | profile | none
+    pub source: &'static str,
+    /// Seconds between position/speed reports.
+    pub report_s: f64,
+    /// Seconds between heartbeats (1 streaming, 20 from an AUV under water).
+    pub heartbeat_s: f64,
+}
+
+impl Default for LinkTiming {
+    fn default() -> LinkTiming {
+        LinkTiming {
+            rtt_s: 0.0,
+            var_s: 0.0,
+            source: "none",
+            report_s: 1.0,
+            heartbeat_s: 1.0,
+        }
+    }
+}
+
+impl LinkTiming {
+    pub fn rto_s(&self) -> f64 {
+        self.rtt_s + 4.0 * self.var_s
+    }
+
+    pub fn ack_timeout(&self, attempt: u32) -> Duration {
+        let base = (self.rto_s() + PROCESSING_S).max(MIN_TIMEOUT_S);
+        let t = base * BACKOFF.powi(attempt.min(16) as i32);
+        Duration::from_secs_f64(t.min(MAX_TIMEOUT_S))
+    }
+
+    pub fn item_timeout(&self) -> Duration {
+        let t = self.rto_s() + PROCESSING_S + VEHICLE_REREQUEST_S;
+        Duration::from_secs_f64(t.clamp(MIN_ITEM_TIMEOUT_S, MAX_TIMEOUT_S))
+    }
+
+    pub fn in_flight(&self) -> Duration {
+        Duration::from_secs_f64((self.rtt_s + self.var_s).min(MAX_TIMEOUT_S))
+    }
+
+    pub fn stall_after_s(&self) -> f64 {
+        STALL_AFTER_S.max(2.0 * self.report_s + self.rto_s())
+    }
+
+    pub fn confirm_wait(&self) -> Duration {
+        let t = (2.0 * self.report_s.max(self.heartbeat_s) + self.rto_s()).max(5.0);
+        Duration::from_secs_f64(t)
+    }
 }
 
 impl LinkStats {
     /// What kind of reporting an autopilot message shows: HIGH_LATENCY2 means the vehicle
     /// is on its low-rate link; a stream message (position) means it is streaming again.
-    pub fn on_message(&mut self, msg: &MavMessage) {
+    ///
+    /// A vehicle asked for HIGH_LATENCY2 on a link that still streams (the minimal plan on
+    /// Iridium) keeps its 1 Hz HEARTBEAT, so heartbeats at the streaming rate also mean
+    /// streaming: the lost-link check stays at 3 s there. An AUV under water sends its
+    /// heartbeat only with each HIGH_LATENCY2, 20 s apart.
+    pub fn on_message(&mut self, msg: &MavMessage, now: f64) {
         match msg {
-            MavMessage::HIGH_LATENCY2(_) => self.high_latency = true,
+            MavMessage::HEARTBEAT(_) => {
+                let gap = self.last_heartbeat.map(|t| now - t);
+                self.last_heartbeat = Some(now);
+                self.heartbeat_streaming = gap.is_some_and(|g| {
+                    g <= STALE_INTERVALS * f64::from(STREAMING_INTERVAL_MS) / 1000.0
+                });
+                if self.heartbeat_streaming {
+                    self.high_latency = false;
+                }
+            }
+            MavMessage::HIGH_LATENCY2(_) => {
+                if !self.heartbeat_streaming {
+                    self.high_latency = true;
+                }
+            }
             MavMessage::GLOBAL_POSITION_INT(_) => self.high_latency = false,
             _ => {}
         }
     }
 
+    /// The timing the task layer uses on this link now (see `LinkTiming`).
+    pub fn timing(&self) -> LinkTiming {
+        let emu = self
+            .emu_link
+            .as_ref()
+            .and_then(|e| e.rtt_ms)
+            .map(|ms| ms / 1000.0);
+        let (rtt_s, var_s, source) = match (self.srtt_s, emu) {
+            (Some(s), Some(e)) if e > 2.0 * s => (e, e / 2.0, "emulator"),
+            (Some(s), _) => (s, self.rttvar_s, "timesync"),
+            (None, Some(e)) => (e, e / 2.0, "emulator"),
+            (None, None) => match self.plan.as_ref().and_then(|p| p.nominal_rtt_s) {
+                Some(n) => (n, n / 2.0, "profile"),
+                None => (0.0, 0.0, "none"),
+            },
+        };
+        let heartbeat_s = f64::from(self.expected_interval_ms()) / 1000.0;
+        LinkTiming {
+            rtt_s,
+            var_s,
+            source,
+            report_s: self
+                .plan
+                .as_ref()
+                .map_or(1.0, |p| p.report_s)
+                .max(heartbeat_s),
+            heartbeat_s,
+        }
+    }
+
     pub fn expected_interval_ms(&self) -> u32 {
-        if self.high_latency {
+        if self.high_latency || self.dive_expected {
             HIGH_LATENCY_INTERVAL_MS
         } else {
             STREAMING_INTERVAL_MS
@@ -197,6 +388,9 @@ impl LinkStats {
             rtt_ms: self.rtt_ms.map(round_int),
             expected_interval_ms: self.expected_interval_ms(),
             emu: self.emu.clone(),
+            telemetry: self.plan.clone(),
+            ack_timeout_ms: (self.timing().ack_timeout(0).as_secs_f64() * 10.0).round() as u32
+                * 100,
         }
     }
 
@@ -218,7 +412,18 @@ impl LinkStats {
     /// A TIMESYNC reply (tc1 != 0) for one of our pings.
     pub fn pong(&mut self, ts1: i64, now: f64) {
         if let Some(sent) = self.timesync_sent.remove(&ts1) {
-            self.rtt_ms = Some((now - sent) * 1000.0);
+            let r = now - sent;
+            self.rtt_ms = Some(r * 1000.0);
+            match self.srtt_s {
+                None => {
+                    self.srtt_s = Some(r);
+                    self.rttvar_s = r / 2.0;
+                }
+                Some(s) => {
+                    self.rttvar_s = 0.75 * self.rttvar_s + 0.25 * (s - r).abs();
+                    self.srtt_s = Some(0.875 * s + 0.125 * r);
+                }
+            }
         }
     }
 }
@@ -285,7 +490,7 @@ impl Link {
                 for f in &frames {
                     if f.compid == mav::AUTOPILOT_COMPID {
                         stats.on_packet(f.seq, now, wall);
-                        stats.on_message(&f.msg);
+                        stats.on_message(&f.msg, now);
                     }
                     *stats.by_type.entry(f.msg.message_name()).or_default() += 1;
                 }
@@ -393,15 +598,52 @@ mod tests {
     fn high_latency_link_is_stale_later() {
         let mut s = LinkStats::default();
         assert_eq!(s.snapshot(0.0).stale_after_s(), 3.0);
-        s.on_message(&MavMessage::HIGH_LATENCY2(Default::default()));
+        s.on_message(&MavMessage::HIGH_LATENCY2(Default::default()), 0.0);
         let snap = s.snapshot(0.0);
         assert_eq!(snap.expected_interval_ms, 20_000);
         assert_eq!(snap.stale_after_s(), 60.0);
-        // heartbeats come with the acoustic status and don't end it; streaming does
-        s.on_message(&MavMessage::HEARTBEAT(Default::default()));
+        // heartbeats come with the acoustic status (20 s apart) and don't end it
+        s.on_message(&MavMessage::HEARTBEAT(Default::default()), 20.0);
+        s.on_message(&MavMessage::HIGH_LATENCY2(Default::default()), 20.0);
+        s.on_message(&MavMessage::HEARTBEAT(Default::default()), 40.0);
         assert!(s.high_latency);
-        s.on_message(&MavMessage::GLOBAL_POSITION_INT(Default::default()));
+        s.on_message(&MavMessage::GLOBAL_POSITION_INT(Default::default()), 41.0);
         assert_eq!(s.snapshot(0.0).stale_after_s(), 3.0);
+    }
+
+    #[test]
+    fn an_auv_that_may_dive_is_given_its_report_interval() {
+        // streaming at the surface, but running a mission at depth: the next thing heard
+        // may be the first report from under water, 20 s on
+        let mut s = LinkStats {
+            dive_expected: true,
+            ..LinkStats::default()
+        };
+        s.on_message(&MavMessage::HEARTBEAT(Default::default()), 0.0);
+        s.on_message(&MavMessage::HEARTBEAT(Default::default()), 1.0);
+        assert!(!s.high_latency);
+        assert_eq!(s.snapshot(1.0).stale_after_s(), 60.0);
+    }
+
+    #[test]
+    fn high_latency2_with_streaming_heartbeats_is_still_streaming() {
+        // the minimal plan: HIGH_LATENCY2 every 5 s, HEARTBEAT every second
+        let mut s = LinkStats::default();
+        for i in 0..20 {
+            let t = f64::from(i);
+            s.on_message(&MavMessage::HEARTBEAT(Default::default()), t);
+            if i % 5 == 0 {
+                s.on_message(&MavMessage::HIGH_LATENCY2(Default::default()), t + 0.1);
+            }
+            if i > 0 {
+                assert!(!s.high_latency, "t={t}");
+            }
+        }
+        assert_eq!(s.snapshot(20.0).stale_after_s(), 3.0);
+        // the heartbeats stop but for one with each report (the AUV dived)
+        s.on_message(&MavMessage::HEARTBEAT(Default::default()), 40.0);
+        s.on_message(&MavMessage::HIGH_LATENCY2(Default::default()), 40.0);
+        assert!(s.high_latency);
     }
 
     #[test]
@@ -416,6 +658,92 @@ mod tests {
         s.ping(44, 13.0); // 43 is forgotten
         s.pong(43, 13.1);
         assert_eq!(s.snapshot(13.1).rtt_ms, Some(25));
+    }
+
+    #[test]
+    fn rtt_is_smoothed_rfc6298() {
+        let mut s = LinkStats::default();
+        s.ping(1, 0.0);
+        s.pong(1, 1.4);
+        assert_eq!((s.srtt_s, s.rttvar_s), (Some(1.4), 0.7));
+        s.ping(2, 10.0);
+        s.pong(2, 11.0); // 1.0 s: srtt 1.35, rttvar 0.75 x 0.7 + 0.25 x 0.4 = 0.625
+        assert!((s.srtt_s.unwrap_or(0.0) - 1.35).abs() < 1e-9);
+        assert!((s.rttvar_s - 0.625).abs() < 1e-9);
+        assert_eq!(s.snapshot(11.0).rtt_ms, Some(1000)); // the console still sees the last
+    }
+
+    fn timing_for(
+        rtt: Option<(f64, f64)>,
+        emu_ms: Option<f64>,
+        plan: Option<crate::telemetry::PlanChoice>,
+    ) -> LinkTiming {
+        let mut s = LinkStats::default();
+        if let Some((r, v)) = rtt {
+            s.srtt_s = Some(r);
+            s.rttvar_s = v;
+        }
+        s.emu_link = emu_ms.map(|ms| EmuLink {
+            rtt_ms: Some(ms),
+            ..EmuLink::default()
+        });
+        s.plan = plan;
+        s.timing()
+    }
+
+    fn secs(d: Duration) -> f64 {
+        (d.as_secs_f64() * 1000.0).round() / 1000.0
+    }
+
+    #[test]
+    fn fast_links_keep_the_old_timeouts() {
+        // LOS: 30 ms measured. The floors: 1 s per ACK, 1.5 s per mission item, as before.
+        let t = timing_for(Some((0.03, 0.005)), None, None);
+        assert_eq!(t.source, "timesync");
+        assert_eq!(secs(t.ack_timeout(0)), 1.0);
+        assert_eq!(secs(t.ack_timeout(1)), 1.5);
+        assert_eq!(secs(t.item_timeout()), 1.5);
+        assert_eq!(t.stall_after_s(), 10.0);
+        assert_eq!(secs(t.confirm_wait()), 5.0);
+        // nothing known at all: the same floors
+        let t = timing_for(None, None, None);
+        assert_eq!(
+            (t.source, secs(t.ack_timeout(0)), secs(t.item_timeout())),
+            ("none", 1.0, 1.5)
+        );
+    }
+
+    #[test]
+    fn slow_links_wait_for_their_round_trip() {
+        use crate::telemetry::{PlanInput, choose};
+        let iridium = choose(&PlanInput {
+            link_class: Some("satcom"),
+            space_class: Some("iridium"),
+            ..PlanInput::default()
+        });
+        // before any measurement: the profile's 1.4 s, rto 3 x 1.4
+        let t = timing_for(None, None, Some(iridium.clone()));
+        assert_eq!(t.source, "profile");
+        assert_eq!(secs(t.ack_timeout(0)), 4.45);
+        assert_eq!(secs(t.item_timeout()), 5.45);
+        assert_eq!(t.report_s, 5.0);
+        assert_eq!((t.stall_after_s() * 100.0).round() / 100.0, 14.2); // 2 x 5 s + 4.2 s
+        // the emulator's measured delay: 1.5 s
+        let t = timing_for(None, Some(1500.0), Some(iridium.clone()));
+        assert_eq!((t.source, secs(t.ack_timeout(0))), ("emulator", 4.75));
+        // TIMESYNC converged: 1.4 s, 0.15 s deviation. Tighter: 1.4 + 0.6 + 0.25
+        let t = timing_for(Some((1.4, 0.15)), Some(1500.0), Some(iridium));
+        assert_eq!((t.source, secs(t.ack_timeout(0))), ("timesync", 2.25));
+        assert_eq!(secs(t.ack_timeout(2)), 5.063);
+        assert_eq!(secs(t.in_flight()), 1.55);
+        // GEO: 0.6 s
+        let t = timing_for(Some((0.6, 0.05)), None, None);
+        assert_eq!(secs(t.ack_timeout(0)), 1.05);
+        // the AUV dived: TIMESYNC still says 1.4 s, the emulator 12 s: the emulator wins
+        let t = timing_for(Some((1.4, 0.15)), Some(12_000.0), None);
+        assert_eq!((t.source, t.rtt_s), ("emulator", 12.0));
+        assert_eq!(secs(t.ack_timeout(0)), 30.0); // 36.25 s, capped
+        assert_eq!(secs(t.ack_timeout(3)), 30.0);
     }
 
     #[test]

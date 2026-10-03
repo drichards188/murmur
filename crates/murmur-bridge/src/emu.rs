@@ -168,6 +168,22 @@ fn brief(raw: &Value, recent: &Value) -> EmuBrief {
     }
 }
 
+/// The figures the bridge's timing and telemetry plan use, from one link's view.
+fn figures(v: &Value) -> crate::link::EmuLink {
+    let s = |k: &str| v[k].as_str().map(str::to_string);
+    let up = &v["recent"]["up"];
+    crate::link::EmuLink {
+        profile: s("profile"),
+        active_profile: s("active_profile").or_else(|| s("profile")),
+        bandwidth_bps: v["nominal"]["bandwidth_bps"]
+            .as_f64()
+            .map(|b| b.round() as u32),
+        rtt_ms: v["emu_rtt_ms"].as_f64(),
+        up_pkts: up["pkts"].as_u64().unwrap_or(0),
+        up_queue_drops: up["by_cause"]["queue"].as_u64().unwrap_or(0),
+    }
+}
+
 /// One link's view (see the module docs) from its latest record and its history.
 fn view(raw: &Value, hist: &VecDeque<Sample>) -> (Value, EmuBrief) {
     let Some(now) = hist.back() else {
@@ -266,7 +282,7 @@ impl Emu {
     }
 
     /// Takes one `/stats` answer: history, views, and the briefs to hand to the vehicles.
-    fn ingest(&self, stats: &Value, now: f64) -> HashMap<Uid, EmuBrief> {
+    fn ingest(&self, stats: &Value, now: f64) -> HashMap<Uid, (EmuBrief, crate::link::EmuLink)> {
         let mut briefs = HashMap::new();
         self.write(|s| {
             let mut summary = stats.clone();
@@ -292,8 +308,8 @@ impl Emu {
                     h.pop_front();
                 }
                 let (v, b) = view(raw, h);
+                briefs.insert(uid, (b, figures(&v)));
                 s.views.insert(uid, v);
-                briefs.insert(uid, b);
             }
         });
         briefs
@@ -317,7 +333,8 @@ impl Emu {
                 Ok(stats) => {
                     let briefs = self.ingest(&stats, now);
                     for cell in world.vehicles() {
-                        cell.set_emu(briefs.get(&cell.uid).cloned());
+                        let (b, f) = briefs.get(&cell.uid).cloned().unzip();
+                        cell.set_emu(b, f);
                     }
                     warned = false;
                 }
@@ -328,7 +345,7 @@ impl Emu {
                     });
                     if stale {
                         for cell in world.vehicles() {
-                            cell.set_emu(None);
+                            cell.set_emu(None, None);
                         }
                     }
                     if !warned {
@@ -463,7 +480,7 @@ mod tests {
             2.0,
         );
         assert_eq!(
-            b[&3],
+            b[&3].0,
             EmuBrief {
                 state: "degraded",
                 cause: Some("event_loss".into())
@@ -476,6 +493,12 @@ mod tests {
         assert_eq!(v["recent"]["up"]["latency_ms"], 15.0);
         assert_eq!(v["total"]["up"]["dropped"], 31);
         assert_eq!(v["emu_rtt_ms"], 30.0);
+        let f = &b[&3].1;
+        assert_eq!(
+            (f.rtt_ms, f.up_pkts, f.up_queue_drops),
+            (Some(30.0), 100, 0)
+        );
+        assert_eq!(f.active_profile.as_deref(), Some("los")); // no gate: the profile itself
         // the old samples age out of the history
         emu.ingest(&json!({"per_link": [rec(3, 300, &[("loss", 1), ("event_loss", 30)], 269, 15.0)]}), 100.0);
         assert_eq!(emu.read(|s| s.hist[&3].len()), 1);

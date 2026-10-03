@@ -30,6 +30,7 @@ mod platforms;
 mod push;
 mod space;
 mod tasks;
+mod telemetry;
 mod tracks;
 mod vehicle;
 mod world;

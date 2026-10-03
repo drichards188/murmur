@@ -3,7 +3,7 @@ import { LINKS, PROTOCOLS, type Protocol } from './catalogLabels'
 import { type EmuDir, emuCause, fmtBps, fmtDuration, useEmuLink } from './linkEmu'
 import { symbolSvg } from './symbols'
 import { orbitRange, usePlatformLimits } from './taskDefaults'
-import type { Tasking, Vehicle } from './types'
+import type { Tasking, TelemetryPlan, Vehicle } from './types'
 import { callsign, DOMAIN_LABEL, domainOf, isStale } from './types'
 
 interface Props {
@@ -19,6 +19,21 @@ interface Props {
 
 function fmt(n: number | null | undefined, digits = 0, unit = '') {
   return n == null || Number.isNaN(n) ? '–' : `${n.toFixed(digits)}${unit}`
+}
+
+const PLAN_REASON: Record<TelemetryPlan['reason'], string> = {
+  link: '',
+  bandwidth: ', stepped down to fit the bandwidth',
+  queue: ', stepped down for queue drops',
+  uniform: ', uniform plan',
+}
+
+/** "reduced for GEO SATCOM · 3.1 msg/s, 131 B/s" */
+function planText(p: TelemetryPlan): string {
+  const what = `${p.tier} for ${p.label ?? p.profile ?? 'this link'}${PLAN_REASON[p.reason]}`
+  if (p.tier === 'silent') return `${what} · the vehicle reports every ${Math.round(p.report_s)} s on its own`
+  const how = p.tier === 'minimal' ? `HIGH_LATENCY2 every ${Math.round(p.report_s)} s, ` : ''
+  return `${what} · ${how}${p.msgs_per_s} msg/s, ${Math.round(p.bytes_per_s)} B/s`
 }
 
 function Item({ k, children, title }: { k: string; children: React.ReactNode; title?: string }) {
@@ -205,7 +220,13 @@ export function VehicleDetails({ v, taskings, selected, onToggleSelect, onClose,
           </Item>
           <Item k="Loss / RTT" title="Measured by the bridge: MAVLink sequence gaps over 10 s, TIMESYNC round trip">
             {fmt(v.link.loss_pct, 0, '%')} · {fmt(v.link.rtt_ms, 0, ' ms')}
+            {(v.link.ack_timeout_ms ?? 0) > 1000 ? ` · ACK wait ${((v.link.ack_timeout_ms ?? 0) / 1000).toFixed(1)} s` : ''}
           </Item>
+          {v.link.telemetry && (
+            <Item k="Telemetry" title="What the bridge asks this vehicle to stream (SET_MESSAGE_INTERVAL), chosen for its link; HEARTBEAT included">
+              {planText(v.link.telemetry)}
+            </Item>
+          )}
           <EmuItems uid={v.uid} />
         </dl>
       </section>
