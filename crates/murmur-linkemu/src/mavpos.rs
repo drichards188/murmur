@@ -8,10 +8,13 @@ use mavlink::dialects::ardupilotmega::MavMessage;
 use mavlink::peek_reader::PeekReader;
 
 const GLOBAL_POSITION_INT: u32 = 33;
+const HIGH_LATENCY2: u32 = 235;
 
-/// Returns the last GLOBAL_POSITION_INT in a datagram, if any. A datagram can carry several
-/// concatenated frames (v1 or v2); frames are walked by their length fields and only
-/// GLOBAL_POSITION_INT frames are handed to the mavlink crate (which checks the CRC).
+/// Returns the last position in a datagram, if any: GLOBAL_POSITION_INT, or HIGH_LATENCY2
+/// (all an AUV under water sends, and what the bridge asks Iridium-class vehicles for; without
+/// it the depth gate would never see a dive). A datagram can carry several concatenated
+/// frames (v1 or v2); frames are walked by their length fields and only those two messages
+/// are handed to the mavlink crate (which checks the CRC).
 pub fn scan_position(buf: &[u8]) -> Option<GeoPoint> {
     let mut found = None;
     let mut i = 0;
@@ -32,20 +35,30 @@ pub fn scan_position(buf: &[u8]) -> Option<GeoPoint> {
         if i + total > buf.len() {
             break;
         }
-        if msgid == GLOBAL_POSITION_INT {
+        if msgid == GLOBAL_POSITION_INT || msgid == HIGH_LATENCY2 {
             let mut frame = &buf[i..i + total];
             let mut reader = PeekReader::new(&mut frame);
             // lat = lon = 0 is an autopilot without a position yet (ArduPilot sends zeros
             // before its first fix), not a vehicle off West Africa: range and terrain would
             // judge it thousands of kilometres out.
-            if let Ok((_, MavMessage::GLOBAL_POSITION_INT(d))) =
-                mavlink::read_versioned_msg::<MavMessage, _>(&mut reader, ReadVersion::Any)
-                && (d.lat != 0 || d.lon != 0)
+            let p =
+                match mavlink::read_versioned_msg::<MavMessage, _>(&mut reader, ReadVersion::Any) {
+                    Ok((_, MavMessage::GLOBAL_POSITION_INT(d))) => {
+                        Some((d.lat, d.lon, f64::from(d.alt) * 1e-3))
+                    }
+                    // altitude in whole metres above MSL (negative: depth)
+                    Ok((_, MavMessage::HIGH_LATENCY2(d))) => {
+                        Some((d.latitude, d.longitude, f64::from(d.altitude)))
+                    }
+                    _ => None,
+                };
+            if let Some((lat, lon, alt_m)) = p
+                && (lat != 0 || lon != 0)
             {
                 found = Some(GeoPoint {
-                    lat: f64::from(d.lat) * 1e-7,
-                    lon: f64::from(d.lon) * 1e-7,
-                    alt_m: f64::from(d.alt) * 1e-3,
+                    lat: f64::from(lat) * 1e-7,
+                    lon: f64::from(lon) * 1e-7,
+                    alt_m,
                 });
             }
         }
@@ -99,6 +112,28 @@ mod tests {
         f.extend(position_frame(2, 11.0, 21.0, 0.0));
         let p = scan_position(&f).expect("position");
         assert!((p.lat - 11.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn high_latency2_is_a_position_too() {
+        use mavlink::dialects::ardupilotmega::HIGH_LATENCY2_DATA;
+        let msg = MavMessage::HIGH_LATENCY2(HIGH_LATENCY2_DATA {
+            latitude: 378_250_000,
+            longitude: -1_224_400_000,
+            altitude: -40,
+            ..Default::default()
+        });
+        let mut f = Vec::new();
+        let header = MavHeader {
+            sequence: 1,
+            system_id: 6,
+            component_id: 1,
+        };
+        mavlink::write_versioned_msg(&mut f, mavlink::MavlinkVersion::V2, header, &msg)
+            .expect("write");
+        let p = scan_position(&f).expect("position");
+        assert!((p.lat - 37.825).abs() < 1e-6 && (p.lon + 122.44).abs() < 1e-6);
+        assert_eq!(p.alt_m, -40.0); // submerged: the acoustic gate closes on this
     }
 
     #[test]
