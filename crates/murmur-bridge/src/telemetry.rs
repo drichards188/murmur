@@ -31,7 +31,9 @@
 //!   lost-link check (`link::STALE_INTERVALS` of a 1 s interval) is unchanged.
 //! - `silent`: nothing requested. An AUV under water reports HEARTBEAT + HIGH_LATENCY2 on its
 //!   own every 20 s (`link::HIGH_LATENCY_INTERVAL_MS`) and ignores stream requests; the GCS
-//!   heartbeat drops to every `gcs_heartbeat_s` too (the AUV's own GCS failsafe is 120 s).
+//!   heartbeat drops to every `gcs_heartbeat_s` too (5 s: the AUV's own GCS failsafe is
+//!   120 s, and the emulator's loss bursts are counted in packets, so at one heartbeat per
+//!   20 s a single burst silenced the GCS for two minutes and surfaced the AUV).
 //!
 //! `MURMUR_TELEMETRY=uniform` turns all of this off: the full plan on every link, as before
 //! (for A/B runs against the link emulator).
@@ -126,7 +128,8 @@ pub struct LinkRow {
 ///   GUESS: often enough to watch a task, little enough to leave the link to commands.
 /// - Acoustic: silent. 300 bps (`links.toml`, GUESS in the 80-5400 bps modem band): the AUV's
 ///   own 20 s HIGH_LATENCY2 is all it can carry. RTT GUESS: sound over ~2 km both ways plus
-///   modem processing and a 30-byte ping's airtime.
+///   modem processing and a 30-byte ping's airtime. GCS heartbeat every 5 s: 21 bytes, about
+///   11% of the modem's downlink.
 #[rustfmt::skip]
 pub const LINKS: &[LinkRow] = &[
     LinkRow { profile: "los", label: "LOS radio", tier: Tier::Full, bandwidth_bps: 500_000, rtt_s: 0.03, gcs_heartbeat_s: 1 },
@@ -137,7 +140,7 @@ pub const LINKS: &[LinkRow] = &[
     LinkRow { profile: "satcom_ku_geo", label: "GEO SATCOM", tier: Tier::Reduced, bandwidth_bps: 256_000, rtt_s: 0.6, gcs_heartbeat_s: 1 },
     LinkRow { profile: "satcom_iridium", label: "Iridium", tier: Tier::Minimal, bandwidth_bps: 22_000, rtt_s: 1.4, gcs_heartbeat_s: 1 },
     LinkRow { profile: "acoustic_surface", label: "Iridium (surfaced)", tier: Tier::Minimal, bandwidth_bps: 22_000, rtt_s: 1.4, gcs_heartbeat_s: 1 },
-    LinkRow { profile: "acoustic", label: "acoustic modem", tier: Tier::Silent, bandwidth_bps: 300, rtt_s: 6.0, gcs_heartbeat_s: 20 },
+    LinkRow { profile: "acoustic", label: "acoustic modem", tier: Tier::Silent, bandwidth_bps: 300, rtt_s: 6.0, gcs_heartbeat_s: 5 },
 ];
 
 pub fn row(profile: &str) -> Option<&'static LinkRow> {
@@ -410,7 +413,7 @@ mod tests {
             ..input("acoustic", None)
         };
         let c = choose(&under);
-        assert_eq!((c.tier, c.gcs_heartbeat_s), (Tier::Silent, 20));
+        assert_eq!((c.tier, c.gcs_heartbeat_s), (Tier::Silent, 5));
         assert_eq!(c.report_s, 20.0);
         let geo = choose(&input("satcom", Some("wgs")));
         assert_eq!(
