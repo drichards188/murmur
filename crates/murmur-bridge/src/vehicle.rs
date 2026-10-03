@@ -31,7 +31,7 @@ const NO_EKF_GRACE_S: f64 = 15.0;
 pub struct Identity(pub Map<String, Value>);
 
 impl Identity {
-    const KEYS: [&str; 12] = [
+    const KEYS: [&str; 13] = [
         "callsign",
         "platform",
         "name",
@@ -39,6 +39,8 @@ impl Identity {
         "role",
         "domain",
         "link",
+        // the SATCOM constellation class (starlink, iridium, wgs, ku-geo): the telemetry plan
+        "space_class",
         "sidc",
         "sim",
         "armed",
@@ -303,6 +305,7 @@ impl Vehicle {
             }
             MavMessage::HOME_POSITION(m) => {
                 self.home = Some((f64::from(m.latitude) / 1e7, f64::from(m.longitude) / 1e7));
+                self.home_alt = Some(f64::from(m.altitude) / 1000.0);
                 self.seen.home = Some(clock::wall());
             }
             MavMessage::VFR_HUD(m) => {
@@ -618,7 +621,7 @@ impl VehicleCell {
         self.stats
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .on_message(msg);
+            .on_message(msg, clock::mono());
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Arc<MavMessage>> {
@@ -636,9 +639,32 @@ impl VehicleCell {
             .snapshot(now)
     }
 
-    /// The link emulator's brief view of this vehicle's link (`crate::emu`).
-    pub fn set_emu(&self, brief: Option<crate::emu::EmuBrief>) {
-        self.stats.lock().unwrap_or_else(|e| e.into_inner()).emu = brief;
+    /// The link emulator's view of this vehicle's link (`crate::emu`): the brief for the
+    /// fleet row and the figures for timing and the telemetry plan.
+    pub fn set_emu(
+        &self,
+        brief: Option<crate::emu::EmuBrief>,
+        figures: Option<crate::link::EmuLink>,
+    ) {
+        let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
+        stats.emu = brief;
+        stats.emu_link = figures;
+    }
+
+    /// How long the task layer waits for this vehicle's answers (`crate::link::LinkTiming`).
+    pub fn link_timing(&self) -> crate::link::LinkTiming {
+        self.stats
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .timing()
+    }
+
+    /// Test hook: the link's measured round trip, as TIMESYNC would set it.
+    #[cfg(test)]
+    pub(crate) fn set_link_rtt(&self, rtt_s: f64, var_s: f64) {
+        let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
+        stats.srtt_s = Some(rtt_s);
+        stats.rttvar_s = var_s;
     }
 
     pub fn link_counters(&self) -> LinkCounters {

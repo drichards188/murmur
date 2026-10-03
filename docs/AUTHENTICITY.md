@@ -40,7 +40,9 @@ so a new behavior inherits it:
   Only the parameters a C2 touches, not all ~1,000.
 - **Rates** (`telemetry.rs`): heartbeat only until the GCS sets intervals, as ArduPilot with
   `common.parm`. An acoustic-linked vehicle under water sends HEARTBEAT + HIGH_LATENCY2 every
-  20 s instead of streaming.
+  20 s instead of streaming. What the GCS sets depends on the link (the bridge's
+  `crates/murmur-bridge/src/telemetry.rs`): on Iridium-class links it asks for HIGH_LATENCY2
+  every 5 s, which ArduPilot and the stand-ins stream like any other message.
 - **Commands and refusals** (`commands.rs`): COMMAND_LONG and COMMAND_INT through one table
   that knows which commands each firmware handles (Blimp has no MISSION_START, RTL or
   DO_CHANGE_SPEED and ACKs NAV_TAKEOFF ACCEPTED), mode changes that fail with the firmware's

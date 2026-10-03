@@ -182,9 +182,9 @@ queue_bytes = 65536
 # Gate, so the link seldom drops); the class has no published network latency, so latency_ms
 # = 700 stays as the total (GUESS) and /stats says latency_source = "profile". Handover
 # outage 250 ms is a GUESS (satellites pass in about 9 minutes). The buoy maps here. The
-# stand-ins do not decimate telemetry, so a 22 kbps link will drop most of what they send
-# (which is also the honest result); link-aware telemetry is a separate issue, this
-# mismatch is left visible on purpose.
+# bridge asks vehicles on this profile (and on acoustic_surface) for HIGH_LATENCY2 every 5 s
+# instead of its full plan (crates/murmur-bridge/src/telemetry.rs, `LINKS`); the bandwidths
+# and latencies there are copied from this file as fallbacks, keep them in step.
 [class.satcom_iridium]
 extends = "satcom"
 space_class = "iridium"

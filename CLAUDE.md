@@ -65,8 +65,13 @@ meaningful. Decision and command, not weapons.
   ports from its base). A bridge that finds a port taken drops it for good.
 - With the emulator, ZEP 1 (the LTA on the Marin Headlands) is behind terrain from the Crissy
   Field ground station at spawn: it never connects until moved. That is the model, not a bug.
-- The bridge's task layer times out at 1-1.5 s per exchange: missions do not upload over the
-  ~1.5 s RTT Iridium-class links (a surfaced AUV, the buoy) until that is fixed (Phase D).
+- The bridge's task-layer timeouts follow each link's measured round trip (`LinkTiming` in
+  `crates/murmur-bridge/src/link.rs`; floors 1 s per ACK, 1.5 s per mission item, as before on
+  fast links) and its telemetry plan follows the link class (`crates/murmur-bridge/src/
+  telemetry.rs`: HIGH_LATENCY2 every 5 s on Iridium-class links). A task to an AUV under water
+  still crosses a 300 bps modem: expect tens of seconds per exchange, and ArduPilot's own 8 s
+  mission-upload timeout makes uploads there unlikely to finish. `MURMUR_TELEMETRY=uniform`
+  restores the one-plan-for-all for A/B runs.
 
 ## Conventions
 

@@ -72,9 +72,10 @@ drop decisions. Real runs differ only through socket arrival timing.
 
 ### Physics hooks
 
-All driven by `GLOBAL_POSITION_INT` parsed from uplink traffic (mavlink crate, ardupilotmega
-dialect; frames are walked by length and only that message is decoded; v1, v2 and
-concatenated frames work).
+All driven by `GLOBAL_POSITION_INT` or `HIGH_LATENCY2` (what an AUV under water sends, and
+what the bridge asks Iridium-class vehicles for) parsed from uplink traffic (mavlink crate,
+ardupilotmega dialect; frames are walked by length and only those messages are decoded; v1,
+v2 and concatenated frames work).
 
 - **Range**: `range_ok_km`/`range_max_km`/`range_exp` give loss from 0 to 1 as distance from
   `[ground_station]` grows.
@@ -175,9 +176,10 @@ runs on a blocking thread) and the packet path reads the latest answer:
   usable satellites, the source errors, or `--no-space` is given, the profile's static numbers
   apply, stated in the log, in `/stats` (`space.classes.<class>.static_reason`) and per vehicle
   (`satcom.mode = "static"`).
-- **Bandwidth** stays the profile's: Iridium (22 kbps) cannot carry the stand-ins' telemetry
-  rates and drops most of it. That mismatch is deliberate and visible; link-aware telemetry is
-  a separate issue.
+- **Bandwidth** stays the profile's. What the vehicles send over it is the bridge's
+  link-aware telemetry plan (`crates/murmur-bridge/src/telemetry.rs`): the full plan on LOS,
+  mesh, tether and Starlink-class links, a reduced one on GEO, HIGH_LATENCY2 every 5 s on
+  Iridium-class links, nothing extra from an AUV under water.
 
 `/stats/<uid>` has `satcom`: `class`, `mode` (`pending`, `live`, `static`), `up`, `visible`,
 `best_norad_id`, `best_name`, `best_elevation_deg`, `slant_range_km`, `latency_ms` and
@@ -247,6 +249,16 @@ for 300 s (queueing alone on 300 bps with a 256-byte queue is ~7 s, plus sound a
 jitter; a ping a second would also fill the downlink by itself), SATCOM every 2 s for 60 s,
 everything else every second for 10 s (murmur-0nv.3). `emu_rtt_ms` is the fallback figure
 when no answer comes back at all.
+
+The bridge also reads each link's `active_profile`, `nominal.bandwidth_bps`, `emu_rtt_ms` and
+recent uplink queue drops from this view: the task layer's timeouts follow the round trip
+(`LinkTiming` in `crates/murmur-bridge/src/link.rs`: RFC 6298 on TIMESYNC, the emulator's
+figure before the first answer or when it is more than twice TIMESYNC's), and the telemetry
+plan follows the profile carrying the link now, steps down where it would not fit a quarter of
+the bandwidth, and steps down for two minutes after queue drops (`crates/murmur-bridge/src/
+telemetry.rs`). Each vehicle's choice is `link.telemetry` in `/api/state`; the details card
+shows it ("Telemetry: minimal for Iridium"). `MURMUR_TELEMETRY=uniform` on the bridge sends
+the full plan everywhere, for A/B runs.
 
 ## Scenario files
 

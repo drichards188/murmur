@@ -1,5 +1,9 @@
 //! Running one op: the MAVLink exchanges (commands with retries, mission upload, arming, mode
 //! changes) and the telemetry judgements (active, done, left the task, not moving).
+//!
+//! Every wait is the link's (`crate::link::LinkTiming`, read afresh for each exchange): the
+//! floors on a fast radio, the measured round trip on a slow one (GEO SATCOM, Iridium, an AUV's
+//! modem). The formula and its sources are on `LinkTiming`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,12 +16,12 @@ use super::op::{OpCell, OpState};
 use super::{TaskKind, TaskParams};
 use crate::clock::{self, round_int};
 use crate::geo;
+use crate::link::LinkTiming;
 use crate::mav::{self, Kind, MavMessage, apm};
 use crate::vehicle::{Vehicle, VehicleCell};
 
-const ACK_TIMEOUT: Duration = Duration::from_secs(1);
 const ACK_RETRIES: u8 = 4;
-const MISSION_TIMEOUT: Duration = Duration::from_millis(1500);
+/// Item timeouts in a row (nothing heard from the vehicle) before a mission upload fails.
 const MISSION_RETRIES: u32 = 5;
 const READY_TIMEOUT: Duration = Duration::from_secs(120);
 const ARM_PATIENCE: Duration = Duration::from_secs(30);
@@ -26,7 +30,6 @@ const RETRY_PAUSE: Duration = Duration::from_secs(2);
 const POLL: Duration = Duration::from_millis(500);
 /// A vehicle may be out of its task's mode this long (a transient) before the op fails.
 const LEFT_MODE_GRACE_S: f64 = 3.0;
-const STALL_AFTER_S: f64 = 10.0;
 const STALL_MIN_SPEED: f64 = 0.3;
 
 pub struct OpFailed(pub String);
@@ -137,6 +140,18 @@ impl Item {
         Item::nav(apm::MavCmd::MAV_CMD_NAV_WAYPOINT, lat, lon, alt)
     }
 
+    /// Whether a vehicle's copy is this item. ArduPilot stores items compactly and answers in
+    /// its own frame (non-INT), so compare what survives: the command, the position to the
+    /// 1e-7 degree and, for a jump, its target.
+    fn same_as(&self, it: &apm::MISSION_ITEM_INT_DATA) -> bool {
+        let close = |a: i32, b: f64| (i64::from(a) - (b * 1e7) as i64).abs() <= 2;
+        it.command == self.command
+            && close(it.x, self.lat)
+            && close(it.y, self.lon)
+            && (self.command != apm::MavCmd::MAV_CMD_DO_JUMP
+                || round_int(f64::from(it.param1)) == round_int(f64::from(self.p[0])))
+    }
+
     fn encode(&self, seq: u16, target: u8) -> MavMessage {
         MavMessage::MISSION_ITEM_INT(apm::MISSION_ITEM_INT_DATA {
             param1: self.p[0],
@@ -160,7 +175,9 @@ impl Item {
 
 /// "NOT MOVING" detection: if a vehicle that should be moving shows no ground speed for a
 /// while, say so. The autopilot can be in AUTO and still not going anywhere (aground, fouled,
-/// stuck): that's what the operator needs to see.
+/// stuck): that's what the operator needs to see. "A while" is 10 s on a streaming link and
+/// longer where speed is reported less often (`LinkTiming::stall_after_s`): a vehicle on
+/// HIGH_LATENCY2 every 5 s, or 20 s under water, must not read as stuck between reports.
 struct StallWatch {
     moving_at: f64,
 }
@@ -172,13 +189,13 @@ impl StallWatch {
         }
     }
 
-    fn detail(&mut self, v: &Vehicle, base: String) -> String {
+    fn detail(&mut self, v: &Vehicle, timing: &LinkTiming, base: String) -> String {
         let now = clock::mono();
         if v.groundspeed.unwrap_or(0.0) >= STALL_MIN_SPEED {
             self.moving_at = now;
         }
         let stalled = now - self.moving_at;
-        if stalled >= STALL_AFTER_S {
+        if stalled >= timing.stall_after_s() {
             format!("NOT MOVING for {stalled:.0}s (aground or stuck?) · {base}")
         } else {
             base
@@ -232,8 +249,13 @@ impl Task<'_> {
 
     // ---- MAVLink building blocks ----------------------------------------------------------
 
+    fn timing(&self) -> LinkTiming {
+        self.v().link_timing()
+    }
+
     /// COMMAND_LONG with retries. The `confirmation` field increments on each retry so the
-    /// autopilot can tell a retransmission from a new command.
+    /// autopilot can tell a retransmission from a new command. Each try waits the link's ACK
+    /// timeout, a little longer each time; a late ACK to an earlier try still counts.
     async fn command_long(&self, command: apm::MavCmd, params: &[f32]) -> Result {
         let mut p = [0.0f32; 7];
         p[..params.len()].copy_from_slice(params);
@@ -241,9 +263,10 @@ impl Task<'_> {
         for confirmation in 0..=ACK_RETRIES {
             self.v()
                 .send(&mav::command_long(self.v().sysid, command, confirmation, p));
+            let wait = self.timing().ack_timeout(u32::from(confirmation));
             let ack = recv_until(
                 &mut rx,
-                ACK_TIMEOUT,
+                wait,
                 |m| matches!(m, MavMessage::COMMAND_ACK(a) if a.command == command),
             )
             .await;
@@ -265,8 +288,19 @@ impl Task<'_> {
     }
 
     /// MAVLink mission protocol: COUNT -> (REQUEST_INT seq -> ITEM_INT seq)* -> ACK. The
-    /// vehicle drives the transfer, so a lost item just gets requested again; on silence we
-    /// resend whatever we sent last. Older firmware asks with the deprecated MISSION_REQUEST.
+    /// vehicle drives the transfer and re-requests a missing item every second (ArduPilot's
+    /// MissionItemProtocol), so on a link whose round trip is longer than that, requests come
+    /// twice. Tolerating that, and loss, the way the protocol intends:
+    /// - a request for an item still in flight (sent less than `LinkTiming::in_flight` ago) or
+    ///   for one the vehicle already moved past is not answered again;
+    /// - MAV_MISSION_INVALID_SEQUENCE is the vehicle ignoring a duplicate we sent anyway; it
+    ///   keeps waiting for the item it asked for, so the upload goes on;
+    /// - silence for the link's item timeout: resend whatever went last (the vehicle may also
+    ///   have lost the COUNT);
+    /// - after the last item, silence or MAV_MISSION_ERROR (no longer receiving: its ACCEPTED
+    ///   was lost) is settled by asking the vehicle what it holds (`confirm_mission`).
+    ///
+    /// Older firmware asks with the deprecated MISSION_REQUEST.
     #[allow(deprecated)]
     async fn upload_mission(&self, items: &[Item]) -> Result {
         let sysid = self.v().sysid;
@@ -279,9 +313,12 @@ impl Task<'_> {
             ..Default::default()
         });
         self.v().send(&last);
+        let mut sent: Option<(u16, Instant)> = None;
+        let mut asked: Option<u16> = None;
         let mut timeouts = 0;
         loop {
-            let msg = recv_until(&mut rx, MISSION_TIMEOUT, |m| {
+            let timing = self.timing();
+            let msg = recv_until(&mut rx, timing.item_timeout(), |m| {
                 matches!(
                     m,
                     MavMessage::MISSION_REQUEST_INT(_)
@@ -290,34 +327,125 @@ impl Task<'_> {
                 )
             })
             .await;
+            let final_sent = sent.is_some_and(|(seq, _)| seq + 1 == count);
             let Some(msg) = msg else {
                 timeouts += 1;
                 if timeouts > MISSION_RETRIES {
                     return fail("mission upload timed out");
                 }
+                if final_sent && self.confirm_mission(items, &mut rx).await? {
+                    return Ok(());
+                }
                 self.v().send(&last);
                 continue;
             };
-            timeouts = 0;
             let seq = match &*msg {
-                MavMessage::MISSION_ACK(a) => {
-                    return match a.mavtype {
-                        apm::MavMissionResult::MAV_MISSION_ACCEPTED => Ok(()),
-                        r => fail(format!("mission rejected: {r:?}")),
-                    };
-                }
+                MavMessage::MISSION_ACK(a) => match a.mavtype {
+                    apm::MavMissionResult::MAV_MISSION_ACCEPTED => return Ok(()),
+                    apm::MavMissionResult::MAV_MISSION_INVALID_SEQUENCE => continue,
+                    apm::MavMissionResult::MAV_MISSION_ERROR if final_sent => {
+                        if self.confirm_mission(items, &mut rx).await? {
+                            return Ok(());
+                        }
+                        return fail("mission upload lost: the vehicle stopped receiving");
+                    }
+                    r => return fail(format!("mission rejected: {r:?}")),
+                },
                 MavMessage::MISSION_REQUEST_INT(r) => r.seq,
                 MavMessage::MISSION_REQUEST(r) => r.seq,
                 _ => continue,
             };
+            timeouts = 0;
             if seq >= count {
                 return fail(format!("vehicle requested item {seq} of {count}"));
             }
+            if asked.is_some_and(|a| seq < a) {
+                continue; // a stale re-request: the vehicle already has that one
+            }
+            if sent.is_some_and(|(s, at)| s == seq && at.elapsed() < timing.in_flight()) {
+                continue; // it crossed our copy, which is still on its way
+            }
+            asked = Some(seq);
             self.op()
                 .set_progress(Some(format!("upload {}/{count}", seq + 1)));
             last = items[usize::from(seq)].encode(seq, sysid);
             self.v().send(&last);
+            sent = Some((seq, Instant::now()));
         }
+    }
+
+    /// Whether the vehicle holds the mission just uploaded, when its final ACK never came:
+    /// MISSION_REQUEST_LIST for the count, then the last item. The vehicle stores items only
+    /// in order, so it asked for the last item only after taking every other one; if it also
+    /// holds our last item, the whole mission is ours. Ok(false): it is still receiving (it
+    /// answers DENIED) or holds something else; the upload goes on or fails.
+    #[allow(deprecated)]
+    async fn confirm_mission(
+        &self,
+        items: &[Item],
+        rx: &mut broadcast::Receiver<Arc<MavMessage>>,
+    ) -> Result<bool> {
+        let sysid = self.v().sysid;
+        let count = items.len() as u16;
+        let target = (sysid, mav::AUTOPILOT_COMPID);
+        let denied = |m: &MavMessage| {
+            matches!(m, MavMessage::MISSION_ACK(a)
+                if a.mavtype == apm::MavMissionResult::MAV_MISSION_DENIED)
+        };
+        self.op().narrate("confirming the mission upload");
+        let mut held = None;
+        for attempt in 0..=u32::from(ACK_RETRIES) {
+            self.v().send(&MavMessage::MISSION_REQUEST_LIST(
+                apm::MISSION_REQUEST_LIST_DATA {
+                    target_system: target.0,
+                    target_component: target.1,
+                    ..Default::default()
+                },
+            ));
+            let wait = self.timing().ack_timeout(attempt);
+            let m = recv_until(rx, wait, |m| {
+                matches!(m, MavMessage::MISSION_COUNT(_)) || denied(m)
+            })
+            .await;
+            match m.as_deref() {
+                Some(MavMessage::MISSION_COUNT(c)) => {
+                    held = Some(c.count);
+                    break;
+                }
+                Some(_) => return Ok(false), // still receiving
+                None => {}
+            }
+        }
+        let Some(held) = held else {
+            return fail("mission upload unconfirmed: no answer to MISSION_REQUEST_LIST");
+        };
+        if held != count {
+            return Ok(false);
+        }
+        let seq = count - 1;
+        for attempt in 0..=u32::from(ACK_RETRIES) {
+            self.v().send(&MavMessage::MISSION_REQUEST_INT(
+                apm::MISSION_REQUEST_INT_DATA {
+                    seq,
+                    target_system: target.0,
+                    target_component: target.1,
+                    ..Default::default()
+                },
+            ));
+            let wait = self.timing().ack_timeout(attempt);
+            let m = recv_until(rx, wait, |m| {
+                matches!(m, MavMessage::MISSION_ITEM_INT(it) if it.seq == seq) || denied(m)
+            })
+            .await;
+            match m.as_deref() {
+                Some(MavMessage::MISSION_ITEM_INT(it)) => {
+                    return Ok(items[usize::from(seq)].same_as(it));
+                }
+                Some(_) => return Ok(false),
+                None => {}
+            }
+        }
+        fail("mission upload unconfirmed: the vehicle did not send its last item")
     }
 
     async fn ensure_armed(&self) -> Result {
@@ -345,11 +473,16 @@ impl Task<'_> {
                 }
             }
         }
-        for _ in 0..20 {
+        // the next heartbeat says so: a second away when streaming, 20 s from an AUV under water
+        let deadline = Instant::now() + self.timing().confirm_wait();
+        while Instant::now() < deadline {
             if self.v().read(|s| s.armed) {
                 return Ok(());
             }
             sleep(Duration::from_millis(250)).await;
+        }
+        if self.v().read(|s| s.armed) {
+            return Ok(());
         }
         fail("arm accepted but vehicle never reported armed")
     }
@@ -389,14 +522,16 @@ impl Task<'_> {
         }
     }
 
-    /// Poll until `cond`. `detail` narrates progress; `guard` may fail the op early.
+    /// Poll until `cond`. `detail` narrates progress (given the link's timing); `guard` may
+    /// fail the op early.
     async fn wait_until(
         &self,
         mut cond: impl FnMut(&Vehicle) -> bool,
-        mut detail: impl FnMut(&Vehicle) -> String,
+        mut detail: impl FnMut(&Vehicle, &LinkTiming) -> String,
         mut guard: Option<&mut ModeGuard>,
     ) -> Result {
         loop {
+            let timing = self.timing();
             let step = self.v().read(|v| {
                 if cond(v) {
                     return Ok(None);
@@ -404,7 +539,7 @@ impl Task<'_> {
                 if let Some(err) = guard.as_mut().and_then(|g| g.check(v)) {
                     return Err(OpFailed(err));
                 }
-                Ok(Some(detail(v)))
+                Ok(Some(detail(v, &timing)))
             })?;
             match step {
                 None => return Ok(()),
@@ -501,8 +636,12 @@ impl Task<'_> {
             mode: auto,
             left_at: None,
         };
-        self.wait_until(done, |v| stall.detail(v, progress(v)), Some(&mut guard))
-            .await?;
+        self.wait_until(
+            done,
+            |v, timing| stall.detail(v, timing, progress(v)),
+            Some(&mut guard),
+        )
+        .await?;
         self.op().set(OpState::Done, done_text);
         Ok(())
     }
@@ -626,7 +765,7 @@ impl Task<'_> {
         self.op().set(OpState::Acked, "accepted");
         self.wait_mode(mode).await?;
         self.op().set(OpState::Active, "returning");
-        self.wait_until(at_home, progress, None).await?;
+        self.wait_until(at_home, |v, _| progress(v), None).await?;
         self.op().set(OpState::Done, "home");
         Ok(())
     }
@@ -661,7 +800,7 @@ impl Task<'_> {
 
         let mut rx = tracker.subscribe();
         let mut confirmed = false;
-        for _ in 0..=ACK_RETRIES {
+        for attempt in 0..=u32::from(ACK_RETRIES) {
             tracker.send(&MavMessage::PARAM_SET(apm::PARAM_SET_DATA {
                 param_value: f32::from(target.sysid),
                 target_system: tracker.sysid,
@@ -669,7 +808,7 @@ impl Task<'_> {
                 param_id: mav::char_array("SYSID_TARGET"),
                 param_type: apm::MavParamType::MAV_PARAM_TYPE_REAL32,
             }));
-            let echo = recv_until(&mut rx, ACK_TIMEOUT, |m| {
+            let echo = recv_until(&mut rx, self.timing().ack_timeout(attempt), |m| {
                 matches!(m, MavMessage::PARAM_VALUE(p) if mav::chars_to_string(&p.param_id) == "SYSID_TARGET")
             })
             .await;
@@ -713,6 +852,6 @@ impl Task<'_> {
     }
 }
 
-fn mode_detail(v: &Vehicle) -> String {
+fn mode_detail(v: &Vehicle, _: &LinkTiming) -> String {
     format!("mode {}", v.mode.as_deref().unwrap_or("None"))
 }

@@ -31,6 +31,23 @@ export interface LinkHealth {
   /** The link emulator's state for this link, when one runs: degraded or down and why
    *  (a linkemu drop cause, or `event`). Details from /api/links/{uid} (linkEmu.ts). */
   emu?: { state: 'ok' | 'degraded' | 'down'; cause: string | null }
+  /** The telemetry plan the bridge chose for this link (Rust bridge only): the tier, the link
+   *  profile it was chosen for and why (`link` table, stepped down for `bandwidth` or measured
+   *  `queue` drops, or `uniform` with MURMUR_TELEMETRY=uniform). */
+  telemetry?: TelemetryPlan | null
+  /** The task layer's command ACK wait on this link now, ms (Rust bridge only). */
+  ack_timeout_ms?: number
+}
+
+export interface TelemetryPlan {
+  tier: 'full' | 'reduced' | 'minimal' | 'silent'
+  profile: string | null
+  label: string | null
+  reason: 'link' | 'bandwidth' | 'queue' | 'uniform'
+  msgs_per_s: number
+  bytes_per_s: number
+  /** Seconds between position/speed reports under this plan. */
+  report_s: number
 }
 
 /** What a vehicle's position rests on (Rust bridge only). A submerged AUV dead-reckons: ready, but drifting. */

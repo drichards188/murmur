@@ -21,6 +21,10 @@ pub const SYNTHETIC_UID_BASE: Uid = 1_000_000;
 /// The telemetry plan is re-sent this often (cheap) so a rebooted vehicle picks it up again.
 const PLAN_RESEND_TICKS: u64 = 30;
 const MANIFEST_CHECK_TICKS: u64 = 5;
+/// While a vehicle's home is unknown, HOME_POSITION is asked for this often. Streaming
+/// vehicles get a home from their first GLOBAL_POSITION_INT long before; on HIGH_LATENCY2
+/// (the minimal plan) no position message carries it.
+const HOME_REQUEST_TICKS: u64 = 10;
 
 pub struct Config {
     pub base_port: u16,
@@ -274,22 +278,74 @@ impl World {
                 let Some(v) = link.vehicle.get() else {
                     continue;
                 };
-                v.send(&gcs_heartbeat());
-                let every = link
-                    .stats
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .timesync
-                    .every_s
-                    .max(1);
+                let (kind, rates_sent, air, unread, identity, submerged, may_dive, no_home) = v
+                    .read(|s| {
+                        let air = s.identity.as_ref().and_then(|i| i.str("domain")) == Some("air")
+                            || s.kind.is_some_and(Kind::flying);
+                        let submerged = s
+                            .alt_msl
+                            .is_some_and(|a| a < -crate::telemetry::SUBMERGED_M);
+                        let unread = params_to_read(s);
+                        // an AUV on its acoustic modem goes quiet when it dives: expected while
+                        // it runs a mission (or is already under), not a lost link
+                        let acoustic =
+                            s.identity.as_ref().and_then(|i| i.str("link")) == Some("acoustic");
+                        let below = s
+                            .alt_msl
+                            .is_some_and(|a| a < -0.5 * crate::telemetry::SUBMERGED_M);
+                        let mission =
+                            s.armed && matches!(s.mode.as_deref(), Some("AUTO" | "GUIDED"));
+                        let may_dive = acoustic && (below || mission);
+                        (
+                            s.kind,
+                            s.rates_sent,
+                            air,
+                            unread,
+                            s.identity.clone(),
+                            submerged,
+                            may_dive,
+                            s.home.is_none(),
+                        )
+                    });
+                let now = crate::clock::mono();
+                let (choice, sent, every) = {
+                    let mut st = link.stats.lock().unwrap_or_else(|e| e.into_inner());
+                    st.dive_expected = may_dive;
+                    if st
+                        .emu_link
+                        .as_ref()
+                        .is_some_and(crate::telemetry::queue_pressure)
+                    {
+                        st.queue_hold_until = Some(now + crate::telemetry::QUEUE_HOLD_S);
+                    }
+                    let choice = crate::telemetry::choose(&crate::telemetry::PlanInput {
+                        kind,
+                        air,
+                        link_class: identity.as_ref().and_then(|i| i.str("link")),
+                        space_class: identity.as_ref().and_then(|i| i.str("space_class")),
+                        submerged: submerged || st.high_latency,
+                        emu: st.emu_link.as_ref(),
+                        queue_hold: st.queue_hold_until.is_some_and(|t| now < t),
+                        uniform: crate::telemetry::uniform_from_env(),
+                    });
+                    st.plan = Some(choice.clone());
+                    (choice, st.plan_sent.clone(), st.timesync.every_s.max(1))
+                };
+                if tick.is_multiple_of(choice.gcs_heartbeat_s.max(1)) {
+                    v.send(&gcs_heartbeat());
+                }
                 if tick.is_multiple_of(every) {
                     link.send_timesync();
                 }
-                let (kind, rates_sent, air, unread) = v.read(|s| {
-                    let air = s.identity.as_ref().and_then(|i| i.str("domain")) == Some("air")
-                        || s.kind.is_some_and(Kind::flying);
-                    (s.kind, s.rates_sent, air, params_to_read(s))
-                });
+                if no_home && kind.is_some() && tick.is_multiple_of(HOME_REQUEST_TICKS) {
+                    let id = apm::HOME_POSITION_DATA::ID as f32;
+                    v.send(&mav::command_long(
+                        v.sysid,
+                        apm::MavCmd::MAV_CMD_REQUEST_MESSAGE,
+                        0,
+                        [id, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    ));
+                }
                 for id in unread {
                     v.send(&MavMessage::PARAM_REQUEST_READ(
                         apm::PARAM_REQUEST_READ_DATA {
@@ -300,9 +356,18 @@ impl World {
                         },
                     ));
                 }
-                if tick.is_multiple_of(PLAN_RESEND_TICKS) || (kind.is_some() && !rates_sent) {
-                    for (msg_id, hz) in telemetry_plan(kind, air) {
-                        let p = [msg_id as f32, (1e6 / hz) as f32, 0.0, 0.0, 0.0, 0.0, 0.0];
+                // the plan: on a change at once (stopping what is no longer wanted), else
+                // re-sent now and then so a rebooted vehicle picks it up again. Nothing for
+                // a silent link (an AUV under water can't stream and ignores the requests).
+                let want = choice.messages(kind, air);
+                let changed = sent.as_deref() != Some(want.as_slice());
+                if kind.is_some()
+                    && choice.tier != crate::telemetry::Tier::Silent
+                    && (!rates_sent || changed || tick.is_multiple_of(PLAN_RESEND_TICKS))
+                {
+                    let prior = if rates_sent { sent.as_deref() } else { None };
+                    for (msg_id, us) in crate::telemetry::interval_requests(&want, prior) {
+                        let p = [msg_id as f32, us, 0.0, 0.0, 0.0, 0.0, 0.0];
                         v.send(&mav::command_long(
                             v.sysid,
                             apm::MavCmd::MAV_CMD_SET_MESSAGE_INTERVAL,
@@ -310,6 +375,22 @@ impl World {
                             p,
                         ));
                     }
+                    if changed && rates_sent {
+                        println!(
+                            "uid {}: telemetry {} for {} ({})",
+                            v.uid,
+                            choice.tier.name(),
+                            choice
+                                .label
+                                .or(choice.profile.as_deref())
+                                .unwrap_or("unknown link"),
+                            choice.reason
+                        );
+                    }
+                    link.stats
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .plan_sent = Some(want);
                     v.write(|s| s.rates_sent = true);
                 }
             }
@@ -347,27 +428,6 @@ fn gcs_heartbeat() -> MavMessage {
         system_status: apm::MavState::MAV_STATE_ACTIVE,
         mavlink_version: 3,
     })
-}
-
-/// (message id, Hz) per vehicle. Position fastest for aircraft; everything else slow.
-/// Event messages (HEARTBEAT, STATUSTEXT, COMMAND_ACK, mission protocol) aren't streams.
-pub fn telemetry_plan(kind: Option<Kind>, air: bool) -> Vec<(u32, f64)> {
-    let mut plan = vec![
-        (
-            apm::GLOBAL_POSITION_INT_DATA::ID,
-            if air { 2.0 } else { 1.0 },
-        ),
-        (apm::ATTITUDE_DATA::ID, 1.0),
-        (apm::VFR_HUD_DATA::ID, 1.0),
-        (apm::MISSION_CURRENT_DATA::ID, 1.0),
-        (apm::SYS_STATUS_DATA::ID, 0.5),
-        (apm::GPS_RAW_INT_DATA::ID, 0.5),
-        (apm::EKF_STATUS_REPORT_DATA::ID, 0.5),
-    ];
-    if kind == Some(Kind::Tracker) {
-        plan.push((apm::NAV_CONTROLLER_OUTPUT_DATA::ID, 1.0));
-    }
-    plan
 }
 
 #[cfg(test)]
@@ -408,16 +468,5 @@ mod tests {
         assert_eq!(m.identities[&251].str("callsign"), Some("SEA 9"));
         assert_eq!(m.identities[&251].0.get("domain"), Some(&Value::Null));
         assert_eq!(m.sysid_of(251), Some(1));
-    }
-
-    #[test]
-    fn plan_rates() {
-        let plan = telemetry_plan(Some(Kind::Plane), true);
-        assert_eq!(plan[0], (33, 2.0));
-        assert_eq!(plan.len(), 7);
-        assert_eq!(
-            telemetry_plan(Some(Kind::Tracker), false).last(),
-            Some(&(62, 1.0))
-        );
     }
 }

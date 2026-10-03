@@ -26,6 +26,7 @@ mod platforms;
 mod push;
 mod space;
 mod tasks;
+mod telemetry;
 mod vehicle;
 mod world;
 

@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::sync::mpsc;
-use tokio::time::sleep;
+use tokio::time::{Instant, sleep, sleep_until};
 
 use super::*;
 use crate::clock;
@@ -16,18 +16,21 @@ use crate::link::{LinkStats, Transmit};
 use crate::mav::{self, MavMessage, apm};
 use crate::vehicle::VehicleCell;
 
+/// Where the bridge's messages to the fake go: straight in, or through a slow link.
+type Deliver = Box<dyn Fn(MavMessage) + Send + Sync>;
+
 struct FakeTx {
     port: u16,
-    tx: mpsc::UnboundedSender<MavMessage>,
+    tx: Deliver,
 }
 
 impl Transmit for FakeTx {
     fn send(&self, msg: &MavMessage) {
-        let _ = self.tx.send(msg.clone());
+        (self.tx)(msg.clone());
     }
     fn send_raw(&self, frame: &[u8]) {
         for f in mav::decode(frame) {
-            let _ = self.tx.send(f.msg);
+            (self.tx)(f.msg);
         }
     }
     fn port(&self) -> u16 {
@@ -66,6 +69,37 @@ pub(crate) struct Quirks {
     speed: f64,
     /// after this long in AUTO, drop to `mode` saying `text`
     bail_after: Option<(f64, &'static str, &'static str)>,
+    /// one-way delay of the link, both directions (in order, as the emulator delivers)
+    delay: Duration,
+    /// every `lose_every`th message in each direction is lost (0: none)
+    lose_every: u32,
+    /// the upload's final MISSION_ACK is lost (once)
+    lose_final_ack: bool,
+    /// report like an AUV under water: HEARTBEAT + HIGH_LATENCY2 every this many seconds,
+    /// nothing streamed
+    high_latency_s: Option<f64>,
+}
+
+/// A one-way slow link: each message arrives `delay` after it was sent, in order; every
+/// `lose_every`th is lost.
+fn slow_link<T: Send + 'static>(
+    delay: Duration,
+    lose_every: u32,
+    deliver: impl Fn(T) + Send + 'static,
+) -> mpsc::UnboundedSender<(Instant, T)> {
+    let (tx, mut rx) = mpsc::unbounded_channel::<(Instant, T)>();
+    tokio::spawn(async move {
+        let mut n = 0u32;
+        while let Some((sent, m)) = rx.recv().await {
+            sleep_until(sent + delay).await;
+            n += 1;
+            if lose_every > 0 && n.is_multiple_of(lose_every) {
+                continue;
+            }
+            deliver(m);
+        }
+    });
+    tx
 }
 
 struct Fake {
@@ -88,12 +122,40 @@ struct Fake {
     target_pos: Option<(f64, f64)>,
     /// set when the fake reports a mode change it made itself
     said: Option<String>,
+    /// ArduPilot's upload state: receiving, last request and last item (monotonic s)
+    receiving: bool,
+    last_request: f64,
+    last_receive: f64,
+    /// the final ACK was already lost once (`Quirks::lose_final_ack`)
+    lost_ack: bool,
+    /// HIGH_LATENCY2 mode: when the next report is due
+    next_report: f64,
+    /// to the bridge over the slow link, when there is one
+    out: Option<mpsc::UnboundedSender<(Instant, MavMessage)>>,
 }
 
 impl Fake {
     fn emit(&self, msg: MavMessage) {
-        self.cell
-            .handle(&msg, &mav::encode_as(&msg, self.sysid, 1, 0), clock::mono());
+        match &self.out {
+            Some(out) => {
+                let _ = out.send((Instant::now(), msg));
+            }
+            None => deliver(
+                &self.cell,
+                self.sysid,
+                &msg,
+                self.q.high_latency_s.is_some(),
+            ),
+        }
+    }
+
+    fn mission_ack(&self, mavtype: apm::MavMissionResult) {
+        self.emit(MavMessage::MISSION_ACK(apm::MISSION_ACK_DATA {
+            target_system: 255,
+            target_component: 190,
+            mavtype,
+            ..Default::default()
+        }));
     }
 
     fn ack(&self, command: apm::MavCmd, result: apm::MavResult) {
@@ -125,24 +187,53 @@ impl Fake {
                 }
                 _ => self.ack(c.command, apm::MavResult::MAV_RESULT_ACCEPTED),
             },
+            // ArduPilot's MissionItemProtocol: items only in order (anything else is answered
+            // INVALID_SEQUENCE and ignored), ERROR when not receiving, re-requests in `step`
             MavMessage::MISSION_COUNT(m) => {
                 self.upload_count = m.count;
                 self.mission.clear();
+                self.receiving = true;
+                self.last_receive = clock::mono();
                 self.request(0);
             }
             MavMessage::MISSION_ITEM_INT(it) => {
-                if usize::from(it.seq) == self.mission.len() {
-                    self.mission.push(it);
+                if !self.receiving {
+                    return self.mission_ack(apm::MavMissionResult::MAV_MISSION_ERROR);
                 }
+                if usize::from(it.seq) != self.mission.len() {
+                    return self.mission_ack(apm::MavMissionResult::MAV_MISSION_INVALID_SEQUENCE);
+                }
+                self.mission.push(it);
+                self.last_receive = clock::mono();
                 if self.mission.len() == usize::from(self.upload_count) {
-                    self.emit(MavMessage::MISSION_ACK(apm::MISSION_ACK_DATA {
-                        target_system: 255,
-                        target_component: 190,
-                        mavtype: apm::MavMissionResult::MAV_MISSION_ACCEPTED,
-                        ..Default::default()
-                    }));
+                    self.receiving = false;
+                    if self.q.lose_final_ack && !self.lost_ack {
+                        self.lost_ack = true;
+                    } else {
+                        self.mission_ack(apm::MavMissionResult::MAV_MISSION_ACCEPTED);
+                    }
                 } else {
                     self.request(self.mission.len() as u16);
+                }
+            }
+            MavMessage::MISSION_REQUEST_LIST(_) => {
+                if self.receiving {
+                    return self.mission_ack(apm::MavMissionResult::MAV_MISSION_DENIED);
+                }
+                self.emit(MavMessage::MISSION_COUNT(apm::MISSION_COUNT_DATA {
+                    count: self.mission.len() as u16,
+                    target_system: 255,
+                    target_component: 190,
+                    ..Default::default()
+                }));
+            }
+            MavMessage::MISSION_REQUEST_INT(r) => {
+                if self.receiving {
+                    return self.mission_ack(apm::MavMissionResult::MAV_MISSION_DENIED);
+                }
+                match self.mission.get(usize::from(r.seq)) {
+                    Some(it) => self.emit(MavMessage::MISSION_ITEM_INT(it.clone())),
+                    None => self.mission_ack(apm::MavMissionResult::MAV_MISSION_INVALID_SEQUENCE),
                 }
             }
             MavMessage::PARAM_SET(p) => self.emit(MavMessage::PARAM_VALUE(apm::PARAM_VALUE_DATA {
@@ -160,7 +251,8 @@ impl Fake {
         }
     }
 
-    fn request(&self, seq: u16) {
+    fn request(&mut self, seq: u16) {
+        self.last_request = clock::mono();
         self.emit(MavMessage::MISSION_REQUEST_INT(
             apm::MISSION_REQUEST_INT_DATA {
                 seq,
@@ -190,6 +282,14 @@ impl Fake {
     fn step(&mut self, dt: f64) {
         self.speed_now = 0.0;
         let now = clock::mono();
+        if self.receiving {
+            if now - self.last_receive > 8.0 {
+                self.receiving = false;
+                self.mission_ack(apm::MavMissionResult::MAV_MISSION_OPERATION_CANCELLED);
+            } else if now - self.last_request > 1.0 {
+                self.request(self.mission.len() as u16);
+            }
+        }
         let auto = self.mode == self.fw.mode("AUTO");
         if auto && self.armed {
             let since = *self.auto_since.get_or_insert(now);
@@ -238,6 +338,33 @@ impl Fake {
         } else {
             apm::MavModeFlag::empty()
         };
+        let heartbeat = MavMessage::HEARTBEAT(apm::HEARTBEAT_DATA {
+            custom_mode: self.mode,
+            mavtype: self.fw.mav_type(),
+            autopilot: apm::MavAutopilot::MAV_AUTOPILOT_ARDUPILOTMEGA,
+            base_mode: base | apm::MavModeFlag::MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+            system_status: apm::MavState::MAV_STATE_ACTIVE,
+            mavlink_version: 3,
+        });
+        if let Some(every) = self.q.high_latency_s {
+            if now >= self.next_report {
+                self.next_report = now + every;
+                self.emit(heartbeat);
+                self.emit(MavMessage::HIGH_LATENCY2(apm::HIGH_LATENCY2_DATA {
+                    latitude: (self.lat * 1e7) as i32,
+                    longitude: (self.lon * 1e7) as i32,
+                    altitude: self.alt_rel as i16,
+                    groundspeed: (self.speed_now * 5.0) as u8,
+                    wp_num: self.seq,
+                    custom_mode: self.mode as u16,
+                    mavtype: self.fw.mav_type(),
+                    failure_flags: apm::HlFailureFlag::HL_FAILURE_FLAG_GPS,
+                    battery: 90,
+                    ..Default::default()
+                }));
+            }
+            return;
+        }
         self.emit(MavMessage::HEARTBEAT(apm::HEARTBEAT_DATA {
             custom_mode: self.mode,
             mavtype: self.fw.mav_type(),
@@ -292,6 +419,13 @@ impl TaskManager {
     }
 }
 
+fn deliver(cell: &VehicleCell, sysid: u8, msg: &MavMessage, link_stats: bool) {
+    if link_stats {
+        cell.link_on_message(msg); // as the receive loop does
+    }
+    cell.handle(msg, &mav::encode_as(msg, sysid, 1, 0), clock::mono());
+}
+
 /// A fake vehicle at (lat, lon), running until the test ends.
 pub(crate) fn spawn_fake(
     uid: Uid,
@@ -303,13 +437,32 @@ pub(crate) fn spawn_fake(
     let (tx, mut rx) = mpsc::unbounded_channel();
     let port = 20000 + uid as u16;
     let sysid = (uid % 250 + 1) as u8;
+    let slow = !q.delay.is_zero() || q.lose_every > 0;
+    let to_fake: Deliver = if slow {
+        let link = slow_link(q.delay, q.lose_every, move |m| {
+            let _ = tx.send(m);
+        });
+        Box::new(move |m| {
+            let _ = link.send((Instant::now(), m));
+        })
+    } else {
+        Box::new(move |m| {
+            let _ = tx.send(m);
+        })
+    };
     let cell = Arc::new(VehicleCell::new(
         uid,
         sysid,
-        Arc::new(FakeTx { port, tx }),
+        Arc::new(FakeTx { port, tx: to_fake }),
         Arc::new(Mutex::new(LinkStats::default())),
         None,
     ));
+    let out = slow.then(|| {
+        let c = cell.clone();
+        slow_link(q.delay, q.lose_every, move |m: MavMessage| {
+            deliver(&c, sysid, &m, true)
+        })
+    });
     let mut fake = Fake {
         fw,
         sysid,
@@ -329,6 +482,12 @@ pub(crate) fn spawn_fake(
         auto_since: None,
         target_pos: None,
         said: None,
+        receiving: false,
+        last_request: 0.0,
+        last_receive: 0.0,
+        lost_ack: false,
+        next_report: 0.0,
+        out,
     };
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_millis(200));
@@ -763,4 +922,180 @@ fn request_json_matches_the_console() {
         serde_json::to_string(&r.params).ok().as_deref(),
         Some(r#"{"center":[-122.45,37.8],"radius":250.0}"#)
     );
+}
+
+/// An Iridium-class link: 700 ms each way, one message in eleven lost each way (9%, worse
+/// than the profile's 2%).
+fn iridium() -> Quirks {
+    Quirks {
+        delay: Duration::from_millis(700),
+        lose_every: 11,
+        ..quick()
+    }
+}
+
+fn patrol(uid: Uid, cell: &Arc<VehicleCell>, route: Vec<LngLat>) -> TaskOrder {
+    TaskOrder::new(
+        request(
+            "patrol",
+            &[uid],
+            TaskParams {
+                route: Some(route),
+                ..TaskParams::default()
+            },
+        ),
+        &fleet(&[cell]),
+    )
+    .unwrap_or_else(|e| panic!("{e}"))
+}
+
+#[tokio::test(start_paused = true)]
+async fn mission_uploads_over_a_slow_lossy_link() {
+    // A surfaced AUV on its mast radio: the vehicle re-requests every second, so with a 1.4 s
+    // round trip every item is asked for twice. The old 1 s / 1.5 s timeouts failed this with
+    // MAV_MISSION_INVALID_SEQUENCE at item 2; the duplicates are now not answered (in flight)
+    // or ignored (INVALID_SEQUENCE), and the measured round trip sets the waits.
+    let auv = spawn_fake(20, Firmware::Sub, LAT, LON, iridium());
+    auv.set_link_rtt(1.4, 0.15);
+    sleep(Duration::from_secs(2)).await;
+    let tm = TaskManager::default();
+    let route = vec![
+        [LON + 0.002, LAT],
+        [LON + 0.002, LAT + 0.002],
+        [LON, LAT + 0.002],
+        [LON - 0.001, LAT + 0.001],
+        [LON - 0.001, LAT],
+    ];
+    let t = tm.dispatch_unchecked(patrol(20, &auv, route.clone()));
+    let s = settle(&t.ops[0], 600).await;
+    assert_eq!(states(&s), [Queued, Sent, Acked, Active, Done], "{s:?}");
+    assert_eq!(s.detail, "first lap complete, patrolling");
+    // nothing measured yet (no TIMESYNC answer, no emulator): the floors, and it still works
+    let auv2 = spawn_fake(21, Firmware::Sub, LAT, LON, iridium());
+    sleep(Duration::from_secs(2)).await;
+    let t = tm.dispatch_unchecked(patrol(21, &auv2, route));
+    let s = settle(&t.ops[0], 600).await;
+    assert_eq!(s.state, Done, "{s:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_lost_final_ack_is_settled_by_asking_the_vehicle() {
+    let boat = spawn_fake(
+        22,
+        Firmware::Rover,
+        LAT,
+        LON,
+        Quirks {
+            delay: Duration::from_millis(300),
+            lose_final_ack: true,
+            ..quick()
+        },
+    );
+    boat.set_link_rtt(0.6, 0.05);
+    sleep(Duration::from_secs(1)).await;
+    let tm = TaskManager::default();
+    let t = tm.dispatch_unchecked(patrol(
+        22,
+        &boat,
+        vec![[LON + 0.002, LAT], [LON + 0.002, LAT + 0.002]],
+    ));
+    let s = settle(&t.ops[0], 300).await;
+    // the resent last item met MAV_MISSION_ERROR (no longer receiving), which used to fail
+    // the op; asking for the count and the last item showed the mission had arrived
+    assert_eq!(states(&s), [Queued, Sent, Acked, Active, Done], "{s:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn commands_wait_for_a_slow_ack() {
+    // GEO plus queueing: 1.2 s each way. A 1 s wait would resend every command and give up
+    // after five tries in 5 s; the link's timeout waits for the answer.
+    let boat = spawn_fake(
+        23,
+        Firmware::Rover,
+        LAT,
+        LON,
+        Quirks {
+            delay: Duration::from_millis(1200),
+            ..quick()
+        },
+    );
+    boat.set_link_rtt(2.4, 0.2);
+    sleep(Duration::from_secs(3)).await;
+    let tm = TaskManager::default();
+    let t = tm.dispatch_unchecked(
+        TaskOrder::new(
+            request("hold", &[23], TaskParams::default()),
+            &fleet(&[&boat]),
+        )
+        .unwrap_or_else(|e| panic!("{e}")),
+    );
+    let s = settle(&t.ops[0], 60).await;
+    assert_eq!(states(&s), [Queued, Sent, Acked, Done], "{s:?}");
+    assert_eq!(
+        boat.link_timing().ack_timeout(0),
+        Duration::from_millis(3450)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn rare_reports_are_not_a_stall_but_a_stall_still_is() {
+    // An AUV under water: HEARTBEAT + HIGH_LATENCY2 every 20 s, nothing else. Speed is known
+    // only at each report, so a 10 s NOT MOVING would fire between reports of a vehicle doing
+    // 2 m/s. It waits 2 x 20 s + the round trip instead.
+    let auv = spawn_fake(
+        24,
+        Firmware::Sub,
+        LAT,
+        LON,
+        Quirks {
+            speed: 2.0,
+            high_latency_s: Some(20.0),
+            ..Quirks::default()
+        },
+    );
+    sleep(Duration::from_secs(25)).await;
+    assert_eq!(auv.link_timing().heartbeat_s, 20.0);
+    let tm = TaskManager::default();
+    let t = tm.dispatch_unchecked(patrol(
+        24,
+        &auv,
+        vec![[LON + 0.01, LAT], [LON + 0.01, LAT + 0.01]],
+    ));
+    for _ in 0..240 {
+        sleep(Duration::from_millis(500)).await;
+        let s = t.ops[0].snapshot();
+        assert!(!s.detail.starts_with("NOT MOVING"), "{s:?}");
+        assert_ne!(s.state, Failed, "{s:?}");
+    }
+    assert_eq!(t.ops[0].state(), Active);
+    // the same AUV, stuck: NOT MOVING, once 40 s have passed without movement
+    let stuck = spawn_fake(
+        25,
+        Firmware::Sub,
+        LAT,
+        LON,
+        Quirks {
+            speed: 0.0,
+            high_latency_s: Some(20.0),
+            ..Quirks::default()
+        },
+    );
+    sleep(Duration::from_secs(25)).await;
+    let t = tm.dispatch_unchecked(patrol(
+        25,
+        &stuck,
+        vec![[LON + 0.01, LAT], [LON + 0.01, LAT + 0.01]],
+    ));
+    let mut said = None;
+    for i in 0..400 {
+        sleep(Duration::from_millis(500)).await;
+        let s = t.ops[0].snapshot();
+        if s.detail.starts_with("NOT MOVING") {
+            said = Some((i, s.detail));
+            break;
+        }
+    }
+    let (i, detail) = said.unwrap_or_else(|| panic!("never NOT MOVING"));
+    assert!(detail.starts_with("NOT MOVING for 4"), "{detail}");
+    assert!(i > 80, "after {i} half seconds");
 }
