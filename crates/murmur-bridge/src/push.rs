@@ -527,15 +527,16 @@ impl Subscription {
         (msg.kind == "view").then_some(msg.sub)
     }
 
-    /// Whether a point is in the view grown by the margin.
-    fn contains(&self, [lon, lat]: [f64; 2]) -> bool {
+    /// Whether a point is in the view grown by the margin (a fraction of its width and
+    /// height on each side).
+    fn contains(&self, [lon, lat]: [f64; 2], margin: f64) -> bool {
         let Some([w, s, e, n]) = self.bounds else {
             return false;
         };
         if !(w.is_finite() && s.is_finite() && e.is_finite() && n.is_finite()) {
             return false;
         }
-        let dy = (n - s) * VIEW_MARGIN;
+        let dy = (n - s) * margin;
         if lat < s - dy || lat > n + dy {
             return false;
         }
@@ -543,7 +544,7 @@ impl Subscription {
             // across the antimeridian
             return lon >= w || lon <= e;
         }
-        let dx = (e - w) * VIEW_MARGIN;
+        let dx = (e - w) * margin;
         lon >= w - dx && lon <= e + dx
     }
 }
@@ -558,6 +559,9 @@ pub struct ClientView {
     frames: u64,
     /// the last clusters JSON sent, while the client is in cluster mode
     clusters: Option<String>,
+    /// the view moved: the cells (cut to it) go out with the next delta, not the next
+    /// lite frame
+    clusters_dirty: bool,
 }
 
 struct Sent {
@@ -596,6 +600,7 @@ impl ClientView {
             taskings: None,
             frames: 0,
             clusters: None,
+            clusters_dirty: false,
         }
     }
 
@@ -603,6 +608,7 @@ impl ClientView {
     pub fn subscribe(&mut self, sub: Subscription) {
         if self.lod.is_some() {
             self.sub = Some(sub);
+            self.clusters_dirty = true;
         }
     }
 
@@ -626,7 +632,7 @@ impl ClientView {
         let in_view: Vec<bool> = frame
             .vehicles
             .iter()
-            .map(|v| v.pos.is_some_and(|p| sub.contains(p)))
+            .map(|v| v.pos.is_some_and(|p| sub.contains(p, VIEW_MARGIN)))
             .collect();
         let clustered = in_view.iter().filter(|b| **b).count() > lod.max_full;
         Plan {
@@ -679,8 +685,9 @@ impl ClientView {
             frame.taskings
         );
         self.clusters = None;
+        self.clusters_dirty = false;
         if plan.clustered {
-            let c = clusters_json(frame, plan.tile_zoom);
+            let c = clusters_json(frame, plan.tile_zoom, self.sub.as_ref());
             msg.push_str(",\"clusters\":");
             msg.push_str(&c);
             self.clusters = Some(c);
@@ -791,9 +798,9 @@ impl ClientView {
             self.taskings = Some(frame.taskings.clone());
         }
         if plan.clustered {
-            // the first clustered frame at once, then at the lite cadence
-            if lite_frame || self.clusters.is_none() {
-                let c = clusters_json(frame, plan.tile_zoom);
+            // the first clustered frame and a moved view at once, then at the lite cadence
+            if lite_frame || self.clusters.is_none() || self.clusters_dirty {
+                let c = clusters_json(frame, plan.tile_zoom, self.sub.as_ref());
                 if self.clusters.as_deref() != Some(c.as_str()) {
                     msg.push_str(",\"clusters\":");
                     msg.push_str(&c);
@@ -803,6 +810,7 @@ impl ClientView {
         } else if self.clusters.take().is_some() {
             msg.push_str(",\"clusters\":null");
         }
+        self.clusters_dirty = false;
         msg.push('}');
         msg
     }
@@ -835,11 +843,21 @@ struct CellJson {
     tk: [u32; 5],
 }
 
-/// `{"z": tile zoom, "cells": [...]}` for every tile with something in it.
-pub fn clusters_json(frame: &PushFrame, z: u8) -> String {
+/// The cluster cells go out for the view grown by this much on each side (twice the detail
+/// margin): a pan reveals cells that are already there, and the payload is bounded by the
+/// screen, not the fleet.
+const CLUSTER_MARGIN: f64 = 2.0 * VIEW_MARGIN;
+
+/// `{"z": tile zoom, "cells": [...]}` for every tile with something in it, within the view
+/// (`within`) grown by `CLUSTER_MARGIN`; everywhere without one.
+pub fn clusters_json(frame: &PushFrame, z: u8, within: Option<&Subscription>) -> String {
+    let near = |p: [f64; 2]| within.is_none_or(|s| s.contains(p, CLUSTER_MARGIN));
     let mut cells: BTreeMap<(i64, i64), Cell> = BTreeMap::new();
     for v in &frame.vehicles {
         let Some([lon, lat]) = v.pos else { continue };
+        if !near([lon, lat]) {
+            continue;
+        }
         let c = cells.entry(tile(lon, lat, z)).or_default();
         c.n += 1;
         c.d[v.domain as usize] += 1;
@@ -848,6 +866,9 @@ pub fn clusters_json(frame: &PushFrame, z: u8) -> String {
         c.lat += lat;
     }
     for t in &frame.tracks {
+        if !near([t.lon, t.lat]) {
+            continue;
+        }
         let c = cells.entry(tile(t.lon, t.lat, z)).or_default();
         c.tk[match t.affiliation {
             Affiliation::Hostile => 0,
@@ -1342,9 +1363,13 @@ mod tests {
             TrackMark { lon: 0.0, lat: 0.0, affiliation: Affiliation::Neutral },
             TrackMark { lon: 100.0, lat: 50.0, affiliation: Affiliation::Unknown },
         ];
-        let c = parse(&clusters_json(&f, 1));
+        let c = parse(&clusters_json(&f, 1, None));
         let cells = c["cells"].as_array().expect("cells");
         assert_eq!(cells.len(), 2);
+        // cut to a view: the far cell is left out (the window is the view grown by half)
+        let c = parse(&clusters_json(&f, 1, Some(&sub(-1.0, -1.0, 1.0, 1.0, 10.0, &[]))));
+        assert_eq!(c["cells"].as_array().map(Vec::len), Some(1));
+        assert_eq!(c["cells"][0]["n"], 3);
         let near = cells.iter().find(|c| c["n"] == 3).expect("the vehicles' cell");
         assert_eq!(near["lost"], 1);
         assert_eq!(near["tk"], serde_json::json!([1, 0, 0, 1, 0]));
@@ -1357,13 +1382,13 @@ mod tests {
     fn view_message_parses_and_antimeridian_wraps() {
         let s = Subscription::parse(r#"{"type":"view","bounds":[170,-10,-170,10],"zoom":9.5,"pin":[3]}"#)
             .expect("a view");
-        assert!(s.contains([175.0, 0.0]));
-        assert!(s.contains([-175.0, 0.0]));
-        assert!(!s.contains([0.0, 0.0]));
+        assert!(s.contains([175.0, 0.0], VIEW_MARGIN));
+        assert!(s.contains([-175.0, 0.0], VIEW_MARGIN));
+        assert!(!s.contains([0.0, 0.0], VIEW_MARGIN));
         assert!(s.pin.contains(&3));
         assert!(Subscription::parse(r#"{"type":"other"}"#).is_none());
         assert!(Subscription::parse("nonsense").is_none());
         let none = Subscription::parse(r#"{"type":"view"}"#).expect("bounds optional");
-        assert!(!none.contains([0.0, 0.0]));
+        assert!(!none.contains([0.0, 0.0], VIEW_MARGIN));
     }
 }
