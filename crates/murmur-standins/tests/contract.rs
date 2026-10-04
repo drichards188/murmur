@@ -189,6 +189,9 @@ async fn offline(spec: Spec, alt: f64) -> (Vehicle, UdpSocket) {
     let port = sink.local_addr().expect("addr").port();
     let sock = UdpSocket::bind("127.0.0.1:0").await.expect("bind");
     sock.connect(("127.0.0.1", port)).await.expect("connect");
+    // tokio's try_send needs the socket's writability observed once (the engine's run loop
+    // polls the reactor every tick; a stepped vehicle never yields to it)
+    sock.writable().await.expect("writable");
     let v = Vehicle::new(config(spec, port, alt), sock, None).expect("vehicle");
     (v, sink)
 }
@@ -566,14 +569,15 @@ async fn gcs_heartbeat_loss_triggers_the_rover_failsafe() {
         ..Default::default()
     };
     g.send(MavMessage::HEARTBEAT(gcs_hb.clone())).await;
-    // FS_GCS_TIMEOUT 5 s, then FS_TIMEOUT 1.5 s
+    // FS_GCS_TIMEOUT 5 s, then FS_TIMEOUT 1.5 s; announced by the radio check, which runs
+    // first (failsafe.rs, as the motorboat SITL does with FS_THR_ENABLE on)
     let text = g
         .expect(|m| match m {
             MavMessage::STATUSTEXT(t) => t.text.to_str().ok().map(str::to_owned),
             _ => None,
         })
         .await;
-    assert_eq!(text, "GCS Failsafe");
+    assert_eq!(text, "Radio Failsafe");
     let hb = g
         .expect(|m| match m {
             MavMessage::HEARTBEAT(h) => Some((h.custom_mode, h.system_status)),
@@ -644,6 +648,103 @@ async fn plane_rtl_circles_home_at_the_turn_bounded_radius() {
         (v.st.alt - 7600.0).abs() < 1.0,
         "RTL_ALTITUDE -1: same altitude"
     );
+}
+
+/// Events as they went on the wire: "IR n" for MISSION_ITEM_REACHED, the STATUSTEXTs. The
+/// sink is read as a std socket: a stepped test never yields to tokio's reactor.
+fn events(sink: &std::net::UdpSocket) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut buf = [0u8; 2048];
+    while let Ok(n) = sink.recv(&mut buf) {
+        let mut r = PeekReader::new(&buf[..n]);
+        match mavlink::read_v2_msg::<MavMessage, _>(&mut r) {
+            Ok((_, MavMessage::STATUSTEXT(t))) => out.push(t.text.to_str().unwrap_or("").to_owned()),
+            Ok((_, MavMessage::MISSION_ITEM_REACHED(m))) => out.push(format!("IR {}", m.seq)),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The motorboat SITL's mission in sim/tests/standins_vs_sitl_plane_boat_sub.py, on the wire:
+/// MISSION_ITEM_REACHED for the DO item (it takes the waypoint's), the waypoints and the
+/// hold-time waypoint on each pass, AP_Mission's texts in order, "Mission Complete".
+#[tokio::test]
+async fn boat_mission_with_do_items_twice_as_ardurover_reports_it() {
+    let mut s = spec("boat");
+    s.cruise_mps = 12.0;
+    let (mut v, sink) = offline(s, 0.0).await;
+    let sink = sink.into_std().expect("std socket");
+    sink.set_nonblocking(true).expect("nonblocking");
+    let item = |seq: u16, command: MavCmd, north_m: f64, east_m: f64, p1: f32, p2: f32| {
+        let located = (north_m, east_m) != (0.0, 0.0);
+        MISSION_ITEM_INT_DATA {
+            seq,
+            command,
+            #[allow(deprecated)]
+            frame: MavFrame::MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
+            x: if located { ((37.8 + north_m / 111_320.0) * 1e7) as i32 } else { 0 },
+            y: if located { ((-122.6 + east_m / (111_320.0 * 37.8f64.to_radians().cos())) * 1e7) as i32 } else { 0 },
+            param1: p1,
+            param2: p2,
+            ..Default::default()
+        }
+    };
+    v.mission.install(vec![
+        item(0, MavCmd::MAV_CMD_NAV_WAYPOINT, 0.0, 0.0, 0.0, 0.0),
+        item(1, MavCmd::MAV_CMD_NAV_WAYPOINT, 0.0, 150.0, 0.0, 0.0),
+        item(2, MavCmd::MAV_CMD_DO_CHANGE_SPEED, 0.0, 0.0, 1.0, 6.0),
+        item(3, MavCmd::MAV_CMD_NAV_WAYPOINT, 150.0, 150.0, 0.0, 0.0),
+        item(4, MavCmd::MAV_CMD_NAV_WAYPOINT, 150.0, 0.0, 5.0, 0.0),
+        item(5, MavCmd::MAV_CMD_DO_JUMP, 0.0, 0.0, 1.0, 1.0),
+    ]);
+    v.st.armed = true;
+    v.set_mode("AUTO");
+    let mut log = events(&sink);
+    let mut settle = 0;
+    for _ in 0..3000 {
+        // as the engine's run loop does between ticks: a send that found the socket not
+        // writable clears tokio's readiness until the reactor sees it writable again
+        v.link.sock.writable().await.expect("writable");
+        v.step();
+        // a breath for loopback delivery (a softirq) to keep up with ticks run back to back
+        std::thread::sleep(Duration::from_micros(200));
+        log.extend(events(&sink));
+        if v.mission.complete {
+            settle += 1;
+            if settle > 10 {
+                break;
+            }
+        }
+    }
+    // loopback delivery (a softirq) lags a loop that runs minutes of physics in milliseconds,
+    // more so beside the other tests: drain until nothing more comes for a while
+    let mut quiet = 0;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while quiet < 6 && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+        let more = events(&sink);
+        quiet = if more.is_empty() { quiet + 1 } else { 0 };
+        log.extend(more);
+    }
+    let pass = [
+        "Mission: 1 WP",
+        "IR 2",
+        "Reached waypoint #1",
+        "Mission: 2 ChangeSpeed",
+        "speed: 6.0 m/s",
+        "Mission: 3 WP",
+        "IR 3",
+        "Reached waypoint #3",
+        "Mission: 4 WP",
+        "Reached waypoint #4. Loiter for 5 seconds",
+        "IR 4",
+    ];
+    let mut want: Vec<&str> = pass.to_vec();
+    want.push("Mission: 5 Jump 1/1");
+    want.extend(pass);
+    want.push("Mission Complete");
+    assert_eq!(log, want);
 }
 
 #[tokio::test]

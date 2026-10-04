@@ -4,8 +4,8 @@
 //! LOITER 3, RTL 4, AUTO 5, HOLD 6; boots in LOITER. AUTO accepts any mission (or none) and
 //! runs only NAV_WAYPOINT: AP_Mission announces each command it starts ("Mission: 2 WP"),
 //! Blimp skips every other one ("Command not supported. Skipped.", TAKEOFF and LOITER_UNLIM
-//! included) and AP_Mission walks DO_JUMPs ("Mission: 5 Jump 2/unlimited" from the second
-//! pass). Waypoints are not reported reached (no text, no MISSION_ITEM_REACHED): the mission
+//! included) and AP_Mission walks DO_JUMPs ("Mission: 5 Jump 1/unlimited" on every run).
+//! Waypoints are not reported reached (no text, no MISSION_ITEM_REACHED): the mission
 //! just moves on. At the end: "Mission complete.", holding at the last target. Blimp has no
 //! in-flight disarm check, so a GCS disarm in the air is accepted (the envelope floats on).
 //! RTL flies to home and down to it (its target is the home position, altitude included, so
