@@ -99,6 +99,14 @@ impl Vehicle {
         let firmware = behavior.firmware();
         let mut params = Params::seed(firmware, &cfg.spec, cfg.sysid());
         params.extend(behavior.extra_params(&cfg.spec));
+        for (name, value) in &cfg.params {
+            if !params.preset(name, *value) {
+                eprintln!(
+                    "{}: no parameter {name} in this stand-in, ignored",
+                    cfg.callsign
+                );
+            }
+        }
         let fix = behavior.gps(&st).0 as u8
             >= mavlink::dialects::ardupilotmega::GpsFixType::GPS_FIX_TYPE_3D_FIX as u8;
         let nav = Nav::new(&mut rng, (lat, lon, alt), Aid::for_firmware(firmware), fix);

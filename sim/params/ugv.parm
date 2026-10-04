@@ -1,0 +1,6 @@
+# Layered on top of ArduPilot's built-in rover + skid-steer defaults.
+# GCS (lost-link) failsafe on, as the stand-ins have it (ArduRover ships it off, action Hold):
+# RTL when no GCS heartbeat for FS_GCS_TIMEOUT, which swarm.py sets from the link profile
+# (lost_link_s in sim/links.toml).
+FS_GCS_ENABLE 1
+FS_ACTION 1

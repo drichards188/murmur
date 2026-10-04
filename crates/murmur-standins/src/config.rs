@@ -1,5 +1,7 @@
 //! `sim/run/standins.json`, written by `sim/swarm.py`.
 
+use std::collections::BTreeMap;
+
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -26,6 +28,12 @@ pub struct VehicleConfig {
     /// [lat, lon, alt_m (negative = depth), heading_deg]
     pub home: [f64; 4],
     pub spec: Spec,
+    /// ArduPilot parameters `sim/swarm.py` sets for this vehicle, as a SITL vehicle gets them
+    /// in its defaults file (today the lost-link failsafe timer for its link profile, from
+    /// `sim/links.toml`). Applied over the seeded table; names the stand-in doesn't model are
+    /// reported and skipped.
+    #[serde(default)]
+    pub params: BTreeMap<String, f64>,
 }
 
 /// The platform entry from `sim/platforms.toml`. Only what the kinematics use.
