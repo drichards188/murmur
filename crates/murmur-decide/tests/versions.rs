@@ -37,7 +37,7 @@ const LOGS: [(&str, u32); 9] = [
     // rules 4: the same scenario, its run.started naming the operator roster and its
     // engagement order the loiter radius
     ("v4-engagement-scenario-01.jsonl", 4),
-    // rules 5 (built from a clean fcbe3c1): the same scenario with the fallback preloaded as
+    // rules 5 (clean builds of fcbe3c1 and 7c55ed3): the same scenario with the fallback preloaded as
     // the platform's lost-link action (the order's preload, set and restore reports), and
     // scenario 54, a lost friendly an operator accepted (engage.accepted, the catalog's climb
     // rate in the world facts)
