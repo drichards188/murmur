@@ -82,7 +82,7 @@
 //! truncated tail needs the head hash ([`ReplayReport::head_sha256`]) checked against an
 //! external anchor.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
@@ -95,7 +95,7 @@ use crate::engage::{
 };
 use crate::engine::{
     dispatched_event, engaged_vehicles, is_self_approval, op_state_mismatch, op_state_owner,
-    order_for, supersede_mismatch,
+    order_for, supersede_mismatch, waiting_vehicles,
 };
 use crate::ids::{OperatorId, SessionId, Uid};
 use crate::hash::{GENESIS, sha256_hex};
@@ -172,6 +172,8 @@ pub struct ReplayReport {
     pub queue_expired: usize,
     pub resumed: usize,
     pub reboots: usize,
+    /// Rules 5: dispatched intents sent back to the queue (their link lost before the start).
+    pub requeued: usize,
     /// The intents the log leaves open (a vehicle task queued, approved but not dispatched,
     /// or dispatched with ops still running): what a restarted bridge carries over.
     #[serde(skip)]
@@ -271,8 +273,24 @@ struct Tracked {
     queued_logged: Option<u64>,
     recheck: Option<Verdict>,
     queue_expired: bool,
-    /// Each vehicle's last op state.
+    /// The deadline sends it back to the inbox (a human's approval held long enough), and
+    /// a `queue.expired` that did so waits for its transition.
+    queue_inbox: bool,
+    queue_expired_inbox: bool,
+    /// The last re-check's seq (a dispatch from the queue follows it at once).
+    recheck_seq: Option<u64>,
+    /// An `intent.requeued` waiting for its transition.
+    requeued_logged: Option<u64>,
+    /// Each vehicle's last op state (since its last dispatch).
     ops: BTreeMap<Uid, String>,
+    /// The vehicles that ever started it (this run or, carried over, one before).
+    committed: BTreeSet<Uid>,
+    /// Dispatched before (this run or one before).
+    dispatched_before: bool,
+    /// Its basis is from the run before a bridge restart.
+    basis_carried: bool,
+    /// Each vehicle's platform as its last check saw it (or as carried over).
+    platforms: BTreeMap<Uid, String>,
 }
 
 impl Tracked {
@@ -324,8 +342,25 @@ impl Tracked {
             queued_logged: None,
             recheck: None,
             queue_expired: false,
+            queue_inbox: false,
+            queue_expired_inbox: false,
+            recheck_seq: None,
+            requeued_logged: None,
             ops: BTreeMap::new(),
+            committed: BTreeSet::new(),
+            dispatched_before: false,
+            basis_carried: false,
+            platforms: BTreeMap::new(),
         }
+    }
+
+    /// Back to the inbox from the queue: who approves is decided from scratch.
+    fn back_to_inbox(&mut self) {
+        self.signers.clear();
+        self.granted = false;
+        self.granted_at_submission = false;
+        self.expires_t = None;
+        self.approval_rec = None;
     }
 
     /// The decision's routing on this intent: tier, rule, approvers, who may approve.
@@ -464,6 +499,9 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (5, "\"booted_t\":", "a vehicle's boot instant"),
     (5, "\"phase\":\"dequeue\"", "a dequeue check"),
     (5, "\"queue\":{", "a [queue] policy"),
+    (5, "\"type\":\"intent.requeued\"", "an intent sent back to the queue"),
+    (5, "\"waiting\":", "a human order waiting in the queue (a decision's fact)"),
+    (5, "\"reach\":", "a vehicle's reach"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.
@@ -648,6 +686,8 @@ fn replay_inner<S: AsRef<str>>(
     let mut newest_on: BTreeMap<Uid, IntentId> = BTreeMap::new();
     // intents carried over from a previous run, checked against it after the loop
     let mut resumed: Vec<ResumedEvent> = Vec::new();
+    // when each vehicle was last logged rebooting
+    let mut rebooted: BTreeMap<Uid, Time> = BTreeMap::new();
 
     for (i, e) in events.iter().enumerate() {
         let want_prev = if i == 0 {
@@ -804,6 +844,7 @@ fn replay_inner<S: AsRef<str>>(
                 preview,
             } => {
                 check_engaged(&mut r, e, *intent, &inputs.engaged, &intents);
+                check_waiting(&mut r, e, *intent, &inputs.waiting, &intents);
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(
                         &mut r,
@@ -870,6 +911,13 @@ fn replay_inner<S: AsRef<str>>(
                     }
                 }
                 tr.last_check_passed = Some(again_passed);
+                // which platform each of its vehicles was (a next run carries it only onto the
+                // same ones)
+                for u in &tr.spec.uids {
+                    if let Some(p) = inputs.vehicles.get(u).and_then(|v| v.platform.as_ref()) {
+                        tr.platforms.insert(u.clone(), p.id.clone());
+                    }
+                }
                 tr.last_inputs = Some(Box::new(inputs));
                 tr.check_window = Some((before_t, e.t));
                 tr.last_results = again;
@@ -892,6 +940,7 @@ fn replay_inner<S: AsRef<str>>(
                 decision,
             } => {
                 check_engaged(&mut r, e, *intent, &inputs.engaged, &intents);
+                check_waiting(&mut r, e, *intent, &inputs.waiting, &intents);
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(
                         &mut r,
@@ -968,12 +1017,15 @@ fn replay_inner<S: AsRef<str>>(
                         );
                     }
                 }
-                if tr.state == State::Queued && tr.recheck != Some(Verdict::Inbox) {
+                if tr.state == State::Queued
+                    && tr.recheck != Some(Verdict::Inbox)
+                    && !tr.queue_expired_inbox
+                {
                     bad(
                         &mut r,
                         e,
                         Some(*intent),
-                        "a queued intent sent for approval without a re-check that says so",
+                        "a queued intent sent for approval without a re-check or a queue expiry that says so",
                         json(&tr.recheck),
                         json(&Verdict::Inbox),
                     );
@@ -1371,6 +1423,24 @@ fn replay_inner<S: AsRef<str>>(
                         );
                     }
                 }
+                // and a queue expiry by its own (expired, or back to the inbox)
+                if tr.state == State::Queued && tr.queue_expired {
+                    let follows = if tr.queue_expired_inbox {
+                        Transition::RequireApproval
+                    } else {
+                        Transition::Expire
+                    };
+                    if *transition != follows {
+                        bad(
+                            &mut r,
+                            e,
+                            Some(*intent),
+                            "a queue expiry not carried out",
+                            json(transition),
+                            json(&follows),
+                        );
+                    }
+                }
                 // the engine writes an intent.dispatched and its transition back to back
                 if let Some(seq) = tr.dispatch_logged
                     && *transition != Transition::Dispatch
@@ -1389,6 +1459,8 @@ fn replay_inner<S: AsRef<str>>(
                     Transition::Dispatch => {
                         tr.dispatch_logged = None;
                         tr.dispatched = true;
+                        tr.dispatched_before = true;
+                        tr.ops.clear();
                         last_dispatch = Some(*intent);
                         for u in &tr.spec.uids {
                             newest_on.insert(u.clone(), *intent);
@@ -1411,6 +1483,10 @@ fn replay_inner<S: AsRef<str>>(
                         tr.queue_expired = false;
                         r.queue_expired += 1;
                     }
+                    Transition::Requeue => {
+                        tr.requeued_logged = None;
+                        r.requeued += 1;
+                    }
                     // what the approval rests on, as the engine records it: the last check,
                     // the decision that routed it, the engagements in play then, who
                     Transition::AutoApprove
@@ -1427,11 +1503,15 @@ fn replay_inner<S: AsRef<str>>(
                                 .map(|w| w.engaged.clone())
                                 .unwrap_or_default(),
                         });
+                        tr.basis_carried = false;
                     }
                     _ => {}
                 }
                 if tr.state == State::Queued {
                     tr.recheck = None;
+                    tr.recheck_seq = None;
+                    tr.queue_expired = false;
+                    tr.queue_expired_inbox = false;
                 }
                 tr.state = *to;
             }
@@ -1441,6 +1521,8 @@ fn replay_inner<S: AsRef<str>>(
                 uids,
                 space: order,
                 engage: engage_order,
+                inputs: reach_inputs,
+                reach,
             } => {
                 let Some(tr) = intents.get_mut(intent) else {
                     bad(
@@ -1477,6 +1559,54 @@ fn replay_inner<S: AsRef<str>>(
                     );
                 }
                 let from_queue = tr.state == State::Queued && tr.recheck == Some(Verdict::Dispatch);
+                // out of the queue: at once after the re-check that allows it
+                if from_queue && tr.recheck_seq.map(|s| s + 1) != Some(e.seq) {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "dispatched from the queue, but not right after its re-check",
+                        e.seq.to_string(),
+                        json(&tr.recheck_seq.map(|s| s + 1)),
+                    );
+                }
+                // rules 5, straight from the approval: only to vehicles the link reaches now
+                if let Some(pol) = &policy
+                    && matches!(tr.state, State::AutoApproved | State::Approved)
+                    && pol.rules.rules_version >= 5
+                    && pol.queue().queues(tr.spec.kind())
+                {
+                    match (reach_inputs, reach) {
+                        (Some(inputs), Some(reach)) => match resolve(inputs, &areas, &answers) {
+                            Ok(w) => {
+                                let cfg = pol.queue();
+                                let again = queue::reach(&tr.spec, &w, &cfg, &pol.rules);
+                                if &again != reach {
+                                    bad(&mut r, e, Some(*intent), "reach differs", json(reach), json(&again));
+                                }
+                                if !queue::all_reachable(&again) {
+                                    bad(
+                                        &mut r,
+                                        e,
+                                        Some(*intent),
+                                        "dispatched to a vehicle the link could not reach (it must be queued)",
+                                        json(reach),
+                                        json(&again),
+                                    );
+                                }
+                            }
+                            Err(why) => bad(&mut r, e, Some(*intent), why, String::new(), String::new()),
+                        },
+                        _ => bad(
+                            &mut r,
+                            e,
+                            Some(*intent),
+                            "dispatched without the reach that allows it (rules 5: its kind is queued when a vehicle can't be reached)",
+                            "none".into(),
+                            "inputs and reach".into(),
+                        ),
+                    }
+                }
                 if !(matches!(tr.state, State::AutoApproved | State::Approved) || from_queue) {
                     bad(
                         &mut r,
@@ -1979,7 +2109,11 @@ fn replay_inner<S: AsRef<str>>(
                         json(&again),
                     );
                 }
-                let want = e.t.plus_ms(i64::from(cfg.expire_s(tr.spec.kind())) * 1000);
+                let basis = tr
+                    .basis
+                    .clone()
+                    .unwrap_or_else(|| crate::engine::no_basis(e.t));
+                let (want, inbox) = cfg.bound(cfg.wait_end(tr.spec.kind(), e.t), &basis, e.t);
                 if *expires_t != want {
                     bad(
                         &mut r,
@@ -1991,7 +2125,8 @@ fn replay_inner<S: AsRef<str>>(
                     );
                 }
                 tr.queued_logged = Some(e.seq);
-                tr.queue_expires = Some(*expires_t);
+                tr.queue_expires = Some(want);
+                tr.queue_inbox = inbox;
             }
             EventBody::QueueRecheck {
                 intent,
@@ -2007,6 +2142,19 @@ fn replay_inner<S: AsRef<str>>(
                 r.rechecks += 1;
                 if tr.state != State::Queued {
                     bad(&mut r, e, Some(*intent), "re-check of an intent that is not queued", json(&tr.state), json(&State::Queued));
+                }
+                // at its deadline the queue lets go: expired (or back to the inbox), never sent
+                if let Some(d) = tr.queue_expires
+                    && e.t >= d
+                {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "re-checked at or after its queue deadline (it must expire)",
+                        json(&e.t),
+                        format!("before {}", json(&d)),
+                    );
                 }
                 // the checks it judges are the dequeue check just before it
                 let Some(w) = tr
@@ -2051,7 +2199,12 @@ fn replay_inner<S: AsRef<str>>(
                     .basis
                     .clone()
                     .unwrap_or_else(|| crate::engine::no_basis(w.t));
-                let rc = queue::assess(&tr.spec, &basis, &tr.last_results, passed, d.as_ref(), &w);
+                let since = queue::Since {
+                    basis: &basis,
+                    carried: tr.basis_carried,
+                    rebooted: &rebooted,
+                };
+                let rc = queue::assess(&tr.spec, &since, &tr.last_results, passed, d.as_ref(), &w);
                 if (rc.verdict, &rc.changes) != (*verdict, changes) {
                     bad(
                         &mut r,
@@ -2068,21 +2221,19 @@ fn replay_inner<S: AsRef<str>>(
                     Verdict::Void => r.recheck_voided += 1,
                 }
                 tr.recheck = Some(rc.verdict);
+                tr.recheck_seq = Some(e.seq);
                 if rc.verdict == Verdict::Inbox
                     && let Some(d) = &d
                 {
                     // a new decision: who approves it is this decision's, from scratch
                     tr.route(d);
-                    tr.signers.clear();
-                    tr.granted = false;
-                    tr.granted_at_submission = false;
-                    tr.expires_t = None;
-                    tr.approval_rec = None;
+                    tr.back_to_inbox();
                 }
             }
             EventBody::QueueExpired {
                 intent,
                 expires_t,
+                inbox,
                 ..
             } => {
                 let Some(tr) = intents.get_mut(intent) else {
@@ -2102,7 +2253,81 @@ fn replay_inner<S: AsRef<str>>(
                         json(&tr.queue_expires),
                     );
                 }
+                if *inbox != tr.queue_inbox {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "queue expiry differs from its deadline's (expired, or back to the inbox for a human's approval held long enough)",
+                        json(inbox),
+                        json(&tr.queue_inbox),
+                    );
+                }
                 tr.queue_expired = true;
+                tr.queue_expired_inbox = *inbox;
+                if *inbox {
+                    tr.back_to_inbox();
+                }
+            }
+            EventBody::IntentRequeued {
+                intent,
+                expires_t,
+                inbox,
+            } => {
+                let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
+                    bad(&mut r, e, Some(*intent), "requeued without run.started or intent.created", String::new(), String::new());
+                    continue;
+                };
+                let cfg = pol.queue();
+                if tr.state != State::Dispatched
+                    || pol.rules.rules_version < 5
+                    || !cfg.queues(tr.spec.kind())
+                {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "requeued, but it is not a dispatched vehicle task the queue holds",
+                        json(&tr.state),
+                        json(&State::Dispatched),
+                    );
+                }
+                // evidence: every vehicle's op ended with its link lost before the start, and
+                // none ever started the order
+                let lost = tr
+                    .spec
+                    .uids
+                    .iter()
+                    .all(|u| tr.ops.get(u).map(String::as_str) == Some(queue::REQUEUED_OP));
+                if !lost || !tr.committed.is_empty() {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "requeued without every vehicle's op ending with its link lost before the start (or after a vehicle started it)",
+                        json(&(&tr.ops, &tr.committed)),
+                        format!("every op {}, none started", queue::REQUEUED_OP),
+                    );
+                }
+                let basis = tr
+                    .basis
+                    .clone()
+                    .unwrap_or_else(|| crate::engine::no_basis(e.t));
+                let (want, want_inbox) =
+                    cfg.bound(cfg.wait_end(tr.spec.kind(), basis.t), &basis, e.t);
+                if (*expires_t, *inbox) != (want, want_inbox) {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "requeue deadline differs from policy",
+                        json(&(expires_t, inbox)),
+                        json(&(want, want_inbox)),
+                    );
+                }
+                tr.requeued_logged = Some(e.seq);
+                tr.queue_expires = Some(want);
+                tr.queue_inbox = want_inbox;
             }
             EventBody::IntentResumed {
                 intent: spec,
@@ -2113,6 +2338,9 @@ fn replay_inner<S: AsRef<str>>(
                 approval,
                 expires_t,
                 ops,
+                committed,
+                dispatched_before,
+                platforms,
             } => {
                 r.resumed += 1;
                 if intents.contains_key(&spec.id) {
@@ -2127,6 +2355,9 @@ fn replay_inner<S: AsRef<str>>(
                     approval: approval.clone(),
                     expires_t: *expires_t,
                     ops: ops.clone(),
+                    committed: committed.clone(),
+                    dispatched_before: *dispatched_before,
+                    platforms: platforms.clone(),
                 };
                 if !queue::queueable(spec.kind())
                     || !matches!(state, State::Queued | State::Dispatched)
@@ -2147,10 +2378,30 @@ fn replay_inner<S: AsRef<str>>(
                     tr.route(d);
                 }
                 tr.basis = Some(basis.clone());
+                tr.basis_carried = true;
                 tr.last_results = basis.checks.clone();
                 tr.approval_rec = approval.clone();
-                tr.queue_expires = *expires_t;
                 tr.ops = ops.clone();
+                tr.committed = committed.iter().cloned().collect();
+                tr.dispatched_before = *dispatched_before;
+                tr.platforms = platforms.clone();
+                if let (Some(pol), Some(by_kind)) = (&policy, *expires_t) {
+                    let cfg = pol.queue();
+                    // not queued there: its kind's wait from the approval
+                    if from.was != State::Queued && by_kind != cfg.wait_end(spec.kind(), basis.t) {
+                        bad(
+                            &mut r,
+                            e,
+                            Some(spec.id),
+                            "resumed queue deadline differs from policy",
+                            json(&by_kind),
+                            json(&cfg.wait_end(spec.kind(), basis.t)),
+                        );
+                    }
+                    let (d, inbox) = cfg.bound(by_kind, basis, e.t);
+                    tr.queue_expires = Some(d);
+                    tr.queue_inbox = inbox;
+                }
                 if *state == State::Dispatched {
                     tr.dispatched = true;
                     for u in &spec.uids {
@@ -2164,16 +2415,20 @@ fn replay_inner<S: AsRef<str>>(
                 uid,
                 boot_ms_before,
                 boot_ms,
-                ..
+                booted_t,
+                booted_before_t,
             } => {
                 r.reboots += 1;
-                if boot_ms >= boot_ms_before {
+                rebooted.insert(uid.clone(), e.t);
+                if let Some(why) =
+                    queue::reboot_mismatch(*boot_ms_before, *boot_ms, *booted_t, *booted_before_t)
+                {
                     bad(
                         &mut r,
                         e,
                         None,
-                        "reboot without the time since boot going back",
-                        json(&(uid, boot_ms_before, boot_ms)),
+                        why,
+                        json(&(uid, boot_ms_before, boot_ms, booted_t, booted_before_t)),
                         String::new(),
                     );
                 }
@@ -2220,6 +2475,9 @@ fn replay_inner<S: AsRef<str>>(
                 }
                 if let Some(s) = state.strip_prefix("intercept ") {
                     tr.intercept_reports.push((s.to_string(), detail.clone()));
+                }
+                if queue::committed_op(state) {
+                    tr.committed.insert(uid.clone());
                 }
                 tr.ops.insert(uid.clone(), state.clone());
             }
@@ -2317,6 +2575,9 @@ fn replay_inner<S: AsRef<str>>(
                     None
                 },
                 ops: t.ops.clone(),
+                committed: t.committed.iter().cloned().collect(),
+                dispatched_before: t.dispatched_before,
+                platforms: t.platforms.clone(),
             })
         })
         .collect();
@@ -2403,8 +2664,22 @@ fn check_resumed(r: &mut ReplayReport, resumed: &[ResumedEvent], opts: &ReplayOp
         if *state != was.resumes_as() {
             push(r, *seq, id, "resumed in another state than its op states allow", json(state), json(&was.resumes_as()));
         }
-        let carried = (&open.spec, &open.basis, &open.policy, &open.approval, &open.ops);
-        let there = (&was.spec, &was.basis, &was.policy, &was.approval, &was.ops);
+        let carried = (
+            &open.spec,
+            &open.basis,
+            &open.policy,
+            &open.approval,
+            &open.ops,
+            (&open.committed, open.dispatched_before, &open.platforms),
+        );
+        let there = (
+            &was.spec,
+            &was.basis,
+            &was.policy,
+            &was.approval,
+            &was.ops,
+            (&was.committed, was.dispatched_before, &was.platforms),
+        );
         if carried != there {
             push(r, *seq, id, "carried over differently from how the previous log leaves it", json(&carried), json(&there));
         }
@@ -2824,17 +3099,23 @@ fn unbacked(tr: &Tracked, t: Transition) -> Option<&'static str> {
                 Some("dispatched without its intent.dispatched order")
             }
             Transition::RequireApproval
-                if tr.recheck != Some(Verdict::Inbox) || tr.expires_t.is_none() =>
+                if !(tr.recheck == Some(Verdict::Inbox) || tr.queue_expired_inbox)
+                    || tr.expires_t.is_none() =>
             {
-                Some("sent back to the inbox without a re-check that says so and a deadline")
+                Some(
+                    "sent back to the inbox without a re-check or a queue expiry that says so and a deadline",
+                )
             }
-            Transition::Expire if !tr.queue_expired => {
-                Some("expired from the queue without a queue.expired")
+            Transition::Expire if !tr.queue_expired || tr.queue_expired_inbox => {
+                Some("expired from the queue without a queue.expired that expires it")
             }
             _ => None,
         };
     }
     match t {
+        Transition::Requeue if tr.requeued_logged.is_none() => {
+            Some("requeued without an intent.requeued")
+        }
         Transition::Queue if tr.queued_logged.is_none() => {
             Some("queued without an intent.queued")
         }
@@ -2891,6 +3172,39 @@ fn unbacked(tr: &Tracked, t: Transition) -> Option<&'static str> {
 
 fn json<T: Serialize>(v: &T) -> String {
     serde_json::to_string(v).unwrap_or_else(|e| format!("<unserializable: {e}>"))
+}
+
+/// A decision's logged `waiting` fact (rules 5: the vehicles with a human-approved order
+/// waiting in the queue) against the queued intents replay tracks at that point.
+fn check_waiting(
+    r: &mut ReplayReport,
+    e: &Event,
+    id: IntentId,
+    logged: &BTreeMap<crate::ids::Uid, IntentId>,
+    intents: &BTreeMap<IntentId, Tracked>,
+) {
+    let Some(tr) = intents.get(&id) else { return };
+    let want = waiting_vehicles(
+        intents.iter().map(|(i, t)| {
+            (
+                *i,
+                &t.spec,
+                t.state,
+                t.basis.as_ref().is_some_and(|b| b.by_human),
+            )
+        }),
+        &tr.spec,
+    );
+    if *logged != want {
+        bad(
+            r,
+            e,
+            Some(id),
+            "human-order-waiting facts differ",
+            json(logged),
+            json(&want),
+        );
+    }
 }
 
 /// A decision's logged `engaged` fact (the vehicles with an engagement in play) against the

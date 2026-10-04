@@ -350,6 +350,11 @@ pub struct WorldSnapshot {
     /// always goes to a human. Absent when empty.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub engaged: BTreeMap<Uid, IntentId>,
+    /// Engine-filled (rules 5): the intent's vehicles that have an order a human approved
+    /// waiting in the queue, by that intent's id. An agent's order on one of them goes to a
+    /// human (it would supersede the human's order). Absent when empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub waiting: BTreeMap<Uid, IntentId>,
     /// Engine-filled for an engagement's signature (and its hold while signatures wait):
     /// the plan being signed, frozen by the first signature. Its checks read this plan, not a
     /// fresh preview. Absent otherwise.
@@ -377,6 +382,10 @@ pub struct LoggedInputs {
     /// The intent's vehicles with an engagement in play (absent when none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub engaged: BTreeMap<Uid, IntentId>,
+    /// The intent's vehicles with a human-approved order waiting in the queue (absent when
+    /// none).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub waiting: BTreeMap<Uid, IntentId>,
     /// The plan an engagement signature is on (absent otherwise).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<Box<crate::engage::FrozenPlan>>,
@@ -401,6 +410,7 @@ impl LoggedInputs {
             },
             tracks: world.tracks.clone(),
             engaged: world.engaged.clone(),
+            waiting: world.waiting.clone(),
             plan: world.plan.clone(),
         }
     }
@@ -441,6 +451,7 @@ impl LoggedInputs {
             space,
             tracks: self.tracks.clone(),
             engaged: self.engaged.clone(),
+            waiting: self.waiting.clone(),
             plan: self.plan.clone(),
         }
     }
@@ -483,6 +494,7 @@ impl WorldSnapshot {
             tracks: self.tracks.clone(),
             // engine-owned: filled from its own intents
             engaged: BTreeMap::new(),
+            waiting: BTreeMap::new(),
             plan: None,
         }
     }

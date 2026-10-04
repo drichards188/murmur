@@ -226,15 +226,22 @@ in the console (`sim/fleets/contacts-demo.toml` shows coverage gaps at the Gate)
   on its acoustic modem) is queued with a deadline (`[queue]` per kind: 900 s, hold 60 s,
   rtl 120 s), not sent into a dead link; when it can be reached its checks run again on the
   world then and it is sent, sent back to the inbox (a human's picture changed: a check, the
-  tier, a reboot, an engagement now in play) or voided; past its deadline it expires. Exactly
-  once: a mission is a transaction (a lost final ACK settled by asking the vehicle, a link
-  lost mid-way waited out for the kind's wait and then a full mission download decides
-  whether to follow, only start, or upload again), a command is retried only when neither its
-  ACK nor telemetry showing its effect came back, a vehicle its failsafe sent home is held
-  then armed. A restarted bridge carries open intents over from its log (`intent.resumed`;
-  pointer `logs/audit/.resume-<port>.json`, `MURMUR_RESUME`): queued ones re-checked, started
-  ones followed and never re-sent. Reboots (time since boot going back) are logged, end the
-  op, and are a fact (`booted_t`) the re-check compares with the approval. Console: a Queue
+  tier, a reboot, an engagement now in play, a restart) or voided (a check fails, or a newer
+  order for its vehicle stands); past its deadline it expires, and a human's approval goes
+  back to the inbox after 120 s. Exactly once: a mission is a transaction (a lost final ACK
+  settled by asking the vehicle; a link lost before the vehicle started the order sends it
+  back to the queue, re-checked, and the next delivery downloads the mission and compares it
+  item by item, frame, altitude and parameters included, to follow, only start, or upload
+  again), a command is retried only when neither its ACK nor telemetry showing its effect
+  came back and never after IN_PROGRESS, a vehicle its failsafe sent home (or a copter left
+  in BRAKE) is switched to a mode it arms in. A bridge that crashed carries open intents over
+  from its log (`intent.resumed`; pointer `logs/audit/.resume-<port>.json`, deleted on a
+  clean stop; `MURMUR_RESUME`): only onto the same platforms, its anchors checked; queued
+  ones re-checked (a human's approval back to the inbox), started ones followed and never
+  re-sent, across any number of restarts. Reboots (time since boot going back, or the boot
+  instant it implies jumping later after an outage longer than the uptime) are logged, end
+  the op, and send a human's queued approval back to the inbox. Review fixes (10-04, see
+  DECISIONS). Console: a Queue
   drawer (why each waits, time left, cancel, how recent ones left), queued paths dashed with
   QUEUED, sent orders labelled until the vehicle's telemetry confirms them. Not covered: an
   engagement under way when the bridge restarts (not carried over; its platform keeps its

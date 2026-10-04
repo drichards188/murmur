@@ -129,8 +129,12 @@ pub struct TaskOrder {
     /// how each vehicle's op delivers it (after a bridge restart: the vehicle may hold it
     /// already); absent: fresh
     pub resume: HashMap<Uid, Resume>,
-    /// how long an op waits for a link lost mid-exchange before it fails (zero: not at all)
+    /// how long an op following an order its vehicle had started (after a bridge restart)
+    /// waits for a lost link before it fails (zero: not at all)
     pub patience: std::time::Duration,
+    /// rules 5: a link lost before the vehicle started the order ends the op `requeued` (the
+    /// decision layer puts the order back in the queue) instead of failing it
+    pub requeue: bool,
 }
 
 impl TaskOrder {
@@ -178,6 +182,7 @@ impl TaskOrder {
             fleet: fleet.values().cloned().collect(),
             resume: HashMap::new(),
             patience: std::time::Duration::ZERO,
+            requeue: false,
         })
     }
 }
@@ -296,6 +301,7 @@ impl TaskManager {
                 fleet: order.fleet.clone(),
                 resume: order.resume.get(&v.uid).copied().unwrap_or_default(),
                 patience: order.patience,
+                requeue: order.requeue,
             };
             exec::spawn(ctx);
         }
@@ -346,6 +352,15 @@ impl TaskManager {
             let (radius, _, tol) = exec::orbit_geometry(params.radius, min_r, caps.orbit);
             Some((center, radius + tol))
         })
+    }
+
+    /// A newer order (intent `newer`) was queued for `uid`: its current op, if it carries an
+    /// older intent and the vehicle has not started it yet (waiting for a fix or a link,
+    /// mid-exchange), is stopped and failed saying so; one it started runs on until the newer
+    /// order is dispatched. Returns the stopped op's id.
+    pub fn abandon_unstarted(&self, uid: Uid, newer: u64, detail: &str) -> Option<u64> {
+        let op = self.lock().active.get(&uid).cloned()?;
+        (op.intent_id < newer && op.abandon(detail.to_string())).then_some(op.id)
     }
 
     /// Each vehicle's latest op, in uid order.

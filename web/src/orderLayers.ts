@@ -1,20 +1,24 @@
 import { PathLayer, TextLayer } from '@deck.gl/layers'
 import type { Intent } from './decisions'
 import { fmtDuration } from './decisions'
+import { leadingAt } from './estimate'
 import { circle, distanceM } from './geo'
 import type { ViewMode } from './MapView'
 import type { LngLat, Tasking, Vehicle } from './types'
+import { isStale } from './types'
 
 /** Ordered versus confirmed on the map (rules 5, murmur-5p4), through MapView's `layers`
  *  prop:
  *
  *  - an order held in the queue (approved, its vehicle unreachable now): its path dashed in
  *    amber, "QUEUED" with why and how long it may still wait, and a QUEUED badge under the
- *    vehicle;
+ *    vehicle (under its dead-reckoning estimate while it is silent and has one);
  *  - an order sent but not yet confirmed by the vehicle's own telemetry (its op not active
- *    yet: sent, acked): "ORDERED ... not yet confirmed" at its path, or at the vehicle for a
- *    mode (hold, rtl). The path itself is MapView's tasking line: dashed until the vehicle
- *    is seen executing it, solid after.
+ *    yet: waiting for a fix, sent, accepted): "ORDERED ... not yet confirmed" at its path,
+ *    or at the vehicle for a mode (hold, rtl). The path itself is MapView's tasking line:
+ *    dashed until the vehicle is seen executing it, solid after;
+ *  - an order carried over a bridge restart that a vehicle had started, waiting for its
+ *    vehicles to connect: "RESUMED ... waiting for the vehicle; followed, not sent again".
  *
  *  Drawn at ground level in both views, over terrain. */
 
@@ -97,6 +101,17 @@ function anchorOf(i: Intent, vehicles: Vehicle[]): LngLat | null {
   return v?.position ?? null
 }
 
+/** Where a vehicle is drawn now: its estimate's leading position while it is silent and the
+ *  bridge sent a motion model, else its last report. */
+function shownAt(v: Vehicle, nowMs: number): LngLat | null {
+  if (v.estimate && v.position && isStale(v)) return leadingAt(v.estimate, nowMs).at.position
+  return v.position ?? null
+}
+
+/** An op state in words for a label (the op's own "queued" is a wait for a position fix,
+ *  not the decision queue). */
+const OP_WORDS: Record<string, string> = { queued: 'waiting for a fix', sent: 'sent', acked: 'accepted' }
+
 function shortReason(i: Intent): string {
   const r = (i.reach_now ?? i.queue?.reach ?? []).find((x) => !x.reachable)
   if (!r) return 'reachable: re-checking'
@@ -127,7 +142,14 @@ export function buildOrderLayers(input: OrderInput, _view: ViewMode) {
     for (const u of i.uids) badged.add(u)
   }
   for (const v of input.vehicles) {
-    if (badged.has(String(v.uid)) && v.position) labels.push({ at: v.position, text: 'QUEUED', color: QUEUED, badge: true })
+    const at = badged.has(String(v.uid)) ? shownAt(v, input.nowMs) : null
+    if (at) labels.push({ at, text: 'QUEUED', color: QUEUED, badge: true })
+  }
+  // resumed under way after a bridge restart: followed once its vehicles connect
+  for (const i of input.intents) {
+    if (!i.follow_pending) continue
+    const at = anchorOf(i, input.vehicles)
+    if (at) labels.push({ at, text: `RESUMED i${i.id} ${i.kind} · waiting for the vehicle; followed, not sent again`, color: ORDERED })
   }
   // sent, not yet confirmed by telemetry: the tasking's ops still sent or acked
   const byId = new Map(input.taskings.map((t) => [t.id, t]))
@@ -139,7 +161,7 @@ export function buildOrderLayers(input: OrderInput, _view: ViewMode) {
     if (waiting.length === 0) continue
     const at = anchorOf(i, input.vehicles)
     if (!at) continue
-    const states = [...new Set(waiting.map((o) => o.state))].join(', ')
+    const states = [...new Set(waiting.map((o) => OP_WORDS[o.state] ?? o.state))].join(', ')
     const lost = waiting.some((o) => o.detail.startsWith('link lost'))
     labels.push({
       at,

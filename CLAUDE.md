@@ -76,10 +76,13 @@ meaningful. Decision and command, not weapons.
   from it, and a fixed base inside it collides at random. It can change between boots: check
   `sysctl net.ipv4.ip_local_port_range` (37795-41890 as of 2026-10-04; was 39160-43255).
 - Rules 5 queue: an order for a vehicle the link can't carry it to now waits in the Queue
-  (console button; `GET /api/inbox` `queued`), it is not an error. A bridge restarted within 15
-  min carries the last run's open intents over (`logs/audit/.resume-<port>.json`;
-  `MURMUR_RESUME=0` off, `=<log>` from that log); replay such a log with its predecessor
-  beside it (or `murmur-replay --prev`).
+  (console button; `GET /api/inbox` `queued`), it is not an error; one whose link drops
+  before the vehicle started it comes back there (`intent.requeued`). A human's approval is
+  held 120 s at most (`[queue] human_expire_s`), then back to the inbox. Open intents carry
+  into the next run only after a crash (the pointer `logs/audit/.resume-<port>.json` that a
+  clean stop, `make down`, deletes; within 15 min) or with `MURMUR_RESUME=<log>`, onto the
+  same platforms under the same uids; replay such a log with its predecessor beside it (or
+  `murmur-replay --prev`). `MURMUR_RESUME=0` turns it off.
 - The bridge's task-layer timeouts follow each link's measured round trip (`LinkTiming` in
   `crates/murmur-bridge/src/link.rs`; floors 1 s per ACK, 1.5 s per mission item, as before on
   fast links) and its telemetry plan follows the link class (`crates/murmur-bridge/src/

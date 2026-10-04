@@ -176,6 +176,13 @@ fn a_mission_cant_cross_an_acoustic_link_but_a_hold_can() {
     let remus = w.vehicles.get_mut(&uid("remus-1")).unwrap();
     restamp(remus, t);
     remus.report_interval_ms = Some(20_000);
+    // a hold is one command: it goes over the modem
+    let hold_id = fx.submit(hold(&["remus-1"]), &w);
+    assert!(matches!(
+        fx.engine.dispatch_or_queue(hold_id, &w).unwrap(),
+        Routed::Dispatched(_)
+    ));
+    // a newer order, a patrol: a mission upload can't cross the modem, so it waits
     let patrol = Proposal::new(
         Task::Patrol {
             route: vec![ON_WATER, BAY],
@@ -192,12 +199,6 @@ fn a_mission_cant_cross_an_acoustic_link_but_a_hold_can() {
         panic!("not queued")
     };
     assert!(reach[0].detail.contains("a mission upload can't cross it"), "{}", reach[0].detail);
-    // a hold is one command: it goes over the modem
-    let hold_id = fx.submit(hold(&["remus-1"]), &w);
-    assert!(matches!(
-        fx.engine.dispatch_or_queue(hold_id, &w).unwrap(),
-        Routed::Dispatched(_)
-    ));
     // surfaced: streaming again; the patrol goes
     fx.advance(30);
     let w = world_now(&fx);
@@ -293,10 +294,10 @@ fn a_human_approval_whose_picture_changed_goes_back_to_the_inbox() {
     assert_eq!(fx.state(id), State::Approved);
     fx.engine.dispatch_or_queue(id, &w).unwrap();
     assert_eq!(fx.state(id), State::Queued);
-    // back after a reboot: the vehicle booted after the approval
-    fx.advance(120);
+    // back after a reboot (within the human bound): the vehicle booted after the approval
+    fx.advance(60);
     let mut w = world_now(&fx);
-    w.vehicles.get_mut(&uid("blade-1")).unwrap().booted_t = Some(fx.clock.now().plus_ms(-60_000));
+    w.vehicles.get_mut(&uid("blade-1")).unwrap().booted_t = Some(fx.clock.now().plus_ms(-10_000));
     assert_eq!(fx.engine.dequeue(id, &w, &terrain()).unwrap(), Dequeued::Inbox);
     let i = fx.engine.intent(id).unwrap();
     assert_eq!(i.state(), State::PendingApproval);
@@ -681,10 +682,22 @@ fn a_started_order_resumes_dispatched_and_is_never_sent_again() {
 fn a_reboot_is_logged_and_replayed() {
     let mut fx = fx();
     fx.engine
-        .record_reboot(&uid("sky-1"), 812_300, 4_100, fx.clock.now())
+        .record_reboot(&uid("sky-1"), 812_300, 4_100, fx.clock.now(), None)
         .unwrap();
+    // one seen by its boot instant jumping later (an outage longer than its uptime)
+    let now = fx.clock.now();
+    fx.engine
+        .record_reboot(&uid("blade-1"), 60_000, 95_000, now, Some(now.plus_ms(-125_000)))
+        .unwrap();
+    // neither: refused, nothing logged
+    let lines = fx.log.lines().len();
+    assert!(fx
+        .engine
+        .record_reboot(&uid("blade-1"), 60_000, 95_000, now, Some(now.plus_ms(-20_000)))
+        .is_err());
+    assert_eq!(fx.log.lines().len(), lines);
     let r = replays(&fx);
-    assert_eq!(r.reboots, 1);
+    assert_eq!(r.reboots, 2);
     let text = forge(&fx.log.text(), |ev| {
         for e in ev.iter_mut() {
             if let EventBody::VehicleRebooted { boot_ms, .. } = &mut e.body {
@@ -721,4 +734,420 @@ fn a_link_that_just_came_back_waits_for_the_picture_before_the_recheck() {
         Dequeued::Dispatched(_)
     ));
     replays(&fx);
+}
+
+// ---- review fixes ---------------------------------------------------------------------
+
+fn reason(fx: &Fx, id: IntentId) -> String {
+    fx.engine.intent(id).unwrap().history().last().unwrap().reason.clone()
+}
+
+#[test]
+fn a_dispatched_order_whose_link_was_lost_before_the_start_goes_back_to_the_queue() {
+    let mut fx = fx();
+    let w = world_now(&fx);
+    let id = fx.submit(orbit_sky(), &w);
+    assert!(matches!(
+        fx.engine.dispatch_or_queue(id, &w).unwrap(),
+        Routed::Dispatched(_)
+    ));
+    fx.engine
+        .record_op_state(id, &uid("sky-1"), "sent", "uploading 15 mission items")
+        .unwrap();
+    // its op has not ended so: refused, nothing logged
+    let lines = fx.log.lines().len();
+    assert!(fx.engine.requeue(id).is_err());
+    assert_eq!(fx.log.lines().len(), lines);
+    fx.engine
+        .record_op_state(
+            id,
+            &uid("sky-1"),
+            "requeued",
+            "link lost mid-upload: back to the queue, re-checked before it is sent again",
+        )
+        .unwrap();
+    fx.advance(5);
+    let expires_t = fx.engine.requeue(id).unwrap();
+    assert_eq!(fx.state(id), State::Queued);
+    // the kind's wait from the approval, not a fresh one
+    assert_eq!(expires_t, T0.plus_ms(900_000));
+    assert!(fx.engine.intent(id).unwrap().dispatched_before());
+    assert!(reason(&fx, id).starts_with("back to the queue"), "{}", reason(&fx, id));
+    // the link is back: re-checked on the world now, then dispatched again
+    fx.advance(20);
+    let w = world_now(&fx);
+    assert!(matches!(
+        fx.engine.dequeue(id, &w, &terrain()).unwrap(),
+        Dequeued::Dispatched(_)
+    ));
+    let r = replays(&fx);
+    assert_eq!((r.requeued, r.recheck_dispatched), (1, 1));
+    assert!(r.open.iter().any(|o| o.spec.id == id && o.dispatched_before));
+    // replay binds the requeue to its evidence
+    let whats = forged(&fx, |ev| {
+        for e in ev.iter_mut() {
+            if let EventBody::OpState { state, .. } = &mut e.body
+                && state == "requeued"
+            {
+                *state = "failed".into();
+            }
+        }
+    });
+    assert!(
+        whats.iter().any(|w| w.contains("requeued without every vehicle's op ending")),
+        "{whats:?}"
+    );
+    // a vehicle that started it: never requeued
+    let mut fx = fx_on(policy());
+    let w = world_now(&fx);
+    let id = fx.submit(orbit_sky(), &w);
+    fx.engine.dispatch_or_queue(id, &w).unwrap();
+    fx.engine.record_op_state(id, &uid("sky-1"), "acked", "accepted").unwrap();
+    fx.engine
+        .record_op_state(id, &uid("sky-1"), "requeued", "link lost")
+        .unwrap();
+    assert!(fx.engine.requeue(id).is_err());
+    assert_eq!(fx.state(id), State::Dispatched);
+}
+
+#[test]
+fn an_older_queued_order_never_goes_over_a_newer_one() {
+    // review T2: an older order waits in the queue; the operator submits a newer one for
+    // the same vehicle that waits for a second approver. The link comes back: the older is
+    // voided (superseded), the newer stands
+    let mut fx = fx_on(waiting_policy());
+    let op2 = fx
+        .engine
+        .open_operator_session(OperatorId::new("op-2"))
+        .unwrap();
+    let w = silent(&fx, "blade-1", 5);
+    let a = fx.submit(orbit(NEAR_CRISSY, 200.0, &["blade-1"]), &w);
+    assert_eq!(fx.state(a), State::PendingApproval);
+    fx.engine
+        .approve(a, op2.authority(), None, &w, &terrain())
+        .unwrap();
+    assert!(matches!(
+        fx.engine.dispatch_or_queue(a, &w).unwrap(),
+        Routed::Queued { .. }
+    ));
+    let b = fx.submit(orbit(NEAR_CRISSY, 300.0, &["blade-1"]), &w);
+    assert_eq!(fx.state(b), State::PendingApproval);
+    fx.advance(20);
+    let w = world_now(&fx);
+    assert_eq!(fx.engine.dequeue(a, &w, &terrain()).unwrap(), Dequeued::Voided);
+    assert!(
+        reason(&fx, a).contains(&format!("{b} is a newer order for vehicle blade-1")),
+        "{}",
+        reason(&fx, a)
+    );
+    assert_eq!(fx.state(b), State::PendingApproval, "the newer order stands");
+    replays(&fx);
+}
+
+#[test]
+fn a_human_approval_held_past_its_bound_goes_back_to_the_inbox() {
+    let mut fx = fx();
+    // an armed platform: approved by the operator's own submission
+    let w = silent(&fx, "blade-1", 5);
+    let id = fx.submit(orbit(NEAR_CRISSY, 200.0, &["blade-1"]), &w);
+    assert_eq!(fx.state(id), State::Approved);
+    let Routed::Queued { expires_t, .. } = fx.engine.dispatch_or_queue(id, &w).unwrap() else {
+        panic!("not queued")
+    };
+    // a human's approval is held 120 s at most (`[queue] human_expire_s`), not the orbit's
+    // 900 s
+    assert_eq!(expires_t, T0.plus_ms(120_000));
+    assert!(fx.engine.intent(id).unwrap().queue().unwrap().inbox);
+    fx.advance(119);
+    fx.engine.expire_due().unwrap();
+    assert_eq!(fx.state(id), State::Queued);
+    fx.advance(1);
+    fx.engine.expire_due().unwrap();
+    let i = fx.engine.intent(id).unwrap();
+    assert_eq!(i.state(), State::PendingApproval);
+    assert!(i.approval().is_none(), "the old approval does not stand");
+    assert!(reason(&fx, id).contains("back to the inbox"), "{}", reason(&fx, id));
+    assert!(fx.engine.inbox().iter().any(|i| i.id() == id));
+    replays(&fx);
+    let whats = forged(&fx, |ev| {
+        for e in ev.iter_mut() {
+            if let EventBody::QueueExpired { inbox, .. } = &mut e.body {
+                *inbox = false;
+            }
+        }
+    });
+    assert!(whats.iter().any(|w| w.contains("queue expiry differs")), "{whats:?}");
+    // the bound is the policy's, bounded
+    let q = |h: u32| QueueConfig {
+        human_expire_s: Some(h),
+        ..QueueConfig::default()
+    };
+    assert!(q(0).validate().is_err());
+    assert!(q(7_200).validate().is_err());
+    assert!(q(300).validate().is_ok());
+}
+
+#[test]
+fn replay_catches_a_recheck_after_the_deadline_and_a_dispatch_apart_from_its_recheck() {
+    let (fx, _) = queued_then_dispatched();
+    // review F1: the deadline cut to before the re-check
+    let whats = forged(&fx, |ev| {
+        for e in ev.iter_mut() {
+            if let EventBody::RunStarted { policy, .. } = &mut e.body {
+                policy.queue = Some(QueueConfig {
+                    expire_s: 10,
+                    ..QueueConfig::default()
+                });
+            }
+            if let EventBody::IntentQueued { expires_t, .. } = &mut e.body {
+                *expires_t = expires_t.plus_ms(-890_000);
+            }
+        }
+    });
+    assert!(
+        whats.iter().any(|w| w.contains("re-checked at or after its queue deadline")),
+        "{whats:?}"
+    );
+    // review F1b: the dequeue moved past the deadline
+    let whats = forged(&fx, |ev| {
+        let mut later = false;
+        for e in ev.iter_mut() {
+            later |= matches!(&e.body, EventBody::CheckResult { phase, .. } if *phase == audit::CheckPhase::Dequeue);
+            if later {
+                e.t = e.t.plus_ms(900_000);
+            }
+        }
+    });
+    assert!(
+        whats.iter().any(|w| w.contains("re-checked at or after its queue deadline")),
+        "{whats:?}"
+    );
+    // the dispatch held back after its re-check (something logged between)
+    let whats = forged(&fx, |ev| {
+        let i = ev
+            .iter()
+            .position(|e| matches!(e.body, EventBody::QueueRecheck { .. }))
+            .unwrap();
+        let mut between = ev[i].clone();
+        between.body = EventBody::VehicleEvent {
+            uid: uid("sky-1"),
+            kind: "mode".into(),
+            text: "AUTO -> BRAKE".into(),
+        };
+        ev.insert(i + 1, between);
+    });
+    assert!(
+        whats.iter().any(|w| w.contains("dispatched from the queue, but not right after its re-check")),
+        "{whats:?}"
+    );
+}
+
+#[test]
+fn replay_catches_a_direct_dispatch_to_a_vehicle_the_link_could_not_reach() {
+    // review F9: the queueing replaced by a dispatch straight to the silent vehicle
+    let mut fx = fx();
+    let w = silent(&fx, "sky-1", 5);
+    let id = fx.submit(orbit_sky(), &w);
+    fx.engine.dispatch_or_queue(id, &w).unwrap();
+    assert_eq!(fx.state(id), State::Queued);
+    let whats = forged(&fx, |ev| {
+        for e in ev.iter_mut() {
+            match &mut e.body {
+                EventBody::IntentQueued { intent, .. } => {
+                    let intent = *intent;
+                    e.body = EventBody::IntentDispatched {
+                        intent,
+                        task: orbit_sky().task,
+                        uids: vec![uid("sky-1")],
+                        space: None,
+                        engage: None,
+                        inputs: None,
+                        reach: None,
+                    };
+                }
+                EventBody::IntentState {
+                    transition, to, ..
+                } if *transition == Transition::Queue => {
+                    *transition = Transition::Dispatch;
+                    *to = State::Dispatched;
+                }
+                _ => {}
+            }
+        }
+    });
+    assert!(
+        whats.iter().any(|w| w.contains("dispatched without the reach that allows it")),
+        "{whats:?}"
+    );
+    // and the engine itself refuses to dispatch it straight
+    let mut fx = fx_on(policy());
+    let w = silent(&fx, "sky-1", 5);
+    let id = fx.submit(orbit_sky(), &w);
+    let lines = fx.log.lines().len();
+    assert!(matches!(
+        fx.engine.dispatch(id, &w),
+        Err(EngineError::NotDispatchable { .. })
+    ));
+    assert!(fx.engine.dispatch_order(id).is_err());
+    assert_eq!(fx.log.lines().len(), lines, "nothing logged");
+    // reachable: dispatched with the reach that allowed it
+    let w = world_now(&fx);
+    fx.engine.dispatch(id, &w).unwrap();
+    assert!(fx.log.text().contains("\"reach\":[{\"uid\":\"sky-1\",\"reachable\":true"));
+    replays(&fx);
+}
+
+#[test]
+fn an_agents_order_on_a_vehicle_with_a_human_order_waiting_goes_to_a_human() {
+    let mut fx = fx();
+    // the operator's own order for blade-1 waits in the queue (its link is down)
+    let w = silent(&fx, "blade-1", 5);
+    let id = fx.submit(orbit(NEAR_CRISSY, 200.0, &["blade-1"]), &w);
+    fx.engine.dispatch_or_queue(id, &w).unwrap();
+    assert_eq!(fx.state(id), State::Queued);
+    // an agent's hold on blade-1 would run on its own and supersede it: a human decides
+    let hold_id = fx
+        .engine
+        .agent_port(AgentId::new("planner"))
+        .propose(hold(&["blade-1"]), rationale("park it"), &w, &terrain())
+        .unwrap()
+        .id();
+    let i = fx.engine.intent(hold_id).unwrap();
+    assert_eq!(i.state(), State::PendingApproval);
+    assert_eq!(i.policy().unwrap().rule, "(human order waiting)");
+    // on another vehicle, it runs on its own as before
+    let other = fx
+        .engine
+        .agent_port(AgentId::new("planner"))
+        .propose(hold(&["sky-1"]), rationale("park it"), &w, &terrain())
+        .unwrap()
+        .id();
+    assert_eq!(fx.state(other), State::AutoApproved);
+    replays(&fx);
+    // a forged fact is caught
+    let whats = forged(&fx, |ev| {
+        for e in ev.iter_mut() {
+            if let EventBody::CheckResult { inputs, .. } | EventBody::PolicyDecision { inputs, .. } = &mut e.body {
+                inputs.waiting.clear();
+            }
+        }
+    });
+    assert!(whats.iter().any(|w| w.contains("human-order-waiting facts differ")), "{whats:?}");
+}
+
+#[test]
+fn a_carried_human_approval_goes_back_to_the_inbox() {
+    // review T3: a human's approval from the run before a restart is not acted on unseen
+    let mut a = fx();
+    let w = silent(&a, "blade-1", 5);
+    let id = a.submit(orbit(NEAR_CRISSY, 200.0, &["blade-1"]), &w);
+    a.engine.dispatch_or_queue(id, &w).unwrap();
+    let ra = replay_str(&a.log.text()).unwrap();
+    let open = ra.open.iter().find(|o| o.spec.id == id).unwrap();
+    assert_eq!(open.platforms.get(&uid("blade-1")).map(String::as_str), Some("switchblade"));
+    let mut b = fx();
+    b.clock.set(a.clock.now().plus_ms(30_000));
+    let from = ResumedFrom {
+        log: "a.jsonl".into(),
+        head: ra.head_sha256.clone().unwrap(),
+        seq: ra.last_seq,
+        was: open.state,
+    };
+    b.engine.resume(open, from).unwrap();
+    assert!(b.engine.intent(id).unwrap().basis_carried());
+    let w = world_now(&b);
+    assert_eq!(b.engine.dequeue(id, &w, &terrain()).unwrap(), Dequeued::Inbox);
+    let rc = b.engine.intent(id).unwrap().queue().unwrap().recheck.clone().unwrap();
+    assert!(rc.changes[0].contains("approved before a bridge restart"), "{:?}", rc.changes);
+    let a_text = a.log.text();
+    let rb = replay_str_with(
+        &b.log.text(),
+        &ReplayOptions {
+            previous: Some(&a_text),
+            ..ReplayOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(rb.ok(), "{:?}", rb.mismatches);
+}
+
+#[test]
+fn a_vehicle_that_started_an_order_stays_started_across_a_second_restart() {
+    // review T6: run A dispatched it and the vehicle started it; run B carried it over and
+    // its follow op reported `queued` before B crashed; run C must still follow it, never
+    // send it again
+    let mut a = fx();
+    let w = world_now(&a);
+    let id = a.submit(orbit_sky(), &w);
+    a.engine.dispatch_or_queue(id, &w).unwrap();
+    a.engine.record_op_state(id, &uid("sky-1"), "acked", "accepted").unwrap();
+    let ra = replay_str(&a.log.text()).unwrap();
+    let open = ra.open.iter().find(|o| o.spec.id == id).unwrap().clone();
+    let resume = |run: &mut Fx, prev: &ReplayReport, open: &OpenIntent| {
+        let from = ResumedFrom {
+            log: "prev.jsonl".into(),
+            head: prev.head_sha256.clone().unwrap(),
+            seq: prev.last_seq,
+            was: open.state,
+        };
+        run.engine.resume(open, from).unwrap();
+    };
+    let mut b = fx();
+    b.clock.set(a.clock.now().plus_ms(10_000));
+    resume(&mut b, &ra, &open);
+    b.engine
+        .record_op_state(id, &uid("sky-1"), "queued", "waiting for navigation (GPS + EKF)")
+        .unwrap();
+    let rb = replay_str_with(
+        &b.log.text(),
+        &ReplayOptions {
+            trust_resumed: true,
+            ..ReplayOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(rb.ok(), "{:?}", rb.mismatches);
+    let open_b = rb.open.iter().find(|o| o.spec.id == id).unwrap().clone();
+    assert_eq!(open_b.ops.get(&uid("sky-1")).map(String::as_str), Some("queued"));
+    assert_eq!(open_b.committed(), vec![uid("sky-1")], "started stays started");
+    assert!(open_b.dispatched_before);
+    assert_eq!(open_b.resumes_as(), State::Dispatched);
+    let mut c = fx();
+    c.clock.set(b.clock.now().plus_ms(10_000));
+    resume(&mut c, &rb, &open_b);
+    assert_eq!(c.state(id), State::Dispatched);
+    let b_text = b.log.text();
+    let rc = replay_str_with(
+        &c.log.text(),
+        &ReplayOptions {
+            previous: Some(&b_text),
+            ..ReplayOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(rc.ok(), "{:?}", rc.mismatches);
+    // a dispatch never started, carried twice: still asks the vehicle first
+    let mut a = fx();
+    let w = world_now(&a);
+    let id = a.submit(orbit_sky(), &w);
+    a.engine.dispatch_or_queue(id, &w).unwrap();
+    a.engine.record_op_state(id, &uid("sky-1"), "sent", "uploading").unwrap();
+    let ra = replay_str(&a.log.text()).unwrap();
+    let open = ra.open.iter().find(|o| o.spec.id == id).unwrap().clone();
+    assert_eq!(open.resumes_as(), State::Queued);
+    let mut b = fx();
+    b.clock.set(a.clock.now().plus_ms(10_000));
+    resume(&mut b, &ra, &open);
+    assert!(b.engine.intent(id).unwrap().dispatched_before());
+    let rb = replay_str_with(
+        &b.log.text(),
+        &ReplayOptions {
+            trust_resumed: true,
+            ..ReplayOptions::default()
+        },
+    )
+    .unwrap();
+    let open_b = rb.open.iter().find(|o| o.spec.id == id).unwrap();
+    assert_eq!(open_b.state, State::Queued);
+    assert!(open_b.dispatched_before, "a vehicle may still hold it");
 }

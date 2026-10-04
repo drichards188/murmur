@@ -27,6 +27,17 @@ const NO_EKF_GRACE_S: f64 = 15.0;
 /// A time since boot this much earlier than the last one is a reboot, not a reordered packet
 /// (messages of one burst carry times milliseconds apart; the links deliver in order).
 pub const REBOOT_SLACK_MS: u64 = 1_000;
+/// A reboot also shows when the time since boot did not go back (an outage longer than the
+/// uptime before it): the boot instant it implies (arrival less the time since boot) is
+/// later than the recent reports put it, by more than this (a slow link's delay), plus
+/// [`BOOT_JUMP_PER_SILENT_S`] of the silence before the report (a simulator that runs slower
+/// than the wall clock drifts while it is silent). A vehicle up for less than this before an
+/// outage that outlasts its new uptime is not seen to reboot.
+pub const BOOT_JUMP_S: f64 = 30.0;
+pub const BOOT_JUMP_PER_SILENT_S: f64 = 0.05;
+/// How many recent reports the boot instant's baseline is the earliest of (it follows a slow
+/// drift, not a jump).
+const BOOT_BASELINE_KEEP: usize = 20;
 
 /// What the launcher's fleet manifest says a node is: callsign, platform, role, domain, link...
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -203,6 +214,9 @@ pub struct Vehicle {
     pub boot_epoch: u32,
     /// Reboots waiting for the audit log, oldest first.
     pub reboots: VecDeque<Reboot>,
+    /// The boot instants the recent reports imply (monotonic s), and when the last came.
+    boot_implied: VecDeque<f64>,
+    boot_heard_mono: Option<f64>,
 }
 
 /// Arrival times (wall clock, seconds) of the messages behind each decision fact.
@@ -255,13 +269,14 @@ pub struct VehicleEvent {
     pub text: String,
 }
 
-/// A reboot the bridge saw: the time since boot before and after (ms) and the new boot
-/// instant (wall s). Logged as `vehicle.rebooted` by the decision loop.
+/// A reboot the bridge saw: the time since boot before and after (ms), the new boot instant
+/// and the one before (wall s). Logged as `vehicle.rebooted` by the decision loop.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Reboot {
     pub boot_ms_before: u64,
     pub boot_ms: u64,
     pub booted_wall: f64,
+    pub booted_before_wall: Option<f64>,
 }
 
 impl Vehicle {
@@ -529,15 +544,35 @@ impl Vehicle {
         self.events.push_back(VehicleEvent { kind, text });
     }
 
-    /// A reported time since boot: the boot instant at first, a reboot when it goes back.
+    /// A reported time since boot: the boot instant at first; a reboot when it goes back, or
+    /// when the boot instant it implies jumps later than the recent reports put it (see
+    /// [`BOOT_JUMP_S`]).
     fn observe_boot(&mut self, boot_ms: u64) {
         let wall = clock::wall();
+        let mono = clock::mono();
         let booted = wall - boot_ms as f64 / 1000.0;
+        let implied = mono - boot_ms as f64 / 1000.0;
+        let silent = self.boot_heard_mono.map_or(0.0, |t| (mono - t).max(0.0));
+        self.boot_heard_mono = Some(mono);
+        let baseline = self.boot_implied.iter().copied().fold(f64::INFINITY, f64::min);
+        let went_back = self
+            .boot_ms
+            .is_some_and(|before| boot_ms + REBOOT_SLACK_MS < before);
+        let jumped = baseline.is_finite()
+            && implied - baseline > BOOT_JUMP_S + BOOT_JUMP_PER_SILENT_S * silent;
         match self.boot_ms {
-            Some(before) if boot_ms + REBOOT_SLACK_MS < before => {
+            Some(before) if went_back || jumped => {
                 self.boot_epoch += 1;
+                // the boot instant before: as estimated then, or (a jump) the one the recent
+                // reports put it at, by the monotonic clock the jump was measured on
+                let booted_before = if went_back {
+                    self.booted_wall
+                } else {
+                    Some(booted - (implied - baseline))
+                };
                 self.booted_wall = Some(booted);
                 self.boot_ms = Some(boot_ms);
+                self.boot_implied.clear();
                 if self.reboots.len() == EVENTS_KEEP {
                     self.reboots.pop_front();
                 }
@@ -545,6 +580,7 @@ impl Vehicle {
                     boot_ms_before: before,
                     boot_ms,
                     booted_wall: booted,
+                    booted_before_wall: booted_before,
                 });
             }
             Some(_) => self.boot_ms = Some(boot_ms),
@@ -553,6 +589,10 @@ impl Vehicle {
                 self.booted_wall = Some(booted);
             }
         }
+        if self.boot_implied.len() == BOOT_BASELINE_KEEP {
+            self.boot_implied.pop_front();
+        }
+        self.boot_implied.push_back(implied);
     }
 
     fn set_mode(&mut self, mav_type: apm::MavType, custom_mode: u32) {

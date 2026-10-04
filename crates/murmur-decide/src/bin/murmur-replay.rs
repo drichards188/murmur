@@ -200,10 +200,11 @@ fn main() -> ExitCode {
             report.assessments
         );
     }
-    if report.queued + report.rechecks + report.resumed + report.reboots > 0 {
+    if report.queued + report.rechecks + report.resumed + report.reboots + report.requeued > 0 {
         println!(
-            "queue: {} queued, {} re-check(s) recomputed ({} dispatched, {} back to the inbox, {} voided), {} expired; {} carried over from a previous run; {} vehicle reboot(s)",
+            "queue: {} queued, {} sent back after a lost link, {} re-check(s) recomputed ({} dispatched, {} back to the inbox, {} voided), {} expired; {} carried over from a previous run; {} vehicle reboot(s)",
             report.queued,
+            report.requeued,
             report.rechecks,
             report.recheck_dispatched,
             report.recheck_inbox,

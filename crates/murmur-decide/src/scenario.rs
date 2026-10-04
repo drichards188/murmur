@@ -721,7 +721,8 @@ pub fn run(
             }
         }
         // anything approved goes out at once, as on the bridge
-        dispatch_approved(&mut engine, &mut vehicles, &mut engaging, &mut failures, s);
+        let world = snapshot(&vehicles, &tracks, &catalog, &areas, now);
+        dispatch_approved(&mut engine, &world, &mut vehicles, &mut engaging, &mut failures, s);
     }
 
     // the outcome
@@ -1350,6 +1351,7 @@ struct Extra {
 
 fn dispatch_approved(
     engine: &mut Engine,
+    world: &WorldSnapshot,
     vehicles: &mut BTreeMap<String, VehicleSim>,
     engaging: &mut BTreeMap<IntentId, (String, LonLat)>,
     failures: &mut Vec<String>,
@@ -1364,7 +1366,7 @@ fn dispatch_approved(
         if !is_engage {
             // another order on these vehicles: as on the bridge, it stands and supersedes
             // any engagement on them (no fallback commanded)
-            match engine.dispatch(id) {
+            match engine.dispatch(id, world) {
                 Ok(o) => {
                     let hit: Vec<IntentId> = engine
                         .intents()

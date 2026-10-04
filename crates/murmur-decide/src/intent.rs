@@ -6,7 +6,7 @@
 //! fields are private and change only through the [`crate::Engine`], which logs every change
 //! before making it. The legal state changes are the table in [`next_state`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -567,10 +567,13 @@ pub enum Transition {
     Fail,
     /// Rules 5: held for a vehicle that can't be reached now (`intent.queued`).
     Queue,
+    /// Rules 5: dispatched, but the link to every vehicle was lost before any started it:
+    /// back to the queue (`intent.requeued`), re-checked before it is sent again.
+    Requeue,
 }
 
 impl Transition {
-    pub const ALL: [Transition; 15] = [
+    pub const ALL: [Transition; 16] = [
         Transition::Check,
         Transition::ChecksFailed,
         Transition::AutoApprove,
@@ -586,6 +589,7 @@ impl Transition {
         Transition::Complete,
         Transition::Fail,
         Transition::Queue,
+        Transition::Requeue,
     ];
 }
 
@@ -611,12 +615,15 @@ pub struct IllegalTransition {
 /// auto_approved | approved -queue-> queued                               (rules 5)
 /// queued -dispatch-> dispatched | -require_approval-> pending_approval
 ///        | -void-> voided | -expire-> expired                           (rules 5)
+/// dispatched -requeue-> queued                                           (rules 5)
 /// ```
 ///
 /// A queued intent leaves the queue only through a re-check against the world at that
 /// moment (`queue.recheck`): dispatched when it passes (and, for a human's approval, the
 /// picture it rested on still holds), back to the inbox when a human must look again, void
-/// when a check fails; expired at its deadline.
+/// when a check fails; expired at its deadline (or, for a human's approval held past
+/// `[queue] human_expire_s`, back to the inbox). A dispatched order whose link was lost to
+/// every vehicle before any started it goes back to the queue (`requeue`).
 ///
 /// Approved is reachable only through `Approve` and `AuthorizeAtSubmission`, which the
 /// engine performs only with a `HumanAuthority` (the second only for the submitter's own
@@ -638,6 +645,7 @@ pub fn next_state(from: State, transition: Transition) -> Result<State, IllegalT
         (S::AutoApproved | S::Approved, T::Queue) => S::Queued,
         (S::Queued, T::RequireApproval) => S::PendingApproval,
         (S::Queued, T::Expire) => S::Expired,
+        (S::Dispatched, T::Requeue) => S::Queued,
         (S::Dispatched, T::Complete) => S::Done,
         (S::Dispatched, T::Fail) => S::Failed,
         (S::Dispatched, T::Release) => S::Effected,
@@ -706,6 +714,20 @@ pub struct Intent {
     /// Rules 5: carried over from the previous run after a bridge restart.
     #[serde(skip_serializing_if = "Option::is_none")]
     resumed: Option<Box<Resumed>>,
+    /// Rules 5: the vehicles that ever accepted and started it (an op `acked`, `active` or
+    /// `done`, in this run or one before): never sent it again.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    committed: BTreeSet<Uid>,
+    /// Rules 5: it was dispatched before (in this run or one before), so a vehicle may hold
+    /// it: its next delivery asks the vehicle what it holds first.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    dispatched_before: bool,
+    /// Rules 5: its basis (a human's approval) comes from the run before a bridge restart.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    basis_carried: bool,
+    /// Each vehicle's last op state in this run (op.state).
+    #[serde(skip)]
+    ops: BTreeMap<Uid, String>,
 }
 
 /// An intent carried over from the previous run: where from, and each vehicle's last op
@@ -738,6 +760,10 @@ impl Intent {
             queue: None,
             basis: None,
             resumed: None,
+            committed: BTreeSet::new(),
+            dispatched_before: false,
+            basis_carried: false,
+            ops: BTreeMap::new(),
         }
     }
 
@@ -788,6 +814,22 @@ impl Intent {
     /// Carried over from the previous run after a bridge restart.
     pub fn resumed(&self) -> Option<&Resumed> {
         self.resumed.as_deref()
+    }
+    /// The vehicles that ever accepted and started it (this run or one before).
+    pub fn committed(&self) -> &BTreeSet<Uid> {
+        &self.committed
+    }
+    /// Dispatched before, in this run or one before: a vehicle may hold it.
+    pub fn dispatched_before(&self) -> bool {
+        self.dispatched_before
+    }
+    /// Its basis (a human's approval) is from the run before a bridge restart.
+    pub fn basis_carried(&self) -> bool {
+        self.basis_carried
+    }
+    /// Each vehicle's last op state in this run.
+    pub fn ops(&self) -> &BTreeMap<Uid, String> {
+        &self.ops
     }
 
     pub(crate) fn apply(
@@ -842,6 +884,29 @@ impl Intent {
     }
     pub(crate) fn set_basis(&mut self, b: Basis) {
         self.basis = Some(Box::new(b));
+        self.basis_carried = false;
+    }
+    pub(crate) fn set_carried(
+        &mut self,
+        committed: BTreeSet<Uid>,
+        dispatched_before: bool,
+        basis_carried: bool,
+    ) {
+        self.committed = committed;
+        self.dispatched_before = dispatched_before;
+        self.basis_carried = basis_carried;
+    }
+    /// Dispatched (again): a vehicle may hold it from now on; its op states start over.
+    pub(crate) fn mark_dispatched(&mut self) {
+        self.dispatched_before = true;
+        self.ops.clear();
+    }
+    /// An op state reported for `uid` (`committed`: the vehicle accepted and started it).
+    pub(crate) fn record_op(&mut self, uid: &Uid, state: &str, committed: bool) {
+        self.ops.insert(uid.clone(), state.to_string());
+        if committed {
+            self.committed.insert(uid.clone());
+        }
     }
     /// Back to the inbox from the queue: a new decision is needed, so the old approval and
     /// any signatures are dropped (the history keeps them).

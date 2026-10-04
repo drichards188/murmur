@@ -24,6 +24,10 @@ pub struct Caps {
     /// (ArduCopter LOITER, for one) descends and lands, and a mode that only stops the motors
     /// (ArduRover HOLD) lets a boat drift off with the current. See the notes above `PLANE`.
     pub hold: &'static str,
+    /// A mode the firmware arms in, switched to when arming is refused in a return, landing
+    /// or brake mode (a lost-link failsafe's, an earlier hold's): ArduCopter does not arm in
+    /// BRAKE (its hold), so a copter arms in GUIDED; the rest arm in their hold mode.
+    pub arm: &'static str,
     /// mission altitude: base, and step per vehicle of that kind in the same tasking (vertical
     /// separation); negative is depth
     pub alt: (f64, f64),
@@ -71,6 +75,7 @@ static PLANE: Caps = Caps {
     auto: "AUTO",
     rtl: Some("RTL"),
     hold: "LOITER",
+    arm: "LOITER",
     alt: (80.0, 15.0),
     takeoff: Some(MavCmd::MAV_CMD_NAV_TAKEOFF),
     orbit: Some(OrbitStyle::Loiter),
@@ -94,6 +99,7 @@ static COPTER: Caps = Caps {
     auto: "AUTO",
     rtl: Some("RTL"),
     hold: "BRAKE",
+    arm: "GUIDED",
     alt: (30.0, 5.0),
     takeoff: Some(MavCmd::MAV_CMD_NAV_TAKEOFF),
     orbit: Some(OrbitStyle::Waypoints),
@@ -101,6 +107,7 @@ static COPTER: Caps = Caps {
 };
 static BLIMP: Caps = Caps {
     hold: "LOITER",
+    arm: "LOITER",
     alt: (20.0, 5.0),
     takeoff: None,
     home_tol: 30.0,
@@ -111,6 +118,7 @@ static BOAT: Caps = Caps {
     auto: "AUTO",
     rtl: Some("RTL"),
     hold: "LOITER",
+    arm: "LOITER",
     alt: (0.0, 0.0),
     takeoff: None,
     orbit: Some(OrbitStyle::Waypoints),
@@ -118,12 +126,14 @@ static BOAT: Caps = Caps {
 };
 static UGV: Caps = Caps {
     hold: "HOLD",
+    arm: "HOLD",
     home_tol: 10.0,
     ..BOAT
 };
 static SUB: Caps = Caps {
     rtl: None,
     hold: "POSHOLD",
+    arm: "POSHOLD",
     alt: (-5.0, -2.0),
     home_tol: 20.0,
     ..BOAT
@@ -133,6 +143,7 @@ static TRACKER: Caps = Caps {
     auto: "AUTO",
     rtl: None,
     hold: "STOP",
+    arm: "STOP",
     alt: (0.0, 0.0),
     takeoff: None,
     orbit: None,

@@ -512,6 +512,26 @@ group. Dates are 2026.
   time since boot went back lost the mode and armed state its order set: its running op
   fails saying so and the intent ends failed, logged as `vehicle.rebooted`. A queued order
   approved by a human before the reboot goes back to the inbox.
+- **The queue after its review: a lost link goes back through the queue, never around it**
+  (10-04, review of d3ccb5d). An order sent whose link drops before the vehicle started it
+  no longer waits in the executor for up to the kind's wait and then resumes unchecked: its
+  op ends `requeued` and the order goes back to the queue (`intent.requeued`, replayed
+  against the op states), where it is re-checked like any other, and the next delivery asks
+  the vehicle what it holds first. An executor waits for a lost link only to follow an order
+  its vehicle had started (after a restart), 120 s at most. The newest order for a vehicle
+  stands: an older queued one is voided, never a newer one, and a newer queued order stops
+  an older one's op that had not started. A human's approval is held 120 s at most
+  (`[queue] human_expire_s`) and does not survive a bridge restart unseen; an agent's order
+  on a vehicle with a human's order waiting needs a human. Carry-over happens only after a
+  crash (a clean stop deletes the pointer, whose writer must also be gone) or by naming the
+  log, onto the same platforms under the same uids, from a log that matches its anchors.
+  "Started" is sticky across op states and restarts. A mission is ours only if command,
+  frame, position, altitude and parameters match. A reboot during an outage longer than the
+  uptime shows as the boot instant jumping later (more than 30 s, plus 5 % of the silence for
+  a simulator that runs slow): residual, a vehicle up less than about 30 s before such an
+  outage. Copters arm in GUIDED (not BRAKE). A command answered IN_PROGRESS is never sent
+  again. Replay rejects a re-check at or after its deadline, a dispatch not right after its
+  re-check, and (rules 5) a direct dispatch without the reach that allowed it.
 - **The operator roster is logged and checked** (10-04, second review of the bindings; rules
   4). A log could credit a session, with engagement authority, to an operator the bridge was
   never configured with (`MURMUR_OPERATORS` and `MURMUR_ENGAGE_OPERATORS` were not logged).

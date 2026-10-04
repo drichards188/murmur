@@ -13,12 +13,16 @@
 //!   would stop it unacknowledged);
 //! - policy now needs a human and none approved it: **inbox**;
 //! - a human approved it and the picture changed (a check's outcome, the policy tier or rule,
-//!   a vehicle rebooted since): **inbox**, so a human looks again;
+//!   a vehicle rebooted since, a bridge restart since): **inbox**, so a human looks again;
 //! - otherwise **dispatch**, exactly the approved order.
 //!
-//! A queued intent that is still waiting at its deadline ends `expired` (`queue.expired`).
-//! Safety commands get a short queue or none (`[queue.kind.hold] expire_s`; 0 = never
-//! queued: dispatched at once whatever the link, as before).
+//! A queued intent that is still waiting at its deadline ends `expired` (`queue.expired`); a
+//! human's approval is held no longer than `[queue] human_expire_s` after it, and then goes
+//! back to the inbox instead ([`QueueConfig::bound`]). Safety commands get a short queue or
+//! none (`[queue.kind.hold] expire_s`; 0 = never queued: dispatched at once whatever the
+//! link, as before). A dispatched order whose link was lost before any vehicle started it
+//! comes back to the queue (`intent.requeued`, op state [`REQUEUED_OP`]); an older queued
+//! order never goes over a newer one for the same vehicle (the engine voids it).
 //!
 //! Everything here is a pure function of logged facts, so replay recomputes it.
 
@@ -44,6 +48,23 @@ pub const MISSION_LINK_MAX_INTERVAL_MS: u32 = 5_000;
 /// delay, seconds at most.
 pub const BOOT_TOLERANCE_MS: i64 = 30_000;
 
+/// Why a `vehicle.rebooted` shows no reboot, if it doesn't: the time since boot went back,
+/// or the boot instant moved later than the one before by more than [`BOOT_TOLERANCE_MS`].
+pub fn reboot_mismatch(
+    boot_ms_before: u64,
+    boot_ms: u64,
+    booted_t: Time,
+    booted_before_t: Option<Time>,
+) -> Option<&'static str> {
+    if boot_ms < boot_ms_before {
+        return None;
+    }
+    match booted_before_t {
+        Some(b) if booted_t.ms_since(b) > BOOT_TOLERANCE_MS => None,
+        _ => Some("reboot without the time since boot going back or the boot instant jumping later"),
+    }
+}
+
 /// `[queue]` in the policy file (rules 5; absent: these defaults).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -56,6 +77,11 @@ pub struct QueueConfig {
     /// Per task kind (`[queue.kind.<kind>]`): another wait, or none.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub kind: BTreeMap<TaskKind, KindQueue>,
+    /// A human's approval is good in the queue this long, seconds from the approval (1..3600,
+    /// default 120, the inbox's own wait): an order a human approved that still waits then goes
+    /// back to the inbox for a new look, whatever its kind's wait. Absent: the default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub human_expire_s: Option<u32>,
 }
 
 impl Default for QueueConfig {
@@ -64,9 +90,18 @@ impl Default for QueueConfig {
             expire_s: 900,
             link_intervals: 3,
             kind: BTreeMap::new(),
+            human_expire_s: None,
         }
     }
 }
+
+/// [`QueueConfig::human_expire_s`] when the file leaves it out.
+pub const HUMAN_EXPIRE_S: u32 = 120;
+
+/// How long an op that lost its link waits for it at most, seconds, once the vehicle had
+/// started the order (it follows it; nothing new is sent): the kind's queue wait, capped here.
+/// Before the start, a lost link sends the order back to the queue at once (re-checked there).
+pub const IN_FLIGHT_PATIENCE_S: u32 = 120;
 
 /// `[queue.kind.<kind>]`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -88,6 +123,13 @@ impl QueueConfig {
             return Err(format!(
                 "queue.expire_s must be within 1..{MAX_QUEUE_S}, got {}",
                 self.expire_s
+            ));
+        }
+        if let Some(h) = self.human_expire_s
+            && !(1..=MAX_QUEUE_S).contains(&h)
+        {
+            return Err(format!(
+                "queue.human_expire_s must be within 1..{MAX_QUEUE_S}, got {h}"
             ));
         }
         if !(1..=10).contains(&self.link_intervals) {
@@ -126,6 +168,37 @@ impl QueueConfig {
     /// Whether an order of `kind` is ever held: a vehicle task whose wait is not 0.
     pub fn queues(&self, kind: TaskKind) -> bool {
         queueable(kind) && self.expire_s(kind) > 0
+    }
+
+    /// How long a human's approval is good in the queue, seconds.
+    pub fn human_expire_s(&self) -> u32 {
+        self.human_expire_s.unwrap_or(HUMAN_EXPIRE_S)
+    }
+
+    /// The end of an order of `kind`'s wait begun at `from`.
+    pub fn wait_end(&self, kind: TaskKind, from: Time) -> Time {
+        from.plus_ms(i64::from(self.expire_s(kind)) * 1000)
+    }
+
+    /// The deadline of an order held in the queue from `now` (queued, requeued or carried over)
+    /// whose kind's wait ends at `by_kind`, and what happens at it: past its kind's wait it
+    /// expires (`false`); one a human approved is held no longer than `human_expire_s` after
+    /// that approval (`basis.t`), and when that comes first it goes back to the inbox instead
+    /// (`true`). Never before `now`.
+    pub fn bound(&self, by_kind: Time, basis: &Basis, now: Time) -> (Time, bool) {
+        if basis.by_human {
+            let by_human = basis.t.plus_ms(i64::from(self.human_expire_s()) * 1000);
+            // at or before: a deadline carried into the next run stays an inbox one
+            if by_human <= by_kind {
+                return (by_human.max(now), true);
+            }
+        }
+        (by_kind.max(now), false)
+    }
+
+    /// How long an op that lost its link after the vehicle started the order may wait for it.
+    pub fn in_flight_patience_s(&self, kind: TaskKind) -> u32 {
+        self.expire_s(kind).min(IN_FLIGHT_PATIENCE_S)
     }
 }
 
@@ -305,17 +378,33 @@ pub struct Recheck {
     pub changes: Vec<String>,
 }
 
-/// The re-check verdict for an intent queued on `basis`, given the checks and policy on the
-/// world now (`now`: the dequeue check's inputs). See the module docs for the order.
+/// What an approval rested on, and what happened to it since: the input of [`assess`].
+#[derive(Clone, Copy, Debug)]
+pub struct Since<'a> {
+    pub basis: &'a Basis,
+    /// The basis is from the run before a bridge restart.
+    pub carried: bool,
+    /// When each vehicle was last logged rebooting in this run (`vehicle.rebooted`): one
+    /// logged after the approval rebooted after the facts it rested on.
+    pub rebooted: &'a BTreeMap<Uid, Time>,
+}
+
+/// The re-check verdict for an intent queued on `since.basis`, given the checks and policy
+/// on the world now (`now`: the dequeue check's inputs). See the module docs for the order.
 pub fn assess(
     spec: &IntentSpec,
-    basis: &Basis,
+    since: &Since<'_>,
     results: &[CheckResult],
     passed: bool,
     decision: Option<&PolicyDecision>,
     now: &WorldSnapshot,
 ) -> Recheck {
+    let basis = since.basis;
     let mut changes: Vec<String> = Vec::new();
+    // a human's look from before a bridge restart: another run, perhaps another picture
+    if since.carried && basis.by_human {
+        changes.push("approved before a bridge restart: a human looks again".into());
+    }
     // each check's outcome against the basis, by rule and vehicle
     for r in results {
         let before = basis
@@ -360,7 +449,14 @@ pub fn assess(
         }
     }
     for u in &spec.uids {
-        if let Some(b) = now.vehicles.get(u).and_then(|v| v.booted_t)
+        // a reboot logged after the approval (the facts it rested on are from before), or a
+        // boot instant later than the approval by more than the estimate's error
+        if let Some(t) = since.rebooted.get(u).filter(|t| **t > basis.t) {
+            changes.push(format!(
+                "vehicle {u} rebooted after the approval (seen {:.0} s after it)",
+                t.ms_since(basis.t) as f64 / 1000.0
+            ));
+        } else if let Some(b) = now.vehicles.get(u).and_then(|v| v.booted_t)
             && b.ms_since(basis.t) > BOOT_TOLERANCE_MS
         {
             changes.push(format!(
@@ -412,7 +508,11 @@ pub struct QueueState {
     pub t: Time,
     /// It is dispatched, sent back, voided or expired by then.
     pub expires_t: Time,
-    /// Why it was queued: each vehicle's reach then.
+    /// At the deadline it goes back to the inbox (a human's approval is held no longer than
+    /// `[queue] human_expire_s`), not expired.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub inbox: bool,
+    /// Why it was queued: each vehicle's reach then (empty when requeued or carried over).
     pub reach: Vec<Reach>,
     /// The last dequeue's judgement, once there was one.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -470,22 +570,31 @@ pub struct OpenIntent {
     /// its op ends.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub ops: BTreeMap<Uid, String>,
+    /// The vehicles that ever accepted and started it (an op `acked`, `active` or `done`, in
+    /// this run or one before): never sent it again, whatever happened after.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub committed: Vec<Uid>,
+    /// It was dispatched before (in this run or one before), so a vehicle may hold it: the
+    /// next delivery asks the vehicle what it holds first.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dispatched_before: bool,
+    /// Each vehicle's platform (catalog id) as its last check saw it: a next run carries it
+    /// only onto the same platforms under those uids.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub platforms: BTreeMap<Uid, String>,
 }
 
 impl OpenIntent {
-    /// The vehicles that accepted and started it (their last op `acked`, `active` or `done`).
+    /// The vehicles that ever accepted and started it (sticky across op states and runs).
     pub fn committed(&self) -> Vec<Uid> {
-        self.ops
-            .iter()
-            .filter(|(_, s)| committed_op(s))
-            .map(|(u, _)| u.clone())
-            .collect()
+        self.committed.clone()
     }
 
     /// The state it resumes in: dispatched when some vehicle had already started it
-    /// (followed, never re-sent), else queued (re-checked, then delivered once).
+    /// (followed, never re-sent), else queued (re-checked, then delivered once; checked
+    /// against what the vehicle holds first if it was dispatched before).
     pub fn resumes_as(&self) -> State {
-        if self.state == State::Dispatched && !self.committed().is_empty() {
+        if self.state == State::Dispatched && !self.committed.is_empty() {
             State::Dispatched
         } else {
             State::Queued
@@ -501,5 +610,10 @@ pub fn committed_op(state: &str) -> bool {
 
 /// Op states an op ends in.
 pub fn ended_op(state: &str) -> bool {
-    matches!(state, "done" | "failed" | "superseded")
+    matches!(state, "done" | "failed" | "superseded" | REQUEUED_OP)
 }
+
+/// The op state of an op whose link was lost before the vehicle started the order (rules 5):
+/// it ends, and when every op of the order ended so, the order goes back to the queue
+/// (`intent.requeued`), re-checked before it is sent again.
+pub const REQUEUED_OP: &str = "requeued";

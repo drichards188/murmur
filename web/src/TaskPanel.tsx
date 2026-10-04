@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { Draft } from './MapView'
 import type { TaskKind, Tasking, Vehicle } from './types'
-import { callsign, LIFECYCLE } from './types'
+import { callsign, LIFECYCLE, opEnding } from './types'
 import { TaskResult, type TaskOutcome } from './TaskResult'
 import { tierLabel, type SpaceRuns } from './decisions'
 import { scenarioNow } from './decisions'
@@ -37,7 +37,7 @@ function age(t: number) {
 }
 
 function Lifecycle({ state }: { state: string }) {
-  const failed = state === 'failed' || state === 'superseded'
+  const failed = state === 'failed' || state === 'superseded' || state === 'requeued'
   const idx = LIFECYCLE.indexOf(state as never)
   return (
     <span className={`steps ${failed ? 'failed' : ''}`}>
@@ -230,7 +230,7 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings, pendi
                   </span>
                   <Lifecycle state={o.state} />
                   <span className="op-detail">
-                    {o.state === 'failed' || o.state === 'superseded' ? <b>{o.state}: </b> : null}
+                    {opEnding(o) ? <b>{opEnding(o)}: </b> : null}
                     {o.detail}
                     {o.progress && o.progress !== o.detail ? ` · ${o.progress}` : ''}
                   </span>

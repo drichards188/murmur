@@ -113,6 +113,12 @@ export interface Intent {
   queue?: QueueInfo
   /** rules 5: carried over from the previous run after a bridge restart */
   resumed?: { from: { log: string; head: string; seq: number; was: IntentState }; ops?: Record<string, string> }
+  /** rules 5: the vehicles that ever started it (followed, never sent it again) */
+  committed?: string[]
+  /** rules 5: dispatched before (a vehicle may hold it: its next delivery asks first) */
+  dispatched_before?: boolean
+  /** rules 5: resumed under way, waiting for its vehicles to connect before it is followed */
+  follow_pending?: boolean
   /** queued intents in the inbox message: each vehicle's reach on the world now */
   reach_now?: Reach[]
 }
@@ -127,6 +133,8 @@ export interface Reach {
 export interface QueueInfo {
   t: number
   expires_t: number
+  /** at the deadline it goes back to the inbox (a human's approval is held only so long) */
+  inbox?: boolean
   reach: Reach[]
   recheck?: { t: number; verdict: 'dispatch' | 'inbox' | 'void'; changes: string[] }
 }

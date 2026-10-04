@@ -3,12 +3,14 @@
 //! ```text
 //! queued -> sent -> acked -> active -> done
 //!    \________\_______\________\______> failed | superseded
+//!    \________\_____________________> requeued
 //! ```
 //!
 //! queued: waiting for a navigation fix. sent: the first MAVLink message is on the wire.
 //! acked: the vehicle accepted everything (mission, arm, mode). active: telemetry shows it
 //! executing. done: telemetry shows the goal reached. An ACK is not done: "active" and
-//! "done" are judged from telemetry, never from acknowledgements.
+//! "done" are judged from telemetry, never from acknowledgements. requeued (rules 5): the
+//! link was lost before the vehicle started the order; the order goes back to the queue.
 
 use std::sync::{Mutex, MutexGuard};
 
@@ -29,11 +31,15 @@ pub enum OpState {
     Done,
     Failed,
     Superseded,
+    Requeued,
 }
 
 impl OpState {
     pub fn is_terminal(self) -> bool {
-        matches!(self, OpState::Done | OpState::Failed | OpState::Superseded)
+        matches!(
+            self,
+            OpState::Done | OpState::Failed | OpState::Superseded | OpState::Requeued
+        )
     }
 
     fn rank(self) -> u8 {
@@ -42,7 +48,7 @@ impl OpState {
             OpState::Sent => 1,
             OpState::Acked => 2,
             OpState::Active => 3,
-            OpState::Done | OpState::Failed | OpState::Superseded => 4,
+            OpState::Done | OpState::Failed | OpState::Superseded | OpState::Requeued => 4,
         }
     }
 
@@ -93,7 +99,10 @@ impl OpRecord {
                 state,
                 t: clock::wall(),
             });
-        } else if matches!(state, OpState::Failed | OpState::Superseded) {
+        } else if matches!(
+            state,
+            OpState::Failed | OpState::Superseded | OpState::Requeued
+        ) {
             return false;
         }
         if let Some(d) = detail {
@@ -180,7 +189,10 @@ impl OpCell {
     /// Progress outlives "done" (an orbit keeps orbiting), but not failure or replacement.
     pub fn set_progress(&self, progress: Option<String>) {
         let mut r = self.lock();
-        if !matches!(r.state, OpState::Failed | OpState::Superseded) {
+        if !matches!(
+            r.state,
+            OpState::Failed | OpState::Superseded | OpState::Requeued
+        ) {
             r.progress = progress;
         }
     }
@@ -195,6 +207,20 @@ impl OpCell {
             h.abort();
         }
         self.set(OpState::Superseded, detail);
+    }
+
+    /// Stop an op whose vehicle has not started its order (queued or sent: waiting for a
+    /// position fix or a link, mid-exchange) and mark it failed, saying why: a newer order was
+    /// queued for the vehicle. Returns whether it was stopped (an op already acked or ended
+    /// runs on).
+    pub fn abandon(&self, detail: String) -> bool {
+        if !matches!(self.state(), OpState::Queued | OpState::Sent) {
+            return false;
+        }
+        if let Some(h) = self.abort.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            h.abort();
+        }
+        self.set(OpState::Failed, detail)
     }
 
     pub fn snapshot(&self) -> OpSnapshot {

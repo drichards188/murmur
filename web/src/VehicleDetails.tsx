@@ -5,7 +5,7 @@ import { type EmuDir, emuCause, fmtBps, fmtDuration, useEmuLink } from './linkEm
 import { symbolSvg } from './symbols'
 import { orbitRange, usePlatformLimits } from './taskDefaults'
 import type { Estimate, Tasking, TelemetryPlan, Vehicle } from './types'
-import { callsign, DOMAIN_LABEL, domainOf, isStale, staleMs } from './types'
+import { callsign, DOMAIN_LABEL, domainOf, isStale, opEnding, staleMs } from './types'
 
 interface Props {
   v: Vehicle
@@ -312,7 +312,7 @@ export function VehicleDetails({ v, taskings, now, selected, onToggleSelect, onC
         {op ? (
           <dl>
             <Item k="Current">
-              {op.o.task.toUpperCase()} #{op.t.id} · <b className={op.o.state === 'failed' || op.o.state === 'superseded' ? 'bad' : ''}>{op.o.state}</b>
+              {op.o.task.toUpperCase()} #{op.t.id} · <b className={op.o.state === 'failed' || op.o.state === 'superseded' || op.o.state === 'requeued' ? 'bad' : ''}>{opEnding(op.o) ?? op.o.state}</b>
             </Item>
             {op.o.detail && <Item k="Detail">{op.o.detail}</Item>}
             {op.o.progress && op.o.progress !== op.o.detail && <Item k="Progress">{op.o.progress}</Item>}

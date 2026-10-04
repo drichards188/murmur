@@ -19,6 +19,7 @@ dispatched -> effected -> done | failed       (engage: release, then the assessm
 dispatched -> aborted                         (engage: stopped before the effect)
 auto_approved | approved -> queued            (rules 5: a vehicle can't be reached now)
 queued -> dispatched | pending_approval | voided | expired   (its re-check, or its deadline)
+dispatched -> queued                          (rules 5: the link lost before any vehicle started it)
 ```
 
 The full table is `intent::next_state`; anything else is a typed `IllegalTransition`.
@@ -115,17 +116,31 @@ link to fail, nor sent twice, nor sent stale.
   but a hold or rtl, its navigation status and position fresh again by the checks' own limit
   (a link that comes back brings the heartbeat first); and for a mission upload (orbit,
   patrol, a sub's rtl) a link that reports at least every 5 s
-  (`MISSION_LINK_MAX_INTERVAL_MS`: not an AUV on its acoustic modem). All reachable: dispatched
-  as before. Otherwise `intent.queued` (the inputs the judgement read, each vehicle's reach,
-  the deadline) and the intent is `queued`. Satellite requests and engagements are never
-  queued, nor a kind whose wait is 0.
+  (`MISSION_LINK_MAX_INTERVAL_MS`: not an AUV on its acoustic modem). All reachable:
+  `intent.dispatched` with the inputs and reach that allowed it (`Engine::dispatch(id,
+  world)` does the same and refuses an unreachable vehicle; `dispatch_order` refuses a kind
+  the queue holds). Otherwise `intent.queued` (the inputs the judgement read, each vehicle's
+  reach, the deadline) and the intent is `queued`. Satellite requests and engagements are
+  never queued, nor a kind whose wait is 0.
 - **Deadline** (`[queue]` in the policy, schema 3): `expire_s` (default 900), per kind
   `[queue.kind.<kind>] expire_s` (the shipped file: hold 60, rtl 120; 0 never queues),
-  `link_intervals` (3). Bounded (`QueueConfig::validate`: 1..3600 s, 0..3600 per kind, 1..10
-  intervals, vehicle kinds only); replay validates the logged copy too.
+  `human_expire_s` (120: a human's approval is held at most this long after it, then the
+  order goes back to the inbox instead of expiring; `QueueConfig::bound`), `link_intervals`
+  (3). Bounded (`QueueConfig::validate`: 1..3600 s, 0..3600 per kind, 1..3600 for a human's
+  approval, 1..10 intervals, vehicle kinds only); replay validates the logged copy too.
+- **Requeue** (`Engine::requeue`): a dispatched order whose link was lost to every vehicle
+  before any started it (each vehicle's last op state `requeued`, none ever `acked`) goes
+  back to the queue (`intent.requeued`, its deadline the kind's wait from the approval,
+  bounded as above), re-checked like any queued order before it is sent again. The bridge
+  then delivers it asking the vehicle what it holds first (`Intent::dispatched_before`).
+- **Never an older order over a newer one**: a dequeue voids the intent when a newer one for
+  one of its vehicles stands (approved, queued, dispatched, or waiting for a human after a
+  human submitted it); a human's approved order waiting in the queue makes an agent's order
+  on that vehicle a human decision (the `waiting` fact, policy rule `(human order waiting)`).
 - **Dequeue** (`Engine::dequeue`, the bridge offers every queued intent each second): past
-  the deadline it expires (`queue.expired`, with why); while a vehicle can't be reached
-  nothing happens and nothing is logged; otherwise the checks run on the world now
+  the deadline it expires (`queue.expired`, with why; or, `inbox`, back to the inbox with a
+  new `approval.requested`); while a vehicle can't be reached nothing happens and nothing is
+  logged; otherwise the checks run on the world now
   (`check.result`, phase `dequeue`), the policy decides on the same inputs, and
   `queue.recheck` logs the reach, the decision and the verdict (`queue::assess`) against
   what the approval rested on (`Basis`: the checks, the decision and the engagements in
@@ -135,22 +150,27 @@ link to fail, nor sent twice, nor sent stale.
     would stop it unacknowledged);
   - the policy now needs a human and none approved it: **inbox**;
   - a human approved it and something changed: a check's outcome, the policy tier, rule or
-    approvers, a vehicle that booted after the approval (`booted_t` later than it by more
-    than 30 s): **inbox**, where a human approves it again (the old approval is dropped;
+    approvers, a vehicle that rebooted after the approval (a `vehicle.rebooted` logged after
+    it, or `booted_t` later than it by more than 30 s), an approval from the run before a
+    bridge restart: **inbox**, where a human approves it again (the old approval is dropped;
     `approval.requested` gives a new deadline);
-  - otherwise **dispatch**: `intent.dispatched` exactly as approved.
+  - otherwise **dispatch**: `intent.dispatched` exactly as approved, right after the re-check,
+    which is judged before the deadline or not at all.
 - **Cancel**: an operator cancels a queued intent (`void`), an agent withdraws its own.
 - **Restart** (`Engine::resume`, `ReplayReport::open`): the intents a log leaves open (a
   vehicle task queued, approved but not dispatched, or dispatched with ops still running)
   can be carried into the next run's log as `intent.resumed`, keeping their ids (new ones
   number on from `ReplayReport::next_intent`, `Engine::reserve_ids`), with their basis,
-  decision, approval (`CarriedApproval`), deadline and each vehicle's last op state. One
-  that some vehicle had started (`acked`, `active`, `done`) resumes `dispatched`: the bridge
-  follows it there and never sends it again; any other resumes `queued` and is re-checked
-  before it goes (and, if it may have been delivered, checked against what the vehicle
-  holds first).
+  decision, approval (`CarriedApproval`), deadline, each vehicle's last op state, the
+  vehicles that ever started it (`committed`: sticky across op states and runs), whether it
+  was ever dispatched (`dispatched_before`) and each vehicle's platform as last checked. One
+  that some vehicle had started resumes `dispatched`: the bridge follows it there and never
+  sends it again; any other resumes `queued` and is re-checked before it goes (a human's
+  approval goes back to the inbox: `basis_carried`), and, if it was dispatched before,
+  checked against what the vehicle holds first.
 - **Reboots**: `Engine::record_reboot` logs `vehicle.rebooted` (the time since boot before
-  and after, the new boot instant); the bridge ends a running op on a rebooted vehicle.
+  and after, the new boot instant and, when the time since boot did not go back, the one
+  before: a jump of more than 30 s); the bridge ends a running op on a rebooted vehicle.
 
 **Replay.** `intent.queued` is recomputed (reach from its inputs, at least one vehicle
 unreachable, the deadline from the policy, approved before, a kind the policy queues);
@@ -158,11 +178,16 @@ unreachable, the deadline from the policy, approved before, a kind the policy qu
 decision and verdict are recomputed from that check against the basis replay rebuilt from
 the approval; the next transition must carry out the verdict (dispatch, back to the inbox
 with a new `approval.requested`, void), and a dispatch from the queue needs a re-check that
-says so; a queue expiry needs its deadline. `intent.resumed` is checked against the previous
-log (`ReplayOptions::previous`, `murmur-replay --prev`, by default the file it names beside
-the log): that log is the one named (head, last seq), replays, and leaves the intent open
-exactly as carried; without it a resumed intent is a mismatch unless trusted
-(`--trust-resumed`). One generation: replay each log with its own predecessor.
+says so, logged right after it and before the deadline; a queue expiry needs its deadline
+and its kind (expired or back to the inbox). Under rules 5 a dispatch straight from an
+approval of a kind the queue holds needs its reach (recomputed: every vehicle reachable). An
+`intent.requeued` needs every vehicle's last op state `requeued`, none ever started, and its
+deadline from the policy. Each decision's `waiting` fact is recomputed from the queued
+intents. `intent.resumed` is checked against the previous log (`ReplayOptions::previous`,
+`murmur-replay --prev`, by default the file it names beside the log): that log is the one
+named (head, last seq), replays, and leaves the intent open exactly as carried; without it a
+resumed intent is a mismatch unless trusted (`--trust-resumed`). One generation: replay each
+log with its own predecessor.
 
 ## Engagements (Phase E)
 
@@ -518,11 +543,17 @@ Rules versions:
   approved order for a vehicle the link can't carry it to now is queued
   (`intent.queued`) instead of dispatched, re-checked when it can be reached (`check.result`
   phase `dequeue`, `queue.recheck`: dispatch, back to the inbox, void), expired at its
-  deadline (`queue.expired`); open intents are carried over a bridge restart
-  (`intent.resumed`); reboots are logged (`vehicle.rebooted`) and the boot instant is a
-  vehicle fact (`booted_t`). Gated in `Engine::dispatch_or_queue` (rules before 5 dispatch
-  as before) and `Engine::resume`; markers: those event types, a `dequeue` phase, `booted_t`
-  and the policy's `[queue]` (policy schema 3).
+  deadline (`queue.expired`, or back to the inbox for a human's approval held
+  `human_expire_s`); a dispatched order whose link was lost before any vehicle started it
+  goes back to the queue (`intent.requeued`); an older queued order is voided when a newer
+  one for its vehicle stands, and an agent's order on a vehicle with a human-approved order
+  waiting needs a human (`waiting`); a direct dispatch logs the reach that allowed it; open
+  intents are carried over a bridge restart (`intent.resumed`); reboots are logged
+  (`vehicle.rebooted`) and the boot instant is a vehicle fact (`booted_t`). Gated in
+  `Engine::dispatch_or_queue`, `Engine::dispatch` (rules before 5 dispatch as before),
+  `Engine::requeue` and `Engine::resume`, and the `waiting` rule in `policy::decide`;
+  markers: those event types, a `dequeue` phase, `booted_t`, `reach`, `waiting` and the
+  policy's `[queue]` (policy schema 3).
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
@@ -551,8 +582,9 @@ The full contract is in the crate docs (`src/lib.rs`). In short:
    deadline). For approved intents: `dispatch_or_queue` with the world now gives
    `Routed::Dispatched(Order)` (a vehicle order: a `DispatchOrder` for the existing task
    manager, execute exactly it) or `Routed::Queued`; offer each queued intent to `dequeue`
-   with a fresh snapshot every second (`Dequeued::Dispatched` is executed the same way).
-   `dispatch` still gives a `DispatchOrder` directly; report back with `record_op_state` (a
+   with a fresh snapshot every second (`Dequeued::Dispatched` is executed the same way); when
+   every op of a dispatched order ended `requeued`, `requeue` it. `dispatch(id, world)` gives
+   a `DispatchOrder` directly (refused for an unreachable vehicle under rules 5); report back with `record_op_state` (a
    dispatched intent's own vehicles only, and before its finish) and `finish`; log vehicle
    events; `void` intents the world invalidates. An engagement's fallback is reported as
    op state `fallback` with a detail that starts with the fallback's name (see "What was

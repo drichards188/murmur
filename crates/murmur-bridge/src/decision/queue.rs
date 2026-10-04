@@ -11,15 +11,27 @@
 //! - **Dequeue.** Each tick, every queued intent is offered to the engine with a fresh
 //!   snapshot ([`murmur_decide::Engine::dequeue`]): still unreachable, nothing happens;
 //!   reachable, its checks run on the world then and the engine dispatches it, sends it back
-//!   to the inbox, or voids it. The executor gets the kind's queue wait as its patience for
-//!   a link lost mid-exchange (`tasks::exec`).
+//!   to the inbox, or voids it (also when a newer order for one of its vehicles stands: an
+//!   older order never goes over a newer one).
+//! - **Requeue.** A dispatched order whose link is lost before its vehicle started it ends
+//!   its op `requeued` (`tasks::exec`); when every op of the order ended so, it goes back to
+//!   the queue ([`murmur_decide::Engine::requeue`]), re-checked before it is sent again, and
+//!   then delivered asking the vehicle what it holds first (`Resume::Verify`). An op that
+//!   follows an order its vehicle had started waits for a lost link the kind's queue wait,
+//!   120 s at most. A newer order queued for a vehicle stops an older order's op there that
+//!   has not started (failed, "abandoned").
 //! - **Restart.** The bridge keeps a pointer to its log and the ids it leaves open
-//!   (`logs/audit/.resume-<http port>.json`, rewritten when that set changes). A bridge that
-//!   starts within `MURMUR_RESUME_WINDOW_S` (900 s) of the last write replays that log and
-//!   carries every open vehicle intent over (`intent.resumed`): queued (and approved, or
-//!   dispatched but never started) ones continue queued, re-checked before they go and, if
-//!   they may have been delivered, checked against what the vehicle holds first; dispatched
-//!   ones some vehicle had started are followed there (`Resume::Adopt`), never sent again.
+//!   (`logs/audit/.resume-<http port>.json`, rewritten when that set changes, with the pid of
+//!   the bridge that writes it); a clean shutdown deletes it. A bridge that starts within
+//!   `MURMUR_RESUME_WINDOW_S` (900 s) of the last write of a pointer left behind (a crash),
+//!   whose writer is no longer running, replays that log and carries every open vehicle intent
+//!   over (`intent.resumed`): queued (and approved, or dispatched but never started) ones
+//!   continue queued, re-checked before they go (a human's approval goes back to the inbox)
+//!   and, if they may have been delivered, checked against what the vehicle holds first;
+//!   dispatched ones some vehicle had started are followed there (`Resume::Adopt`), never
+//!   sent again. The log must match its anchors (a crash leaves no shutdown anchor), each
+//!   intent's vehicles must be the same platforms under the same uids in this run's fleet,
+//!   and an approval must be by an operator of this run, or that intent is not carried.
 //!   `MURMUR_RESUME=0` turns this off, `MURMUR_RESUME=<log.jsonl>` resumes from that log.
 //! - **Reboots.** A vehicle whose time since boot went back is logged (`vehicle.rebooted`);
 //!   its running op ends (`tasks::exec`), and its boot instant is a fact the dequeue
@@ -51,7 +63,8 @@ pub const RESUME_WINDOW_S: f64 = 900.0;
 pub enum ResumeFrom {
     /// Not at all (`MURMUR_RESUME=0`).
     Off,
-    /// The log the pointer file names, if it was written within the window.
+    /// The log the pointer file names, if it was written within the window by a bridge that
+    /// is no longer running (a clean shutdown deletes the pointer).
     Pointer { window_s: f64 },
     /// This log (`MURMUR_RESUME=<path>`).
     Log(PathBuf),
@@ -64,6 +77,9 @@ pub struct Pointer {
     pub open: Vec<u64>,
     /// Wall clock, s.
     pub t: f64,
+    /// The bridge process that writes it (0: unknown).
+    #[serde(default)]
+    pub pid: u32,
 }
 
 /// A resumed intent some vehicle had started, waiting for its vehicles to connect before
@@ -77,13 +93,20 @@ pub(super) struct PendingFollow {
 }
 
 impl Decision {
-    /// How long an order of `kind` may wait for its vehicles (in the queue, or for a link
-    /// lost mid-exchange): `[queue]` per kind; zero under rules before 5.
+    /// How long an op following an order its vehicle had started (after a bridge restart)
+    /// waits for a lost link, and how long a resumed order's vehicles have to connect: the
+    /// kind's queue wait, 120 s at most; zero under rules before 5.
     pub(super) fn patience(&self, kind: DKind) -> Duration {
         if self.rules.rules_version < 5 {
             return Duration::ZERO;
         }
-        Duration::from_secs(u64::from(self.queue_cfg.expire_s(kind)))
+        Duration::from_secs(u64::from(self.queue_cfg.in_flight_patience_s(kind)))
+    }
+
+    /// Whether a link lost before the vehicle started an order of `kind` sends the order back
+    /// to the queue (rules 5, a kind the policy queues), instead of failing it.
+    pub(super) fn requeues(&self, kind: DKind) -> bool {
+        self.rules.rules_version >= 5 && self.queue_cfg.queues(kind)
     }
 
     /// A vehicle intent the engine approved: dispatched to its vehicles if the link can carry
@@ -143,6 +166,7 @@ impl Decision {
             }
         };
         order.patience = self.patience(released.task.kind());
+        order.requeue = self.requeues(released.task.kind());
         order.resume = resume.clone();
         let tasking = self.world.tasks.dispatch(AuthorizedOrder {
             intent: released.intent,
@@ -159,13 +183,14 @@ impl Decision {
         self.supersede(core, id, &released.uids);
     }
 
-    /// A newer order queued for these vehicles: older queued ones on them are voided (the
-    /// newest order stands, as at a dispatch).
+    /// A newer order queued for these vehicles: older queued ones on them are voided, and an
+    /// older order's op there that its vehicle has not started (waiting for a fix or a link,
+    /// mid-exchange) is stopped (the newest order stands, as at a dispatch). Never a newer one.
     fn supersede_queued(&self, core: &mut Core, id: IntentId, uids: &[murmur_decide::Uid]) {
         let stale: Vec<(IntentId, murmur_decide::Uid)> = core
             .engine
             .intents()
-            .filter(|i| i.id() != id && i.id() < id && i.state() == State::Queued)
+            .filter(|i| i.id() < id && i.state() == State::Queued)
             .filter_map(|i| {
                 let u = i.spec().uids.iter().find(|u| uids.contains(u))?;
                 Some((i.id(), u.clone()))
@@ -176,6 +201,13 @@ impl Decision {
             if let Err(e) = core.engine.void(other, &why) {
                 eprintln!("decision: void {other}: {e}");
             }
+        }
+        for u in uids {
+            let Some(b) = bridge_uid(u) else { continue };
+            let detail = format!(
+                "abandoned before the vehicle started it: {id} was queued for vehicle {u} (the newest order stands)"
+            );
+            self.world.tasks.abandon_unstarted(b, id.0, &detail);
         }
     }
 
@@ -258,6 +290,7 @@ impl Decision {
                     r.boot_ms_before,
                     r.boot_ms,
                     super::snapshot::ms(r.booted_wall),
+                    r.booted_before_wall.map(super::snapshot::ms),
                 ) {
                     eprintln!("decision: reboot: {e}");
                 }
@@ -269,8 +302,24 @@ impl Decision {
 
     /// Carry the previous run's open intents into this one: replay `text` (the log named
     /// `name`), and resume every vehicle intent it leaves open. Refused (nothing carried) if
-    /// it does not replay, or was written under rules before 5.
-    pub fn carry_over(&self, name: &str, text: &str) -> Result<Vec<IntentId>, String> {
+    /// it does not replay, was written under rules before 5, or does not match its anchor
+    /// file (`anchors`, when there is one; a missing shutdown anchor is a crash, the case this
+    /// is for). An intent is not carried when one of its vehicles is not the same platform
+    /// under its uid in this run's fleet, or when a human approved it who is not an operator
+    /// of this run.
+    pub fn carry_over(
+        &self,
+        name: &str,
+        text: &str,
+        anchors: Option<&str>,
+    ) -> Result<Vec<IntentId>, String> {
+        if let Some(a) = anchors
+            && let Some(why) = anchors_refuse(text, a)
+        {
+            return Err(format!(
+                "{name} does not match its anchors ({why}): nothing carried over"
+            ));
+        }
         let report = replay_str_with(
             text,
             &ReplayOptions {
@@ -289,12 +338,17 @@ impl Decision {
             ));
         }
         let head = report.head_sha256.clone().unwrap_or_default();
+        let platforms = self.fleet_platforms();
         let mut carried = Vec::new();
         {
             let mut guard = self.lock();
             let core = &mut *guard;
             core.engine.reserve_ids(report.next_intent);
             for open in &report.open {
+                if let Some(why) = refuse_carry(open, &platforms, &self.operators) {
+                    eprintln!("decision: {} not carried over: {why}", open.spec.id);
+                    continue;
+                }
                 let from = ResumedFrom {
                     log: name.to_string(),
                     head: head.clone(),
@@ -322,6 +376,33 @@ impl Decision {
         Ok(carried)
     }
 
+    /// The platform under each uid in this run's fleet: the manifest file's, or the
+    /// identity of a vehicle already connected (which wins).
+    fn fleet_platforms(&self) -> BTreeMap<murmur_decide::Uid, String> {
+        let mut out = BTreeMap::new();
+        if let Some(data) = std::fs::read(&self.world.cfg.manifest)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        {
+            let (m, _) = crate::world::Manifest::parse(&data);
+            for (uid, identity) in &m.identities {
+                if let Some(p) = identity.str("platform") {
+                    out.insert(duid(*uid), p.to_string());
+                }
+            }
+        }
+        for cell in self.world.vehicles() {
+            if let Some(p) = cell.read(|v| {
+                v.identity
+                    .as_ref()
+                    .and_then(|i| i.str("platform").map(str::to_string))
+            }) {
+                out.insert(duid(cell.uid), p);
+            }
+        }
+        out
+    }
+
     /// Each tick: resumed intents a vehicle had started get their follow tasking once all
     /// their vehicles are connected; one whose vehicles don't connect within the kind's wait
     /// ends failed.
@@ -345,6 +426,21 @@ impl Decision {
                 .uids
                 .iter()
                 .all(|u| bridge_uid(u).is_some_and(|b| fleet.contains_key(&b)));
+            // a newer order for one of its vehicles stands: the older one is not followed
+            if let Some((newer, uid)) = core.engine.newer_order(id) {
+                core.follow.remove(&id);
+                let detail = format!(
+                    "after the bridge restart: {newer} is a newer order for vehicle {uid}: not followed, not sent again"
+                );
+                if let Err(e) = core
+                    .engine
+                    .finish(id, murmur_decide::TaskOutcome::Failed { detail })
+                {
+                    eprintln!("decision: finish {id}: {e}");
+                }
+                continue;
+            }
+            let committed = intent.committed().clone();
             let Some(pending) = core.follow.get(&id) else {
                 continue;
             };
@@ -365,9 +461,11 @@ impl Decision {
                 .uids
                 .iter()
                 .filter_map(|u| {
+                    // started (in any run before: the set is sticky) and not ended: followed
                     let mode = match pending.ops.get(u).map(String::as_str) {
                         Some(s) if dq::committed_op(s) => Resume::Adopt,
                         Some(s) if dq::ended_op(s) => Resume::Ended,
+                        _ if committed.contains(u) => Resume::Adopt,
                         _ => Resume::Undelivered,
                     };
                     Some((bridge_uid(u)?, mode))
@@ -413,6 +511,7 @@ impl Decision {
             log: self.audit_path.clone(),
             open: open.clone(),
             t: clock::wall(),
+            pid: std::process::id(),
         };
         match write_atomic(path, &p) {
             Ok(()) => core.pointer_written = Some((open, p.t)),
@@ -421,18 +520,57 @@ impl Decision {
     }
 }
 
-/// How a dequeued intent's ops deliver it: one that the previous run had dispatched (not
-/// started: it resumed queued) may be on the vehicle already, so each op checks first.
+/// How a dequeued intent's ops deliver it: one dispatched before (in this run, before its
+/// link was lost, or in a run before a restart; never started, or it would not be queued) may
+/// be on the vehicle already, so each op asks the vehicle what it holds first.
 fn resume_modes(intent: &Intent) -> HashMap<Uid, Resume> {
-    match intent.resumed() {
-        Some(r) if r.from.was == State::Dispatched => intent
-            .spec()
-            .uids
-            .iter()
-            .filter_map(|u| Some((bridge_uid(u)?, Resume::Verify)))
-            .collect(),
-        _ => HashMap::new(),
+    if !intent.dispatched_before() {
+        return HashMap::new();
     }
+    intent
+        .spec()
+        .uids
+        .iter()
+        .filter_map(|u| Some((bridge_uid(u)?, Resume::Verify)))
+        .collect()
+}
+
+/// Why an open intent of the previous run is not carried into this one, if it isn't: a vehicle
+/// that is another platform under its uid now (or not in this run's fleet), or an approval
+/// by someone who is not an operator of this run.
+fn refuse_carry(
+    open: &dq::OpenIntent,
+    platforms: &BTreeMap<murmur_decide::Uid, String>,
+    operators: &[murmur_decide::OperatorId],
+) -> Option<String> {
+    for u in &open.spec.uids {
+        let now = platforms.get(u);
+        match (open.platforms.get(u), now) {
+            (Some(was), Some(now)) if was == now => {}
+            (Some(was), Some(now)) => {
+                return Some(format!(
+                    "vehicle {u} was a {was}, is a {now} in this run's fleet"
+                ));
+            }
+            (Some(was), None) => {
+                return Some(format!("vehicle {u} (a {was}) is not in this run's fleet"));
+            }
+            (None, _) => {
+                return Some(format!(
+                    "the previous log does not say which platform vehicle {u} was"
+                ));
+            }
+        }
+    }
+    if let Some(a) = &open.approval
+        && !operators.contains(&a.by)
+    {
+        return Some(format!(
+            "approved by {}, who is not an operator of this run",
+            a.by
+        ));
+    }
+    None
 }
 
 fn write_atomic(path: &Path, p: &Pointer) -> std::io::Result<()> {
@@ -445,9 +583,11 @@ fn write_atomic(path: &Path, p: &Pointer) -> std::io::Result<()> {
 }
 
 /// At start: the previous run's log to carry open intents over from, if any (see
-/// [`ResumeFrom`]). The pointer must name a log other than ours and have been written within
-/// the window. Its list of open intents is not trusted to be current (it is rewritten once a
-/// tick, and a crash can come between an order and that write): the log says what is open.
+/// [`ResumeFrom`]). The pointer must name a log other than ours, have been written within
+/// the window, and by a bridge that is no longer running (a clean shutdown deletes it, so a
+/// pointer left behind means a crash). Its list of open intents is not trusted to be current
+/// (it is rewritten once a tick, and a crash can come between an order and that write): the
+/// log says what is open.
 pub fn previous_log(from: &ResumeFrom, pointer: Option<&Path>, ours: &Path) -> Option<PathBuf> {
     match from {
         ResumeFrom::Off => None,
@@ -456,7 +596,32 @@ pub fn previous_log(from: &ResumeFrom, pointer: Option<&Path>, ours: &Path) -> O
             let text = std::fs::read(pointer?).ok()?;
             let p: Pointer = serde_json::from_slice(&text).ok()?;
             let fresh = clock::wall() - p.t <= *window_s;
-            (fresh && p.log != ours && p.log.exists()).then_some(p.log)
+            let writer_alive = p.pid != 0
+                && p.pid != std::process::id()
+                && Path::new("/proc").join(p.pid.to_string()).exists();
+            (fresh && !writer_alive && p.log != ours && p.log.exists()).then_some(p.log)
         }
     }
+}
+
+/// Delete the pointer file if it names `ours` (a clean shutdown: nothing is left to carry
+/// over, and the next run starts afresh).
+pub fn drop_pointer(pointer: &Path, ours: &Path) {
+    let names_ours = std::fs::read(pointer)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Pointer>(&b).ok())
+        .is_some_and(|p| p.log == ours);
+    if names_ours && let Err(e) = std::fs::remove_file(pointer) {
+        eprintln!("decision: {}: {e}", pointer.display());
+    }
+}
+
+/// Why a previous log's anchor file refuses it, if it does: every problem `verify` finds but
+/// the missing shutdown anchor (a crashed run, the one a carry-over is for).
+pub fn anchors_refuse(log: &str, anchors: &str) -> Option<String> {
+    let r = murmur_decide::anchor::verify(log, anchors);
+    r.problems
+        .iter()
+        .find(|p| !p.what.starts_with("no shutdown anchor"))
+        .map(|p| format!("seq {}: {}", p.seq, p.what))
 }

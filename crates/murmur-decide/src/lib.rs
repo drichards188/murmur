@@ -229,7 +229,7 @@
 //! // Only an operator session can approve it.
 //! let session = engine.open_operator_session(OperatorId::new("op-1")).unwrap();
 //! engine.approve(id, session.authority(), None, &world, &NoTerrain).unwrap();
-//! let order = engine.dispatch(id).unwrap();
+//! let order = engine.dispatch(id, &world).unwrap();
 //! assert_eq!(order.uids, vec![Uid::new("sky-1")]);
 //!
 //! // The log reproduces every decision.

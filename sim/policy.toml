@@ -69,12 +69,16 @@ until = "window"
 # link reports less often than every 5 s (an AUV on its acoustic modem: an upload can't cross
 # it). When it can be reached its checks run again on the world then: it is sent if they pass,
 # back to the inbox if a human approved a picture that has since changed (a check, the tier, a
-# reboot, an engagement now in play), voided if a check fails. Past its wait it expires. Each
-# wait is also how long an order already under way waits for a link lost mid-exchange.
+# reboot, an engagement now in play, a bridge restart since), voided if a check fails or a
+# newer order for its vehicle stands. Past its wait it expires; a human's approval is held no
+# longer than human_expire_s, then it goes back to the inbox. An order sent whose link is lost
+# before its vehicle started it comes back here (re-checked before it goes again); one its
+# vehicle started waits for a lost link this long too, 120 s at most.
 # Bounds: expire_s 1..3600; per kind 0..3600 (0: never queued, sent at once whatever the link,
-# as before rules 5); link_intervals 1..10. The queue holds vehicle tasks only.
+# as before rules 5); human_expire_s 1..3600; link_intervals 1..10. Vehicle tasks only.
 [queue]
 expire_s = 900                              # an order waits at most this long for its vehicles
+human_expire_s = 120                        # a human's approval, at most this long after it
 link_intervals = 3                          # reachable: heard within this many of its link's
                                             # expected report intervals (the bridge's lost-link rule)
 

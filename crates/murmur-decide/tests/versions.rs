@@ -408,12 +408,14 @@ fn an_unknown_policy_key_still_fails_to_parse() {
     assert!(serde_json::from_str::<audit::Event>(&line).is_err());
 }
 
-/// Rules 5, live (murmur-5p4): the queue across a bridge restart, from a clean build. The
-/// first run queued an orbit for an AUV under water (sent when it surfaced) and one for a
-/// copter whose link was cut; the bridge was stopped mid-queue (the AUV's orbit mid-upload)
-/// and the second run carried both over, re-checked them and sent them (the AUV's only
-/// started: it already held the mission), then queued and sent a boat's patrol through a
-/// Starlink outage. Each was anchored as it ran.
+/// Rules 5, live (murmur-5p4, after its review): the queue across a bridge crash, from a clean
+/// build. The first run queued an orbit for an AUV under water (sent when it surfaced), and
+/// sent an orbit to a SITL copter whose link was cut before it could start it: the order came
+/// back to the queue (`intent.requeued`) and went again once the link was back, re-checked.
+/// The bridge was then killed (SIGKILL: no shutdown anchor) with the copter on station; the
+/// second run carried the orbit over and followed it (ArduCopter's own mission compared item
+/// by item: not sent again), then queued and sent a boat's patrol through a Starlink outage,
+/// and stopped cleanly. Each was anchored as it ran.
 const QUEUE_BEFORE: &str = "v5-queue-live-before-restart.jsonl";
 const QUEUE_AFTER: &str = "v5-queue-live-after-restart.jsonl";
 
@@ -428,15 +430,21 @@ fn anchors_of(name: &str) -> String {
 fn the_live_queue_logs_replay_across_the_restart() {
     let before = fixture(QUEUE_BEFORE);
     let after = fixture(QUEUE_AFTER);
-    for (name, log) in [(QUEUE_BEFORE, &before), (QUEUE_AFTER, &after)] {
-        let a = anchor::verify(log, &anchors_of(name));
-        assert!(a.ok(), "{name}: {:?}", a.problems);
-        assert!(a.shutdown, "{name}: a clean stop anchored the head");
-    }
+    // the first run crashed: its anchors hold up to the last one, with no shutdown anchor
+    let a = anchor::verify(&before, &anchors_of(QUEUE_BEFORE));
+    assert!(!a.shutdown);
+    assert!(
+        a.problems.iter().all(|p| p.what.starts_with("no shutdown anchor")),
+        "{:?}",
+        a.problems
+    );
+    let a = anchor::verify(&after, &anchors_of(QUEUE_AFTER));
+    assert!(a.ok(), "{:?}", a.problems);
+    assert!(a.shutdown, "a clean stop anchored the head");
     let r = replay_str(&before).unwrap();
     assert!(r.ok(), "{:?}", r.mismatches);
     assert_eq!(r.rules_version, 5);
-    assert!(r.queued >= 2 && r.recheck_dispatched >= 1, "{r:?}");
+    assert!(r.queued >= 1 && r.requeued >= 1 && r.recheck_dispatched >= 2, "{r:?}");
     assert_eq!(r.build.as_ref().map(|b| b.dirty), Some(Some(false)));
     // the second run, checked against the first
     let opts = |previous| ReplayOptions {
@@ -445,8 +453,11 @@ fn the_live_queue_logs_replay_across_the_restart() {
     };
     let r = replay_str_with(&after, &opts(Some(&before))).unwrap();
     assert!(r.ok(), "{:?}", r.mismatches);
-    assert_eq!(r.resumed, 2);
-    assert!(r.recheck_dispatched >= 2, "{r:?}");
+    assert!(r.resumed >= 1, "{r:?}");
+    assert!(r.recheck_dispatched >= 1, "{r:?}");
+    // the orbit started in the first run is followed in the second, never sent again
+    assert!(after.contains("\"type\":\"intent.resumed\""));
+    assert!(after.contains("\"state\":\"dispatched\""));
     // not without it, nor against an edited one
     let r = replay_str(&after).unwrap();
     assert!(whats(&r).iter().any(|w| w.contains("not verified")), "{:?}", whats(&r));

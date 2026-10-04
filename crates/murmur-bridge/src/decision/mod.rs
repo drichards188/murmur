@@ -438,9 +438,15 @@ impl Decision {
             let name = prev
                 .file_name()
                 .map_or_else(|| prev.display().to_string(), |n| n.to_string_lossy().into_owned());
+            // its anchors, where this run keeps its own (`<dir>/<log stem>.anchors`)
+            let anchors = s.anchors.as_ref().and_then(|cfg| {
+                let stem = prev.file_stem()?.to_string_lossy().into_owned();
+                let file = cfg.path.parent()?.join(format!("{stem}.anchors"));
+                std::fs::read_to_string(file).ok()
+            });
             match std::fs::read_to_string(&prev)
                 .map_err(|e| format!("{}: {e}", prev.display()))
-                .and_then(|text| d.carry_over(&name, &text))
+                .and_then(|text| d.carry_over(&name, &text, anchors.as_deref()))
             {
                 Ok(ids) if ids.is_empty() => {}
                 Ok(ids) => println!(
@@ -469,6 +475,11 @@ impl Decision {
                 Ok(_) => a.flush_hook(),
                 Err(e) => eprintln!("anchor {}: {e}", a.path().display()),
             }
+        }
+        // a clean stop leaves nothing to carry over: the next run starts afresh (only a
+        // crash, or `MURMUR_RESUME=<log>`, carries open intents into a new run)
+        if let Some(p) = self.pointer.get() {
+            queue::drop_pointer(p, &self.audit_path);
         }
         std::process::exit(0)
     }
@@ -1066,14 +1077,15 @@ impl Decision {
 
     /// Older orders still waiting for these vehicles are superseded (voided), and an
     /// engagement in play on one of them (pending, approved or under way) is stopped with
-    /// that cause: the newest order stands.
+    /// that cause: the newest order stands. A newer order is never voided by an older one's
+    /// dispatch (rules 5: an older queued order that comes out of the queue after it).
     fn supersede(&self, core: &mut Core, id: IntentId, uids: &[DUid]) {
         let took: BTreeSet<&DUid> = uids.iter().collect();
         let stale: Vec<(IntentId, DUid)> = core
             .engine
             .intents()
             .filter(|i| {
-                i.id() != id
+                i.id() < id
                     && !matches!(i.spec().task, Task::Engage { .. })
                     && matches!(
                         i.state(),
@@ -1461,13 +1473,16 @@ impl Decision {
         }
     }
 
-    /// Log each op's state changes (and NOT MOVING) as `op.state`; finish the intent when
-    /// all its ops have ended: done if every vehicle got there, else failed with why.
+    /// Log each op's state changes (and NOT MOVING) as `op.state`; when all its ops have
+    /// ended, finish the intent: done if every vehicle got there, else failed with why; or
+    /// (rules 5), when every op ended `requeued` (the link lost before any vehicle started
+    /// it), send it back to the queue.
     fn follow_ops(&self, core: &mut Core) {
         let Core {
             engine, running, ..
         } = core;
         let mut ended = Vec::new();
+        let mut requeued = Vec::new();
         for (id, run) in running.iter_mut() {
             let snap = run.tasking.snapshot();
             for op in &snap.ops {
@@ -1486,6 +1501,10 @@ impl Decision {
                 run.reported.insert(op.id, key);
             }
             if snap.ops.iter().all(|o| o.state.is_terminal()) {
+                if !snap.ops.is_empty() && snap.ops.iter().all(|o| o.state == OpState::Requeued) {
+                    requeued.push(*id);
+                    continue;
+                }
                 let bad: Vec<String> = snap
                     .ops
                     .iter()
@@ -1510,6 +1529,26 @@ impl Decision {
                 ended.push((*id, outcome));
             }
         }
+        // back to the queue: re-checked on the world when the link is back, then delivered
+        // asking the vehicle what it holds first; if the engine refuses (a vehicle had
+        // started it), the order failed
+        for id in requeued {
+            match engine.requeue(id) {
+                Ok(_) => {
+                    running.remove(&id);
+                }
+                Err(e) => {
+                    eprintln!("decision: requeue {id}: {e}");
+                    let detail = format!("the link was lost before the order started: {e}");
+                    match engine.finish(id, TaskOutcome::Failed { detail }) {
+                        Ok(_) => {
+                            running.remove(&id);
+                        }
+                        Err(e) => eprintln!("decision: finish {id}: {e}"),
+                    }
+                }
+            }
+        }
         for (id, outcome) in ended {
             match engine.finish(id, outcome) {
                 Ok(_) => {
@@ -1529,7 +1568,13 @@ impl Decision {
         let intents: Vec<Value> = all
             .into_iter()
             .rev()
-            .map(|i| intent_json(i, core.taskings.get(&i.id()).map(|t| t.id), self.tol()))
+            .map(|i| {
+                let mut v = intent_json(i, core.taskings.get(&i.id()).map(|t| t.id), self.tol());
+                if core.follow.contains_key(&i.id()) {
+                    v["follow_pending"] = json!(true);
+                }
+                v
+            })
             .collect();
         json!({
             "intents": intents,
@@ -1626,6 +1671,10 @@ impl Decision {
                 .map(|i| {
                     let mut v =
                         intent_json(i, core.taskings.get(&i.id()).map(|t| t.id), self.tol());
+                    // resumed under way, waiting for its vehicles to connect to be followed
+                    if core.follow.contains_key(&i.id()) {
+                        v["follow_pending"] = json!(true);
+                    }
                     if i.state() != State::PendingApproval
                         && let Some(w) = &world
                         && let Some(e) = self.engage_view(&core, i, w)

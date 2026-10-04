@@ -398,7 +398,14 @@ fn explain(i: &Intent) -> String {
         }
         State::Queued => {
             s.push_str(
-                " It is approved but held: a vehicle it is for can't be reached now (a silent                  link, or an AUV whose acoustic modem can't carry a mission). When the link                  can carry it, its checks run again on the world then: it is sent if they                  pass, goes back to the inbox if a human approved a picture that changed, and                  is voided if a check fails.",
+                concat!(
+                    " It is approved but held: a vehicle it is for can't be reached now (a silent",
+                    " link, or an AUV whose acoustic modem can't carry a mission). When the link",
+                    " can carry it, its checks run again on the world then: it is sent if they",
+                    " pass, goes back to the inbox if a human approved a picture that changed (or",
+                    " was approved before a bridge restart, or long enough ago), and is voided if a",
+                    " check fails or a newer order for its vehicle stands.",
+                ),
             );
             if let Some(q) = i.queue() {
                 s.push_str(&format!(

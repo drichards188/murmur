@@ -129,8 +129,23 @@ export function QueuePanel({ decisions, vehicles, now, onFocus, onClose }: Props
                     after restart
                   </span>
                 )}
+                {i.dispatched_before && (
+                  <span
+                    className="ix-tag warn"
+                    title="it was sent before its link was lost: when it goes again, the vehicle is asked what it holds first"
+                  >
+                    sent before
+                  </span>
+                )}
                 {left != null && (
-                  <span className={`ix-count ${left < 60 ? 'urgent' : ''}`} title="it expires when its wait runs out">
+                  <span
+                    className={`ix-count ${left < 60 ? 'urgent' : ''}`}
+                    title={
+                      i.queue?.inbox
+                        ? 'a human approved it: when this runs out it goes back to the inbox for a new look'
+                        : 'it expires when its wait runs out'
+                    }
+                  >
                     <b>{fmtDuration(left)}</b>
                     <span className="ix-count-bar">
                       <span style={{ width: `${frac * 100}%` }} />

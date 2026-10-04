@@ -522,6 +522,27 @@ pub fn decide(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> Poli
             d.tier = Tier::Human;
             d.submitter_authorizes = false;
         }
+        // Rules 5: likewise on a vehicle with an order a human approved waiting in the queue:
+        // an agent's order dispatched or queued there would supersede the human's.
+        if policy.rules.rules_version >= 5
+            && spec.source.is_agent()
+            && d.tier == Tier::Auto
+            && !world.waiting.is_empty()
+        {
+            let list: Vec<String> = world
+                .waiting
+                .iter()
+                .map(|(u, i)| format!("{u} ({i})"))
+                .collect();
+            d.reason = format!(
+                "tier {} is auto, but an agent's order on a vehicle with a human-approved order waiting in the queue needs a human: {}",
+                d.rule,
+                list.join(", ")
+            );
+            d.rule = "(human order waiting)".into();
+            d.tier = Tier::Human;
+            d.submitter_authorizes = false;
+        }
         return d;
     }
     // The engagement floor, whatever the file says: a human always, never at submission,

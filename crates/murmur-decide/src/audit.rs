@@ -291,6 +291,13 @@ pub enum EventBody {
         /// Engage: where the platform is sent (the approval snapshot's effect point).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         engage: Option<EngageOrder>,
+        /// Rules 5, a kind the queue holds, dispatched straight from its approval: the
+        /// vehicle facts that showed every vehicle reachable (`reach`, recomputed by replay).
+        /// Absent when it comes out of the queue (its `queue.recheck` holds them).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inputs: Option<LoggedInputs>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reach: Option<Vec<Reach>>,
     },
 
     /// Rules 5: an approved intent held for vehicles that can't be reached now (`reach`,
@@ -317,12 +324,28 @@ pub enum EventBody {
         changes: Vec<String>,
     },
 
-    /// Rules 5: a queued intent's deadline passed before its vehicles could be reached.
+    /// Rules 5: a queued intent's deadline passed before its vehicles could be reached. It
+    /// expires, or (`inbox`: a human's approval held past `[queue] human_expire_s`) goes back
+    /// to the inbox for a new decision (`approval.requested` follows).
     #[serde(rename = "queue.expired")]
     QueueExpired {
         intent: IntentId,
         expires_t: Time,
         reason: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        inbox: bool,
+    },
+
+    /// Rules 5: a dispatched intent whose link was lost to every vehicle before any started
+    /// it (each vehicle's last `op.state` is `requeued`, none ever started it) goes back to
+    /// the queue until `expires_t` (`inbox` as in `queue.expired`), re-checked before it is
+    /// sent again.
+    #[serde(rename = "intent.requeued")]
+    IntentRequeued {
+        intent: IntentId,
+        expires_t: Time,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        inbox: bool,
     },
 
     /// Rules 5: an intent the previous run left open (queued, approved, or dispatched and
@@ -345,17 +368,29 @@ pub enum EventBody {
         expires_t: Option<Time>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         ops: BTreeMap<Uid, String>,
+        /// The vehicles that ever started it, across every run it went through.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        committed: Vec<Uid>,
+        /// It was dispatched in some run before: a vehicle may hold it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        dispatched_before: bool,
+        /// Each vehicle's platform as the previous run last checked it.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        platforms: BTreeMap<Uid, String>,
     },
 
-    /// Rules 5: a vehicle's time since boot went back: it rebooted, and lost the mode and
-    /// armed state (and, on a stand-in, the mission) its orders had set. `booted_t` is the
-    /// new boot instant the bridge reports from here on.
+    /// Rules 5: a vehicle rebooted, and lost the mode and armed state (and, on a stand-in,
+    /// the mission) its orders had set: its time since boot went back, or (an outage longer
+    /// than its uptime before) the boot instant it implies jumped later than the one before
+    /// (`booted_before_t`). `booted_t` is the new boot instant the bridge reports from here on.
     #[serde(rename = "vehicle.rebooted")]
     VehicleRebooted {
         uid: Uid,
         boot_ms_before: u64,
         boot_ms: u64,
         booted_t: Time,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        booted_before_t: Option<Time>,
     },
 
     /// Per-vehicle task progress from the task layer (sent, acked, active, done, failed).

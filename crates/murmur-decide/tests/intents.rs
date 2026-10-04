@@ -44,6 +44,7 @@ fn every_transition_legal_and_illegal() {
         (S::Queued, T::RequireApproval, S::PendingApproval),
         (S::Queued, T::Void, S::Voided),
         (S::Queued, T::Expire, S::Expired),
+        (S::Dispatched, T::Requeue, S::Queued),
     ];
     let mut checked = 0;
     for from in State::ALL {
@@ -60,7 +61,7 @@ fn every_transition_legal_and_illegal() {
             checked += 1;
         }
     }
-    assert_eq!(checked, 14 * 15);
+    assert_eq!(checked, 14 * 16);
     for s in State::ALL {
         if s.is_terminal() {
             assert!(
@@ -143,7 +144,7 @@ fn auto_path_to_done() {
     let mut f = fx();
     let id = f.submit(orbit(NEAR_CRISSY, 150.0, &["sky-1"]));
     assert_eq!(f.state(id), State::AutoApproved);
-    let order = f.engine.dispatch(id).unwrap();
+    let order = f.engine.dispatch(id, &world()).unwrap();
     assert_eq!(order.task.kind(), TaskKind::Orbit);
     f.engine
         .record_op_state(id, &uid("sky-1"), "active", "on station")
@@ -182,7 +183,7 @@ fn human_path_approve_dispatch_fail() {
     let a = f.engine.intent(id).unwrap().approval().unwrap();
     assert_eq!(a.by, OperatorId::new("op-1"));
     assert!(a.self_approved, "op-1 proposed and approved it");
-    f.engine.dispatch(id).unwrap();
+    f.engine.dispatch(id, &world()).unwrap();
     f.engine
         .finish(
             id,
@@ -238,7 +239,7 @@ fn illegal_operations_are_typed_errors_and_change_nothing() {
             .map(|i| i.id()),
     );
     assert_illegal(f.engine.reject(auto, auth, None).map(|i| i.id()));
-    assert_illegal(f.engine.dispatch(pending));
+    assert_illegal(f.engine.dispatch(pending, &world()));
     assert_illegal(f.engine.finish(auto, TaskOutcome::Done).map(|i| i.id()));
     assert_eq!(
         f.log.lines().len(),
@@ -246,8 +247,8 @@ fn illegal_operations_are_typed_errors_and_change_nothing() {
         "a refused operation logs nothing"
     );
 
-    f.engine.dispatch(auto).unwrap();
-    assert_illegal(f.engine.dispatch(auto));
+    f.engine.dispatch(auto, &world()).unwrap();
+    assert_illegal(f.engine.dispatch(auto, &world()));
     assert_illegal(f.engine.void(auto, "too late").map(|i| i.id()));
 
     f.engine.reject(pending, auth, None).unwrap();
@@ -257,7 +258,7 @@ fn illegal_operations_are_typed_errors_and_change_nothing() {
             .map(|i| i.id()),
     );
     assert!(matches!(
-        f.engine.dispatch(IntentId(99)),
+        f.engine.dispatch(IntentId(99), &world()),
         Err(EngineError::UnknownIntent(_))
     ));
 }
@@ -442,7 +443,7 @@ fn a_humans_own_submission_in_a_human_tier_is_approved_at_submission() {
             "{:?}",
             i.history().last()
         );
-        f.engine.dispatch(id).unwrap();
+        f.engine.dispatch(id, &world()).unwrap();
     }
     assert!(f.engine.inbox().is_empty());
     // Explicit in the log: its own event, not auto_approved, not approval.granted.

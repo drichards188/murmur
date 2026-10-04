@@ -212,10 +212,13 @@ export default function App() {
   const pins = useMemo(() => {
     const set = new Set<number>(selected)
     if (detailsUid != null) set.add(detailsUid)
-    for (const i of pending ?? []) for (const u of i.uids) if (Number.isFinite(Number(u))) set.add(Number(u))
+    // and the vehicles of orders waiting in the queue (rules 5): their badge, and the
+    // re-check when the link is back, are about them
+    for (const i of [...(pending ?? []), ...(queuedIntents ?? [])])
+      for (const u of i.uids) if (Number.isFinite(Number(u))) set.add(Number(u))
     for (const a of alerts ?? []) set.add(a.uid)
     return [...set].sort((a, b) => a - b)
-  }, [selected, detailsUid, pending, alerts])
+  }, [selected, detailsUid, pending, queuedIntents, alerts])
   useEffect(() => {
     if (mapView) setView({ bounds: mapView.bounds, zoom: mapView.zoom, pin: pins })
   }, [mapView, pins, setView])

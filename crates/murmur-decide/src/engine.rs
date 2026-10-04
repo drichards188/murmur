@@ -176,6 +176,26 @@ pub(crate) fn engaged_vehicles<'a>(
     out
 }
 
+/// Rules 5: the orders a human approved that wait in the queue on `spec`'s vehicles, other
+/// than `spec` itself, by vehicle (the lowest id when there are several). The engine logs this
+/// with each decision (`waiting`); replay recomputes it from its own intents. `intents`:
+/// (id, spec, state, approved by a human).
+pub(crate) fn waiting_vehicles<'a>(
+    intents: impl Iterator<Item = (IntentId, &'a IntentSpec, State, bool)>,
+    spec: &IntentSpec,
+) -> BTreeMap<Uid, IntentId> {
+    let mut out: BTreeMap<Uid, IntentId> = BTreeMap::new();
+    for (id, s, state, by_human) in intents {
+        if id == spec.id || state != State::Queued || !by_human {
+            continue;
+        }
+        for u in spec.uids.iter().filter(|u| s.uids.contains(u)) {
+            out.entry(u.clone()).or_insert(id);
+        }
+    }
+    out
+}
+
 /// What the task layer should execute for an approved intent.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DispatchOrder {
@@ -253,6 +273,8 @@ pub struct Engine {
     last_dispatched: Option<IntentId>,
     /// Per vehicle, the intent dispatched to it last: an older one's order there was replaced.
     newest_on: BTreeMap<Uid, IntentId>,
+    /// Rules 5: when each vehicle was last logged rebooting (`vehicle.rebooted`).
+    rebooted: BTreeMap<Uid, Time>,
 }
 
 impl std::fmt::Debug for Engine {
@@ -315,6 +337,7 @@ impl Engine {
             roster: roster.clone(),
             last_dispatched: None,
             newest_on: BTreeMap::new(),
+            rebooted: BTreeMap::new(),
         };
         let policy = e.policy.clone();
         e.emit(EventBody::RunStarted {
@@ -1402,6 +1425,46 @@ impl Engine {
         )
     }
 
+    /// Rules 5: the human-approved orders waiting in the queue on `spec`'s vehicles, other
+    /// than `spec` itself: a fact the engine logs with each decision (`waiting`).
+    fn waiting_for(&self, spec: &IntentSpec) -> BTreeMap<Uid, IntentId> {
+        waiting_vehicles(
+            self.intents.values().map(|i| {
+                (
+                    i.id(),
+                    i.spec(),
+                    i.state(),
+                    i.basis().is_some_and(|b| b.by_human),
+                )
+            }),
+            spec,
+        )
+    }
+
+    /// Rules 5: a newer order still standing for one of the intent's vehicles, and which
+    /// vehicle (see [`Engine::dequeue`]): an older order is neither sent nor followed over it.
+    pub fn newer_order(&self, id: IntentId) -> Option<(IntentId, Uid)> {
+        self.newer_on(self.intents.get(&id)?.spec())
+    }
+
+    /// Rules 5: a newer order still standing for one of `spec`'s vehicles (approved, queued,
+    /// dispatched, or waiting for a human's approval after a human submitted it), and which
+    /// vehicle. An older queued order never goes over it: the newest order stands.
+    fn newer_on(&self, spec: &IntentSpec) -> Option<(IntentId, Uid)> {
+        self.intents.values().find_map(|i| {
+            let standing = match i.state() {
+                State::Approved | State::AutoApproved | State::Queued | State::Dispatched => true,
+                State::PendingApproval => !i.spec().source.is_agent(),
+                _ => false,
+            };
+            if i.id() <= spec.id || i.spec().kind() == TaskKind::Engage || !standing {
+                return None;
+            }
+            let u = spec.uids.iter().find(|u| i.spec().uids.contains(u))?;
+            Some((i.id(), u.clone()))
+        })
+    }
+
     /// For the console (not a decision, not logged): an engagement's checks and preview on
     /// the world now, to show the operator what changed since it was nominated.
     pub fn engage_live(
@@ -1476,27 +1539,91 @@ impl Engine {
 
     /// Hand an approved (or auto-approved) vehicle intent to the task layer. A collect or
     /// cover is refused ([`EngineError::SpaceIntent`], nothing changes): it has no vehicles,
-    /// so use [`Engine::dispatch_order`].
-    pub fn dispatch(&mut self, id: IntentId) -> Result<DispatchOrder, EngineError> {
-        let spec = self.get(id)?.spec();
+    /// so use [`Engine::dispatch_order`]. Rules 5, a kind the queue holds: only if the link
+    /// reaches every vehicle on `world` ([`queue::reach`], logged with the dispatch); else
+    /// refused, nothing logged ([`Engine::dispatch_or_queue`] queues it instead).
+    pub fn dispatch(
+        &mut self,
+        id: IntentId,
+        world: &WorldSnapshot,
+    ) -> Result<DispatchOrder, EngineError> {
+        let spec = self.get(id)?.spec().clone();
         if spec.task.is_space() {
             return Err(EngineError::SpaceIntent(id));
         }
         if spec.kind() == TaskKind::Engage {
             return Err(EngineError::EngageIntent(id));
         }
-        match self.dispatch_order(id)? {
+        let order = if self.reach_needed(&spec) {
+            next_state(self.get(id)?.state(), Transition::Dispatch)
+                .map_err(|err| EngineError::Illegal { id, err })?;
+            self.refuse_queued(id)?;
+            let cfg = self.policy.queue();
+            let inputs = world.subset_for(&spec);
+            let reach = queue::reach(&spec, &inputs, &cfg, &self.policy.rules);
+            if !queue::all_reachable(&reach) {
+                return Err(EngineError::NotDispatchable {
+                    id,
+                    why: format!(
+                        "the link can't reach its vehicles now ({}): queue it (dispatch_or_queue)",
+                        queue::unreachable_summary(&reach)
+                    ),
+                });
+            }
+            let logged = self.log_inputs(&inputs)?;
+            self.dispatch_inner(id, Some((logged, reach)))?
+        } else {
+            self.dispatch_order(id)?
+        };
+        match order {
             Order::Vehicles(o) => Ok(o),
             Order::Collect(_) | Order::Cover(_) => Err(EngineError::SpaceIntent(id)),
             Order::Engage(_) => Err(EngineError::EngageIntent(id)),
         }
     }
 
+    /// Rules 5: whether dispatching `spec` straight from its approval needs the link's reach
+    /// logged with it (a kind the policy's queue holds).
+    fn reach_needed(&self, spec: &IntentSpec) -> bool {
+        self.policy.rules.rules_version >= 5 && self.policy.queue().queues(spec.kind())
+    }
+
+    /// A queued intent leaves the queue only through [`Engine::dequeue`] (its re-check).
+    fn refuse_queued(&self, id: IntentId) -> Result<(), EngineError> {
+        if self.get(id)?.state() == State::Queued {
+            return Err(EngineError::NotDispatchable {
+                id,
+                why: "it is queued: it leaves the queue through its re-check (dequeue)".into(),
+            });
+        }
+        Ok(())
+    }
+
     /// Hand any approved (or auto-approved) intent on: a [`DispatchOrder`] for vehicle
     /// tasks, a [`CollectOrder`] (the chosen option, as the last check found it) or a
     /// [`CoverOrder`] for space tasks. Logged as `intent.dispatched` (with `space` for
-    /// collect and cover).
+    /// collect and cover). Rules 5: a vehicle task the queue holds goes through
+    /// [`Engine::dispatch`] or [`Engine::dispatch_or_queue`] (the link's reach is logged with
+    /// it), and a queued intent through [`Engine::dequeue`]: refused here.
     pub fn dispatch_order(&mut self, id: IntentId) -> Result<Order, EngineError> {
+        let spec = self.get(id)?.spec().clone();
+        if self.reach_needed(&spec) {
+            return Err(EngineError::NotDispatchable {
+                id,
+                why: "under rules 5 a vehicle task is dispatched with its vehicles' reach (dispatch, dispatch_or_queue)".into(),
+            });
+        }
+        self.refuse_queued(id)?;
+        self.dispatch_inner(id, None)
+    }
+
+    /// The dispatch itself: `intent.dispatched` (with the reach that allowed it, when one was
+    /// judged), then the transition.
+    fn dispatch_inner(
+        &mut self,
+        id: IntentId,
+        reached: Option<(LoggedInputs, Vec<Reach>)>,
+    ) -> Result<Order, EngineError> {
         let intent = self.get(id)?;
         next_state(intent.state(), Transition::Dispatch)
             .map_err(|err| EngineError::Illegal { id, err })?;
@@ -1514,8 +1641,22 @@ impl Engine {
             Order::Engage(_) => "dispatched: platform sent to the effect point",
         };
         let uids = intent.spec().uids.clone();
-        self.emit(dispatched_event(intent.spec(), &order))?;
+        let mut event = dispatched_event(intent.spec(), &order);
+        if let (
+            EventBody::IntentDispatched {
+                inputs: logged,
+                reach: logged_reach,
+                ..
+            },
+            Some((inputs, reach)),
+        ) = (&mut event, reached)
+        {
+            *logged = Some(inputs);
+            *logged_reach = Some(reach);
+        }
+        self.emit(event)?;
         self.transition(id, Transition::Dispatch, reason.into())?;
+        self.get_mut(id)?.mark_dispatched();
         self.last_dispatched = Some(id);
         for u in uids {
             self.newest_on.insert(u, id);
@@ -1546,18 +1687,25 @@ impl Engine {
         }
         let spec = intent.spec().clone();
         let cfg = self.policy.queue();
-        if self.policy.rules.rules_version < 5 || !cfg.queues(spec.kind()) {
+        if !self.reach_needed(&spec) {
             return Ok(Routed::Dispatched(self.dispatch_order(id)?));
         }
         let inputs = world.subset_for(&spec);
         let reach = queue::reach(&spec, &inputs, &cfg, &self.policy.rules);
-        if queue::all_reachable(&reach) {
-            return Ok(Routed::Dispatched(self.dispatch_order(id)?));
-        }
         let logged = self.log_inputs(&inputs)?;
+        if queue::all_reachable(&reach) {
+            return Ok(Routed::Dispatched(
+                self.dispatch_inner(id, Some((logged, reach)))?,
+            ));
+        }
         // one instant for the deadline and the event, so replay recomputes it from e.t
         let now = self.now();
-        let expires_t = now.plus_ms(i64::from(cfg.expire_s(spec.kind())) * 1000);
+        let basis = self
+            .get(id)?
+            .basis()
+            .cloned()
+            .unwrap_or_else(|| no_basis(now));
+        let (expires_t, inbox) = cfg.bound(cfg.wait_end(spec.kind(), now), &basis, now);
         self.emit_at(
             now,
             EventBody::IntentQueued {
@@ -1570,6 +1718,7 @@ impl Engine {
         self.get_mut(id)?.set_queue(Some(QueueState {
             t: now,
             expires_t,
+            inbox,
             reach: reach.clone(),
             recheck: None,
         }));
@@ -1610,8 +1759,18 @@ impl Engine {
         let spec = intent.spec().clone();
         let deadline = intent.queue().map(|q| q.expires_t);
         if deadline.is_some_and(|d| self.now() >= d) {
-            self.expire_queued(id)?;
-            return Ok(Dequeued::Expired);
+            return self.expire_queued(id);
+        }
+        // never an older order over a newer one for the same vehicle: the newest stands
+        if let Some((newer, uid)) = self.newer_on(&spec) {
+            self.transition(
+                id,
+                Transition::Void,
+                format!(
+                    "system: superseded: {newer} is a newer order for vehicle {uid} (the newest order stands)"
+                ),
+            )?;
+            return Ok(Dequeued::Voided);
         }
         let cfg = self.policy.queue();
         let reach = queue::reach(&spec, &world.subset_for(&spec), &cfg, &self.policy.rules);
@@ -1620,15 +1779,27 @@ impl Engine {
         }
         let (inputs, _, results, passed) =
             self.run_checks(&spec, CheckPhase::Dequeue, world, terrain)?;
+        // the re-check is judged before the deadline, or not at all
+        let now = self.now();
+        if deadline.is_some_and(|d| now >= d) {
+            return self.expire_queued(id);
+        }
         let decision = passed.then(|| policy::decide(&spec, &inputs, &self.policy));
         // without a basis (none was recorded), a human decides: nothing to compare with
-        let basis = self
-            .get(id)?
+        let intent = self.get(id)?;
+        let carried = intent.basis_carried();
+        let sent_before = intent.dispatched_before();
+        let basis = intent
             .basis()
             .cloned()
             .unwrap_or_else(|| no_basis(inputs.t));
-        let recheck = queue::assess(&spec, &basis, &results, passed, decision.as_ref(), &inputs);
-        let t = self.emit(EventBody::QueueRecheck {
+        let since = queue::Since {
+            basis: &basis,
+            carried,
+            rebooted: &self.rebooted,
+        };
+        let recheck = queue::assess(&spec, &since, &results, passed, decision.as_ref(), &inputs);
+        let t = self.emit_at(now, EventBody::QueueRecheck {
             intent: id,
             reach,
             decision: decision.clone(),
@@ -1643,31 +1814,12 @@ impl Engine {
             });
         }
         match (recheck.verdict, decision) {
-            (Verdict::Dispatch, _) => Ok(Dequeued::Dispatched(self.dispatch_order(id)?)),
+            // the order goes out at once, right after the re-check that allows it
+            (Verdict::Dispatch, _) => Ok(Dequeued::Dispatched(self.dispatch_inner(id, None)?)),
             (Verdict::Inbox, Some(decision)) => {
-                let intent = self.get_mut(id)?;
-                intent.set_policy(decision);
-                intent.clear_approval();
-                let now = self.now();
-                let (expires_t, until) = policy::approval_deadline(
-                    &self.policy,
-                    &spec.task,
-                    None,
-                    &self.scenario_map(),
-                    now,
-                );
-                self.emit_at(
-                    now,
-                    EventBody::ApprovalRequested {
-                        intent: id,
-                        expires_t,
-                        until,
-                    },
-                )?;
-                self.get_mut(id)?.set_expires(expires_t);
-                self.transition(
+                self.back_to_inbox(
                     id,
-                    Transition::RequireApproval,
+                    Some(decision),
                     format!(
                         "back to the inbox from the queue: {}",
                         recheck.changes.join("; ")
@@ -1676,28 +1828,76 @@ impl Engine {
                 Ok(Dequeued::Inbox)
             }
             _ => {
+                let held = if sent_before {
+                    " (it was sent before its link was lost: the vehicle may hold or run it; look at the vehicle)"
+                } else {
+                    ""
+                };
                 self.transition(
                     id,
                     Transition::Void,
-                    format!("re-check failed at dequeue: {}", recheck.changes.join("; ")),
+                    format!(
+                        "re-check failed at dequeue: {}{held}",
+                        recheck.changes.join("; ")
+                    ),
                 )?;
                 Ok(Dequeued::Voided)
             }
         }
     }
 
-    /// A queued intent's deadline passed: `queue.expired`, then expired.
-    fn expire_queued(&mut self, id: IntentId) -> Result<(), EngineError> {
+    /// From the queue back to the inbox: a new decision is needed (`decision`, a re-check's;
+    /// none: the one it has), so the old approval and its signatures are dropped, and it
+    /// waits for a human under the policy's approval deadline (`approval.requested`).
+    fn back_to_inbox(
+        &mut self,
+        id: IntentId,
+        decision: Option<PolicyDecision>,
+        reason: String,
+    ) -> Result<(), EngineError> {
+        let task = self.get(id)?.spec().task.clone();
+        let intent = self.get_mut(id)?;
+        if let Some(d) = decision {
+            intent.set_policy(d);
+        }
+        intent.clear_approval();
+        let now = self.now();
+        let (expires_t, until) =
+            policy::approval_deadline(&self.policy, &task, None, &self.scenario_map(), now);
+        self.emit_at(
+            now,
+            EventBody::ApprovalRequested {
+                intent: id,
+                expires_t,
+                until,
+            },
+        )?;
+        self.get_mut(id)?.set_expires(expires_t);
+        self.transition(id, Transition::RequireApproval, reason)?;
+        Ok(())
+    }
+
+    /// A queued intent's deadline passed: `queue.expired`, then expired; or, for a human's
+    /// approval held as long as `[queue] human_expire_s` allows, back to the inbox.
+    fn expire_queued(&mut self, id: IntentId) -> Result<Dequeued, EngineError> {
         let intent = self.get(id)?;
-        next_state(intent.state(), Transition::Expire)
-            .map_err(|err| EngineError::Illegal { id, err })?;
-        let (expires_t, since, why) = intent
-            .queue()
-            .map_or((Time(0), Time(0), String::new()), |q| {
-                (q.expires_t, q.t, queue::unreachable_summary(&q.reach))
-            });
+        let (expires_t, since, why, inbox) = intent.queue().map_or(
+            (Time(0), Time(0), String::new(), false),
+            |q| (q.expires_t, q.t, queue::unreachable_summary(&q.reach), q.inbox),
+        );
+        let tr = if inbox {
+            Transition::RequireApproval
+        } else {
+            Transition::Expire
+        };
+        next_state(intent.state(), tr).map_err(|err| EngineError::Illegal { id, err })?;
         let waited = expires_t.ms_since(since) / 1000;
-        let reason = if why.is_empty() {
+        let reason = if inbox {
+            format!(
+                "a human's approval waits in the queue at most {} s: back to the inbox for a new decision",
+                self.policy.queue().human_expire_s()
+            )
+        } else if why.is_empty() {
             format!("not dispatched within {waited} s: its vehicles could not be reached")
         } else {
             format!("not dispatched within {waited} s: its vehicles could not be reached ({why})")
@@ -1706,9 +1906,76 @@ impl Engine {
             intent: id,
             expires_t,
             reason: reason.clone(),
+            inbox,
         })?;
+        if inbox {
+            self.back_to_inbox(id, None, reason)?;
+            return Ok(Dequeued::Inbox);
+        }
         self.transition(id, Transition::Expire, reason)?;
-        Ok(())
+        Ok(Dequeued::Expired)
+    }
+
+    /// Rules 5: a dispatched intent whose link was lost to every one of its vehicles before
+    /// any of them started it (each vehicle's last op state `requeued`, none ever committed)
+    /// goes back to the queue (`intent.requeued`): re-checked on the world before it is sent
+    /// again (then asking each vehicle what it holds first), until its kind's wait from the
+    /// approval at the latest. Refused, nothing logged, otherwise.
+    pub fn requeue(&mut self, id: IntentId) -> Result<Time, EngineError> {
+        let intent = self.get(id)?;
+        let refuse = |why: &str| EngineError::NotDispatchable {
+            id,
+            why: why.to_string(),
+        };
+        next_state(intent.state(), Transition::Requeue)
+            .map_err(|err| EngineError::Illegal { id, err })?;
+        let spec = intent.spec().clone();
+        if !self.reach_needed(&spec) {
+            return Err(refuse("only a vehicle task the queue holds is requeued (rules 5)"));
+        }
+        if !intent.committed().is_empty() {
+            return Err(refuse("a vehicle had started it: it is followed, never sent again"));
+        }
+        let lost: Vec<String> = spec
+            .uids
+            .iter()
+            .filter(|u| intent.ops().get(*u).map(String::as_str) == Some(queue::REQUEUED_OP))
+            .map(|u| u.to_string())
+            .collect();
+        if lost.len() != spec.uids.len() {
+            return Err(refuse(
+                "requeued only when every vehicle's op ended with its link lost before the start",
+            ));
+        }
+        let cfg = self.policy.queue();
+        let now = self.now();
+        let basis = intent.basis().cloned().unwrap_or_else(|| no_basis(now));
+        let (expires_t, inbox) = cfg.bound(cfg.wait_end(spec.kind(), basis.t), &basis, now);
+        self.emit_at(
+            now,
+            EventBody::IntentRequeued {
+                intent: id,
+                expires_t,
+                inbox,
+            },
+        )?;
+        self.get_mut(id)?.set_queue(Some(QueueState {
+            t: now,
+            expires_t,
+            inbox,
+            reach: Vec::new(),
+            recheck: None,
+        }));
+        self.transition(
+            id,
+            Transition::Requeue,
+            format!(
+                "back to the queue: the link to vehicle(s) {} was lost before the order started; re-checked before it is sent again (for {} s at most)",
+                lost.join(", "),
+                expires_t.ms_since(now) / 1000
+            ),
+        )?;
+        Ok(expires_t)
     }
 
     /// Rules 5: carry an intent the previous run left open into this one (`intent.resumed`),
@@ -1737,12 +2004,11 @@ impl Engine {
         }
         let state = open.resumes_as();
         let cfg = self.policy.queue();
+        // the deadline it carries: its own if it was queued, else its kind's wait from the
+        // approval (bounded below for a human's approval, as at any queueing)
         let expires_t = (state == State::Queued).then(|| {
-            open.expires_t.unwrap_or_else(|| {
-                open.basis
-                    .t
-                    .plus_ms(i64::from(cfg.expire_s(open.spec.kind())) * 1000)
-            })
+            open.expires_t
+                .unwrap_or_else(|| cfg.wait_end(open.spec.kind(), open.basis.t))
         });
         let t = self.emit(EventBody::IntentResumed {
             intent: open.spec.clone(),
@@ -1753,6 +2019,9 @@ impl Engine {
             approval: open.approval.clone(),
             expires_t,
             ops: open.ops.clone(),
+            committed: open.committed.clone(),
+            dispatched_before: open.dispatched_before,
+            platforms: open.platforms.clone(),
         })?;
         let mut intent = Intent::new(open.spec.clone());
         intent.set_checks(open.basis.checks.clone());
@@ -1763,14 +2032,21 @@ impl Engine {
             intent.set_approval(carried_approval(a));
         }
         intent.set_basis(open.basis.clone());
+        intent.set_carried(
+            open.committed.iter().cloned().collect(),
+            open.dispatched_before,
+            true,
+        );
         intent.set_resumed(crate::intent::Resumed {
             from: from.clone(),
             ops: open.ops.clone(),
         });
-        if let Some(expires_t) = expires_t {
+        if let Some(by_kind) = expires_t {
+            let (expires_t, inbox) = cfg.bound(by_kind, &open.basis, t);
             intent.set_queue(Some(QueueState {
                 t,
                 expires_t,
+                inbox,
                 reach: Vec::new(),
                 recheck: None,
             }));
@@ -1809,21 +2085,33 @@ impl Engine {
         self.next_intent = self.next_intent.max(next);
     }
 
-    /// Rules 5: a vehicle rebooted (its time since boot went back): logged as
-    /// `vehicle.rebooted` with both readings and the new boot instant.
+    /// Rules 5: a vehicle rebooted (its time since boot went back, or its boot instant
+    /// jumped later than `booted_before_t` by more than [`queue::BOOT_TOLERANCE_MS`]): logged
+    /// as `vehicle.rebooted` with both readings and the new boot instant. Refused, nothing
+    /// logged, when it shows neither.
     pub fn record_reboot(
         &mut self,
         uid: &Uid,
         boot_ms_before: u64,
         boot_ms: u64,
         booted_t: Time,
+        booted_before_t: Option<Time>,
     ) -> Result<(), EngineError> {
-        self.emit(EventBody::VehicleRebooted {
+        if let Some(why) = queue::reboot_mismatch(boot_ms_before, boot_ms, booted_t, booted_before_t)
+        {
+            return Err(EngineError::NotDispatchable {
+                id: IntentId(0),
+                why: format!("vehicle {uid}: {why}"),
+            });
+        }
+        let t = self.emit(EventBody::VehicleRebooted {
             uid: uid.clone(),
             boot_ms_before,
             boot_ms,
             booted_t,
+            booted_before_t,
         })?;
+        self.rebooted.insert(uid.clone(), t);
         Ok(())
     }
 
@@ -1865,6 +2153,8 @@ impl Engine {
             state: state.into(),
             detail: detail.into(),
         })?;
+        self.get_mut(id)?
+            .record_op(uid, state, queue::committed_op(state));
         Ok(())
     }
 
@@ -2039,6 +2329,7 @@ impl Engine {
             inputs.space = self.ask_space(&spec.task, inputs.t)?;
         }
         inputs.engaged = self.engaged_for(spec);
+        inputs.waiting = self.waiting_for(spec);
         let results = rules::evaluate(spec, &inputs, &self.policy.rules);
         let passed = rules::passed(&results, spec.kind());
         let preview = (spec.kind() == TaskKind::Engage)
@@ -2373,6 +2664,8 @@ pub(crate) fn dispatched_event(spec: &IntentSpec, order: &Order) -> EventBody {
             Order::Engage(o) => Some(o.clone()),
             _ => None,
         },
+        inputs: None,
+        reach: None,
     }
 }
 
@@ -2672,6 +2965,7 @@ impl AgentPort<'_> {
             inputs.space = self.engine.ask_space(&spec.task, inputs.t)?;
         }
         inputs.engaged = self.engine.engaged_for(&spec);
+        inputs.waiting = self.engine.waiting_for(&spec);
         let checks = rules::evaluate(&spec, &inputs, &self.engine.policy.rules);
         let passed = rules::passed(&checks, spec.kind());
         let policy = passed.then(|| policy::decide(&spec, &inputs, &self.engine.policy));

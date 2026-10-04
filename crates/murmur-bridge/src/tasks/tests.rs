@@ -93,6 +93,10 @@ pub(crate) struct Quirks {
     pub reboot: Option<Arc<AtomicBool>>,
     /// the mode it starts in (its lost-link failsafe sent it home, say)
     pub start_mode: Option<&'static str>,
+    /// cut the link once the vehicle has taken `.1` items of its `.0`th upload (1: the first)
+    pub cut_mid_upload: Option<(u32, u16)>,
+    /// answer this command MAV_RESULT_IN_PROGRESS and never finish it
+    pub stuck_in_progress: Option<apm::MavCmd>,
 }
 
 impl Quirks {
@@ -168,6 +172,11 @@ struct Fake {
     speed_now: f64,
     mission: Vec<apm::MISSION_ITEM_INT_DATA>,
     upload_count: u16,
+    /// the next item of the upload in progress (ArduPilot writes them over the mission it
+    /// holds, in place, after truncating it to the new count)
+    upload_next: u16,
+    /// uploads started (MISSION_COUNT received)
+    uploads: u32,
     seq: u16,
     auto_since: Option<f64>,
     target_pos: Option<(f64, f64)>,
@@ -253,10 +262,18 @@ impl Fake {
             self.counted(&mav::cmd_name(c.command));
         }
         match msg {
+            MavMessage::COMMAND_LONG(c) if self.q.stuck_in_progress == Some(c.command) => {
+                self.ack(c.command, apm::MavResult::MAV_RESULT_IN_PROGRESS);
+            }
             MavMessage::COMMAND_LONG(c) => match c.command {
                 apm::MavCmd::MAV_CMD_COMPONENT_ARM_DISARM => {
-                    // ArduPilot arms in no return mode (AP_Arming mode checks)
-                    if c.param1 > 0.5 && self.mode == self.fw.mode("RTL") {
+                    // ArduPilot arms in no return mode, and ArduCopter not in BRAKE or LAND
+                    // either (its modes' allows_arming)
+                    let refuses = self.mode == self.fw.mode("RTL")
+                        || (matches!(self.fw, Firmware::Copter)
+                            && (self.mode == self.fw.mode("BRAKE")
+                                || self.mode == self.fw.mode("LAND")));
+                    if c.param1 > 0.5 && refuses {
                         return self.ack(c.command, apm::MavResult::MAV_RESULT_FAILED);
                     }
                     self.armed = c.param1 > 0.5;
@@ -277,10 +294,14 @@ impl Fake {
             },
             // ArduPilot's MissionItemProtocol: items only in order (anything else is answered
             // INVALID_SEQUENCE and ignored), ERROR when not receiving, re-requests in `step`
+            // as ArduPilot: the mission it holds is truncated to the new count and written over
+            // in place, item by item; an upload cut short leaves the new items before the old
             MavMessage::MISSION_COUNT(m) => {
                 self.counted("MISSION_COUNT");
+                self.uploads += 1;
                 self.upload_count = m.count;
-                self.mission.clear();
+                self.mission.truncate(usize::from(m.count));
+                self.upload_next = 0;
                 self.receiving = true;
                 self.last_receive = clock::mono();
                 self.request(0);
@@ -289,12 +310,24 @@ impl Fake {
                 if !self.receiving {
                     return self.mission_ack(apm::MavMissionResult::MAV_MISSION_ERROR);
                 }
-                if usize::from(it.seq) != self.mission.len() {
+                if it.seq != self.upload_next {
                     return self.mission_ack(apm::MavMissionResult::MAV_MISSION_INVALID_SEQUENCE);
                 }
-                self.mission.push(it);
+                let at = usize::from(it.seq);
+                if at < self.mission.len() {
+                    self.mission[at] = it;
+                } else {
+                    self.mission.push(it);
+                }
+                self.upload_next += 1;
                 self.last_receive = clock::mono();
-                if self.mission.len() == usize::from(self.upload_count) {
+                if self.q.cut_mid_upload == Some((self.uploads, self.upload_next))
+                    && let Some(c) = &self.q.cut
+                {
+                    c.store(true, Ordering::SeqCst);
+                    return;
+                }
+                if self.upload_next == self.upload_count {
                     self.receiving = false;
                     self.counted("mission accepted");
                     if self.q.cut_after_upload
@@ -311,7 +344,7 @@ impl Fake {
                         self.mission_ack(apm::MavMissionResult::MAV_MISSION_ACCEPTED);
                     }
                 } else {
-                    self.request(self.mission.len() as u16);
+                    self.request(self.upload_next);
                 }
             }
             MavMessage::MISSION_REQUEST_LIST(_) => {
@@ -397,7 +430,7 @@ impl Fake {
                 self.receiving = false;
                 self.mission_ack(apm::MavMissionResult::MAV_MISSION_OPERATION_CANCELLED);
             } else if now - self.last_request > 1.0 {
-                self.request(self.mission.len() as u16);
+                self.request(self.upload_next);
             }
         }
         let auto = self.mode == self.fw.mode("AUTO");
@@ -591,6 +624,8 @@ pub(crate) fn spawn_fake(
         speed_now: 0.0,
         mission: Vec::new(),
         upload_count: 0,
+        upload_next: 0,
+        uploads: 0,
         seq: 0,
         auto_since: None,
         target_pos: None,
@@ -1275,10 +1310,20 @@ async fn a_lost_mission_ack_and_lost_command_acks_execute_once() {
     assert_eq!(w.count("MISSION_COUNT"), 1);
 }
 
+/// An order that goes back to the queue after a lost link, delivered again (the decision
+/// layer re-checked it): asking the vehicle what it holds first.
+fn redelivered(uid: Uid, cell: &Arc<VehicleCell>, route: Vec<LngLat>) -> TaskOrder {
+    let mut o = patrol(uid, cell, route);
+    o.requeue = true;
+    o.resume.insert(uid, Resume::Verify);
+    o
+}
+
 #[tokio::test(start_paused = true)]
-async fn a_link_lost_after_the_upload_is_waited_out_and_the_mission_started_once() {
+async fn a_link_lost_after_the_upload_requeues_and_the_next_delivery_only_starts_it() {
     // the link drops the moment the vehicle has the whole mission, before its ACK: the op
-    // waits for the link (its patience), then asks the vehicle what it holds and only starts it
+    // ends `requeued` (never started); delivered again once the link is back, it asks the
+    // vehicle what it holds and only starts it
     let (boat, w) = watched(
         32,
         Firmware::Rover,
@@ -1290,14 +1335,16 @@ async fn a_link_lost_after_the_upload_is_waited_out_and_the_mission_started_once
     sleep(Duration::from_millis(500)).await;
     let tm = TaskManager::default();
     let mut order = patrol(32, &boat, short_patrol());
-    order.patience = Duration::from_secs(120);
+    order.requeue = true;
     let t = tm.dispatch_unchecked(order);
-    sleep(Duration::from_secs(25)).await;
-    let mid = t.ops[0].snapshot();
-    assert_eq!(mid.state, Sent, "{mid:?}");
-    assert!(mid.detail.starts_with("link lost"), "{}", mid.detail);
+    let s = settle(&t.ops[0], 120).await;
+    assert_eq!(s.state, Requeued, "{s:?}");
+    assert!(s.detail.starts_with("link lost") && s.detail.contains("back to the queue"), "{}", s.detail);
+    assert_eq!(w.count("MAV_CMD_DO_SET_MISSION_CURRENT"), 0, "never started");
     w.set_cut(false);
-    let s = settle(&t.ops[0], 300).await;
+    sleep(Duration::from_secs(2)).await;
+    let t2 = tm.dispatch_unchecked(redelivered(32, &boat, short_patrol()));
+    let s = settle(&t2.ops[0], 300).await;
     assert_eq!(s.state, Done, "{s:?}");
     assert_eq!(w.count("MISSION_COUNT"), 1, "not uploaded again: it held the mission");
     assert_eq!(w.count("mission accepted"), 1);
@@ -1305,44 +1352,176 @@ async fn a_link_lost_after_the_upload_is_waited_out_and_the_mission_started_once
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_link_lost_mid_upload_restarts_the_transfer_once_it_is_back() {
+async fn a_link_lost_before_anything_got_through_requeues_and_the_next_delivery_uploads() {
     let (boat, w) = watched(33, Firmware::Rover, quick());
     sleep(Duration::from_millis(500)).await;
     let tm = TaskManager::default();
     let mut order = patrol(33, &boat, short_patrol());
-    order.patience = Duration::from_secs(120);
-    // cut before anything gets through: the COUNT is lost
+    order.requeue = true;
     w.set_cut(true);
     let t = tm.dispatch_unchecked(order);
-    sleep(Duration::from_secs(20)).await;
-    assert!(t.ops[0].snapshot().detail.starts_with("link lost"), "{:?}", t.ops[0].snapshot());
+    let s = settle(&t.ops[0], 120).await;
+    assert_eq!(s.state, Requeued, "{s:?}");
     assert_eq!(w.count("MISSION_COUNT"), 0);
     w.set_cut(false);
-    let s = settle(&t.ops[0], 300).await;
+    sleep(Duration::from_secs(2)).await;
+    let t2 = tm.dispatch_unchecked(redelivered(33, &boat, short_patrol()));
+    let s = settle(&t2.ops[0], 300).await;
     assert_eq!(s.state, Done, "{s:?}");
     assert_eq!(w.count("mission accepted"), 1);
     assert_eq!(w.count("MAV_CMD_DO_SET_MISSION_CURRENT"), 1);
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_link_that_never_comes_back_fails_the_op_after_its_patience() {
-    let (boat, w) = watched(34, Firmware::Rover, quick());
+async fn a_partial_upload_over_another_mission_is_not_taken_for_ours() {
+    // the vehicle runs patrol A; patrol B (as many items) is cut after two of its items: as
+    // ArduPilot does, it now holds B's first items over A's last ones. Delivered again, the op
+    // finds that mixed mission is not B and uploads B whole.
+    let (boat, w) = watched(
+        34,
+        Firmware::Rover,
+        Quirks {
+            cut_mid_upload: Some((2, 2)),
+            ..quick()
+        },
+    );
     sleep(Duration::from_millis(500)).await;
     let tm = TaskManager::default();
-    let mut order = patrol(34, &boat, short_patrol());
-    order.patience = Duration::from_secs(40);
+    let route_a = vec![[LON + 0.01, LAT], [LON + 0.01, LAT + 0.01]];
+    let route_b = vec![[LON - 0.01, LAT], [LON - 0.01, LAT - 0.01]];
+    let t = tm.dispatch_unchecked(patrol(34, &boat, route_a));
+    for _ in 0..300 {
+        if t.ops[0].state() == Active {
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(t.ops[0].state(), Active);
+    let mut b = patrol(34, &boat, route_b.clone());
+    b.requeue = true;
+    let t2 = tm.dispatch_unchecked(b);
+    let s = settle(&t2.ops[0], 120).await;
+    assert_eq!(s.state, Requeued, "{s:?}");
+    assert_eq!(w.count("MISSION_COUNT"), 2);
+    w.set_cut(false);
+    sleep(Duration::from_secs(10)).await;
+    let t3 = tm.dispatch_unchecked(redelivered(34, &boat, route_b));
+    for _ in 0..600 {
+        if matches!(t3.ops[0].state(), Active | Done | Failed) {
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    let s = t3.ops[0].snapshot();
+    assert!(matches!(s.state, Active | Done), "{s:?}");
+    assert_eq!(w.count("MISSION_COUNT"), 3, "B uploaded whole: the mixed mission is not B");
+}
+
+#[tokio::test(start_paused = true)]
+async fn without_a_queue_a_lost_link_fails_the_op_and_an_adopted_order_waits_its_patience() {
+    // no queue (before rules 5, a kind the policy never queues): failed at once, as before
+    let (boat, w) = watched(35, Firmware::Rover, quick());
+    sleep(Duration::from_millis(500)).await;
+    let tm = TaskManager::default();
     w.set_cut(true);
-    let t = tm.dispatch_unchecked(order);
+    let t = tm.dispatch_unchecked(patrol(35, &boat, short_patrol()));
+    let s = settle(&t.ops[0], 120).await;
+    assert_eq!(s.state, Failed, "{s:?}");
+    assert!(s.detail.starts_with("link lost"), "{}", s.detail);
+    // an order the vehicle had started (after a bridge restart): its link is waited for, at
+    // most the op's patience, and then the op fails; nothing is sent
+    let (boat, w) = watched(36, Firmware::Rover, quick());
+    sleep(Duration::from_millis(500)).await;
+    w.set_cut(true);
+    let mut adopt = patrol(36, &boat, short_patrol());
+    adopt.requeue = true;
+    adopt.patience = Duration::from_secs(40);
+    adopt.resume.insert(36, Resume::Adopt);
+    let t = tm.dispatch_unchecked(adopt);
     let s = settle(&t.ops[0], 300).await;
     assert_eq!(s.state, Failed, "{s:?}");
     assert!(s.detail.starts_with("link lost") && s.detail.ends_with("not back within 40 s"), "{}", s.detail);
-    // with no patience (before rules 5, or a kind the policy never queues): as before
-    let (boat, w) = watched(35, Firmware::Rover, quick());
+    assert_eq!(w.count("MISSION_COUNT"), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_mission_at_another_altitude_is_not_ours() {
+    // review T4: b flies patrol R in slot 1 of a two-vehicle order (5 m above slot 0); R for
+    // b alone (slot 0) is delivered asking first (as after a lost link): the mission b runs
+    // differs in altitude, so it is not ours, and the new one is uploaded
+    let (a, _wa) = watched(80, Firmware::Copter, quick());
+    let (b, wb) = watched(81, Firmware::Copter, quick());
     sleep(Duration::from_millis(500)).await;
-    w.set_cut(true);
-    let t = tm.dispatch_unchecked(patrol(35, &boat, short_patrol()));
+    let tm = TaskManager::default();
+    let route = vec![[LON + 0.01, LAT], [LON + 0.01, LAT + 0.01], [LON, LAT + 0.01]];
+    let both = TaskOrder::new(
+        request("patrol", &[80, 81], TaskParams { route: Some(route.clone()), ..TaskParams::default() }),
+        &fleet(&[&a, &b]),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let t = tm.dispatch_unchecked(both);
+    for _ in 0..600 {
+        if t.ops[1].state() == Active {
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(t.ops[1].state(), Active, "{:?}", t.ops[1].snapshot());
+    assert_eq!(wb.count("MISSION_COUNT"), 1);
+    let t2 = tm.dispatch_unchecked(redelivered(81, &b, route));
+    for _ in 0..600 {
+        if matches!(t2.ops[0].state(), Active | Done | Failed) {
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    let s = t2.ops[0].snapshot();
+    assert!(matches!(s.state, Active | Done), "{s:?}");
+    assert_eq!(wb.count("MISSION_COUNT"), 2, "the other altitude is not ours: uploaded");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_copter_its_hold_left_in_brake_arms_in_guided() {
+    // ArduCopter does not arm in BRAKE (its hold) or LAND: the op switches to GUIDED to arm
+    let (copter, w) = watched(
+        39,
+        Firmware::Copter,
+        Quirks {
+            start_mode: Some("BRAKE"),
+            ..quick()
+        },
+    );
+    sleep(Duration::from_millis(500)).await;
+    let tm = TaskManager::default();
+    let t = tm.dispatch_unchecked(patrol(39, &copter, short_patrol()));
+    let s = settle(&t.ops[0], 300).await;
+    assert_eq!(s.state, Done, "{s:?}");
+    assert_eq!(w.count("MAV_CMD_COMPONENT_ARM_DISARM"), 2, "refused in BRAKE, then armed");
+    assert_eq!(w.count("MAV_CMD_DO_SET_MODE"), 2, "GUIDED to arm, then AUTO");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_command_in_progress_is_never_sent_twice() {
+    // the vehicle answers MAV_RESULT_IN_PROGRESS and never finishes: the command is not sent
+    // again, and the op fails saying so (the mode change does not retry it either)
+    let (boat, w) = watched(
+        40,
+        Firmware::Rover,
+        Quirks {
+            stuck_in_progress: Some(apm::MavCmd::MAV_CMD_DO_SET_MODE),
+            ..quick()
+        },
+    );
+    sleep(Duration::from_millis(500)).await;
+    let tm = TaskManager::default();
+    let t = tm.dispatch_unchecked(
+        TaskOrder::new(request("hold", &[40], TaskParams::default()), &fleet(&[&boat]))
+            .unwrap_or_else(|e| panic!("{e}")),
+    );
     let s = settle(&t.ops[0], 300).await;
     assert_eq!(s.state, Failed, "{s:?}");
+    assert!(s.detail.contains("in progress, never finished"), "{}", s.detail);
+    assert_eq!(w.count("MAV_CMD_DO_SET_MODE"), 1, "sent once");
 }
 
 #[tokio::test(start_paused = true)]
