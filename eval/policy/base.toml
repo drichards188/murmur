@@ -63,6 +63,9 @@ assess_window_s = 120
 max_picture_gap_s = 5
 token_ttl_s = 15
 max_signing_s = 120
+plan_drift_max_m = 300
+holding_speed_mps = 1.5
+friendly_growth_mps = 1.0
 
 [[tier]]
 name = "safety-commands"
