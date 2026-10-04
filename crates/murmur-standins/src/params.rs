@@ -227,6 +227,9 @@ impl Params {
                 // RTL (as copter.parm); timeout as ArduCopter's default until swarm.py's
                 p.put("FS_GCS_ENABLE", I8, 1.0, false);
                 p.put("FS_GCS_TIMEOUT", F32, 5.0, false);
+                // ArduCopter's default: continue in pilot-controlled modes on GCS loss (bit 4);
+                // bit 1 would continue a mission in AUTO
+                p.put("FS_OPTIONS", I32, 16.0, false);
                 p.put("AUTO_OPTIONS", I32, 3.0, false); // copter.parm
                 p.put("BATT_FS_LOW_ACT", I8, 2.0, false); // RTL
                 p.put("BATT_FS_CRT_ACT", I8, 1.0, false); // Land

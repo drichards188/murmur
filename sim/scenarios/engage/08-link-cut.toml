@@ -1,11 +1,18 @@
 # Link loss mid-engagement: the platform goes silent after dispatch; once it has not been
 # heard for longer than the approval assumed (5 s), the engagement aborts with its recorded
-# fallback (loiter here), never a silent continue, and no effect is ever released.
+# fallback (loiter here), never a silent continue, and no effect is ever released. The order
+# the engine sends can't reach it, so (rules 5) the fallback was preloaded at dispatch as its
+# own lost-link action (ArduRover FS_ACTION 6, Loiter or Hold), its 30 s LEO timer shortened
+# to the approval's 5 s: it holds where it is on its own, and gets its own values back once
+# its link returns. (Until rules 5 this was a fixed wing, whose firmware can't hold where it
+# is on a lost link: scenario 40.)
 title = "The platform's link is cut mid-engagement"
 invariant = "platform_link"
 attack = "cut the platform's link after dispatch"
 expect = "aborted"
 expect_rule = "platform_link"
+expect_lost_link = "Loiter or Hold"
+expect_preload = ["set confirmed", "restore confirmed"]
 end_s = 120
 
 [[operator]]
@@ -18,9 +25,10 @@ id = "op-3"
 engage = true
 
 [[vehicle]]
-uid = "blade-1"
-platform = "switchblade"    # armed, EO/IR 3 km
+uid = "viper-1"
+platform = "magura"         # armed USV (ArduRover), LEO SATCOM: a 30 s lost-link timer
 at = [-122.4700, 37.8160]
+lost_link_s = 30
 
 [[track]]
 id = "T-0001"
@@ -41,7 +49,7 @@ by = "op-1"
 at_s = 1
 action = "nominate"
 by = "op-1"
-platform = "blade-1"
+platform = "viper-1"
 track = "T-0001"
 radius_m = 75
 fallback = "loiter"
@@ -65,5 +73,11 @@ state = "dispatched"
 [[step]]
 at_s = 40
 action = "vehicle"
-uid = "blade-1"
+uid = "viper-1"
 silent = true
+
+[[step]]
+at_s = 70                   # the link returns: its own lost-link values go back
+action = "vehicle"
+uid = "viper-1"
+silent = false

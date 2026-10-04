@@ -278,10 +278,20 @@ async fn intent_action(
         "reject" => app.decision.reject(&op, id, note),
         "cancel" => app.decision.cancel(&op, id, note),
         "abort" => app.decision.abort(&op, id, note),
+        // rules 5: {"uid": n, "since": engine ms or null}, as the keep-out check names it
+        "accept_unknown" => match serde_json::from_slice::<crate::decision::engage::AcceptUnknown>(&body) {
+            Ok(a) => app.decision.accept_unknown(&op, id, &a),
+            Err(e) => {
+                return error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    format!("accept_unknown wants {{\"uid\": n, \"since\": engine ms or null}}: {e}"),
+                );
+            }
+        },
         _ => {
             return error(
                 StatusCode::NOT_FOUND,
-                format!("unknown action {action:?} (approve, reject, cancel, abort, picture)"),
+                format!("unknown action {action:?} (approve, reject, cancel, abort, picture, accept_unknown)"),
             );
         }
     };

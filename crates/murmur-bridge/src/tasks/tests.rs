@@ -132,6 +132,9 @@ struct Fake {
     next_report: f64,
     /// to the bridge over the slow link, when there is one
     out: Option<mpsc::UnboundedSender<(Instant, MavMessage)>>,
+    /// the parameters it answers PARAM_REQUEST_READ and PARAM_SET for (the GCS failsafe's,
+    /// as the stand-ins seed them: an engagement's lost-link preload reads and sets these)
+    params: std::collections::BTreeMap<String, f32>,
 }
 
 impl Fake {
@@ -236,13 +239,31 @@ impl Fake {
                     None => self.mission_ack(apm::MavMissionResult::MAV_MISSION_INVALID_SEQUENCE),
                 }
             }
-            MavMessage::PARAM_SET(p) => self.emit(MavMessage::PARAM_VALUE(apm::PARAM_VALUE_DATA {
-                param_value: p.param_value,
-                param_count: 1,
-                param_index: 0,
-                param_id: p.param_id,
-                param_type: p.param_type,
-            })),
+            MavMessage::PARAM_SET(p) => {
+                let name = mav::chars_to_string(&p.param_id);
+                if let Some(v) = self.params.get_mut(&name) {
+                    *v = p.param_value;
+                }
+                self.emit(MavMessage::PARAM_VALUE(apm::PARAM_VALUE_DATA {
+                    param_value: p.param_value,
+                    param_count: 1,
+                    param_index: 0,
+                    param_id: p.param_id,
+                    param_type: p.param_type,
+                }));
+            }
+            MavMessage::PARAM_REQUEST_READ(r) => {
+                let name = mav::chars_to_string(&r.param_id);
+                if let Some(v) = self.params.get(&name) {
+                    self.emit(MavMessage::PARAM_VALUE(apm::PARAM_VALUE_DATA {
+                        param_value: *v,
+                        param_count: 1,
+                        param_index: 0,
+                        param_id: r.param_id,
+                        param_type: apm::MavParamType::MAV_PARAM_TYPE_REAL32,
+                    }));
+                }
+            }
             // a relayed target position (antenna tracker)
             MavMessage::GLOBAL_POSITION_INT(g) => {
                 self.target_pos = Some((f64::from(g.lat) / 1e7, f64::from(g.lon) / 1e7));
@@ -488,6 +509,18 @@ pub(crate) fn spawn_fake(
         lost_ack: false,
         next_report: 0.0,
         out,
+        params: [
+            ("FS_GCS_ENABLE", 1.0),
+            ("FS_GCS_TIMEOUT", 5.0),
+            ("FS_OPTIONS", 16.0),
+            ("FS_ACTION", 1.0),
+            ("FS_GCS_ENABL", 1.0),
+            ("FS_LONG_ACTN", 1.0),
+            ("FS_LONG_TIMEOUT", 5.0),
+        ]
+        .into_iter()
+        .map(|(n, v)| (n.to_string(), v))
+        .collect(),
     };
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_millis(200));

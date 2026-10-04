@@ -61,10 +61,12 @@
 //! Every function here is pure: the engine logs the inputs and the results, and
 //! `murmur-replay` recomputes them.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::areas::{Area, AreaKind};
-use crate::catalog::{Domain, SensorFact};
+use crate::catalog::{AutopilotKind, Domain, SensorFact};
 use crate::geo::{LonLat, haversine_m};
 use crate::ids::{IntentId, OperatorId, SessionId, Uid};
 use crate::intent::{IntentSpec, Task};
@@ -214,6 +216,27 @@ pub struct EngageRules {
     /// kilometres. Default 1 (schema 2, rules 2).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub friendly_growth_mps: Option<f64>,
+    /// Rules 5: the 1-sigma error of a protected track's velocity estimate, m/s. A track is
+    /// predicted along its velocity with this error times the span on top of its own
+    /// position uncertainty and its manoeuvre noise ([`track_prediction_sigma`]). Default 1
+    /// (schema 3; basis: the Phase G velocity-noise sweep, docs in the README).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub track_velocity_sigma_mps: Option<f64>,
+    /// Rules 5: a protected track's manoeuvre as acceleration noise, 1-sigma per domain,
+    /// m/s^2 (a constant-velocity prediction with white acceleration noise: the position
+    /// error grows as this squared times span^3 / 3 at the 1 s update). Missing domains take
+    /// their default: surface and subsurface 0.2, air and ground 2.0 (schema 3).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub track_accel_mps2: Option<BTreeMap<Domain, f64>>,
+    /// Rules 5: how fast an aircraft track, or one of our vehicles (at least its catalog
+    /// climb rate), may change altitude over a prediction, m/s. Default 10 (schema 3).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vertical_rate_mps: Option<f64>,
+    /// Rules 5: the keep-out above and below the effect's altitude beyond the effect radius,
+    /// metres, where both altitudes are known (else the keep-out is a cylinder of unlimited
+    /// height, as before). Default `keep_out_m` (schema 3).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep_out_vertical_m: Option<f64>,
 }
 
 fn rules_version_now() -> u32 {
@@ -241,6 +264,32 @@ impl EngageRules {
         self.friendly_growth_mps.unwrap_or(1.0)
     }
 
+    /// [`EngageRules::track_velocity_sigma_mps`] or its default.
+    pub fn track_velocity_sigma(&self) -> f64 {
+        self.track_velocity_sigma_mps.unwrap_or(1.0)
+    }
+
+    /// [`EngageRules::track_accel_mps2`] for `domain`, or its default.
+    pub fn track_accel(&self, domain: Domain) -> f64 {
+        self.track_accel_mps2
+            .as_ref()
+            .and_then(|m| m.get(&domain).copied())
+            .unwrap_or(match domain {
+                Domain::Surface | Domain::Subsurface => 0.2,
+                Domain::Air | Domain::Ground => 2.0,
+            })
+    }
+
+    /// [`EngageRules::vertical_rate_mps`] or its default.
+    pub fn vertical_rate(&self) -> f64 {
+        self.vertical_rate_mps.unwrap_or(10.0)
+    }
+
+    /// [`EngageRules::keep_out_vertical_m`] or its default (`keep_out_m`).
+    pub fn keep_out_vertical(&self) -> f64 {
+        self.keep_out_vertical_m.unwrap_or(self.keep_out_m)
+    }
+
     /// The decisions of rules version 2 on (see the changelog).
     fn v2(&self) -> bool {
         self.rules_version >= 2
@@ -249,6 +298,12 @@ impl EngageRules {
     /// The decisions of rules version 3 on (see the changelog).
     fn v3(&self) -> bool {
         self.rules_version >= 3
+    }
+
+    /// The decisions of rules version 5 on (see the changelog): the lost-link preload, the
+    /// keep-outs' prediction model and altitude, accepted unknown friendlies.
+    pub fn v5(&self) -> bool {
+        self.rules_version >= 5
     }
 
     /// The optional keys this section sets, each with the policy schema that introduced it
@@ -267,6 +322,18 @@ impl EngageRules {
         }
         if self.friendly_growth_mps.is_some() {
             keys.push((2, "friendly_growth_mps"));
+        }
+        if self.track_velocity_sigma_mps.is_some() {
+            keys.push((3, "track_velocity_sigma_mps"));
+        }
+        if self.track_accel_mps2.is_some() {
+            keys.push((3, "track_accel_mps2"));
+        }
+        if self.vertical_rate_mps.is_some() {
+            keys.push((3, "vertical_rate_mps"));
+        }
+        if self.keep_out_vertical_m.is_some() {
+            keys.push((3, "keep_out_vertical_m"));
         }
         keys
     }
@@ -303,6 +370,10 @@ impl Default for EngageRules {
             plan_drift_max_m: None,
             holding_speed_mps: None,
             friendly_growth_mps: None,
+            track_velocity_sigma_mps: None,
+            track_accel_mps2: None,
+            vertical_rate_mps: None,
+            keep_out_vertical_m: None,
         }
     }
 }
@@ -354,6 +425,12 @@ impl EngageRules {
         within(self.plan_drift_max(), 0.0, 2000.0, "plan_drift_max_m")?;
         within(self.holding_speed(), 0.0, 5.0, "holding_speed_mps")?;
         within(self.friendly_growth(), 0.1, 10.0, "friendly_growth_mps")?;
+        within(self.track_velocity_sigma(), 0.1, 10.0, "track_velocity_sigma_mps")?;
+        for d in [Domain::Air, Domain::Ground, Domain::Surface, Domain::Subsurface] {
+            within(self.track_accel(d), 0.01, 20.0, "track_accel_mps2")?;
+        }
+        within(self.vertical_rate(), 0.5, 100.0, "vertical_rate_mps")?;
+        within(self.keep_out_vertical(), 50.0, 20_000.0, "keep_out_vertical_m")?;
         if self.assess_window_s < self.assess_dwell_s {
             return Err("rules.engage.assess_window_s must be at least assess_dwell_s".into());
         }
@@ -619,6 +696,89 @@ pub struct Engagement {
     /// Time of the last observe step (for the coverage sum).
     #[serde(skip)]
     pub(crate) last_observe: Option<(Time, bool)>,
+    /// Rules 5: the lost-link action the platform carries while the engagement is under way
+    /// ([`preload_for`] on the final approval's world); the engagement order carries it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preload: Option<LostLinkPreload>,
+    /// Rules 5: the platform's report of setting it (and reading it back), and of restoring
+    /// its own values afterwards.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preloaded: Option<PreloadRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restored: Option<PreloadRecord>,
+    /// Rules 5: our vehicles an operator accepted as lost for this engagement.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub accepted: BTreeMap<Uid, AcceptedUnknown>,
+}
+
+/// Rules 5: an operator's explicit acceptance that one of our vehicles is lost (its
+/// position unknown since its last report, `since`; none: it never reported one), for one
+/// engagement (`engage.accepted`). The friendly keep-out then leaves that vehicle out, but
+/// only while it is lost since exactly that report: one that reports again counts as any
+/// other, and a newer loss needs a new acceptance. Never automatic, never an agent's.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcceptedUnknown {
+    pub since: Option<Time>,
+    pub by: OperatorId,
+}
+
+/// Rules 5: one parameter a lost-link preload sets, and its value.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ParamSetting {
+    pub name: String,
+    pub value: f64,
+}
+
+/// Rules 5: bits a lost-link preload clears in a bitmask parameter.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ParamBits {
+    pub name: String,
+    pub clear: u32,
+}
+
+/// Rules 5: what the platform's own lost-link (GCS) failsafe must be while an engagement is
+/// under way, so that the approval's fallback happens even when the order to fly it can't
+/// arrive: the failsafe enabled with the action that is the fallback, anything that would
+/// override it cleared, and its timer no longer than the approval's link-gap limit. ArduPilot
+/// 4.8 parameter names ([`preload_for`]). The bridge sets these at dispatch, reads them back
+/// (`engage.preload`), and restores the platform's own values when the engagement ends.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LostLinkPreload {
+    /// The firmware whose parameters these are (ArduPlane, ArduCopter, ArduRover, ArduSub).
+    pub firmware: String,
+    pub fallback: Fallback,
+    /// What the platform does on its own when it loses the GCS, in its firmware's words.
+    pub action: String,
+    /// Parameters set to exactly these values.
+    pub set: Vec<ParamSetting>,
+    /// Bits cleared (ArduCopter's FS_OPTIONS bit 1: continue the mission on GCS loss).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clear_bits: Vec<ParamBits>,
+    /// The lost-link timer, and the longest it may be while the engagement is under way, s
+    /// (the platform's own value if shorter).
+    pub timer: String,
+    pub timer_max_s: f64,
+}
+
+/// Rules 5: whether an `engage.preload` report is the preload (`set`) or the platform's own
+/// values put back (`restore`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreloadPhase {
+    Set,
+    Restore,
+}
+
+/// Rules 5: a preload or restore as the platform answered it (`engage.preload`).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PreloadRecord {
+    pub t: Time,
+    pub phase: PreloadPhase,
+    /// The platform's own values before the preload (set), what was read back after.
+    pub before: BTreeMap<String, f64>,
+    pub readback: BTreeMap<String, f64>,
+    pub confirmed: bool,
+    pub detail: String,
 }
 
 /// One signature's picture.
@@ -654,6 +814,11 @@ pub struct EngageOrder {
     /// and nothing logged it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loiter_radius_m: Option<f64>,
+    /// Rules 5: the lost-link action the platform must carry while the engagement is under
+    /// way, the fallback as its own failsafe ([`LostLinkPreload`]); nothing is released
+    /// until the platform confirms it (`engage.preload`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preload: Option<LostLinkPreload>,
 }
 
 /// The radius `uid` loiters at over an effect point: the rules' margin over its catalog
@@ -674,6 +839,277 @@ pub fn loiter_radius(uid: &Uid, world: &WorldSnapshot, cfg: &RulesConfig) -> f64
         });
     min.map_or(30.0, |m| (m * cfg.orbit_radius_margin).ceil())
         .max(30.0)
+}
+
+// ---- rules 5: the fallback as the platform's own lost-link action -----------------------
+
+/// Rules 5: the shortest lost-link timer a preload sets, s: the low end of ArduPilot 4.8's
+/// documented FS_GCS_TIMEOUT range (Copter, Rover, Blimp; Plane's FS_LONG_TIMEOUT goes to
+/// 1 s). The GCS heartbeat is 1 s on every link an armed platform uses (`telemetry.rs`).
+pub const PRELOAD_TIMER_MIN_S: f64 = 2.0;
+
+/// Which autopilot a vehicle runs: its heartbeat's, else the catalog's.
+pub fn platform_autopilot(v: &crate::world::VehicleFacts) -> Option<AutopilotKind> {
+    v.autopilot
+        .as_ref()
+        .map(|a| a.value)
+        .or_else(|| v.platform.as_ref().and_then(|p| p.autopilot))
+}
+
+/// The longest silence an approval tolerates from its platform, ms: `link_gap_s`, or
+/// `link_gap_intervals` of its report interval when longer ([`snapshot`] records it).
+pub fn link_gap_limit_ms(v: Option<&crate::world::VehicleFacts>, ec: &EngageRules) -> i64 {
+    let interval = v.and_then(|v| v.report_interval_ms);
+    let by_link = interval.map_or(0, |i| (ec.link_gap_intervals * f64::from(i)).round() as i64);
+    ms(ec.link_gap_s).max(by_link)
+}
+
+/// Rules 5: the platform's lost-link action that is `fallback`, in ArduPilot 4.8's terms, or
+/// why there is none (fail closed: the nomination can't carry that fallback on that platform):
+///
+/// - ArduPlane (and QuadPlane in fixed-wing modes): `FS_GCS_ENABL` 1 (heartbeat), and
+///   `FS_LONG_ACTN` 1 for return (RTL). It has no action that holds where it is
+///   (`FS_LONG_ACTN`: 0 continue the mission, 1 RTL, 2 glide, 3 parachute, 4 AUTO,
+///   5 AUTOLAND): abort and loiter can't be preloaded.
+/// - ArduCopter: `FS_GCS_ENABLE` 1 (RTL) for return, 7 (brake, else land) for abort and
+///   loiter (it has no circling lost-link action: a multirotor's hold is BRAKE, holding its
+///   position); `FS_OPTIONS` bit 1 (continue the mission in AUTO on GCS loss) cleared.
+/// - ArduRover (boats, UGVs): `FS_GCS_ENABLE` 1 (not 2, which continues in AUTO) and
+///   `FS_ACTION` 1 (RTL) for return, 2 (Hold) for abort, 6 (Loiter, else Hold) for loiter.
+/// - ArduSub: `FS_GCS_ENABLE` 3 (depth hold) for abort and loiter; it has no return.
+/// - Blimp (its only action is Land), AntennaTracker and a drifter: none.
+///
+/// The timer (`FS_LONG_TIMEOUT` on Plane, `FS_GCS_TIMEOUT` elsewhere) is at most the
+/// approval's link-gap limit (whole seconds, at least [`PRELOAD_TIMER_MIN_S`]), so the
+/// platform takes its fallback about when the engine stops the engagement for silence;
+/// ArduRover acts `FS_TIMEOUT` (1.5 s) after its timer.
+pub fn preload_for(
+    fallback: Fallback,
+    autopilot: Option<AutopilotKind>,
+    link_gap_limit_ms: i64,
+) -> Result<LostLinkPreload, String> {
+    let timer_max_s = (link_gap_limit_ms as f64 / 1000.0)
+        .ceil()
+        .max(PRELOAD_TIMER_MIN_S);
+    let set = |v: &[(&str, f64)]| {
+        v.iter()
+            .map(|(n, x)| ParamSetting {
+                name: (*n).to_string(),
+                value: *x,
+            })
+            .collect::<Vec<_>>()
+    };
+    let Some(ap) = autopilot else {
+        return Err("its autopilot is unknown: its lost-link action can't be set".into());
+    };
+    type Parts = (&'static str, &'static str, Vec<ParamSetting>, Vec<ParamBits>, &'static str);
+    let (firmware, action, params, clear_bits, timer): Parts = match (ap, fallback) {
+        (AutopilotKind::Plane | AutopilotKind::Vtol, Fallback::Return) => (
+            "ArduPlane",
+            "RTL",
+            set(&[("FS_GCS_ENABL", 1.0), ("FS_LONG_ACTN", 1.0)]),
+            Vec::new(),
+            "FS_LONG_TIMEOUT",
+        ),
+        (AutopilotKind::Plane | AutopilotKind::Vtol, f) => {
+            return Err(format!(
+                "ArduPlane 4.8 has no lost-link action that holds where it is (FS_LONG_ACTN: 0 continue the mission, 1 RTL, 2 glide, 3 parachute, 4 AUTO, 5 AUTOLAND): fallback {} can't be its own failsafe; only return can",
+                f.as_str()
+            ));
+        }
+        (AutopilotKind::Copter, f) => (
+            "ArduCopter",
+            if f == Fallback::Return { "RTL" } else { "Brake or Land" },
+            set(&[("FS_GCS_ENABLE", if f == Fallback::Return { 1.0 } else { 7.0 })]),
+            vec![ParamBits {
+                name: "FS_OPTIONS".into(),
+                clear: 2,
+            }],
+            "FS_GCS_TIMEOUT",
+        ),
+        (AutopilotKind::Boat | AutopilotKind::Ugv, f) => {
+            let (action, value) = match f {
+                Fallback::Return => ("RTL", 1.0),
+                Fallback::Abort => ("Hold", 2.0),
+                Fallback::Loiter => ("Loiter or Hold", 6.0),
+            };
+            (
+                "ArduRover",
+                action,
+                set(&[("FS_GCS_ENABLE", 1.0), ("FS_ACTION", value)]),
+                Vec::new(),
+                "FS_GCS_TIMEOUT",
+            )
+        }
+        (AutopilotKind::Sub, Fallback::Abort | Fallback::Loiter) => (
+            "ArduSub",
+            "Depth hold",
+            set(&[("FS_GCS_ENABLE", 3.0)]),
+            Vec::new(),
+            "FS_GCS_TIMEOUT",
+        ),
+        (AutopilotKind::Sub, Fallback::Return) => {
+            return Err(
+                "ArduSub 4.8 has no lost-link return (FS_GCS_ENABLE: warn, disarm, depth hold, surface): fallback return can't be its own failsafe".into(),
+            );
+        }
+        (AutopilotKind::Blimp, f) => {
+            return Err(format!(
+                "Blimp 4.8's only lost-link action is Land (FS_GCS_ENABLE 5): fallback {} can't be its own failsafe",
+                f.as_str()
+            ));
+        }
+        (AutopilotKind::Tracker | AutopilotKind::Drifter, _) => {
+            return Err(format!("a {} has no lost-link action", ap.as_str()));
+        }
+    };
+    Ok(LostLinkPreload {
+        firmware: firmware.into(),
+        fallback,
+        action: action.into(),
+        set: params,
+        clear_bits,
+        timer: timer.into(),
+        timer_max_s,
+    })
+}
+
+impl LostLinkPreload {
+    /// Every parameter it reads and sets, in order: the set ones, the bitmasks, the timer.
+    pub fn names(&self) -> Vec<&str> {
+        self.set
+            .iter()
+            .map(|p| p.name.as_str())
+            .chain(self.clear_bits.iter().map(|b| b.name.as_str()))
+            .chain(std::iter::once(self.timer.as_str()))
+            .collect()
+    }
+
+    /// "ArduPlane RTL (FS_GCS_ENABL 1, FS_LONG_ACTN 1; FS_LONG_TIMEOUT at most 5 s)".
+    pub fn describe(&self) -> String {
+        let mut parts: Vec<String> = self
+            .set
+            .iter()
+            .map(|p| format!("{} {}", p.name, p.value))
+            .collect();
+        parts.extend(
+            self.clear_bits
+                .iter()
+                .map(|b| format!("{} bits {} clear", b.name, b.clear)),
+        );
+        format!(
+            "{} {} ({}; {} at most {} s)",
+            self.firmware,
+            self.action,
+            parts.join(", "),
+            self.timer,
+            self.timer_max_s
+        )
+    }
+
+    /// Whether `readback` (each parameter as the platform reports it) shows it in force: every
+    /// set parameter at its value, every cleared bit clear, the timer above 0 and at most
+    /// `timer_max_s`. `Err` says the first thing that differs. A parameter the platform did
+    /// not report fails (unknown is not in force); a bitmask it does not have is clear.
+    pub fn holds(&self, readback: &BTreeMap<String, f64>) -> Result<(), String> {
+        for p in &self.set {
+            match readback.get(&p.name) {
+                Some(v) if (v - p.value).abs() < 0.01 => {}
+                Some(v) => return Err(format!("{} reads {v}, not {}", p.name, p.value)),
+                None => return Err(format!("{} was not read back", p.name)),
+            }
+        }
+        for b in &self.clear_bits {
+            if let Some(v) = readback.get(&b.name)
+                && (v.round() as i64) & i64::from(b.clear) != 0
+            {
+                return Err(format!("{} reads {v}: bits {} are not clear", b.name, b.clear));
+            }
+        }
+        match readback.get(&self.timer) {
+            Some(v) if *v > 0.0 && *v <= self.timer_max_s + 0.01 => Ok(()),
+            Some(v) => Err(format!(
+                "{} reads {v} s, not within 0..{} s",
+                self.timer, self.timer_max_s
+            )),
+            None => Err(format!("{} was not read back", self.timer)),
+        }
+    }
+}
+
+/// Rules 5: the preload an approved engagement's order carries, from the final signature's
+/// world (the platform's autopilot) and its snapshot (the fallback, the link-gap limit).
+/// None before rules 5, or when there is none (the `fallback_preload` check has failed the
+/// signature then, so it is never approved without one).
+pub fn order_preload(
+    spec: &IntentSpec,
+    world: &WorldSnapshot,
+    snap: &EngageSnapshot,
+    cfg: &RulesConfig,
+) -> Option<LostLinkPreload> {
+    if cfg.rules_version < 5 {
+        return None;
+    }
+    let v = platform_of(spec).and_then(|u| world.vehicles.get(u))?;
+    preload_for(snap.fallback, platform_autopilot(v), snap.link_gap_limit_ms).ok()
+}
+
+/// Rules 5: whether a restore put back the platform's own values (`before`, as the preload
+/// read them): every parameter it had read, as it was. `Err` says what differs.
+pub fn restored(before: &BTreeMap<String, f64>, readback: &BTreeMap<String, f64>) -> Result<(), String> {
+    if before.is_empty() {
+        return Err("no values of its own were read before the preload".into());
+    }
+    for (name, want) in before {
+        match readback.get(name) {
+            Some(v) if (v - want).abs() < 0.01 => {}
+            Some(v) => return Err(format!("{name} reads {v}, not its own {want}")),
+            None => return Err(format!("{name} was not read back")),
+        }
+    }
+    Ok(())
+}
+
+/// Rules 5, at nomination and on the plan: the platform's own lost-link action can be the
+/// engagement's fallback ([`preload_for`]).
+fn preload_check(uid: Option<&Uid>, fallback: Fallback, world: &WorldSnapshot, ec: &EngageRules) -> CheckResult {
+    let r = RuleId::FallbackPreload;
+    let Some(v) = uid.and_then(|u| world.vehicles.get(u)) else {
+        return check(r, uid, Outcome::Fail, "cannot evaluate: platform not in the world model");
+    };
+    match preload_for(fallback, platform_autopilot(v), link_gap_limit_ms(Some(v), ec)) {
+        Ok(p) => check(
+            r,
+            uid,
+            Outcome::Pass,
+            format!(
+                "fallback {} as the platform's own lost-link action: {}; set and read back at dispatch, nothing released before",
+                fallback.as_str(),
+                p.describe()
+            ),
+        ),
+        Err(why) => check(r, uid, Outcome::Fail, why),
+    }
+}
+
+/// Rules 5, at the release: the platform confirmed its lost-link action is the fallback
+/// (`preloaded`: the preload its read-back confirmed, none until then).
+fn preloaded_check(uid: Option<&Uid>, preloaded: Option<&LostLinkPreload>) -> CheckResult {
+    let r = RuleId::FallbackPreload;
+    match preloaded {
+        Some(p) => check(
+            r,
+            uid,
+            Outcome::Pass,
+            format!("the platform's lost-link action is the fallback, read back: {}", p.describe()),
+        ),
+        None => check(
+            r,
+            uid,
+            Outcome::Fail,
+            "the platform has not confirmed its lost-link action is the fallback: nothing is released",
+        ),
+    }
 }
 
 /// The fallback the bridge must command when an engagement stops after dispatch.
@@ -1025,7 +1461,7 @@ fn describe_track(id: &str, t: &TrackFacts) -> String {
 /// run alongside, from [`crate::rules::evaluate`]). Fixed order, fixed precision.
 pub fn evaluate(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Vec<CheckResult> {
     let ec = cfg.engage_rules();
-    let Some((track_id, radius, _, _)) = params(spec) else {
+    let Some((track_id, radius, _, fallback)) = params(spec) else {
         return Vec::new();
     };
     let uid = platform_of(spec);
@@ -1067,6 +1503,7 @@ pub fn evaluate(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
     match &pv {
         Ok(p) => {
             out.push(no_strike_check(p, world));
+            let alt = effect_alt(track, p.effect_t, p.effect_radius_m, &ec);
             out.push(keep_out_friendly(
                 p.effect_point,
                 p.effect_t,
@@ -1074,6 +1511,7 @@ pub fn evaluate(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
                 uid,
                 world,
                 cfg,
+                alt,
             ));
             out.push(keep_out_tracks(
                 p.effect_point,
@@ -1082,6 +1520,7 @@ pub fn evaluate(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
                 track_id,
                 world,
                 &ec,
+                alt,
             ));
         }
         Err(_) => {
@@ -1093,6 +1532,9 @@ pub fn evaluate(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
     out.push(armed_check(uid, world));
     if ec.v2() {
         out.push(free_check(uid, world));
+    }
+    if ec.v5() {
+        out.push(preload_check(uid, fallback, world, &ec));
     }
     out.push(reach_check(uid, &pv, world, cfg, &ec));
     out
@@ -1378,6 +1820,7 @@ pub const CIRCLE_CENTER_MAX_AGE_MS: i64 = 12_000;
 /// counts, at every span.
 pub const CIRCLE_CARRY_S: f64 = 5.0;
 
+#[allow(clippy::too_many_arguments)]
 pub fn keep_out_friendly(
     point: LonLat,
     effect_t: Time,
@@ -1385,12 +1828,27 @@ pub fn keep_out_friendly(
     platform: Option<&Uid>,
     world: &WorldSnapshot,
     cfg: &RulesConfig,
+    alt: Option<EffectAlt>,
 ) -> CheckResult {
     let r = RuleId::KeepOutFriendly;
+    let ec = cfg.engage_rules();
     let mut nearest: Option<(f64, &Uid)> = None;
     let mut count = 0;
+    // rules 5: lost vehicles an operator accepted, and vehicles clear by altitude
+    let mut accepted: Vec<String> = Vec::new();
+    let mut by_alt: Vec<String> = Vec::new();
     for (uid, v) in &world.vehicles {
         if Some(uid) == platform {
+            continue;
+        }
+        let pos_fresh = fresh(&v.position, v, "position", world, cfg).is_ok();
+        // rules 5: lost since exactly the report an operator accepted for this engagement
+        if ec.v5()
+            && !pos_fresh
+            && let Some(a) = world.unknown_accepted.get(uid)
+            && a.since == v.position.as_ref().map(|p| p.t)
+        {
+            accepted.push(format!("{uid}: {}, accepted by {}", lost_since(v, world), a.by));
             continue;
         }
         count += 1;
@@ -1399,10 +1857,16 @@ pub fn keep_out_friendly(
                 r,
                 Some(uid),
                 Outcome::Fail,
-                format!("vehicle {uid} has no position: cannot clear the keep-out"),
+                if ec.v5() {
+                    format!(
+                        "vehicle {uid} has no position: cannot clear the keep-out ({}: an operator may accept it as unknown)",
+                        lost_since(v, world)
+                    )
+                } else {
+                    format!("vehicle {uid} has no position: cannot clear the keep-out")
+                },
             );
         };
-        let ec = cfg.engage_rules();
         // rules 3: a vehicle flying a circle stays on it; its momentary heading, carried
         // a minute or more ahead, would put it kilometres away in any direction. The circle
         // holds only a vehicle that is on it: its position, reported with the circle, within
@@ -1411,7 +1875,6 @@ pub fn keep_out_friendly(
         // Each report is judged on its own freshness: the position by the usual link-aware
         // rule, the center by its own age.
         let reported = v.circling.as_ref().filter(|_| ec.v3());
-        let pos_fresh = fresh(&v.position, v, "position", world, cfg).is_ok();
         let circling = reported.filter(|c| {
             let center_fresh = match c.value.center_t {
                 Some(ct) => world.t.ms_since(ct) <= CIRCLE_CENTER_MAX_AGE_MS,
@@ -1424,7 +1887,7 @@ pub fn keep_out_friendly(
         let vel = v
             .velocity_mps
             .as_ref()
-            .filter(|_| fresh(&v.position, v, "position", world, cfg).is_ok())
+            .filter(|_| pos_fresh)
             .and_then(|f| fresh(&v.velocity_mps, v, "velocity", world, cfg).ok().map(|_| f.value));
         let span = secs(effect_t.ms_since(pos.t)).max(0.0);
         let off_circle = reported.is_some() && circling.is_none();
@@ -1497,7 +1960,15 @@ pub fn keep_out_friendly(
                 };
                 Some((
                     (haversine_m(pos.value, point) - cruise * carry).max(0.0),
-                    "how far it could reach at cruise speed".into(),
+                    if ec.v5() && !pos_fresh {
+                        format!(
+                            "how far it could reach at cruise speed; {}: an operator may accept it as unknown",
+                            lost_since(v, world)
+                        )
+                        .into()
+                    } else {
+                        "how far it could reach at cruise speed".into()
+                    },
                 ))
             }
         };
@@ -1521,12 +1992,35 @@ pub fn keep_out_friendly(
             }
         };
         if d < keep_out_m {
+            // rules 5: in 3D where its altitude (fresh) and the effect's are known: clear when
+            // even climbing or descending at its vertical rate it stays outside the keep-out
+            // above or below the effect
+            if let Some(e) = alt.filter(|_| ec.v5())
+                && let Ok(a) = fresh(&v.alt_msl_m, v, "altitude", world, cfg)
+            {
+                let alt_t = v.alt_msl_m.as_ref().map_or(pos.t, |f| f.t);
+                let alt_span = secs(effect_t.ms_since(alt_t)).max(0.0);
+                let rate = v
+                    .platform
+                    .as_ref()
+                    .and_then(|p| p.climb_mps)
+                    .unwrap_or(0.0)
+                    .max(ec.vertical_rate());
+                let m = ec.keep_out_sigma * VEHICLE_ALT_SIGMA_M + rate * alt_span;
+                if let Some(c) = vertical_clear(&e, *a, m) {
+                    by_alt.push(format!(
+                        "{uid} at {a:.0} m ({c:.0} m outside the vertical keep-out with {m:.0} m of altitude uncertainty)"
+                    ));
+                    continue;
+                }
+            }
             return check(
                 r,
                 Some(uid),
                 Outcome::Fail,
                 format!(
-                    "vehicle {uid} could be {d:.0} m from the effect point at the effect time ({how}); keep-out {keep_out_m:.0} m"
+                    "vehicle {uid} could be {d:.0} m from the effect point at the effect time ({how}); keep-out {keep_out_m:.0} m{}",
+                    vertical_note(alt.filter(|_| ec.v5()), v.alt_msl_m.is_some())
                 ),
             );
         }
@@ -1535,12 +2029,141 @@ pub fn keep_out_friendly(
         }
     }
     let near = nearest.map_or(String::new(), |(d, u)| format!("; nearest {u} at {d:.0} m"));
+    let mut tail = String::new();
+    if !by_alt.is_empty() {
+        tail.push_str(&format!("; clear by altitude: {}", by_alt.join(", ")));
+    }
+    if !accepted.is_empty() {
+        tail.push_str(&format!("; position accepted as unknown: {}", accepted.join(", ")));
+    }
     check(
         r,
         None,
         Outcome::Pass,
-        format!("{count} vehicle(s) of ours clear of the {keep_out_m:.0} m keep-out at the effect time{near}"),
+        format!("{count} vehicle(s) of ours clear of the {keep_out_m:.0} m keep-out at the effect time{near}{tail}"),
     )
+}
+
+/// How long one of our vehicles has been lost, for an operator to accept: "position unknown
+/// for 312 s (since t=1781000123000)" (engine ms, what an acceptance names), or "no position
+/// ever reported (since none)".
+fn lost_since(v: &crate::world::VehicleFacts, world: &WorldSnapshot) -> String {
+    match &v.position {
+        Some(p) => format!(
+            "position unknown for {:.0} s (since t={})",
+            secs(world.t.ms_since(p.t)),
+            p.t.0
+        ),
+        None => "no position ever reported (since none)".into(),
+    }
+}
+
+/// Why a keep-out that failed in 2D was not read in 3D (rules 5), for the detail.
+fn vertical_note(alt: Option<EffectAlt>, known: bool) -> &'static str {
+    match (alt, known) {
+        (Some(_), true) => "; within the vertical keep-out too",
+        (Some(_), false) => "; its altitude is unknown, so the keep-out has no ceiling",
+        (None, _) => "",
+    }
+}
+
+// ---- rules 5: the keep-outs' prediction model and altitude --------------------------------
+
+/// Rules 5: a protected track without a velocity estimate could be anywhere it reaches at
+/// its domain's top speed, m/s (fail closed on missing data): 100 for aircraft (a light
+/// aircraft or small UAS cruises at 50 to 70), 30 on the ground, 25 on the surface (a fast
+/// small boat at about 50 kt), 15 under water.
+pub fn top_speed_mps(domain: Domain) -> f64 {
+    match domain {
+        Domain::Air => 100.0,
+        Domain::Ground => 30.0,
+        Domain::Surface => 25.0,
+        Domain::Subsurface => 15.0,
+    }
+}
+
+/// Rules 5: the 1-sigma error of a track's altitude estimate, m: the sensing model's radar
+/// height error on aircraft (30, `tracks/sensing.rs`), 5 for a sonar depth, 10 for a surface
+/// or ground contact (its height above the datum).
+pub fn track_alt_sigma_m(domain: Domain) -> f64 {
+    match domain {
+        Domain::Air => 30.0,
+        Domain::Subsurface => 5.0,
+        Domain::Surface | Domain::Ground => 10.0,
+    }
+}
+
+/// Rules 5: how fast a protected track may change altitude, m/s: an aircraft at
+/// `vertical_rate_mps`, a vessel on the surface not at all, anything on the ground or under
+/// water at 2 (a road's grade, a submarine's depth change).
+pub fn track_vertical_mps(domain: Domain, ec: &EngageRules) -> f64 {
+    match domain {
+        Domain::Air => ec.vertical_rate(),
+        Domain::Surface => 0.0,
+        Domain::Ground | Domain::Subsurface => 2.0,
+    }
+}
+
+/// Rules 5: the 1-sigma error of one of our vehicles' altitude (GNSS vertical), m.
+pub const VEHICLE_ALT_SIGMA_M: f64 = 10.0;
+
+/// Rules 5: the 1-sigma error of a protected track's predicted position `span_s` after its
+/// estimate, along its velocity: a constant-velocity prediction with white acceleration
+/// noise (Bar-Shalom, Li and Kirubarajan, Estimation with Applications to Tracking and
+/// Navigation, 2001, the continuous white-noise acceleration model), its three parts
+/// independent: the tracker's own 1-sigma now (`pos_sigma_m`, already grown for the track's
+/// age), the velocity estimate's error times the span (`track_velocity_sigma_mps`), and the
+/// manoeuvres it may make, `q span^3 / 3` with `q` the domain's acceleration noise squared
+/// times the 1 s update (`track_accel_mps2`). Not linear in speed times time: a fast track on
+/// a steady course is as predictable as a slow one.
+pub fn track_prediction_sigma(t: &TrackFacts, span_s: f64, ec: &EngageRules) -> f64 {
+    let span = span_s.max(0.0);
+    let v = ec.track_velocity_sigma() * span;
+    let a = ec.track_accel(t.domain);
+    let q = a * a; // m^2/s^3 at the 1 s update
+    (t.pos_sigma_m.powi(2) + v * v + q * span.powi(3) / 3.0).sqrt()
+}
+
+/// Rules 5: the effect's altitude for a 3D keep-out: the target's estimate (MSL) with its
+/// uncertainty at the effect time (`keep_out_sigma` of its altitude error, and how far it may
+/// climb or descend by then), and how far above and below it the keep-out reaches (the
+/// effect radius plus `keep_out_vertical_m`). None (the keep-out stays 2D, a cylinder of
+/// unlimited height) before rules 5, without the target, or when its altitude is unknown.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EffectAlt {
+    pub alt_m: f64,
+    pub margin_m: f64,
+    pub half_height_m: f64,
+}
+
+/// See [`EffectAlt`].
+pub fn effect_alt(
+    target: Option<&TrackFacts>,
+    effect_t: Time,
+    effect_radius_m: f64,
+    ec: &EngageRules,
+) -> Option<EffectAlt> {
+    if !ec.v5() {
+        return None;
+    }
+    let t = target?;
+    let alt_m = t.alt_m.filter(|a| a.is_finite())?;
+    let span = secs(effect_t.ms_since(t.position.t)).max(0.0);
+    Some(EffectAlt {
+        alt_m,
+        margin_m: ec.keep_out_sigma * track_alt_sigma_m(t.domain)
+            + track_vertical_mps(t.domain, ec) * span,
+        half_height_m: effect_radius_m + ec.keep_out_vertical(),
+    })
+}
+
+/// How far (m) something at `alt_m`, give or take `margin_m`, stays outside the keep-out above
+/// or below the effect; None when its band reaches into the keep-out's.
+fn vertical_clear(e: &EffectAlt, alt_m: f64, margin_m: f64) -> Option<f64> {
+    let top = e.alt_m + e.margin_m + e.half_height_m;
+    let bottom = e.alt_m - e.margin_m - e.half_height_m;
+    let c = (alt_m - margin_m - top).max(bottom - (alt_m + margin_m));
+    (c > 0.0).then_some(c)
 }
 
 /// No track but the target and tracks an operator declared hostile (`declared_by` set) may be
@@ -1548,6 +2171,13 @@ pub fn keep_out_friendly(
 /// neutral, unknown, suspect and assumed friend tracks are protected, a hostile affiliation
 /// nobody declared too, stale ones too (their uncertainty has grown). Another declared
 /// hostile is exempt like the target: an open design question (DECISIONS.md).
+///
+/// Rules 5: the uncertainty is [`track_prediction_sigma`] (before: the tracker's growth law,
+/// `max(1, 0.3 x speed)` times the span, which made a fast track on a steady course block
+/// kilometres away); a track without a velocity estimate could be anywhere it reaches at its
+/// domain's top speed; and where the target's and the track's altitudes are both known the
+/// keep-out has a ceiling and a floor ([`effect_alt`]).
+#[allow(clippy::too_many_arguments)]
 pub fn keep_out_tracks(
     point: LonLat,
     effect_t: Time,
@@ -1555,10 +2185,12 @@ pub fn keep_out_tracks(
     target: &str,
     world: &WorldSnapshot,
     ec: &EngageRules,
+    alt: Option<EffectAlt>,
 ) -> CheckResult {
     let r = RuleId::KeepOutTracks;
     let mut nearest: Option<(f64, &str)> = None;
     let mut count = 0;
+    let mut by_alt: Vec<String> = Vec::new();
     for (id, t) in &world.tracks {
         // exempt: the target, and other tracks an operator declared hostile (an affiliation
         // without a declaration is protected)
@@ -1568,20 +2200,82 @@ pub fn keep_out_tracks(
             continue;
         }
         count += 1;
-        let p = track_at(t, effect_t);
-        let sigma = track_sigma_at(t, world.t, effect_t);
+        if !ec.v5() {
+            let p = track_at(t, effect_t);
+            let sigma = track_sigma_at(t, world.t, effect_t);
+            let d = haversine_m(p, point);
+            let edge = d - ec.keep_out_sigma * sigma;
+            if edge < keep_out_m {
+                return check(
+                    r,
+                    None,
+                    Outcome::Fail,
+                    format!(
+                        "track {} predicted {d:.0} m from the effect point at the effect time ({:.0}-sigma {:.0} m); keep-out {keep_out_m:.0} m",
+                        describe_track(id, t),
+                        ec.keep_out_sigma,
+                        ec.keep_out_sigma * sigma
+                    ),
+                );
+            }
+            if nearest.is_none_or(|(n, _)| edge < n) {
+                nearest = Some((edge, id));
+            }
+            continue;
+        }
+        // rules 5: from its estimate, over the span since it
+        let span = secs(effect_t.ms_since(t.position.t)).max(0.0);
+        let (p, reach, how) = match t.velocity_mps {
+            Some(_) => {
+                let sigma = track_prediction_sigma(t, span, ec);
+                (
+                    track_at(t, effect_t),
+                    ec.keep_out_sigma * sigma,
+                    format!(
+                        "{:.0}-sigma {:.0} m over {span:.0} s: tracker {:.0} m, velocity {:.0} m, manoeuvre {:.0} m",
+                        ec.keep_out_sigma,
+                        ec.keep_out_sigma * sigma,
+                        t.pos_sigma_m,
+                        ec.track_velocity_sigma() * span,
+                        ec.track_accel(t.domain) * (span.powi(3) / 3.0).sqrt()
+                    ),
+                )
+            }
+            None => {
+                let top = top_speed_mps(t.domain);
+                (
+                    t.position.value,
+                    ec.keep_out_sigma * t.pos_sigma_m + top * span,
+                    format!(
+                        "no velocity estimate: anywhere it reaches at {top:.0} m/s in {span:.0} s, {:.0} m with its {:.0}-sigma",
+                        ec.keep_out_sigma * t.pos_sigma_m + top * span,
+                        ec.keep_out_sigma
+                    ),
+                )
+            }
+        };
         let d = haversine_m(p, point);
-        let edge = d - ec.keep_out_sigma * sigma;
+        let edge = d - reach;
         if edge < keep_out_m {
+            // in 3D where both altitudes are known
+            if let (Some(e), Some(a)) = (alt, t.alt_m.filter(|a| a.is_finite())) {
+                let m = ec.keep_out_sigma * track_alt_sigma_m(t.domain)
+                    + track_vertical_mps(t.domain, ec) * span;
+                if let Some(c) = vertical_clear(&e, a, m) {
+                    by_alt.push(format!(
+                        "{id} at {a:.0} m ({c:.0} m outside the vertical keep-out with {m:.0} m of altitude uncertainty)"
+                    ));
+                    continue;
+                }
+            }
             return check(
                 r,
                 None,
                 Outcome::Fail,
                 format!(
-                    "track {} predicted {d:.0} m from the effect point at the effect time ({:.0}-sigma {:.0} m); keep-out {keep_out_m:.0} m",
+                    "track {} predicted {d:.0} m from the effect point at the effect time ({how}); keep-out {keep_out_m:.0} m{}",
                     describe_track(id, t),
-                    ec.keep_out_sigma,
-                    ec.keep_out_sigma * sigma
+                    vertical_note(alt, t.alt_m.is_some())
                 ),
             );
         }
@@ -1590,11 +2284,16 @@ pub fn keep_out_tracks(
         }
     }
     let near = nearest.map_or(String::new(), |(d, id)| format!("; nearest {id} at {d:.0} m"));
+    let by_alt = if by_alt.is_empty() {
+        String::new()
+    } else {
+        format!("; clear by altitude: {}", by_alt.join(", "))
+    };
     check(
         r,
         None,
         Outcome::Pass,
-        format!("{count} protected track(s) clear of the {keep_out_m:.0} m keep-out at the effect time{near}"),
+        format!("{count} protected track(s) clear of the {keep_out_m:.0} m keep-out at the effect time{near}{by_alt}"),
     )
 }
 
@@ -1851,6 +2550,7 @@ fn plan_checks(
         out.push(zone_check(p, world));
     }
     out.push(no_strike_check(p, world));
+    let alt = effect_alt(world.tracks.get(track_id), p.effect_t, p.effect_radius_m, &ec);
     out.push(keep_out_friendly(
         p.effect_point,
         p.effect_t,
@@ -1858,6 +2558,7 @@ fn plan_checks(
         uid,
         world,
         cfg,
+        alt,
     ));
     out.push(keep_out_tracks(
         p.effect_point,
@@ -1866,10 +2567,16 @@ fn plan_checks(
         track_id,
         world,
         &ec,
+        alt,
     ));
     out.push(armed_check(uid, world));
     if ec.v2() {
         out.push(free_check(uid, world));
+    }
+    if ec.v5()
+        && let Some((_, _, _, fallback)) = params(spec)
+    {
+        out.push(preload_check(uid, fallback, world, &ec));
     }
     out.push(plan_reach_check(uid, p, world, cfg, &ec));
     out.push(plan_track_check(plan, world.tracks.get(track_id), world, &ec));
@@ -2155,17 +2862,14 @@ pub fn snapshot(
         Some(plan) => plan.preview.clone(),
         None => preview(spec, world, cfg)?,
     };
-    let interval = platform_of(spec)
-        .and_then(|u| world.vehicles.get(u))
-        .and_then(|v| v.report_interval_ms);
-    let by_link = interval.map_or(0, |i| (ec.link_gap_intervals * f64::from(i)).round() as i64);
+    let v = platform_of(spec).and_then(|u| world.vehicles.get(u));
     Ok(EngageSnapshot {
         t: world.t,
         track_id: track_id.to_string(),
         track: track.clone(),
         preview,
-        report_interval_ms: interval,
-        link_gap_limit_ms: ms(ec.link_gap_s).max(by_link),
+        report_interval_ms: v.and_then(|v| v.report_interval_ms),
+        link_gap_limit_ms: link_gap_limit_ms(v, &ec),
         fallback,
     })
 }
@@ -2176,6 +2880,8 @@ pub fn snapshot(
 ///
 /// `prev_t` is when the picture was last checked (the last `engage.picture`, or the final
 /// approval): a gap longer than `max_picture_gap_s` fails it, since nothing held it then.
+/// `preloaded` (rules 5) is the lost-link preload the platform confirmed by reading it back
+/// (`engage.preload`), none until then: the release needs it.
 pub fn picture(
     spec: &IntentSpec,
     snap: &EngageSnapshot,
@@ -2183,6 +2889,7 @@ pub fn picture(
     cfg: &RulesConfig,
     dispatched: bool,
     prev_t: Time,
+    preloaded: Option<&LostLinkPreload>,
 ) -> (Vec<CheckResult>, bool, bool) {
     let ec = cfg.engage_rules();
     let p = &snap.preview;
@@ -2228,6 +2935,7 @@ pub fn picture(
     } else {
         p.effect_t
     };
+    let alt = effect_alt(track, effect_at, p.effect_radius_m, &ec);
     picture_checks.push(keep_out_friendly(
         p.effect_point,
         effect_at,
@@ -2235,6 +2943,7 @@ pub fn picture(
         uid,
         world,
         cfg,
+        alt,
     ));
     picture_checks.push(keep_out_tracks(
         p.effect_point,
@@ -2243,6 +2952,7 @@ pub fn picture(
         id,
         world,
         &ec,
+        alt,
     ));
     picture_checks.push(link_check(uid, snap, world));
     picture_checks.push(nav_check(uid, world, cfg));
@@ -2251,7 +2961,11 @@ pub fn picture(
     let mut out = picture_checks;
     let mut ready = false;
     if dispatched && holds {
-        let release = release_checks(uid, snap, track, world, cfg);
+        let mut release = release_checks(uid, snap, track, world, cfg);
+        // rules 5: the fallback is the platform's own lost-link action, read back
+        if ec.v5() {
+            release.push(preloaded_check(uid, preloaded));
+        }
         ready = release.iter().all(|c| c.outcome == Outcome::Pass);
         out.extend(release);
     }
@@ -2542,7 +3256,8 @@ fn release_checks(
     // released before the plan's time: the keep-outs as they are now (the picture read them at
     // the plan's time)
     if ec.v2() && world.t < p.effect_t {
-        out.push(keep_out_friendly(p.effect_point, world.t, p.keep_out_m, uid, world, cfg));
+        let alt = effect_alt(track, world.t, p.effect_radius_m, ec);
+        out.push(keep_out_friendly(p.effect_point, world.t, p.keep_out_m, uid, world, cfg, alt));
         out.push(keep_out_tracks(
             p.effect_point,
             world.t,
@@ -2550,6 +3265,7 @@ fn release_checks(
             &snap.track_id,
             world,
             ec,
+            alt,
         ));
     }
     match track {

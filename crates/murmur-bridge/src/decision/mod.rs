@@ -55,6 +55,7 @@ mod alerts;
 mod civil;
 pub mod engage;
 mod failsafe;
+mod preload;
 pub mod snapshot;
 pub mod space;
 mod terrain;
@@ -190,7 +191,8 @@ fn engine_err(e: EngineError) -> DecisionError {
         | EngineError::StalePicture { .. }
         | EngineError::PlanChanged { .. }
         | EngineError::NoPicture { .. }
-        | EngineError::SupersedesEngagement { .. } => 409,
+        | EngineError::SupersedesEngagement { .. }
+        | EngineError::NotAccepted { .. } => 409,
         EngineError::EngagementNeedsAuthority(_) | EngineError::ProposerCannotApprove { .. } => {
             403
         }
@@ -307,6 +309,9 @@ struct Core {
     space_runs: BTreeMap<IntentId, space::SpaceRun>,
     /// dispatched engagements: the platform's intercept, then any fallback
     engagements: BTreeMap<IntentId, engage::EngageRun>,
+    /// rules 5: platforms whose own lost-link values go back once their engagement ended
+    /// (retried until the vehicle answers; outlives the engagement's run)
+    restores: BTreeMap<IntentId, engage::RestoreRun>,
     /// `operator.view` budget per operator: (tokens, monotonic seconds when last filled)
     view_budget: BTreeMap<OperatorId, (f64, f64)>,
 }
@@ -457,6 +462,7 @@ impl Decision {
                 taskings: BTreeMap::new(),
                 space_runs: BTreeMap::new(),
                 engagements: BTreeMap::new(),
+                restores: BTreeMap::new(),
                 view_budget: BTreeMap::new(),
             }),
             updates: watch::channel(Arc::new(String::new())).0,
@@ -665,11 +671,15 @@ impl Decision {
             let world = self.snapshot();
             let session =
                 Self::session(&mut core.engine, &mut core.sessions, by, &self.engage_operators)?;
+            // rules 5: the operator's acceptances of lost vehicles, as the check showed them
+            let accept: Vec<(DUid, Option<Time>)> =
+                req.engage.accept_unknown.iter().map(engage::AcceptUnknown::engine).collect();
             let id = core
                 .engine
-                .submit(
+                .submit_accepting(
                     session.authority(),
                     proposal,
+                    &accept,
                     &world,
                     &self.terrain.oracle(),
                 )

@@ -77,6 +77,12 @@ pub struct VehicleFacts {
     /// Absent: not known to be circling. Rules 3.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub circling: Option<Fact<Circle>>,
+    /// Altitude above mean sea level (negative: depth), metres, stamped with the position it
+    /// came with (GLOBAL_POSITION_INT, HIGH_LATENCY2). Rules 5 read an engagement's keep-out
+    /// in 3D where it and the effect's altitude are known; absent (or stale), the keep-out
+    /// stays 2D for this vehicle. Absent in logs written before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alt_msl_m: Option<Fact<f64>>,
 }
 
 /// A circle a vehicle flies: its center and its radius with the tolerance it is flown to
@@ -349,6 +355,12 @@ pub struct WorldSnapshot {
     /// fresh preview. Absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<Box<crate::engage::FrozenPlan>>,
+    /// Engine-filled for an engagement's checks (rules 5): our vehicles whose position an
+    /// operator accepted as unknown for it (`engage.accepted`), with the last report it
+    /// names. The friendly keep-out leaves out a vehicle that is lost since exactly then.
+    /// Absent when none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unknown_accepted: BTreeMap<Uid, crate::engage::AcceptedUnknown>,
 }
 
 /// A decision's inputs as logged: the [`WorldSnapshot`] with the area set replaced by its
@@ -374,6 +386,10 @@ pub struct LoggedInputs {
     /// The plan an engagement signature is on (absent otherwise).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<Box<crate::engage::FrozenPlan>>,
+    /// Our vehicles an operator accepted as lost for this engagement (rules 5; absent when
+    /// none).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unknown_accepted: BTreeMap<Uid, crate::engage::AcceptedUnknown>,
 }
 
 impl LoggedInputs {
@@ -396,6 +412,7 @@ impl LoggedInputs {
             tracks: world.tracks.clone(),
             engaged: world.engaged.clone(),
             plan: world.plan.clone(),
+            unknown_accepted: world.unknown_accepted.clone(),
         }
     }
 
@@ -436,6 +453,7 @@ impl LoggedInputs {
             tracks: self.tracks.clone(),
             engaged: self.engaged.clone(),
             plan: self.plan.clone(),
+            unknown_accepted: self.unknown_accepted.clone(),
         }
     }
 }
@@ -478,6 +496,7 @@ impl WorldSnapshot {
             // engine-owned: filled from its own intents
             engaged: BTreeMap::new(),
             plan: None,
+            unknown_accepted: BTreeMap::new(),
         }
     }
 

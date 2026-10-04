@@ -53,7 +53,11 @@
 #                 failsafe). A vehicle's timer comes from the profile it starts on (a gated
 #                 profile's is not used). What the failsafe does is the firmware's
 #                 (sim/params/*.parm, crates/murmur-standins/src/params.rs): RTL for planes,
-#                 copters and rovers, surface for an AUV, disarm for a tethered ROV.
+#                 copters and rovers, surface for an AUV, disarm for a tethered ROV. While
+#                 an engagement is under way (decision rules 5) the bridge sets the
+#                 failsafe's action to the engagement's fallback and shortens the timer to
+#                 the approval's link-gap limit (5 s on a streaming link), then puts both back
+#                 (crates/murmur-decide/README.md, "Lost-link preload").
 #
 # Lost-link timers (murmur-nb1). Real systems set them from the link and the mission:
 # seconds where a lost link means out of range, minutes where outages are part of the link

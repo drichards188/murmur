@@ -152,6 +152,92 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
   fails `picture_gap`. `step_engagements` returns a `StepOutcome`: the events to act on,
   and each engagement whose step failed, on its own.
   `dispatch` and `finish` refuse engagements; `dispatch_order` returns `Order::Engage`.
+- **Lost-link preload** (rules 5, murmur-der.2). A fallback the bridge commands after a
+  stop can't arrive over a dead link, so the approval's fallback becomes the platform's own
+  lost-link (GCS) failsafe while the engagement is under way. `fallback_preload` checks at
+  nomination and on the plan that the platform's firmware has such an action
+  (`engage::preload_for`, ArduPilot 4.8):
+
+  | firmware | return | abort | loiter | timer |
+  |---|---|---|---|---|
+  | ArduPlane (and QuadPlane in fixed-wing modes) | `FS_GCS_ENABL` 1, `FS_LONG_ACTN` 1 (RTL) | none | none | `FS_LONG_TIMEOUT` |
+  | ArduCopter | `FS_GCS_ENABLE` 1 (RTL) | 7 (Brake, else Land) | 7 | `FS_GCS_TIMEOUT` |
+  | ArduRover (boats, UGVs) | `FS_GCS_ENABLE` 1, `FS_ACTION` 1 (RTL) | `FS_ACTION` 2 (Hold) | `FS_ACTION` 6 (Loiter, else Hold) | `FS_GCS_TIMEOUT` |
+  | ArduSub | none | `FS_GCS_ENABLE` 3 (depth hold) | 3 | `FS_GCS_TIMEOUT` |
+  | Blimp, AntennaTracker, drifter | none | none | none | |
+
+  ArduPlane's `FS_LONG_ACTN` is continue, RTL, glide, parachute, AUTO or AUTOLAND: nothing
+  holds where it is, so a fixed wing can only take fallback `return` (its "continue" would
+  fly the intercept on to the effect point and circle there). ArduCopter has no circling
+  lost-link action: a multirotor's hold where it is is BRAKE, used for `loiter` too; its
+  `FS_OPTIONS` bit 1 (continue a mission in AUTO on GCS loss) is cleared. ArduRover's
+  `FS_GCS_ENABLE` 2 would continue in AUTO, so it is set to 1. The timer is at most the
+  approval's link-gap limit (`link_gap_s`, or `link_gap_intervals` report intervals), in
+  whole seconds and at least 2 s (`PRELOAD_TIMER_MIN_S`, the low end of the documented
+  FS_GCS_TIMEOUT range): the platform takes its fallback about when the engine stops the
+  engagement for silence, instead of after its link class's own timer (30 s on LEO,
+  120 s on GEO and Iridium, `sim/links.toml`). ArduRover acts `FS_TIMEOUT` (1.5 s) after it.
+  The engagement order carries the preload (`EngageOrder::preload`, from the final
+  signature's world: the platform's autopilot and the snapshot's fallback and link-gap
+  limit; replay recomputes it). The bridge reads the platform's own values, sets the
+  preload, reads it back and reports it (`Engine::record_preload`, logged `engage.preload`
+  with `confirmed` recomputed from the read-back); only then does it send the intercept. A
+  `set` that does not confirm (no answer, another value read back, a timer too long) stops
+  the engagement at once (cause system, `the platform's lost-link action could not be
+  preloaded: ...`) with its fallback; and the release checks it too (`fallback_preload` in
+  the release checks: nothing is released without a confirmed `set`, so a preload that is
+  never reported ends the engagement late, with its fallback). When the engagement ends
+  (effect, abort, superseded) the bridge puts the platform's own values back and reads them
+  back (`engage.preload` restore, which must match what the `set` read first), retried
+  until the vehicle answers.
+- **Keep-out model** (rules 5, murmur-der.3; parameters in `[rules.engage]`, each bounded,
+  schema 3):
+  - *Tracks* are predicted along their velocity with a 1-sigma of `sqrt(pos_sigma^2 +
+    (track_velocity_sigma_mps x span)^2 + q x span^3 / 3)`, `q = track_accel_mps2^2 x 1 s`
+    (`track_prediction_sigma`): the tracker's own uncertainty now (already grown for the
+    track's age), the velocity estimate's error, and its manoeuvres as white acceleration
+    noise (the continuous white-noise acceleration model: Bar-Shalom, Li and Kirubarajan,
+    *Estimation with Applications to Tracking and Navigation*, 2001). Before, the growth was
+    the tracker's `max(1, 0.3 x speed)` times the span: a 20 m/s ferry 300 s out had a
+    2-sigma of 3.63 km, now 1.34 km (and a 6 m/s boat the same 1.34 km: speed is not
+    uncertainty). Defaults and basis: `track_velocity_sigma_mps` 1.0 (the Phase G
+    velocity-noise sweep passed every scenario at 0.5 m/s per axis and saw late aborts at
+    1 m/s per axis; the Phase G live tracks' estimates moved by at most 1.3 m/s from one
+    second to the next, AIS ones 0.3); `track_accel_mps2` 0.2 m/s^2 on the surface and under
+    water (a ferry or patrol boat in a 300 m turn at 10 m/s pulls 0.33 m/s^2; Bar-Shalom's
+    rule of thumb puts the noise between half and all of the largest manoeuvre), 2.0 in the
+    air and on the ground (a standard-rate turn at 55 m/s is 2.9 m/s^2). A track without a
+    velocity estimate could be anywhere it reaches at its domain's top speed (25 m/s on the
+    surface, 100 in the air, 30 on the ground, 15 under water): fail closed. Conservative
+    where it matters: the keep-outs are read again every second while the plan waits and
+    after approval, and at the release over a span of seconds, where the model is the
+    tracker's own uncertainty; a track that turns toward the point shows in its next
+    estimate.
+  - *Altitude*: where the target's altitude (the effect's) and the other's are both known,
+    the keep-out has a ceiling and a floor: `effect_radius_m + keep_out_vertical_m` (default
+    `keep_out_m`) above and below the effect, each side's altitude counting with
+    `keep_out_sigma` of its error (a track's: 30 m in the air, the sensing model's radar
+    height error; 10 m on the surface and ground, 5 m under water; ours: 10 m, GNSS
+    vertical) and with how far it could climb or descend by the effect time (ours: the
+    larger of `vertical_rate_mps`, 10, and the catalog's climb rate; aircraft tracks
+    `vertical_rate_mps`; surface tracks 0; ground and subsurface 2 m/s). An unknown or stale
+    altitude, either side's, leaves the keep-out 2D (no ceiling), as before. A MALE aircraft
+    at 7,000 m over a surface effect two minutes out is clear; a quadcopter at 120 m is not.
+    Our vehicles' altitude is a new world fact (`alt_msl_m`, with the position it came
+    with).
+  - *Lost friendlies*: one of ours whose position is not fresh still blocks by how far it
+    could reach (or, without a position, at all), and the detail says since when (`position
+    unknown for 312 s (since t=...)`). An operator may accept that, explicitly and logged:
+    "vehicle X position unknown since T: accept" (`Engine::submit_accepting` at the
+    nomination, `Engine::accept_unknown_friendly` while it waits with no signature; logged
+    as `engage.accepted` with the operator and session). The friendly keep-out then leaves
+    that vehicle out while it is lost since exactly that report; one that reports again
+    counts like any other, and a newer loss needs a new acceptance. Never automatic: the
+    engine takes it only with a `HumanAuthority`, refuses it for a vehicle that is not lost
+    or not since that report, and after a signature (the plan was signed without it); an
+    agent's port has no such method (a compile-fail doctest) and the bridge refuses an
+    agent's request carrying one. Every engagement decision logs the acceptances it read
+    (`unknown_accepted`), which replay checks against the `engage.accepted` events.
 - **Scenarios** (`scenario.rs`, `murmur-scenarios`, `sim/scenarios/engage/`): the
   adversarial set, one or more per invariant, with log tampering; see that directory's
   README for the format.
@@ -353,6 +439,17 @@ roster and the loiter radius from rules 4 (older logs don't carry them):
   names, with engagement authority only for one on its engagement list; a rules 4 log always
   names its roster. Rejections and at-submission approvals are under the deciding operator's
   own session, as signatures already were.
+- Lost-link preload (rules 5): the order's `preload` is the one the approved fallback and the
+  platform's autopilot give (`engage::order_preload` on the final signature's world); every
+  `engage.preload` is the dispatched engagement's, on its platform, one `set` and then
+  restores only once the engagement ended, its `confirmed` recomputed from the read-back
+  (and, for a restore, against what the `set` read first); an `engage.effect` needs a
+  confirmed `set` (and the release picture recomputes the `fallback_preload` check); a `set`
+  that did not confirm while under way is followed by its stop, for it, and a stop that
+  says so follows such a report.
+- Accepted lost friendlies (rules 5): every `engage.accepted` is under the accepting
+  operator's own session, at its submitter's nomination or while it waits with no
+  signature; every decision of that engagement logs exactly the acceptances made so far.
 
 The engine refuses the op states, supersedes and sessions these checks reject
 (`EngineError::NotItsOrder`, `EngineError::NotOnRoster`, nothing logged), so an honest engine
@@ -448,10 +545,24 @@ Rules versions:
   which replay checks every session, and an engagement order carries the radius the
   platform loiters at over the effect point (`loiter_radius_m`, which the bridge flies and
   replay recomputes). A rules 4 log without a roster is a mismatch.
+- **5**, the engagement part (murmur-der.2, murmur-der.3; gated by `EngageRules::v5`, every
+  change on engagement paths only): the approval's fallback preloaded as the platform's own
+  lost-link action (the `fallback_preload` check at nomination, on the plan and at the
+  release; the order's `preload`; `engage.preload` reports, an unconfirmed one stopping the
+  engagement); the keep-outs' prediction model for tracks (constant velocity with
+  acceleration noise, not 0.3 x speed; a track without a velocity estimate anywhere it
+  reaches); keep-outs in 3D where both altitudes are known; a lost friendly accepted by an
+  operator (`engage.accepted`, `unknown_accepted`) left out of the friendly keep-out. New
+  world facts: our vehicles' `alt_msl_m`, the catalog's `climb_mps`. Markers (a log
+  claiming rules 4 or older can't carry them): a `fallback_preload` check, an order's
+  `preload`, `engage.preload` and `engage.accepted` events, `unknown_accepted`,
+  `alt_msl_m`, `climb_mps`. Fixture: `tests/data/audit/v5-engagement-scenario-01.jsonl`.
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
-`seen_max_age_s`, an unreleased build's name for it, is still read.
+`seen_max_age_s`, an unreleased build's name for it, is still read; **3** adds
+`track_velocity_sigma_mps`, `track_accel_mps2` (a table by domain), `vertical_rate_mps`
+and `keep_out_vertical_m` (optional; rules 5).
 
 ## Integration contract for the bridge
 
@@ -476,7 +587,13 @@ The full contract is in the crate docs (`src/lib.rs`). In short:
    dispatched intent's own vehicles only, and before its finish) and `finish`; log vehicle
    events; `void` intents the world invalidates. An engagement's fallback is reported as
    op state `fallback` with a detail that starts with the fallback's name (see "What was
-   executed is what was approved" above and `src/lib.rs`).
+   executed is what was approved" above and `src/lib.rs`). Rules 5: an engagement order's
+   `preload` is set on the platform before its intercept (its own values read first, the
+   preload read back) and reported with `record_preload` (set); send the intercept only
+   once it confirms, command the fallback it returns when it doesn't, and put the
+   platform's own values back once the engagement ended (`record_preload` restore). A
+   nomination that accepts lost vehicles goes through `submit_accepting`; one already
+   waiting through `accept_unknown_friendly`: an operator's request only.
 6. Any `Err` from the engine means nothing changed; never dispatch on an error.
 7. The inbox shows `checks` (look for `unverified`), `policy.facts.unverified` and
    `policy.facts.area_detail` as the reason a human is needed, and `approval.self_approved`.
@@ -522,9 +639,13 @@ on the scenario clock.
   chain, or a cut tail, is not detected by replay alone (see the hash chain section).
 - Cross-platform replay: trigonometry goes through the platform libm. Same machine is exact;
   across machines a last-bit difference could in principle flip a boundary case.
-- Engagements: a straight-line intercept (no turn radius or climb), 2D keep-outs, the
-  platform's own path checked against no-go areas but not no-strike areas, engagement
-  authority on the same placeholder authentication as the operator header.
+- Engagements: a straight-line intercept (no turn radius or climb), keep-outs 2D wherever
+  an altitude is unknown (and a vertical cylinder, not a volume shaped by any effect model,
+  where both are known), the platform's own path checked against no-go areas but not
+  no-strike areas, engagement authority on the same placeholder authentication as the
+  operator header. The lost-link preload is not persisted by the bridge: a bridge restarted
+  during an engagement leaves the platform with the preloaded failsafe until an operator
+  resets it.
 - Satellite tasking: no cloud model (optical options note it), no sensitive-area or
   cost/priority tiers yet (every collect needs a human), no competing demand or agility
   model, one collect per intent. Cover reads the area's centroid only. The segment identity

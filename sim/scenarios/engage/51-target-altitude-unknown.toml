@@ -1,0 +1,62 @@
+# Rules 5, fail closed on missing data: our MALE aircraft at 7,000 m over the target, but the
+# target has no altitude estimate (an ESM bearing, say): the effect's altitude is unknown, so
+# every keep-out stays 2D, and the aircraft blocks.
+title = "A target with an unknown altitude keeps the keep-out 2D"
+invariant = "keep_out_friendly"
+attack = "one of our aircraft at 7,000 m over a target whose altitude is unknown"
+expect = "rejected"
+expect_rule = "keep_out_friendly"
+end_s = 20
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km: it also covers the point for the assessment
+at = [-122.4700, 37.8160]
+
+[[vehicle]]
+uid = "reaper-1"
+platform = "mq9b"           # one of ours, MALE (catalog climb 10 m/s)
+at = [-122.4950, 37.8255]   # on a 1.5 km circle around the target
+velocity = [60.0, 0.0]
+alt_m = 7000
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+# no altitude estimate for it
+
+[[step]]
+at_s = 0
+action = "vehicle"
+uid = "reaper-1"
+circling = [-122.4950, 37.8120, 1500]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600

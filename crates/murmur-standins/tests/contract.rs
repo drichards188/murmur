@@ -755,3 +755,58 @@ async fn auv_estimate_drifts_from_truth_until_it_surfaces() {
         "estimate = truth again"
     );
 }
+
+/// Step `v` (armed, in `mode`) with the GCS heard once and then silent until its GCS
+/// failsafe has had time to act: the modes it went through.
+fn lose_the_gcs(v: &mut Vehicle, mode: &'static str) -> Vec<&'static str> {
+    v.st.armed = true;
+    v.set_mode(mode);
+    v.gcs_heartbeat();
+    let mut modes = vec![v.st.mode];
+    // a 5 s timer (and Rover's 1.5 s FS_TIMEOUT) at the physics rate
+    for _ in 0..200 {
+        v.step();
+        if modes.last() != Some(&v.st.mode) {
+            modes.push(v.st.mode);
+        }
+    }
+    modes
+}
+
+#[tokio::test]
+async fn copter_gcs_failsafe_takes_its_fs_gcs_enable_action() {
+    // an engagement's preload for abort or loiter: 7, Brake (else Land)
+    let (mut v, _sink) = offline(spec("copter"), 30.0).await;
+    v.params.set("FS_GCS_ENABLE", 7.0).expect("set");
+    assert_eq!(lose_the_gcs(&mut v, "GUIDED"), ["GUIDED", "BRAKE"]);
+    // for return: 1, RTL
+    let (mut v, _sink) = offline(spec("copter"), 30.0).await;
+    v.params.set("FS_GCS_ENABLE", 1.0).expect("set");
+    assert_eq!(lose_the_gcs(&mut v, "GUIDED"), ["GUIDED", "RTL"]);
+    // 5: Land
+    let (mut v, _sink) = offline(spec("copter"), 30.0).await;
+    v.params.set("FS_GCS_ENABLE", 5.0).expect("set");
+    assert_eq!(lose_the_gcs(&mut v, "GUIDED"), ["GUIDED", "LAND"]);
+    // FS_OPTIONS bit 1 continues a mission in AUTO (an engagement's preload clears it)
+    let (mut v, _sink) = offline(spec("copter"), 30.0).await;
+    v.params.set("FS_GCS_ENABLE", 7.0).expect("set");
+    v.params.set("FS_OPTIONS", 2.0).expect("set");
+    assert_eq!(lose_the_gcs(&mut v, "AUTO")[0], "AUTO");
+    assert!(v.fs.gcs, "the failsafe is on; the mission continues");
+    // ArduCopter's default FS_OPTIONS (bit 4): a pilot-controlled mode carries on
+    let (mut v, _sink) = offline(spec("copter"), 30.0).await;
+    assert_eq!(v.params.get("FS_OPTIONS"), Some(16.0));
+    assert_eq!(lose_the_gcs(&mut v, "LOITER"), ["LOITER"]);
+}
+
+#[tokio::test]
+async fn rover_gcs_failsafe_takes_its_fs_action() {
+    // an engagement's preload for loiter: FS_ACTION 6, Loiter (else Hold)
+    let (mut v, _sink) = offline(spec("boat"), 0.0).await;
+    v.params.set("FS_ACTION", 6.0).expect("set");
+    assert_eq!(lose_the_gcs(&mut v, "GUIDED"), ["GUIDED", "LOITER"]);
+    // for abort: 2, Hold
+    let (mut v, _sink) = offline(spec("boat"), 0.0).await;
+    v.params.set("FS_ACTION", 2.0).expect("set");
+    assert_eq!(lose_the_gcs(&mut v, "GUIDED"), ["GUIDED", "HOLD"]);
+}

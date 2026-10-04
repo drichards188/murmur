@@ -1,0 +1,51 @@
+# Rules 5: an engagement's fallback must be the platform's own lost-link action, set at
+# dispatch, since an order to fly it can't arrive over a dead link. ArduPlane 4.8 has no
+# lost-link action that holds where it is (FS_LONG_ACTN: continue, RTL, glide, parachute,
+# AUTO, AUTOLAND), so a fixed wing can't carry fallback loiter: the nomination fails closed
+# (fallback_preload) and says that only return can be preloaded on it.
+title = "A fallback the platform's firmware can't take on a lost link"
+invariant = "fallback_preload"
+attack = "nominate a fixed wing with fallback loiter, which ArduPlane can't preload as its lost-link action"
+expect = "rejected"
+expect_rule = "fallback_preload"
+end_s = 20
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km: it also covers the point for the assessment
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+# no altitude estimate for it
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "loiter"
+window_s = 600

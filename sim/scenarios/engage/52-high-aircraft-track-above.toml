@@ -1,0 +1,76 @@
+# Rules 5: a protected aircraft track (a neutral airliner at 3,000 m) predicted right over
+# the effect point at the effect time. In 2D it blocks; in 3D its altitude (2-sigma 60 m of
+# radar height error, and 10 m/s of climb or descent over the prediction) keeps it above
+# 1,900 m, far above the keep-out's 275 m over a surface effect.
+title = "A high aircraft track above the effect no longer blocks"
+invariant = "keep_out_tracks"
+attack = "a neutral airliner passes over the effect point at 3,000 m"
+expect = "done"
+expect_assessment = "ceased"
+end_s = 200
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km: it also covers the point for the assessment
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+alt_m = 0                   # on the surface (radar, EO/IR)
+
+[[track]]
+id = "T-0002"
+at = [-122.4950, 37.7745]   # 4.2 km south, over the city
+velocity = [0.0, 40.0]      # north at 40 m/s: over the effect point at about the effect time
+affiliation = "neutral"
+identity = "airliner"
+identity_confidence = 0.9
+domain = "air"
+alt_m = 3000
+sources = ["3:radar"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"

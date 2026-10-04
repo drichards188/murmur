@@ -114,6 +114,12 @@ pub struct PlatformFacts {
     /// existed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sensors: Vec<SensorFact>,
+    /// The catalog's climb rate, m/s (`climb_mps`): rules 5 count one of our vehicles as able
+    /// to change altitude at least this fast (or `vertical_rate_mps`, the larger) when they
+    /// read a keep-out in 3D. Absent in logs written before it existed and for platforms
+    /// without the figure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub climb_mps: Option<f64>,
 }
 
 /// One sensor from the catalog: its type (`radar`, `eo_ir`, `ais`, `sonar`, `esm`) and its
@@ -136,6 +142,7 @@ struct RawPlatform {
     cruise_mps: Option<f64>,
     turn_dps: Option<f64>,
     endurance_h: Option<f64>,
+    climb_mps: Option<f64>,
     #[serde(default)]
     sensors: Vec<RawSensor>,
 }
@@ -189,6 +196,7 @@ impl Catalog {
                             range_m: s.range_m,
                         })
                         .collect(),
+                    climb_mps: r.climb_mps.filter(|c| c.is_finite() && *c > 0.0),
                 };
                 (id, facts)
             })

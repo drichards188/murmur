@@ -73,6 +73,14 @@ pub struct Scenario {
     /// plan stopped holding.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub expect_reset: bool,
+    /// Rules 5: the platform must have followed its preloaded lost-link action on its own (a
+    /// substring of what it did, e.g. "Loiter or Hold").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect_lost_link: Option<String>,
+    /// Rules 5: preload reports that must have been logged, in order (substrings: `set
+    /// confirmed`, `set unconfirmed`, `restore confirmed`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expect_preload: Vec<String>,
     /// After the run, attack the log and require replay to catch it:
     /// `proposer_approval`, `agent_approval`, `suppress_void`, `edit_snapshot`,
     /// `drop_signature`, `edit_effect`, `strip_approvers`, `drop_reset`, `agent_order_auto`,
@@ -86,6 +94,13 @@ pub struct Scenario {
     /// or `persists`.
     #[serde(default = "out_of_play")]
     pub after_effect: String,
+    /// Rules 5: how the engaging platform answers its lost-link preload at dispatch:
+    /// `confirm` (default: read back as set, a second later), `no_answer` (it never answers
+    /// the parameter protocol: the bridge reports the error), `mismatch` (it answers with
+    /// another lost-link action than the order's), `never` (nothing is reported: the release
+    /// waits for it until the engagement is late). A silent platform never answers.
+    #[serde(default = "confirm")]
+    pub preload: String,
     /// Paths relative to the repo root (defaults: sim/policy.toml, sim/platforms.toml,
     /// sim/areas).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -108,6 +123,10 @@ pub struct Scenario {
 
 fn out_of_play() -> String {
     "out_of_play".into()
+}
+
+fn confirm() -> String {
+    "confirm".into()
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -140,6 +159,14 @@ pub struct VehicleDef {
     pub battery: f64,
     #[serde(default = "interval")]
     pub report_interval_ms: u32,
+    /// Rules 5: its altitude above mean sea level, reported with its position, m (absent:
+    /// not reported, so a keep-out reads it in 2D).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alt_m: Option<f64>,
+    /// Its own lost-link timer, s, as `sim/links.toml` sets it for its link (default 5): what
+    /// a preload shortens and a restore puts back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lost_link_s: Option<f64>,
 }
 
 fn battery() -> f64 {
@@ -178,6 +205,13 @@ pub struct TrackDef {
     pub silent: bool,
     #[serde(default)]
     pub sources: Vec<String>,
+    /// Its estimated altitude (negative: depth), m (absent: unknown, as from an ESM bearing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alt_m: Option<f64>,
+    /// The tracker has no velocity estimate for it yet (a new track: its velocity comes from
+    /// fixes a baseline apart), however it moves.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_velocity_estimate: bool,
 }
 
 fn sigma() -> f64 {
@@ -223,7 +257,23 @@ pub enum Action {
         fallback: Fallback,
         #[serde(default)]
         window_s: Option<u32>,
+        /// Rules 5: our vehicles the nominating operator accepts as lost (each since its last
+        /// report, as the check shows it). Only an operator's nomination can carry them.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        accept: Vec<String>,
     },
+    /// Rules 5: an operator accepts, for the last nomination while it waits with no
+    /// signature, that one of our vehicles is lost since its last report (or since
+    /// `since_s`, scenario seconds, to name another report: the engine refuses it).
+    Accept {
+        by: String,
+        uid: String,
+        #[serde(default)]
+        since_s: Option<f64>,
+    },
+    /// An agent "tries" to accept a lost vehicle: there is no such method on its port, so it
+    /// is recorded and nothing may change.
+    AgentAccept { agent: String, uid: String },
     /// An operator with engagement authority asks for the picture of the last nomination
     /// (a picture token, as the console does before a signature); the next `approve` by them
     /// quotes it.
@@ -289,6 +339,9 @@ pub enum Action {
         /// contact's real velocity, until set again: an estimate that wobbles, not a turn.
         #[serde(default)]
         velocity_error: Option<[f64; 2]>,
+        /// Its estimated altitude, m (rules 5 read keep-outs in 3D where it is known).
+        #[serde(default)]
+        alt_m: Option<f64>,
     },
     /// One of our vehicles changes: position, velocity, link (silent: no reports; a report
     /// interval: the link class changed), navigation source (`gnss`, `dead_reckoning`).
@@ -318,6 +371,9 @@ pub enum Action {
         /// fact: it keeps its own position and velocity); a radius of 0 stops reporting it.
         #[serde(default)]
         reported_circle: Option<[f64; 3]>,
+        /// Its altitude above mean sea level, m (reported with its position).
+        #[serde(default)]
+        alt_m: Option<f64>,
     },
     /// Check the last nomination now.
     Expect {
@@ -366,6 +422,12 @@ pub struct ScenarioResult {
     pub assessment: Option<String>,
     pub refusals: Vec<String>,
     pub fallback: Option<String>,
+    /// Rules 5: what the platform did on its own after losing its link with the fallback
+    /// preloaded as its lost-link action (`"<action> after <n> s without the GCS"`).
+    pub lost_link_action: Option<String>,
+    /// Rules 5: the preload reports logged (`set confirmed`, `set unconfirmed`, `restore
+    /// confirmed`, ...), in order.
+    pub preload_reports: Vec<String>,
     pub replay_ok: bool,
     pub replay_events: usize,
     pub replay_mismatches: Vec<String>,
@@ -437,6 +499,10 @@ struct VehicleSim {
     /// where the platform is flying (dispatched engagement, or fallback home)
     goal: Option<LonLat>,
     orbit: bool,
+    /// its altitude MSL as reported (none: not reported)
+    alt: Option<f64>,
+    /// when its link was cut (it then hears no GCS either)
+    silent_since: Option<u32>,
 }
 
 struct TrackSim {
@@ -449,6 +515,8 @@ struct TrackSim {
     /// The correlated part of the velocity estimate's error (`velocity_noise_mps`).
     vel_noise: [f64; 2],
     silent: bool,
+    /// no velocity estimate (the tracker has none yet)
+    no_velocity: bool,
 }
 
 /// Golden Gate land/water: land south of the Presidio shore and on Marin, water between.
@@ -554,6 +622,8 @@ pub fn run(
                 last_t: T0,
                 goal: None,
                 orbit: false,
+                alt: v.alt_m,
+                silent_since: None,
             },
         );
     }
@@ -601,7 +671,7 @@ pub fn run(
                         rho * tr.vel_noise[1] + k * rng.gauss(),
                     ];
                 }
-                tr.facts.velocity_mps = Some([
+                tr.facts.velocity_mps = (!tr.no_velocity).then_some([
                     tr.truth_vel[0] + tr.vel_error[0] + tr.vel_noise[0],
                     tr.truth_vel[1] + tr.vel_error[1] + tr.vel_noise[1],
                 ]);
@@ -675,6 +745,18 @@ pub fn run(
                 s,
             );
         }
+        // rules 5: the platforms answer their lost-link preloads (and restores), and one cut
+        // off from the GCS long enough follows its preloaded action on its own
+        preloads(
+            &sc.preload,
+            &mut engine,
+            &mut vehicles,
+            &mut extra,
+            &mut engaging,
+            &mut fallback_seen,
+            &mut failures,
+            s,
+        );
         // the bridge's loop: expire, then hold the picture / release / observe
         let _ = engine.expire_due();
         let world = snapshot(&vehicles, &tracks, &catalog, &areas, now);
@@ -722,6 +804,17 @@ pub fn run(
         }
         // anything approved goes out at once, as on the bridge
         dispatch_approved(&mut engine, &mut vehicles, &mut engaging, &mut failures, s);
+        for (id, (uid, _)) in &engaging {
+            extra.preloads.entry(*id).or_insert_with(|| PreloadSim {
+                uid: uid.clone(),
+                due_s: s + 1,
+                set: None,
+                before: BTreeMap::new(),
+                timer_s: None,
+                restored: false,
+                acted: false,
+            });
+        }
     }
 
     // the outcome
@@ -773,6 +866,24 @@ pub fn run(
     for want in &sc.expect_refusals {
         if !refusals.iter().any(|r| r.contains(want.as_str())) {
             failures.push(format!("expected a refusal containing {want:?}, got {refusals:?}"));
+        }
+    }
+    if let Some(want) = &sc.expect_lost_link
+        && !extra.lost_link_action.as_deref().is_some_and(|a| a.contains(want.as_str()))
+    {
+        failures.push(format!(
+            "expected the platform to follow its preloaded lost-link action ({want}), it did {:?}",
+            extra.lost_link_action
+        ));
+    }
+    let mut reports = extra.preload_reports.iter();
+    for want in &sc.expect_preload {
+        if !reports.any(|r| r.contains(want.as_str())) {
+            failures.push(format!(
+                "expected preload reports {:?} in order, got {:?}",
+                sc.expect_preload, extra.preload_reports
+            ));
+            break;
         }
     }
     let text = log.text();
@@ -832,6 +943,8 @@ pub fn run(
         assessment,
         refusals,
         fallback: fallback_seen,
+        lost_link_action: extra.lost_link_action.clone(),
+        preload_reports: extra.preload_reports.clone(),
         replay_ok: report.ok(),
         replay_events: report.events,
         replay_mismatches,
@@ -854,8 +967,8 @@ fn track_sim(t: &TrackDef) -> TrackSim {
         vel_noise: [0.0, 0.0],
         facts: TrackFacts {
             position: Fact::new(LonLat::new(t.at[0], t.at[1]), seen),
-            alt_m: None,
-            velocity_mps: Some(t.velocity),
+            alt_m: t.alt_m,
+            velocity_mps: (!t.no_velocity_estimate).then_some(t.velocity),
             pos_sigma_m: t.sigma_m,
             sigma_growth_mps: Some((0.3 * speed).max(1.0)),
             confidence: t.confidence,
@@ -869,6 +982,7 @@ fn track_sim(t: &TrackDef) -> TrackSim {
             declared_by: t.declared_by.clone(),
         },
         silent: t.silent,
+        no_velocity: t.no_velocity_estimate,
     }
 }
 
@@ -917,6 +1031,7 @@ fn snapshot(
                 }),
                 report_interval_ms: Some(v.interval),
                 velocity_mps: Some(Fact::new(v.vel, t)),
+                alt_msl_m: v.alt.map(|a| Fact::new(a, t)),
                 platform: p,
             },
         );
@@ -984,6 +1099,7 @@ fn act(
             radius_m,
             fallback,
             window_s,
+            accept,
         } => {
             let task = Task::Engage {
                 track: track.clone(),
@@ -996,17 +1112,31 @@ fn act(
             };
             let mut proposal = Proposal::new(task, vec![Uid::new(platform)]);
             let w = world(tracks, vehicles);
+            // rules 5: each accepted lost vehicle since its last report, as the check shows it
+            let accepted: Vec<(Uid, Option<Time>)> = accept
+                .iter()
+                .map(|u| {
+                    let since = w.vehicles.get(&Uid::new(u)).and_then(|v| v.position.as_ref()).map(|p| p.t);
+                    (Uid::new(u), since)
+                })
+                .collect();
             let out = match (by, agent) {
                 (Some(by), _) => match session(by) {
                     Some(sess) => {
                         proposal.rationale = rationale.as_deref().map(Rationale::new).transpose().ok().flatten();
                         engine
-                            .submit(sess.authority(), proposal, &w, terrain)
+                            .submit_accepting(sess.authority(), proposal, &accepted, &w, terrain)
                             .map(|i| i.id())
                     }
                     None => return failures.push(format!("t={s}: unknown operator {by}")),
                 },
                 (None, Some(agent)) => {
+                    // an agent's port takes no acceptance: there is nothing to pass it to
+                    if !accept.is_empty() {
+                        refusals.push(format!(
+                            "agent {agent}: no acceptance of a lost vehicle on an agent's proposal (its port has no such parameter)"
+                        ));
+                    }
                     let Ok(r) = Rationale::new(rationale.clone().unwrap_or_default()) else {
                         refusals.push("an agent's proposal needs a rationale".into());
                         return;
@@ -1146,6 +1276,39 @@ fn act(
                 Err(e) => refusals.push(e.to_string()),
             }
         }
+        Action::Accept { by, uid, since_s } => {
+            let (Some(id), Some(sess)) = (*last, session(by)) else {
+                return failures.push(format!("t={s}: accept: no nomination or unknown operator {by}"));
+            };
+            let w = world(tracks, vehicles);
+            let since = match since_s {
+                Some(x) => Some(T0.plus_ms((x * 1000.0).round() as i64)),
+                None => w.vehicles.get(&Uid::new(uid)).and_then(|v| v.position.as_ref()).map(|p| p.t),
+            };
+            if let Err(e) = engine.accept_unknown_friendly(id, sess.authority(), Uid::new(uid), since, &w) {
+                refusals.push(e.to_string());
+            }
+        }
+        Action::AgentAccept { agent, uid } => {
+            // AgentPort has propose, preview, withdraw, record and read: nothing accepts a lost
+            // vehicle. The attempt is recorded; the intent and its acceptances must not move.
+            let before = last.and_then(|id| engine.intent(id)).map(|i| {
+                (i.state(), i.engagement().map(|e| e.accepted.clone()).unwrap_or_default())
+            });
+            let _ = engine.agent_port(AgentId::new(agent)).record_action(
+                "engage.accept.attempt",
+                &format!("vehicle {uid}: no agent path to accepting a lost vehicle exists"),
+            );
+            refusals.push(format!(
+                "agent {agent}: no accept method on AgentPort (accepting vehicle {uid} as lost cannot be expressed)"
+            ));
+            let after = last.and_then(|id| engine.intent(id)).map(|i| {
+                (i.state(), i.engagement().map(|e| e.accepted.clone()).unwrap_or_default())
+            });
+            if before != after {
+                failures.push(format!("t={s}: the intent moved on an agent's attempt to accept"));
+            }
+        }
         Action::AgentApprove { agent } => {
             // The agent's whole surface is AgentPort: propose, preview, withdraw, record,
             // read. None of them approves; the attempt is recorded and the intent must not
@@ -1175,6 +1338,7 @@ fn act(
             domain,
             silent,
             velocity_error,
+            alt_m,
         } => {
             let t = tracks.entry(id.clone()).or_insert_with(|| {
                 track_sim(&TrackDef {
@@ -1191,8 +1355,13 @@ fn act(
                     age_s: 0.0,
                     silent: false,
                     sources: vec!["sensor".into()],
+                    alt_m: *alt_m,
+                    no_velocity_estimate: false,
                 })
             });
+            if let Some(a) = alt_m {
+                t.facts.alt_m = Some(*a);
+            }
             if let Some(p) = at {
                 t.truth = LonLat::new(p[0], p[1]);
                 t.facts.position = Fact::new(t.truth, now);
@@ -1247,10 +1416,14 @@ fn act(
             gps_glitch,
             circling,
             reported_circle,
+            alt_m,
         } => {
             let Some(v) = vehicles.get_mut(uid) else {
                 return failures.push(format!("t={s}: unknown vehicle {uid}"));
             };
+            if let Some(a) = alt_m {
+                v.alt = Some(*a);
+            }
             if let Some(p) = at {
                 v.pos = LonLat::new(p[0], p[1]);
             }
@@ -1258,6 +1431,12 @@ fn act(
                 v.vel = *vel;
             }
             if let Some(si) = silent {
+                if *si && !v.silent {
+                    v.silent_since = Some(s);
+                }
+                if !*si {
+                    v.silent_since = None;
+                }
                 v.silent = *si;
             }
             if let Some(i) = report_interval_ms {
@@ -1345,6 +1524,206 @@ struct Extra {
     last_task: Option<IntentId>,
     /// The picture token each operator's last `look` got.
     looked: BTreeMap<String, u64>,
+    /// Rules 5: each dispatched engagement's lost-link preload as its platform answers it.
+    preloads: BTreeMap<IntentId, PreloadSim>,
+    lost_link_action: Option<String>,
+    preload_reports: Vec<String>,
+}
+
+/// Rules 5: a dispatched engagement's lost-link preload, as the runner's platform answers it.
+struct PreloadSim {
+    uid: String,
+    /// when it answers the preload (a second after the dispatch)
+    due_s: u32,
+    /// the `set` reported, and whether it confirmed
+    set: Option<bool>,
+    /// its own values, read before the preload
+    before: BTreeMap<String, f64>,
+    /// the timer it carries while preloaded, s
+    timer_s: Option<f64>,
+    restored: bool,
+    /// it already followed its lost-link action
+    acted: bool,
+}
+
+/// What a stand-in of each firmware carries before a preload (`crates/murmur-standins`
+/// `params.rs` with the LOS link's 5 s timer): the platform's own values a restore puts back.
+fn own_value(name: &str) -> f64 {
+    match name {
+        "FS_OPTIONS" => 16.0,
+        "FS_LONG_TIMEOUT" | "FS_GCS_TIMEOUT" => 5.0,
+        _ => 1.0,
+    }
+}
+
+/// Rules 5: each dispatched engagement's platform answers its lost-link preload (as
+/// `scenario.preload` says), puts its own values back once the engagement has ended, and,
+/// cut off from the GCS for longer than its preloaded timer, follows the preloaded action.
+#[allow(clippy::too_many_arguments)]
+fn preloads(
+    mode: &str,
+    engine: &mut Engine,
+    vehicles: &mut BTreeMap<String, VehicleSim>,
+    extra: &mut Extra,
+    engaging: &mut BTreeMap<IntentId, (String, LonLat)>,
+    fallback_seen: &mut Option<String>,
+    failures: &mut Vec<String>,
+    s: u32,
+) {
+    use crate::engage::PreloadPhase;
+    use crate::engine::PreloadReport;
+    let ids: Vec<IntentId> = extra.preloads.keys().copied().collect();
+    for id in ids {
+        let Some(intent) = engine.intent(id) else { continue };
+        let state = intent.state();
+        let Some(preload) = intent.engagement().and_then(|e| e.preload.clone()) else {
+            continue;
+        };
+        let Some(ps) = extra.preloads.get_mut(&id) else { continue };
+        let silent = vehicles.get(&ps.uid).is_none_or(|v| v.silent);
+        let own_timer = vehicles
+            .get(&ps.uid)
+            .and_then(|v| v.def.lost_link_s)
+            .unwrap_or(5.0);
+        let own = |n: &str| if n == preload.timer { own_timer } else { own_value(n) };
+        // the set, a second after the dispatch
+        if ps.set.is_none() && s >= ps.due_s && mode != "never" {
+            let names: Vec<String> = preload.names().iter().map(|n| (*n).to_string()).collect();
+            let before: BTreeMap<String, f64> =
+                names.iter().map(|n| (n.clone(), own(n))).collect();
+            let set_values = || {
+                let mut r = before.clone();
+                for p in &preload.set {
+                    r.insert(p.name.clone(), p.value);
+                }
+                for b in &preload.clear_bits {
+                    let v = r.get(&b.name).copied().unwrap_or(0.0).round() as i64;
+                    r.insert(b.name.clone(), (v & !i64::from(b.clear)) as f64);
+                }
+                let timer = own_timer.min(preload.timer_max_s);
+                r.insert(preload.timer.clone(), timer);
+                r
+            };
+            let report = if silent || mode == "no_answer" {
+                PreloadReport {
+                    uid: Uid::new(&ps.uid),
+                    phase: PreloadPhase::Set,
+                    before: BTreeMap::new(),
+                    readback: BTreeMap::new(),
+                    error: Some(format!(
+                        "no answer from the vehicle to PARAM_REQUEST_READ {} after 3 attempts",
+                        names[0]
+                    )),
+                }
+            } else if mode == "mismatch" {
+                // it answers with another action than the order's (the first set parameter
+                // one off): a write it did not take
+                let mut r = set_values();
+                if let Some(p) = preload.set.last() {
+                    r.insert(p.name.clone(), p.value + 1.0);
+                }
+                PreloadReport {
+                    uid: Uid::new(&ps.uid),
+                    phase: PreloadPhase::Set,
+                    before: before.clone(),
+                    readback: r,
+                    error: None,
+                }
+            } else {
+                PreloadReport {
+                    uid: Uid::new(&ps.uid),
+                    phase: PreloadPhase::Set,
+                    before: before.clone(),
+                    readback: set_values(),
+                    error: None,
+                }
+            };
+            ps.before = report.before.clone();
+            ps.timer_s = report.readback.get(&preload.timer).copied();
+            match engine.record_preload(id, report) {
+                Ok(stop) => {
+                    let confirmed = engine
+                        .intent(id)
+                        .and_then(|i| i.engagement())
+                        .and_then(|e| e.preloaded.as_ref())
+                        .is_some_and(|r| r.confirmed);
+                    ps.set = Some(confirmed);
+                    extra.preload_reports.push(format!(
+                        "t={s} set {}",
+                        if confirmed { "confirmed" } else { "unconfirmed" }
+                    ));
+                    if let Some(f) = stop {
+                        *fallback_seen = Some(f.fallback.as_str().into());
+                        if let Some(v) = vehicles.get_mut(f.uid.as_str()) {
+                            follow(v, f.fallback);
+                        }
+                        engaging.remove(&f.intent);
+                    }
+                }
+                Err(e) => failures.push(format!("t={s}: preload {id}: {e}")),
+            }
+            continue;
+        }
+        let Some(ps) = extra.preloads.get_mut(&id) else { continue };
+        // cut off from the GCS for longer than its preloaded timer: its own failsafe
+        if ps.set == Some(true)
+            && !ps.restored
+            && !ps.acted
+            && let Some(v) = vehicles.get_mut(&ps.uid)
+            && let (Some(since), Some(timer)) = (v.silent_since, ps.timer_s)
+            && f64::from(s.saturating_sub(since)) > timer
+        {
+            ps.acted = true;
+            follow(v, preload.fallback);
+            extra.lost_link_action = Some(format!(
+                "{} ({} {}) after {} s without the GCS",
+                preload.action,
+                preload.firmware,
+                preload.fallback.as_str(),
+                s - since
+            ));
+        }
+        // its own values back once the engagement has ended (when it can hear us)
+        if ps.set.is_some()
+            && !ps.restored
+            && !ps.before.is_empty()
+            && state != State::Dispatched
+            && !silent
+        {
+            let report = PreloadReport {
+                uid: Uid::new(&ps.uid),
+                phase: PreloadPhase::Restore,
+                before: BTreeMap::new(),
+                readback: ps.before.clone(),
+                error: None,
+            };
+            match engine.record_preload(id, report) {
+                Ok(_) => {
+                    ps.restored = true;
+                    extra.preload_reports.push(format!("t={s} restore confirmed"));
+                }
+                Err(e) => failures.push(format!("t={s}: restore {id}: {e}")),
+            }
+        }
+    }
+}
+
+/// The runner's platform flies a fallback: hold where it is, home, or orbit where it is.
+fn follow(v: &mut VehicleSim, f: Fallback) {
+    match f {
+        Fallback::Abort => {
+            v.goal = None;
+            v.vel = [0.0, 0.0];
+        }
+        Fallback::Return => {
+            v.goal = Some(v.home);
+            v.orbit = false;
+        }
+        Fallback::Loiter => {
+            v.goal = Some(v.pos);
+            v.orbit = true;
+        }
+    }
 }
 
 fn dispatch_approved(
@@ -1675,6 +2054,66 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             }
             if !done {
                 return Err(format!("nothing to {kind}"));
+            }
+        }
+        "drop_preload" => {
+            // rules 5: hide that the platform confirmed (or failed) its lost-link preload
+            let before = events.len();
+            events.retain(|e| {
+                !matches!(
+                    &e.body,
+                    EventBody::EngagePreload { intent, phase: crate::engage::PreloadPhase::Set, .. }
+                        if *intent == spec.id
+                )
+            });
+            if events.len() == before {
+                return Err("no engage.preload set to drop".into());
+            }
+        }
+        "forge_preload" => {
+            // rules 5: a preload the platform never confirmed made to look confirmed
+            let mut done = false;
+            for e in &mut events {
+                if let EventBody::EngagePreload {
+                    intent,
+                    confirmed,
+                    error,
+                    ..
+                } = &mut e.body
+                    && *intent == spec.id
+                    && !*confirmed
+                {
+                    *confirmed = true;
+                    *error = None;
+                    done = true;
+                }
+            }
+            if !done {
+                return Err("no unconfirmed engage.preload to forge".into());
+            }
+        }
+        "drop_acceptance" => {
+            // rules 5: hide that an operator accepted a lost vehicle (the decisions still
+            // read it)
+            let before = events.len();
+            events.retain(|e| !matches!(&e.body, EventBody::EngageAccepted { intent, .. } if *intent == spec.id));
+            if events.len() == before {
+                return Err("no engage.accepted to drop".into());
+            }
+        }
+        "acceptance_by_agent" => {
+            // rules 5: an acceptance credited to an agent (in the operator's session)
+            let mut done = false;
+            for e in &mut events {
+                if let EventBody::EngageAccepted { intent, by, .. } = &mut e.body
+                    && *intent == spec.id
+                {
+                    *by = OperatorId::new("agent-planner");
+                    done = true;
+                }
+            }
+            if !done {
+                return Err("no engage.accepted to forge".into());
             }
         }
         other => return Err(format!("unknown tamper {other:?}")),

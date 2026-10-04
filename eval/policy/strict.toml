@@ -60,6 +60,10 @@ max_signing_s = 120
 plan_drift_max_m = 300
 holding_speed_mps = 1.5
 friendly_growth_mps = 1.0
+track_velocity_sigma_mps = 1.0
+track_accel_mps2 = { air = 2.0, ground = 2.0, surface = 0.2, subsurface = 0.2 }
+vertical_rate_mps = 10.0
+keep_out_vertical_m = 200
 
 [[tier]]
 name = "safety-commands"

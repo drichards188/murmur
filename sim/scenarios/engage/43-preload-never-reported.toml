@@ -1,0 +1,72 @@
+# Rules 5: the bridge never reports the platform's preload (a lost reply, a stalled job).
+# The platform reaches the point and the picture holds, but the release needs the preload
+# confirmed (fallback_preload): it waits, and once the effect is late_s past its time the
+# engagement aborts with its fallback. A dispatch without a confirmed preload never releases.
+title = "No preload is ever confirmed: nothing is released"
+invariant = "fallback_preload"
+attack = "the platform's lost-link preload is never reported"
+expect = "aborted"
+expect_rule = "engage_window"
+preload = "never"
+end_s = 200
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km: it also covers the point for the assessment
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+# no altitude estimate for it
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"
+
+[[step]]
+at_s = 110                  # at the point, time come: held, but not ready without the preload
+action = "expect"
+state = "dispatched"
+rule = "fallback_preload"

@@ -1,0 +1,73 @@
+# Rules 5: only a human accepts a lost friendly. An agent nominates with the same lost
+# quadcopter in the way and asks to accept it: its port takes no acceptance, so the
+# nomination is checked without one and rejected (keep_out_friendly); the agent then tries to
+# accept on the pending record, and there is no method for it either. Nothing moves.
+title = "An agent cannot accept a lost friendly"
+invariant = "keep_out_friendly"
+attack = "an agent nominates and tries to accept a lost friendly's unknown position"
+expect = "rejected"
+expect_rule = "keep_out_friendly"
+expect_refusals = ["no acceptance of a lost vehicle on an agent's proposal", "no accept method on AgentPort"]
+end_s = 70
+
+[[agent]]
+id = "agent-planner"
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km: it also covers the point for the assessment
+at = [-122.4700, 37.8160]
+
+[[vehicle]]
+uid = "drone-1"
+platform = "x10"            # one of ours, 12 m/s cruise
+at = [-122.4723, 37.8120]   # 2 km east of the target
+
+[[step]]
+at_s = 0
+action = "vehicle"
+uid = "drone-1"
+silent = true               # its link is cut: lost from here on
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+# no altitude estimate for it
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 60
+action = "nominate"
+agent = "agent-planner"
+rationale = "declared hostile fast boat holding west of the bridge; blade-1 is closest"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+accept = ["drone-1"]
+
+[[step]]
+at_s = 62
+action = "agent_accept"
+agent = "agent-planner"
+uid = "drone-1"

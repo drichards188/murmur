@@ -234,7 +234,14 @@ impl Decision {
     /// exists when the task layer couldn't take it (as [`Decision::submit`] does).
     fn agent_proposal(&self, req: &IntentRequest) -> Result<Proposal, DecisionError> {
         if req.task == "engage" {
-            // a nomination: the engine routes it to operators with engagement authority
+            // a nomination: the engine routes it to operators with engagement authority;
+            // accepting a lost vehicle is an operator's decision, never an agent's (rules 5)
+            if !req.engage.accept_unknown.is_empty() {
+                return Err(DecisionError::new(
+                    403,
+                    "an agent can't accept a lost vehicle's unknown position: only an operator can (engage.accepted)",
+                ));
+            }
             self.check_vehicles(&req.uids)?;
             return engage::proposal(req, self.clock.now());
         }

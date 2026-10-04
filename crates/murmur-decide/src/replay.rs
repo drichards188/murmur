@@ -94,8 +94,8 @@ use crate::engage::{
     PictureToken, StopCause, TrackIdentity,
 };
 use crate::engine::{
-    dispatched_event, engaged_vehicles, is_self_approval, op_state_mismatch, op_state_owner,
-    order_for, supersede_mismatch,
+    PRELOAD_FAILED, dispatched_event, engaged_vehicles, is_self_approval, op_state_mismatch,
+    op_state_owner, order_for, preload_mismatch, preload_verdict, supersede_mismatch,
 };
 use crate::ids::{OperatorId, SessionId, Uid};
 use crate::hash::{GENESIS, sha256_hex};
@@ -235,6 +235,15 @@ struct Tracked {
     intercept_reports: Vec<(String, String)>,
     /// Engage: the loiter radius from the final approval's world (its order carries it).
     loiter_radius_m: Option<f64>,
+    /// Engage, rules 5: the lost-link preload from the final approval's world (its order
+    /// carries it), the platform's `set` report (its own values before, confirmed), whether a
+    /// restore confirmed, and an unconfirmed `set` whose stop is due (seq).
+    preload: Option<engage::LostLinkPreload>,
+    preload_set: Option<(BTreeMap<String, f64>, bool)>,
+    restore_confirmed: bool,
+    preload_stop_due: Option<u64>,
+    /// Engage, rules 5: our vehicles operators accepted as lost for it (`engage.accepted`).
+    accepted: BTreeMap<Uid, engage::AcceptedUnknown>,
 }
 
 /// Which decision rules a replay accepts a log under.
@@ -345,6 +354,13 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (3, "\"gps_fix_from\":", "a GPS fix inferred from HIGH_LATENCY2"),
     (3, "\"circling\":", "a vehicle's circle"),
     (4, "\"loiter_radius_m\":", "an engagement order's loiter radius"),
+    (5, "\"rule\":\"fallback_preload\"", "a fallback_preload check"),
+    (5, "\"preload\":", "an engagement order's lost-link preload"),
+    (5, "\"type\":\"engage.preload\"", "a lost-link preload report"),
+    (5, "\"type\":\"engage.accepted\"", "an acceptance of a lost vehicle"),
+    (5, "\"unknown_accepted\":", "an accepted lost vehicle in decision inputs"),
+    (5, "\"alt_msl_m\":", "a vehicle's altitude fact"),
+    (5, "\"climb_mps\":", "a platform's climb rate"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.
@@ -698,6 +714,11 @@ fn replay_inner<S: AsRef<str>>(
                         platform_events: Vec::new(),
                         intercept_reports: Vec::new(),
                         loiter_radius_m: None,
+                        preload: None,
+                        preload_set: None,
+                        restore_confirmed: false,
+                        preload_stop_due: None,
+                        accepted: BTreeMap::new(),
                     },
                 );
                 if intent.kind() == TaskKind::Engage {
@@ -713,6 +734,7 @@ fn replay_inner<S: AsRef<str>>(
                 ..
             } => {
                 check_engaged(&mut r, e, *intent, &inputs.engaged, &intents);
+                check_accepted(&mut r, e, *intent, &inputs.unknown_accepted, &intents);
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(
                         &mut r,
@@ -788,6 +810,7 @@ fn replay_inner<S: AsRef<str>>(
                 decision,
             } => {
                 check_engaged(&mut r, e, *intent, &inputs.engaged, &intents);
+                check_accepted(&mut r, e, *intent, &inputs.unknown_accepted, &intents);
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(
                         &mut r,
@@ -921,6 +944,9 @@ fn replay_inner<S: AsRef<str>>(
                 inputs,
                 ..
             } => {
+                if let Some(i) = inputs {
+                    check_accepted(&mut r, e, *intent, &i.unknown_accepted, &intents);
+                }
                 let Some(tr) = intents.get_mut(intent) else {
                     bad(&mut r, e, Some(*intent), "unknown intent", String::new(), String::new());
                     continue;
@@ -1041,6 +1067,13 @@ fn replay_inner<S: AsRef<str>>(
                     // where the platform loiters over the point, from the re-check's world
                     tr.loiter_radius_m = match (&policy, tr.spec.uids.first(), tr.last_inputs.as_deref()) {
                         (Some(pol), Some(u), Some(w)) => Some(engage::loiter_radius(u, w, &pol.rules)),
+                        _ => None,
+                    };
+                    // rules 5: its lost-link action as the fallback, from the same world
+                    tr.preload = match (&policy, tr.last_inputs.as_deref(), snapshot.as_deref()) {
+                        (Some(pol), Some(w), Some(snap)) => {
+                            engage::order_preload(&tr.spec, w, snap, &pol.rules)
+                        }
                         _ => None,
                     };
                 }
@@ -1369,6 +1402,7 @@ fn replay_inner<S: AsRef<str>>(
                 holds,
                 ready,
             } => {
+                check_accepted(&mut r, e, *intent, &inputs.unknown_accepted, &intents);
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(
                         &mut r,
@@ -1386,6 +1420,16 @@ fn replay_inner<S: AsRef<str>>(
                         e,
                         Some(*intent),
                         "picture failed but the engagement went on (void suppressed)",
+                        seq.to_string(),
+                        "engage.stopped".into(),
+                    );
+                }
+                if let Some(seq) = tr.preload_stop_due {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "the platform's preload did not confirm but the engagement went on",
                         seq.to_string(),
                         "engage.stopped".into(),
                     );
@@ -1420,8 +1464,21 @@ fn replay_inner<S: AsRef<str>>(
                 };
                 let dispatched = tr.state == State::Dispatched;
                 let prev_t = tr.last_picture_t.unwrap_or(snap.t);
-                let (again, h, rd) =
-                    engage::picture(&tr.spec, &snap, &w, &pol.rules, dispatched, prev_t);
+                // rules 5: the release needs the platform's preload confirmed
+                let preloaded = tr
+                    .preload_set
+                    .as_ref()
+                    .filter(|(_, confirmed)| *confirmed)
+                    .and(tr.preload.as_ref());
+                let (again, h, rd) = engage::picture(
+                    &tr.spec,
+                    &snap,
+                    &w,
+                    &pol.rules,
+                    dispatched,
+                    prev_t,
+                    preloaded,
+                );
                 tr.last_picture_t = Some(e.t);
                 r.pictures_recomputed += 1;
                 if &again != results || h != *holds || rd != *ready {
@@ -1454,6 +1511,20 @@ fn replay_inner<S: AsRef<str>>(
                     bad(&mut r, e, Some(*intent), "unknown intent", String::new(), String::new());
                     continue;
                 };
+                // rules 5: never on a platform whose lost-link action was not confirmed as the
+                // fallback (the picture's release check says so; this binds it on its own)
+                if policy.as_ref().is_some_and(|p| p.rules.rules_version >= 5)
+                    && !tr.preload_set.as_ref().is_some_and(|(_, c)| *c)
+                {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "effect released without the platform's lost-link preload confirmed",
+                        json(&tr.preload_set),
+                        "a confirmed engage.preload set".into(),
+                    );
+                }
                 // released by the platform the engagement was dispatched to (its dispatch is
                 // bound to the nomination's platform), inside the plan's time tolerance
                 let platform = tr.spec.uids.first();
@@ -1637,6 +1708,30 @@ fn replay_inner<S: AsRef<str>>(
                         json(&tr.platform_events),
                     );
                 }
+                // rules 5: a preload that did not confirm is stopped at once, for it, and a
+                // stop that says so follows such a report
+                let for_preload = reason.starts_with(&format!("system: {PRELOAD_FAILED}"));
+                if tr.preload_stop_due.is_some() && !(matches!(cause, StopCause::System) && for_preload) {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "a preload that did not confirm stopped for another reason",
+                        reason.clone(),
+                        format!("system: {PRELOAD_FAILED}..."),
+                    );
+                }
+                if for_preload && tr.preload_stop_due.is_none() {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "stop quotes a preload failure the platform did not report",
+                        reason.clone(),
+                        "an unconfirmed engage.preload set".into(),
+                    );
+                }
+                tr.preload_stop_due = None;
                 // a stop for a failed intercept quotes the intercept's report (the bridge
                 // logs it in the same step, just before)
                 if let StopCause::System = cause
@@ -1680,6 +1775,7 @@ fn replay_inner<S: AsRef<str>>(
                 step,
                 covered_s,
             } => {
+                check_accepted(&mut r, e, *intent, &inputs.unknown_accepted, &intents);
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(&mut r, e, Some(*intent), "unknown intent", String::new(), String::new());
                     continue;
@@ -1748,6 +1844,113 @@ fn replay_inner<S: AsRef<str>>(
                 }
                 tr.assessed = true;
                 r.assessments += 1;
+            }
+            EventBody::EngageAccepted {
+                intent,
+                uid,
+                since,
+                by,
+                session,
+            } => {
+                let Some(tr) = intents.get_mut(intent) else {
+                    bad(&mut r, e, Some(*intent), "acceptance for an unknown intent", String::new(), String::new());
+                    continue;
+                };
+                // an operator's own session: an agent has none
+                match sessions.get(session) {
+                    Some((op, _)) if op == by => {}
+                    other => bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "acceptance of a lost vehicle under a session that is not the operator's",
+                        by.to_string(),
+                        json(&other.map(|o| &o.0)),
+                    ),
+                }
+                // at the nomination by its own (human) submitter, or while it waits with no
+                // signature
+                let at_submission = tr.state == State::Proposed
+                    && matches!(&tr.spec.source, Source::Human { id } if id == by);
+                let waiting = tr.state == State::PendingApproval && tr.signers.is_empty();
+                if tr.spec.kind() != TaskKind::Engage || !(at_submission || waiting) {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "acceptance of a lost vehicle outside an engagement's nomination or its wait for a first signature",
+                        json(&(tr.state, &tr.spec.source, tr.signers.len())),
+                        "its submitter's nomination, or pending without signatures".into(),
+                    );
+                }
+                tr.accepted.insert(
+                    uid.clone(),
+                    engage::AcceptedUnknown {
+                        since: *since,
+                        by: by.clone(),
+                    },
+                );
+            }
+            EventBody::EngagePreload {
+                intent,
+                uid,
+                phase,
+                before,
+                readback,
+                error,
+                confirmed,
+            } => {
+                let Some(tr) = intents.get_mut(intent) else {
+                    bad(&mut r, e, Some(*intent), "preload for an unknown intent", String::new(), String::new());
+                    continue;
+                };
+                if let Some(why) = preload_mismatch(
+                    &tr.spec,
+                    tr.state,
+                    tr.dispatched,
+                    tr.preload.as_ref(),
+                    tr.preload_set.is_some(),
+                    tr.restore_confirmed,
+                    *phase,
+                    uid,
+                ) {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        why,
+                        json(&(uid, phase)),
+                        json(&(tr.state, tr.dispatched, &tr.preload, &tr.preload_set)),
+                    );
+                }
+                let verdict = preload_verdict(
+                    *phase,
+                    tr.preload.as_ref(),
+                    tr.preload_set.as_ref().map(|(b, _)| b),
+                    readback,
+                    error.as_deref(),
+                );
+                if verdict.is_ok() != *confirmed {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "preload confirmation differs from its read-back",
+                        confirmed.to_string(),
+                        json(&verdict),
+                    );
+                }
+                match phase {
+                    engage::PreloadPhase::Set => {
+                        tr.preload_set = Some((before.clone(), verdict.is_ok()));
+                        if verdict.is_err() && tr.state == State::Dispatched {
+                            tr.preload_stop_due = Some(e.seq);
+                        }
+                    }
+                    engage::PreloadPhase::Restore => {
+                        tr.restore_confirmed |= verdict.is_ok();
+                    }
+                }
             }
             EventBody::OpState {
                 intent,
@@ -2067,6 +2270,7 @@ fn check_dispatch(
         answer,
         tr.snapshot.as_deref(),
         tr.loiter_radius_m,
+        tr.preload.as_ref(),
         &pol.rules,
     ) {
         Ok(o) => dispatched_event(&tr.spec, &o),
@@ -2159,6 +2363,16 @@ fn check_dispatch(
                     "engagement order's loiter radius differs from the platform's",
                     json(&o.loiter_radius_m),
                     json(&w.loiter_radius_m),
+                );
+            }
+            if o.preload != w.preload {
+                bad(
+                    r,
+                    e,
+                    id,
+                    "engagement order's lost-link preload is not the approved fallback on that platform",
+                    json(&o.preload),
+                    json(&w.preload),
                 );
             }
         }
@@ -2341,6 +2555,29 @@ fn check_engaged(
             "engagement-in-play facts differ",
             json(logged),
             json(&want),
+        );
+    }
+}
+
+/// Rules 5: a decision's logged `unknown_accepted` (the lost vehicles operators accepted for
+/// an engagement) against the `engage.accepted` events replay has seen for it (none for any
+/// other intent).
+fn check_accepted(
+    r: &mut ReplayReport,
+    e: &Event,
+    id: IntentId,
+    logged: &BTreeMap<Uid, engage::AcceptedUnknown>,
+    intents: &BTreeMap<IntentId, Tracked>,
+) {
+    let Some(tr) = intents.get(&id) else { return };
+    if *logged != tr.accepted {
+        bad(
+            r,
+            e,
+            Some(id),
+            "accepted lost vehicles differ from the acceptances logged for it",
+            json(logged),
+            json(&tr.accepted),
         );
     }
 }

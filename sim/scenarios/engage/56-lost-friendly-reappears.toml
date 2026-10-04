@@ -1,0 +1,86 @@
+# Rules 5: an acceptance covers one loss, not the vehicle. The operator accepted the lost
+# quadcopter; the engagement is approved and dispatched; then the quadcopter reports again,
+# 150 m from the effect point: its fresh position counts like any other vehicle's, and the
+# engagement aborts (keep_out_friendly) with its fallback. Afterwards the log is forged to
+# credit the acceptance to an agent; replay catches it (not an operator, not its session).
+title = "An accepted lost friendly reports again inside the keep-out"
+invariant = "keep_out_friendly"
+attack = "an accepted lost friendly reappears near the effect point; the acceptance is credited to an agent in the log"
+expect = "aborted"
+expect_rule = "keep_out_friendly"
+tamper = "acceptance_by_agent"
+end_s = 120
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km: it also covers the point for the assessment
+at = [-122.4700, 37.8160]
+
+[[vehicle]]
+uid = "drone-1"
+platform = "x10"            # one of ours, 12 m/s cruise
+at = [-122.4723, 37.8120]   # 2 km east of the target
+
+[[step]]
+at_s = 0
+action = "vehicle"
+uid = "drone-1"
+silent = true               # its link is cut: lost from here on
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+# no altitude estimate for it
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 60
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+accept = ["drone-1"]
+
+[[step]]
+at_s = 64
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 67
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 68
+action = "expect"
+state = "dispatched"
+
+[[step]]
+at_s = 80
+action = "vehicle"
+uid = "drone-1"
+silent = false
+at = [-122.4950, 37.8133]   # 150 m north of the target

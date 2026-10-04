@@ -112,6 +112,56 @@ group. Dates are 2026.
   cliff at a span boundary (regression `39-friendly-on-its-circles-slack-band`). The bridge takes a LOITER or RTL center from
   NAV_CONTROLLER_OUTPUT reported in that mode and at most 12 s old, stamps the circle with
   the older of the center and the position, and logs its source and center time.
+- **The approval's fallback is the platform's own lost-link action; no release without it**
+  (10-04, murmur-der.2; rules 5). A fallback commanded over a dead link can't arrive, so the
+  engagement order carries a preload: the platform's GCS failsafe set to the fallback
+  (ArduPilot 4.8: Plane `FS_LONG_ACTN` 1 RTL; Copter `FS_GCS_ENABLE` 1 RTL or 7 Brake;
+  Rover `FS_ACTION` 1 RTL, 2 Hold, 6 Loiter; Sub `FS_GCS_ENABLE` 3 depth hold), whatever
+  would override it cleared (Copter `FS_OPTIONS` bit 1, Rover `FS_GCS_ENABLE` 2), its timer
+  no longer than the approval's link-gap limit (5 s on a streaming link instead of 30 s on
+  LEO or 120 s on GEO). The bridge reads the platform's own values, sets the preload, reads
+  it back, and sends the intercept only once that confirms; one that doesn't stops the
+  engagement with its fallback, and the release needs a confirmed one (fail closed: a lost
+  report means no effect). The platform's own values go back when the engagement ends. A
+  fallback the firmware has no lost-link action for fails the nomination
+  (`fallback_preload`): ArduPlane has none that holds where it is (continue, RTL, glide,
+  parachute, AUTO, AUTOLAND), so a fixed wing takes `return` only (its "continue" would fly
+  on to the effect point and circle there); ArduSub has no return. The stand-in copter now
+  honours `FS_GCS_ENABLE` and `FS_OPTIONS` as ArduCopter does. Regressions: scenarios 08 (the
+  USV holds where it is on its own after its link is cut), 40 to 44.
+- **Keep-outs predict a track with acceleration noise, not with its speed** (10-04,
+  murmur-der.3; rules 5). The tracker's growth law, `max(1, 0.3 x speed)` times the span at
+  2-sigma, made a 20 m/s ferry 300 s out block 3.6 km around its predicted position while a
+  slow boat that can turn on a dime counted as tighter. A protected track is now predicted
+  along its velocity with `sqrt(tracker sigma^2 + (1 m/s x span)^2 + q span^3 / 3)`, q the
+  domain's manoeuvre (0.2 m/s^2 on the water, 2 in the air) squared over the 1 s update:
+  the continuous white-noise acceleration model (Bar-Shalom et al. 2001). The ferry's 2-sigma
+  is 1.34 km, the same as a 6 m/s boat's. Basis: the Phase G velocity-noise sweep (0.5 m/s
+  per axis passes, 1 m/s per axis aborts late), the Phase G live tracks (estimates moved at
+  most 1.3 m/s second to second), a ferry's 300 m turn (0.33 m/s^2), a standard-rate turn
+  at 55 m/s (2.9 m/s^2). Still conservative where it binds: the keep-outs are read every
+  second, and at the release over seconds, where only the tracker's own uncertainty counts;
+  a track without a velocity estimate is anywhere it reaches at its domain's top speed (it
+  was held where it was). Regressions: 45 (a distant fast ferry), 46 (a near one still
+  blocks), 47.
+- **Keep-outs in 3D where both altitudes are known** (10-04, murmur-der.3; rules 5). The
+  keep-out reaches the effect radius plus `keep_out_vertical_m` (default `keep_out_m`, 200 m)
+  above and below the effect's altitude (the target's estimate), each side counted with
+  2-sigma of its altitude error and how far it could climb or descend by then (ours: 10 m/s
+  or the catalog's climb rate if faster; aircraft tracks 10 m/s; surface tracks none). An
+  unknown or stale altitude on either side leaves it 2D, as before. A MALE aircraft at 7 km
+  over a surface effect no longer blocks; a quadcopter at 120 m still does. Our vehicles'
+  altitude (MSL) is a world fact now. Regressions: 48 to 52.
+- **A lost friendly blocks until an operator accepts it, explicitly and logged** (10-04,
+  murmur-der.3; rules 5). Its reachable circle still grows without a cap (fail closed), but
+  the check says since when its position is unknown, and an operator may accept it for one
+  engagement ("vehicle X position unknown since T: accept"): at the nomination or while it
+  waits with no signature (after one, the plan was signed without it), logged as
+  `engage.accepted` under the operator's session, read by every check of that engagement and
+  replay-checked. It covers that loss only: a vehicle that reports again counts like any
+  other, a newer loss needs a new acceptance. Never automatic and never an agent's: the
+  engine takes it only with a human authority, an agent's port has no such method and the
+  bridge refuses an agent's request carrying one. Regressions: 53 to 56.
 - **A HIGH_LATENCY2 report without its GPS failure flag is a 3D fix** (10-04, fourth
   review). HIGH_LATENCY2 carries no fix type, so a platform on that link alone never had a
   fresh fix and could never release. The bridge now counts each one without
@@ -380,16 +430,17 @@ group. Dates are 2026.
   sent to loiter at the predicted point; the effect is released only when the picture holds,
   the predicted time has come, the platform is at the point and the track is estimated
   inside the radius. If not within `late_s`, it aborts.
-- **Keep-outs are conservative, in 2D** (10-03). Every vehicle of ours (all domains) but the
+- **Keep-outs are conservative, in 2D** (10-03; revised 10-04, rules 5: see the three
+  keep-out entries under Direction). Every vehicle of ours (all domains) but the
   engaging platform, carried along its velocity to the effect time, or, without a fresh
   velocity, wherever it could get at cruise speed; every track but the target and tracks an
   operator declared hostile (`declared_by` set: an affiliation without a declaration is
   protected; neutral, unknown, suspect, assumed friend, stale ones too) with 2-sigma of its
-  predicted uncertainty. A vertical cylinder of unlimited height: an aircraft high overhead
-  counts. Known costs, left as they are: a fast track's 2-sigma grows with the time to the
-  effect, so a fast neutral far away can block (conservative by design); a friendly
-  without a fresh velocity grows at cruise speed with no cap, so a long transit can be
-  blocked by a vehicle that will never come near. Open design question (not decided here):
+  predicted uncertainty. Until rules 5 a vertical cylinder of unlimited height (an aircraft
+  high overhead counted), a fast track's 2-sigma growing with its speed, and a lost friendly
+  blocking with no way past; rules 5 read altitude where both sides know it, predict tracks
+  with acceleration noise, and let an operator accept a lost friendly, each failing closed
+  on missing data. Open design question (not decided here):
   another declared hostile inside the keep-out is exempt like the target, so an effect may
   be released with a second declared hostile inside the radius; whether that should need
   its own signatures is for the study.
@@ -483,10 +534,11 @@ group. Dates are 2026.
 - **Still placeholders, stated** (10-03). Engagement authority comes from
   `MURMUR_ENGAGE_OPERATORS` and the `X-Murmur-Operator` header, as operators do from
   `MURMUR_OPERATORS`: a stand-in for real authentication (the lists are logged as the run's
-  roster from rules 4, which bounds who a log can name, not who sent a header). The fallback is commanded by the
-  bridge after a stop; it is not preloaded into the vehicle as its lost-link action, so a
-  platform that loses its link en route follows its own lost-link failsafe (the per-link
-  timers above), not the engagement's fallback, until the link returns.
+  roster from rules 4, which bounds who a log can name, not who sent a header). Until rules
+  5 the fallback was only commanded by the bridge after a stop, so a platform that lost its
+  link en route followed its own lost-link failsafe; from rules 5 it is preloaded as that
+  failsafe (see above). The bridge does not persist a preload: restarted mid-engagement, it
+  leaves the platform's failsafe as preloaded.
 - **Unknown endurance on an engagement: a weaker check, stated** (10-03). Most armed
   platforms have no endurance figure; engage is consequential (an unverified check would
   block it), so `reach` passes on a fresh battery above the reserve and a transit of at

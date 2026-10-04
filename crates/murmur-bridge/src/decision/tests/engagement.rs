@@ -166,6 +166,7 @@ impl Erig {
                 effect_radius_m: Some(100.0),
                 window_s: Some(300),
                 fallback: Some(fallback.into()),
+                accept_unknown: Vec::new(),
             },
             constraints: Constraints::default(),
             rationale: None,
@@ -208,8 +209,29 @@ impl Erig {
         assert_eq!(e.status, 409, "{}", e.detail);
         let o = self.sign("op-3", id).await.expect("signs");
         assert_eq!(o.state, State::Dispatched, "{}", o.intent);
-        assert!(o.tasking.is_some());
+        // rules 5: the intercept waits for the platform's lost-link preload to confirm
+        assert!(o.tasking.is_none(), "no intercept before the preload confirms");
+        self.preloaded(id).await;
         id
+    }
+
+    /// Rules 5: the loop reports the platform's lost-link preload (read, set, read back on
+    /// the fake autopilot) and only then sends the intercept (its preload step alone here,
+    /// so the engagement is still under way when the test goes on).
+    async fn preloaded(&self, id: IntentId) {
+        for _ in 0..10 {
+            sleep(Duration::from_millis(500)).await;
+            let mut guard = self.r.d.lock();
+            self.r.d.step_preloads(&mut guard);
+            if guard.taskings.contains_key(&id) {
+                break;
+            }
+        }
+        let core = self.r.d.lock();
+        let e = core.engine.intent(id).and_then(Intent::engagement).expect("engagement");
+        let set = e.preloaded.as_ref().expect("the preload was reported");
+        assert!(set.confirmed, "{set:?}");
+        assert!(core.taskings.contains_key(&id), "the intercept went out after it");
     }
 
     /// One second: engine clock, a truth tick, the decision loop.
@@ -417,6 +439,7 @@ async fn a_fleet_vehicle_never_heard_from_is_not_clear_of_the_keep_out() {
         Some(&murmur_decide::Uid::new("1")),
         &snap,
         &murmur_decide::RulesConfig::default(),
+        None,
     );
     assert_eq!(r.outcome, murmur_decide::Outcome::Fail, "{r:?}");
     assert!(r.detail.contains("no position"), "{}", r.detail);
@@ -492,4 +515,76 @@ async fn the_platforms_own_failsafe_stops_the_engagement() {
     assert!(e.tracks.take_effects().is_empty(), "no effect");
     let rep = replay::replay_str(&e.r.log.text()).expect("parses");
     assert!(rep.ok(), "{:?}", rep.mismatches);
+}
+
+/// The `engage.preload` events of the log, as (phase, readback, confirmed).
+fn preloads(log: &MemorySink) -> Vec<(String, Value, bool)> {
+    log.lines()
+        .iter()
+        .filter(|l| l.contains("\"type\":\"engage.preload\""))
+        .map(|l| {
+            let v: Value = serde_json::from_str(l).expect("json");
+            (
+                v["phase"].as_str().unwrap_or_default().to_string(),
+                v["readback"].clone(),
+                v["confirmed"].as_bool().unwrap_or(false),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_fallback_is_preloaded_as_the_lost_link_action_then_restored() {
+    let e = engage_rig();
+    // abort on a multirotor: ArduCopter FS_GCS_ENABLE 7 (Brake, else Land), FS_OPTIONS bit 1
+    // clear, FS_GCS_TIMEOUT at most the approval's 5 s; read back before the intercept
+    let id = e.approved("abort").await;
+    let order = e
+        .r
+        .log
+        .lines()
+        .into_iter()
+        .find(|l| l.contains("\"type\":\"intent.dispatched\""))
+        .expect("dispatched");
+    assert!(order.contains("\"preload\":{\"firmware\":\"ArduCopter\""), "{order}");
+    let set = preloads(&e.r.log);
+    assert_eq!(set.len(), 1, "{set:?}");
+    assert_eq!(set[0].0, "set");
+    assert!(set[0].2, "confirmed: {set:?}");
+    assert_eq!(set[0].1["FS_GCS_ENABLE"], 7.0, "{set:?}");
+    assert_eq!(set[0].1["FS_OPTIONS"], 16.0, "{set:?}");
+    assert_eq!(set[0].1["FS_GCS_TIMEOUT"], 5.0, "{set:?}");
+    // an operator aborts: the engagement is over, the platform's own values go back
+    e.r.d.abort(&op("op-1"), id.0, None).expect("aborted");
+    for _ in 0..6 {
+        e.tick(true).await;
+    }
+    let all = preloads(&e.r.log);
+    assert_eq!(all.len(), 2, "{all:?}");
+    assert_eq!(all[1].0, "restore");
+    assert!(all[1].2, "confirmed: {all:?}");
+    assert_eq!(all[1].1["FS_GCS_ENABLE"], 1.0, "its own action back: {all:?}");
+    let rep = replay::replay_str(&e.r.log.text()).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_agent_cannot_accept_a_lost_vehicle() {
+    let e = engage_rig();
+    e.r.vehicle(1, Firmware::Copter, "fpv", TARGET);
+    sleep(Duration::from_millis(500)).await;
+    e.picture().await;
+    let mut req = e.nomination("return");
+    req.rationale = Some("the declared fast boat west of the bridge".into());
+    req.engage.accept_unknown = vec![engage::AcceptUnknown { uid: 2, since: None }];
+    let err = e
+        .r
+        .d
+        .agent_propose(&AgentId::new("agent-planner"), req)
+        .await
+        .expect_err("refused");
+    assert_eq!(err.status, 403, "{}", err.detail);
+    assert!(err.detail.contains("only an operator"), "{}", err.detail);
+    assert_eq!(e.r.events("engage.accepted"), 0);
+    assert_eq!(e.r.events("intent.created"), 0, "refused before any intent exists");
 }

@@ -1,0 +1,79 @@
+# Rules 5: keep-outs read in 3D where both altitudes are known. Our MALE aircraft circles
+# 1.5 km around the target at 7,000 m: in 2D its circle covers the effect point and blocks
+# (the 2D keep-out is a cylinder of unlimited height). In 3D the effect is on the surface
+# (the target's altitude 0 m, 2-sigma 20 m) and the keep-out reaches 275 m above it; the
+# aircraft, even descending at its 10 m/s for the whole prediction, stays above 5,900 m.
+title = "A high friendly above the effect no longer blocks"
+invariant = "keep_out_friendly"
+attack = "one of our aircraft circles over the target at 7,000 m"
+expect = "done"
+expect_assessment = "ceased"
+end_s = 200
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km: it also covers the point for the assessment
+at = [-122.4700, 37.8160]
+
+[[vehicle]]
+uid = "reaper-1"
+platform = "mq9b"           # one of ours, MALE (catalog climb 10 m/s)
+at = [-122.4950, 37.8255]   # on a 1.5 km circle around the target
+velocity = [60.0, 0.0]
+alt_m = 7000
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+alt_m = 0                   # on the surface (radar, EO/IR)
+
+[[step]]
+at_s = 0
+action = "vehicle"
+uid = "reaper-1"
+circling = [-122.4950, 37.8120, 1500]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"

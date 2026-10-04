@@ -29,6 +29,7 @@
 //! is needed: another machine, a signed checkpoint, a transparency log, none of which is
 //! here).
 
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
@@ -40,7 +41,7 @@ use crate::areas::AreaSet;
 use crate::authority::{Grants, Roster};
 use crate::engage::{
     AssessResult, EngageOrder, EngagePreview, EngageSnapshot, Fallback, ObserveStep, PictureToken,
-    StopCause,
+    PreloadPhase, StopCause,
 };
 use crate::geo::LonLat;
 use crate::ids::{AgentId, IntentId, OperatorId, SessionId, Uid};
@@ -358,6 +359,40 @@ pub enum EventBody {
         /// superseded by another order that stands).
         #[serde(default)]
         fallback: Option<Fallback>,
+    },
+
+    /// Engage, rules 5: an operator accepted that one of our vehicles is lost (its position
+    /// unknown since its report at `since`; null: it never reported one) for this
+    /// engagement, so its friendly keep-out leaves that vehicle out while it is lost since
+    /// exactly then. At the nomination or while it waits with no signature; never automatic,
+    /// never an agent's (replay checks the session is the operator's).
+    #[serde(rename = "engage.accepted")]
+    EngageAccepted {
+        intent: IntentId,
+        uid: Uid,
+        #[serde(default)]
+        since: Option<Time>,
+        by: OperatorId,
+        session: SessionId,
+    },
+
+    /// Engage, rules 5: the platform's own lost-link action set as the engagement's fallback
+    /// (`set`: its own values read first, `before`, and the order's preload read back), or
+    /// its own values put back once the engagement ended (`restore`). `error` is what the
+    /// bridge met (no answer); `confirmed` that the read-back shows it in force (replay
+    /// recomputes it). A release needs a confirmed `set`; an unconfirmed one stops the
+    /// engagement with its fallback.
+    #[serde(rename = "engage.preload")]
+    EngagePreload {
+        intent: IntentId,
+        uid: Uid,
+        phase: PreloadPhase,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        before: BTreeMap<String, f64>,
+        readback: BTreeMap<String, f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+        confirmed: bool,
     },
 
     /// Engage, after the effect: one observation step of the effect point.

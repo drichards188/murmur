@@ -1,0 +1,56 @@
+# Rules 5: a low friendly over the effect point still blocks in 3D: our quadcopter hovers
+# 100 m from the target at 120 m; at its vertical rate (10 m/s, at least its catalog climb)
+# over the prediction it could be anywhere from the surface up, inside the keep-out's 275 m
+# above the effect.
+title = "A low friendly above the effect still blocks"
+invariant = "keep_out_friendly"
+attack = "one of our quadcopters hovers 120 m above the water next to the target"
+expect = "rejected"
+expect_rule = "keep_out_friendly"
+end_s = 20
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km: it also covers the point for the assessment
+at = [-122.4700, 37.8160]
+
+[[vehicle]]
+uid = "drone-1"
+platform = "x10"
+at = [-122.4950, 37.8129]   # 100 m north of the target
+alt_m = 120
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+alt_m = 0                   # on the surface (radar, EO/IR)
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600

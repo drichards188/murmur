@@ -7,6 +7,10 @@
 //!   switched to <mode>", later "GCS Failsafe Cleared".
 //! - Rover (FS_GCS_ENABLE, FS_GCS_TIMEOUT, then FS_TIMEOUT, FS_ACTION; failsafe.cpp
 //!   failsafe_trigger): not in RTL or HOLD; "GCS Failsafe", "GCS Failsafe Cleared".
+//! - Copter (FS_GCS_ENABLE action, FS_GCS_TIMEOUT, FS_OPTIONS; events.cpp
+//!   failsafe_gcs_on_event): armed, "GCS Failsafe", then RTL (1, 2), SmartRTL or RTL (3),
+//!   SmartRTL or Land (4), Land (5), AUTO_RTL or RTL (6), Brake or Land (7), each falling back
+//!   as ArduCopter does; FS_OPTIONS bit 1 continues a mission in AUTO, bit 4 a pilot mode.
 //! - Sub (FS_GCS_ENABLE action, FS_GCS_TIMEOUT; failsafe.cpp failsafe_gcs_check): warns
 //!   "MYGCS: heartbeat lost" every 30 s; acts once, if armed (disarm, depth hold, surface).
 //!
@@ -368,7 +372,19 @@ impl Vehicle {
                     _ => {} // 1: warn only
                 }
             }
-            Firmware::Copter | Firmware::Blimp | Firmware::Tracker => {
+            Firmware::Copter => {
+                let enable = p(self, "FS_GCS_ENABLE", 0.0) as i64;
+                let lost = enable != 0 && self.gcs_lost(now, p(self, "FS_GCS_TIMEOUT", 5.0));
+                if lost && !self.fs.gcs && self.st.armed {
+                    self.fs.gcs = true;
+                    GCS_FAILSAFES.fetch_add(1, Ordering::Relaxed);
+                    self.copter_gcs_action(enable);
+                } else if !lost && self.fs.gcs {
+                    self.fs.gcs = false;
+                    self.text(WARN, "GCS Failsafe Cleared");
+                }
+            }
+            Firmware::Blimp | Firmware::Tracker => {
                 let enable = p(self, "FS_GCS_ENABLE", 0.0) as i64;
                 let lost = enable != 0 && self.gcs_lost(now, p(self, "FS_GCS_TIMEOUT", 5.0));
                 if lost && !self.fs.gcs && self.st.armed {
@@ -381,6 +397,56 @@ impl Vehicle {
                     self.text(WARN, "GCS Failsafe Cleared");
                 }
             }
+        }
+    }
+
+    /// ArduCopter's failsafe_gcs_on_event and do_failsafe_action (events.cpp), armed and
+    /// flying: FS_OPTIONS bit 1 continues a mission in AUTO, bit 4 a pilot-controlled mode;
+    /// else FS_GCS_ENABLE says what: 1 (and 2, removed in 4.0) RTL, 3 SmartRTL or RTL, 4
+    /// SmartRTL or Land, 5 Land, 6 AUTO_RTL (a DO_LAND_START sequence) or RTL, 7 Brake or
+    /// Land; an unknown value RTL. RTL falls back to Land when it can't run. The stand-in keeps
+    /// no SmartRTL path and no landing sequence, so those say so and fall back as ArduCopter
+    /// does. An engagement's lost-link preload sets 7 (or 1) here, and clears bit 1.
+    fn copter_gcs_action(&mut self, enable: i64) {
+        let options = self.params.f("FS_OPTIONS", 16.0) as i64;
+        let mode = self.st.mode;
+        // ModeAuto, Brake, Circle, Guided, GuidedNoGPS, Land, RTL, SmartRTL, AvoidADSB,
+        // Follow, Autorotate: is_autopilot()
+        let autopilot = matches!(
+            mode,
+            "AUTO" | "BRAKE" | "CIRCLE" | "GUIDED" | "GUIDED_NOGPS" | "LAND" | "RTL"
+                | "SMART_RTL" | "AVOID_ADSB" | "FOLLOW" | "AUTOROTATE"
+        );
+        if mode == "AUTO" && options & 2 != 0 {
+            self.text(WARN, "GCS Failsafe - Continuing Auto Mode");
+            return;
+        }
+        if options & 16 != 0 && !autopilot {
+            self.text(WARN, "GCS Failsafe - Continuing Pilot Control");
+            return;
+        }
+        self.text(WARN, "GCS Failsafe");
+        match enable {
+            3 => {
+                self.text(WARN, "SmartRTL Unavailable, Trying RTL Mode");
+                self.fall_through(&["RTL", "LAND"]);
+            }
+            4 => {
+                self.text(WARN, "SmartRTL Unavailable, Using Land Mode");
+                self.try_mode("LAND");
+            }
+            5 => _ = self.try_mode("LAND"),
+            6 => {
+                self.text(WARN, "Trying RTL Mode");
+                self.fall_through(&["RTL", "LAND"]);
+            }
+            7 => {
+                if !self.try_mode("BRAKE") {
+                    self.text(WARN, "Trying Land Mode");
+                    self.try_mode("LAND");
+                }
+            }
+            _ => _ = self.fall_through(&["RTL", "LAND"]),
         }
     }
 

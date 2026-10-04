@@ -689,6 +689,7 @@ fn an_unclassified_target_classified_after_approval_voids() {
         &e.policy().rules,
         false,
         T0,
+        None,
     );
     assert!(!ok, "{results:?}");
     assert!(
@@ -943,7 +944,7 @@ fn circling_friend(at: LonLat, vel: [f64; 2], c: Option<Fact<Circle>>) -> WorldS
 fn friendly(w: &WorldSnapshot, effect_t: Time, version: u32) -> CheckResult {
     let mut cfg = policy().rules;
     cfg.rules_version = version;
-    engage::keep_out_friendly(TARGET_AT, effect_t, 275.0, Some(&uid("blade-1")), w, &cfg)
+    engage::keep_out_friendly(TARGET_AT, effect_t, 275.0, Some(&uid("blade-1")), w, &cfg, None)
 }
 
 #[test]
