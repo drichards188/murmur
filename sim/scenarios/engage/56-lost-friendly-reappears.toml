@@ -28,13 +28,8 @@ at = [-122.4700, 37.8160]
 [[vehicle]]
 uid = "drone-1"
 platform = "x10"            # one of ours, 12 m/s cruise
-at = [-122.4723, 37.8120]   # 2 km east of the target
-
-[[step]]
-at_s = 0
-action = "vehicle"
-uid = "drone-1"
-silent = true               # its link is cut: lost from here on
+at = [-122.4723, 37.8120]   # 2 km east of the target, where it last reported
+lost_for_s = 60             # its link was cut a minute before: lost
 
 [[track]]
 id = "T-0001"
@@ -53,7 +48,7 @@ affiliation = "hostile"
 by = "op-1"
 
 [[step]]
-at_s = 60
+at_s = 1
 action = "nominate"
 by = "op-1"
 platform = "blade-1"
@@ -64,22 +59,22 @@ window_s = 600
 accept = ["drone-1"]
 
 [[step]]
-at_s = 64
+at_s = 5
 action = "approve"
 by = "op-2"
 
 [[step]]
-at_s = 67
+at_s = 8
 action = "approve"
 by = "op-3"
 
 [[step]]
-at_s = 68
+at_s = 9
 action = "expect"
 state = "dispatched"
 
 [[step]]
-at_s = 80
+at_s = 20
 action = "vehicle"
 uid = "drone-1"
 silent = false

@@ -8,7 +8,7 @@ attack = "an agent nominates and tries to accept a lost friendly's unknown posit
 expect = "rejected"
 expect_rule = "keep_out_friendly"
 expect_refusals = ["no acceptance of a lost vehicle on an agent's proposal", "no accept method on AgentPort"]
-end_s = 70
+end_s = 20
 
 [[agent]]
 id = "agent-planner"
@@ -30,13 +30,8 @@ at = [-122.4700, 37.8160]
 [[vehicle]]
 uid = "drone-1"
 platform = "x10"            # one of ours, 12 m/s cruise
-at = [-122.4723, 37.8120]   # 2 km east of the target
-
-[[step]]
-at_s = 0
-action = "vehicle"
-uid = "drone-1"
-silent = true               # its link is cut: lost from here on
+at = [-122.4723, 37.8120]   # 2 km east of the target, where it last reported
+lost_for_s = 60             # its link was cut a minute before: lost
 
 [[track]]
 id = "T-0001"
@@ -55,7 +50,7 @@ affiliation = "hostile"
 by = "op-1"
 
 [[step]]
-at_s = 60
+at_s = 1
 action = "nominate"
 agent = "agent-planner"
 rationale = "declared hostile fast boat holding west of the bridge; blade-1 is closest"
@@ -67,7 +62,7 @@ window_s = 600
 accept = ["drone-1"]
 
 [[step]]
-at_s = 62
+at_s = 3
 action = "agent_accept"
 agent = "agent-planner"
 uid = "drone-1"

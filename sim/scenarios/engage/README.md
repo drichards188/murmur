@@ -95,6 +95,7 @@ battery = 95                     # percent (default 95)
 report_interval_ms = 1000        # its link's report interval (default 1000)
 alt_m = 7000                     # rules 5: altitude MSL it reports (absent: none, 2D)
 lost_link_s = 30                 # its own lost-link timer (default 5): what a preload shortens
+lost_for_s = 60                  # lost before the run: silent, last reported this long before
 
 [[track]]                        # a perception track (not truth)
 id = "T-0001"

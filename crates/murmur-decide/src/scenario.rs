@@ -167,6 +167,10 @@ pub struct VehicleDef {
     /// a preload shortens and a restore puts back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lost_link_s: Option<f64>,
+    /// Lost before the run starts: silent from the start, its last report this many seconds
+    /// before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lost_for_s: Option<u32>,
 }
 
 fn battery() -> f64 {
@@ -617,13 +621,13 @@ pub fn run(
                 pos: at,
                 vel: v.velocity,
                 home: at,
-                silent: false,
+                silent: v.lost_for_s.is_some(),
                 interval: v.report_interval_ms,
-                last_t: T0,
+                last_t: T0.plus_ms(-i64::from(v.lost_for_s.unwrap_or(0)) * 1000),
                 goal: None,
                 orbit: false,
                 alt: v.alt_m,
-                silent_since: None,
+                silent_since: v.lost_for_s.map(|_| 0),
             },
         );
     }
