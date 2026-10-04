@@ -180,7 +180,8 @@ fn engine_err(e: EngineError) -> DecisionError {
         | EngineError::EngageIntent(_)
         | EngineError::NotAnEngagement(_)
         | EngineError::AlreadySigned { .. }
-        | EngineError::EngageLifecycle { .. } => 409,
+        | EngineError::EngageLifecycle { .. }
+        | EngineError::StalePicture { .. } => 409,
         EngineError::EngagementNeedsAuthority(_) | EngineError::ProposerCannotApprove { .. } => {
             403
         }
@@ -629,12 +630,28 @@ impl Decision {
     }
 
     /// Approve a pending intent (re-checked against the current world; voided if the
-    /// picture no longer holds), then dispatch it.
+    /// picture no longer holds), then dispatch it. Tests' shorthand for
+    /// [`Self::approve_seen`] without a preview (which an engagement needs).
+    #[cfg(test)]
     pub async fn approve(
         &self,
         by: &OperatorId,
         id: u64,
         note: Option<String>,
+    ) -> Result<Outcome, DecisionError> {
+        self.approve_seen(by, id, note, None).await
+    }
+
+    /// [`Self::approve`] with what the signer saw: an engagement's signature must carry the
+    /// preview its console displayed (`seen`: the effect point and time, and when that
+    /// preview was computed); the engine refuses it when that is stale or no longer its
+    /// picture.
+    pub async fn approve_seen(
+        &self,
+        by: &OperatorId,
+        id: u64,
+        note: Option<String>,
+        seen: Option<murmur_decide::SeenPicture>,
     ) -> Result<Outcome, DecisionError> {
         let id = IntentId(id);
         let (task, uids) = {
@@ -652,12 +669,18 @@ impl Decision {
             let world = self.snapshot();
             let session = Self::session(&mut core.engine, &mut core.sessions, by, &self.engage_operators)?;
             let r = if matches!(task, Task::Engage { .. }) {
-                match session.engagement_authority() {
-                    Some(auth) => core
+                match (session.engagement_authority(), seen) {
+                    (Some(auth), Some(seen)) => core
                         .engine
-                        .approve_engagement(id, auth, note, &world, &self.terrain.oracle())
+                        .approve_engagement(id, auth, note, seen, &world, &self.terrain.oracle())
                         .map(|_| ()),
-                    None => core
+                    (Some(_), None) => {
+                        return Err(DecisionError::new(
+                            400,
+                            "an engagement signature must carry the preview you saw (seen: t, effect_point, effect_t)",
+                        ));
+                    }
+                    (None, _) => core
                         .engine
                         .approve(id, session.authority(), note, &world, &self.terrain.oracle())
                         .map(|_| ()),
@@ -825,14 +848,17 @@ impl Decision {
     }
 
     /// Older orders still waiting for these vehicles are superseded (voided), and an
-    /// engagement under way on one of them is stopped: the newest order stands.
+    /// engagement in play on one of them (pending, approved or under way) is stopped with
+    /// that cause: the newest order stands.
     fn supersede(&self, core: &mut Core, id: IntentId, uids: &[DUid]) {
         let took: BTreeSet<&DUid> = uids.iter().collect();
         let stale: Vec<(IntentId, DUid)> = core
             .engine
             .intents()
             .filter(|i| {
-                i.id() != id && matches!(i.state(), State::PendingApproval | State::Approved)
+                i.id() != id
+                    && !matches!(i.spec().task, Task::Engage { .. })
+                    && matches!(i.state(), State::PendingApproval | State::Approved)
             })
             .filter_map(|i| {
                 let u = i.spec().uids.iter().find(|u| took.contains(u))?;
@@ -970,7 +996,7 @@ impl Decision {
             if let Some(p) =
                 murmur_decide::engage::terrain_point(&spec, &world.subset_for(&spec), &self.rules)
             {
-                self.terrain.prefetch(&[p]).await;
+                self.terrain.prefetch_near(&[p]).await;
             }
             return;
         }
@@ -997,20 +1023,35 @@ impl Decision {
 
     // ---- the loop -----------------------------------------------------------------------
 
+    /// The loop: once a second, [`Self::tick`] (which holds every engagement's picture);
+    /// beside it, its own task fetches terrain for pending engagements, so a slow or
+    /// failing terrain service never delays the tick (a gap in holding the picture aborts an
+    /// engagement: `picture_gap`).
     pub async fn run(self: Arc<Self>) {
+        let prefetcher = self.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                prefetcher.prefetch_engagements().await;
+            }
+        });
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             interval.tick().await;
-            self.prefetch_engagements().await;
             self.tick();
         }
     }
 
-    /// Pending and running engagements' predicted effect points, for the console's live
-    /// checks (the reach check asks a boat's or UGV's effect point for land or water).
+    /// Pending engagements' predicted effect points (they move with their tracks), for the
+    /// console's live checks and the signatures (the reach check asks a boat's or UGV's
+    /// effect point for land or water). Approved and dispatched engagements are held on
+    /// their approval snapshot, which needs no terrain. Skipped for a few seconds after
+    /// tidewater fails.
     async fn prefetch_engagements(&self) {
-        if !self.terrain.configured() {
+        if !self.terrain.configured() || self.terrain.backing_off() {
             return;
         }
         let specs: Vec<murmur_decide::IntentSpec> = self
@@ -1033,7 +1074,7 @@ impl Decision {
             })
             .collect();
         if !points.is_empty() {
-            self.terrain.prefetch(&points).await;
+            self.terrain.prefetch_near(&points).await;
         }
     }
 

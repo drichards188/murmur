@@ -36,7 +36,8 @@ use serde::{Deserialize, Serialize};
 use crate::areas::AreaSet;
 use crate::authority::Grants;
 use crate::engage::{
-    AssessResult, EngageOrder, EngagePreview, EngageSnapshot, Fallback, ObserveStep, StopCause,
+    AssessResult, EngageOrder, EngagePreview, EngageSnapshot, Fallback, ObserveStep, SeenPicture,
+    StopCause,
 };
 use crate::geo::LonLat;
 use crate::ids::{AgentId, IntentId, OperatorId, SessionId, Uid};
@@ -168,6 +169,9 @@ pub enum EventBody {
         /// just before it).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         snapshot: Option<Box<EngageSnapshot>>,
+        /// Engage: the preview the signer saw (the console sends it with the signature).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seen: Option<SeenPicture>,
     },
 
     /// A signature that is not yet enough: signature `n` of the `of` distinct approvers the
@@ -180,6 +184,27 @@ pub enum EventBody {
         n: u32,
         of: u32,
         note: Option<String>,
+        /// Engage: the picture this signature is on (every signature is bound to one;
+        /// replay recomputes it from the re-check just before).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snapshot: Option<Box<EngageSnapshot>>,
+        /// Engage: the preview the signer saw.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seen: Option<SeenPicture>,
+    },
+
+    /// Engage: the signatures so far (`dropped`) were on a picture that no longer holds
+    /// (the track left the earlier signer's prediction, was reclassified or its declaration
+    /// changed), so they are dropped and must be given again. At a signature the picture is
+    /// that signature's re-check (`inputs` absent); while pending it is the world then
+    /// (`inputs` present). Replay recomputes the comparison.
+    #[serde(rename = "approval.reset")]
+    ApprovalReset {
+        intent: IntentId,
+        dropped: Vec<OperatorId>,
+        reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inputs: Option<LoggedInputs>,
     },
 
     /// A human submitted an intent whose policy tier needs a human and lets the submitter
@@ -286,7 +311,9 @@ pub enum EventBody {
         intent: IntentId,
         cause: StopCause,
         reason: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// The fallback commanded; `null` when none was (stopped before dispatch, or
+        /// superseded by another order that stands).
+        #[serde(default)]
         fallback: Option<Fallback>,
     },
 

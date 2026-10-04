@@ -235,9 +235,11 @@ pub use catalog::{AutopilotKind, Catalog, Domain, PlatformFacts, SensorFact};
 pub use engage::{
     AssessResult, Assessment, EffectOrder, EffectRecord, EngageOrder, EngagePreview, EngageRules,
     EngageSnapshot, EngageWindow, Engagement, EngagementEvent, Fallback, FallbackOrder,
-    ObserveStep, PictureVerdict, StopCause, StopRecord,
+    ObserveStep, PictureVerdict, ResetRecord, SeenPicture, SignedPicture, StopCause, StopRecord,
 };
-pub use engine::{AgentPort, DispatchOrder, Engine, EngineError, Order, Preview, TaskOutcome};
+pub use engine::{
+    AgentPort, DispatchOrder, Engine, EngineError, Order, Preview, StepOutcome, TaskOutcome,
+};
 pub use geo::{LonLat, Polygon};
 pub use ids::{AgentId, IntentId, OperatorId, SessionId, Uid};
 pub use intent::{
@@ -252,7 +254,7 @@ pub use space::{
     SegmentId, SpaceAnswer, SpaceArea, SpaceOracle, SpaceOrder, SpaceQuery, SpaceRules,
     SpaceSegment, Window,
 };
-pub use terrain::{NoTerrain, PolygonTerrain, Surface, TerrainOracle};
+pub use terrain::{NearSample, NoTerrain, PolygonTerrain, Surface, TerrainOracle};
 pub use time::{Clock, ManualClock, SystemClock, Time};
 pub use world::{
     Affiliation, Fact, LoggedInputs, LoggedSpace, SpaceInputs, TerrainInputs, TrackFacts,

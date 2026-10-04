@@ -1147,3 +1147,53 @@ async fn an_agent_nominates_an_engagement_and_nothing_it_can_call_moves_it() {
     }
     r.replays();
 }
+
+#[tokio::test(start_paused = true)]
+async fn an_agent_order_on_an_engaging_platform_waits_for_a_human() {
+    let r = rig();
+    r.vehicle(2, Firmware::Copter, "fpv", (37.8120, -122.4900)); // armed, 440 m away
+    r.vehicle(3, Firmware::Copter, "fpv", (37.8068, -122.4460)); // Crissy Field, 4 km
+    sleep(Duration::from_millis(500)).await;
+    r.clock.set(snapshot::ms(crate::clock::wall()));
+    hostile_track(&r);
+    let out = r
+        .ok(
+            &planner(),
+            "propose_intent",
+            nomination(2, Some("T-0001 is declared hostile and holding in ez-gate-west")),
+        )
+        .await;
+    let eng = out["id"].as_u64().expect("id");
+    assert_eq!(out["state"], "pending_approval", "{out}");
+    let hold = |uid: Uid| json!({ "task": "hold", "uids": [uid], "rationale": "hold position" });
+    // a hold runs on its own anywhere else (the safety-commands tier)...
+    let other = r.ok(&planner(), "propose_intent", hold(3)).await;
+    assert_eq!(other["state"], "dispatched", "{other}");
+    // ...but not on a platform with an engagement in play: a human decides
+    let pv = r.ok(&planner(), "preview_intent", hold(2)).await;
+    assert_eq!(pv["would_reach"], "pending_approval", "{pv}");
+    let mine = r.ok(&planner(), "propose_intent", hold(2)).await;
+    assert_eq!(mine["state"], "pending_approval", "{mine}");
+    let held = mine["id"].as_u64().expect("id");
+    assert_eq!(r.state(eng), State::PendingApproval);
+    let v = r.d.intent_json(held).expect("intent");
+    assert_eq!(v["intent"]["policy"]["rule"], "(engagement in play)", "{v}");
+    assert_eq!(r.events("engage.stopped"), 0);
+    // an operator's own hold still runs, and supersedes the engagement: no fallback
+    let req: crate::decision::IntentRequest =
+        serde_json::from_value(json!({ "task": "hold", "uids": [2] })).expect("request");
+    let o = r.d.submit(&OperatorId::new("op-1"), req).await.expect("operator hold");
+    assert!(o.dispatched(), "{}", o.intent);
+    assert_eq!(r.state(eng), State::Voided);
+    let stop = r
+        .log
+        .lines()
+        .into_iter()
+        .find(|l| l.contains("\"type\":\"engage.stopped\""))
+        .expect("engage.stopped");
+    assert!(stop.contains("\"kind\":\"superseded\""), "{stop}");
+    assert!(stop.contains("\"fallback\":null"), "{stop}");
+    assert!(stop.contains(&format!("\"by\":{}", o.id.0)), "{stop}");
+    r.replays();
+}
+

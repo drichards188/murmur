@@ -112,7 +112,10 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
   `target_identity`, `target_recency`, `target_uncertainty`, `engagement_zone`, `no_strike`
   (area kinds `engagement_zone` and `no_strike` in `sim/areas/*.geojson`),
   `keep_out_friendly`, `keep_out_tracks`, `platform_armed`, `reach`. Thresholds in
-  `[rules.engage]`.
+  `[rules.engage]`, each bounded (`EngageRules::validate`). The effect circle must lie
+  wholly inside a zone and clear of every no-strike area. The effect point's land/water
+  answer comes from `TerrainOracle::sample_near` (a sample within `TERRAIN_NEAR_M`, logged
+  with where it was taken; not evaluated when the samples that near disagree).
 - **Preview** (`engage::preview`): straight-line intercept at catalog cruise speed against
   the track's constant-velocity projection, after `dispatch_delay_s`; the effect point and
   time; the uncertainty ellipse. Logged on every `check.result` (`preview`), recomputed by
@@ -121,7 +124,14 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
   lives only in a session opened with `Engine::open_operator_session_with(op, Grants {
   engage: true })` (the grants are logged with `session.opened`). `approve` refuses an
   engagement. Policy floor in `policy::decide`: never auto, never at submission, proposer
-  excluded, at least one approver.
+  excluded, never fewer than two approvers (`ENGAGE_MIN_APPROVERS`; replay holds it too).
+  Each signature carries the preview its signer saw (`SeenPicture`, refused when older than
+  `seen_max_age_s` or off the engine's effect point) and stores its own snapshot; when the
+  track changes between signatures (identity, declaration, beyond the deviation tolerance),
+  at the next signature or in `step_engagements`, every signature is dropped
+  (`approval.reset`). An agent's order on a vehicle with an engagement in play goes to a
+  human (`(engagement in play)`; the engagements in play are logged with each decision as
+  `engaged`).
 - **Hold the picture**: the final `approval.granted` carries an `EngageSnapshot`;
   `Engine::step_engagements(world)` (once a second) logs `engage.picture` (declared,
   reclassified, recency, deviation, keep-outs, the platform's link, the window and
@@ -130,8 +140,12 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
   `FallbackOrder`; when it holds and is ready it logs `engage.effect` and returns an
   `EffectOrder`. After the effect it logs `engage.observe` each second and finally
   `engage.assessed` (persists, ceased, unknown).
-- **Stop**: `Engine::abort_engagement(id, &HumanAuthority, note)` (any operator) and
-  `Engine::stop_engagement_system(id, reason)` (the bridge: retasked, task failed).
+- **Stop**: `Engine::abort_engagement(id, &HumanAuthority, note)` (any operator),
+  `Engine::stop_engagement_system(id, reason)` (the bridge: task failed) and
+  `Engine::supersede_engagement(id, by)` (another order dispatched to its platform: cause
+  `superseded`, `fallback: null`). A picture more than `max_picture_gap_s` after the last
+  fails `picture_gap`. `step_engagements` returns a `StepOutcome`: the events to act on,
+  and each engagement whose step failed, on its own.
   `dispatch` and `finish` refuse engagements; `dispatch_order` returns `Order::Engage`.
 - **Scenarios** (`scenario.rs`, `murmur-scenarios`, `sim/scenarios/engage/`): the
   adversarial set, one or more per invariant, with log tampering; see that directory's

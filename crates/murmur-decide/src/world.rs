@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::areas::AreaSet;
 use crate::catalog::{AutopilotKind, PlatformFacts};
 use crate::geo::LonLat;
-use crate::ids::Uid;
+use crate::ids::{IntentId, Uid};
 use crate::intent::{IntentSpec, Task};
 use crate::rules::{RulesConfig, needs_terrain};
 use crate::space::SpaceAnswer;
@@ -190,6 +190,17 @@ pub struct TerrainSample {
     pub lon_e7: i64,
     pub lat_e7: i64,
     pub surface: Surface,
+    /// When the answer is a nearby sample (an engagement's moving effect point): where it
+    /// was taken and how far from the point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<SampleFrom>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SampleFrom {
+    pub lon_e7: i64,
+    pub lat_e7: i64,
+    pub distance_m: f64,
 }
 
 impl TerrainInputs {
@@ -274,6 +285,11 @@ pub struct WorldSnapshot {
     /// only. Empty (and absent in the log) when there are none or in logs from before.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tracks: BTreeMap<String, TrackFacts>,
+    /// Engine-filled: the intent's vehicles that have an engagement in play (pending,
+    /// approved or dispatched), by the engagement's id. An agent's order on one of them
+    /// always goes to a human. Absent when empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub engaged: BTreeMap<Uid, IntentId>,
 }
 
 /// A decision's inputs as logged: the [`WorldSnapshot`] with the area set replaced by its
@@ -293,6 +309,9 @@ pub struct LoggedInputs {
     /// The track picture the decision was taken against (absent when empty).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tracks: BTreeMap<String, TrackFacts>,
+    /// The intent's vehicles with an engagement in play (absent when none).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub engaged: BTreeMap<Uid, IntentId>,
 }
 
 impl LoggedInputs {
@@ -313,6 +332,7 @@ impl LoggedInputs {
                 },
             },
             tracks: world.tracks.clone(),
+            engaged: world.engaged.clone(),
         }
     }
 
@@ -351,6 +371,7 @@ impl LoggedInputs {
             terrain: self.terrain.clone(),
             space,
             tracks: self.tracks.clone(),
+            engaged: self.engaged.clone(),
         }
     }
 }
@@ -390,6 +411,8 @@ impl WorldSnapshot {
             // The whole track picture: few tracks, and an engagement decision (Phase E)
             // must be replayable against exactly the picture it saw.
             tracks: self.tracks.clone(),
+            // engine-owned: filled from its own intents
+            engaged: BTreeMap::new(),
         }
     }
 
@@ -412,23 +435,26 @@ impl WorldSnapshot {
         if matches!(spec.task, Task::Engage { .. }) {
             w.terrain = match crate::engage::terrain_point(spec, &w, cfg) {
                 None => TerrainInputs::NotNeeded,
-                Some(p) => match oracle.sample(w.t, &[p]) {
-                    Ok(answers) if answers.len() == 1 => TerrainInputs::Sampled {
-                        samples: answers
-                            .into_iter()
-                            .map(|surface| {
-                                let (lon_e7, lat_e7) = p.e7();
-                                TerrainSample {
-                                    lon_e7,
-                                    lat_e7,
-                                    surface,
-                                }
-                            })
-                            .collect(),
-                    },
-                    Ok(_) => TerrainInputs::Sampled {
-                        samples: Vec::new(),
-                    },
+                Some(p) => match oracle.sample_near(w.t, p, crate::engage::TERRAIN_NEAR_M) {
+                    Ok(near) => {
+                        let (lon_e7, lat_e7) = p.e7();
+                        let from = (near.distance_m > 0.0).then(|| {
+                            let (lon_e7, lat_e7) = near.at.e7();
+                            SampleFrom {
+                                lon_e7,
+                                lat_e7,
+                                distance_m: (near.distance_m * 10.0).round() / 10.0,
+                            }
+                        });
+                        TerrainInputs::Sampled {
+                            samples: vec![TerrainSample {
+                                lon_e7,
+                                lat_e7,
+                                surface: near.surface,
+                                from,
+                            }],
+                        }
+                    }
                     Err(reason) => TerrainInputs::Unavailable { reason },
                 },
             };
@@ -447,6 +473,7 @@ impl WorldSnapshot {
                                 lon_e7,
                                 lat_e7,
                                 surface,
+                                from: None,
                             }
                         })
                         .collect(),

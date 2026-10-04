@@ -13,12 +13,17 @@
 //! clock the vehicles' conditions run on; without it, the current time. Either way it is
 //! clamped into the scenario window from `/v1/info`. The surface and depth each decision
 //! read are logged with it, so replay doesn't depend on any of this.
+//!
+//! Waypoints are answered exactly (the point fetched). An engagement's predicted effect
+//! point moves with its track every second, so it alone is answered from the nearest
+//! sample within [`murmur_decide::engage::TERRAIN_NEAR_M`] (the log says where that sample
+//! was and how far), and not at all when the samples that near disagree (a shoreline).
 
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use murmur_decide::{LonLat, Surface, TerrainOracle, Time};
+use murmur_decide::{LonLat, NearSample, Surface, TerrainOracle, Time};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -28,12 +33,13 @@ use crate::clock;
 
 /// A cached answer is used this long; the tide moves the shoreline.
 const CACHE_TTL_S: f64 = 600.0;
-/// A point the cache has no exact answer for takes the nearest cached answer within this
-/// many metres. An engagement's predicted effect point moves with its track every second, so
-/// the point prefetched and the point checked a moment later differ; tidewater's own depth
-/// grid is coarser than this.
-const NEAR_M: f64 = 50.0;
+/// An effect point within this many metres of a cached sample is not fetched again: the
+/// samples it is answered from are at most [`murmur_decide::engage::TERRAIN_NEAR_M`] away,
+/// and a shoreline shows as neighbours that disagree.
+const NEAR_FETCH_M: f64 = murmur_decide::engage::TERRAIN_NEAR_M / 2.0;
 const TIMEOUT: Duration = Duration::from_secs(3);
+/// After tidewater fails, background fetches wait this long before asking again.
+const BACKOFF_S: f64 = 5.0;
 
 type Key = (i64, i64);
 
@@ -46,6 +52,8 @@ pub struct Terrain {
     client: Option<Tidewater>,
     cache: Mutex<HashMap<Key, Cached>>,
     last_error: Mutex<Option<String>>,
+    /// When tidewater last failed (wall s).
+    failed_at: Mutex<Option<f64>>,
     /// Tests: a fixed land/water map instead of tidewater.
     #[cfg(test)]
     fixed: Option<murmur_decide::PolygonTerrain>,
@@ -58,6 +66,7 @@ impl Terrain {
             client: None,
             cache: Mutex::default(),
             last_error: Mutex::new(None),
+            failed_at: Mutex::new(None),
             fixed: Some(map),
         }
     }
@@ -76,6 +85,7 @@ impl Terrain {
             client,
             cache: Mutex::default(),
             last_error: Mutex::new(err),
+            failed_at: Mutex::new(None),
             #[cfg(test)]
             fixed: None,
         }
@@ -85,20 +95,35 @@ impl Terrain {
         self.client.is_some()
     }
 
-    /// Fetch whatever the cache can't answer for these points.
+    /// Fetch whatever the cache can't answer exactly for these points (waypoints).
     pub async fn prefetch(&self, points: &[LonLat]) {
+        self.fetch(points, 0.0).await;
+    }
+
+    /// Fetch the effect points no cached sample is near ([`NEAR_FETCH_M`]).
+    pub async fn prefetch_near(&self, points: &[LonLat]) {
+        self.fetch(points, NEAR_FETCH_M).await;
+    }
+
+    /// Tidewater failed less than [`BACKOFF_S`] ago: a background fetch should wait.
+    pub fn backing_off(&self) -> bool {
+        let at = *self.failed_at.lock().unwrap_or_else(|e| e.into_inner());
+        at.is_some_and(|t| clock::wall() - t < BACKOFF_S)
+    }
+
+    async fn fetch(&self, points: &[LonLat], skip_within_m: f64) {
         let Some(client) = &self.client else { return };
         let now = clock::wall();
         let missing: Vec<LonLat> = {
             let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
             cache.retain(|_, c| now - c.at < CACHE_TTL_S);
             let mut seen = std::collections::HashSet::new();
-            // a point within half the near radius of a cached answer needs no new request
             let close = |p: &LonLat| {
-                cache.keys().any(|k| {
-                    let q = LonLat::new(k.0 as f64 / 1e7, k.1 as f64 / 1e7);
-                    murmur_decide::geo::haversine_m(*p, q) <= NEAR_M / 2.0
-                })
+                skip_within_m > 0.0
+                    && cache.keys().any(|k| {
+                        let q = LonLat::new(k.0 as f64 / 1e7, k.1 as f64 / 1e7);
+                        murmur_decide::geo::haversine_m(*p, q) <= skip_within_m
+                    })
             };
             points
                 .iter()
@@ -118,10 +143,12 @@ impl Terrain {
                     cache.insert(p.e7(), Cached { surface, at: now });
                 }
                 *err = None;
+                *self.failed_at.lock().unwrap_or_else(|e| e.into_inner()) = None;
             }
             Err(e) => {
                 eprintln!("terrain: {e}");
                 *err = Some(e);
+                *self.failed_at.lock().unwrap_or_else(|e| e.into_inner()) = Some(clock::wall());
             }
         }
     }
@@ -142,43 +169,93 @@ impl TerrainOracle for CacheOracle<'_> {
             return map.sample(at, points);
         }
         let _ = at; // tidewater is asked at scenario time when prefetching
-        if t.client.is_none() {
-            let why = t
-                .last_error
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone();
-            return Err(
-                why.unwrap_or_else(|| "no terrain source (MURMUR_TIDEWATER_URL is not set)".into())
-            );
-        }
+        t.source()?;
         let cache = t.cache.lock().unwrap_or_else(|e| e.into_inner());
-        let near = |p: &LonLat| {
-            cache
-                .iter()
-                .map(|(k, c)| {
-                    let q = LonLat::new(k.0 as f64 / 1e7, k.1 as f64 / 1e7);
-                    (murmur_decide::geo::haversine_m(*p, q), c)
-                })
-                .filter(|(d, _)| *d <= NEAR_M)
-                .min_by(|a, b| a.0.total_cmp(&b.0))
-                .map(|(_, c)| c.surface.clone())
-        };
         points
             .iter()
-            .map(|p| cache.get(&p.e7()).map(|c| c.surface.clone()).or_else(|| near(p)))
+            .map(|p| cache.get(&p.e7()).map(|c| c.surface.clone()))
             .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| {
-                let why = t
-                    .last_error
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone();
-                format!(
-                    "tidewater did not answer for every waypoint ({})",
-                    why.unwrap_or_else(|| "not fetched".into())
-                )
+            .ok_or_else(|| t.not_answered("every waypoint"))
+    }
+
+    fn sample_near(&self, at: Time, p: LonLat, within_m: f64) -> Result<NearSample, String> {
+        let t = self.0;
+        #[cfg(test)]
+        if t.fixed.is_some() {
+            return self.sample(at, &[p]).map(|s| NearSample {
+                surface: s[0].clone(),
+                at: p,
+                distance_m: 0.0,
+            });
+        }
+        let _ = at;
+        t.source()?;
+        let cache = t.cache.lock().unwrap_or_else(|e| e.into_inner());
+        let near: Vec<(f64, LonLat, &Surface)> = cache
+            .iter()
+            .map(|(k, c)| {
+                let q = LonLat::new(k.0 as f64 / 1e7, k.1 as f64 / 1e7);
+                (murmur_decide::geo::haversine_m(p, q), q, &c.surface)
             })
+            .filter(|(d, _, _)| *d <= within_m)
+            .collect();
+        nearest_agreeing(&near, within_m).ok_or_else(|| t.not_answered("the effect point"))?
+    }
+}
+
+impl Terrain {
+    /// `Err` when there is no terrain source at all.
+    fn source(&self) -> Result<(), String> {
+        if self.client.is_some() {
+            return Ok(());
+        }
+        let why = self
+            .last_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        Err(why.unwrap_or_else(|| "no terrain source (MURMUR_TIDEWATER_URL is not set)".into()))
+    }
+
+    fn not_answered(&self, what: &str) -> String {
+        let why = self
+            .last_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        format!(
+            "tidewater did not answer for {what} ({})",
+            why.unwrap_or_else(|| "not fetched".into())
+        )
+    }
+}
+
+/// The nearest of the samples within `within_m` (`None`: there are none), unless they
+/// disagree on land, water or coverage (a shoreline, or a coverage edge): then `Err`.
+fn nearest_agreeing(
+    near: &[(f64, LonLat, &Surface)],
+    within_m: f64,
+) -> Option<Result<NearSample, String>> {
+    let (d, q, s) = near.iter().min_by(|a, b| a.0.total_cmp(&b.0))?;
+    if let Some((d2, _, other)) = near.iter().find(|(_, _, o)| !s.same_kind(o)) {
+        return Some(Err(format!(
+            "samples within {within_m:.0} m of the effect point disagree ({} at {d:.0} m, {} at {d2:.0} m): a shoreline, not evaluated",
+            kind(s),
+            kind(other)
+        )));
+    }
+    Some(Ok(NearSample {
+        surface: (*s).clone(),
+        at: *q,
+        distance_m: *d,
+    }))
+}
+
+fn kind(s: &Surface) -> &'static str {
+    match s {
+        Surface::Water { .. } => "water",
+        Surface::Land => "land",
+        Surface::OutsideCoverage => "outside coverage",
     }
 }
 
@@ -374,6 +451,46 @@ mod tests {
         let t = Terrain::new(None);
         let r = t.oracle().sample(Time(0), &[LonLat::new(-122.47, 37.82)]);
         assert!(r.is_err_and(|e| e.contains("MURMUR_TIDEWATER_URL")));
+    }
+
+    #[test]
+    fn effect_points_take_a_near_sample_unless_the_neighbours_disagree() {
+        let q1 = LonLat::new(-122.4702, 37.82);
+        let q2 = LonLat::new(-122.4704, 37.82);
+        let water = Surface::Water { depth_m: 12.0 };
+        let deeper = Surface::Water { depth_m: 14.0 };
+        // none near: not answered
+        assert!(nearest_agreeing(&[], 50.0).is_none());
+        // the nearest of agreeing samples, with where it was taken
+        let near = [(18.0, q1, &water), (35.0, q2, &deeper)];
+        let s = nearest_agreeing(&near, 50.0).expect("near").expect("agree");
+        assert_eq!((s.surface, s.at, s.distance_m), (water.clone(), q1, 18.0));
+        // a shoreline: land and water both within reach
+        let near = [(18.0, q1, &water), (35.0, q2, &Surface::Land)];
+        let e = nearest_agreeing(&near, 50.0).expect("near").expect_err("shoreline");
+        assert!(e.contains("shoreline"), "{e}");
+    }
+
+    #[test]
+    fn waypoints_are_answered_exactly() {
+        let mut t = Terrain::new(Some("http://127.0.0.1:9"));
+        assert!(t.configured());
+        let p = LonLat::new(-122.47, 37.82);
+        t.cache.get_mut().expect("cache").insert(
+            p.e7(),
+            Cached {
+                surface: Surface::Land,
+                at: clock::wall(),
+            },
+        );
+        let o = t.oracle();
+        assert_eq!(o.sample(Time(0), &[p]), Ok(vec![Surface::Land]));
+        // 20 m away: a waypoint is not answered from a neighbour, an effect point is
+        let q = murmur_decide::engage::offset(p, 20.0, 0.0);
+        assert!(o.sample(Time(0), &[q]).is_err());
+        let n = o.sample_near(Time(0), q, 50.0).expect("near sample");
+        assert_eq!(n.surface, Surface::Land);
+        assert!((n.distance_m - 20.0).abs() < 0.5, "{}", n.distance_m);
     }
 
     #[test]

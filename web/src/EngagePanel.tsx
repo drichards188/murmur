@@ -11,8 +11,9 @@ import { callsign } from './types'
 /** The nomination form (Phase E): pair a declared-hostile track with one armed platform for
  *  an abstract effect (a point, a radius, a time). The platform list comes from the bridge's
  *  dry run (`POST /api/engage/options`: every check and the preview on the world now, nothing
- *  created), reachable platforms first. Nominating puts it in the inbox, where two operators
- *  with engagement authority (never the proposer) decide it. */
+ *  created), listed by uid: no ranking, no recommendation, nothing preselected; the operator
+ *  picks. Nominating puts it in the inbox, where two operators with engagement authority
+ *  (never the proposer) decide it. */
 
 interface Props {
   tracks: TracksMessage | null
@@ -44,7 +45,6 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onNomin
   const [rationale, setRationale] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [showAll, setShowAll] = useState(false)
   const [tick, setTick] = useState(0)
 
   useEffect(() => {
@@ -66,10 +66,6 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onNomin
           if (gone) return
           setOptions(o)
           setError(null)
-          if (uid == null) {
-            const first = o.find((x) => x.passed)
-            if (first) setUid(first.uid)
-          }
         })
         .catch((e) => !gone && setError((e as Error).message))
     }, 250)
@@ -90,7 +86,6 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onNomin
 
   const t = (tracks?.tracks ?? []).find((x) => x.id === track)
   const reachable = (options ?? []).filter((o) => o.passed)
-  const others = (options ?? []).filter((o) => !o.passed)
   const nameOf = (u: number) => {
     const v = vehicles.find((x) => x.uid === u)
     return v ? `${callsign(v)} (${v.identity?.short ?? v.identity?.platform ?? ''})` : `vehicle ${u}`
@@ -161,33 +156,24 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onNomin
 
       <section className="eg-options">
         <span className="ix-label">
-          Armed platforms {options ? `(${reachable.length} can take it now)` : '(checking...)'}
+          Armed platforms {options ? `(${reachable.length} of ${options.length} pass every check now; listed by uid, not ranked)` : '(checking...)'}
         </span>
-        {reachable.map((o) => (
-          <button key={o.uid} className={`eg-opt ok ${uid === o.uid ? 'on' : ''}`} onClick={() => setUid(o.uid)}>
-            <b>{nameOf(o.uid)}</b>
-            {o.preview && (
-              <span>
-                effect {fmtRel(o.preview.effect_t - now())}, {(o.preview.distance_m / 1000).toFixed(2)} km at {o.preview.cruise_mps.toFixed(0)} m/s
-              </span>
-            )}
-          </button>
-        ))}
-        {others.length > 0 && (
-          <button className="ix-toggle" onClick={() => setShowAll(!showAll)}>
-            {showAll ? 'Hide' : 'Show'} {others.length} that can't
-          </button>
-        )}
-        {showAll &&
-          others.map((o) => {
-            const f = firstFail(o.checks)
-            return (
-              <button key={o.uid} className={`eg-opt bad ${uid === o.uid ? 'on' : ''}`} onClick={() => setUid(o.uid)}>
-                <b>{nameOf(o.uid)}</b>
+        {uid == null && options && options.length > 0 && <p className="eg-hint">Pick a platform: nothing is chosen for you.</p>}
+        {(options ?? []).map((o) => {
+          const f = firstFail(o.checks)
+          return (
+            <button key={o.uid} className={`eg-opt ${o.passed ? 'ok' : 'bad'} ${uid === o.uid ? 'on' : ''}`} onClick={() => setUid(o.uid)}>
+              <b>{nameOf(o.uid)}</b>
+              {o.passed && o.preview ? (
+                <span>
+                  effect {fmtRel(o.preview.effect_t - now())}, {(o.preview.distance_m / 1000).toFixed(2)} km at {o.preview.cruise_mps.toFixed(0)} m/s
+                </span>
+              ) : (
                 <span>{f ? `${f.rule}: ${f.detail}` : 'some check did not pass'}</span>
-              </button>
-            )
-          })}
+              )}
+            </button>
+          )
+        })}
         {options && !options.length && <p className="eg-hint">No armed platform in the fleet.</p>}
       </section>
 

@@ -9,8 +9,10 @@
 //! Intents: `POST /api/intents` (the task request plus optional `constraints` and
 //! `rationale`; `task: "engage"` with `track`, `effect_radius_m`, `window_s`, `fallback`
 //! nominates an engagement, Phase E), `GET /api/intents`, `GET /api/intents/{id}`, `POST
-//! /api/intents/{id}/approve|reject|cancel|abort` (optional body `{"note": "..."}`; `abort`
-//! stops an approved or dispatched engagement before its effect, any operator), `GET
+//! /api/intents/{id}/approve|reject|cancel|abort` (optional body `{"note": "..."}`; an
+//! engagement's approve also carries `"seen": {"t", "effect_point", "effect_t"}`, the
+//! preview the signer was shown, which the engine refuses when stale; `abort` stops an
+//! approved or dispatched engagement before its effect, any operator), `GET
 //! /api/inbox`, `GET /api/operators` (who may sign an engagement), `POST /api/engage/options`
 //! (the nomination form's dry run: which armed platforms could take it, with checks and
 //! preview; nothing is created or logged). These name the operator in the `X-Murmur-Operator` header, which must be one
@@ -234,11 +236,22 @@ async fn intent_action(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let note = if body.iter().all(u8::is_ascii_whitespace) {
-        None
+    let (note, seen) = if body.iter().all(u8::is_ascii_whitespace) {
+        (None, None)
     } else {
         match serde_json::from_slice::<Value>(&body) {
-            Ok(v) => v["note"].as_str().map(str::to_string),
+            Ok(v) => {
+                let seen = match v.get("seen").filter(|s| !s.is_null()) {
+                    None => None,
+                    Some(s) => match serde_json::from_value::<murmur_decide::SeenPicture>(s.clone()) {
+                        Ok(s) => Some(s),
+                        Err(e) => {
+                            return error(StatusCode::UNPROCESSABLE_ENTITY, format!("seen: {e}"));
+                        }
+                    },
+                };
+                (v["note"].as_str().map(str::to_string), seen)
+            }
             Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, format!("body: {e}")),
         }
     };
@@ -247,7 +260,7 @@ async fn intent_action(
         Err(e) => return decision_error(e),
     };
     let result = match action.as_str() {
-        "approve" => app.decision.approve(&op, id, note).await,
+        "approve" => app.decision.approve_seen(&op, id, note, seen).await,
         "reject" => app.decision.reject(&op, id, note),
         "cancel" => app.decision.cancel(&op, id, note),
         "abort" => app.decision.abort(&op, id, note),

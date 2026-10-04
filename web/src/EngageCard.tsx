@@ -60,29 +60,33 @@ function ll(p: [number, number]) {
   return `${p[1].toFixed(5)}, ${p[0].toFixed(5)}`
 }
 
+/** The checks as the bridge last ran them on the world now (`live`), each with what it was at
+ *  the nomination; without a live run, the nomination's. An engagement check is matched by
+ *  rule alone (its subject changes: a keep-out names the vehicle that fails it), the
+ *  generic vehicle rules by rule and vehicle. */
 function ChecksList({ checks, live, vehicles }: { checks: Check[]; live?: Check[]; vehicles: Vehicle[] }) {
-  const key = (c: Check) => `${c.rule}|${c.uid ?? ''}`
-  const liveBy = new Map((live ?? []).map((c) => [key(c), c]))
+  const key = (c: Check) => (ENGAGE_RULES.includes(c.rule) ? c.rule : `${c.rule}|${c.uid ?? ''}`)
+  const atNomination = new Map(checks.map((c) => [key(c), c]))
   const rank = (c: Check) => {
     const k = ENGAGE_RULES.indexOf(c.rule)
     return (k < 0 ? 100 : k) + OUTCOME_ORDER[c.outcome] * 0.01
   }
-  const sorted = [...checks].sort((a, b) => rank(a) - rank(b))
+  const sorted = [...(live ?? checks)].sort((a, b) => rank(a) - rank(b))
   return (
     <div className="eg-checks">
       {sorted.map((c, k) => {
-        const now = liveBy.get(key(c))
-        const changed = now && now.outcome !== c.outcome
+        const then = live ? atNomination.get(key(c)) : undefined
+        const changed = then != null && then.outcome !== c.outcome
         return (
-          <div key={k} className={`ix-check ${(now ?? c).outcome} ${changed ? 'eg-changed' : ''}`}>
-            <span className="ix-mark">{MARK[(now ?? c).outcome]}</span>
+          <div key={k} className={`ix-check ${c.outcome} ${changed ? 'eg-changed' : ''}`}>
+            <span className="ix-mark">{MARK[c.outcome]}</span>
             <span className="ix-text">
               <span className="ix-rule">
                 {c.rule}
                 {c.uid != null && <i> {nameOf(vehicles, c.uid)}</i>}
-                {changed && <em className="eg-was"> was {MARK[c.outcome].toLowerCase()} at nomination</em>}
+                {changed && <em className="eg-was"> was {MARK[then.outcome].toLowerCase()} at nomination</em>}
               </span>
-              <span className="ix-detail">{(now ?? c).detail}</span>
+              <span className="ix-detail">{c.detail}</span>
             </span>
           </div>
         )
@@ -159,19 +163,36 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
   const expired = i.expires_t != null && i.expires_t <= now()
   const worse = (live?.changed ?? []).filter((c) => c.worse)
   const drift = live?.track_drift_m ?? null
+  // the preview on screen, and how old it is: a signature carries it, and the engine refuses
+  // one that is stale or no longer its picture
+  const ageS = live ? (now() - live.t) / 1000 : null
+  const maxAgeS = view?.seen_max_age_s ?? 15
+  const stale = ageS == null || ageS > maxAgeS
+  const livePasses = live?.passed === true && live.preview != null
   const signHint = isProposer
     ? `You (${operator}) proposed this: the proposer may not approve it (two-person rule).`
     : !hasAuthority
       ? `${operator} has no engagement authority (MURMUR_ENGAGE_OPERATORS). Act as one of: ${(view?.eligible ?? []).join(', ') || 'none listed'}.`
       : alreadySigned
         ? `You (${operator}) already signed; another operator with engagement authority must.`
-        : `Signing as ${operator}: signature ${signed.length + 1} of ${needed}.`
+        : !live
+          ? 'No live picture from the bridge yet: wait for it before signing.'
+          : !livePasses
+            ? 'Some check fails on the world now: it cannot be signed as it stands.'
+            : stale
+              ? `The preview on screen is ${Math.round(ageS ?? 0)} s old (limit ${maxAgeS} s): wait for a fresh one.`
+              : `Signing as ${operator}: signature ${signed.length + 1} of ${needed}, on the preview shown (${Math.round(ageS ?? 0)} s old).`
+  const canApprove = canSign && livePasses && !stale
 
   const act = async (action: 'approve' | 'reject') => {
     setBusy(true)
     setError(null)
     try {
-      const r = await intentAction(i.id, action, note)
+      const seen =
+        action === 'approve' && live?.preview
+          ? { t: live.t, effect_point: live.preview.effect_point, effect_t: live.preview.effect_t }
+          : undefined
+      const r = await intentAction(i.id, action, note, seen)
       const last = r.intent.history[r.intent.history.length - 1]
       if (action === 'reject') onDone(`i${i.id} engagement rejected by ${getOperator()}`, 'ok')
       else if (r.intent.state === 'pending_approval') onDone(`i${i.id} signed by ${getOperator()} (${(r.intent.concurrences?.length ?? 0)} of ${needed}); another approver must sign`, 'ok')
@@ -245,7 +266,10 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
       </section>
 
       <section className="eg-sec">
-        <span className="ix-label">Preview {live?.preview ? '(on the world now)' : '(at nomination)'}</span>
+        <span className="ix-label">
+          Preview {live?.preview ? `(on the world now, computed ${Math.max(0, Math.round(ageS ?? 0))} s ago)` : '(at nomination)'}
+          {live?.preview && stale && <em className="eg-was"> stale</em>}
+        </span>
         {pv ? <PreviewFacts p={pv} now={now} platform={platform} /> : <p className="bad">No intercept: see the reach check.</p>}
         <p className="eg-fallback">
           If stopped before the effect (abort, void, link loss): <b>{FALLBACK_LABEL[p.fallback]}</b>
@@ -263,12 +287,22 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
         <span className="ix-label">
           Approvals {signed.length} of {needed}
         </span>
+        {view?.reset && (
+          <p className="eg-alarm" role="status">
+            Signatures of {view.reset.dropped.join(', ')} dropped {fmtRel(view.reset.t - now())}: {view.reset.reason}. They must sign again on the picture as it is now.
+          </p>
+        )}
+        {(view?.signatures ?? []).map((s) => (
+          <p key={s.by} className="muted">
+            {s.by} signed {fmtRel(s.t - now())} on the effect point {ll(s.effect_point)}.
+          </p>
+        ))}
         <p>
           {signed.length ? `Signed: ${signed.join(', ')}. ` : ''}
           May sign: {(view?.eligible ?? []).join(', ') || 'nobody listed'}
           {view?.proposer ? `; not ${view.proposer} (proposer)` : ''}.
         </p>
-        <p className={canSign ? 'muted' : 'eg-hint'}>{signHint}</p>
+        <p className={canApprove ? 'muted' : 'eg-hint'}>{signHint}</p>
       </section>
 
       <footer className="ix-actions" onClick={(e) => e.stopPropagation()}>
@@ -276,7 +310,7 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
         <button className="ix-reject" disabled={busy || expired} onClick={() => act('reject')}>
           Reject
         </button>
-        <button className="ix-approve eg-approve" disabled={busy || expired || !canSign} onClick={() => act('approve')} title={signHint}>
+        <button className="ix-approve eg-approve" disabled={busy || expired || !canApprove} onClick={() => act('approve')} title={signHint}>
           Approve {signed.length + 1}/{needed}
         </button>
         {error && <p className="error ix-error">{error}</p>}
@@ -353,6 +387,7 @@ function RunCard({ intent: i, vehicles, now, selected, onFocus, onDone }: CardPr
       {e?.stop && (
         <p className="eg-stop">
           <b>{i.state === 'aborted' ? 'Aborted' : 'Voided'}</b>: {e.stop.reason}
+          {e.stop.cause.kind === 'superseded' ? ` (superseded by i${e.stop.cause.by})` : ''}
           {e.stop.fallback ? `; fallback ${e.stop.fallback} commanded` : ''}
         </p>
       )}

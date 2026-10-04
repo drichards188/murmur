@@ -76,7 +76,7 @@ export interface Engagement {
   snapshot?: EngageSnapshot
   watch?: PictureVerdict
   effect?: { t: number; point: LngLat; radius_m: number; planned_t: number }
-  stop?: { t: number; cause: { kind: 'operator' | 'picture' | 'system'; by?: string }; reason: string; fallback?: Fallback }
+  stop?: { t: number; cause: { kind: 'operator' | 'picture' | 'system' | 'superseded'; by?: string | number }; reason: string; fallback?: Fallback | null }
   observe?: { covered_by: string[]; track_present: boolean; seen_after_effect_t?: number }
   covered_s: number
   assessment?: { t: number; result: 'persists' | 'ceased' | 'unknown'; evidence: string; covered_s: number }
@@ -92,6 +92,12 @@ export interface EngageView {
   proposer_excluded: boolean
   eligible: string[]
   engage_operators: string[]
+  /** each current signature, when, and the effect point it was on */
+  signatures?: { by: string; t: number; effect_point: LngLat; effect_t: number }[]
+  /** signatures dropped because the picture changed between them */
+  reset?: { t: number; dropped: string[]; reason: string } | null
+  /** the oldest preview a signature may carry */
+  seen_max_age_s?: number
   track_now: {
     position: LngLat
     pos_sigma_m: number

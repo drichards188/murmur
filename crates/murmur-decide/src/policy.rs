@@ -26,9 +26,11 @@
 //! operators must sign before the intent is approved) and `proposer_may_approve = false`
 //! (the human who proposed it can't be one of them). An engagement has a floor whatever the
 //! file says: it is never auto-approved and never approved at submission, its proposer never
-//! approves it, and at least one approver signs it (DoD Directive 3000.09: appropriate human
+//! approves it, and at least two distinct approvers sign it (DoD Directive 3000.09: appropriate human
 //! judgment over the use of force); only an operator session with engagement authority may
-//! sign it (`crate::Engine::approve_engagement`).
+//! sign it (`crate::Engine::approve_engagement`). The floor is two approvers
+//! ([`ENGAGE_MIN_APPROVERS`]); a file may ask for more, never fewer. An agent's order on a
+//! vehicle with an engagement in play is never auto (`(engagement in play)`).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -451,13 +453,30 @@ fn segment_leaves(
 }
 
 pub fn decide(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> PolicyDecision {
-    let d = decide_by_file(spec, world, policy);
+    let mut d = decide_by_file(spec, world, policy);
     if spec.kind() != TaskKind::Engage {
+        // An agent's order on a vehicle with an engagement in play (pending, approved or
+        // dispatched) goes to a human: a hold or an rtl would otherwise run on its own and
+        // supersede, so stop, the engagement. An operator's own order is a human decision.
+        if spec.source.is_agent() && d.tier == Tier::Auto && !world.engaged.is_empty() {
+            let list: Vec<String> = world
+                .engaged
+                .iter()
+                .map(|(u, i)| format!("{u} ({i})"))
+                .collect();
+            d.reason = format!(
+                "tier {} is auto, but an agent's order on a vehicle with an engagement in play needs a human: {}",
+                d.rule,
+                list.join(", ")
+            );
+            d.rule = "(engagement in play)".into();
+            d.tier = Tier::Human;
+            d.submitter_authorizes = false;
+        }
         return d;
     }
-    // The engagement floor: a human always, never at submission, never the proposer, at
-    // least one approver; whatever the file says.
-    let mut d = d;
+    // The engagement floor, whatever the file says: a human always, never at submission,
+    // never the proposer, and two distinct approvers at least (two-person rule).
     if d.tier == Tier::Auto {
         d.reason = format!(
             "tier {} is auto, but an engagement always needs human approval (DoD Directive 3000.09)",
@@ -465,13 +484,15 @@ pub fn decide(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> Poli
         );
         d.rule = "(engage)".into();
         d.tier = Tier::Human;
-        d.approvers = 1;
     }
     d.submitter_authorizes = false;
     d.proposer_excluded = true;
-    d.approvers = d.approvers.max(1);
+    d.approvers = d.approvers.max(ENGAGE_MIN_APPROVERS);
     d
 }
+
+/// The fewest distinct approvers an engagement may have, whatever the policy file says.
+pub const ENGAGE_MIN_APPROVERS: u32 = 2;
 
 fn decide_by_file(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> PolicyDecision {
     let armed: Vec<Uid> = spec

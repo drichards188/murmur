@@ -61,7 +61,7 @@ use crate::areas::AreaSet;
 use crate::audit::{Event, EventBody, LogError, parse_log};
 use crate::authority::Grants;
 use crate::engage::{self, EffectRecord, EngageSnapshot, ObserveStep, StopCause};
-use crate::engine::is_self_approval;
+use crate::engine::{engaged_vehicles, is_self_approval};
 use crate::ids::{OperatorId, SessionId};
 use crate::hash::{GENESIS, sha256_hex};
 use crate::ids::IntentId;
@@ -170,6 +170,11 @@ struct Tracked {
     last_observe: Option<(Time, bool)>,
     last_step: Option<(Time, ObserveStep)>,
     assessed: bool,
+    /// Engage: each current signature's picture (dropped on `approval.reset`).
+    signed: Vec<(OperatorId, EngageSnapshot)>,
+    /// Engage: when the picture was last checked (the final approval, then each
+    /// `engage.picture`).
+    last_picture_t: Option<Time>,
 }
 
 /// Replay a JSONL log. The chain is checked over the lines exactly as they are in the
@@ -385,6 +390,8 @@ fn replay_inner(
                         last_observe: None,
                         last_step: None,
                         assessed: false,
+                        signed: Vec::new(),
+                        last_picture_t: None,
                     },
                 );
                 if intent.kind() == TaskKind::Engage {
@@ -399,6 +406,7 @@ fn replay_inner(
                 preview,
                 ..
             } => {
+                check_engaged(&mut r, e, *intent, &inputs.engaged, &intents);
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(
                         &mut r,
@@ -459,6 +467,7 @@ fn replay_inner(
                 inputs,
                 decision,
             } => {
+                check_engaged(&mut r, e, *intent, &inputs.engaged, &intents);
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(
                         &mut r,
@@ -547,6 +556,8 @@ fn replay_inner(
                 session,
                 n,
                 of,
+                snapshot,
+                seen,
                 ..
             } => {
                 let Some(tr) = intents.get_mut(intent) else {
@@ -572,8 +583,63 @@ fn replay_inner(
                         json(&want),
                     );
                 }
+                check_signed_picture(&mut r, e, *intent, tr, by, snapshot, seen, policy.as_ref());
                 tr.signers.push(by.clone());
                 r.concurrences += 1;
+            }
+            EventBody::ApprovalReset {
+                intent,
+                dropped,
+                inputs,
+                ..
+            } => {
+                let Some(tr) = intents.get_mut(intent) else {
+                    bad(&mut r, e, Some(*intent), "unknown intent", String::new(), String::new());
+                    continue;
+                };
+                if *dropped != tr.signers {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "reset drops other signatures than the current ones",
+                        json(dropped),
+                        json(&tr.signers),
+                    );
+                }
+                // the picture the comparison read: the logged world, or this signature's
+                // re-check (the check.result just before)
+                let now: Option<WorldSnapshot> = match inputs {
+                    Some(i) => resolve(i, &areas, &answers).ok(),
+                    None => tr.last_inputs.as_deref().cloned(),
+                };
+                let changed = match (&policy, now) {
+                    (Some(pol), Some(w)) => {
+                        let track = engage::params(&tr.spec).map(|p| p.0.to_string()).unwrap_or_default();
+                        let current = if inputs.is_some() {
+                            None
+                        } else {
+                            engage::snapshot(&tr.spec, &w, &pol.rules).ok()
+                        };
+                        tr.signed.iter().any(|(_, s)| match &current {
+                            Some(c) => engage::same_picture(s, c, &pol.rules).is_err(),
+                            None => engage::same_track(s, w.tracks.get(&track), w.t, &pol.rules).is_err(),
+                        })
+                    }
+                    _ => false,
+                };
+                if !changed {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "signatures dropped although their picture held",
+                        json(dropped),
+                        "the picture held".into(),
+                    );
+                }
+                tr.signers.clear();
+                tr.signed.clear();
             }
             EventBody::ApprovalGranted {
                 intent,
@@ -581,6 +647,7 @@ fn replay_inner(
                 self_approved,
                 session,
                 snapshot,
+                seen,
                 ..
             } => {
                 let Some(tr) = intents.get_mut(intent) else {
@@ -631,6 +698,11 @@ fn replay_inner(
                     r.self_approvals += 1;
                 }
                 check_signature(&mut r, e, *intent, tr, by, *session, &sessions);
+                check_signed_picture(&mut r, e, *intent, tr, by, snapshot, seen, policy.as_ref());
+                if tr.spec.kind() == TaskKind::Engage {
+                    tr.last_picture_t = snapshot.as_ref().map(|s| s.t);
+                    tr.snapshot = snapshot.clone();
+                }
                 tr.signers.push(by.clone());
                 let needed = usize::try_from(tr.approvers).unwrap_or(usize::MAX);
                 if tr.signers.len() != needed {
@@ -641,34 +713,6 @@ fn replay_inner(
                         "approval granted without the signatures the tier needs",
                         tr.signers.len().to_string(),
                         needed.to_string(),
-                    );
-                }
-                if tr.spec.kind() == TaskKind::Engage {
-                    let again = match (&policy, &tr.last_inputs) {
-                        (Some(pol), Some(w)) => {
-                            engage::snapshot(&tr.spec, w, &pol.rules).ok().map(Box::new)
-                        }
-                        _ => None,
-                    };
-                    if again.is_none() || again != *snapshot {
-                        bad(
-                            &mut r,
-                            e,
-                            Some(*intent),
-                            "engagement snapshot differs from the approval's re-check",
-                            json(snapshot),
-                            json(&again),
-                        );
-                    }
-                    tr.snapshot = snapshot.clone();
-                } else if snapshot.is_some() {
-                    bad(
-                        &mut r,
-                        e,
-                        Some(*intent),
-                        "snapshot on an approval that is not an engagement",
-                        json(snapshot),
-                        "none".into(),
                     );
                 }
                 tr.granted = true;
@@ -990,7 +1034,10 @@ fn replay_inner(
                     }
                 };
                 let dispatched = tr.state == State::Dispatched;
-                let (again, h, rd) = engage::picture(&tr.spec, &snap, &w, &pol.rules, dispatched);
+                let prev_t = tr.last_picture_t.unwrap_or(snap.t);
+                let (again, h, rd) =
+                    engage::picture(&tr.spec, &snap, &w, &pol.rules, dispatched, prev_t);
+                tr.last_picture_t = Some(e.t);
                 r.pictures_recomputed += 1;
                 if &again != results || h != *holds || rd != *ready {
                     bad(
@@ -1029,6 +1076,17 @@ fn replay_inner(
                         "dispatched, picture holds and ready".into(),
                     );
                 }
+                // the picture that released it is this step's, not one from before a gap
+                if tr.last_picture_t.is_none_or(|p| e.t.ms_since(p) > 1000) {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "effect without a picture checked in the same step",
+                        json(&tr.last_picture_t),
+                        json(&e.t),
+                    );
+                }
                 let want = tr
                     .snapshot
                     .as_ref()
@@ -1058,6 +1116,7 @@ fn replay_inner(
                 fallback,
                 ..
             } => {
+                let known: std::collections::BTreeSet<IntentId> = intents.keys().copied().collect();
                 let Some(tr) = intents.get_mut(intent) else {
                     bad(&mut r, e, Some(*intent), "unknown intent", String::new(), String::new());
                     continue;
@@ -1084,8 +1143,21 @@ fn replay_inner(
                     },
                     _ => {}
                 }
+                let superseded = matches!(cause, StopCause::Superseded { .. });
+                if let StopCause::Superseded { by, .. } = cause
+                    && !known.contains(by)
+                {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "superseded by an intent that does not exist",
+                        by.to_string(),
+                        String::new(),
+                    );
+                }
                 let want = match tr.state {
-                    State::Dispatched => engage::params(&tr.spec).map(|p| p.3),
+                    State::Dispatched if !superseded => engage::params(&tr.spec).map(|p| p.3),
                     _ => None,
                 };
                 if *fallback != want {
@@ -1442,4 +1514,102 @@ fn unbacked(tr: &Tracked, t: Transition) -> Option<&'static str> {
 
 fn json<T: Serialize>(v: &T) -> String {
     serde_json::to_string(v).unwrap_or_else(|e| format!("<unserializable: {e}>"))
+}
+
+/// A decision's logged `engaged` fact (the vehicles with an engagement in play) against the
+/// engagements replay tracks at that point.
+fn check_engaged(
+    r: &mut ReplayReport,
+    e: &Event,
+    id: IntentId,
+    logged: &BTreeMap<crate::ids::Uid, IntentId>,
+    intents: &BTreeMap<IntentId, Tracked>,
+) {
+    let Some(tr) = intents.get(&id) else { return };
+    let want = engaged_vehicles(intents.iter().map(|(i, t)| (*i, &t.spec, t.state)), &tr.spec);
+    if *logged != want {
+        bad(
+            r,
+            e,
+            Some(id),
+            "engagement-in-play facts differ",
+            json(logged),
+            json(&want),
+        );
+    }
+}
+
+/// An engagement signature's picture: present, recomputed from its re-check, consistent
+/// with what the signer saw, and the same picture every earlier signature is on.
+#[allow(clippy::too_many_arguments)]
+fn check_signed_picture(
+    r: &mut ReplayReport,
+    e: &Event,
+    id: IntentId,
+    tr: &mut Tracked,
+    by: &OperatorId,
+    snapshot: &Option<Box<EngageSnapshot>>,
+    seen: &Option<engage::SeenPicture>,
+    policy: Option<&Policy>,
+) {
+    if tr.spec.kind() != TaskKind::Engage {
+        if snapshot.is_some() {
+            bad(
+                r,
+                e,
+                Some(id),
+                "snapshot on an approval that is not an engagement",
+                json(snapshot),
+                "none".into(),
+            );
+        }
+        return;
+    }
+    let Some(pol) = policy else { return };
+    let again = tr
+        .last_inputs
+        .as_deref()
+        .and_then(|w| engage::snapshot(&tr.spec, w, &pol.rules).ok());
+    let Some(snap) = snapshot.as_deref() else {
+        bad(r, e, Some(id), "engagement signature without its picture", "none".into(), json(&again));
+        return;
+    };
+    if again.as_ref() != Some(snap) {
+        bad(
+            r,
+            e,
+            Some(id),
+            "engagement snapshot differs from the signature's re-check",
+            json(snapshot),
+            json(&again),
+        );
+    }
+    match seen {
+        None => bad(
+            r,
+            e,
+            Some(id),
+            "engagement signature without the preview its signer saw",
+            "none".into(),
+            "seen".into(),
+        ),
+        Some(s) => {
+            if let Err(why) = engage::check_seen(s, snap, &pol.rules) {
+                bad(r, e, Some(id), "signature on a preview the engine would refuse", why, String::new());
+            }
+        }
+    }
+    for (who, earlier) in &tr.signed {
+        if let Err(why) = engage::same_picture(earlier, snap, &pol.rules) {
+            bad(
+                r,
+                e,
+                Some(id),
+                "signature on a picture that differs from an earlier signature's (no reset)",
+                format!("{who} then, {by} now"),
+                why,
+            );
+        }
+    }
+    tr.signed.push((by.clone(), snap.clone()));
 }

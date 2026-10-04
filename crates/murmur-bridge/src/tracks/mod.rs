@@ -420,6 +420,7 @@ impl Tracks {
             "t": e.t.0 as f64 / 1000.0,
             "point": [e.point.lon, e.point.lat],
             "radius_m": e.radius_m,
+            "platform": e.uid.as_str(),
             "ours": ours,
         }));
     }

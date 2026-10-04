@@ -766,6 +766,13 @@ impl Intent {
     pub(crate) fn push_concurrence(&mut self, a: Approval) {
         self.concurrences.push(a);
     }
+    /// Drop the signatures so far (an engagement whose picture changed); returns who signed.
+    pub(crate) fn clear_concurrences(&mut self) -> Vec<OperatorId> {
+        std::mem::take(&mut self.concurrences)
+            .into_iter()
+            .map(|a| a.by)
+            .collect()
+    }
     pub(crate) fn engagement_mut(&mut self) -> &mut Engagement {
         self.engagement.get_or_insert_with(Default::default)
     }

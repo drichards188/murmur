@@ -57,6 +57,9 @@ pub struct EngageParams {
     pub fallback: Option<String>,
 }
 
+/// How long after an engagement ended its run is kept (its platform's orders followed).
+const FORGET_AFTER_S: i64 = 300;
+
 /// An engagement the loop follows: its platform's intercept and, once stopped, the
 /// fallback.
 pub(super) struct EngageRun {
@@ -271,33 +274,33 @@ impl Decision {
         }
     }
 
-    /// Engagements on vehicles another order just took: stopped (the new order stands, so
-    /// no fallback is commanded).
+    /// Engagements in play (pending, approved, under way) on vehicles another order (`id`)
+    /// just took: stopped, cause superseded by `id` and its source (the new order stands, so
+    /// no fallback is commanded). Only an operator's order gets here on its own: an agent's
+    /// order on a vehicle with an engagement in play always waits for a human.
     pub(super) fn stop_superseded_engagements(
         &self,
         core: &mut Core,
         id: IntentId,
         took: &[murmur_decide::Uid],
     ) {
-        let hit: Vec<(IntentId, murmur_decide::Uid)> = core
+        let hit: Vec<IntentId> = core
             .engine
             .intents()
             .filter(|i| {
                 i.id() != id
-                    && i.state() == State::Dispatched
+                    && matches!(
+                        i.state(),
+                        State::PendingApproval | State::Approved | State::Dispatched
+                    )
                     && matches!(i.spec().task, Task::Engage { .. })
+                    && i.spec().uids.iter().any(|u| took.contains(u))
             })
-            .filter_map(|i| {
-                let u = i.spec().uids.iter().find(|u| took.contains(u))?;
-                Some((i.id(), u.clone()))
-            })
+            .map(Intent::id)
             .collect();
-        for (other, uid) in hit {
-            let why = format!(
-                "superseded: {id} was dispatched to vehicle {uid} (that order stands; no fallback commanded)"
-            );
-            if let Err(e) = core.engine.stop_engagement_system(other, &why) {
-                eprintln!("decision: stop {other}: {e}");
+        for other in hit {
+            if let Err(e) = core.engine.supersede_engagement(other, id) {
+                eprintln!("decision: supersede {other}: {e}");
             }
             core.engagements.remove(&other);
         }
@@ -355,63 +358,80 @@ impl Decision {
         }
         let active = core.engine.intents().any(|i| {
             matches!(i.spec().task, Task::Engage { .. })
-                && matches!(i.state(), State::Approved | State::Dispatched | State::Effected)
+                && match i.state() {
+                    // signatures waiting for the rest are held on their picture too
+                    State::PendingApproval => !i.concurrences().is_empty(),
+                    State::Approved | State::Dispatched | State::Effected => true,
+                    _ => false,
+                }
         });
         // the world only when an engagement is in play (a snapshot of a large fleet is not free)
         if active {
             let world = self.snapshot();
-            match core.engine.step_engagements(&world) {
-                Ok(events) => {
-                    for ev in events {
-                        match ev {
-                            murmur_decide::EngagementEvent::Stopped(f) => {
-                                self.command_fallback(core, f);
-                            }
-                            murmur_decide::EngagementEvent::Effect(e) => {
-                                self.send_effect(&e, &world);
-                            }
-                            murmur_decide::EngagementEvent::Voided { .. }
-                            | murmur_decide::EngagementEvent::Assessed { .. } => {}
-                        }
+            let out = core.engine.step_engagements(&world);
+            // each engagement on its own: one that failed (an audit write) is reported, the
+            // others' orders are still carried out
+            for (id, e) in &out.errors {
+                eprintln!("decision: engagement {id}: {e}");
+            }
+            for ev in out.events {
+                match ev {
+                    murmur_decide::EngagementEvent::Stopped(f) => {
+                        self.command_fallback(core, f);
                     }
+                    murmur_decide::EngagementEvent::Effect(e) => {
+                        self.send_effect(&e, &world);
+                    }
+                    murmur_decide::EngagementEvent::Voided { .. }
+                    | murmur_decide::EngagementEvent::Assessed { .. } => {}
                 }
-                Err(e) => eprintln!("decision: engagements: {e}"),
             }
         }
-        // forget runs whose intent ended long enough ago that nothing more will happen
+        self.forget_finished_engagements(core);
+    }
+
+    /// Forget the runs of engagements that ended: once their platform's last order (the
+    /// intercept, or the fallback) finished, or [`FORGET_AFTER_S`] after the end (an orbit
+    /// at the effect point never finishes on its own). Op states are logged until then.
+    fn forget_finished_engagements(&self, core: &mut Core) {
+        let now = self.clock.now();
         let done: Vec<IntentId> = core
             .engagements
-            .keys()
-            .filter(|id| {
-                core.engine
-                    .intent(**id)
-                    .is_none_or(|i| i.state().is_terminal() && i.history().len() > 1)
-            })
-            .copied()
-            .collect();
-        for id in done {
-            let finished = core.engagements.get(&id).is_some_and(|r| {
-                [&r.intercept, &r.fallback]
+            .iter()
+            .filter(|(id, run)| {
+                let Some(i) = core.engine.intent(**id) else {
+                    return true;
+                };
+                if !i.state().is_terminal() {
+                    return false;
+                }
+                let ended = i.history().last().map_or(now, |h| h.t);
+                let stale = now.ms_since(ended) > FORGET_AFTER_S * 1000;
+                let finished = [&run.intercept, &run.fallback]
                     .into_iter()
                     .flatten()
-                    .all(|t| t.snapshot().ops.iter().all(|o| o.state.is_terminal()))
-            });
-            if finished {
-                core.engagements.remove(&id);
-            }
+                    .all(|t| t.snapshot().ops.iter().all(|o| o.state.is_terminal()));
+                finished || stale
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in done {
+            core.engagements.remove(&id);
         }
     }
 
     /// The abstract effect to the contacts process, on the simulation channel: the point,
-    /// the radius, the time, and (for the evaluation truth log only) where our vehicles
-    /// reported themselves.
+    /// the radius, the time, the engaging platform, and (for the evaluation truth log only)
+    /// where our other vehicles reported themselves (none for one that never has: the truth
+    /// log lists it as unknown, not as clear).
     fn send_effect(&self, e: &EffectOrder, world: &murmur_decide::WorldSnapshot) {
         let ours: Vec<Value> = world
             .vehicles
             .iter()
-            .filter_map(|(uid, v)| {
-                let p = v.position.as_ref()?;
-                Some(json!({ "uid": uid, "lon": p.value.lon, "lat": p.value.lat }))
+            .filter(|(uid, _)| **uid != e.uid)
+            .map(|(uid, v)| {
+                let p = v.position.as_ref().map(|p| p.value);
+                json!({ "uid": uid, "lon": p.map(|p| p.lon), "lat": p.map(|p| p.lat) })
             })
             .collect();
         if let Some(t) = self.tracks() {
@@ -465,6 +485,26 @@ impl Decision {
             .map(|a| a.by.to_string())
             .chain(i.approval().map(|a| a.by.to_string()))
             .collect();
+        let record = i.engagement();
+        // each current signature, when, and on what effect point
+        let signatures: Vec<Value> = record
+            .map(|e| {
+                e.signed
+                    .iter()
+                    .map(|s| {
+                        json!({
+                            "by": s.by,
+                            "t": s.t,
+                            "effect_point": s.snapshot.preview.effect_point,
+                            "effect_t": s.snapshot.preview.effect_t,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let reset = record.and_then(|e| e.reset.as_ref()).map(|r| {
+            json!({ "t": r.t, "dropped": r.dropped, "reason": r.reason })
+        });
         let eligible: Vec<String> = self
             .engage_operators
             .iter()
@@ -479,6 +519,9 @@ impl Decision {
             "proposer_excluded": p.is_some_and(|p| p.proposer_excluded),
             "eligible": eligible,
             "engage_operators": self.engage_operators,
+            "signatures": signatures,
+            "reset": reset,
+            "seen_max_age_s": self.rules.engage_rules().seen_max_age_s,
         });
         let now_track: Option<&TrackFacts> = world.tracks.get(track);
         if let Some(t) = now_track {
@@ -549,7 +592,7 @@ pub struct OptionsRequest {
 impl Decision {
     /// A dry run for the nomination form (read-only, not a decision, not logged): for each
     /// armed vehicle, the checks a nomination with it would get on the world now, and its
-    /// preview. Reachable ones (every check passes) first, soonest effect first.
+    /// preview. Listed by uid, with no ranking and no recommendation: the operator picks.
     pub async fn engage_options(&self, req: OptionsRequest) -> Result<Value, DecisionError> {
         let fleet = self.fleet();
         let armed: Vec<crate::vehicle::Uid> = fleet
@@ -621,16 +664,13 @@ impl Decision {
                 "preview": preview,
             }));
         }
-        out.sort_by(|a, b| {
-            let key = |v: &Value| {
-                (
-                    !v["passed"].as_bool().unwrap_or(false),
-                    v["preview"]["effect_t"].as_i64().unwrap_or(i64::MAX),
-                )
-            };
-            key(a).cmp(&key(b))
-        });
-        Ok(json!({ "t": now, "track": req.track, "options": out }))
+        // by uid (the fleet's order): no "best" first
+        Ok(json!({
+            "t": now,
+            "track": req.track,
+            "options": out,
+            "note": "listed by uid; not a ranking or a recommendation",
+        }))
     }
 
     /// Every engagement intent, newest first, as the console and agents see it (the intent

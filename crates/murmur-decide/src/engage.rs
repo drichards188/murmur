@@ -154,6 +154,12 @@ pub struct EngageRules {
     pub assess_dwell_s: f64,
     /// Unknown: the point was not covered long enough within this long after the effect.
     pub assess_window_s: f64,
+    /// The picture must be checked at least this often while an engagement is in play; a
+    /// longer gap (a stalled loop) fails the picture, seconds.
+    pub max_picture_gap_s: f64,
+    /// A signature carries the preview its signer saw; one older than this is refused,
+    /// seconds.
+    pub seen_max_age_s: f64,
 }
 
 impl Default for EngageRules {
@@ -179,55 +185,55 @@ impl Default for EngageRules {
             assess_grace_s: 3.0,
             assess_dwell_s: 15.0,
             assess_window_s: 120.0,
+            max_picture_gap_s: 5.0,
+            seen_max_age_s: 15.0,
         }
     }
 }
 
 impl EngageRules {
+    /// Every threshold inside a bound, so a policy file can't switch a check off (a zero
+    /// confidence, a zero keep-out) or make it meaningless (an unbounded age or gap). The
+    /// bounds are the table below; the values in force are logged with the policy.
     pub fn validate(&self) -> Result<(), String> {
-        let frac = |v: f64, n: &str| {
-            if v.is_finite() && (0.0..=1.0).contains(&v) {
+        let within = |v: f64, lo: f64, hi: f64, n: &str| {
+            if v.is_finite() && v >= lo && v <= hi {
                 Ok(())
             } else {
-                Err(format!("rules.engage.{n} must be 0..1"))
+                Err(format!("rules.engage.{n} must be within {lo}..{hi}, got {v}"))
             }
         };
-        frac(self.min_identity_confidence, "min_identity_confidence")?;
-        frac(self.min_track_confidence, "min_track_confidence")?;
-        for (v, n) in [
-            (self.max_track_age_s, "max_track_age_s"),
-            (self.max_sigma_fraction, "max_sigma_fraction"),
-            (self.max_effect_radius_m, "max_effect_radius_m"),
-            (self.max_transit_s, "max_transit_s"),
-            (self.arrival_m, "arrival_m"),
-            (self.assess_dwell_s, "assess_dwell_s"),
-            (self.assess_window_s, "assess_window_s"),
-            (self.link_gap_s, "link_gap_s"),
-        ] {
-            if !(v.is_finite() && v > 0.0) {
-                return Err(format!("rules.engage.{n} must be > 0"));
-            }
+        within(self.min_identity_confidence, 0.3, 1.0, "min_identity_confidence")?;
+        within(self.min_track_confidence, 0.3, 1.0, "min_track_confidence")?;
+        within(self.max_track_age_s, 1.0, 30.0, "max_track_age_s")?;
+        within(self.max_sigma_fraction, 0.05, 1.0, "max_sigma_fraction")?;
+        within(self.max_effect_radius_m, 1.0, 1000.0, "max_effect_radius_m")?;
+        within(self.keep_out_m, 50.0, 5000.0, "keep_out_m")?;
+        within(self.keep_out_sigma, 1.0, 5.0, "keep_out_sigma")?;
+        within(self.dispatch_delay_s, 0.0, 300.0, "dispatch_delay_s")?;
+        within(self.max_transit_s, 10.0, 7200.0, "max_transit_s")?;
+        within(
+            self.unknown_endurance_max_transit_s,
+            0.0,
+            3600.0,
+            "unknown_endurance_max_transit_s",
+        )?;
+        within(self.deviation_fraction, 0.1, 5.0, "deviation_fraction")?;
+        within(self.deviation_min_m, 5.0, 500.0, "deviation_min_m")?;
+        within(self.link_gap_s, 1.0, 120.0, "link_gap_s")?;
+        within(self.link_gap_intervals, 1.0, 10.0, "link_gap_intervals")?;
+        within(self.arrival_m, 10.0, 2000.0, "arrival_m")?;
+        within(self.late_s, 0.0, 600.0, "late_s")?;
+        within(self.assess_grace_s, 0.0, 30.0, "assess_grace_s")?;
+        within(self.assess_dwell_s, 1.0, 600.0, "assess_dwell_s")?;
+        within(self.assess_window_s, 10.0, 3600.0, "assess_window_s")?;
+        within(self.max_picture_gap_s, 1.0, 30.0, "max_picture_gap_s")?;
+        within(self.seen_max_age_s, 1.0, 120.0, "seen_max_age_s")?;
+        if self.assess_window_s < self.assess_dwell_s {
+            return Err("rules.engage.assess_window_s must be at least assess_dwell_s".into());
         }
-        for (v, n) in [
-            (self.keep_out_m, "keep_out_m"),
-            (self.keep_out_sigma, "keep_out_sigma"),
-            (self.dispatch_delay_s, "dispatch_delay_s"),
-            (self.deviation_fraction, "deviation_fraction"),
-            (self.deviation_min_m, "deviation_min_m"),
-            (self.late_s, "late_s"),
-            (self.assess_grace_s, "assess_grace_s"),
-            (self.link_gap_intervals, "link_gap_intervals"),
-            (
-                self.unknown_endurance_max_transit_s,
-                "unknown_endurance_max_transit_s",
-            ),
-        ] {
-            if !(v.is_finite() && v >= 0.0) {
-                return Err(format!("rules.engage.{n} must be >= 0"));
-            }
-        }
-        if self.default_window_s == 0 {
-            return Err("rules.engage.default_window_s must be > 0".into());
+        if !(1..=86_400).contains(&self.default_window_s) {
+            return Err("rules.engage.default_window_s must be within 1..86400".into());
         }
         Ok(())
     }
@@ -311,9 +317,28 @@ pub enum StopCause {
     Operator { by: OperatorId, session: SessionId },
     /// The picture no longer held: the last `engage.picture` failed (replay recomputes it).
     Picture,
-    /// The bridge stopped it for a reason outside the picture (the platform was retasked,
-    /// its task failed, it was lost).
+    /// The bridge stopped it for a reason outside the picture (its task failed, it was
+    /// lost).
     System,
+    /// Another order was dispatched to its platform: that order stands and no fallback is
+    /// commanded. `by` is that intent and `source` who it came from.
+    Superseded {
+        by: IntentId,
+        source: crate::intent::Source,
+    },
+}
+
+/// What a signer saw when signing an engagement: the preview's predicted effect point and
+/// time and when that preview was computed (the console sends it with the signature). A
+/// signature on a picture that is stale or no longer the engine's is refused.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SeenPicture {
+    /// When the preview the signer saw was computed (engine time).
+    pub t: Time,
+    pub effect_point: LonLat,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect_t: Option<Time>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -387,6 +412,12 @@ pub struct Engagement {
     /// The preview the last check computed (submission, then each approval re-check).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preview: Option<EngagePreview>,
+    /// The picture each signature so far is on (the final one's is `snapshot`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub signed: Vec<SignedPicture>,
+    /// The last time signatures were dropped because the picture changed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reset: Option<ResetRecord>,
     /// The picture held at the final approval.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<EngageSnapshot>,
@@ -406,6 +437,22 @@ pub struct Engagement {
     /// Time of the last observe step (for the coverage sum).
     #[serde(skip)]
     pub(crate) last_observe: Option<(Time, bool)>,
+}
+
+/// One signature's picture.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SignedPicture {
+    pub by: OperatorId,
+    pub t: Time,
+    pub snapshot: EngageSnapshot,
+}
+
+/// Signatures dropped because the picture changed.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ResetRecord {
+    pub t: Time,
+    pub dropped: Vec<OperatorId>,
+    pub reason: String,
 }
 
 /// What [`crate::Engine::dispatch_order`] hands the bridge for an approved engagement: send
@@ -530,6 +577,21 @@ pub fn distance_to_area(p: LonLat, area: &Area) -> f64 {
     best
 }
 
+/// Distance from `p` to an area's nearest edge, metres (whether `p` is inside or not).
+pub fn boundary_distance(p: LonLat, area: &Area) -> f64 {
+    let mut best = f64::INFINITY;
+    for poly in &area.polygons {
+        for ring in std::iter::once(&poly.exterior).chain(poly.holes.iter()) {
+            let n = ring.len();
+            for i in 0..n {
+                let (a, b) = (enu(p, ring[i]), enu(p, ring[(i + 1) % n]));
+                best = best.min(point_segment(a, b));
+            }
+        }
+    }
+    best
+}
+
 /// Distance from the origin to segment a-b (flat metres).
 fn point_segment(a: (f64, f64), b: (f64, f64)) -> f64 {
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
@@ -576,6 +638,12 @@ pub fn effective_window(spec: &IntentSpec, cfg: &EngageRules) -> Option<EngageWi
 fn platform_of(spec: &IntentSpec) -> Option<&Uid> {
     spec.uids.first()
 }
+
+/// An engagement's terrain point (its predicted effect point, for a boat or ground
+/// platform) moves with the track every second, so the oracle may answer it from a sample
+/// taken this near (logged with where and how far: [`crate::world::SampleFrom`]); samples
+/// that near which disagree (a shoreline) leave it not evaluated.
+pub const TERRAIN_NEAR_M: f64 = 50.0;
 
 // ---- preview --------------------------------------------------------------------------------
 
@@ -937,8 +1005,38 @@ fn zone_check(p: &EngagePreview, world: &WorldSnapshot) -> CheckResult {
         "effect point ({:.5}, {:.5})",
         p.effect_point.lon, p.effect_point.lat
     );
+    // the whole effect circle, not just its centre: inside a zone, at least the effect
+    // radius from its boundary
+    let margin = |z: &Area| boundary_distance(p.effect_point, z);
+    if let Some(z) = zones
+        .iter()
+        .find(|z| z.contains(p.effect_point) && margin(z) >= p.effect_radius_m)
+    {
+        return check(
+            r,
+            None,
+            Outcome::Pass,
+            format!(
+                "{at} with its {:.0} m radius is inside {} ({}), {:.0} m from its edge",
+                p.effect_radius_m,
+                z.id,
+                z.name,
+                margin(z)
+            ),
+        );
+    }
     match zones.iter().find(|z| z.contains(p.effect_point)) {
-        Some(z) => check(r, None, Outcome::Pass, format!("{at} is inside {} ({})", z.id, z.name)),
+        Some(z) => check(
+            r,
+            None,
+            Outcome::Fail,
+            format!(
+                "{at} is inside {} but only {:.0} m from its edge: the {:.0} m effect circle crosses it",
+                z.id,
+                margin(z),
+                p.effect_radius_m
+            ),
+        ),
         None => check(
             r,
             None,
@@ -1083,9 +1181,11 @@ pub fn keep_out_friendly(
     )
 }
 
-/// No track but the target and declared hostiles may be inside the keep-out at `effect_t`,
-/// with `keep_out_sigma` of its predicted uncertainty: neutral, unknown, suspect and assumed
-/// friend tracks are protected, stale ones too (their uncertainty has grown).
+/// No track but the target and tracks an operator declared hostile (`declared_by` set) may be
+/// inside the keep-out at `effect_t`, with `keep_out_sigma` of its predicted uncertainty:
+/// neutral, unknown, suspect and assumed friend tracks are protected, a hostile affiliation
+/// nobody declared too, stale ones too (their uncertainty has grown). Another declared
+/// hostile is exempt like the target: an open design question (DECISIONS.md).
 pub fn keep_out_tracks(
     point: LonLat,
     effect_t: Time,
@@ -1098,7 +1198,11 @@ pub fn keep_out_tracks(
     let mut nearest: Option<(f64, &str)> = None;
     let mut count = 0;
     for (id, t) in &world.tracks {
-        if id == target || t.affiliation.value == Affiliation::Hostile {
+        // exempt: the target, and other tracks an operator declared hostile (an affiliation
+        // without a declaration is protected)
+        if id == target
+            || (t.affiliation.value == Affiliation::Hostile && t.declared_by.is_some())
+        {
             continue;
         }
         count += 1;
@@ -1329,17 +1433,35 @@ pub fn snapshot(
 /// Hold the picture: the checks after approval against the snapshot, and (once dispatched)
 /// whether the effect may be released now. Returns the results, whether the picture holds
 /// (every picture check passes) and whether the release conditions are met too.
+///
+/// `prev_t` is when the picture was last checked (the last `engage.picture`, or the final
+/// approval): a gap longer than `max_picture_gap_s` fails it, since nothing held it then.
 pub fn picture(
     spec: &IntentSpec,
     snap: &EngageSnapshot,
     world: &WorldSnapshot,
     cfg: &RulesConfig,
     dispatched: bool,
+    prev_t: Time,
 ) -> (Vec<CheckResult>, bool, bool) {
     let ec = cfg.engage_rules();
     let p = &snap.preview;
     let uid = platform_of(spec);
     let mut picture_checks = Vec::new();
+    let gap = secs(world.t.ms_since(prev_t));
+    picture_checks.push(check(
+        RuleId::PictureGap,
+        None,
+        if gap <= ec.max_picture_gap_s {
+            Outcome::Pass
+        } else {
+            Outcome::Fail
+        },
+        format!(
+            "picture last checked {gap:.1} s ago (limit {:.1} s)",
+            ec.max_picture_gap_s
+        ),
+    ));
     let track = world.tracks.get(&snap.track_id);
     let id = snap.track_id.as_str();
     // declared, reclassified, recency
@@ -1390,7 +1512,8 @@ pub fn picture(
 
 fn reclass_check(id: &str, then: &TrackFacts, now: &TrackFacts, ec: &EngageRules) -> CheckResult {
     let r = RuleId::TargetIdentity;
-    if then.identity.is_some() && then.identity != now.identity {
+    // any change counts, from unclassified to a kind too
+    if then.identity != now.identity {
         return check(
             r,
             None,
@@ -1565,6 +1688,103 @@ fn release_checks(
         )),
     }
     out
+}
+
+// ---- one picture for every signature --------------------------------------------------------
+
+/// Whether a later signature's picture is the one an earlier signer approved: the track
+/// where the earlier snapshot predicts it now (within the picture's deviation tolerance, as
+/// the hold after approval), with the same identity and declaration. The predicted effect
+/// point itself is not compared: for a moving track it slides along the track's path as the
+/// decision takes time, and every signature re-runs the zone, no-strike and keep-out checks
+/// on the point it would send the platform to. `Ok` says how close, `Err` what changed.
+pub fn same_picture(
+    earlier: &EngageSnapshot,
+    now: &EngageSnapshot,
+    cfg: &RulesConfig,
+) -> Result<String, String> {
+    if earlier.track_id != now.track_id {
+        return Err(format!(
+            "the track changed: {} then, {} now",
+            earlier.track_id, now.track_id
+        ));
+    }
+    same_track(earlier, Some(&now.track), now.t, cfg)
+}
+
+/// [`same_picture`] against the track as it is at `t` (`None`: no longer in the picture):
+/// what holds a waiting engagement's signatures every second.
+pub fn same_track(
+    earlier: &EngageSnapshot,
+    now: Option<&TrackFacts>,
+    t: Time,
+    cfg: &RulesConfig,
+) -> Result<String, String> {
+    let ec = cfg.engage_rules();
+    let tol = (ec.deviation_fraction * earlier.preview.effect_radius_m).max(ec.deviation_min_m);
+    let id = &earlier.track_id;
+    let Some(track) = now else {
+        return Err(format!("{id} is no longer in the picture"));
+    };
+    if earlier.track.identity != track.identity {
+        return Err(format!(
+            "{id} reclassified between signatures: {} then, {} now",
+            earlier.track.identity.as_deref().unwrap_or("unclassified"),
+            track.identity.as_deref().unwrap_or("unclassified")
+        ));
+    }
+    if earlier.track.declared_by != track.declared_by
+        || earlier.track.affiliation.value != track.affiliation.value
+    {
+        return Err(format!(
+            "{id} declaration changed between signatures: {} by {} then, {} by {} now",
+            earlier.track.affiliation.value.as_str(),
+            earlier.track.declared_by.as_deref().unwrap_or("nobody"),
+            track.affiliation.value.as_str(),
+            track.declared_by.as_deref().unwrap_or("nobody")
+        ));
+    }
+    let moved = haversine_m(track_at(&earlier.track, t), track_at(track, t));
+    if moved > tol {
+        return Err(format!(
+            "{id} is {moved:.0} m from where the earlier signature's picture predicts it (tolerance {tol:.0} m)"
+        ));
+    }
+    Ok(format!(
+        "{id} within {moved:.0} m of where the earlier picture predicts it (tolerance {tol:.0} m)"
+    ))
+}
+
+/// Whether the preview a signer saw is the picture the engine signs on: recent enough, and
+/// its effect point within the deviation tolerance of the re-check's.
+pub fn check_seen(
+    seen: &SeenPicture,
+    now: &EngageSnapshot,
+    cfg: &RulesConfig,
+) -> Result<(), String> {
+    let ec = cfg.engage_rules();
+    let age = secs(now.t.ms_since(seen.t));
+    // a preview from the future was not computed by this engine
+    if age < -1.0 {
+        return Err(format!(
+            "the preview you saw is dated {:.0} s ahead of the engine: look again",
+            -age
+        ));
+    }
+    if age > ec.seen_max_age_s {
+        return Err(format!(
+            "the preview you saw is {age:.0} s old (limit {:.0} s): look again",
+            ec.seen_max_age_s
+        ));
+    }
+    let tol = (ec.deviation_fraction * now.preview.effect_radius_m).max(ec.deviation_min_m);
+    let d = haversine_m(seen.effect_point, now.preview.effect_point);
+    if d > tol {
+        return Err(format!(
+            "the effect point you saw is {d:.0} m from the engine's now (tolerance {tol:.0} m): look again"
+        ));
+    }
+    Ok(())
 }
 
 // ---- assessment -----------------------------------------------------------------------------

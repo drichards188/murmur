@@ -5,8 +5,10 @@
 //! time; one whose scenario says `on_effect = "out_of_play"` (the default) leaves the
 //! scenario, so our sensors stop detecting it (that is what the assessment reads). The
 //! record of what was inside, whether the intended contact was, and any collateral (another
-//! contact, or one of our vehicles, inside the radius) goes to the evaluation truth log
-//! only: the C2 never sees it. No damage, blast or lethality is modelled: a flag and a time.
+//! contact, or one of our vehicles, inside the radius; one of ours with no reported position
+//! is listed as unknown) goes to the evaluation truth log only: the C2 never sees it. The
+//! engaging platform is named apart, never counted as collateral. No damage, blast or
+//! lethality is modelled: a flag and a time.
 
 use murmur_standins::geo::distance_m;
 use serde::{Deserialize, Serialize};
@@ -14,12 +16,15 @@ use serde::{Deserialize, Serialize};
 use crate::motion::Mover;
 use crate::scenario::OnEffect;
 
-/// One of our vehicles as the bridge last heard it (its reported position).
+/// One of our vehicles as the bridge last heard it (its reported position; none if it has
+/// never reported one).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Ours {
     pub uid: String,
-    pub lon: f64,
-    pub lat: f64,
+    #[serde(default)]
+    pub lon: Option<f64>,
+    #[serde(default)]
+    pub lat: Option<f64>,
 }
 
 /// The effect as the bridge sends it.
@@ -34,6 +39,10 @@ pub struct EffectNotice {
     /// `[lon, lat]`.
     pub point: [f64; 2],
     pub radius_m: f64,
+    /// The engaging platform's uid (not in `ours`).
+    #[serde(default)]
+    pub platform: Option<String>,
+    /// Our other vehicles.
     #[serde(default)]
     pub ours: Vec<Ours>,
 }
@@ -43,6 +52,9 @@ pub struct EffectNotice {
 pub struct Collateral {
     pub contacts: Vec<String>,
     pub ours: Vec<String>,
+    /// Ours with no reported position: not known to be clear.
+    #[serde(default)]
+    pub ours_unknown: Vec<String>,
 }
 
 /// What the effect did, for the evaluation truth log.
@@ -56,6 +68,8 @@ pub struct EffectApplied {
     pub point: [f64; 2],
     pub radius_m: f64,
     pub target_contact: Option<String>,
+    /// The engaging platform.
+    pub platform: Option<String>,
     /// The intended contact was inside the radius when the effect was applied.
     pub target_inside: bool,
     /// Every contact inside the radius, with its distance from the point.
@@ -87,9 +101,13 @@ pub fn apply(e: &EffectNotice, movers: &mut [Mover], now: f64) -> EffectApplied 
             collateral.contacts.push(m.contact.id.clone());
         }
     }
-    for o in &e.ours {
-        if distance_m(lat, lon, o.lat, o.lon) <= e.radius_m {
-            collateral.ours.push(o.uid.clone());
+    for o in e.ours.iter().filter(|o| e.platform.as_ref() != Some(&o.uid)) {
+        match o.lat.zip(o.lon) {
+            Some((olat, olon)) if distance_m(lat, lon, olat, olon) <= e.radius_m => {
+                collateral.ours.push(o.uid.clone());
+            }
+            Some(_) => {}
+            None => collateral.ours_unknown.push(o.uid.clone()),
         }
     }
     let target_inside = e
@@ -104,6 +122,7 @@ pub fn apply(e: &EffectNotice, movers: &mut [Mover], now: f64) -> EffectApplied 
         point: e.point,
         radius_m: e.radius_m,
         target_contact: e.target_contact.clone(),
+        platform: e.platform.clone(),
         target_inside,
         inside,
         out_of_play: out,
@@ -163,9 +182,13 @@ mod tests {
             t: 100.0,
             point: [-122.4950, 37.8120],
             radius_m: 75.0,
+            platform: Some("9".into()),
             ours: vec![
-                Ours { uid: "1".into(), lon: -122.4951, lat: 37.8121 },
-                Ours { uid: "2".into(), lon: -122.4700, lat: 37.8160 },
+                Ours { uid: "1".into(), lon: Some(-122.4951), lat: Some(37.8121) },
+                Ours { uid: "2".into(), lon: Some(-122.4700), lat: Some(37.8160) },
+                Ours { uid: "3".into(), lon: None, lat: None },
+                // the platform itself, if a bridge sent it: never collateral
+                Ours { uid: "9".into(), lon: Some(-122.4950), lat: Some(37.8120) },
             ],
         };
         let r = apply(&e, &mut movers, 101.0);
@@ -173,6 +196,8 @@ mod tests {
         assert_eq!(r.out_of_play, vec!["target".to_string()]);
         assert_eq!(r.collateral.contacts, vec!["near".to_string()]);
         assert_eq!(r.collateral.ours, vec!["1".to_string()]);
+        assert_eq!(r.collateral.ours_unknown, vec!["3".to_string()]);
+        assert_eq!(r.platform.as_deref(), Some("9"));
         assert_eq!(r.inside.len(), 2);
         // the target leaves the scenario; the sailboat persists, flagged; the ferry untouched
         for m in &mut movers {

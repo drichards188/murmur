@@ -71,7 +71,7 @@ pub struct Scenario {
     pub expect_refusals: Vec<String>,
     /// After the run, attack the log and require replay to catch it:
     /// `proposer_approval`, `agent_approval`, `suppress_void`, `edit_snapshot`,
-    /// `drop_signature`, `edit_effect`.
+    /// `drop_signature`, `edit_effect`, `strip_approvers`, `drop_reset`, `agent_order_auto`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tamper: Option<String>,
     /// Seconds to run (default: the last step plus 10).
@@ -220,8 +220,32 @@ pub enum Action {
         window_s: Option<u32>,
     },
     /// An operator signs the last nomination (with engagement authority if they have it;
-    /// without it the engine refuses).
-    Approve { by: String },
+    /// without it the engine refuses), with the preview a console would have shown: the
+    /// engine's on the world now, `seen_age_s` old and `seen_offset_m` metres north of it
+    /// (to play a signer looking at a stale or different picture).
+    Approve {
+        by: String,
+        #[serde(default)]
+        seen_age_s: Option<u32>,
+        #[serde(default)]
+        seen_offset_m: Option<f64>,
+    },
+    /// Another order on some of our vehicles (hold or rtl) from an operator (`by`) or an
+    /// agent (`agent`, with a rationale). Dispatched at once if its tier lets it run (as on
+    /// the bridge), superseding any engagement on those vehicles.
+    Task {
+        #[serde(default)]
+        by: Option<String>,
+        #[serde(default)]
+        agent: Option<String>,
+        #[serde(default)]
+        rationale: Option<String>,
+        task: String,
+        uids: Vec<String>,
+    },
+    /// The loop stalls: no engagement step for `seconds` (a bridge that stopped holding the
+    /// picture).
+    Stall { seconds: u32 },
     Reject { by: String },
     /// Any operator stops it.
     Abort { by: String },
@@ -274,6 +298,9 @@ pub enum Action {
         rule: Option<String>,
         #[serde(default)]
         concurrences: Option<usize>,
+        /// The state of the last `task` step's intent.
+        #[serde(default)]
+        task_state: Option<String>,
     },
 }
 
@@ -475,6 +502,7 @@ pub fn run(
     let mut target_out: Option<String> = None;
     let mut fallback_seen: Option<String> = None;
     let mut engaging: BTreeMap<IntentId, (String, LonLat)> = BTreeMap::new();
+    let mut extra = Extra::default();
 
     for s in 0..=end_s {
         let now = T0.plus_ms(i64::from(s) * 1000);
@@ -544,15 +572,24 @@ pub fn run(
                 &mut fallback_seen,
                 &mut failures,
                 &mut engaging,
+                &mut extra,
                 s,
             );
         }
         // the bridge's loop: expire, then hold the picture / release / observe
         let _ = engine.expire_due();
         let world = snapshot(&vehicles, &tracks, &catalog, &areas, now);
-        match engine.step_engagements(&world) {
-            Ok(events) => {
-                for ev in events {
+        let outcome = if s < extra.stall_until {
+            crate::engine::StepOutcome::default()
+        } else {
+            engine.step_engagements(&world)
+        };
+        for (id, e) in &outcome.errors {
+            failures.push(format!("t={s}: step_engagements {id}: {e}"));
+        }
+        {
+            {
+                for ev in outcome.events {
                     match ev {
                         EngagementEvent::Stopped(f) => {
                             fallback_seen = Some(f.fallback.as_str().into());
@@ -583,7 +620,6 @@ pub fn run(
                     }
                 }
             }
-            Err(e) => failures.push(format!("t={s}: step_engagements: {e}")),
         }
         // anything approved goes out at once, as on the bridge
         dispatch_approved(&mut engine, &mut vehicles, &mut engaging, &mut failures, s);
@@ -782,6 +818,7 @@ fn act(
     fallback_seen: &mut Option<String>,
     failures: &mut Vec<String>,
     engaging: &mut BTreeMap<IntentId, (String, LonLat)>,
+    extra: &mut Extra,
     s: u32,
 ) {
     let world = |tracks: &BTreeMap<String, TrackSim>, vehicles: &BTreeMap<String, VehicleSim>| {
@@ -856,19 +893,75 @@ fn act(
                 Err(e) => refusals.push(e.to_string()),
             }
         }
-        Action::Approve { by } => {
+        Action::Approve {
+            by,
+            seen_age_s,
+            seen_offset_m,
+        } => {
             let (Some(id), Some(sess)) = (*last, session(by)) else {
                 return failures.push(format!("t={s}: approve: no nomination or unknown operator {by}"));
             };
             let w = world(tracks, vehicles);
-            let r = match sess.engagement_authority() {
-                Some(auth) => engine.approve_engagement(id, auth, None, &w, terrain).map(|_| ()),
-                None => engine.approve(id, sess.authority(), None, &w, terrain).map(|_| ()),
+            // what a console shows: the engine's preview on the world now
+            let shown = engine
+                .intent(id)
+                .and_then(|i| engage::preview(i.spec(), &w.subset_for(i.spec()), &engine.policy().rules).ok());
+            let seen = shown.map(|p| engage::SeenPicture {
+                t: now.plus_ms(-i64::from(seen_age_s.unwrap_or(0)) * 1000),
+                effect_point: offset(p.effect_point, 0.0, seen_offset_m.unwrap_or(0.0)),
+                effect_t: Some(p.effect_t),
+            });
+            let r = match (sess.engagement_authority(), seen) {
+                (Some(auth), Some(seen)) => engine
+                    .approve_engagement(id, auth, None, seen, &w, terrain)
+                    .map(|_| ()),
+                (Some(_), None) => {
+                    refusals.push("no preview to show the signer".into());
+                    Ok(())
+                }
+                (None, _) => engine.approve(id, sess.authority(), None, &w, terrain).map(|_| ()),
             };
             if let Err(e) = r {
                 refusals.push(e.to_string());
             }
         }
+        Action::Task {
+            by,
+            agent,
+            rationale,
+            task,
+            uids,
+        } => {
+            let t = match task.as_str() {
+                "hold" => Task::Hold {},
+                "rtl" => Task::Rtl {},
+                other => return failures.push(format!("t={s}: task {other}: hold or rtl")),
+            };
+            let proposal = Proposal::new(t, uids.iter().map(Uid::new).collect());
+            let w = world(tracks, vehicles);
+            let out = match (by, agent) {
+                (Some(by), _) => match session(by) {
+                    Some(sess) => engine.submit(sess.authority(), proposal, &w, terrain).map(|i| i.id()),
+                    None => return failures.push(format!("t={s}: unknown operator {by}")),
+                },
+                (None, Some(agent)) => {
+                    let Ok(r) = Rationale::new(rationale.clone().unwrap_or_default()) else {
+                        refusals.push("an agent's proposal needs a rationale".into());
+                        return;
+                    };
+                    engine
+                        .agent_port(AgentId::new(agent))
+                        .propose(proposal, r, &w, terrain)
+                        .map(|i| i.id())
+                }
+                (None, None) => return failures.push(format!("t={s}: task needs by or agent")),
+            };
+            match out {
+                Ok(id) => extra.last_task = Some(id),
+                Err(e) => refusals.push(e.to_string()),
+            }
+        }
+        Action::Stall { seconds } => extra.stall_until = s + seconds,
         Action::Reject { by } => {
             if let (Some(id), Some(sess)) = (*last, session(by))
                 && let Err(e) = engine.reject(id, sess.authority(), None)
@@ -1012,7 +1105,17 @@ fn act(
             state,
             rule,
             concurrences,
+            task_state,
         } => {
+            if let Some(want) = task_state {
+                let got = extra.last_task.and_then(|id| engine.intent(id)).map(|i| state_str(i.state()));
+                if got.as_deref() != Some(want.as_str()) {
+                    failures.push(format!(
+                        "t={s}: expected the task {want}, got {}",
+                        got.as_deref().unwrap_or("none")
+                    ));
+                }
+            }
             let i = last.and_then(|id| engine.intent(id));
             let got = i.map(|i| state_str(i.state()));
             if let Some(want) = state
@@ -1053,6 +1156,15 @@ fn act(
     }
 }
 
+/// Runner state the timeline changes besides the world.
+#[derive(Default)]
+struct Extra {
+    /// No engagement step before this second.
+    stall_until: u32,
+    /// The last `task` step's intent.
+    last_task: Option<IntentId>,
+}
+
 fn dispatch_approved(
     engine: &mut Engine,
     vehicles: &mut BTreeMap<String, VehicleSim>,
@@ -1060,12 +1172,55 @@ fn dispatch_approved(
     failures: &mut Vec<String>,
     s: u32,
 ) {
-    let approved: Vec<IntentId> = engine
+    let ready: Vec<(IntentId, bool, Vec<Uid>)> = engine
         .intents()
-        .filter(|i| i.state() == State::Approved && matches!(i.spec().task, Task::Engage { .. }))
-        .map(|i| i.id())
+        .filter(|i| matches!(i.state(), State::Approved | State::AutoApproved))
+        .map(|i| (i.id(), matches!(i.spec().task, Task::Engage { .. }), i.spec().uids.clone()))
         .collect();
-    for id in approved {
+    for (id, is_engage, uids) in ready {
+        if !is_engage {
+            // another order on these vehicles: as on the bridge, it stands and supersedes
+            // any engagement on them (no fallback commanded)
+            match engine.dispatch(id) {
+                Ok(o) => {
+                    let hit: Vec<IntentId> = engine
+                        .intents()
+                        .filter(|i| {
+                            i.id() != id
+                                && matches!(i.spec().task, Task::Engage { .. })
+                                && matches!(
+                                    i.state(),
+                                    State::PendingApproval | State::Approved | State::Dispatched
+                                )
+                                && i.spec().uids.iter().any(|u| uids.contains(u))
+                        })
+                        .map(|i| i.id())
+                        .collect();
+                    for e in hit {
+                        if let Err(err) = engine.supersede_engagement(e, id) {
+                            failures.push(format!("t={s}: supersede {e}: {err}"));
+                        }
+                        engaging.remove(&e);
+                    }
+                    for u in &o.uids {
+                        if let Some(v) = vehicles.get_mut(u.as_str()) {
+                            match o.task {
+                                Task::Rtl {} => {
+                                    v.goal = Some(v.home);
+                                    v.orbit = false;
+                                }
+                                _ => {
+                                    v.goal = None;
+                                    v.vel = [0.0, 0.0];
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => failures.push(format!("t={s}: dispatch {id}: {e}")),
+            }
+            continue;
+        }
         match engine.dispatch_order(id) {
             Ok(Order::Engage(o)) => {
                 if let Some(v) = vehicles.get_mut(o.uid.as_str()) {
@@ -1111,6 +1266,81 @@ pub fn tamper(text: &str, kind: &str) -> Result<String, String> {
             }
             if !done {
                 return Err("no approval.granted to forge".into());
+            }
+        }
+        "strip_approvers" => {
+            // a log that says one approver was enough: the policy's engagement tier (if the
+            // file had one) and the decision without `approvers`, and the first signature
+            // gone
+            let mut decided = false;
+            for e in &mut events {
+                match &mut e.body {
+                    EventBody::RunStarted { policy, .. } => {
+                        for t in &mut policy.tiers {
+                            if t.name == "engagement" {
+                                t.approvers = None;
+                            }
+                        }
+                    }
+                    EventBody::PolicyDecision {
+                        intent, decision, ..
+                    } if *intent == spec.id => {
+                        decision.approvers = 1;
+                        decided = true;
+                    }
+                    _ => {}
+                }
+            }
+            let before = events.len();
+            events.retain(|e| {
+                !matches!(&e.body, EventBody::ApprovalConcurred { intent, .. } if *intent == spec.id)
+            });
+            if !decided || events.len() == before {
+                return Err("no engagement decision and signature to strip".into());
+            }
+        }
+        "agent_order_auto" => {
+            // an agent's order on the engaging platform made to look auto-approved: the
+            // decision says the hold/rtl tier and the engagement-in-play facts are gone
+            let order = events
+                .iter()
+                .find_map(|e| match &e.body {
+                    EventBody::IntentCreated { intent }
+                        if intent.source.is_agent()
+                            && matches!(intent.task, Task::Hold {} | Task::Rtl {}) =>
+                    {
+                        Some(intent.id)
+                    }
+                    _ => None,
+                })
+                .ok_or("no agent order in the log")?;
+            let mut done = false;
+            for e in &mut events {
+                if let EventBody::PolicyDecision {
+                    intent,
+                    inputs,
+                    decision,
+                } = &mut e.body
+                    && *intent == order
+                {
+                    inputs.engaged.clear();
+                    decision.tier = crate::policy::Tier::Auto;
+                    decision.rule = "low-risk".into();
+                    done = true;
+                }
+            }
+            if !done {
+                return Err("no decision on the agent's order".into());
+            }
+        }
+        "drop_reset" => {
+            // hide that the picture changed between signatures
+            let before = events.len();
+            events.retain(|e| {
+                !matches!(&e.body, EventBody::ApprovalReset { intent, .. } if *intent == spec.id)
+            });
+            if events.len() == before {
+                return Err("no approval.reset to drop".into());
             }
         }
         "drop_signature" => {

@@ -9,7 +9,7 @@
 //! on the target, the dispatch delay is zero); the full timeline is the decision layer's
 //! scenarios (`sim/scenarios/engage`).
 
-use murmur_decide::Affiliation;
+use murmur_decide::{Affiliation, SeenPicture};
 
 use super::*;
 use crate::tracks::Tracks;
@@ -172,6 +172,29 @@ impl Erig {
         }
     }
 
+    /// What the console shows a signer: the live preview of the pending nomination.
+    fn seen(&self, id: IntentId) -> Option<SeenPicture> {
+        let inbox = self.r.d.inbox_json();
+        let p = inbox["pending"]
+            .as_array()?
+            .iter()
+            .find(|p| p["intent"]["id"] == id.0 || p["id"] == id.0)?
+            .clone();
+        let live = &p["engage"]["live"];
+        Some(SeenPicture {
+            t: serde_json::from_value(live["t"].clone()).ok()?,
+            effect_point: serde_json::from_value(live["preview"]["effect_point"].clone()).ok()?,
+            effect_t: serde_json::from_value(live["preview"]["effect_t"].clone()).ok(),
+        })
+    }
+
+    /// A signature as the console sends it: with the preview it displays.
+    async fn sign(&self, who: &str, id: IntentId) -> Result<Outcome, DecisionError> {
+        let seen = self.seen(id);
+        assert!(seen.is_some(), "no live preview for {id}");
+        self.r.d.approve_seen(&op(who), id.0, None, seen).await
+    }
+
     /// Nominate (op-1) and sign twice (op-2, op-3): approved and dispatched.
     async fn approved(&self, fallback: &str) -> IntentId {
         self.r
@@ -187,13 +210,13 @@ impl Erig {
         assert_eq!(out.state, State::PendingApproval, "{}", out.intent);
         let id = out.id;
         // no authority, the proposer's own (would be refused for the proposer anyway)
-        let e = self.r.d.approve(&op("op-1"), id.0, None).await.expect_err("no authority");
+        let e = self.sign("op-1", id).await.expect_err("no authority");
         assert_eq!(e.status, 403, "{}", e.detail);
-        let o = self.r.d.approve(&op("op-2"), id.0, None).await.expect("signs");
+        let o = self.sign("op-2", id).await.expect("signs");
         assert_eq!(o.state, State::PendingApproval);
-        let e = self.r.d.approve(&op("op-2"), id.0, None).await.expect_err("twice");
+        let e = self.sign("op-2", id).await.expect_err("twice");
         assert_eq!(e.status, 409, "{}", e.detail);
-        let o = self.r.d.approve(&op("op-3"), id.0, None).await.expect("signs");
+        let o = self.sign("op-3", id).await.expect("signs");
         assert_eq!(o.state, State::Dispatched, "{}", o.intent);
         assert!(o.tasking.is_some());
         id
@@ -225,6 +248,12 @@ async fn an_engagement_through_the_bridge_releases_an_abstract_effect() {
     assert_eq!(effects.len(), 1, "{effects:?}");
     assert_eq!(effects[0]["target_contact"], "fastboat");
     assert_eq!(effects[0]["radius_m"], 100.0);
+    // the engaging platform is named apart, never among "ours" (collateral)
+    assert_eq!(effects[0]["platform"], "1");
+    assert!(
+        effects[0]["ours"].as_array().expect("ours").iter().all(|o| o["uid"] != "1"),
+        "{effects:?}"
+    );
     // the console's view: who signed, the engagement record
     let msg: serde_json::Value = serde_json::from_str(&e.r.d.message()).expect("json");
     let mine = msg["intents"]
@@ -291,7 +320,7 @@ async fn the_proposer_with_authority_still_cannot_sign() {
         .await
         .expect("nominated")
         .id;
-    let err = e.r.d.approve(&op("op-2"), id.0, None).await.expect_err("proposer");
+    let err = e.sign("op-2", id).await.expect_err("proposer");
     assert_eq!(err.status, 403, "{}", err.detail);
     assert!(err.detail.contains("may not approve"), "{}", err.detail);
     assert_eq!(e.r.state(id), State::PendingApproval);
@@ -303,3 +332,85 @@ async fn the_proposer_with_authority_still_cannot_sign() {
     let rep = replay::replay_str(&e.r.log.text()).expect("parses");
     assert!(rep.ok(), "{:?}", rep.mismatches);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_signature_carries_the_preview_it_was_shown() {
+    let e = engage_rig();
+    e.r.vehicle(1, Firmware::Copter, "fpv", TARGET);
+    sleep(Duration::from_millis(500)).await;
+    e.picture().await;
+    let id = e.r.d.submit(&op("op-1"), e.nomination("return")).await.expect("nominated").id;
+    // none: refused before the engine
+    let err = e.r.d.approve_seen(&op("op-2"), id.0, None, None).await.expect_err("no preview");
+    assert_eq!(err.status, 400, "{}", err.detail);
+    // one a minute old: refused by the engine, logged
+    let mut old = e.seen(id).expect("live preview");
+    old.t = old.t.plus_ms(-60_000);
+    let err = e.r.d.approve_seen(&op("op-2"), id.0, None, Some(old)).await.expect_err("stale");
+    assert_eq!(err.status, 409, "{}", err.detail);
+    assert!(err.detail.contains("look again"), "{}", err.detail);
+    // one with another effect point: refused
+    let mut off = e.seen(id).expect("live preview");
+    off.effect_point = murmur_decide::engage::offset(off.effect_point, 0.0, 500.0);
+    let err = e.r.d.approve_seen(&op("op-2"), id.0, None, Some(off)).await.expect_err("moved");
+    assert_eq!(err.status, 409, "{}", err.detail);
+    assert_eq!(e.r.state(id), State::PendingApproval);
+    // the one on screen: signed, 1 of 2, and the console sees the signature's picture
+    e.sign("op-2", id).await.expect("signs");
+    let inbox = e.r.d.inbox_json();
+    let p = &inbox["pending"][0];
+    assert_eq!(p["engage"]["signatures"][0]["by"], "op-2", "{p}");
+    assert!(p["engage"]["signatures"][0]["effect_point"].is_array(), "{p}");
+    let rep = replay::replay_str(&e.r.log.text()).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+    assert_eq!(rep.concurrences, 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_fleet_vehicle_never_heard_from_is_not_clear_of_the_keep_out() {
+    let e = engage_rig();
+    // the manifest names vehicle 2 (a USV), which never reports
+    let dir = std::env::temp_dir().join(format!("murmur-engage-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let manifest = dir.join("fleet.json");
+    std::fs::write(
+        &manifest,
+        json!({ "vehicles": [
+            { "uid": 1, "sysid": 1, "port": 1, "platform": "fpv", "callsign": "FPV 1" },
+            { "uid": 2, "sysid": 2, "port": 2, "platform": "seahunter", "callsign": "USV 2" },
+        ]})
+        .to_string(),
+    )
+    .expect("manifest");
+    let world = World::new(Config {
+        base_port: 0,
+        http_port: 0,
+        default_ports: 0,
+        manifest: manifest.clone(),
+        platforms: root().join("sim/platforms.toml"),
+        root: root(),
+    });
+    world.load_manifest();
+    let snap = super::snapshot::build(
+        &world,
+        &Catalog::load(&root().join("sim/platforms.toml")).expect("catalog"),
+        &AreaSet::empty("test", e.r.clock.now()),
+        e.r.clock.now(),
+        None,
+    );
+    let v2 = snap.vehicles.get(&murmur_decide::Uid::new("2")).expect("in the world model");
+    assert!(v2.position.is_none() && v2.platform.is_some(), "{v2:?}");
+    // and the friendly keep-out fails closed on it
+    let r = murmur_decide::engage::keep_out_friendly(
+        murmur_decide::LonLat::new(TARGET.1, TARGET.0),
+        e.r.clock.now(),
+        300.0,
+        Some(&murmur_decide::Uid::new("1")),
+        &snap,
+        &murmur_decide::RulesConfig::default(),
+    );
+    assert_eq!(r.outcome, murmur_decide::Outcome::Fail, "{r:?}");
+    assert!(r.detail.contains("no position"), "{}", r.detail);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+

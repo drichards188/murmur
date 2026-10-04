@@ -68,8 +68,8 @@ pub enum RuleId {
     NoStrike,
     /// None of our vehicles can be inside the keep-out at the effect time.
     KeepOutFriendly,
-    /// No protected track (anything but the target and declared hostiles) inside the
-    /// keep-out at the effect time.
+    /// No protected track (anything but the target and tracks an operator declared
+    /// hostile) inside the keep-out at the effect time.
     KeepOutTracks,
     /// The platform is armed (catalog).
     PlatformArmed,
@@ -87,6 +87,8 @@ pub enum RuleId {
     EffectTime,
     /// Release: the track is estimated inside the effect radius.
     Alignment,
+    /// After approval: the picture was checked recently enough (no stalled watch).
+    PictureGap,
 }
 
 impl RuleId {
@@ -117,6 +119,7 @@ impl RuleId {
             RuleId::Arrival => "arrival",
             RuleId::EffectTime => "effect_time",
             RuleId::Alignment => "alignment",
+            RuleId::PictureGap => "picture_gap",
         }
     }
 }

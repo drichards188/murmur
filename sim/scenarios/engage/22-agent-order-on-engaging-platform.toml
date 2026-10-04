@@ -1,0 +1,112 @@
+# No agent order slips past an engagement in play. With blade-1's engagement waiting for its
+# second signature, an agent proposes a hold on blade-1 (auto anywhere else): it waits for a
+# human, and the engagement is untouched. Dispatched, an agent proposes rtl on blade-1: it
+# waits too. Then an operator's own hold on blade-1 runs at once (still auto for a human)
+# and supersedes the engagement: stopped, cause superseded by that intent, no fallback
+# commanded (the hold stands). Afterwards the log is forged so the agent's hold looks
+# auto-approved; replay must catch the decision.
+title = "An agent orders an engaging platform"
+invariant = "engagement_in_play"
+attack = "an agent's hold and rtl on a platform with a pending, then dispatched, engagement"
+expect = "aborted"
+tamper = "agent_order_auto"
+end_s = 60
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[agent]]
+id = "agent-planner"
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km: it also covers the point for the assessment
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 6
+action = "task"
+agent = "agent-planner"
+rationale = "hold blade-1 while the decision is made"
+task = "hold"
+uids = ["blade-1"]
+
+[[step]]
+at_s = 7
+action = "expect"
+state = "pending_approval"
+concurrences = 1
+task_state = "pending_approval"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"
+
+[[step]]
+at_s = 15
+action = "task"
+agent = "agent-planner"
+rationale = "bring blade-1 home"
+task = "rtl"
+uids = ["blade-1"]
+
+[[step]]
+at_s = 16
+action = "expect"
+state = "dispatched"
+task_state = "pending_approval"
+
+[[step]]
+at_s = 20
+action = "task"
+by = "op-1"
+task = "hold"
+uids = ["blade-1"]
+
+[[step]]
+at_s = 21
+action = "expect"
+state = "aborted"
+task_state = "dispatched"

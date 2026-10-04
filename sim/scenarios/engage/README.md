@@ -46,7 +46,8 @@ The effect is an abstract event: a point, a radius, a time. Nothing here models 
 ```toml
 title = "A neutral boat enters the keep-out after approval"
 invariant = "keep_out_tracks"    # what it attacks: a rule id, or two_person,
-                                 # agent_cannot_authorize, abort, assessment, audit
+                                 # agent_cannot_authorize, signed_picture,
+                                 # engagement_in_play, abort, assessment, audit
 attack = "a neutral boat closes on the effect point after approval"
 expect = "aborted"               # the designed end of the last nomination: rejected, voided,
                                  # aborted, done, pending_approval, expired
@@ -55,7 +56,8 @@ expect_assessment = "ceased"     # optional (done): persists, ceased, unknown
 expect_refusals = ["may not approve it"]   # optional: substrings of engine refusals met
 tamper = "suppress_void"         # optional log attack replay must catch: proposer_approval,
                                  # agent_approval, suppress_void, edit_snapshot,
-                                 # drop_signature, edit_effect
+                                 # drop_signature, edit_effect, strip_approvers,
+                                 # drop_reset, agent_order_auto
 end_s = 120                      # seconds to run (default: the last step + 10)
 after_effect = "out_of_play"     # or "persists"
 # policy, catalog, areas = "path"  # optional, relative to the repo (defaults: sim/...)
@@ -104,13 +106,15 @@ Actions (each `[[step]]` has `at_s` and `action`):
 |---|---|---|
 | `declare` | `track`, `affiliation`, `by` | an operator's declaration (logged `operator.action track.declare`) |
 | `nominate` | `by` or `agent` (+ `rationale`), `platform`, `track`, `radius_m`, `fallback` (`abort`, `return`, `loiter`), `window_s` | a nomination; becomes "the last nomination" the other steps act on |
-| `approve` | `by` | a signature: through `approve_engagement` if the session has engagement authority, else `approve` (which the engine refuses for an engagement) |
+| `approve` | `by`, optional `seen_age_s`, `seen_offset_m` | a signature: through `approve_engagement` if the session has engagement authority, else `approve` (which the engine refuses for an engagement). It carries what a console would have shown the signer: the engine's preview now, or one `seen_age_s` old, or with its effect point `seen_offset_m` metres north (a stale or different picture, which the engine refuses) |
+| `task` | `by` or `agent` (+ `rationale`), `task` (`hold`, `rtl`), `uids` | another order on our vehicles; dispatched at once if its tier lets it run, superseding any engagement on them (no fallback commanded) |
+| `stall` | `seconds` | the loop that holds the picture stops for that long (no engagement step) |
 | `reject` | `by` | an operator rejects it |
 | `abort` | `by` | any operator stops it; the fallback is commanded |
 | `agent_approve` | `agent` | an agent "tries" to approve: there is no such method on its port, so it is recorded and the intent must not move |
 | `track` | `id` and any of `at`, `velocity`, `affiliation`, `declared_by`, `undeclare`, `identity`, `identity_confidence`, `sigma_m`, `domain`, `silent` | a track changes (or appears) |
 | `vehicle` | `uid` and any of `at`, `velocity`, `silent`, `report_interval_ms` | one of ours changes; `silent` cuts its link |
-| `expect` | `state`, `rule`, `concurrences` | check the last nomination now |
+| `expect` | `state`, `rule`, `concurrences`, `task_state` | check the last nomination now (`task_state`: the last `task` step's intent) |
 
 Approved engagements are dispatched at once (as the bridge does). Every second the runner
 calls `Engine::step_engagements` (hold the picture, release, observe, assess).
@@ -138,3 +142,8 @@ calls `Engine::step_engagements` (hold the picture, release, observe, assess).
 | 17-unarmed-platform | platform_armed | an unarmed USV | rejected |
 | 18-drop-signature | two_person | a signature deleted from the log | done; tamper caught |
 | 19-window-too-short | reach | a window the platform can't make | rejected |
+| 20-policy-without-engagement-tier | two_person | a policy file without the engagement tier (one approver); the log forged to say one was enough | 1 of 2 after one signature; done; tamper caught |
+| 21-picture-moves-between-signatures | signed_picture | signers sign a 40 s old and a 400 m off preview; the target moves 880 m between signatures; the reset cut from the log | refusals; first signature dropped; done; tamper caught |
+| 22-agent-order-on-engaging-platform | engagement_in_play | an agent's hold, then rtl, on a platform with an engagement pending, then dispatched; an operator's hold; the log forged to make the agent's hold auto | the agent's orders wait for a human; the operator's supersedes (aborted, no fallback); tamper caught |
+| 23-picture-gap | picture_gap | the loop that holds the picture stops for 10 s | aborted (picture_gap), fallback return |
+| 24-strip-approvers | two_person | the logged policy and decision stripped of `approvers`, a signature dropped | done; tamper caught |

@@ -249,7 +249,7 @@ pub fn areas(mcp: &Mcp) -> Value {
         "source": set.source,
         "as_of": set.loaded_t.0 as f64 / 1000.0,
         "age_s": age(now, set.loaded_t.0 as f64 / 1000.0),
-        "note": "approved: where the operator has approved operations (a route leaving it needs a human). no_go: no route may enter (the geofence check fails). Polygons are rings of [lon, lat].",
+        "note": "approved: where the operator has approved operations (a route leaving it needs a human). no_go: no route may enter (the geofence check fails). engagement_zone: an engagement's whole effect circle must lie inside one. no_strike: an engagement's effect circle must stay clear of every one. Polygons are rings of [lon, lat].",
         "areas": set.areas,
     })
 }

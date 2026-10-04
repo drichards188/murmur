@@ -65,7 +65,7 @@ rules' freshness limit for that vehicle's link):
 |---|---|
 | `get_fleet`, `get_vehicle` | identity, platform limits and tasks, position, nav readiness and source, battery, home, link health, current task |
 | `get_platforms` | the catalog: limits, link class, `armed`, tasks per kind, fleet members |
-| `get_areas` | approved and no-go areas as `[lon, lat]` polygons |
+| `get_areas` | approved, no-go, engagement-zone and no-strike areas as `[lon, lat]` polygons |
 | `get_policy` | the risk-tier policy and rules configuration in force |
 | `get_intents` | intents of the run (filter by state, or `mine`) with checks, policy, approval, history |
 | `get_inbox` | pending approvals (why each needs a human, when it expires) and alerts |
@@ -89,7 +89,9 @@ track a human operator declared hostile), one armed platform in `uids`, `effect_
 is an abstract event (a point, a radius, a time). It always waits for two human operators
 with engagement authority; the agent can preview it and follow it (`get_nominations`,
 `explain_intent`) and withdraw it while it waits, never sign, stop or release it: no such
-tool exists, and the engine's agent port has no such method.
+tool exists, and the engine's agent port has no such method. While an engagement is in play
+on a vehicle (pending, approved or under way), any order the agent proposes for that vehicle
+waits for a human, whatever its tier (`(engagement in play)`).
 
 A collect flows as: preview (or `get_satellite_tasking_options`) for the options, propose with
 `chosen = {norad_id, collect_time}` and a rationale, wait in the inbox (every collect needs a

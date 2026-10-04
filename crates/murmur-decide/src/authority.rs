@@ -52,9 +52,9 @@
 //!
 //! ```compile_fail,E0308
 //! // A plain operator's authority is not engagement authority.
-//! use murmur_decide::{Engine, HumanAuthority, IntentId, NoTerrain, WorldSnapshot};
-//! fn approve(engine: &mut Engine, a: &HumanAuthority, world: &WorldSnapshot) {
-//!     let _ = engine.approve_engagement(IntentId(1), a, None, world, &NoTerrain);
+//! use murmur_decide::{Engine, HumanAuthority, IntentId, NoTerrain, SeenPicture, WorldSnapshot};
+//! fn approve(engine: &mut Engine, a: &HumanAuthority, seen: SeenPicture, world: &WorldSnapshot) {
+//!     let _ = engine.approve_engagement(IntentId(1), a, None, seen, world, &NoTerrain);
 //! }
 //! ```
 

@@ -1,0 +1,107 @@
+# Every signature is on the same picture. op-2 signs; a signer looking at a preview 40 s old,
+# then at an effect point 400 m from the engine's, is refused ("look again"). The target
+# moves about 880 m west before op-3 signs (still inside the zone, still a valid
+# nomination): op-2's signature was on a picture that no longer holds, so it is dropped
+# (approval.reset) and op-3's is the first on the new one. op-2 signs again on the picture
+# as it is; dispatched. Afterwards the reset is cut from the log with a recomputed chain;
+# replay must catch signatures on two different pictures.
+title = "The target moves between signatures"
+invariant = "signed_picture"
+attack = "the track moves between the first and second signature; signers sign stale or different previews; the log hides the reset"
+expect = "done"
+expect_assessment = "ceased"
+expect_refusals = ["s old", "m from the engine's now"]
+tamper = "drop_reset"
+end_s = 220
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[agent]]
+id = "agent-planner"
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km: it also covers the point for the assessment
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 6
+action = "expect"
+state = "pending_approval"
+concurrences = 1
+
+[[step]]
+at_s = 6
+action = "track"
+id = "T-0001"
+at = [-122.505, 37.812]
+
+[[step]]
+at_s = 7
+action = "approve"
+by = "op-3"
+seen_age_s = 40
+
+[[step]]
+at_s = 7
+action = "approve"
+by = "op-3"
+seen_offset_m = 400.0
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "pending_approval"
+concurrences = 1
+
+[[step]]
+at_s = 12
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 13
+action = "expect"
+state = "dispatched"

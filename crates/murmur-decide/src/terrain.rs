@@ -23,6 +23,40 @@ pub trait TerrainOracle {
     /// One answer per point, in order. `Err` means the oracle as a whole is unavailable,
     /// which the domain rule records as "not evaluated".
     fn sample(&self, t: Time, points: &[LonLat]) -> Result<Vec<Surface>, String>;
+
+    /// One answer for a point that moves every second (an engagement's predicted effect
+    /// point): the nearest sample within `within_m`, and where it was taken. `Err` (not
+    /// evaluated) when there is none, or when the samples that near disagree (a shoreline).
+    /// The default asks for the point itself.
+    fn sample_near(&self, t: Time, p: LonLat, within_m: f64) -> Result<NearSample, String> {
+        let _ = within_m;
+        self.sample(t, &[p])?
+            .into_iter()
+            .next()
+            .map(|surface| NearSample {
+                surface,
+                at: p,
+                distance_m: 0.0,
+            })
+            .ok_or_else(|| "the terrain oracle gave no answer".into())
+    }
+}
+
+/// [`TerrainOracle::sample_near`]'s answer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NearSample {
+    pub surface: Surface,
+    /// Where the sample was taken.
+    pub at: LonLat,
+    /// How far that is from the point asked, metres.
+    pub distance_m: f64,
+}
+
+impl Surface {
+    /// Land, water or outside coverage (a depth difference is not a disagreement).
+    pub fn same_kind(&self, other: &Surface) -> bool {
+        std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
 }
 
 /// No terrain source installed.
