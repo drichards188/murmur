@@ -229,7 +229,7 @@ impl Decision {
         queued
             .into_iter()
             .map(|i| {
-                let reach: Vec<Reach> = dq::reach(i.spec(), &world, &self.queue_cfg);
+                let reach: Vec<Reach> = dq::reach(i.spec(), &world, &self.queue_cfg, &self.rules);
                 let mut v = super::intent_json(i, None, self.tol());
                 v["reach_now"] = json!(reach);
                 v

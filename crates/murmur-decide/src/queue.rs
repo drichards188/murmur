@@ -30,7 +30,7 @@ use crate::catalog::AutopilotKind;
 use crate::ids::{IntentId, OperatorId, SessionId, Uid};
 use crate::intent::{IntentSpec, State, TaskKind};
 use crate::policy::{PolicyDecision, Tier};
-use crate::rules::{CheckResult, Outcome};
+use crate::rules::{CheckResult, Outcome, RulesConfig};
 use crate::time::Time;
 use crate::world::WorldSnapshot;
 
@@ -159,9 +159,17 @@ pub struct Reach {
 
 /// Can each of the intent's vehicles be reached for it now? Heard from within
 /// `link_intervals` of its link's report interval (its last heartbeat, the `autopilot`
-/// fact's time), and, for a mission upload, on a link that reports at least every
+/// fact's time); for anything but a safety command, its navigation status and position
+/// reported again within the freshness limit the checks apply (a link that just came back
+/// brings the heartbeat first: the re-check must not read the picture from before the
+/// outage); and, for a mission upload, on a link that reports at least every
 /// [`MISSION_LINK_MAX_INTERVAL_MS`]. Fails closed: no facts, no heartbeat, unreachable.
-pub fn reach(spec: &IntentSpec, world: &WorldSnapshot, cfg: &QueueConfig) -> Vec<Reach> {
+pub fn reach(
+    spec: &IntentSpec,
+    world: &WorldSnapshot,
+    cfg: &QueueConfig,
+    rules: &RulesConfig,
+) -> Vec<Reach> {
     spec.uids
         .iter()
         .map(|uid| {
@@ -189,6 +197,31 @@ pub fn reach(spec: &IntentSpec, world: &WorldSnapshot, cfg: &QueueConfig) -> Vec
                         limit as f64 / 1000.0
                     ),
                 );
+            }
+            // what the re-check reads must be as fresh as the checks need it (hold and rtl
+            // are exempt from readiness, as in the rules)
+            if !matches!(spec.kind(), TaskKind::Hold | TaskKind::Rtl) {
+                let (fresh_ms, _) = rules.fact_age_limit_ms(v.report_interval_ms);
+                let facts = [
+                    ("navigation status", v.nav_ready.as_ref().map(|f| f.t)),
+                    ("position", v.position.as_ref().map(|f| f.t)),
+                ];
+                for (what, t) in facts {
+                    let Some(t) = t else {
+                        return out(false, format!("heard, but no {what} reported yet"));
+                    };
+                    let age = world.t.ms_since(t);
+                    if age > fresh_ms {
+                        return out(
+                            false,
+                            format!(
+                                "heard again, waiting for its {what} ({:.1} s old, limit {:.0} s)",
+                                age as f64 / 1000.0,
+                                fresh_ms as f64 / 1000.0
+                            ),
+                        );
+                    }
+                }
             }
             if needs_mission(spec.kind(), v.autopilot.as_ref().map(|f| f.value))
                 && every > MISSION_LINK_MAX_INTERVAL_MS

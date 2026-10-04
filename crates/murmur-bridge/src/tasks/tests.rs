@@ -91,6 +91,8 @@ pub(crate) struct Quirks {
     /// set it and the fake reboots (and clears it): time since boot from 0, disarmed, out of
     /// AUTO, mission gone (as a stand-in restarts)
     pub reboot: Option<Arc<AtomicBool>>,
+    /// the mode it starts in (its lost-link failsafe sent it home, say)
+    pub start_mode: Option<&'static str>,
 }
 
 impl Quirks {
@@ -253,6 +255,10 @@ impl Fake {
         match msg {
             MavMessage::COMMAND_LONG(c) => match c.command {
                 apm::MavCmd::MAV_CMD_COMPONENT_ARM_DISARM => {
+                    // ArduPilot arms in no return mode (AP_Arming mode checks)
+                    if c.param1 > 0.5 && self.mode == self.fw.mode("RTL") {
+                        return self.ack(c.command, apm::MavResult::MAV_RESULT_FAILED);
+                    }
                     self.armed = c.param1 > 0.5;
                     self.ack(c.command, apm::MavResult::MAV_RESULT_ACCEPTED);
                 }
@@ -569,6 +575,7 @@ pub(crate) fn spawn_fake(
             deliver(&c, sysid, &m, true)
         })
     });
+    let start_mode = q.start_mode.map_or(0, |m| fw.mode(m));
     let mut fake = Fake {
         fw,
         sysid,
@@ -579,7 +586,7 @@ pub(crate) fn spawn_fake(
         alt_rel: 0.0,
         home: (lat, lon),
         armed: false,
-        mode: 0,
+        mode: start_mode,
         yaw: 0.0,
         speed_now: 0.0,
         mission: Vec::new(),
@@ -1431,4 +1438,25 @@ async fn after_a_restart_an_order_the_vehicle_runs_is_followed_not_resent() {
     assert_eq!(s.state, Done, "{s:?}");
     assert_eq!(w.count("MISSION_COUNT"), 1, "it held the mission: not uploaded again");
     assert_eq!(w.count("MAV_CMD_DO_SET_MISSION_CURRENT"), 2, "started (once more, it was not running)");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_vehicle_its_failsafe_sent_home_is_held_then_armed() {
+    // an outage: the boat's lost-link failsafe put it in RTL, where ArduRover won't arm; the
+    // order delivered after the outage switches it to its hold mode, arms, and goes
+    let (boat, w) = watched(
+        38,
+        Firmware::Rover,
+        Quirks {
+            start_mode: Some("RTL"),
+            ..quick()
+        },
+    );
+    sleep(Duration::from_millis(500)).await;
+    let tm = TaskManager::default();
+    let t = tm.dispatch_unchecked(patrol(38, &boat, short_patrol()));
+    let s = settle(&t.ops[0], 300).await;
+    assert_eq!(s.state, Done, "{s:?}");
+    assert_eq!(w.count("MAV_CMD_COMPONENT_ARM_DISARM"), 2, "refused in RTL, then armed");
+    assert_eq!(w.count("MISSION_COUNT"), 1);
 }

@@ -1550,7 +1550,7 @@ impl Engine {
             return Ok(Routed::Dispatched(self.dispatch_order(id)?));
         }
         let inputs = world.subset_for(&spec);
-        let reach = queue::reach(&spec, &inputs, &cfg);
+        let reach = queue::reach(&spec, &inputs, &cfg, &self.policy.rules);
         if queue::all_reachable(&reach) {
             return Ok(Routed::Dispatched(self.dispatch_order(id)?));
         }
@@ -1614,7 +1614,7 @@ impl Engine {
             return Ok(Dequeued::Expired);
         }
         let cfg = self.policy.queue();
-        let reach = queue::reach(&spec, &world.subset_for(&spec), &cfg);
+        let reach = queue::reach(&spec, &world.subset_for(&spec), &cfg, &self.policy.rules);
         if !queue::all_reachable(&reach) {
             return Ok(Dequeued::Waiting(reach));
         }

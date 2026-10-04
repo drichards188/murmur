@@ -1965,7 +1965,7 @@ fn replay_inner<S: AsRef<str>>(
                         continue;
                     }
                 };
-                let again = queue::reach(&tr.spec, &w, &cfg);
+                let again = queue::reach(&tr.spec, &w, &cfg, &pol.rules);
                 if &again != reach {
                     bad(&mut r, e, Some(*intent), "reach differs", json(reach), json(&again));
                 }
@@ -2028,7 +2028,7 @@ fn replay_inner<S: AsRef<str>>(
                     continue;
                 };
                 let cfg = pol.queue();
-                let again = queue::reach(&tr.spec, &w, &cfg);
+                let again = queue::reach(&tr.spec, &w, &cfg, &pol.rules);
                 if &again != reach {
                     bad(&mut r, e, Some(*intent), "reach differs", json(reach), json(&again));
                 }

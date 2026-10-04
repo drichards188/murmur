@@ -695,3 +695,30 @@ fn a_reboot_is_logged_and_replayed() {
     let r = replay_str(&text).unwrap();
     assert!(!r.ok());
 }
+
+#[test]
+fn a_link_that_just_came_back_waits_for_the_picture_before_the_recheck() {
+    // the heartbeat arrives first; the re-check must not read the position from before the
+    // outage (it would fail closed on a stale fact and void the order spuriously)
+    let mut fx = fx();
+    let w = silent(&fx, "sky-1", 5);
+    let id = fx.submit(orbit_sky(), &w);
+    fx.engine.dispatch_or_queue(id, &w).unwrap();
+    fx.advance(40);
+    let mut w = world_now(&fx);
+    let before = fx.clock.now().plus_ms(-40_000);
+    let v = w.vehicles.get_mut(&uid("sky-1")).unwrap();
+    v.position = v.position.clone().map(|f| Fact::new(f.value, before));
+    let Dequeued::Waiting(reach) = fx.engine.dequeue(id, &w, &terrain()).unwrap() else {
+        panic!("dequeued on a stale picture")
+    };
+    assert!(reach[0].detail.starts_with("heard again, waiting for its position"), "{}", reach[0].detail);
+    assert_eq!(count(&fx, "check.result"), 1, "no re-check yet");
+    // the position comes in: re-checked, sent
+    let w = world_now(&fx);
+    assert!(matches!(
+        fx.engine.dequeue(id, &w, &terrain()).unwrap(),
+        Dequeued::Dispatched(_)
+    ));
+    replays(&fx);
+}

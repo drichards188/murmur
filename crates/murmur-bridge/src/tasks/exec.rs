@@ -771,6 +771,7 @@ impl Task<'_> {
                 if h.autopilot != apm::MavAutopilot::MAV_AUTOPILOT_INVALID
                     && h.base_mode.contains(apm::MavModeFlag::MAV_MODE_FLAG_SAFETY_ARMED))
         };
+        let mut left_return_mode = false;
         loop {
             match self
                 .command_long(apm::MavCmd::MAV_CMD_COMPONENT_ARM_DISARM, &[1.0], armed)
@@ -778,6 +779,21 @@ impl Task<'_> {
             {
                 Ok(()) => break,
                 Err(Stop::Failed(e)) => {
+                    // a vehicle its lost-link failsafe sent home while the order waited (an
+                    // outage) is in a mode no autopilot arms in: hold first, then arm (the
+                    // order's own mode follows)
+                    let mode = self.v().read(|s| s.mode.clone()).unwrap_or_default();
+                    if !left_return_mode
+                        && matches!(mode.as_str(), "RTL" | "SMART_RTL" | "QRTL" | "LAND" | "QLAND")
+                    {
+                        left_return_mode = true;
+                        self.op().narrate(format!(
+                            "arming refused in {mode} (its failsafe?): switching to {} to arm",
+                            self.caps.hold
+                        ));
+                        self.set_mode(self.caps.hold).await?;
+                        continue;
+                    }
                     // pre-arm checks can fail for a while after boot (EKF settling)
                     if Instant::now() > deadline {
                         return fail(e);
