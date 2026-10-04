@@ -2416,7 +2416,7 @@ impl Engine {
             id,
             why: why.to_string(),
         };
-        if self.policy.rules.rules_version < 6 {
+        if self.policy.rules.rules_version < 5 {
             return Err(refuse("intents are carried over from rules 5 on"));
         }
         if self.intents.contains_key(&id) {

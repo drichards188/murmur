@@ -872,9 +872,9 @@ on the scenario clock.
   an altitude is unknown (and a vertical cylinder, not a volume shaped by any effect model,
   where both are known), the platform's own path checked against no-go areas but not
   no-strike areas, engagement authority on the same placeholder authentication as the
-  operator header. The lost-link preload is not persisted by the bridge: a bridge restarted
-  during an engagement leaves the platform with the preloaded failsafe until an operator
-  resets it.
+  operator header. An engagement does not survive a bridge restart: the next run puts the
+  platform's own lost-link values back (carried over from the last run's log, onto the same
+  vehicle only, see the lost-link preload above), but the engagement itself is not resumed.
 - Satellite tasking: no cloud model (optical options note it), no sensitive-area or
   cost/priority tiers yet (every collect needs a human), no competing demand or agility
   model, one collect per intent. Cover reads the area's centroid only. The segment identity

@@ -526,6 +526,65 @@ fn restarted() -> (Fx, Fx, IntentId) {
     (a, b, id)
 }
 
+/// The queue is rules 5: an engine deciding under rules 5 (not only the current rules)
+/// carries a queued intent over from the run before. A regression test for the gate in
+/// `Engine::resume` (a rules renumbering once moved it to the next version).
+#[test]
+fn a_rules_5_engine_carries_a_queued_intent_over() {
+    let rules5 = || {
+        let mut p = policy();
+        p.rules.rules_version = 5;
+        p
+    };
+    let accept5 = ReplayOptions {
+        rules: replay::RulesAccepted::Exactly(5),
+        ..ReplayOptions::default()
+    };
+    // the world as a rules 5 bridge logs it: no fact only rules 6 builds write
+    let as_rules5 = |mut w: WorldSnapshot| {
+        for v in w.vehicles.values_mut() {
+            v.alt_msl_m = None;
+            if let Some(p) = &mut v.platform {
+                p.climb_mps = None;
+                p.max_mps = None;
+            }
+        }
+        w
+    };
+    let mut a = fx_on(rules5());
+    let w = as_rules5(silent(&a, "sky-1", 5));
+    let id = a.submit(orbit_sky(), &w);
+    a.engine.dispatch_or_queue(id, &w).unwrap();
+    let ra = replay_str_with(&a.log.text(), &accept5).unwrap();
+    assert!(ra.ok(), "{:?}", ra.mismatches);
+    assert_eq!(ra.rules_version, 5);
+    let open: Vec<&OpenIntent> = ra.open.iter().filter(|o| o.state == State::Queued).collect();
+    assert_eq!(open.len(), 1);
+    let mut b = fx_on(rules5());
+    b.clock.set(a.clock.now().plus_ms(30_000));
+    let from = ResumedFrom {
+        log: "a.jsonl".into(),
+        head: ra.head_sha256.clone().unwrap(),
+        seq: ra.last_seq,
+        was: open[0].state,
+    };
+    b.engine.reserve_ids(ra.next_intent);
+    assert_eq!(b.engine.resume(open[0], from).unwrap(), id);
+    assert_eq!(b.state(id), State::Queued);
+    // and the run that carried it replays against the one it came from, under rules 5
+    let text_a = a.log.text();
+    let rb = replay_str_with(
+        &b.log.text(),
+        &ReplayOptions {
+            previous: Some(&text_a),
+            ..accept5
+        },
+    )
+    .unwrap();
+    assert!(rb.ok(), "{:?}", rb.mismatches);
+    assert_eq!(rb.resumed, 1);
+}
+
 #[test]
 fn a_queued_order_survives_a_restart_and_goes_once() {
     let (a, mut b, id) = restarted();
