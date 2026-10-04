@@ -45,6 +45,14 @@ group. Dates are 2026.
 
 ## Fleet and simulation
 
+- **Lost-link timers follow the link, failsafes stay on** (10-03, murmur-nb1). One table,
+  `lost_link_s` per profile in `sim/links.toml` (5 s LOS and tether, 10 s mesh, 30 s LEO,
+  120 s GEO, Iridium and acoustic; sources and guesses marked), written by `sim/swarm.py`
+  into every vehicle's parameters, SITL and stand-in alike (FS_LONG_TIMEOUT on Plane,
+  FS_GCS_TIMEOUT elsewhere). SITL gets the GCS failsafe on as the stand-ins have it (Blimp
+  excepted: 4.8 disarms on it). The GCS heartbeat has its own thread in the bridge, and the
+  stand-in engine skips a stall longer than 1 s instead of running its vehicles' clocks
+  through it.
 - **Truth and perception in separate processes, on a labelled channel** (10-02, Phase C2).
   Contacts that are not ours run in `crates/murmur-contacts`, not in the stand-in engine:
   stand-ins are our vehicles and speak their real protocol; contacts have none, and the

@@ -3,7 +3,7 @@
 Every platform gets a **stand-in** (light, runs anywhere, thousands at once) and a recorded path to
 **maximum authenticity** (heavier: real firmware, real protocol, high-fidelity dynamics). A fleet
 chooses per node. Stand-ins drop internal physics, never the interface: what the C2 sees must
-behave like the real thing. Last updated 2026-10-02.
+behave like the real thing. Last updated 2026-10-03.
 
 ## The stand-in contract
 
@@ -55,7 +55,12 @@ so a new behavior inherits it:
   as the current one, as AP_Mission reports. The "Mission: N Type" texts come from one
   helper (`behavior/apmission.rs`).
 - **Failures**: battery drained by load over the catalog endurance, battery and GCS-loss
-  failsafes per firmware with ArduPilot's texts (`battery.rs`, `failsafe.rs`).
+  failsafes per firmware with ArduPilot's texts (`battery.rs`, `failsafe.rs`). The GCS-loss
+  (lost-link) timer follows the link: `lost_link_s` per profile in `sim/links.toml` (5 s LOS,
+  2 minutes GEO SATCOM, sources and guesses marked there), which `sim/swarm.py` writes into
+  stand-ins and SITL vehicles alike as FS_LONG_TIMEOUT (Plane) or FS_GCS_TIMEOUT. An engine
+  stall longer than 1 s (the host swapping) is skipped, not caught up, so vehicles don't run
+  their failsafe clocks past heartbeats still queued in their sockets (`vehicle.rs`).
 - **Truth vs reported** (`nav.rs`): without GPS the estimate drifts (INS heading and DVL scale
   errors, unseen current beyond DVL range; figures are estimates in the 0.1-0.5 % of
   distance class), EKF flags drop to relative position, and a fix after surfacing resets it.

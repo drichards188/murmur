@@ -1,6 +1,7 @@
 //! One stand-in: autopilot state, its behavior, its link, and the task that runs it.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use mavlink::MessageData;
@@ -417,6 +418,30 @@ fn wall_nanos() -> u64 {
 
 pub const TICK: Duration = Duration::from_millis(1000 / PHYSICS_HZ as u64);
 
+/// The longest delay the physics catches up on, tick by tick. A longer stall of the engine
+/// (the host swapping, a stopped process) is skipped instead: its vehicles freeze through it.
+/// Caught up, it would run their clocks through the stall before they could read what the
+/// GCS sent meanwhile (still queued in their sockets), and every armed vehicle's GCS failsafe
+/// would fire on heartbeats that had in fact arrived: a 7 s stop of the engine put 85 of 100
+/// airborne stand-ins into RTL (murmur-nb1). A real autopilot doesn't stall with the host
+/// its GCS runs on. 1 s: under every failsafe timer, over any scheduling hiccup.
+pub const MAX_CATCH_UP: Duration = Duration::from_secs(1);
+
+/// Stalls skipped, all vehicles together, for the engine's stats line (which resets them):
+/// how many vehicles skipped one, and the longest, in ms.
+pub static STALL_SKIPS: AtomicU64 = AtomicU64::new(0);
+pub static STALL_MAX_MS: AtomicU64 = AtomicU64::new(0);
+
+/// After a tick that came `late` past its due time: the next due time on the same phase if
+/// the stall is to be skipped (see [`MAX_CATCH_UP`]), else None (catch up tick by tick).
+pub fn skip_to(due: tokio::time::Instant, late: Duration) -> Option<tokio::time::Instant> {
+    if late <= MAX_CATCH_UP {
+        return None;
+    }
+    let ticks = late.as_nanos() / TICK.as_nanos() + 1;
+    Some(due + TICK * u32::try_from(ticks).unwrap_or(u32::MAX))
+}
+
 /// Run one vehicle forever: 10 Hz physics and telemetry, and answer whatever the GCS sends
 /// as soon as it arrives. `phase` (within one tick) offsets this vehicle's ticks from the
 /// others': real autopilots are not in lockstep, and thousands of links sending in the same
@@ -427,7 +452,15 @@ pub async fn run(mut v: Vehicle, phase: Duration) {
     let mut buf = vec![0u8; 2048];
     loop {
         tokio::select! {
-            _ = every.tick() => v.step(),
+            due = every.tick() => {
+                let late = tokio::time::Instant::now().saturating_duration_since(due);
+                if let Some(next) = skip_to(due, late) {
+                    every.reset_at(next);
+                    STALL_SKIPS.fetch_add(1, Ordering::Relaxed);
+                    STALL_MAX_MS.fetch_max(late.as_millis() as u64, Ordering::Relaxed);
+                }
+                v.step()
+            }
             r = v.link.sock.recv(&mut buf) => {
                 // errors (e.g. ICMP port unreachable while the bridge is down) are not fatal
                 if let Ok(n) = r {
@@ -435,5 +468,23 @@ pub async fn run(mut v: Vehicle, phase: Duration) {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_long_stall_is_skipped_on_the_same_phase() {
+        let due = tokio::time::Instant::now();
+        // a scheduling hiccup is caught up tick by tick
+        assert_eq!(skip_to(due, Duration::from_millis(250)), None);
+        assert_eq!(skip_to(due, MAX_CATCH_UP), None);
+        // a 7.05 s stall: next tick 7.1 s after the late one was due, same phase
+        assert_eq!(
+            skip_to(due, Duration::from_millis(7_050)),
+            Some(due + Duration::from_millis(7_100))
+        );
     }
 }

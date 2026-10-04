@@ -32,6 +32,8 @@
 //!   VTOL is treated as a fixed-wing here (gap: no Q-mode EKF failsafe). Sub and
 //!   AntennaTracker: none (a sub keeps relative position on its DVL).
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use mavlink::dialects::ardupilotmega::MavSeverity;
 
 use crate::battery::Level;
@@ -59,6 +61,12 @@ pub struct Failsafes {
     ekf_notify: bool,
     glitch: bool,
 }
+
+/// The GCS heartbeat as the vehicles receive it, all stand-ins together, for the engine's
+/// stats line (and reset by it): the longest gap between two heartbeats from the GCS on the
+/// failsafe clock, in ms, and how many GCS failsafes triggered.
+pub static GCS_GAP_MAX_MS: AtomicU64 = AtomicU64::new(0);
+pub static GCS_FAILSAFES: AtomicU64 = AtomicU64::new(0);
 
 /// ArduPilot's EKF_CHECK_ITERATIONS_MAX (1 s at 10 Hz) and EKF_CHECK_WARNING_TIME.
 pub const EKF_CHECK_ITERATIONS: u8 = 10;
@@ -241,6 +249,15 @@ impl Vehicle {
         }
     }
 
+    /// A heartbeat from MAV_GCS_SYSID (GCS_MAVLINK::handle_heartbeat, sysid_mygcs_seen).
+    pub fn gcs_heartbeat(&mut self) {
+        let now = self.now();
+        if let Some(prev) = self.fs.gcs_last {
+            GCS_GAP_MAX_MS.fetch_max(((now - prev) * 1000.0) as u64, Ordering::Relaxed);
+        }
+        self.fs.gcs_last = Some(now);
+    }
+
     fn gcs_lost(&self, now: f64, timeout: f64) -> bool {
         self.fs.gcs_last.is_some_and(|t| now - t > timeout)
     }
@@ -266,6 +283,7 @@ impl Vehicle {
                 let lost = enabled && self.gcs_lost(now, p(self, "FS_LONG_TIMEOUT", 5.0));
                 if lost && !self.fs.gcs && self.st.armed {
                     self.fs.gcs = true;
+                    GCS_FAILSAFES.fetch_add(1, Ordering::Relaxed);
                     let action = p(self, "FS_LONG_ACTN", 0.0) as i64;
                     match self.st.mode {
                         "AUTO" | "GUIDED" | "AVOID_ADSB" => match action {
@@ -309,6 +327,7 @@ impl Vehicle {
                     return;
                 }
                 self.fs.gcs = true;
+                GCS_FAILSAFES.fetch_add(1, Ordering::Relaxed);
                 self.text(WARN, "GCS Failsafe");
                 if mode == "AUTO" && enable == 2 {
                     self.text(WARN, "Failsafe - Continuing Auto Mode");
@@ -337,6 +356,7 @@ impl Vehicle {
                     return;
                 }
                 self.fs.gcs = true;
+                GCS_FAILSAFES.fetch_add(1, Ordering::Relaxed);
                 match action {
                     2 => self.disarm(),
                     3 => {
@@ -353,6 +373,7 @@ impl Vehicle {
                 let lost = enable != 0 && self.gcs_lost(now, p(self, "FS_GCS_TIMEOUT", 5.0));
                 if lost && !self.fs.gcs && self.st.armed {
                     self.fs.gcs = true;
+                    GCS_FAILSAFES.fetch_add(1, Ordering::Relaxed);
                     self.text(WARN, "GCS Failsafe");
                     self.fall_through(&["RTL", "LAND"]);
                 } else if !lost && self.fs.gcs {
