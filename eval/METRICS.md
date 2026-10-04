@@ -241,6 +241,11 @@ independently of the engine and of replay; `metrics.engage_signatures`):
 - an engagement's events with no `intent.created` for it are a violation where it is
   dispatched or released.
 
+Counted, not violations (rules 5): the lost vehicles operators accepted for an engagement
+(`acceptances`, `engage.accepted`) and withdrew (`acceptances_revoked`), and the signatures by
+an operator who also accepted one (`self_accepted_signatures`: allowed, the acceptor may be
+one of the two signers, but measured, like a self-approval).
+
 The reviews' forged logs are tests (`eval/tests/test_metrics.py`): a borrowed session, a
 session opened after the effect, the nomination removed, the effect moved 300 m, the second
 signature moved after the dispatch, a session opened after the signature but before the

@@ -199,6 +199,10 @@ pub enum EventBody {
         /// Engage: the instant the signature was checked at.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         checked_t: Option<Time>,
+        /// Engage, rules 5: the signer also accepted one of its lost vehicles (allowed,
+        /// recorded like `self_approved`; replay recomputes it).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        self_accepted: bool,
     },
 
     /// A signature that is not yet enough: signature `n` of the `of` distinct approvers the
@@ -225,6 +229,9 @@ pub enum EventBody {
         /// plan's freeze time are read against it).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         checked_t: Option<Time>,
+        /// Engage, rules 5: as on `approval.granted`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        self_accepted: bool,
     },
 
     /// Engage: the engine showed a signer the picture (`token`: the plan, the track's
@@ -412,11 +419,17 @@ pub enum EventBody {
         error: Option<String>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         confirmed: bool,
+        /// `carried`: the vehicle the values were preloaded on (from that log's write-ahead):
+        /// they go back only to a vehicle that matches.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        vehicle: Option<Box<crate::engage::VehicleIdentity>>,
     },
 
-    /// Engage, rules 5: the platform's own lost-link action set as the engagement's fallback
-    /// (`set`: its own values read first, `before`, or the ones still owed back from an earlier
-    /// preload, and the order's preload read back), read again near the release (`verify`),
+    /// Engage, rules 5: the platform's own lost-link values read and logged before anything is
+    /// written (`intent`, the write-ahead: owed back from here on, with the vehicle's
+    /// identity), the platform's own lost-link action set as the engagement's fallback
+    /// (`set`: its `before` is the intent's, and the order's preload read back), read again
+    /// near the release (`verify`),
     /// or its own values put back once the engagement ended (`restore`). `error` is what the
     /// bridge met (no answer); `confirmed` that the read-back shows it in force (replay
     /// recomputes it). A release needs a confirmed `set` and a confirmed read-back at most
@@ -432,6 +445,9 @@ pub enum EventBody {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
         confirmed: bool,
+        /// `intent`: the vehicle it is about to be written to (the bridge's report).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        vehicle: Option<Box<crate::engage::VehicleIdentity>>,
     },
 
     /// Engage, after the effect: one observation step of the effect point.

@@ -94,7 +94,7 @@ export interface EngageView {
   eligible: string[]
   engage_operators: string[]
   /** each current signature, when, and the effect point it was on */
-  signatures?: { by: string; t: number; effect_point: LngLat; effect_t: number }[]
+  signatures?: { by: string; t: number; effect_point: LngLat; effect_t: number; self_accepted?: boolean }[]
   /** signatures dropped with their plan because it stopped holding */
   reset?: { t: number; dropped: string[]; reason: string } | null
   /** rules 5: our vehicles an operator accepted as lost for this engagement (position unknown
@@ -144,6 +144,9 @@ export interface PictureToken {
   plan: EngagePreview
   frozen: boolean
   track: TrackIdentity
+  /** rules 5: the lost vehicles accepted for it when it was shown (engine uid -> who, since
+   *  which report): the signature covers them; a token from before a change is refused */
+  unknown_accepted?: Record<string, { since: number | null; by: string }>
 }
 
 /** Ask for the picture to sign (an operator with engagement authority who may sign it). */

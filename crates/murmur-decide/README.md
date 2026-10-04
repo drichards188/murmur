@@ -193,21 +193,32 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
   `PRELOAD_FRESH_MS` (10 s) old, so a value another station (or anything else) changed
   after the set shows before anything is released; a verify that does not confirm stops the
   engagement (`the platform's lost-link action changed: ...`) with its fallback. The bridge
-  runs one parameter job at a time on a platform's link (set, verify or restore). The
-  platform's own values are owed back from its `set` on: a newer engagement dispatched on it
-  before they went back takes them over (its `set` reports them as `before` and does not
-  read them off the still-preloaded vehicle; replay flags a `set` whose `before` differs from
-  values still owed), and they go back only once no engagement holds the platform (none
-  under way or waiting for its set), so a restore never undoes a newer preload. The restore
+  runs one parameter job at a time on a platform's link (read, write, verify or restore).
+  The write is logged ahead: the platform's own values, once read, go into the log as
+  `engage.preload` intent (with the vehicle's identity: platform, callsign, system id,
+  home) before anything is written, and the set's `before` must be exactly those (the engine
+  refuses, and replay flags, a set without its write-ahead or with other values); a bridge
+  that stops between the write and its report still finds them owed in its log. An
+  engagement that ended before its write-ahead never touches the vehicle. The platform's own
+  values are owed back from the write-ahead on: a newer engagement dispatched on it before
+  they went back takes them over (its write-ahead logs them and does not read them off the
+  still-preloaded vehicle; replay flags one whose values differ from those still owed), and
+  they go back only once no engagement holds the platform (none under way or waiting for its
+  set): the engine refuses, and replay flags, a restore (`engage.preload` restore or
+  `platform.restore`) while another engagement is under way on the platform. The restore
   (`engage.preload` restore by the engagement that preloaded last, or `platform.restore`
   when the engine refuses that or none of this run owns it) is retried with backoff (15 s,
   doubling to 300 s), every attempt logged, with an inbox alert (`restore_pending`) while it
   stays unconfirmed for 30 s. Values still owed when the bridge stops are carried over:
   at its next start it derives them from its previous log (`replay::owed_restores`; the
-  file `logs/audit/.last-run-<http port>` names that log), logs them as `platform.restore`
-  carried, and puts them back. Replay reports every platform whose values were still owed
-  when the log ended (`ReplayReport::unrestored`, printed `UNRESTORED:` by `murmur-replay`);
-  it is not a decision mismatch.
+  file `logs/audit/.last-run-<http port>` names that log; a reused run id carries from the
+  part of the same file before this run's `run.started`), logs them as `platform.restore`
+  carried with the vehicle's identity, and puts them back only onto a vehicle that matches
+  it (platform, callsign, system id, home within 500 m: `VehicleIdentity::matches`; else
+  nothing is written and the inbox says why). A pointer to a log that can't be read is an
+  inbox alert too, not a silent first start. Replay reports every platform whose values were
+  still owed when the log ended (`ReplayReport::unrestored`, printed `UNRESTORED:` by
+  `murmur-replay`); it is not a decision mismatch.
 - **Keep-out model** (rules 5, murmur-der.3; parameters in `[rules.engage]`, each bounded,
   schema 3):
   - *Tracks* are predicted along their velocity with a 1-sigma of `sqrt(pos_sigma^2 +
@@ -232,24 +243,33 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
     tracker's own uncertainty; a track that turns toward the point shows in its next
     estimate.
   - *Altitude*: where the target's altitude (the effect's) and the other's are both known,
-    and a track's is backed by a sensor that ranges it (`engage::track_altitude`: radar for
-    an aircraft; radar or its own AIS report for a vessel; sonar under water; never a ground
-    track, whose 0 m from the sensing model is not its height above sea level, and never
-    from passive sensors alone, EO/IR or ESM: a bearing, no range), the keep-out has a
-    ceiling and a floor: `effect_radius_m + keep_out_vertical_m` (default
+    and a track's is a recent ranged measurement (`engage::track_altitude`: its own time,
+    `alt_t`, at most `track_alt_max_age_s`, 10 s, old, and a ranging sensor that hit the
+    track that recently in `source_t`: radar for an aircraft, radar or its own AIS report for
+    a vessel; never a ground track, whose 0 m from the sensing model is not its height above
+    sea level, nor a subsurface one, whose sonar fix is bearing-heavy; never from passive
+    sensors alone, EO/IR or ESM: a bearing, no range; and not an altitude a radar measured
+    minutes ago while EO/IR keeps the position fresh), the keep-out has a ceiling and a
+    floor: `effect_radius_m + keep_out_vertical_m` (default
     `keep_out_m`) above and below the effect, each side's altitude counting with
     `keep_out_sigma` of its error (a track's: 30 m in the air, the sensing model's radar
     height error; 10 m on the surface and ground, 5 m under water; ours: 10 m, GNSS
-    vertical) and with how far it could climb or descend by the effect time (ours: the
+    vertical) and with how far it could climb or descend by the effect time, a track's
+    counted from when its altitude was measured, not from its position's time (ours: the
     largest of `vertical_rate_mps`, 10, the catalog's climb rate and, for a fixed wing, its
-    dive at cruise speed down `FIXED_WING_DIVE_DEG`, 25 degrees, ArduPlane's default
-    `PTCH_LIM_MIN_DEG` (an MQ-9B at 90 m/s: 38 m/s), either way (`friendly_vertical_mps`);
-    aircraft tracks `vertical_rate_mps`; surface tracks 0; ground and subsurface 2 m/s). An
+    dive at its top speed (`max_mps`, else cruise) down `FIXED_WING_DIVE_DEG`, 25 degrees,
+    ArduPlane's default `PTCH_LIM_MIN_DEG` (an MQ-9B at 105 m/s: 44 m/s), either way
+    (`friendly_vertical_mps`); aircraft tracks `vertical_rate_mps`; surface tracks 0). An
     unknown, stale or unbacked altitude, either side's, leaves the keep-out 2D (no ceiling),
     as before. A MALE aircraft at 7,000 m over a surface effect two minutes out is clear (it
-    can't dive below 2,400 m by then); at 3,000 m it is not; a quadcopter at 120 m is not.
-    The bridge's sensing model gives no altitude for an air contact seen by EO/IR (and none
-    from ESM), as a passive sensor measures none.
+    can't dive below 1,600 m by then); at 3,000 m it is not; a quadcopter at 120 m is not.
+    The bridge's sensing model gives an altitude only where the sensor ranges the contact in
+    height: a radar or AIS for a contact on the water (sea level), and for an aircraft only a
+    radar that measures elevation (`height = true` in the catalog: the CCA's fire-control
+    radar; the USVs' navigation radars and the MALE aircraft's surface-search radars are 2D);
+    none from EO/IR, ESM or sonar, none for a ground contact. The tracker carries the
+    altitude's time and each source's last hit into the decision facts (`alt_t`,
+    `source_t`).
     Our vehicles' altitude is a new world fact (`alt_msl_m`, with the position it came
     with).
   - *Lost friendlies*: one of ours whose position is not fresh still blocks by how far it
@@ -269,7 +289,9 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
     with the plan: they are given again, on the new picture. Any operator may withdraw one
     while the engagement is pending, approved or under way (`Engine::revoke_unknown_friendly`,
     `engage.acceptance_revoked`: it only restricts; the held picture counts the vehicle again
-    and stops an engagement it now blocks). Never automatic: the engine refuses it for a
+    and stops an engagement it now blocks). The acceptor may also be one of the two signers
+    (not barred: two people still sign); the signature records it (`self_accepted`, like
+    `self_approved`; replay recomputes it), the card says so, and the evaluation counts it. Never automatic: the engine refuses it for a
     vehicle that is not lost or not since that report, and after a signature (the plan was
     signed without it); an agent's port has no such method (a compile-fail doctest) and the
     bridge refuses an agent's request carrying one (403 too for an operator without
@@ -479,25 +501,32 @@ roster and the loiter radius from rules 4 (older logs don't carry them):
   own session, as signatures already were.
 - Lost-link preload (rules 5): the order's `preload` is the one the approved fallback and the
   platform's autopilot give (`engage::order_preload` on the final signature's world); every
-  `engage.preload` is the dispatched engagement's, on its platform, one `set`, re-reads
-  (`verify`) only after a confirmed set while under way, and restores only once the
-  engagement ended, its `confirmed` recomputed from the read-back (and, for a restore,
-  against what the `set` read first); an `engage.effect` needs a confirmed `set` and its
+  `engage.preload` is the dispatched engagement's, on its platform: one write-ahead
+  (`intent`, while under way) before one `set` whose `before` is exactly the write-ahead's,
+  re-reads (`verify`) only after a confirmed set while under way, and restores only once the
+  engagement ended and while no other engagement is under way on the platform, its
+  `confirmed` recomputed from the read-back (and, for a restore, against what the `set` read
+  first); an `engage.effect` needs a confirmed `set` and its
   latest read-back confirmed (and the release picture recomputes the `fallback_preload`
   check with the read-back's age); a `set` or `verify` that did not confirm while under
   way is followed by its stop, for it, and a stop that says so follows such a report. The
-  platforms' own values are a ledger: owed from a `set` (or a carried `platform.restore`)
-  until a confirmed restore shows them all back; a `set` whose `before` differs from values
-  still owed is flagged (a preloaded value read as the platform's own); a non-carried
-  `platform.restore` must put back exactly the values owed, its `confirmed` recomputed; and
-  values still owed at the end are reported (`unrestored`), not a mismatch.
+  platforms' own values are a ledger: owed from a write-ahead (or a carried
+  `platform.restore`) until a confirmed restore shows them all back; a write-ahead whose
+  values differ from those still owed is flagged (a preloaded value read as the platform's
+  own); a non-carried `platform.restore` must put back exactly the values owed, never while
+  an engagement is under way on the platform, its `confirmed` recomputed; and values still
+  owed at the end are reported (`unrestored`), not a mismatch.
 - Accepted lost friendlies (rules 5): every `engage.accepted` is under the accepting
   operator's own session with engagement authority, at its submitter's nomination or while
   it waits with no signature, its logged world within 5 s of it and showing the vehicle
   lost since exactly `since` (recomputed); every picture token and signature carries
   exactly the acceptances in force; a reset clears them; an `engage.acceptance_revoked`
   withdraws one in force, under the operator's own session; every decision of that
-  engagement logs exactly the acceptances in force.
+  engagement logs exactly the acceptances in force; every signature's `self_accepted` says
+  whether its signer accepted one of them.
+- Track altitudes (rules 5): recomputed from the logged facts, so a decision that counted a
+  track's altitude rests on its logged time (`alt_t`) and its sources' last hits
+  (`source_t`) within `track_alt_max_age_s`.
 
 The engine refuses the op states, supersedes and sessions these checks reject
 (`EngineError::NotItsOrder`, `EngineError::NotOnRoster`, nothing logged), so an honest engine
@@ -606,11 +635,16 @@ Rules versions:
   ground track's), our vehicles climbing or diving at the larger of both; a lost friendly
   accepted by an operator with engagement authority (`engage.accepted` with the vehicle's
   facts, carried in every picture token, cleared by a reset, withdrawn by
-  `engage.acceptance_revoked`; `unknown_accepted`) left out of the friendly keep-out. New
-  world facts: our vehicles' `alt_msl_m`, the catalog's `climb_mps`. Markers (a log
+  `engage.acceptance_revoked`; `unknown_accepted`; a signer who accepted one is recorded,
+  `self_accepted`) left out of the friendly keep-out; a preload's write-ahead
+  (`engage.preload` intent, with the vehicle's identity) and no restore while another
+  engagement holds the platform; a track's altitude only from a recent ranged measurement
+  (`track_alt_max_age_s`, schema 3). New world facts: our vehicles' `alt_msl_m`, the
+  catalog's `climb_mps` and `max_mps`, a track's `alt_t` and `source_t`. Markers (a log
   claiming rules 4 or older can't carry them): a `fallback_preload` check, an order's
   `preload`, `engage.preload`, `engage.accepted`, `engage.acceptance_revoked` and
-  `platform.restore` events, `unknown_accepted`, `alt_msl_m`, `climb_mps`. Fixtures:
+  `platform.restore` events, `unknown_accepted`, `alt_msl_m`, `climb_mps`, `max_mps`,
+  `alt_t`, `source_t`. Fixtures:
   `tests/data/audit/v5-engagement-scenario-01.jsonl`,
   `v5-lost-friendly-accepted-scenario-54.jsonl`, and a live run with its anchors
   (`v5-engagement-live.jsonl`, `tests/data/anchors/v5-engagement-live.anchors`: two
@@ -624,8 +658,8 @@ Rules versions:
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
 `seen_max_age_s`, an unreleased build's name for it, is still read; **3** adds
-`track_velocity_sigma_mps`, `track_accel_mps2` (a table by domain), `vertical_rate_mps`
-and `keep_out_vertical_m` (optional; rules 5).
+`track_velocity_sigma_mps`, `track_accel_mps2` (a table by domain), `vertical_rate_mps`,
+`keep_out_vertical_m` and `track_alt_max_age_s` (optional; rules 5).
 
 ## Integration contract for the bridge
 

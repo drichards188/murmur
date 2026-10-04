@@ -123,6 +123,11 @@ pub struct SensorSpec {
     pub range_m: f64,
     #[serde(default)]
     pub guess: bool,
+    /// A radar that measures elevation too (3D: a fire-control or air-surveillance radar):
+    /// it gives an aircraft's height. A navigation or surface-search radar (2D, the default)
+    /// gives none.
+    #[serde(default)]
+    pub height: bool,
 }
 
 /// Sensors and mast height per platform id.
@@ -395,15 +400,16 @@ pub fn detect(
                 let lat = c.lat + sigma * nn / 111_320.0;
                 let lon = c.lon + sigma * ne / (111_320.0 * c.lat.to_radians().cos());
                 let wrong = s.kind.classifier().is_some() && misclassified(&c.id, s.kind);
-                // an altitude only where the sensor ranges the contact: a passive sensor
-                // (ESM; EO/IR on an air contact) has a bearing and an elevation angle, no
-                // range, so no altitude (the decision rules count a track's altitude for a 3D
-                // keep-out only when a ranging source backs it)
+                // no range, no altitude: a contact on the water ranged by a radar (or
+                // reporting itself over AIS) is at sea level; an aircraft's height comes
+                // only from a radar that measures elevation (`height`: a 2D navigation or
+                // surface-search radar, as on our USVs, gives none); EO/IR and ESM have a
+                // bearing, no range; sonar's fix is bearing-heavy (no depth); a ground
+                // contact's 0 m is not its height (no terrain under it here)
                 let alt_m = match (s.kind, c.domain) {
-                    (SensorType::Esm, _) | (SensorType::EoIr, Domain::Air) => None,
-                    (_, Domain::Subsurface) => Some(c.alt_m + 5.0 * nn),
-                    (SensorType::Radar, Domain::Air) => Some(c.alt_m + 30.0 * ne),
-                    _ => Some(c.alt_m),
+                    (SensorType::Radar | SensorType::Ais, Domain::Surface) => Some(c.alt_m),
+                    (SensorType::Radar, Domain::Air) if s.height => Some(c.alt_m + 30.0 * ne),
+                    _ => None,
                 };
                 out.push(Detection {
                     contact_id: c.id.clone(),

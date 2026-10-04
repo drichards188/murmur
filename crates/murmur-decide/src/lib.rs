@@ -197,7 +197,7 @@
 //!     platform: Some(PlatformFacts {
 //!         id: "x10".into(), domain: Domain::Air, armed: false, cruise_mps: Some(12.0),
 //!         min_turn_radius_m: None, endurance_h: Some(0.65), autopilot: Some(AutopilotKind::Copter),
-//!         sensors: Vec::new(), climb_mps: None,
+//!         sensors: Vec::new(), climb_mps: None, max_mps: None,
 //!     }),
 //!     autopilot: Some(Fact::new(AutopilotKind::Copter, t)),
 //!     nav_ready: Some(Fact::new(true, t)),
@@ -270,7 +270,7 @@ pub use engage::{
     EngageSnapshot, EngageWindow, Engagement, EngagementEvent, Fallback, FallbackOrder,
     AcceptedUnknown, EffectAlt, FrozenPlan, LostLinkPreload, ObserveStep, ParamBits, ParamSetting,
     PictureToken, PictureVerdict, PreloadPhase, PreloadRecord, ResetRecord, SignedPicture, StopCause,
-    StopRecord, TrackIdentity,
+    StopRecord, TrackIdentity, VehicleIdentity,
 };
 pub use engine::{
     AgentPort, DispatchOrder, Engine, EngineError, Order, PREPARED_SPACE_MAX_AGE_MS, PlatformRestoreReport, PreloadReport,

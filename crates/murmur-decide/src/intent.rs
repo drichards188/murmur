@@ -634,6 +634,10 @@ pub struct Approval {
     pub t: Time,
     /// The approver proposed the intent too (no second person looked at it).
     pub self_approved: bool,
+    /// Rules 5, an engagement: the signer is also an operator who accepted one of its lost
+    /// vehicles (allowed, recorded so evaluation can measure it).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub self_accepted: bool,
     /// The approval is the submission itself: a human submitted the intent and its policy
     /// tier lets the submitter authorize (`approval.at_submission`). Always self-approved.
     pub at_submission: bool,

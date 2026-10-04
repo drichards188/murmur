@@ -136,10 +136,13 @@ pub(super) struct ParamLane {
     owed: Option<Owed>,
 }
 
-/// What a lane's job is for.
+/// What a lane's job is for: an engagement's preload (reading the platform's own values,
+/// then, once they are logged as its write-ahead, writing it), a re-read near the release, a
+/// restore.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Purpose {
-    Set(IntentId),
+    Read(IntentId),
+    Write(IntentId),
     Verify(IntentId),
     Restore,
 }
@@ -147,6 +150,8 @@ enum Purpose {
 /// Rules 5: a platform's own lost-link values, owed back to it.
 pub(super) struct Owed {
     values: BTreeMap<String, f64>,
+    /// the vehicle they were preloaded on (a carried restore goes only to a match)
+    vehicle: Option<murmur_decide::VehicleIdentity>,
     /// the engagement whose restore it is (the last one that preloaded the platform); none:
     /// carried over from an earlier run's log
     owner: Option<IntentId>,
@@ -159,9 +164,10 @@ pub(super) struct Owed {
 }
 
 impl Owed {
-    pub(super) fn carried(values: BTreeMap<String, f64>) -> Owed {
+    pub(super) fn carried(values: BTreeMap<String, f64>, vehicle: Option<murmur_decide::VehicleIdentity>) -> Owed {
         Owed {
             values,
+            vehicle,
             owner: None,
             due_since: None,
             next_try: 0.0,
@@ -172,10 +178,16 @@ impl Owed {
 }
 
 impl ParamLane {
-    pub(super) fn carrying(values: BTreeMap<String, f64>) -> ParamLane {
+    /// The platform's own values owed back to it, if any.
+    #[cfg(test)]
+    pub(super) fn owed_values(&self) -> Option<&BTreeMap<String, f64>> {
+        self.owed.as_ref().map(|o| &o.values)
+    }
+
+    pub(super) fn carrying(values: BTreeMap<String, f64>, vehicle: Option<murmur_decide::VehicleIdentity>) -> ParamLane {
         ParamLane {
             job: None,
-            owed: Some(Owed::carried(values)),
+            owed: Some(Owed::carried(values, vehicle)),
         }
     }
 }
@@ -186,6 +198,24 @@ const RESTORE_RETRY_S: f64 = 15.0;
 const RESTORE_RETRY_MAX_S: f64 = 300.0;
 /// Rules 5: how long a due restore may stay unconfirmed before the inbox says so, s.
 pub(super) const RESTORE_ALERT_S: f64 = 30.0;
+
+/// Rules 5: a fleet vehicle as a preload's write-ahead names it: its platform and callsign
+/// (the manifest), its system id, and its home (from its telemetry, else the manifest's).
+fn identity_of(cell: &crate::vehicle::VehicleCell) -> murmur_decide::VehicleIdentity {
+    cell.read(|v| {
+        let ident = v.identity.as_ref();
+        let manifest_home = ident
+            .and_then(|i| i.0.get("home"))
+            .and_then(|h| h.as_array())
+            .and_then(|h| Some((h.first()?.as_f64()?, h.get(1)?.as_f64()?)));
+        murmur_decide::VehicleIdentity {
+            platform: ident.and_then(|i| i.str("platform")).map(str::to_string),
+            callsign: ident.and_then(|i| i.str("callsign")).map(str::to_string),
+            sysid: Some(cell.sysid),
+            home: v.home.or(manifest_home).map(|(lat, lon)| murmur_decide::LonLat::new(lon, lat)),
+        }
+    })
+}
 
 /// The engine proposal for an engage request.
 pub(super) fn proposal(req: &IntentRequest, now: Time) -> Result<Proposal, DecisionError> {
@@ -351,6 +381,7 @@ impl Decision {
                     before: BTreeMap::new(),
                     readback: BTreeMap::new(),
                     error: Some("the platform is not in the fleet".into()),
+                    vehicle: None,
                 };
                 run.preload_reported = true;
                 core.engagements.insert(id, run);
@@ -385,6 +416,7 @@ impl Decision {
         let mut stops: Vec<FallbackOrder> = Vec::new();
         let mut sends: Vec<(IntentId, TaskOrder)> = Vec::new();
         let now_mono = crate::clock::mono();
+        let fleet = self.fleet();
         let finished: Vec<(crate::vehicle::Uid, Purpose, super::preload::JobResult)> = core
             .params
             .iter_mut()
@@ -398,20 +430,72 @@ impl Decision {
             .collect();
         for (uid, purpose, res) in finished {
             match purpose {
-                Purpose::Set(id) => {
+                Purpose::Read(id) => {
+                    let under_way = core.engine.intent(id).map(Intent::state) == Some(State::Dispatched);
+                    let preload = core.engine.intent(id).and_then(Intent::engagement).and_then(|e| e.preload.clone());
+                    // ended meanwhile: nothing was written, nothing to report or write
+                    if !under_way {
+                        if let Some(run) = core.engagements.get_mut(&id) {
+                            run.preload_reported = true;
+                            run.pending = None;
+                        }
+                        continue;
+                    }
+                    // a read that failed: nothing written; the set fails with it
+                    if res.error.is_some() || preload.is_none() {
+                        if let Some(run) = core.engagements.get_mut(&id) {
+                            run.preload_reported = true;
+                        }
+                        let report = murmur_decide::PreloadReport {
+                            uid: duid(uid),
+                            phase: murmur_decide::PreloadPhase::Set,
+                            before: BTreeMap::new(),
+                            readback: BTreeMap::new(),
+                            error: res.error.or_else(|| Some("no preload in the order".into())),
+                            vehicle: None,
+                        };
+                        match core.engine.record_preload(id, report) {
+                            Ok(Some(f)) => stops.push(f),
+                            Ok(None) => {}
+                            Err(e) => eprintln!("decision: preload {id}: {e}"),
+                        }
+                        continue;
+                    }
+                    // the write-ahead: its own values in the log before anything is written
+                    let vehicle = fleet.get(&uid).map(|c| identity_of(c));
+                    let report = murmur_decide::PreloadReport {
+                        uid: duid(uid),
+                        phase: murmur_decide::PreloadPhase::Intent,
+                        before: res.before.clone(),
+                        readback: BTreeMap::new(),
+                        error: None,
+                        vehicle: vehicle.clone(),
+                    };
+                    if let Err(e) = core.engine.record_preload(id, report) {
+                        eprintln!("decision: preload write-ahead {id}: {e}");
+                        if let Some(run) = core.engagements.get_mut(&id) {
+                            run.preload_reported = true;
+                        }
+                        continue;
+                    }
+                    // owed back from now on, this engagement owning their restore (it took
+                    // over any earlier owner's)
+                    let lane = core.params.entry(uid).or_default();
+                    let owed = lane.owed.get_or_insert_with(|| Owed::carried(BTreeMap::new(), None));
+                    for (n, v) in &res.before {
+                        owed.values.entry(n.clone()).or_insert(*v);
+                    }
+                    owed.owner = Some(id);
+                    owed.vehicle = vehicle;
+                    owed.due_since = None;
+                    // then the write, at once (the lane is this engagement's)
+                    if let (Some(cell), Some(p)) = (fleet.get(&uid), preload) {
+                        lane.job = Some((Purpose::Write(id), super::preload::start_write(cell.clone(), p, res.before)));
+                    }
+                }
+                Purpose::Write(id) => {
                     if let Some(run) = core.engagements.get_mut(&id) {
                         run.preload_reported = true;
-                    }
-                    // the platform's own values are owed back from now on, this engagement
-                    // owning their restore (it took over any earlier owner's)
-                    if !res.before.is_empty() {
-                        let lane = core.params.entry(uid).or_default();
-                        let owed = lane.owed.get_or_insert_with(|| Owed::carried(BTreeMap::new()));
-                        for (n, v) in &res.before {
-                            owed.values.entry(n.clone()).or_insert(*v);
-                        }
-                        owed.owner = Some(id);
-                        owed.due_since = None;
                     }
                     let report = murmur_decide::PreloadReport {
                         uid: duid(uid),
@@ -419,6 +503,7 @@ impl Decision {
                         before: res.before,
                         readback: res.readback,
                         error: res.error,
+                        vehicle: None,
                     };
                     match core.engine.record_preload(id, report) {
                         Ok(Some(f)) => stops.push(f),
@@ -446,6 +531,7 @@ impl Decision {
                         before: BTreeMap::new(),
                         readback: res.readback,
                         error: res.error,
+                        vehicle: None,
                     };
                     match core.engine.record_preload(id, report) {
                         Ok(Some(f)) => stops.push(f),
@@ -471,6 +557,7 @@ impl Decision {
                                     before: BTreeMap::new(),
                                     readback: res.readback.clone(),
                                     error: res.error.clone(),
+                                    vehicle: None,
                                 },
                             )
                             .is_ok()
@@ -483,6 +570,7 @@ impl Decision {
                             from: None,
                             readback: res.readback.clone(),
                             error: res.error.clone(),
+                            vehicle: None,
                         })
                     {
                         eprintln!("decision: restore of {uid}: {e}");
@@ -572,7 +660,7 @@ impl Decision {
                     run.want_set = false;
                 }
                 core.params.entry(uid).or_default().job =
-                    Some((Purpose::Set(id), super::preload::start_set(cell.clone(), p, known)));
+                    Some((Purpose::Read(id), super::preload::start_read(cell.clone(), p, known)));
                 continue;
             }
             // a re-read due
@@ -596,9 +684,21 @@ impl Decision {
             let Some(lane) = core.params.get_mut(&uid) else { continue };
             let Some(owed) = lane.owed.as_mut() else { continue };
             owed.due_since.get_or_insert(now_mono);
+            // values carried over from an earlier run go back only to the vehicle they were
+            // preloaded on (the uid may name another one now)
+            let mismatch = match (&cell, owed.owner, &owed.vehicle) {
+                (Some(c), None, Some(was)) => was.matches(&identity_of(c)).err(),
+                _ => None,
+            };
             match cell {
                 // gone from the fleet: still owed, and the inbox says so
                 None => owed.last_error = Some("the vehicle is not in the fleet".into()),
+                Some(_) if mismatch.is_some() => {
+                    owed.last_error = Some(format!(
+                        "not written: the vehicle with this uid may not be the one preloaded ({})",
+                        mismatch.unwrap_or_default()
+                    ));
+                }
                 Some(cell) if now_mono >= owed.next_try => {
                     lane.job = Some((Purpose::Restore, super::preload::start_restore(cell, owed.values.clone())));
                 }
@@ -612,41 +712,100 @@ impl Decision {
     /// carried (`platform.restore`) and put back like any other once the platform answers.
     /// Then `pointer` names this run's log. A missing pointer or log is a first start.
     pub(super) fn carry_restores(&self, pointer: &std::path::Path) {
-        let previous = std::fs::read_to_string(pointer).ok().map(|s| std::path::PathBuf::from(s.trim()));
-        if let Some(prev) = previous.filter(|p| p != &self.audit_path)
-            && let Ok(text) = std::fs::read_to_string(&prev)
-        {
-            let file = prev.file_name().map_or_else(|| prev.display().to_string(), |f| f.to_string_lossy().into_owned());
-            let mut guard = self.lock();
-            let core = &mut *guard;
-            for o in murmur_decide::replay::owed_restores(&text) {
-                let Some(uid) = bridge_uid(&o.uid) else { continue };
-                let by: Vec<String> = o.by.iter().map(ToString::to_string).collect();
-                let from = if by.is_empty() {
-                    format!("{file} (carried over into it)")
-                } else {
-                    format!("{file} (preloaded by {})", by.join(", "))
-                };
-                let report = murmur_decide::PlatformRestoreReport {
-                    uid: o.uid.clone(),
-                    values: o.values.clone(),
-                    carried: true,
-                    from: Some(from.clone()),
-                    readback: BTreeMap::new(),
-                    error: None,
-                };
-                match core.engine.record_platform_restore(report) {
-                    Ok(_) => {
-                        println!("lost-link values of vehicle {uid} owed back from {from}: restoring");
-                        core.params.insert(uid, ParamLane::carrying(o.values));
+        let fail = |why: String| {
+            eprintln!("decision: {why}");
+            self.lock().carry_problem = Some((why, crate::clock::wall()));
+        };
+        match std::fs::read_to_string(pointer) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                println!("no earlier run named by {}: nothing carried over", pointer.display());
+            }
+            Err(e) => fail(format!(
+                "{} can't be read ({e}): lost-link values the last run on this port still owed can't be carried over",
+                pointer.display()
+            )),
+            Ok(named) => {
+                let prev = std::path::PathBuf::from(named.trim());
+                match std::fs::read_to_string(&prev) {
+                    Err(e) => fail(format!(
+                        "the last run's log {} can't be read ({e}): lost-link values it still owed can't be carried over",
+                        prev.display()
+                    )),
+                    Ok(text) => {
+                        // a reused run id: the same file, this run appended after its own
+                        // run.started; carry from what came before it
+                        let text = if prev == self.audit_path {
+                            let lines: Vec<&str> = text.lines().collect();
+                            let start = lines
+                                .iter()
+                                .rposition(|l| l.contains("\"type\":\"run.started\""))
+                                .unwrap_or(lines.len());
+                            lines[..start].join("\n")
+                        } else {
+                            text
+                        };
+                        let file = prev
+                            .file_name()
+                            .map_or_else(|| prev.display().to_string(), |f| f.to_string_lossy().into_owned());
+                        println!("carrying over from {file} (named by {})", pointer.display());
+                        self.carry_from(&file, &text);
                     }
-                    Err(e) => eprintln!("decision: carry restore of {uid}: {e}"),
                 }
             }
         }
         if let Err(e) = std::fs::write(pointer, self.audit_path.display().to_string()) {
-            eprintln!("decision: {}: {e}", pointer.display());
+            fail(format!(
+                "{} can't be written ({e}): the next run won't find this one's log to carry over from",
+                pointer.display()
+            ));
         }
+    }
+
+    /// The values `text` (the log of run `file`) still owed, logged as carried and owed back.
+    fn carry_from(&self, file: &str, text: &str) {
+        let mut guard = self.lock();
+        let core = &mut *guard;
+        for o in murmur_decide::replay::owed_restores(text) {
+            let Some(uid) = bridge_uid(&o.uid) else { continue };
+            let by: Vec<String> = o.by.iter().map(ToString::to_string).collect();
+            let from = if by.is_empty() {
+                format!("{file} (carried over into it)")
+            } else {
+                format!("{file} (preloaded by {})", by.join(", "))
+            };
+            let report = murmur_decide::PlatformRestoreReport {
+                uid: o.uid.clone(),
+                values: o.values.clone(),
+                carried: true,
+                from: Some(from.clone()),
+                readback: BTreeMap::new(),
+                error: None,
+                vehicle: o.vehicle.clone(),
+            };
+            match core.engine.record_platform_restore(report) {
+                Ok(_) => {
+                    println!("lost-link values of vehicle {uid} owed back from {from}: restoring");
+                    core.params.insert(uid, ParamLane::carrying(o.values, o.vehicle));
+                }
+                Err(e) => eprintln!("decision: carry restore of {uid}: {e}"),
+            }
+        }
+    }
+
+    /// Rules 5: an alert of the bridge's start (the last run's log could not be read, so what
+    /// it owed could not be carried over).
+    pub(super) fn carry_alert(&self, core: &Core, now_wall: f64) -> Option<super::alerts::Alert> {
+        core.carry_problem.as_ref().map(|(why, t)| super::alerts::Alert {
+            id: "restore:carry".into(),
+            kind: "restore_pending",
+            severity: super::alerts::Severity::High,
+            uid: 0,
+            callsign: None,
+            detail: why.clone(),
+            since_t: now_wall.min(*t),
+            op_id: None,
+            intent_id: None,
+        })
     }
 
     /// Rules 5: inbox alerts for platforms whose own lost-link values have been due back for
@@ -1021,11 +1180,18 @@ impl Decision {
                 e.signed
                     .iter()
                     .map(|s| {
+                        // rules 5: the signer also accepted one of its lost vehicles
+                        let self_accepted = i
+                            .concurrences()
+                            .iter()
+                            .chain(i.approval())
+                            .any(|a| a.by == s.by && a.self_accepted);
                         json!({
                             "by": s.by,
                             "t": s.t,
                             "effect_point": s.snapshot.preview.effect_point,
                             "effect_t": s.snapshot.preview.effect_t,
+                            "self_accepted": self_accepted,
                         })
                     })
                     .collect()

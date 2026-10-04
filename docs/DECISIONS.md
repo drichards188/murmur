@@ -131,7 +131,14 @@ group. Dates are 2026.
   with backoff, every attempt logged (`platform.restore` when no engagement of the run owns
   them or the engine refuses one), with an inbox alert after 30 s; values still owed when
   the bridge stops are derived from its log at the next start, logged as carried and put
-  back; replay reports any still owed at a log's end (review of 3318f25, findings 3 and 4). A
+  back; replay reports any still owed at a log's end (review of 3318f25, findings 3 and 4).
+  The write is logged ahead (`engage.preload` intent: the platform's own values and the
+  vehicle's identity, before anything is written), so a crash between the write and its
+  report still leaves them owed; carried values go back only to a vehicle that matches the
+  one preloaded (platform, callsign, system id, home within 500 m), else nothing is written
+  and the inbox says why; a start that can't read the last run's log says so too; and
+  neither the engine nor replay allows a restore while another engagement holds the
+  platform (second review, f389832). A
   fallback the firmware has no lost-link action for fails the nomination
   (`fallback_preload`): ArduPlane has none that holds where it is (continue, RTL, glide,
   parachute, AUTO, AUTOLAND), so a fixed wing takes `return` only (its "continue" would fly
@@ -165,10 +172,17 @@ group. Dates are 2026.
   give none (the sensing model no longer hands EO/IR an air contact's exact altitude), and a
   ground track's 0 m is not its height above sea level, so ground targets stay 2D until a
   terrain-referenced altitude with a logged basis exists. An unknown, stale or unbacked
-  altitude on either side leaves it 2D, as before. A MALE aircraft at 7 km over a surface
-  effect no longer blocks; at 3 km, or a quadcopter at 120 m, it still does. Our vehicles'
-  altitude (MSL) is a world fact now. Regressions: 48 to 52, 61 (a passive-only aircraft
-  altitude), 63 (a ground target).
+  altitude on either side leaves it 2D, as before. A track's altitude counts only while it is
+  recent: the tracker carries its time and each source's last hit, a ranging sensor must have
+  hit the track within `track_alt_max_age_s` (10 s, about ten radar revisits in the sensing
+  model) and the vertical margin grows from the altitude's time, not the position's (second
+  review: a radar altitude frozen while EO/IR kept the position fresh cleared an aircraft
+  that could have descended to the effect). Only sensors that range a contact in height give
+  one: a radar or AIS for a contact on the water, a 3D radar for an aircraft (our USVs'
+  navigation radars are 2D), never sonar. Our fixed wings dive at their top speed. A MALE
+  aircraft at 7 km over a surface effect no longer blocks; at 3 km, or a quadcopter at 120
+  m, it still does. Our vehicles' altitude (MSL) is a world fact now. Regressions: 48 to 52,
+  61 (a passive-only aircraft altitude), 63 (a ground target), 64 (a stale radar altitude).
 - **A lost friendly blocks until an operator accepts it, explicitly and logged** (10-04,
   murmur-der.3; rules 5). Its reachable circle still grows without a cap (fail closed), but
   the check says since when its position is unknown, and an operator may accept it for one
@@ -184,7 +198,10 @@ group. Dates are 2026.
   on the new picture, not carried over silently); any operator may revoke it, which stops
   an engagement it now blocks. Never automatic and never an agent's: the engine takes it
   only with an `EngagementAuthority`, an agent's port has no such method and the bridge
-  refuses an agent's request carrying one. Regressions: 53 to 60.
+  refuses an agent's request carrying one. The acceptor may also sign (two people still
+  sign; barring it would need a third operator with authority on duty): the signature
+  records it (`self_accepted`), the card shows it and the evaluation counts it. Regressions:
+  53 to 60, 65.
 - **A HIGH_LATENCY2 report without its GPS failure flag is a 3D fix** (10-04, fourth
   review). HIGH_LATENCY2 carries no fix type, so a platform on that link alone never had a
   fresh fix and could never release. The bridge now counts each one without

@@ -558,7 +558,11 @@ def engage_signatures(events: list[dict]) -> dict[str, Any]:
     - the released effect (`engage.effect`) must come after such a dispatch, at that plan's
       point, time and radius, by the dispatched order's platform;
     - an engagement's events without its `intent.created` (no nomination in the log) are a
-      violation where it is dispatched or released."""
+      violation where it is dispatched or released.
+
+    Rules 5, not violations: lost vehicles operators accepted (`engage.accepted`), revoked
+    (`engage.acceptance_revoked`), and signatures by an operator who also accepted one
+    (`self_accepted`), counted."""
     sessions: dict[Any, tuple[str, bool]] = {}
     kind: dict[int, str] = {}
     created: set[int] = set()
@@ -568,7 +572,8 @@ def engage_signatures(events: list[dict]) -> dict[str, Any]:
     sigs: dict[int, list[tuple[str, bool, str | None, dict | None]]] = defaultdict(list)
     frozen: dict[int, dict | None] = {}  # intent -> the plan the dispatch rested on (None: none)
     order_uid: dict[int, str] = {}  # intent -> the platform the dispatched order named
-    out: dict[str, Any] = {"engagements": 0, "dispatched": 0, "released": 0, "dispatched_bad": 0, "released_bad": 0, "bad": []}
+    out: dict[str, Any] = {"engagements": 0, "dispatched": 0, "released": 0, "dispatched_bad": 0, "released_bad": 0, "bad": [],
+                           "acceptances": 0, "acceptances_revoked": 0, "self_accepted_signatures": 0}
 
     def bad(i: int, at: str, e: dict, why: str) -> None:
         out[f"{at}_bad"] += 1
@@ -621,6 +626,12 @@ def engage_signatures(events: list[dict]) -> dict[str, Any]:
         i = int(i)
         if not is_engage(e, i):
             continue
+        if typ == "engage.accepted":
+            out["acceptances"] += 1
+        elif typ == "engage.acceptance_revoked":
+            out["acceptances_revoked"] += 1
+        if typ in ("approval.concurred", "approval.granted") and e.get("self_accepted"):
+            out["self_accepted_signatures"] += 1
         if typ in ("approval.concurred", "approval.granted"):
             if i not in frozen:  # after the dispatch a signature no longer counts
                 ses = sessions.get(e.get("session"))  # the session as it stood when signed

@@ -588,15 +588,19 @@ impl Engine {
         }
         let dispatched = intent.history().iter().any(|h| h.state == State::Dispatched);
         let eng = intent.engagement().cloned().unwrap_or_default();
+        let other_holds = self.engaged_elsewhere(id, &report.uid);
         if let Some(why) = preload_mismatch(
             intent.spec(),
             intent.state(),
             dispatched,
             eng.preload.as_ref(),
+            eng.intended.as_ref().map(|r| &r.before),
             eng.preloaded.as_ref().map(|r| r.confirmed),
             eng.restored.as_ref().is_some_and(|r| r.confirmed),
+            other_holds,
             report.phase,
             &report.uid,
+            &report.before,
         ) {
             return Err(EngineError::NotItsOrder { id, why: why.into() });
         }
@@ -604,6 +608,7 @@ impl Engine {
             report.phase,
             eng.preload.as_ref(),
             eng.preloaded.as_ref().map(|r| &r.before),
+            &report.before,
             &report.readback,
             report.error.as_deref(),
         );
@@ -616,6 +621,7 @@ impl Engine {
             readback: report.readback.clone(),
             error: report.error.clone(),
             confirmed,
+            vehicle: report.vehicle.clone().map(Box::new),
         })?;
         let record = engage::PreloadRecord {
             t,
@@ -628,6 +634,7 @@ impl Engine {
         let state = self.get(id)?.state();
         let e = self.get_mut(id)?.engagement_mut();
         match report.phase {
+            engage::PreloadPhase::Intent => e.intended = Some(record),
             engage::PreloadPhase::Set => e.preloaded = Some(record),
             engage::PreloadPhase::Verify => e.verified = Some(record),
             engage::PreloadPhase::Restore => e.restored = Some(record),
@@ -656,6 +663,15 @@ impl Engine {
     /// attempt confirmed (the read-back shows every value back, no error; replay recomputes
     /// it, and reports a platform whose values were still owed when the log ended).
     pub fn record_platform_restore(&mut self, report: PlatformRestoreReport) -> Result<bool, EngineError> {
+        // never while an engagement holds the platform: that would undo its preload
+        if !report.carried
+            && let Some(other) = self.engagement_holding(&report.uid, None)
+        {
+            return Err(EngineError::NotItsOrder {
+                id: other,
+                why: "a restore of the platform's own values while an engagement holds it".into(),
+            });
+        }
         let confirmed = !report.carried
             && match &report.error {
                 Some(_) => false,
@@ -669,8 +685,27 @@ impl Engine {
             readback: report.readback,
             error: report.error,
             confirmed,
+            vehicle: report.vehicle.map(Box::new),
         })?;
         Ok(confirmed)
+    }
+
+    /// Rules 5: another engagement than `id` under way on vehicle `uid`.
+    fn engaged_elsewhere(&self, id: IntentId, uid: &Uid) -> bool {
+        self.engagement_holding(uid, Some(id)).is_some()
+    }
+
+    /// Rules 5: an engagement (other than `except`) under way on vehicle `uid`: it holds the
+    /// platform's lost-link preload, so nothing restores the platform's own values meanwhile.
+    fn engagement_holding(&self, uid: &Uid, except: Option<IntentId>) -> Option<IntentId> {
+        self.intents()
+            .find(|i| {
+                Some(i.id()) != except
+                    && i.spec().kind() == TaskKind::Engage
+                    && i.state() == State::Dispatched
+                    && i.spec().uids.first() == Some(uid)
+            })
+            .map(Intent::id)
     }
 
     /// Approve a pending intent. Re-runs the checks against the current world first: an
@@ -923,12 +958,14 @@ impl Engine {
                 token: None,
                 supersedes,
                 checked_t: None,
+                self_accepted: false,
             })?;
             self.get_mut(id)?.push_concurrence(Approval {
                 by: by.clone(),
                 session,
                 t,
                 self_approved,
+                self_accepted: false,
                 at_submission: false,
                 note,
             });
@@ -944,12 +981,14 @@ impl Engine {
             token: None,
             supersedes,
             checked_t: None,
+            self_accepted: false,
         })?;
         self.get_mut(id)?.set_approval(Approval {
             by: by.clone(),
             session,
             t,
             self_approved,
+            self_accepted: false,
             at_submission: false,
             note,
         });
@@ -1073,6 +1112,11 @@ impl Engine {
             }
         };
         self.tokens.remove(&token);
+        // rules 5: the signer also accepted one of its lost vehicles (allowed, recorded)
+        let self_accepted = self
+            .get(id)?
+            .engagement()
+            .is_some_and(|e| e.accepted.values().any(|a| &a.by == by));
         let n = u32::try_from(self.get(id)?.concurrences().len()).unwrap_or(u32::MAX) + 1;
         if n < of {
             let t = self.emit(EventBody::ApprovalConcurred {
@@ -1086,6 +1130,7 @@ impl Engine {
                 token: Some(Box::new(shown)),
                 supersedes: Vec::new(),
                 checked_t: Some(now),
+                self_accepted,
             })?;
             let intent = self.get_mut(id)?;
             intent.push_concurrence(Approval {
@@ -1093,6 +1138,7 @@ impl Engine {
                 session,
                 t,
                 self_approved,
+                self_accepted,
                 at_submission: false,
                 note,
             });
@@ -1124,6 +1170,7 @@ impl Engine {
             token: Some(Box::new(shown)),
             supersedes: Vec::new(),
             checked_t: Some(now),
+            self_accepted,
         })?;
         let intent = self.get_mut(id)?;
         intent.set_approval(Approval {
@@ -1131,6 +1178,7 @@ impl Engine {
             session,
             t,
             self_approved,
+            self_accepted,
             at_submission: false,
             note,
         });
@@ -2157,6 +2205,7 @@ impl Engine {
                     session: by.session(),
                     t,
                     self_approved: true,
+                    self_accepted: false,
                     at_submission: true,
                     note: None,
                 });
@@ -2396,6 +2445,8 @@ pub struct PreloadReport {
     pub readback: BTreeMap<String, f64>,
     /// What went wrong on the way (no answer from the vehicle, a refused write).
     pub error: Option<String>,
+    /// `intent`: the vehicle the values are about to be written to.
+    pub vehicle: Option<engage::VehicleIdentity>,
 }
 
 /// Rules 5: a platform's own lost-link values owed back outside an engagement's restore
@@ -2412,6 +2463,8 @@ pub struct PlatformRestoreReport {
     /// wrong on the way.
     pub readback: BTreeMap<String, f64>,
     pub error: Option<String>,
+    /// `carried`: the vehicle they were preloaded on.
+    pub vehicle: Option<engage::VehicleIdentity>,
 }
 
 /// Rules 5: how a stop for a preload that did not confirm begins (after `system: `); replay
@@ -2432,10 +2485,13 @@ pub(crate) fn preload_mismatch(
     state: State,
     dispatched: bool,
     preload: Option<&engage::LostLinkPreload>,
+    intent: Option<&BTreeMap<String, f64>>,
     set: Option<bool>,
     restore_confirmed: bool,
+    other_holds: bool,
     phase: engage::PreloadPhase,
     uid: &Uid,
+    before: &BTreeMap<String, f64>,
 ) -> Option<&'static str> {
     let set_logged = set.is_some();
     if !dispatched {
@@ -2448,7 +2504,17 @@ pub(crate) fn preload_mismatch(
         return Some("preload reported for an engagement order that carries none");
     }
     match phase {
+        engage::PreloadPhase::Intent if intent.is_some() || set_logged => {
+            Some("a second write-ahead of the preload, or one after its set")
+        }
+        engage::PreloadPhase::Intent if state != State::Dispatched => {
+            Some("a write-ahead of the preload for an engagement not under way")
+        }
         engage::PreloadPhase::Set if set_logged => Some("a second preload set for one engagement"),
+        // the values it put aside are the ones the write-ahead logged (none read: nothing written)
+        engage::PreloadPhase::Set if !before.is_empty() && intent != Some(before) => {
+            Some("a preload set whose own values are not its write-ahead's (or that has none)")
+        }
         engage::PreloadPhase::Verify if set != Some(true) || state != State::Dispatched => {
             Some("a preload re-read without a confirmed set, or of an engagement not under way")
         }
@@ -2458,6 +2524,9 @@ pub(crate) fn preload_mismatch(
         }
         engage::PreloadPhase::Restore if restore_confirmed => {
             Some("a restore after the platform's values were already put back")
+        }
+        engage::PreloadPhase::Restore if other_holds => {
+            Some("a restore while another engagement holds the platform")
         }
         _ => None,
     }
@@ -2470,6 +2539,7 @@ pub(crate) fn preload_verdict(
     phase: engage::PreloadPhase,
     preload: Option<&engage::LostLinkPreload>,
     before: Option<&BTreeMap<String, f64>>,
+    own: &BTreeMap<String, f64>,
     readback: &BTreeMap<String, f64>,
     error: Option<&str>,
 ) -> Result<(), String> {
@@ -2477,6 +2547,8 @@ pub(crate) fn preload_verdict(
         return Err(e.to_string());
     }
     match phase {
+        engage::PreloadPhase::Intent if own.is_empty() => Err("no values of its own were read".into()),
+        engage::PreloadPhase::Intent => Ok(()),
         engage::PreloadPhase::Set | engage::PreloadPhase::Verify => preload
             .ok_or_else(|| "no preload in the order".to_string())?
             .holds(readback),

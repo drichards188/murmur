@@ -64,6 +64,7 @@ track_velocity_sigma_mps = 1.0
 track_accel_mps2 = { air = 2.0, ground = 2.0, surface = 0.2, subsurface = 0.2 }
 vertical_rate_mps = 10.0
 keep_out_vertical_m = 200
+track_alt_max_age_s = 10
 
 [[tier]]
 name = "safety-commands"

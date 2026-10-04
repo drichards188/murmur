@@ -516,6 +516,18 @@ def test_two_authorized_signers_on_one_plan_is_fine():
     assert inv["engage"]["released"] == 1
 
 
+def test_an_acceptor_who_signs_is_counted_not_a_violation():
+    # rules 5: op-2 accepted a lost vehicle and signs; allowed (two signers still), measured
+    events = engagement([("op-2", PLAN_A), ("op-3", PLAN_A)])
+    for e in events:
+        if e.get("type") == "approval.concurred" and e.get("by") == "op-2":
+            e["self_accepted"] = True
+    events.insert(1, {"seq": 0, "t": 4.5, "type": "engage.accepted", "intent": 1, "uid": "drone-1", "since": None, "by": "op-2"})
+    e = M.engage_signatures(events)
+    assert (e["dispatched_bad"], e["released_bad"]) == (0, 0)
+    assert (e["acceptances"], e["self_accepted_signatures"]) == (1, 1)
+
+
 def test_every_way_to_fall_short_of_two_signers_is_a_violation():
     cases = {
         "one signer twice": [("op-2", PLAN_A), ("op-2", PLAN_A)],

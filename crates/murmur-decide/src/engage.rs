@@ -237,6 +237,10 @@ pub struct EngageRules {
     /// height, as before). Default `keep_out_m` (schema 3).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keep_out_vertical_m: Option<f64>,
+    /// Rules 5: how old a track's altitude, and the ranging sensor's last hit behind it, may
+    /// be for a 3D keep-out to count it, s (older: 2D). Default 10 (schema 3).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub track_alt_max_age_s: Option<f64>,
 }
 
 fn rules_version_now() -> u32 {
@@ -290,6 +294,11 @@ impl EngageRules {
         self.keep_out_vertical_m.unwrap_or(self.keep_out_m)
     }
 
+    /// [`EngageRules::track_alt_max_age_s`] or its default.
+    pub fn track_alt_max_age(&self) -> f64 {
+        self.track_alt_max_age_s.unwrap_or(10.0)
+    }
+
     /// The decisions of rules version 2 on (see the changelog).
     fn v2(&self) -> bool {
         self.rules_version >= 2
@@ -335,6 +344,9 @@ impl EngageRules {
         if self.keep_out_vertical_m.is_some() {
             keys.push((3, "keep_out_vertical_m"));
         }
+        if self.track_alt_max_age_s.is_some() {
+            keys.push((3, "track_alt_max_age_s"));
+        }
         keys
     }
 }
@@ -374,6 +386,7 @@ impl Default for EngageRules {
             track_accel_mps2: None,
             vertical_rate_mps: None,
             keep_out_vertical_m: None,
+            track_alt_max_age_s: None,
         }
     }
 }
@@ -431,6 +444,7 @@ impl EngageRules {
         }
         within(self.vertical_rate(), 0.5, 100.0, "vertical_rate_mps")?;
         within(self.keep_out_vertical(), 50.0, 20_000.0, "keep_out_vertical_m")?;
+        within(self.track_alt_max_age(), 1.0, 300.0, "track_alt_max_age_s")?;
         if self.assess_window_s < self.assess_dwell_s {
             return Err("rules.engage.assess_window_s must be at least assess_dwell_s".into());
         }
@@ -707,6 +721,10 @@ pub struct Engagement {
     pub preload: Option<LostLinkPreload>,
     /// Rules 5: the platform's report of setting it (and reading it back), and of restoring
     /// its own values afterwards.
+    /// Rules 5: the write-ahead of the preload: the platform's own values, logged before
+    /// anything was written.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intended: Option<PreloadRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preloaded: Option<PreloadRecord>,
     /// Rules 5: the last re-read of it near the release.
@@ -764,6 +782,55 @@ pub fn lost_since_report(
     Ok(())
 }
 
+/// Rules 5: which vehicle a preload was set on, as the bridge knows it (its manifest and its
+/// telemetry), logged with the write-ahead (`engage.preload` intent) and with values carried
+/// over to another run (`platform.restore`): those go back only to a vehicle that matches.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct VehicleIdentity {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callsign: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sysid: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<LonLat>,
+}
+
+impl VehicleIdentity {
+    /// How far apart two homes may be and still be the same vehicle's, m.
+    pub const HOME_TOLERANCE_M: f64 = 500.0;
+
+    /// Whether `now` (the vehicle that has the uid now) is this one: every field this one
+    /// knows must be known there and equal (the home within [`Self::HOME_TOLERANCE_M`]).
+    /// `Err` says why not (or what is not known yet).
+    pub fn matches(&self, now: &VehicleIdentity) -> Result<(), String> {
+        fn same<T: PartialEq + std::fmt::Debug>(what: &str, was: &Option<T>, is: &Option<T>) -> Result<(), String> {
+            match (was, is) {
+                (None, _) => Ok(()),
+                (Some(_), None) => Err(format!("its {what} is not known yet")),
+                (Some(a), Some(b)) if a == b => Ok(()),
+                (Some(a), Some(b)) => Err(format!("its {what} is {b:?}, not {a:?}")),
+            }
+        }
+        same("platform", &self.platform, &now.platform)?;
+        same("callsign", &self.callsign, &now.callsign)?;
+        same("system id", &self.sysid, &now.sysid)?;
+        match (self.home, now.home) {
+            (None, _) => Ok(()),
+            (Some(_), None) => Err("its home is not known yet".into()),
+            (Some(a), Some(b)) => {
+                let d = haversine_m(a, b);
+                if d <= Self::HOME_TOLERANCE_M {
+                    Ok(())
+                } else {
+                    Err(format!("its home is {d:.0} m from the one preloaded"))
+                }
+            }
+        }
+    }
+}
+
 /// Rules 5: one parameter a lost-link preload sets, and its value.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ParamSetting {
@@ -802,11 +869,15 @@ pub struct LostLinkPreload {
     pub timer_max_s: f64,
 }
 
-/// Rules 5: whether an `engage.preload` report is the preload (`set`) or the platform's own
-/// values put back (`restore`).
+/// Rules 5: whether an `engage.preload` report is the write-ahead of a preload (`intent`), the
+/// preload (`set`), a re-read near the release (`verify`) or the platform's own values put
+/// back (`restore`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PreloadPhase {
+    /// The platform's own values, read and logged before anything is written: from here on
+    /// they are owed back (a bridge that stops before the set's report still knows them).
+    Intent,
     Set,
     /// Read back again while the engagement is under way, near its release: still in force.
     Verify,
@@ -1603,7 +1674,7 @@ pub fn evaluate(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
     match &pv {
         Ok(p) => {
             out.push(no_strike_check(p, world));
-            let alt = effect_alt(track, p.effect_t, p.effect_radius_m, &ec);
+            let alt = effect_alt(track, world.t, p.effect_t, p.effect_radius_m, &ec);
             out.push(keep_out_friendly(
                 p.effect_point,
                 p.effect_t,
@@ -2207,14 +2278,15 @@ pub const VEHICLE_ALT_SIGMA_M: f64 = 10.0;
 pub const FIXED_WING_DIVE_DEG: f64 = 25.0;
 
 /// Rules 5: how fast one of our vehicles may climb or descend, m/s, either way: the largest of
-/// `vertical_rate_mps`, the catalog's climb rate, and for a fixed wing its dive at cruise
-/// speed down [`FIXED_WING_DIVE_DEG`] (a MALE aircraft at 90 m/s: 38 m/s).
+/// `vertical_rate_mps`, the catalog's climb rate, and for a fixed wing its dive at its top
+/// speed (`max_mps`, else cruise) down [`FIXED_WING_DIVE_DEG`] (a MALE aircraft at 105 m/s:
+/// 44 m/s).
 pub fn friendly_vertical_mps(v: &crate::world::VehicleFacts, ec: &EngageRules) -> f64 {
     let p = v.platform.as_ref();
     let climb = p.and_then(|p| p.climb_mps).unwrap_or(0.0);
     let fixed_wing = platform_autopilot(v).is_some_and(AutopilotKind::is_fixed_wing);
     let dive = if fixed_wing {
-        p.and_then(|p| p.cruise_mps).unwrap_or(0.0) * FIXED_WING_DIVE_DEG.to_radians().sin()
+        p.and_then(|p| p.max_mps.or(p.cruise_mps)).unwrap_or(0.0) * FIXED_WING_DIVE_DEG.to_radians().sin()
     } else {
         0.0
     };
@@ -2250,31 +2322,41 @@ pub struct EffectAlt {
     pub half_height_m: f64,
 }
 
-/// Rules 5: a track's altitude where a 3D keep-out may use it, or None (2D). A sensor that
-/// ranges must back it: radar, sonar under water, or for a vessel its own AIS report (it is
-/// on the surface); an altitude from passive sensors only (EO/IR, ESM: a bearing, no range)
-/// does not count. A ground track's altitude does not count at all: the sensing model gives
-/// ground contacts 0 m whatever the terrain, and an altitude above the terrain is not one
-/// above mean sea level (a terrain-referenced height, DEM plus offset, is future work).
-pub fn track_altitude(t: &TrackFacts) -> Option<f64> {
+/// Rules 5: a track's altitude where a 3D keep-out may use it, and when it was measured, or
+/// None (2D). It must be recent (its own time, `alt_t`, at most `track_alt_max_age_s` before
+/// `now`) and backed by a sensor that ranges the contact which detected it that recently
+/// (`source_t`): radar for an aircraft (the sensing model gives an aircraft's height only from
+/// a radar that measures elevation), radar or the vessel's own AIS report for a vessel (on the
+/// surface its height is sea level). An altitude from passive sensors only (EO/IR, ESM: a
+/// bearing, no range) does not count, nor one a radar measured long ago while EO/IR keeps
+/// the position fresh. Never a ground track's (the sensing model gives ground contacts 0 m
+/// whatever the terrain, and a height above the terrain is not one above mean sea level: a
+/// terrain-referenced height is future work) nor a subsurface one's (sonar's fix is
+/// bearing-heavy: no depth).
+pub fn track_altitude(t: &TrackFacts, now: Time, ec: &EngageRules) -> Option<(f64, Time)> {
     let alt = t.alt_m.filter(|a| a.is_finite())?;
-    let has = |kind: &str| {
-        t.sources
+    let at = t.alt_t?;
+    let max_ms = ms(ec.track_alt_max_age());
+    if now.ms_since(at) > max_ms {
+        return None;
+    }
+    let recent = |kind: &str| {
+        t.source_t
             .iter()
-            .any(|s| s.rsplit(':').next() == Some(kind))
+            .any(|(s, st)| s.rsplit(':').next() == Some(kind) && now.ms_since(*st) <= max_ms)
     };
     let backed = match t.domain {
-        Domain::Ground => false,
-        Domain::Air => has("radar"),
-        Domain::Surface => has("radar") || has("ais"),
-        Domain::Subsurface => has("sonar"),
+        Domain::Air => recent("radar"),
+        Domain::Surface => recent("radar") || recent("ais"),
+        Domain::Ground | Domain::Subsurface => false,
     };
-    backed.then_some(alt)
+    backed.then_some((alt, at))
 }
 
 /// See [`EffectAlt`].
 pub fn effect_alt(
     target: Option<&TrackFacts>,
+    now: Time,
     effect_t: Time,
     effect_radius_m: f64,
     ec: &EngageRules,
@@ -2283,8 +2365,9 @@ pub fn effect_alt(
         return None;
     }
     let t = target?;
-    let alt_m = track_altitude(t)?;
-    let span = secs(effect_t.ms_since(t.position.t)).max(0.0);
+    let (alt_m, alt_t) = track_altitude(t, now, ec)?;
+    // the margin grows from when the altitude was measured, not the position's time
+    let span = secs(effect_t.ms_since(alt_t)).max(0.0);
     Some(EffectAlt {
         alt_m,
         margin_m: ec.keep_out_sigma * track_alt_sigma_m(t.domain)
@@ -2393,10 +2476,12 @@ pub fn keep_out_tracks(
         let d = haversine_m(p, point);
         let edge = d - reach;
         if edge < keep_out_m {
-            // in 3D where both altitudes are known (and backed: track_altitude)
-            if let (Some(e), Some(a)) = (alt, track_altitude(t)) {
+            // in 3D where both altitudes are known (recent and ranged: track_altitude), the
+            // margin growing from the altitude's own time
+            if let (Some(e), Some((a, alt_t))) = (alt, track_altitude(t, world.t, ec)) {
+                let alt_span = secs(effect_t.ms_since(alt_t)).max(0.0);
                 let m = ec.keep_out_sigma * track_alt_sigma_m(t.domain)
-                    + track_vertical_mps(t.domain, ec) * span;
+                    + track_vertical_mps(t.domain, ec) * alt_span;
                 if let Some(c) = vertical_clear(&e, a, m) {
                     by_alt.push(format!(
                         "{id} at {a:.0} m ({c:.0} m outside the vertical keep-out with {m:.0} m of altitude uncertainty)"
@@ -2411,7 +2496,7 @@ pub fn keep_out_tracks(
                 format!(
                     "track {} predicted {d:.0} m from the effect point at the effect time ({how}); keep-out {keep_out_m:.0} m{}",
                     describe_track(id, t),
-                    vertical_note(alt, track_altitude(t).is_some())
+                    vertical_note(alt, track_altitude(t, world.t, ec).is_some())
                 ),
             );
         }
@@ -2686,7 +2771,7 @@ fn plan_checks(
         out.push(zone_check(p, world));
     }
     out.push(no_strike_check(p, world));
-    let alt = effect_alt(world.tracks.get(track_id), p.effect_t, p.effect_radius_m, &ec);
+    let alt = effect_alt(world.tracks.get(track_id), world.t, p.effect_t, p.effect_radius_m, &ec);
     out.push(keep_out_friendly(
         p.effect_point,
         p.effect_t,
@@ -3079,7 +3164,7 @@ pub fn picture(
     } else {
         p.effect_t
     };
-    let alt = effect_alt(track, effect_at, p.effect_radius_m, &ec);
+    let alt = effect_alt(track, world.t, effect_at, p.effect_radius_m, &ec);
     picture_checks.push(keep_out_friendly(
         p.effect_point,
         effect_at,
@@ -3400,7 +3485,7 @@ fn release_checks(
     // released before the plan's time: the keep-outs as they are now (the picture read them at
     // the plan's time)
     if ec.v2() && world.t < p.effect_t {
-        let alt = effect_alt(track, world.t, p.effect_radius_m, ec);
+        let alt = effect_alt(track, world.t, world.t, p.effect_radius_m, ec);
         out.push(keep_out_friendly(p.effect_point, world.t, p.keep_out_m, uid, world, cfg, alt));
         out.push(keep_out_tracks(
             p.effect_point,

@@ -68,7 +68,7 @@ tamper = "suppress_void"         # optional log attack replay must catch: propos
                                  # drop_reset, agent_order_auto, drop_ack, loosen_policy,
                                  # and rules 5: drop_preload, forge_preload,
                                  # drop_verify, drop_acceptance, acceptance_by_agent,
-                                 # acceptance_without_authority
+                                 # acceptance_without_authority, hide_self_accepted
                                  # (one with nothing to edit in a run's log reports "not
                                  # applicable")
 end_s = 120                      # seconds to run (default: the last step + 10)
@@ -117,6 +117,9 @@ silent = false                   # true: no detections at all
 sources = ["3:radar"]
 alt_m = 0                        # rules 5: its estimated altitude (absent: unknown, 2D)
 no_velocity_estimate = false     # rules 5: the tracker has no velocity for it yet
+alt_age_s = 0                    # rules 5: its altitude was last ranged this long before the
+                                 # start and never again (the radar lost it; the others keep
+                                 # its position fresh); sources radar and ais are the ranging ones
 
 [[step]]
 at_s = 0
@@ -217,3 +220,5 @@ calls `Engine::step_engagements` (hold the picture, release, observe, assess).
 | 61-passive-aircraft-altitude-stays-2d | keep_out_tracks | the airliner of 52 over the effect point, its altitude from EO/IR only | rejected (2D) |
 | 62-preload-changed-before-release | fallback_preload | the lost-link action changed on the platform after the set; the re-read cut from the log | aborted at the re-read, fallback, own values back; tamper caught |
 | 63-ground-target-stays-2d | keep_out_friendly | the review's probe 8: our quadcopter 400 m MSL over a ground target logged at 0 m | rejected (2D) |
+| 64-stale-radar-altitude-stays-2d | keep_out_tracks | the second review's probe: an aircraft 100 m from the point whose radar altitude is five minutes old while EO/IR keeps its position fresh | rejected (2D) |
+| 65-acceptor-signs-recorded | signed_picture | the operator who accepted a lost vehicle signs; the log hides that they did both | done (ceased), `self_accepted` on the signature; tamper caught |

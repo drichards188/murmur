@@ -178,37 +178,50 @@ impl ReplayReport {
     }
 }
 
-/// Rules 5: the platforms' own lost-link values owed back to them: from a preload set that
-/// changed them (or may have), or carried over from an earlier run (`platform.restore`),
-/// until a restore confirms them. Who owes them: the engagements that preloaded since.
+/// Rules 5: the platforms' own lost-link values owed back to them: from a preload's
+/// write-ahead (`engage.preload` intent, logged before anything is written: the platform may
+/// hold the preload from then on), or carried over from an earlier run (`platform.restore`),
+/// until a restore confirms them. Who owes them (the engagements that preloaded since) and
+/// the vehicle they were preloaded on.
 #[derive(Default)]
 struct Restores {
-    owed: BTreeMap<Uid, (BTreeMap<String, f64>, Vec<IntentId>)>,
+    owed: BTreeMap<Uid, Owed>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct Owed {
+    values: BTreeMap<String, f64>,
+    by: Vec<IntentId>,
+    vehicle: Option<engage::VehicleIdentity>,
 }
 
 impl Restores {
     /// A preload set on `uid` read `before` as the platform's own values: while earlier
     /// values are owed, those it shares with them must be them (a value read off a preloaded
     /// platform is not its own); the others are owed too from now on. Err: the values owed.
-    fn owe(&mut self, uid: &Uid, intent: IntentId, before: &BTreeMap<String, f64>) -> Result<(), String> {
-        match self.owed.get_mut(uid) {
-            Some((values, by)) => {
-                by.push(intent);
-                let differs = before.iter().any(|(n, v)| values.get(n).is_some_and(|o| o != v));
-                let was = json(&*values);
-                for (n, v) in before {
-                    values.entry(n.clone()).or_insert(*v);
-                }
-                if differs {
-                    return Err(was);
-                }
-                Ok(())
-            }
-            None => {
-                self.owed.insert(uid.clone(), (before.clone(), vec![intent]));
-                Ok(())
-            }
+    fn owe(
+        &mut self,
+        uid: &Uid,
+        intent: IntentId,
+        before: &BTreeMap<String, f64>,
+        vehicle: Option<&engage::VehicleIdentity>,
+    ) -> Result<(), String> {
+        let o = self.owed.entry(uid.clone()).or_default();
+        if !o.by.contains(&intent) {
+            o.by.push(intent);
         }
+        if let Some(v) = vehicle {
+            o.vehicle = Some(v.clone());
+        }
+        let differs = before.iter().any(|(n, v)| o.values.get(n).is_some_and(|w| w != v));
+        let was = json(&o.values);
+        for (n, v) in before {
+            o.values.entry(n.clone()).or_insert(*v);
+        }
+        if differs {
+            return Err(was);
+        }
+        Ok(())
     }
 
     /// A confirmed restore on `uid` read `readback`: paid when it shows every value owed.
@@ -216,7 +229,7 @@ impl Restores {
         if self
             .owed
             .get(uid)
-            .is_some_and(|(values, _)| engage::restored(values, readback).is_ok())
+            .is_some_and(|o| engage::restored(&o.values, readback).is_ok())
         {
             self.owed.remove(uid);
         }
@@ -232,10 +245,11 @@ impl Restores {
                 before,
                 readback,
                 confirmed,
+                vehicle,
                 ..
             } => match phase {
-                engage::PreloadPhase::Set if !before.is_empty() => {
-                    let _ = self.owe(uid, *intent, before);
+                engage::PreloadPhase::Intent | engage::PreloadPhase::Set if !before.is_empty() => {
+                    let _ = self.owe(uid, *intent, before, vehicle.as_deref());
                 }
                 engage::PreloadPhase::Restore if *confirmed => self.paid(uid, readback),
                 _ => {}
@@ -246,10 +260,15 @@ impl Restores {
                 carried,
                 readback,
                 confirmed,
+                vehicle,
                 ..
             } => {
                 if *carried {
-                    self.owed.entry(uid.clone()).or_insert_with(|| (values.clone(), Vec::new()));
+                    self.owed.entry(uid.clone()).or_insert_with(|| Owed {
+                        values: values.clone(),
+                        by: Vec::new(),
+                        vehicle: vehicle.as_deref().cloned(),
+                    });
                 } else if *confirmed {
                     self.paid(uid, readback);
                 }
@@ -261,7 +280,8 @@ impl Restores {
     fn report(&self) -> Vec<String> {
         self.owed
             .iter()
-            .map(|(uid, (values, by))| {
+            .map(|(uid, o)| {
+                let (values, by) = (&o.values, &o.by);
                 let by: Vec<String> = by.iter().map(ToString::to_string).collect();
                 let by = if by.is_empty() {
                     "carried over from an earlier run".to_string()
@@ -284,6 +304,9 @@ pub struct OwedRestore {
     pub uid: Uid,
     pub values: BTreeMap<String, f64>,
     pub by: Vec<IntentId>,
+    /// The vehicle they were preloaded on (from the write-ahead): they go back only to a
+    /// vehicle that matches.
+    pub vehicle: Option<engage::VehicleIdentity>,
 }
 
 pub fn owed_restores(text: &str) -> Vec<OwedRestore> {
@@ -296,13 +319,38 @@ pub fn owed_restores(text: &str) -> Vec<OwedRestore> {
     restores
         .owed
         .into_iter()
-        .map(|(uid, (values, by))| OwedRestore { uid, values, by })
+        .map(|(uid, o)| OwedRestore {
+            uid,
+            values: o.values,
+            by: o.by,
+            vehicle: o.vehicle,
+        })
         .collect()
 }
 
+/// Rules 5: an engagement (other than `except`) under way on vehicle `uid`: it holds the
+/// platform's preload, so no restore of its own values may run meanwhile.
+fn holding(intents: &BTreeMap<IntentId, Tracked>, uid: &Uid, except: Option<IntentId>) -> Option<IntentId> {
+    intents
+        .iter()
+        .find(|(id, tr)| {
+            Some(**id) != except
+                && tr.spec.kind() == TaskKind::Engage
+                && tr.state == State::Dispatched
+                && tr.spec.uids.first() == Some(uid)
+        })
+        .map(|(id, _)| *id)
+}
+
 /// Rules 5: a `platform.restore`: carried values become owed (equal to any already owed);
-/// an attempt must put back the values owed, and its `confirmed` is recomputed.
-fn platform_restore(r: &mut ReplayReport, e: &Event, restores: &mut Restores) {
+/// an attempt must put back the values owed, never while an engagement holds the platform,
+/// and its `confirmed` is recomputed.
+fn platform_restore(
+    r: &mut ReplayReport,
+    e: &Event,
+    restores: &mut Restores,
+    intents: &BTreeMap<IntentId, Tracked>,
+) {
     let EventBody::PlatformRestore {
         uid,
         values,
@@ -315,13 +363,31 @@ fn platform_restore(r: &mut ReplayReport, e: &Event, restores: &mut Restores) {
     else {
         return;
     };
-    let owed = restores.owed.get(uid).map(|(v, _)| v);
+    let owed = restores.owed.get(uid).map(|o| &o.values);
     if *carried {
         if owed.is_some_and(|v| v != values) || *confirmed || !readback.is_empty() {
             bad(r, e, None, "carried restore differs from the values owed", json(values), json(&owed));
         }
-        restores.owed.entry(uid.clone()).or_insert_with(|| (values.clone(), Vec::new()));
+        let vehicle = match &e.body {
+            EventBody::PlatformRestore { vehicle, .. } => vehicle.as_deref().cloned(),
+            _ => None,
+        };
+        restores.owed.entry(uid.clone()).or_insert_with(|| Owed {
+            values: values.clone(),
+            by: Vec::new(),
+            vehicle,
+        });
         return;
+    }
+    if let Some(other) = holding(intents, uid, None) {
+        bad(
+            r,
+            e,
+            Some(other),
+            "restore of the platform's own values while an engagement holds it",
+            uid.to_string(),
+            "no engagement under way on the platform".into(),
+        );
     }
     if owed != Some(values) {
         bad(r, e, None, "restore of values not owed back to the platform", json(values), json(&owed));
@@ -405,6 +471,8 @@ struct Tracked {
     preload: Option<engage::LostLinkPreload>,
     preload_set: Option<(BTreeMap<String, f64>, bool)>,
     restore_confirmed: bool,
+    /// Rules 5: the preload's write-ahead (`intent`): the platform's own values it logged.
+    preload_intent: Option<BTreeMap<String, f64>>,
     /// Rules 5: the latest `set` or `verify` read-back of the preload: its time, confirmed.
     preload_read: Option<(Time, bool)>,
     /// the unconfirmed preload report a stop must follow: its seq and the stop's reason prefix
@@ -530,6 +598,9 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (5, "\"unknown_accepted\":", "an accepted lost vehicle in decision inputs"),
     (5, "\"alt_msl_m\":", "a vehicle's altitude fact"),
     (5, "\"climb_mps\":", "a platform's climb rate"),
+    (5, "\"max_mps\":", "a platform's top speed"),
+    (5, "\"alt_t\":", "a track altitude's time"),
+    (5, "\"source_t\":", "a track source's last hit"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.
@@ -888,6 +959,7 @@ fn replay_inner<S: AsRef<str>>(
                         preload: None,
                         preload_set: None,
                         restore_confirmed: false,
+                        preload_intent: None,
                         preload_read: None,
                         preload_stop_due: None,
                         accepted: BTreeMap::new(),
@@ -1075,6 +1147,7 @@ fn replay_inner<S: AsRef<str>>(
                 token,
                 supersedes,
                 checked_t,
+                self_accepted,
                 ..
             } => {
                 let Some(tr) = intents.get_mut(intent) else {
@@ -1089,6 +1162,7 @@ fn replay_inner<S: AsRef<str>>(
                     continue;
                 };
                 check_signature(&mut r, e, *intent, tr, by, *session, &sessions);
+                check_self_accepted(&mut r, e, *intent, tr, by, *self_accepted);
                 let want = (u32::try_from(tr.signers.len()).unwrap_or(u32::MAX) + 1, tr.approvers);
                 if (*n, *of) != want || *n >= *of {
                     bad(
@@ -1184,6 +1258,7 @@ fn replay_inner<S: AsRef<str>>(
                 token,
                 supersedes,
                 checked_t,
+                self_accepted,
                 ..
             } => {
                 let Some(tr) = intents.get_mut(intent) else {
@@ -1218,6 +1293,7 @@ fn replay_inner<S: AsRef<str>>(
                         format!("< {:?}", other.map(|t| t.0)),
                     ),
                 }
+                check_self_accepted(&mut r, e, *intent, tr, by, *self_accepted);
                 let want = is_self_approval(&tr.spec.source, by);
                 if *self_approved != want {
                     bad(
@@ -2128,7 +2204,7 @@ fn replay_inner<S: AsRef<str>>(
                 }
             }
             EventBody::PlatformRestore { .. } => {
-                platform_restore(&mut r, e, &mut restores);
+                platform_restore(&mut r, e, &mut restores, &intents);
             }
             EventBody::EngagePreload {
                 intent,
@@ -2138,7 +2214,9 @@ fn replay_inner<S: AsRef<str>>(
                 readback,
                 error,
                 confirmed,
+                vehicle,
             } => {
+                let other_holds = holding(&intents, uid, Some(*intent)).is_some();
                 let Some(tr) = intents.get_mut(intent) else {
                     bad(&mut r, e, Some(*intent), "preload for an unknown intent", String::new(), String::new());
                     continue;
@@ -2148,10 +2226,13 @@ fn replay_inner<S: AsRef<str>>(
                     tr.state,
                     tr.dispatched,
                     tr.preload.as_ref(),
+                    tr.preload_intent.as_ref(),
                     tr.preload_set.as_ref().map(|(_, c)| *c),
                     tr.restore_confirmed,
+                    other_holds,
                     *phase,
                     uid,
+                    before,
                 ) {
                     bad(
                         &mut r,
@@ -2166,6 +2247,7 @@ fn replay_inner<S: AsRef<str>>(
                     *phase,
                     tr.preload.as_ref(),
                     tr.preload_set.as_ref().map(|(b, _)| b),
+                    before,
                     readback,
                     error.as_deref(),
                 );
@@ -2180,16 +2262,32 @@ fn replay_inner<S: AsRef<str>>(
                     );
                 }
                 match phase {
+                    engage::PreloadPhase::Intent => {
+                        tr.preload_intent = Some(before.clone());
+                        // the platform's own values, owed back from the write-ahead on (a
+                        // value read off a platform still preloaded is not its own)
+                        if !before.is_empty()
+                            && let Err(owed) = restores.owe(uid, *intent, before, vehicle.as_deref())
+                        {
+                            bad(
+                                &mut r,
+                                e,
+                                Some(*intent),
+                                "preload read the platform's values while earlier ones were owed back to it",
+                                json(before),
+                                owed,
+                            );
+                        }
+                    }
                     engage::PreloadPhase::Set => {
                         tr.preload_set = Some((before.clone(), verdict.is_ok()));
                         tr.preload_read = Some((e.t, verdict.is_ok()));
                         if verdict.is_err() && tr.state == State::Dispatched {
                             tr.preload_stop_due = Some((e.seq, PRELOAD_FAILED));
                         }
-                        // the platform's own values, owed back once it ends (a value read
-                        // off a platform still preloaded is not its own)
+                        // (the same values as its write-ahead: already owed)
                         if !before.is_empty()
-                            && let Err(owed) = restores.owe(uid, *intent, before)
+                            && let Err(owed) = restores.owe(uid, *intent, before, None)
                         {
                             bad(
                                 &mut r,
@@ -2331,6 +2429,15 @@ fn replay_inner<S: AsRef<str>>(
     r.intents = intents.len();
     r.unrestored = restores.report();
     r
+}
+
+/// Rules 5: a signature's `self_accepted`: the signer accepted one of the engagement's lost
+/// vehicles in force.
+fn check_self_accepted(r: &mut ReplayReport, e: &Event, id: IntentId, tr: &Tracked, by: &OperatorId, logged: bool) {
+    let want = tr.accepted.values().any(|a| &a.by == by);
+    if logged != want {
+        bad(r, e, Some(id), "self_accepted flag differs", logged.to_string(), want.to_string());
+    }
 }
 
 /// A human act (`what`) under a session opened earlier for that operator.

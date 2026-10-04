@@ -130,6 +130,7 @@ fn target(t: Time, at: LonLat, vel: [f64; 2], declared: bool) -> TrackFacts {
     TrackFacts {
         position: Fact::new(at, t),
         alt_m: None,
+        alt_t: None,
         velocity_mps: Some(vel),
         pos_sigma_m: 15.0,
         sigma_growth_mps: Some(1.0),
@@ -146,6 +147,7 @@ fn target(t: Time, at: LonLat, vel: [f64; 2], declared: bool) -> TrackFacts {
         identity: Some("small_fast_boat".into()),
         identity_confidence: 0.9,
         sources: vec!["3:radar".into()],
+        source_t: [("3:radar".to_string(), t)].into_iter().collect(),
         domain: Domain::Surface,
         last_seen_t: t,
         declared_by: declared.then(|| "op-1".to_string()),

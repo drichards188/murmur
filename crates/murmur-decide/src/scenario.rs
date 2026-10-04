@@ -85,7 +85,8 @@ pub struct Scenario {
     /// `proposer_approval`, `agent_approval`, `suppress_void`, `edit_snapshot`,
     /// `drop_signature`, `edit_effect`, `strip_approvers`, `drop_reset`, `agent_order_auto`,
     /// `drop_ack`, `loosen_policy`, and for rules 5 `drop_preload`, `forge_preload`,
-    /// `drop_verify`, `drop_acceptance`, `acceptance_by_agent`, `acceptance_without_authority`.
+    /// `drop_verify`, `drop_acceptance`, `acceptance_by_agent`, `acceptance_without_authority`,
+    /// `hide_self_accepted`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tamper: Option<String>,
     /// Seconds to run (default: the last step plus 10).
@@ -220,6 +221,11 @@ pub struct TrackDef {
     /// fixes a baseline apart), however it moves.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_velocity_estimate: bool,
+    /// Rules 5: its altitude was last measured this long before the start, s, and never
+    /// again: the ranging sensors (radar, AIS) lost it while the others keep its position
+    /// fresh (0: measured with every detection).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub alt_age_s: f64,
 }
 
 fn sigma() -> f64 {
@@ -536,6 +542,12 @@ struct TrackSim {
     silent: bool,
     /// no velocity estimate (the tracker has none yet)
     no_velocity: bool,
+    /// rules 5: its altitude is no longer measured (the ranging sensors lost it)
+    alt_frozen: bool,
+}
+
+fn is_zero(x: &f64) -> bool {
+    *x == 0.0
 }
 
 /// Golden Gate land/water: land south of the Presidio shore and on Marin, water between.
@@ -705,6 +717,16 @@ pub fn run(
                 };
                 tr.facts.position = Fact::new(noisy, now);
                 tr.facts.last_seen_t = now;
+                // every source hit it; the ranging ones (and so the altitude) unless they lost it
+                let frozen = tr.alt_frozen;
+                for (src, st) in &mut tr.facts.source_t {
+                    if !(frozen && ranging(src)) {
+                        *st = now;
+                    }
+                }
+                if !frozen && tr.facts.alt_m.is_some() {
+                    tr.facts.alt_t = Some(now);
+                }
             } else if s > 0 {
                 // unobserved: the estimate stays where it was last seen
             }
@@ -978,8 +1000,14 @@ pub fn run(
     })
 }
 
+/// A source that ranges a contact in height (or puts it at sea level): radar, AIS.
+fn ranging(source: &str) -> bool {
+    matches!(source.rsplit(':').next(), Some("radar" | "ais"))
+}
+
 fn track_sim(t: &TrackDef) -> TrackSim {
     let seen = T0.plus_ms(-((t.age_s * 1000.0).round() as i64));
+    let alt_seen = seen.plus_ms(-((t.alt_age_s * 1000.0).round() as i64));
     let speed = t.velocity[0].hypot(t.velocity[1]);
     TrackSim {
         truth: LonLat::new(t.at[0], t.at[1]),
@@ -989,6 +1017,7 @@ fn track_sim(t: &TrackDef) -> TrackSim {
         facts: TrackFacts {
             position: Fact::new(LonLat::new(t.at[0], t.at[1]), seen),
             alt_m: t.alt_m,
+            alt_t: t.alt_m.map(|_| alt_seen),
             velocity_mps: (!t.no_velocity_estimate).then_some(t.velocity),
             pos_sigma_m: t.sigma_m,
             sigma_growth_mps: Some((0.3 * speed).max(1.0)),
@@ -998,12 +1027,18 @@ fn track_sim(t: &TrackDef) -> TrackSim {
             identity: t.identity.clone(),
             identity_confidence: t.identity_confidence,
             sources: t.sources.clone(),
+            source_t: t
+                .sources
+                .iter()
+                .map(|s| (s.clone(), if ranging(s) { alt_seen } else { seen }))
+                .collect(),
             domain: t.domain,
             last_seen_t: seen,
             declared_by: t.declared_by.clone(),
         },
         silent: t.silent,
         no_velocity: t.no_velocity_estimate,
+        alt_frozen: t.alt_age_s > 0.0,
     }
 }
 
@@ -1399,10 +1434,13 @@ fn act(
                     sources: vec!["sensor".into()],
                     alt_m: *alt_m,
                     no_velocity_estimate: false,
+                    alt_age_s: 0.0,
                 })
             });
             if let Some(a) = alt_m {
                 t.facts.alt_m = Some(*a);
+                t.facts.alt_t = Some(now);
+                t.alt_frozen = false;
             }
             if let Some(p) = at {
                 t.truth = LonLat::new(p[0], p[1]);
@@ -1660,6 +1698,7 @@ fn preloads(
                         "no answer from the vehicle to PARAM_REQUEST_READ {} after 3 attempts",
                         names[0]
                     )),
+                    vehicle: None,
                 }
             } else if mode == "mismatch" {
                 // it answers with another action than the order's (the first set parameter
@@ -1674,6 +1713,7 @@ fn preloads(
                     before: before.clone(),
                     readback: r,
                     error: None,
+                    vehicle: None,
                 }
             } else {
                 PreloadReport {
@@ -1682,11 +1722,32 @@ fn preloads(
                     before: before.clone(),
                     readback: set_values(),
                     error: None,
+                    vehicle: None,
                 }
             };
             ps.before = report.before.clone();
             ps.holds = report.readback.clone();
             ps.timer_s = report.readback.get(&preload.timer).copied();
+            // the write-ahead: its own values logged before anything is written
+            if !report.before.is_empty() {
+                let identity = vehicles.get(&ps.uid).map(|v| crate::engage::VehicleIdentity {
+                    platform: Some(v.def.platform.clone()),
+                    callsign: Some(ps.uid.clone()),
+                    sysid: None,
+                    home: Some(v.home),
+                });
+                let intent_report = PreloadReport {
+                    uid: Uid::new(&ps.uid),
+                    phase: PreloadPhase::Intent,
+                    before: report.before.clone(),
+                    readback: BTreeMap::new(),
+                    error: None,
+                    vehicle: identity,
+                };
+                if let Err(e) = engine.record_preload(id, intent_report) {
+                    failures.push(format!("t={s}: preload intent {id}: {e}"));
+                }
+            }
             match engine.record_preload(id, report) {
                 Ok(stop) => {
                     let confirmed = engine
@@ -1730,6 +1791,7 @@ fn preloads(
                 before: BTreeMap::new(),
                 readback,
                 error: None,
+                vehicle: None,
             };
             match engine.record_preload(id, report) {
                 Ok(stop) => {
@@ -1788,6 +1850,7 @@ fn preloads(
                 before: BTreeMap::new(),
                 readback: ps.before.clone(),
                 error: None,
+                vehicle: None,
             };
             match engine.record_preload(id, report) {
                 Ok(_) => {
@@ -2220,6 +2283,25 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             }
             if !done {
                 return Err("no engage.accepted to forge".into());
+            }
+        }
+        "hide_self_accepted" => {
+            // rules 5: a signer who accepted a lost vehicle recorded as if they had not
+            let mut done = false;
+            for e in &mut events {
+                match &mut e.body {
+                    EventBody::ApprovalGranted { intent, self_accepted, .. }
+                    | EventBody::ApprovalConcurred { intent, self_accepted, .. }
+                        if *intent == spec.id && *self_accepted =>
+                    {
+                        *self_accepted = false;
+                        done = true;
+                    }
+                    _ => {}
+                }
+            }
+            if !done {
+                return Err("no self-accepted signature to hide".into());
             }
         }
         "acceptance_without_authority" => {

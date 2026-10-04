@@ -1,0 +1,64 @@
+# Rules 5, from the second review (its probe): a track's altitude counts for the 3D keep-out
+# only while it is recent and a ranging sensor hit the track that recently. A neutral light
+# aircraft circles 100 m from the effect point; the radar that measured it at 1,500 m lost it
+# five minutes ago, while EO/IR keeps its position fresh (it may be at 100 m by now). Its
+# altitude is too old to count (track_alt_max_age_s, 10 s): the keep-out stays 2D and the
+# nomination is rejected. The same aircraft with a fresh radar altitude is scenario 52's case.
+title = "A stale radar altitude keeps the keep-out 2D"
+invariant = "keep_out_tracks"
+attack = "a neutral aircraft 100 m from the point whose radar altitude is five minutes old while EO/IR keeps its position fresh"
+expect = "rejected"
+expect_rule = "keep_out_tracks"
+end_s = 20
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+alt_m = 0                   # on the surface (radar)
+
+[[track]]
+id = "T-0002"
+at = [-122.4939, 37.8120]   # 100 m east of the effect point
+velocity = [0.0, 0.0]
+affiliation = "neutral"
+identity = "light_aircraft"
+identity_confidence = 0.9
+domain = "air"
+alt_m = 1500                # as the radar last measured it
+alt_age_s = 300             # five minutes ago; the radar has not hit it since
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600

@@ -4,7 +4,7 @@
 # comes near, an aircraft at 3,000 m). Stand-ins only: no ArduPilot SITL needed.
 #   MURMUR_OPERATORS=op-1,op-2,op-3 MURMUR_ENGAGE_OPERATORS=op-2,op-3 \
 #   make goldengate GG_FLEET=engage-keepout-demo CONTACTS=sim/scenarios/golden-gate-engage-keepout.toml
-# - the MQ-9B-class aircraft at 7,600 m circles 3.5 km around the holding point: its circle
+# - the MQ-9B-class aircraft at 9,000 m circles 3.5 km around the holding point: its circle
 #   covers the effect point, so a 2D keep-out blocked every engagement there; in 3D it is
 #   thousands of metres above a surface effect;
 # - the Magura-class USV (LEO SATCOM, a 30 s lost-link timer) takes fallback loiter: at
@@ -39,4 +39,4 @@ spawn = [37.8055, -122.4480, 5, 0]
 platform = "mq9b"                      # one of ours, MALE, on station over the target area
 sim = "standin"
 count = 1
-spawn = [37.8120, -122.4950, 7600, 90] # loitering 3.5 km around the holding point
+spawn = [37.8120, -122.4950, 9000, 90] # loitering 3.5 km around the holding point

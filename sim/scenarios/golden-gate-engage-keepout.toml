@@ -8,8 +8,10 @@
 # - a fast ferry that runs to a landing 300 m south of the holding point and waits there four
 #   minutes, then runs 4.9 km east and waits again (its legs take 4 minutes): near, it still
 #   blocks; far, it does not;
-# - an aircraft crossing over the holding point at 3,000 m: in 2D it blocked whenever it
-#   passed overhead; in 3D (both altitudes known) it is far above a surface effect.
+# - an aircraft crossing over the holding point at 3,000 m: in 2D it blocks whenever it
+#   passes overhead. It stays 2D here: no sensor of the demo fleet measures an aircraft's
+#   height (the USVs' radars are 2D navigation radars, EO/IR has no range), and a 3D keep-out
+#   counts a track's altitude only from a recent ranged measurement.
 # Timeline from the start (scenario seconds): the target holds from about 375 s; the near
 # ferry waits by the holding point 243 to 483 s, leaves, waits 4.9 km east 726 to 966 s,
 # comes back (in the way from about 1,100 s) and waits by the holding point 1,209 to 1,449 s.

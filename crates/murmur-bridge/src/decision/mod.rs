@@ -319,6 +319,8 @@ struct Core {
     /// rules 5: per platform, its one lost-link parameter job and its own values owed back
     /// (outlives the engagements' runs)
     params: BTreeMap<Uid, engage::ParamLane>,
+    /// rules 5: why the start could not carry over what the last run owed (and when)
+    carry_problem: Option<(String, f64)>,
     /// `operator.view` budget per operator: (tokens, monotonic seconds when last filled)
     view_budget: BTreeMap<OperatorId, (f64, f64)>,
 }
@@ -473,6 +475,7 @@ impl Decision {
                 space_runs: BTreeMap::new(),
                 engagements: BTreeMap::new(),
                 params: BTreeMap::new(),
+                carry_problem: None,
                 view_budget: BTreeMap::new(),
             }),
             updates: watch::channel(Arc::new(String::new())).0,
@@ -1569,7 +1572,11 @@ impl Decision {
             clock::wall(),
         );
         // rules 5: platforms whose own lost-link failsafe has not been confirmed back
-        alerts.extend(self.restore_alerts(&self.lock(), clock::wall()));
+        {
+            let core = self.lock();
+            alerts.extend(self.restore_alerts(&core, clock::wall()));
+            alerts.extend(self.carry_alert(&core, clock::wall()));
+        }
         alerts.sort_by(|a, b| a.severity.cmp(&b.severity).then(a.since_t.total_cmp(&b.since_t)));
         json!({
             "pending": pending,

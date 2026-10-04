@@ -110,7 +110,7 @@ loiter_radius_m = 6000
 endurance_h = 3
 link = "los"
 sidc = "SFAPMFQ--------"
-sensors = [{ type = "radar", range_m = 150000, guess = true }, { type = "eo_ir", range_m = 30000, guess = true }, { type = "esm", range_m = 200000, guess = true }]
+sensors = [{ type = "radar", range_m = 150000, guess = true, height = true }, { type = "eo_ir", range_m = 30000, guess = true }, { type = "esm", range_m = 200000, guess = true }]   # AESA fire-control radar: 3D
 protocol = "uci"
 protocol_note = "A-GRA, UCI and OMS are controlled distribution; stays on the generic intent API"
 authenticity = "A-GRA/UCI interface plus a JSBSim jet model"

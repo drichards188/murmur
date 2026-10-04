@@ -120,6 +120,10 @@ pub struct PlatformFacts {
     /// without the figure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub climb_mps: Option<f64>,
+    /// The catalog's top speed, m/s (`max_mps`): rules 5 count a fixed wing of ours as able
+    /// to dive at it down `FIXED_WING_DIVE_DEG`. Absent where the catalog has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_mps: Option<f64>,
 }
 
 /// One sensor from the catalog: its type (`radar`, `eo_ir`, `ais`, `sonar`, `esm`) and its
@@ -143,6 +147,7 @@ struct RawPlatform {
     turn_dps: Option<f64>,
     endurance_h: Option<f64>,
     climb_mps: Option<f64>,
+    max_mps: Option<f64>,
     #[serde(default)]
     sensors: Vec<RawSensor>,
 }
@@ -197,6 +202,7 @@ impl Catalog {
                         })
                         .collect(),
                     climb_mps: r.climb_mps.filter(|c| c.is_finite() && *c > 0.0),
+                    max_mps: r.max_mps.filter(|c| c.is_finite() && *c > 0.0),
                 };
                 (id, facts)
             })

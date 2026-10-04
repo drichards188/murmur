@@ -674,9 +674,9 @@ async fn tracks_are_perception_with_age_and_never_truth() {
         mast_m: 4.0,
         submerged: false,
         sensors: vec![
-            SensorSpec { kind: SensorType::Radar, range_m: 8_000.0, guess: true },
-            SensorSpec { kind: SensorType::EoIr, range_m: 5_000.0, guess: true },
-            SensorSpec { kind: SensorType::Ais, range_m: 15_000.0, guess: true },
+            SensorSpec { kind: SensorType::Radar, range_m: 8_000.0, guess: true, height: false },
+            SensorSpec { kind: SensorType::EoIr, range_m: 5_000.0, guess: true, height: false },
+            SensorSpec { kind: SensorType::Ais, range_m: 15_000.0, guess: true, height: false },
         ],
     };
     let contact = ContactTruth {
@@ -1121,8 +1121,8 @@ fn hostile_track(r: &Rig) {
         mast_m: 4.0,
         submerged: false,
         sensors: vec![
-            SensorSpec { kind: SensorType::Radar, range_m: 8_000.0, guess: true },
-            SensorSpec { kind: SensorType::EoIr, range_m: 5_000.0, guess: true },
+            SensorSpec { kind: SensorType::Radar, range_m: 8_000.0, guess: true, height: false },
+            SensorSpec { kind: SensorType::EoIr, range_m: 5_000.0, guess: true, height: false },
         ],
     };
     let contact = ContactTruth {

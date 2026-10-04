@@ -140,6 +140,8 @@ vertical_rate_mps = 10.0                    # keep-outs in 3D where both altitud
                                             # catalog climb), may climb or descend
 keep_out_vertical_m = 200                   # the keep-out above and below the effect, beyond its radius
                                             # (an unknown altitude leaves it 2D: no ceiling)
+track_alt_max_age_s = 10                    # a track's altitude counts for the 3D keep-out only while its
+                                            # last ranged measurement (and that sensor's hit) is this recent, s
 
 [[tier]]
 name = "safety-commands"

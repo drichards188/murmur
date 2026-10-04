@@ -54,6 +54,8 @@ export interface Approval {
   by: string
   t: number
   self_approved: boolean
+  /** rules 5, an engagement: the signer also accepted one of its lost vehicles */
+  self_accepted?: boolean
   /** the approval was the submission itself (an operator's own task in a human tier) */
   at_submission?: boolean
   note: string | null

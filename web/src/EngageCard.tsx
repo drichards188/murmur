@@ -368,7 +368,8 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
         )}
         {(view?.signatures ?? []).map((s) => (
           <p key={s.by} className="muted">
-            {s.by} signed {fmtRel(s.t - now())} on the effect point {ll(s.effect_point)}.
+            {s.by} signed {fmtRel(s.t - now())} on the effect point {ll(s.effect_point)}
+            {s.self_accepted ? ', having also accepted a lost vehicle for it' : ''}.
           </p>
         ))}
         <p>
@@ -397,6 +398,12 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
           <div className="eg-shown" role="status">
             <b>You would sign</b>: effect at {ll(shown.plan.effect_point)} {fmtRel(shown.plan.effect_t - now())}, radius {Math.round(shown.plan.effect_radius_m)} m, {platform}, fallback {FALLBACK_LABEL[p.fallback]}; {shown.track.id} {shown.track.identity ?? 'unclassified'}, {shown.track.affiliation} declared by {shown.track.declared_by ?? 'nobody'}.{' '}
             {shown.frozen ? `The plan ${plan?.by ?? ''} froze.` : 'Your signature freezes this plan.'}{' '}
+            {Object.entries(shown.unknown_accepted ?? {}).map(([uid, a]) => (
+              <span key={uid} className="eg-alarm">
+                It covers {nameOf(vehicles, uid)} accepted as lost by {a.by}
+                {a.since == null ? ' (it never reported a position)' : ` (position unknown since ${fmtRel(a.since - now())})`}.{' '}
+              </span>
+            ))}
             {shownLeft > 0 ? `Valid ${Math.ceil(shownLeft)} s.` : 'Expired: look again.'}{' '}
             <button className="ghost mini" onClick={() => setShown(null)}>
               Cancel

@@ -65,6 +65,9 @@ pub struct Track {
     pub lat: f64,
     pub lon: f64,
     pub alt_m: Option<f64>,
+    /// when a detection last carried an altitude (wall s): a sensor that ranges the contact
+    /// in height measured it then (rules 5 count it for a 3D keep-out only while recent)
+    pub alt_t: Option<f64>,
     /// east, north m/s
     pub vel: Option<(f64, f64)>,
     /// 1 sigma at `last_seen_t`
@@ -141,6 +144,7 @@ impl Track {
             lat: d.lat,
             lon: d.lon,
             alt_m: d.alt_m,
+            alt_t: None,
             vel: None,
             sigma_m: d.sigma_m,
             confidence: 0.0,
@@ -214,6 +218,7 @@ impl Track {
                 (Some(a), Some(b)) => Some(a + k * (b - a)),
                 (_, b) => b,
             };
+            self.alt_t = Some(now);
         }
         // velocity: what the contact reports over AIS (course and speed over ground) when
         // we hear it, else from successive fixes a baseline apart
@@ -524,6 +529,7 @@ impl Track {
         TrackFacts {
             position: Fact::new(LonLat::new(self.lon, self.lat), ms(self.last_seen_t)),
             alt_m: self.alt_m,
+            alt_t: self.alt_t.map(ms),
             velocity_mps: self.vel.map(|(e, n)| [e, n]),
             pos_sigma_m: self.sigma_at(now),
             sigma_growth_mps: Some(sigma_growth_mps(self.speed_mps())),
@@ -539,6 +545,11 @@ impl Track {
                 .sources
                 .values()
                 .map(|s| format!("{}:{}", s.uid, s.sensor.as_str()))
+                .collect(),
+            source_t: self
+                .sources
+                .values()
+                .map(|s| (format!("{}:{}", s.uid, s.sensor.as_str()), ms(s.last_t)))
                 .collect(),
             domain: self.domain.decide(),
             last_seen_t: ms(self.last_seen_t),

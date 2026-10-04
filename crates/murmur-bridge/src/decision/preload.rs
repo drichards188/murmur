@@ -5,8 +5,10 @@
 //! fallback (ArduPilot 4.8 parameters, `murmur_decide::engage::preload_for`), anything that
 //! would override it cleared, its timer no longer than the approval's link-gap limit. This
 //! module does it on the vehicle's link, as a GCS does: read every parameter the preload
-//! touches (the platform's own values, kept to put back), set the preload's values (the
-//! timer only if the platform's own is longer), and read each back. The engine logs the
+//! touches (the platform's own values, kept to put back: [`start_read`]), and once they are
+//! in the log as the write-ahead (`engage.preload` intent), set the preload's values (the
+//! timer only if the platform's own is longer) and read each back ([`start_write`]). A bridge
+//! that stops between the write and its report still finds the values owed in its log. The engine logs the
 //! result (`engage.preload`) and decides from the read-back: the intercept goes out only once
 //! it confirms, nothing is released before, and one that does not confirm stops the
 //! engagement with its fallback. Near the release [`start_verify`] reads it again (the
@@ -78,12 +80,18 @@ impl Job {
 /// Read the preload's parameters, set them, read them back. `known`: the platform's own
 /// values still owed back to it from an earlier preload (the vehicle may still hold that
 /// preload): those are its own, and are not read again (what it holds now is not its own).
-pub fn start_set(
+pub fn start_read(
     cell: Arc<VehicleCell>,
     preload: LostLinkPreload,
     known: BTreeMap<String, f64>,
 ) -> Job {
-    Job::spawn(async move { set(&cell, &preload, &known).await })
+    Job::spawn(async move { read_own(&cell, &preload, &known).await })
+}
+
+/// Write the preload (`before`: the platform's own values the write-ahead logged) and read it
+/// back. Called only once the write-ahead is in the log.
+pub fn start_write(cell: Arc<VehicleCell>, preload: LostLinkPreload, before: BTreeMap<String, f64>) -> Job {
+    Job::spawn(async move { write_preload(&cell, &preload, before).await })
 }
 
 /// Read the preload's parameters again (near the release: is it still in force?).
@@ -133,7 +141,7 @@ pub fn start_restore(cell: Arc<VehicleCell>, values: BTreeMap<String, f64>) -> J
     })
 }
 
-async fn set(cell: &VehicleCell, preload: &LostLinkPreload, known: &BTreeMap<String, f64>) -> JobResult {
+async fn read_own(cell: &VehicleCell, preload: &LostLinkPreload, known: &BTreeMap<String, f64>) -> JobResult {
     let mut out = JobResult::default();
     // the platform's own values first: what a restore puts back (those still owed from an
     // earlier preload as they were, never read off a platform that may hold it)
@@ -154,6 +162,14 @@ async fn set(cell: &VehicleCell, preload: &LostLinkPreload, known: &BTreeMap<Str
             }
         }
     }
+    out
+}
+
+async fn write_preload(cell: &VehicleCell, preload: &LostLinkPreload, before: BTreeMap<String, f64>) -> JobResult {
+    let mut out = JobResult {
+        before,
+        ..JobResult::default()
+    };
     // the values: the failsafe's action exactly, the bits cleared, the timer shortened only
     let mut want: Vec<(String, f64)> = preload
         .set

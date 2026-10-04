@@ -175,6 +175,11 @@ pub struct TrackFacts {
     /// Estimated altitude (negative: depth), metres, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alt_m: Option<f64>,
+    /// Rules 5: when the altitude was last measured (by a sensor that ranges the contact in
+    /// height); absent when unknown. A 3D keep-out counts the altitude only while this is
+    /// recent (`track_alt_max_age_s`) and grows its margin from then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alt_t: Option<Time>,
     /// Estimated velocity east, north in m/s, when the track has enough history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub velocity_mps: Option<[f64; 2]>,
@@ -197,6 +202,9 @@ pub struct TrackFacts {
     pub identity_confidence: f64,
     /// Our sensors behind the track, as "<uid>:<sensor>" (e.g. "3:radar").
     pub sources: Vec<String>,
+    /// Rules 5: when each of `sources` last detected the track.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub source_t: BTreeMap<String, Time>,
     pub domain: crate::catalog::Domain,
     /// When the track was last updated by a detection.
     pub last_seen_t: Time,

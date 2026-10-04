@@ -22,10 +22,13 @@ fn root() -> PathBuf {
 const TARGET_AT: LonLat = LonLat::new(-122.4950, 37.8120);
 const BLADE_AT: LonLat = LonLat::new(-122.4700, 37.8160);
 
+/// A track seen at `t` by its sources (AIS by default), its altitude (when one is set)
+/// measured then too.
 fn track(t: Time, at: LonLat, vel: Option<[f64; 2]>, aff: Affiliation, domain: Domain) -> TrackFacts {
     TrackFacts {
         position: Fact::new(at, t),
         alt_m: None,
+        alt_t: Some(t),
         velocity_mps: vel,
         pos_sigma_m: 15.0,
         sigma_growth_mps: Some(vel.map_or(1.0, |[e, n]| (0.3 * e.hypot(n)).max(1.0))),
@@ -35,10 +38,17 @@ fn track(t: Time, at: LonLat, vel: Option<[f64; 2]>, aff: Affiliation, domain: D
         identity: Some("ferry".into()),
         identity_confidence: 0.9,
         sources: vec!["ais".into()],
+        source_t: [("ais".to_string(), t)].into_iter().collect(),
         domain,
         last_seen_t: t,
         declared_by: (aff == Affiliation::Hostile).then(|| "op-1".to_string()),
     }
+}
+
+/// The track's sources, each last hit at `t`.
+fn seen_by(tr: &mut TrackFacts, sources: &[&str], t: Time) {
+    tr.sources = sources.iter().map(|s| (*s).to_string()).collect();
+    tr.source_t = sources.iter().map(|s| ((*s).to_string(), t)).collect();
 }
 
 fn fresh(mut v: VehicleFacts, t: Time) -> VehicleFacts {
@@ -177,7 +187,22 @@ fn report(uid: &str, phase: PreloadPhase, before: &[(&str, f64)], readback: &[(&
         before: m(before),
         readback: m(readback),
         error: None,
+        vehicle: None,
     }
+}
+
+/// The bridge's preload as it reports it: its write-ahead (the platform's own values, logged
+/// before anything is written), then the set and its read-back.
+fn set(e: &mut Engine, id: IntentId, before: &[(&str, f64)], readback: &[(&str, f64)]) -> Result<Option<FallbackOrder>, EngineError> {
+    let mut intent = report("blade-1", PreloadPhase::Intent, before, &[]);
+    intent.vehicle = Some(VehicleIdentity {
+        platform: Some("switchblade".into()),
+        callsign: Some("BLADE 1".into()),
+        sysid: Some(1),
+        home: Some(BLADE_AT),
+    });
+    e.record_preload(id, intent)?;
+    e.record_preload(id, report("blade-1", PreloadPhase::Set, before, readback))
 }
 
 const OWN: &[(&str, f64)] = &[("FS_GCS_ENABL", 1.0), ("FS_LONG_ACTN", 1.0), ("FS_LONG_TIMEOUT", 120.0)];
@@ -198,7 +223,12 @@ fn the_order_carries_the_preload_and_the_engine_binds_its_reports() {
     assert!(refused(&mut e, report("other-1", PreloadPhase::Set, OWN, SET)), "another vehicle");
     assert!(refused(&mut e, report("blade-1", PreloadPhase::Restore, &[], OWN)), "a restore before any set");
     assert_eq!(log.lines().len(), n);
+    // a set without its write-ahead, or with other values than it logged, is refused; then
     // the platform confirms it: logged, nothing stopped
+    assert!(refused(&mut e, report("blade-1", PreloadPhase::Set, OWN, SET)), "a set without its write-ahead");
+    assert!(e.record_preload(id, report("blade-1", PreloadPhase::Intent, OWN, &[])).unwrap().is_none());
+    assert!(refused(&mut e, report("blade-1", PreloadPhase::Intent, OWN, &[])), "a second write-ahead");
+    assert!(refused(&mut e, report("blade-1", PreloadPhase::Set, SET, SET)), "other values than its write-ahead's");
     assert!(e.record_preload(id, report("blade-1", PreloadPhase::Set, OWN, SET)).unwrap().is_none());
     assert!(e.intent(id).unwrap().engagement().unwrap().preloaded.as_ref().unwrap().confirmed);
     assert!(refused(&mut e, report("blade-1", PreloadPhase::Set, OWN, SET)), "a second set");
@@ -223,7 +253,7 @@ fn a_preload_that_does_not_confirm_stops_the_engagement_with_its_fallback() {
     let (id, _) = dispatched(&mut e, &clock);
     // the timer read back longer than the approval allows
     let long = [("FS_GCS_ENABL", 1.0), ("FS_LONG_ACTN", 1.0), ("FS_LONG_TIMEOUT", 120.0)];
-    let f = e.record_preload(id, report("blade-1", PreloadPhase::Set, OWN, &long)).unwrap().unwrap();
+    let f = set(&mut e, id, OWN, &long).unwrap().unwrap();
     assert_eq!(f.fallback, Fallback::Return);
     let i = e.intent(id).unwrap();
     assert_eq!(i.state(), State::Aborted);
@@ -241,7 +271,7 @@ fn a_preload_changed_before_the_release_stops_the_engagement() {
     let (id, _) = dispatched(&mut e, &clock);
     let refused = |e: &mut Engine, r: PreloadReport| matches!(e.record_preload(id, r), Err(EngineError::NotItsOrder { .. }));
     assert!(refused(&mut e, report("blade-1", PreloadPhase::Verify, &[], SET)), "a re-read before any set");
-    assert!(e.record_preload(id, report("blade-1", PreloadPhase::Set, OWN, SET)).unwrap().is_none());
+    assert!(set(&mut e, id, OWN, SET).unwrap().is_none());
     clock.advance_ms(5_000);
     assert!(e.record_preload(id, report("blade-1", PreloadPhase::Verify, &[], SET)).unwrap().is_none());
     let eng = e.intent(id).unwrap().engagement().unwrap().clone();
@@ -268,7 +298,7 @@ fn values_owed_back_are_reported_carried_and_never_taken_off_a_preloaded_platfor
     let log = MemorySink::new();
     let mut e = Engine::with_areas(policy(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
     let (id, _) = dispatched(&mut e, &clock);
-    e.record_preload(id, report("blade-1", PreloadPhase::Set, OWN, SET)).unwrap();
+    set(&mut e, id, OWN, SET).unwrap();
     let op = e.open_operator_session(OperatorId::new("op-1")).unwrap();
     e.abort_engagement(id, op.authority(), "stop").unwrap();
     // its restore never confirmed: reported, not a mismatch
@@ -283,6 +313,7 @@ fn values_owed_back_are_reported_carried_and_never_taken_off_a_preloaded_platfor
         from: None,
         readback: readback.clone(),
         error: error.map(str::to_string),
+        vehicle: None,
     };
     assert!(!e.record_platform_restore(attempt(&BTreeMap::new(), Some("no answer"))).unwrap());
     assert!(e.record_platform_restore(attempt(&own, None)).unwrap());
@@ -300,12 +331,109 @@ fn values_owed_back_are_reported_carried_and_never_taken_off_a_preloaded_platfor
         from: Some("20261004T000000Z-1.jsonl I-0001".into()),
         readback: BTreeMap::new(),
         error: None,
+        vehicle: None,
     };
     assert!(!e.record_platform_restore(carried).unwrap());
     let (id, _) = dispatched(&mut e, &clock);
-    e.record_preload(id, report("blade-1", PreloadPhase::Set, SET, SET)).unwrap();
+    set(&mut e, id, SET, SET).unwrap();
     let w = whats(&log.text());
     assert!(w.iter().any(|m| m.contains("while earlier ones were owed back")), "{w:?}");
+}
+
+#[test]
+fn a_crash_between_the_write_and_its_report_still_leaves_the_values_owed() {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = Engine::with_areas(policy(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    let (id, _) = dispatched(&mut e, &clock);
+    // the write-ahead is logged, then the bridge stops before the set's report
+    let mut intent = report("blade-1", PreloadPhase::Intent, OWN, &[]);
+    let identity = VehicleIdentity {
+        platform: Some("switchblade".into()),
+        callsign: Some("BLADE 1".into()),
+        sysid: Some(1),
+        home: Some(BLADE_AT),
+    };
+    intent.vehicle = Some(identity.clone());
+    e.record_preload(id, intent).unwrap();
+    let text = log.text();
+    let owed = replay::owed_restores(&text);
+    assert_eq!(owed.len(), 1, "{owed:?}");
+    assert_eq!(owed[0].values["FS_LONG_TIMEOUT"], 120.0);
+    assert_eq!(owed[0].by, [id]);
+    assert_eq!(owed[0].vehicle.as_ref(), Some(&identity), "the vehicle they were preloaded on");
+    let r = replay::replay_str(&text).unwrap();
+    assert!(r.ok() && r.unrestored.len() == 1, "{:?} {:?}", r.mismatches, r.unrestored);
+    // a log that cuts the write-ahead leaves a set without one: caught
+    let lines: Vec<String> = log.lines();
+    let mut forged: Vec<String> = lines[..lines.len() - 1].to_vec();
+    forged.push(lines.last().unwrap().replace("\"phase\":\"intent\"", "\"phase\":\"set\""));
+    let w = whats(&rechain(&forged));
+    assert!(w.iter().any(|m| m.contains("not its write-ahead's (or that has none)")), "{w:?}");
+}
+
+#[test]
+fn a_carried_restore_goes_only_to_the_vehicle_it_was_preloaded_on() {
+    let was = VehicleIdentity {
+        platform: Some("switchblade".into()),
+        callsign: Some("BLADE 1".into()),
+        sysid: Some(1),
+        home: Some(BLADE_AT),
+    };
+    assert!(was.matches(&was).is_ok());
+    let other = |f: &dyn Fn(&mut VehicleIdentity)| {
+        let mut v = was.clone();
+        f(&mut v);
+        was.matches(&v)
+    };
+    assert!(other(&|v| v.platform = Some("magura".into())).unwrap_err().contains("platform"));
+    assert!(other(&|v| v.callsign = Some("BLADE 2".into())).unwrap_err().contains("callsign"));
+    assert!(other(&|v| v.sysid = Some(7)).unwrap_err().contains("system id"));
+    assert!(other(&|v| v.home = None).unwrap_err().contains("not known yet"));
+    let far = LonLat::new(BLADE_AT.lon + 2_000.0 / 87_943.0, BLADE_AT.lat);
+    assert!(other(&|v| v.home = Some(far)).unwrap_err().contains(" m from the one preloaded"));
+    let near = LonLat::new(BLADE_AT.lon + 100.0 / 87_943.0, BLADE_AT.lat);
+    assert!(other(&|v| v.home = Some(near)).is_ok(), "within 500 m");
+}
+
+#[test]
+fn no_restore_while_another_engagement_holds_the_platform() {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = Engine::with_areas(policy(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    let (a, _) = dispatched(&mut e, &clock);
+    set(&mut e, a, OWN, SET).unwrap();
+    let op = e.open_operator_session(OperatorId::new("op-1")).unwrap();
+    e.abort_engagement(a, op.authority(), "stop").unwrap();
+    // a second engagement is dispatched on the same platform before A's restore ran
+    clock.advance_ms(1000);
+    let (b, _) = dispatched(&mut e, &clock);
+    let refused = |e: &mut Engine, id: IntentId, r: PreloadReport| matches!(e.record_preload(id, r), Err(EngineError::NotItsOrder { .. }));
+    assert!(refused(&mut e, a, report("blade-1", PreloadPhase::Restore, &[], OWN)), "A's restore would undo B's preload");
+    let own: BTreeMap<String, f64> = OWN.iter().map(|(n, v)| ((*n).to_string(), *v)).collect();
+    let attempt = PlatformRestoreReport {
+        uid: Uid::new("blade-1"),
+        values: own.clone(),
+        carried: false,
+        from: None,
+        readback: own.clone(),
+        error: None,
+        vehicle: None,
+    };
+    assert!(e.record_platform_restore(attempt.clone()).is_err(), "nor the platform's own restore");
+    let n = log.lines().len();
+    // B takes A's values over and ends; then they go back
+    set(&mut e, b, OWN, SET).unwrap();
+    e.abort_engagement(b, op.authority(), "stop").unwrap();
+    assert!(e.record_preload(b, report("blade-1", PreloadPhase::Restore, &[], OWN)).unwrap().is_none());
+    let r = replay::replay_str(&log.text()).unwrap();
+    assert!(r.ok() && r.unrestored.is_empty(), "{:?} {:?}", r.mismatches, r.unrestored);
+    // a log with A's restore logged while B held the platform: caught
+    let mut lines: Vec<String> = log.lines();
+    let restore = lines.last().unwrap().replace(&format!("\"intent\":{}", b.0), &format!("\"intent\":{}", a.0));
+    lines.insert(n, restore);
+    let w = whats(&rechain(&lines));
+    assert!(w.iter().any(|m| m.contains("while another engagement holds the platform")), "{w:?}");
 }
 
 /// A released engagement's log (scenario 01), its lines.
@@ -399,7 +527,7 @@ fn tracks_check(w: &WorldSnapshot, span_s: i64, version: u32) -> CheckResult {
     let r = rules(version);
     let ec = r.engage_rules();
     let t = w.t.plus_ms(span_s * 1000);
-    let alt = engage::effect_alt(w.tracks.get("T-0001"), t, 75.0, &ec);
+    let alt = engage::effect_alt(w.tracks.get("T-0001"), w.t, t, 75.0, &ec);
     engage::keep_out_tracks(TARGET_AT, t, 275.0, "T-0001", w, &ec, alt)
 }
 
@@ -439,7 +567,7 @@ fn a_track_without_a_velocity_estimate_blocks_by_its_reach() {
 fn friendly_check(w: &WorldSnapshot, span_s: i64, version: u32) -> CheckResult {
     let r = rules(version);
     let t = w.t.plus_ms(span_s * 1000);
-    let alt = engage::effect_alt(w.tracks.get("T-0001"), t, 75.0, &r.engage_rules());
+    let alt = engage::effect_alt(w.tracks.get("T-0001"), w.t, t, 75.0, &r.engage_rules());
     engage::keep_out_friendly(TARGET_AT, t, 275.0, Some(&Uid::new("blade-1")), w, &r, alt)
 }
 
@@ -458,8 +586,8 @@ fn above(target_alt: Option<f64>, platform: &str, alt: Option<f64>) -> WorldSnap
 #[test]
 fn keep_outs_are_3d_only_where_both_altitudes_are_known() {
     // a MALE aircraft at 7,000 m over a surface effect, 120 s out: clear in 3D (diving 25
-    // degrees at its 90 m/s cruise, 38 m/s, it can't get below 7,000 - 2 x 10 - 38 x 120 =
-    // 2,415 m), blocking in 2D
+    // degrees at its 105 m/s top speed, 44 m/s, it can't get below 7,000 - 2 x 10 - 44 x 120
+    // = 1,655 m), blocking in 2D
     let w = above(Some(0.0), "mq9b", Some(7_000.0));
     let c = friendly_check(&w, 120, 5);
     assert_eq!(c.outcome, Outcome::Pass, "{}", c.detail);
@@ -469,8 +597,8 @@ fn keep_outs_are_3d_only_where_both_altitudes_are_known() {
     let c = friendly_check(&above(Some(0.0), "x10", Some(120.0)), 120, 5);
     assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
     assert!(c.detail.contains("within the vertical keep-out too"), "{}", c.detail);
-    // the faster of climb and dive counts, either way: a CCA-class aircraft (230 m/s cruise,
-    // 97 m/s diving) at 6,000 m could be down at the effect in 120 s; so could the MQ-9B
+    // the faster of climb and dive counts, either way: a CCA-class aircraft (260 m/s top,
+    // 110 m/s diving) at 6,000 m could be down at the effect in 120 s; so could the MQ-9B
     // from 3,000 m (its catalog climb, 10 m/s, would have kept it 1,800 m up)
     assert_eq!(friendly_check(&above(Some(0.0), "cca", Some(6_000.0)), 120, 5).outcome, Outcome::Fail);
     let c = friendly_check(&above(Some(0.0), "mq9b", Some(3_000.0)), 120, 5);
@@ -478,7 +606,7 @@ fn keep_outs_are_3d_only_where_both_altitudes_are_known() {
     assert_eq!(friendly_check(&above(Some(0.0), "mq9b", Some(6_000.0)), 120, 5).outcome, Outcome::Pass);
     let mq9b = fresh(vehicle("mq9b", TARGET_AT), T0);
     let rate = engage::friendly_vertical_mps(&mq9b, &rules(5).engage_rules());
-    assert!((rate - 90.0 * 25f64.to_radians().sin()).abs() < 1e-9, "{rate}");
+    assert!((rate - 105.0 * 25f64.to_radians().sin()).abs() < 1e-9, "{rate}");
     // unknown altitude, ours or the target's: 2D, no ceiling
     let c = friendly_check(&above(Some(0.0), "mq9b", None), 120, 5);
     assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
@@ -493,7 +621,7 @@ fn keep_outs_are_3d_only_where_both_altitudes_are_known() {
     let mut w = world(T0);
     w.tracks.get_mut("T-0001").unwrap().alt_m = Some(0.0);
     let mut plane = track(T0, TARGET_AT, Some([0.0, 0.0]), Affiliation::Neutral, Domain::Air);
-    plane.sources = vec!["3:radar".into(), "1:eo_ir".into()];
+    seen_by(&mut plane, &["3:radar", "1:eo_ir"], T0);
     plane.alt_m = Some(3_000.0);
     w.tracks.insert("T-0002".into(), plane.clone());
     let c = tracks_check(&w, 120, 5);
@@ -506,7 +634,7 @@ fn keep_outs_are_3d_only_where_both_altitudes_are_known() {
     assert_eq!(tracks_check(&w, 120, 5).outcome, Outcome::Fail, "its altitude unknown: 2D");
     // seen by passive sensors only (a bearing, no range), its altitude does not count: 2D
     plane.alt_m = Some(3_000.0);
-    plane.sources = vec!["1:eo_ir".into(), "2:esm".into()];
+    seen_by(&mut plane, &["1:eo_ir", "2:esm"], T0);
     w.tracks.insert("T-0002".into(), plane);
     let c = tracks_check(&w, 120, 5);
     assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
@@ -514,33 +642,83 @@ fn keep_outs_are_3d_only_where_both_altitudes_are_known() {
 }
 
 #[test]
+fn a_stale_radar_altitude_does_not_count_while_eo_ir_keeps_the_position_fresh() {
+    // the second review's probe: a neutral aircraft track 100 m from the point, its last
+    // radar altitude 1,500 m (300 s ago; truly at 100 m now), EO/IR keeping its position
+    // fresh; the effect 60 s out
+    let mut w = world(T0);
+    w.tracks.get_mut("T-0001").unwrap().alt_m = Some(0.0);
+    let near = LonLat::new(TARGET_AT.lon + 100.0 / 87_943.0, TARGET_AT.lat);
+    let mut plane = track(T0, near, Some([0.0, 0.0]), Affiliation::Neutral, Domain::Air);
+    plane.alt_m = Some(1_500.0);
+    seen_by(&mut plane, &["3:radar", "1:eo_ir"], T0);
+    w.tracks.insert("T-0002".into(), plane.clone());
+    let c = tracks_check(&w, 60, 5);
+    assert_eq!(c.outcome, Outcome::Pass, "measured now, it is clear by altitude: {}", c.detail);
+    assert!(c.detail.contains("clear by altitude: T-0002 at 1500 m"), "{}", c.detail);
+    let ec = rules(5).engage_rules();
+    let old = T0.plus_ms(-300_000);
+    // the altitude measured 300 s ago: 2D
+    plane.alt_t = Some(old);
+    plane.source_t.insert("3:radar".into(), old);
+    w.tracks.insert("T-0002".into(), plane.clone());
+    assert_eq!(engage::track_altitude(&plane, T0, &ec), None);
+    let c = tracks_check(&w, 60, 5);
+    assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
+    assert!(c.detail.contains("altitude is unknown"), "{}", c.detail);
+    // a recent altitude without a recent ranging hit behind it does not count either
+    plane.alt_t = Some(T0);
+    w.tracks.insert("T-0002".into(), plane.clone());
+    assert_eq!(engage::track_altitude(&plane, T0, &ec), None);
+    // within the bound (10 s), it counts, its margin growing from the altitude's time: 8 s
+    // old here, so 2 x 30 m + 10 m/s x 68 s = 740 m of altitude uncertainty
+    let t8 = T0.plus_ms(-8_000);
+    plane.alt_t = Some(t8);
+    plane.source_t.insert("3:radar".into(), t8);
+    w.tracks.insert("T-0002".into(), plane.clone());
+    assert_eq!(engage::track_altitude(&plane, T0, &ec), Some((1_500.0, t8)));
+    let c = tracks_check(&w, 60, 5);
+    assert!(c.detail.contains("with 740 m of altitude uncertainty"), "{}", c.detail);
+    // and the logged facts replay: the bound is the policy's (schema 3 key)
+    assert_eq!(ec.track_alt_max_age(), 10.0);
+}
+
+#[test]
 fn only_a_ranged_altitude_counts_and_a_ground_target_stays_2d() {
+    let ec = rules(5).engage_rules();
     let mut t = track(T0, TARGET_AT, Some([0.0, 0.0]), Affiliation::Hostile, Domain::Air);
     t.alt_m = Some(800.0);
+    let alt = |t: &TrackFacts| engage::track_altitude(t, T0, &ec).map(|(a, _)| a);
     for (sources, want) in [
-        (vec!["3:radar"], Some(800.0)),
-        (vec!["1:eo_ir"], None),
-        (vec!["2:esm", "1:eo_ir"], None),
-        (vec!["ais"], None),
+        (&["3:radar"][..], Some(800.0)),
+        (&["1:eo_ir"][..], None),
+        (&["2:esm", "1:eo_ir"][..], None),
+        (&["ais"][..], None),
     ] {
-        t.sources = sources.iter().map(|s| (*s).to_string()).collect();
-        assert_eq!(engage::track_altitude(&t), want, "air {sources:?}");
+        seen_by(&mut t, sources, T0);
+        assert_eq!(alt(&t), want, "air {sources:?}");
     }
     t.domain = Domain::Surface;
-    for (sources, want) in [(vec!["ais"], Some(800.0)), (vec!["3:radar"], Some(800.0)), (vec!["1:eo_ir"], None)] {
-        t.sources = sources.iter().map(|s| (*s).to_string()).collect();
-        assert_eq!(engage::track_altitude(&t), want, "surface {sources:?}");
+    for (sources, want) in [(&["ais"][..], Some(800.0)), (&["3:radar"][..], Some(800.0)), (&["1:eo_ir"][..], None)] {
+        seen_by(&mut t, sources, T0);
+        assert_eq!(alt(&t), want, "surface {sources:?}");
     }
+    // sonar's fix is bearing-heavy: no depth counts
     t.domain = Domain::Subsurface;
-    t.sources = vec!["4:sonar".into()];
-    assert_eq!(engage::track_altitude(&t), Some(800.0));
+    seen_by(&mut t, &["4:sonar"], T0);
+    assert_eq!(alt(&t), None);
+    // an altitude without its time (a log of older facts) does not count
+    t.domain = Domain::Air;
+    seen_by(&mut t, &["3:radar"], T0);
+    t.alt_t = None;
+    assert_eq!(alt(&t), None);
     // a ground track's 0 m is not its altitude above sea level (the terrain under it is not
     // modelled): no 3D keep-out, whatever saw it. The reviewer's probe: a ground target
     // logged at 0 m with one of ours 400 m MSL right above it (150 m over the real terrain)
     t.domain = Domain::Ground;
-    t.sources = vec!["3:radar".into()];
+    t.alt_t = Some(T0);
     t.alt_m = Some(0.0);
-    assert_eq!(engage::track_altitude(&t), None);
+    assert_eq!(alt(&t), None);
     let mut w = world(T0);
     w.tracks.insert("T-0001".into(), t);
     let mut v = fresh(vehicle("x10", TARGET_AT), T0);
@@ -548,7 +726,7 @@ fn only_a_ranged_altitude_counts_and_a_ground_target_stays_2d() {
     w.vehicles.insert(Uid::new("drone-1"), v);
     let c = friendly_check(&w, 0, 5);
     assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
-    assert!(engage::effect_alt(w.tracks.get("T-0001"), T0, 75.0, &rules(5).engage_rules()).is_none());
+    assert!(engage::effect_alt(w.tracks.get("T-0001"), T0, T0, 75.0, &ec).is_none());
 }
 
 // ---- der.3 (b): lost friendlies ----------------------------------------------------------------
@@ -761,7 +939,7 @@ fn policy_keys_of_rules_5_are_bounded_and_of_schema_3() {
     // the shipped file sets them, each a schema 3 key
     let shipped = rules(5).engage_rules();
     let keys = shipped.schema_keys();
-    for k in ["track_velocity_sigma_mps", "track_accel_mps2", "vertical_rate_mps", "keep_out_vertical_m"] {
+    for k in ["track_velocity_sigma_mps", "track_accel_mps2", "vertical_rate_mps", "keep_out_vertical_m", "track_alt_max_age_s"] {
         assert!(keys.contains(&(3, k)), "{k}: {keys:?}");
     }
     assert_eq!(shipped.track_accel(Domain::Surface), 0.2);

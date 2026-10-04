@@ -68,6 +68,7 @@ fn observer(uid: u64, lat: f64, lon: f64, alt: f64, sensors: &[(SensorType, f64)
                 kind: *kind,
                 range_m: *range_m,
                 guess: true,
+                height: false,
             })
             .collect(),
     }

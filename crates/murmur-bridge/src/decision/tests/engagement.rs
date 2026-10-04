@@ -31,6 +31,11 @@ fn engage_rig() -> Erig {
 /// The engagement rig, on `world` when given (a second run of the bridge beside the same
 /// vehicles).
 fn engage_rig_on(on: Option<(Arc<World>, Arc<Tracks>)>) -> Erig {
+    engage_rig_with(on, PathBuf::from("memory"))
+}
+
+/// The engagement rig whose audit log is said to be `audit_path` (the sink is in memory).
+fn engage_rig_with(on: Option<(Arc<World>, Arc<Tracks>)>, audit_path: PathBuf) -> Erig {
     let root = root();
     let mut policy = Policy::load(&root.join("sim/policy.toml")).expect("policy");
     let mut e = policy.rules.engage_rules();
@@ -62,7 +67,7 @@ fn engage_rig_on(on: Option<(Arc<World>, Arc<Tracks>)>) -> Erig {
             catalog: Catalog::load(&root.join("sim/platforms.toml")).expect("catalog"),
             areas: AreaSet::load_dir(&root.join("sim/areas"), clock.now()).expect("areas"),
             sink: Box::new(log.clone()),
-            audit_path: PathBuf::from("memory"),
+            audit_path,
             clock: Arc::new(clock.clone()),
             terrain,
             operators: vec![OperatorId::new("op-1"), OperatorId::new("op-2"), OperatorId::new("op-3")],
@@ -106,8 +111,8 @@ impl Erig {
             mast_m: 4.0,
             submerged: false,
             sensors: vec![
-                SensorSpec { kind: SensorType::Radar, range_m: 8_000.0, guess: true },
-                SensorSpec { kind: SensorType::EoIr, range_m: 5_000.0, guess: true },
+                SensorSpec { kind: SensorType::Radar, range_m: 8_000.0, guess: true, height: false },
+                SensorSpec { kind: SensorType::EoIr, range_m: 5_000.0, guess: true, height: false },
             ],
         };
         let contacts = if with_target {
@@ -556,9 +561,13 @@ async fn the_fallback_is_preloaded_as_the_lost_link_action_then_restored() {
         .find(|l| l.contains("\"type\":\"intent.dispatched\""))
         .expect("dispatched");
     assert!(order.contains("\"preload\":{\"firmware\":\"ArduCopter\""), "{order}");
-    let set = preloads(&e.r.log);
-    assert_eq!(set.len(), 1, "{set:?}");
-    assert_eq!(set[0].0, "set");
+    // its own values logged first (the write-ahead, with the vehicle's identity), then set
+    let all = preloads(&e.r.log);
+    assert_eq!(all.iter().map(|p| p.0.as_str()).collect::<Vec<_>>(), ["intent", "set"], "{all:?}");
+    let intent = e.r.log.lines().into_iter().find(|l| l.contains("\"phase\":\"intent\"")).expect("intent");
+    assert!(intent.contains("\"before\":{\"FS_GCS_ENABLE\":1.0"), "{intent}");
+    assert!(intent.contains("\"vehicle\":{\"platform\":\"fpv\",\"callsign\":\"fpv 1\",\"sysid\":"), "{intent}");
+    let set = &all[1..];
     assert!(set[0].2, "confirmed: {set:?}");
     assert_eq!(set[0].1["FS_GCS_ENABLE"], 7.0, "{set:?}");
     assert_eq!(set[0].1["FS_OPTIONS"], 16.0, "{set:?}");
@@ -569,16 +578,16 @@ async fn the_fallback_is_preloaded_as_the_lost_link_action_then_restored() {
         e.tick(true).await;
     }
     let all = preloads(&e.r.log);
-    assert_eq!(all.len(), 2, "{all:?}");
-    assert_eq!(all[1].0, "restore");
-    assert!(all[1].2, "confirmed: {all:?}");
-    assert_eq!(all[1].1["FS_GCS_ENABLE"], 1.0, "its own action back: {all:?}");
+    assert_eq!(all.len(), 3, "{all:?}");
+    assert_eq!(all[2].0, "restore");
+    assert!(all[2].2, "confirmed: {all:?}");
+    assert_eq!(all[2].1["FS_GCS_ENABLE"], 1.0, "its own action back: {all:?}");
     let rep = replay::replay_str(&e.r.log.text()).expect("parses");
     assert!(rep.ok(), "{:?}", rep.mismatches);
 }
 
 #[tokio::test(start_paused = true)]
-async fn an_engagement_superseded_while_its_preload_is_set_gets_the_values_back() {
+async fn an_engagement_superseded_before_its_preload_is_written_leaves_the_platform_alone() {
     let e = engage_rig();
     e.r.vehicle(1, Firmware::Copter, "fpv", TARGET);
     sleep(Duration::from_millis(500)).await;
@@ -587,8 +596,8 @@ async fn an_engagement_superseded_while_its_preload_is_set_gets_the_values_back(
     e.sign("op-2", id).await.expect("signs");
     let o = e.sign("op-3", id).await.expect("signs");
     assert_eq!(o.state, State::Dispatched);
-    // before the preload has reported, an operator's own hold takes the platform: the
-    // engagement stops (superseded), its intercept is never sent
+    // while the platform's own values are being read, an operator's own hold takes the
+    // platform: the engagement stops (superseded), its intercept is never sent
     let hold = e.r.d.submit(&op("op-1"), simple("hold", 1)).await.expect("hold");
     assert_eq!(e.r.state(id), State::Aborted, "{}", e.r.reason(id));
     for _ in 0..6 {
@@ -596,13 +605,11 @@ async fn an_engagement_superseded_while_its_preload_is_set_gets_the_values_back(
         e.r.d.tick();
     }
     assert!(!e.r.d.lock().taskings.contains_key(&id), "no intercept after the stop");
-    // the preload's report is logged, then the platform's own values go back
+    // the read finishes after the stop: nothing is written (no write-ahead, no set), so
+    // nothing is owed back either
     let all = preloads(&e.r.log);
-    assert_eq!(all.len(), 2, "{all:?}");
-    assert_eq!((all[0].0.as_str(), all[1].0.as_str()), ("set", "restore"));
-    assert_eq!(all[0].1["FS_GCS_ENABLE"], 7.0, "{all:?}");
-    assert!(all[1].2, "{all:?}");
-    assert_eq!(all[1].1["FS_GCS_ENABLE"], 1.0, "{all:?}");
+    assert!(all.is_empty(), "{all:?}");
+    assert!(e.r.d.lock().params.get(&1).is_none_or(|l| l.owed_values().is_none()));
     assert_ne!(hold.id, id);
     let rep = replay::replay_str(&e.r.log.text()).expect("parses");
     assert!(rep.ok(), "{:?}", rep.mismatches);
@@ -705,8 +712,8 @@ async fn the_preload_is_read_again_before_the_release() {
         }
     }
     let all = preloads(&e.r.log);
-    assert_eq!(all.iter().map(|p| (p.0.as_str(), p.2)).collect::<Vec<_>>(), [("set", true), ("verify", true)], "{all:?}");
-    assert_eq!(all[1].1["FS_GCS_ENABLE"], 1.0, "{all:?}");
+    assert_eq!(all.iter().map(|p| (p.0.as_str(), p.2)).collect::<Vec<_>>(), [("intent", true), ("set", true), ("verify", true)], "{all:?}");
+    assert_eq!(all[2].1["FS_GCS_ENABLE"], 1.0, "{all:?}");
     assert_eq!(e.r.state(id), State::Dispatched, "{}", e.r.reason(id));
     let rep = replay::replay_str(&e.r.log.text()).expect("parses");
     assert!(rep.ok(), "{:?}", rep.mismatches);
@@ -768,6 +775,7 @@ async fn a_restore_that_does_not_confirm_is_retried_logged_and_alerted() {
         from: None,
         readback: BTreeMap::new(),
         error: None,
+        vehicle: None,
     })
     .expect("logged");
     let dir = std::env::temp_dir().join(format!("murmur-alert-{}", std::process::id()));
@@ -882,5 +890,102 @@ async fn every_signer_sees_an_acceptance_and_any_operator_withdraws_it() {
     let rep = replay::replay_str(&e.r.log.text()).expect("parses");
     assert!(rep.ok(), "{:?}", rep.mismatches);
     assert_eq!((e.r.events("engage.accepted"), e.r.events("engage.acceptance_revoked")), (1, 1));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A previous run's log that owes vehicle 1's own lost-link values (carried into it), as
+/// preloaded on `vehicle`.
+fn owing_log(vehicle: murmur_decide::VehicleIdentity) -> String {
+    let prev = MemorySink::new();
+    let mut eng = murmur_decide::Engine::new(
+        Policy::load(&root().join("sim/policy.toml")).expect("policy"),
+        murmur_decide::Roster::new(vec![op("op-1")], vec![]).expect("roster"),
+        Box::new(ManualClock::new(snapshot::ms(clock::wall()))),
+        Box::new(prev.clone()),
+    )
+    .expect("engine");
+    eng.record_platform_restore(murmur_decide::PlatformRestoreReport {
+        uid: duid(1),
+        values: [("FS_GCS_ENABLE".to_string(), 1.0)].into_iter().collect(),
+        carried: true,
+        from: None,
+        readback: BTreeMap::new(),
+        error: None,
+        vehicle: Some(vehicle),
+    })
+    .expect("logged");
+    prev.text()
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_carried_restore_is_not_written_to_another_vehicle_with_the_uid() {
+    let e = engage_rig();
+    e.r.vehicle(1, Firmware::Copter, "fpv", TARGET);
+    sleep(Duration::from_millis(500)).await;
+    // the last run preloaded a magura as vehicle 1; this run's vehicle 1 is an FPV quadcopter
+    let dir = std::env::temp_dir().join(format!("murmur-carry-other-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let log = dir.join("run-0.jsonl");
+    std::fs::write(
+        &log,
+        owing_log(murmur_decide::VehicleIdentity {
+            platform: Some("magura".into()),
+            callsign: Some("VIPER 1".into()),
+            sysid: Some(1),
+            home: None,
+        }),
+    )
+    .expect("log");
+    let pointer = dir.join(".last-run-0");
+    std::fs::write(&pointer, log.display().to_string()).expect("pointer");
+    e.r.d.carry_restores(&pointer);
+    for _ in 0..45 {
+        e.r.d.tick();
+        sleep(Duration::from_secs(1)).await;
+    }
+    // carried, never written, and the inbox says why
+    let all = platform_restores(&e.r.log);
+    assert_eq!(all.len(), 1, "only the carried event: {all:?}");
+    let inbox = e.r.d.inbox_json();
+    let alert = inbox["alerts"].as_array().expect("alerts").iter().find(|a| a["id"] == "restore:1").cloned().expect("alert");
+    let detail = alert["detail"].as_str().unwrap_or_default();
+    assert!(detail.contains("may not be the one preloaded (its platform is \"fpv\", not \"magura\")"), "{detail}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_start_that_cannot_read_the_last_runs_log_says_so() {
+    let e = engage_rig();
+    let dir = std::env::temp_dir().join(format!("murmur-carry-missing-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let pointer = dir.join(".last-run-0");
+    std::fs::write(&pointer, dir.join("gone.jsonl").display().to_string()).expect("pointer");
+    e.r.d.carry_restores(&pointer);
+    let inbox = e.r.d.inbox_json();
+    let alert = inbox["alerts"].as_array().expect("alerts").iter().find(|a| a["id"] == "restore:carry").cloned().expect("alert");
+    assert!(alert["detail"].as_str().unwrap_or_default().contains("gone.jsonl can't be read"), "{alert}");
+    // a first start (no pointer yet) is not a problem
+    let e2 = engage_rig();
+    e2.r.d.carry_restores(&dir.join(".last-run-1"));
+    assert!(e2.r.d.inbox_json()["alerts"].as_array().expect("alerts").is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_reused_run_id_carries_from_the_same_file() {
+    // the run id was reused: the log file is this run's too, the last run's events first
+    let dir = std::env::temp_dir().join(format!("murmur-carry-reused-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let file = dir.join("run.jsonl");
+    let earlier = owing_log(murmur_decide::VehicleIdentity::default());
+    let this_run = earlier.lines().next().expect("run.started").to_string();
+    std::fs::write(&file, format!("{earlier}{this_run}\n")).expect("log");
+    let pointer = dir.join(".last-run-0");
+    std::fs::write(&pointer, file.display().to_string()).expect("pointer");
+    let e = engage_rig_with(None, file.clone());
+    e.r.d.carry_restores(&pointer);
+    let all = platform_restores(&e.r.log);
+    assert_eq!(all.len(), 1, "carried from the earlier run's part of the file: {all:?}");
+    assert!(all[0].0, "{all:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }

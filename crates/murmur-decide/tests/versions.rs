@@ -162,12 +162,17 @@ fn the_rules_5_live_log_preloads_restores_and_reads_altitude() {
             _ => None,
         })
         .collect();
-    let (set, restore) = (&preloads[0], &preloads[preloads.len() - 1]);
+    // its own values logged ahead of the write (with the USV's identity), then set
+    let (intent, set, restore) = (&preloads[0], &preloads[1], &preloads[preloads.len() - 1]);
+    assert_eq!(intent.1, engage::PreloadPhase::Intent);
+    assert!(intent.4);
+    assert_eq!(intent.2, set.2, "the set put aside what its write-ahead logged");
+    assert!(log.contains("\"phase\":\"intent\"") && log.contains("\"vehicle\":{\"platform\":\"magura\",\"callsign\":\"VIPER 1\""));
     assert_eq!(set.1, engage::PreloadPhase::Set);
     assert!(set.4);
     assert_eq!((set.2["FS_ACTION"], set.2["FS_GCS_TIMEOUT"]), (1.0, 30.0));
     assert_eq!((set.3["FS_ACTION"], set.3["FS_GCS_TIMEOUT"]), (6.0, 5.0));
-    let verifies = &preloads[1..preloads.len() - 1];
+    let verifies = &preloads[2..preloads.len() - 1];
     assert!(!verifies.is_empty() && verifies.iter().all(|v| v.1 == engage::PreloadPhase::Verify && v.4), "{preloads:?}");
     let effect_t = events.iter().find(|e| matches!(e.body, EventBody::EngageEffect { .. })).unwrap().t;
     let last_read = verifies.iter().map(|v| v.0).filter(|t| *t <= effect_t).max().unwrap();
@@ -176,10 +181,11 @@ fn the_rules_5_live_log_preloads_restores_and_reads_altitude() {
     assert!(restore.4);
     assert_eq!(restore.3, set.2, "its own values back");
     // our vehicles' altitude in the world facts, and the keep-out read in 3D: our MALE
-    // aircraft 7,600 m over the point, clear even diving at 38 m/s; the light aircraft's
-    // altitude comes from radar
-    assert!(log.contains("\"alt_msl_m\":{\"value\":7600.0"));
-    assert!(log.contains("clear by altitude: 5 at 7600 m"));
+    // aircraft 9,000 m over the point, clear even diving at 44 m/s; the tracks' altitudes
+    // with their times and their sources' last hits
+    assert!(log.contains("\"alt_msl_m\":{\"value\":9000.0"));
+    assert!(log.contains("clear by altitude: 5 at 9000 m"));
+    assert!(log.contains("\"alt_t\":") && log.contains("\"source_t\":{"));
     assert!(log.contains("\"identity\":\"light_aircraft\""));
 }
 
@@ -420,7 +426,7 @@ fn a_policy_schema_claim_must_fit_its_keys() {
         .filter(|m| m.what.contains("a key of a later policy schema"))
         .map(|m| m.logged.as_str())
         .collect();
-    for key in ["track_velocity_sigma_mps", "track_accel_mps2", "vertical_rate_mps", "keep_out_vertical_m"] {
+    for key in ["track_velocity_sigma_mps", "track_accel_mps2", "vertical_rate_mps", "keep_out_vertical_m", "track_alt_max_age_s"] {
         assert!(later.contains(&format!("rules.engage.{key} (schema 3)").as_str()), "{key}: {later:?}");
     }
     // a schema newer than replay knows
