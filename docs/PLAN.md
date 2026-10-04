@@ -485,9 +485,11 @@ numbers further down come from the re-run.
   proposal and decision (16 of 900) and shows false rejects and d' with and without them.
   Approve-all stopped only what the rules did; reject-all stopped everything, legitimate
   cards included (d' 0 for both).
-- Engagement suite on the final code (0c7da6b): 39 scenarios x 10 seeds x track noise 0, 3,
-  10 and 20 m, 1,560 scenario runs: every one ended as designed and replayed, 520/520 forged
-  logs caught, zero violations of the hardened two-signer check (600 effects released).
+- Engagement suite on the final code (release binaries as of 0c7da6b, harness checks as of
+  this branch's head): 39 scenarios x 10 seeds x track noise 0, 3, 10 and 20 m, 1,560
+  scenario runs: every one ended as designed and replayed, 520/520 forged
+  logs caught, zero violations of the hardened two-signer and execution-to-approval checks
+  (600 effects released).
 
 Next: a cross-check that can catch a spoofed position (our own vehicles seen by our own
 sensors); track-age rules for vehicle tasks aimed at a track; an approval re-check that

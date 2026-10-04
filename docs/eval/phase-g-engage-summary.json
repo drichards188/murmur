@@ -1,7 +1,7 @@
 {
  "not_human_data": true,
- "note": "Phase E's engagement scenarios through the real decision engine (murmur-scenarios), deterministic per scenario, seed and track-noise level; the harness's own invariants on every audit log, including the two-signer rule read from the log alone (eval/METRICS.md). No person decides here.",
- "code": "0c7da6b",
+ "note": "Phase E's engagement scenarios through the real decision engine (murmur-scenarios), deterministic per scenario, seed and track-noise level; the harness's own invariants on every audit log, including the two-signer rule and the execution-to-approval check read from the log alone (eval/METRICS.md). No person decides here.",
+ "code": "6cbca8d (release binaries unchanged since 0c7da6b)",
  "scenarios": "sim/scenarios/engage",
  "seeds": [
   1,
