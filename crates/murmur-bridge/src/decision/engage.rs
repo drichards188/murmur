@@ -547,7 +547,7 @@ impl Decision {
             if core.params.get(&uid).is_some_and(|l| l.job.is_some()) {
                 continue;
             }
-            let Some(cell) = fleet.get(&uid) else { continue };
+            let cell = fleet.get(&uid).cloned();
             let holding: Vec<IntentId> = core
                 .engagements
                 .iter()
@@ -558,7 +558,8 @@ impl Decision {
                 .map(|(id, _)| *id)
                 .collect();
             // a set waiting
-            if let Some(&id) = holding.iter().find(|id| core.engagements.get(id).is_some_and(|r| r.want_set))
+            if let Some(cell) = &cell
+                && let Some(&id) = holding.iter().find(|id| core.engagements.get(id).is_some_and(|r| r.want_set))
                 && let Some(p) = core.engine.intent(id).and_then(Intent::engagement).and_then(|e| e.preload.clone())
             {
                 let known = core
@@ -576,7 +577,8 @@ impl Decision {
             }
             // a re-read due
             let rules = &self.rules;
-            if let Some((id, p)) = holding.iter().find_map(|id| {
+            if let Some(cell) = &cell
+                && let Some((id, p)) = holding.iter().find_map(|id| {
                 let e = core.engine.intent(*id).and_then(Intent::engagement)?;
                 (core.engagements.get(id).is_some_and(|r| r.preload_reported)
                     && engage::preload_verify_due(e, now, rules))
@@ -594,8 +596,13 @@ impl Decision {
             let Some(lane) = core.params.get_mut(&uid) else { continue };
             let Some(owed) = lane.owed.as_mut() else { continue };
             owed.due_since.get_or_insert(now_mono);
-            if now_mono >= owed.next_try {
-                lane.job = Some((Purpose::Restore, super::preload::start_restore(cell.clone(), owed.values.clone())));
+            match cell {
+                // gone from the fleet: still owed, and the inbox says so
+                None => owed.last_error = Some("the vehicle is not in the fleet".into()),
+                Some(cell) if now_mono >= owed.next_try => {
+                    lane.job = Some((Purpose::Restore, super::preload::start_restore(cell, owed.values.clone())));
+                }
+                Some(_) => {}
             }
         }
     }

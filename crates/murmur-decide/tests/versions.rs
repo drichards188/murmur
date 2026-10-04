@@ -145,34 +145,42 @@ fn the_rules_5_live_log_preloads_restores_and_reads_altitude() {
     assert!(r.ok(), "{:?}", r.mismatches);
     assert_eq!((r.engagements, r.effects, r.assessments), (3, 1, 1));
     assert_eq!(r.build.as_ref().map(|b| b.dirty), Some(Some(false)));
+    assert!(r.unrestored.is_empty(), "{:?}", r.unrestored);
     // the fast ferry by the point blocked twice; then the USV's FS_ACTION 6 (Loiter) and its
-    // 5 s timer (its own: 1 and 30 s) read back before the intercept, and put back after
+    // 5 s timer (its own: 1 and 30 s) read back before the intercept, read again every few
+    // seconds before the release, and put back after
     let events = parse_log(&log).unwrap();
     let rejected = events
         .iter()
-        .filter(|e| matches!(&e.body, EventBody::IntentState { to: State::Rejected, reason, .. } if reason.contains("keep_out_tracks: track T-0001 (neutral, ferry)")))
+        .filter(|e| matches!(&e.body, EventBody::IntentState { to: State::Rejected, reason, .. } if reason.contains("keep_out_tracks: track T-") && reason.contains("(neutral, ferry)")))
         .count();
     assert_eq!(rejected, 2);
     let preloads: Vec<_> = events
         .iter()
         .filter_map(|e| match &e.body {
-            EventBody::EngagePreload { phase, before, readback, confirmed, .. } => Some((*phase, before.clone(), readback.clone(), *confirmed)),
+            EventBody::EngagePreload { phase, before, readback, confirmed, .. } => Some((e.t, *phase, before.clone(), readback.clone(), *confirmed)),
             _ => None,
         })
         .collect();
-    assert_eq!(preloads.len(), 2, "{preloads:?}");
-    let (set, restore) = (&preloads[0], &preloads[1]);
-    assert_eq!(set.0, engage::PreloadPhase::Set);
-    assert!(set.3);
-    assert_eq!((set.1["FS_ACTION"], set.1["FS_GCS_TIMEOUT"]), (1.0, 30.0));
-    assert_eq!((set.2["FS_ACTION"], set.2["FS_GCS_TIMEOUT"]), (6.0, 5.0));
-    assert_eq!(restore.0, engage::PreloadPhase::Restore);
-    assert!(restore.3);
-    assert_eq!(restore.2, set.1, "its own values back");
-    // our vehicles' altitude in the world facts, and the keep-outs read in 3D
-    assert!(log.contains("\"alt_msl_m\":{\"value\":7000.0"));
-    assert!(log.contains("clear by altitude: 5 at 7000 m"));
-    assert!(log.contains("clear by altitude: T-0003 at 3003 m"));
+    let (set, restore) = (&preloads[0], &preloads[preloads.len() - 1]);
+    assert_eq!(set.1, engage::PreloadPhase::Set);
+    assert!(set.4);
+    assert_eq!((set.2["FS_ACTION"], set.2["FS_GCS_TIMEOUT"]), (1.0, 30.0));
+    assert_eq!((set.3["FS_ACTION"], set.3["FS_GCS_TIMEOUT"]), (6.0, 5.0));
+    let verifies = &preloads[1..preloads.len() - 1];
+    assert!(!verifies.is_empty() && verifies.iter().all(|v| v.1 == engage::PreloadPhase::Verify && v.4), "{preloads:?}");
+    let effect_t = events.iter().find(|e| matches!(e.body, EventBody::EngageEffect { .. })).unwrap().t;
+    let last_read = verifies.iter().map(|v| v.0).filter(|t| *t <= effect_t).max().unwrap();
+    assert!(effect_t.ms_since(last_read) <= engage::PRELOAD_FRESH_MS, "read back {} ms before the release", effect_t.ms_since(last_read));
+    assert_eq!(restore.1, engage::PreloadPhase::Restore);
+    assert!(restore.4);
+    assert_eq!(restore.3, set.2, "its own values back");
+    // our vehicles' altitude in the world facts, and the keep-out read in 3D: our MALE
+    // aircraft 7,600 m over the point, clear even diving at 38 m/s; the light aircraft's
+    // altitude comes from radar
+    assert!(log.contains("\"alt_msl_m\":{\"value\":7600.0"));
+    assert!(log.contains("clear by altitude: 5 at 7600 m"));
+    assert!(log.contains("\"identity\":\"light_aircraft\""));
 }
 
 #[test]
