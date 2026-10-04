@@ -115,7 +115,7 @@ def evaluate(m, dt, reach, cap):
         a = m.get("arrive")
         if a and arrived and a["ring"]:
             return pos, {"kind": "arc", "center": a["center"], "radius_m": a["radius_m"],
-                         "width_m": a["width_m"] + 2 * m["along0_m"], "angle_deg": bearing(a["center"], pos),
+                         "width_m": a["width_m"], "angle_deg": bearing(a["center"], pos),
                          "spread_deg": 180}
         if a and arrived:
             return pos, {"kind": "circle", "center": a["center"], "radius_m": a["radius_m"] + m["along0_m"]}

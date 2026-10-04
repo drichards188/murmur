@@ -126,7 +126,7 @@ export function evalMotion(m: Motion, dtIn: number, reachMps: number, capM: numb
       const across = bound(m.across0_m + m.across_mps * dt, m.across0_m)
       const a = m.arrive
       if (a && arrived && a.ring) {
-        return { position, region: { kind: 'arc', center: a.center, radius_m: a.radius_m, width_m: a.width_m + 2 * m.along0_m, angle_deg: flatBearing(a.center, position), spread_deg: 180 } }
+        return { position, region: { kind: 'arc', center: a.center, radius_m: a.radius_m, width_m: a.width_m, angle_deg: flatBearing(a.center, position), spread_deg: 180 } }
       }
       if (a && arrived) return { position, region: { kind: 'circle', center: a.center, radius_m: a.radius_m + m.along0_m } }
       return { position, region: { kind: 'ellipse', center: position, semi_major_m: along, semi_minor_m: across, bearing_deg: m.bearing_deg } }

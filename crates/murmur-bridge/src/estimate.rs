@@ -468,12 +468,14 @@ pub fn eval(m: &Motion, dt: f64, reach_mps: f64, cap_m: f64) -> (LngLat, Region)
             let along = bound(along0_m + along_mps * dt, *along0_m);
             let across = bound(across0_m + across_mps * dt, *across0_m);
             match arrive {
+                // on the ring it circles: where on it is unknown (the whole ring), how far
+                // off it is only the ring's own band
                 Some(a) if arrived && a.ring => (
                     position,
                     Region::Arc {
                         center: a.center,
                         radius_m: a.radius_m,
-                        width_m: a.width_m + 2.0 * along0_m,
+                        width_m: a.width_m,
                         angle_deg: bearing(a.center, position),
                         spread_deg: 180.0,
                     },
@@ -792,14 +794,14 @@ impl Inputs<'_> {
     /// Clockwise around `center` (bearing increasing), from the last velocity; the default
     /// when not moving (ArduPilot loiters clockwise at a positive radius, the bridge's
     /// waypoint rings run clockwise too).
-    fn clockwise_about(&self, center: LngLat, at: LngLat) -> bool {
+    fn clockwise_about(&self, center: LngLat) -> bool {
         let Some([ve, vn]) = self.vel_en else {
             return true;
         };
         if ve.hypot(vn) < 0.3 {
             return true;
         }
-        let theta = bearing(center, at).to_radians();
+        let theta = bearing(center, self.position).to_radians();
         ve * theta.cos() - vn * theta.sin() >= 0.0
     }
 
@@ -813,7 +815,9 @@ impl Inputs<'_> {
     }
 
     /// Around `center` from the phase of `at`, with `spread0_m` of initial uncertainty along
-    /// the ring.
+    /// the ring. The sense of rotation is judged where the velocity was measured (the last
+    /// position), and only if that was on this ring too; a ring joined later is flown
+    /// clockwise, as ArduPilot loiters at a positive radius.
     fn ring(&self, at: LngLat, center: LngLat, radius: f64, spread0_m: f64) -> Motion {
         let speed = self.task_speed();
         let rate = if radius > 0.0 {
@@ -821,7 +825,10 @@ impl Inputs<'_> {
         } else {
             0.0
         };
-        let sign = if self.clockwise_about(center, at) { 1.0 } else { -1.0 };
+        let was_on_ring =
+            (distance_m(center, self.position) - radius).abs() <= self.ring_width(radius);
+        let clockwise = !was_on_ring || self.clockwise_about(center);
+        let sign = if clockwise { 1.0 } else { -1.0 };
         let along_mps = (0.3 * speed).max(MIN_ALONG_MPS);
         let to_deg = |m: f64| if radius > 0.0 { (m / radius).to_degrees() } else { 180.0 };
         Motion::Ring {
@@ -998,7 +1005,7 @@ impl Inputs<'_> {
                 let tol = self.ring_tolerance(radius);
                 let off = (distance_m(center, self.position) - radius).abs();
                 if task.state == OpState::Done || off <= 2.0 * tol {
-                    let turn = if self.clockwise_about(center, self.position) { "clockwise" } else { "counter-clockwise" };
+                    let turn = if self.clockwise_about(center) { "clockwise" } else { "counter-clockwise" };
                     return Some((
                         "orbit",
                         self.ring(self.position, center, radius, self.s0()),
@@ -1742,6 +1749,39 @@ mod tests {
         // no timer known: no branch
         boat.lost_link = None;
         assert!(estimate(&boat).failsafe.is_none());
+    }
+
+    #[test]
+    fn a_branch_ring_keeps_the_sense_of_the_loiter_it_continues() {
+        // an RQ-4 loitering counter-clockwise around home (its RTL circle is the same ring):
+        // the lost-link branch, judged 120 s on, must not run the other way
+        let home: LngLat = [-122.75, 37.75];
+        let mut plane = moving(base(Kind::Plane, 160.0, 175.0, "air"), 0.0, 160.0); // north on the east side
+        plane.position = step(home, 90.0, 9000.0);
+        plane.home = Some(home);
+        plane.mode = Some("LOITER");
+        plane.loiter_radius_m = Some(9000.0);
+        plane.rtl_radius_m = Some(9000.0);
+        plane.nav_target = Some((home, 999.0));
+        plane.lost_link = Some(("satcom".into(), 120.0));
+        plane.now = 1200.0;
+        let e = estimate(&plane);
+        let Motion::Ring { rate_dps: r0, .. } = e.motion else { panic!("{:?}", e.motion) };
+        assert!(r0 < 0.0, "counter-clockwise: {r0}");
+        let f = e.failsafe.expect("branch");
+        let Motion::Ring { rate_dps: r1, center, .. } = f.motion else { panic!("{:?}", f.motion) };
+        assert!(r1 < 0.0 && (r1 - r0).abs() < 1e-9, "{r0} {r1}");
+        assert!(distance_m(center, home) < 0.2);
+        // the branch continues from where the first model had it when the timer fired
+        let (p120, _) = eval(&e.motion, 120.0, e.reach_mps, e.cap_m);
+        let (pb, _) = eval(&f.motion, 0.0, e.reach_mps, e.cap_m);
+        assert!(distance_m(p120, pb) < 20.0, "{}", distance_m(p120, pb));
+        // a ring joined from afar is flown clockwise whatever the old heading
+        plane.position = step(home, 90.0, 30_000.0);
+        plane.mode = Some("RTL");
+        let e = estimate(&plane);
+        let Motion::Line { arrive: Some(a), .. } = &e.motion else { panic!("{:?}", e.motion) };
+        assert!(a.ring);
     }
 
     #[test]
