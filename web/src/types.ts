@@ -22,8 +22,11 @@ export const AIR_KINDS: Kind[] = ['plane', 'vtol', 'copter', 'blimp']
 export const SEA_KINDS: Kind[] = ['boat', 'sub']
 
 export interface LinkHealth {
-  last_rx_t: number | null // bridge clock, seconds
+  /** bridge clock, seconds; a lite snapshot carries it only once the link is lost */
+  last_rx_t?: number | null
   since_last_ms: number | null // computed in the browser from last_rx_t and the message time
+  /** lite snapshots: the bridge's own verdict (a live link then costs nothing to keep reporting) */
+  stale?: boolean
   loss_pct: number | null
   rtt_ms: number | null
   /** How often the link should be heard from: 1000 streaming, 20000 on HIGH_LATENCY2 (Rust bridge only). */
@@ -56,6 +59,10 @@ export type NavSource = 'gnss' | 'dead_reckoning' | 'none'
 export interface Vehicle {
   uid: number // fleet-unique; what the console keys on
   sysid: number // MAVLink system ID: unique per link only, wraps in fleets over 250
+  /** Level of detail (murmur-and): `lite` is what the bridge sends for a vehicle outside
+   *  the view (identity, a coarse position, mode, link state, once a second, no trail);
+   *  absent or `full` is the whole snapshot at 4 Hz. */
+  lod?: 'full' | 'lite'
   identity: Identity | null
   kind: Kind | null
   mode: string | null
@@ -111,6 +118,39 @@ export interface BridgeState {
   t: number
   vehicles: Vehicle[]
   taskings: Tasking[]
+  /** Counts per map tile while the view holds more vehicles than the bridge sends in full
+   *  (zoomed out over a large fleet); null or absent otherwise. */
+  clusters?: Clusters | null
+}
+
+/** One map tile with something in it (`push.rs` clusters). */
+export interface Cluster {
+  x: number
+  y: number
+  /** centroid of what is in the tile, lon lat: where the marker goes */
+  c: LngLat
+  /** vehicles in the tile */
+  n: number
+  /** of them: air, ground, surface, subsurface */
+  d: [number, number, number, number]
+  /** of them: links lost */
+  lost: number
+  /** tracks in the tile: hostile, suspect, unknown, neutral, assumed friend */
+  tk: [number, number, number, number, number]
+}
+
+export interface Clusters {
+  /** the tile zoom the cells are at (web mercator tiles) */
+  z: number
+  cells: Cluster[]
+}
+
+/** What the console looks at, sent to the bridge (`/ws?lod=1`): the map's bounds (w, s, e,
+ *  n) and zoom, and the vehicles it wants at full detail whatever the view. */
+export interface ViewSubscription {
+  bounds: [number, number, number, number] | null
+  zoom: number
+  pin: number[]
 }
 
 export const LIFECYCLE: OpState[] = ['queued', 'sent', 'acked', 'active', 'done']
@@ -161,5 +201,5 @@ export function staleMs(v: Pick<Vehicle, 'link'>): number {
 }
 
 export function isStale(v: Pick<Vehicle, 'link'>): boolean {
-  return (v.link.since_last_ms ?? 0) > staleMs(v)
+  return v.link.stale ?? (v.link.since_last_ms ?? 0) > staleMs(v)
 }

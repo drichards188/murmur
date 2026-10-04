@@ -17,7 +17,8 @@ interface Props {
 }
 
 function linkClass(v: Vehicle) {
-  const since = v.link.since_last_ms ?? Infinity
+  // a lite snapshot says lost or not instead of when the last packet came
+  const since = v.link.since_last_ms ?? (v.link.stale == null || v.link.stale ? Infinity : 0)
   const loss = v.link.loss_pct ?? 0
   if (since > staleMs(v)) return 'bad'
   if (since > (v.link.expected_interval_ms ?? 1000) || loss > 10) return 'warn'
@@ -107,7 +108,13 @@ function Row({ v, selected, open, onToggle, onDeselect, onDetails }: RowProps) {
         <span>{fmt(v.groundspeed, 1, ' m/s')}</span>
       </span>
       <span className={`vrow-link ${lc}`}>
-        <span title="time since last message">{stale || (v.link.since_last_ms ?? 0) >= 1000 ? `${Math.floor((v.link.since_last_ms ?? 0) / 1000)}s` : fmt(v.link.since_last_ms, 0, 'ms')}</span>
+        <span title="time since last message">
+          {stale || (v.link.since_last_ms ?? 0) >= 1000
+            ? `${Math.floor((v.link.since_last_ms ?? 0) / 1000)}s`
+            : v.link.since_last_ms == null && v.link.stale === false
+              ? 'live' // a lite snapshot (out of view): the link is heard from, no exact age
+              : fmt(v.link.since_last_ms, 0, 'ms')}
+        </span>
         <span title="packet loss, last 10 s">{fmt(v.link.loss_pct, 0, '%')} loss</span>
         <span title="round trip time (TIMESYNC)">{fmt(v.link.rtt_ms, 0, 'ms')} rtt</span>
         {v.link.emu && v.link.emu.state !== 'ok' && (

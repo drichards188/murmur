@@ -1,38 +1,50 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { getOperator, setBridgeOperators, type Decisions, type Intent, type Authorization } from './decisions'
 import { perfPush, perfUpdateStart } from './perf'
 import type { TracksMessage } from './tracks'
-import type { BridgeState, LngLat, TaskKind, Tasking, Vehicle } from './types'
+import type { BridgeState, Clusters, LngLat, TaskKind, Tasking, Vehicle, ViewSubscription } from './types'
 
 const TRAIL_MAX = 120 // same cap as the bridge keeps
 
-/** After the initial full state, the bridge sends only vehicles that changed (with just
- *  their new trail points) and the task list only when it changed. */
+/** After the initial full state, the bridge sends only vehicles that changed and the task
+ *  list only when it changed. On the level-of-detail feed (`/ws?lod=1`, murmur-and) each
+ *  vehicle is a partial object merged over what the console has: the identity comes once,
+ *  `trail` replaces the trail (a vehicle newly in view, or a new sampling step), `trail_add`
+ *  appends to it, and a `lite` snapshot (out of view) has no trail at all. `clusters` is the
+ *  tile aggregate while the view holds more vehicles than the bridge sends in full (null
+ *  when that ends; absent when unchanged). */
 interface Delta {
   type: 'delta'
   t: number
-  vehicles: (Omit<Vehicle, 'trail'> & { trail_add: Vehicle['trail'] })[]
+  vehicles: (Partial<Omit<Vehicle, 'trail'>> & { uid: number; trail?: Vehicle['trail']; trail_add?: Vehicle['trail'] })[]
   taskings?: Tasking[]
+  clusters?: Clusters | null
 }
 
 function applyDelta(prev: BridgeState, d: Delta): BridgeState {
-  if (!d.vehicles.length && !d.taskings) return { ...prev, t: d.t }
+  if (!d.vehicles.length && !d.taskings && d.clusters === undefined) return { ...prev, t: d.t }
   const byUid = new Map(prev.vehicles.map((v) => [v.uid, v]))
-  for (const { trail_add, ...v } of d.vehicles) {
+  for (const { trail: whole, trail_add, ...v } of d.vehicles) {
     const old = byUid.get(v.uid)
-    const trail = [...(old?.trail ?? []), ...trail_add].slice(-TRAIL_MAX)
-    byUid.set(v.uid, { ...(v as Omit<Vehicle, 'trail'>), trail } as Vehicle)
+    const trail =
+      v.lod === 'lite' ? [] : whole ? whole.slice(-TRAIL_MAX) : trail_add?.length ? [...(old?.trail ?? []), ...trail_add].slice(-TRAIL_MAX) : (old?.trail ?? [])
+    // a full update carries the link's fast fields (packet time, loss, RTT) or its slow
+    // ones (plan, emulator) or both: merge them; a lite link is whole and replaces it
+    const link = v.link && v.lod !== 'lite' && old?.link ? { ...old.link, ...v.link } : v.link
+    byUid.set(v.uid, { ...old, ...v, ...(link ? { link } : {}), trail } as Vehicle)
   }
   return {
     ...prev,
     t: d.t,
     vehicles: [...byUid.values()].sort((a, b) => a.uid - b.uid),
     taskings: d.taskings ?? prev.taskings,
+    clusters: d.clusters === undefined ? prev.clusters : d.clusters,
   }
 }
 
 /** The bridge sends when each vehicle was last heard from; age is relative to the
- *  bridge's clock (in each message), not this browser's. */
+ *  bridge's clock (in each message), not this browser's. A lite snapshot says only whether
+ *  the link is lost, and when the last packet came once it is. */
 function withAges(s: BridgeState): BridgeState {
   return {
     ...s,
@@ -52,6 +64,9 @@ export function useBridge() {
   // tracks of contacts that are not ours (Phase C2): sent whole whenever one changes
   const [tracks, setTracks] = useState<TracksMessage | null>(null)
   const retry = useRef(0)
+  const socket = useRef<WebSocket | null>(null)
+  // the last view sent, so a reconnect starts from it
+  const view = useRef<ViewSubscription | null>(null)
 
   useEffect(() => {
     let ws: WebSocket | null = null
@@ -61,10 +76,12 @@ export function useBridge() {
 
     const connect = () => {
       const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-      ws = new WebSocket(`${proto}://${location.host}/ws`)
+      ws = new WebSocket(`${proto}://${location.host}/ws?lod=1`)
+      socket.current = ws
       ws.onopen = () => {
         retry.current = 0
         setStatus('live')
+        if (view.current) ws?.send(JSON.stringify({ type: 'view', ...view.current }))
       }
       ws.onmessage = (ev) => {
         const msg = JSON.parse(ev.data)
@@ -85,6 +102,7 @@ export function useBridge() {
         }
       }
       ws.onclose = () => {
+        if (socket.current === ws) socket.current = null
         if (closed) return
         setStatus('down')
         const delay = Math.min(5000, 500 * 2 ** retry.current++)
@@ -99,7 +117,26 @@ export function useBridge() {
     }
   }, [])
 
-  return { state, status, decisions, tracks }
+  /** Tell the bridge what the console looks at (bounds, zoom) and which vehicles it wants
+   *  at full detail whatever the view. Cheap to call often; nothing goes out unchanged. */
+  const setView = useCallback((next: ViewSubscription) => {
+    const cur = view.current
+    if (cur && cur.zoom === next.zoom && same4(cur.bounds, next.bounds) && sameList(cur.pin, next.pin)) return
+    view.current = next
+    const ws = socket.current
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'view', ...next }))
+  }, [])
+
+  return { state, status, decisions, tracks, setView }
+}
+
+function same4(a: ViewSubscription['bounds'], b: ViewSubscription['bounds']) {
+  if (!a || !b) return a === b
+  return a[0] === b[0] && a[1] === b[1] && a[2] === b[2] && a[3] === b[3]
+}
+
+function sameList(a: number[], b: number[]) {
+  return a.length === b.length && a.every((x, i) => x === b[i])
 }
 
 export interface TaskRequest {
