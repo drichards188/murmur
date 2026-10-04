@@ -8,8 +8,9 @@ meaningful. Decision and command, not weapons.
 
 1. Read `docs/PLAN.md` (the plan, phase by phase) and `docs/DECISIONS.md` (what was decided
    and why; don't relitigate those).
-2. `bd ready` for open work (see AGENTS.md for bd usage). Current phase: **R** (Rust core; since R.5
-   the bridge and stand-ins are Rust only), then **C** (intents, rules, risk tiers, audit log, inbox).
+2. `bd ready` for open work (see AGENTS.md for bd usage). Done: R (Rust core), C (intents, rules,
+   policy, audit, inbox), C2 (contacts, sensing, tracks), F (MCP for agents). Current: **E**
+   (engagement decision chain) and **G** (evaluation harness).
 3. Sibling repo `~/tidewater` (real-world conditions). ArduPilot at `~/ardupilot`, branch
    `tidewater-water-depth`.
 
@@ -43,7 +44,8 @@ meaningful. Decision and command, not weapons.
 - **Never `pkill -f <pattern>` with a pattern that appears in your own command line**: it kills
   your shell (exit 144). Use `make down` (PID file `logs/up.pid`; it sends TERM, because an
   `up.sh` started in the background ignores SIGINT).
-- Background tasks in this harness stop after 2 hours: restart with `make goldengate`.
+- Background tasks in this harness stop after 2 hours: restart with `make goldengate`, or start it
+  detached (`setsid nohup make goldengate > logs/goldengate.out 2>&1 &`) or in your own terminal.
 - Foreground `sleep` is blocked: wait with `until <check>; do sleep 2; done`.
 - Global git `core.autocrlf=true` (WSL): repos rely on `.gitattributes` (LF). A fresh ArduPilot
   clone needs `-c core.autocrlf=false` or its python shebangs break.
@@ -64,8 +66,8 @@ meaningful. Decision and command, not weapons.
 - A stack uses two UDP ranges now (vehicle base + N and bridge base + N): pick both clear of
   every other stack's ranges, including a large load test's (a 3,000-node test spans 3,000
   ports from its base). A bridge that finds a port taken drops it for good.
-- With the emulator, ZEP 1 (the LTA on the Marin Headlands) is behind terrain from the Crissy
-  Field ground station at spawn: it never connects until moved. That is the model, not a bug.
+- Keep fixed port bases (vehicle, bridge) below the ephemeral range (39160 here): stand-ins and
+  clients draw from 39160-43255, and a fixed base inside it collides at random.
 - The bridge's task-layer timeouts follow each link's measured round trip (`LinkTiming` in
   `crates/murmur-bridge/src/link.rs`; floors 1 s per ACK, 1.5 s per mission item, as before on
   fast links) and its telemetry plan follows the link class (`crates/murmur-bridge/src/
