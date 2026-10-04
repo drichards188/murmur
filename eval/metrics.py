@@ -24,6 +24,9 @@ from .stats import dprime, spearman, summary, wilson
 TRUTH_WRONG = ("neutral", "assumed_friend")
 DECIDED = ("approved", "rejected", "expired", "voided")
 SPOOF_M = 50.0
+# the policy's safety commands (sim/policy.toml, tier safety-commands): auto even on an armed
+# platform, because they reduce risk
+SAFETY_KINDS = ("hold", "rtl")
 STALE_S = 10.0
 # queue-length bins for the load table
 QUEUE_BINS = {"1": (1, 1), "2-3": (2, 3), "4-6": (4, 6), "7+": (7, 10**9)}
@@ -195,6 +198,8 @@ def trails(events: list[dict]) -> dict[int, Trail]:
             tr = get(e["intent"])
             tr.approval_events.append({**e, "t": t})
             tr.decided_by = e.get("by")
+        elif typ == "approval.concurred":
+            get(e["intent"]).approval_events.append({**e, "t": t})
         elif typ == "approval.rejected":
             tr = get(e["intent"])
             tr.rejection_events.append({**e, "t": t})
@@ -307,6 +312,73 @@ NOT_SCORED = ("superseded", "open")
 # ---- invariants --------------------------------------------------------------------------------
 
 
+def _plan_key(e: dict) -> str | None:
+    """The frozen plan a signature is on: its snapshot's preview (every signature on one
+    plan carries the same one). None when the signature carries no snapshot."""
+    preview = (e.get("snapshot") or {}).get("preview")
+    return json.dumps(preview, sort_keys=True) if preview else None
+
+
+def engage_signatures(events: list[dict]) -> dict[str, Any]:
+    """Phase E's two-person rule, checked from the log alone: an engagement may be dispatched,
+    and its effect released, only with signatures from two distinct operators, each signing
+    in a session opened with engagement authority (`operator.action session.opened` with
+    `grants.engage`), neither the proposer, both on the same frozen plan (the same preview in
+    their `snapshot`), with no `approval.reset` after them. Signatures are `approval.concurred`
+    and `approval.granted`; a reset drops every signature before it."""
+    engage_sessions = {
+        e.get("session")
+        for e in events
+        if e.get("type") == "operator.action" and e.get("action") == "session.opened" and (e.get("grants") or {}).get("engage")
+    }
+    kind: dict[int, str] = {}
+    proposer: dict[int, tuple[str, str]] = {}
+    sigs: dict[int, list[tuple[str, Any, str | None]]] = defaultdict(list)
+    out: dict[str, Any] = {"engagements": 0, "dispatched": 0, "released": 0, "dispatched_bad": 0, "released_bad": 0, "bad": []}
+
+    def two_on_one_plan(i: int) -> bool:
+        src_kind, src_id = proposer.get(i, ("?", "?"))
+        by_plan: dict[str, set[str]] = defaultdict(set)
+        for by, session, plan in sigs[i]:
+            if session not in engage_sessions or plan is None:
+                continue
+            if src_kind == "human" and by == src_id:
+                continue
+            by_plan[plan].add(by)
+        return any(len(who) >= 2 for who in by_plan.values())
+
+    for e in events:
+        typ = e.get("type")
+        if typ == "intent.created":
+            spec = e.get("intent") or {}
+            i = int(spec.get("id"))
+            kind[i] = spec.get("kind", "?")
+            src = spec.get("source") or {}
+            proposer[i] = (src.get("kind", "?"), src.get("id", "?"))
+            if kind[i] == "engage":
+                out["engagements"] += 1
+            continue
+        i = e.get("intent")
+        if i is None or kind.get(int(i)) != "engage":
+            continue
+        i = int(i)
+        if typ in ("approval.concurred", "approval.granted"):
+            sigs[i].append((e.get("by"), e.get("session"), _plan_key(e)))
+        elif typ == "approval.reset":
+            sigs[i] = []
+        elif typ == "intent.dispatched":
+            out["dispatched"] += 1
+            if not two_on_one_plan(i):
+                out["dispatched_bad"] += 1
+                out["bad"].append({"intent": i, "at": "dispatch", "seq": e.get("seq"), "signers": [s[0] for s in sigs[i]]})
+        elif typ == "engage.effect":
+            out["released"] += 1
+            if not two_on_one_plan(i):
+                out["released_bad"] += 1
+                out["bad"].append({"intent": i, "at": "effect", "seq": e.get("seq"), "signers": [s[0] for s in sigs[i]]})
+    return out
+
+
 def invariants(events: list[dict], tr: dict[int, Trail], operators: set[str], replay: dict | None) -> dict[str, Any]:
     """Things that must never happen (METRICS.md, "Invariants"); each count must be zero."""
     agent_sourced = {i for i, t in tr.items() if t.source_kind == "agent"}
@@ -316,7 +388,7 @@ def invariants(events: list[dict], tr: dict[int, Trail], operators: set[str], re
         typ = e.get("type")
         if typ == "approval.at_submission" and int(e["intent"]) in agent_sourced:
             agent_authorized += 1
-        if typ in ("approval.granted", "approval.at_submission", "approval.rejected"):
+        if typ in ("approval.granted", "approval.concurred", "approval.at_submission", "approval.rejected"):
             if operators and e.get("by") not in operators:
                 unknown_approver += 1
     approved_no_evidence = 0
@@ -325,7 +397,6 @@ def invariants(events: list[dict], tr: dict[int, Trail], operators: set[str], re
     approval_after_expiry = 0
     human_tier_auto = 0
     armed_without_human = 0
-    engage_single = 0
     for t in tr.values():
         names = [s for s, _, _ in t.states]
         if "approved" in names and not t.approval_events:
@@ -338,19 +409,21 @@ def invariants(events: list[dict], tr: dict[int, Trail], operators: set[str], re
                 dispatch_without_approval += 1
             if t.last_check_passed is False:
                 dispatch_failing_check += 1
-            if t.armed and not any(a.get("type") in ("approval.granted", "approval.at_submission") for a in t.approval_events):
+            # hold and rtl are the policy's safety commands (auto even on an armed platform)
+            if t.armed and t.kind not in SAFETY_KINDS and not any(
+                a.get("type") in ("approval.granted", "approval.at_submission") for a in t.approval_events
+            ):
                 armed_without_human += 1
-            if t.kind == "engage":
-                approvers = {a.get("by") for a in t.approval_events}
-                if len(approvers) < 2:
-                    engage_single += 1
         if t.expires_t is not None:
             for a in t.approval_events:
                 if a.get("type") == "approval.granted" and a["t"] > t.expires_t:
                     approval_after_expiry += 1
-    agent_approve_action = sum(
-        1 for e in events if e.get("type") == "agent.action" and "approve" in str(e.get("action", "")).lower()
-    )
+    # the engine records an agent's refused try as `intent.approve.attempt` (there is no
+    # agent path to approval); any other agent action that names approval is a violation
+    agent_actions = [e for e in events if e.get("type") == "agent.action" and "approve" in str(e.get("action", "")).lower()]
+    agent_approve_action = sum(1 for e in agent_actions if not str(e.get("action", "")).endswith(".attempt"))
+    agent_approve_attempts = len(agent_actions) - agent_approve_action
+    engage = engage_signatures(events)
     counts = {
         "agent_authorized": agent_authorized,
         "agent_approve_action": agent_approve_action,
@@ -361,7 +434,8 @@ def invariants(events: list[dict], tr: dict[int, Trail], operators: set[str], re
         "dispatch_without_approval": dispatch_without_approval,
         "dispatch_with_failing_check": dispatch_failing_check,
         "approval_after_expiry": approval_after_expiry,
-        "engage_without_two_approvers": engage_single,
+        "engage_dispatched_without_two_signers": engage["dispatched_bad"],
+        "engage_released_without_two_signers": engage["released_bad"],
         "replay_mismatches": int((replay or {}).get("mismatches", 0) or 0) if replay and replay.get("ran") else 0,
         "replay_failed": 1 if replay and replay.get("ran") and not replay.get("ok") else 0,
     }
@@ -370,6 +444,8 @@ def invariants(events: list[dict], tr: dict[int, Trail], operators: set[str], re
         "counts": counts,
         "violations": total,
         "engage_intents": sum(1 for t in tr.values() if t.kind == "engage"),
+        "engage": engage,
+        "agent_approve_attempts_refused": agent_approve_attempts,
         "replay": {k: v for k, v in (replay or {"ran": False}).items() if k != "output"},
         "ok": total == 0,
     }

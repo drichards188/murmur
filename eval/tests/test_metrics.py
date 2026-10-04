@@ -350,11 +350,12 @@ def test_each_invariant_fires():
     log.checked(4, 3)
     log.pending(4, 3, expires_in=10)
     log.approve(4, 30, by="mallory")
-    # an engagement with one approver
+    # an engagement with one approver, released
     log.created(5, 40, kind="engage")
     log.checked(5, 40)
     log.pending(5, 40)
     log.approve(5, 50)
+    log.add(55, "engage.effect", intent=5, uid="4", point=[-122.5, 37.8], radius_m=50, planned_t=0)
     # a dispatch whose last check failed
     log.created(6, 60)
     log.checked(6, 60)
@@ -371,22 +372,74 @@ def test_each_invariant_fires():
     assert c["armed_dispatched_without_human"] == 1
     assert c["approval_after_expiry"] == 1
     assert c["approver_not_an_operator"] == 1
-    assert c["engage_without_two_approvers"] == 1
+    assert c["engage_dispatched_without_two_signers"] == 1
+    assert c["engage_released_without_two_signers"] == 1
     assert c["dispatch_with_failing_check"] == 1
     assert c["agent_approve_action"] == 1
     assert c["replay_mismatches"] == 3 and c["replay_failed"] == 1
     assert not inv["ok"]
 
 
-def test_engagement_with_two_approvers_is_fine():
+PLAN_A = {"effect_point": [-122.495, 37.812], "effect_t": 1, "effect_radius_m": 75}
+PLAN_B = {"effect_point": [-122.505, 37.812], "effect_t": 2, "effect_radius_m": 75}
+
+
+def engagement(signatures, reset_after: int | None = None, proposer: str = "op-1") -> list[dict]:
+    """An engagement log as the engine writes it: sessions (op-2, op-3, op-4 with
+    engagement authority, op-1 and op-5 without), the nomination by `proposer`, the given
+    signatures `(by, plan)` (the last one granted, the others concurred), an optional reset
+    after the n-th signature, the dispatch and the effect."""
     log = Log()
-    log.created(1, 0, kind="engage")
-    log.checked(1, 0)
-    log.pending(1, 0)
-    log.add(5, "approval.granted", intent=1, by="op-1", session=1, self_approved=False)
-    log.approve(1, 10, by="op-2")
-    inv = M.invariants(log.events, M.trails(log.events), {"op-1", "op-2"}, REPLAY_OK)
-    assert inv["counts"]["engage_without_two_approvers"] == 0
+    sessions = {"op-1": 1, "op-2": 2, "op-3": 3, "op-4": 4, "op-5": 5}
+    for op, sid in sessions.items():
+        grants = {"engage": True} if op in ("op-2", "op-3", "op-4") else None
+        log.add(0, "operator.action", operator=op, session=sid, action="session.opened", detail="", **({"grants": grants} if grants else {}))
+    log.add(1, "intent.created", intent={"id": 1, "created_t": T0, "source": {"kind": "human", "id": proposer}, "kind": "engage", "uids": ["blade-1"]})
+    log.checked(1, 1)
+    log.pending(1, 1)
+    for n, (by, plan) in enumerate(signatures):
+        typ = "approval.granted" if n == len(signatures) - 1 else "approval.concurred"
+        snap = {"snapshot": {"preview": plan}} if plan is not None else {}
+        log.add(5 + n, typ, intent=1, by=by, session=sessions[by], **snap)
+        if reset_after is not None and n + 1 == reset_after:
+            log.add(5 + n, "approval.reset", intent=1, dropped=[by], reason="track_deviation")
+    log.state(1, 20, "pending_approval", "approved")
+    log.add(20, "intent.dispatched", intent=1, uids=["blade-1"])
+    log.state(1, 20, "approved", "dispatched")
+    log.add(60, "engage.effect", intent=1, uid="blade-1", point=[-122.495, 37.812], radius_m=75, planned_t=0)
+    return log.events
+
+
+def engage_counts(events) -> tuple[int, int]:
+    e = M.engage_signatures(events)
+    return e["dispatched_bad"], e["released_bad"]
+
+
+def test_two_authorized_signers_on_one_plan_is_fine():
+    events = engagement([("op-2", PLAN_A), ("op-3", PLAN_A)])
+    assert engage_counts(events) == (0, 0)
+    ops = {"op-1", "op-2", "op-3", "op-4", "op-5"}
+    inv = M.invariants(events, M.trails(events), ops, REPLAY_OK)
+    assert inv["violations"] == 0, inv["counts"]
+    assert inv["engage"]["released"] == 1
+
+
+def test_every_way_to_fall_short_of_two_signers_is_a_violation():
+    cases = {
+        "one signer twice": [("op-2", PLAN_A), ("op-2", PLAN_A)],
+        "a signer without engagement authority": [("op-2", PLAN_A), ("op-5", PLAN_A)],
+        "the proposer signs": [("op-2", PLAN_A), ("op-1", PLAN_A)],
+        "two plans": [("op-2", PLAN_A), ("op-3", PLAN_B)],
+        "no snapshot": [("op-2", None), ("op-3", None)],
+        "one signature": [("op-2", PLAN_A)],
+    }
+    for name, sigs in cases.items():
+        assert engage_counts(engagement(sigs)) == (1, 1), name
+    # the proposer with engagement authority still may not count as a signer
+    assert engage_counts(engagement([("op-2", PLAN_A), ("op-3", PLAN_A)], proposer="op-2")) == (1, 1)
+    # a reset drops the signatures before it
+    assert engage_counts(engagement([("op-2", PLAN_A), ("op-3", PLAN_A)], reset_after=1)) == (1, 1)
+    assert engage_counts(engagement([("op-2", PLAN_A), ("op-3", PLAN_B), ("op-4", PLAN_B)], reset_after=1)) == (0, 0)
 
 
 def test_empty_run_is_well_formed():
@@ -415,3 +468,16 @@ def test_dprime_corners_and_direction():
     assert dprime(0, 3, 0, 3) == 0.0  # approved everything
     assert dprime(3, 0, 0, 3) > 1.0  # perfect discrimination, finite
     assert dprime(0, 3, 3, 0) < -1.0  # backwards
+
+
+def test_refused_agent_attempts_and_safety_commands_are_not_violations():
+    log = Log()
+    log.created(1, 0, kind="engage")
+    log.add(1, "agent.action", agent="agent-planner", action="intent.approve.attempt", detail="no agent path to approval exists")
+    # an operator's hold on an armed platform: the policy's safety tier, auto by design
+    log.created(2, 2, source="human", kind="hold")
+    log.checked(2, 2, armed=("4",), tier="auto")
+    log.auto(2, 2)
+    inv = M.invariants(log.events, M.trails(log.events), OPS, REPLAY_OK)
+    assert inv["violations"] == 0, inv["counts"]
+    assert inv["agent_approve_attempts_refused"] == 1
