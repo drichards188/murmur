@@ -76,13 +76,13 @@ at = [-122.5150, 37.8120]
 
 # ---------------------------------------------------------------- goes silent (stale-track)
 [[contact]]
-id = "dark-boat-baker"
-name = "Dark boat holding in the Gate west of Fort Point, gone from the picture after 75 s"
+id = "dark-boat-crissy"
+name = "Dark boat holding off Crissy Field, gone from the picture after 110 s"
 affiliation = "hostile"
 domain = "surface"
 kind = "small_fast_boat"
 motion = "station"
-# in open water with a line of sight to the Crissy Field ground station (off Baker Beach
-# itself the bluffs mask an aircraft orbiting there, and its link goes stale)
-at = [-122.4900, 37.8120]
-end_s = 75
+# east of the bridge in open water: in line of sight of the Crissy Field ground station, and
+# every leg to it from the aircraft at Crissy Field clears the towers' no-go boxes
+at = [-122.4450, 37.8150]
+end_s = 110

@@ -81,14 +81,16 @@ at = [-122.5150, 37.8120]
 
 # ---------------------------------------------------------------- goes silent (stale-track)
 [[contact]]
-id = "dark-boat-baker"
-name = "Dark boat holding off Baker Beach, gone from the picture after 75 s"
+id = "dark-boat-crissy"
+name = "Dark boat holding off Crissy Field, gone from the picture after 110 s"
 affiliation = "hostile"
 domain = "surface"
 kind = "small_fast_boat"
 motion = "station"
-at = [-122.4950, 37.7980]
-end_s = 75
+# east of the bridge in open water: in line of sight of the Crissy Field ground station, and
+# every leg to it from the aircraft at Crissy Field clears the towers' no-go boxes
+at = [-122.4450, 37.8150]
+end_s = 110
 
 # ---------------------------------------------------------------- engagement situations
 [[contact]]
