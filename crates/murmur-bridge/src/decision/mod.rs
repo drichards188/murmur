@@ -336,8 +336,9 @@ struct Core {
     follow: BTreeMap<IntentId, queue::PendingFollow>,
     /// the open intents last written to the pointer file, and when
     pointer_written: Option<(Vec<u64>, f64)>,
-    /// the fleet identity last written beside the log
+    /// the fleet identity last written beside the log, and when it was last looked at
     fleet_written: Option<queue::FleetIdentity>,
+    fleet_looked: Option<f64>,
 }
 
 /// `operator.view` events an operator may log: a burst of this many, refilled at
@@ -557,6 +558,7 @@ impl Decision {
                 follow: BTreeMap::new(),
                 pointer_written: None,
                 fleet_written: None,
+                fleet_looked: None,
             }),
             updates: watch::channel(Arc::new(String::new())).0,
             recent: agent::RecentEvents::default(),

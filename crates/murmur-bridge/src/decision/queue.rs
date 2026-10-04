@@ -443,24 +443,13 @@ impl Decision {
     /// point), and a connected vehicle's own identity and reported home where the manifest
     /// has none.
     pub fn fleet_identity(&self) -> FleetIdentity {
-        let mut out: FleetIdentity = self
-            .world
-            .manifest()
-            .identities
-            .iter()
-            .map(|(uid, i)| (*uid, identity_of(i, None)))
-            .collect();
-        // at start the bridge has not read the manifest yet
-        if out.is_empty()
-            && let Some(data) = std::fs::read(&self.world.cfg.manifest)
-                .ok()
-                .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-        {
-            let (m, _) = crate::world::Manifest::parse(&data);
-            for (uid, i) in &m.identities {
-                out.insert(*uid, identity_of(i, None));
-            }
-        }
+        // the manifest file itself: its entries carry the spawn point the world's identities
+        // leave out
+        let mut out: FleetIdentity = std::fs::read(&self.world.cfg.manifest)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .map(|data| manifest_identities(&data))
+            .unwrap_or_default();
         for cell in self.world.vehicles() {
             let (identity, home) = cell.read(|v| (v.identity.clone(), v.home));
             let now = identity_of_opt(identity.as_deref(), home);
@@ -478,6 +467,12 @@ impl Decision {
         let Some(path) = self.fleet_file.get() else {
             return;
         };
+        // looked at every few seconds: the manifest can be large
+        let now = clock::mono();
+        if core.fleet_looked.is_some_and(|t| now - t < FLEET_LOOK_S) {
+            return;
+        }
+        core.fleet_looked = Some(now);
         let fleet = self.fleet_identity();
         if core.fleet_written.as_ref() == Some(&fleet) {
             return;
@@ -683,6 +678,41 @@ fn identity_of(i: &crate::vehicle::Identity, reported: Option<(f64, f64)>) -> Ve
         callsign: i.str("callsign").map(str::to_string),
         home: spawn.or(reported.map(|(la, lo)| [la, lo])),
     }
+}
+
+/// How often the fleet identity beside the log is brought up to date, s.
+const FLEET_LOOK_S: f64 = 5.0;
+
+/// The fleet manifest's vehicles (`sim/run/fleet.json`: `vehicles`, each with its `uid`
+/// (else its sysid), `platform`, `callsign` and spawn point `home` [lat, lon, alt, heading]).
+pub fn manifest_identities(data: &Value) -> FleetIdentity {
+    let mut out = FleetIdentity::new();
+    for v in data
+        .get("vehicles")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(uid) = v
+            .get("uid")
+            .and_then(Value::as_u64)
+            .or_else(|| v.get("sysid").and_then(Value::as_u64))
+        else {
+            continue;
+        };
+        let home = v.get("home").and_then(Value::as_array).and_then(|a| {
+            Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?])
+        });
+        out.insert(
+            uid,
+            VehicleIdentity {
+                platform: v.get("platform").and_then(Value::as_str).map(str::to_string),
+                callsign: v.get("callsign").and_then(Value::as_str).map(str::to_string),
+                home,
+            },
+        );
+    }
+    out
 }
 
 fn identity_of_opt(

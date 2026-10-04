@@ -870,3 +870,17 @@ async fn an_order_approved_again_after_a_restart_asks_the_vehicle_first() {
     );
     replays_after(&blog, &r.log);
 }
+
+#[test]
+fn the_fleet_identity_takes_each_vehicles_spawn_point_from_the_manifest() {
+    // found live: the world's identities leave the manifest's `home` out, so a run's fleet
+    // identity had homes only for vehicles already connected, and a carry-over at start
+    // (none connected yet) could not tell any vehicle the same
+    let manifest = json!({ "vehicles": [
+        { "uid": 1, "sysid": 1, "platform": "remus", "callsign": "REMUS 1", "home": [37.825, -122.44, 0, 90] },
+        { "sysid": 7, "platform": "x10", "callsign": "SKY 1", "home": [37.805, -122.45, 0, 0] },
+    ]});
+    let f = crate::decision::queue::manifest_identities(&manifest);
+    assert_eq!(f.get(&1).and_then(|v| v.home), Some([37.825, -122.44]));
+    assert_eq!(f.get(&7).and_then(|v| v.callsign.clone()).as_deref(), Some("SKY 1"));
+}
