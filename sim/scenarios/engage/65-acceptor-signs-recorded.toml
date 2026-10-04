@@ -62,22 +62,22 @@ uid = "drone-1"
 silent = true
 
 [[step]]
-at_s = 15
+at_s = 14
 action = "accept"
 by = "op-2"
 uid = "drone-1"
 
 [[step]]
-at_s = 17
+at_s = 15
 action = "approve"
 by = "op-2"
 
 [[step]]
-at_s = 19
+at_s = 16
 action = "approve"
 by = "op-3"
 
 [[step]]
-at_s = 20
+at_s = 17
 action = "expect"
 state = "dispatched"

@@ -649,11 +649,11 @@ Rules versions:
   `v5-lost-friendly-accepted-scenario-54.jsonl`, and a live run with its anchors
   (`v5-engagement-live.jsonl`, `tests/data/anchors/v5-engagement-live.anchors`: two
   nominations rejected for a fast ferry by the point, a third clear of a far fast ferry and
-  by altitude of our aircraft at 7,600 m (diving at 38 m/s it can't get down by the effect
-  time), its USV's lost-link action preloaded, read again seven times before the release
-  (the last 2 s before it), the effect released, the USV's own values restored; an
-  acceptance by an operator without engagement authority refused with a 403, nothing
-  logged).
+  by altitude of our aircraft at 9,000 m (diving at 44 m/s it can't get down by the effect
+  time), its USV's own lost-link values logged ahead of the write (with its identity), the
+  preload set, read again seven times before the release (the last 5 s before it), the
+  effect released, the USV's own values restored; an acceptance by an operator without
+  engagement authority refused with a 403, nothing logged).
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
