@@ -36,7 +36,8 @@ fn anchored_run(dir: &Path, cmd: Option<String>) -> (MemorySink, String) {
     .unwrap();
     for n in 0..12 {
         clock.advance_ms(1000);
-        e.open_operator_session(OperatorId::new(format!("op-{n}"))).unwrap();
+        e.open_operator_session(OperatorId::new(format!("op-{n}")))
+            .unwrap();
     }
     anchors.anchor_now("shutdown").unwrap();
     anchors.flush_hook();
@@ -45,7 +46,10 @@ fn anchored_run(dir: &Path, cmd: Option<String>) -> (MemorySink, String) {
 }
 
 fn lines(text: &str) -> Vec<String> {
-    text.lines().filter(|l| !l.trim().is_empty()).map(str::to_string).collect()
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// Renumber and re-hash a log's lines, every other byte kept (a forger's tool).
@@ -56,7 +60,11 @@ fn rechain(lines: &[String]) -> String {
         let t_at = l.find(",\"t\":").unwrap();
         let p_at = l.find(",\"prev\":\"").unwrap();
         let after = &l[p_at + 9 + 64 + 1..];
-        let line = format!("{{\"seq\":{}{},\"prev\":\"{prev}\"{after}", n + 1, &l[t_at..p_at]);
+        let line = format!(
+            "{{\"seq\":{}{},\"prev\":\"{prev}\"{after}",
+            n + 1,
+            &l[t_at..p_at]
+        );
         prev = murmur_decide::hash::sha256_hex(line.as_bytes());
         out.push_str(&line);
         out.push('\n');
@@ -97,7 +105,9 @@ fn a_rewritten_log_does_not_match_its_anchors() {
     assert!(replay::replay_str(&forged).unwrap().ok());
     let r = verify(&forged, &anchors);
     assert!(
-        whats(&r).iter().any(|w| w.contains("the log was rewritten")),
+        whats(&r)
+            .iter()
+            .any(|w| w.contains("the log was rewritten")),
         "{:?}",
         whats(&r)
     );
@@ -118,7 +128,9 @@ fn a_truncated_log_and_one_appended_after_shutdown_are_caught() {
     more.push(ls[ls.len() - 1].replacen("op-", "op-late-", 1));
     let r = verify(&rechain(&more), &anchors);
     assert!(
-        whats(&r).iter().any(|w| w.contains("after the shutdown anchor")),
+        whats(&r)
+            .iter()
+            .any(|w| w.contains("after the shutdown anchor")),
         "{:?}",
         whats(&r)
     );

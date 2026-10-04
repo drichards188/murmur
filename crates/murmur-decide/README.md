@@ -341,8 +341,10 @@ schema newer than it knows.
 
 To change a rule: bump `RULES_VERSION`, gate the change on it, add a marker for any field
 or check only the new builds write, add a line below, and commit a log of the new version
-to `tests/data/audit/` with an entry in `tests/versions.rs`, which replays a committed log of
-every version (each with its version accepted explicitly) and checks the downgrade cases.
+to `tests/data/audit/` (a live one with its anchors in `tests/data/anchors/`) with an entry
+in `tests/versions.rs`, which replays a committed log of every version (each with its
+version accepted explicitly), checks the live log against its anchors, and checks the
+downgrade cases.
 
 Rules versions:
 
