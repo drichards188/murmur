@@ -28,6 +28,11 @@ use crate::clock;
 
 /// A cached answer is used this long; the tide moves the shoreline.
 const CACHE_TTL_S: f64 = 600.0;
+/// A point the cache has no exact answer for takes the nearest cached answer within this
+/// many metres. An engagement's predicted effect point moves with its track every second, so
+/// the point prefetched and the point checked a moment later differ; tidewater's own depth
+/// grid is coarser than this.
+const NEAR_M: f64 = 50.0;
 const TIMEOUT: Duration = Duration::from_secs(3);
 
 type Key = (i64, i64);
@@ -88,9 +93,16 @@ impl Terrain {
             let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
             cache.retain(|_, c| now - c.at < CACHE_TTL_S);
             let mut seen = std::collections::HashSet::new();
+            // a point within half the near radius of a cached answer needs no new request
+            let close = |p: &LonLat| {
+                cache.keys().any(|k| {
+                    let q = LonLat::new(k.0 as f64 / 1e7, k.1 as f64 / 1e7);
+                    murmur_decide::geo::haversine_m(*p, q) <= NEAR_M / 2.0
+                })
+            };
             points
                 .iter()
-                .filter(|p| !cache.contains_key(&p.e7()) && seen.insert(p.e7()))
+                .filter(|p| !cache.contains_key(&p.e7()) && !close(p) && seen.insert(p.e7()))
                 .copied()
                 .collect()
         };
@@ -141,9 +153,20 @@ impl TerrainOracle for CacheOracle<'_> {
             );
         }
         let cache = t.cache.lock().unwrap_or_else(|e| e.into_inner());
+        let near = |p: &LonLat| {
+            cache
+                .iter()
+                .map(|(k, c)| {
+                    let q = LonLat::new(k.0 as f64 / 1e7, k.1 as f64 / 1e7);
+                    (murmur_decide::geo::haversine_m(*p, q), c)
+                })
+                .filter(|(d, _)| *d <= NEAR_M)
+                .min_by(|a, b| a.0.total_cmp(&b.0))
+                .map(|(_, c)| c.surface.clone())
+        };
         points
             .iter()
-            .map(|p| cache.get(&p.e7()).map(|c| c.surface.clone()))
+            .map(|p| cache.get(&p.e7()).map(|c| c.surface.clone()).or_else(|| near(p)))
             .collect::<Option<Vec<_>>>()
             .ok_or_else(|| {
                 let why = t

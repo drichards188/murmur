@@ -1002,7 +1002,38 @@ impl Decision {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             interval.tick().await;
+            self.prefetch_engagements().await;
             self.tick();
+        }
+    }
+
+    /// Pending and running engagements' predicted effect points, for the console's live
+    /// checks (the reach check asks a boat's or UGV's effect point for land or water).
+    async fn prefetch_engagements(&self) {
+        if !self.terrain.configured() {
+            return;
+        }
+        let specs: Vec<murmur_decide::IntentSpec> = self
+            .lock()
+            .engine
+            .intents()
+            .filter(|i| {
+                matches!(i.spec().task, Task::Engage { .. }) && i.state() == State::PendingApproval
+            })
+            .map(|i| i.spec().clone())
+            .collect();
+        if specs.is_empty() {
+            return;
+        }
+        let world = self.snapshot();
+        let points: Vec<LonLat> = specs
+            .iter()
+            .filter_map(|s| {
+                murmur_decide::engage::terrain_point(s, &world.subset_for(s), &self.rules)
+            })
+            .collect();
+        if !points.is_empty() {
+            self.terrain.prefetch(&points).await;
         }
     }
 
