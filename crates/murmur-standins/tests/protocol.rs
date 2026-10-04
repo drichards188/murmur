@@ -92,6 +92,7 @@ async fn start(behavior: &str, alt: f64) -> Gcs {
         port,
         home: [37.8, -122.6, alt, 90.0],
         spec: spec(behavior),
+        params: Default::default(),
     };
     tokio::spawn(vehicle::run(
         Vehicle::new(cfg, sock, None).expect("vehicle"),

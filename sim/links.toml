@@ -45,6 +45,38 @@
 #                 without it the profile uses its static numbers and says so in the log and
 #                 in /stats.
 #   handover_outage_ms   how long the link drops at a handover (default 0: only counted)
+#   lost_link_s   the vehicle's lost-link timer: seconds without a GCS heartbeat before its
+#                 GCS failsafe acts. Not used by the emulator: sim/swarm.py writes it into each
+#                 vehicle's parameters (SITL defaults file and stand-ins alike) under its
+#                 firmware's ArduPilot 4.8 name, FS_LONG_TIMEOUT on Plane (QuadPlane too),
+#                 FS_GCS_TIMEOUT on Copter, Rover, Sub and Blimp (AntennaTracker has no GCS
+#                 failsafe). A vehicle's timer comes from the profile it starts on (a gated
+#                 profile's is not used). What the failsafe does is the firmware's
+#                 (sim/params/*.parm, crates/murmur-standins/src/params.rs): RTL for planes,
+#                 copters and rovers, surface for an AUV, disarm for a tethered ROV.
+#
+# Lost-link timers (murmur-nb1). Real systems set them from the link and the mission:
+# seconds where a lost link means out of range, minutes where outages are part of the link
+# (Hobbs, "Remotely Piloted Aircraft Systems", NASA 2021, NTRS 20210013529: a timer keeps
+# brief interruptions from triggering the lost-link procedure; near the ground station it
+# may need to act after a few seconds, elsewhere the aircraft may continue for an extended
+# period). ArduPilot ships 5 s (FS_LONG_TIMEOUT, FS_GCS_TIMEOUT; documented ranges 1-300 s
+# for Plane, 2-120 s for Copter, Rover and Blimp, not enforced). PX4 ships 10 s
+# (COM_DL_LOSS_T).
+#
+#   profile         lost_link_s  basis
+#   los             5            ArduPilot default; a LOS radio that goes quiet is out of range
+#   mesh            10           GUESS: a relay mesh reroutes in seconds; PX4's default
+#   tether          5            ArduSub default (FS_GCS_TIMEOUT); a cable doesn't fade
+#   satcom (GEO)    120          GUESS: rain fade, beam switches and the antenna masked in a
+#                                bank last tens of seconds; MALE/HALE fly on (Hobbs)
+#   satcom_ku_geo   120          extends satcom
+#   satcom_leo      30           GUESS: Starlink-class outages (handovers, obstructions) are
+#                                seconds long
+#   satcom_iridium  120          GUESS: slow, narrow link; the top of FS_GCS_TIMEOUT's range
+#   acoustic        120          Murmur's choice before this table: an AUV is out of contact
+#                                by design and surfaces after two minutes without its GCS
+#                                (which heartbeats every 5 s to it under water)
 
 seed = 1
 
@@ -112,6 +144,7 @@ antenna_m = 0
 # Crissy Field: tens of metres) still blocks.
 terrain = "ramp"
 terrain_ramp_m = 20
+lost_link_s = 5            # ArduPilot's default (table above)
 
 # ---- Mesh (relay-dependent: FPV, tactical UGVs). Several hops at ~5-10 ms each; capacity
 # shared across the mesh. All GUESS apart from the per-hop latency.
@@ -129,6 +162,7 @@ gs_antenna_m = 10          # GUESS
 antenna_m = 1.5            # GUESS: a whip on a ground vehicle or boat
 terrain = "ramp"           # as for los; a mesh can also route around a shallow obstruction
 terrain_ramp_m = 20
+lost_link_s = 10           # GUESS (table above)
 
 # ---- SATCOM, GEO (default for the satcom class: Global Hawk, Reaper). Follows WGS-class
 # military GEO satellites (space_class "wgs"): up while one is above the 5 deg mask, latency
@@ -148,6 +182,7 @@ jitter_ms = 40
 bandwidth_bps = 256000
 queue_bytes = 16384
 down_when = "submerged"
+lost_link_s = 120          # GUESS (table above); satcom_ku_geo inherits it
 
 # ---- SATCOM, commercial Ku-band GEO (Intelsat-class, "ku-geo" in the space catalog): what
 # RQ-4 and MQ-9B-class aircraft also use. Documented alternative to the WGS mapping: map
@@ -176,6 +211,7 @@ latency_ms = 25
 jitter_ms = 5              # GUESS
 bandwidth_bps = 2000000    # GUESS
 queue_bytes = 65536
+lost_link_s = 30           # GUESS (table above)
 
 # ---- SATCOM, Iridium-like ("iridium", SBD / PPP): low rate, ~1 s latency. GUESS throughout.
 # Visibility is real (66 satellites, 8.2 deg mask: always at least one in view at the Golden
@@ -193,6 +229,7 @@ latency_ms = 700
 jitter_ms = 200
 bandwidth_bps = 22000
 queue_bytes = 4096
+lost_link_s = 120          # GUESS (table above)
 
 # ---- Acoustic (AUVs and XLUUVs, JANUS-style). Modems run from tens of bps (JANUS baseline is
 # 80 bps) to a few kbps (WHOI Micro-Modem 80-5400 bps); 300 bps is a GUESS in that band.
@@ -206,6 +243,7 @@ bandwidth_bps = 300
 queue_bytes = 256
 down_when = "surfaced"
 propagation_mps = 1500
+lost_link_s = 120          # surface after two minutes without the GCS (table above)
 # At the surface the modem is useless but the mast is out of the water: survey AUVs (REMUS
 # class) carry Iridium SBD and RF for exactly that, and the catalog says "acoustic modem;
 # SATCOM when surfaced". The surfaced vehicle uses this profile instead of going dark.
@@ -228,6 +266,7 @@ latency_ms = 1
 jitter_ms = 0.3
 bandwidth_bps = 10000000
 queue_bytes = 65536
+lost_link_s = 5            # ArduSub's default (table above)
 
 # SATCOM class -> profile. The class itself comes from each platform's `space_class` in
 # sim/platforms.toml (buoy iridium; magura, corsair, seahunter, saildrone starlink; rq4, mq9b

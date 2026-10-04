@@ -46,7 +46,7 @@ pub fn handle(v: &mut Vehicle, h: &MavHeader, msg: &MavMessage) {
     match msg {
         MavMessage::HEARTBEAT(_) => {
             if f32::from(h.system_id) == v.params.get("MAV_GCS_SYSID").unwrap_or(255.0) {
-                v.fs.gcs_last = Some(v.now());
+                v.gcs_heartbeat();
             }
         }
         MavMessage::TIMESYNC(m) => {

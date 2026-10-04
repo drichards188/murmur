@@ -101,6 +101,10 @@ pub struct RawProfile {
     /// shipped profiles; real figures are not public). 0 (default) means handovers are only
     /// counted.
     pub handover_outage_ms: Option<f64>,
+    /// The lost-link timer of vehicles on this profile (seconds without a GCS heartbeat
+    /// before their GCS failsafe acts). Not used here: `sim/swarm.py` writes it into the
+    /// vehicles' parameters. Accepted, inherited through `extends` and checked (> 0).
+    pub lost_link_s: Option<f64>,
 }
 
 /// The ground station's height above MSL: a number, or `"dem"` for the DEM height at the
@@ -420,6 +424,11 @@ impl Config {
         for (name, p) in &self.class {
             let r = self.resolve(name)?;
             let _ = p;
+            if let Some(t) = r.lost_link_s
+                && !(t.is_finite() && t > 0.0)
+            {
+                return Err(format!("profile {name}: lost_link_s must be > 0, not {t}"));
+            }
             if let Some(g) = &r.gated_profile {
                 if r.down_when.is_none() {
                     return Err(format!("profile {name}: gated_profile needs down_when"));
@@ -544,7 +553,8 @@ impl Config {
                 fresnel_clear,
                 propagation_mps,
                 space_class,
-                handover_outage_ms
+                handover_outage_ms,
+                lost_link_s
             );
         }
         Ok(out)
@@ -633,6 +643,21 @@ mod tests {
             .expect("scenario");
         assert_eq!(cfg.event.len(), before + 1);
         assert!(cfg.event.iter().any(|e| e.gnss.is_some()));
+    }
+
+    /// Every profile a vehicle can start on carries a lost-link timer (sim/swarm.py writes it
+    /// into its parameters); SATCOM GEO waits minutes, a LOS radio seconds.
+    #[test]
+    fn shipped_profiles_carry_lost_link_timers() {
+        let c = Config::parse(include_str!("../../../sim/links.toml")).expect("sim/links.toml");
+        let t = |p: &str| c.resolve(p).expect(p).lost_link_s;
+        assert_eq!(t("los"), Some(5.0));
+        assert_eq!(t("satcom"), Some(120.0));
+        assert_eq!(t("satcom_ku_geo"), Some(120.0)); // inherited
+        for p in ["mesh", "tether", "satcom_leo", "satcom_iridium", "acoustic"] {
+            assert!(t(p).is_some(), "{p}");
+        }
+        assert!(Config::parse("[class.a]\nlost_link_s = 0\n").is_err());
     }
 
     #[test]

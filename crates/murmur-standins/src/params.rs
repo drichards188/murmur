@@ -4,8 +4,10 @@
 //! failsafes, battery), not ArduPilot's full table of ~1,000: `param_count` reports what is
 //! here. Values follow ArduPilot's defaults, then Murmur's `sim/params/*.parm` for the kind
 //! (so a stand-in and a SITL vehicle of the same kind answer alike), then the platform
-//! catalog. Where Murmur chose a value ArduPilot leaves off (the GCS failsafes), the table
-//! says so. Behaviors read their parameters from here.
+//! catalog, then what `sim/swarm.py` sets per vehicle (`VehicleConfig::params`: the
+//! lost-link timer for its link profile, `lost_link_s` in `sim/links.toml`, which replaces
+//! the timeouts seeded here). Where Murmur chose a value ArduPilot leaves off (the GCS
+//! failsafes), the table says so. Behaviors read their parameters from here.
 
 use mavlink::dialects::ardupilotmega::MavParamType;
 
@@ -86,6 +88,16 @@ impl Params {
         Ok((i, &self.list[i]))
     }
 
+    /// A default from outside the vehicle (a SITL defaults file's role: `sim/swarm.py`'s
+    /// per-vehicle parameters): no read-only check. False if this table has no such name.
+    pub fn preset(&mut self, name: &str, value: f64) -> bool {
+        let found = self.find(name).is_some();
+        if found && value.is_finite() {
+            self.update(name, value as f32);
+        }
+        found
+    }
+
     /// Set from inside the autopilot (e.g. MIS_TOTAL after an upload): no read-only check.
     pub fn update(&mut self, name: &str, value: f32) {
         if let Some((i, _)) = self.find(name) {
@@ -156,8 +168,10 @@ impl Params {
                 p.put("TRIM_THROTTLE", I8, 45.0, false);
                 p.put("TKOFF_ALT", I16, 60.0, false);
                 p.put("THR_FAILSAFE", I8, 0.0, false);
-                // GCS heartbeat loss: RTL after FS_LONG_TIMEOUT (Murmur's choice; ArduPlane
-                // ships FS_GCS_ENABL 0)
+                // GCS heartbeat loss: RTL after FS_LONG_TIMEOUT (Murmur's choice, as
+                // sim/params/plane.parm; ArduPlane ships FS_GCS_ENABL 0). The timeout is
+                // ArduPlane's default here; swarm.py sets it from the link profile. (ArduPlane
+                // 4.8 has no FS_SHORT_TIMEOUT; FS_SHORT_ACTN is the RC failsafe's.)
                 p.put("FS_GCS_ENABL", I8, 1.0, false);
                 p.put("FS_LONG_ACTN", I8, 1.0, false);
                 p.put("FS_LONG_TIMEOUT", F32, 5.0, false);
@@ -178,7 +192,9 @@ impl Params {
                 let boat = spec.behavior != "ugv";
                 p.put("FRAME_CLASS", I8, if boat { 2.0 } else { 1.0 }, false);
                 p.put("MIS_DONE_BEHAVE", I8, if boat { 1.0 } else { 0.0 }, false);
-                // GCS heartbeat loss: RTL (Murmur's choice; ArduRover ships it off, action Hold)
+                // GCS heartbeat loss: RTL (Murmur's choice, as sim/params/boat.parm, ugv.parm
+                // and sailboat.parm; ArduRover ships it off, action Hold). Timeout: ArduRover's
+                // default, replaced by swarm.py's from the link profile.
                 p.put("FS_GCS_ENABLE", I8, 1.0, false);
                 p.put("FS_GCS_TIMEOUT", F32, 5.0, false);
                 p.put("FS_ACTION", I8, 1.0, false);
@@ -208,7 +224,8 @@ impl Params {
             Firmware::Copter => {
                 // the waypoint, RTL and pilot parameters (WP_SPD, WP_RADIUS_M, RTL_ALT_M, ...)
                 // are the behavior's `extra_params`
-                p.put("FS_GCS_ENABLE", I8, 1.0, false); // RTL
+                // RTL (as copter.parm); timeout as ArduCopter's default until swarm.py's
+                p.put("FS_GCS_ENABLE", I8, 1.0, false);
                 p.put("FS_GCS_TIMEOUT", F32, 5.0, false);
                 p.put("AUTO_OPTIONS", I32, 3.0, false); // copter.parm
                 p.put("BATT_FS_LOW_ACT", I8, 2.0, false); // RTL
@@ -219,6 +236,7 @@ impl Params {
             }
             Firmware::Blimp => {
                 p.put("FS_GCS_ENABLE", I8, 1.0, false);
+                p.put("FS_GCS_TIMEOUT", F32, 5.0, false); // Blimp/Parameters.cpp (G2)
                 p.put("BATT_FS_LOW_ACT", I8, 1.0, false); // Land
                 p.put("BATT_FS_CRT_ACT", I8, 1.0, false);
                 // EKF failsafe (Blimp/config.h): Land
@@ -286,6 +304,21 @@ mod tests {
         assert_eq!(s.get("FS_GCS_ENABLE"), Some(4.0));
         assert!(s.get("Q_ENABLE").is_none());
         assert!(s.get("SYSID_TARGET").is_none());
+    }
+
+    #[test]
+    fn preset_sets_what_exists_read_only_included() {
+        let mut p = Params::seed(Firmware::Plane, &spec("plane", Some("satcom")), 7);
+        assert!(p.preset("FS_LONG_TIMEOUT", 120.0));
+        assert_eq!(p.get("FS_LONG_TIMEOUT"), Some(120.0));
+        // a defaults file is not a GCS: read-only does not apply
+        assert!(p.preset("MIS_TOTAL", 2.0));
+        assert_eq!(p.get("MIS_TOTAL"), Some(2.0));
+        // Copter's name for the timer is not a Plane parameter
+        assert!(!p.preset("FS_GCS_TIMEOUT", 10.0));
+        assert!(p.get("FS_GCS_TIMEOUT").is_none());
+        let b = Params::seed(Firmware::Blimp, &spec("blimp", Some("los")), 7);
+        assert_eq!(b.get("FS_GCS_TIMEOUT"), Some(5.0));
     }
 
     #[test]

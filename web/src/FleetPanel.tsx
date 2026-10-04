@@ -77,7 +77,7 @@ function Row({ v, selected, open, onToggle, onDeselect, onDetails }: RowProps) {
             </span>
           )}
           {v.nav_source === 'dead_reckoning' && (
-            <span className="vrow-standin" title="Dead reckoning: no GNSS fix, position from inertial navigation and DVL, error growing with distance">
+            <span className="vrow-standin" title="Dead reckoning: no GNSS fix, position from inertial navigation and DVL (sub) or airspeed (fixed-wing), error growing with distance">
               DR
             </span>
           )}

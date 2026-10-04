@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use murmur_standins::conditions::{self, Slot};
 use murmur_standins::config::Fleet;
+use murmur_standins::failsafe;
 use murmur_standins::link;
 use murmur_standins::vehicle::{self, Vehicle};
 
@@ -106,8 +107,29 @@ async fn stats(n: usize, period: Duration) {
         } else {
             String::new()
         };
+        // the GCS heartbeat as received: longest gap on the failsafe clock, failsafes
+        let gap = failsafe::GCS_GAP_MAX_MS.swap(0, Ordering::Relaxed);
+        let fs = failsafe::GCS_FAILSAFES.swap(0, Ordering::Relaxed);
+        let gcs = if gap > 0 || fs > 0 {
+            format!(
+                ", longest GCS heartbeat gap {:.1} s, {fs} GCS failsafes",
+                gap as f64 / 1000.0
+            )
+        } else {
+            String::new()
+        };
+        let skips = vehicle::STALL_SKIPS.swap(0, Ordering::Relaxed);
+        let stall = vehicle::STALL_MAX_MS.swap(0, Ordering::Relaxed);
+        let stalls = if skips > 0 {
+            format!(
+                ", engine stalled up to {:.1} s (skipped by {skips} vehicles)",
+                stall as f64 / 1000.0
+            )
+        } else {
+            String::new()
+        };
         println!(
-            "{n} stand-ins: {:.0} msg/s sent, {:.0} send errors/s{nav}",
+            "{n} stand-ins: {:.0} msg/s sent, {:.0} send errors/s{nav}{gcs}{stalls}",
             (sent - sent0) as f64 / secs,
             (err - err0) as f64 / secs
         );
