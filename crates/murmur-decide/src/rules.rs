@@ -97,6 +97,8 @@ pub enum RuleId {
     /// After approval: the platform navigates on GNSS (a release on a dead-reckoned position
     /// is not trusted).
     PlatformNav,
+    /// The platform has no other engagement in play (one engagement per platform).
+    PlatformFree,
 }
 
 impl RuleId {
@@ -131,6 +133,7 @@ impl RuleId {
             RuleId::Plan => "plan",
             RuleId::SigningTime => "signing_time",
             RuleId::PlatformNav => "platform_nav",
+            RuleId::PlatformFree => "platform_free",
         }
     }
 }

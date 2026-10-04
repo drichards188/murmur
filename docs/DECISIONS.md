@@ -58,6 +58,49 @@ group. Dates are 2026.
   within `max_signing_s` (120 s) of the first. When the plan stops holding every signature
   is dropped with it (`approval.reset`) and a new plan must be signed; a signature that
   finds it so is refused. Replay recomputes every plan check, reset and snapshot.
+- **The frozen plan survives a wobbling velocity estimate, not a real turn** (10-04, third
+  review). A tracker's velocity estimate moves by half a metre per second or more within
+  seconds; carried a minute or two to the plan's time that moved the prediction tens of
+  metres and dropped plans for nothing. Now: a target slower than `holding_speed_mps`
+  (1.5 m/s) is predicted where it is; the track is held against where the plan's track path
+  puts it now (as after approval), and carried to the plan's time against the plan's point,
+  each tolerance growing with the track's uncertainty growth over the span
+  (`sigma_growth_mps` times the time, at most `plan_drift_max_m`, 300 m) and with the two
+  estimates' position noise (twice the combined `pos_sigma_m`, bounded by the uncertainty
+  check); the detail logs every part. A turn, a reversal or getting under way still drops the plan at once; a
+  small real drift inside the allowance is left to the release, which needs the track
+  inside the effect radius of the plan's point (and otherwise aborts late with the
+  fallback). The same allowance applies to the deviation check after approval.
+- **Friendlies count with their prediction uncertainty; the effect has a time tolerance**
+  (10-04, Phase G harness: scenario 10 at seed 8 and 20 m noise released with our AUV
+  predicted 7 m outside the keep-out and still closing). One of our vehicles predicted
+  along its velocity now counts with `keep_out_sigma` times an uncertainty growing at the
+  larger of `friendly_growth_mps` (1 m/s) and 0.3 times its speed (it may turn or be
+  retasked), failing closed; after the plan's time the keep-outs are read at the release
+  itself. A moving target may be released up to `plan_slack_s` before the plan's time when
+  it is at the point (the same time tolerance as for arriving late), with the keep-outs
+  read at that instant; a holding one waits for the time. Regression:
+  `36-friendly-just-outside-keep-out`.
+- **The platform's own failsafe stops its engagement** (10-04, live run). When the
+  engaging platform reports a failsafe taking over (a GCS failsafe switching it to RTL,
+  say), the bridge stops the engagement at once (cause `system`, the fallback commanded)
+  instead of waiting for the picture to time out.
+- **The effective signing window, by target speed** (10-04, third review). The plan gives
+  the signatures `dispatch_delay_s` (20 s) before the platform was to leave, plus the slack
+  it may arrive late (`late_s`, 60 s, for a holding target; the deviation tolerance over the
+  target's speed for a moving one), plus, for a fixed wing that circles while it waits, the
+  time to cross its circle (about 5 s for a Switchblade-class platform). With the defaults
+  and a 75 m radius: about 85 s for a holding target, 34 s at 8 m/s, 30 s at 15 m/s
+  (`max_signing_s` caps it). Past it the plan is dropped and signed again; a longer
+  `dispatch_delay_s` buys time at the cost of a later, less certain effect point.
+- **A first signer's stale picture asks them to look again** (10-04, third review). If the
+  plan a first signer was shown no longer holds when they sign, but the nomination does on
+  the world now, the signature is refused ("look again") and nothing is voided; only when
+  the nomination itself fails its checks is it void, as for any approval.
+- **One engagement per platform** (10-04, third review). A nomination on a platform with
+  another engagement in play is rejected (`platform_free`), since its dispatch would stop
+  the first without anyone acknowledging it; the scenario runner models the bridge's
+  superseding too, and flags any engagement found in play at a dispatch.
 - **A signer signs what the engine showed them** (10-03, second review). Before signing,
   the console asks for the picture (`POST /api/intents/{id}/picture`): the engine issues a
   token bound to the operator's session, with the plan (the frozen one, or the preview the
@@ -66,7 +109,9 @@ group. Dates are 2026.
   on. The signature quotes the token, once; it is refused if the token expired, is another
   session's, or its plan or track facts no longer match ("look again"). Replay checks each
   signature against the issued token and recomputes an unfrozen token's plan. This replaces
-  a self-attested "seen" preview.
+  a self-attested "seen" preview. The instant the engine checked the token at is logged
+  (`checked_t`), and replay checks it lies within the signature's re-check and compares the
+  expiry against it.
 - **No agent order slips past an engagement in play** (10-03, Phase E review). An agent's
   order on a vehicle with an engagement pending, approved or under way goes to a human,
   whatever its tier says (`(engagement in play)`; the engine logs the engagements in play
@@ -94,7 +139,11 @@ group. Dates are 2026.
   no agent can starve the tick. Replay recomputes the gap from the logged picture times and
   flags an effect not released by a picture of the same step. After approval the platform
   must navigate on GNSS: dead reckoning (or no solution) fails `platform_nav` and stops it
-  with its fallback, consistent with an unverified position blocking an engagement.
+  with its fallback, consistent with an unverified position blocking an engagement. Since
+  ArduPilot keeps its absolute-position flag for seconds after GPS loss and while it rejects
+  a glitching fix (a spoofed one is fused afterwards), the receiver's own fix
+  (GPS_RAW_INT, 3D) and the filter's EKF_GPS_GLITCHING flag (HIGH_LATENCY2: its GPS
+  failure flag) are logged facts of the vehicle and both must hold; unknown fails.
 - **Space as taskable infrastructure** (10-02, user direction): request coverage and
   capabilities from satellites when needed; don't fly or command satellite buses (no CCSDS).
   One theater map for earthbound nodes, plus a space timeline and a globe inset; one camera

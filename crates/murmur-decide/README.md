@@ -130,7 +130,10 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
   (`approve_engagement(id, &auth, note, token, world, terrain)`). The first signature
   freezes the plan it was shown (`FrozenPlan`); every later signature signs that plan, and
   the checks run on it (`WorldSnapshot::plan`); when it stops holding, at a signature or in
-  `step_engagements`, every signature is dropped with it (`approval.reset`). An agent's order on a vehicle with an engagement in play goes to a
+  `step_engagements`, every signature is dropped with it (`approval.reset`). The target is
+  predicted with `target_velocity` (none below `holding_speed_mps`), and the plan and
+  deviation checks allow `sigma_growth_mps` times the span for velocity-estimate wobble,
+  at most `plan_drift_max_m`. One engagement per platform (`platform_free`). An agent's order on a vehicle with an engagement in play goes to a
   human (`(engagement in play)`; the engagements in play are logged with each decision as
   `engaged`).
 - **Hold the picture**: the final `approval.granted` carries an `EngageSnapshot`;

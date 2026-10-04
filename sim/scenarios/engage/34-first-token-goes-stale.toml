@@ -1,0 +1,88 @@
+# A stale picture is refused, not fatal (third review, Q1). op-2 looks at s=5; the target
+# turns around at s=6; op-2 signs at s=12 on the picture from s=5, whose plan no longer
+# holds. The nomination still holds on the world now, so the signature is refused ("look
+# again") and nothing is voided; op-2 looks again and signs, op-3 signs, done.
+title = "The first signer's picture goes stale before they sign"
+invariant = "signed_picture"
+attack = "the target turns between the first signer's look and signature"
+expect = "done"
+expect_assessment = "ceased"
+expect_refusals = ["look again"]
+end_s = 400
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km: it also covers the point for the assessment
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.505, 37.815]
+velocity = [-8.0, 0.0]
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 150
+fallback = "return"
+window_s = 900
+
+[[step]]
+at_s = 5
+action = "look"
+by = "op-2"
+
+[[step]]
+at_s = 6
+action = "track"
+id = "T-0001"
+velocity = [8.0, 0.0]
+
+[[step]]
+at_s = 12
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 13
+action = "expect"
+state = "pending_approval"
+concurrences = 0
+
+[[step]]
+at_s = 14
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 16
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 17
+action = "expect"
+state = "dispatched"

@@ -51,7 +51,7 @@ action = "nominate"
 by = "op-1"
 platform = "blade-1"
 track = "T-0001"
-radius_m = 75
+radius_m = 150
 fallback = "return"
 window_s = 900
 

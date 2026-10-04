@@ -177,6 +177,9 @@ pub enum EventBody {
         /// (superseded): the approver acknowledged them. Absent when none.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         supersedes: Vec<IntentId>,
+        /// Engage: the instant the signature was checked at.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        checked_t: Option<Time>,
     },
 
     /// A signature that is not yet enough: signature `n` of the `of` distinct approvers the
@@ -199,6 +202,10 @@ pub enum EventBody {
         /// As on `approval.granted`: the engagements this approval acknowledged stopping.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         supersedes: Vec<IntentId>,
+        /// Engage: the instant the signature was checked at (the token's expiry and the
+        /// plan's freeze time are read against it).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        checked_t: Option<Time>,
     },
 
     /// Engage: the engine showed a signer the picture (`token`: the plan, the track's

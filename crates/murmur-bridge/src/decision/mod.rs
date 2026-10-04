@@ -1199,6 +1199,7 @@ impl Decision {
     }
 
     fn log_vehicle_events(&self, core: &mut Core) {
+        let mut failsafes: Vec<(DUid, String)> = Vec::new();
         for cell in self.world.vehicles() {
             let events: Vec<_> = cell.write(|v| v.events.drain(..).collect());
             for e in &events {
@@ -1208,8 +1209,41 @@ impl Decision {
                 {
                     eprintln!("decision: vehicle event: {err}");
                 }
+                // a failsafe taking over (not one clearing, not the status coming back)
+                let lower = e.text.to_ascii_lowercase();
+                if e.kind == "failsafe"
+                    && !lower.contains("clear")
+                    && !lower.contains("mav_state_active")
+                    && !lower.contains("mav_state_standby")
+                {
+                    failsafes.push((duid(cell.uid), e.text.clone()));
+                }
             }
             self.remember_events(&cell, &events);
+        }
+        // an engagement whose platform's own failsafe took over is stopped: the platform is
+        // no longer flying the intercept, so nothing must be released on it
+        for (uid, text) in failsafes {
+            let hit: Vec<IntentId> = core
+                .engine
+                .intents()
+                .filter(|i| {
+                    matches!(i.spec().task, Task::Engage { .. })
+                        && matches!(i.state(), State::Approved | State::Dispatched)
+                        && i.spec().uids.contains(&uid)
+                })
+                .map(Intent::id)
+                .collect();
+            for id in hit {
+                match core
+                    .engine
+                    .stop_engagement_system(id, &format!("the platform's failsafe took over ({text})"))
+                {
+                    Ok(Some(f)) => self.command_fallback(core, f),
+                    Ok(None) => {}
+                    Err(e) => eprintln!("decision: stop {id}: {e}"),
+                }
+            }
         }
     }
 

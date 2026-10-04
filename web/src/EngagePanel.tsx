@@ -182,7 +182,7 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onNomin
           <span className="ix-label">Checks for {nameOf(chosen.uid)} now</span>
           <div className="eg-checks">
             {chosen.checks
-              .filter((c) => c.outcome !== 'pass' || ['target_declared', 'keep_out_tracks', 'keep_out_friendly', 'no_strike', 'engagement_zone', 'reach'].includes(c.rule))
+              .filter((c) => c.outcome !== 'pass' || ['target_declared', 'keep_out_tracks', 'keep_out_friendly', 'no_strike', 'engagement_zone', 'platform_free', 'reach'].includes(c.rule))
               .map((c, k) => (
                 <div key={k} className={`ix-check ${c.outcome}`}>
                   <span className="ix-mark">{c.outcome.toUpperCase()}</span>

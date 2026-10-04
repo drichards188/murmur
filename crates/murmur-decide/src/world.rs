@@ -59,6 +59,13 @@ pub struct VehicleFacts {
     /// before it existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub velocity_mps: Option<Fact<[f64; 2]>>,
+    /// The GPS receiver's fix type (GPS_RAW_INT: 3 is a 3D fix), and whether the
+    /// navigation filter flags the GPS as glitching (EKF_STATUS_REPORT). An engagement's
+    /// release needs both (Phase E). Absent in logs written before they existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gps_fix: Option<Fact<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gps_glitch: Option<Fact<bool>>,
 }
 
 /// The standard identity (MIL-STD-2525 affiliation) a track is estimated or declared to

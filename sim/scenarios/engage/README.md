@@ -36,7 +36,8 @@ The effect is an abstract event: a point, a radius, a time. Nothing here models 
   `tamper_mismatches`.
 - No physics and no truth process: contacts move along their velocity and are detected every
   second unless silenced (with `--noise`, each detection is the truth plus independent
-  Gaussian noise, not a random walk); the engaging platform flies straight to the effect point at its
+  Gaussian noise, not a random walk; with `--vnoise`, each velocity estimate carries an
+  error correlated over about 10 s, as a tracker's smoothed velocity wobbles); the engaging platform flies straight to the effect point at its
   catalog cruise speed once dispatched and follows its fallback when stopped. After the
   effect the target stops being detected (`after_effect = "out_of_play"`) or not
   (`"persists"`). The live stack runs the same engine against stand-ins and the contacts
@@ -118,8 +119,8 @@ Actions (each `[[step]]` has `at_s` and `action`):
 | `reject` | `by` | an operator rejects it |
 | `abort` | `by` | any operator stops it; the fallback is commanded |
 | `agent_approve` | `agent` | an agent "tries" to approve: there is no such method on its port, so it is recorded and the intent must not move |
-| `track` | `id` and any of `at`, `velocity`, `affiliation`, `declared_by`, `undeclare`, `identity`, `identity_confidence`, `sigma_m`, `domain`, `silent` | a track changes (or appears) |
-| `vehicle` | `uid` and any of `at`, `velocity`, `silent`, `report_interval_ms`, `nav` (`gnss`, `dead_reckoning`) | one of ours changes; `silent` cuts its link |
+| `track` | `id` and any of `at`, `velocity`, `affiliation`, `declared_by`, `undeclare`, `identity`, `identity_confidence`, `sigma_m`, `domain`, `silent`, `velocity_error` | a track changes (or appears); `velocity` is how the contact really moves, `velocity_error` how far the tracker's estimate is off it |
+| `vehicle` | `uid` and any of `at`, `velocity`, `silent`, `report_interval_ms`, `nav` (`gnss`, `dead_reckoning`), `gps_fix` (3: a 3D fix), `gps_glitch` | one of ours changes; `silent` cuts its link |
 | `expect` | `state`, `rule`, `concurrences`, `task_state` | check the last nomination now (`task_state`: the last `task` step's intent) |
 
 Approved engagements are dispatched at once (as the bridge does). Every second the runner
@@ -159,3 +160,9 @@ calls `Engine::step_engagements` (hold the picture, release, observe, assess).
 | 28-look-before-reclassification | signed_picture | a signature quotes a picture taken before the target was reclassified; the logged policy loosened | refused; pending; tamper caught |
 | 29-approve-order-on-engaging-platform | engagement_in_play | an agent's hold on the engaging platform approved without acknowledging it stops the engagement; the acknowledgement cut from the log | refused, then acknowledged: voided (superseded); tamper caught |
 | 30-gnss-lost-en-route | platform_nav | the platform falls back to dead reckoning after dispatch | aborted (platform_nav), fallback return |
+| 31-velocity-estimate-wobbles | signed_picture | the tracker's velocity estimate is 0.8 m/s off between a look and a signature, and while a signature waits | the plan holds; done |
+| 32-second-engagement-on-platform | platform_free | a second nomination on a platform whose engagement is under way | rejected (platform_free) |
+| 33-gps-glitch-en-route | platform_nav | the filter flags the GPS as glitching after dispatch, keeping its absolute-position flag | aborted (platform_nav) |
+| 34-first-token-goes-stale | signed_picture | the target turns between the first signer's look and signature | refused ("look again"), not voided; done |
+| 36-friendly-just-outside-keep-out | keep_out_friendly | our AUV closes on the effect point, predicted a few metres outside the keep-out at the effect time | aborted (keep_out_friendly: counted with its prediction uncertainty) |
+| 35-real-course-change-while-waiting | signed_picture | a holding target gets under way at 6 m/s while a signature waits | the plan dropped at once; a new plan; done |

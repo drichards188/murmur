@@ -631,6 +631,7 @@ impl Engine {
                 snapshot: None,
                 token: None,
                 supersedes,
+                checked_t: None,
             })?;
             self.get_mut(id)?.push_concurrence(Approval {
                 by: by.clone(),
@@ -651,6 +652,7 @@ impl Engine {
             snapshot: None,
             token: None,
             supersedes,
+            checked_t: None,
         })?;
         self.get_mut(id)?.set_approval(Approval {
             by: by.clone(),
@@ -749,7 +751,21 @@ impl Engine {
                 self.refuse(by, session, id, &why)?;
                 return Err(EngineError::PlanChanged { id, why });
             }
-            self.transition(id, Transition::Void, format!("checks failed at approval: {failed}"))?;
+            // the plan this first signer was shown no longer holds; if the nomination does
+            // on the world now (a fresh look would show a plan that passes), they look again;
+            // if not, it is void like any approval whose re-check fails
+            let (_, _, live, live_ok) =
+                self.run_checks_plan(&spec, CheckPhase::Approve, world, terrain, None)?;
+            if live_ok {
+                let why = format!("the plan you were shown no longer holds ({failed}): look again");
+                self.refuse(by, session, id, &why)?;
+                return Err(EngineError::StalePicture { id, why });
+            }
+            self.transition(
+                id,
+                Transition::Void,
+                format!("checks failed at approval: {}", summarize_failures(&live)),
+            )?;
             return Err(EngineError::ChecksFailedAtApproval(id));
         }
         let snapshot = match engage::snapshot(&spec, &inputs, &self.policy.rules) {
@@ -776,6 +792,7 @@ impl Engine {
                 snapshot: Some(Box::new(snapshot.clone())),
                 token: Some(Box::new(shown)),
                 supersedes: Vec::new(),
+                checked_t: Some(now),
             })?;
             let intent = self.get_mut(id)?;
             intent.push_concurrence(Approval {
@@ -806,6 +823,7 @@ impl Engine {
             snapshot: Some(Box::new(snapshot.clone())),
             token: Some(Box::new(shown)),
             supersedes: Vec::new(),
+            checked_t: Some(now),
         })?;
         let intent = self.get_mut(id)?;
         intent.set_approval(Approval {

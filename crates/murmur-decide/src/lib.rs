@@ -184,6 +184,8 @@
 //!     nav_source: None,
 //!     report_interval_ms: None,
 //!     velocity_mps: None,
+//!     gps_fix: None,
+//!     gps_glitch: None,
 //! });
 //!
 //! // An agent proposes; policy sends it to the inbox.
