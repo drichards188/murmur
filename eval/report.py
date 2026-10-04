@@ -1,13 +1,27 @@
 """The batch report: one self-contained HTML file (inline CSS and SVG, no scripts, no
-network) from a results directory.
+network) from a results directory, and a `summary.json` beside it.
 
     python -m eval.report eval/results/<batch>        # writes <batch>/report.html
 
 Metrics are recomputed from each run's raw logs (eval/metrics.py `compute_run`), so a fix to
 a metric applies to old batches; the replay result recorded at run time is reused.
-Rates are pooled over seeds with a Wilson 95% interval; where every seed has cases, the
-mean of the per-seed rates is shown with a Student t 95% interval as well (METRICS.md,
-"Intervals"). Nothing is published from here; the file stays in the results directory.
+
+What the report will and will not say (eval/METRICS.md):
+
+- Only runs that finished (`ok`) are scored. A run that failed, timed out or left no
+  `run.json` (checked against the batch's job list) is listed under "What went wrong" and
+  kept out of every number.
+- Wrong proposals are split by what the C2 showed when they were made (the frozen rule book,
+  eval/evidence.py): "the C2 showed it" (catchable from the picture) and "picture wrong"
+  (the C2 showed nothing against it). No number pools the two, and no number pools
+  scenarios.
+- The primary interval is clustered by seed: one rate per run (a run is one seed of one
+  scenario and arm), their mean, and a Student t 95% interval. The pooled Wilson interval
+  is shown second; it treats proposals as independent, which they are not.
+- The proxy arms are a model, not people: their rates are outputs of eval/proxy.py at the
+  parameters listed, and their intervals are Monte Carlo variation of that model across
+  seeds, never an estimate about humans.
+- Held-out scenarios (written after the rule book was frozen) are reported apart.
 """
 
 from __future__ import annotations
@@ -16,15 +30,15 @@ import datetime as dt
 import html
 import json
 import re
-import subprocess
 import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from . import REPO
 from .engage import load_suite
-from .metrics import compute_run
+from .evidence import RULEBOOK_VERSION
+from .metrics import NOT_HUMAN, compute_run
+from .provenance import code_id
 from .stats import dprime, summary, t_interval, wilson
 
 ARM_ORDER = ["rules-only", "rules-only-reject", "human-proxy", "agent+human-proxy", "agent+model", "study"]
@@ -39,6 +53,16 @@ ARM_COLOR = {
 }
 RIGHT = ("#2a78d6", "#3987e5")
 WRONG = ("#eb6834", "#d95926")
+# who decides the inbox in each arm, in the words the report uses (never bare "human")
+DECIDER = {
+    "rules-only": "a script that approves everything",
+    "rules-only-reject": "a script that rejects everything",
+    "human-proxy": "the proxy operator model",
+    "agent+human-proxy": "the proxy operator model",
+    "agent+model": "the proxy operator model",
+    "study": "a participant",
+}
+PROXY_ARMS = ("human-proxy", "agent+human-proxy", "agent+model")
 
 
 def esc(x: Any) -> str:
@@ -62,6 +86,11 @@ def arm_key(a: str) -> int:
     return ARM_ORDER.index(a) if a in ARM_ORDER else len(ARM_ORDER)
 
 
+def arm_label(a: str) -> str:
+    """The arm's name as tiles and headings show it: the proxy is always called a model."""
+    return f"{a} (model)" if a in PROXY_ARMS else a
+
+
 # ---- collection ------------------------------------------------------------------------------
 
 
@@ -69,20 +98,39 @@ def find_runs(batch: Path) -> list[Path]:
     return sorted(p.parent for p in batch.glob("*/*/seed-*/run.json"))
 
 
-def collect(batch: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def collect(batch: Path) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    """(batch meta, scored runs, excluded runs). A run is scored only if its status is ok
+    (in its run.json and in the batch's record of it); every other run, and every job of
+    the batch that left no run.json, is excluded and listed with why."""
     meta: dict[str, Any] = {}
     if (batch / "batch.json").exists():
         try:
             meta = json.loads((batch / "batch.json").read_text())
         except ValueError:
             meta = {}
-    runs = []
+    batch_status = {r.get("dir"): r for r in meta.get("runs", [])}
+    runs, excluded = [], []
+    seen = set()
     for d in find_runs(batch):
-        info = json.loads((d / "run.json").read_text())
+        rel = str(d.relative_to(batch))
+        seen.add(rel)
+        try:
+            info = json.loads((d / "run.json").read_text())
+        except ValueError as e:
+            excluded.append({"rel": rel, "why": f"run.json unreadable: {e}"})
+            continue
+        b = batch_status.get(rel, {})
+        status = info.get("status")
+        if b.get("status") == "timed out":
+            status = "timed out"
+        if status != "ok":
+            excluded.append({"rel": rel, "why": f"{status}: {(b.get('error') or info.get('error') or '')[:400]}", "info": info})
+            continue
         try:
             m = compute_run(d)
         except Exception as e:  # noqa: BLE001 (a broken run is reported, not fatal)
-            m = {"error": repr(e)}
+            excluded.append({"rel": rel, "why": f"metrics failed: {e!r}", "info": info})
+            continue
         story = []
         if (d / "storyline.jsonl").exists():
             for line in (d / "storyline.jsonl").read_text().splitlines():
@@ -90,36 +138,105 @@ def collect(batch: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
                     story.append(json.loads(line))
                 except ValueError:
                     continue
-        runs.append({"dir": d, "rel": str(d.relative_to(batch)), "info": info, "m": m, "story": story})
-    return meta, runs
+        runs.append({"dir": d, "rel": rel, "info": info, "m": m, "story": story})
+    for job in meta.get("jobs", []):
+        if job.get("dir") not in seen:
+            b = batch_status.get(job.get("dir"), {})
+            excluded.append({"rel": job.get("dir"), "why": f"no run.json ({b.get('status') or 'never ran'}; {b.get('error') or ''})"})
+    return meta, runs, excluded
 
 
-def pooled(runs: list[dict[str, Any]], path: list[str]) -> dict[str, Any]:
-    """Pool a {k, n} block over runs: Wilson on the sums, t-interval on per-run rates."""
+def get(b: Any, path: list[str]) -> Any:
+    for p in path:
+        b = b.get(p) if isinstance(b, dict) else None
+    return b
+
+
+def seed_block(runs: list[dict[str, Any]], path: list[str]) -> dict[str, Any]:
+    """A {k, n} block over runs. Primary: one rate per run (one seed), their mean and a
+    Student t 95% interval (clustered by seed). Secondary: the pooled k/n with a Wilson
+    interval, which treats the proposals as independent."""
     k = n = 0
-    per_run = []
+    per_seed = []
     for r in runs:
-        b: Any = r["m"]
-        for p in path:
-            b = (b or {}).get(p) if isinstance(b, dict) else None
-        if not isinstance(b, dict) or b.get("n") is None:
+        b = get(r["m"], path)
+        if not isinstance(b, dict) or not b.get("n"):
             continue
         k += int(b.get("k", 0))
         n += int(b.get("n", 0))
-        if b.get("n"):
-            per_run.append(b["k"] / b["n"])
+        per_seed.append(b["k"] / b["n"])
     rate, lo, hi = wilson(k, n)
-    mean, tlo, thi = t_interval(per_run) if len(per_run) >= 2 else (None, None, None)
-    return {"k": k, "n": n, "rate": rate, "ci": [lo, hi], "seed_mean": mean, "seed_ci": [tlo, thi], "seeds_with_cases": len(per_run)}
+    mean, tlo, thi = t_interval(per_seed) if len(per_seed) >= 2 else (None, None, None)
+    return {
+        "k": k,
+        "n": n,
+        "rate": rate,
+        "ci": [lo, hi],
+        "seed_rates": [round(x, 4) for x in per_seed],
+        "seed_mean": mean,
+        "seed_ci": [None if tlo is None else max(0.0, tlo), None if thi is None else min(1.0, thi)],
+        "seeds_with_cases": len(per_seed),
+    }
 
 
-def disc(runs: list[dict[str, Any]]) -> dict[str, Any]:
-    """Discrimination pooled over runs: sum the four cells, then d' (stats.dprime)."""
+def chart_block(b: dict[str, Any]) -> dict[str, Any]:
+    """The block a dot plot draws: the seed-clustered mean and interval where two seeds had
+    cases, else the pooled rate and its Wilson interval."""
+    if b.get("seed_mean") is not None:
+        return {**b, "rate": b["seed_mean"], "ci": b["seed_ci"]}
+    return b
+
+
+def disc(runs: list[dict[str, Any]], key: str = "discrimination") -> dict[str, Any]:
+    """Discrimination over runs: the four cells summed, then d' (stats.dprime); and the
+    per-seed d' values."""
     cells = {"hit": 0, "miss": 0, "false_alarm": 0, "correct_reject": 0}
+    per_seed = []
     for r in runs:
+        d = r["m"].get(key) or {}
         for k in cells:
-            cells[k] += int((r["m"].get("discrimination") or {}).get(k, 0))
-    return {**cells, "dprime": dprime(cells["hit"], cells["miss"], cells["false_alarm"], cells["correct_reject"])}
+            cells[k] += int(d.get(k, 0))
+        if d.get("dprime") is not None:
+            per_seed.append(d["dprime"])
+    return {**cells, "dprime": dprime(cells["hit"], cells["miss"], cells["false_alarm"], cells["correct_reject"]), "seed_dprime": per_seed}
+
+
+def read_stats(runs: list[dict[str, Any]], c2_shows_it: bool) -> dict[str, Any] | None:
+    """For a proxy arm: the should-reject cards (by whether the C2 showed it) the model
+    decided in the inbox, how many it read, and how many of those its rule book fired on
+    (from the run's decision records: `diligent`, `if_read`)."""
+    n = read = fired = caught = 0
+    p_read = []
+    for r in runs:
+        dec = {d.get("intent_id"): d for d in r["info"].get("decisions", []) if "diligent" in d}
+        if not dec:
+            continue
+        for p in r["m"].get("per_intent", []):
+            if p.get("label") != "should_reject" or p.get("c2_shows_it") is not c2_shows_it:
+                continue
+            d = dec.get(p.get("id"))
+            if d is None:
+                continue
+            n += 1
+            p_read.append(float(d.get("p_read", 0.0)))
+            if d.get("diligent"):
+                read += 1
+                if d.get("if_read") == "reject":
+                    fired += 1
+            if d.get("action") == "reject":
+                caught += 1
+    if not n:
+        return None
+    return {"n": n, "read": read, "fired": fired, "caught": caught, "p_read_mean": sum(p_read) / len(p_read)}
+
+
+def tte(runs: list[dict[str, Any]], key: str) -> dict[str, Any]:
+    """Time to effect: the median of the per-run medians (each run one seed), and the
+    median of every value pooled."""
+    meds = [get(r["m"], ["time_to_effect", key, "median"]) for r in runs]
+    meds = [m for m in meds if m is not None]
+    vals = [v for r in runs for v in (get(r["m"], ["time_to_effect", key, "values"]) or [])]
+    return {"median_of_run_medians": summary(meds)["median"], "pooled_median": summary(vals)["median"], "n": len(vals), "runs": len(meds)}
 
 
 def aggregate(runs: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any]]:
@@ -128,31 +245,36 @@ def aggregate(runs: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any
         groups[(r["info"].get("scenario", "?"), r["info"].get("arm", "?"))].append(r)
     out = {}
     for key, rs in groups.items():
-        good = [r for r in rs if "error" not in r["m"]]
-        lat = [d["latency_s"] for r in good for d in r["m"].get("decisions", []) if d.get("latency_s") is not None]
-        tte_auto = [r["m"]["time_to_effect"]["auto"]["median"] for r in good if r["m"]["time_to_effect"]["auto"]["median"] is not None]
-        tte_h = [r["m"]["time_to_effect"]["human_legitimate"]["median"] for r in good if r["m"]["time_to_effect"]["human_legitimate"]["median"] is not None]
+        lat = [d["latency_s"] for r in rs for d in r["m"].get("decisions", []) if d.get("latency_s") is not None]
+        legit_shown = sum(1 for r in rs for p in r["m"].get("per_intent", []) if p.get("label") == "legitimate" and p.get("c2_shows_it"))
         out[key] = {
             "runs": rs,
-            "ok": sum(1 for r in rs if r["info"].get("status") == "ok"),
-            "sr": pooled(good, ["should_reject"]),
-            "sr_prevented": pooled(good, ["should_reject", "prevented"]),
-            "sr_human": pooled(good, ["should_reject", "human"]),
-            "sv": pooled(good, ["should_void"]),
-            "sv_stopped": pooled(good, ["should_void", "stopped"]),
-            "fr": pooled(good, ["legitimate", "false_reject"]),
-            "lp": pooled(good, ["legitimate", "passed"]),
-            "ov": pooled(good, ["override"]),
-            "goodput": pooled(good, ["goodput"]),
-            "disc": disc(good),
+            "seeds": sorted(r["info"].get("seed") for r in rs),
+            "sr_shown": seed_block(rs, ["should_reject", "c2_shows_it"]),
+            "sr_wrong_picture": seed_block(rs, ["should_reject", "picture_wrong"]),
+            "sr_shown_prevented": seed_block(rs, ["should_reject", "c2_shows_it", "prevented"]),
+            "sr_wrong_picture_prevented": seed_block(rs, ["should_reject", "picture_wrong", "prevented"]),
+            "read_shown": read_stats(rs, True),
+            "read_wrong_picture": read_stats(rs, False),
+            "sv": seed_block(rs, ["should_void"]),
+            "sv_stopped": seed_block(rs, ["should_void", "stopped"]),
+            "fr": seed_block(rs, ["legitimate", "false_reject"]),
+            "lp": seed_block(rs, ["legitimate", "passed"]),
+            "legit_c2_against": legit_shown,
+            "ov": seed_block(rs, ["override"]),
+            "goodput": seed_block(rs, ["goodput"]),
+            "disc": disc(rs),
+            "disc_armed": disc(rs, "discrimination_armed"),
             "lat": summary(lat),
-            "max_queue": max((r["m"]["load"]["max_queue"] for r in good), default=None),
-            "expired": sum(r["m"]["load"]["expired"] for r in good),
-            "violations": sum(r["m"]["invariants"]["violations"] for r in good),
-            "replay_ok": sum(1 for r in good if (r["m"]["invariants"]["replay"] or {}).get("ok")),
-            "tte_auto": summary(tte_auto)["median"],
-            "tte_human": summary(tte_h)["median"],
-            "decisions": [d for r in good for d in r["m"].get("decisions", [])],
+            "max_queue": max((r["m"]["load"]["max_queue"] for r in rs), default=None),
+            "expired": sum(r["m"]["load"]["expired"] for r in rs),
+            "violations": sum(r["m"]["invariants"]["violations"] for r in rs),
+            "replay_ok": sum(1 for r in rs if (r["m"]["invariants"]["replay"] or {}).get("ok")),
+            "tte_auto": tte(rs, "auto"),
+            "tte_human": tte(rs, "human_legitimate"),
+            "premise_failed": sum(len(r["m"].get("premises", {}).get("failed", [])) for r in rs),
+            "premise_checked": sum(r["m"].get("premises", {}).get("checked", 0) for r in rs),
+            "decisions": [d for r in rs for d in r["m"].get("decisions", [])],
         }
     return out
 
@@ -288,121 +410,6 @@ def css() -> str:
     return CSS % {"right_l": RIGHT[0], "wrong_l": WRONG[0], "right_d": RIGHT[1], "wrong_d": WRONG[1], "arms_l": arms(0), "arms_d": arms(1)}
 
 
-def ci_text(b: dict[str, Any], seeds: bool = False) -> str:
-    """k/n = rate, the pooled Wilson interval, and (seeds) the mean of the per-seed rates
-    with its t interval when at least two seeds had cases."""
-    if not b or not b.get("n"):
-        return '<span class="muted">no cases</span>'
-    out = f'{b["k"]}/{b["n"]} = {pct(b["rate"])}<br><span class="muted">[{pct(b["ci"][0])}, {pct(b["ci"][1])}]</span>'
-    if seeds and b.get("seed_mean") is not None:
-        lo, hi = b["seed_ci"]
-        out += f'<br><span class="muted">seeds {pct(b["seed_mean"])} [{pct(max(0.0, lo))}, {pct(min(1.0, hi))}]</span>'
-    return out
-
-
-def git_sha() -> str:
-    try:
-        return subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=REPO, capture_output=True, text=True, timeout=5).stdout.strip()
-    except (OSError, subprocess.TimeoutExpired):
-        return "?"
-
-
-def what_went_wrong(meta: dict[str, Any], runs: list[dict[str, Any]], agg: dict[tuple[str, str], dict[str, Any]], suite: dict[str, Any] | None = None) -> str:
-    items: list[str] = []
-    if suite:
-        for e in suite["summary"]["totals"]["errors"]:
-            items.append(f'<li><span class="bad">Engagement suite failed to run</span> (seed {esc(e["seed"])}, noise {esc(e["noise"])} m): {esc(e["error"])}</li>')
-        for row in suite["summary"]["table"]:
-            if row["violations"]:
-                items.append(f'<li><span class="bad">Engagement invariant violated</span>: {esc(row["scenario"])} at {esc(row["noise"])} m noise: {row["violations"]} (see suite.json)</li>')
-            if row["tamper_runs"] and row["tamper_detected"] < row["tamper_runs"]:
-                items.append(f'<li><span class="bad">Forged log not caught</span>: {esc(row["scenario"])} ({esc(row["tamper"])}) at {esc(row["noise"])} m noise in {row["tamper_runs"] - row["tamper_detected"]} run(s)</li>')
-            if row["ok"] < row["runs"]:
-                seeds = sorted(f["seed"] for f in row["failures"])
-                first = row["failures"][0]
-                ends = ", ".join(f"{k} {v}" for k, v in sorted(row["final_states"].items(), key=lambda kv: str(kv[0])))
-                items.append(
-                    f'<li>Engagement scenario not as designed: <code>{esc(row["scenario"])}</code> at {esc(row["noise"])} m track noise, '
-                    f'{row["runs"] - row["ok"]}/{row["runs"]} seeds ({esc(seeds)}); designed end {esc(row["expect"])}, ends: {esc(ends)}; '
-                    f'first: {esc(first["failure"])}</li>'
-                )
-    # runs that failed or warned
-    for r in runs:
-        info = r["info"]
-        if info.get("status") != "ok":
-            items.append(f'<li><span class="bad">Run failed</span>: <code>{esc(r["rel"])}</code>: {esc(info.get("status"))} {esc((info.get("error") or "")[:300])}</li>')
-        for w in info.get("warnings", []):
-            items.append(f'<li>Warning in <code>{esc(r["rel"])}</code>: {esc(str(w)[:300])}</li>')
-        if "error" in r["m"]:
-            items.append(f'<li><span class="bad">Metrics failed</span> for <code>{esc(r["rel"])}</code>: {esc(r["m"]["error"])}</li>')
-    # storyline errors and retries
-    for r in runs:
-        for rec in r["story"]:
-            if rec.get("kind") == "error":
-                items.append(f'<li>Storyline step <code>{esc(rec.get("step"))}</code> failed in <code>{esc(r["rel"])}</code> at {esc(rec.get("t_rel"))} s: {esc(rec.get("error"))}</li>')
-            if rec.get("kind") == "skipped" and rec.get("reason") != "run ended":
-                items.append(f'<li>Step <code>{esc(rec.get("step"))}</code> skipped in <code>{esc(r["rel"])}</code>: {esc(rec.get("reason"))}</li>')
-        retries = sum(1 for rec in r["story"] if rec.get("kind") == "retry")
-        if retries:
-            items.append(f'<li><code>{esc(r["rel"])}</code>: {retries} resolution retries (a track was not held yet when the step was due); the step ran later than scripted.</li>')
-        ready = (r["info"].get("ready") or {})
-        if ready and not ready.get("ready"):
-            items.append(f'<li><code>{esc(r["rel"])}</code>: the fleet was not fully ready when the storyline started: {esc(ready.get("vehicles"))}</li>')
-    # flakiness: a step that produced an intent in some seeds and not in others
-    by_group: dict[tuple[str, str], dict[str, set[int]]] = defaultdict(lambda: defaultdict(set))
-    seeds: dict[tuple[str, str], set[int]] = defaultdict(set)
-    for r in runs:
-        key = (r["info"].get("scenario"), r["info"].get("arm"))
-        seeds[key].add(r["info"].get("seed"))
-        for rec in r["story"]:
-            if rec.get("kind") == "propose" and (rec.get("intent_id") is not None or rec.get("declined")):
-                by_group[key][rec.get("step")].add(r["info"].get("seed"))
-    for key, steps in sorted(by_group.items()):
-        for step, s in sorted(steps.items()):
-            missing = seeds[key] - s
-            if missing:
-                items.append(f'<li>Flaky: step <code>{esc(step)}</code> of {esc(key[0])} / {esc(key[1])} produced no intent in seed(s) {esc(sorted(missing))}.</li>')
-    # outcome failures: the oversight let something through, or stopped something it should
-    # not have; grouped by scenario, arm and step, with the seeds it happened in
-    groups: dict[tuple[str, str, str, str], dict[str, Any]] = {}
-    kinds = {
-        ("should_reject", "passed"): "Should-reject dispatched",
-        ("should_void", "passed"): "Should-void dispatched (approved before the bridge noticed the lost link)",
-    }
-    for (scenario, arm), a in sorted(agg.items(), key=lambda kv: (kv[0][0], arm_key(kv[0][1]))):
-        for r in a["runs"]:
-            for p in r["m"].get("per_intent", []):
-                label, oc = p.get("label"), p.get("outcome")
-                what = kinds.get((label, oc))
-                if what is None and label == "legitimate" and oc in ("rejected_in_inbox", "expired", "caught_by_rules", "caught_by_system"):
-                    what = f"Legitimate intent stopped ({oc})"
-                if what is None and label and oc in ("open", "superseded"):
-                    what = f"Not scored ({oc})"
-                if what is None:
-                    continue
-                g = groups.setdefault((what, scenario, arm, str(p.get("step"))), {"seeds": [], "why": p.get("label_basis") or "", "reason": p.get("decided_reason") or ""})
-                g["seeds"].append(r["info"].get("seed"))
-    # the scripted baselines fail by construction (approve-all lets every wrong card through,
-    # reject-all stops every right one): one line each, so the decider's failures stand out
-    baseline = {"rules-only", "rules-only-reject"}
-    by_construction: dict[tuple[str, str], int] = defaultdict(int)
-    for (what, scenario, arm, step), g in groups.items():
-        if arm in baseline and not what.startswith("Not scored"):
-            by_construction[(arm, what)] += len(g["seeds"])
-            continue
-        detail = esc(g["why"]) if what.startswith("Should-reject") else esc(g["reason"] or "(still pending when the run ended)")
-        items.append(
-            f'<li>{esc(what)}: {esc(scenario)} / {esc(arm)}, step <code>{esc(step)}</code>, seed(s) {esc(sorted(g["seeds"]))}: {detail}</li>'
-        )
-    for (arm, what), n in sorted(by_construction.items()):
-        items.append(f'<li class="muted">By construction, {esc(arm)}: {esc(what)} x {n} over all scenarios and seeds (see the per-scenario tables).</li>')
-    for s in meta.get("skipped", []):
-        items.append(f'<li>Scenario <code>{esc(s.get("scenario"))}</code> not run: {esc(s.get("reason"))}</li>')
-    if not items:
-        items.append("<li>Nothing: every run finished, every step produced its intent, and no labelled proposal slipped through.</li>")
-    return "<ul>" + "".join(items) + "</ul>"
-
-
 def engage_section(suite: dict[str, Any]) -> str:
     """Phase E's scenario suite: designed ends, replays, forged logs, invariants, per
     scenario and track-noise level over seeds."""
@@ -459,46 +466,311 @@ def engage_section(suite: dict[str, Any]) -> str:
     return "".join(out)
 
 
+def ci_text(b: dict[str, Any] | None) -> str:
+    """Seed-clustered mean [t interval] (seeds with cases), then the pooled k/n [Wilson]."""
+    if not b or not b.get("n"):
+        return '<span class="muted">no cases</span>'
+    out = ""
+    if b.get("seed_mean") is not None:
+        lo, hi = b["seed_ci"]
+        out += f'{pct(b["seed_mean"])} <span class="muted">[{pct(lo)}, {pct(hi)}], {b["seeds_with_cases"]} seeds</span><br>'
+    else:
+        out += f'<span class="muted">{b["seeds_with_cases"]} seed with cases: no seed interval</span><br>'
+    out += f'<span class="muted">pooled {b["k"]}/{b["n"]} = {pct(b["rate"])} [{pct(b["ci"][0])}, {pct(b["ci"][1])}]</span>'
+    return out
+
+
+def read_text(rs: dict[str, Any] | None) -> str:
+    """A proxy arm's should-reject cards in the inbox as the model handled them."""
+    if not rs:
+        return ""
+    return (
+        f'<br><span class="muted">model: read {rs["read"]}/{rs["n"]} (mean P(read) {rs["p_read_mean"]:.2f}); '
+        f'rule book fired on {rs["fired"]}/{rs["read"]} read</span>'
+    )
+
+
+def provenance_text(runs: list[dict[str, Any]], meta: dict[str, Any]) -> tuple[str, list[str]]:
+    """The code the runs ran (from each run.json), and warnings when it differs between runs
+    or the tree was dirty."""
+    ids: dict[str, int] = defaultdict(int)
+    bins: dict[str, set[str]] = defaultdict(set)
+    for r in runs:
+        p = r["info"].get("provenance")
+        ids[code_id(p)] += 1
+        for name, h in ((p or {}).get("binaries") or {}).items():
+            bins[name].add((h or "missing")[:12])
+    warnings = []
+    if len(ids) > 1:
+        warnings.append(f"the runs ran different code: {dict(ids)}")
+    if any("dirty" in k for k in ids):
+        changed = sorted({c for r in runs for c in ((r["info"].get("provenance") or {}).get("changed") or [])})
+        warnings.append(f"runs ran from a tree with uncommitted changes to tracked files: {', '.join(changed[:20])}")
+    for name, hs in bins.items():
+        if len(hs) > 1:
+            warnings.append(f"{name} differed between runs: {sorted(hs)}")
+    text = ", ".join(f"{k} ({v} runs)" for k, v in sorted(ids.items())) or code_id(meta.get("provenance"))
+    hashes = "; ".join(f"{n} {sorted(h)[0]}" for n, h in sorted(bins.items()) if len(h) == 1)
+    return f"code {esc(text)}{'; binaries sha256 ' + esc(hashes) if hashes else ''}", warnings
+
+
+def what_went_wrong(
+    meta: dict[str, Any],
+    runs: list[dict[str, Any]],
+    excluded: list[dict[str, Any]],
+    agg: dict[tuple[str, str], dict[str, Any]],
+    provenance_warnings: list[str],
+    suite: dict[str, Any] | None = None,
+) -> str:
+    items: list[str] = []
+    for w in provenance_warnings:
+        items.append(f'<li><span class="bad">Provenance</span>: {esc(w)}</li>')
+    for x in excluded:
+        items.append(f'<li><span class="bad">Run excluded from every number</span>: <code>{esc(x["rel"])}</code>: {esc(x["why"])}</li>')
+    if suite:
+        for e in suite["summary"]["totals"]["errors"]:
+            items.append(f'<li><span class="bad">Engagement suite failed to run</span> (seed {esc(e["seed"])}, noise {esc(e["noise"])} m): {esc(e["error"])}</li>')
+        for row in suite["summary"]["table"]:
+            if row["violations"]:
+                items.append(f'<li><span class="bad">Engagement invariant violated</span>: {esc(row["scenario"])} at {esc(row["noise"])} m noise: {row["violations"]} (see suite.json)</li>')
+            if row["tamper_runs"] and row["tamper_detected"] < row["tamper_runs"]:
+                items.append(f'<li><span class="bad">Forged log not caught</span>: {esc(row["scenario"])} ({esc(row["tamper"])}) at {esc(row["noise"])} m noise in {row["tamper_runs"] - row["tamper_detected"]} run(s)</li>')
+            if row["ok"] < row["runs"]:
+                seeds = sorted(f["seed"] for f in row["failures"])
+                first = row["failures"][0]
+                ends = ", ".join(f"{k} {v}" for k, v in sorted(row["final_states"].items(), key=lambda kv: str(kv[0])))
+                items.append(
+                    f'<li>Engagement scenario not as designed: <code>{esc(row["scenario"])}</code> at {esc(row["noise"])} m track noise, '
+                    f'{row["runs"] - row["ok"]}/{row["runs"]} seeds ({esc(seeds)}); designed end {esc(row["expect"])}, ends: {esc(ends)}; '
+                    f'first: {esc(first["failure"])}</li>'
+                )
+    # premises: the run did not show what the scenario says it shows, grouped by step
+    prem: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for r in runs:
+        for f in r["m"].get("premises", {}).get("failed", []):
+            key = (r["info"].get("scenario"), r["info"].get("arm"), f["step"])
+            g = prem.setdefault(key, {"seeds": [], "failed": set()})
+            g["seeds"].append(r["info"].get("seed"))
+            for x in f["failed"]:
+                g["failed"].add(x.split(":")[0])
+            g.setdefault("example", f["failed"])
+    for (sc, arm, step), g in sorted(prem.items()):
+        items.append(
+            f'<li><span class="bad">Premise failed</span>: {esc(sc)} / {esc(arm)}, step <code>{esc(step)}</code>, seed(s) {esc(sorted(g["seeds"]))} '
+            f'({esc(", ".join(sorted(g["failed"])))}); e.g. {esc("; ".join(g["example"]))}. The case is scored by what the run showed, not by the premise.</li>'
+        )
+    # clocks, warnings, storyline errors and retries
+    for r in runs:
+        for c in r["info"].get("clock_checks", []) or []:
+            if not c.get("ok"):
+                items.append(f'<li><span class="bad">Clock check failed</span> in <code>{esc(r["rel"])}</code>: {esc(c)}</li>')
+        for w in r["info"].get("warnings", []):
+            if not str(w).startswith("clock check failed"):
+                items.append(f'<li>Warning in <code>{esc(r["rel"])}</code>: {esc(str(w)[:300])}</li>')
+        for rec in r["story"]:
+            if rec.get("kind") == "error":
+                items.append(f'<li>Storyline step <code>{esc(rec.get("step"))}</code> failed in <code>{esc(r["rel"])}</code> at {esc(rec.get("t_rel"))} s: {esc(rec.get("error"))}</li>')
+            if rec.get("kind") == "skipped" and rec.get("reason") not in ("run ended", "in this arm the agent makes its own proposals from the world model"):
+                items.append(f'<li>Step <code>{esc(rec.get("step"))}</code> skipped in <code>{esc(r["rel"])}</code>: {esc(rec.get("reason"))}</li>')
+        retries = sum(1 for rec in r["story"] if rec.get("kind") == "retry")
+        if retries:
+            items.append(f'<li><code>{esc(r["rel"])}</code>: {retries} resolution retries (a track was not held yet when the step was due); the step ran later than scripted.</li>')
+    # flakiness: a step that produced an intent in some seeds and not in others
+    by_group: dict[tuple[str, str], dict[str, set[int]]] = defaultdict(lambda: defaultdict(set))
+    seeds: dict[tuple[str, str], set[int]] = defaultdict(set)
+    for r in runs:
+        key = (r["info"].get("scenario"), r["info"].get("arm"))
+        seeds[key].add(r["info"].get("seed"))
+        for rec in r["story"]:
+            if rec.get("kind") == "propose" and (rec.get("intent_id") is not None or rec.get("declined")):
+                by_group[key][rec.get("step")].add(r["info"].get("seed"))
+    for key, steps in sorted(by_group.items()):
+        if key[1] == "agent+human-proxy":
+            continue  # the agent chooses its own proposals: a different set per seed is the design
+        for step, s in sorted(steps.items()):
+            missing = seeds[key] - s
+            if missing:
+                items.append(f'<li>Flaky: step <code>{esc(step)}</code> of {esc(key[0])} / {esc(key[1])} produced no intent in seed(s) {esc(sorted(missing))}.</li>')
+    # outcome failures, grouped by scenario, arm and step, with the seeds
+    groups: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for (scenario, arm), a in sorted(agg.items(), key=lambda kv: (kv[0][0], arm_key(kv[0][1]))):
+        for r in a["runs"]:
+            for p in r["m"].get("per_intent", []):
+                label, oc = p.get("label"), p.get("outcome")
+                what = None
+                if label == "should_reject" and oc == "passed":
+                    what = "Should-reject dispatched, " + ("the C2 showed it" if p.get("c2_shows_it") else "picture wrong")
+                elif label == "should_void" and oc == "passed":
+                    what = "Should-void dispatched: approved while the vehicle's link was cut (truth), and sent"
+                elif label == "legitimate" and oc in ("rejected_in_inbox", "expired", "caught_by_rules", "caught_by_system"):
+                    what = f"Legitimate intent stopped ({oc})" + (", the C2 showed something against it" if p.get("c2_shows_it") else "")
+                elif label and oc in ("open", "superseded"):
+                    what = f"Not scored ({oc})"
+                if what is None:
+                    continue
+                g = groups.setdefault((what, scenario, arm, str(p.get("step"))), {"seeds": [], "why": p.get("label_basis") or "", "reason": p.get("decided_reason") or "", "evidence": p.get("evidence") or []})
+                g["seeds"].append(r["info"].get("seed"))
+    # the scripted baselines fail by construction (approve-all lets every wrong card through,
+    # reject-all stops every right one): one line each, so the decider's failures stand out
+    baseline = {"rules-only", "rules-only-reject"}
+    by_construction: dict[tuple[str, str], int] = defaultdict(int)
+    for (what, scenario, arm, step), g in groups.items():
+        if arm in baseline and not what.startswith("Not scored"):
+            by_construction[(arm, what)] += len(g["seeds"])
+            continue
+        if what.startswith("Should-reject"):
+            detail = esc(g["why"]) + (f"; the C2 showed: {esc('; '.join(g['evidence']))}" if g["evidence"] else "")
+        else:
+            detail = esc(g["reason"] or "(still pending when the run ended)")
+        items.append(f'<li>{esc(what)}: {esc(scenario)} / {esc(arm)}, step <code>{esc(step)}</code>, seed(s) {esc(sorted(g["seeds"]))}: {detail}</li>')
+    for (arm, what), n in sorted(by_construction.items()):
+        items.append(f'<li class="muted">By construction, {esc(arm)}: {esc(what)} x {n} over all scenarios and seeds (see the per-scenario tables).</li>')
+    for s in meta.get("skipped", []):
+        items.append(f'<li>Scenario <code>{esc(s.get("scenario"))}</code> not run: {esc(s.get("reason"))}</li>')
+    if not items:
+        items.append("<li>Nothing: every run finished, every premise held, every step produced its intent, and no labelled proposal slipped through.</li>")
+    return "<ul>" + "".join(items) + "</ul>"
+
+
+def results_table(agg: dict[tuple[str, str], dict[str, Any]], scenarios: list[str], arms: list[str]) -> str:
+    rows = []
+    for s in scenarios:
+        for a in arms:
+            g = agg.get((s, a))
+            if not g:
+                continue
+            proxy = a in PROXY_ARMS
+            rows.append(
+                f"<tr><td>{esc(s)}</td><td>{esc(arm_label(a))}</td><td class='n'>{len(g['runs'])}<br><span class='muted'>seeds {esc(g['seeds'])}</span></td>"
+                f"<td class='n'>{ci_text(g['sr_shown'])}{read_text(g['read_shown']) if proxy else ''}</td>"
+                f"<td class='n'>{ci_text(g['sr_wrong_picture'])}{read_text(g['read_wrong_picture']) if proxy else ''}</td>"
+                f"<td class='n'>{ci_text(g['sv'])}<br><span class='muted'>stopped {g['sv_stopped']['k']}/{g['sv_stopped']['n']}</span></td>"
+                f"<td class='n'>{ci_text(g['fr'])}<br><span class='muted'>legitimate with the C2 against: {g['legit_c2_against']}</span></td>"
+                f"<td class='n'>{num(g['disc_armed']['dprime'], 2)} / {num(g['disc']['dprime'], 2)}<br><span class='muted'>armed {g['disc_armed']['hit']}/{g['disc_armed']['miss']}/{g['disc_armed']['false_alarm']}/{g['disc_armed']['correct_reject']}</span></td>"
+                f"<td class='n'>{num(g['lat']['median'])} / {num(g['lat']['p90'])}<br><span class='muted'>n={g['lat']['n']}</span></td>"
+                f"<td class='n'>{ci_text(g['goodput'])}<br><span class='muted'>expired {g['expired']}, max queue {esc(g['max_queue'])}</span></td>"
+                f"<td class='n'>{num(g['tte_auto']['median_of_run_medians'])} / {num(g['tte_human']['median_of_run_medians'])}</td>"
+                f"<td class='n'>{g['premise_checked'] - g['premise_failed']}/{g['premise_checked']}</td>"
+                f"<td class='n{' bad' if g['violations'] else ''}'>{g['violations']}</td><td class='n'>{g['replay_ok']}/{len(g['runs'])}</td></tr>"
+            )
+    if not rows:
+        return ""
+    return (
+        '<div class="card"><table><thead><tr><th>scenario</th><th>arm</th><th>runs</th>'
+        "<th>should-reject caught: the C2 showed it</th><th>should-reject caught: picture wrong</th>"
+        "<th>should-void voided by the C2</th><th>legitimate rejected in the inbox</th>"
+        "<th>d' armed / all <span class='muted'>hit/miss/FA/CR</span></th><th>latency median / p90 s</th>"
+        "<th>decided in time, of all inbox cards</th><th>time to effect auto / human s</th><th>premises held</th>"
+        "<th>violations</th><th>replay ok</th></tr></thead><tbody>" + "".join(rows) + "</tbody></table></div>"
+    )
+
+
+def scenario_sections(agg: dict[tuple[str, str], dict[str, Any]], scenarios: list[str], arms: list[str], spec_by_name: dict[str, Any]) -> str:
+    body = []
+    for s in scenarios:
+        spec = spec_by_name.get(s, {})
+        body.append(f"<h3>{esc(spec.get('title', s))} <span class='muted'>({esc(s)}{', held out' if spec.get('heldout') else ''})</span></h3>")
+        if spec.get("path"):
+            body.append(
+                f"<p class='muted'>Spec <code>{esc(spec.get('path'))}</code>, fleet <code>{esc(spec.get('fleet'))}</code>, contacts "
+                f"<code>{esc(spec.get('contacts'))}</code>, policy <code>{esc(spec.get('policy'))}</code>, events <code>{esc(spec.get('events'))}</code>, "
+                f"{esc(spec.get('duration_s'))} s after the origin.</p>"
+            )
+        steps: dict[str, dict[str, dict[str, int]]] = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
+        for a in arms:
+            g = agg.get((s, a))
+            if not g:
+                continue
+            for r in g["runs"]:
+                for p in r["m"].get("per_intent", []):
+                    if not p.get("step"):
+                        continue
+                    st = p["step"]
+                    if a == "agent+human-proxy" and st.startswith("agent-"):
+                        st = "agent's own"
+                    shown = "" if p.get("c2_shows_it") is None else (", C2 showed it" if p.get("c2_shows_it") else ", C2 showed nothing")
+                    key = f"{st} ({p.get('label')}{shown if p.get('label') != 'should_void' else ''})"
+                    steps[key][a][p.get("outcome") or "?"] += 1
+        if steps:
+            hdr = "".join(f"<th>{esc(arm_label(a))}</th>" for a in arms if (s, a) in agg)
+            trs = []
+            for key in sorted(steps):
+                cells = []
+                for a in arms:
+                    if (s, a) not in agg:
+                        continue
+                    c = steps[key].get(a, {})
+                    cells.append("<td>" + (", ".join(f"{esc(o)} {n}" for o, n in sorted(c.items())) or "<span class='muted'>none</span>") + "</td>")
+                trs.append(f"<tr><td><code>{esc(key)}</code></td>{''.join(cells)}</tr>")
+            body.append(f'<div class="card"><table><thead><tr><th>step (label from truth, what the C2 showed)</th>{hdr}</tr></thead><tbody>{"".join(trs)}</tbody></table></div>')
+        prs = []
+        for a in arms:
+            g = agg.get((s, a))
+            if not g:
+                continue
+            for r in sorted(g["runs"], key=lambda r: r["info"].get("seed", 0)):
+                m = r["m"]
+                sr = m["should_reject"]
+                prs.append(
+                    f"<tr><td>{esc(arm_label(a))}</td><td class='n'>{esc(r['info'].get('seed'))}</td><td class='n'>{esc(r['info'].get('ready_at_s'))}</td>"
+                    f"<td class='n'>{m['counts']['intents']}</td><td class='n'>{sr['c2_shows_it']['k']}/{sr['c2_shows_it']['n']}</td>"
+                    f"<td class='n'>{sr['picture_wrong']['k']}/{sr['picture_wrong']['n']}</td>"
+                    f"<td class='n'>{m['should_void']['k']}/{m['should_void']['n']}</td><td class='n'>{m['counts']['human_decisions']}</td>"
+                    f"<td class='n'>{len(m.get('premises', {}).get('failed', []))}</td>"
+                    f"<td class='n'>{m['invariants']['violations']}</td><td><code>{esc(r['rel'])}</code></td></tr>"
+                )
+        body.append(
+            '<details><summary>Runs</summary><div class="card"><table><thead><tr><th>arm</th><th>seed</th><th>fleet ready s</th><th>intents</th>'
+            "<th>caught, C2 showed it</th><th>caught, picture wrong</th><th>voided</th><th>inbox decisions</th><th>premises failed</th>"
+            "<th>violations</th><th>directory</th></tr></thead><tbody>" + "".join(prs) + "</tbody></table></div></details>"
+        )
+    return "".join(body)
+
+
 def build(batch: Path) -> Path:
     batch = Path(batch)
-    meta, runs = collect(batch)
+    meta, runs, excluded = collect(batch)
     agg = aggregate(runs)
-    scenarios = sorted({k[0] for k in agg})
-    arms = sorted({k[1] for k in agg}, key=arm_key)
     spec_by_name = {s["name"]: s for s in meta.get("scenarios", [])}
-    n_ok = sum(1 for r in runs if r["info"].get("status") == "ok")
+    for r in runs:
+        spec_by_name.setdefault(r["info"].get("scenario"), r["info"].get("spec") or {})
+    scenarios_all = sorted({k[0] for k in agg})
+    heldout = [s for s in scenarios_all if (spec_by_name.get(s) or {}).get("heldout")]
+    dev = [s for s in scenarios_all if s not in heldout]
+    arms = sorted({k[1] for k in agg}, key=arm_key)
     total_viol = sum(a["violations"] for a in agg.values())
     proxy = next((r["info"].get("proxy") for r in runs if r["info"].get("proxy")), None)
     suite = load_suite(batch)
+    prov_text, prov_warn = provenance_text(runs, meta)
+    planned = len(meta.get("jobs", [])) or (len(runs) + len(excluded))
 
     body: list[str] = []
     body.append(f"<h1>Murmur evaluation: {esc(meta.get('id', batch.name))}</h1>")
-    if not runs:
-        body.append(f'<p class="muted">The engagement scenario suite only; started {esc(meta.get("started"))}, code {esc(git_sha())}.</p>')
+    if not runs and not excluded:
+        body.append(f'<p class="muted">The engagement scenario suite only; started {esc(meta.get("started"))}; {esc(code_id(meta.get("provenance")))}.</p>')
     else:
+        ready = [r["info"].get("ready_at_s") for r in runs if r["info"].get("ready_at_s") is not None]
         body.append(
-            f'<p class="muted">{len(runs)} runs ({n_ok} ok), {len(scenarios)} scenarios, arms {esc(", ".join(arms))}, seeds {esc(meta.get("seeds"))}; '
-            f'started {esc(meta.get("started"))}, ended {esc(meta.get("ended"))}; code {esc(git_sha())}; '
-            f'{esc(meta.get("parallel"))} stacks in parallel on {esc((meta.get("machine") or {}).get("cpus"))} CPUs; {esc(meta.get("tidewater"))}.</p>'
+            f'<p class="muted">{planned} runs planned, {len(runs)} scored, {len(excluded)} excluded (listed under What went wrong); '
+            f'{len(scenarios_all)} scenarios ({len(heldout)} held out), arms {esc(", ".join(arms))}, seeds {esc(meta.get("seeds"))}; '
+            f'started {esc(meta.get("started"))}, ended {esc(meta.get("ended"))}; {prov_text}; '
+            f'{esc(meta.get("parallel"))} stacks in parallel on {esc((meta.get("machine") or {}).get("cpus"))} CPUs; {esc(meta.get("tidewater"))}; '
+            f'fleet ready {num(min(ready), 1) if ready else "n/a"} to {num(max(ready), 1) if ready else "n/a"} s after the stand-ins started, before every origin.</p>'
         )
     for note in meta.get("notes", []):
         body.append(f'<p class="muted">{esc(note)}</p>')
     body.append(
-        '<div class="note"><strong>The human-proxy is not a human.</strong> It is a scripted operator model with explicit '
-        "parameters (eval/proxy.py, listed below), built to exercise the metrics end to end and to give the rules-only "
-        "baseline something to be compared with. Nothing in this report is human data, and nothing here supports a claim "
-        "about how people behave: that needs participants (study mode, eval/README.md). Labels come from simulation truth "
-        "the operator never sees (METRICS.md).</div>"
+        '<div class="note"><strong>Not human data.</strong> ' + esc(NOT_HUMAN) + " The proxy operator is a model with explicit "
+        f"parameters (eval/proxy.py, listed at the end). It reads a card with probability P(read) = diligence x fatigue "
+        "(fatigue halves it every <code>fatigue_queue</code> cards in the queue), and when it reads, it applies the generic rule "
+        f"book of eval/evidence.py ({esc(RULEBOOK_VERSION)}), the same one the metrics use to sort wrong proposals; when it does "
+        "not read, it approves. So, by construction, on a wrong card the C2 shows, it catches about P(read) of them (when the rule "
+        "fires on what it sees at decision time), and on a wrong card the C2 shows nothing against, it catches none. Its rates "
+        "here are outputs of that model at those parameters; their intervals are Monte Carlo variation of the model across "
+        "seeds, not estimates about people. A claim about human judgment needs participants (study mode, eval/README.md). "
+        "Labels come from simulation truth that no decider sees (eval/METRICS.md).</div>"
     )
-    # KPIs
-    sr_all = {a: pooled([r for (s, aa), g in agg.items() if aa == a for r in g["runs"] if "error" not in r["m"]], ["should_reject"]) for a in arms}
-    kpis = [f'<div class="kpi"><div class="label">Invariant violations</div><div class="value">{total_viol}</div><div class="sub">must be zero, all runs</div></div>']
-    for a in arms:
-        b = sr_all[a]
-        kpis.append(
-            f'<div class="kpi"><div class="label">Should-reject caught, {esc(a)}</div><div class="value">{pct(b["rate"])}</div>'
-            f'<div class="sub">{b["k"]}/{b["n"]}, 95% CI {pct(b["ci"][0])} to {pct(b["ci"][1])}, all scenarios</div></div>'
-        )
+    kpis = [f'<div class="kpi"><div class="label">Invariant violations</div><div class="value">{total_viol}</div><div class="sub">must be zero; {len(runs)} scored runs</div></div>']
     if suite:
         t = suite["summary"]["totals"]
         kpis.append(
@@ -509,196 +781,92 @@ def build(batch: Path) -> Path:
             f'<div class="kpi"><div class="label">Engagement scenarios ended as designed</div><div class="value">{t["ok"]}/{t["runs"]}</div>'
             f'<div class="sub">{t["tamper_detected"]}/{t["tamper_runs"]} forged logs caught, {t["replay_ok"]} replayed</div></div>'
         )
+    if runs:
+        prem_checked = sum(g["premise_checked"] for g in agg.values())
+        prem_failed = sum(g["premise_failed"] for g in agg.values())
+        kpis.append(
+            f'<div class="kpi"><div class="label">Scenario premises held</div><div class="value">{prem_checked - prem_failed}/{prem_checked}</div>'
+            f'<div class="sub">what each step says the run shows, checked against what it recorded</div></div>'
+        )
+        kpis.append(f'<div class="kpi"><div class="label">Runs excluded</div><div class="value">{len(excluded)}</div><div class="sub">failed, timed out or missing; never pooled</div></div>')
     body.append('<div class="kpis">' + "".join(kpis) + "</div>")
 
     if runs:
-        # headline table
         body.append("<h2>Results by scenario and arm</h2>")
         body.append(
-            "<p>Rates pooled over seeds, Wilson 95% interval in brackets; for the catch and void rates, also the mean of the "
-            "per-seed rates with a Student t 95% interval (clipped to 0-100%) where two or more seeds had cases. Catch: should-reject proposals rejected or voided before effect "
-            "(or declined by the proposer). Void: should-void proposals voided by the C2 itself; stopped: not dispatched at all. "
-            "False reject: legitimate proposals a human rejected, of those a human decided. d': how well the decider tells "
-            "should-reject from legitimate cards (SandTable's trust d', 0 for reject-all or approve-all; cells pooled over seeds). "
-            "Latency: seconds from entering the inbox to the decision. Decided before expiry: SandTable's goodput. Time to effect: "
-            "median seconds from proposal to dispatch (auto tier / legitimate human tier).</p>"
+            "<p>Each cell: the mean of the per-seed rates with a Student t 95% interval over the seeds that had cases (primary: "
+            "proposals within one run share a stack, a picture and a decider, so they are not independent), then the pooled count "
+            "with its Wilson 95% interval (secondary). Wrong proposals are split by what the C2 showed when they were made "
+            "(the rule book on the recorded card and tracks): <em>the C2 showed it</em> (catchable from the picture) or "
+            "<em>picture wrong</em> (nothing the C2 showed spoke against it); the two are never pooled. Caught: rejected or voided "
+            "before dispatch, or declined by the proposer. For the proxy arms, the line under it says how the model handled those "
+            "cards: how many it read, and on how many its rule book fired. Should-void: voided by the C2 itself, of the proposals "
+            "decided while the tasked vehicle's link was cut (truth). Legitimate rejected: of the legitimate proposals decided in "
+            "the inbox, by the arm's decider (see the arms below), with the count of legitimate proposals the C2 showed something "
+            "against. d': SandTable's trust d', on armed cards and on all cards decided in the inbox (0 for reject-all or "
+            "approve-all). Decided in time: SandTable's goodput, cards approved or rejected of every card that reached the inbox. "
+            "Time to effect: the median over runs of each run's median seconds from proposal to dispatch (auto tier / "
+            "legitimate inbox cards). Premises: the run showed what each step's premise says.</p>"
         )
-        rows = []
-        for s in scenarios:
-            for a in arms:
-                g = agg.get((s, a))
-                if not g:
-                    continue
-                rows.append(
-                    f"<tr><td>{esc(s)}</td><td>{esc(a)}</td><td class='n'>{g['ok']}/{len(g['runs'])}</td>"
-                    f"<td class='n'>{ci_text(g['sr'], True)}</td><td class='n'>{ci_text(g['sv'], True)}</td><td class='n'>{ci_text(g['sv_stopped'])}</td>"
-                    f"<td class='n'>{ci_text(g['fr'])}</td><td class='n'>{num(g['disc']['dprime'], 2)}<br><span class='muted'>{g['disc']['hit']}/{g['disc']['miss']}/{g['disc']['false_alarm']}/{g['disc']['correct_reject']}</span></td>"
-                    f"<td class='n'>{num(g['lat']['median'])} / {num(g['lat']['p90'])}<br><span class='muted'>n={g['lat']['n']}</span></td>"
-                    f"<td class='n'>{ci_text(g['goodput'])}</td>"
-                    f"<td class='n'>{esc(g['max_queue'])}</td><td class='n'>{g['expired']}</td>"
-                    f"<td class='n'>{num(g['tte_auto'])} / {num(g['tte_human'])}</td>"
-                    f"<td class='n'>{g['violations']}</td><td class='n'>{g['replay_ok']}/{len(g['runs'])}</td></tr>"
-                )
-        body.append(
-            '<div class="card"><table><thead><tr><th>scenario</th><th>arm</th><th>runs ok</th><th>should-reject caught</th>'
-            "<th>should-void voided</th><th>should-void stopped</th><th>false reject</th><th>d' <span class='muted'>hit/miss/FA/CR</span></th>"
-            "<th>latency median / p90 s</th><th>decided before expiry</th><th>max queue</th>"
-            "<th>expired</th><th>time to effect auto / human s</th><th>violations</th><th>replay ok</th></tr></thead><tbody>"
-            + "".join(rows)
-            + "</tbody></table></div>"
-        )
+        body.append("<p>Deciders: " + "; ".join(f"<strong>{esc(a)}</strong>: {esc(DECIDER.get(a, '?'))}" for a in arms) + ". "
+                    "In <strong>agent+human-proxy</strong> the scripted agent makes its own proposals from the picture through the MCP "
+                    "tools (eval/agent.py `AgentPolicy`, the same in every scenario), so its cases are not the storyline's: compare its "
+                    "rates by category, not step by step.</p>")
+        body.append("<h3>Development scenarios</h3>")
+        body.append(results_table(agg, dev, arms))
+        if heldout:
+            body.append("<h3>Held-out scenarios</h3>")
+            body.append(
+                "<p>Written after the rule book (eval/evidence.py) was committed and never used to write or tune it; checked only "
+                "for their own mechanics (premises). A result that holds on the development scenarios and not here is a result "
+                "about those scenarios.</p>"
+            )
+            body.append(results_table(agg, heldout, arms))
 
-        # charts
-        sr_rows = [(s, [(a, agg[(s, a)]["sr"]) for a in arms if (s, a) in agg]) for s in scenarios if any(agg.get((s, a), {}).get("sr", {}).get("n") for a in arms)]
-        if sr_rows:
-            body.append("<h3>Should-reject catch rate</h3>")
-            body.append('<div class="card">' + rate_chart(sr_rows, "Should-reject catch rate by scenario and arm", "caught before effect (95% Wilson interval)") + "</div>")
-        sv_rows = [(s, [(a, agg[(s, a)]["sv"]) for a in arms if (s, a) in agg]) for s in scenarios if any(agg.get((s, a), {}).get("sv", {}).get("n") for a in arms)]
-        if sv_rows:
-            body.append("<h3>Correct-void rate</h3>")
-            body.append('<div class="card">' + rate_chart(sv_rows, "Should-void voided by the C2 by scenario and arm", "voided by the C2 before dispatch (95% Wilson interval)") + "</div>")
+        for title, key, label in (
+            ("Should-reject caught, the C2 showed it", "sr_shown", "caught before dispatch: seed-mean and t interval where two seeds had cases, else pooled with Wilson"),
+            ("Should-reject caught, picture wrong", "sr_wrong_picture", "caught before dispatch: seed-mean and t interval where two seeds had cases, else pooled with Wilson"),
+            ("Should-void voided by the C2", "sv", "voided by the C2 before dispatch"),
+        ):
+            rows = [(s, [(a, chart_block(agg[(s, a)][key])) for a in arms if (s, a) in agg]) for s in dev + heldout if any(agg.get((s, a), {}).get(key, {}).get("n") for a in arms)]
+            if rows:
+                body.append(f"<h3>{esc(title)}</h3>")
+                body.append('<div class="card">' + rate_chart(rows, title, label) + "</div>")
+
         proxy_decisions = []
         for (s, a), g in agg.items():
-            if a in ("human-proxy", "agent+human-proxy", "agent+model", "study"):
+            if a in PROXY_ARMS or a == "study":
                 for d in g["decisions"]:
                     proxy_decisions.append({**d, "scenario": s, "arm": a})
         if proxy_decisions:
-            body.append("<h3>Approval fatigue: time in the inbox against the queue</h3>")
+            body.append("<h3>Time in the inbox against the queue (an echo of the model's parameters)</h3>")
             body.append(
-                "<p>Every human (proxy) decision in the batch: how many cards were pending when it was made, how long the card waited, "
-                "and whether the decision was right by the label. Hover a mark for the intent.</p>"
+                "<p>Every inbox decision of the proxy arms: the cards pending when it was made, how long the card waited, and "
+                "whether it was right by the label. For the proxy this is its own parameters coming back (looks every "
+                "<code>attend_s</code>, reads faster and less often as the queue grows: <code>fatigue_queue</code>, "
+                "<code>hurry</code>), shown to check that the harness measures them, not as a finding about fatigue.</p>"
             )
             body.append('<div class="card">' + scatter(proxy_decisions, "Decision latency against queue length") + "</div>")
-            # the queue table, per scenario where the queue actually varied: pooled over
-            # scenarios, the queue length stands in for the scenario (the quiet scenarios hold
-            # the uncatchable cases at queue 1), which would read as the opposite of fatigue
-            lt = []
-            loaded = sorted({d["scenario"] for d in proxy_decisions if d["queue"] >= 3})
-            for sc in loaded:
-                for a in arms:
-                    ds = [d for d in proxy_decisions if d["arm"] == a and d["scenario"] == sc]
-                    if not ds:
-                        continue
-                    for name, (lo, hi) in {"1": (1, 1), "2-3": (2, 3), "4-6": (4, 6), "7+": (7, 10**9)}.items():
-                        rs = [d for d in ds if lo <= d["queue"] <= hi]
-                        if not rs:
-                            continue
-                        judged = [d for d in rs if d.get("wrong") is not None and d.get("armed")]
-                        k = sum(1 for d in judged if d["wrong"])
-                        rate, clo, chi = wilson(k, len(judged))
-                        lt.append(
-                            f"<tr><td>{esc(sc)}</td><td>{esc(a)}</td><td>{name}</td><td class='n'>{len(rs)}</td><td class='n'>{num(summary([d['latency_s'] for d in rs])['median'])}</td>"
-                            f"<td class='n'>{num(summary([d['tracks_viewed'] for d in rs])['mean'], 2)}</td>"
-                            f"<td class='n'>{k}/{len(judged)} = {pct(rate)} <span class='muted'>[{pct(clo)}, {pct(chi)}]</span></td></tr>"
-                        )
-            if lt:
-                body.append(
-                    "<p>By queue length at the decision, within each scenario where the queue grew past two (pooling across "
-                    "scenarios would confound the queue with the scenario). Wrong: armed cards decided against their label.</p>"
-                )
-                body.append(
-                    '<div class="card"><table><thead><tr><th>scenario</th><th>arm</th><th>queue at decision</th><th>decisions</th><th>median latency s</th>'
-                    "<th>tracks looked up per decision</th><th>armed cards wrong by the label</th></tr></thead><tbody>" + "".join(lt) + "</tbody></table></div>"
-                )
-            # information shown
-            it = []
-            for a in arms:
-                ds = [d for d in proxy_decisions if d["arm"] == a and d.get("latency_s") is not None and d.get("armed")]
-                if not ds:
-                    continue
-                for name, pred in (("looked up no track", lambda d: d["tracks_viewed"] == 0), ("looked up the cited track(s)", lambda d: d["tracks_viewed"] > 0)):
-                    rs = [d for d in ds if pred(d)]
-                    if not rs:
-                        continue
-                    judged = [d for d in rs if d.get("wrong") is not None]
-                    k = sum(1 for d in judged if d["wrong"])
-                    om = summary([d["open_ms"] / 1000 for d in rs if d.get("open_ms") is not None])
-                    it.append(
-                        f"<tr><td>{esc(a)}</td><td>{name}</td><td class='n'>{len(rs)}</td><td class='n'>{num(summary([d['latency_s'] for d in rs])['median'])}</td>"
-                        f"<td class='n'>{num(om['median'])}</td><td class='n'>{num(summary([d['checks_shown'] for d in rs])['mean'])}</td>"
-                        f"<td class='n'>{k}/{len(judged)}</td></tr>"
-                    )
-            body.append("<h3>Approval time against the information shown</h3>")
-            body.append(
-                "<p>From the <code>operator.view</code> events: what the card showed (checks, warnings, rationale) and which tracks "
-                "the decider opened, joined with the decision, for cards on armed platforms (the consequential ones). Card open time "
-                "is the console's own measure (the proxy's reading time here); latency includes the time before the card was first "
-                "looked at.</p>"
-            )
-            body.append(
-                '<div class="card"><table><thead><tr><th>arm</th><th>information looked at</th><th>decisions</th><th>median latency s</th>'
-                "<th>median card open s</th><th>checks on the card</th><th>wrong by the label</th></tr></thead><tbody>" + "".join(it) + "</tbody></table></div>"
-            )
 
-        # override
         ov_rows = []
-        for s in scenarios:
+        for s in dev + heldout:
             for a in arms:
                 g = agg.get((s, a))
                 if not g or not g["ov"]["n"]:
                     continue
-                withdrawn = sum(r["m"]["override"]["withdrawn"] for r in g["runs"] if "error" not in r["m"])
-                agent_n = sum(r["m"]["override"]["agent_intents"] for r in g["runs"] if "error" not in r["m"])
-                ov_rows.append(f"<tr><td>{esc(s)}</td><td>{esc(a)}</td><td class='n'>{agent_n}</td><td class='n'>{ci_text(g['ov'])}</td><td class='n'>{withdrawn}</td></tr>")
+                withdrawn = sum(r["m"]["override"]["withdrawn"] for r in g["runs"])
+                agent_n = sum(r["m"]["override"]["agent_intents"] for r in g["runs"])
+                ov_rows.append(f"<tr><td>{esc(s)}</td><td>{esc(arm_label(a))}</td><td class='n'>{agent_n}</td><td class='n'>{ci_text(g['ov'])}</td><td class='n'>{withdrawn}</td></tr>")
         if ov_rows:
             body.append("<h3>Override rate (agent proposals)</h3>")
-            body.append('<div class="card"><table><thead><tr><th>scenario</th><th>arm</th><th>agent intents</th><th>rejected by a human, of those a human decided</th><th>withdrawn by the agent</th></tr></thead><tbody>' + "".join(ov_rows) + "</tbody></table></div>")
-
-        # per scenario
-        body.append("<h2>Scenarios</h2>")
-        for s in scenarios:
-            spec = spec_by_name.get(s, {})
-            body.append(f"<h3>{esc(spec.get('title', s))} <span class='muted'>({esc(s)})</span></h3>")
-            if spec.get("path"):
-                body.append(f"<p class='muted'>Spec <code>{esc(spec.get('path'))}</code>, fleet <code>{esc(spec.get('fleet'))}</code>, policy <code>{esc(spec.get('policy'))}</code>, events <code>{esc(spec.get('events'))}</code>, {esc(spec.get('duration_s'))} s at rate {esc(spec.get('rate'))}.</p>")
-            steps = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
-            labels_of: dict[str, str] = {}
-            for a in arms:
-                g = agg.get((s, a))
-                if not g:
-                    continue
-                for r in g["runs"]:
-                    for p in r["m"].get("per_intent", []):
-                        if p.get("step"):
-                            st = p["step"].rsplit("-", 1)[0] if s == "approval-flood" and p["step"].startswith("flood-") else p["step"]
-                            key = f"{st} ({p.get('label')})"
-                            labels_of[key] = p.get("label")
-                            steps[key][a][p.get("outcome") or "?"] += 1
-            if steps:
-                hdr = "".join(f"<th>{esc(a)}</th>" for a in arms if (s, a) in agg)
-                trs = []
-                for key in steps:
-                    cells = []
-                    for a in arms:
-                        if (s, a) not in agg:
-                            continue
-                        c = steps[key].get(a, {})
-                        cells.append("<td>" + (", ".join(f"{esc(o)} {n}" for o, n in sorted(c.items())) or "<span class='muted'>none</span>") + "</td>")
-                    trs.append(f"<tr><td><code>{esc(key)}</code></td>{''.join(cells)}</tr>")
-                body.append(f'<div class="card"><table><thead><tr><th>step (label)</th>{hdr}</tr></thead><tbody>{"".join(trs)}</tbody></table></div>')
-            # per run rows
-            prs = []
-            for a in arms:
-                g = agg.get((s, a))
-                if not g:
-                    continue
-                for r in sorted(g["runs"], key=lambda r: r["info"].get("seed", 0)):
-                    m = r["m"]
-                    if "error" in m:
-                        prs.append(f"<tr><td>{esc(a)}</td><td class='n'>{esc(r['info'].get('seed'))}</td><td colspan='6'>metrics failed: {esc(m['error'])}</td></tr>")
-                        continue
-                    prs.append(
-                        f"<tr><td>{esc(a)}</td><td class='n'>{esc(r['info'].get('seed'))}</td><td>{esc(r['info'].get('status'))}</td>"
-                        f"<td class='n'>{m['counts']['intents']}</td><td class='n'>{m['should_reject']['k']}/{m['should_reject']['n']}</td>"
-                        f"<td class='n'>{m['should_void']['k']}/{m['should_void']['n']}</td><td class='n'>{m['counts']['human_decisions']}</td>"
-                        f"<td class='n'>{m['invariants']['violations']}</td><td><code>{esc(r['rel'])}</code></td></tr>"
-                    )
             body.append(
-                '<details><summary>Runs</summary><div class="card"><table><thead><tr><th>arm</th><th>seed</th><th>status</th><th>intents</th>'
-                "<th>caught</th><th>voided</th><th>human decisions</th><th>violations</th><th>directory</th></tr></thead><tbody>" + "".join(prs) + "</tbody></table></div></details>"
+                '<div class="card"><table><thead><tr><th>scenario</th><th>arm</th><th>agent intents</th><th>rejected in the inbox by the arm\'s decider, '
+                "of those it decided</th><th>withdrawn by the agent</th></tr></thead><tbody>" + "".join(ov_rows) + "</tbody></table></div>"
             )
 
-        # invariants
+        body.append("<h2>Scenarios</h2>")
+        body.append(scenario_sections(agg, dev + heldout, arms, spec_by_name))
+
         body.append("<h2>Invariants</h2>")
         body.append(
             "<p>Each must be zero in every run (METRICS.md, \"Invariants\"). Replay: <code>murmur-replay</code> recomputed every check and "
@@ -717,37 +885,39 @@ def build(batch: Path) -> Path:
                 cells.append(f"<td class='n{' bad' if v else ''}'>{v}</td>")
             irows.append(f"<tr><td><code>{esc(name)}</code></td>{''.join(cells)}</tr>")
         body.append(f'<div class="card"><table><thead><tr><th>invariant</th>{"".join(f"<th>{esc(a)}</th>" for a in arms)}</tr></thead><tbody>{"".join(irows)}</tbody></table></div>')
-        engage = sum((r["m"].get("invariants") or {}).get("engage_intents", 0) for r in runs)
-        body.append(
-            f"<p class='muted'>Engagement intents in the live runs: {engage} (no live scenario nominates one yet; the engagement "
-            "chain is measured by the scenario suite below, where the same invariants run on every audit log).</p>"
-        )
 
     if suite:
         body.append(engage_section(suite))
 
-    # what went wrong
     body.append("<h2>What went wrong</h2>")
-    body.append("<p>Everything below is listed, not filtered: failed runs, warnings, storyline steps that failed or were skipped, steps that behaved differently across seeds, and every labelled proposal the oversight got wrong.</p>")
-    body.append('<div class="card">' + what_went_wrong(meta, runs, agg, suite) + "</div>")
+    body.append(
+        "<p>Everything below is listed, not filtered: excluded runs, provenance mismatches, failed premises and clock checks, "
+        "warnings, storyline steps that failed or were skipped, steps that behaved differently across seeds, and every labelled "
+        "proposal the oversight got wrong.</p>"
+    )
+    body.append('<div class="card">' + what_went_wrong(meta, runs, excluded, agg, prov_warn, suite) + "</div>")
     body.append("<h3>Limits of this measurement</h3>")
     body.append(
         "<ul>"
-        "<li>The supervisor in the proxy arms is a script (above). Its catch rate measures the information on the card and in the "
-        "track picture against a fixed rule book, not human judgment.</li>"
-        "<li>Labels are the scenario author's, applied by truth (contact affiliation, the stand-in navigation offset, the track's "
-        "age at proposal). A scenario can only measure what it scripts.</li>"
-        "<li>Small samples: a few labelled proposals per run, three seeds. The intervals are wide on purpose; read them.</li>"
-        "<li>Stand-ins, not SITL; vehicle physics run at wall-clock speed whatever the scenario rate; time to effect stops at "
-        "dispatch (it excludes the vehicle getting there).</li>"
-        "<li>Seeds vary the sensing draws, the contacts' motion, the link losses and the proxy's random draws; the storyline's "
-        "times are fixed, so seeds do not vary when situations happen.</li>"
+        "<li>The decider in the proxy arms is a model (above): what it catches is P(read) times what its rule book sees, by "
+        "construction. These numbers test the harness and the scenarios; they say nothing about people.</li>"
+        "<li>Labels come from truth, at the moment each one is about: what a proposal targets (the contact's affiliation and "
+        "presence, where it really is against the aim point and radius, protected contacts inside the radius, the tasked "
+        "vehicle's real position) when it is proposed; whether the tasked vehicle's link was cut when it is decided. A scenario "
+        "can only measure what it scripts, and its premises say what it scripts; a failed premise is listed above.</li>"
+        "<li>\"The C2 showed it\" is the rule book applied to the card and the tracks the C2 held when the proposal was made. The "
+        "proxy applies the same rule book when it decides, to the tracks then; the two can differ (a target that drifted, a "
+        "track that went stale in between), and the model lines under the proxy rates show how often its rule fired.</li>"
+        "<li>Small samples: a few labelled proposals per run and a few seeds. Read the intervals.</li>"
+        "<li>One clock: every scenario's storyline, events and contacts start at one origin, a fixed time after the stand-ins "
+        "start; a run whose fleet was not ready by then fails (listed). Seeds vary the sensing draws, the link losses, the "
+        "contacts' motion jitter and the proxy's draws, not when situations happen.</li>"
+        "<li>Stand-ins, not SITL; time to effect stops at dispatch (it excludes the vehicle getting there).</li>"
         "</ul>"
     )
-    # proxy parameters
     if proxy:
         prow = "".join(f"<tr><td><code>{esc(k)}</code></td><td>{esc(v)}</td></tr>" for k, v in proxy.items())
-        body.append("<h2>Proxy operator parameters</h2>")
+        body.append("<h2>Proxy operator model parameters</h2>")
         body.append(f'<div class="card"><table><tbody>{prow}</tbody></table></div>')
     body.append(f"<p class='muted'>Generated {dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds')} by eval/report.py from {esc(batch)}. Metric definitions: eval/METRICS.md.</p>")
 
@@ -758,16 +928,24 @@ def build(batch: Path) -> Path:
     )
     out = batch / "report.html"
     out.write_text(page)
-    (batch / "summary.json").write_text(
-        json.dumps(
-            {
-                f"{s}|{a}": {k: v for k, v in g.items() if k not in ("runs", "decisions")}
-                for (s, a), g in sorted(agg.items())
-            },
-            indent=1,
-            default=str,
-        )
-    )
+    summary_doc = {
+        "not_human_data": True,
+        "note": NOT_HUMAN + " Proxy-arm rates are outputs of the proxy operator model (eval/proxy.py) at the parameters below; their intervals are Monte Carlo variation of that model across seeds.",
+        "batch": meta.get("id", batch.name),
+        "started": meta.get("started"),
+        "ended": meta.get("ended"),
+        "code": prov_text,
+        "provenance_warnings": prov_warn,
+        "rulebook": RULEBOOK_VERSION,
+        "proxy_params": proxy,
+        "runs_planned": planned,
+        "runs_scored": len(runs),
+        "runs_excluded": [{"run": x["rel"], "why": x["why"]} for x in excluded],
+        "heldout_scenarios": heldout,
+        "intervals": "seed_mean and seed_ci: mean of per-seed rates with a Student t 95% interval (primary); rate and ci: pooled with a Wilson 95% interval (secondary)",
+        "groups": {f"{s}|{a}": {k: v for k, v in g.items() if k not in ("runs", "decisions")} for (s, a), g in sorted(agg.items())},
+    }
+    (batch / "summary.json").write_text(json.dumps(summary_doc, indent=1, default=str))
     return out
 
 
