@@ -1,8 +1,10 @@
-# The evaluation policy (Phase G): sim/policy.toml's tiers with one change, `submitter_authorizes
+# The evaluation policy (Phase G): sim/policy.toml with one change, `submitter_authorizes
 # = false` on every human tier, so that a second human operator's consequential proposals wait
 # in the supervising operator's inbox exactly as an agent's do. The arms then differ only in
 # who proposes (a human or an agent) and who decides (a script, the proxy, a participant).
-# The same file serves every arm, so the policy is never a confound between them.
+# The same file serves every arm, so the policy is never a confound between them. Everything
+# else (rules, the engagement rules and tier, approval kinds) is the shipped policy's, which
+# eval/tests/test_harness.py checks.
 #
 # Routine tasks inside the approved area stay auto, as in the shipped policy, so the cost of
 # oversight on them is zero by construction and the human tier carries only consequential
@@ -14,6 +16,10 @@ submitter_authorizes = false
 
 [approval.kind.collect]
 until = "tasking_lead"
+
+[approval.kind.engage]
+expire_s = 300
+until = "window"
 
 [rules]
 max_fact_age_s = 10
@@ -32,6 +38,32 @@ gnss_min_visible = 4
 link_step_s = 60
 gnss_step_s = 300
 
+[rules.engage]
+# as sim/policy.toml (see its comments)
+min_identity_confidence = 0.6
+min_track_confidence = 0.5
+max_track_age_s = 5
+max_sigma_fraction = 0.5
+max_effect_radius_m = 250
+keep_out_m = 200
+keep_out_sigma = 2
+default_window_s = 600
+dispatch_delay_s = 20
+max_transit_s = 900
+unknown_endurance_max_transit_s = 600
+deviation_fraction = 1.0
+deviation_min_m = 50
+link_gap_s = 5
+link_gap_intervals = 3
+arrival_m = 150
+late_s = 60
+assess_grace_s = 3
+assess_dwell_s = 15
+assess_window_s = 120
+max_picture_gap_s = 5
+token_ttl_s = 15
+max_signing_s = 120
+
 [[tier]]
 name = "safety-commands"
 when = { kind = ["hold", "rtl"] }
@@ -49,6 +81,15 @@ name = "coverage-query"
 when = { kind = ["cover"] }
 tier = "auto"
 reason = "a coverage query commands nothing"
+
+[[tier]]
+name = "engagement"
+when = { kind = ["engage"] }
+tier = "human"
+reason = "an engagement needs two operators with engagement authority, neither the proposer (DoD Directive 3000.09)"
+submitter_authorizes = false
+proposer_may_approve = false
+approvers = 2
 
 [[tier]]
 name = "armed-platform"

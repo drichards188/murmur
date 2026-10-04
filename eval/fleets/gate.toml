@@ -6,9 +6,14 @@
 # reserves.
 #
 # uids follow the unit order (eval/stack.py plans with sim/swarm.py): 1 PUMA 1, 2 VIPER 1,
-# 3 REMUS 1, 4 BLADE 1, 5 BLADE 2. Scenario files select vehicles by callsign, except the
-# GNSS events (eval/scenarios/events/), which the stand-in engine selects by uid.
-title = "Evaluation: Golden Gate, five stand-ins"
+# 3 BLADE 1, 4 BLADE 2. Scenario files select vehicles by callsign, except the GNSS events
+# (eval/scenarios/events/), which the stand-in engine selects by uid.
+#
+# No underwater vehicle: an AUV's acoustic link (HIGH_LATENCY2 every 5 s over a lossy
+# modem) made the fleet's readiness depend on the seed's loss draws (seed 3 took 35 s, the
+# others about 10 s), and readiness sets every clock. Nothing the scenarios measure needs
+# one.
+title = "Evaluation: Golden Gate, four stand-ins"
 
 [[unit]]
 platform = "puma"                      # EO/IR 4 km, unarmed: the sensor the agent tasks
@@ -19,10 +24,6 @@ spawn = [37.8080, -122.4600, 120, 270] # east of the bridge (clear of the towers
 platform = "magura"                    # radar 8 km, EO/IR 5 km, AIS receiver
 sim = "standin"
 spawn = [37.8120, -122.4880, 0, 270]   # south side of the Gate
-
-[[unit]]
-platform = "remus"                     # sonar 3 km
-spawn = [37.8120, -122.5050, 0, 270]   # west of the Gate, at the surface
 
 [[unit]]
 platform = "switchblade"               # armed: every task is a human decision

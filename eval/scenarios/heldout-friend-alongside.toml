@@ -12,7 +12,7 @@ title = "Held-out: friend alongside the target"
 description = "Armed orbits over a hostile boat, before and after a friendly police boat comes alongside it."
 heldout = true
 fleet = "eval/fleets/gate.toml"
-contacts = "eval/scenarios/contacts/gate-heldout.toml"
+contacts = "eval/scenarios/contacts/gate-heldout-friend.toml"
 policy = "eval/policy/base.toml"
 duration_s = 250
 rate = 1
@@ -35,7 +35,7 @@ rationale = "Track {track} ({kind}, estimated {affiliation}) is holding north of
 
 [[step]]
 id = "clear-1"
-at_s = 60
+at_s = 50
 kind = "propose"
 task = "orbit"
 vehicles = { callsign = "BLADE 1" }
@@ -48,7 +48,7 @@ rationale = "Track {track} ({kind}, estimated {affiliation} {confidence}: {reaso
 
 [[step]]
 id = "clear-2"
-at_s = 95
+at_s = 75
 kind = "propose"
 task = "orbit"
 vehicles = { callsign = "BLADE 2" }
