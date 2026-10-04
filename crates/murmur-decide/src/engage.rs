@@ -1325,6 +1325,16 @@ fn no_strike_check(p: &EngagePreview, world: &WorldSnapshot) -> CheckResult {
 /// None of our vehicles but the engaging platform can be inside the keep-out at `effect_t`:
 /// with a fresh velocity, its position carried along it; otherwise its last position and how
 /// far it could go at catalog cruise speed since. No position at all fails.
+/// Rules 3: a reported circle holds a vehicle whose position, reported within this long of
+/// the circle, lies within the circle's radius and [`CIRCLE_SLACK_M`] of its center.
+pub const CIRCLE_POSITION_SKEW_MS: i64 = 2_000;
+/// Rules 3: how far outside a circle's radius its vehicle may be and still be on it, m.
+pub const CIRCLE_SLACK_M: f64 = 50.0;
+/// Rules 3: an effect this soon after a circling vehicle's position (a release, or a check
+/// just before one) also reads that position, along its velocity: the nearer of it and the
+/// disc counts.
+pub const CIRCLE_NEAR_EFFECT_S: f64 = 5.0;
+
 pub fn keep_out_friendly(
     point: LonLat,
     effect_t: Time,
@@ -1351,48 +1361,66 @@ pub fn keep_out_friendly(
         };
         let ec = cfg.engage_rules();
         // rules 3: a vehicle flying a circle stays on it; its momentary heading, carried
-        // a minute or more ahead, would put it kilometres away in any direction
-        let circling = v
+        // a minute or more ahead, would put it kilometres away in any direction. The circle
+        // holds only a vehicle that is on it: its position, reported with the circle, within
+        // the circle's radius and a small slack of the center. Otherwise the circle is
+        // wrong or stale, and the vehicle is predicted from where it is.
+        let reported = v
             .circling
             .as_ref()
             .filter(|_| ec.v3())
             .and_then(|c| fresh(&v.circling, v, "circle", world, cfg).ok().map(|_| c));
+        let circling = reported.filter(|c| {
+            c.t.ms_since(pos.t).abs() <= CIRCLE_POSITION_SKEW_MS
+                && haversine_m(pos.value, c.value.center) <= c.value.radius_m + CIRCLE_SLACK_M
+        });
         let vel = v
             .velocity_mps
             .as_ref()
             .filter(|_| fresh(&v.position, v, "position", world, cfg).is_ok())
             .and_then(|f| fresh(&v.velocity_mps, v, "velocity", world, cfg).ok().map(|_| f.value));
-        let (d, how): (f64, std::borrow::Cow<'static, str>) = match (circling, vel) {
-            (Some(c), _) => {
-                // anywhere on its disc, with the same uncertainty growth as any of ours (it
-                // may be retasked); fail closed on the near edge
-                let dt = secs(effect_t.ms_since(c.t)).max(0.0);
-                let margin = ec.keep_out_sigma * ec.friendly_growth() * dt;
-                (
-                    (haversine_m(c.value.center, point) - c.value.radius_m - margin).max(0.0),
-                    format!(
-                        "circling within {:.0} m of its center, less its uncertainty",
-                        c.value.radius_m
-                    )
-                    .into(),
-                )
-            }
-            (None, Some([e, n])) => {
+        let span = secs(effect_t.ms_since(pos.t)).max(0.0);
+        // from where it is: along its velocity (or how far it could reach). With a circle
+        // that holds it, only near the effect, where its position says more than its disc;
+        // the nearer of the two counts
+        let from_position = circling.is_none() || span <= CIRCLE_NEAR_EFFECT_S;
+        let off_circle = reported.is_some() && circling.is_none();
+        let disc = circling.map(|c| {
+            // anywhere on its disc, with the same uncertainty growth as any of ours (it
+            // may be retasked); fail closed on the near edge
+            let dt = secs(effect_t.ms_since(c.t)).max(0.0);
+            let margin = ec.keep_out_sigma * ec.friendly_growth() * dt;
+            (
+                (haversine_m(c.value.center, point) - c.value.radius_m - margin).max(0.0),
+                std::borrow::Cow::<'static, str>::from(format!(
+                    "circling within {:.0} m of its center, less its uncertainty",
+                    c.value.radius_m
+                )),
+            )
+        });
+        let here: Option<(f64, std::borrow::Cow<'static, str>)> = match vel {
+            _ if !from_position => None,
+            Some([e, n]) => {
                 // along its velocity, with an uncertainty that grows with the span (it may
                 // turn or be retasked); fail closed on the near edge
                 let dt = secs(effect_t.ms_since(pos.t)).max(0.0);
                 let p = offset(pos.value, e * dt, n * dt);
-                if ec.v2() {
-                    let margin = ec.keep_out_sigma * ec.friendly_growth() * dt;
+                let margin = ec.keep_out_sigma * ec.friendly_growth() * dt;
+                Some(if off_circle {
+                    (
+                        (haversine_m(p, point) - margin).max(0.0),
+                        "predicted along its velocity, less its uncertainty; its reported circle does not hold its position".into(),
+                    )
+                } else if ec.v2() {
                     (
                         (haversine_m(p, point) - margin).max(0.0),
                         "predicted along its velocity, less its uncertainty".into(),
                     )
                 } else {
                     (haversine_m(p, point), "predicted along its velocity".into())
-                }
+                })
             }
-            (None, None) => {
+            None => {
                 let cruise = v
                     .platform
                     .as_ref()
@@ -1409,10 +1437,29 @@ pub fn keep_out_friendly(
                     );
                 };
                 let dt = secs(effect_t.ms_since(pos.t)).max(0.0);
-                (
+                Some((
                     (haversine_m(pos.value, point) - cruise * dt).max(0.0),
                     "how far it could reach at cruise speed".into(),
-                )
+                ))
+            }
+        };
+        let (d, how) = match (disc, here) {
+            (Some(a), Some(b)) => {
+                if b.0 < a.0 {
+                    b
+                } else {
+                    a
+                }
+            }
+            (Some(a), None) | (None, Some(a)) => a,
+            // no circle holds it and nothing from its position: fail closed
+            (None, None) => {
+                return check(
+                    r,
+                    Some(uid),
+                    Outcome::Fail,
+                    format!("vehicle {uid}: cannot predict it: cannot clear the keep-out"),
+                );
             }
         };
         if d < keep_out_m {

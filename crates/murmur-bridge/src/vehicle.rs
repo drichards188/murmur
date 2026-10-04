@@ -162,8 +162,12 @@ pub struct Vehicle {
     pub nav_bearing: Option<i16>,
     pub target_dist: Option<u16>,
     /// Where the autopilot navigates to (NAV_CONTROLLER_OUTPUT's target bearing and
-    /// distance from the position then): the loiter center in LOITER, home in RTL.
+    /// distance from the position then): the loiter center in LOITER, home or a rally point
+    /// in RTL. Stamped `seen.nav_target`.
     pub nav_target: Option<(f64, f64)>,
+    /// When the mode last changed (wall clock, s): a navigation target reported before it
+    /// belongs to the previous mode (the last AUTO waypoint, say).
+    pub mode_since: Option<f64>,
     /// The GPS fix comes from a HIGH_LATENCY2 report (which carries no fix type: without
     /// its GPS failure flag it counts as a 3D fix), not from GPS_RAW_INT.
     pub gps_fix_hl2: bool,
@@ -190,6 +194,8 @@ pub struct FactTimes {
     pub ekf: Option<f64>,
     /// HIGH_LATENCY2 (position, battery and navigation health in one low-rate report)
     pub hl2: Option<f64>,
+    /// NAV_CONTROLLER_OUTPUT (the navigation target)
+    pub nav_target: Option<f64>,
 }
 
 /// The latest report from a vehicle's navigation filter, with its arrival time.
@@ -197,6 +203,23 @@ pub struct FactTimes {
 enum NavReport {
     Ekf(apm::EkfStatusFlags, Option<f64>),
     HighLatency(apm::HlFailureFlag, Option<f64>),
+}
+
+/// How old a navigation target may be to center a loiter circle, s (NAV_CONTROLLER_OUTPUT
+/// comes every 2 s on a full link, every 5 s on a reduced one).
+pub const NAV_TARGET_MAX_AGE_S: f64 = 12.0;
+
+/// A circle a fixed wing flies on its own ([`Vehicle::loiter_circle`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LoiterCircle {
+    /// (lat, lon)
+    pub center: (f64, f64),
+    /// with the tolerance it is flown to
+    pub radius_m: f64,
+    /// circling in RTL (else LOITER)
+    pub rtl: bool,
+    /// when the center was reported (wall clock, s)
+    pub center_t: f64,
 }
 
 /// Something the vehicle did or said that belongs in the audit log.
@@ -322,6 +345,7 @@ impl Vehicle {
                 self.nav_target = self.pos.map(|(lat, lon)| {
                     crate::geo::destination(lat, lon, f64::from(m.target_bearing), f64::from(m.wp_dist))
                 });
+                self.seen.nav_target = self.nav_target.map(|_| clock::wall());
             }
             MavMessage::ATTITUDE(m) => {
                 self.yaw = Some(f64::from(m.yaw).to_degrees().rem_euclid(360.0));
@@ -465,6 +489,7 @@ impl Vehicle {
         {
             let text = format!("{prev} -> {mode}");
             self.push_event("mode", text);
+            self.mode_since = Some(clock::wall());
         }
         self.mode = Some(mode);
     }
@@ -500,13 +525,22 @@ impl Vehicle {
         self.seen.gps.map(|t| (self.gps_fix, t))
     }
 
-    /// The circle a fixed wing flies on its own, ((lat, lon) center, radius m with the
-    /// tolerance it is flown to): in LOITER around the point it navigates to, in RTL around
-    /// home once there. The radius is WP_LOITER_RAD (RTL: RTL_RADIUS, WP_LOITER_RAD when 0),
-    /// no tighter than the airframe turns. None when not a fixed wing, in another mode, a
-    /// radius or the center unknown, or not on its circle yet (still flying to it).
-    pub fn loiter_circle(&self) -> Option<((f64, f64), f64)> {
+    /// The circle a fixed wing flies on its own: in LOITER around the point it navigates
+    /// to, in RTL around its navigation target (home, or a rally point) once there. The
+    /// center is NAV_CONTROLLER_OUTPUT's target, reported in this mode and at most
+    /// [`NAV_TARGET_MAX_AGE_S`] ago; the radius WP_LOITER_RAD (RTL: RTL_RADIUS, WP_LOITER_RAD
+    /// when 0), no tighter than the airframe turns, plus the tolerance it is flown to. None
+    /// when not a fixed wing, in another mode, a radius or the center unknown or old, or not
+    /// on its circle yet (still flying to it). The engine trusts it only while the
+    /// position is on it, too.
+    pub fn loiter_circle(&self) -> Option<LoiterCircle> {
         if !matches!(self.kind, Some(Kind::Plane | Kind::Vtol)) {
+            return None;
+        }
+        let center_t = self.seen.nav_target?;
+        if self.mode_since.is_some_and(|m| center_t < m)
+            || clock::wall() - center_t > NAV_TARGET_MAX_AGE_S
+        {
             return None;
         }
         let min_turn = self
@@ -515,11 +549,12 @@ impl Vehicle {
             .and_then(|i| i.num("min_turn_radius_m"))
             .unwrap_or(0.0);
         let loiter = self.loiter_radius_m?.abs();
-        let (center, radius) = match self.mode.as_deref()? {
-            "LOITER" => (self.nav_target?, loiter),
+        let center = self.nav_target?;
+        let (rtl, radius) = match self.mode.as_deref()? {
+            "LOITER" => (false, loiter),
             "RTL" => {
                 let r = self.rtl_radius_m?;
-                (self.home?, if r == 0.0 { loiter } else { r.abs() })
+                (true, if r == 0.0 { loiter } else { r.abs() })
             }
             _ => return None,
         };
@@ -529,7 +564,12 @@ impl Vehicle {
         }
         let r = radius + (radius * 0.4).max(60.0);
         let (lat, lon) = self.pos?;
-        (crate::geo::haversine_m(lat, lon, center.0, center.1) <= r).then_some((center, r))
+        (crate::geo::haversine_m(lat, lon, center.0, center.1) <= r).then_some(LoiterCircle {
+            center,
+            radius_m: r,
+            rtl,
+            center_t,
+        })
     }
 
     /// Whether the navigation filter flags its GPS as glitching (EKF_STATUS_REPORT's
@@ -902,17 +942,37 @@ mod tests {
             ..Default::default()
         });
         v.apply(&nav, &[], 0.0);
-        let ((lat, lon), r) = v.loiter_circle().expect("a circle");
-        assert!((r - 210.0).abs() < 1e-9, "{r}"); // 150 m and its 60 m tolerance
-        let d = crate::geo::haversine_m(37.80, -122.45, lat, lon);
+        let c = v.loiter_circle().expect("a circle");
+        assert!((c.radius_m - 210.0).abs() < 1e-9, "{c:?}"); // 150 m and its 60 m tolerance
+        assert!(!c.rtl);
+        assert_eq!(Some(c.center_t), v.seen.nav_target);
+        let d = crate::geo::haversine_m(37.80, -122.45, c.center.0, c.center.1);
         assert!((d - 150.0).abs() < 1.0, "{d}");
         // far from its circle: still flying to it
         v.pos = Some((37.70, -122.45));
         assert_eq!(v.loiter_circle(), None);
-        // RTL: around home once there, at WP_LOITER_RAD when RTL_RADIUS is 0
+        v.pos = Some((37.80, -122.45));
+        // a center reported before the mode changed is the previous mode's target
+        v.mode_since = Some(clock::wall() + 1.0);
+        assert_eq!(v.loiter_circle(), None);
+        v.mode_since = None;
+        // a center that stopped coming is not trusted for long
+        v.seen.nav_target = Some(clock::wall() - NAV_TARGET_MAX_AGE_S - 1.0);
+        assert_eq!(v.loiter_circle(), None);
+        // RTL: around its navigation target (home here; a rally point if it has one) once
+        // there, at WP_LOITER_RAD when RTL_RADIUS is 0
         v.mode = Some("RTL".into());
-        v.pos = Some((37.811, -122.45));
-        assert_eq!(v.loiter_circle(), Some(((37.81, -122.45), 210.0)));
+        v.apply(&gpi(37.811, -122.45, 100.0, 100.0), &[], 1.0);
+        let nav_home = MavMessage::NAV_CONTROLLER_OUTPUT(apm::NAV_CONTROLLER_OUTPUT_DATA {
+            target_bearing: 180,
+            wp_dist: 111,
+            ..Default::default()
+        });
+        v.apply(&nav_home, &[], 1.0);
+        let c = v.loiter_circle().expect("circling home");
+        assert!(c.rtl);
+        assert!((c.radius_m - 210.0).abs() < 1e-9, "{c:?}");
+        assert!(crate::geo::haversine_m(37.81, -122.45, c.center.0, c.center.1) < 2.0, "{c:?}");
         // in AUTO it flies its mission (an orbit task reports its own circle)
         v.mode = Some("AUTO".into());
         assert_eq!(v.loiter_circle(), None);

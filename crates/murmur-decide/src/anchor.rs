@@ -43,6 +43,10 @@ pub struct Anchor {
     pub head: String,
     /// "start", "every N events" or "shutdown".
     pub why: String,
+    /// The cadence the writer was set to: an anchor every this many events. The verifier
+    /// holds the file to it, so a removed anchor shows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub every: Option<u64>,
 }
 
 /// Where anchors go and how often.
@@ -74,6 +78,8 @@ struct State {
     seq: u64,
     head: Option<String>,
     since: u64,
+    /// The shutdown anchor is written: nothing more may be appended.
+    closed: bool,
 }
 
 /// The anchoring of one audit log; clones share it (the sink takes one, the bridge keeps
@@ -99,6 +105,7 @@ impl Anchors {
             seq: 0,
             head: None,
             since: 0,
+            closed: false,
         }))))
     }
 
@@ -126,6 +133,21 @@ impl Anchors {
             return Ok(None);
         }
         st.write(why).map(Some)
+    }
+
+    /// The shutdown anchor, and the log closed behind it: every later append fails (the
+    /// engine then doesn't act on what it couldn't log), so nothing follows the anchor.
+    pub fn close(&self) -> std::io::Result<Option<Anchor>> {
+        let mut st = self.lock();
+        st.closed = true;
+        if st.head.is_none() {
+            return Ok(None);
+        }
+        st.write("shutdown").map(Some)
+    }
+
+    fn is_closed(&self) -> bool {
+        self.lock().closed
     }
 
     /// Wait until the command has run for every anchor taken so far.
@@ -173,6 +195,7 @@ impl State {
             seq: self.seq,
             head: self.head.clone().unwrap_or_default(),
             why: why.to_string(),
+            every: Some(self.every),
         };
         let json = serde_json::to_string(&a).map_err(std::io::Error::other)?;
         let mut buf = Vec::with_capacity(json.len() + 1);
@@ -234,6 +257,9 @@ pub struct AnchoredSink<S> {
 
 impl<S: AuditSink> AuditSink for AnchoredSink<S> {
     fn append(&mut self, line: &str) -> std::io::Result<()> {
+        if self.anchors.is_closed() {
+            return Err(std::io::Error::other("audit log closed at shutdown"));
+        }
         self.inner.append(line)?;
         self.anchors.appended(line);
         Ok(())
@@ -266,9 +292,23 @@ impl AnchorReport {
     }
 }
 
+/// The cadence an anchor file declares: its anchors' `every`, or "every N events".
+fn cadence(parsed: &[Anchor]) -> Option<u64> {
+    parsed.iter().find_map(|a| {
+        a.every.or_else(|| {
+            a.why
+                .strip_prefix("every ")
+                .and_then(|r| r.strip_suffix(" events"))
+                .and_then(|n| n.parse().ok())
+        })
+    })
+}
+
 /// Check a log against its anchor file: its first line and every anchored event's line must
-/// hash as anchored, and the log must reach the last anchor (no truncation). Events after a
-/// shutdown anchor are a problem too (appended after the run ended).
+/// hash as anchored, and the log must reach the last anchor (no truncation). The file must
+/// be whole: a start anchor on the first event, one every N events as it declares, and a
+/// shutdown anchor last, with nothing after it in the log. A run that crashed has no
+/// shutdown anchor and fails too: its tail can't be told from a cut one.
 pub fn verify(log: &str, anchors: &str) -> AnchorReport {
     let lines: Vec<&str> = log.lines().filter(|l| !l.trim().is_empty()).collect();
     let seqs: Vec<Option<u64>> = lines.iter().map(|l| line_seq(l)).collect();
@@ -324,6 +364,54 @@ pub fn verify(log: &str, anchors: &str) -> AnchorReport {
             ),
             None => problem(a.seq, "no event with the anchored seq".into(), String::new(), a.seq.to_string()),
         }
+    }
+    // the file is whole: the start, the declared cadence, the shutdown last
+    let first_seq = seqs.iter().flatten().min().copied().unwrap_or(1);
+    match parsed.first() {
+        Some(a) if a.why == "start" && a.seq == first_seq => {}
+        Some(a) => problem(
+            a.seq,
+            "the first anchor is not the start anchor on run.started: anchors were removed".into(),
+            format!("{} at seq {}", a.why, a.seq),
+            format!("start at seq {first_seq}"),
+        ),
+        None => {}
+    }
+    let every = cadence(&parsed);
+    if let Some(n) = every {
+        for w in parsed.windows(2) {
+            let gap = w[1].seq.saturating_sub(w[0].seq);
+            let ok = match w[1].why.as_str() {
+                "shutdown" => gap <= n,
+                _ => gap == n,
+            };
+            if !ok {
+                problem(
+                    w[1].seq,
+                    format!("anchor missing: one every {n} events is declared, these are {gap} apart"),
+                    format!("seq {} then {}", w[0].seq, w[1].seq),
+                    format!("every {n}"),
+                );
+            }
+        }
+    } else if parsed.len() > 2 {
+        problem(0, "anchors declare no cadence".into(), String::new(), String::new());
+    }
+    match parsed.iter().position(|a| a.why == "shutdown") {
+        Some(i) if i + 1 != parsed.len() => problem(
+            parsed[i + 1].seq,
+            "anchors after the shutdown anchor".into(),
+            parsed[i + 1].why.clone(),
+            "shutdown last".into(),
+        ),
+        Some(_) => {}
+        None if !parsed.is_empty() => problem(
+            last_seq,
+            "no shutdown anchor: the run did not end cleanly, or its last anchors were removed".into(),
+            parsed.last().map_or(String::new(), |a| format!("last anchor: {} at seq {}", a.why, a.seq)),
+            "shutdown".into(),
+        ),
+        None => {}
     }
     r.anchors = parsed.len();
     r.last_anchored = parsed.iter().map(|a| a.seq).max();

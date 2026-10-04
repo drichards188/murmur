@@ -1,0 +1,60 @@
+# A circle fact that does not hold the friendly (fifth review's probe). One of our fixed
+# wings is 50 m from the target, but the circle reported for it is 1500 m north (a stale or
+# wrong fact). A circle holds only a vehicle that is on it: its position, reported with the
+# circle, within the circle's radius and 50 m of the center. This one isn't, so the vehicle
+# is predicted from where it is, inside the keep-out, and the nomination is rejected.
+title = "A friendly off its reported circle"
+invariant = "keep_out_friendly"
+attack = "a fresh circle fact far from the effect point, for a friendly right next to it"
+expect = "rejected"
+expect_rule = "keep_out_friendly"
+end_s = 20
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km
+at = [-122.4700, 37.8160]
+[[vehicle]]
+uid = "blade-2"
+platform = "switchblade"    # ours, not engaging: 50 m north of the target
+at = [-122.4950, 37.81245]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "vehicle"
+uid = "blade-2"
+reported_circle = [-122.4950, 37.8255, 210.0]   # 1500 m north: not where it is
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600

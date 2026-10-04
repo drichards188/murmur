@@ -223,8 +223,12 @@ clean shutdown (`logs/anchors/<run-id>.anchors`; `MURMUR_ANCHOR_DIR` moves it,
 JSON on its stdin (and in `MURMUR_ANCHOR`), run in order on a thread of its own, to post it
 elsewhere. `murmur-replay --anchors <file>` checks the log against them: the first line and
 every anchored event must hash as anchored, the log must reach the last anchor (a cut tail
-shows), and nothing may follow a shutdown anchor. Events after the last anchor are not
-covered.
+shows), the file must be whole (the start anchor on `run.started`, one anchor every N events
+as each declares in `every`, a shutdown anchor last, so a removed anchor line shows), and
+nothing may follow the shutdown anchor: the bridge closes the log behind it (later appends
+fail, so nothing is done that isn't logged) and exits with the decision lock held. A run
+that crashed has no shutdown anchor and fails the check: its tail can't be told from a cut
+one.
 
 **An anchor is only as strong as the separation between where it is kept and whoever can
 write the log.** The local anchor file sits in the same account as the log: it catches an
@@ -361,11 +365,16 @@ Rules versions:
   time tolerance; signatures log `checked_t`, which replay requires and bounds. Released
   as master `6da8909`.
 - **3**: the fourth Phase E review. One of our vehicles known to fly a circle (`circling`:
-  an orbit task on station, a fixed wing loitering or circling home) is predicted anywhere
-  on its disc, less the same growing uncertainty, instead of along its momentary heading
-  (a circling fixed wing no longer blocks engagements kilometres away); `platform_nav`
-  says when its 3D fix is a HIGH_LATENCY2 report without its GPS failure flag
-  (`gps_fix_from`); `run.started` names the build.
+  an orbit task on station, a fixed wing loitering or circling its RTL point, with its
+  source and when its center was reported) is predicted anywhere on its disc, less the
+  same growing uncertainty, instead of along its momentary heading (a circling fixed wing
+  no longer blocks engagements kilometres away). The circle holds only a vehicle that is
+  on it: its position, reported within 2 s of the circle, within the radius and 50 m of
+  the center (`CIRCLE_POSITION_SKEW_MS`, `CIRCLE_SLACK_M`); otherwise it is predicted from
+  its position. An effect within 5 s of its position (a release, `CIRCLE_NEAR_EFFECT_S`)
+  reads that position along its velocity as well, the nearer of the two counting.
+  `platform_nav` says when its 3D fix is a HIGH_LATENCY2 report without its GPS failure
+  flag (`gps_fix_from`); `run.started` names the build.
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that

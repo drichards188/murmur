@@ -917,61 +917,114 @@ fn a_gps_glitch_after_approval_aborts() {
     assert!(r.ok(), "{:?}", r.mismatches);
 }
 
+fn circle(center: LonLat, radius_m: f64, t: Time) -> Fact<Circle> {
+    Fact::new(
+        Circle {
+            center,
+            radius_m,
+            source: Some(CircleSource::Loiter),
+            center_t: Some(t),
+        },
+        t,
+    )
+}
+
+/// One of our fixed wings at `at`, heading `vel`, with a reported circle.
+fn circling_friend(at: LonLat, vel: [f64; 2], c: Option<Fact<Circle>>) -> WorldSnapshot {
+    let mut w = engage_world(T0);
+    let mut f = vehicle("switchblade", at);
+    f.velocity_mps = Some(Fact::new(vel, T0));
+    f.circling = c;
+    w.vehicles.insert(uid("blade-2"), f);
+    w
+}
+
+fn friendly(w: &WorldSnapshot, effect_t: Time, version: u32) -> CheckResult {
+    let mut cfg = policy().rules;
+    cfg.rules_version = version;
+    engage::keep_out_friendly(TARGET_AT, effect_t, 275.0, Some(&uid("blade-1")), w, &cfg)
+}
+
 #[test]
 fn a_circling_friendly_is_predicted_on_its_circle_not_along_its_heading() {
     // one of our fixed wings, 600 m north of the effect point on the south edge of a 200 m
     // circle, heading straight at it: 30 s ahead its heading puts it on the point
     let p = TARGET_AT;
     let center = engage::offset(p, 0.0, 800.0);
-    let mut w = engage_world(T0);
-    let mut f = vehicle("switchblade", engage::offset(p, 0.0, 600.0));
-    f.velocity_mps = Some(Fact::new([0.0, -20.0], T0));
-    f.circling = Some(Fact::new(
-        Circle {
-            center,
-            radius_m: 200.0,
-        },
-        T0,
-    ));
-    w.vehicles.insert(uid("blade-2"), f);
+    let mut w = circling_friend(
+        engage::offset(p, 0.0, 600.0),
+        [0.0, -20.0],
+        Some(circle(center, 200.0, T0)),
+    );
     let effect_t = T0.plus_ms(30_000);
-    let mut cfg = policy().rules;
     // rules 2 carry it along its heading, circle or not
-    cfg.rules_version = 2;
-    let c = engage::keep_out_friendly(p, effect_t, 275.0, Some(&uid("blade-1")), &w, &cfg);
+    let c = friendly(&w, effect_t, 2);
     assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
     assert!(c.detail.contains("predicted along its velocity"), "{}", c.detail);
     // rules 3: anywhere on its disc, 600 m out less its uncertainty (2 x 1 m/s x 30 s)
-    cfg.rules_version = 3;
-    let c = engage::keep_out_friendly(p, effect_t, 275.0, Some(&uid("blade-1")), &w, &cfg);
+    let c = friendly(&w, effect_t, 3);
     assert_eq!(c.outcome, Outcome::Pass, "{}", c.detail);
     assert!(
         c.detail.contains("blade-2 at 539 m") || c.detail.contains("blade-2 at 540 m"),
         "{}",
         c.detail
     );
-    // a circle that reaches into the keep-out still blocks it
+    // a circle that reaches into the keep-out still blocks it (the vehicle on its edge)
     let v = w.vehicles.get_mut(&uid("blade-2")).unwrap();
-    v.circling = Some(Fact::new(
-        Circle {
-            center: engage::offset(p, 0.0, 400.0),
-            radius_m: 200.0,
-        },
-        T0,
-    ));
-    let c = engage::keep_out_friendly(p, effect_t, 275.0, Some(&uid("blade-1")), &w, &cfg);
+    v.position = Some(Fact::new(engage::offset(p, 0.0, 600.0), T0));
+    v.circling = Some(circle(engage::offset(p, 0.0, 400.0), 200.0, T0));
+    let c = friendly(&w, effect_t, 3);
     assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
     assert!(c.detail.contains("circling within 200 m"), "{}", c.detail);
     // and a stale circle is not trusted: back to its heading
     let v = w.vehicles.get_mut(&uid("blade-2")).unwrap();
-    v.circling = Some(Fact::new(
-        Circle {
-            center,
-            radius_m: 200.0,
-        },
-        T0.plus_ms(-60_000),
-    ));
-    let c = engage::keep_out_friendly(p, effect_t, 275.0, Some(&uid("blade-1")), &w, &cfg);
+    v.circling = Some(circle(center, 200.0, T0.plus_ms(-60_000)));
+    let c = friendly(&w, effect_t, 3);
+    assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
+    assert!(c.detail.contains("predicted along its velocity"), "{}", c.detail);
+}
+
+#[test]
+fn a_circle_that_does_not_hold_the_friendly_is_not_trusted() {
+    // the fifth review's probe: our vehicle 50 m from the effect point, a fresh circle fact
+    // 1500 m north. The circle can't hold a vehicle that is not on it: its position counts
+    let p = TARGET_AT;
+    let w = circling_friend(
+        engage::offset(p, 0.0, 50.0),
+        [0.0, 0.0],
+        Some(circle(engage::offset(p, 0.0, 1500.0), 210.0, T0)),
+    );
+    for effect_t in [T0, T0.plus_ms(60_000)] {
+        let c = friendly(&w, effect_t, 3);
+        assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
+        assert!(c.detail.contains("does not hold its position"), "{}", c.detail);
+    }
+    // a vehicle just outside its circle, within the slack, is on it
+    let w = circling_friend(
+        engage::offset(p, 0.0, 1500.0 - 210.0 - 40.0),
+        [0.0, 0.0],
+        Some(circle(engage::offset(p, 0.0, 1500.0), 210.0, T0)),
+    );
+    let c = friendly(&w, T0.plus_ms(60_000), 3);
+    assert_eq!(c.outcome, Outcome::Pass, "{}", c.detail);
+}
+
+#[test]
+fn near_the_effect_a_circling_friendly_is_read_from_its_position_too() {
+    // on its 200 m circle 600 m north of the effect point, 40 m outside the radius (within
+    // the slack), heading at the point at 20 m/s
+    let p = TARGET_AT;
+    let w = circling_friend(
+        engage::offset(p, 0.0, 360.0),
+        [0.0, -20.0],
+        Some(circle(engage::offset(p, 0.0, 600.0), 200.0, T0)),
+    );
+    // 30 s out the disc alone counts: 400 m less 60 m of uncertainty
+    let c = friendly(&w, T0.plus_ms(30_000), 3);
+    assert_eq!(c.outcome, Outcome::Pass, "{}", c.detail);
+    // 5 s out (a release, or a check just before one) its position counts too: 260 m along
+    // its velocity, less 10 m, inside the 275 m keep-out
+    let c = friendly(&w, T0.plus_ms(5_000), 3);
     assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
     assert!(c.detail.contains("predicted along its velocity"), "{}", c.detail);
 }

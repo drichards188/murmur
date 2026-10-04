@@ -102,7 +102,13 @@ group. Dates are 2026.
   any of ours. Carried along its momentary heading, a circling fixed wing pointed somewhere
   every lap, and the live demo's loitering BLADE blocked engagements kilometres away. A
   vehicle not known to circle is still carried along its velocity. Regression:
-  `37-friendly-circling-near-target`.
+  `37-friendly-circling-near-target`. The engine trusts a circle only while it holds the
+  vehicle (fifth review): the position, reported within 2 s of it, within the radius and
+  50 m of the center, else the vehicle is predicted from its position (regression
+  `38-friendly-off-its-reported-circle`); within 5 s of the effect (a release) its position
+  counts as well, the nearer of the two. The bridge takes a LOITER or RTL center from
+  NAV_CONTROLLER_OUTPUT reported in that mode and at most 12 s old, stamps the circle with
+  the older of the center and the position, and logs its source and center time.
 - **A HIGH_LATENCY2 report without its GPS failure flag is a 3D fix** (10-04, fourth
   review). HIGH_LATENCY2 carries no fix type, so a platform on that link alone never had a
   fresh fix and could never release. The bridge now counts each one without
@@ -326,7 +332,9 @@ group. Dates are 2026.
   accepts; only comparing the head hash with an external anchor shows the rewrite. Since
   the fourth review the bridge writes run-time anchors (the first line's hash and the head,
   every 100 events and at shutdown) to `logs/anchors/<run-id>.anchors` and hands each to
-  `MURMUR_ANCHOR_CMD`; `murmur-replay --anchors` checks a log against them. A local anchor
+  `MURMUR_ANCHOR_CMD`; `murmur-replay --anchors` checks a log against them, and the anchor
+  file's own completeness (start, the declared cadence, a shutdown anchor last; the log is
+  closed behind the shutdown anchor). A local anchor
   file is only as strong as the separation between it and whoever can write the log:
   protection against that writer needs a separate trust domain the command posts to, which
   is not part of Murmur (`murmur-decide/README.md`).

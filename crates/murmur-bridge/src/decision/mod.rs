@@ -395,16 +395,18 @@ impl Decision {
         self.anchors.get().map(Anchors::path)
     }
 
-    /// A clean shutdown: anchor the log's head (under the decision lock, so no event is
-    /// being written) and let the anchor command finish.
-    pub fn shutdown(&self) {
+    /// A clean shutdown: under the decision lock (no event being written, none after),
+    /// anchor the log's head and close it behind the anchor, let the anchor command finish,
+    /// and exit with the lock still held.
+    pub fn shutdown_and_exit(&self) -> ! {
         let _core = self.lock();
         if let Some(a) = self.anchors.get() {
-            match a.anchor_now("shutdown") {
+            match a.close() {
                 Ok(_) => a.flush_hook(),
                 Err(e) => eprintln!("anchor {}: {e}", a.path().display()),
             }
         }
+        std::process::exit(0)
     }
 
     pub fn from_parts(world: Arc<World>, p: Parts) -> Result<Arc<Decision>, String> {

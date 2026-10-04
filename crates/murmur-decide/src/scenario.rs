@@ -314,6 +314,10 @@ pub enum Action {
         /// reports it as the vehicle's `circling` fact); a radius of 0 stops circling.
         #[serde(default)]
         circling: Option<[f64; 3]>,
+        /// Report a circle `[lon, lat, radius_m]` the vehicle does not fly (a wrong or stale
+        /// fact: it keeps its own position and velocity); a radius of 0 stops reporting it.
+        #[serde(default)]
+        reported_circle: Option<[f64; 3]>,
     },
     /// Check the last nomination now.
     Expect {
@@ -421,8 +425,9 @@ struct VehicleSim {
     nav: crate::world::NavSource,
     gps_fix: u8,
     gps_glitch: bool,
-    /// the circle it flies (center, radius m)
+    /// the circle reported for it (center, radius m), and whether it flies it
     circling: Option<(LonLat, f64)>,
+    circling_flown: bool,
     pos: LonLat,
     vel: [f64; 2],
     home: LonLat,
@@ -528,6 +533,7 @@ pub fn run(
                 gps_fix: 3,
                 gps_glitch: false,
                 circling: None,
+                circling_flown: false,
                 pos: at,
                 vel: v.velocity,
                 home: at,
@@ -622,7 +628,7 @@ pub fn run(
                         v.goal = None;
                     }
                 }
-            } else if let Some((c, radius)) = v.circling.filter(|_| s > 0) {
+            } else if let Some((c, radius)) = v.circling.filter(|_| s > 0 && v.circling_flown) {
                 // a second around the circle, clockwise, at its speed
                 let speed = v.vel[0].hypot(v.vel[1]);
                 let (ce, cn) = engage::enu(c, v.pos);
@@ -888,7 +894,14 @@ fn snapshot(
                 gps_glitch: Some(Fact::new(v.gps_glitch, t)),
                 gps_fix_from: None,
                 circling: v.circling.map(|(center, radius_m)| {
-                    Fact::new(crate::world::Circle { center, radius_m }, t)
+                    let source = Some(crate::world::CircleSource::OrbitTask);
+                    let circle = crate::world::Circle {
+                        center,
+                        radius_m,
+                        source,
+                        center_t: None,
+                    };
+                    Fact::new(circle, t)
                 }),
                 report_interval_ms: Some(v.interval),
                 velocity_mps: Some(Fact::new(v.vel, t)),
@@ -1221,6 +1234,7 @@ fn act(
             gps_fix,
             gps_glitch,
             circling,
+            reported_circle,
         } => {
             let Some(v) = vehicles.get_mut(uid) else {
                 return failures.push(format!("t={s}: unknown vehicle {uid}"));
@@ -1248,6 +1262,11 @@ fn act(
             }
             if let Some([lon, lat, radius]) = circling {
                 v.circling = (*radius > 0.0).then(|| (LonLat::new(*lon, *lat), *radius));
+                v.circling_flown = true;
+            }
+            if let Some([lon, lat, radius]) = reported_circle {
+                v.circling = (*radius > 0.0).then(|| (LonLat::new(*lon, *lat), *radius));
+                v.circling_flown = false;
             }
         }
         Action::Expect {

@@ -39,8 +39,15 @@ fn anchored_run(dir: &Path, cmd: Option<String>) -> (MemorySink, String) {
         e.open_operator_session(OperatorId::new(format!("op-{n}")))
             .unwrap();
     }
-    anchors.anchor_now("shutdown").unwrap();
+    // a clean stop: the shutdown anchor, and the log closed behind it
+    anchors.close().unwrap();
     anchors.flush_hook();
+    let before = log.lines().len();
+    assert!(
+        e.open_operator_session(OperatorId::new("op-late")).is_err(),
+        "nothing is logged, or done, after the shutdown anchor"
+    );
+    assert_eq!(log.lines().len(), before);
     let text = std::fs::read_to_string(&cfg.path).unwrap();
     (log, text)
 }
@@ -158,4 +165,45 @@ fn the_anchor_command_receives_every_anchor() {
     let (_, anchors) = anchored_run(&dir, Some(format!("cat >> '{}'", posted.display())));
     let got = std::fs::read_to_string(&posted).unwrap();
     assert_eq!(got, anchors);
+}
+
+#[test]
+fn removed_anchors_are_caught() {
+    let (log, anchors) = anchored_run(&scratch("removed"), None);
+    let text = log.text();
+    let al = lines(&anchors);
+    assert!(al.len() >= 4, "{anchors}");
+    let without = |i: usize| {
+        let mut v = al.clone();
+        v.remove(i);
+        v.join("\n")
+    };
+    // an anchor in the middle: the cadence breaks
+    let r = verify(&text, &without(1));
+    assert!(
+        whats(&r).iter().any(|w| w.contains("anchor missing")),
+        "{:?}",
+        whats(&r)
+    );
+    // the shutdown anchor: no clean end
+    let r = verify(&text, &without(al.len() - 1));
+    assert!(
+        whats(&r).iter().any(|w| w.contains("no shutdown anchor")),
+        "{:?}",
+        whats(&r)
+    );
+    // the start anchor
+    let r = verify(&text, &without(0));
+    assert!(
+        whats(&r).iter().any(|w| w.contains("not the start anchor")),
+        "{:?}",
+        whats(&r)
+    );
+    // only the start
+    let r = verify(&text, &al[0]);
+    assert!(
+        whats(&r).iter().any(|w| w.contains("no shutdown anchor")),
+        "{:?}",
+        whats(&r)
+    );
 }

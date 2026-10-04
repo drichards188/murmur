@@ -80,11 +80,31 @@ pub struct VehicleFacts {
 }
 
 /// A circle a vehicle flies: its center and its radius with the tolerance it is flown to
-/// (the vehicle stays within `radius_m` of `center`).
+/// (the vehicle stays within `radius_m` of `center`). The friendly keep-out trusts it only
+/// while the vehicle's position is on it (rules 3).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Circle {
     pub center: LonLat,
     pub radius_m: f64,
+    /// Where the bridge knows it from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<CircleSource>,
+    /// When its center was reported (LOITER and RTL: NAV_CONTROLLER_OUTPUT's target); the
+    /// fact is stamped with the older of this and the position. None: a task's own center.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub center_t: Option<Time>,
+}
+
+/// See [`Circle::source`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CircleSource {
+    /// An orbit task on station, still in the mission's mode.
+    OrbitTask,
+    /// A fixed wing in LOITER around its navigation target.
+    Loiter,
+    /// A fixed wing in RTL circling its navigation target (home, or a rally point).
+    Rtl,
 }
 
 /// See [`VehicleFacts::gps_fix_from`].

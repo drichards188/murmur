@@ -80,8 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let decision = decision.clone();
         tokio::spawn(async move {
             shutdown_signal().await;
-            decision.shutdown();
-            std::process::exit(0);
+            decision.shutdown_and_exit();
         });
     }
     if !decision.terrain_configured() {
