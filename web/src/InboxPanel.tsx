@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Alert, Check, Decisions, Intent } from './decisions'
 import {
   ALERT_LABEL,
@@ -11,6 +11,7 @@ import {
   verdict,
 } from './decisions'
 import { distanceM } from './geo'
+import { reportView } from './operatorView'
 import type { LngLat, Vehicle } from './types'
 import { callsign } from './types'
 import './inbox.css'
@@ -190,10 +191,22 @@ function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone }: C
   const unverified = new Set(i.policy?.facts.unverified ?? [])
   const armed = new Set(i.policy?.facts.armed ?? [])
   const reasons = (i.why ?? []).slice(1) // the first line is the policy rule, shown as the tier
+  // evaluation instrumentation (operatorView.ts): the card opened, closed or was decided
+  const view = useRef({ openedAt: performance.now(), decided: false })
+  useEffect(() => {
+    const v = view.current
+    reportView(i, 'open', v.openedAt)
+    return () => {
+      if (!v.decided) reportView(i, 'close', v.openedAt)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [i.id])
 
   const act = async (action: 'approve' | 'reject') => {
     setBusy(true)
     setError(null)
+    view.current.decided = true
+    reportView(i, 'decide', view.current.openedAt, action)
     try {
       const r = await intentAction(i.id, action, note)
       const last = r.intent.history[r.intent.history.length - 1]
