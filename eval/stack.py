@@ -19,6 +19,7 @@ import signal
 import subprocess
 import sys
 import time
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -89,7 +90,34 @@ class Proc:
         return self.popen.poll() is None
 
 
+def toml_value(v: Any) -> str:
+    """A TOML value for the event tables this module writes (strings, numbers, booleans,
+    lists, inline tables)."""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return repr(v)
+    if isinstance(v, str):
+        return json.dumps(v)
+    if isinstance(v, (list, tuple)):
+        return "[" + ", ".join(toml_value(x) for x in v) + "]"
+    if isinstance(v, dict):
+        return "{ " + ", ".join(f"{k} = {toml_value(x)}" for k, x in v.items()) + " }"
+    raise TypeError(f"no TOML for {v!r}")
+
+
+def event_toml(e: dict[str, Any]) -> str:
+    return "[[event]]\n" + "".join(f"{k} = {toml_value(v)}\n" for k, v in e.items()) + "\n"
+
+
 class Stack:
+    """The stack's scenario clocks share one origin: `origin = stand-ins start + origin_s`.
+    The spec's GNSS events (`at_s`, read once by the stand-in engine at its start) are
+    written shifted by `origin_s`; its link events (`at_s` on the emulator's clock) are
+    shifted by the emulator's offset to the origin once the stand-ins have started (the
+    emulator re-reads the file); the contacts start at the origin; the storyline's `at_s`
+    counts from it. The fleet must be ready before the origin, or the run fails."""
+
     def __init__(
         self,
         spec: Spec,
@@ -112,7 +140,12 @@ class Stack:
         self.bridge = Bridge(f"http://127.0.0.1:{block.http}")
         self.audit_src = REPO / "logs" / "audit" / f"{run_id}.jsonl"
         self.started_at: float | None = None
+        self.emu_start: float | None = None
+        self.standins_start: float | None = None
+        self.origin: float | None = None
+        self.contacts_spawned: float | None = None
         self.notes: list[str] = []
+        self.spec_events: list[dict[str, Any]] = []
 
     # ---- files ---------------------------------------------------------------------------
 
@@ -130,8 +163,8 @@ class Stack:
 
     @property
     def events_file(self) -> Path:
-        """The run's own copy of the scripted events (linkemu `--scenario`, stand-ins
-        `MURMUR_EVENTS`). Storyline `link` steps append to it while the run goes; the
+        """The run's own scripted events (linkemu `--scenario`, stand-ins `MURMUR_EVENTS`),
+        on the run's origin. Storyline `link` steps append to it while the run goes; the
         emulator re-reads it within a second of a change."""
         return self.run_dir / "events.toml"
 
@@ -139,10 +172,48 @@ class Stack:
     def emu_url(self) -> str:
         return f"http://127.0.0.1:{self.block.emu}"
 
-    def write_events(self) -> None:
-        head = "# The run's scripted events: the spec's events file, then storyline link steps.\n"
-        body = self.spec.events.read_text() if self.spec.events else ""
-        self.events_file.write_text(head + body + ("\n" if body and not body.endswith("\n") else ""))
+    def load_spec_events(self) -> None:
+        if not self.spec.events:
+            return
+        raw = tomllib.loads(self.spec.events.read_text())
+        self.spec_events = [dict(e) for e in raw.get("event", [])]
+
+    def gnss_events(self) -> list[dict[str, Any]]:
+        """The spec's GNSS effects, `at_s` shifted onto the origin (the stand-in engine
+        counts from its own start, `origin_s` before the origin)."""
+        out = []
+        for e in self.spec_events:
+            if "gnss" not in e:
+                continue
+            g = {k: v for k, v in e.items() if k not in ("loss", "cut", "extra_latency_ms", "dir")}
+            if "at_s" in g:
+                g["at_s"] = round(float(g["at_s"]) + self.spec.origin_s, 3)
+            out.append(g)
+        return out
+
+    def link_events(self) -> list[dict[str, Any]]:
+        """The spec's link effects, `at_s` shifted onto the origin on the emulator's clock."""
+        assert self.origin is not None and self.emu_start is not None
+        out = []
+        for e in self.spec_events:
+            if not (e.get("cut") or e.get("loss") is not None or e.get("extra_latency_ms") or ("circle" in e and "gnss" not in e)):
+                continue
+            c = {k: v for k, v in e.items() if k != "gnss"}
+            if "at_s" in c:
+                c["at_s"] = round(float(c["at_s"]) + (self.origin - self.emu_start), 3)
+            out.append(c)
+        return out
+
+    def write_events(self, with_links: bool) -> None:
+        head = (
+            "# The run's scripted events on its origin (eval/stack.py): the spec's GNSS events\n"
+            "# shifted for the stand-in engine, its link events for the emulator, then storyline\n"
+            "# link steps.\n\n"
+        )
+        body = "".join(event_toml(e) for e in self.gnss_events())
+        if with_links:
+            body += "".join(event_toml(e) for e in self.link_events())
+        self.events_file.write_text(head + body)
 
     def write_manifests(self) -> None:
         vehicles, platforms = plan_fleet(self.spec.fleet, self.block.vehicle_base)
@@ -206,7 +277,8 @@ class Stack:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.started_at = time.time()
         self.write_manifests()
-        self.write_events()
+        self.load_spec_events()
+        self.write_events(with_links=False)
         b = self.block
         # the emulator first: it binds every vehicle port before any vehicle sends
         emu_cmd = [
@@ -224,6 +296,8 @@ class Stack:
         ]
         emu = self._spawn("linkemu", emu_cmd, self._env())
         self._wait_http(f"http://127.0.0.1:{b.emu}/health", emu, 60)
+        summary = Bridge(self.emu_url).try_get("/stats/summary") or {}
+        self.emu_start = time.time() - float(summary.get("uptime_s") or 0.0)
         if not self.bridge_fleet_json.exists():
             raise StackError("linkemu wrote no bridge manifest")
 
@@ -248,18 +322,17 @@ class Stack:
         standins_env = {
             "MURMUR_STANDINS_TRUTH": str(self.run_dir / "standins-truth.jsonl"),
             "MURMUR_STANDINS_STATS": "0",
+            "MURMUR_EVENTS": str(self.events_file),
         }
-        if self.spec.events:
-            # GNSS events are read once at start (storyline link steps are comms only)
-            standins_env["MURMUR_EVENTS"] = str(self.events_file)
+        self.standins_start = time.time()
         self._spawn(
             "standins",
             [str(_binary("murmur-standins")), str(self.standins_json)],
             self._env(**standins_env),
         )
-
-        # the contacts start once the fleet is ready (start_contacts), so the contacts'
-        # clock and the storyline's start together in every seed
+        self.origin = self.standins_start + self.spec.origin_s
+        # the emulator re-reads the file within a second; the origin is seconds away
+        self.write_events(with_links=True)
 
         if self.web:
             vite = REPO / "web" / "node_modules" / ".bin" / "vite"
@@ -284,14 +357,45 @@ class Stack:
             time.sleep(0.3)
         raise StackError(f"{proc.name} did not answer at {url} within {timeout:.0f} s; see {proc.log}")
 
-    def start_contacts(self, timeout: float = 30.0) -> float | None:
-        """Start the contacts process and wait until its truth reaches the bridge. Called
-        once the fleet is ready, so the scenario's contact times (`start_s`, `end_s`, the
-        route timing) count from the same moment as the storyline's `at_s`, whatever the
-        fleet's readiness took in this seed. Returns seconds to the first truth, None
-        without contacts or if none arrived."""
+    def wait_ready(self, timeout: float) -> dict[str, Any]:
+        """Until every vehicle has a position and is navigation-ready (or `timeout`). The
+        result says when, relative to the stand-ins' start, and whether that was before
+        the origin."""
+        assert self.standins_start is not None and self.origin is not None
+        deadline = time.monotonic() + timeout
+        status: dict[str, Any] = {"ready": False, "vehicles": {}, "first_ready_s": {}, "first_seen_s": {}}
+        want = {v["uid"] for v in self.vehicles}
+        while time.monotonic() < deadline:
+            dead = [p.name for p in self.procs if not p.alive()]
+            if dead:
+                raise StackError(f"{', '.join(dead)} exited during startup; see the run directory logs")
+            state = self.bridge.try_get("/api/state") or {}
+            now_s = round(time.time() - self.standins_start, 2)
+            for v in state.get("vehicles", []):
+                status["first_seen_s"].setdefault(str(v["uid"]), now_s)
+            ready = {v["uid"] for v in state.get("vehicles", []) if v.get("nav_ready") and v.get("position")}
+            for u in ready:
+                status["first_ready_s"].setdefault(str(u), now_s)
+            status["vehicles"] = {str(u): (u in ready) for u in sorted(want)}
+            if want <= ready:
+                status["ready"] = True
+                break
+            time.sleep(0.25)
+        status["ready_after_s"] = round(time.time() - self.standins_start, 2)
+        status["before_origin"] = bool(status["ready"] and time.time() <= self.origin)
+        return status
+
+    def start_contacts_at_origin(self, timeout: float = 30.0) -> dict[str, Any]:
+        """Wait for the origin, start the contacts process then (its clock is the
+        scenario's from there), and wait until its truth reaches the bridge."""
+        assert self.origin is not None
+        while time.time() < self.origin:
+            time.sleep(min(0.05, max(0.0, self.origin - time.time())))
+        out: dict[str, Any] = {"spawned_after_origin_s": None, "truth_after_s": None}
         if not self.spec.contacts:
-            return None
+            return out
+        self.contacts_spawned = time.time()
+        out["spawned_after_origin_s"] = round(self.contacts_spawned - self.origin, 3)
         proc = self._spawn(
             "contacts",
             [str(_binary("murmur-contacts")), str(self.spec.contacts)],
@@ -305,34 +409,32 @@ class Stack:
         t0 = time.monotonic()
         while time.monotonic() - t0 < timeout:
             if (self.bridge.truth() or {}).get("truth"):
-                return round(time.monotonic() - t0, 2)
+                out["truth_after_s"] = round(time.monotonic() - t0, 2)
+                return out
             if not proc.alive():
                 raise StackError(f"contacts exited with {proc.popen.returncode}; see {proc.log}")
-            time.sleep(0.2)
-        return None
+            time.sleep(0.1)
+        return out
 
-    def wait_ready(self, timeout: float) -> dict[str, Any]:
-        """Until every vehicle has a position and is navigation-ready. Returns what was and
-        wasn't ready; a timeout is not fatal (the run records it)."""
-        deadline = time.monotonic() + timeout
-        t0 = time.monotonic()
-        status: dict[str, Any] = {"ready": False, "vehicles": {}}
-        want = {v["uid"] for v in self.vehicles}
-        while time.monotonic() < deadline:
-            dead = [p.name for p in self.procs if not p.alive()]
-            if dead:
-                raise StackError(f"{', '.join(dead)} exited during startup; see the run directory logs")
-            state = self.bridge.try_get("/api/state") or {}
-            ready = {v["uid"] for v in state.get("vehicles", []) if v.get("nav_ready") and v.get("position")}
-            status["vehicles"] = {str(u): (u in ready) for u in sorted(want)}
-            if want <= ready:
-                status["ready"] = True
-                break
-            time.sleep(1.0)
-        status["ready_after_s"] = round(time.monotonic() - t0, 1)
-        return status
+    def clocks(self) -> dict[str, Any]:
+        """Where each clock started relative to the origin (seconds; negative = before)."""
+        o = self.origin or 0.0
+
+        def rel(t: float | None) -> float | None:
+            return None if t is None else round(t - o, 3)
+
+        return {
+            "origin_unix": self.origin,
+            "origin_s": self.spec.origin_s,
+            "linkemu": rel(self.emu_start),
+            "standins": rel(self.standins_start),
+            "contacts": rel(self.contacts_spawned),
+        }
 
     # ---- stop ----------------------------------------------------------------------------
+
+    def alive_names(self) -> list[str]:
+        return [p.name for p in self.procs if not p.alive()]
 
     def stop(self) -> dict[str, Any]:
         exits: dict[str, Any] = {}

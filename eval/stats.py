@@ -6,8 +6,67 @@ import math
 import random
 from statistics import NormalDist, mean, median, stdev
 
-# two-sided 95% Student t quantiles for n - 1 degrees of freedom (n = 2..10), then normal
-T95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262}
+def _betacf(a: float, b: float, x: float) -> float:
+    """Continued fraction for the regularized incomplete beta (Lentz's method)."""
+    tiny = 1e-300
+    qab, qap, qam = a + b, a + 1.0, a - 1.0
+    c, d = 1.0, 1.0 - qab * x / qap
+    d = 1.0 / (d if abs(d) > tiny else tiny)
+    h = d
+    for m in range(1, 300):
+        m2 = 2 * m
+        aa = m * (b - m) * x / ((qam + m2) * (a + m2))
+        d = 1.0 + aa * d
+        d = 1.0 / (d if abs(d) > tiny else tiny)
+        c = 1.0 + aa / c if abs(1.0 + aa / c) > tiny else tiny
+        h *= d * c
+        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
+        d = 1.0 + aa * d
+        d = 1.0 / (d if abs(d) > tiny else tiny)
+        c = 1.0 + aa / c if abs(1.0 + aa / c) > tiny else tiny
+        delta = d * c
+        h *= delta
+        if abs(delta - 1.0) < 1e-14:
+            break
+    return h
+
+
+def betainc(a: float, b: float, x: float) -> float:
+    """The regularized incomplete beta function I_x(a, b)."""
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    lbeta = math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b) + a * math.log(x) + b * math.log(1.0 - x)
+    if x < (a + 1.0) / (a + b + 2.0):
+        return math.exp(lbeta) * _betacf(a, b, x) / a
+    return 1.0 - math.exp(lbeta) * _betacf(b, a, 1.0 - x) / b
+
+
+def t_cdf(t: float, df: float) -> float:
+    """Student t cumulative distribution."""
+    x = df / (df + t * t)
+    tail = 0.5 * betainc(df / 2.0, 0.5, x)
+    return 1.0 - tail if t >= 0 else tail
+
+
+def t_quantile(p: float, df: float) -> float:
+    """Student t quantile (inverse CDF) by bisection on `t_cdf`; exact to 1e-10."""
+    lo, hi = -1e6, 1e6
+    for _ in range(200):
+        mid = (lo + hi) / 2.0
+        if t_cdf(mid, df) < p:
+            lo = mid
+        else:
+            hi = mid
+        if hi - lo < 1e-10:
+            break
+    return (lo + hi) / 2.0
+
+
+def t95(df: int) -> float:
+    """The two-sided 95% Student t critical value for `df` degrees of freedom."""
+    return t_quantile(0.975, float(df))
 
 
 def wilson(k: int, n: int, z: float = 1.96) -> tuple[float | None, float | None, float | None]:
@@ -22,7 +81,8 @@ def wilson(k: int, n: int, z: float = 1.96) -> tuple[float | None, float | None,
 
 
 def t_interval(values: list[float]) -> tuple[float | None, float | None, float | None]:
-    """Mean and a 95% t-interval across runs (seeds). One value: no interval."""
+    """Mean and a 95% Student t interval across runs (seeds: the unit of replication, so the
+    interval treats a run's cases as a cluster). One value: no interval."""
     xs = [float(v) for v in values if v is not None]
     if not xs:
         return None, None, None
@@ -30,8 +90,7 @@ def t_interval(values: list[float]) -> tuple[float | None, float | None, float |
     if len(xs) < 2:
         return m, None, None
     s = stdev(xs)
-    t = T95.get(len(xs) - 1, 1.96)
-    half = t * s / math.sqrt(len(xs))
+    half = t95(len(xs) - 1) * s / math.sqrt(len(xs))
     return m, m - half, m + half
 
 

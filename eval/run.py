@@ -38,11 +38,12 @@ from .agent import make_proposer
 from .arms import ARMS, Arm, arm as get_arm
 from .bridge import Bridge
 from .engage import EngageAdapter, run_suite
-from .metrics import compute, load_jsonl, run_replay
-from .ports import Allocator, PortBlock, TIDEWATER_PORT
+from .metrics import clock_checks, compute_run, run_replay
+from .ports import Allocator, PortBlock, ephemeral_range, lease_tidewater_port
 from .proxy import ProxyParams, make_supervisor, proxy_params
 from .spec import Spec, SpecError, load_spec, spec_summary
 from .stack import OPERATORS, Stack, StackError, kill_from_pids
+from .provenance import collect as provenance
 from .storyline import Log, Storyline, TruthSampler, World
 
 SCENARIOS = REPO / "eval" / "scenarios"
@@ -72,40 +73,60 @@ def _answers(url: str) -> bool:
     return Bridge(url).try_get("/v1/info") is not None
 
 
-def ensure_tidewater(mode: str, out_dir: Path | None) -> tuple[str | None, subprocess.Popen | None, str]:
-    """A `tidewater serve` to share: the one in MURMUR_TIDEWATER_URL, the default stack's
-    at :8770, or one started here for the batch (stopped by the caller). Returns (url,
-    process or None, note)."""
-    if mode == "none":
-        return None, None, "tidewater: off (spec)"
-    env_url = os.environ.get("MURMUR_TIDEWATER_URL", "").strip()
-    if env_url and _answers(env_url):
-        return env_url, None, f"tidewater: using {env_url} (MURMUR_TIDEWATER_URL)"
-    if _answers("http://127.0.0.1:8770"):
-        return "http://127.0.0.1:8770", None, "tidewater: using the default stack's serve at :8770"
-    url = f"http://127.0.0.1:{TIDEWATER_PORT}"
-    if _answers(url):
-        return url, None, f"tidewater: using the one already at {url}"
-    if not TIDEWATER_BIN.exists() or not TIDEWATER_SCENARIO.exists():
-        return None, None, f"tidewater: not available ({TIDEWATER_BIN} or {TIDEWATER_SCENARIO} missing); running without conditions"
-    log = (out_dir or Path.cwd()) / "tidewater-serve.log"
-    f = open(log, "w")
-    p = subprocess.Popen(
-        [str(TIDEWATER_BIN), "serve", str(TIDEWATER_SCENARIO), "--port", str(TIDEWATER_PORT)],
-        stdout=f,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
-    f.close()
-    deadline = time.monotonic() + 150
-    while time.monotonic() < deadline:
-        if _answers(url):
-            return url, p, f"tidewater: started serve on :{TIDEWATER_PORT} (pid {p.pid})"
-        if p.poll() is not None:
-            return None, None, f"tidewater serve exited ({p.returncode}); see {log}; running without conditions"
-        time.sleep(1)
-    stop_process(p)
-    return None, None, "tidewater serve did not answer in 150 s; running without conditions"
+class Tidewater:
+    """A `tidewater serve` of this batch's (or this single run's) own, on a port leased from
+    10690-10699, stopped by the one who started it; nobody else's stack depends on it. With
+    MURMUR_TIDEWATER_URL set, that serve is used instead (and never stopped here)."""
+
+    def __init__(self) -> None:
+        self.url: str | None = None
+        self.proc: subprocess.Popen | None = None
+        self.lease: Any = None
+        self.note = ""
+
+    def start(self, mode: str, out_dir: Path) -> "Tidewater":
+        if mode == "none":
+            self.note = "tidewater: off"
+            return self
+        env_url = os.environ.get("MURMUR_TIDEWATER_URL", "").strip()
+        if env_url and _answers(env_url):
+            self.url, self.note = env_url, f"tidewater: {env_url} (MURMUR_TIDEWATER_URL)"
+            return self
+        if not TIDEWATER_BIN.exists() or not TIDEWATER_SCENARIO.exists():
+            self.note = f"tidewater: not available ({TIDEWATER_BIN} or {TIDEWATER_SCENARIO} missing); running without conditions"
+            return self
+        leased = lease_tidewater_port()
+        if leased is None:
+            self.note = "tidewater: no free port in 10690-10699; running without conditions"
+            return self
+        port, self.lease = leased
+        url = f"http://127.0.0.1:{port}"
+        log = out_dir / "tidewater-serve.log"
+        with open(log, "w") as f:
+            self.proc = subprocess.Popen(
+                [str(TIDEWATER_BIN), "serve", str(TIDEWATER_SCENARIO), "--port", str(port)],
+                stdout=f,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        deadline = time.monotonic() + 150
+        while time.monotonic() < deadline:
+            if _answers(url):
+                self.url, self.note = url, f"tidewater: own serve on :{port} (pid {self.proc.pid})"
+                return self
+            if self.proc.poll() is not None:
+                break
+            time.sleep(1)
+        self.stop()
+        self.note = f"tidewater serve did not start; see {log}; running without conditions"
+        return self
+
+    def stop(self) -> None:
+        stop_process(self.proc)
+        self.proc = None
+        if self.lease is not None:
+            self.lease.release()
+            self.lease = None
 
 
 def stop_process(p: subprocess.Popen | None) -> None:
@@ -178,19 +199,25 @@ class Run:
         self.info["tidewater_url"] = self.tidewater_url
         self.save()
         proposer = None
+        self.info["provenance"] = provenance()
         try:
             stack.start()
             self.info["status"] = "waiting for the fleet"
             self.save()
-            ready = stack.wait_ready(self.spec.ready_timeout_s)
-            if not ready.get("ready"):
-                self.info["warnings"].append(f"fleet not fully ready after {self.spec.ready_timeout_s:.0f} s: {ready}")
-            ready["contacts_truth_after_s"] = stack.start_contacts()
-            if self.spec.contacts and ready["contacts_truth_after_s"] is None:
-                self.info["warnings"].append("no contact truth reached the bridge within 30 s of starting the contacts")
+            # no point waiting past the origin: a fleet not ready by then fails the run
+            ready = stack.wait_ready(max(1.0, (stack.origin or time.time()) - time.time() + 0.5))
             self.info["ready"] = ready
-            t_ready = time.time()
-            self.info["ready_at_s"] = round(t_ready - (stack.started_at or t_ready), 1)
+            if not ready.get("before_origin"):
+                raise StackError(
+                    f"the fleet was not ready by the origin ({self.spec.origin_s:.0f} s after the stand-ins started): "
+                    f"ready={ready.get('ready')} after {ready.get('ready_after_s')} s, vehicles {ready.get('vehicles')}"
+                )
+            ready.update(stack.start_contacts_at_origin())
+            if self.spec.contacts and ready.get("truth_after_s") is None:
+                raise StackError("no contact truth reached the bridge within 30 s of the origin")
+            self.info["clocks"] = stack.clocks()
+            t_ready = stack.origin or time.time()
+            self.info["ready_at_s"] = ready.get("ready_after_s")
             bridge = stack.bridge
             mcp_url = f"http://127.0.0.1:{self.block.http}/mcp"
             if self.arm.web:
@@ -202,18 +229,19 @@ class Run:
             self.info["supervisor_config"] = supervisor.describe()
             log = Log(self.out / "storyline.jsonl")
             log.write({"kind": "phase", "name": "ready", "ready_after_s": ready.get("ready_after_s"), "vehicles": ready.get("vehicles")})
+            world = World(bridge, self.out)
             story = Storyline(
                 self.spec,
                 bridge,
                 proposer,
-                World(bridge, self.out),
+                world,
                 log,
                 t_ready,
                 events_file=stack.events_file,
                 emu_url=stack.emu_url,
                 engage=EngageAdapter(bridge),
             )
-            sampler = TruthSampler(bridge, self.out / "truth.jsonl")
+            sampler = TruthSampler(world, self.out / "truth.jsonl")
             stop = asyncio.Event()
             self.info["status"] = "running"
             self.save()
@@ -223,10 +251,10 @@ class Run:
                 asyncio.create_task(sampler.run(stop)),
             ]
             end = t_ready + self.duration_s
+            died: list[str] = []
             while time.time() < end:
-                dead = [p.name for p in stack.procs if not p.alive()]
-                if dead:
-                    self.info["warnings"].append(f"{', '.join(dead)} exited during the run")
+                died = [p.name for p in stack.procs if not p.alive()]
+                if died:
                     break
                 await asyncio.sleep(1.0)
             stop.set()
@@ -248,6 +276,11 @@ class Run:
                 if data is not None:
                     (self.out / f"{name}.json").write_text(json.dumps(data, indent=1))
             self.info["status"] = "collected"
+            if died:
+                # a stack process died: the run is not what the scenario says, so it fails
+                # (and is listed, never pooled)
+                self.info["status"] = "failed"
+                self.info["error"] = f"{', '.join(died)} exited during the run"
         except asyncio.CancelledError:
             self.info["status"] = "interrupted"
             raise
@@ -270,8 +303,12 @@ class Run:
         self.info["replay"] = run_replay(self.out / "audit.jsonl")
         if self.info["replay"].get("ran") and not self.info["replay"].get("ok"):
             self.info["warnings"].append("replay reported mismatches")
+        self.info["clock_checks"] = clock_checks(self.out, self.info.get("clocks") or {}, self.spec)
+        for c in self.info["clock_checks"]:
+            if not c.get("ok"):
+                self.info["warnings"].append(f"clock check failed: {c}")
         try:
-            m = compute(load_jsonl(self.out / "audit.jsonl"), load_jsonl(self.out / "storyline.jsonl"), set(OPERATORS), self.info["replay"], self.arm.name)
+            m = compute_run(self.out, info=self.info)
             (self.out / "metrics.json").write_text(json.dumps(m, indent=1))
             self.info["summary"] = {
                 "intents": m["counts"]["intents"],
@@ -282,6 +319,7 @@ class Run:
                 "human_decisions": m["counts"]["human_decisions"],
                 "violations": m["invariants"]["violations"],
                 "storyline_errors": m["counts"]["storyline_errors"],
+                "premise_failures": len(m.get("premises", {}).get("failed", [])),
             }
         except Exception as e:  # noqa: BLE001
             self.info["warnings"].append(f"metrics failed: {e!r}")
@@ -301,24 +339,33 @@ def do_run(args: argparse.Namespace) -> int:
     out = Path(args.out) if args.out else RESULTS / "single" / f"{spec.name}-{args.arm}-s{args.seed}-{now_id()}"
     out.mkdir(parents=True, exist_ok=True)
     alloc = Allocator()
-    block = alloc.allocate(args.block)
-    tw_proc = None
+    lease = None
+    if args.leased:
+        # the batch holds this block's lock for the life of this process
+        if args.block is None:
+            raise SystemExit("--leased needs --block")
+        block = PortBlock(args.block)
+    else:
+        lease = alloc.allocate(args.block)
+        block = lease.block
+    tw = Tidewater()
     tidewater_url = args.tidewater_url
-    note = ""
     if tidewater_url is None:
-        tidewater_url, tw_proc, note = ensure_tidewater(args.tidewater or spec.tidewater, out)
+        tw.start(args.tidewater or spec.tidewater, out)
+        tidewater_url = tw.url
     try:
         run = Run(spec, a, args.seed, out, block, tidewater_url, proxy_params(spec.proxy, args.proxy), args.model, args.participant, args.duration)
-        if note:
-            run.info["notes"].append(note)
+        if tw.note:
+            run.info["notes"].append(tw.note)
         try:
             info = asyncio.run(run.execute())
         except KeyboardInterrupt:
             print(f"interrupted: the stack is stopped; partial run in {out}", file=sys.stderr)
             return 130
     finally:
-        stop_process(tw_proc)
-        alloc.release(block)
+        tw.stop()
+        if lease is not None:
+            alloc.release(lease)
     print(json.dumps({k: info.get(k) for k in ("run_id", "status", "error", "warnings", "summary")}, indent=1))
     print(f"run directory: {out}")
     return 0 if info.get("status") == "ok" else 1
@@ -342,7 +389,15 @@ def machine() -> dict[str, Any]:
     # under 1% each at this fleet size); the proxy and the sampler are idle most of the
     # time. Three stacks per 12 cores is conservative; memory is not the limit.
     recommended = max(1, min(free_blocks, cpus // 4, 6))
-    return {"cpus": cpus, "mem_gb": mem_gb, "load_1m": load, "free_port_blocks": free_blocks, "recommended_parallel": recommended, "platform": platform.platform()}
+    return {
+        "cpus": cpus,
+        "mem_gb": mem_gb,
+        "load_1m": load,
+        "free_port_blocks": free_blocks,
+        "ephemeral_range": ephemeral_range(),
+        "recommended_parallel": recommended,
+        "platform": platform.platform(),
+    }
 
 
 def do_measure(args: argparse.Namespace) -> int:
@@ -360,6 +415,9 @@ def do_batch(args: argparse.Namespace) -> int:
             raise SystemExit("study mode is interactive: use `python -m eval.run study`")
     out = Path(args.out) if args.out else RESULTS / now_id()
     out.mkdir(parents=True, exist_ok=True)
+    if any(a.external_model for a in arms):
+        # one spend ledger for the whole batch, under MURMUR_EVAL_BATCH_MAX_USD
+        os.environ.setdefault("MURMUR_EVAL_LEDGER", str(out / "model-ledger.json"))
     m = machine()
     parallel = args.parallel or m["recommended_parallel"]
     parallel = max(1, min(parallel, m["free_port_blocks"]))
@@ -372,18 +430,22 @@ def do_batch(args: argparse.Namespace) -> int:
         for a in arms:
             for seed in args.seeds:
                 jobs.append((s, a, seed))
-    tidewater_url, tw_proc, note = (None, None, "tidewater: off (--tidewater none)") if args.tidewater == "none" else ensure_tidewater("shared", out)
+    tw = Tidewater().start(args.tidewater, out)
+    tidewater_url, note = tw.url, tw.note
     batch: dict[str, Any] = {
         "id": out.name,
         "started": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
         "machine": m,
         "parallel": parallel,
+        "provenance": provenance(),
         "scenarios": [spec_summary(s) for s in scenarios],
         "arms": [a.name for a in arms],
         "seeds": list(args.seeds),
         "proxy_preset": args.proxy,
         "tidewater": note,
         "skipped": skipped,
+        # every run the batch means to make, so a run that leaves no run.json is missed
+        "jobs": [{"scenario": s.name, "arm": a.name, "seed": seed, "dir": f"{s.name}/{a.name}/seed-{seed}"} for s, a, seed in jobs],
         "runs": [],
     }
     if not args.no_engage:
@@ -405,11 +467,20 @@ def do_batch(args: argparse.Namespace) -> int:
         s, a, seed = job
         run_dir = out / s.name / a.name / f"seed-{seed}"
         run_dir.mkdir(parents=True, exist_ok=True)
-        block = alloc.allocate()
+        # another runner may hold a block for a while: wait for one rather than fail the job
+        deadline = time.time() + 600
+        while True:
+            try:
+                lease = alloc.allocate()
+                break
+            except RuntimeError:
+                if time.time() > deadline:
+                    raise
+                time.sleep(5)
         cmd = [
             str(PYTHON), "-m", "eval.run", "run", str(s.path),
             "--arm", a.name, "--seed", str(seed), "--out", str(run_dir),
-            "--block", str(block.index), "--tidewater-url", tidewater_url or "none",
+            "--block", str(lease.block.index), "--leased", "--tidewater-url", tidewater_url or "none",
         ]
         if args.proxy:
             cmd += ["--proxy", args.proxy]
@@ -417,10 +488,19 @@ def do_batch(args: argparse.Namespace) -> int:
             cmd += ["--duration", str(args.duration)]
         if args.include_placeholders:
             cmd.append("--include-placeholders")
+        # a run can't take longer than its scenario plus startup, collection and replay
+        limit = (args.duration or s.duration_s) + s.origin_s + s.ready_timeout_s + 300
         t0 = time.time()
+        timed_out = False
         with open(run_dir / "runner.log", "w") as f:
-            p = subprocess.run(cmd, cwd=str(REPO), stdout=f, stderr=subprocess.STDOUT, env={**os.environ, "PYTHONUNBUFFERED": "1"})
-        alloc.release(block)
+            p = subprocess.Popen(cmd, cwd=str(REPO), stdout=f, stderr=subprocess.STDOUT, env={**os.environ, "PYTHONUNBUFFERED": "1"}, start_new_session=True)
+            try:
+                p.wait(timeout=limit)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                stop_process(p)
+                kill_from_pids(run_dir)
+        alloc.release(lease)
         info = {}
         if (run_dir / "run.json").exists():
             try:
@@ -433,8 +513,8 @@ def do_batch(args: argparse.Namespace) -> int:
             "seed": seed,
             "dir": str(run_dir.relative_to(out)),
             "exit": p.returncode,
-            "status": info.get("status", "no run.json"),
-            "error": info.get("error"),
+            "status": "timed out" if timed_out else info.get("status", "no run.json"),
+            "error": f"killed after {limit:.0f} s" if timed_out else info.get("error"),
             "warnings": info.get("warnings", []),
             "summary": info.get("summary"),
             "wall_s": round(time.time() - t0, 1),
@@ -448,7 +528,7 @@ def do_batch(args: argparse.Namespace) -> int:
             for fut in as_completed(futures):
                 results.append(fut.result())
     finally:
-        stop_process(tw_proc)
+        tw.stop()
     results.sort(key=lambda r: (r["scenario"], r["arm"], r["seed"]))
     batch["runs"] = results
     batch["ended"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
@@ -529,6 +609,7 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--tidewater-url", help="an existing tidewater serve ('none' for none)")
         p.add_argument("--duration", type=float, help="override the spec's duration_s")
         p.add_argument("--include-placeholders", action="store_true", help="run scenarios whose requirements the bridge lacks (steps are skipped)")
+        p.add_argument("--leased", action="store_true", help=argparse.SUPPRESS)  # the batch holds --block's lock
 
     r = sub.add_parser("run", help="one scenario, one arm, one seed")
     r.add_argument("scenario")
@@ -544,7 +625,7 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--parallel", type=int, help="stacks at once (default: measured, conservative)")
     b.add_argument("--out")
     b.add_argument("--proxy")
-    b.add_argument("--tidewater", choices=["shared", "none"], default="shared")
+    b.add_argument("--tidewater", choices=["shared", "none"], default="shared", help="shared: one serve of the batch's own for all its runs")
     b.add_argument("--duration", type=float)
     b.add_argument("--include-placeholders", action="store_true")
     b.add_argument("--engage-seeds", nargs="+", type=int, default=list(range(1, 11)), help="engagement scenario suite seeds (default 1-10)")
