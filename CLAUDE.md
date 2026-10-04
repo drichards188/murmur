@@ -87,6 +87,12 @@ meaningful. Decision and command, not weapons.
   200 m, from `<log>.fleet.json`) and a log matching its anchors; without those files nothing
   carries unless `MURMUR_RESUME_UNVERIFIED=1`. Replay such a log with its predecessor beside
   it (or `murmur-replay --prev`). `MURMUR_RESUME=0` turns it off.
+- Rules 6 engagements preload the approval's fallback as the platform's own lost-link action
+  and owe its own values back afterwards (`engage.preload`, inbox alert `restore_pending`).
+  `logs/audit/.last-run-<http port>` names the last run's log: at start the bridge carries
+  the values that log still owed (`platform.restore`) onto the same vehicle only. Unlike
+  `.resume-<port>.json` it survives a clean stop and is rewritten at every start, so the two
+  can name different logs. An engagement itself never carries over or queues.
 - The bridge's task-layer timeouts follow each link's measured round trip (`LinkTiming` in
   `crates/murmur-bridge/src/link.rs`; floors 1 s per ACK, 1.5 s per mission item, as before on
   fast links) and its telemetry plan follows the link class (`crates/murmur-bridge/src/
