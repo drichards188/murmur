@@ -17,6 +17,9 @@ proposed -> checked -> auto_approved | pending_approval
 checked -> approved   (authorize_at_submission: a human's own intent in a human tier)
 dispatched -> effected -> done | failed       (engage: release, then the assessment)
 dispatched -> aborted                         (engage: stopped before the effect)
+auto_approved | approved -> queued            (rules 5: a vehicle can't be reached now)
+queued -> dispatched | pending_approval | voided | expired   (its re-check, or its deadline)
+dispatched -> queued                          (rules 5: the link lost before any vehicle started it)
 ```
 
 The full table is `intent::next_state`; anything else is a typed `IllegalTransition`.
@@ -100,6 +103,101 @@ The full table is `intent::next_state`; anything else is a typed `IllegalTransit
    declaration order, no maps). Decision inputs carry `areas_sha256` instead of the
    polygons (about 700 bytes saved per decision event).
 
+## The queue for unreachable vehicles (rules 5)
+
+`queue.rs`, murmur-5p4. Orders to vehicles that can't be reached right now (a silent link, a
+satellite outage, a jammed radio, an AUV under water) are neither lost, nor sent into a dead
+link to fail, nor sent twice, nor sent stale.
+
+- **Dispatch or queue** (`Engine::dispatch_or_queue`, called for every approved or
+  auto-approved intent): `queue::reach` on the world now says whether each vehicle can be
+  reached for this order: heard within `link_intervals` of its report interval (its
+  heartbeat, the `autopilot` fact: 3 s streaming, 60 s on an acoustic link); for anything
+  but a hold or rtl, its navigation status and position fresh again by the checks' own limit
+  (a link that comes back brings the heartbeat first); and for a mission upload (orbit,
+  patrol, a sub's rtl) a link that reports at least every 5 s
+  (`MISSION_LINK_MAX_INTERVAL_MS`: not an AUV on its acoustic modem). All reachable:
+  `intent.dispatched` with the inputs and reach that allowed it (`Engine::dispatch(id,
+  world)` does the same and refuses an unreachable vehicle; `dispatch_order` refuses a kind
+  the queue holds). Otherwise `intent.queued` (the inputs the judgement read, each vehicle's
+  reach, the deadline) and the intent is `queued`. Satellite requests and engagements are
+  never queued, nor a kind whose wait is 0.
+- **Deadline** (`[queue]` in the policy, schema 3): `expire_s` (default 900), per kind
+  `[queue.kind.<kind>] expire_s` (the shipped file: hold 60, rtl 120; 0 never queues),
+  `human_expire_s` (120: a human's approval is held at most this long after it, then the
+  order goes back to the inbox instead of expiring; `QueueConfig::bound`), `link_intervals`
+  (3). Bounded (`QueueConfig::validate`: 1..3600 s, 0..3600 per kind, 1..3600 for a human's
+  approval, 1..10 intervals, vehicle kinds only); replay validates the logged copy too.
+- **Requeue** (`Engine::requeue`): a dispatched order whose link was lost to every vehicle
+  before any confirmed it goes back to the queue (`intent.requeued`, its deadline the kind's
+  wait from the approval, bounded as above), re-checked like any queued order before it is
+  sent again. Each vehicle's last op state is `requeued` (the link went before the start)
+  or `unconfirmed` (after it: an op `starting` means the start went out, the mission mode,
+  the hold or rtl mode, or new items to a vehicle already flying a mission), and none ever
+  `acked`. The bridge then delivers it asking the vehicle what it holds first
+  (`Intent::dispatched_before`); where it may have started (`Intent::maybe_started`) the
+  delivery only confirms it (`Intent::confirming`): followed if the vehicle runs it, and if
+  not (`unconfirmed` again) it is never started again on its own: `intent.requeued` with its
+  deadline now and `queue.expired` send it to the inbox, saying what the vehicle does. A
+  human's approval there may start it again. An order that ends or goes to the inbox while
+  it may be running says so in its reason.
+- **Never an older order over a newer one**: a dequeue voids the intent when a newer one for
+  one of its vehicles stands (approved, queued, dispatched, or waiting for a human after a
+  human submitted it); a human's approved order waiting in the queue, or dispatched with no
+  vehicle started on it yet, makes an agent's order on that vehicle a human decision (the
+  `waiting` fact, policy rule `(human order waiting)`).
+- **Dequeue** (`Engine::dequeue`, the bridge offers every queued intent each second): past
+  the deadline it expires (`queue.expired`, with why; or, `inbox`, back to the inbox with a
+  new `approval.requested`); while a vehicle can't be reached nothing happens and nothing is
+  logged; otherwise the checks run on the world now
+  (`check.result`, phase `dequeue`), the policy decides on the same inputs, and
+  `queue.recheck` logs the reach, the decision and the verdict (`queue::assess`) against
+  what the approval rested on (`Basis`: the checks, the decision and the engagements in
+  play when it became `approved` or `auto_approved`, and who approved it):
+  - a check fails: **void** (fail closed, as an approval re-check would);
+  - an engagement now in play on its vehicles that was not then: **inbox** (its dispatch
+    would stop it unacknowledged);
+  - the policy now needs a human and none approved it: **inbox**;
+  - a human approved it and something changed: a check's outcome, the policy tier, rule or
+    approvers, a vehicle that rebooted after the approval (a `vehicle.rebooted` logged after
+    it, or `booted_t` later than it by more than 30 s), an approval from the run before a
+    bridge restart: **inbox**, where a human approves it again (the old approval is dropped;
+    `approval.requested` gives a new deadline);
+  - otherwise **dispatch**: `intent.dispatched` exactly as approved, right after the re-check,
+    which is judged before the deadline or not at all.
+- **Cancel**: an operator cancels a queued intent (`void`), an agent withdraws its own.
+- **Restart** (`Engine::resume`, `ReplayReport::open`): the intents a log leaves open (a
+  vehicle task queued, approved but not dispatched, or dispatched with ops still running)
+  can be carried into the next run's log as `intent.resumed`, keeping their ids (new ones
+  number on from `ReplayReport::next_intent`, `Engine::reserve_ids`), with their basis,
+  decision, approval (`CarriedApproval`), deadline, each vehicle's last op state, the
+  vehicles that ever started it (`committed`: sticky across op states and runs), whether it
+  was ever dispatched (`dispatched_before`) and each vehicle's platform as last checked. One
+  that some vehicle had started resumes `dispatched`: the bridge follows it there and never
+  sends it again; any other resumes `queued` and is re-checked before it goes (a human's
+  approval goes back to the inbox: `basis_carried`), and, if it was dispatched before,
+  checked against what the vehicle holds first.
+- **Reboots**: `Engine::record_reboot` logs `vehicle.rebooted` (the time since boot before
+  and after, the new boot instant and, when the time since boot did not go back, the one
+  before: a jump of more than 30 s); the bridge ends a running op on a rebooted vehicle.
+
+**Replay.** `intent.queued` is recomputed (reach from its inputs, at least one vehicle
+unreachable, the deadline from the policy, approved before, a kind the policy queues);
+`queue.recheck` must follow its dequeue check directly, and its reach (all reachable),
+decision and verdict are recomputed from that check against the basis replay rebuilt from
+the approval; the next transition must carry out the verdict (dispatch, back to the inbox
+with a new `approval.requested`, void), and a dispatch from the queue needs a re-check that
+says so, logged right after it and before the deadline; a queue expiry needs its deadline
+and its kind (expired or back to the inbox). Under rules 5 a dispatch straight from an
+approval of a kind the queue holds needs its reach (recomputed: every vehicle reachable). An
+`intent.requeued` needs every vehicle's last op state `requeued`, none ever started, and its
+deadline from the policy. Each decision's `waiting` fact is recomputed from the queued
+intents. `intent.resumed` is checked against the previous log (`ReplayOptions::previous`,
+`murmur-replay --prev`, by default the file it names beside the log): that log is the one
+named (head, last seq), replays, and leaves the intent open exactly as carried; without it a
+resumed intent is a mismatch unless trusted (`--trust-resumed`). One generation: replay each
+log with its own predecessor.
+
 ## Engagements (Phase E)
 
 `engage.rs`: the engagement decision chain, a C2 decision study with an abstract effect (a
@@ -152,7 +250,7 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
   fails `picture_gap`. `step_engagements` returns a `StepOutcome`: the events to act on,
   and each engagement whose step failed, on its own.
   `dispatch` and `finish` refuse engagements; `dispatch_order` returns `Order::Engage`.
-- **Lost-link preload** (rules 5, murmur-der.2). A fallback the bridge commands after a
+- **Lost-link preload** (rules 6, murmur-der.2). A fallback the bridge commands after a
   stop can't arrive over a dead link, so the approval's fallback becomes the platform's own
   lost-link (GCS) failsafe while the engagement is under way. `fallback_preload` checks at
   nomination and on the plan that the platform's firmware has such an action
@@ -219,8 +317,8 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
   inbox alert too, not a silent first start. Replay reports every platform whose values were
   still owed when the log ended (`ReplayReport::unrestored`, printed `UNRESTORED:` by
   `murmur-replay`); it is not a decision mismatch.
-- **Keep-out model** (rules 5, murmur-der.3; parameters in `[rules.engage]`, each bounded,
-  schema 3):
+- **Keep-out model** (rules 6, murmur-der.3; parameters in `[rules.engage]`, each bounded,
+  schema 4):
   - *Tracks* are predicted along their velocity with a 1-sigma of `sqrt(pos_sigma^2 +
     (track_velocity_sigma_mps x span)^2 + q x span^3 / 3)`, `q = track_accel_mps2^2 x 1 s`
     (`track_prediction_sigma`): the tracker's own uncertainty now (already grown for the
@@ -364,18 +462,21 @@ chain, a recomputed chain caught only by the head.
 
 **Run-time anchors** (`src/anchor.rs`). The bridge wraps its log's sink so that the hash of
 the first line (`run.started`) and the head are written, as the log grows, to a separate
-append-only file: after the first event, every `MURMUR_ANCHOR_EVERY` events (100), and at a
-clean shutdown (`logs/anchors/<run-id>.anchors`; `MURMUR_ANCHOR_DIR` moves it,
+append-only file: after the first event, every `MURMUR_ANCHOR_EVERY` events (100), after
+every event a restart carries intents over by (`intent.state`, `intent.resumed`,
+`op.state`: "decision"), and at a clean shutdown (`logs/anchors/<run-id>.anchors`;
+`MURMUR_ANCHOR_DIR` moves it,
 `MURMUR_ANCHORS=0` turns it off). `MURMUR_ANCHOR_CMD`, a shell command, gets each anchor's
 JSON on its stdin (and in `MURMUR_ANCHOR`), run in order on a thread of its own, to post it
 elsewhere. `murmur-replay --anchors <file>` checks the log against them: the first line and
 every anchored event must hash as anchored, the log must reach the last anchor (a cut tail
-shows), the file must be whole (the start anchor on `run.started`, one anchor every N events
-as each declares in `every`, a shutdown anchor last, so a removed anchor line shows), and
+shows), the file must be whole (the start anchor on `run.started`, a cadence anchor exactly N
+events after the anchor before it as each declares in `every`, a decision or shutdown anchor
+at most N after it, a shutdown anchor last, so a removed anchor line shows), and
 nothing may follow the shutdown anchor: the bridge closes the log behind it (later appends
 fail, so nothing is done that isn't logged) and exits with the decision lock held. A run
 that crashed has no shutdown anchor and fails the check: its tail can't be told from a cut
-one.
+one, but everything up to its last decision is anchored (a carry-over checks that much).
 
 **An anchor is only as strong as the separation between where it is kept and whoever can
 write the log.** The local anchor file sits in the same account as the log: it catches an
@@ -429,7 +530,8 @@ human decision to measure.
 ```
 cargo run -p murmur-decide --bin murmur-replay -- logs/audit/<run-id>.jsonl \
     [--rules N | --min-rules N] [--anchors logs/anchors/<run-id>.anchors] \
-    [--space sim/space/constellations.toml sim/space/cache]
+    [--space sim/space/constellations.toml sim/space/cache] \
+    [--prev logs/audit/<previous-run>.jsonl | --trust-resumed]
 ```
 
 A log is recomputed with the rules it records, but by default only the current rules are
@@ -499,7 +601,7 @@ roster and the loiter radius from rules 4 (older logs don't carry them):
   names, with engagement authority only for one on its engagement list; a rules 4 log always
   names its roster. Rejections and at-submission approvals are under the deciding operator's
   own session, as signatures already were.
-- Lost-link preload (rules 5): the order's `preload` is the one the approved fallback and the
+- Lost-link preload (rules 6): the order's `preload` is the one the approved fallback and the
   platform's autopilot give (`engage::order_preload` on the final signature's world); every
   `engage.preload` is the dispatched engagement's, on its platform: one write-ahead
   (`intent`, while under way) before one `set` whose `before` is exactly the write-ahead's,
@@ -516,7 +618,7 @@ roster and the loiter radius from rules 4 (older logs don't carry them):
   own); a non-carried `platform.restore` must put back exactly the values owed, never while
   an engagement is under way on the platform, its `confirmed` recomputed; and values still
   owed at the end are reported (`unrestored`), not a mismatch.
-- Accepted lost friendlies (rules 5): every `engage.accepted` is under the accepting
+- Accepted lost friendlies (rules 6): every `engage.accepted` is under the accepting
   operator's own session with engagement authority, at its submitter's nomination or while
   it waits with no signature, its logged world within 5 s of it and showing the vehicle
   lost since exactly `since` (recomputed); every picture token and signature carries
@@ -524,7 +626,7 @@ roster and the loiter radius from rules 4 (older logs don't carry them):
   withdraws one in force, under the operator's own session; every decision of that
   engagement logs exactly the acceptances in force; every signature's `self_accepted` says
   whether its signer accepted one of them.
-- Track altitudes (rules 5): recomputed from the logged facts, so a decision that counted a
+- Track altitudes (rules 6): recomputed from the logged facts, so a decision that counted a
   track's altitude rests on its logged time (`alt_t`) and its sources' last hits
   (`source_t`) within `track_alt_max_age_s`.
 
@@ -622,10 +724,28 @@ Rules versions:
   which replay checks every session, and an engagement order carries the radius the
   platform loiters at over the effect point (`loiter_radius_m`, which the bridge flies and
   replay recomputes). A rules 4 log without a roster is a mismatch.
-- **5**, the engagement part (murmur-der.2, murmur-der.3; gated by `EngageRules::v5`, every
-  change on engagement paths only): the approval's fallback preloaded as the platform's own
-  lost-link action (the `fallback_preload` check at nomination, on the plan and at the
-  release; the order's `preload`; `engage.preload` reports, set, verify near the release
+- **5**: the safe command queue (murmur-5p4, see "The queue for unreachable vehicles"): an
+  approved order for a vehicle the link can't carry it to now is queued
+  (`intent.queued`) instead of dispatched, re-checked when it can be reached (`check.result`
+  phase `dequeue`, `queue.recheck`: dispatch, back to the inbox, void), expired at its
+  deadline (`queue.expired`, or back to the inbox for a human's approval held
+  `human_expire_s`); a dispatched order whose link was lost before any vehicle started it
+  goes back to the queue (`intent.requeued`), and one whose start had gone out (op
+  `starting`, then `unconfirmed`) is only confirmed next time, or goes to a human when the
+  vehicle does not run it; an older queued order is voided when a newer
+  one for its vehicle stands, and an agent's order on a vehicle with a human-approved order
+  waiting needs a human (`waiting`); a direct dispatch logs the reach that allowed it; open
+  intents are carried over a bridge restart (`intent.resumed`); reboots are logged
+  (`vehicle.rebooted`) and the boot instant is a vehicle fact (`booted_t`). Gated in
+  `Engine::dispatch_or_queue`, `Engine::dispatch` (rules before 5 dispatch as before),
+  `Engine::requeue` and `Engine::resume`, and the `waiting` rule in `policy::decide`;
+  markers: those event types, a `dequeue` phase, `booted_t`, `reach`, `waiting` and the
+  policy's `[queue]` (policy schema 3).
+
+- **6**, the engagement part (murmur-der.2, murmur-der.3 and their two reviews; gated by
+  `EngageRules::v6`, every change on engagement paths only): the approval's fallback
+  preloaded as the platform's own lost-link action (the `fallback_preload` check at
+  nomination, on the plan and at the release; the order's `preload`; `engage.preload` reports, set, verify near the release
   (the release needs a read-back at most 10 s old) and restore, an unconfirmed set or verify
   stopping the engagement; the platforms' own values owed back as a ledger,
   `platform.restore` for values carried over from an earlier run or restored outside an
@@ -639,15 +759,15 @@ Rules versions:
   `self_accepted`) left out of the friendly keep-out; a preload's write-ahead
   (`engage.preload` intent, with the vehicle's identity) and no restore while another
   engagement holds the platform; a track's altitude only from a recent ranged measurement
-  (`track_alt_max_age_s`, schema 3). New world facts: our vehicles' `alt_msl_m`, the
+  (`track_alt_max_age_s`, policy schema 4). New world facts: our vehicles' `alt_msl_m`, the
   catalog's `climb_mps` and `max_mps`, a track's `alt_t` and `source_t`. Markers (a log
-  claiming rules 4 or older can't carry them): a `fallback_preload` check, an order's
+  claiming rules 5 or older can't carry them): a `fallback_preload` check, an order's
   `preload`, `engage.preload`, `engage.accepted`, `engage.acceptance_revoked` and
   `platform.restore` events, `unknown_accepted`, `alt_msl_m`, `climb_mps`, `max_mps`,
   `alt_t`, `source_t`. Fixtures:
-  `tests/data/audit/v5-engagement-scenario-01.jsonl`,
-  `v5-lost-friendly-accepted-scenario-54.jsonl`, and a live run with its anchors
-  (`v5-engagement-live.jsonl`, `tests/data/anchors/v5-engagement-live.anchors`: two
+  `tests/data/audit/v6-engagement-scenario-01.jsonl`,
+  `v6-lost-friendly-accepted-scenario-54.jsonl`, and a live run with its anchors
+  (`v6-engagement-live.jsonl`, `tests/data/anchors/v6-engagement-live.anchors`: two
   nominations rejected for a fast ferry by the point, a third clear of a far fast ferry and
   by altitude of our aircraft at 9,000 m (diving at 44 m/s it can't get down by the effect
   time), its USV's own lost-link values logged ahead of the write (with its identity), the
@@ -657,9 +777,10 @@ Rules versions:
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
-`seen_max_age_s`, an unreleased build's name for it, is still read; **3** adds
-`track_velocity_sigma_mps`, `track_accel_mps2` (a table by domain), `vertical_rate_mps`,
-`keep_out_vertical_m` and `track_alt_max_age_s` (optional; rules 5).
+`seen_max_age_s`, an unreleased build's name for it, is still read; **3** adds `[queue]`
+(optional; absent: its defaults); **4** adds `track_velocity_sigma_mps`, `track_accel_mps2`
+(a table by domain), `vertical_rate_mps`, `keep_out_vertical_m` and `track_alt_max_age_s`
+(optional; rules 6).
 
 ## Integration contract for the bridge
 
@@ -679,12 +800,17 @@ The full contract is in the crate docs (`src/lib.rs`). In short:
    elevation is outside coverage; `water_depth_m > 0` is water), or `NoTerrain`.
 4. Operator endpoints: `submit` (also behind the legacy `POST /api/tasks`), `approve`,
    `reject`, `cancel`, `inbox`. Agent (MCP) side: an `AgentPort` per agent, nothing else.
-5. Every second: `expire_due`. For approved intents: `dispatch` gives a `DispatchOrder` for
-   the existing task manager (execute exactly it); report back with `record_op_state` (a
+5. Every second: `expire_due` (pending approvals and, rules 5, queued intents past their
+   deadline). For approved intents: `dispatch_or_queue` with the world now gives
+   `Routed::Dispatched(Order)` (a vehicle order: a `DispatchOrder` for the existing task
+   manager, execute exactly it) or `Routed::Queued`; offer each queued intent to `dequeue`
+   with a fresh snapshot every second (`Dequeued::Dispatched` is executed the same way); when
+   every op of a dispatched order ended `requeued`, `requeue` it. `dispatch(id, world)` gives
+   a `DispatchOrder` directly (refused for an unreachable vehicle under rules 5); report back with `record_op_state` (a
    dispatched intent's own vehicles only, and before its finish) and `finish`; log vehicle
    events; `void` intents the world invalidates. An engagement's fallback is reported as
    op state `fallback` with a detail that starts with the fallback's name (see "What was
-   executed is what was approved" above and `src/lib.rs`). Rules 5: an engagement order's
+   executed is what was approved" above and `src/lib.rs`). Rules 6: an engagement order's
    `preload` is set on the platform before its intercept (its own values read first, the
    preload read back) and reported with `record_preload` (set); send the intercept only
    once it confirms, command the fallback it returns when it doesn't; read it again every

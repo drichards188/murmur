@@ -215,3 +215,57 @@ fn removed_anchors_are_caught() {
         whats(&r)
     );
 }
+
+#[test]
+fn a_crashed_log_is_anchored_up_to_its_last_decision() {
+    // review 2: every intent transition and op state is anchored as it is written, so a log
+    // whose run crashed (no shutdown anchor) is covered up to its last decision, not only up
+    // to the last cadence anchor
+    let dir = scratch("decisions");
+    let cfg = AnchorConfig {
+        path: dir.join("run.anchors"),
+        every: 100,
+        cmd: None,
+    };
+    let log = MemorySink::new();
+    let anchors = Anchors::open(&cfg, Path::new("memory")).unwrap();
+    let clock = ManualClock::new(T0);
+    let mut e = Engine::new(
+        policy(),
+        roster(),
+        Box::new(clock.clone()),
+        Box::new(anchors.sink(log.clone())),
+    )
+    .unwrap();
+    let op = e.open_operator_session(OperatorId::new("op-1")).unwrap();
+    let w = world();
+    let id = e
+        .submit(op.authority(), orbit(NEAR_CRISSY, 150.0, &["sky-1"]), &w, &terrain())
+        .unwrap()
+        .id();
+    e.dispatch(id, &w).unwrap();
+    e.record_op_state(id, &uid("sky-1"), "sent", "uploading").unwrap();
+    // a crash: no shutdown anchor
+    let text = std::fs::read_to_string(&cfg.path).unwrap();
+    let ls = lines(&log.text());
+    let r = verify(&log.text(), &text);
+    assert!(!r.shutdown);
+    assert!(
+        r.problems.iter().all(|p| p.what.starts_with("no shutdown anchor")),
+        "{:?}",
+        r.problems
+    );
+    assert_eq!(r.last_anchored, Some(ls.len() as u64), "the last event, an op state, is anchored");
+    assert!(lines(&text).iter().any(|a| a.contains("\"why\":\"decision\"")), "{text}");
+    // a decision anchor removed is caught: the cadence anchor after it is no longer where it
+    // belongs, or the next decision anchor too far
+    let al = lines(&text);
+    let i = al.iter().position(|a| a.contains("\"why\":\"decision\"")).unwrap();
+    let mut v = al.clone();
+    v.remove(i);
+    let r2 = verify(&log.text(), &v.join("\n"));
+    assert!(r2.problems.len() >= r.problems.len());
+    // the decisions' tail truncated: caught
+    let r3 = verify(&rechain(&ls[..ls.len() - 1]), &text);
+    assert!(whats(&r3).iter().any(|w| w.contains("log truncated")), "{:?}", whats(&r3));
+}

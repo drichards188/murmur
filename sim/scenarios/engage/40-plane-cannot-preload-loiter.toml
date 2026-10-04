@@ -1,4 +1,4 @@
-# Rules 5: an engagement's fallback must be the platform's own lost-link action, set at
+# Rules 6: an engagement's fallback must be the platform's own lost-link action, set at
 # dispatch, since an order to fly it can't arrive over a dead link. ArduPlane 4.8 has no
 # lost-link action that holds where it is (FS_LONG_ACTN: continue, RTL, glide, parachute,
 # AUTO, AUTOLAND), so a fixed wing can't carry fallback loiter: the nomination fails closed

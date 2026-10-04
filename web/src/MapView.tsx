@@ -99,10 +99,11 @@ const empty: FC = { type: 'FeatureCollection', features: [] }
 function taskingFeatures(taskings: Tasking[]): FC {
   const features: GeoJSON.Feature[] = []
   for (const t of taskings) {
-    const live = t.ops.filter((o) => o.state !== 'superseded' && o.state !== 'failed')
+    const live = t.ops.filter((o) => o.state !== 'superseded' && o.state !== 'failed' && o.state !== 'requeued')
     if (live.length === 0) continue
-    // intent stays dashed until at least one vehicle has confirmed it
-    const confirmed = live.some((o) => ['acked', 'active', 'done'].includes(o.state))
+    // ordered vs confirmed: dashed until a vehicle's own telemetry shows it executing (an
+    // ACK says it accepted the order, not that it flies it)
+    const confirmed = live.some((o) => ['active', 'done'].includes(o.state))
     const props = { kind: t.task, confirmed, label: `${t.task.toUpperCase()} #${t.id}` }
     if (t.task === 'orbit' && t.params.center) {
       features.push({

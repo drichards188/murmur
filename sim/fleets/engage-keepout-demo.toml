@@ -1,4 +1,4 @@
-# Rules 5 engagement demo (murmur-der.2, murmur-der.3): the engagement demo's armed and sensor
+# Rules 6 engagement demo (murmur-der.2, murmur-der.3): the engagement demo's armed and sensor
 # stand-ins, and one of our MALE aircraft circling high over the target's holding area, for
 # sim/scenarios/golden-gate-engage-keepout.toml (a distant fast ferry, a fast ferry that
 # comes near, an aircraft at 3,000 m). Stand-ins only: no ArduPilot SITL needed.
@@ -13,7 +13,7 @@
 # - the Switchblade-class fixed wing can only take fallback return (ArduPlane has no lost-link
 #   action that holds where it is).
 # The effect is an abstract event (a point, a radius, a time); see docs/PLAN.md, Phase E.
-title = "Rules 5 engagement demo: armed stand-ins, sensors and a high friendly at the Gate"
+title = "Rules 6 engagement demo: armed stand-ins, sensors and a high friendly at the Gate"
 
 [[unit]]
 platform = "switchblade"               # armed; EO/IR 3 km

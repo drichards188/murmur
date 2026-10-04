@@ -66,7 +66,7 @@ pub struct Track {
     pub lon: f64,
     pub alt_m: Option<f64>,
     /// when a detection last carried an altitude (wall s): a sensor that ranges the contact
-    /// in height measured it then (rules 5 count it for a 3D keep-out only while recent)
+    /// in height measured it then (rules 6 count it for a 3D keep-out only while recent)
     pub alt_t: Option<f64>,
     /// east, north m/s
     pub vel: Option<(f64, f64)>,

@@ -517,7 +517,7 @@ def test_two_authorized_signers_on_one_plan_is_fine():
 
 
 def test_an_acceptor_who_signs_is_counted_not_a_violation():
-    # rules 5: op-2 accepted a lost vehicle and signs; allowed (two signers still), measured
+    # rules 6: op-2 accepted a lost vehicle and signs; allowed (two signers still), measured
     events = engagement([("op-2", PLAN_A), ("op-3", PLAN_A)])
     for e in events:
         if e.get("type") == "approval.concurred" and e.get("by") == "op-2":

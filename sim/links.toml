@@ -54,7 +54,7 @@
 #                 profile's is not used). What the failsafe does is the firmware's
 #                 (sim/params/*.parm, crates/murmur-standins/src/params.rs): RTL for planes,
 #                 copters and rovers, surface for an AUV, disarm for a tethered ROV. While
-#                 an engagement is under way (decision rules 5) the bridge sets the
+#                 an engagement is under way (decision rules 6) the bridge sets the
 #                 failsafe's action to the engagement's fallback and shortens the timer to
 #                 the approval's link-gap limit (5 s on a streaming link), then puts both back
 #                 (crates/murmur-decide/README.md, "Lost-link preload").

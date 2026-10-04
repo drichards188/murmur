@@ -1,10 +1,10 @@
 # Link loss mid-engagement: the platform goes silent after dispatch; once it has not been
 # heard for longer than the approval assumed (5 s), the engagement aborts with its recorded
 # fallback (loiter here), never a silent continue, and no effect is ever released. The order
-# the engine sends can't reach it, so (rules 5) the fallback was preloaded at dispatch as its
+# the engine sends can't reach it, so (rules 6) the fallback was preloaded at dispatch as its
 # own lost-link action (ArduRover FS_ACTION 6, Loiter or Hold), its 30 s LEO timer shortened
 # to the approval's 5 s: it holds where it is on its own, and gets its own values back once
-# its link returns. (Until rules 5 this was a fixed wing, whose firmware can't hold where it
+# its link returns. (Until rules 6 this was a fixed wing, whose firmware can't hold where it
 # is on a lost link: scenario 40.)
 title = "The platform's link is cut mid-engagement"
 invariant = "platform_link"

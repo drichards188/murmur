@@ -1,4 +1,4 @@
-# Rules 5: the same lost quadcopter, but the nominating operator, who holds engagement
+# Rules 6: the same lost quadcopter, but the nominating operator, who holds engagement
 # authority, accepts, explicitly, that its position is unknown since its last report
 # (engage.accepted, logged before the checks with the report it names and the vehicle's facts). The friendly keep-out leaves it out, says so, and two signers sign
 # the plan that shows it. Afterwards the acceptance is cut from the log; replay finds every

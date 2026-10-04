@@ -1,4 +1,4 @@
-# Rules 5, fail closed on missing data: a new protected track 2.5 km from the effect point
+# Rules 6, fail closed on missing data: a new protected track 2.5 km from the effect point
 # has no velocity estimate yet (the tracker takes one from fixes 10 s apart). It is not held
 # where it is: it could be anywhere it reaches at its domain's top speed (25 m/s on the
 # surface) by the effect time, so it blocks.

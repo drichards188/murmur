@@ -1,4 +1,4 @@
-# Rules 5: the preload is read again near the release. The platform confirmed its lost-link
+# Rules 6: the preload is read again near the release. The platform confirmed its lost-link
 # action as the fallback at dispatch, but by the re-read (every 5 s from 30 s before the
 # release window opens) another station has changed its lost-link action. The re-read does
 # not confirm (engage.preload verify): the engagement stops with its fallback, nothing is

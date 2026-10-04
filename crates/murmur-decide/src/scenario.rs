@@ -73,18 +73,18 @@ pub struct Scenario {
     /// plan stopped holding.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub expect_reset: bool,
-    /// Rules 5: the platform must have followed its preloaded lost-link action on its own (a
+    /// Rules 6: the platform must have followed its preloaded lost-link action on its own (a
     /// substring of what it did, e.g. "Loiter or Hold").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expect_lost_link: Option<String>,
-    /// Rules 5: preload reports that must have been logged, in order (substrings: `set
+    /// Rules 6: preload reports that must have been logged, in order (substrings: `set
     /// confirmed`, `set unconfirmed`, `restore confirmed`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expect_preload: Vec<String>,
     /// After the run, attack the log and require replay to catch it:
     /// `proposer_approval`, `agent_approval`, `suppress_void`, `edit_snapshot`,
     /// `drop_signature`, `edit_effect`, `strip_approvers`, `drop_reset`, `agent_order_auto`,
-    /// `drop_ack`, `loosen_policy`, and for rules 5 `drop_preload`, `forge_preload`,
+    /// `drop_ack`, `loosen_policy`, and for rules 6 `drop_preload`, `forge_preload`,
     /// `drop_verify`, `drop_acceptance`, `acceptance_by_agent`, `acceptance_without_authority`,
     /// `hide_self_accepted`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -96,7 +96,7 @@ pub struct Scenario {
     /// or `persists`.
     #[serde(default = "out_of_play")]
     pub after_effect: String,
-    /// Rules 5: how the engaging platform answers its lost-link preload at dispatch:
+    /// Rules 6: how the engaging platform answers its lost-link preload at dispatch:
     /// `confirm` (default: read back as set, a second later), `no_answer` (it never answers
     /// the parameter protocol: the bridge reports the error), `mismatch` (it answers with
     /// another lost-link action than the order's), `never` (nothing is reported: the release
@@ -164,7 +164,7 @@ pub struct VehicleDef {
     pub battery: f64,
     #[serde(default = "interval")]
     pub report_interval_ms: u32,
-    /// Rules 5: its altitude above mean sea level, reported with its position, m (absent:
+    /// Rules 6: its altitude above mean sea level, reported with its position, m (absent:
     /// not reported, so a keep-out reads it in 2D).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alt_m: Option<f64>,
@@ -221,7 +221,7 @@ pub struct TrackDef {
     /// fixes a baseline apart), however it moves.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_velocity_estimate: bool,
-    /// Rules 5: its altitude was last measured this long before the start, s, and never
+    /// Rules 6: its altitude was last measured this long before the start, s, and never
     /// again: the ranging sensors (radar, AIS) lost it while the others keep its position
     /// fresh (0: measured with every detection).
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -271,12 +271,12 @@ pub enum Action {
         fallback: Fallback,
         #[serde(default)]
         window_s: Option<u32>,
-        /// Rules 5: our vehicles the nominating operator accepts as lost (each since its last
+        /// Rules 6: our vehicles the nominating operator accepts as lost (each since its last
         /// report, as the check shows it). Only an operator's nomination can carry them.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         accept: Vec<String>,
     },
-    /// Rules 5: an operator with engagement authority accepts, for the last nomination while
+    /// Rules 6: an operator with engagement authority accepts, for the last nomination while
     /// it waits with no signature, that one of our vehicles is lost since its last report
     /// (or since `since_s`, scenario seconds, to name another report: the engine refuses
     /// it). Without engagement authority it is refused.
@@ -286,7 +286,7 @@ pub enum Action {
         #[serde(default)]
         since_s: Option<f64>,
     },
-    /// Rules 5: an operator withdraws an acceptance of a lost vehicle for the last
+    /// Rules 6: an operator withdraws an acceptance of a lost vehicle for the last
     /// nomination (pending or under way).
     Revoke { by: String, uid: String },
     /// An agent "tries" to accept a lost vehicle: there is no such method on its port, so it
@@ -357,7 +357,7 @@ pub enum Action {
         /// contact's real velocity, until set again: an estimate that wobbles, not a turn.
         #[serde(default)]
         velocity_error: Option<[f64; 2]>,
-        /// Its estimated altitude, m (rules 5 read keep-outs in 3D where it is known).
+        /// Its estimated altitude, m (rules 6 read keep-outs in 3D where it is known).
         #[serde(default)]
         alt_m: Option<f64>,
     },
@@ -440,10 +440,10 @@ pub struct ScenarioResult {
     pub assessment: Option<String>,
     pub refusals: Vec<String>,
     pub fallback: Option<String>,
-    /// Rules 5: what the platform did on its own after losing its link with the fallback
+    /// Rules 6: what the platform did on its own after losing its link with the fallback
     /// preloaded as its lost-link action (`"<action> after <n> s without the GCS"`).
     pub lost_link_action: Option<String>,
-    /// Rules 5: the preload reports logged (`set confirmed`, `set unconfirmed`, `restore
+    /// Rules 6: the preload reports logged (`set confirmed`, `set unconfirmed`, `restore
     /// confirmed`, ...), in order.
     pub preload_reports: Vec<String>,
     pub replay_ok: bool,
@@ -542,7 +542,7 @@ struct TrackSim {
     silent: bool,
     /// no velocity estimate (the tracker has none yet)
     no_velocity: bool,
-    /// rules 5: its altitude is no longer measured (the ranging sensors lost it)
+    /// rules 6: its altitude is no longer measured (the ranging sensors lost it)
     alt_frozen: bool,
 }
 
@@ -786,7 +786,7 @@ pub fn run(
                 s,
             );
         }
-        // rules 5: the platforms answer their lost-link preloads (and restores), and one cut
+        // rules 6: the platforms answer their lost-link preloads (and restores), and one cut
         // off from the GCS long enough follows its preloaded action on its own
         preloads(
             &sc.preload,
@@ -844,7 +844,8 @@ pub fn run(
             }
         }
         // anything approved goes out at once, as on the bridge
-        dispatch_approved(&mut engine, &mut vehicles, &mut engaging, &mut failures, s);
+        let world = snapshot(&vehicles, &tracks, &catalog, &areas, now);
+        dispatch_approved(&mut engine, &world, &mut vehicles, &mut engaging, &mut failures, s);
         for (id, (uid, _)) in &engaging {
             extra.preloads.entry(*id).or_insert_with(|| PreloadSim {
                 uid: uid.clone(),
@@ -1089,6 +1090,7 @@ fn snapshot(
                 velocity_mps: Some(Fact::new(v.vel, t)),
                 alt_msl_m: v.alt.map(|a| Fact::new(a, t)),
                 platform: p,
+                booted_t: None,
             },
         );
     }
@@ -1168,7 +1170,7 @@ fn act(
             };
             let mut proposal = Proposal::new(task, vec![Uid::new(platform)]);
             let w = world(tracks, vehicles);
-            // rules 5: each accepted lost vehicle since its last report, as the check shows it
+            // rules 6: each accepted lost vehicle since its last report, as the check shows it
             let accepted: Vec<(Uid, Option<Time>)> = accept
                 .iter()
                 .map(|u| {
@@ -1604,13 +1606,13 @@ struct Extra {
     last_task: Option<IntentId>,
     /// The picture token each operator's last `look` got.
     looked: BTreeMap<String, u64>,
-    /// Rules 5: each dispatched engagement's lost-link preload as its platform answers it.
+    /// Rules 6: each dispatched engagement's lost-link preload as its platform answers it.
     preloads: BTreeMap<IntentId, PreloadSim>,
     lost_link_action: Option<String>,
     preload_reports: Vec<String>,
 }
 
-/// Rules 5: a dispatched engagement's lost-link preload, as the runner's platform answers it.
+/// Rules 6: a dispatched engagement's lost-link preload, as the runner's platform answers it.
 struct PreloadSim {
     uid: String,
     /// when it answers the preload (a second after the dispatch)
@@ -1640,7 +1642,7 @@ fn own_value(name: &str) -> f64 {
     }
 }
 
-/// Rules 5: each dispatched engagement's platform answers its lost-link preload (as
+/// Rules 6: each dispatched engagement's platform answers its lost-link preload (as
 /// `scenario.preload` says), puts its own values back once the engagement has ended, and,
 /// cut off from the GCS for longer than its preloaded timer, follows the preloaded action.
 #[allow(clippy::too_many_arguments)]
@@ -1883,6 +1885,7 @@ fn follow(v: &mut VehicleSim, f: Fallback) {
 
 fn dispatch_approved(
     engine: &mut Engine,
+    world: &WorldSnapshot,
     vehicles: &mut BTreeMap<String, VehicleSim>,
     engaging: &mut BTreeMap<IntentId, (String, LonLat)>,
     failures: &mut Vec<String>,
@@ -1897,7 +1900,7 @@ fn dispatch_approved(
         if !is_engage {
             // another order on these vehicles: as on the bridge, it stands and supersedes
             // any engagement on them (no fallback commanded)
-            match engine.dispatch(id) {
+            match engine.dispatch(id, world) {
                 Ok(o) => {
                     let hit: Vec<IntentId> = engine
                         .intents()
@@ -2212,7 +2215,7 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             }
         }
         "drop_preload" => {
-            // rules 5: hide that the platform confirmed (or failed) its lost-link preload
+            // rules 6: hide that the platform confirmed (or failed) its lost-link preload
             let before = events.len();
             events.retain(|e| {
                 !matches!(
@@ -2226,7 +2229,7 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             }
         }
         "drop_verify" => {
-            // rules 5: hide the re-read near the release that found the preload changed
+            // rules 6: hide the re-read near the release that found the preload changed
             let before = events.len();
             events.retain(|e| {
                 !matches!(
@@ -2240,7 +2243,7 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             }
         }
         "forge_preload" => {
-            // rules 5: a preload the platform never confirmed made to look confirmed
+            // rules 6: a preload the platform never confirmed made to look confirmed
             let mut done = false;
             for e in &mut events {
                 if let EventBody::EngagePreload {
@@ -2262,7 +2265,7 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             }
         }
         "drop_acceptance" => {
-            // rules 5: hide that an operator accepted a lost vehicle (the decisions still
+            // rules 6: hide that an operator accepted a lost vehicle (the decisions still
             // read it)
             let before = events.len();
             events.retain(|e| !matches!(&e.body, EventBody::EngageAccepted { intent, .. } if *intent == spec.id));
@@ -2271,7 +2274,7 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             }
         }
         "acceptance_by_agent" => {
-            // rules 5: an acceptance credited to an agent (in the operator's session)
+            // rules 6: an acceptance credited to an agent (in the operator's session)
             let mut done = false;
             for e in &mut events {
                 if let EventBody::EngageAccepted { intent, by, .. } = &mut e.body
@@ -2286,7 +2289,7 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             }
         }
         "hide_self_accepted" => {
-            // rules 5: a signer who accepted a lost vehicle recorded as if they had not
+            // rules 6: a signer who accepted a lost vehicle recorded as if they had not
             let mut done = false;
             for e in &mut events {
                 match &mut e.body {
@@ -2305,7 +2308,7 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             }
         }
         "acceptance_without_authority" => {
-            // rules 5: an acceptance re-credited to an operator whose session has no
+            // rules 6: an acceptance re-credited to an operator whose session has no
             // engagement authority (that session, as opened in the log)
             let plain = events.iter().find_map(|e| match &e.body {
                 EventBody::OperatorAction {

@@ -114,13 +114,13 @@ pub struct PlatformFacts {
     /// existed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sensors: Vec<SensorFact>,
-    /// The catalog's climb rate, m/s (`climb_mps`): rules 5 count one of our vehicles as able
+    /// The catalog's climb rate, m/s (`climb_mps`): rules 6 count one of our vehicles as able
     /// to change altitude at least this fast (or `vertical_rate_mps`, the larger) when they
     /// read a keep-out in 3D. Absent in logs written before it existed and for platforms
     /// without the figure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub climb_mps: Option<f64>,
-    /// The catalog's top speed, m/s (`max_mps`): rules 5 count a fixed wing of ours as able
+    /// The catalog's top speed, m/s (`max_mps`): rules 6 count a fixed wing of ours as able
     /// to dive at it down `FIXED_WING_DIVE_DEG`. Absent where the catalog has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_mps: Option<f64>,

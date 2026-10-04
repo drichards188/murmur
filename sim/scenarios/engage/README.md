@@ -42,7 +42,7 @@ The effect is an abstract event: a point, a radius, a time. Nothing here models 
   effect the target stops being detected (`after_effect = "out_of_play"`) or not
   (`"persists"`). The live stack runs the same engine against stand-ins and the contacts
   process.
-- Rules 5: a dispatched platform answers its lost-link preload a second after the dispatch
+- Rules 6: a dispatched platform answers its lost-link preload a second after the dispatch
   (`preload`, below), as the bridge reports it; with it confirmed and its link cut for longer
   than the preloaded timer it follows the preloaded action on its own
   (`lost_link_action`); once the engagement ended and it can hear us, its own values go back
@@ -66,14 +66,14 @@ tamper = "suppress_void"         # optional log attack replay must catch: propos
                                  # agent_approval, suppress_void, edit_snapshot,
                                  # drop_signature, edit_effect, strip_approvers,
                                  # drop_reset, agent_order_auto, drop_ack, loosen_policy,
-                                 # and rules 5: drop_preload, forge_preload,
+                                 # and rules 6: drop_preload, forge_preload,
                                  # drop_verify, drop_acceptance, acceptance_by_agent,
                                  # acceptance_without_authority, hide_self_accepted
                                  # (one with nothing to edit in a run's log reports "not
                                  # applicable")
 end_s = 120                      # seconds to run (default: the last step + 10)
 after_effect = "out_of_play"     # or "persists"
-preload = "confirm"              # rules 5: how the platform answers its lost-link preload:
+preload = "confirm"              # rules 6: how the platform answers its lost-link preload:
                                  # confirm (default), no_answer, mismatch (another action read
                                  # back), never (nothing reported), changed (confirmed, then
                                  # another action at the re-read near the release); a confirmed
@@ -97,7 +97,7 @@ at = [-122.4700, 37.8160]        # [lon, lat]
 velocity = [0.0, 0.0]            # east, north m/s (default 0)
 battery = 95                     # percent (default 95)
 report_interval_ms = 1000        # its link's report interval (default 1000)
-alt_m = 7000                     # rules 5: altitude MSL it reports (absent: none, 2D)
+alt_m = 7000                     # rules 6: altitude MSL it reports (absent: none, 2D)
 lost_link_s = 30                 # its own lost-link timer (default 5): what a preload shortens
 lost_for_s = 60                  # lost before the run: silent, last reported this long before
 
@@ -115,9 +115,9 @@ domain = "surface"               # default surface
 age_s = 0                        # seconds since the last detection at the start
 silent = false                   # true: no detections at all
 sources = ["3:radar"]
-alt_m = 0                        # rules 5: its estimated altitude (absent: unknown, 2D)
-no_velocity_estimate = false     # rules 5: the tracker has no velocity for it yet
-alt_age_s = 0                    # rules 5: its altitude was last ranged this long before the
+alt_m = 0                        # rules 6: its estimated altitude (absent: unknown, 2D)
+no_velocity_estimate = false     # rules 6: the tracker has no velocity for it yet
+alt_age_s = 0                    # rules 6: its altitude was last ranged this long before the
                                  # start and never again (the radar lost it; the others keep
                                  # its position fresh); sources radar and ais are the ranging ones
 
@@ -134,9 +134,9 @@ Actions (each `[[step]]` has `at_s` and `action`):
 | action | fields | what it does |
 |---|---|---|
 | `declare` | `track`, `affiliation`, `by` | an operator's declaration (logged `operator.action track.declare`) |
-| `nominate` | `by` or `agent` (+ `rationale`), `platform`, `track`, `radius_m`, `fallback` (`abort`, `return`, `loiter`), `window_s`, `accept` (rules 5: vehicles the operator accepts as lost, each since its last report) | a nomination; becomes "the last nomination" the other steps act on |
-| `accept` | `by`, `uid`, `since_s` (optional: another report than the last, which the engine refuses) | rules 5: an operator with engagement authority accepts a lost vehicle for the last nomination while it waits with no signature (without it: refused) |
-| `revoke` | `by`, `uid` | rules 5: any operator withdraws an acceptance from the last nomination (pending or under way) |
+| `nominate` | `by` or `agent` (+ `rationale`), `platform`, `track`, `radius_m`, `fallback` (`abort`, `return`, `loiter`), `window_s`, `accept` (rules 6: vehicles the operator accepts as lost, each since its last report) | a nomination; becomes "the last nomination" the other steps act on |
+| `accept` | `by`, `uid`, `since_s` (optional: another report than the last, which the engine refuses) | rules 6: an operator with engagement authority accepts a lost vehicle for the last nomination while it waits with no signature (without it: refused) |
+| `revoke` | `by`, `uid` | rules 6: any operator withdraws an acceptance from the last nomination (pending or under way) |
 | `agent_accept` | `agent`, `uid` | an agent "tries" to accept a lost vehicle: its port has no such method; recorded, nothing may move |
 | `look` | `by` | an operator with engagement authority asks for the picture (a picture token: the plan and the track now); their next `approve` quotes it |
 | `approve` | `by` | a signature: through `approve_engagement` if the session has engagement authority (quoting the token from their last `look`, or one asked for now), else `approve` (which the engine refuses for an engagement) |
@@ -164,7 +164,7 @@ calls `Engine::step_engagements` (hold the picture, release, observe, assess).
 | 05-target-reclassified | target_identity | identity changes after approval | aborted |
 | 06-target-undeclared | target_declared | declaration withdrawn after approval | aborted |
 | 07-target-moves | track_deviation | the target gets under way after approval | aborted |
-| 08-link-cut | platform_link | the platform (a USV, rules 5) goes silent mid-engagement | aborted, fallback loiter; it holds where it is on its own (its preloaded FS_ACTION 6, its 30 s timer shortened to 5 s); its own values back when the link returns |
+| 08-link-cut | platform_link | the platform (a USV, rules 6) goes silent mid-engagement | aborted, fallback loiter; it holds where it is on its own (its preloaded FS_ACTION 6, its 30 s timer shortened to 5 s); its own values back when the link returns |
 | 09-friendly-sub-near-target | keep_out_friendly | our AUV 150 m from the target | rejected |
 | 10-friendly-sub-closes | keep_out_friendly | our AUV heads in after approval | aborted |
 | 11-stale-track | target_recency | nominate on a 30 s old track | rejected |

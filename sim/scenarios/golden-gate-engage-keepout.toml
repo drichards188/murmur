@@ -1,9 +1,9 @@
-# Golden Gate traffic for the rules 5 keep-out demo (murmur-der.3, with
+# Golden Gate traffic for the rules 6 keep-out demo (murmur-der.3, with
 # sim/fleets/engage-keepout-demo.toml): the suspect fast boat comes in from Richardson Bay and
 # holds west of the bridge (the target, as in golden-gate-engage.toml), and three neutrals
-# that rules 4 counted as in the way and rules 5 tells apart:
+# that rules 4 counted as in the way and rules 6 tells apart:
 # - a fast ferry shuttling at 20 m/s 1.4 km west of the holding point: under rules 4 its
-#   2-sigma grew at 0.3 x 20 m/s (about 1.3 km two minutes out) and it blocked; under rules 5
+#   2-sigma grew at 0.3 x 20 m/s (about 1.3 km two minutes out) and it blocked; under rules 6
 #   it is predicted with acceleration noise (about 0.3 km) and is clear;
 # - a fast ferry that runs to a landing 300 m south of the holding point and waits there four
 #   minutes, then runs 4.9 km east and waits again (its legs take 4 minutes): near, it still
@@ -16,7 +16,7 @@
 # ferry waits by the holding point 243 to 483 s, leaves, waits 4.9 km east 726 to 966 s,
 # comes back (in the way from about 1,100 s) and waits by the holding point 1,209 to 1,449 s.
 # Truth only: the C2 sees what our sensors make of it. An effect is an abstract event.
-title = "Golden Gate traffic, rules 5 keep-out demo"
+title = "Golden Gate traffic, rules 6 keep-out demo"
 seed = 11
 
 [sensing]

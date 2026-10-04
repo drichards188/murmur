@@ -1,4 +1,4 @@
-//! Rules 5: an engagement's fallback preloaded as its platform's own lost-link action.
+//! Rules 6: an engagement's fallback preloaded as its platform's own lost-link action.
 //!
 //! A fallback the bridge commands after a stop can't arrive over a dead link, so at dispatch
 //! the engine's order carries a [`LostLinkPreload`]: the platform's GCS failsafe set to the

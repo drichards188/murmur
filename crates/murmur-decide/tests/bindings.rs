@@ -283,7 +283,7 @@ fn approved_armed_orbit() -> (String, IntentId) {
     let op = e.open_operator_session(OperatorId::new("op-1")).unwrap();
     clock.advance_ms(1_000);
     e.approve(id, op.authority(), None, &w, &tr).unwrap();
-    e.dispatch(id).unwrap();
+    e.dispatch(id, &w).unwrap();
     e.record_op_state(id, &uid("blade-1"), "active", "on station")
         .unwrap();
     e.finish(id, TaskOutcome::Done).unwrap();
@@ -643,7 +643,7 @@ fn the_engine_refuses_op_states_replay_would_reject() {
     let refused = |r: Result<(), EngineError>| matches!(r, Err(EngineError::NotItsOrder { .. }));
     let before = log.lines().len();
     assert!(refused(e.record_op_state(id, &uid("sky-1"), "sent", "")));
-    e.dispatch(id).unwrap();
+    e.dispatch(id, &w).unwrap();
     let after_dispatch = log.lines().len();
     assert!(refused(e.record_op_state(id, &uid("hawk-1"), "sent", "")));
     assert_eq!(log.lines().len(), after_dispatch, "nothing logged");

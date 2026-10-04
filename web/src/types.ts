@@ -138,7 +138,17 @@ export interface Estimate {
   now: { t: number; position: LngLat; radius_m: number }
 }
 
-export type OpState = 'queued' | 'sent' | 'acked' | 'active' | 'done' | 'failed' | 'superseded'
+export type OpState =
+  | 'queued'
+  | 'sent'
+  | 'starting'
+  | 'acked'
+  | 'active'
+  | 'done'
+  | 'failed'
+  | 'superseded'
+  | 'requeued'
+  | 'unconfirmed'
 
 export interface Op {
   id: number
@@ -202,7 +212,20 @@ export interface ViewSubscription {
   pin: number[]
 }
 
-export const LIFECYCLE: OpState[] = ['queued', 'sent', 'acked', 'active', 'done']
+export const LIFECYCLE: OpState[] = ['queued', 'sent', 'starting', 'acked', 'active', 'done']
+
+/** An op that ended short, in a word: failed, replaced, back to the queue (rules 5: its link
+ *  was lost before the vehicle started it), or NOT SENT (after a bridge restart another
+ *  vehicle of the order had started it, and this one had not been sent it). */
+export function opEnding(o: { state: string; detail: string }): string | null {
+  if (o.state === 'failed' && o.detail.startsWith('not sent before the bridge restarted')) return 'NOT SENT'
+  if (o.state === 'requeued') return 'back to the queue'
+  // its start went out and nothing confirmed it: it may be running; or a later look found it
+  // not running (a human decides)
+  if (o.state === 'unconfirmed') return o.detail.includes('does not run it now') || o.detail.includes('is not ') ? 'NOT RUNNING' : 'MAY BE RUNNING'
+  if (o.state === 'failed' || o.state === 'superseded') return o.state
+  return null
+}
 
 const PREFIX: Record<Kind, string> = {
   ugv: 'UGV',

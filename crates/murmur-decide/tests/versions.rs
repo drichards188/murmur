@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 10] = [
+const LOGS: [(&str, u32); 12] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -37,20 +37,29 @@ const LOGS: [(&str, u32); 10] = [
     // rules 4: the same scenario, its run.started naming the operator roster and its
     // engagement order the loiter radius
     ("v4-engagement-scenario-01.jsonl", 4),
-    // rules 5 (clean builds of fcbe3c1 and 7c55ed3): the same scenario with the fallback
-    // preloaded as the platform's lost-link action (the order's preload, set and restore
-    // reports), and scenario 54, a lost friendly an operator accepted (engage.accepted, the
-    // catalog's climb rate in the world facts); and a live run (a clean 553a640, anchored as it
-    // ran): two nominations rejected for a fast ferry by the point, a third clear of a far
-    // fast ferry and, by altitude, of our aircraft at 7,000 m and an aircraft at 3,000 m, its
-    // USV's lost-link action preloaded, released, restored
+    // rules 5: the same scenario, its policy carrying the [queue] for unreachable vehicles
+    // (policy schema 3)
     ("v5-engagement-scenario-01.jsonl", 5),
-    ("v5-lost-friendly-accepted-scenario-54.jsonl", 5),
-    ("v5-engagement-live.jsonl", 5),
+    // rules 5, live: orders queued for an AUV under water and a copter whose link was cut
+    // (the run the next one resumed from; that one is checked against it below)
+    ("v5-queue-live-before-restart.jsonl", 5),
+    // rules 6 (clean builds): the same scenario with the fallback preloaded as the platform's
+    // lost-link action (the order's preload, its write-ahead, set, re-reads and restore), and
+    // scenario 54, a lost friendly an operator accepted (engage.accepted, the catalog's climb
+    // rate in the world facts); and a live run, anchored as it ran: two nominations rejected
+    // for a fast ferry by the point, a third clear of a far fast ferry and, by altitude, of
+    // our aircraft at 9,000 m, its USV's lost-link action preloaded, re-read, released,
+    // restored
+    ("v6-engagement-scenario-01.jsonl", 6),
+    ("v6-lost-friendly-accepted-scenario-54.jsonl", 6),
+    ("v6-engagement-live.jsonl", 6),
 ];
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v5-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v6-engagement-scenario-01.jsonl";
+
+/// The committed scenario log of rules 5 (the queue).
+const V5_SCENARIO: &str = "v5-engagement-scenario-01.jsonl";
 
 fn accepting(rules: RulesAccepted) -> ReplayOptions<'static> {
     ReplayOptions {
@@ -133,11 +142,11 @@ fn the_live_log_matches_the_anchors_written_as_it_ran() {
 }
 
 #[test]
-fn the_rules_5_live_log_preloads_restores_and_reads_altitude() {
+fn the_rules_6_live_log_preloads_restores_and_reads_altitude() {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/data/anchors/v5-engagement-live.anchors");
+        .join("tests/data/anchors/v6-engagement-live.anchors");
     let anchors = std::fs::read_to_string(p).unwrap();
-    let log = fixture("v5-engagement-live.jsonl");
+    let log = fixture("v6-engagement-live.jsonl");
     let a = anchor::verify(&log, &anchors);
     assert!(a.ok(), "{:?}", a.problems);
     assert!(a.shutdown, "a clean stop anchored the head");
@@ -346,7 +355,7 @@ fn a_downgraded_claim_is_caught_by_what_the_log_carries() {
         "{:?}",
         whats(&r)
     );
-    // a rules 5 log claiming rules 4 still carries the preload and the fallback_preload check,
+    // a rules 6 log claiming rules 5 still carries the preload and the fallback_preload check,
     // and one with an accepted lost friendly carries the acceptance and the climb rates
     for (name, markers) in [
         (
@@ -354,19 +363,19 @@ fn a_downgraded_claim_is_caught_by_what_the_log_carries() {
             &["a lost-link preload report", "an engagement order's lost-link preload", "a fallback_preload check"][..],
         ),
         (
-            "v5-lost-friendly-accepted-scenario-54.jsonl",
+            "v6-lost-friendly-accepted-scenario-54.jsonl",
             &["an acceptance of a lost vehicle", "an accepted lost vehicle in decision inputs", "a platform's climb rate"][..],
         ),
-        ("v5-engagement-live.jsonl", &["a vehicle's altitude fact", "a lost-link preload report"][..]),
+        ("v6-engagement-live.jsonl", &["a vehicle's altitude fact", "a lost-link preload report", "a track altitude's time"][..]),
     ] {
         let mut ls = lines(&fixture(name));
-        assert!(ls[0].contains("\"rules_version\":5,"));
-        ls[0] = ls[0].replacen("\"rules_version\":5,", "\"rules_version\":4,", 1);
-        let r = with(&rechain(&ls), RulesAccepted::Exactly(4));
+        assert!(ls[0].contains("\"rules_version\":6,"));
+        ls[0] = ls[0].replacen("\"rules_version\":6,", "\"rules_version\":5,", 1);
+        let r = with(&rechain(&ls), RulesAccepted::Exactly(5));
         let w = whats(&r);
         for marker in markers {
             assert!(
-                w.iter().any(|m| m.contains(marker) && m.contains("only builds of rules 5")),
+                w.iter().any(|m| m.contains(marker) && m.contains("only builds of rules 6")),
                 "{name} {marker}: {w:?}"
             );
         }
@@ -393,6 +402,25 @@ fn a_downgraded_claim_is_caught_by_what_the_log_carries() {
         "{:?}",
         whats(&r)
     );
+    // a rules 5 log claiming rules 4 (and policy schema 2) still carries its [queue]
+    let mut ls = lines(&fixture(V5_SCENARIO));
+    assert!(ls[0].contains("\"rules_version\":5,\"policy_schema\":3,"));
+    ls[0] = ls[0].replacen(
+        "\"rules_version\":5,\"policy_schema\":3,",
+        "\"rules_version\":4,\"policy_schema\":2,",
+        1,
+    );
+    let r = with(&rechain(&ls), RulesAccepted::Exactly(4));
+    let w = whats(&r);
+    assert!(
+        w.iter()
+            .any(|m| m.contains("a [queue] policy") && m.contains("only builds of rules 5")),
+        "{w:?}"
+    );
+    assert!(
+        w.iter().any(|m| m.contains("a key of a later policy schema")),
+        "{w:?}"
+    );
 }
 
 #[test]
@@ -416,9 +444,9 @@ fn a_policy_schema_claim_must_fit_its_keys() {
         "{:?}",
         whats(&r)
     );
-    // a rules 5 policy (schema 3 keys) claiming schema 2
+    // a rules 6 policy (schema 4 keys) claiming schema 3
     let mut ls = lines(&fixture(CURRENT));
-    ls[0] = ls[0].replacen("\"policy_schema\":3,", "\"policy_schema\":2,", 1);
+    ls[0] = ls[0].replacen("\"policy_schema\":4,", "\"policy_schema\":3,", 1);
     let r = replay_str(&rechain(&ls)).unwrap();
     let later: Vec<&str> = r
         .mismatches
@@ -427,7 +455,7 @@ fn a_policy_schema_claim_must_fit_its_keys() {
         .map(|m| m.logged.as_str())
         .collect();
     for key in ["track_velocity_sigma_mps", "track_accel_mps2", "vertical_rate_mps", "keep_out_vertical_m", "track_alt_max_age_s"] {
-        assert!(later.contains(&format!("rules.engage.{key} (schema 3)").as_str()), "{key}: {later:?}");
+        assert!(later.contains(&format!("rules.engage.{key} (schema 4)").as_str()), "{key}: {later:?}");
     }
     // a schema newer than replay knows
     let mut ls = lines(&fixture(CURRENT));
@@ -486,4 +514,87 @@ fn an_unknown_policy_key_still_fails_to_parse() {
     // the old names are known keys, not a loosened parser
     let line = run_started_with_ttl_key("ttl_whatever_s");
     assert!(serde_json::from_str::<audit::Event>(&line).is_err());
+}
+
+/// Rules 5, live (murmur-5p4, after its review): the queue across a bridge crash, from a clean
+/// build. The first run queued an orbit for an AUV under water (sent when it surfaced), and
+/// sent an orbit to a SITL copter whose link was cut before it could start it: the order came
+/// back to the queue (`intent.requeued`) and went again once the link was back, re-checked.
+/// The bridge was then killed (SIGKILL: no shutdown anchor, every decision anchored up to the
+/// last event) with the copter en route; the second run carried both orbits over and followed
+/// the copter's (ArduCopter's own mission compared item by item: not sent again), then queued
+/// and sent a boat's patrol through a Starlink outage, and stopped cleanly. Each was anchored
+/// as it ran.
+const QUEUE_BEFORE: &str = "v5-queue-live-before-restart.jsonl";
+const QUEUE_AFTER: &str = "v5-queue-live-after-restart.jsonl";
+
+fn anchors_of(name: &str) -> String {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data/anchors")
+        .join(name.replace(".jsonl", ".anchors"));
+    std::fs::read_to_string(p).unwrap()
+}
+
+#[test]
+fn the_live_queue_logs_replay_across_the_restart() {
+    let before = fixture(QUEUE_BEFORE);
+    let after = fixture(QUEUE_AFTER);
+    // the first run crashed: its anchors hold up to the last one, with no shutdown anchor,
+    // and its last decision is anchored (review 2: no unanchored tail of decisions)
+    let a = anchor::verify(&before, &anchors_of(QUEUE_BEFORE));
+    assert!(!a.shutdown);
+    assert!(
+        a.problems.iter().all(|p| p.what.starts_with("no shutdown anchor")),
+        "{:?}",
+        a.problems
+    );
+    let last_decision = lines(&before)
+        .iter()
+        .rev()
+        .find(|l| l.contains("\"type\":\"intent.state\"") || l.contains("\"type\":\"op.state\""))
+        .and_then(|l| serde_json::from_str::<audit::Event>(l).ok())
+        .map(|e| e.seq);
+    assert!(a.last_anchored >= last_decision, "{:?} {last_decision:?}", a.last_anchored);
+    let a = anchor::verify(&after, &anchors_of(QUEUE_AFTER));
+    assert!(a.ok(), "{:?}", a.problems);
+    assert!(a.shutdown, "a clean stop anchored the head");
+    // rules 5 logs: replayed with their rules accepted
+    let r = with(&before, RulesAccepted::Exactly(5));
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert_eq!(r.rules_version, 5);
+    assert!(r.queued >= 1 && r.requeued >= 1 && r.recheck_dispatched >= 2, "{r:?}");
+    assert_eq!(r.build.as_ref().map(|b| b.dirty), Some(Some(false)));
+    // the second run, checked against the first
+    let opts = |previous| ReplayOptions {
+        previous,
+        rules: RulesAccepted::Exactly(5),
+        ..ReplayOptions::default()
+    };
+    let r = replay_str_with(&after, &opts(Some(&before))).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert!(r.resumed >= 1, "{r:?}");
+    assert!(r.recheck_dispatched >= 1, "{r:?}");
+    // the orbit started in the first run is followed in the second, never sent again
+    assert!(after.contains("\"type\":\"intent.resumed\""));
+    assert!(after.contains("\"state\":\"dispatched\""));
+    // review T6, on the live log: the AUV's orbit was still waiting to be followed when the
+    // second run stopped (its follow op's last state `queued`); a third run would still
+    // follow it, as the AUV had started it in the first
+    let auv = r
+        .open
+        .iter()
+        .find(|o| o.spec.uids == vec![murmur_decide::Uid::new("1")])
+        .expect("the AUV's orbit is open");
+    assert_eq!(auv.ops.get(&murmur_decide::Uid::new("1")).map(String::as_str), Some("queued"));
+    assert_eq!(auv.committed(), vec![murmur_decide::Uid::new("1")]);
+    assert_eq!(auv.resumes_as(), State::Dispatched);
+    // not without it, nor against an edited one
+    let r = with(&after, RulesAccepted::Exactly(5));
+    assert!(whats(&r).iter().any(|w| w.contains("not verified")), "{:?}", whats(&r));
+    let mut ls = lines(&before);
+    let n = ls.len();
+    ls[n - 1] = ls[n - 1].replacen("\"t\":", "\"t\": ", 1);
+    let edited = ls.join("\n");
+    let r = replay_str_with(&after, &opts(Some(&edited))).unwrap();
+    assert!(!r.ok(), "an edited previous log is not the one carried from");
 }

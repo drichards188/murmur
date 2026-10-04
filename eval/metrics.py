@@ -560,7 +560,7 @@ def engage_signatures(events: list[dict]) -> dict[str, Any]:
     - an engagement's events without its `intent.created` (no nomination in the log) are a
       violation where it is dispatched or released.
 
-    Rules 5, not violations: lost vehicles operators accepted (`engage.accepted`), revoked
+    Rules 6, not violations: lost vehicles operators accepted (`engage.accepted`), revoked
     (`engage.acceptance_revoked`), and signatures by an operator who also accepted one
     (`self_accepted`), counted."""
     sessions: dict[Any, tuple[str, bool]] = {}

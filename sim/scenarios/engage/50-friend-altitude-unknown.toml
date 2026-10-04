@@ -1,4 +1,4 @@
-# Rules 5, fail closed on missing data: the same MALE aircraft circling over the target,
+# Rules 6, fail closed on missing data: the same MALE aircraft circling over the target,
 # but its altitude is not reported. A 3D keep-out needs both altitudes; with one unknown it
 # stays 2D (no ceiling) for that vehicle, which blocks.
 title = "A friendly above the effect with an unknown altitude blocks"

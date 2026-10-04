@@ -4,7 +4,9 @@
 //! Every task goes through `crate::decision`: `POST /api/tasks` (the console) is a thin
 //! wrapper that creates a human intent. Its response is the tasking as before plus
 //! `intent_id`, `state` and `dispatched`; an intent that needs approval answers 202 with
-//! `dispatched: false` and why, one the rules reject answers 422 with the reasons.
+//! `dispatched: false` and why, one approved but held for a vehicle the link can't reach now
+//! (rules 5, state `queued`) answers 202 saying so, one the rules reject answers 422 with the
+//! reasons. `GET /api/inbox` lists the queue as `queued` (each with `reach_now`).
 //!
 //! Intents: `POST /api/intents` (the task request plus optional `constraints` and
 //! `rationale`; `task: "engage"` with `track`, `effect_radius_m`, `window_s`, `fallback`
@@ -172,6 +174,14 @@ async fn tasks(
             StatusCode::ACCEPTED,
             format!("not dispatched: waiting for an operator to approve intent {id} ({reason})"),
         )
+    } else if state == murmur_decide::State::Queued {
+        // rules 5: approved, held for a vehicle the link can't carry it to now
+        (
+            StatusCode::ACCEPTED,
+            format!(
+                "queued: intent {id} is approved and goes when the link can carry it, re-checked first ({reason})"
+            ),
+        )
     } else {
         (
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -280,7 +290,7 @@ async fn intent_action(
         "reject" => app.decision.reject(&op, id, note),
         "cancel" => app.decision.cancel(&op, id, note),
         "abort" => app.decision.abort(&op, id, note),
-        // rules 5: {"uid": n, "since": engine ms or null}, as the keep-out check names it
+        // rules 6: {"uid": n, "since": engine ms or null}, as the keep-out check names it
         "accept_unknown" => match serde_json::from_slice::<crate::decision::engage::AcceptUnknown>(&body) {
             Ok(a) => app.decision.accept_unknown(&op, id, &a),
             Err(e) => {
@@ -290,7 +300,7 @@ async fn intent_action(
                 );
             }
         },
-        // rules 5: {"uid": n}
+        // rules 6: {"uid": n}
         "revoke_unknown" => match serde_json::from_slice::<crate::decision::engage::AcceptUnknown>(&body) {
             Ok(a) => app.decision.revoke_unknown(&op, id, a.uid),
             Err(e) => {

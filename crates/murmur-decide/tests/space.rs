@@ -284,7 +284,7 @@ fn chosen_option_is_approved_by_a_human_and_dispatched() {
 
     // The vehicle dispatch path refuses a space intent and changes nothing.
     assert!(matches!(
-        run.engine.dispatch(id),
+        run.engine.dispatch(id, &world),
         Err(EngineError::SpaceIntent(_))
     ));
     assert_eq!(run.engine.intent(id).unwrap().state(), State::Approved);

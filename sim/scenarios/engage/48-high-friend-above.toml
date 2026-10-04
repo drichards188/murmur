@@ -1,4 +1,4 @@
-# Rules 5: keep-outs read in 3D where both altitudes are known. Our MALE aircraft circles
+# Rules 6: keep-outs read in 3D where both altitudes are known. Our MALE aircraft circles
 # 1.5 km around the target at 7,000 m: in 2D its circle covers the effect point and blocks
 # (the 2D keep-out is a cylinder of unlimited height). In 3D the effect is on the surface
 # (the target's altitude 0 m, 2-sigma 20 m) and the keep-out reaches 275 m above it; the

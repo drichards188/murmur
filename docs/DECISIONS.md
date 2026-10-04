@@ -113,7 +113,7 @@ group. Dates are 2026.
   NAV_CONTROLLER_OUTPUT reported in that mode and at most 12 s old, stamps the circle with
   the older of the center and the position, and logs its source and center time.
 - **The approval's fallback is the platform's own lost-link action; no release without it**
-  (10-04, murmur-der.2; rules 5). A fallback commanded over a dead link can't arrive, so the
+  (10-04, murmur-der.2; rules 6). A fallback commanded over a dead link can't arrive, so the
   engagement order carries a preload: the platform's GCS failsafe set to the fallback
   (ArduPilot 4.8: Plane `FS_LONG_ACTN` 1 RTL; Copter `FS_GCS_ENABLE` 1 RTL or 7 Brake;
   Rover `FS_ACTION` 1 RTL, 2 Hold, 6 Loiter; Sub `FS_GCS_ENABLE` 3 depth hold), whatever
@@ -147,7 +147,7 @@ group. Dates are 2026.
   USV holds where it is on its own after its link is cut), 40 to 44, 62 (changed before the
   release).
 - **Keep-outs predict a track with acceleration noise, not with its speed** (10-04,
-  murmur-der.3; rules 5). The tracker's growth law, `max(1, 0.3 x speed)` times the span at
+  murmur-der.3; rules 6). The tracker's growth law, `max(1, 0.3 x speed)` times the span at
   2-sigma, made a 20 m/s ferry 300 s out block 3.6 km around its predicted position while a
   slow boat that can turn on a dime counted as tighter. A protected track is now predicted
   along its velocity with `sqrt(tracker sigma^2 + (1 m/s x span)^2 + q span^3 / 3)`, q the
@@ -184,7 +184,7 @@ group. Dates are 2026.
   m, it still does. Our vehicles' altitude (MSL) is a world fact now. Regressions: 48 to 52,
   61 (a passive-only aircraft altitude), 63 (a ground target), 64 (a stale radar altitude).
 - **A lost friendly blocks until an operator accepts it, explicitly and logged** (10-04,
-  murmur-der.3; rules 5). Its reachable circle still grows without a cap (fail closed), but
+  murmur-der.3; rules 6). Its reachable circle still grows without a cap (fail closed), but
   the check says since when its position is unknown, and an operator may accept it for one
   engagement ("vehicle X position unknown since T: accept"): at the nomination or while it
   waits with no signature (after one, the plan was signed without it), logged as
@@ -492,15 +492,15 @@ group. Dates are 2026.
   sent to loiter at the predicted point; the effect is released only when the picture holds,
   the predicted time has come, the platform is at the point and the track is estimated
   inside the radius. If not within `late_s`, it aborts.
-- **Keep-outs are conservative, in 2D** (10-03; revised 10-04, rules 5: see the three
+- **Keep-outs are conservative, in 2D** (10-03; revised 10-04, rules 6: see the three
   keep-out entries under Direction). Every vehicle of ours (all domains) but the
   engaging platform, carried along its velocity to the effect time, or, without a fresh
   velocity, wherever it could get at cruise speed; every track but the target and tracks an
   operator declared hostile (`declared_by` set: an affiliation without a declaration is
   protected; neutral, unknown, suspect, assumed friend, stale ones too) with 2-sigma of its
-  predicted uncertainty. Until rules 5 a vertical cylinder of unlimited height (an aircraft
+  predicted uncertainty. Until rules 6 a vertical cylinder of unlimited height (an aircraft
   high overhead counted), a fast track's 2-sigma growing with its speed, and a lost friendly
-  blocking with no way past; rules 5 read altitude where both sides know it, predict tracks
+  blocking with no way past; rules 6 read altitude where both sides know it, predict tracks
   with acceleration noise, and let an operator accept a lost friendly, each failing closed
   on missing data. Open design question (not decided here):
   another declared hostile inside the keep-out is exempt like the target, so an effect may
@@ -569,6 +569,76 @@ group. Dates are 2026.
   intercept's loiter radius, which the bridge chose and nothing logged, is now part of the
   engagement order (rules 4) and recomputed; a loiter fallback's centre and radius are still
   the bridge's and not logged.
+- **Orders for unreachable vehicles are queued, re-checked, delivered once** (10-04,
+  murmur-5p4; rules 5). An approved order is dispatched only when the link can carry it to
+  every vehicle; otherwise it waits in the queue with a bounded, per-kind deadline (safety
+  commands short: a hold or rtl delivered long after it was given may no longer be wanted).
+  It leaves the queue only through a re-check on the world when its vehicles can be reached
+  (logged, recomputed by replay): sent exactly as approved, back to the inbox when a human
+  approved a picture that has since changed (an auto-approved order is sent if the policy
+  still says auto), voided when a check fails. A human's approval is not stretched over a
+  changed picture; the policy's is re-run. Gated on rules 5; older logs replay unchanged.
+- **Reachable means heard and the picture fresh again** (10-04, found live). A link that comes
+  back brings the heartbeat a tick before the position and navigation reports; a re-check
+  then read the pre-outage picture, failed closed on its age and voided the order. For
+  anything but a hold or rtl, a vehicle is reachable only once its navigation status and
+  position are fresh by the checks' own limit. A mission also needs a link reporting at least
+  every 5 s: an AUV on its acoustic modem can't take an upload (ArduPilot drops one after 8 s
+  without the next item), so its order waits until it surfaces.
+- **Exactly once is the bridge's job, by telemetry** (10-04). ArduPilot does not use
+  COMMAND_LONG's confirmation field to drop duplicates, so a retry is sent only when neither
+  the ACK nor telemetry showing the effect (a heartbeat in the mode, armed, MISSION_CURRENT
+  on the first item) came back. A mission upload is a transaction whose commit is the start
+  (current item, arm, mode): a lost final ACK is settled by asking the vehicle; after a link
+  lost mid-way (waited out for the kind's queue wait) or a bridge restart, a full download
+  compared item by item decides between following, starting only, and uploading again; a
+  vehicle that had started an order is never sent it again.
+- **A restarted bridge carries open intents over from its own log** (10-04). The log is the
+  record; a small pointer file (`logs/audit/.resume-<http port>.json`: the log, the open ids,
+  rewritten when they change) says where to look, and a bridge starting within 15 minutes
+  replays that log and carries every open vehicle intent over as `intent.resumed`, keeping
+  its id. Replay checks each against the previous log. The evaluation harness turns it off
+  (`MURMUR_RESUME=0`): its stacks reuse port blocks.
+- **A reboot ends the op; nothing is re-sent behind the operator** (10-04). A vehicle whose
+  time since boot went back lost the mode and armed state its order set: its running op
+  fails saying so and the intent ends failed, logged as `vehicle.rebooted`. A queued order
+  approved by a human before the reboot goes back to the inbox.
+- **The queue after its review: a lost link goes back through the queue, never around it**
+  (10-04, review of d3ccb5d). An order sent whose link drops before the vehicle started it
+  no longer waits in the executor for up to the kind's wait and then resumes unchecked: its
+  op ends `requeued` and the order goes back to the queue (`intent.requeued`, replayed
+  against the op states), where it is re-checked like any other, and the next delivery asks
+  the vehicle what it holds first. An executor waits for a lost link only to follow an order
+  its vehicle had started (after a restart), 120 s at most. The newest order for a vehicle
+  stands: an older queued one is voided, never a newer one, and a newer queued order stops
+  an older one's op that had not started. A human's approval is held 120 s at most
+  (`[queue] human_expire_s`) and does not survive a bridge restart unseen; an agent's order
+  on a vehicle with a human's order waiting needs a human. Carry-over happens only after a
+  crash (a clean stop deletes the pointer, whose writer must also be gone) or by naming the
+  log, onto the same platforms under the same uids, from a log that matches its anchors.
+  "Started" is sticky across op states and restarts. A mission is ours only if command,
+  frame, position, altitude and parameters match. A reboot during an outage longer than the
+  uptime shows as the boot instant jumping later (more than 30 s, plus 5 % of the silence for
+  a simulator that runs slow): residual, a vehicle up less than about 30 s before such an
+  outage. Copters arm in GUIDED (not BRAKE). A command answered IN_PROGRESS is never sent
+  again. Replay rejects a re-check at or after its deadline, a dispatch not right after its
+  re-check, and (rules 5) a direct dispatch without the reach that allowed it.
+- **A start that went out unconfirmed may be running; it is never started again on its own**
+  (10-04, second review of the queue). An ACK lost after the vehicle took the mission mode
+  left the op looking unstarted, so a later delivery restarted a mission the vehicle's
+  failsafe had stopped. The op now marks the moment its start goes out (`starting`: the
+  mission mode, a hold or rtl mode, new items to a vehicle already flying a mission); a link
+  lost after it ends the op `unconfirmed`, the order goes back to the queue, and its next
+  delivery only follows it if the vehicle runs it; if it does not, a human decides (the
+  inbox, saying the vehicle's mode). Every path that delivers an order sent before asks the
+  vehicle first, a human's re-approval included. An order that ends while it may be
+  running says so, keeps its tasking on the map, and a vehicle running it raises an alert.
+  A carried-over order needs the same vehicle, not only the same platform (callsign and
+  home within 200 m, from a fleet identity written beside the log), and a log whose anchors
+  and fleet identity can be read (or `MURMUR_RESUME_UNVERIFIED=1`); every decision is
+  anchored as it is written, so a crashed log is covered to its last decision. A reboot is
+  judged at the vehicle clock's own rate (a slow simulator is not a reboot). An agent may
+  not replace a human's order that no vehicle has started yet.
 - **The operator roster is logged and checked** (10-04, second review of the bindings; rules
   4). A log could credit a session, with engagement authority, to an operator the bridge was
   never configured with (`MURMUR_OPERATORS` and `MURMUR_ENGAGE_OPERATORS` were not logged).
@@ -598,7 +668,7 @@ group. Dates are 2026.
   `MURMUR_OPERATORS`: a stand-in for real authentication (the lists are logged as the run's
   roster from rules 4, which bounds who a log can name, not who sent a header). Until rules
   5 the fallback was only commanded by the bridge after a stop, so a platform that lost its
-  link en route followed its own lost-link failsafe; from rules 5 it is preloaded as that
+  link en route followed its own lost-link failsafe; from rules 6 it is preloaded as that
   failsafe (see above). A bridge restarted mid-engagement puts the platform's own failsafe
   back from its last log's ledger (`.last-run-<port>` names that log); the engagement itself
   does not survive the restart.

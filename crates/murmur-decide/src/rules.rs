@@ -99,7 +99,7 @@ pub enum RuleId {
     PlatformNav,
     /// The platform has no other engagement in play (one engagement per platform).
     PlatformFree,
-    /// Rules 5: the platform's own lost-link action can be the engagement's fallback (at
+    /// Rules 6: the platform's own lost-link action can be the engagement's fallback (at
     /// nomination), and is confirmed preloaded as it (at the release).
     FallbackPreload,
 }
@@ -206,17 +206,18 @@ pub enum UnknownEndurance {
 /// with the rules it was produced under. `run.started` records it; a log without one was
 /// written by version 1. The changelog is in `crates/murmur-decide/README.md`. Version 4
 /// changes no check: it logs the operator roster and the engagement order's loiter radius,
-/// which replay then binds (a log claiming 3 or earlier can't carry them). Version 5 (the
-/// engagement part): the platform's lost-link action preloaded as the fallback and
-/// confirmed before a release, and the keep-outs' prediction model, altitude and accepted
-/// unknown friendlies (`crate::engage`).
-pub const RULES_VERSION: u32 = 5;
+/// which replay then binds (a log claiming 3 or earlier can't carry them). Version 5 holds
+/// orders for unreachable vehicles in a queue and re-checks them before dispatch
+/// ([`crate::queue`]). Version 6 (the engagement part): the platform's lost-link action
+/// preloaded as the fallback and confirmed before a release, the keep-outs' prediction
+/// model, altitude and accepted unknown friendlies (`crate::engage`).
+pub const RULES_VERSION: u32 = 6;
 
 /// The version of the policy file's schema: bumped when a key is added, renamed or removed.
 /// A renamed or removed key stays an optional field of its own, so an old log both parses
 /// and re-serializes byte for byte; `run.started` records it (absent: 1), and replay checks
 /// that the logged policy uses no key of a later schema ([`crate::EngageRules::schema_keys`]).
-pub const POLICY_SCHEMA: u32 = 3;
+pub const POLICY_SCHEMA: u32 = 4;
 
 fn current_rules_version() -> u32 {
     RULES_VERSION

@@ -602,3 +602,6 @@ mod space_tasking;
 
 /// Engagements through the bridge (`tests/engagement.rs`).
 mod engagement;
+
+/// The queue for unreachable vehicles through the bridge (`tests/queue.rs`, rules 5).
+mod queue;

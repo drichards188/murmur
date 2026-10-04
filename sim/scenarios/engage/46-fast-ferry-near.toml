@@ -1,4 +1,4 @@
-# Rules 5: the same 20 m/s ferry crossing 500 m north of the effect point still blocks: its
+# Rules 6: the same 20 m/s ferry crossing 500 m north of the effect point still blocks: its
 # 2-sigma (about 320 m) reaches inside the 275 m keep-out. The tuning narrows how far a
 # predictable track blocks; it does not let one through the keep-out.
 title = "A nearby fast ferry still blocks"

@@ -1,4 +1,4 @@
-# Rules 5: a track's altitude counts for a 3D keep-out only when a sensor that ranges backs
+# Rules 6: a track's altitude counts for a 3D keep-out only when a sensor that ranges backs
 # it. The airliner of scenario 52 at 3,000 m over the effect point, but seen by EO/IR only
 # (a bearing and an elevation angle, no range): its altitude does not count, the keep-out
 # stays 2D, and the nomination is rejected.

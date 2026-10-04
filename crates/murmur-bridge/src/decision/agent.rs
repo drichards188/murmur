@@ -235,7 +235,7 @@ impl Decision {
     fn agent_proposal(&self, req: &IntentRequest) -> Result<Proposal, DecisionError> {
         if req.task == "engage" {
             // a nomination: the engine routes it to operators with engagement authority;
-            // accepting a lost vehicle is an operator's decision, never an agent's (rules 5)
+            // accepting a lost vehicle is an operator's decision, never an agent's (rules 6)
             if !req.engage.accept_unknown.is_empty() {
                 return Err(DecisionError::new(
                     403,
@@ -397,6 +397,27 @@ fn explain(i: &Intent) -> String {
                 s.push_str(&format!(
                     " It expires at t={:.0} if nobody decides.",
                     e.0 as f64 / 1000.0
+                ));
+            }
+            if spec.source.is_agent() {
+                s.push_str(" The proposing agent may withdraw it until then.");
+            }
+        }
+        State::Queued => {
+            s.push_str(
+                concat!(
+                    " It is approved but held: a vehicle it is for can't be reached now (a silent",
+                    " link, or an AUV whose acoustic modem can't carry a mission). When the link",
+                    " can carry it, its checks run again on the world then: it is sent if they",
+                    " pass, goes back to the inbox if a human approved a picture that changed (or",
+                    " was approved before a bridge restart, or long enough ago), and is voided if a",
+                    " check fails or a newer order for its vehicle stands.",
+                ),
+            );
+            if let Some(q) = i.queue() {
+                s.push_str(&format!(
+                    " It expires at t={:.0} if the vehicle can't be reached by then.",
+                    q.expires_t.0 as f64 / 1000.0
                 ));
             }
             if spec.source.is_agent() {

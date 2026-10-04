@@ -60,7 +60,7 @@ function nameOf(vehicles: Vehicle[], uid: string | number) {
   return v ? callsign(v) : `vehicle ${uid}`
 }
 
-/** Rules 5: the lost vehicles an operator accepted for this engagement, shown to every signer
+/** Rules 6: the lost vehicles an operator accepted for this engagement, shown to every signer
  *  (and while it is under way), each with a button to withdraw it (any operator may). */
 function Acceptances({ intent: i, vehicles, now, onDone, signing }: Pick<CardProps, 'intent' | 'vehicles' | 'now' | 'onDone'> & { signing?: boolean }) {
   const [error, setError] = useState<string | null>(null)

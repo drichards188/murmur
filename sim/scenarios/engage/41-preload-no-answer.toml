@@ -1,4 +1,4 @@
-# Rules 5: at dispatch the platform's lost-link action is set to the fallback and read back.
+# Rules 6: at dispatch the platform's lost-link action is set to the fallback and read back.
 # Here the platform never answers the parameter protocol: the preload is reported
 # unconfirmed (engage.preload, with the bridge's error), the engagement stops at once
 # (system: the platform's lost-link action could not be preloaded) with its fallback, and

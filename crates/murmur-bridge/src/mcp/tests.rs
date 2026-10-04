@@ -245,7 +245,7 @@ const FORBIDDEN_NAME_STEMS: &[&str] = &[
     "control", "arm", "takeoff", "land", "goto", "fly", "drive", "steer", "mode", "mission",
     "waypoint", "upload", "send", "mavlink", "cancel", "override", "abort", "engage", "fire",
     "strike", "launch",
-    // rules 5: accepting a lost friendly's unknown position is an operator's decision
+    // rules 6: accepting a lost friendly's unknown position is an operator's decision
     "accept", "acknowledg", "waive",
 ];
 

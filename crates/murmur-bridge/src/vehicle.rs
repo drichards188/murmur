@@ -24,6 +24,43 @@ pub const TRAIL_KEEP: usize = 120;
 /// Firmware that doesn't report EKF status gets this long after a 3D fix before it counts as
 /// ready to navigate.
 const NO_EKF_GRACE_S: f64 = 15.0;
+/// A time since boot this much earlier than the last one is a reboot, not a reordered packet
+/// (messages of one burst carry times milliseconds apart; the links deliver in order).
+pub const REBOOT_SLACK_MS: u64 = 1_000;
+/// A reboot also shows when the time since boot did not go back (an outage longer than the
+/// uptime before it): the boot instant it implies (arrival less the time since boot, at the
+/// rate the vehicle's clock runs against ours) is later than the recent reports put it, by
+/// more than this (a slow link's delay), plus a share of the silence before the report for
+/// what the rate estimate may be off by (see [`boot_rate`]). A reboot that came within this
+/// of the last report before an outage that outlasts the new uptime is not seen.
+pub const BOOT_JUMP_S: f64 = 30.0;
+/// The vehicle's clock rate is estimated over the recent reports once they span this long
+/// (a simulator may run slower than the wall clock); before that it is taken as 1.
+const BOOT_RATE_SPAN_S: f64 = 30.0;
+/// The reports the rate and the boot instant's baseline come from: one a second, this far
+/// back.
+const BOOT_RATE_WINDOW_S: f64 = 300.0;
+/// How far off the arrival delays may put the rate estimate: this many seconds of delay
+/// across its span.
+const BOOT_DELAY_S: f64 = 3.0;
+/// The drift allowed per second of silence on top of the delays' share: a rate that changes.
+const BOOT_DRIFT_PER_S: f64 = 0.02;
+/// Allowed per second of silence while the rate is not known yet.
+const BOOT_DRIFT_UNKNOWN_PER_S: f64 = 0.15;
+
+/// The vehicle clock's rate against ours from (monotonic s, time since boot s) samples, and
+/// the drift to allow per second of silence for it: estimated over the samples' span once it
+/// is [`BOOT_RATE_SPAN_S`] (bounded to 0.5..1.5), else 1 with a wide allowance.
+pub fn boot_rate(samples: &VecDeque<(f64, f64)>) -> (f64, f64) {
+    match (samples.front(), samples.back()) {
+        (Some(a), Some(b)) if b.0 - a.0 >= BOOT_RATE_SPAN_S => {
+            let span = b.0 - a.0;
+            let rate = ((b.1 - a.1) / span).clamp(0.5, 1.5);
+            (rate, BOOT_DRIFT_PER_S + BOOT_DELAY_S / span)
+        }
+        _ => (1.0, BOOT_DRIFT_UNKNOWN_PER_S),
+    }
+}
 
 /// What the launcher's fleet manifest says a node is: callsign, platform, role, domain, link...
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -187,6 +224,23 @@ pub struct Vehicle {
     /// Events for the audit log (`vehicle.event`), oldest first.
     pub events: VecDeque<VehicleEvent>,
     system_status: Option<apm::MavState>,
+    /// When anything was last heard from it (monotonic s, the tokio clock): the task layer
+    /// tells a lost link mid-exchange from a vehicle that refuses.
+    pub heard_mono: Option<f64>,
+    /// The last time since boot it reported (ms: GLOBAL_POSITION_INT, ATTITUDE, SYSTEM_TIME,
+    /// HIGH_LATENCY2), when it booted by that (wall s, estimated once: the arrival time less
+    /// the time since boot) and how many reboots the bridge has seen (each one: the time since
+    /// boot went back). An op started before a reboot is over: the vehicle lost the mode and
+    /// armed state its order set.
+    pub boot_ms: Option<u64>,
+    pub booted_wall: Option<f64>,
+    pub boot_epoch: u32,
+    /// Reboots waiting for the audit log, oldest first.
+    pub reboots: VecDeque<Reboot>,
+    /// Recent reports' (monotonic s, time since boot s), one a second over the last
+    /// [`BOOT_RATE_WINDOW_S`], and when the last report came.
+    boot_samples: VecDeque<(f64, f64)>,
+    boot_heard_mono: Option<f64>,
 }
 
 /// Arrival times (wall clock, seconds) of the messages behind each decision fact.
@@ -237,6 +291,16 @@ pub struct VehicleEvent {
     /// "mode", "failsafe" or "statustext"
     pub kind: &'static str,
     pub text: String,
+}
+
+/// A reboot the bridge saw: the time since boot before and after (ms), the new boot instant
+/// and the one before (wall s). Logged as `vehicle.rebooted` by the decision loop.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Reboot {
+    pub boot_ms_before: u64,
+    pub boot_ms: u64,
+    pub booted_wall: f64,
+    pub booted_before_wall: Option<f64>,
 }
 
 impl Vehicle {
@@ -294,6 +358,9 @@ impl Vehicle {
                 }
                 // vx north, vy east, cm/s
                 self.vel_en = Some([f64::from(m.vy) / 100.0, f64::from(m.vx) / 100.0]);
+                if m.time_boot_ms > 0 {
+                    self.observe_boot(u64::from(m.time_boot_ms));
+                }
                 for link in self.forward_to.values() {
                     link.send_raw(raw);
                 }
@@ -335,6 +402,9 @@ impl Vehicle {
                 self.seen.gps = Some(wall);
                 self.hl_failure = Some(m.failure_flags);
                 self.seen.hl2 = Some(wall);
+                if m.timestamp > 0 {
+                    self.observe_boot(u64::from(m.timestamp));
+                }
             }
             MavMessage::PARAM_VALUE(m) => match mav::chars_to_string(&m.param_id).as_str() {
                 "Q_ENABLE" => {
@@ -356,7 +426,15 @@ impl Vehicle {
                 });
                 self.seen.nav_target = self.nav_target.map(|_| clock::wall());
             }
+            MavMessage::SYSTEM_TIME(m) => {
+                if m.time_boot_ms > 0 {
+                    self.observe_boot(u64::from(m.time_boot_ms));
+                }
+            }
             MavMessage::ATTITUDE(m) => {
+                if m.time_boot_ms > 0 {
+                    self.observe_boot(u64::from(m.time_boot_ms));
+                }
                 self.yaw = Some(f64::from(m.yaw).to_degrees().rem_euclid(360.0));
                 self.roll = Some(f64::from(m.roll).to_degrees());
                 self.pitch = Some(f64::from(m.pitch).to_degrees());
@@ -488,6 +566,73 @@ impl Vehicle {
             self.events.pop_front();
         }
         self.events.push_back(VehicleEvent { kind, text });
+    }
+
+    /// A reported time since boot: the boot instant at first; a reboot when it goes back, or
+    /// when the boot instant it implies jumps later than the recent reports put it (see
+    /// [`BOOT_JUMP_S`]).
+    fn observe_boot(&mut self, boot_ms: u64) {
+        let wall = clock::wall();
+        let mono = clock::mono();
+        let boot_s = boot_ms as f64 / 1000.0;
+        let booted = wall - boot_s;
+        let silent = self.boot_heard_mono.map_or(0.0, |t| (mono - t).max(0.0));
+        self.boot_heard_mono = Some(mono);
+        // the boot instant each report implies at the vehicle clock's own rate: a constant
+        // (plus the link's delay) until it reboots
+        let (rate, drift) = boot_rate(&self.boot_samples);
+        let implied_at = |m: f64, b: f64| m - b / rate;
+        let implied = implied_at(mono, boot_s);
+        let baseline = self
+            .boot_samples
+            .iter()
+            .map(|(m, b)| implied_at(*m, *b))
+            .fold(f64::INFINITY, f64::min);
+        let went_back = self
+            .boot_ms
+            .is_some_and(|before| boot_ms + REBOOT_SLACK_MS < before);
+        let jumped =
+            baseline.is_finite() && implied - baseline > BOOT_JUMP_S + drift * silent;
+        match self.boot_ms {
+            Some(before) if went_back || jumped => {
+                self.boot_epoch += 1;
+                // the boot instant before: as estimated then, or (a jump) the one the recent
+                // reports put it at, by the monotonic clock the jump was measured on
+                let booted_before = if went_back {
+                    self.booted_wall
+                } else {
+                    Some(booted - (implied - baseline))
+                };
+                self.booted_wall = Some(booted);
+                self.boot_ms = Some(boot_ms);
+                self.boot_samples.clear();
+                if self.reboots.len() == EVENTS_KEEP {
+                    self.reboots.pop_front();
+                }
+                self.reboots.push_back(Reboot {
+                    boot_ms_before: before,
+                    boot_ms,
+                    booted_wall: booted,
+                    booted_before_wall: booted_before,
+                });
+            }
+            Some(_) => self.boot_ms = Some(boot_ms),
+            None => {
+                self.boot_ms = Some(boot_ms);
+                self.booted_wall = Some(booted);
+            }
+        }
+        if self.boot_samples.back().is_none_or(|(m, _)| mono - m >= 1.0) {
+            self.boot_samples.push_back((mono, boot_s));
+        }
+        while self.boot_samples.len() > 1
+            && self
+                .boot_samples
+                .front()
+                .is_some_and(|(m, _)| mono - m > BOOT_RATE_WINDOW_S)
+        {
+            self.boot_samples.pop_front();
+        }
     }
 
     fn set_mode(&mut self, mav_type: apm::MavType, custom_mode: u32) {
@@ -742,7 +887,10 @@ impl VehicleCell {
                 .unwrap_or_else(|e| e.into_inner())
                 .pong(m.ts1, now);
         }
-        let notify = self.write(|v| v.apply(msg, raw, now));
+        let notify = self.write(|v| {
+            v.heard_mono = Some(now);
+            v.apply(msg, raw, now)
+        });
         if notify && self.events.receiver_count() > 0 {
             let _ = self.events.send(Arc::new(msg.clone()));
         }

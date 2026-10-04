@@ -97,7 +97,7 @@ export interface EngageView {
   signatures?: { by: string; t: number; effect_point: LngLat; effect_t: number; self_accepted?: boolean }[]
   /** signatures dropped with their plan because it stopped holding */
   reset?: { t: number; dropped: string[]; reason: string } | null
-  /** rules 5: our vehicles an operator accepted as lost for this engagement (position unknown
+  /** rules 6: our vehicles an operator accepted as lost for this engagement (position unknown
    *  since `since`, engine ms; null: never reported): its friendly keep-out leaves them out
    *  while they stay lost since then. Every signer's picture carries them. */
   accepted?: { uid: number | null; engine_uid: string; since: number | null; by: string }[]
@@ -144,7 +144,7 @@ export interface PictureToken {
   plan: EngagePreview
   frozen: boolean
   track: TrackIdentity
-  /** rules 5: the lost vehicles accepted for it when it was shown (engine uid -> who, since
+  /** rules 6: the lost vehicles accepted for it when it was shown (engine uid -> who, since
    *  which report): the signature covers them; a token from before a change is refused */
   unknown_accepted?: Record<string, { since: number | null; by: string }>
 }
@@ -214,7 +214,7 @@ export async function nominate(req: { track: string; uid: number; radius: number
   return b.intent as Intent
 }
 
-/** Rules 5: any operator withdraws an acceptance of a lost vehicle (pending or under way):
+/** Rules 6: any operator withdraws an acceptance of a lost vehicle (pending or under way):
  *  the checks count the vehicle again, which stops an engagement it now blocks. */
 export async function revokeUnknown(id: number, uid: number): Promise<Intent> {
   const b = await post(`/api/intents/${id}/revoke_unknown`, { uid })

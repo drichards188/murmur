@@ -17,6 +17,10 @@ use crate::intent::{
     State, Task, TaskKind, Transition, next_state,
 };
 use crate::policy::{self, Policy, PolicyDecision, Tier};
+use crate::queue::{
+    self as queue, Basis, CarriedApproval, OpenIntent, QueueState, Reach, RecheckRecord,
+    ResumedFrom, Verdict,
+};
 use crate::rules::{self, CheckResult, Outcome};
 use serde::Serialize;
 use crate::space::{
@@ -87,7 +91,7 @@ pub enum EngineError {
     /// give them: nothing was logged.
     #[error("operator {operator}: {why}")]
     NotOnRoster { operator: OperatorId, why: String },
-    /// Rules 5: an acceptance of a lost friendly the engine can't take (the vehicle is not
+    /// Rules 6: an acceptance of a lost friendly the engine can't take (the vehicle is not
     /// lost, or not since the report it names; the engagement already has signatures):
     /// nothing was logged.
     #[error("vehicle {uid}: {why}")]
@@ -177,6 +181,32 @@ pub(crate) fn engaged_vehicles<'a>(
     out
 }
 
+/// Rules 5: the orders a human approved that wait on `spec`'s vehicles, other than `spec`
+/// itself, by vehicle (the lowest id when there are several): queued, or dispatched with no
+/// vehicle having started them yet (an agent's order there would replace them before they
+/// run). The engine logs this with each decision (`waiting`); replay recomputes it from its
+/// own intents. `intents`: (id, spec, state, approved by a human, some vehicle started it).
+pub(crate) fn waiting_vehicles<'a>(
+    intents: impl Iterator<Item = (IntentId, &'a IntentSpec, State, bool, bool)>,
+    spec: &IntentSpec,
+) -> BTreeMap<Uid, IntentId> {
+    let mut out: BTreeMap<Uid, IntentId> = BTreeMap::new();
+    for (id, s, state, by_human, started) in intents {
+        let waits = match state {
+            State::Queued => true,
+            State::Dispatched => !started,
+            _ => false,
+        };
+        if id == spec.id || !waits || !by_human || s.kind() == TaskKind::Engage {
+            continue;
+        }
+        for u in spec.uids.iter().filter(|u| s.uids.contains(u)) {
+            out.entry(u.clone()).or_insert(id);
+        }
+    }
+    out
+}
+
 /// What the task layer should execute for an approved intent.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DispatchOrder {
@@ -200,6 +230,30 @@ pub enum Order {
 pub enum TaskOutcome {
     Done,
     Failed { detail: String },
+}
+
+/// What [`Engine::dispatch_or_queue`] did with an approved intent.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Routed {
+    /// Every vehicle could be reached: handed on now.
+    Dispatched(Order),
+    /// Some vehicle can't be reached now: held (`intent.queued`) until `expires_t`.
+    Queued { expires_t: Time, reach: Vec<Reach> },
+}
+
+/// What [`Engine::dequeue`] did with a queued intent.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Dequeued {
+    /// A vehicle still can't be reached: nothing logged, still queued.
+    Waiting(Vec<Reach>),
+    /// Re-checked and dispatched: execute the order.
+    Dispatched(Order),
+    /// Re-checked: a human must decide again; it waits in the inbox.
+    Inbox,
+    /// Re-checked: a check failed on the world now; voided.
+    Voided,
+    /// Its deadline passed first; expired.
+    Expired,
 }
 
 pub struct Engine {
@@ -230,6 +284,8 @@ pub struct Engine {
     last_dispatched: Option<IntentId>,
     /// Per vehicle, the intent dispatched to it last: an older one's order there was replaced.
     newest_on: BTreeMap<Uid, IntentId>,
+    /// Rules 5: when each vehicle was last logged rebooting (`vehicle.rebooted`).
+    rebooted: BTreeMap<Uid, Time>,
 }
 
 impl std::fmt::Debug for Engine {
@@ -292,6 +348,7 @@ impl Engine {
             roster: roster.clone(),
             last_dispatched: None,
             newest_on: BTreeMap::new(),
+            rebooted: BTreeMap::new(),
         };
         let policy = e.policy.clone();
         e.emit(EventBody::RunStarted {
@@ -424,7 +481,7 @@ impl Engine {
         self.get(id)
     }
 
-    /// Rules 5: [`Engine::submit`] for an engagement nomination whose submitter, an operator
+    /// Rules 6: [`Engine::submit`] for an engagement nomination whose submitter, an operator
     /// with engagement authority, also accepts, as their explicit decision, that some of our
     /// vehicles are lost: each `(uid, since)` names a vehicle whose position is unknown since
     /// its report at `since` (none: it never reported one). Logged as `engage.accepted`, with
@@ -466,7 +523,7 @@ impl Engine {
         self.get(id)
     }
 
-    /// Rules 5: an operator with engagement authority accepts, for engagement `id` while it
+    /// Rules 6: an operator with engagement authority accepts, for engagement `id` while it
     /// waits with no signature yet, that vehicle `uid` is lost since its report at `since`
     /// (see [`Engine::submit_accepting`]). Logged as `engage.accepted` with the vehicle's facts
     /// and the world's time; the next check reads it, and every signer's picture token
@@ -520,7 +577,7 @@ impl Engine {
         self.get(id)
     }
 
-    /// Rules 5: any operator withdraws an acceptance of a lost vehicle for engagement `id`
+    /// Rules 6: any operator withdraws an acceptance of a lost vehicle for engagement `id`
     /// (pending, approved or under way: it only restricts, like an abort). Logged as
     /// `engage.acceptance_revoked`; its checks, and the picture held after approval, count
     /// the vehicle again (which stops an engagement it now blocks).
@@ -554,19 +611,19 @@ impl Engine {
         self.get(id)
     }
 
-    /// Whether `uid` is lost since exactly `since` on `world` (rules 5 acceptances).
+    /// Whether `uid` is lost since exactly `since` on `world` (rules 6 acceptances).
     fn acceptable(&self, uid: &Uid, since: Option<Time>, world: &WorldSnapshot) -> Result<(), EngineError> {
         let no = |why: String| EngineError::NotAccepted {
             uid: uid.clone(),
             why,
         };
-        if self.policy.rules.rules_version < 5 {
+        if self.policy.rules.rules_version < 6 {
             return Err(no("these decision rules have no acceptance of a lost vehicle".into()));
         }
         engage::lost_since_report(world.vehicles.get(uid), since, world.t, &self.policy.rules).map_err(no)
     }
 
-    /// Rules 5: the platform's report of its lost-link preload for dispatched engagement
+    /// Rules 6: the platform's report of its lost-link preload for dispatched engagement
     /// `id` (`set`: its own values read first, then the order's preload set and read back;
     /// `restore`: its own values put back once the engagement ended). Logged as
     /// `engage.preload` with whether the read-back confirms it (replay recomputes that). A
@@ -656,7 +713,7 @@ impl Engine {
         }
     }
 
-    /// Rules 5: a platform's own lost-link values owed back outside an engagement's own
+    /// Rules 6: a platform's own lost-link values owed back outside an engagement's own
     /// restore, logged as `platform.restore`: carried over at start from an earlier log whose
     /// preload was never confirmed back (`carried`), each attempt to put them back, and an
     /// engagement's restore that [`Engine::record_preload`] refused. Returns whether the
@@ -690,12 +747,12 @@ impl Engine {
         Ok(confirmed)
     }
 
-    /// Rules 5: another engagement than `id` under way on vehicle `uid`.
+    /// Rules 6: another engagement than `id` under way on vehicle `uid`.
     fn engaged_elsewhere(&self, id: IntentId, uid: &Uid) -> bool {
         self.engagement_holding(uid, Some(id)).is_some()
     }
 
-    /// Rules 5: an engagement (other than `except`) under way on vehicle `uid`: it holds the
+    /// Rules 6: an engagement (other than `except`) under way on vehicle `uid`: it holds the
     /// platform's lost-link preload, so nothing restores the platform's own values meanwhile.
     fn engagement_holding(&self, uid: &Uid, except: Option<IntentId>) -> Option<IntentId> {
         self.intents()
@@ -1002,7 +1059,16 @@ impl Engine {
         } else {
             format!("approved by {by}{signers}")
         };
-        self.transition(id, Transition::Approve, reason)?;
+        let t = self.transition_at(id, Transition::Approve, reason)?;
+        // what this approval rests on: its re-check, the decision that asked for it
+        let policy = self.get(id)?.policy().cloned();
+        self.get_mut(id)?.set_basis(Basis {
+            t,
+            by_human: true,
+            checks: results,
+            policy,
+            engaged: inputs.engaged.clone(),
+        });
         self.get(id)
     }
 
@@ -1112,7 +1178,7 @@ impl Engine {
             }
         };
         self.tokens.remove(&token);
-        // rules 5: the signer also accepted one of its lost vehicles (allowed, recorded)
+        // rules 6: the signer also accepted one of its lost vehicles (allowed, recorded)
         let self_accepted = self
             .get(id)?
             .engagement()
@@ -1158,7 +1224,7 @@ impl Engine {
             .uids
             .first()
             .map(|u| engage::loiter_radius(u, &inputs, &self.policy.rules));
-        // rules 5: its lost-link action as the fallback (the checks just passed say there is one)
+        // rules 6: its lost-link action as the fallback (the checks just passed say there is one)
         let preload = engage::order_preload(&spec, &inputs, &snapshot, &self.policy.rules);
         let t = self.emit(EventBody::ApprovalGranted {
             intent: id,
@@ -1224,7 +1290,7 @@ impl Engine {
         let e = intent.engagement_mut();
         e.signed.clear();
         e.plan = None;
-        // rules 5: the acceptances go with the plan they were given for (given again, on the
+        // rules 6: the acceptances go with the plan they were given for (given again, on the
         // new picture)
         e.accepted.clear();
         e.reset = Some(engage::ResetRecord { t, dropped, reason });
@@ -1596,7 +1662,7 @@ impl Engine {
         }
         let dispatched = state == State::Dispatched;
         let prev_t = eng.watch.as_ref().map_or(snap.t, |w| w.t);
-        // rules 5: the release needs the platform's lost-link action read back as the
+        // rules 6: the release needs the platform's lost-link action read back as the
         // fallback while it was dispatched
         let preloaded = eng
             .preload
@@ -1685,7 +1751,7 @@ impl Engine {
         )
     }
 
-    /// Rules 5: the vehicles an operator accepted as lost for engagement `id` (a fact the
+    /// Rules 6: the vehicles an operator accepted as lost for engagement `id` (a fact the
     /// engine logs with each of its decisions, `unknown_accepted`; replay tracks the
     /// `engage.accepted` events and compares).
     fn accepted_for(&self, id: IntentId) -> BTreeMap<Uid, engage::AcceptedUnknown> {
@@ -1694,6 +1760,47 @@ impl Engine {
             .and_then(Intent::engagement)
             .map(|e| e.accepted.clone())
             .unwrap_or_default()
+    }
+
+    /// Rules 5: the human-approved orders waiting in the queue on `spec`'s vehicles, other
+    /// than `spec` itself: a fact the engine logs with each decision (`waiting`).
+    fn waiting_for(&self, spec: &IntentSpec) -> BTreeMap<Uid, IntentId> {
+        waiting_vehicles(
+            self.intents.values().map(|i| {
+                (
+                    i.id(),
+                    i.spec(),
+                    i.state(),
+                    i.basis().is_some_and(|b| b.by_human),
+                    !i.committed().is_empty(),
+                )
+            }),
+            spec,
+        )
+    }
+
+    /// Rules 5: a newer order still standing for one of the intent's vehicles, and which
+    /// vehicle (see [`Engine::dequeue`]): an older order is neither sent nor followed over it.
+    pub fn newer_order(&self, id: IntentId) -> Option<(IntentId, Uid)> {
+        self.newer_on(self.intents.get(&id)?.spec())
+    }
+
+    /// Rules 5: a newer order still standing for one of `spec`'s vehicles (approved, queued,
+    /// dispatched, or waiting for a human's approval after a human submitted it), and which
+    /// vehicle. An older queued order never goes over it: the newest order stands.
+    fn newer_on(&self, spec: &IntentSpec) -> Option<(IntentId, Uid)> {
+        self.intents.values().find_map(|i| {
+            let standing = match i.state() {
+                State::Approved | State::AutoApproved | State::Queued | State::Dispatched => true,
+                State::PendingApproval => !i.spec().source.is_agent(),
+                _ => false,
+            };
+            if i.id() <= spec.id || i.spec().kind() == TaskKind::Engage || !standing {
+                return None;
+            }
+            let u = spec.uids.iter().find(|u| i.spec().uids.contains(u))?;
+            Some((i.id(), u.clone()))
+        })
     }
 
     /// For the console (not a decision, not logged): an engagement's checks and preview on
@@ -1736,8 +1843,29 @@ impl Engine {
     /// The bridge voids an intent whose basis no longer holds (vehicle lost, superseded).
     /// Anyone can stop an action; only a human can authorize one.
     pub fn void(&mut self, id: IntentId, reason: &str) -> Result<&Intent, EngineError> {
-        self.transition(id, Transition::Void, format!("system: {reason}"))?;
+        let note = self.running_note(id);
+        self.transition(id, Transition::Void, format!("system: {reason}{note}"))?;
         self.get(id)
+    }
+
+    /// Rules 5: what a vehicle may still be doing with an intent that ends or goes to a human
+    /// unconfirmed: running it (its start went out and nothing confirmed it), or holding it
+    /// (it was sent before its link was lost). Empty otherwise.
+    fn running_note(&self, id: IntentId) -> String {
+        let Some(i) = self.intents.get(&id) else {
+            return String::new();
+        };
+        if !i.maybe_started().is_empty() {
+            let who: Vec<String> = i.maybe_started().iter().map(ToString::to_string).collect();
+            return format!(
+                " (it may be running on vehicle(s) {}: its start went out before the link was lost, and nothing confirmed it since; look at the vehicle)",
+                who.join(", ")
+            );
+        }
+        if i.dispatched_before() && i.state() == State::Queued {
+            return " (it was sent before its link was lost: the vehicle may hold it; look at the vehicle)".into();
+        }
+        String::new()
     }
 
     /// Expire every pending approval past its deadline. Call periodically.
@@ -1754,32 +1882,108 @@ impl Engine {
         for id in &due {
             self.expire(*id)?;
         }
-        Ok(due)
+        // rules 5: queued intents whose vehicles were not reachable before their deadline
+        let queued: Vec<IntentId> = self
+            .intents
+            .values()
+            .filter(|i| {
+                i.state() == State::Queued && i.queue().is_some_and(|q| now >= q.expires_t)
+            })
+            .map(Intent::id)
+            .collect();
+        for id in &queued {
+            self.expire_queued(*id)?;
+        }
+        Ok(due.into_iter().chain(queued).collect())
     }
 
     /// Hand an approved (or auto-approved) vehicle intent to the task layer. A collect or
     /// cover is refused ([`EngineError::SpaceIntent`], nothing changes): it has no vehicles,
-    /// so use [`Engine::dispatch_order`].
-    pub fn dispatch(&mut self, id: IntentId) -> Result<DispatchOrder, EngineError> {
-        let spec = self.get(id)?.spec();
+    /// so use [`Engine::dispatch_order`]. Rules 5, a kind the queue holds: only if the link
+    /// reaches every vehicle on `world` ([`queue::reach`], logged with the dispatch); else
+    /// refused, nothing logged ([`Engine::dispatch_or_queue`] queues it instead).
+    pub fn dispatch(
+        &mut self,
+        id: IntentId,
+        world: &WorldSnapshot,
+    ) -> Result<DispatchOrder, EngineError> {
+        let spec = self.get(id)?.spec().clone();
         if spec.task.is_space() {
             return Err(EngineError::SpaceIntent(id));
         }
         if spec.kind() == TaskKind::Engage {
             return Err(EngineError::EngageIntent(id));
         }
-        match self.dispatch_order(id)? {
+        let order = if self.reach_needed(&spec) {
+            next_state(self.get(id)?.state(), Transition::Dispatch)
+                .map_err(|err| EngineError::Illegal { id, err })?;
+            self.refuse_queued(id)?;
+            let cfg = self.policy.queue();
+            let inputs = world.subset_for(&spec);
+            let reach = queue::reach(&spec, &inputs, &cfg, &self.policy.rules);
+            if !queue::all_reachable(&reach) {
+                return Err(EngineError::NotDispatchable {
+                    id,
+                    why: format!(
+                        "the link can't reach its vehicles now ({}): queue it (dispatch_or_queue)",
+                        queue::unreachable_summary(&reach)
+                    ),
+                });
+            }
+            let logged = self.log_inputs(&inputs)?;
+            self.dispatch_inner(id, Some((logged, reach)))?
+        } else {
+            self.dispatch_order(id)?
+        };
+        match order {
             Order::Vehicles(o) => Ok(o),
             Order::Collect(_) | Order::Cover(_) => Err(EngineError::SpaceIntent(id)),
             Order::Engage(_) => Err(EngineError::EngageIntent(id)),
         }
     }
 
+    /// Rules 5: whether dispatching `spec` straight from its approval needs the link's reach
+    /// logged with it (a kind the policy's queue holds).
+    fn reach_needed(&self, spec: &IntentSpec) -> bool {
+        self.policy.rules.rules_version >= 5 && self.policy.queue().queues(spec.kind())
+    }
+
+    /// A queued intent leaves the queue only through [`Engine::dequeue`] (its re-check).
+    fn refuse_queued(&self, id: IntentId) -> Result<(), EngineError> {
+        if self.get(id)?.state() == State::Queued {
+            return Err(EngineError::NotDispatchable {
+                id,
+                why: "it is queued: it leaves the queue through its re-check (dequeue)".into(),
+            });
+        }
+        Ok(())
+    }
+
     /// Hand any approved (or auto-approved) intent on: a [`DispatchOrder`] for vehicle
     /// tasks, a [`CollectOrder`] (the chosen option, as the last check found it) or a
     /// [`CoverOrder`] for space tasks. Logged as `intent.dispatched` (with `space` for
-    /// collect and cover).
+    /// collect and cover). Rules 5: a vehicle task the queue holds goes through
+    /// [`Engine::dispatch`] or [`Engine::dispatch_or_queue`] (the link's reach is logged with
+    /// it), and a queued intent through [`Engine::dequeue`]: refused here.
     pub fn dispatch_order(&mut self, id: IntentId) -> Result<Order, EngineError> {
+        let spec = self.get(id)?.spec().clone();
+        if self.reach_needed(&spec) {
+            return Err(EngineError::NotDispatchable {
+                id,
+                why: "under rules 5 a vehicle task is dispatched with its vehicles' reach (dispatch, dispatch_or_queue)".into(),
+            });
+        }
+        self.refuse_queued(id)?;
+        self.dispatch_inner(id, None)
+    }
+
+    /// The dispatch itself: `intent.dispatched` (with the reach that allowed it, when one was
+    /// judged), then the transition.
+    fn dispatch_inner(
+        &mut self,
+        id: IntentId,
+        reached: Option<(LoggedInputs, Vec<Reach>)>,
+    ) -> Result<Order, EngineError> {
         let intent = self.get(id)?;
         next_state(intent.state(), Transition::Dispatch)
             .map_err(|err| EngineError::Illegal { id, err })?;
@@ -1798,13 +2002,542 @@ impl Engine {
             Order::Engage(_) => "dispatched: platform sent to the effect point",
         };
         let uids = intent.spec().uids.clone();
-        self.emit(dispatched_event(intent.spec(), &order))?;
+        let mut event = dispatched_event(intent.spec(), &order);
+        if let (
+            EventBody::IntentDispatched {
+                inputs: logged,
+                reach: logged_reach,
+                ..
+            },
+            Some((inputs, reach)),
+        ) = (&mut event, reached)
+        {
+            *logged = Some(inputs);
+            *logged_reach = Some(reach);
+        }
+        self.emit(event)?;
         self.transition(id, Transition::Dispatch, reason.into())?;
+        self.get_mut(id)?.mark_dispatched();
         self.last_dispatched = Some(id);
         for u in uids {
             self.newest_on.insert(u, id);
         }
         Ok(order)
+    }
+
+    /// Rules 5: dispatch an approved (or auto-approved) vehicle intent if the link can carry
+    /// it to every one of its vehicles now ([`queue::reach`] on `world`), else hold it in the
+    /// queue (`intent.queued`, with the vehicle facts that judgement read and its deadline,
+    /// `[queue]` per kind). Space intents, engagements, kinds the policy never queues and
+    /// rules before 5 are dispatched as [`Engine::dispatch_order`] does.
+    pub fn dispatch_or_queue(
+        &mut self,
+        id: IntentId,
+        world: &WorldSnapshot,
+    ) -> Result<Routed, EngineError> {
+        let intent = self.get(id)?;
+        let state = intent.state();
+        if !matches!(state, State::Approved | State::AutoApproved) {
+            let err = next_state(state, Transition::Queue)
+                .err()
+                .unwrap_or(IllegalTransition {
+                    from: state,
+                    transition: Transition::Queue,
+                });
+            return Err(EngineError::Illegal { id, err });
+        }
+        let spec = intent.spec().clone();
+        let cfg = self.policy.queue();
+        if !self.reach_needed(&spec) {
+            return Ok(Routed::Dispatched(self.dispatch_order(id)?));
+        }
+        let inputs = world.subset_for(&spec);
+        let reach = queue::reach(&spec, &inputs, &cfg, &self.policy.rules);
+        let logged = self.log_inputs(&inputs)?;
+        if queue::all_reachable(&reach) {
+            return Ok(Routed::Dispatched(
+                self.dispatch_inner(id, Some((logged, reach)))?,
+            ));
+        }
+        // one instant for the deadline and the event, so replay recomputes it from e.t
+        let now = self.now();
+        let basis = self
+            .get(id)?
+            .basis()
+            .cloned()
+            .unwrap_or_else(|| no_basis(now));
+        let (expires_t, inbox) = cfg.bound(cfg.wait_end(spec.kind(), now), &basis, now);
+        self.emit_at(
+            now,
+            EventBody::IntentQueued {
+                intent: id,
+                inputs: logged,
+                reach: reach.clone(),
+                expires_t,
+            },
+        )?;
+        self.get_mut(id)?.set_queue(Some(QueueState {
+            t: now,
+            expires_t,
+            inbox,
+            reach: reach.clone(),
+            recheck: None,
+        }));
+        let why = queue::unreachable_summary(&reach);
+        self.transition(
+            id,
+            Transition::Queue,
+            format!(
+                "queued for at most {} s: {why}",
+                expires_t.ms_since(now) / 1000
+            ),
+        )?;
+        Ok(Routed::Queued { expires_t, reach })
+    }
+
+    /// Rules 5: try a queued intent again. Past its deadline it expires. While some vehicle
+    /// still can't be reached it stays queued and nothing is logged. Otherwise its checks run
+    /// on the world now (`check.result`, phase `dequeue`), the policy decides on the same
+    /// inputs, and the verdict ([`queue::assess`] against what the approval rested on) is
+    /// logged as `queue.recheck`: dispatch the approved order, back to the inbox (a human
+    /// must decide again), or void.
+    pub fn dequeue(
+        &mut self,
+        id: IntentId,
+        world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
+    ) -> Result<Dequeued, EngineError> {
+        let intent = self.get(id)?;
+        if intent.state() != State::Queued {
+            let err = next_state(intent.state(), Transition::Dispatch)
+                .err()
+                .unwrap_or(IllegalTransition {
+                    from: intent.state(),
+                    transition: Transition::Dispatch,
+                });
+            return Err(EngineError::Illegal { id, err });
+        }
+        let spec = intent.spec().clone();
+        let deadline = intent.queue().map(|q| q.expires_t);
+        if deadline.is_some_and(|d| self.now() >= d) {
+            return self.expire_queued(id);
+        }
+        // never an older order over a newer one for the same vehicle: the newest stands
+        if let Some((newer, uid)) = self.newer_on(&spec) {
+            let note = self.running_note(id);
+            self.transition(
+                id,
+                Transition::Void,
+                format!(
+                    "system: superseded: {newer} is a newer order for vehicle {uid} (the newest order stands){note}"
+                ),
+            )?;
+            return Ok(Dequeued::Voided);
+        }
+        let cfg = self.policy.queue();
+        let reach = queue::reach(&spec, &world.subset_for(&spec), &cfg, &self.policy.rules);
+        if !queue::all_reachable(&reach) {
+            return Ok(Dequeued::Waiting(reach));
+        }
+        let (inputs, _, results, passed) =
+            self.run_checks(&spec, CheckPhase::Dequeue, world, terrain)?;
+        // the re-check is judged before the deadline, or not at all
+        let now = self.now();
+        if deadline.is_some_and(|d| now >= d) {
+            return self.expire_queued(id);
+        }
+        let decision = passed.then(|| policy::decide(&spec, &inputs, &self.policy));
+        // without a basis (none was recorded), a human decides: nothing to compare with
+        let intent = self.get(id)?;
+        let carried = intent.basis_carried();
+        let basis = intent
+            .basis()
+            .cloned()
+            .unwrap_or_else(|| no_basis(inputs.t));
+        let since = queue::Since {
+            basis: &basis,
+            carried,
+            rebooted: &self.rebooted,
+        };
+        let recheck = queue::assess(&spec, &since, &results, passed, decision.as_ref(), &inputs);
+        let t = self.emit_at(now, EventBody::QueueRecheck {
+            intent: id,
+            reach,
+            decision: decision.clone(),
+            verdict: recheck.verdict,
+            changes: recheck.changes.clone(),
+        })?;
+        if let Some(q) = self.get_mut(id)?.queue_mut() {
+            q.recheck = Some(RecheckRecord {
+                t,
+                verdict: recheck.verdict,
+                changes: recheck.changes.clone(),
+            });
+        }
+        match (recheck.verdict, decision) {
+            // the order goes out at once, right after the re-check that allows it
+            (Verdict::Dispatch, _) => Ok(Dequeued::Dispatched(self.dispatch_inner(id, None)?)),
+            (Verdict::Inbox, Some(decision)) => {
+                self.back_to_inbox(
+                    id,
+                    Some(decision),
+                    format!(
+                        "back to the inbox from the queue: {}",
+                        recheck.changes.join("; ")
+                    ),
+                )?;
+                Ok(Dequeued::Inbox)
+            }
+            _ => {
+                let note = self.running_note(id);
+                self.transition(
+                    id,
+                    Transition::Void,
+                    format!(
+                        "re-check failed at dequeue: {}{note}",
+                        recheck.changes.join("; ")
+                    ),
+                )?;
+                Ok(Dequeued::Voided)
+            }
+        }
+    }
+
+    /// From the queue back to the inbox: a new decision is needed (`decision`, a re-check's;
+    /// none: the one it has), so the old approval and its signatures are dropped, and it
+    /// waits for a human under the policy's approval deadline (`approval.requested`).
+    fn back_to_inbox(
+        &mut self,
+        id: IntentId,
+        decision: Option<PolicyDecision>,
+        reason: String,
+    ) -> Result<(), EngineError> {
+        let task = self.get(id)?.spec().task.clone();
+        let reason = format!("{reason}{}", self.running_note(id));
+        let intent = self.get_mut(id)?;
+        if let Some(d) = decision {
+            intent.set_policy(d);
+        }
+        intent.clear_approval();
+        // the human's next approval decides, starting it again included
+        intent.clear_maybe_started();
+        let now = self.now();
+        let (expires_t, until) =
+            policy::approval_deadline(&self.policy, &task, None, &self.scenario_map(), now);
+        self.emit_at(
+            now,
+            EventBody::ApprovalRequested {
+                intent: id,
+                expires_t,
+                until,
+            },
+        )?;
+        self.get_mut(id)?.set_expires(expires_t);
+        self.transition(id, Transition::RequireApproval, reason)?;
+        Ok(())
+    }
+
+    /// A queued intent's deadline passed: `queue.expired`, then expired; or, for a human's
+    /// approval held as long as `[queue] human_expire_s` allows, back to the inbox.
+    fn expire_queued(&mut self, id: IntentId) -> Result<Dequeued, EngineError> {
+        let intent = self.get(id)?;
+        let (expires_t, since, why, inbox) = intent.queue().map_or(
+            (Time(0), Time(0), String::new(), false),
+            |q| (q.expires_t, q.t, queue::unreachable_summary(&q.reach), q.inbox),
+        );
+        let tr = if inbox {
+            Transition::RequireApproval
+        } else {
+            Transition::Expire
+        };
+        next_state(intent.state(), tr).map_err(|err| EngineError::Illegal { id, err })?;
+        let waited = expires_t.ms_since(since) / 1000;
+        let reason = if inbox {
+            format!(
+                "a human's approval waits in the queue at most {} s: back to the inbox for a new decision",
+                self.policy.queue().human_expire_s()
+            )
+        } else if why.is_empty() {
+            format!(
+                "not dispatched within {waited} s: its vehicles could not be reached{}",
+                self.running_note(id)
+            )
+        } else {
+            format!(
+                "not dispatched within {waited} s: its vehicles could not be reached ({why}){}",
+                self.running_note(id)
+            )
+        };
+        self.emit(EventBody::QueueExpired {
+            intent: id,
+            expires_t,
+            reason: reason.clone(),
+            inbox,
+        })?;
+        if inbox {
+            self.back_to_inbox(id, None, reason)?;
+            return Ok(Dequeued::Inbox);
+        }
+        self.transition(id, Transition::Expire, reason)?;
+        Ok(Dequeued::Expired)
+    }
+
+    /// Rules 5: a dispatched intent whose link was lost to every one of its vehicles before
+    /// any of them confirmed it (each vehicle's last op state `requeued`, or `unconfirmed`
+    /// when its start had gone out; none ever committed) goes back to the queue
+    /// (`intent.requeued`): re-checked on the world before it is sent again (then asking each
+    /// vehicle what it holds first, and only following it where it may have started), until
+    /// its kind's wait from the approval at the latest. When a delivery that only confirmed
+    /// an order that may have started found a vehicle not running it (`unconfirmed` there),
+    /// it is not started again on its own: it goes back to a human at once (`intent.requeued`
+    /// with its deadline now, then `queue.expired` to the inbox). Refused, nothing logged,
+    /// otherwise.
+    pub fn requeue(&mut self, id: IntentId) -> Result<Time, EngineError> {
+        let intent = self.get(id)?;
+        let refuse = |why: &str| EngineError::NotDispatchable {
+            id,
+            why: why.to_string(),
+        };
+        next_state(intent.state(), Transition::Requeue)
+            .map_err(|err| EngineError::Illegal { id, err })?;
+        let spec = intent.spec().clone();
+        if !self.reach_needed(&spec) {
+            return Err(refuse("only a vehicle task the queue holds is requeued (rules 5)"));
+        }
+        if !intent.committed().is_empty() {
+            return Err(refuse("a vehicle had started it: it is followed, never sent again"));
+        }
+        let lost: Vec<String> = spec
+            .uids
+            .iter()
+            .filter(|u| {
+                matches!(
+                    intent.ops().get(*u).map(String::as_str),
+                    Some(queue::REQUEUED_OP | queue::UNCONFIRMED_OP)
+                )
+            })
+            .map(|u| u.to_string())
+            .collect();
+        if lost.len() != spec.uids.len() {
+            return Err(refuse(
+                "requeued only when every vehicle's op ended with its link lost before it was confirmed",
+            ));
+        }
+        // a delivery that only confirmed it, to a vehicle that does not run it
+        let not_running: Vec<String> = queue::confirm_failed(intent.confirming(), intent.ops())
+            .iter()
+            .map(|u| {
+                let detail = intent.op_details().get(u).cloned().unwrap_or_default();
+                format!("vehicle {u}: {detail}")
+            })
+            .collect();
+        let cfg = self.policy.queue();
+        let now = self.now();
+        let basis = intent.basis().cloned().unwrap_or_else(|| no_basis(now));
+        let (expires_t, inbox) = if not_running.is_empty() {
+            cfg.bound(cfg.wait_end(spec.kind(), basis.t), &basis, now)
+        } else {
+            (now, true)
+        };
+        self.emit_at(
+            now,
+            EventBody::IntentRequeued {
+                intent: id,
+                expires_t,
+                inbox,
+            },
+        )?;
+        self.get_mut(id)?.set_queue(Some(QueueState {
+            t: now,
+            expires_t,
+            inbox,
+            reach: Vec::new(),
+            recheck: None,
+        }));
+        if !not_running.is_empty() {
+            self.transition(
+                id,
+                Transition::Requeue,
+                "back to the queue, on its way to a human: it may have started, and does not run now".into(),
+            )?;
+            let reason = format!(
+                "it may have started before its link was lost, and does not run now: not started again on its own; a human decides ({})",
+                not_running.join("; ")
+            );
+            self.emit(EventBody::QueueExpired {
+                intent: id,
+                expires_t,
+                reason: reason.clone(),
+                inbox: true,
+            })?;
+            // it is not running there: the reason says so, not "may be running"
+            self.get_mut(id)?.clear_maybe_started();
+            self.back_to_inbox(id, None, reason)?;
+            return Ok(expires_t);
+        }
+        let started: Vec<String> = spec
+            .uids
+            .iter()
+            .filter(|u| intent_ops_unconfirmed(self.get(id).ok(), u))
+            .map(ToString::to_string)
+            .collect();
+        let how = if started.is_empty() {
+            "before the order started".to_string()
+        } else {
+            format!(
+                "after its start went out to {} (it may be running: its next delivery only follows it there)",
+                started.join(", ")
+            )
+        };
+        self.transition(
+            id,
+            Transition::Requeue,
+            format!(
+                "back to the queue: the link to vehicle(s) {} was lost {how}; re-checked before it is sent again (for {} s at most)",
+                lost.join(", "),
+                expires_t.ms_since(now) / 1000
+            ),
+        )?;
+        Ok(expires_t)
+    }
+
+    /// Rules 5: carry an intent the previous run left open into this one (`intent.resumed`),
+    /// keeping its id. It continues queued (re-checked on the world before it goes, delivered
+    /// once) unless some vehicle had already started it, when it continues dispatched: the
+    /// bridge follows it there and never sends it again. Ids after the previous run's are
+    /// reserved with [`Engine::reserve_ids`].
+    pub fn resume(
+        &mut self,
+        open: &OpenIntent,
+        from: ResumedFrom,
+    ) -> Result<IntentId, EngineError> {
+        let id = open.spec.id;
+        let refuse = |why: &str| EngineError::NotDispatchable {
+            id,
+            why: why.to_string(),
+        };
+        if self.policy.rules.rules_version < 6 {
+            return Err(refuse("intents are carried over from rules 5 on"));
+        }
+        if self.intents.contains_key(&id) {
+            return Err(refuse("an intent with that id already exists in this run"));
+        }
+        if !queue::queueable(open.spec.kind()) {
+            return Err(refuse("only vehicle tasks are carried over"));
+        }
+        let state = open.resumes_as();
+        let cfg = self.policy.queue();
+        // the deadline it carries: its own if it was queued, else its kind's wait from the
+        // approval (bounded below for a human's approval, as at any queueing)
+        let expires_t = (state == State::Queued).then(|| {
+            open.expires_t
+                .unwrap_or_else(|| cfg.wait_end(open.spec.kind(), open.basis.t))
+        });
+        let t = self.emit(EventBody::IntentResumed {
+            intent: open.spec.clone(),
+            from: from.clone(),
+            state,
+            basis: open.basis.clone(),
+            policy: open.policy.clone(),
+            approval: open.approval.clone(),
+            expires_t,
+            ops: open.ops.clone(),
+            committed: open.committed.clone(),
+            dispatched_before: open.dispatched_before,
+            platforms: open.platforms.clone(),
+            maybe_started: open.maybe_started.clone(),
+        })?;
+        let mut intent = Intent::new(open.spec.clone());
+        intent.set_checks(open.basis.checks.clone());
+        if let Some(p) = &open.policy {
+            intent.set_policy(p.clone());
+        }
+        if let Some(a) = &open.approval {
+            intent.set_approval(carried_approval(a));
+        }
+        intent.set_basis(open.basis.clone());
+        intent.set_carried(
+            open.committed.iter().cloned().collect(),
+            open.dispatched_before,
+            true,
+            open.maybe_started.iter().cloned().collect(),
+        );
+        intent.set_resumed(crate::intent::Resumed {
+            from: from.clone(),
+            ops: open.ops.clone(),
+        });
+        if let Some(by_kind) = expires_t {
+            let (expires_t, inbox) = cfg.bound(by_kind, &open.basis, t);
+            intent.set_queue(Some(QueueState {
+                t,
+                expires_t,
+                inbox,
+                reach: Vec::new(),
+                recheck: None,
+            }));
+        }
+        let reason = match state {
+            State::Dispatched => format!(
+                "resumed after a restart from {} ({}): started on {}; followed, never sent again",
+                from.log,
+                state_name(from.was),
+                open.committed()
+                    .iter()
+                    .map(Uid::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            _ => format!(
+                "resumed after a restart from {} ({}): queued until it can be re-checked and sent",
+                from.log,
+                state_name(from.was)
+            ),
+        };
+        intent.resume_in(state, t, reason);
+        if state == State::Dispatched {
+            for u in &open.spec.uids {
+                self.newest_on.insert(u.clone(), id);
+            }
+        }
+        self.intents.insert(id, intent);
+        self.next_intent = self.next_intent.max(id.0 + 1);
+        Ok(id)
+    }
+
+    /// New intents get ids from `next` on (after a restart: past every id of the previous
+    /// run, so an id names one intent across the carried-over logs).
+    pub fn reserve_ids(&mut self, next: u64) {
+        self.next_intent = self.next_intent.max(next);
+    }
+
+    /// Rules 5: a vehicle rebooted (its time since boot went back, or its boot instant
+    /// jumped later than `booted_before_t` by more than [`queue::BOOT_TOLERANCE_MS`]): logged
+    /// as `vehicle.rebooted` with both readings and the new boot instant. Refused, nothing
+    /// logged, when it shows neither.
+    pub fn record_reboot(
+        &mut self,
+        uid: &Uid,
+        boot_ms_before: u64,
+        boot_ms: u64,
+        booted_t: Time,
+        booted_before_t: Option<Time>,
+    ) -> Result<(), EngineError> {
+        if let Some(why) = queue::reboot_mismatch(boot_ms_before, boot_ms, booted_t, booted_before_t)
+        {
+            return Err(EngineError::NotDispatchable {
+                id: IntentId(0),
+                why: format!("vehicle {uid}: {why}"),
+            });
+        }
+        let t = self.emit(EventBody::VehicleRebooted {
+            uid: uid.clone(),
+            boot_ms_before,
+            boot_ms,
+            booted_t,
+            booted_before_t,
+        })?;
+        self.rebooted.insert(uid.clone(), t);
+        Ok(())
     }
 
     /// Report a dispatched intent's progress on one of its own vehicles (for a collect or
@@ -1845,6 +2578,8 @@ impl Engine {
             state: state.into(),
             detail: detail.into(),
         })?;
+        self.get_mut(id)?
+            .record_op(uid, state, detail, queue::committed_op(state));
         Ok(())
     }
 
@@ -1968,6 +2703,17 @@ impl Engine {
             .map_err(|err| EngineError::Illegal { id, err })
     }
 
+    /// [`Self::transition`], returning the time the state change was logged at.
+    fn transition_at(
+        &mut self,
+        id: IntentId,
+        transition: Transition,
+        reason: String,
+    ) -> Result<Time, EngineError> {
+        self.transition(id, transition, reason)?;
+        Ok(self.last_t)
+    }
+
     fn expire(&mut self, id: IntentId) -> Result<(), EngineError> {
         let expires_t = self.get(id)?.expires_t().unwrap_or(Time(0));
         next_state(self.get(id)?.state(), Transition::Expire)
@@ -2008,6 +2754,7 @@ impl Engine {
             inputs.space = self.ask_space(&spec.task, inputs.t)?;
         }
         inputs.engaged = self.engaged_for(spec);
+        inputs.waiting = self.waiting_for(spec);
         if spec.kind() == TaskKind::Engage {
             inputs.unknown_accepted = self.accepted_for(spec.id);
         }
@@ -2140,7 +2887,7 @@ impl Engine {
         })?;
         self.next_intent += 1;
         self.intents.insert(id, Intent::new(spec.clone()));
-        // rules 5: the submitter's acceptances of lost vehicles, before the checks read them
+        // rules 6: the submitter's acceptances of lost vehicles, before the checks read them
         // (only an engagement operator's submission carries any: the others pass none)
         if let Some(a) = accept {
             for (uid, since) in a.list {
@@ -2187,10 +2934,20 @@ impl Engine {
             .flatten()
             .filter(|by| is_self_approval(&spec.source, by.operator()));
         let rule = decision.rule.clone();
+        // what an approval here rests on (auto, or the submitter's own): these checks and
+        // this decision, on these inputs
+        let basis = Basis {
+            t: inputs.t,
+            by_human: tier == Tier::Human && at_submission.is_some(),
+            checks: results.clone(),
+            policy: Some(decision.clone()),
+            engaged: inputs.engaged.clone(),
+        };
         self.get_mut(id)?.set_policy(decision);
         match (tier, at_submission) {
             (Tier::Auto, _) => {
-                self.transition(id, Transition::AutoApprove, reason)?;
+                let t = self.transition_at(id, Transition::AutoApprove, reason)?;
+                self.get_mut(id)?.set_basis(Basis { t, ..basis });
             }
             (Tier::Human, Some(by)) => {
                 let t = self.emit(EventBody::ApprovalAtSubmission {
@@ -2209,11 +2966,12 @@ impl Engine {
                     at_submission: true,
                     note: None,
                 });
-                self.transition(
+                let t = self.transition_at(
                     id,
                     Transition::AuthorizeAtSubmission,
                     format!("{reason}; authorized at submission by {}", by.operator()),
                 )?;
+                self.get_mut(id)?.set_basis(Basis { t, ..basis });
             }
             (Tier::Human, None) => {
                 // one instant for the deadline and the event, so replay recomputes it from e.t
@@ -2333,13 +3091,13 @@ pub(crate) fn order_for(
                 } else {
                     None
                 },
-                // rules 5 on: the platform's lost-link action as the fallback
-                preload: if rules.rules_version >= 5 {
-                    Some(
+                // rules 6 on: the platform's lost-link action as the fallback
+                preload: if rules.rules_version >= 6 {
+                    Some(Box::new(
                         preload
                             .cloned()
                             .ok_or_else(|| not("no lost-link preload from the approval"))?,
-                    )
+                    ))
                 } else {
                     None
                 },
@@ -2369,6 +3127,8 @@ pub(crate) fn dispatched_event(spec: &IntentSpec, order: &Order) -> EventBody {
             Order::Engage(o) => Some(o.clone()),
             _ => None,
         },
+        inputs: None,
+        reach: None,
     }
 }
 
@@ -2425,14 +3185,14 @@ pub(crate) fn op_state_owner(spec: &IntentSpec, uid: &Uid) -> Result<(), String>
     }
 }
 
-/// Rules 5: who accepts lost vehicles at a nomination, and which.
+/// Rules 6: who accepts lost vehicles at a nomination, and which.
 struct Acceptor<'a> {
     by: &'a OperatorId,
     session: SessionId,
     list: &'a [(Uid, Option<Time>)],
 }
 
-/// Rules 5: what the bridge reports of an engagement's lost-link preload
+/// Rules 6: what the bridge reports of an engagement's lost-link preload
 /// ([`Engine::record_preload`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PreloadReport {
@@ -2449,7 +3209,7 @@ pub struct PreloadReport {
     pub vehicle: Option<engage::VehicleIdentity>,
 }
 
-/// Rules 5: a platform's own lost-link values owed back outside an engagement's restore
+/// Rules 6: a platform's own lost-link values owed back outside an engagement's restore
 /// ([`Engine::record_platform_restore`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlatformRestoreReport {
@@ -2467,16 +3227,16 @@ pub struct PlatformRestoreReport {
     pub vehicle: Option<engage::VehicleIdentity>,
 }
 
-/// Rules 5: how a stop for a preload that did not confirm begins (after `system: `); replay
+/// Rules 6: how a stop for a preload that did not confirm begins (after `system: `); replay
 /// requires such a stop to follow an unconfirmed `engage.preload` set.
 pub(crate) const PRELOAD_FAILED: &str = "the platform's lost-link action could not be preloaded: ";
 
-/// Rules 5: how a stop for a re-read that no longer shows the preload begins; replay requires
+/// Rules 6: how a stop for a re-read that no longer shows the preload begins; replay requires
 /// it to follow an unconfirmed `engage.preload` verify.
 pub(crate) const PRELOAD_CHANGED: &str = "the platform's lost-link action changed: ";
 
 /// Why a preload report can't be this engagement's, if it can't: never dispatched; another
-/// vehicle than its platform; an order without a preload (before rules 5); a second `set`;
+/// vehicle than its platform; an order without a preload (before rules 6); a second `set`;
 /// a `restore` without a `set`, while the engagement is under way, or after one confirmed.
 /// The engine refuses these; replay flags them.
 #[allow(clippy::too_many_arguments)]
@@ -2624,6 +3384,37 @@ pub(crate) fn op_state_mismatch(
     None
 }
 
+/// Whether `uid`'s last op on the intent ended `unconfirmed` (its start went out).
+fn intent_ops_unconfirmed(intent: Option<&Intent>, uid: &Uid) -> bool {
+    intent.is_some_and(|i| i.ops().get(uid).map(String::as_str) == Some(queue::UNCONFIRMED_OP))
+}
+
+/// A basis that forces a human: no checks to compare with (every result is a change), by a
+/// human. Used for a queued intent with no recorded basis (never written by this engine).
+pub(crate) fn no_basis(t: Time) -> Basis {
+    Basis {
+        t,
+        by_human: true,
+        checks: Vec::new(),
+        policy: None,
+        engaged: BTreeMap::new(),
+    }
+}
+
+/// The approval a resumed intent carries, as the engine records approvals.
+fn carried_approval(a: &CarriedApproval) -> Approval {
+    Approval {
+        by: a.by.clone(),
+        session: a.session,
+        t: a.t,
+        self_approved: a.self_approved,
+        // carried intents are vehicle tasks: no engagement, nothing accepted
+        self_accepted: false,
+        at_submission: a.at_submission,
+        note: None,
+    }
+}
+
 fn amend_detail(old: IntentId, new: IntentId, chosen: &ChosenCollect) -> String {
     format!(
         "{old} -> {new}: NORAD {} at {}",
@@ -2696,7 +3487,7 @@ pub struct Preview {
 /// ```compile_fail,E0599
 /// use murmur_decide::{AgentPort, IntentId, Uid, WorldSnapshot};
 /// fn agent_code(port: &mut AgentPort<'_>, world: &WorldSnapshot) {
-///     // rules 5: accepting a lost friendly's unknown position is an operator's decision
+///     // rules 6: accepting a lost friendly's unknown position is an operator's decision
 ///     port.accept_unknown_friendly(IntentId(1), Uid::new("drone-1"), None, world);
 /// }
 /// ```
@@ -2795,6 +3586,7 @@ impl AgentPort<'_> {
             inputs.space = self.engine.ask_space(&spec.task, inputs.t)?;
         }
         inputs.engaged = self.engine.engaged_for(&spec);
+        inputs.waiting = self.engine.waiting_for(&spec);
         let checks = rules::evaluate(&spec, &inputs, &self.engine.policy.rules);
         let passed = rules::passed(&checks, spec.kind());
         let policy = passed.then(|| policy::decide(&spec, &inputs, &self.engine.policy));

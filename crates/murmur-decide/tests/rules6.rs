@@ -1,4 +1,4 @@
-//! Decision rules 5, the engagement part: the approval's fallback preloaded as the
+//! Decision rules 6, the engagement part: the approval's fallback preloaded as the
 //! platform's own lost-link action (and nothing released without it confirmed), and the
 //! keep-outs' prediction model, altitude and accepted lost friendlies. Every change fails
 //! closed on missing data; older rules decide as they did.
@@ -486,16 +486,16 @@ fn replay_binds_the_order_to_the_approved_fallbacks_preload() {
     let claimed: Vec<String> = lines
         .iter()
         .enumerate()
-        .map(|(i, l)| if i == 0 { l.replacen("\"rules_version\":5,", "\"rules_version\":4,", 1) } else { l.clone() })
+        .map(|(i, l)| if i == 0 { l.replacen("\"rules_version\":6,", "\"rules_version\":5,", 1) } else { l.clone() })
         .collect();
     let r = replay::replay_str_with(
         &rechain(&claimed),
-        &replay::ReplayOptions { rules: replay::RulesAccepted::Exactly(4), ..Default::default() },
+        &replay::ReplayOptions { rules: replay::RulesAccepted::Exactly(5), ..Default::default() },
     )
     .unwrap();
     let w: Vec<&str> = r.mismatches.iter().map(|m| m.what.as_str()).collect();
     for marker in ["lost-link preload report", "an engagement order's lost-link preload", "a fallback_preload check"] {
-        assert!(w.iter().any(|m| m.contains(marker) && m.contains("only builds of rules 5")), "{marker}: {w:?}");
+        assert!(w.iter().any(|m| m.contains(marker) && m.contains("only builds of rules 6")), "{marker}: {w:?}");
     }
 }
 
@@ -503,23 +503,23 @@ fn replay_binds_the_order_to_the_approved_fallbacks_preload() {
 
 #[test]
 fn a_fast_track_on_a_steady_course_is_as_predictable_as_a_slow_one() {
-    let ec5 = rules(5).engage_rules();
+    let ec6 = rules(6).engage_rules();
     // the issue's case: a 20 m/s ferry 300 s out. Rules 4: 2-sigma of 15 + max(1, 0.3 x 20)
-    // x 300 = 3,630 m. Rules 5: tracker 15 m, velocity 1 m/s x 300 s, manoeuvre 0.2 m/s^2:
+    // x 300 = 3,630 m. Rules 6: tracker 15 m, velocity 1 m/s x 300 s, manoeuvre 0.2 m/s^2:
     // sqrt(15^2 + 300^2 + 0.04 x 300^3 / 3) = 671 m, 2-sigma 1,342 m
     let ferry = track(T0, TARGET_AT, Some([-20.0, 0.0]), Affiliation::Neutral, Domain::Surface);
     let old = 2.0 * engage::track_sigma_at(&ferry, T0, T0.plus_ms(300_000));
-    let new = 2.0 * engage::track_prediction_sigma(&ferry, 300.0, &ec5);
+    let new = 2.0 * engage::track_prediction_sigma(&ferry, 300.0, &ec6);
     assert!((old - 3630.0).abs() < 1.0, "{old}");
     assert!((new - 1342.0).abs() < 2.0, "{new}");
     // and it no longer depends on the speed: a 6 m/s tour boat gets the same
     let boat = track(T0, TARGET_AT, Some([-6.0, 0.0]), Affiliation::Neutral, Domain::Surface);
-    assert_eq!(engage::track_prediction_sigma(&boat, 300.0, &ec5), engage::track_prediction_sigma(&ferry, 300.0, &ec5));
+    assert_eq!(engage::track_prediction_sigma(&boat, 300.0, &ec6), engage::track_prediction_sigma(&ferry, 300.0, &ec6));
     // a short prediction stays near the tracker's own uncertainty
-    assert!(engage::track_prediction_sigma(&ferry, 10.0, &ec5) < 20.0);
+    assert!(engage::track_prediction_sigma(&ferry, 10.0, &ec6) < 20.0);
     // an aircraft manoeuvres harder (2 m/s^2): at 60 s, 540 m 1-sigma
     let plane = track(T0, TARGET_AT, Some([55.0, 0.0]), Affiliation::Neutral, Domain::Air);
-    assert!((engage::track_prediction_sigma(&plane, 60.0, &ec5) - 540.0).abs() < 2.0);
+    assert!((engage::track_prediction_sigma(&plane, 60.0, &ec6) - 540.0).abs() < 2.0);
 }
 
 /// `keep_out_tracks` around the target for an effect `span_s` from now, under `version`.
@@ -538,26 +538,26 @@ fn a_distant_fast_ferry_no_longer_blocks_but_a_near_one_does() {
     let north_2km = LonLat::new(TARGET_AT.lon + 6_000.0 / 87_943.0, TARGET_AT.lat + 2_000.0 / 111_320.0);
     let mut w = world(T0);
     w.tracks.insert("T-0002".into(), track(T0, north_2km, Some([-20.0, 0.0]), Affiliation::Neutral, Domain::Surface));
-    assert_eq!(tracks_check(&w, 300, 4).outcome, Outcome::Fail, "rules 4: 3.6 km of 2-sigma");
-    let c = tracks_check(&w, 300, 5);
+    assert_eq!(tracks_check(&w, 300, 5).outcome, Outcome::Fail, "rules 5: 3.6 km of 2-sigma");
+    let c = tracks_check(&w, 300, 6);
     assert_eq!(c.outcome, Outcome::Pass, "{}", c.detail);
     // the same ferry passing 1 km away still blocks
     let north_1km = LonLat::new(north_2km.lon, TARGET_AT.lat + 1_000.0 / 111_320.0);
     w.tracks.insert("T-0002".into(), track(T0, north_1km, Some([-20.0, 0.0]), Affiliation::Neutral, Domain::Surface));
-    let c = tracks_check(&w, 300, 5);
+    let c = tracks_check(&w, 300, 6);
     assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
     assert!(c.detail.contains("velocity 300 m, manoeuvre 600 m"), "{}", c.detail);
 }
 
 #[test]
 fn a_track_without_a_velocity_estimate_blocks_by_its_reach() {
-    // fail closed: rules 4 held it where it was (1 m/s of growth); rules 5 lets it be anywhere
+    // fail closed: rules 5 held it where it was (1 m/s of growth); rules 6 lets it be anywhere
     // it reaches at its domain's top speed (25 m/s on the surface)
     let mut w = world(T0);
     let at = LonLat::new(TARGET_AT.lon, TARGET_AT.lat + 2_000.0 / 111_320.0);
     w.tracks.insert("T-0002".into(), track(T0, at, None, Affiliation::Unknown, Domain::Surface));
-    assert_eq!(tracks_check(&w, 100, 4).outcome, Outcome::Pass);
-    let c = tracks_check(&w, 100, 5);
+    assert_eq!(tracks_check(&w, 100, 5).outcome, Outcome::Pass);
+    let c = tracks_check(&w, 100, 6);
     assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
     assert!(c.detail.contains("no velocity estimate"), "{}", c.detail);
 }
@@ -589,33 +589,33 @@ fn keep_outs_are_3d_only_where_both_altitudes_are_known() {
     // degrees at its 105 m/s top speed, 44 m/s, it can't get below 7,000 - 2 x 10 - 44 x 120
     // = 1,655 m), blocking in 2D
     let w = above(Some(0.0), "mq9b", Some(7_000.0));
-    let c = friendly_check(&w, 120, 5);
+    let c = friendly_check(&w, 120, 6);
     assert_eq!(c.outcome, Outcome::Pass, "{}", c.detail);
     assert!(c.detail.contains("clear by altitude: over-1 at 7000 m"), "{}", c.detail);
-    assert_eq!(friendly_check(&w, 120, 4).outcome, Outcome::Fail, "rules 4: 2D");
+    assert_eq!(friendly_check(&w, 120, 5).outcome, Outcome::Fail, "rules 5: 2D");
     // a quadcopter at 120 m still blocks: its vertical reach covers the keep-out above the effect
-    let c = friendly_check(&above(Some(0.0), "x10", Some(120.0)), 120, 5);
+    let c = friendly_check(&above(Some(0.0), "x10", Some(120.0)), 120, 6);
     assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
     assert!(c.detail.contains("within the vertical keep-out too"), "{}", c.detail);
     // the faster of climb and dive counts, either way: a CCA-class aircraft (260 m/s top,
     // 110 m/s diving) at 6,000 m could be down at the effect in 120 s; so could the MQ-9B
     // from 3,000 m (its catalog climb, 10 m/s, would have kept it 1,800 m up)
-    assert_eq!(friendly_check(&above(Some(0.0), "cca", Some(6_000.0)), 120, 5).outcome, Outcome::Fail);
-    let c = friendly_check(&above(Some(0.0), "mq9b", Some(3_000.0)), 120, 5);
+    assert_eq!(friendly_check(&above(Some(0.0), "cca", Some(6_000.0)), 120, 6).outcome, Outcome::Fail);
+    let c = friendly_check(&above(Some(0.0), "mq9b", Some(3_000.0)), 120, 6);
     assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
-    assert_eq!(friendly_check(&above(Some(0.0), "mq9b", Some(6_000.0)), 120, 5).outcome, Outcome::Pass);
+    assert_eq!(friendly_check(&above(Some(0.0), "mq9b", Some(6_000.0)), 120, 6).outcome, Outcome::Pass);
     let mq9b = fresh(vehicle("mq9b", TARGET_AT), T0);
-    let rate = engage::friendly_vertical_mps(&mq9b, &rules(5).engage_rules());
+    let rate = engage::friendly_vertical_mps(&mq9b, &rules(6).engage_rules());
     assert!((rate - 105.0 * 25f64.to_radians().sin()).abs() < 1e-9, "{rate}");
     // unknown altitude, ours or the target's: 2D, no ceiling
-    let c = friendly_check(&above(Some(0.0), "mq9b", None), 120, 5);
+    let c = friendly_check(&above(Some(0.0), "mq9b", None), 120, 6);
     assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
     assert!(c.detail.contains("its altitude is unknown"), "{}", c.detail);
-    assert_eq!(friendly_check(&above(None, "mq9b", Some(7_000.0)), 120, 5).outcome, Outcome::Fail);
+    assert_eq!(friendly_check(&above(None, "mq9b", Some(7_000.0)), 120, 6).outcome, Outcome::Fail);
     // a stale altitude is not known either
     let mut w = above(Some(0.0), "mq9b", Some(7_000.0));
     w.vehicles.get_mut(&Uid::new("over-1")).unwrap().alt_msl_m = Some(Fact::new(7_000.0, T0.plus_ms(-60_000)));
-    assert_eq!(friendly_check(&w, 120, 5).outcome, Outcome::Fail);
+    assert_eq!(friendly_check(&w, 120, 6).outcome, Outcome::Fail);
     // a protected aircraft track at 3,000 m over the effect, its altitude from radar: clear
     // in 3D; at 450 m: not
     let mut w = world(T0);
@@ -624,19 +624,19 @@ fn keep_outs_are_3d_only_where_both_altitudes_are_known() {
     seen_by(&mut plane, &["3:radar", "1:eo_ir"], T0);
     plane.alt_m = Some(3_000.0);
     w.tracks.insert("T-0002".into(), plane.clone());
-    let c = tracks_check(&w, 120, 5);
+    let c = tracks_check(&w, 120, 6);
     assert_eq!(c.outcome, Outcome::Pass, "{}", c.detail);
     plane.alt_m = Some(450.0);
     w.tracks.insert("T-0002".into(), plane.clone());
-    assert_eq!(tracks_check(&w, 120, 5).outcome, Outcome::Fail);
+    assert_eq!(tracks_check(&w, 120, 6).outcome, Outcome::Fail);
     plane.alt_m = None;
     w.tracks.insert("T-0002".into(), plane.clone());
-    assert_eq!(tracks_check(&w, 120, 5).outcome, Outcome::Fail, "its altitude unknown: 2D");
+    assert_eq!(tracks_check(&w, 120, 6).outcome, Outcome::Fail, "its altitude unknown: 2D");
     // seen by passive sensors only (a bearing, no range), its altitude does not count: 2D
     plane.alt_m = Some(3_000.0);
     seen_by(&mut plane, &["1:eo_ir", "2:esm"], T0);
     w.tracks.insert("T-0002".into(), plane);
-    let c = tracks_check(&w, 120, 5);
+    let c = tracks_check(&w, 120, 6);
     assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
     assert!(c.detail.contains("altitude is unknown"), "{}", c.detail);
 }
@@ -653,17 +653,17 @@ fn a_stale_radar_altitude_does_not_count_while_eo_ir_keeps_the_position_fresh() 
     plane.alt_m = Some(1_500.0);
     seen_by(&mut plane, &["3:radar", "1:eo_ir"], T0);
     w.tracks.insert("T-0002".into(), plane.clone());
-    let c = tracks_check(&w, 60, 5);
+    let c = tracks_check(&w, 60, 6);
     assert_eq!(c.outcome, Outcome::Pass, "measured now, it is clear by altitude: {}", c.detail);
     assert!(c.detail.contains("clear by altitude: T-0002 at 1500 m"), "{}", c.detail);
-    let ec = rules(5).engage_rules();
+    let ec = rules(6).engage_rules();
     let old = T0.plus_ms(-300_000);
     // the altitude measured 300 s ago: 2D
     plane.alt_t = Some(old);
     plane.source_t.insert("3:radar".into(), old);
     w.tracks.insert("T-0002".into(), plane.clone());
     assert_eq!(engage::track_altitude(&plane, T0, &ec), None);
-    let c = tracks_check(&w, 60, 5);
+    let c = tracks_check(&w, 60, 6);
     assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
     assert!(c.detail.contains("altitude is unknown"), "{}", c.detail);
     // a recent altitude without a recent ranging hit behind it does not count either
@@ -677,15 +677,15 @@ fn a_stale_radar_altitude_does_not_count_while_eo_ir_keeps_the_position_fresh() 
     plane.source_t.insert("3:radar".into(), t8);
     w.tracks.insert("T-0002".into(), plane.clone());
     assert_eq!(engage::track_altitude(&plane, T0, &ec), Some((1_500.0, t8)));
-    let c = tracks_check(&w, 60, 5);
+    let c = tracks_check(&w, 60, 6);
     assert!(c.detail.contains("with 740 m of altitude uncertainty"), "{}", c.detail);
-    // and the logged facts replay: the bound is the policy's (schema 3 key)
+    // and the logged facts replay: the bound is the policy's (schema 4 key)
     assert_eq!(ec.track_alt_max_age(), 10.0);
 }
 
 #[test]
 fn only_a_ranged_altitude_counts_and_a_ground_target_stays_2d() {
-    let ec = rules(5).engage_rules();
+    let ec = rules(6).engage_rules();
     let mut t = track(T0, TARGET_AT, Some([0.0, 0.0]), Affiliation::Hostile, Domain::Air);
     t.alt_m = Some(800.0);
     let alt = |t: &TrackFacts| engage::track_altitude(t, T0, &ec).map(|(a, _)| a);
@@ -724,7 +724,7 @@ fn only_a_ranged_altitude_counts_and_a_ground_target_stays_2d() {
     let mut v = fresh(vehicle("x10", TARGET_AT), T0);
     v.alt_msl_m = Some(Fact::new(400.0, T0));
     w.vehicles.insert(Uid::new("drone-1"), v);
-    let c = friendly_check(&w, 0, 5);
+    let c = friendly_check(&w, 0, 6);
     assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
     assert!(engage::effect_alt(w.tracks.get("T-0001"), T0, T0, 75.0, &ec).is_none());
 }
@@ -781,7 +781,7 @@ fn only_an_operator_accepts_a_lost_friendly_and_only_the_loss_it_names() {
     let id = i.id();
     // the vehicle reports again: it counts like any other (here, clear 2 km away)
     w.vehicles.get_mut(&Uid::new("drone-1")).unwrap().position = Some(Fact::new(lost_at, clock.now()));
-    let r = rules(5);
+    let r = rules(6);
     let c = engage::keep_out_friendly(TARGET_AT, clock.now(), 275.0, Some(&Uid::new("blade-1")), &{
         let mut x = w.clone();
         x.unknown_accepted = e.intent(id).unwrap().engagement().unwrap().accepted.clone();
@@ -922,8 +922,8 @@ fn replay_checks_the_vehicle_was_lost_since_the_acceptance_says() {
 }
 
 #[test]
-fn policy_keys_of_rules_5_are_bounded_and_of_schema_3() {
-    let mut e = rules(5).engage_rules();
+fn policy_keys_of_rules_6_are_bounded_and_of_schema_4() {
+    let mut e = rules(6).engage_rules();
     assert!(e.validate().is_ok());
     for (k, v) in [("track_velocity_sigma_mps", 0.0), ("vertical_rate_mps", 0.0), ("keep_out_vertical_m", 10.0)] {
         let mut x = e.clone();
@@ -936,11 +936,11 @@ fn policy_keys_of_rules_5_are_bounded_and_of_schema_3() {
     }
     e.track_accel_mps2 = Some([(Domain::Air, 0.0)].into_iter().collect());
     assert!(e.validate().unwrap_err().contains("track_accel_mps2"));
-    // the shipped file sets them, each a schema 3 key
-    let shipped = rules(5).engage_rules();
+    // the shipped file sets them, each a schema 4 key
+    let shipped = rules(6).engage_rules();
     let keys = shipped.schema_keys();
     for k in ["track_velocity_sigma_mps", "track_accel_mps2", "vertical_rate_mps", "keep_out_vertical_m", "track_alt_max_age_s"] {
-        assert!(keys.contains(&(3, k)), "{k}: {keys:?}");
+        assert!(keys.contains(&(4, k)), "{k}: {keys:?}");
     }
     assert_eq!(shipped.track_accel(Domain::Surface), 0.2);
     assert_eq!(shipped.keep_out_vertical(), 200.0);

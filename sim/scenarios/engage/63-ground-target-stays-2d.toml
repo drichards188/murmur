@@ -1,4 +1,4 @@
-# Rules 5, from the review (probe 8): a ground track's altitude is not its height above sea
+# Rules 6, from the review (probe 8): a ground track's altitude is not its height above sea
 # level (the sensing model gives ground contacts 0 m whatever the terrain, which here is
 # about 250 m). One of our quadcopters 400 m MSL right over the target, so 150 m over the
 # real ground: a 3D keep-out on the logged 0 m would clear it. A ground target stays 2D: the

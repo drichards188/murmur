@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 
 pub use caps::{caps, platform_kind};
+pub use exec::Resume;
 #[cfg(test)]
 pub use op::HistoryEntry;
 pub use op::{OpCell, OpSnapshot, OpState};
@@ -125,6 +126,15 @@ pub struct TaskOrder {
     pub target: Option<Arc<VehicleCell>>,
     /// every vehicle, for tasks that touch others (a tracker's relay)
     pub fleet: Vec<Arc<VehicleCell>>,
+    /// how each vehicle's op delivers it (after a bridge restart: the vehicle may hold it
+    /// already); absent: fresh
+    pub resume: HashMap<Uid, Resume>,
+    /// how long an op following an order its vehicle had started (after a bridge restart)
+    /// waits for a lost link before it fails (zero: not at all)
+    pub patience: std::time::Duration,
+    /// rules 5: a link lost before the vehicle started the order ends the op `requeued` (the
+    /// decision layer puts the order back in the queue) instead of failing it
+    pub requeue: bool,
 }
 
 impl TaskOrder {
@@ -170,6 +180,9 @@ impl TaskOrder {
             target,
             params: req.params,
             fleet: fleet.values().cloned().collect(),
+            resume: HashMap::new(),
+            patience: std::time::Duration::ZERO,
+            requeue: false,
         })
     }
 }
@@ -241,12 +254,17 @@ impl TaskManager {
         inner.last_tasking += 1;
         let tasking_id = inner.last_tasking;
         let kinds: Vec<Option<Kind>> = order.vehicles.iter().map(|v| v.read(|s| s.kind)).collect();
+        let epochs: Vec<u32> = order
+            .vehicles
+            .iter()
+            .map(|v| v.read(|s| s.boot_epoch))
+            .collect();
         let mut counts: HashMap<Option<Kind>, usize> = HashMap::new();
         let mut ops = Vec::new();
-        for (v, kind) in order.vehicles.iter().zip(&kinds) {
+        for ((v, kind), epoch) in order.vehicles.iter().zip(&kinds).zip(&epochs) {
             let slot = counts.entry(*kind).or_default();
             inner.last_op += 1;
-            ops.push(Arc::new(OpCell::new(
+            let mut op = OpCell::new(
                 inner.last_op,
                 tasking_id,
                 intent_id,
@@ -254,7 +272,9 @@ impl TaskManager {
                 v.uid,
                 v.sysid,
                 *slot,
-            )));
+            );
+            op.boot_epoch = *epoch;
+            ops.push(Arc::new(op));
             *slot += 1;
         }
         for ((op, v), kind) in ops.iter().zip(&order.vehicles).zip(&kinds) {
@@ -279,6 +299,9 @@ impl TaskManager {
                 same_kind: counts.get(kind).copied().unwrap_or(1),
                 target: order.target.clone(),
                 fleet: order.fleet.clone(),
+                resume: order.resume.get(&v.uid).copied().unwrap_or_default(),
+                patience: order.patience,
+                requeue: order.requeue,
             };
             exec::spawn(ctx);
         }
@@ -310,7 +333,10 @@ impl TaskManager {
         let params = {
             let inner = self.lock();
             let op = inner.active.get(&v.uid)?;
-            if op.task != TaskKind::Orbit || op.state() != OpState::Done {
+            if op.task != TaskKind::Orbit
+                || op.state() != OpState::Done
+                || v.read(|s| s.boot_epoch) != op.boot_epoch
+            {
                 return None;
             }
             let tasking = op.tasking;
@@ -326,6 +352,15 @@ impl TaskManager {
             let (radius, _, tol) = exec::orbit_geometry(params.radius, min_r, caps.orbit);
             Some((center, radius + tol))
         })
+    }
+
+    /// A newer order (intent `newer`) was queued for `uid`: its current op, if it carries an
+    /// older intent and the vehicle has not started it yet (waiting for a fix or a link,
+    /// mid-exchange), is stopped and failed saying so; one it started runs on until the newer
+    /// order is dispatched. Returns the stopped op's id.
+    pub fn abandon_unstarted(&self, uid: Uid, newer: u64, detail: &str) -> Option<u64> {
+        let op = self.lock().active.get(&uid).cloned()?;
+        (op.intent_id < newer && op.abandon(detail.to_string())).then_some(op.id)
     }
 
     /// Each vehicle's latest op, in uid order.

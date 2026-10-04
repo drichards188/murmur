@@ -1,4 +1,4 @@
-# Rules 5: only a human accepts a lost friendly. An agent nominates with the same lost
+# Rules 6: only a human accepts a lost friendly. An agent nominates with the same lost
 # quadcopter in the way and asks to accept it: its port takes no acceptance, so the
 # nomination is checked without one and rejected (keep_out_friendly); the agent then tries to
 # accept on the pending record, and there is no method for it either. Nothing moves.

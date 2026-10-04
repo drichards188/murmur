@@ -1,4 +1,4 @@
-# Rules 5: every signer sees the acceptances. op-2 looks at the picture at s=14; op-3, who
+# Rules 6: every signer sees the acceptances. op-2 looks at the picture at s=14; op-3, who
 # holds engagement authority, then accepts the lost quadcopter (engage.accepted, logged with
 # its facts). op-2's signature on the token from before the acceptance is refused (the
 # token carries the accepted set: look again); on a fresh one, which shows the acceptance,

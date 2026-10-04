@@ -212,6 +212,7 @@
 //!     gps_fix_from: None,
 //!     circling: None,
 //!     alt_msl_m: None,
+//!     booted_t: None,
 //! });
 //!
 //! // An agent proposes; policy sends it to the inbox.
@@ -229,7 +230,7 @@
 //! // Only an operator session can approve it.
 //! let session = engine.open_operator_session(OperatorId::new("op-1")).unwrap();
 //! engine.approve(id, session.authority(), None, &world, &NoTerrain).unwrap();
-//! let order = engine.dispatch(id).unwrap();
+//! let order = engine.dispatch(id, &world).unwrap();
 //! assert_eq!(order.uids, vec![Uid::new("sky-1")]);
 //!
 //! // The log reproduces every decision.
@@ -248,6 +249,7 @@ pub mod hash;
 pub mod ids;
 pub mod intent;
 pub mod policy;
+pub mod queue;
 pub mod replay;
 pub mod route;
 pub mod scenario;
@@ -273,8 +275,9 @@ pub use engage::{
     StopRecord, TrackIdentity, VehicleIdentity,
 };
 pub use engine::{
-    AgentPort, DispatchOrder, Engine, EngineError, Order, PREPARED_SPACE_MAX_AGE_MS, PlatformRestoreReport, PreloadReport,
-    PreparedSpace, Preview, StepOutcome, TaskOutcome, prepare_space,
+    AgentPort, Dequeued, DispatchOrder, Engine, EngineError, Order, PREPARED_SPACE_MAX_AGE_MS,
+    PlatformRestoreReport, PreloadReport, PreparedSpace, Preview, Routed, StepOutcome,
+    TaskOutcome, prepare_space,
 };
 pub use geo::{LonLat, Polygon};
 pub use ids::{AgentId, IntentId, OperatorId, SessionId, Uid};
@@ -283,6 +286,10 @@ pub use intent::{
     State, Targets, Task, TaskKind, Transition, next_state,
 };
 pub use policy::{DeadlineBasis, KindApproval, Policy, PolicyDecision, Tier, Until};
+pub use queue::{
+    Basis, CarriedApproval, KindQueue, OpenIntent, QueueConfig, QueueState, Reach, Recheck,
+    RecheckRecord, ResumedFrom, Verdict,
+};
 pub use route::{LegKind, Route, Segment};
 pub use rules::{
     CheckResult, Outcome, POLICY_SCHEMA, RULES_VERSION, RuleId, RulesConfig, UnknownEndurance,

@@ -1,4 +1,4 @@
-# Rules 5, from the second review (its probe): a track's altitude counts for the 3D keep-out
+# Rules 6, from the second review (its probe): a track's altitude counts for the 3D keep-out
 # only while it is recent and a ranging sensor hit the track that recently. A neutral light
 # aircraft circles 100 m from the effect point; the radar that measured it at 1,500 m lost it
 # five minutes ago, while EO/IR keeps its position fresh (it may be at 100 m by now). Its

@@ -1,8 +1,8 @@
-# Rules 5: a protected track is predicted along its velocity with its tracker's 1-sigma, a
+# Rules 6: a protected track is predicted along its velocity with its tracker's 1-sigma, a
 # 1 m/s velocity error and acceleration noise (0.2 m/s^2 on the surface), not the tracker's
 # 0.3 x speed growth. A 20 m/s ferry crossing 1.4 km north of the effect point at about the
 # effect time blocked under rules 4 (2-sigma of 15 + 6 m/s x 104 s: 1.28 km) and is clear
-# under rules 5 (2-sigma about 320 m); the hold after approval and the release still read it
+# under rules 6 (2-sigma about 320 m); the hold after approval and the release still read it
 # every second.
 title = "A distant fast ferry no longer blocks"
 invariant = "keep_out_tracks"

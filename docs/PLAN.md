@@ -190,8 +190,8 @@ in the console (`sim/fleets/contacts-demo.toml` shows coverage gaps at the Gate)
   `tc netem` only as a one-off cross-check.
 - Bridge behaviors: dead reckoning with a growing uncertainty area for silent vehicles
   (murmur-4y9, built: `crates/murmur-bridge/src/estimate.rs`, console `estimate.ts`,
-  `estimateLayers.ts`); intents queued for unreachable vehicles with expiry (murmur-5p4);
-  fallback rules per action class; telemetry priority under low bandwidth (murmur-f6q).
+  `estimateLayers.ts`); fallback rules per action class; telemetry priority under low
+  bandwidth (murmur-f6q).
 - **Dead reckoning for silent vehicles** (murmur-4y9). Past its link's stale threshold a
   vehicle's snapshot carries an `estimate`: a motion model frozen at its last report, in
   order of what is known best: its current task (an orbit: somewhere on the ring, the phase
@@ -219,6 +219,38 @@ in the console (`sim/fleets/contacts-demo.toml` shows coverage gaps at the Gate)
   GNSS-denied vehicle); over three 300 s cuts at the Golden Gate the aircraft stayed inside
   their rings 100 % of the time until their timers fired and the RTL branch held them after,
   the boat's branch held it 100 % from the moment its 30 s timer fired.
+- **Safe command queue** (murmur-5p4, built; rules 5; `crates/murmur-decide/src/queue.rs`,
+  bridge `decision/queue.rs`, `tasks/exec.rs`; `crates/murmur-decide/README.md` "The queue
+  for unreachable vehicles"): an approved order for a vehicle the link can't carry it to now
+  (silent past its lost-link time, its picture not fresh again yet, or a mission for an AUV
+  on its acoustic modem) is queued with a deadline (`[queue]` per kind: 900 s, hold 60 s,
+  rtl 120 s), not sent into a dead link; when it can be reached its checks run again on the
+  world then and it is sent, sent back to the inbox (a human's picture changed: a check, the
+  tier, a reboot, an engagement now in play, a restart) or voided (a check fails, or a newer
+  order for its vehicle stands); past its deadline it expires, and a human's approval goes
+  back to the inbox after 120 s. Exactly once: a mission is a transaction (a lost final ACK
+  settled by asking the vehicle; a link lost before the vehicle started the order sends it
+  back to the queue, re-checked, and the next delivery downloads the mission and compares it
+  item by item, frame, altitude and parameters included, to follow, only start, or upload
+  again), a command is retried only when neither its ACK nor telemetry showing its effect
+  came back and never after IN_PROGRESS, a vehicle its failsafe sent home (or a copter left
+  in BRAKE) is switched to a mode it arms in. A bridge that crashed carries open intents over
+  from its log (`intent.resumed`; pointer `logs/audit/.resume-<port>.json`, deleted on a
+  clean stop; `MURMUR_RESUME`): only onto the same platforms, its anchors checked; queued
+  ones re-checked (a human's approval back to the inbox), started ones followed and never
+  re-sent, across any number of restarts. Reboots (time since boot going back, or the boot
+  instant it implies jumping later after an outage longer than the uptime) are logged, end
+  the op, and send a human's queued approval back to the inbox. An order whose start went out
+  unconfirmed is only followed where the vehicle runs it, never restarted on its own (a
+  human decides), and one no longer in force that a vehicle runs raises an alert; a
+  carried-over order needs the same vehicle (fleet identity beside the log) and an anchored
+  log (every decision anchored). Review fixes (10-04, two rounds; see DECISIONS). Console:
+  a Queue
+  drawer (why each waits, time left, cancel, how recent ones left), queued paths dashed with
+  QUEUED, sent orders labelled until the vehicle's telemetry confirms them. Not covered: an
+  engagement under way when the bridge restarts (not carried over; its platform keeps its
+  last order, nothing commands the fallback), pending approvals across a restart, and a
+  stand-in that reboots on command (the fake autopilot in the tests does).
 
 - **Space segment** (`crates/murmur-space`, murmur-0nv.1): satellites as taskable
   infrastructure, not flown nodes. The operator requests a capability over an area and time
@@ -352,7 +384,7 @@ and the target reversing between signatures, a transient reclassification, a pic
 before a reclassification, an approval that would stop an engagement, GNSS lost en route, a
 wobbling velocity estimate, a second engagement on a platform, a GPS glitch en route, a
 first signer's stale picture, a target getting under way while a signature waits, a friendly
-closing to just outside the keep-out; from rules 5, 40 to 65: a fallback the firmware can't
+closing to just outside the keep-out; from rules 6, 40 to 65: a fallback the firmware can't
 preload, a preload not answered, read back wrong, never reported, cut from the log or
 changed before the release, a distant and a near fast ferry, a track without a velocity
 estimate, friendlies and an aircraft track above the effect with their altitudes known or
@@ -372,7 +404,7 @@ Live demo: `sim/fleets/engage-demo.toml` (stand-in switchblade, magura, ugv_arme
 x10) with `sim/scenarios/golden-gate-engage.toml` (the fast boat holding west of the bridge,
 a tour boat circling through the keep-out).
 
-Rules 5 follow-ups (murmur-der.2, murmur-der.3; `crates/murmur-decide/README.md`):
+Rules 6 follow-ups (murmur-der.2, murmur-der.3; `crates/murmur-decide/README.md`):
 
 - **The fallback as the platform's own lost-link action.** The engagement order carries the
   approval's fallback as the platform's GCS failsafe (ArduPilot 4.8 parameters per

@@ -11,6 +11,9 @@
 //!   last anchor.
 //! - `--space` also re-runs every logged space query (collect, cover) on that space segment
 //!   and compares; a different segment is a cache mismatch, reported separately.
+//! - Rules 5: a log whose `intent.resumed` events carry intents over from the previous run
+//!   is checked against that log: `--prev <file>`, or by default the file the events name in
+//!   the same directory. `--trust-resumed` accepts them without it (trusting their origin).
 //!
 //! Exit status: 0 all decisions reproduced (and, with `--space`, every space query too; with
 //! `--anchors`, the anchors hold), 1 decision or anchor mismatches found, 2 unreadable log or
@@ -24,13 +27,15 @@ use std::sync::Arc;
 use murmur_decide::SpaceSegment;
 use murmur_decide::replay::{Mismatch, ReplayOptions, RulesAccepted, replay_str_with};
 
-const USAGE: &str = "usage: murmur-replay <audit-log.jsonl> [--rules N | --min-rules N] [--anchors <file>] [--space <constellations.toml> <cache-dir>]";
+const USAGE: &str = "usage: murmur-replay <audit-log.jsonl> [--rules N | --min-rules N] [--anchors <file>] [--space <constellations.toml> <cache-dir>] [--prev <previous-log.jsonl> | --trust-resumed]";
 
 struct Args {
     path: String,
     rules: RulesAccepted,
     anchors: Option<String>,
     space: Option<(String, String)>,
+    prev: Option<String>,
+    trust_resumed: bool,
 }
 
 fn version(v: Option<&String>, flag: &str) -> Result<u32, String> {
@@ -44,6 +49,8 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut rules = None;
     let mut anchors = None;
     let mut space = None;
+    let mut prev = None;
+    let mut trust_resumed = false;
     let mut it = args.iter().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -59,6 +66,8 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
                 });
             }
             "--anchors" => anchors = Some(it.next().ok_or("--anchors needs a file")?.clone()),
+            "--prev" => prev = Some(it.next().ok_or("--prev needs a file")?.clone()),
+            "--trust-resumed" => trust_resumed = true,
             "--space" => {
                 let catalog = it.next().ok_or("--space needs a catalog and a cache dir")?;
                 let cache = it.next().ok_or("--space needs a catalog and a cache dir")?;
@@ -74,6 +83,8 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
         rules: rules.unwrap_or_default(),
         anchors,
         space,
+        prev,
+        trust_resumed,
     })
 }
 
@@ -118,9 +129,22 @@ fn main() -> ExitCode {
     let oracle = segment
         .as_ref()
         .map(|s| s as &dyn murmur_decide::SpaceOracle);
+    // rules 5: the previous run's log, for the intents this one carried over
+    let prev_text = match previous_log(path, &text, args.prev.as_deref()) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("murmur-replay: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    if let Some((p, _)) = &prev_text {
+        println!("previous run's log (for carried-over intents): {p}");
+    }
     let opts = ReplayOptions {
         rules: args.rules,
         space: oracle,
+        previous: prev_text.as_ref().map(|(_, t)| t.as_str()),
+        trust_resumed: args.trust_resumed,
     };
     let report = match replay_str_with(&text, &opts) {
         Ok(r) => r,
@@ -176,6 +200,20 @@ fn main() -> ExitCode {
             report.assessments
         );
     }
+    if report.queued + report.rechecks + report.resumed + report.reboots + report.requeued > 0 {
+        println!(
+            "queue: {} queued, {} sent back after a lost link, {} re-check(s) recomputed ({} dispatched, {} back to the inbox, {} voided), {} expired; {} carried over from a previous run; {} vehicle reboot(s)",
+            report.queued,
+            report.requeued,
+            report.rechecks,
+            report.recheck_dispatched,
+            report.recheck_inbox,
+            report.recheck_voided,
+            report.queue_expired,
+            report.resumed,
+            report.reboots
+        );
+    }
     if report.space_queries > 0 {
         let how = match &segment {
             None => "not recomputed (pass --space to re-run them)".to_string(),
@@ -189,7 +227,7 @@ fn main() -> ExitCode {
     if let Some(head) = &report.head_sha256 {
         println!("head {head} (compare with an external anchor to detect a rewrite or truncation)");
     }
-    // rules 5: not a decision mismatch, but the operator should know
+    // rules 6: not a decision mismatch, but the operator should know
     for u in &report.unrestored {
         println!("UNRESTORED: {u}");
     }
@@ -234,6 +272,39 @@ fn main() -> ExitCode {
         return ExitCode::from(3);
     }
     ExitCode::SUCCESS
+}
+
+/// The previous run's log: `--prev`, else (when the log carries intents over) the file its
+/// first `intent.resumed` names, beside it. None when there is nothing carried over.
+fn previous_log(
+    path: &str,
+    text: &str,
+    given: Option<&str>,
+) -> Result<Option<(String, String)>, String> {
+    let named = text.lines().find_map(|l| {
+        if !l.contains("\"type\":\"intent.resumed\"") {
+            return None;
+        }
+        let v: serde_json::Value = serde_json::from_str(l).ok()?;
+        v.get("from")?.get("log")?.as_str().map(str::to_string)
+    });
+    let file = match (given, named) {
+        (Some(g), _) => g.to_string(),
+        (None, Some(n)) => {
+            let beside = Path::new(path)
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(&n);
+            if !beside.exists() {
+                return Ok(None);
+            }
+            beside.display().to_string()
+        }
+        (None, None) => return Ok(None),
+    };
+    std::fs::read_to_string(&file)
+        .map(|t| Some((file.clone(), t)))
+        .map_err(|e| format!("{file}: {e}"))
 }
 
 fn print_all(ms: &[Mismatch]) {

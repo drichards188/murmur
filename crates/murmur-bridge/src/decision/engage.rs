@@ -20,7 +20,7 @@
 //!   with engagement authority (a placeholder for real authentication, like
 //!   `MURMUR_OPERATORS`, which must list them too); only they can sign an engagement, never
 //!   its proposer, and the engagement tier asks for two of them.
-//! - **Lost-link preload** (rules 5). The order carries the fallback as the platform's own
+//! - **Lost-link preload** (rules 6). The order carries the fallback as the platform's own
 //!   lost-link action ([`murmur_decide::LostLinkPreload`]); at dispatch the bridge reads the
 //!   platform's own values, sets the preload and reads it back (`super::preload`), reports it
 //!   (`engage.preload`), and sends the intercept only once it confirms. One that does not
@@ -33,7 +33,7 @@
 //!   holds it, retried with backoff, every attempt logged, an inbox alert while they stay
 //!   owed past [`RESTORE_ALERT_S`]. Values still owed when the bridge stops are carried over
 //!   from its log at the next start (`platform.restore`, [`Decision::carry_restores`]).
-//! - **Lost friendlies** (rules 5). A nomination may carry `accept_unknown`: our vehicles
+//! - **Lost friendlies** (rules 6). A nomination may carry `accept_unknown`: our vehicles
 //!   whose position the nominating operator accepts as unknown since a named report
 //!   (`POST /api/intents/{id}/accept_unknown` does it while the nomination waits with no
 //!   signature; `.../revoke_unknown` withdraws it). Only an operator with engagement
@@ -74,14 +74,14 @@ pub struct EngageParams {
     /// where it is), `return` (RTL) or `loiter` (orbit where it is).
     #[serde(default)]
     pub fallback: Option<String>,
-    /// Rules 5: our vehicles whose position the nominating operator accepts as unknown, each
+    /// Rules 6: our vehicles whose position the nominating operator accepts as unknown, each
     /// since the report the check names (`since`, engine ms; null: it never reported one).
     /// An operator's only.
     #[serde(default)]
     pub accept_unknown: Vec<AcceptUnknown>,
 }
 
-/// Rules 5: "vehicle `uid`, position unknown since `since`: accept".
+/// Rules 6: "vehicle `uid`, position unknown since `since`: accept".
 #[derive(Debug, Clone, Deserialize)]
 pub struct AcceptUnknown {
     pub uid: crate::vehicle::Uid,
@@ -105,7 +105,7 @@ pub(super) struct EngageRun {
     fallback: Option<Arc<Tasking>>,
     /// op id -> state last written to the log
     reported: HashMap<u64, OpState>,
-    /// rules 5: the platform, the intercept waiting for its lost-link preload to confirm,
+    /// rules 6: the platform, the intercept waiting for its lost-link preload to confirm,
     /// whether the set still waits for the platform's link, and whether it was reported
     /// (or abandoned before it started)
     platform: Option<crate::vehicle::Uid>,
@@ -128,7 +128,7 @@ impl EngageRun {
     }
 }
 
-/// Rules 5: one platform's lost-link parameters as the bridge handles them: the one job on
+/// Rules 6: one platform's lost-link parameters as the bridge handles them: the one job on
 /// its link, and its own values while a preload has replaced them.
 #[derive(Default)]
 pub(super) struct ParamLane {
@@ -147,7 +147,7 @@ enum Purpose {
     Restore,
 }
 
-/// Rules 5: a platform's own lost-link values, owed back to it.
+/// Rules 6: a platform's own lost-link values, owed back to it.
 pub(super) struct Owed {
     values: BTreeMap<String, f64>,
     /// the vehicle they were preloaded on (a carried restore goes only to a match)
@@ -192,14 +192,14 @@ impl ParamLane {
     }
 }
 
-/// Rules 5: seconds before the first retry of a restore that did not confirm; each later one
+/// Rules 6: seconds before the first retry of a restore that did not confirm; each later one
 /// waits twice as long, up to [`RESTORE_RETRY_MAX_S`].
 const RESTORE_RETRY_S: f64 = 15.0;
 const RESTORE_RETRY_MAX_S: f64 = 300.0;
-/// Rules 5: how long a due restore may stay unconfirmed before the inbox says so, s.
+/// Rules 6: how long a due restore may stay unconfirmed before the inbox says so, s.
 pub(super) const RESTORE_ALERT_S: f64 = 30.0;
 
-/// Rules 5: a fleet vehicle as a preload's write-ahead names it: its platform and callsign
+/// Rules 6: a fleet vehicle as a preload's write-ahead names it: its platform and callsign
 /// (the manifest), its system id, and its home (from its telemetry, else the manifest's).
 fn identity_of(cell: &crate::vehicle::VehicleCell) -> murmur_decide::VehicleIdentity {
     cell.read(|v| {
@@ -363,7 +363,7 @@ impl Decision {
                 return Ok(());
             }
         };
-        // rules 5: the fallback as the platform's own lost-link action first (on the
+        // rules 6: the fallback as the platform's own lost-link action first (on the
         // platform's lane, once any job there has finished); the intercept goes out once its
         // read-back confirms
         if o.preload.is_some() {
@@ -403,7 +403,7 @@ impl Decision {
         Ok(())
     }
 
-    /// Rules 5: the platforms' lost-link parameter jobs, one at a time per platform. First the
+    /// Rules 6: the platforms' lost-link parameter jobs, one at a time per platform. First the
     /// jobs that finished: a set reported to the engine (`engage.preload`; its own values are
     /// owed back from then on, the engagement owning their restore), then the intercept sent
     /// if it confirmed and the engagement is still under way, else (the engine stopped it)
@@ -607,7 +607,7 @@ impl Decision {
         self.start_param_jobs(core, now_mono);
     }
 
-    /// Rules 5: on each platform whose lane is free, the next job: a set waiting (its
+    /// Rules 6: on each platform whose lane is free, the next job: a set waiting (its
     /// engagement still under way; one that ended first never touches the vehicle), else a
     /// re-read due near the release, else the restore of its own values once no engagement
     /// holds it (none under way or waiting for its set: a restore never undoes a newer
@@ -707,7 +707,7 @@ impl Decision {
         }
     }
 
-    /// Rules 5, at start: the platforms' own lost-link values this station's last run still
+    /// Rules 6, at start: the platforms' own lost-link values this station's last run still
     /// owed back when it ended (derived from its audit log, which `pointer` names), logged as
     /// carried (`platform.restore`) and put back like any other once the platform answers.
     /// Then `pointer` names this run's log. A missing pointer or log is a first start.
@@ -792,7 +792,7 @@ impl Decision {
         }
     }
 
-    /// Rules 5: an alert of the bridge's start (the last run's log could not be read, so what
+    /// Rules 6: an alert of the bridge's start (the last run's log could not be read, so what
     /// it owed could not be carried over).
     pub(super) fn carry_alert(&self, core: &Core, now_wall: f64) -> Option<super::alerts::Alert> {
         core.carry_problem.as_ref().map(|(why, t)| super::alerts::Alert {
@@ -808,7 +808,7 @@ impl Decision {
         })
     }
 
-    /// Rules 5: inbox alerts for platforms whose own lost-link values have been due back for
+    /// Rules 6: inbox alerts for platforms whose own lost-link values have been due back for
     /// longer than [`RESTORE_ALERT_S`] without a confirmed restore.
     pub(super) fn restore_alerts(&self, core: &Core, now_wall: f64) -> Vec<super::alerts::Alert> {
         let fleet = self.fleet();
@@ -924,7 +924,7 @@ impl Decision {
             if let Err(e) = core.engine.supersede_engagement(other, id) {
                 eprintln!("decision: supersede {other}: {e}");
             }
-            // rules 5: no intercept for it; a set still on the platform's lane reports when it
+            // rules 6: no intercept for it; a set still on the platform's lane reports when it
             // finishes (the lane knows whose it is), and its own values go back once nothing
             // holds the platform
             core.engagements.remove(&other);
@@ -994,6 +994,13 @@ impl Decision {
         // the world only when an engagement is in play (a snapshot of a large fleet is not free)
         if active {
             let world = self.snapshot();
+            // every vehicle event that came in before this picture (the receive loop runs
+            // beside the tick: a mode change can land after the tick's own drain) is handled
+            // before anything is decided on it: a platform whose failsafe took it out of its
+            // intercept is stopped first, never released on. The drain must stay after the
+            // snapshot: the snapshot carries no mode, so an event that lands between a drain
+            // placed before it and the snapshot would reopen the race (no test pins this order)
+            self.log_vehicle_events(core);
             let out = core.engine.step_engagements(&world, &self.terrain.oracle());
             // each engagement on its own: one that failed (an audit write) is reported, the
             // others' orders are still carried out
@@ -1032,7 +1039,7 @@ impl Decision {
                 if !i.state().is_terminal() {
                     return false;
                 }
-                // rules 5: its preload reported first (or abandoned before it started)
+                // rules 6: its preload reported first (or abandoned before it started)
                 if run.platform.is_some() && !run.preload_reported {
                     return false;
                 }
@@ -1098,7 +1105,7 @@ impl Decision {
         out
     }
 
-    /// `POST /api/intents/{id}/accept_unknown` (rules 5): an operator with engagement
+    /// `POST /api/intents/{id}/accept_unknown` (rules 6): an operator with engagement
     /// authority accepts, for a nomination waiting with no signature yet, that one of our
     /// vehicles is lost since the report the check names (`since`, engine ms; null: never
     /// reported). Logged as `engage.accepted` with the vehicle's facts; the next check reads
@@ -1132,7 +1139,7 @@ impl Decision {
         out
     }
 
-    /// `POST /api/intents/{id}/revoke_unknown` (rules 5): any operator withdraws an
+    /// `POST /api/intents/{id}/revoke_unknown` (rules 6): any operator withdraws an
     /// acceptance of a lost vehicle (`engage.acceptance_revoked`); the checks count it again,
     /// which stops an engagement it now blocks.
     pub fn revoke_unknown(
@@ -1180,7 +1187,7 @@ impl Decision {
                 e.signed
                     .iter()
                     .map(|s| {
-                        // rules 5: the signer also accepted one of its lost vehicles
+                        // rules 6: the signer also accepted one of its lost vehicles
                         let self_accepted = i
                             .concurrences()
                             .iter()
@@ -1200,7 +1207,7 @@ impl Decision {
         let reset = record.and_then(|e| e.reset.as_ref()).map(|r| {
             json!({ "t": r.t, "dropped": r.dropped, "reason": r.reason })
         });
-        // rules 5: the lost vehicles accepted for it, shown to every signer
+        // rules 6: the lost vehicles accepted for it, shown to every signer
         let accepted: Vec<Value> = record
             .map(|e| {
                 e.accepted

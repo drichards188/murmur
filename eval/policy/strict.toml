@@ -15,6 +15,18 @@ until = "tasking_lead"
 expire_s = 300
 until = "window"
 
+# The shipped policy's queue for unreachable vehicles (rules 5), unchanged.
+[queue]
+expire_s = 900
+human_expire_s = 120
+link_intervals = 3
+
+[queue.kind.hold]
+expire_s = 60
+
+[queue.kind.rtl]
+expire_s = 120
+
 [rules]
 max_fact_age_s = 10
 fact_age_intervals = 3

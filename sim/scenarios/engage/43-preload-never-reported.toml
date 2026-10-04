@@ -1,4 +1,4 @@
-# Rules 5: the bridge never reports the platform's preload (a lost reply, a stalled job).
+# Rules 6: the bridge never reports the platform's preload (a lost reply, a stalled job).
 # The platform reaches the point and the picture holds, but the release needs the preload
 # confirmed (fallback_preload): it waits, and once the effect is late_s past its time the
 # engagement aborts with its fallback. A dispatch without a confirmed preload never releases.

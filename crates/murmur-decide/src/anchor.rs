@@ -12,9 +12,11 @@
 //! separate trust domain: `MURMUR_ANCHOR_CMD` handing each anchor to a machine, a service or
 //! a timestamping authority that the log's writer can't change.
 //!
-//! An anchor is taken after the first event (`run.started`), every `every` events, and at a
-//! clean shutdown. Events after the last anchor are not covered: their truncation can't be
-//! told from a run that ended there (the shutdown anchor tells a clean end).
+//! An anchor is taken after the first event (`run.started`), every `every` events, after every
+//! event a restart carries intents over by (`intent.state`, `intent.resumed`, `op.state`:
+//! "decision"), and at a clean shutdown. Events after the last anchor are not covered: their
+//! truncation can't be told from a run that ended there (the shutdown anchor tells a clean
+//! end); after a crash, that is at most the vehicle events since the last decision.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -41,7 +43,7 @@ pub struct Anchor {
     /// The last event written when the anchor was taken, and the SHA-256 of its line.
     pub seq: u64,
     pub head: String,
-    /// "start", "every N events" or "shutdown".
+    /// "start", "every N events", "decision" or "shutdown".
     pub why: String,
     /// The cadence the writer was set to: an anchor every this many events. The verifier
     /// holds the file to it, so a removed anchor shows.
@@ -172,7 +174,13 @@ impl Anchors {
             Some("start".to_string())
         } else {
             st.since += 1;
-            (st.since >= st.every).then(|| format!("every {} events", st.every))
+            if st.since >= st.every {
+                Some(format!("every {} events", st.every))
+            } else if decision_line(line) {
+                Some("decision".to_string())
+            } else {
+                None
+            }
         };
         if let Some(why) = why
             && let Err(e) = st.write(&why)
@@ -264,6 +272,14 @@ impl<S: AuditSink> AuditSink for AnchoredSink<S> {
         self.anchors.appended(line);
         Ok(())
     }
+}
+
+/// An event a restart carries intents over by: an intent's state change, a carried-over
+/// intent, an op's state (whether a vehicle started an order).
+fn decision_line(line: &str) -> bool {
+    ["\"type\":\"intent.state\"", "\"type\":\"intent.resumed\"", "\"type\":\"op.state\""]
+        .iter()
+        .any(|t| line.contains(t))
 }
 
 /// An event line's `seq` (lines start `{"seq":N,`).
@@ -381,8 +397,10 @@ pub fn verify(log: &str, anchors: &str) -> AnchorReport {
     if let Some(n) = every {
         for w in parsed.windows(2) {
             let gap = w[1].seq.saturating_sub(w[0].seq);
+            // every anchor restarts the count: a cadence anchor comes exactly N events after
+            // the one before, a decision or shutdown anchor at most N
             let ok = match w[1].why.as_str() {
-                "shutdown" => gap <= n,
+                "shutdown" | "decision" => gap <= n,
                 _ => gap == n,
             };
             if !ok {

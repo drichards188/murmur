@@ -1,4 +1,4 @@
-# Rules 5: an acceptance covers one loss, not the vehicle. The operator accepted the lost
+# Rules 6: an acceptance covers one loss, not the vehicle. The operator accepted the lost
 # quadcopter; the engagement is approved and dispatched; then the quadcopter reports again,
 # 150 m from the effect point: its fresh position counts like any other vehicle's, and the
 # engagement aborts (keep_out_friendly) with its fallback. Afterwards the log is forged to

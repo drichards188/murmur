@@ -1,4 +1,4 @@
-# Rules 5: a protected aircraft track (a neutral airliner at 3,000 m) predicted right over
+# Rules 6: a protected aircraft track (a neutral airliner at 3,000 m) predicted right over
 # the effect point at the effect time. In 2D it blocks; in 3D its altitude (2-sigma 60 m of
 # radar height error, and 10 m/s of climb or descent over the prediction) keeps it above
 # 1,900 m, far above the keep-out's 275 m over a surface effect.

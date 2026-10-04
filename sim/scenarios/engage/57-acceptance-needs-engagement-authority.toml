@@ -1,4 +1,4 @@
-# Rules 5, from the review of 3318f25 (probe A1): an operator without engagement authority
+# Rules 6, from the review of 3318f25 (probe A1): an operator without engagement authority
 # (op-4, not the proposer) tries to accept a lost friendly after op-2 looked at the picture.
 # Refused: only engagement authority accepts a lost vehicle (the bridge answers 403; the
 # engine API takes only an EngagementAuthority). op-2 signs on the picture as it is (again

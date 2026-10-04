@@ -268,7 +268,7 @@ fn authority_and_lifecycle_are_enforced_by_the_engine() {
         .unwrap_err();
     assert!(matches!(err, EngineError::EngagementNeedsAuthority(_)), "{err}");
     // not dispatchable, not finishable, not abortable while pending
-    assert!(matches!(e.dispatch(id), Err(EngineError::EngageIntent(_))));
+    assert!(matches!(e.dispatch(id, &engage_world(T0)), Err(EngineError::EngageIntent(_))));
     assert!(e.finish(id, TaskOutcome::Done).is_err());
     assert!(e.abort_engagement(id, op1.authority(), "x").is_err());
     assert_eq!(e.intent(id).unwrap().state(), State::PendingApproval);
@@ -545,7 +545,7 @@ fn an_agent_order_on_an_engaging_platform_goes_to_a_human() {
     assert_eq!(e.intent(aid).unwrap().state(), State::PendingApproval);
     e.approve_acknowledging(aid, op.authority(), None, &w, &terrain()).unwrap();
     assert_eq!(e.intent(aid).unwrap().state(), State::Approved);
-    e.dispatch(aid).unwrap();
+    e.dispatch(aid, &w).unwrap();
     e.supersede_engagement(id, aid).unwrap();
     let i = e.intent(id).unwrap();
     assert_eq!(i.state(), State::Voided);
@@ -567,7 +567,9 @@ fn an_agent_order_on_an_engaging_platform_goes_to_a_human() {
         .unwrap()
         .to_string();
     assert!(granted.contains("\"supersedes\":[1]"), "{granted}");
-    // with the engagement gone, the agent's next hold runs on its own again
+    // with the engagement gone (and the operator's hold under way: rules 5 protects a human's
+    // order no vehicle started yet), the agent's next hold runs on its own again
+    e.record_op_state(aid, &uid("blade-1"), "done", "holding").unwrap();
     let mut port = e.agent_port(AgentId::new("agent-planner"));
     let b = port
         .propose(hold(), Rationale::new("hold it there").unwrap(), &w, &terrain())
@@ -1358,7 +1360,7 @@ fn the_engine_refuses_reports_and_supersedes_a_newer_order_rules_out() {
         .submit(op9.authority(), Proposal::new(Task::Hold {}, vec![blade.clone()]), &w, &terrain())
         .unwrap()
         .id();
-    e.dispatch(hold).unwrap();
+    e.dispatch(hold, &w).unwrap();
     assert!(not_its_order(e.supersede_engagement(second, first)));
     e.supersede_engagement(second, hold).unwrap();
     let r = replay::replay_str(&log.text()).unwrap();
@@ -1410,7 +1412,7 @@ fn only_a_dispatched_order_on_the_platform_supersedes_an_engagement() {
     let elsewhere = e.submit(op.authority(), hold("sky-1"), &w, &terrain()).unwrap().id();
     let here = e.submit(op.authority(), hold("blade-1"), &w, &terrain()).unwrap().id();
     assert_eq!(e.intent(here).unwrap().state(), State::AutoApproved);
-    e.dispatch(elsewhere).unwrap();
+    e.dispatch(elsewhere, &w).unwrap();
     let before = log.lines().len();
     // not itself, not an order that does not take the platform, not one not yet dispatched
     assert!(not_its_order(e.supersede_engagement(id, id)));
@@ -1418,7 +1420,7 @@ fn only_a_dispatched_order_on_the_platform_supersedes_an_engagement() {
     assert!(not_its_order(e.supersede_engagement(id, here)));
     assert_eq!(log.lines().len(), before, "nothing logged");
     assert_eq!(e.intent(id).unwrap().state(), State::PendingApproval);
-    e.dispatch(here).unwrap();
+    e.dispatch(here, &w).unwrap();
     e.supersede_engagement(id, here).unwrap();
     assert_eq!(e.intent(id).unwrap().state(), State::Voided);
     let r = replay::replay_str(&log.text()).unwrap();

@@ -47,7 +47,8 @@ pub struct VehicleParams {
 #[derive(Deserialize, JsonSchema)]
 pub struct IntentsParams {
     /// Only intents in this state: proposed, checked, auto_approved, pending_approval,
-    /// approved, rejected, expired, voided, dispatched, done or failed.
+    /// approved, queued (held for a vehicle the link can't reach now; re-checked before it
+    /// goes), rejected, expired, voided, dispatched, done or failed.
     pub state: Option<String>,
     /// Only intents this agent proposed.
     pub mine: Option<bool>,

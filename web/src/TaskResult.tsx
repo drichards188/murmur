@@ -8,6 +8,8 @@ import { callsign } from './types'
 export type TaskOutcome =
   | { kind: 'authorized'; intentId: number; authorization: Authorization }
   | { kind: 'wait'; intentId: number; detail: string; expires_t: number | null }
+  /** rules 5: approved, held for a vehicle the link can't carry it to now (202, queued) */
+  | { kind: 'queued'; intentId: number; detail: string }
   | { kind: 'refused'; intent: Intent; detail: string }
 
 function name(vehicles: Vehicle[], uid: string | null) {
@@ -42,6 +44,24 @@ export function TaskResult({
           <button className="ghost" onClick={() => onInbox(outcome.intentId)}>
             See i{outcome.intentId} in Decisions
           </button>
+          <button className="ghost" onClick={onDismiss}>
+            Dismiss
+          </button>
+        </div>
+      </div>
+    )
+  }
+  if (outcome.kind === 'queued') {
+    return (
+      <div className="tr wait" role="status">
+        <strong>Approved, held: a vehicle can't be reached now</strong>
+        <span>
+          Intent i{outcome.intentId} is queued, not sent into a dead link. It goes when the link can carry it, after its checks run
+          again on the picture then; it comes back to the inbox if that picture changed, and expires if the vehicle stays out of
+          reach. See it in the Queue.
+        </span>
+        <span className="muted">{outcome.detail}</span>
+        <div className="row">
           <button className="ghost" onClick={onDismiss}>
             Dismiss
           </button>

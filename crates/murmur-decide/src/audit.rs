@@ -47,6 +47,7 @@ use crate::geo::LonLat;
 use crate::ids::{AgentId, IntentId, OperatorId, SessionId, Uid};
 use crate::intent::{IntentSpec, State, Task, Transition};
 use crate::policy::{DeadlineBasis, Policy, PolicyDecision};
+use crate::queue::{Basis, CarriedApproval, Reach, ResumedFrom, Verdict};
 use crate::rules::CheckResult;
 use crate::space::{ScenarioMap, SegmentId, SpaceAnswer, SpaceOrder};
 use crate::time::Time;
@@ -69,12 +70,14 @@ pub struct LoggedAreas {
     pub areas: AreaSet,
 }
 
-/// When a check ran: at submission, or again at approval against the then-current world.
+/// When a check ran: at submission, again at approval against the then-current world, or
+/// (rules 5) when a queued intent's vehicles are reachable again, before it may go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CheckPhase {
     Submit,
     Approve,
+    Dequeue,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -199,7 +202,7 @@ pub enum EventBody {
         /// Engage: the instant the signature was checked at.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         checked_t: Option<Time>,
-        /// Engage, rules 5: the signer also accepted one of its lost vehicles (allowed,
+        /// Engage, rules 6: the signer also accepted one of its lost vehicles (allowed,
         /// recorded like `self_approved`; replay recomputes it).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         self_accepted: bool,
@@ -229,7 +232,7 @@ pub enum EventBody {
         /// plan's freeze time are read against it).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         checked_t: Option<Time>,
-        /// Engage, rules 5: as on `approval.granted`.
+        /// Engage, rules 6: as on `approval.granted`.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         self_accepted: bool,
     },
@@ -295,6 +298,109 @@ pub enum EventBody {
         /// Engage: where the platform is sent (the approval snapshot's effect point).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         engage: Option<EngageOrder>,
+        /// Rules 5, a kind the queue holds, dispatched straight from its approval: the
+        /// vehicle facts that showed every vehicle reachable (`reach`, recomputed by replay).
+        /// Absent when it comes out of the queue (its `queue.recheck` holds them).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inputs: Option<LoggedInputs>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reach: Option<Vec<Reach>>,
+    },
+
+    /// Rules 5: an approved intent held for vehicles that can't be reached now (`reach`,
+    /// recomputed by replay from `inputs`), until `expires_t` at the latest.
+    #[serde(rename = "intent.queued")]
+    IntentQueued {
+        intent: IntentId,
+        inputs: LoggedInputs,
+        reach: Vec<Reach>,
+        expires_t: Time,
+    },
+
+    /// Rules 5: a queued intent's vehicles are reachable again and its checks ran on the
+    /// world now (the `check.result`, phase `dequeue`, just before): the policy decision on
+    /// those inputs (absent when a check failed) and what follows (`verdict`: dispatch, back
+    /// to the inbox, void), with what changed since the approval. Replay recomputes all of it.
+    #[serde(rename = "queue.recheck")]
+    QueueRecheck {
+        intent: IntentId,
+        reach: Vec<Reach>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decision: Option<PolicyDecision>,
+        verdict: Verdict,
+        changes: Vec<String>,
+    },
+
+    /// Rules 5: a queued intent's deadline passed before its vehicles could be reached. It
+    /// expires, or (`inbox`: a human's approval held past `[queue] human_expire_s`) goes back
+    /// to the inbox for a new decision (`approval.requested` follows).
+    #[serde(rename = "queue.expired")]
+    QueueExpired {
+        intent: IntentId,
+        expires_t: Time,
+        reason: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        inbox: bool,
+    },
+
+    /// Rules 5: a dispatched intent whose link was lost to every vehicle before any started
+    /// it (each vehicle's last `op.state` is `requeued`, none ever started it) goes back to
+    /// the queue until `expires_t` (`inbox` as in `queue.expired`), re-checked before it is
+    /// sent again.
+    #[serde(rename = "intent.requeued")]
+    IntentRequeued {
+        intent: IntentId,
+        expires_t: Time,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        inbox: bool,
+    },
+
+    /// Rules 5: an intent the previous run left open (queued, approved, or dispatched and
+    /// still running), carried into this one after a bridge restart: its spec and id, where
+    /// it comes from (that log, its head and last seq), the state it continues in here
+    /// (`queued`: re-checked before it goes; `dispatched`: some vehicle had started it, so it
+    /// is followed, never sent again), what its approval rested on, and per vehicle its last
+    /// op state there. Replay checks it against the previous log when given it.
+    #[serde(rename = "intent.resumed")]
+    IntentResumed {
+        intent: IntentSpec,
+        from: ResumedFrom,
+        state: State,
+        basis: Basis,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        policy: Option<PolicyDecision>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        approval: Option<CarriedApproval>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_t: Option<Time>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        ops: BTreeMap<Uid, String>,
+        /// The vehicles that ever started it, across every run it went through.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        committed: Vec<Uid>,
+        /// It was dispatched in some run before: a vehicle may hold it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        dispatched_before: bool,
+        /// Each vehicle's platform as the previous run last checked it.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        platforms: BTreeMap<Uid, String>,
+        /// The vehicles that may have started it (its start went out, nothing confirmed it).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        maybe_started: Vec<Uid>,
+    },
+
+    /// Rules 5: a vehicle rebooted, and lost the mode and armed state (and, on a stand-in,
+    /// the mission) its orders had set: its time since boot went back, or (an outage longer
+    /// than its uptime before) the boot instant it implies jumped later than the one before
+    /// (`booted_before_t`). `booted_t` is the new boot instant the bridge reports from here on.
+    #[serde(rename = "vehicle.rebooted")]
+    VehicleRebooted {
+        uid: Uid,
+        boot_ms_before: u64,
+        boot_ms: u64,
+        booted_t: Time,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        booted_before_t: Option<Time>,
     },
 
     /// Per-vehicle task progress from the task layer (sent, acked, active, done, failed).
@@ -368,7 +474,7 @@ pub enum EventBody {
         fallback: Option<Fallback>,
     },
 
-    /// Engage, rules 5: an operator with engagement authority accepted that one of our
+    /// Engage, rules 6: an operator with engagement authority accepted that one of our
     /// vehicles is lost (its position unknown since its report at `since`; null: it never
     /// reported one) for this engagement, so its friendly keep-out leaves that vehicle out
     /// while it is lost since exactly then. At the nomination or while it waits with no
@@ -389,7 +495,7 @@ pub enum EventBody {
         vehicle: Box<crate::world::VehicleFacts>,
     },
 
-    /// Engage, rules 5: an operator withdrew an acceptance of a lost vehicle for this
+    /// Engage, rules 6: an operator withdrew an acceptance of a lost vehicle for this
     /// engagement (any operator may: it only restricts). Its checks count the vehicle again.
     #[serde(rename = "engage.acceptance_revoked")]
     EngageAcceptanceRevoked {
@@ -399,7 +505,7 @@ pub enum EventBody {
         session: SessionId,
     },
 
-    /// Rules 5: a platform's own lost-link values owed back outside an engagement's own
+    /// Rules 6: a platform's own lost-link values owed back outside an engagement's own
     /// restore: carried over at start from an earlier log whose preload was never confirmed
     /// back (`carried`, `from`: that log and engagement), then each attempt to put them back
     /// (`readback`, `error`, `confirmed`: replay recomputes it against the values owed); also
@@ -425,7 +531,7 @@ pub enum EventBody {
         vehicle: Option<Box<crate::engage::VehicleIdentity>>,
     },
 
-    /// Engage, rules 5: the platform's own lost-link values read and logged before anything is
+    /// Engage, rules 6: the platform's own lost-link values read and logged before anything is
     /// written (`intent`, the write-ahead: owed back from here on, with the vehicle's
     /// identity), the platform's own lost-link action set as the engagement's fallback
     /// (`set`: its `before` is the intent's, and the order's preload read back), read again

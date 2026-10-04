@@ -1,4 +1,4 @@
-# Rules 5: the platform answers its preload, but reads back another lost-link action than
+# Rules 6: the platform answers its preload, but reads back another lost-link action than
 # the order's (FS_LONG_ACTN 2, glide, for the fallback's RTL): a write it did not take. The
 # read-back does not confirm, the engagement stops at once with its fallback, and nothing is
 # released; the platform's own values are put back when it can hear us.

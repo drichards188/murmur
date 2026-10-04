@@ -1,4 +1,4 @@
-# Rules 5, fail closed on missing data: our MALE aircraft at 7,000 m over the target, but the
+# Rules 6, fail closed on missing data: our MALE aircraft at 7,000 m over the target, but the
 # target has no altitude estimate (an ESM bearing, say): the effect's altitude is unknown, so
 # every keep-out stays 2D, and the aircraft blocks.
 title = "A target with an unknown altitude keeps the keep-out 2D"

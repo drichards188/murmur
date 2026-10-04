@@ -19,6 +19,7 @@ export type IntentState =
   | 'dispatched'
   | 'effected' // engage: the abstract effect was released; the assessment follows
   | 'aborted' // engage: stopped after dispatch, before the effect; the fallback was commanded
+  | 'queued' // rules 5: approved, held for a vehicle the link can't carry it to now
   | 'done'
   | 'failed'
 
@@ -54,7 +55,7 @@ export interface Approval {
   by: string
   t: number
   self_approved: boolean
-  /** rules 5, an engagement: the signer also accepted one of its lost vehicles */
+  /** rules 6, an engagement: the signer also accepted one of its lost vehicles */
   self_accepted?: boolean
   /** the approval was the submission itself (an operator's own task in a human tier) */
   at_submission?: boolean
@@ -109,6 +110,35 @@ export interface Intent {
   engagement?: Engagement
   /** engage: signatures and, while pending, the live picture (the bridge's view) */
   engage?: EngageView
+  /** rules 5: held for an unreachable vehicle (or once was): since, until, why, and the last
+   *  re-check's verdict when its vehicles could be reached again */
+  queue?: QueueInfo
+  /** rules 5: carried over from the previous run after a bridge restart */
+  resumed?: { from: { log: string; head: string; seq: number; was: IntentState }; ops?: Record<string, string> }
+  /** rules 5: the vehicles that ever started it (followed, never sent it again) */
+  committed?: string[]
+  /** rules 5: dispatched before (a vehicle may hold it: its next delivery asks first) */
+  dispatched_before?: boolean
+  /** rules 5: resumed under way, waiting for its vehicles to connect before it is followed */
+  follow_pending?: boolean
+  /** queued intents in the inbox message: each vehicle's reach on the world now */
+  reach_now?: Reach[]
+}
+
+/** Whether one vehicle can be reached for an order now, and why. */
+export interface Reach {
+  uid: string
+  reachable: boolean
+  detail: string
+}
+
+export interface QueueInfo {
+  t: number
+  expires_t: number
+  /** at the deadline it goes back to the inbox (a human's approval is held only so long) */
+  inbox?: boolean
+  reach: Reach[]
+  recheck?: { t: number; verdict: 'dispatch' | 'inbox' | 'void'; changes: string[] }
 }
 
 export interface IntentSpace {
@@ -142,7 +172,9 @@ export interface Alert {
 export interface Inbox {
   pending: Intent[]
   alerts: Alert[]
-  counts: { pending: number; alerts: number }
+  /** rules 5: approved orders held for vehicles the link can't carry them to now */
+  queued?: Intent[]
+  counts: { pending: number; alerts: number; queued?: number }
 }
 
 export interface Decisions {

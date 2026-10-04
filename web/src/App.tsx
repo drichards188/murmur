@@ -27,6 +27,8 @@ import { buildEstimateLayers } from './estimateLayers'
 import { circle } from './geo'
 import { PERF_ON, perfCommitted, perfPassiveBegin, perfRenderBegin, perfUpdateEnd } from './perf'
 import { PerfOverlay } from './PerfOverlay'
+import { QueueButton, QueuePanel } from './QueuePanel'
+import { buildOrderLayers } from './orderLayers'
 import { noteFocusedIntent, noteTrackViewed } from './operatorView'
 
 function useUtcClock() {
@@ -61,6 +63,8 @@ export default function App() {
   const [draft, setDraft] = useState<Draft>({ mode: 'orbit', center: null, radius: 250, route: [] })
   const [showSpace, setShowSpace] = useState(false)
   const [showInbox, setShowInbox] = useState(false)
+  // rules 5: orders held for vehicles the link can't reach now
+  const [showQueue, setShowQueue] = useState(false)
   const [inboxTab, setInboxTab] = useState<InboxTab>('inbox')
   const [inboxSel, setInboxSel] = useState<InboxSelection>(null)
   // evaluation instrumentation: a track opened is attributed to the selected inbox card only
@@ -177,10 +181,22 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [silent, estimateTick, detailsUid],
   )
+  // ordered versus confirmed (rules 5): queued orders' paths dashed, sent ones not yet
+  // confirmed labelled
+  const queuedIntents = decisions?.inbox.queued
+  const orderTick = Math.floor(now() / 1000)
   const mapLayers = useCallback<MapLayers>(
-    (view) => [...estimateLayers(view), ...trackLayers(view), ...(engageDrawings.length ? buildEngageLayers(engageDrawings, now(), view) : [])],
+    (view) => [
+      ...estimateLayers(view),
+      ...trackLayers(view),
+      ...(engageDrawings.length ? buildEngageLayers(engageDrawings, now(), view) : []),
+      ...buildOrderLayers(
+        { queued: queuedIntents ?? [], intents: allIntents ?? [], taskings: state?.taskings ?? [], vehicles: state?.vehicles ?? [], nowMs: now() },
+        view,
+      ),
+    ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [estimateLayers, trackLayers, engageDrawings],
+    [estimateLayers, trackLayers, engageDrawings, queuedIntents, allIntents, state?.taskings, state?.vehicles, orderTick],
   )
   const focusTrack = useCallback(
     (t: Track) => setFit((f) => ({ points: [trackPredicted(t, now())], n: (f?.n ?? 0) + 1, padRight: 400 })),
@@ -196,10 +212,13 @@ export default function App() {
   const pins = useMemo(() => {
     const set = new Set<number>(selected)
     if (detailsUid != null) set.add(detailsUid)
-    for (const i of pending ?? []) for (const u of i.uids) if (Number.isFinite(Number(u))) set.add(Number(u))
+    // and the vehicles of orders waiting in the queue (rules 5): their badge, and the
+    // re-check when the link is back, are about them
+    for (const i of [...(pending ?? []), ...(queuedIntents ?? [])])
+      for (const u of i.uids) if (Number.isFinite(Number(u))) set.add(Number(u))
     for (const a of alerts ?? []) set.add(a.uid)
     return [...set].sort((a, b) => a - b)
-  }, [selected, detailsUid, pending, alerts])
+  }, [selected, detailsUid, pending, queuedIntents, alerts])
   useEffect(() => {
     if (mapView) setView({ bounds: mapView.bounds, zoom: mapView.zoom, pin: pins })
   }, [mapView, pins, setView])
@@ -295,6 +314,7 @@ export default function App() {
         </span>
         <span className={`pill ${status}`}>{status === 'live' ? 'BRIDGE LIVE' : status === 'down' ? 'BRIDGE DOWN' : 'CONNECTING'}</span>
         <InboxButton decisions={decisions} open={showInbox} hiddenAlerts={hiddenAlerts} onClick={() => setShowInbox((v) => !v)} />
+        <QueueButton decisions={decisions} open={showQueue} onClick={() => setShowQueue((v) => !v)} />
         <TracksButton tracks={tracks} open={showTracks} now={now} onClick={() => setShowTracks((v) => !v)} />
         <button className={`ghost platforms-btn ${showSpace ? 'on' : ''}`} onClick={() => setShowSpace((v) => !v)} title="Space timeline: imaging access, SATCOM, GNSS">
           Space
@@ -406,6 +426,21 @@ export default function App() {
             onClose={() => setShowInbox(false)}
             mem={alertMem}
             hidden={hiddenAlerts}
+          />
+          </ErrorBoundary>
+        )}
+        {showQueue && (
+          <ErrorBoundary name="Queue" className="floating">
+          <QueuePanel
+            decisions={decisions}
+            vehicles={vehicles}
+            now={now}
+            onFocus={(uids) => {
+              setSelected(new Set(uids))
+              const pts = uids.map((u) => vehicles.find((v) => v.uid === u)?.position).filter((p): p is LngLat => p != null)
+              if (pts.length) setFit((f) => ({ points: pts, n: (f?.n ?? 0) + 1, padRight: 430 }))
+            }}
+            onClose={() => setShowQueue(false)}
           />
           </ErrorBoundary>
         )}

@@ -27,7 +27,7 @@ fn scenario() -> String {
         .submit(a, orbit(NEAR_CRISSY, 150.0, &["sky-1"]), &w, &tr)
         .unwrap()
         .id();
-    e.dispatch(i1).unwrap();
+    e.dispatch(i1, &w).unwrap();
     e.record_op_state(i1, &uid("sky-1"), "active", "on station")
         .unwrap();
     e.finish(i1, TaskOutcome::Done).unwrap();
@@ -60,6 +60,10 @@ fn scenario() -> String {
     let mut w_later = w.clone();
     w_later.t = T0.plus_ms(32_000);
     for v in w_later.vehicles.values_mut() {
+        // heard from again (rules 5: the dispatch needs the link to reach it)
+        if let Some(f) = v.autopilot.as_mut() {
+            f.t = w_later.t;
+        }
         v.nav_ready.as_mut().unwrap().t = w_later.t;
         v.battery_pct.as_mut().unwrap().t = w_later.t;
         v.position.as_mut().unwrap().t = w_later.t;
@@ -97,7 +101,7 @@ fn scenario() -> String {
     .unwrap();
     e.approve(i2, a, Some("picture holds".into()), &w_later, &tr)
         .unwrap();
-    e.dispatch(i2).unwrap();
+    e.dispatch(i2, &w_later).unwrap();
     e.finish(
         i2,
         TaskOutcome::Failed {
@@ -755,7 +759,7 @@ fn scenario_at_submission() -> String {
         .submit(a, orbit(NEAR_CRISSY, 150.0, &["blade-1"]), &w, &tr)
         .unwrap()
         .id();
-    e.dispatch(armed).unwrap();
+    e.dispatch(armed, &w).unwrap();
     let outside = e
         .submit(a, orbit(OUTSIDE_APPROVED, 5000.0, &["hawk-1"]), &w, &tr)
         .unwrap()

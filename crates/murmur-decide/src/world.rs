@@ -78,11 +78,17 @@ pub struct VehicleFacts {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub circling: Option<Fact<Circle>>,
     /// Altitude above mean sea level (negative: depth), metres, stamped with the position it
-    /// came with (GLOBAL_POSITION_INT, HIGH_LATENCY2). Rules 5 read an engagement's keep-out
+    /// came with (GLOBAL_POSITION_INT, HIGH_LATENCY2). Rules 6 read an engagement's keep-out
     /// in 3D where it and the effect's altitude are known; absent (or stale), the keep-out
     /// stays 2D for this vehicle. Absent in logs written before it existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alt_msl_m: Option<Fact<f64>>,
+    /// When the autopilot booted (engine time), estimated by the bridge from the time since
+    /// boot its messages carry, and replaced when it detects a reboot. A queued order
+    /// compares it with its approval: a vehicle that booted since lost its mission and mode.
+    /// Absent before rules 5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub booted_t: Option<Time>,
 }
 
 /// A circle a vehicle flies: its center and its radius with the tolerance it is flown to
@@ -175,7 +181,7 @@ pub struct TrackFacts {
     /// Estimated altitude (negative: depth), metres, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alt_m: Option<f64>,
-    /// Rules 5: when the altitude was last measured (by a sensor that ranges the contact in
+    /// Rules 6: when the altitude was last measured (by a sensor that ranges the contact in
     /// height); absent when unknown. A 3D keep-out counts the altitude only while this is
     /// recent (`track_alt_max_age_s`) and grows its margin from then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -202,7 +208,7 @@ pub struct TrackFacts {
     pub identity_confidence: f64,
     /// Our sensors behind the track, as "<uid>:<sensor>" (e.g. "3:radar").
     pub sources: Vec<String>,
-    /// Rules 5: when each of `sources` last detected the track.
+    /// Rules 6: when each of `sources` last detected the track.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub source_t: BTreeMap<String, Time>,
     pub domain: crate::catalog::Domain,
@@ -358,12 +364,17 @@ pub struct WorldSnapshot {
     /// always goes to a human. Absent when empty.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub engaged: BTreeMap<Uid, IntentId>,
+    /// Engine-filled (rules 5): the intent's vehicles that have an order a human approved
+    /// waiting in the queue, by that intent's id. An agent's order on one of them goes to a
+    /// human (it would supersede the human's order). Absent when empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub waiting: BTreeMap<Uid, IntentId>,
     /// Engine-filled for an engagement's signature (and its hold while signatures wait):
     /// the plan being signed, frozen by the first signature. Its checks read this plan, not a
     /// fresh preview. Absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<Box<crate::engage::FrozenPlan>>,
-    /// Engine-filled for an engagement's checks (rules 5): our vehicles whose position an
+    /// Engine-filled for an engagement's checks (rules 6): our vehicles whose position an
     /// operator accepted as unknown for it (`engage.accepted`), with the last report it
     /// names. The friendly keep-out leaves out a vehicle that is lost since exactly then.
     /// Absent when none.
@@ -391,10 +402,14 @@ pub struct LoggedInputs {
     /// The intent's vehicles with an engagement in play (absent when none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub engaged: BTreeMap<Uid, IntentId>,
+    /// The intent's vehicles with a human-approved order waiting in the queue (absent when
+    /// none).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub waiting: BTreeMap<Uid, IntentId>,
     /// The plan an engagement signature is on (absent otherwise).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<Box<crate::engage::FrozenPlan>>,
-    /// Our vehicles an operator accepted as lost for this engagement (rules 5; absent when
+    /// Our vehicles an operator accepted as lost for this engagement (rules 6; absent when
     /// none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unknown_accepted: BTreeMap<Uid, crate::engage::AcceptedUnknown>,
@@ -419,6 +434,7 @@ impl LoggedInputs {
             },
             tracks: world.tracks.clone(),
             engaged: world.engaged.clone(),
+            waiting: world.waiting.clone(),
             plan: world.plan.clone(),
             unknown_accepted: world.unknown_accepted.clone(),
         }
@@ -460,6 +476,7 @@ impl LoggedInputs {
             space,
             tracks: self.tracks.clone(),
             engaged: self.engaged.clone(),
+            waiting: self.waiting.clone(),
             plan: self.plan.clone(),
             unknown_accepted: self.unknown_accepted.clone(),
         }
@@ -503,6 +520,7 @@ impl WorldSnapshot {
             tracks: self.tracks.clone(),
             // engine-owned: filled from its own intents
             engaged: BTreeMap::new(),
+            waiting: BTreeMap::new(),
             plan: None,
             unknown_accepted: BTreeMap::new(),
         }

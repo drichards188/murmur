@@ -1,7 +1,9 @@
 //! Inbox alerts, from what the bridge already detects: a lost link (no telemetry for more
 //! than 3 expected intervals: 3 s when streaming, 60 s for an AUV reporting by
 //! HIGH_LATENCY2 over its acoustic link; see `link::STALE_INTERVALS`), NOT MOVING, a vehicle
-//! that left its task, a failed task, an ACK timeout.
+//! that left its task, a failed task, an ACK timeout, and (rules 5) a vehicle that may run an
+//! order nothing confirmed: its start went out before the link was lost (op `unconfirmed`),
+//! and it is in that order's mode now, or still out of contact.
 //!
 //! Derived from the current state on every read, so an alert clears itself when its cause
 //! does (the link comes back, the vehicle gets a new task). Op alerts look only at each
@@ -24,8 +26,9 @@ pub enum Severity {
 pub struct Alert {
     /// Stable while the condition lasts: `link:<uid>` or `op:<op id>`.
     pub id: String,
-    /// lost_link | not_moving | left_task | task_failed | ack_timeout | restore_pending (rules
-    /// 5: a platform's own lost-link failsafe not confirmed back after an engagement)
+    /// lost_link | not_moving | left_task | task_failed | ack_timeout | may_be_running |
+    /// restore_pending (rules 6: a platform's own lost-link failsafe not confirmed back after
+    /// an engagement)
     pub kind: &'static str,
     pub severity: Severity,
     pub uid: Uid,
@@ -89,6 +92,12 @@ pub fn alerts(
         }
     }
     for op in ops {
+        if op.state == OpState::Unconfirmed {
+            if let Some(a) = may_be_running(vehicles, op, now_wall) {
+                out.push(a);
+            }
+            continue;
+        }
         let Some((kind, severity)) = op_alert(op) else {
             continue;
         };
@@ -115,6 +124,61 @@ pub fn alerts(
             .then(a.id.cmp(&b.id))
     });
     out
+}
+
+/// An op whose start went out unconfirmed (the latest on its vehicle): the vehicle in that
+/// order's mode (armed, for a mission) may be running it though nothing confirmed it, and
+/// whatever became of its intent; out of contact, it may be. None when the vehicle is heard
+/// and in another mode.
+fn may_be_running(vehicles: &[std::sync::Arc<VehicleCell>], op: &OpSnapshot, now_wall: f64) -> Option<Alert> {
+    let cell = vehicles.iter().find(|c| c.uid == op.uid)?;
+    let link = cell.link_snapshot(crate::clock::mono());
+    let silent = link
+        .last_rx_t
+        .is_none_or(|last| now_wall - last > link.stale_after_s());
+    let (mode, armed, kind) = cell.read(|v| (v.mode.clone(), v.armed, v.kind));
+    let caps = kind.and_then(crate::tasks::caps);
+    let want = caps.and_then(|c| match op.task {
+        crate::tasks::TaskKind::Hold => Some(c.hold),
+        crate::tasks::TaskKind::Rtl => c.rtl.or(Some(c.auto)),
+        _ => Some(c.auto),
+    });
+    let mission = !matches!(op.task, crate::tasks::TaskKind::Hold | crate::tasks::TaskKind::Rtl);
+    let running = want.is_some() && mode.as_deref() == want && (armed || !mission);
+    let (severity, detail) = if running {
+        (
+            Severity::High,
+            format!(
+                "in {}{}: it may be running the {} of i{} (its start went out before the link was lost, and nothing confirmed it); look at what the vehicle does",
+                mode.as_deref().unwrap_or("?"),
+                if armed { ", armed" } else { "" },
+                op.task.name(),
+                op.intent_id
+            ),
+        )
+    } else if silent {
+        (
+            Severity::Medium,
+            format!(
+                "out of contact: it may be running the {} of i{} (its start went out before the link was lost)",
+                op.task.name(),
+                op.intent_id
+            ),
+        )
+    } else {
+        return None;
+    };
+    Some(Alert {
+        id: format!("op:{}", op.id),
+        kind: "may_be_running",
+        severity,
+        uid: op.uid,
+        callsign: callsign(cell),
+        detail,
+        since_t: op.history.last().map_or(0.0, |h| h.t),
+        op_id: Some(op.id),
+        intent_id: (op.intent_id != 0).then_some(op.intent_id),
+    })
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-# Rules 5, from the second review (its probe P3): the operator who accepts a lost vehicle may
+# Rules 6, from the second review (its probe P3): the operator who accepts a lost vehicle may
 # also sign the engagement (two people still sign, the acceptor is one of them), but the
 # signature records it (`self_accepted`, like `self_approved`), for the console and the
 # evaluation to show. op-2 accepts the lost quadcopter and signs; op-3 signs too. Afterwards
