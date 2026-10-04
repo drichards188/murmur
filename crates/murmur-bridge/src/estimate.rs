@@ -87,8 +87,12 @@ pub type LngLat = [f64; 2];
 /// What the console draws and the details card explains.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Estimate {
-    /// When the model starts: the last position report (wall clock, s). `dt` counts from it.
+    /// When the model starts (wall clock, s): the last position report, or a drift track's
+    /// last step. `dt` counts from it.
     pub t0: f64,
+    /// The last report the estimate rests on: the link's last packet (wall clock, s). The
+    /// silence is counted from here, whatever the model's start.
+    pub since_t: f64,
     /// orbit | patrol | hold | rtl | velocity | stationary
     pub basis: &'static str,
     /// One line for the operator: "orbit #3, 160 m/s clockwise on a 9.0 km ring".
@@ -1502,6 +1506,7 @@ pub fn estimate(inp: &Inputs) -> Estimate {
     };
     Estimate {
         t0: round(t0, 1),
+        since_t: round(inp.last_rx_t, 1),
         basis,
         detail,
         motion: round_motion(motion),
@@ -1529,8 +1534,7 @@ pub fn agent_view(e: &Estimate, now: f64) -> Value {
     let task = json!({
         "basis": e.basis,
         "detail": e.detail,
-        "as_of": e.t0,
-        "age_s": round((now - e.t0).max(0.0), 1),
+        "model_t0": e.t0,
         "now": at(&e.motion, e.t0),
     });
     let failsafe = e.failsafe.as_ref().map(|f| {
@@ -1546,6 +1550,9 @@ pub fn agent_view(e: &Estimate, now: f64) -> Value {
     });
     json!({
         "note": "a display estimate of where the vehicle probably is while its link is silent, not an observed fact: the decision core does not read it, and nothing here is a position fix",
+        // the last report it rests on: the silence is this old, however fresh the model
+        "as_of": e.since_t,
+        "age_s": round((now - e.since_t).max(0.0), 1),
         "leading": e.leading,
         "task": task,
         "failsafe": failsafe,
@@ -1891,6 +1898,8 @@ mod tests {
         let e = estimate(&buoy);
         assert_eq!(e.basis, "drift");
         assert_eq!(e.t0, 1200.0); // the model starts at the track's last step, not the last report
+        assert_eq!(e.since_t, 1000.0); // but the silence is counted from the last report
+        assert_eq!(agent_view(&e, 1247.0)["age_s"], 247.0);
         assert!(e.detail.contains("tidewater"), "{}", e.detail);
         let Motion::Line { from, speed_mps, bearing_deg, along0_m, along_mps, .. } = &e.motion else { panic!("{:?}", e.motion) };
         assert!(distance_m(*from, track.pos) < 0.2);
@@ -2157,8 +2166,9 @@ mod tests {
         assert_eq!(v["leading"], "failsafe");
         assert_eq!(v["failsafe"]["fired"], true);
         assert!(v["failsafe"]["now"]["radius_m"].as_f64().is_some_and(|r| r > 0.0));
-        assert_eq!(v["task"]["as_of"], 1000.0);
-        assert_eq!(v["task"]["age_s"], 200.0);
+        assert_eq!(v["as_of"], 1000.0);
+        assert_eq!(v["age_s"], 200.0);
+        assert_eq!(v["task"]["model_t0"], 1000.0);
         assert!(v["note"].as_str().is_some_and(|n| n.contains("not an observed fact")));
         // before the timer: the task model leads
         let mut early = plane.clone();
