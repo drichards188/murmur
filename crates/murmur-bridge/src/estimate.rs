@@ -805,7 +805,8 @@ pub fn set_water_track(uid: Uid, track: WaterTrack) {
     water_tracks().insert(uid, track);
 }
 
-/// Step every surface vehicle's drift track: a vehicle heard from is reset to where it is;
+/// Step every surface (and subsurface: a surfaced AUV drifts too) vehicle's drift track: a
+/// vehicle heard from is reset to where it is;
 /// a silent one is carried along the current sampled at its track every step (the drifting
 /// buoy's own motion is exactly this, `crates/murmur-standins/src/behavior/drifter.rs`).
 /// Without `MURMUR_TIDEWATER_URL` there is no track and the estimate falls back to its
@@ -842,7 +843,7 @@ pub async fn water_sampler(world: Arc<World>) {
                     .and_then(|p| cfg.limits.platforms.get(p))
                     .map(|l| l.domain.clone())
                     .unwrap_or_else(|| kind_defaults(kind).domain);
-                if domain != "surface" {
+                if domain != "surface" && domain != "subsurface" {
                     continue;
                 }
                 let Some((lat, lon)) = pos else { continue };
@@ -1448,9 +1449,17 @@ pub fn estimate(inp: &Inputs) -> Estimate {
                     "RTL: toward home at cruise speed"
                 },
             ),
+            // surfaced it drifts like a buoy: at the sampled current (plus its growth), else
+            // the default bound
             "surface" => (
-                inp.point(p, s0, 0.3),
-                "surfacing (FS_GCS_ENABLE 4), then on its surface radio",
+                inp.point(
+                    p,
+                    s0,
+                    inp.water
+                        .map(|w| norm(w.drift_en) + drift_growth_mps(w.current_en, w.wind_en))
+                        .unwrap_or(DRIFT_MPS),
+                ),
+                "surfacing (FS_GCS_ENABLE 4), then drifting on its surface radio",
             ),
             "land" => (inp.point(p, s0, 0.3), "landing where it is"),
             _ => (inp.point(p, s0, 0.0), "disarming where it is"),
@@ -2263,7 +2272,19 @@ mod tests {
         assert_eq!(*along0_m, 30.0);
         let f = e.failsafe.expect("surfaces");
         assert_eq!(f.action, "surface");
-        assert!(matches!(f.motion, Motion::Point { .. }));
+        assert!(matches!(f.motion, Motion::Point { rate_mps, .. } if rate_mps == DRIFT_MPS), "{:?}", f.motion);
+        // with the water sampled under it: it drifts at the current, growing with it
+        auv.water = Some(WaterTrack {
+            pos: GATE,
+            t: 1000.0,
+            sigma_m: 10.0,
+            drift_en: [1.8, 0.0],
+            current_en: [1.8, 0.0],
+            wind_en: [0.0, 0.0],
+        });
+        let f = estimate(&auv).failsafe.expect("surfaces");
+        assert!(matches!(f.motion, Motion::Point { rate_mps, .. } if (rate_mps - (1.8 + 0.54 + 0.1)).abs() < 0.01), "{:?}", f.motion);
+        auv.water = None;
         // a tethered ROV disarms instead
         auv.link_class = Some("tether");
         auv.submerged = false;

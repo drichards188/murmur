@@ -167,8 +167,10 @@ export function buildEstimateLayers({ vehicles, nowMs, focus }: EstimateLayerInp
       getSize: 10,
       getColor: (d) => a(TEXT, dim(d)),
       getTextAnchor: 'middle',
-      getAlignmentBaseline: 'bottom',
-      getPixelOffset: (d) => [0, -(frameIcon(d.v, true).halfH + 4)],
+      // the other hypothesis labels below its symbol, so the two don't collide while the
+      // estimates are still close together
+      getAlignmentBaseline: (d) => (d.lead ? 'bottom' : 'top'),
+      getPixelOffset: (d) => [0, (d.lead ? -1 : 1) * (frameIcon(d.v, true).halfH + 4)],
       fontFamily: FONT,
       fontWeight: 600,
       background: true,

@@ -221,6 +221,17 @@ group. Dates are 2026.
   change-only push sends a silent vehicle once per `NOW_STEP_S`, not per frame: a thousand
   silent nodes cost the bridge nothing per frame. Growth rates are stated GUESSes in the
   module header (about two sigma); `scripts/estimate_eval.py` measures containment.
+  Agents read it through MCP as a labelled model with its age, never as a position fact.
+- **Once the lost-link timer has fired, the failsafe branch leads** (10-04, murmur-4y9
+  follow-up). A cut link is cut both ways in every case measured: the vehicle lost the GCS
+  too and did what its firmware does (the boat turned home 30 s in, the aircraft 120 s
+  in), so from the timer on the branch is drawn as the estimate and the task model is
+  kept, dimmed, as the other hypothesis. Both stay on the map: the operator, not the
+  bridge, decides which to believe when the cut was one way.
+- **Drifters are carried along tidewater's current** (10-04, murmur-4y9 follow-up). A
+  buoy's own motion is the water's, so its estimate integrates the sampled current (plus
+  2 % windage, a GUESS) from its last known position rather than freezing (its catalog top
+  speed is 0); without tidewater the bound is the documented 1 m/s.
 - **Lost-link timers follow the link, failsafes stay on** (10-03, murmur-nb1). One table,
   `lost_link_s` per profile in `sim/links.toml` (5 s LOS and tether, 10 s mesh, 30 s LEO,
   120 s GEO, Iridium and acoustic; sources and guesses marked), written by `sim/swarm.py`
