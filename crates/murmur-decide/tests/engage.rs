@@ -916,3 +916,87 @@ fn a_gps_glitch_after_approval_aborts() {
     let r = replay::replay_str(&log.text()).unwrap();
     assert!(r.ok(), "{:?}", r.mismatches);
 }
+
+#[test]
+fn a_circling_friendly_is_predicted_on_its_circle_not_along_its_heading() {
+    // one of our fixed wings, 600 m north of the effect point on the south edge of a 200 m
+    // circle, heading straight at it: 30 s ahead its heading puts it on the point
+    let p = TARGET_AT;
+    let center = engage::offset(p, 0.0, 800.0);
+    let mut w = engage_world(T0);
+    let mut f = vehicle("switchblade", engage::offset(p, 0.0, 600.0));
+    f.velocity_mps = Some(Fact::new([0.0, -20.0], T0));
+    f.circling = Some(Fact::new(
+        Circle {
+            center,
+            radius_m: 200.0,
+        },
+        T0,
+    ));
+    w.vehicles.insert(uid("blade-2"), f);
+    let effect_t = T0.plus_ms(30_000);
+    let mut cfg = policy().rules;
+    // rules 2 carry it along its heading, circle or not
+    cfg.rules_version = 2;
+    let c = engage::keep_out_friendly(p, effect_t, 275.0, Some(&uid("blade-1")), &w, &cfg);
+    assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
+    assert!(c.detail.contains("predicted along its velocity"), "{}", c.detail);
+    // rules 3: anywhere on its disc, 600 m out less its uncertainty (2 x 1 m/s x 30 s)
+    cfg.rules_version = 3;
+    let c = engage::keep_out_friendly(p, effect_t, 275.0, Some(&uid("blade-1")), &w, &cfg);
+    assert_eq!(c.outcome, Outcome::Pass, "{}", c.detail);
+    assert!(
+        c.detail.contains("blade-2 at 539 m") || c.detail.contains("blade-2 at 540 m"),
+        "{}",
+        c.detail
+    );
+    // a circle that reaches into the keep-out still blocks it
+    let v = w.vehicles.get_mut(&uid("blade-2")).unwrap();
+    v.circling = Some(Fact::new(
+        Circle {
+            center: engage::offset(p, 0.0, 400.0),
+            radius_m: 200.0,
+        },
+        T0,
+    ));
+    let c = engage::keep_out_friendly(p, effect_t, 275.0, Some(&uid("blade-1")), &w, &cfg);
+    assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
+    assert!(c.detail.contains("circling within 200 m"), "{}", c.detail);
+    // and a stale circle is not trusted: back to its heading
+    let v = w.vehicles.get_mut(&uid("blade-2")).unwrap();
+    v.circling = Some(Fact::new(
+        Circle {
+            center,
+            radius_m: 200.0,
+        },
+        T0.plus_ms(-60_000),
+    ));
+    let c = engage::keep_out_friendly(p, effect_t, 275.0, Some(&uid("blade-1")), &w, &cfg);
+    assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
+    assert!(c.detail.contains("predicted along its velocity"), "{}", c.detail);
+}
+
+#[test]
+fn a_fix_from_high_latency2_counts_and_says_so() {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = engine_at(&clock, &log);
+    let w = engage_world(T0);
+    let (op2, op3, id) = two_signers(&mut e, &w);
+    sign(&mut e, id, &op2, &w).unwrap();
+    sign(&mut e, id, &op3, &w).unwrap();
+    e.dispatch_order(id).unwrap();
+    clock.advance_ms(1000);
+    // the platform reports only HIGH_LATENCY2 now: no fix type, no GPS failure flag
+    let mut w = engage_world(clock.now());
+    w.vehicles.get_mut(&uid("blade-1")).unwrap().gps_fix_from = Some(GpsFixFrom::HighLatency2);
+    e.step_engagements(&w, &terrain());
+    let i = e.intent(id).unwrap();
+    assert_eq!(i.state(), State::Dispatched, "{:?}", i.history());
+    assert!(
+        log.text().contains("3D fix: a HIGH_LATENCY2 report without its GPS failure flag"),
+        "the picture says where the fix came from"
+    );
+    let r = replay::replay_str(&log.text()).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+}

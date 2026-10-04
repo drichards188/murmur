@@ -424,7 +424,7 @@ fn chain_detects_a_whole_intent_deleted_and_renumbered() {
 
     // The limit, stated as a test: someone who can rewrite the file can recompute the
     // whole chain, and replay passes. Only the head hash differs, which is why it has to
-    // be anchored outside the writer's reach (future work).
+    // be anchored outside the writer's reach (tests/anchors.rs: run-time anchors).
     rechain(&mut v);
     let r = replay_str(&unlines(&v)).unwrap();
     assert!(r.ok(), "{r:#?}");
@@ -442,8 +442,15 @@ fn first_event_must_start_the_chain() {
     v.remove(0);
     renumber(&mut v);
     let r = replay_str(&unlines(&v)).unwrap();
-    assert_eq!(r.mismatches[0].what, CHAIN);
-    assert_eq!(r.mismatches[0].recomputed, GENESIS);
+    let chain = r.mismatches.iter().find(|m| m.what == CHAIN).expect("chain broken");
+    assert_eq!(chain.recomputed, GENESIS);
+    assert!(
+        r.mismatches
+            .iter()
+            .any(|m| m.what == "the log does not start with run.started"),
+        "{:?}",
+        r.mismatches
+    );
 }
 
 // ---- area set, logged once ----------------------------------------------------------------

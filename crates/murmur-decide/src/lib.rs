@@ -186,6 +186,8 @@
 //!     velocity_mps: None,
 //!     gps_fix: None,
 //!     gps_glitch: None,
+//!     gps_fix_from: None,
+//!     circling: None,
 //! });
 //!
 //! // An agent proposes; policy sends it to the inbox.
@@ -210,6 +212,7 @@
 //! assert!(replay::replay_str(&log.text()).unwrap().ok());
 //! ```
 
+pub mod anchor;
 pub mod areas;
 pub mod audit;
 pub mod authority;
@@ -231,7 +234,10 @@ pub mod time;
 pub mod world;
 
 pub use areas::{Area, AreaKind, AreaSet};
-pub use audit::{AuditSink, Event, EventBody, JsonlFile, LoggedAreas, MemorySink, parse_log};
+pub use anchor::{Anchor, AnchorConfig, AnchorReport, AnchoredSink, Anchors};
+pub use audit::{
+    AuditSink, BuildInfo, Event, EventBody, JsonlFile, LoggedAreas, MemorySink, parse_log,
+};
 pub use authority::{EngagementAuthority, Grants, HumanAuthority, OperatorSession};
 pub use catalog::{AutopilotKind, Catalog, Domain, PlatformFacts, SensorFact};
 pub use engage::{
@@ -263,6 +269,6 @@ pub use space::{
 pub use terrain::{NearSample, NoTerrain, PolygonTerrain, Surface, TerrainOracle};
 pub use time::{Clock, ManualClock, SystemClock, Time};
 pub use world::{
-    Affiliation, Fact, LoggedInputs, LoggedSpace, SpaceInputs, TerrainInputs, TrackFacts,
+    Affiliation, Circle, Fact, GpsFixFrom, LoggedInputs, LoggedSpace, SpaceInputs, TerrainInputs, TrackFacts,
     VehicleFacts, WorldSnapshot,
 };

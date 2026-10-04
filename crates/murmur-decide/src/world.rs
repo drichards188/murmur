@@ -66,6 +66,33 @@ pub struct VehicleFacts {
     pub gps_fix: Option<Fact<u8>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gps_glitch: Option<Fact<bool>>,
+    /// Where `gps_fix` comes from when not from the receiver's own report: a HIGH_LATENCY2
+    /// report carries no fix type, so one without its GPS failure flag counts as a 3D fix,
+    /// and says so here. Absent: the receiver's report (GPS_RAW_INT). Rules 3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gps_fix_from: Option<GpsFixFrom>,
+    /// The circle the vehicle is flying (an orbit task on station, a fixed wing loitering or
+    /// circling home), stamped with the report it rests on: an engagement's friendly
+    /// keep-out predicts it anywhere on its disc instead of along its momentary heading.
+    /// Absent: not known to be circling. Rules 3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub circling: Option<Fact<Circle>>,
+}
+
+/// A circle a vehicle flies: its center and its radius with the tolerance it is flown to
+/// (the vehicle stays within `radius_m` of `center`).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Circle {
+    pub center: LonLat,
+    pub radius_m: f64,
+}
+
+/// See [`VehicleFacts::gps_fix_from`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GpsFixFrom {
+    /// A HIGH_LATENCY2 report without HL_FAILURE_FLAG_GPS.
+    HighLatency2,
 }
 
 /// The standard identity (MIL-STD-2525 affiliation) a track is estimated or declared to

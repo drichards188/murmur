@@ -47,6 +47,14 @@
 //! recomputed and the event goes to [`ReplayReport::cache_mismatches`]: a cache mismatch,
 //! which says nothing about the decisions (they were re-decided from the logged answer).
 //!
+//! **Rules versions.** A log is recomputed with the decision rules it records in
+//! `run.started` (none: version 1), but only rules the verifier accepts: by default the
+//! current ones ([`ReplayOptions::rules`]; `murmur-replay --rules N` or `--min-rules N`
+//! accepts older ones explicitly), so a log can't pass by claiming older, looser rules.
+//! What the log carries must fit its claim: `run.started` comes first and only once, and no
+//! field or check only later builds write (a `checked_t`, a GPS fact, a `platform_free`
+//! check, a policy key of a later schema) may appear in a log that claims earlier rules.
+//!
 //! Physics is not replayed; the decision layer is. What replay cannot know is whether the
 //! logged inputs were true of the world: it proves the decisions follow from them. The
 //! chain is tamper-evident, not tamper-proof (see [`crate::audit`]): a full rewrite or a
@@ -112,6 +120,8 @@ pub struct ReplayReport {
     /// The decision rules the log was produced under (`run.started`; 1 when absent), which
     /// replay recomputes with.
     pub rules_version: u32,
+    /// The build that wrote the log (`run.started`; absent before rules 3).
+    pub build: Option<crate::audit::BuildInfo>,
     /// Space queries that could not be recomputed because the segment given to replay is
     /// not the one they ran on. Not decision mismatches: [`Self::ok`] ignores them.
     pub cache_mismatches: Vec<Mismatch>,
@@ -186,11 +196,35 @@ struct Tracked {
     last_picture_t: Option<Time>,
 }
 
+/// Which decision rules a replay accepts a log under.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RulesAccepted {
+    /// Exactly this version (`murmur-replay --rules N`).
+    Exactly(u32),
+    /// This version or a later one (`--min-rules N`; the default is the current version).
+    AtLeast(u32),
+}
+
+impl Default for RulesAccepted {
+    fn default() -> Self {
+        RulesAccepted::AtLeast(crate::rules::RULES_VERSION)
+    }
+}
+
+/// How to replay.
+#[derive(Clone, Copy, Default)]
+pub struct ReplayOptions<'a> {
+    /// The rules versions accepted (default: only the current one).
+    pub rules: RulesAccepted,
+    /// Re-run every logged space query on this segment (see the module docs).
+    pub space: Option<&'a dyn SpaceOracle>,
+}
+
 /// Replay a JSONL log. The chain is checked over the lines exactly as they are in the
 /// text, and each line must be its event's canonical serialization (so an edit that the
 /// parser would ignore, such as an extra field, is still caught).
 pub fn replay_str(text: &str) -> Result<ReplayReport, LogError> {
-    replay_str_with_space(text, None)
+    replay_str_with(text, &ReplayOptions::default())
 }
 
 /// [`replay_str`], and re-run every logged space query on `space` (see the module docs).
@@ -198,6 +232,17 @@ pub fn replay_str_with_space(
     text: &str,
     space: Option<&dyn SpaceOracle>,
 ) -> Result<ReplayReport, LogError> {
+    replay_str_with(
+        text,
+        &ReplayOptions {
+            space,
+            ..ReplayOptions::default()
+        },
+    )
+}
+
+/// [`replay_str`] with options.
+pub fn replay_str_with(text: &str, opts: &ReplayOptions<'_>) -> Result<ReplayReport, LogError> {
     let events = parse_log(text)?;
     let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
     let mut noncanonical = Vec::new();
@@ -210,8 +255,7 @@ pub fn replay_str_with_space(
             noncanonical.push(e.seq);
         }
     }
-    let hashes = lines.iter().map(|l| sha256_hex(l.as_bytes())).collect();
-    let mut r = replay_inner(&events, hashes, space);
+    let mut r = replay_inner(&events, &lines, opts);
     for seq in noncanonical {
         r.mismatches.push(Mismatch {
             seq,
@@ -226,19 +270,142 @@ pub fn replay_str_with_space(
 
 /// Replay parsed events; the chain is checked over their canonical serialization.
 pub fn replay(events: &[Event]) -> ReplayReport {
-    replay_with_space(events, None)
+    replay_with(events, &ReplayOptions::default())
 }
 
 /// [`replay`], and re-run every logged space query on `space`.
 pub fn replay_with_space(events: &[Event], space: Option<&dyn SpaceOracle>) -> ReplayReport {
-    let hashes = events
+    replay_with(
+        events,
+        &ReplayOptions {
+            space,
+            ..ReplayOptions::default()
+        },
+    )
+}
+
+/// [`replay`] with options.
+pub fn replay_with(events: &[Event], opts: &ReplayOptions<'_>) -> ReplayReport {
+    let lines: Vec<String> = events
         .iter()
-        .map(|e| match serde_json::to_string(e) {
-            Ok(line) => sha256_hex(line.as_bytes()),
-            Err(err) => format!("<unserializable: {err}>"),
-        })
+        .map(|e| serde_json::to_string(e).unwrap_or_else(|err| format!("<unserializable: {err}>")))
         .collect();
-    replay_inner(events, hashes, space)
+    replay_inner(events, &lines, opts)
+}
+
+/// Fields and checks only builds of a later rules version write, with that version: a log
+/// claiming earlier rules can't carry them (a downgraded claim). Matched on the lines as
+/// written (a key in quotes followed by a colon can't occur inside a JSON string value).
+const RULES_MARKERS: &[(u32, &str, &str)] = &[
+    (2, "\"checked_t\":", "a signature's checked_t"),
+    (2, "\"gps_fix\":", "a vehicle's GPS fix fact"),
+    (2, "\"gps_glitch\":", "a vehicle's GPS glitch fact"),
+    (2, "\"rule\":\"platform_free\"", "a platform_free check"),
+    (3, "\"gps_fix_from\":", "a GPS fix inferred from HIGH_LATENCY2"),
+    (3, "\"circling\":", "a vehicle's circle"),
+];
+
+/// The first `run.started`'s claims, and everything in the log that contradicts them.
+fn check_claims<S: AsRef<str>>(r: &mut ReplayReport, events: &[Event], lines: &[S], opts: &ReplayOptions<'_>) {
+    let Some(first) = events.first() else { return };
+    let EventBody::RunStarted {
+        rules_version,
+        policy_schema,
+        build,
+        policy,
+        ..
+    } = &first.body
+    else {
+        let kind = serde_json::to_value(&first.body)
+            .ok()
+            .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(str::to_string))
+            .unwrap_or_default();
+        bad(r, first, None, "the log does not start with run.started", kind, "run.started".into());
+        return;
+    };
+    let version = rules_version.unwrap_or(1);
+    match opts.rules {
+        RulesAccepted::Exactly(n) if version != n => bad(
+            r,
+            first,
+            None,
+            "log written under other decision rules than this replay was asked to accept",
+            version.to_string(),
+            n.to_string(),
+        ),
+        RulesAccepted::AtLeast(n) if version < n => bad(
+            r,
+            first,
+            None,
+            "log written under older decision rules than this replay accepts (pass --rules or --min-rules with its version to replay it with them)",
+            version.to_string(),
+            format!(">= {n}"),
+        ),
+        _ => {}
+    }
+    // what only later builds write
+    let mut floor: Vec<(u32, u64, &str)> = Vec::new();
+    if rules_version.is_some() || policy_schema.is_some() {
+        floor.push((2, first.seq, "rules_version and policy_schema in run.started"));
+    }
+    if rules_version.is_some() != policy_schema.is_some() {
+        bad(
+            r,
+            first,
+            None,
+            "run.started carries one of rules_version and policy_schema without the other (every build writes both or neither)",
+            format!("rules_version {rules_version:?}, policy_schema {policy_schema:?}"),
+            String::new(),
+        );
+    }
+    if build.is_some() {
+        floor.push((3, first.seq, "the build in run.started"));
+    }
+    for &(since, needle, what) in RULES_MARKERS {
+        if since <= version {
+            continue;
+        }
+        if let Some(i) = lines.iter().position(|l| l.as_ref().contains(needle)) {
+            floor.push((since, events.get(i).map_or(0, |e| e.seq), what));
+        }
+    }
+    for (since, seq, what) in floor {
+        if since > version {
+            r.mismatches.push(Mismatch {
+                seq,
+                intent: None,
+                what: format!("{what}: only builds of rules {since} or later write it, the log claims rules {version}"),
+                logged: version.to_string(),
+                recomputed: format!(">= {since}"),
+            });
+        }
+    }
+    // the policy file's schema
+    let schema = policy_schema.unwrap_or(1);
+    if schema > crate::rules::POLICY_SCHEMA {
+        bad(
+            r,
+            first,
+            None,
+            "logged policy schema is newer than this replay knows",
+            schema.to_string(),
+            crate::rules::POLICY_SCHEMA.to_string(),
+        );
+    }
+    if let Some(e) = &policy.rules.engage {
+        for (since, key) in e.schema_keys() {
+            if since > schema {
+                bad(
+                    r,
+                    first,
+                    None,
+                    "logged policy uses a key of a later policy schema than it claims",
+                    format!("rules.engage.{key} (schema {since})"),
+                    format!("schema {schema}"),
+                );
+            }
+        }
+    }
 }
 
 /// The area set in force: its logged hash, and the set if that hash verified.
@@ -247,16 +414,23 @@ type InForce = Option<(String, Option<AreaSet>)>;
 /// Logged space answers whose hash verified, by hash.
 type Answers = BTreeMap<String, SpaceAnswer>;
 
-fn replay_inner(
+fn replay_inner<S: AsRef<str>>(
     events: &[Event],
-    hashes: Vec<String>,
-    space: Option<&dyn SpaceOracle>,
+    lines: &[S],
+    opts: &ReplayOptions<'_>,
 ) -> ReplayReport {
+    let space = opts.space;
+    let hashes: Vec<String> = lines.iter().map(|l| sha256_hex(l.as_ref().as_bytes())).collect();
     let mut r = ReplayReport {
         events: events.len(),
         head_sha256: hashes.last().cloned(),
+        build: match events.first().map(|e| &e.body) {
+            Some(EventBody::RunStarted { build, .. }) => build.clone(),
+            _ => None,
+        },
         ..Default::default()
     };
+    check_claims(&mut r, events, lines, opts);
     let mut policy: Option<Policy> = None;
     let mut areas: InForce = None;
     let mut intents: BTreeMap<IntentId, Tracked> = BTreeMap::new();
@@ -318,6 +492,16 @@ fn replay_inner(
                 rules_version,
                 ..
             } => {
+                if i > 0 {
+                    bad(
+                        &mut r,
+                        e,
+                        None,
+                        "run.started is not the log's first event: a run can't start again inside a log",
+                        e.seq.to_string(),
+                        "1".into(),
+                    );
+                }
                 let version = rules_version.unwrap_or(1);
                 if version > crate::rules::RULES_VERSION {
                     bad(

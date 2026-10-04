@@ -165,4 +165,5 @@ calls `Engine::step_engagements` (hold the picture, release, observe, assess).
 | 33-gps-glitch-en-route | platform_nav | the filter flags the GPS as glitching after dispatch, keeping its absolute-position flag | aborted (platform_nav) |
 | 34-first-token-goes-stale | signed_picture | the target turns between the first signer's look and signature | refused ("look again"), not voided; done |
 | 36-friendly-just-outside-keep-out | keep_out_friendly | our AUV closes on the effect point, predicted a few metres outside the keep-out at the effect time | aborted (keep_out_friendly: counted with its prediction uncertainty) |
+| 37-friendly-circling-near-target | keep_out_friendly | one of our fixed wings circles 800 m from the effect point, its heading sweeping across it every lap | done, ceased (rules 3: predicted on its circle, not along its heading) |
 | 35-real-course-change-while-waiting | signed_picture | a holding target gets under way at 6 m/s while a signature waits | the plan dropped at once; a new plan; done |

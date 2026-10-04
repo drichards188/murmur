@@ -1,0 +1,78 @@
+# A friendly fixed wing circling near the target does not block the engagement (rules 3).
+# blade-2 circles 800 m north of the target (200 m radius, 28 m/s). Carried along its
+# momentary heading, as rules 2 did, it would at some second of every lap be predicted on
+# the effect point (a straight line from a circle), and the engagement would abort. The
+# bridge reports the circle it flies (an orbit task on station, a fixed wing loitering or
+# circling home), and rules 3 predict it anywhere on that disc: 600 m from the effect point
+# less its prediction uncertainty, clear of the 275 m keep-out throughout.
+title = "A friendly circling near the target"
+invariant = "keep_out_friendly"
+attack = "one of our fixed wings circles 800 m from the effect point, its heading sweeping across it every lap"
+expect = "done"
+expect_assessment = "ceased"
+end_s = 200
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km: it also covers the point for the assessment
+at = [-122.4700, 37.8160]
+[[vehicle]]
+uid = "blade-2"
+platform = "switchblade"    # ours, not engaging: circling north of the target
+at = [-122.4927, 37.8192]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "vehicle"
+uid = "blade-2"
+velocity = [0.0, -28.0]     # heading south on the east side of its circle
+circling = [-122.4950, 37.8192, 200.0]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"

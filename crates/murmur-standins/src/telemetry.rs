@@ -289,11 +289,13 @@ fn mission_current(v: &Vehicle) -> MavMessage {
     })
 }
 
-/// Where the autopilot is navigating to: the mission item in AUTO, home in RTL.
+/// Where the autopilot is navigating to: the mission item in AUTO, home in RTL, the point it
+/// holds (a fixed wing circles it) in LOITER, as ArduPilot's NAV_CONTROLLER_OUTPUT reports.
 fn nav_target(v: &Vehicle) -> Option<(f64, f64)> {
     match v.st.mode {
         "AUTO" => v.mission.current_location(),
         "RTL" | "SMART_RTL" => Some((v.st.home.0, v.st.home.1)),
+        "LOITER" => Some(v.st.hold_point),
         _ => None,
     }
 }

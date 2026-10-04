@@ -234,6 +234,31 @@ impl EngageRules {
     fn v2(&self) -> bool {
         self.rules_version >= 2
     }
+
+    /// The decisions of rules version 3 on (see the changelog).
+    fn v3(&self) -> bool {
+        self.rules_version >= 3
+    }
+
+    /// The optional keys this section sets, each with the policy schema that introduced it
+    /// (or, for an old name, the first schema whose builds read it): a log claiming an
+    /// older schema can't carry them (replay checks).
+    pub fn schema_keys(&self) -> Vec<(u32, &'static str)> {
+        let mut keys = Vec::new();
+        if self.seen_max_age_s.is_some() {
+            keys.push((2, "seen_max_age_s"));
+        }
+        if self.plan_drift_max_m.is_some() {
+            keys.push((2, "plan_drift_max_m"));
+        }
+        if self.holding_speed_mps.is_some() {
+            keys.push((2, "holding_speed_mps"));
+        }
+        if self.friendly_growth_mps.is_some() {
+            keys.push((2, "friendly_growth_mps"));
+        }
+        keys
+    }
 }
 
 impl Default for EngageRules {
@@ -1324,29 +1349,50 @@ pub fn keep_out_friendly(
                 format!("vehicle {uid} has no position: cannot clear the keep-out"),
             );
         };
+        let ec = cfg.engage_rules();
+        // rules 3: a vehicle flying a circle stays on it; its momentary heading, carried
+        // a minute or more ahead, would put it kilometres away in any direction
+        let circling = v
+            .circling
+            .as_ref()
+            .filter(|_| ec.v3())
+            .and_then(|c| fresh(&v.circling, v, "circle", world, cfg).ok().map(|_| c));
         let vel = v
             .velocity_mps
             .as_ref()
             .filter(|_| fresh(&v.position, v, "position", world, cfg).is_ok())
             .and_then(|f| fresh(&v.velocity_mps, v, "velocity", world, cfg).ok().map(|_| f.value));
-        let (d, how) = match vel {
-            Some([e, n]) => {
+        let (d, how): (f64, std::borrow::Cow<'static, str>) = match (circling, vel) {
+            (Some(c), _) => {
+                // anywhere on its disc, with the same uncertainty growth as any of ours (it
+                // may be retasked); fail closed on the near edge
+                let dt = secs(effect_t.ms_since(c.t)).max(0.0);
+                let margin = ec.keep_out_sigma * ec.friendly_growth() * dt;
+                (
+                    (haversine_m(c.value.center, point) - c.value.radius_m - margin).max(0.0),
+                    format!(
+                        "circling within {:.0} m of its center, less its uncertainty",
+                        c.value.radius_m
+                    )
+                    .into(),
+                )
+            }
+            (None, Some([e, n])) => {
                 // along its velocity, with an uncertainty that grows with the span (it may
                 // turn or be retasked); fail closed on the near edge
-                let ec = cfg.engage_rules();
                 let dt = secs(effect_t.ms_since(pos.t)).max(0.0);
                 let p = offset(pos.value, e * dt, n * dt);
                 if ec.v2() {
                     let margin = ec.keep_out_sigma * ec.friendly_growth() * dt;
                     (
                         (haversine_m(p, point) - margin).max(0.0),
-                        "predicted along its velocity, less its uncertainty",
+                        "predicted along its velocity, less its uncertainty".into(),
                     )
                 } else {
-                    (haversine_m(p, point), "predicted along its velocity")
+                    (haversine_m(p, point), "predicted along its velocity".into())
                 }
             }
-            None => {
+            (None, None) => {
                 let cruise = v
                     .platform
                     .as_ref()
@@ -1365,7 +1411,7 @@ pub fn keep_out_friendly(
                 let dt = secs(effect_t.ms_since(pos.t)).max(0.0);
                 (
                     (haversine_m(pos.value, point) - cruise * dt).max(0.0),
-                    "how far it could reach at cruise speed",
+                    "how far it could reach at cruise speed".into(),
                 )
             }
         };
@@ -2264,7 +2310,15 @@ fn nav_check(uid: Option<&Uid>, world: &WorldSnapshot, cfg: &RulesConfig) -> Che
         }
         Err(e) => return check(r, uid, Outcome::Fail, format!("cannot evaluate: {e}")),
     }
+    let inferred = v.gps_fix_from == Some(crate::world::GpsFixFrom::HighLatency2);
     match fresh(&v.gps_glitch, v, "GPS glitch flag", world, cfg) {
+        // rules 3: a fix inferred from a HIGH_LATENCY2 report says so
+        Ok(false) if cfg.rules_version >= 3 && inferred => check(
+            r,
+            uid,
+            Outcome::Pass,
+            "platform navigates on GNSS (3D fix: a HIGH_LATENCY2 report without its GPS failure flag; no glitch)",
+        ),
         Ok(false) => check(r, uid, Outcome::Pass, "platform navigates on GNSS (3D fix, no glitch)"),
         Ok(true) => check(
             r,

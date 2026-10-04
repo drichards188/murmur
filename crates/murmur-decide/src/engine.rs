@@ -267,6 +267,7 @@ impl Engine {
             crate_version: env!("CARGO_PKG_VERSION").to_string(),
             rules_version: Some(policy.rules.rules_version),
             policy_schema: Some(crate::rules::POLICY_SCHEMA),
+            build: Some(crate::audit::BuildInfo::current()),
             policy,
             areas: areas.clone(),
         })?;

@@ -1,31 +1,92 @@
-//! `murmur-replay <log.jsonl> [--space <constellations.toml> <cache-dir>]`: recompute every
-//! check and policy decision in an audit log from its logged inputs and report any mismatch.
-//! With `--space`, also re-run every logged space query (collect, cover) on that space
-//! segment and compare; a different segment is a cache mismatch, reported separately.
+//! `murmur-replay <log.jsonl> [--rules N | --min-rules N] [--anchors <file>]
+//! [--space <constellations.toml> <cache-dir>]`: recompute every check and policy decision in
+//! an audit log from its logged inputs and report any mismatch.
 //!
-//! Exit status: 0 all decisions reproduced (and, with `--space`, every space query too),
-//! 1 decision mismatches found, 2 unreadable log or usage, 3 decisions reproduced but some
-//! space queries could not be recomputed (cache mismatch).
+//! - A log is recomputed with the decision rules it records, but only rules accepted: by
+//!   default the current ones. `--rules N` accepts exactly version N, `--min-rules N` version
+//!   N or later: an older log is replayed with its own rules only when asked for, so a log
+//!   can't pass by claiming older, looser rules.
+//! - `--anchors <file>` checks the log against its run-time anchors (`logs/anchors/`): its
+//!   first line and every anchored head must hash as anchored, and the log must reach the
+//!   last anchor.
+//! - `--space` also re-runs every logged space query (collect, cover) on that space segment
+//!   and compares; a different segment is a cache mismatch, reported separately.
+//!
+//! Exit status: 0 all decisions reproduced (and, with `--space`, every space query too; with
+//! `--anchors`, the anchors hold), 1 decision or anchor mismatches found, 2 unreadable log or
+//! usage, 3 decisions reproduced but some space queries could not be recomputed (cache
+//! mismatch).
 
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
 
 use murmur_decide::SpaceSegment;
-use murmur_decide::replay::{Mismatch, replay_str_with_space};
+use murmur_decide::replay::{Mismatch, ReplayOptions, RulesAccepted, replay_str_with};
+
+const USAGE: &str = "usage: murmur-replay <audit-log.jsonl> [--rules N | --min-rules N] [--anchors <file>] [--space <constellations.toml> <cache-dir>]";
+
+struct Args {
+    path: String,
+    rules: RulesAccepted,
+    anchors: Option<String>,
+    space: Option<(String, String)>,
+}
+
+fn version(v: Option<&String>, flag: &str) -> Result<u32, String> {
+    v.and_then(|v| v.parse().ok())
+        .filter(|n| *n >= 1)
+        .ok_or_else(|| format!("{flag} needs a rules version (1, 2, ...)"))
+}
+
+fn parse_args(args: &[String]) -> Result<Args, String> {
+    let mut path = None;
+    let mut rules = None;
+    let mut anchors = None;
+    let mut space = None;
+    let mut it = args.iter().skip(1);
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--rules" | "--min-rules" => {
+                if rules.is_some() {
+                    return Err("give one of --rules and --min-rules".into());
+                }
+                let n = version(it.next(), a)?;
+                rules = Some(if a == "--rules" {
+                    RulesAccepted::Exactly(n)
+                } else {
+                    RulesAccepted::AtLeast(n)
+                });
+            }
+            "--anchors" => anchors = Some(it.next().ok_or("--anchors needs a file")?.clone()),
+            "--space" => {
+                let catalog = it.next().ok_or("--space needs a catalog and a cache dir")?;
+                let cache = it.next().ok_or("--space needs a catalog and a cache dir")?;
+                space = Some((catalog.clone(), cache.clone()));
+            }
+            f if f.starts_with("--") => return Err(format!("unknown option {f}")),
+            p if path.is_none() => path = Some(p.to_string()),
+            _ => return Err("one log at a time".into()),
+        }
+    }
+    Ok(Args {
+        path: path.ok_or("no log given")?,
+        rules: rules.unwrap_or_default(),
+        anchors,
+        space,
+    })
+}
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
-    let (path, space) = match args.as_slice() {
-        [_, path] => (path, None),
-        [_, path, flag, catalog, cache] if flag == "--space" => (path, Some((catalog, cache))),
-        _ => {
-            eprintln!(
-                "usage: murmur-replay <audit-log.jsonl> [--space <constellations.toml> <cache-dir>]"
-            );
+    let args = match parse_args(&args) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("murmur-replay: {e}\n{USAGE}");
             return ExitCode::from(2);
         }
     };
+    let path = &args.path;
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) => {
@@ -33,7 +94,7 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let segment = match space {
+    let segment = match &args.space {
         None => None,
         Some((catalog, cache)) => {
             // the run's pinned time shift (space.loaded), so answers are recomputed on the
@@ -57,15 +118,33 @@ fn main() -> ExitCode {
     let oracle = segment
         .as_ref()
         .map(|s| s as &dyn murmur_decide::SpaceOracle);
-    let report = match replay_str_with_space(&text, oracle) {
+    let opts = ReplayOptions {
+        rules: args.rules,
+        space: oracle,
+    };
+    let report = match replay_str_with(&text, &opts) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("murmur-replay: {path}: {e}");
             return ExitCode::from(2);
         }
     };
+    let anchors = match &args.anchors {
+        None => None,
+        Some(file) => match std::fs::read_to_string(file) {
+            Ok(a) => Some((file, murmur_decide::anchor::verify(&text, &a))),
+            Err(e) => {
+                eprintln!("murmur-replay: anchors {file}: {e}");
+                return ExitCode::from(2);
+            }
+        },
+    };
+    let accepted = match args.rules {
+        RulesAccepted::Exactly(n) => format!("accepting rules {n} only"),
+        RulesAccepted::AtLeast(n) => format!("accepting rules {n} or later"),
+    };
     println!(
-        "{path}: decision rules version {}; {} events, {} intents, {} checks and {} policy decisions recomputed, {} transitions verified",
+        "{path}: decision rules version {} ({accepted}); {} events, {} intents, {} checks and {} policy decisions recomputed, {} transitions verified",
         report.rules_version,
         report.events,
         report.intents,
@@ -73,6 +152,14 @@ fn main() -> ExitCode {
         report.policy_recomputed,
         report.transitions_verified
     );
+    if let Some(b) = &report.build {
+        let dirty = match b.dirty {
+            Some(true) => ", working tree dirty",
+            Some(false) => "",
+            None => ", working tree unknown",
+        };
+        println!("written by build {}{dirty}", b.commit);
+    }
     println!(
         "{} area set(s) logged; {} approval(s), {} self-approved; {} authorized at submission",
         report.area_sets, report.approvals, report.self_approvals, report.approvals_at_submission
@@ -102,12 +189,38 @@ fn main() -> ExitCode {
     if let Some(head) = &report.head_sha256 {
         println!("head {head} (compare with an external anchor to detect a rewrite or truncation)");
     }
+    let anchors_ok = match &anchors {
+        None => true,
+        Some((file, a)) => {
+            let last = a.last_anchored.map_or("none".to_string(), |s| s.to_string());
+            println!(
+                "{} anchor(s) in {file}: up to seq {last}, {} event(s) after it not covered{}",
+                a.anchors,
+                a.after_last,
+                if a.shutdown {
+                    "; ended with a shutdown anchor"
+                } else {
+                    ""
+                }
+            );
+            if a.ok() {
+                println!("ANCHORS OK: the log matches every anchor");
+            } else {
+                println!("ANCHOR MISMATCH: {} problem(s)", a.problems.len());
+                print_all(&a.problems);
+            }
+            a.ok()
+        }
+    };
     if !report.ok() {
         println!("MISMATCH: {} problem(s)", report.mismatches.len());
         print_all(&report.mismatches);
         return ExitCode::from(1);
     }
     println!("OK: every decision reproduced exactly");
+    if !anchors_ok {
+        return ExitCode::from(1);
+    }
     if !report.cache_mismatches.is_empty() {
         println!(
             "CACHE MISMATCH: {} space query(ies) ran on a different space segment and were not recomputed",

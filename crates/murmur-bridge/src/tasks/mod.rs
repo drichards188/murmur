@@ -303,6 +303,31 @@ impl TaskManager {
         taskings.iter().map(|t| t.snapshot()).collect()
     }
 
+    /// The circle a vehicle flies for an orbit task once on station (its op done: an orbit
+    /// keeps orbiting) and still in the mission's mode: (center [lon, lat], radius m with
+    /// the tolerance it counts as on station within). None otherwise.
+    pub fn orbit_of(&self, v: &VehicleCell) -> Option<([f64; 2], f64)> {
+        let params = {
+            let inner = self.lock();
+            let op = inner.active.get(&v.uid)?;
+            if op.task != TaskKind::Orbit || op.state() != OpState::Done {
+                return None;
+            }
+            let tasking = op.tasking;
+            inner.taskings.iter().find(|t| t.id == tasking)?.params.clone()
+        };
+        let center = params.center?;
+        v.read(|s| {
+            let caps = caps::caps(s.kind?)?;
+            if s.mode.as_deref() != Some(caps.auto) {
+                return None;
+            }
+            let min_r = s.identity.as_ref().and_then(|i| i.num("min_turn_radius_m"));
+            let (radius, _, tol) = exec::orbit_geometry(params.radius, min_r, caps.orbit);
+            Some((center, radius + tol))
+        })
+    }
+
     /// Each vehicle's latest op, in uid order.
     pub fn current_ops(&self) -> Vec<OpSnapshot> {
         let mut ops: Vec<Arc<OpCell>> = self.lock().active.values().cloned().collect();

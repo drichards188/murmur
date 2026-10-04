@@ -557,9 +557,19 @@ async fn copter_orbit_walks_the_whole_lifecycle() {
         &fleet(&[&copter]),
     );
     let tasking = tm.dispatch_unchecked(order.unwrap_or_else(|e| panic!("{e}")));
+    // not on station yet: no circle to report
+    assert_eq!(tm.orbit_of(&copter), None);
     let s = settle(&tasking.ops[0], 300).await;
     assert_eq!(states(&s), [Queued, Sent, Acked, Active, Done], "{s:?}");
     assert_eq!(s.detail, "on station");
+    // on station: the circle it flies, with its on-station tolerance
+    let (c, r) = tm.orbit_of(&copter).expect("orbiting");
+    assert_eq!(c, center);
+    assert!(r > 200.0 && r <= 280.0, "{r}");
+    // out of the mission's mode (a failsafe, a pilot): not trusted to circle
+    copter.write(|v| v.mode = Some("RTL".into()));
+    assert_eq!(tm.orbit_of(&copter), None);
+    copter.write(|v| v.mode = Some("AUTO".into()));
     assert_eq!(s.progress.as_deref(), Some("orbiting"));
     // the copter took off and is on the ring
     let d = copter
