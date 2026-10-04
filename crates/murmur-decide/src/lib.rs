@@ -93,11 +93,22 @@
 //!    readers. No approve tool exists.
 //! 6. **Timer.** About once a second, [`Engine::expire_due`].
 //! 7. **Dispatch.** For each intent in `auto_approved` or `approved`, [`Engine::dispatch`]
-//!    returns a [`DispatchOrder`] (task, uids) for the existing task manager. Report
-//!    per-vehicle op states with [`Engine::record_op_state`] and the end with
-//!    [`Engine::finish`]. Vehicle events (mode change, failsafe, STATUSTEXT) go to
-//!    [`Engine::record_vehicle_event`]. If the world invalidates an intent before dispatch
-//!    (vehicle lost, superseded), call [`Engine::void`].
+//!    returns a [`DispatchOrder`] (task, uids) for the existing task manager: execute
+//!    exactly that order (replay requires the logged `intent.dispatched` to be the approved
+//!    intent's task and vehicles). Report per-vehicle op states with
+//!    [`Engine::record_op_state`] and the end with [`Engine::finish`]: op states only for a
+//!    dispatched intent, on its own vehicles, and (a vehicle or space task) before its
+//!    finish; the engine refuses anything else ([`EngineError::NotItsOrder`]). Vehicle
+//!    events (mode change, failsafe, STATUSTEXT) go to [`Engine::record_vehicle_event`]. If
+//!    the world invalidates an intent before dispatch (vehicle lost, superseded), call
+//!    [`Engine::void`]. An engagement stopped after dispatch hands back a [`FallbackOrder`]:
+//!    report it as op state `fallback` on its platform with a detail that starts with the
+//!    fallback's name (`"return commanded (rtl): ..."`, or `"return could not be commanded:
+//!    ..."`), and its later progress as `fallback <state>`. A stop for the platform's own
+//!    failsafe or mode change quotes the `vehicle.event` logged for that platform just before
+//!    ([`Engine::stop_engagement_system`] with `the platform's failsafe took over (<text>)` or
+//!    `the platform left its intercept (mode <text>)`); [`Engine::supersede_engagement`] takes
+//!    the order already dispatched to the platform.
 //! 8. **Audit failures fail closed.** Every engine call returns `Err` without changing
 //!    state if the log write fails; the bridge must not dispatch on an `Err`.
 //! 9. **Head hash.** [`Engine::head_hash`] is the hash of the last event written. The log

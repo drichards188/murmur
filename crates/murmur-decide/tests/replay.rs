@@ -490,7 +490,8 @@ fn late_approval_and_gaps_are_detected() {
 #[test]
 fn chain_detects_edit_delete_and_reorder_of_any_event() {
     let original = lines(&scenario());
-    // op.state carries no decision: only the chain can notice changes to it.
+    // an op state's detail carries no decision: only the chain can notice an edit to it
+    // (its intent and vehicle are bound to the dispatch: tests/bindings.rs)
     let i = find(&original, "op.state", |_| true);
 
     let mut v = original.clone();

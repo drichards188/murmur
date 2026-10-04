@@ -2,13 +2,13 @@
 //! logs whose hash chain verifies and whose every decision reproduces, but whose orders were
 //! not the ones approved: N2, an engagement's effect released by another vehicle; N3, an
 //! engagement dispatched to another vehicle; v1, an approved armed orbit dispatched to
-//! another vehicle; v2, that orbit's centre moved about 2 km. Each is a regression here, on
-//! committed logs (rules 1 to 3: the bindings are audit checks, not decision rules, and hold
-//! for every version), beside a test for each binding: an `intent.dispatched` is exactly the
-//! approved intent's order; an effect comes from the dispatched platform, at the frozen
-//! plan's point and radius, inside its time tolerance; op states refer to a dispatched
-//! intent and its own vehicles; a superseding order and a reported fallback are what the
-//! stop says.
+//! another vehicle; v2, that orbit's centre moved about 2 km. Each is a regression here (v1
+//! and v2 byte for byte the reviewer's files), also on committed logs of rules 1 and 2 (the
+//! bindings are audit checks, not decision rules, and hold for every version), beside a test
+//! for each binding: an `intent.dispatched` is exactly the approved intent's order; an
+//! effect comes from the dispatched platform, at the frozen plan's point and radius, inside
+//! its time tolerance; op states refer to a dispatched intent and its own vehicles; a
+//! superseding order and a reported fallback are what the stop says.
 #![allow(clippy::unwrap_used)]
 
 mod common;
@@ -29,6 +29,16 @@ const LIVE_V1: &str = "v1-pre-engagement-live-c7.jsonl";
 /// Rules 2: a live engagement aborted when its picture changed, its fallback (return)
 /// commanded and reported.
 const LIVE_V2: &str = "v2-engagement-live.jsonl";
+/// Rules 3: a Phase G evaluation run on stand-ins (the proxy operator, its console's
+/// `operator.view` events): intent 2, op-planner's armed orbit on vehicle 4, approved by
+/// op-1, dispatched, then superseded on its vehicle by intent 4. The reviewer forged v1 and
+/// v2 from it.
+const PHASE_G_V3: &str = "v3-armed-orbit-phase-g.jsonl";
+
+/// A log's head: the hash of its last line.
+fn head(text: &str) -> String {
+    murmur_decide::hash::sha256_hex(text.lines().last().unwrap().as_bytes())
+}
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -81,7 +91,7 @@ fn edit_each(events: &mut [Event], mut f: impl FnMut(&mut EventBody)) {
 
 #[test]
 fn the_forger_reproduces_an_untouched_log_byte_for_byte() {
-    for name in [SCENARIO_V3, LIVE_V1, LIVE_V2] {
+    for name in [SCENARIO_V3, LIVE_V1, LIVE_V2, PHASE_G_V3] {
         let text = fixture(name);
         assert_eq!(forge(&text, |_| {}), text, "{name}");
     }
@@ -140,22 +150,27 @@ fn n3_an_engagement_dispatched_to_another_vehicle_fails_replay() {
     );
 }
 
-/// The live log's approved armed orbit (intent 2, on vehicle 6).
+/// The first approved armed orbit a log dispatched: sent to a human by the armed-platform
+/// tier, approved, dispatched (intent 2 in both logs used here).
 fn armed_orbit(text: &str) -> IntentId {
     let events = parse_log(text).unwrap();
     let approved = |id: IntentId| {
         events.iter().any(|e| {
             matches!(&e.body, EventBody::ApprovalGranted { intent, .. } if *intent == id)
-        }) && events.iter().any(|e| {
-            matches!(&e.body, EventBody::IntentDispatched { intent, .. } if *intent == id)
+        })
+    };
+    let armed = |id: IntentId| {
+        events.iter().any(|e| {
+            matches!(&e.body, EventBody::PolicyDecision { intent, decision, .. }
+                if *intent == id && decision.rule == "armed-platform")
         })
     };
     let id = events
         .iter()
         .find_map(|e| match &e.body {
-            EventBody::PolicyDecision {
-                intent, decision, ..
-            } if decision.rule == "armed-platform" && approved(*intent) => Some(*intent),
+            EventBody::IntentDispatched { intent, .. } if armed(*intent) && approved(*intent) => {
+                Some(*intent)
+            }
             _ => None,
         })
         .unwrap();
@@ -163,34 +178,24 @@ fn armed_orbit(text: &str) -> IntentId {
     id
 }
 
-#[test]
-fn v1_an_approved_armed_orbit_dispatched_to_another_vehicle_fails_replay() {
-    let honest = fixture(LIVE_V1);
-    let id = armed_orbit(&honest);
-    let forged = forge(&honest, |ev| {
+/// v1: the armed orbit's dispatch sent to vehicle 9.
+fn v1(honest: &str) -> String {
+    let id = armed_orbit(honest);
+    forge(honest, |ev| {
         edit_each(ev, |b| {
             if let EventBody::IntentDispatched { intent, uids, .. } = b
                 && *intent == id
             {
-                // vehicle 9 is in the fleet (intent 4 names it)
                 *uids = vec![Uid::new("9")];
             }
         })
-    });
-    let r = caught(
-        &honest,
-        &forged,
-        1,
-        "dispatched to other vehicles than the approved intent's",
-    );
-    assert_eq!(whats(&r).len(), 1, "{:#?}", r.mismatches);
+    })
 }
 
-#[test]
-fn v2_an_approved_armed_orbit_dispatched_with_its_centre_moved_fails_replay() {
-    let honest = fixture(LIVE_V1);
-    let id = armed_orbit(&honest);
-    let forged = forge(&honest, |ev| {
+/// v2: the armed orbit's dispatched centre moved 0.018 degrees (about 2 km) north.
+fn v2(honest: &str) -> String {
+    let id = armed_orbit(honest);
+    forge(honest, |ev| {
         edit_each(ev, |b| {
             if let EventBody::IntentDispatched {
                 intent,
@@ -199,14 +204,59 @@ fn v2_an_approved_armed_orbit_dispatched_with_its_centre_moved_fails_replay() {
             } = b
                 && *intent == id
             {
-                // about 2 km north
                 *center = LonLat::new(center.lon, center.lat + 0.018);
             }
         })
-    });
+    })
+}
+
+#[test]
+fn v1_an_approved_armed_orbit_dispatched_to_another_vehicle_fails_replay() {
+    // the reviewer's file, byte for byte: vehicle 9 instead of 4
+    let honest = fixture(PHASE_G_V3);
+    let forged = v1(&honest);
+    assert_eq!(
+        head(&forged),
+        "f5c1e35f65e5a2b108b17403b5dd851062de5d17f815e388329da5eacb4ca6c6"
+    );
     let r = caught(
         &honest,
         &forged,
+        3,
+        "dispatched to other vehicles than the approved intent's",
+    );
+    assert_eq!(whats(&r).len(), 1, "{:#?}", r.mismatches);
+    // and in a rules 1 live log (vehicle 9 instead of 6)
+    let honest = fixture(LIVE_V1);
+    let r = caught(
+        &honest,
+        &v1(&honest),
+        1,
+        "dispatched to other vehicles than the approved intent's",
+    );
+    assert_eq!(whats(&r).len(), 1, "{:#?}", r.mismatches);
+}
+
+#[test]
+fn v2_an_approved_armed_orbit_dispatched_with_its_centre_moved_fails_replay() {
+    // the reviewer's file, byte for byte
+    let honest = fixture(PHASE_G_V3);
+    let forged = v2(&honest);
+    assert_eq!(
+        head(&forged),
+        "eeaeb391189e5d713b3c38fc5cae44b328d439d4233850ed0586271d8affad50"
+    );
+    let r = caught(
+        &honest,
+        &forged,
+        3,
+        "dispatched task differs from the approved intent's",
+    );
+    assert_eq!(whats(&r).len(), 1, "{:#?}", r.mismatches);
+    let honest = fixture(LIVE_V1);
+    let r = caught(
+        &honest,
+        &v2(&honest),
         1,
         "dispatched task differs from the approved intent's",
     );

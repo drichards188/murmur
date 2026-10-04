@@ -2445,7 +2445,7 @@ fn release_from(p: &EngagePreview, ec: &EngageRules) -> (f64, Time) {
 }
 
 /// The plan's time tolerance: the first and last instant its effect may be released at
-/// (from [`release_from`]; until `late_s` after the plan's time, never after the window
+/// (from `release_from`; until `late_s` after the plan's time, never after the window
 /// closes). A picture is ready only inside it ([`picture`]: the effect time and window
 /// checks); replay bounds every `engage.effect` by it.
 pub fn release_window(p: &EngagePreview, ec: &EngageRules) -> (Time, Time) {

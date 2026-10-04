@@ -427,6 +427,24 @@ group. Dates are 2026.
   check, a build, a circle) under an older claim, and a policy with keys of a later schema
   than it claims. From rules 3, `run.started` names the build (commit, dirty flag). A
   rules-1 log carries no build and no anchors: accepting one is trusting its provenance.
+- **Replay binds what was executed to what was approved** (10-04, sixth review). Forged,
+  re-chained logs passed replay with every decision intact and the execution changed: an
+  engagement's effect released by another vehicle, an engagement or an approved armed orbit
+  dispatched to another vehicle, the orbit's centre moved 2 km. Recomputing decisions is not
+  the claim; the claim is that what was done is what two signers (or the tier's human)
+  approved. So every `intent.dispatched` must be exactly the approved intent's order (task,
+  parameters, vehicles, and the space or engagement order recomputed as the engine makes it:
+  the chosen option as the last answer has it, the frozen plan on the nominated platform);
+  every `engage.effect` comes from that platform, at the plan's point and radius, released
+  inside the plan's time tolerance; every `op.state` is a dispatched intent's, on its own
+  vehicles, and a reported fallback is the one the stop released; a superseding order was
+  dispatched to the platform, under its own source; a stop that quotes a failsafe follows
+  that vehicle event on its own platform. These are audit checks, not decision rules: they
+  apply to every rules version (every committed fixture and every log in `logs/audit`
+  satisfies them, nothing needed gating), and the engine refuses the op states and
+  supersedes they would reject. Not bound, stated: a vehicle event nothing quotes (replay
+  doesn't know the fleet) and a task's done or failed against its op states (the task
+  layer's report). The forged logs are regressions in `tests/bindings.rs`.
 - **The hash chain is tamper-evident, not tamper-proof** (10-03, restated by the second
   review). A forger who removes a self-consistent set of events (a transient reset, the
   signature it dropped and its picture token) and recomputes the chain leaves a log replay

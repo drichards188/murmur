@@ -147,7 +147,8 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
 - **Stop**: `Engine::abort_engagement(id, &HumanAuthority, note)` (any operator),
   `Engine::stop_engagement_system(id, reason)` (the bridge: task failed) and
   `Engine::supersede_engagement(id, by)` (another order dispatched to its platform: cause
-  `superseded`, `fallback: null`). A picture more than `max_picture_gap_s` after the last
+  `superseded`, `fallback: null`; refused unless `by` was dispatched to vehicles that
+  include the platform). A picture more than `max_picture_gap_s` after the last
   fails `picture_gap`. `step_engagements` returns a `StepOutcome`: the events to act on,
   and each engagement whose step failed, on its own.
   `dispatch` and `finish` refuse engagements; `dispatch_order` returns `Order::Engage`.
@@ -294,8 +295,9 @@ policy (resolving `areas_sha256` to the logged set in force, whose own hash must
 content), checks every `intent.state` is legal and backed by its evidence, checks `seq`,
 `t`, the hash chain and every `self_approved` flag, checks every at-submission approval
 (the approver is the submitting human, the tier allowed it, never an agent's intent, and no
-intent whose decision let the submitter authorize was sent to the inbox instead), and
-prints the approval, self-approval and at-submission counts and the head hash. Logs written
+intent whose decision let the submitter authorize was sent to the inbox instead), checks
+that every order dispatched, effect released and op state reported is the approved intent's
+(below), and prints the approval, self-approval and at-submission counts and the head hash. Logs written
 before `submitter_authorizes` existed still replay: the key is additive, and unset in a
 logged policy means false (how those runs behaved). Exit 0 if everything reproduces, 1 on mismatch, 2
 if the log can't be read, 3 if the decisions reproduce but some space queries ran on a
@@ -304,6 +306,48 @@ Determinism: injected clock, integer-millisecond times, `BTreeMap`s, fixed outpu
 fixed-precision detail strings, `serde_json` with `float_roundtrip`, terrain samples keyed at
 1e-7 degree. Replay proves decisions follow from the logged inputs; it can't prove the inputs
 were true of the world.
+
+**What was executed is what was approved** (sixth review). Recomputing every decision is not
+enough: a forger who re-chains the log can leave every decision intact and change what was
+done with it (the review's forged logs released an engagement's effect from another vehicle,
+dispatched an engagement or an approved armed orbit to another vehicle, and moved that
+orbit's centre 2 km, and replay passed them). So replay also binds each executed fact to the
+approval, for every rules version (these are audit checks, not decision rules; every
+committed fixture and every log in `logs/audit` satisfies them):
+
+- `intent.dispatched` is exactly the approved intent's order: the same intent, its task and
+  parameters (orbit centre and radius, patrol route, track target, the collect or cover as
+  approved) and its vehicles in order, and the space or engagement order recomputed the way
+  the engine makes it (`order_for` in `src/engine.rs`, which `Engine::dispatch_order`
+  uses): a collect's order is the chosen option as the answer its last check read has it
+  (satellite, class, times, resolution, scene, that answer's hash), a cover's the approved
+  service, an engagement's the frozen plan (point, time, radius, window) on the nominated
+  platform with its track and fallback. A dispatch transition needs its `intent.dispatched`
+  right before it, and an `intent.dispatched` is followed by its dispatch, nothing else.
+- `engage.effect` comes from the engagement's platform (the one it was dispatched to), at the
+  frozen plan's point and radius (as before), and the picture that released it lies inside
+  the plan's time tolerance (`engage::release_window`: from the plan's time, or
+  `plan_slack_s` before it for a moving target from rules 2, never before the window opens;
+  until `late_s` after it, never after the window closes), the effect never logged before
+  it.
+- `op.state` is a dispatched intent's, on its own vehicles (a collect's `norad:<id>`, a
+  cover's `satcom:<class>` or `gnss:<class>`), for a vehicle or space task only while it
+  runs (its finish is final); an engagement's `fallback` report follows a stop that released
+  a fallback and names that one first in its detail.
+- `engage.stopped` with cause `superseded` names another intent, already dispatched, whose
+  vehicles include the platform, and that intent's own source; a `system` stop that quotes
+  a vehicle event (`the platform's failsafe took over (...)`, `the platform left its
+  intercept (mode ...)`) follows that `vehicle.event` on the engagement's own platform since
+  its last picture; an engagement never ends with a task's `fail`.
+
+The engine refuses the op states and supersedes these checks reject
+(`EngineError::NotItsOrder`, nothing logged), so an honest engine can't write such a log.
+What stays unbound: a vehicle event that no decision or stop quotes (its vehicle id is the
+bridge's report; replay doesn't know the fleet), and whether a vehicle task's outcome (done,
+failed) matches its op states; both are the task layer's report, not a decision.
+`tests/bindings.rs` holds the review's forged logs as regressions (v1 and v2 byte for byte
+the reviewer's files, from `tests/data/audit/v3-armed-orbit-phase-g.jsonl`) and a test per
+binding.
 
 ## Decision rules versions
 
@@ -398,8 +442,11 @@ The full contract is in the crate docs (`src/lib.rs`). In short:
 4. Operator endpoints: `submit` (also behind the legacy `POST /api/tasks`), `approve`,
    `reject`, `cancel`, `inbox`. Agent (MCP) side: an `AgentPort` per agent, nothing else.
 5. Every second: `expire_due`. For approved intents: `dispatch` gives a `DispatchOrder` for
-   the existing task manager; report back with `record_op_state` and `finish`; log vehicle
-   events; `void` intents the world invalidates.
+   the existing task manager (execute exactly it); report back with `record_op_state` (a
+   dispatched intent's own vehicles only, and before its finish) and `finish`; log vehicle
+   events; `void` intents the world invalidates. An engagement's fallback is reported as
+   op state `fallback` with a detail that starts with the fallback's name (see "What was
+   executed is what was approved" above and `src/lib.rs`).
 6. Any `Err` from the engine means nothing changed; never dispatch on an error.
 7. The inbox shows `checks` (look for `unverified`), `policy.facts.unverified` and
    `policy.facts.area_detail` as the reason a human is needed, and `approval.self_approved`.

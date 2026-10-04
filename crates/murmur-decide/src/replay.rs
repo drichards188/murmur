@@ -38,7 +38,20 @@
 //!   logged inputs; the effect follows a picture that held and was ready, at the snapshot's
 //!   point; a failed picture is followed by its `engage.stopped` before anything else
 //!   happens to that engagement (a suppressed void is a mismatch); an abort is backed by an
-//!   `engage.stopped`, a release by an `engage.effect`, and the end by an assessment.
+//!   `engage.stopped`, a release by an `engage.effect`, and the end by an assessment;
+//! - what was executed is what was approved (an audit check, for every rules version): each
+//!   `intent.dispatched` is exactly the approved intent's order (its task and vehicles, and
+//!   the space or engagement order [`crate::engine`] derives from the intent, the answer its
+//!   last check read and the approval's snapshot, the frozen plan), a dispatch transition
+//!   has its `intent.dispatched` right before it and nothing else follows one; an
+//!   `engage.effect` comes from the engagement's platform and the picture that released it
+//!   lies inside the plan's time tolerance ([`engage::release_window`]), the effect never
+//!   before it; an `op.state` is a dispatched intent's, on its own vehicles (a collect's
+//!   satellite, a cover's service), a vehicle or space task's only while it runs, and a
+//!   reported fallback is the one its stop released; a superseded stop names a dispatched
+//!   order on the platform and that order's source; a `system` stop that quotes a failsafe
+//!   or mode change follows that `vehicle.event` on its own platform; an engagement never
+//!   fails like a task.
 //!
 //! **Space recomputation.** [`replay_str_with_space`] also re-runs every logged space query
 //! on the segment given. If that segment is the one the query ran on (same
@@ -56,7 +69,10 @@
 //! check, a policy key of a later schema) may appear in a log that claims earlier rules.
 //!
 //! Physics is not replayed; the decision layer is. What replay cannot know is whether the
-//! logged inputs were true of the world: it proves the decisions follow from them. The
+//! logged inputs were true of the world: it proves the decisions follow from them, and that
+//! the orders logged as executed are the approved ones (not that a vehicle flew them: op
+//! states and vehicle events are the bridge's reports, bound to their intent and vehicle but
+//! not otherwise checked). The
 //! chain is tamper-evident, not tamper-proof (see [`crate::audit`]): a full rewrite or a
 //! truncated tail needs the head hash ([`ReplayReport::head_sha256`]) checked against an
 //! external anchor.
