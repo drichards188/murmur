@@ -189,8 +189,29 @@ in the console (`sim/fleets/contacts-demo.toml` shows coverage gaps at the Gate)
   scenario ("30% loss on all LOS links from minute 5"). Supersedes the netem plan (murmur-p1f);
   `tc netem` only as a one-off cross-check.
 - Bridge behaviors: dead reckoning with a growing uncertainty area for silent vehicles
-  (murmur-4y9); intents queued for unreachable vehicles with expiry (murmur-5p4); fallback
-  rules per action class; telemetry priority under low bandwidth (murmur-f6q).
+  (murmur-4y9); fallback rules per action class; telemetry priority under low bandwidth
+  (murmur-f6q).
+- **Safe command queue** (murmur-5p4, built; rules 5; `crates/murmur-decide/src/queue.rs`,
+  bridge `decision/queue.rs`, `tasks/exec.rs`; `crates/murmur-decide/README.md` "The queue
+  for unreachable vehicles"): an approved order for a vehicle the link can't carry it to now
+  (silent past its lost-link time, its picture not fresh again yet, or a mission for an AUV
+  on its acoustic modem) is queued with a deadline (`[queue]` per kind: 900 s, hold 60 s,
+  rtl 120 s), not sent into a dead link; when it can be reached its checks run again on the
+  world then and it is sent, sent back to the inbox (a human's picture changed: a check, the
+  tier, a reboot, an engagement now in play) or voided; past its deadline it expires. Exactly
+  once: a mission is a transaction (a lost final ACK settled by asking the vehicle, a link
+  lost mid-way waited out for the kind's wait and then a full mission download decides
+  whether to follow, only start, or upload again), a command is retried only when neither its
+  ACK nor telemetry showing its effect came back, a vehicle its failsafe sent home is held
+  then armed. A restarted bridge carries open intents over from its log (`intent.resumed`;
+  pointer `logs/audit/.resume-<port>.json`, `MURMUR_RESUME`): queued ones re-checked, started
+  ones followed and never re-sent. Reboots (time since boot going back) are logged, end the
+  op, and are a fact (`booted_t`) the re-check compares with the approval. Console: a Queue
+  drawer (why each waits, time left, cancel, how recent ones left), queued paths dashed with
+  QUEUED, sent orders labelled until the vehicle's telemetry confirms them. Not covered: an
+  engagement under way when the bridge restarts (not carried over; its platform keeps its
+  last order, nothing commands the fallback), pending approvals across a restart, and a
+  stand-in that reboots on command (the fake autopilot in the tests does).
 
 - **Space segment** (`crates/murmur-space`, murmur-0nv.1): satellites as taskable
   infrastructure, not flown nodes. The operator requests a capability over an area and time

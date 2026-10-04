@@ -456,6 +456,40 @@ group. Dates are 2026.
   intercept's loiter radius, which the bridge chose and nothing logged, is now part of the
   engagement order (rules 4) and recomputed; a loiter fallback's centre and radius are still
   the bridge's and not logged.
+- **Orders for unreachable vehicles are queued, re-checked, delivered once** (10-04,
+  murmur-5p4; rules 5). An approved order is dispatched only when the link can carry it to
+  every vehicle; otherwise it waits in the queue with a bounded, per-kind deadline (safety
+  commands short: a hold or rtl delivered long after it was given may no longer be wanted).
+  It leaves the queue only through a re-check on the world when its vehicles can be reached
+  (logged, recomputed by replay): sent exactly as approved, back to the inbox when a human
+  approved a picture that has since changed (an auto-approved order is sent if the policy
+  still says auto), voided when a check fails. A human's approval is not stretched over a
+  changed picture; the policy's is re-run. Gated on rules 5; older logs replay unchanged.
+- **Reachable means heard and the picture fresh again** (10-04, found live). A link that comes
+  back brings the heartbeat a tick before the position and navigation reports; a re-check
+  then read the pre-outage picture, failed closed on its age and voided the order. For
+  anything but a hold or rtl, a vehicle is reachable only once its navigation status and
+  position are fresh by the checks' own limit. A mission also needs a link reporting at least
+  every 5 s: an AUV on its acoustic modem can't take an upload (ArduPilot drops one after 8 s
+  without the next item), so its order waits until it surfaces.
+- **Exactly once is the bridge's job, by telemetry** (10-04). ArduPilot does not use
+  COMMAND_LONG's confirmation field to drop duplicates, so a retry is sent only when neither
+  the ACK nor telemetry showing the effect (a heartbeat in the mode, armed, MISSION_CURRENT
+  on the first item) came back. A mission upload is a transaction whose commit is the start
+  (current item, arm, mode): a lost final ACK is settled by asking the vehicle; after a link
+  lost mid-way (waited out for the kind's queue wait) or a bridge restart, a full download
+  compared item by item decides between following, starting only, and uploading again; a
+  vehicle that had started an order is never sent it again.
+- **A restarted bridge carries open intents over from its own log** (10-04). The log is the
+  record; a small pointer file (`logs/audit/.resume-<http port>.json`: the log, the open ids,
+  rewritten when they change) says where to look, and a bridge starting within 15 minutes
+  replays that log and carries every open vehicle intent over as `intent.resumed`, keeping
+  its id. Replay checks each against the previous log. The evaluation harness turns it off
+  (`MURMUR_RESUME=0`): its stacks reuse port blocks.
+- **A reboot ends the op; nothing is re-sent behind the operator** (10-04). A vehicle whose
+  time since boot went back lost the mode and armed state its order set: its running op
+  fails saying so and the intent ends failed, logged as `vehicle.rebooted`. A queued order
+  approved by a human before the reboot goes back to the inbox.
 - **The operator roster is logged and checked** (10-04, second review of the bindings; rules
   4). A log could credit a session, with engagement authority, to an operator the bridge was
   never configured with (`MURMUR_OPERATORS` and `MURMUR_ENGAGE_OPERATORS` were not logged).

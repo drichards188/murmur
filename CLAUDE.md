@@ -74,6 +74,11 @@ meaningful. Decision and command, not weapons.
   ports from its base). A bridge that finds a port taken drops it for good.
 - Keep fixed port bases (vehicle, bridge) below the ephemeral range (39160 here): stand-ins and
   clients draw from 39160-43255, and a fixed base inside it collides at random.
+- Rules 5 queue: an order for a vehicle the link can't carry it to now waits in the Queue
+  (console button; `GET /api/inbox` `queued`), it is not an error. A bridge restarted within 15
+  min carries the last run's open intents over (`logs/audit/.resume-<port>.json`;
+  `MURMUR_RESUME=0` off, `=<log>` from that log); replay such a log with its predecessor
+  beside it (or `murmur-replay --prev`).
 - The bridge's task-layer timeouts follow each link's measured round trip (`LinkTiming` in
   `crates/murmur-bridge/src/link.rs`; floors 1 s per ACK, 1.5 s per mission item, as before on
   fast links) and its telemetry plan follows the link class (`crates/murmur-bridge/src/
