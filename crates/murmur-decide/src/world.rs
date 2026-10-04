@@ -11,7 +11,7 @@ use crate::catalog::{AutopilotKind, PlatformFacts};
 use crate::geo::LonLat;
 use crate::ids::Uid;
 use crate::intent::{IntentSpec, Task};
-use crate::rules::needs_terrain;
+use crate::rules::{RulesConfig, needs_terrain};
 use crate::space::SpaceAnswer;
 use crate::terrain::{Surface, TerrainOracle};
 use crate::time::Time;
@@ -54,6 +54,11 @@ pub struct VehicleFacts {
     /// vehicles whose cadence is unknown; both mean the plain `max_fact_age_s`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report_interval_ms: Option<u32>,
+    /// Velocity east, north in m/s (from course and ground speed), when reported. Engagement
+    /// keep-outs carry our vehicles along it to the effect time. Absent in logs written
+    /// before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub velocity_mps: Option<Fact<[f64; 2]>>,
 }
 
 /// The standard identity (MIL-STD-2525 affiliation) a track is estimated or declared to
@@ -113,8 +118,14 @@ pub struct TrackFacts {
     /// Estimated velocity east, north in m/s, when the track has enough history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub velocity_mps: Option<[f64; 2]>,
-    /// 1-sigma horizontal position uncertainty at `t`, metres; grows with age.
+    /// 1-sigma horizontal position uncertainty at the snapshot's `t`, metres; grows with
+    /// age.
     pub pos_sigma_m: f64,
+    /// How fast the tracker grows that uncertainty while the track is unobserved, m/s.
+    /// Absent in logs written before it existed (the engagement rules then use the
+    /// tracker's law, `max(1, 0.3 x speed)`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sigma_growth_mps: Option<f64>,
     /// Track existence confidence, 0..1.
     pub confidence: f64,
     pub affiliation: Fact<Affiliation>,
@@ -360,10 +371,15 @@ impl WorldSnapshot {
         if let Task::Track { target } = &spec.task {
             wanted.push(target);
         }
-        let vehicles = wanted
-            .into_iter()
-            .filter_map(|u| self.vehicles.get(u).map(|v| (u.clone(), v.clone())))
-            .collect();
+        // an engagement's keep-out reads every vehicle of ours
+        let vehicles = if matches!(spec.task, Task::Engage { .. }) {
+            self.vehicles.clone()
+        } else {
+            wanted
+                .into_iter()
+                .filter_map(|u| self.vehicles.get(u).map(|v| (u.clone(), v.clone())))
+                .collect()
+        };
         WorldSnapshot {
             t: self.t,
             vehicles,
@@ -381,7 +397,43 @@ impl WorldSnapshot {
     /// answers for its waypoints from `oracle` (only if some target needs a land/water
     /// check). Public so the bridge can build the same view, e.g. to prefetch terrain.
     pub fn for_intent(&self, spec: &IntentSpec, oracle: &dyn TerrainOracle) -> WorldSnapshot {
+        self.for_intent_with(spec, oracle, &RulesConfig::default())
+    }
+
+    /// [`Self::for_intent`] with the rules configuration in force: an engagement's terrain
+    /// point (its predicted effect point, for a boat or ground platform) depends on it.
+    pub fn for_intent_with(
+        &self,
+        spec: &IntentSpec,
+        oracle: &dyn TerrainOracle,
+        cfg: &RulesConfig,
+    ) -> WorldSnapshot {
         let mut w = self.subset_for(spec);
+        if matches!(spec.task, Task::Engage { .. }) {
+            w.terrain = match crate::engage::terrain_point(spec, &w, cfg) {
+                None => TerrainInputs::NotNeeded,
+                Some(p) => match oracle.sample(w.t, &[p]) {
+                    Ok(answers) if answers.len() == 1 => TerrainInputs::Sampled {
+                        samples: answers
+                            .into_iter()
+                            .map(|surface| {
+                                let (lon_e7, lat_e7) = p.e7();
+                                TerrainSample {
+                                    lon_e7,
+                                    lat_e7,
+                                    surface,
+                                }
+                            })
+                            .collect(),
+                    },
+                    Ok(_) => TerrainInputs::Sampled {
+                        samples: Vec::new(),
+                    },
+                    Err(reason) => TerrainInputs::Unavailable { reason },
+                },
+            };
+            return w;
+        }
         w.terrain = match spec.task.path() {
             Some(path) if needs_terrain(spec, &w) => match oracle.sample(w.t, &path.points) {
                 Ok(answers) if answers.len() == path.points.len() => TerrainInputs::Sampled {

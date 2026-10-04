@@ -34,6 +34,11 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 
 use crate::areas::AreaSet;
+use crate::authority::Grants;
+use crate::engage::{
+    AssessResult, EngageOrder, EngagePreview, EngageSnapshot, Fallback, ObserveStep, StopCause,
+};
+use crate::geo::LonLat;
 use crate::ids::{AgentId, IntentId, OperatorId, SessionId, Uid};
 use crate::intent::{IntentSpec, State, Task, Transition};
 use crate::policy::{DeadlineBasis, Policy, PolicyDecision};
@@ -115,6 +120,9 @@ pub enum EventBody {
         inputs: LoggedInputs,
         results: Vec<CheckResult>,
         passed: bool,
+        /// Engage: the preview computed from the same inputs (absent when there is none).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preview: Option<Box<EngagePreview>>,
     },
 
     #[serde(rename = "policy.decision")]
@@ -144,14 +152,33 @@ pub enum EventBody {
         until: Option<DeadlineBasis>,
     },
 
+    /// The approval that moves an intent to `approved` (the last signature when the tier
+    /// needs more than one).
     #[serde(rename = "approval.granted")]
     ApprovalGranted {
         intent: IntentId,
         by: OperatorId,
         session: SessionId,
-        /// The approver is the human who proposed the intent. Allowed (two-person approval
-        /// is Phase E) but recorded, so evaluation can measure it.
+        /// The approver is the human who proposed the intent. Allowed where the tier lets
+        /// the proposer approve, and recorded so evaluation can measure it; never for an
+        /// engagement.
         self_approved: bool,
+        note: Option<String>,
+        /// Engage: the picture this approval holds (recomputed by replay from the re-check
+        /// just before it).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snapshot: Option<Box<EngageSnapshot>>,
+    },
+
+    /// A signature that is not yet enough: signature `n` of the `of` distinct approvers the
+    /// tier needs (two-person approval). The intent stays `pending_approval`.
+    #[serde(rename = "approval.concurred")]
+    ApprovalConcurred {
+        intent: IntentId,
+        by: OperatorId,
+        session: SessionId,
+        n: u32,
+        of: u32,
         note: Option<String>,
     },
 
@@ -189,6 +216,9 @@ pub enum EventBody {
         /// Collect and cover: the order handed to the bridge (absent for vehicle tasks).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<SpaceOrder>,
+        /// Engage: where the platform is sent (the approval snapshot's effect point).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        engage: Option<EngageOrder>,
     },
 
     /// Per-vehicle task progress from the task layer (sent, acked, active, done, failed).
@@ -214,6 +244,9 @@ pub enum EventBody {
         session: SessionId,
         action: String,
         detail: String,
+        /// `session.opened`: what the session may authorize beyond tasking (absent: nothing).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        grants: Option<Grants>,
     },
 
     #[serde(rename = "agent.action")]
@@ -221,6 +254,58 @@ pub enum EventBody {
         agent: AgentId,
         action: String,
         detail: String,
+    },
+
+    /// Engage, after approval: hold the picture. The checks against the approval's
+    /// snapshot on these inputs, whether the picture holds, and (dispatched) whether the
+    /// effect may be released now. A failed picture is followed by `engage.stopped`.
+    #[serde(rename = "engage.picture")]
+    EngagePicture {
+        intent: IntentId,
+        inputs: LoggedInputs,
+        results: Vec<CheckResult>,
+        holds: bool,
+        ready: bool,
+    },
+
+    /// Engage: the abstract effect, at the approval's predicted point (released right after
+    /// an `engage.picture` that holds and is ready). Not a weapon: a point, a radius, a time.
+    #[serde(rename = "engage.effect")]
+    EngageEffect {
+        intent: IntentId,
+        uid: Uid,
+        point: LonLat,
+        radius_m: f64,
+        planned_t: Time,
+    },
+
+    /// Engage: stopped before the effect (before dispatch it is voided, after it aborted),
+    /// and the fallback commanded.
+    #[serde(rename = "engage.stopped")]
+    EngageStopped {
+        intent: IntentId,
+        cause: StopCause,
+        reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fallback: Option<Fallback>,
+    },
+
+    /// Engage, after the effect: one observation step of the effect point.
+    #[serde(rename = "engage.observe")]
+    EngageObserve {
+        intent: IntentId,
+        inputs: LoggedInputs,
+        step: ObserveStep,
+        covered_s: f64,
+    },
+
+    /// Engage: the assessment that finishes the intent.
+    #[serde(rename = "engage.assessed")]
+    EngageAssessed {
+        intent: IntentId,
+        result: AssessResult,
+        evidence: String,
+        covered_s: f64,
     },
 }
 

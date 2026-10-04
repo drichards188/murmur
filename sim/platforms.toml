@@ -341,6 +341,7 @@ authenticity = "ArduPilot AntennaTracker SITL (already authentic; mount reaches 
 name = "Magura V5-class naval drone"
 short = "USV-S"
 role = "Small fast attack USV"
+armed = true
 domain = "surface"
 sim = "sitl"
 vehicle = "boat"

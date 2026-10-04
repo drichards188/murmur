@@ -1,9 +1,10 @@
 //! Operator areas: the approved operating area(s) and no-go zones, from GeoJSON
 //! (`sim/areas/*.geojson`).
 //!
-//! Each feature needs `properties.id` and `properties.kind` (`"approved"` or `"no_go"`);
-//! `properties.name` is optional. Geometry is a `Polygon` or `MultiPolygon`. Anything else
-//! is a load error: a silently skipped no-go zone would be a fail-open.
+//! Each feature needs `properties.id` and `properties.kind` (`"approved"`, `"no_go"`,
+//! `"engagement_zone"` or `"no_strike"`); `properties.name` is optional. Geometry is a
+//! `Polygon` or `MultiPolygon`. Anything else is a load error: a silently skipped no-go zone
+//! would be a fail-open.
 
 use std::path::Path;
 
@@ -21,6 +22,11 @@ pub enum AreaKind {
     Approved,
     /// No task path may enter it (geofence rule).
     NoGo,
+    /// Phase E: an engagement's predicted effect point must be inside one.
+    EngagementZone,
+    /// Phase E: no engagement's effect circle may touch one (a bridge, a ferry terminal, a
+    /// populated shore).
+    NoStrike,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -167,9 +173,11 @@ fn parse_feature(f: &Value) -> Result<Area, String> {
     let kind = match props.get("kind").and_then(Value::as_str) {
         Some("approved") => AreaKind::Approved,
         Some("no_go") => AreaKind::NoGo,
+        Some("engagement_zone") => AreaKind::EngagementZone,
+        Some("no_strike") => AreaKind::NoStrike,
         other => {
             return Err(format!(
-                "{id}: properties.kind must be \"approved\" or \"no_go\", got {other:?}"
+                "{id}: properties.kind must be \"approved\", \"no_go\", \"engagement_zone\" or \"no_strike\", got {other:?}"
             ));
         }
     };

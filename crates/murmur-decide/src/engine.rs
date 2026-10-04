@@ -5,7 +5,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::areas::AreaSet;
 use crate::audit::{AuditSink, CheckPhase, Event, EventBody, LoggedAreas};
-use crate::authority::{HumanAuthority, OperatorSession};
+use crate::authority::{EngagementAuthority, Grants, HumanAuthority, OperatorSession};
+use crate::engage::{
+    self, EffectOrder, EffectRecord, EngageOrder, EngageWindow, EngagementEvent, FallbackOrder,
+    PictureVerdict, StopCause, StopRecord,
+};
 use crate::hash::{GENESIS, sha256_hex};
 use crate::ids::{AgentId, IntentId, OperatorId, SessionId, Uid};
 use crate::intent::{
@@ -50,6 +54,18 @@ pub enum EngineError {
     NotDispatchable { id: IntentId, why: String },
     #[error("intent {0} is not a collect")]
     NotACollect(IntentId),
+    #[error("intent {0} is an engagement: dispatch it with dispatch_order")]
+    EngageIntent(IntentId),
+    #[error("intent {0} is an engagement: only an operator with engagement authority may approve it")]
+    EngagementNeedsAuthority(IntentId),
+    #[error("intent {0} is not an engagement")]
+    NotAnEngagement(IntentId),
+    #[error("intent {id}: {by} proposed it and may not approve it (two-person rule)")]
+    ProposerCannotApprove { id: IntentId, by: OperatorId },
+    #[error("intent {id}: {by} has already signed it; another operator must")]
+    AlreadySigned { id: IntentId, by: OperatorId },
+    #[error("intent {id}: {why}")]
+    EngageLifecycle { id: IntentId, why: String },
 }
 
 /// What the task layer should execute for an approved intent.
@@ -67,6 +83,8 @@ pub enum Order {
     Vehicles(DispatchOrder),
     Collect(CollectOrder),
     Cover(CoverOrder),
+    /// An approved engagement: send the platform to loiter at the effect point.
+    Engage(EngageOrder),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -218,15 +236,32 @@ impl Engine {
         &mut self,
         operator: OperatorId,
     ) -> Result<OperatorSession, EngineError> {
+        self.open_operator_session_with(operator, Grants::default())
+    }
+
+    /// [`Engine::open_operator_session`] with grants beyond tasking: with `engage`, the
+    /// session carries an [`EngagementAuthority`] (the only thing that approves an
+    /// engagement). The grants are logged with the session (`grants` on
+    /// `operator.action session.opened`), so replay knows who could approve what.
+    pub fn open_operator_session_with(
+        &mut self,
+        operator: OperatorId,
+        grants: Grants,
+    ) -> Result<OperatorSession, EngineError> {
         let session = SessionId(self.next_session);
         self.emit(EventBody::OperatorAction {
             operator: operator.clone(),
             session,
             action: "session.opened".into(),
-            detail: String::new(),
+            detail: if grants.engage {
+                "engagement authority".into()
+            } else {
+                String::new()
+            },
+            grants: (grants != Grants::default()).then_some(grants),
         })?;
         self.next_session += 1;
-        Ok(OperatorSession::mint(operator, session))
+        Ok(OperatorSession::mint(operator, session, grants))
     }
 
     /// A human's intent (also what `POST /api/tasks` becomes). If its checks pass and policy
@@ -251,10 +286,78 @@ impl Engine {
 
     /// Approve a pending intent. Re-runs the checks against the current world first: an
     /// approval of a picture that no longer holds is void.
+    ///
+    /// When the tier needs more than one approver (`approvers = N`), each call is one
+    /// signature: the first N-1 are logged as `approval.concurred` and leave the intent
+    /// pending; the Nth is `approval.granted` and approves it. Each signer must be a
+    /// different operator, and where the tier excludes the proposer
+    /// (`proposer_may_approve = false`, always for an engagement) the proposer's attempt is
+    /// refused and logged (`operator.action approval.refused`). An engagement can't be
+    /// approved here at all: it needs [`Engine::approve_engagement`].
     pub fn approve(
         &mut self,
         id: IntentId,
         by: &HumanAuthority,
+        note: Option<String>,
+        world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
+    ) -> Result<&Intent, EngineError> {
+        if self.get(id)?.spec().kind() == TaskKind::Engage {
+            self.refuse(
+                by.operator(),
+                by.session(),
+                id,
+                "no engagement authority in this session",
+            )?;
+            return Err(EngineError::EngagementNeedsAuthority(id));
+        }
+        self.sign(id, by.operator(), by.session(), note, world, terrain)
+    }
+
+    /// Approve (sign) an engagement. Needs an [`EngagementAuthority`] (a session opened with
+    /// engagement authority), is never the proposer's, and needs as many distinct signers as
+    /// the tier asks (two-person: `approvers = 2`). Each signature re-runs the checks on the
+    /// current world (a failure voids it). The last one stores the picture it rests on (the
+    /// track's facts and the preview, in `approval.granted`'s `snapshot`), which every step
+    /// after is held against ([`Engine::step_engagements`]).
+    pub fn approve_engagement(
+        &mut self,
+        id: IntentId,
+        by: &EngagementAuthority,
+        note: Option<String>,
+        world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
+    ) -> Result<&Intent, EngineError> {
+        if self.get(id)?.spec().kind() != TaskKind::Engage {
+            return Err(EngineError::NotAnEngagement(id));
+        }
+        self.sign(id, by.operator(), by.session(), note, world, terrain)
+    }
+
+    /// Log a refused approval attempt (nothing else changes).
+    fn refuse(
+        &mut self,
+        by: &OperatorId,
+        session: SessionId,
+        id: IntentId,
+        why: &str,
+    ) -> Result<(), EngineError> {
+        self.emit(EventBody::OperatorAction {
+            operator: by.clone(),
+            session,
+            action: "approval.refused".into(),
+            detail: format!("{id}: {why}"),
+            grants: None,
+        })?;
+        Ok(())
+    }
+
+    /// One approval signature (see [`Engine::approve`]).
+    fn sign(
+        &mut self,
+        id: IntentId,
+        by: &OperatorId,
+        session: SessionId,
         note: Option<String>,
         world: &WorldSnapshot,
         terrain: &dyn TerrainOracle,
@@ -264,12 +367,27 @@ impl Engine {
             .map_err(|err| EngineError::Illegal { id, err })?;
         let spec = intent.spec().clone();
         let expires = intent.expires_t();
+        let (of, proposer_excluded) = intent
+            .policy()
+            .map_or((1, false), |p| (p.approvers.max(1), p.proposer_excluded));
+        let signed_before = intent.concurrences().iter().any(|a| a.by == *by);
+        let n = u32::try_from(intent.concurrences().len()).unwrap_or(u32::MAX) + 1;
         let now = self.now();
         if expires.is_some_and(|e| now >= e) {
             self.expire(id)?;
             return Err(EngineError::Expired(id));
         }
-        let (_, _, results, ok) = self.run_checks(&spec, CheckPhase::Approve, world, terrain)?;
+        let self_approved = is_self_approval(&spec.source, by);
+        if proposer_excluded && self_approved {
+            self.refuse(by, session, id, "the proposer may not approve it (two-person rule)")?;
+            return Err(EngineError::ProposerCannotApprove { id, by: by.clone() });
+        }
+        if signed_before {
+            self.refuse(by, session, id, "already signed: another operator must")?;
+            return Err(EngineError::AlreadySigned { id, by: by.clone() });
+        }
+        let (inputs, _, results, ok) =
+            self.run_checks(&spec, CheckPhase::Approve, world, terrain)?;
         if !ok {
             let reason = format!(
                 "checks failed at approval: {}",
@@ -278,32 +396,69 @@ impl Engine {
             self.transition(id, Transition::Void, reason)?;
             return Err(EngineError::ChecksFailedAtApproval(id));
         }
-        let self_approved = is_self_approval(&spec.source, by.operator());
-        let t = self.emit_at(
-            now,
-            EventBody::ApprovalGranted {
+        if n < of {
+            let t = self.emit(EventBody::ApprovalConcurred {
                 intent: id,
-                by: by.operator().clone(),
-                session: by.session(),
-                self_approved,
+                by: by.clone(),
+                session,
+                n,
+                of,
                 note: note.clone(),
-            },
-        )?;
-        self.get_mut(id)?.set_approval(Approval {
-            by: by.operator().clone(),
-            session: by.session(),
+            })?;
+            self.get_mut(id)?.push_concurrence(Approval {
+                by: by.clone(),
+                session,
+                t,
+                self_approved,
+                at_submission: false,
+                note,
+            });
+            return self.get(id);
+        }
+        let snapshot = if spec.kind() == TaskKind::Engage {
+            match engage::snapshot(&spec, &inputs, &self.policy.rules) {
+                Ok(s) => Some(Box::new(s)),
+                Err(why) => {
+                    self.transition(
+                        id,
+                        Transition::Void,
+                        format!("checks failed at approval: cannot hold the picture: {why}"),
+                    )?;
+                    return Err(EngineError::ChecksFailedAtApproval(id));
+                }
+            }
+        } else {
+            None
+        };
+        let t = self.emit(EventBody::ApprovalGranted {
+            intent: id,
+            by: by.clone(),
+            session,
+            self_approved,
+            note: note.clone(),
+            snapshot: snapshot.clone(),
+        })?;
+        let intent = self.get_mut(id)?;
+        intent.set_approval(Approval {
+            by: by.clone(),
+            session,
             t,
             self_approved,
             at_submission: false,
             note,
         });
-        let reason = if self_approved {
-            format!(
-                "approved by {} (self-approved: also the proposer)",
-                by.operator()
-            )
+        if let Some(s) = snapshot {
+            intent.engagement_mut().snapshot = Some(*s);
+        }
+        let signers = if of > 1 {
+            format!(" (signature {n} of {of})")
         } else {
-            format!("approved by {}", by.operator())
+            String::new()
+        };
+        let reason = if self_approved {
+            format!("approved by {by} (self-approved: also the proposer){signers}")
+        } else {
+            format!("approved by {by}{signers}")
         };
         self.transition(id, Transition::Approve, reason)?;
         self.get(id)
@@ -351,6 +506,7 @@ impl Engine {
             session: by.session(),
             action: "intent.amend".into(),
             detail: amend_detail(id, new_id, &chosen),
+            grants: None,
         })?;
         let source = Source::Human {
             id: by.operator().clone(),
@@ -376,6 +532,7 @@ impl Engine {
             session: by.session(),
             action: "intent.cancel".into(),
             detail: format!("{id}: {note}"),
+            grants: None,
         })?;
         self.transition(
             id,
@@ -397,8 +554,266 @@ impl Engine {
             session: by.session(),
             action: action.into(),
             detail: detail.into(),
+            grants: None,
         })?;
         Ok(())
+    }
+
+    // ---- engagements --------------------------------------------------------------------
+
+    /// Any operator stops an approved or dispatched engagement before its effect (no
+    /// engagement authority needed: anyone may stop an action). Before dispatch it is
+    /// voided; after, aborted, and the recorded fallback is returned for the bridge to
+    /// command. Logged as `engage.stopped` with the operator.
+    pub fn abort_engagement(
+        &mut self,
+        id: IntentId,
+        by: &HumanAuthority,
+        note: &str,
+    ) -> Result<Option<FallbackOrder>, EngineError> {
+        let cause = StopCause::Operator {
+            by: by.operator().clone(),
+            session: by.session(),
+        };
+        let reason = format!("aborted by {}: {note}", by.operator());
+        self.stop_engagement(id, cause, reason)
+    }
+
+    /// The bridge stops an engagement for a reason outside the picture (its platform was
+    /// retasked, its task failed, it was lost). As [`Engine::abort_engagement`].
+    pub fn stop_engagement_system(
+        &mut self,
+        id: IntentId,
+        reason: &str,
+    ) -> Result<Option<FallbackOrder>, EngineError> {
+        self.stop_engagement(id, StopCause::System, format!("system: {reason}"))
+    }
+
+    fn stop_engagement(
+        &mut self,
+        id: IntentId,
+        cause: StopCause,
+        reason: String,
+    ) -> Result<Option<FallbackOrder>, EngineError> {
+        let intent = self.get(id)?;
+        if intent.spec().kind() != TaskKind::Engage {
+            return Err(EngineError::NotAnEngagement(id));
+        }
+        let state = intent.state();
+        let (transition, fallback) = match state {
+            State::Approved => (Transition::Void, None),
+            State::Dispatched => (
+                Transition::Abort,
+                engage::params(intent.spec()).map(|p| p.3),
+            ),
+            _ => {
+                let err = next_state(state, Transition::Abort)
+                    .err()
+                    .unwrap_or(crate::intent::IllegalTransition {
+                        from: state,
+                        transition: Transition::Abort,
+                    });
+                return Err(EngineError::Illegal { id, err });
+            }
+        };
+        let uid = intent.spec().uids.first().cloned();
+        let t = self.emit(EventBody::EngageStopped {
+            intent: id,
+            cause: cause.clone(),
+            reason: reason.clone(),
+            fallback,
+        })?;
+        self.get_mut(id)?.engagement_mut().stop = Some(StopRecord {
+            t,
+            cause,
+            reason: reason.clone(),
+            fallback,
+        });
+        let reason = match fallback {
+            Some(f) => format!("{reason}; fallback {}", f.as_str()),
+            None => reason,
+        };
+        self.transition(id, transition, reason.clone())?;
+        Ok(match (fallback, uid) {
+            (Some(fallback), Some(uid)) => Some(FallbackOrder {
+                intent: id,
+                uid,
+                fallback,
+                reason,
+            }),
+            _ => None,
+        })
+    }
+
+    /// Once a second (the bridge's loop), for every approved or dispatched engagement:
+    /// hold the picture against its snapshot (logged as `engage.picture`); void it (before
+    /// dispatch) or abort it with its fallback (after) when the picture no longer holds;
+    /// release the effect when it is ready (`engage.effect`); and for every effected
+    /// engagement, observe the effect point (`engage.observe`) until the assessment
+    /// (`engage.assessed`) finishes it. Returns what the bridge must act on.
+    pub fn step_engagements(
+        &mut self,
+        world: &WorldSnapshot,
+    ) -> Result<Vec<EngagementEvent>, EngineError> {
+        let active: Vec<IntentId> = self
+            .intents
+            .values()
+            .filter(|i| {
+                i.spec().kind() == TaskKind::Engage
+                    && matches!(
+                        i.state(),
+                        State::Approved | State::Dispatched | State::Effected
+                    )
+            })
+            .map(Intent::id)
+            .collect();
+        let mut out = Vec::new();
+        for id in active {
+            let intent = self.get(id)?;
+            let spec = intent.spec().clone();
+            let state = intent.state();
+            let Some(eng) = intent.engagement() else {
+                continue;
+            };
+            let Some(snap) = eng.snapshot.clone() else {
+                continue;
+            };
+            let inputs = world.subset_for(&spec);
+            if state == State::Effected {
+                let Some(effect) = eng.effect.clone() else {
+                    continue;
+                };
+                let prev = eng.last_observe;
+                let covered_before = eng.covered_s;
+                let step = engage::observe(&snap, &effect, &inputs, &self.policy.rules);
+                let covered = !step.covered_by.is_empty();
+                let logged = self.log_inputs(&inputs)?;
+                let t = self.now();
+                let covered_s =
+                    covered_before + engage::coverage_increment(prev, t, covered);
+                let t = self.emit_at(
+                    t,
+                    EventBody::EngageObserve {
+                        intent: id,
+                        inputs: logged,
+                        step: step.clone(),
+                        covered_s,
+                    },
+                )?;
+                let verdict =
+                    engage::assess(&snap, &effect, &step, covered_s, t, &self.policy.rules);
+                {
+                    let e = self.get_mut(id)?.engagement_mut();
+                    e.observe = Some(step);
+                    e.covered_s = covered_s;
+                    e.last_observe = Some((t, covered));
+                }
+                if let Some((result, evidence)) = verdict {
+                    let t = self.emit(EventBody::EngageAssessed {
+                        intent: id,
+                        result,
+                        evidence: evidence.clone(),
+                        covered_s,
+                    })?;
+                    self.get_mut(id)?.engagement_mut().assessment = Some(engage::Assessment {
+                        t,
+                        result,
+                        evidence: evidence.clone(),
+                        covered_s,
+                    });
+                    self.transition(
+                        id,
+                        Transition::Complete,
+                        format!("assessed {}: {evidence}", result.as_str()),
+                    )?;
+                    out.push(EngagementEvent::Assessed { intent: id, result });
+                }
+                continue;
+            }
+            let dispatched = state == State::Dispatched;
+            let (results, holds, ready) =
+                engage::picture(&spec, &snap, &inputs, &self.policy.rules, dispatched);
+            let logged = self.log_inputs(&inputs)?;
+            let t = self.emit_at(
+                inputs.t.max(self.last_t),
+                EventBody::EngagePicture {
+                    intent: id,
+                    inputs: logged,
+                    results: results.clone(),
+                    holds,
+                    ready,
+                },
+            )?;
+            let why = summarize_failures(&results);
+            self.get_mut(id)?.engagement_mut().watch = Some(PictureVerdict {
+                t,
+                holds,
+                ready,
+                results,
+            });
+            if !holds {
+                let reason = format!("picture changed: {why}");
+                match self.stop_engagement(id, StopCause::Picture, reason.clone())? {
+                    Some(order) => out.push(EngagementEvent::Stopped(order)),
+                    None => out.push(EngagementEvent::Voided { intent: id, reason }),
+                }
+                continue;
+            }
+            if dispatched && ready {
+                let p = &snap.preview;
+                let Some(uid) = spec.uids.first().cloned() else {
+                    continue;
+                };
+                let t = self.emit(EventBody::EngageEffect {
+                    intent: id,
+                    uid: uid.clone(),
+                    point: p.effect_point,
+                    radius_m: p.effect_radius_m,
+                    planned_t: p.effect_t,
+                })?;
+                self.get_mut(id)?.engagement_mut().effect = Some(EffectRecord {
+                    t,
+                    point: p.effect_point,
+                    radius_m: p.effect_radius_m,
+                    planned_t: p.effect_t,
+                });
+                self.transition(
+                    id,
+                    Transition::Release,
+                    format!(
+                        "effect released at ({:.5}, {:.5}), radius {:.0} m",
+                        p.effect_point.lon, p.effect_point.lat, p.effect_radius_m
+                    ),
+                )?;
+                out.push(EngagementEvent::Effect(EffectOrder {
+                    intent: id,
+                    uid,
+                    track: snap.track_id.clone(),
+                    point: p.effect_point,
+                    radius_m: p.effect_radius_m,
+                    t,
+                }));
+            }
+        }
+        Ok(out)
+    }
+
+    /// For the console (not a decision, not logged): an engagement's checks and preview on
+    /// the world now, to show the operator what changed since it was nominated.
+    pub fn engage_live(
+        &self,
+        id: IntentId,
+        world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
+    ) -> Option<(Vec<CheckResult>, Option<engage::EngagePreview>)> {
+        let spec = self.intents.get(&id)?.spec();
+        if spec.kind() != TaskKind::Engage {
+            return None;
+        }
+        let inputs = world.for_intent_with(spec, terrain, &self.policy.rules);
+        let checks = rules::evaluate(spec, &inputs, &self.policy.rules);
+        let pv = engage::preview(spec, &inputs, &self.policy.rules).ok();
+        Some((checks, pv))
     }
 
     // ---- agent side -----------------------------------------------------------------
@@ -441,12 +856,17 @@ impl Engine {
     /// cover is refused ([`EngineError::SpaceIntent`], nothing changes): it has no vehicles,
     /// so use [`Engine::dispatch_order`].
     pub fn dispatch(&mut self, id: IntentId) -> Result<DispatchOrder, EngineError> {
-        if self.get(id)?.spec().task.is_space() {
+        let spec = self.get(id)?.spec();
+        if spec.task.is_space() {
             return Err(EngineError::SpaceIntent(id));
+        }
+        if spec.kind() == TaskKind::Engage {
+            return Err(EngineError::EngageIntent(id));
         }
         match self.dispatch_order(id)? {
             Order::Vehicles(o) => Ok(o),
             Order::Collect(_) | Order::Cover(_) => Err(EngineError::SpaceIntent(id)),
+            Order::Engage(_) => Err(EngineError::EngageIntent(id)),
         }
     }
 
@@ -519,6 +939,31 @@ impl Engine {
                     answer_sha256: answer.content_hash()?,
                 })
             }
+            Task::Engage { track, .. } => {
+                let not = |why: &str| EngineError::NotDispatchable {
+                    id,
+                    why: why.to_string(),
+                };
+                let snap = intent
+                    .engagement()
+                    .and_then(|e| e.snapshot.as_ref())
+                    .ok_or_else(|| not("no approval snapshot"))?;
+                let uid = spec
+                    .uids
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| not("no platform"))?;
+                Order::Engage(EngageOrder {
+                    intent: id,
+                    uid,
+                    track: track.clone(),
+                    effect_point: snap.preview.effect_point,
+                    effect_t: snap.preview.effect_t,
+                    effect_radius_m: snap.preview.effect_radius_m,
+                    fallback: snap.fallback,
+                    window_until: snap.preview.window.until,
+                })
+            }
             _ => Order::Vehicles(DispatchOrder {
                 intent: id,
                 task: spec.task.clone(),
@@ -527,20 +972,26 @@ impl Engine {
         };
         let (task, uids) = (spec.task.clone(), spec.uids.clone());
         let space = match &order {
-            Order::Vehicles(_) => None,
+            Order::Vehicles(_) | Order::Engage(_) => None,
             Order::Collect(c) => Some(SpaceOrder::Collect(c.clone())),
             Order::Cover(c) => Some(SpaceOrder::Cover(c.clone())),
+        };
+        let engage_order = match &order {
+            Order::Engage(o) => Some(o.clone()),
+            _ => None,
         };
         let reason = match &order {
             Order::Vehicles(_) => "dispatched to the task layer",
             Order::Collect(_) => "dispatched: satellite tasking request",
             Order::Cover(_) => "dispatched: coverage watch",
+            Order::Engage(_) => "dispatched: platform sent to the effect point",
         };
         self.emit(EventBody::IntentDispatched {
             intent: id,
             task,
             uids,
             space,
+            engage: engage_order,
         })?;
         self.transition(id, Transition::Dispatch, reason.into())?;
         Ok(order)
@@ -564,6 +1015,12 @@ impl Engine {
     }
 
     pub fn finish(&mut self, id: IntentId, outcome: TaskOutcome) -> Result<&Intent, EngineError> {
+        if self.get(id)?.spec().kind() == TaskKind::Engage {
+            return Err(EngineError::EngageLifecycle {
+                id,
+                why: "an engagement ends by its effect and assessment, or by an abort".into(),
+            });
+        }
         let (tr, reason) = match outcome {
             TaskOutcome::Done => (Transition::Complete, "done".to_string()),
             TaskOutcome::Failed { detail } => (Transition::Fail, detail),
@@ -700,12 +1157,15 @@ impl Engine {
         world: &WorldSnapshot,
         terrain: &dyn TerrainOracle,
     ) -> Result<(WorldSnapshot, LoggedInputs, Vec<CheckResult>, bool), EngineError> {
-        let mut inputs = world.for_intent(spec, terrain);
+        let mut inputs = world.for_intent_with(spec, terrain, &self.policy.rules);
         if spec.task.is_space() {
             inputs.space = self.ask_space(&spec.task, inputs.t)?;
         }
         let results = rules::evaluate(spec, &inputs, &self.policy.rules);
         let passed = rules::passed(&results, spec.kind());
+        let preview = (spec.kind() == TaskKind::Engage)
+            .then(|| engage::preview(spec, &inputs, &self.policy.rules).ok())
+            .flatten();
         let logged = self.log_inputs(&inputs)?;
         self.emit(EventBody::CheckResult {
             intent: spec.id,
@@ -713,11 +1173,15 @@ impl Engine {
             inputs: logged.clone(),
             results: results.clone(),
             passed,
+            preview: preview.clone().map(Box::new),
         })?;
         let intent = self.get_mut(spec.id)?;
         intent.set_checks(results.clone());
         if spec.task.is_space() {
             intent.set_space(inputs.space.answer().map(|a| Box::new(a.clone())));
+        }
+        if spec.kind() == TaskKind::Engage {
+            intent.engagement_mut().preview = preview;
         }
         Ok((inputs, logged, results, passed))
     }
@@ -744,6 +1208,30 @@ impl Engine {
             },
             Err(reason) => SpaceInputs::Unavailable { reason },
         })
+    }
+
+    /// An engagement without a window gets the default one, written into its spec (so the
+    /// log, the deadline and every check read the same window). Other tasks as given.
+    fn normalized(&self, task: Task, created_t: Time) -> Task {
+        match task {
+            Task::Engage {
+                track,
+                effect_radius_m,
+                window: None,
+                fallback,
+            } => Task::Engage {
+                track,
+                effect_radius_m,
+                window: Some(EngageWindow {
+                    from: None,
+                    until: created_t.plus_ms(
+                        i64::from(self.policy.rules.engage_rules().default_window_s) * 1000,
+                    ),
+                }),
+                fallback,
+            },
+            t => t,
+        }
     }
 
     /// The proposal that commits collect `id` to `chosen`, and `id`'s current state.
@@ -781,11 +1269,12 @@ impl Engine {
     ) -> Result<IntentId, EngineError> {
         proposal.validate()?;
         let id = IntentId(self.next_intent);
+        let created_t = self.now();
         let spec = IntentSpec {
             id,
-            created_t: self.now(),
+            created_t,
             source,
-            task: proposal.task,
+            task: self.normalized(proposal.task, created_t),
             uids: proposal.uids,
             constraints: proposal.constraints,
             rationale: proposal.rationale,
@@ -915,6 +1404,9 @@ pub struct Preview {
     /// Collect and cover: the space segment's answer the checks read.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub space: Option<Box<crate::space::SpaceAnswer>>,
+    /// Engage: the intercept and the predicted effect.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engage: Option<Box<engage::EngagePreview>>,
 }
 
 /// What agent code is given (Phase F's MCP server holds one per agent). It can propose
@@ -927,6 +1419,20 @@ pub struct Preview {
 /// use murmur_decide::{AgentPort, IntentId};
 /// fn agent_code(port: &mut AgentPort<'_>) {
 ///     port.approve(IntentId(1)); // no such method
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use murmur_decide::{AgentPort, IntentId};
+/// fn agent_code(port: &mut AgentPort<'_>) {
+///     port.approve_engagement(IntentId(1)); // no such method either (Phase E)
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use murmur_decide::{AgentPort, IntentId};
+/// fn agent_code(port: &mut AgentPort<'_>) {
+///     port.abort_engagement(IntentId(1), "stop"); // an agent can't stop an engagement
 /// }
 /// ```
 ///
@@ -998,18 +1504,19 @@ impl AgentPort<'_> {
         terrain: &dyn TerrainOracle,
     ) -> Result<Preview, EngineError> {
         proposal.validate()?;
+        let created_t = self.engine.now();
         let spec = IntentSpec {
             id: IntentId(0),
-            created_t: self.engine.now(),
+            created_t,
             source: Source::Agent {
                 id: self.agent.clone(),
             },
-            task: proposal.task,
+            task: self.engine.normalized(proposal.task, created_t),
             uids: proposal.uids,
             constraints: proposal.constraints,
             rationale: proposal.rationale,
         };
-        let mut inputs = world.for_intent(&spec, terrain);
+        let mut inputs = world.for_intent_with(&spec, terrain, &self.engine.policy.rules);
         if spec.task.is_space() {
             inputs.space = self.engine.ask_space(&spec.task, inputs.t)?;
         }
@@ -1034,6 +1541,10 @@ impl AgentPort<'_> {
                 state_name(would_reach)
             ),
         })?;
+        let engage = (spec.kind() == TaskKind::Engage)
+            .then(|| engage::preview(&spec, &inputs, &self.engine.policy.rules).ok())
+            .flatten()
+            .map(Box::new);
         Ok(Preview {
             kind: spec.kind(),
             uids: spec.uids,
@@ -1042,6 +1553,7 @@ impl AgentPort<'_> {
             policy,
             would_reach,
             space: inputs.space.answer().map(|a| Box::new(a.clone())),
+            engage,
         })
     }
 

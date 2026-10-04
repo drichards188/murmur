@@ -1,0 +1,76 @@
+# Hold the picture: after approval and dispatch, a neutral passenger boat appears heading
+# for the effect point; at the effect time it is predicted inside the keep-out, so the
+# engagement aborts (fallback: return home) before any effect. Afterwards the log is forged
+# to suppress the void (the stop and its transition deleted, the failed picture marked as
+# holding); replay must recompute the picture and catch it.
+title = "A neutral boat enters the keep-out after approval"
+invariant = "keep_out_tracks"
+attack = "a neutral boat closes on the effect point after approval; the void is suppressed in the log"
+expect = "aborted"
+expect_rule = "keep_out_tracks"
+tamper = "suppress_void"
+end_s = 120
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"
+
+[[step]]
+at_s = 20
+action = "track"
+id = "T-0002"
+at = [-122.4950, 37.8183]   # 700 m north of the target
+velocity = [0.0, -6.0]      # heading south at 6 m/s
+affiliation = "neutral"
+identity = "ferry"
+identity_confidence = 0.9

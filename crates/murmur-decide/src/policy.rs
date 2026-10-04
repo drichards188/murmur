@@ -21,6 +21,14 @@
 //! wait in the inbox (the hook for Phase E's two-person engagement; that the inbox approver
 //! is a different person is not enforced yet). It never applies to an agent-sourced intent. In a logged policy without the key (logs written before it
 //! existed) it reads as false, which is how those runs behaved.
+//!
+//! **Two-person approval** (Phase E). A human tier may set `approvers = N` (N distinct
+//! operators must sign before the intent is approved) and `proposer_may_approve = false`
+//! (the human who proposed it can't be one of them). An engagement has a floor whatever the
+//! file says: it is never auto-approved and never approved at submission, its proposer never
+//! approves it, and at least one approver signs it (DoD Directive 3000.09: appropriate human
+//! judgment over the use of force); only an operator session with engagement authority may
+//! sign it (`crate::Engine::approve_engagement`).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -31,7 +39,7 @@ use crate::time::Time;
 
 use crate::areas::Area;
 use crate::ids::Uid;
-use crate::intent::{IntentSpec, Source, TaskKind};
+use crate::intent::{IntentSpec, Source, Task, TaskKind};
 use crate::route::{Segment, route_for};
 use crate::rules::{self, Outcome, RuleId, RulesConfig};
 use crate::world::WorldSnapshot;
@@ -85,6 +93,13 @@ pub struct TierRule {
     /// submitter_authorizes`. Ignored on auto tiers and for agent-sourced intents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub submitter_authorizes: Option<bool>,
+    /// Human tiers: how many distinct operators must approve (default 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approvers: Option<u32>,
+    /// Human tiers: may the human who proposed the intent be one of its approvers (default
+    /// true; an engagement is always false).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposer_may_approve: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -135,6 +150,9 @@ pub enum Until {
     /// after it would fail the lead-time check anyway; expiring there tells the operator
     /// the real deadline.
     TaskingLead,
+    /// Engage: the engagement's window closes (or the fixed wait, if that comes first). An
+    /// approval after the window would fail its reach check anyway.
+    Window,
 }
 
 /// Why a pending intent's deadline is what it is, when it is not a fixed wait (logged in
@@ -164,6 +182,26 @@ pub fn approval_deadline(
         .and_then(|k| k.expire_s)
         .unwrap_or(policy.approval.expire_s);
     let fixed = now.plus_ms(i64::from(secs) * 1000);
+    if k.and_then(|k| k.until) == Some(Until::Window)
+        && let Task::Engage { window, .. } = task
+    {
+        // the window the nomination named, or the default from its creation (the engine
+        // calls this just after creating it, so `now` stands in for the creation time)
+        let until = window.map_or_else(
+            || now.plus_ms(i64::from(policy.rules.engage_rules().default_window_s) * 1000),
+            |w| w.until,
+        );
+        if until < fixed {
+            return (
+                until,
+                Some(DeadlineBasis {
+                    until: Until::Window,
+                    scenario_t: until,
+                }),
+            );
+        }
+        return (fixed, None);
+    }
     if k.and_then(|k| k.until) == Some(Until::TaskingLead) {
         let tol = policy.rules.space_rules().collect_match_tolerance_s;
         if let Some(s) = answer.and_then(|a| crate::space::tasking_deadline(task, a, tol)) {
@@ -226,6 +264,12 @@ impl Policy {
                     kind.as_str()
                 )));
             }
+            if k.until == Some(Until::Window) && *kind != TaskKind::Engage {
+                return Err(PolicyError::Invalid(format!(
+                    "approval.kind.{}: until = \"window\" applies to engage only",
+                    kind.as_str()
+                )));
+            }
         }
         let r = &p.rules;
         if !(r.orbit_radius_margin.is_finite() && r.orbit_radius_margin >= 1.0) {
@@ -240,6 +284,17 @@ impl Policy {
         }
         if let Some(s) = &r.space {
             s.validate().map_err(PolicyError::Invalid)?;
+        }
+        if let Some(e) = &r.engage {
+            e.validate().map_err(PolicyError::Invalid)?;
+        }
+        for t in &p.tiers {
+            if t.approvers == Some(0) {
+                return Err(PolicyError::Invalid(format!(
+                    "tier {}: approvers must be at least 1",
+                    t.name
+                )));
+            }
         }
         Ok(p)
     }
@@ -288,6 +343,22 @@ pub struct PolicyDecision {
     /// auto tiers and agent-sourced intents. Absent (false) in logs written before it existed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub submitter_authorizes: bool,
+    /// Distinct operators who must approve (two-person approval: 2). Absent (1) in logs
+    /// written before it existed.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub approvers: u32,
+    /// The proposer may not approve. Always true for an engagement.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub proposer_excluded: bool,
+}
+
+fn one() -> u32 {
+    1
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_one(n: &u32) -> bool {
+    *n == 1
 }
 
 /// Does any vehicle's route (transit leg, task path, return leg; see [`crate::route`])
@@ -380,6 +451,29 @@ fn segment_leaves(
 }
 
 pub fn decide(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> PolicyDecision {
+    let d = decide_by_file(spec, world, policy);
+    if spec.kind() != TaskKind::Engage {
+        return d;
+    }
+    // The engagement floor: a human always, never at submission, never the proposer, at
+    // least one approver; whatever the file says.
+    let mut d = d;
+    if d.tier == Tier::Auto {
+        d.reason = format!(
+            "tier {} is auto, but an engagement always needs human approval (DoD Directive 3000.09)",
+            d.rule
+        );
+        d.rule = "(engage)".into();
+        d.tier = Tier::Human;
+        d.approvers = 1;
+    }
+    d.submitter_authorizes = false;
+    d.proposer_excluded = true;
+    d.approvers = d.approvers.max(1);
+    d
+}
+
+fn decide_by_file(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> PolicyDecision {
     let armed: Vec<Uid> = spec
         .uids
         .iter()
@@ -433,16 +527,21 @@ pub fn decide(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> Poli
                     ),
                     facts,
                     submitter_authorizes: human_source && policy.submitter_authorizes(None),
+                    approvers: 1,
+                    proposer_excluded: false,
                 };
             }
+            let human = rule.tier == Tier::Human;
             return PolicyDecision {
                 tier: rule.tier,
                 rule: rule.name.clone(),
                 reason: rule.reason.clone(),
                 facts,
-                submitter_authorizes: rule.tier == Tier::Human
+                submitter_authorizes: human
                     && human_source
                     && policy.submitter_authorizes(Some(rule)),
+                approvers: if human { rule.approvers.unwrap_or(1).max(1) } else { 1 },
+                proposer_excluded: human && rule.proposer_may_approve == Some(false),
             };
         }
     }
@@ -452,5 +551,7 @@ pub fn decide(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> Poli
         reason: "no policy rule matched; fail closed to a human".into(),
         facts,
         submitter_authorizes: human_source && policy.submitter_authorizes(None),
+        approvers: 1,
+        proposer_excluded: false,
     }
 }

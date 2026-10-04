@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::areas::Area;
 use crate::catalog::{AutopilotKind, Domain};
+use crate::engage::EngageRules;
 use crate::geo::haversine_m;
 use crate::ids::Uid;
 use crate::intent::{IntentSpec, Targets, Task, TaskKind};
@@ -51,6 +52,41 @@ pub enum RuleId {
     Feasibility,
     /// Cover: the service holds over the window.
     Coverage,
+    // ---- engage (crate::engage) ----
+    /// An operator declared the track hostile (an inferred suspect is not enough).
+    TargetDeclared,
+    /// Identity and existence confidence above the thresholds; after approval, not
+    /// reclassified.
+    TargetIdentity,
+    /// The track's last detection is recent enough.
+    TargetRecency,
+    /// The track's 1-sigma uncertainty is within a fraction of the effect radius.
+    TargetUncertainty,
+    /// The predicted effect point is inside an approved engagement zone.
+    EngagementZone,
+    /// The effect circle is clear of every no-strike area.
+    NoStrike,
+    /// None of our vehicles can be inside the keep-out at the effect time.
+    KeepOutFriendly,
+    /// No protected track (anything but the target and declared hostiles) inside the
+    /// keep-out at the effect time.
+    KeepOutTracks,
+    /// The platform is armed (catalog).
+    PlatformArmed,
+    /// The platform can reach the effect point in the window, with the endurance to do it.
+    Reach,
+    /// After approval: the track is where the approval's snapshot predicts, within tolerance.
+    TrackDeviation,
+    /// After approval: the platform's link holds the approval's assumption.
+    PlatformLink,
+    /// After approval: the window is open and the platform is not late.
+    EngageWindow,
+    /// Release: the platform is at the effect point.
+    Arrival,
+    /// Release: the predicted effect time has come.
+    EffectTime,
+    /// Release: the track is estimated inside the effect radius.
+    Alignment,
 }
 
 impl RuleId {
@@ -65,6 +101,22 @@ impl RuleId {
             RuleId::SpaceQuery => "space_query",
             RuleId::Feasibility => "feasibility",
             RuleId::Coverage => "coverage",
+            RuleId::TargetDeclared => "target_declared",
+            RuleId::TargetIdentity => "target_identity",
+            RuleId::TargetRecency => "target_recency",
+            RuleId::TargetUncertainty => "target_uncertainty",
+            RuleId::EngagementZone => "engagement_zone",
+            RuleId::NoStrike => "no_strike",
+            RuleId::KeepOutFriendly => "keep_out_friendly",
+            RuleId::KeepOutTracks => "keep_out_tracks",
+            RuleId::PlatformArmed => "platform_armed",
+            RuleId::Reach => "reach",
+            RuleId::TrackDeviation => "track_deviation",
+            RuleId::PlatformLink => "platform_link",
+            RuleId::EngageWindow => "engage_window",
+            RuleId::Arrival => "arrival",
+            RuleId::EffectTime => "effect_time",
+            RuleId::Alignment => "alignment",
         }
     }
 }
@@ -152,6 +204,9 @@ pub struct RulesConfig {
     /// Space rules (`[rules.space]`); defaults when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub space: Option<SpaceRules>,
+    /// Engagement rules (`[rules.engage]`, Phase E); defaults when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engage: Option<EngageRules>,
 }
 
 impl RulesConfig {
@@ -171,6 +226,11 @@ impl RulesConfig {
     pub fn space_rules(&self) -> SpaceRules {
         self.space.clone().unwrap_or_default()
     }
+
+    /// `[rules.engage]`, or its defaults.
+    pub fn engage_rules(&self) -> EngageRules {
+        self.engage.clone().unwrap_or_default()
+    }
 }
 
 impl Default for RulesConfig {
@@ -184,6 +244,7 @@ impl Default for RulesConfig {
             task_duration_s: 900,
             unknown_endurance: UnknownEndurance::Human,
             space: None,
+            engage: None,
         }
     }
 }
@@ -199,6 +260,8 @@ pub fn evaluate(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
             out.extend(domain(spec, world));
             out.extend(geofence(spec, world, cfg));
             out.extend(reserves(spec, world, cfg));
+            // engage: the engagement checks (crate::engage), after the vehicle rules
+            out.extend(crate::engage::evaluate(spec, world, cfg));
         }
         Targets::Space => {
             out.extend(space_query(spec, world, cfg));

@@ -27,6 +27,18 @@
 //! - space answers (collect, cover): each `space.query`'s content hash matches its
 //!   `sha256`, every decision references a logged answer, and a dispatched collect is the
 //!   chosen option. Rules re-decide from the logged answers, so this needs no space cache.
+//! - two-person approval: every signature (`approval.concurred`, `approval.granted`) is by
+//!   the operator its session was opened for, never the proposer where the policy excludes
+//!   the proposer, never twice by the same operator, and `approved` comes only with as many
+//!   distinct signatures as the recomputed decision asks;
+//! - engagements (Phase E): every signature on an engagement is under a session opened with
+//!   engagement authority; the preview logged with each check, the snapshot in the final
+//!   `approval.granted`, every `engage.picture` verdict (hold the picture: the voids), every
+//!   `engage.observe` step and the `engage.assessed` verdict are recomputed from their
+//!   logged inputs; the effect follows a picture that held and was ready, at the snapshot's
+//!   point; a failed picture is followed by its `engage.stopped` before anything else
+//!   happens to that engagement (a suppressed void is a mismatch); an abort is backed by an
+//!   `engage.stopped`, a release by an `engage.effect`, and the end by an assessment.
 //!
 //! **Space recomputation.** [`replay_str_with_space`] also re-runs every logged space query
 //! on the segment given. If that segment is the one the query ran on (same
@@ -47,10 +59,13 @@ use serde::Serialize;
 
 use crate::areas::AreaSet;
 use crate::audit::{Event, EventBody, LogError, parse_log};
+use crate::authority::Grants;
+use crate::engage::{self, EffectRecord, EngageSnapshot, ObserveStep, StopCause};
 use crate::engine::is_self_approval;
+use crate::ids::{OperatorId, SessionId};
 use crate::hash::{GENESIS, sha256_hex};
 use crate::ids::IntentId;
-use crate::intent::{IntentSpec, Source, State, Transition, next_state};
+use crate::intent::{IntentSpec, Source, State, TaskKind, Transition, next_state};
 use crate::policy::{self, Policy, Tier};
 use crate::rules;
 use crate::space::{ScenarioMap, SpaceAnswer, SpaceOracle, SpaceOrder};
@@ -94,6 +109,17 @@ pub struct ReplayReport {
     /// Space queries that could not be recomputed because the segment given to replay is
     /// not the one they ran on. Not decision mismatches: [`Self::ok`] ignores them.
     pub cache_mismatches: Vec<Mismatch>,
+    /// Signatures that were not the last one a tier needed (`approval.concurred`).
+    pub concurrences: usize,
+    /// Engagement intents.
+    pub engagements: usize,
+    /// Hold-the-picture verdicts recomputed (`engage.picture`), and how many failed (voids).
+    pub pictures_recomputed: usize,
+    pub picture_voids: usize,
+    /// Effects released, engagements aborted after dispatch, assessments made.
+    pub effects: usize,
+    pub aborts: usize,
+    pub assessments: usize,
 }
 
 impl ReplayReport {
@@ -123,6 +149,27 @@ struct Tracked {
     expired: bool,
     /// The space answer the policy decision read (a collect's deadline comes from it).
     answer: Option<Box<SpaceAnswer>>,
+    /// The recomputed decision's signature count and proposer exclusion.
+    approvers: u32,
+    proposer_excluded: bool,
+    /// Who signed so far (concurred, then granted).
+    signers: Vec<OperatorId>,
+    /// The inputs of the last check (an engagement's snapshot is recomputed from them).
+    last_inputs: Option<Box<WorldSnapshot>>,
+    snapshot: Option<Box<EngageSnapshot>>,
+    /// A failed `engage.picture` not yet followed by its `engage.stopped` (seq).
+    stop_due: Option<u64>,
+    /// The last engage event of this intent was a picture that held and was ready.
+    ready: bool,
+    /// `engage.effect` logged, waiting for its `release` transition.
+    effect_logged: bool,
+    effect: Option<EffectRecord>,
+    /// `engage.stopped` logged, waiting for its void or abort.
+    stopped: bool,
+    covered_s: f64,
+    last_observe: Option<(Time, bool)>,
+    last_step: Option<(Time, ObserveStep)>,
+    assessed: bool,
 }
 
 /// Replay a JSONL log. The chain is checked over the lines exactly as they are in the
@@ -204,6 +251,8 @@ fn replay_inner(
     // from the last `space.loaded`
     let mut scenario_map = ScenarioMap::IDENTITY;
     let mut pinned: Option<i64> = None;
+    // operator sessions as opened: who, with what grants
+    let mut sessions: BTreeMap<SessionId, (OperatorId, Grants)> = BTreeMap::new();
 
     for (i, e) in events.iter().enumerate() {
         let want_prev = if i == 0 {
@@ -322,14 +371,32 @@ fn replay_inner(
                         rejected_by_human: false,
                         expired: false,
                         answer: None,
+                        approvers: 1,
+                        proposer_excluded: false,
+                        signers: Vec::new(),
+                        last_inputs: None,
+                        snapshot: None,
+                        stop_due: None,
+                        ready: false,
+                        effect_logged: false,
+                        effect: None,
+                        stopped: false,
+                        covered_s: 0.0,
+                        last_observe: None,
+                        last_step: None,
+                        assessed: false,
                     },
                 );
+                if intent.kind() == TaskKind::Engage {
+                    r.engagements += 1;
+                }
             }
             EventBody::CheckResult {
                 intent,
                 inputs,
                 results,
                 passed,
+                preview,
                 ..
             } => {
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
@@ -371,7 +438,21 @@ fn replay_inner(
                         json(&(&again, again_passed)),
                     );
                 }
+                if tr.spec.kind() == TaskKind::Engage {
+                    let pv = engage::preview(&tr.spec, &inputs, &pol.rules).ok();
+                    if pv.as_ref() != preview.as_deref() {
+                        bad(
+                            &mut r,
+                            e,
+                            Some(*intent),
+                            "engagement preview differs",
+                            json(preview),
+                            json(&pv),
+                        );
+                    }
+                }
                 tr.last_check_passed = Some(again_passed);
+                tr.last_inputs = Some(Box::new(inputs));
             }
             EventBody::PolicyDecision {
                 intent,
@@ -418,6 +499,8 @@ fn replay_inner(
                 }
                 tr.tier = Some(again.tier);
                 tr.submitter_authorizes = again.submitter_authorizes;
+                tr.approvers = again.approvers.max(1);
+                tr.proposer_excluded = again.proposer_excluded;
                 tr.rule = Some(again.rule);
                 tr.answer = inputs.space.answer().map(|a| Box::new(a.clone()));
             }
@@ -458,10 +541,46 @@ fn replay_inner(
                 }
                 tr.expires_t = Some(*expires_t);
             }
+            EventBody::ApprovalConcurred {
+                intent,
+                by,
+                session,
+                n,
+                of,
+                ..
+            } => {
+                let Some(tr) = intents.get_mut(intent) else {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "unknown intent",
+                        String::new(),
+                        String::new(),
+                    );
+                    continue;
+                };
+                check_signature(&mut r, e, *intent, tr, by, *session, &sessions);
+                let want = (u32::try_from(tr.signers.len()).unwrap_or(u32::MAX) + 1, tr.approvers);
+                if (*n, *of) != want || *n >= *of {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "concurrence count differs",
+                        json(&(n, of)),
+                        json(&want),
+                    );
+                }
+                tr.signers.push(by.clone());
+                r.concurrences += 1;
+            }
             EventBody::ApprovalGranted {
                 intent,
                 by,
                 self_approved,
+                session,
+                snapshot,
                 ..
             } => {
                 let Some(tr) = intents.get_mut(intent) else {
@@ -510,6 +629,47 @@ fn replay_inner(
                 r.approvals += 1;
                 if want {
                     r.self_approvals += 1;
+                }
+                check_signature(&mut r, e, *intent, tr, by, *session, &sessions);
+                tr.signers.push(by.clone());
+                let needed = usize::try_from(tr.approvers).unwrap_or(usize::MAX);
+                if tr.signers.len() != needed {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "approval granted without the signatures the tier needs",
+                        tr.signers.len().to_string(),
+                        needed.to_string(),
+                    );
+                }
+                if tr.spec.kind() == TaskKind::Engage {
+                    let again = match (&policy, &tr.last_inputs) {
+                        (Some(pol), Some(w)) => {
+                            engage::snapshot(&tr.spec, w, &pol.rules).ok().map(Box::new)
+                        }
+                        _ => None,
+                    };
+                    if again.is_none() || again != *snapshot {
+                        bad(
+                            &mut r,
+                            e,
+                            Some(*intent),
+                            "engagement snapshot differs from the approval's re-check",
+                            json(snapshot),
+                            json(&again),
+                        );
+                    }
+                    tr.snapshot = snapshot.clone();
+                } else if snapshot.is_some() {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "snapshot on an approval that is not an engagement",
+                        json(snapshot),
+                        "none".into(),
+                    );
                 }
                 tr.granted = true;
             }
@@ -677,14 +837,69 @@ fn replay_inner(
                         "no evidence".into(),
                     );
                 }
+                match transition {
+                    Transition::Release => {
+                        tr.effect_logged = false;
+                        r.effects += 1;
+                    }
+                    Transition::Abort => {
+                        tr.stopped = false;
+                        r.aborts += 1;
+                    }
+                    Transition::Void => tr.stopped = false,
+                    _ => {}
+                }
                 tr.state = *to;
             }
             EventBody::IntentDispatched {
                 intent,
                 space: order,
+                engage: engage_order,
                 ..
             } => {
                 if let Some(tr) = intents.get(intent) {
+                    if tr.spec.kind() == TaskKind::Engage {
+                        let want = tr.snapshot.as_ref().map(|s| {
+                            (
+                                s.preview.effect_point,
+                                s.preview.effect_t,
+                                s.preview.effect_radius_m,
+                                s.fallback,
+                            )
+                        });
+                        let got = engage_order.as_ref().map(|o| {
+                            (o.effect_point, o.effect_t, o.effect_radius_m, o.fallback)
+                        });
+                        if want.is_none() || want != got {
+                            bad(
+                                &mut r,
+                                e,
+                                Some(*intent),
+                                "engagement dispatched to something other than its approval's snapshot",
+                                json(engage_order),
+                                json(&tr.snapshot.as_ref().map(|s| &s.preview)),
+                            );
+                        }
+                        if let Some(seq) = tr.stop_due {
+                            bad(
+                                &mut r,
+                                e,
+                                Some(*intent),
+                                "engagement dispatched after its picture failed (void suppressed)",
+                                seq.to_string(),
+                                "engage.stopped".into(),
+                            );
+                        }
+                    } else if engage_order.is_some() {
+                        bad(
+                            &mut r,
+                            e,
+                            Some(*intent),
+                            "engagement order on an intent that is not an engagement",
+                            json(engage_order),
+                            "none".into(),
+                        );
+                    }
                     if !matches!(tr.state, State::AutoApproved | State::Approved) {
                         bad(
                             &mut r,
@@ -707,14 +922,338 @@ fn replay_inner(
                     }
                 }
             }
+            EventBody::OperatorAction {
+                operator,
+                session,
+                action,
+                grants,
+                ..
+            } => {
+                if action == "session.opened" {
+                    sessions.insert(*session, (operator.clone(), grants.unwrap_or_default()));
+                }
+            }
+            EventBody::EngagePicture {
+                intent,
+                inputs,
+                results,
+                holds,
+                ready,
+            } => {
+                let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "picture without run.started or intent.created",
+                        String::new(),
+                        String::new(),
+                    );
+                    continue;
+                };
+                if let Some(seq) = tr.stop_due {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "picture failed but the engagement went on (void suppressed)",
+                        seq.to_string(),
+                        "engage.stopped".into(),
+                    );
+                }
+                if !matches!(tr.state, State::Approved | State::Dispatched) {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "picture watch outside approved or dispatched",
+                        json(&tr.state),
+                        "approved|dispatched".into(),
+                    );
+                }
+                let Some(snap) = tr.snapshot.clone() else {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "picture watch without an approval snapshot",
+                        String::new(),
+                        String::new(),
+                    );
+                    continue;
+                };
+                let w = match resolve(inputs, &areas, &answers) {
+                    Ok(w) => w,
+                    Err(why) => {
+                        bad(&mut r, e, Some(*intent), why, String::new(), String::new());
+                        continue;
+                    }
+                };
+                let dispatched = tr.state == State::Dispatched;
+                let (again, h, rd) = engage::picture(&tr.spec, &snap, &w, &pol.rules, dispatched);
+                r.pictures_recomputed += 1;
+                if &again != results || h != *holds || rd != *ready {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "picture verdict differs",
+                        json(&(results, holds, ready)),
+                        json(&(&again, h, rd)),
+                    );
+                }
+                tr.ready = h && rd;
+                if !h {
+                    r.picture_voids += 1;
+                    tr.stop_due = Some(e.seq);
+                }
+            }
+            EventBody::EngageEffect {
+                intent,
+                point,
+                radius_m,
+                planned_t,
+                ..
+            } => {
+                let Some(tr) = intents.get_mut(intent) else {
+                    bad(&mut r, e, Some(*intent), "unknown intent", String::new(), String::new());
+                    continue;
+                };
+                if !tr.ready || tr.state != State::Dispatched {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "effect without a picture that held and was ready",
+                        json(&tr.state),
+                        "dispatched, picture holds and ready".into(),
+                    );
+                }
+                let want = tr
+                    .snapshot
+                    .as_ref()
+                    .map(|s| (s.preview.effect_point, s.preview.effect_radius_m, s.preview.effect_t));
+                if want != Some((*point, *radius_m, *planned_t)) {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "effect not at the approval's predicted point",
+                        json(&(point, radius_m, planned_t)),
+                        json(&want),
+                    );
+                }
+                tr.ready = false;
+                tr.effect_logged = true;
+                tr.effect = Some(EffectRecord {
+                    t: e.t,
+                    point: *point,
+                    radius_m: *radius_m,
+                    planned_t: *planned_t,
+                });
+            }
+            EventBody::EngageStopped {
+                intent,
+                cause,
+                fallback,
+                ..
+            } => {
+                let Some(tr) = intents.get_mut(intent) else {
+                    bad(&mut r, e, Some(*intent), "unknown intent", String::new(), String::new());
+                    continue;
+                };
+                match cause {
+                    StopCause::Picture if tr.stop_due.is_none() => bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "stopped for the picture, but the picture held",
+                        String::new(),
+                        String::new(),
+                    ),
+                    StopCause::Operator { by, session } => match sessions.get(session) {
+                        Some((op, _)) if op == by => {}
+                        other => bad(
+                            &mut r,
+                            e,
+                            Some(*intent),
+                            "abort under a session that is not the operator's",
+                            by.to_string(),
+                            json(&other.map(|o| &o.0)),
+                        ),
+                    },
+                    _ => {}
+                }
+                let want = match tr.state {
+                    State::Dispatched => engage::params(&tr.spec).map(|p| p.3),
+                    _ => None,
+                };
+                if *fallback != want {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "stop's fallback is not the recorded one",
+                        json(fallback),
+                        json(&want),
+                    );
+                }
+                tr.stop_due = None;
+                tr.ready = false;
+                tr.stopped = true;
+            }
+            EventBody::EngageObserve {
+                intent,
+                inputs,
+                step,
+                covered_s,
+            } => {
+                let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
+                    bad(&mut r, e, Some(*intent), "unknown intent", String::new(), String::new());
+                    continue;
+                };
+                let (Some(snap), Some(effect)) = (tr.snapshot.clone(), tr.effect.clone()) else {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "observation without an effect",
+                        String::new(),
+                        String::new(),
+                    );
+                    continue;
+                };
+                let w = match resolve(inputs, &areas, &answers) {
+                    Ok(w) => w,
+                    Err(why) => {
+                        bad(&mut r, e, Some(*intent), why, String::new(), String::new());
+                        continue;
+                    }
+                };
+                let again = engage::observe(&snap, &effect, &w, &pol.rules);
+                let covered = !again.covered_by.is_empty();
+                let sum = tr.covered_s + engage::coverage_increment(tr.last_observe, e.t, covered);
+                if &again != step || sum != *covered_s {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "observation differs",
+                        json(&(step, covered_s)),
+                        json(&(&again, sum)),
+                    );
+                }
+                tr.covered_s = sum;
+                tr.last_observe = Some((e.t, covered));
+                tr.last_step = Some((e.t, again));
+            }
+            EventBody::EngageAssessed {
+                intent,
+                result,
+                evidence,
+                covered_s,
+            } => {
+                let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
+                    bad(&mut r, e, Some(*intent), "unknown intent", String::new(), String::new());
+                    continue;
+                };
+                let again = match (&tr.snapshot, &tr.effect, &tr.last_step) {
+                    (Some(snap), Some(effect), Some((t, step))) => {
+                        engage::assess(snap, effect, step, tr.covered_s, *t, &pol.rules)
+                    }
+                    _ => None,
+                };
+                let logged = Some((*result, evidence.clone()));
+                if again != logged || *covered_s != tr.covered_s {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "assessment differs",
+                        json(&(result, evidence, covered_s)),
+                        json(&(again, tr.covered_s)),
+                    );
+                }
+                tr.assessed = true;
+                r.assessments += 1;
+            }
             EventBody::OpState { .. }
             | EventBody::VehicleEvent { .. }
-            | EventBody::OperatorAction { .. }
             | EventBody::AgentAction { .. } => {}
+        }
+    }
+    let last_seq = events.last().map_or(0, |e| e.seq);
+    for (id, tr) in &intents {
+        if let Some(seq) = tr.stop_due
+            && seq < last_seq
+        {
+            r.mismatches.push(Mismatch {
+                seq,
+                intent: Some(*id),
+                what: "picture failed but the engagement was never stopped (void suppressed)"
+                    .into(),
+                logged: String::new(),
+                recomputed: "engage.stopped".into(),
+            });
         }
     }
     r.intents = intents.len();
     r
+}
+
+/// One approval signature: by the operator the session was opened for; with engagement
+/// authority on an engagement; never the proposer where excluded; never twice.
+fn check_signature(
+    r: &mut ReplayReport,
+    e: &Event,
+    id: IntentId,
+    tr: &Tracked,
+    by: &OperatorId,
+    session: SessionId,
+    sessions: &BTreeMap<SessionId, (OperatorId, Grants)>,
+) {
+    match sessions.get(&session) {
+        Some((op, grants)) if op == by => {
+            if tr.spec.kind() == TaskKind::Engage && !grants.engage {
+                bad(
+                    r,
+                    e,
+                    Some(id),
+                    "engagement approved without engagement authority",
+                    by.to_string(),
+                    "a session opened with grants.engage".into(),
+                );
+            }
+        }
+        other => bad(
+            r,
+            e,
+            Some(id),
+            "approval under a session that is not the approver's",
+            by.to_string(),
+            json(&other.map(|o| &o.0)),
+        ),
+    }
+    if tr.proposer_excluded && is_self_approval(&tr.spec.source, by) {
+        bad(
+            r,
+            e,
+            Some(id),
+            "approved by its proposer (two-person rule)",
+            by.to_string(),
+            "someone other than the proposer".into(),
+        );
+    }
+    if tr.signers.contains(by) {
+        bad(
+            r,
+            e,
+            Some(id),
+            "the same operator signed twice",
+            by.to_string(),
+            json(&tr.signers),
+        );
+    }
 }
 
 /// Verify a logged area set against its hash; the result is the new set in force.
@@ -884,6 +1423,16 @@ fn unbacked(tr: &Tracked, t: Transition) -> Option<&'static str> {
         }
         Transition::Approve if !tr.granted || tr.last_check_passed != Some(true) => {
             Some("approved without a human approval and a passing re-check")
+        }
+        Transition::Approve
+            if tr.signers.len() < usize::try_from(tr.approvers).unwrap_or(usize::MAX) =>
+        {
+            Some("approved without the signatures the tier needs")
+        }
+        Transition::Release if !tr.effect_logged => Some("released without an engage.effect"),
+        Transition::Abort if !tr.stopped => Some("aborted without an engage.stopped"),
+        Transition::Complete if tr.spec.kind() == TaskKind::Engage && !tr.assessed => {
+            Some("engagement completed without an assessment")
         }
         Transition::Reject if !tr.rejected_by_human => Some("rejected without a human rejection"),
         Transition::Expire if !tr.expired => Some("expired without an approval.expired"),
