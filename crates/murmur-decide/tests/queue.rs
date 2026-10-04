@@ -430,10 +430,10 @@ fn replay_catches_a_queue_that_was_not_needed_or_a_stretched_deadline() {
         for e in ev.iter_mut() {
             if let EventBody::IntentQueued { inputs, .. } = &mut e.body {
                 let t = inputs.t;
-                if let Some(v) = inputs.vehicles.get_mut(&uid("sky-1")) {
-                    if let Some(a) = &mut v.autopilot {
-                        a.t = t;
-                    }
+                if let Some(v) = inputs.vehicles.get_mut(&uid("sky-1"))
+                    && let Some(a) = &mut v.autopilot
+                {
+                    a.t = t;
                 }
             }
         }

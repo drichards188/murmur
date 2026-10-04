@@ -111,6 +111,8 @@ pub fn vehicle_facts(
         // velocity over ground, observed with the position (an engagement's keep-out carries
         // our vehicles along it)
         velocity_mps: v.vel_en.and_then(|vel| fact(vel, v.seen.position)),
+        // when it booted (rules 5): a queued order approved before a reboot is looked at again
+        booted_t: v.booted_wall.map(ms),
         platform,
     }
 }

@@ -170,6 +170,14 @@ async fn tasks(
             StatusCode::ACCEPTED,
             format!("not dispatched: waiting for an operator to approve intent {id} ({reason})"),
         )
+    } else if state == murmur_decide::State::Queued {
+        // rules 5: approved, held for a vehicle the link can't carry it to now
+        (
+            StatusCode::ACCEPTED,
+            format!(
+                "queued: intent {id} is approved and goes when the link can carry it, re-checked first ({reason})"
+            ),
+        )
     } else {
         (
             StatusCode::UNPROCESSABLE_ENTITY,

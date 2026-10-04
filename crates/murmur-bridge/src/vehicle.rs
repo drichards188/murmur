@@ -24,6 +24,9 @@ pub const TRAIL_KEEP: usize = 120;
 /// Firmware that doesn't report EKF status gets this long after a 3D fix before it counts as
 /// ready to navigate.
 const NO_EKF_GRACE_S: f64 = 15.0;
+/// A time since boot this much earlier than the last one is a reboot, not a reordered packet
+/// (messages of one burst carry times milliseconds apart; the links deliver in order).
+pub const REBOOT_SLACK_MS: u64 = 1_000;
 
 /// What the launcher's fleet manifest says a node is: callsign, platform, role, domain, link...
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -180,6 +183,19 @@ pub struct Vehicle {
     /// Events for the audit log (`vehicle.event`), oldest first.
     pub events: VecDeque<VehicleEvent>,
     system_status: Option<apm::MavState>,
+    /// When anything was last heard from it (monotonic s, the tokio clock): the task layer
+    /// tells a lost link mid-exchange from a vehicle that refuses.
+    pub heard_mono: Option<f64>,
+    /// The last time since boot it reported (ms: GLOBAL_POSITION_INT, ATTITUDE, SYSTEM_TIME,
+    /// HIGH_LATENCY2), when it booted by that (wall s, estimated once: the arrival time less
+    /// the time since boot) and how many reboots the bridge has seen (each one: the time since
+    /// boot went back). An op started before a reboot is over: the vehicle lost the mode and
+    /// armed state its order set.
+    pub boot_ms: Option<u64>,
+    pub booted_wall: Option<f64>,
+    pub boot_epoch: u32,
+    /// Reboots waiting for the audit log, oldest first.
+    pub reboots: VecDeque<Reboot>,
 }
 
 /// Arrival times (wall clock, seconds) of the messages behind each decision fact.
@@ -230,6 +246,15 @@ pub struct VehicleEvent {
     /// "mode", "failsafe" or "statustext"
     pub kind: &'static str,
     pub text: String,
+}
+
+/// A reboot the bridge saw: the time since boot before and after (ms) and the new boot
+/// instant (wall s). Logged as `vehicle.rebooted` by the decision loop.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Reboot {
+    pub boot_ms_before: u64,
+    pub boot_ms: u64,
+    pub booted_wall: f64,
 }
 
 impl Vehicle {
@@ -287,6 +312,9 @@ impl Vehicle {
                 }
                 // vx north, vy east, cm/s
                 self.vel_en = Some([f64::from(m.vy) / 100.0, f64::from(m.vx) / 100.0]);
+                if m.time_boot_ms > 0 {
+                    self.observe_boot(u64::from(m.time_boot_ms));
+                }
                 for link in self.forward_to.values() {
                     link.send_raw(raw);
                 }
@@ -328,6 +356,9 @@ impl Vehicle {
                 self.seen.gps = Some(wall);
                 self.hl_failure = Some(m.failure_flags);
                 self.seen.hl2 = Some(wall);
+                if m.timestamp > 0 {
+                    self.observe_boot(u64::from(m.timestamp));
+                }
             }
             MavMessage::PARAM_VALUE(m) => match mav::chars_to_string(&m.param_id).as_str() {
                 "Q_ENABLE" => {
@@ -349,7 +380,15 @@ impl Vehicle {
                 });
                 self.seen.nav_target = self.nav_target.map(|_| clock::wall());
             }
+            MavMessage::SYSTEM_TIME(m) => {
+                if m.time_boot_ms > 0 {
+                    self.observe_boot(u64::from(m.time_boot_ms));
+                }
+            }
             MavMessage::ATTITUDE(m) => {
+                if m.time_boot_ms > 0 {
+                    self.observe_boot(u64::from(m.time_boot_ms));
+                }
                 self.yaw = Some(f64::from(m.yaw).to_degrees().rem_euclid(360.0));
                 self.roll = Some(f64::from(m.roll).to_degrees());
                 self.pitch = Some(f64::from(m.pitch).to_degrees());
@@ -481,6 +520,32 @@ impl Vehicle {
             self.events.pop_front();
         }
         self.events.push_back(VehicleEvent { kind, text });
+    }
+
+    /// A reported time since boot: the boot instant at first, a reboot when it goes back.
+    fn observe_boot(&mut self, boot_ms: u64) {
+        let wall = clock::wall();
+        let booted = wall - boot_ms as f64 / 1000.0;
+        match self.boot_ms {
+            Some(before) if boot_ms + REBOOT_SLACK_MS < before => {
+                self.boot_epoch += 1;
+                self.booted_wall = Some(booted);
+                self.boot_ms = Some(boot_ms);
+                if self.reboots.len() == EVENTS_KEEP {
+                    self.reboots.pop_front();
+                }
+                self.reboots.push_back(Reboot {
+                    boot_ms_before: before,
+                    boot_ms,
+                    booted_wall: booted,
+                });
+            }
+            Some(_) => self.boot_ms = Some(boot_ms),
+            None => {
+                self.boot_ms = Some(boot_ms);
+                self.booted_wall = Some(booted);
+            }
+        }
     }
 
     fn set_mode(&mut self, mav_type: apm::MavType, custom_mode: u32) {
@@ -734,7 +799,10 @@ impl VehicleCell {
                 .unwrap_or_else(|e| e.into_inner())
                 .pong(m.ts1, now);
         }
-        let notify = self.write(|v| v.apply(msg, raw, now));
+        let notify = self.write(|v| {
+            v.heard_mono = Some(now);
+            v.apply(msg, raw, now)
+        });
         if notify && self.events.receiver_count() > 0 {
             let _ = self.events.send(Arc::new(msg.clone()));
         }

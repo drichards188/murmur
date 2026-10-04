@@ -43,6 +43,10 @@
 //! release the effect or stop it with its recorded fallback; `POST
 //! /api/intents/{id}/abort` lets any operator stop it before the effect.
 //!
+//! **The queue** (rules 5, [`queue`]). An approved order for a vehicle the link can't carry
+//! it to now is held, not sent into a dead link; each tick it is offered again on the world
+//! then, re-checked before it goes, and it survives a bridge restart.
+//!
 //! **Voiding.** A waiting intent (pending or approved, not yet dispatched) is voided when a
 //! target vehicle goes silent for longer than its freshness limit, `rules.max_fact_age_s` or
 //! `rules.fact_age_intervals` expected report intervals of its link if larger (60 s for an
@@ -55,6 +59,7 @@ mod alerts;
 mod civil;
 pub mod engage;
 mod failsafe;
+pub mod queue;
 pub mod snapshot;
 pub mod space;
 mod terrain;
@@ -235,6 +240,11 @@ pub struct Settings {
     /// `MURMUR_ANCHOR_DIR`; every `MURMUR_ANCHOR_EVERY` events, 100; `MURMUR_ANCHOR_CMD` gets
     /// each one). `MURMUR_ANCHORS=0` turns them off.
     pub anchors: Option<AnchorConfig>,
+    /// Where the previous run's open intents come from (`MURMUR_RESUME`, see [`queue`]).
+    pub resume: queue::ResumeFrom,
+    /// The pointer to this run's log and the intents it leaves open
+    /// (`logs/audit/.resume-<MURMUR_HTTP_PORT>.json`; none with `MURMUR_RESUME=0`).
+    pub pointer: Option<PathBuf>,
 }
 
 impl Settings {
@@ -276,6 +286,19 @@ impl Settings {
                     .unwrap_or(100),
                 cmd: var("MURMUR_ANCHOR_CMD"),
             }),
+            resume: match var("MURMUR_RESUME").as_deref() {
+                Some("0") => queue::ResumeFrom::Off,
+                Some("1") | None => queue::ResumeFrom::Pointer {
+                    window_s: var("MURMUR_RESUME_WINDOW_S")
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(queue::RESUME_WINDOW_S),
+                },
+                Some(path) => queue::ResumeFrom::Log(PathBuf::from(path)),
+            },
+            pointer: (var("MURMUR_RESUME").as_deref() != Some("0")).then(|| {
+                let port = var("MURMUR_HTTP_PORT").unwrap_or_else(|| "8765".into());
+                root.join("logs/audit").join(format!(".resume-{}.json", port.trim()))
+            }),
         }
     }
 }
@@ -309,6 +332,10 @@ struct Core {
     engagements: BTreeMap<IntentId, engage::EngageRun>,
     /// `operator.view` budget per operator: (tokens, monotonic seconds when last filled)
     view_budget: BTreeMap<OperatorId, (f64, f64)>,
+    /// resumed intents a vehicle had started, waiting for their vehicles to connect
+    follow: BTreeMap<IntentId, queue::PendingFollow>,
+    /// the open intents last written to the pointer file, and when
+    pointer_written: Option<(Vec<u64>, f64)>,
 }
 
 /// `operator.view` events an operator may log: a burst of this many, refilled at
@@ -337,6 +364,10 @@ pub struct Decision {
     /// The space segment the engine has, shared: collect and cover queries are answered
     /// with it before the decision lock is taken ([`Decision::prepare_space`]).
     space: std::sync::RwLock<Option<Arc<SpaceSegment>>>,
+    /// `[queue]` of the policy (rules 5).
+    queue_cfg: murmur_decide::QueueConfig,
+    /// The pointer file this run keeps ([`queue`]), if any (set once by [`Decision::load`]).
+    pointer: std::sync::OnceLock<PathBuf>,
 }
 
 /// Everything [`Decision::from_parts`] needs (tests pass a memory sink and a manual clock).
@@ -399,6 +430,27 @@ impl Decision {
         if let Some(a) = anchors {
             let _ = d.anchors.set(a);
         }
+        if let Some(p) = &s.pointer {
+            let _ = d.pointer.set(p.clone());
+        }
+        // the previous run's open intents (queued, approved, under way), carried over
+        if let Some(prev) = queue::previous_log(&s.resume, s.pointer.as_deref(), &s.audit) {
+            let name = prev
+                .file_name()
+                .map_or_else(|| prev.display().to_string(), |n| n.to_string_lossy().into_owned());
+            match std::fs::read_to_string(&prev)
+                .map_err(|e| format!("{}: {e}", prev.display()))
+                .and_then(|text| d.carry_over(&name, &text))
+            {
+                Ok(ids) if ids.is_empty() => {}
+                Ok(ids) => println!(
+                    "decision: carried {} open intent(s) over from {name}: {}",
+                    ids.len(),
+                    ids.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+                ),
+                Err(e) => eprintln!("decision: nothing carried over: {e}"),
+            }
+        }
         Ok(d)
     }
 
@@ -424,6 +476,7 @@ impl Decision {
     pub fn from_parts(world: Arc<World>, p: Parts) -> Result<Arc<Decision>, String> {
         let clock = SharedClock(p.clock);
         let rules = p.policy.rules.clone();
+        let queue_cfg = p.policy.queue();
         // the operators this run admits, logged in run.started: every engagement operator
         // must be an operator too, or the bridge does not start
         let roster = murmur_decide::Roster::new(p.operators.clone(), p.engage_operators.clone())
@@ -458,10 +511,14 @@ impl Decision {
                 space_runs: BTreeMap::new(),
                 engagements: BTreeMap::new(),
                 view_budget: BTreeMap::new(),
+                follow: BTreeMap::new(),
+                pointer_written: None,
             }),
             updates: watch::channel(Arc::new(String::new())).0,
             recent: agent::RecentEvents::default(),
             space: std::sync::RwLock::new(None),
+            queue_cfg,
+            pointer: std::sync::OnceLock::new(),
         });
         d.publish();
         Ok(d)
@@ -1003,37 +1060,8 @@ impl Decision {
                 .map_err(engine_err)?;
             return Ok(());
         }
-        let released = core.engine.dispatch(id).map_err(engine_err)?;
-        let order = match task_request(&released.task, &released.uids)
-            .and_then(|r| TaskOrder::new(r, &fleet).map_err(|e| e.to_string()))
-        {
-            Ok(o) => o,
-            Err(e) => {
-                core.engine
-                    .finish(
-                        id,
-                        TaskOutcome::Failed {
-                            detail: format!("the task layer refused the order: {e}"),
-                        },
-                    )
-                    .map_err(engine_err)?;
-                return Ok(());
-            }
-        };
-        let tasking = self.world.tasks.dispatch(AuthorizedOrder {
-            intent: released.intent,
-            order,
-        });
-        core.taskings.insert(id, tasking.clone());
-        core.running.insert(
-            id,
-            Running {
-                tasking,
-                reported: HashMap::new(),
-            },
-        );
-        self.supersede(core, id, &released.uids);
-        Ok(())
+        // rules 5: dispatched when the link can carry it to every vehicle, else queued
+        self.dispatch_vehicles(core, id)
     }
 
     /// Older orders still waiting for these vehicles are superseded (voided), and an
@@ -1047,7 +1075,10 @@ impl Decision {
             .filter(|i| {
                 i.id() != id
                     && !matches!(i.spec().task, Task::Engage { .. })
-                    && matches!(i.state(), State::PendingApproval | State::Approved)
+                    && matches!(
+                        i.state(),
+                        State::PendingApproval | State::Approved | State::Queued
+                    )
             })
             .filter_map(|i| {
                 let u = i.spec().uids.iter().find(|u| took.contains(u))?;
@@ -1233,6 +1264,12 @@ impl Decision {
             loop {
                 interval.tick().await;
                 prefetcher.prefetch_engagements().await;
+                // queued intents' waypoints: their dequeue re-check reads them from the cache
+                if !prefetcher.terrain.backing_off() {
+                    for (task, uids) in prefetcher.queued_paths() {
+                        prefetcher.prefetch(&task, &uids).await;
+                    }
+                }
             }
         });
         let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -1294,11 +1331,15 @@ impl Decision {
             if let Err(e) = core.engine.expire_due() {
                 eprintln!("decision: expire: {e}");
             }
+            self.log_reboots(core);
             self.log_vehicle_events(core);
             self.void_lost(core);
+            self.follow_queue(core);
+            self.follow_resumed(core);
             self.follow_ops(core);
             self.follow_space(core);
             self.step_engagements(core);
+            self.write_pointer(core);
         }
         self.publish();
     }
@@ -1544,10 +1585,16 @@ impl Decision {
             &self.world.tasks.current_ops(),
             clock::wall(),
         );
+        // rules 5: orders held for vehicles the link can't carry them to now
+        let queued = {
+            let core = self.lock();
+            self.queued_json(&core)
+        };
         json!({
             "pending": pending,
             "alerts": alerts,
-            "counts": { "pending": pending.len(), "alerts": alerts.len() },
+            "queued": queued,
+            "counts": { "pending": pending.len(), "alerts": alerts.len(), "queued": queued.len() },
         })
     }
 

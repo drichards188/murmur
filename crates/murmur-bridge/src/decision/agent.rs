@@ -396,6 +396,20 @@ fn explain(i: &Intent) -> String {
                 s.push_str(" The proposing agent may withdraw it until then.");
             }
         }
+        State::Queued => {
+            s.push_str(
+                " It is approved but held: a vehicle it is for can't be reached now (a silent                  link, or an AUV whose acoustic modem can't carry a mission). When the link                  can carry it, its checks run again on the world then: it is sent if they                  pass, goes back to the inbox if a human approved a picture that changed, and                  is voided if a check fails.",
+            );
+            if let Some(q) = i.queue() {
+                s.push_str(&format!(
+                    " It expires at t={:.0} if the vehicle can't be reached by then.",
+                    q.expires_t.0 as f64 / 1000.0
+                ));
+            }
+            if spec.source.is_agent() {
+                s.push_str(" The proposing agent may withdraw it until then.");
+            }
+        }
         State::Rejected | State::Expired | State::Voided | State::Failed | State::Aborted => {
             if let Some(h) = i.history().last() {
                 s.push_str(&format!(" Last change: {}.", h.reason));

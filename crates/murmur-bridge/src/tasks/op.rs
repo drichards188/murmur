@@ -113,6 +113,8 @@ pub struct OpCell {
     pub sysid: u8,
     /// index among same-kind vehicles in this tasking, for altitude/phase spreading
     pub slot: usize,
+    /// the vehicle's reboot count when the op started: a later reboot ends it
+    pub boot_epoch: u32,
     record: Mutex<OpRecord>,
     pub(super) abort: Mutex<Option<AbortHandle>>,
 }
@@ -150,6 +152,7 @@ impl OpCell {
             uid,
             sysid,
             slot,
+            boot_epoch: 0,
             record: Mutex::new(OpRecord::new()),
             abort: Mutex::default(),
         }
