@@ -418,12 +418,18 @@ impl Vehicle {
         }
     }
 
-    /// Ready to navigate: the autopilot's EKF trusts its absolute position (GPS), or, for a
-    /// sub, its dead-reckoned one. AUTO is refused until then.
+    /// Ready to navigate: the autopilot's EKF trusts its absolute position (GPS), or its
+    /// dead-reckoned one where the vehicle navigates on it: a sub (DVL) and a fixed-wing
+    /// (airspeed; ArduPlane flies on without GNSS, so a plane in a jammer can be tasked out
+    /// of it, and the readiness rule has a human judge the drifting position). A copter,
+    /// rover, boat or blimp without GNSS has no position its autopilot trusts. Tasks wait
+    /// until then.
     pub fn has_position(&self, now: f64) -> bool {
         match self.nav_source(now) {
             NavSource::Gnss => true,
-            NavSource::DeadReckoning => self.kind == Some(Kind::Sub),
+            NavSource::DeadReckoning => {
+                matches!(self.kind, Some(Kind::Sub | Kind::Plane | Kind::Vtol))
+            }
             NavSource::None => false,
         }
     }
@@ -749,12 +755,16 @@ mod tests {
     }
 
     #[test]
-    fn dead_reckoning_is_ready_for_subs_only() {
+    fn dead_reckoning_is_ready_for_subs_and_fixed_wing() {
         use apm::EkfStatusFlags as E;
         for (kind, ready) in [
             (Kind::Sub, true),
+            (Kind::Plane, true),
+            (Kind::Vtol, true),
             (Kind::Boat, false),
             (Kind::Copter, false),
+            (Kind::Ugv, false),
+            (Kind::Blimp, false),
         ] {
             let mut v = Vehicle {
                 kind: Some(kind),

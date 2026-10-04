@@ -262,8 +262,14 @@ impl World {
         }
     }
 
-    /// GCS heartbeat, TIMESYNC pings, parameter reads (`params_to_read`) and the telemetry
-    /// plan, once a second.
+    /// Every UDP link, in port order.
+    pub fn links(&self) -> Vec<Arc<Link>> {
+        lock(&self.links).values().cloned().collect()
+    }
+
+    /// TIMESYNC pings, parameter reads (`params_to_read`), the telemetry plan and with it
+    /// each link's GCS heartbeat period, once a second. The heartbeat itself goes out from
+    /// its own thread (`crate::heartbeat`), so nothing here can hold it up.
     pub async fn housekeeping(self: Arc<Self>) {
         let mut tick: u64 = 0;
         let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -273,8 +279,7 @@ impl World {
                 self.load_manifest();
             }
             self.ensure_ports().await;
-            let links: Vec<Arc<Link>> = lock(&self.links).values().cloned().collect();
-            for link in links {
+            for link in self.links() {
                 let Some(v) = link.vehicle.get() else {
                     continue;
                 };
@@ -331,9 +336,7 @@ impl World {
                     st.plan = Some(choice.clone());
                     (choice, st.plan_sent.clone(), st.timesync.every_s.max(1))
                 };
-                if tick.is_multiple_of(choice.gcs_heartbeat_s.max(1)) {
-                    v.send(&gcs_heartbeat());
-                }
+                link.set_gcs_heartbeat_s(choice.gcs_heartbeat_s);
                 if tick.is_multiple_of(every) {
                     link.send_timesync();
                 }
@@ -417,17 +420,6 @@ fn params_to_read(v: &Vehicle) -> Vec<&'static str> {
         ids.push("RTL_RADIUS");
     }
     ids
-}
-
-fn gcs_heartbeat() -> MavMessage {
-    MavMessage::HEARTBEAT(apm::HEARTBEAT_DATA {
-        custom_mode: 0,
-        mavtype: apm::MavType::MAV_TYPE_GCS,
-        autopilot: apm::MavAutopilot::MAV_AUTOPILOT_INVALID,
-        base_mode: apm::MavModeFlag::empty(),
-        system_status: apm::MavState::MAV_STATE_ACTIVE,
-        mavlink_version: 3,
-    })
 }
 
 #[cfg(test)]

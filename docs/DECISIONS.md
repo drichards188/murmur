@@ -109,6 +109,14 @@ group. Dates are 2026.
   sensors (radar, EO/IR, sonar by domain; not AIS or ESM) reach the effect point at their
   nominal range cover it. Detected after the effect (beyond a grace for the truth side's
   tick): persists; covered `assess_dwell_s` without a detection: ceased; else unknown.
+- **Lost-link timers follow the link, failsafes stay on** (10-03, murmur-nb1). One table,
+  `lost_link_s` per profile in `sim/links.toml` (5 s LOS and tether, 10 s mesh, 30 s LEO,
+  120 s GEO, Iridium and acoustic; sources and guesses marked), written by `sim/swarm.py`
+  into every vehicle's parameters, SITL and stand-in alike (FS_LONG_TIMEOUT on Plane,
+  FS_GCS_TIMEOUT elsewhere). SITL gets the GCS failsafe on as the stand-ins have it (Blimp
+  excepted: 4.8 disarms on it). The GCS heartbeat has its own thread in the bridge, and the
+  stand-in engine skips a stall longer than 1 s instead of running its vehicles' clocks
+  through it.
 - **Truth and perception in separate processes, on a labelled channel** (10-02, Phase C2).
   Contacts that are not ours run in `crates/murmur-contacts`, not in the stand-in engine:
   stand-ins are our vehicles and speak their real protocol; contacts have none, and the
@@ -273,6 +281,8 @@ group. Dates are 2026.
   `sim/params/common.parm` zeroes ArduPilot default streams (`MAV1_*`, not `SR0_*` in this
   version). WebSocket sends full state once, then changes only.
 - **Readiness trusts the vehicle's EKF flags** (10-02): submerged AUVs have no GPS fix.
+  A fixed-wing on dead reckoning (10-03) is `unverified`, not failed: ArduPlane flies on
+  without GNSS, so a plane in a jammer can be tasked out of it, with a human judging it.
 - **Tasks use platform cruise altitude and minimum turn radius** from the manifest (10-02).
 - **Bridges lifted in 3D** by estimating deck height from the highest abutment along the
   bridge line (10-02). Documented in `web/src/bridges.ts`.

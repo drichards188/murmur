@@ -399,7 +399,9 @@ pub fn capability(spec: &IntentSpec, world: &WorldSnapshot) -> Vec<CheckResult> 
 }
 
 /// Navigation is ready and the status is fresh. Hold and RTL are exempt: they are the
-/// safety commands, and the autopilot applies its own checks to them.
+/// safety commands, and the autopilot applies its own checks to them. On dead reckoning (no
+/// GNSS fix) a sub passes, a fixed-wing (plane, VTOL) is `Unverified` (a human judges it),
+/// anything else fails.
 pub fn readiness(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Vec<CheckResult> {
     let r = RuleId::Readiness;
     let kind = spec.kind();
@@ -413,11 +415,16 @@ pub fn readiness(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) ->
             Ok(false) => return res(Outcome::Fail, "navigation not ready (GPS/EKF)".into()),
             Ok(true) => {}
         }
-        // dead reckoning (no GNSS) is how a submerged AUV navigates; anyone else needs a fix
+        // dead reckoning (no GNSS) is how a submerged AUV navigates. A fixed-wing flies on
+        // on airspeed dead reckoning (ArduPlane has no EKF failsafe for it), so it stays
+        // taskable, out of a jammer for one, but a human judges a position that drifts.
+        // Anyone else needs a fix (their EKF gives up the position, as ArduPilot's does).
         let dead_reckoning =
             v.nav_source.as_ref().map(|f| f.value) == Some(NavSource::DeadReckoning);
-        let is_sub = v.autopilot.as_ref().map(|f| f.value) == Some(AutopilotKind::Sub);
-        if dead_reckoning && !is_sub {
+        let ap = v.autopilot.as_ref().map(|f| f.value);
+        let is_sub = ap == Some(AutopilotKind::Sub);
+        let fixed_wing = ap.is_some_and(AutopilotKind::is_fixed_wing);
+        if dead_reckoning && !is_sub && !fixed_wing {
             return res(
                 Outcome::Fail,
                 "navigation on dead reckoning only (no GNSS fix)".into(),
@@ -430,6 +437,12 @@ pub fn readiness(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) ->
                 Some(Err(e)) => return res(Outcome::Fail, e),
                 Some(Ok(_)) => {}
             }
+        }
+        if dead_reckoning && fixed_wing {
+            return res(
+                Outcome::Unverified,
+                "navigation on dead reckoning (no GNSS fix): position error grows with time".into(),
+            );
         }
         if dead_reckoning {
             return res(

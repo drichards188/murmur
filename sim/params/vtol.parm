@@ -2,3 +2,8 @@
 WP_LOITER_RAD 150
 # No RC transmitter in this sim; don't treat missing RC as a failsafe.
 THR_FAILSAFE 0
+# GCS (lost-link) failsafe on, as the stand-ins have it (ArduPlane ships it off): RTL when no
+# GCS heartbeat for FS_LONG_TIMEOUT, which swarm.py sets from the link profile (lost_link_s in
+# sim/links.toml).
+FS_GCS_ENABL 1
+FS_LONG_ACTN 1

@@ -324,7 +324,8 @@ async fn platforms(State(app): State<App>) -> Response {
     }
 }
 
-/// Per-vehicle packet counters (for load tests; kept out of the UI stream).
+/// Per-vehicle packet counters (for load tests; kept out of the UI stream), and the GCS
+/// heartbeat's jitter (`crate::heartbeat`).
 async fn stats(State(app): State<App>) -> Response {
     let vehicles: Map<String, Value> = app
         .world
@@ -337,7 +338,10 @@ async fn stats(State(app): State<App>) -> Response {
             )
         })
         .collect();
-    Json(json!({ "t": clock::wall(), "vehicles": vehicles })).into_response()
+    // the heartbeat thread's jitter: worst send delay and longest gap per minute
+    let heartbeat = crate::heartbeat::stats().map_or(Value::Null, |s| s.json());
+    Json(json!({ "t": clock::wall(), "vehicles": vehicles, "gcs_heartbeat": heartbeat }))
+        .into_response()
 }
 
 async fn ws(State(app): State<App>, upgrade: WebSocketUpgrade) -> Response {

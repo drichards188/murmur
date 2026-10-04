@@ -23,6 +23,7 @@ mod cot;
 mod decision;
 mod emu;
 mod geo;
+mod heartbeat;
 mod link;
 mod mav;
 mod mcp;
@@ -63,6 +64,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     world.load_manifest();
     world.ensure_ports().await;
+    // the GCS heartbeat on its own thread, apart from everything on the runtime
+    let beats = heartbeat::spawn(world.clone())?;
+    println!(
+        "gcs heartbeat: own thread, every {} s",
+        heartbeat::PERIOD.as_secs_f64()
+    );
+    tokio::spawn(heartbeat::report(beats));
     tokio::spawn(world.clone().housekeeping());
     tokio::spawn(decision.clone().run());
     tokio::spawn(tracks.clone().run());
