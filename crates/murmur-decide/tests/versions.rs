@@ -412,10 +412,11 @@ fn an_unknown_policy_key_still_fails_to_parse() {
 /// build. The first run queued an orbit for an AUV under water (sent when it surfaced), and
 /// sent an orbit to a SITL copter whose link was cut before it could start it: the order came
 /// back to the queue (`intent.requeued`) and went again once the link was back, re-checked.
-/// The bridge was then killed (SIGKILL: no shutdown anchor) with the copter on station; the
-/// second run carried the orbit over and followed it (ArduCopter's own mission compared item
-/// by item: not sent again), then queued and sent a boat's patrol through a Starlink outage,
-/// and stopped cleanly. Each was anchored as it ran.
+/// The bridge was then killed (SIGKILL: no shutdown anchor, every decision anchored up to the
+/// last event) with the copter en route; the second run carried both orbits over and followed
+/// the copter's (ArduCopter's own mission compared item by item: not sent again), then queued
+/// and sent a boat's patrol through a Starlink outage, and stopped cleanly. Each was anchored
+/// as it ran.
 const QUEUE_BEFORE: &str = "v5-queue-live-before-restart.jsonl";
 const QUEUE_AFTER: &str = "v5-queue-live-after-restart.jsonl";
 
@@ -430,7 +431,8 @@ fn anchors_of(name: &str) -> String {
 fn the_live_queue_logs_replay_across_the_restart() {
     let before = fixture(QUEUE_BEFORE);
     let after = fixture(QUEUE_AFTER);
-    // the first run crashed: its anchors hold up to the last one, with no shutdown anchor
+    // the first run crashed: its anchors hold up to the last one, with no shutdown anchor,
+    // and its last decision is anchored (review 2: no unanchored tail of decisions)
     let a = anchor::verify(&before, &anchors_of(QUEUE_BEFORE));
     assert!(!a.shutdown);
     assert!(
@@ -438,6 +440,13 @@ fn the_live_queue_logs_replay_across_the_restart() {
         "{:?}",
         a.problems
     );
+    let last_decision = lines(&before)
+        .iter()
+        .rev()
+        .find(|l| l.contains("\"type\":\"intent.state\"") || l.contains("\"type\":\"op.state\""))
+        .and_then(|l| serde_json::from_str::<audit::Event>(l).ok())
+        .map(|e| e.seq);
+    assert!(a.last_anchored >= last_decision, "{:?} {last_decision:?}", a.last_anchored);
     let a = anchor::verify(&after, &anchors_of(QUEUE_AFTER));
     assert!(a.ok(), "{:?}", a.problems);
     assert!(a.shutdown, "a clean stop anchored the head");
