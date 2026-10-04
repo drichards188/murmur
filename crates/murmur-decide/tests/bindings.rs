@@ -722,3 +722,190 @@ fn a_superseding_order_is_dispatched_on_the_platform_from_its_own_source() {
         "superseded by an order that was not dispatched",
     );
 }
+
+// ---- the second review's probes ----------------------------------------------------------
+
+/// A log with intent `from`'s `state` reports credited to intent `to`.
+fn op_state_moved(honest: &str, from: IntentId, state: &str, to: IntentId) -> String {
+    forge(honest, |ev| {
+        edit_each(ev, |b| {
+            if let EventBody::OpState {
+                intent, state: s, ..
+            } = b
+                && *intent == from
+                && s == state
+            {
+                *intent = to;
+            }
+        })
+    })
+}
+
+#[test]
+fn op_states_stay_with_the_order_that_runs_on_the_vehicle() {
+    // the Phase G run: intent 2's orbit on vehicle 4 replaced by intent 4's; the reviewer's
+    // vE (intent 4's "sent" credited to intent 2) and vE2 (intent 2's "superseded" credited
+    // to intent 4), byte for byte
+    let honest = fixture(PHASE_G_V3);
+    let ve = op_state_moved(&honest, IntentId(4), "sent", IntentId(2));
+    assert_eq!(head(&ve), "28a6b1b2e3e4dbee1d2202577c0915a74f6a39f166dc1dd6f1de5263813df5f2");
+    caught(
+        &honest,
+        &ve,
+        3,
+        "op state for an order a newer dispatch replaced on that vehicle",
+    );
+    let ve2 = op_state_moved(&honest, IntentId(2), "superseded", IntentId(4));
+    assert_eq!(head(&ve2), "480097eb7113a261e1a1f781aa594d29949331792b77fa8cd714f502ec8dbe5a");
+    caught(
+        &honest,
+        &ve2,
+        3,
+        "op state superseded with no newer order on that vehicle",
+    );
+}
+
+#[test]
+fn a_reported_fallback_names_the_task_its_fallback_commands() {
+    // return is an rtl, not a hold
+    let honest = fixture(LIVE_V2);
+    let forged = forge(&honest, |ev| {
+        edit_each(ev, |b| {
+            if let EventBody::OpState { state, detail, .. } = b
+                && state == "fallback"
+            {
+                *detail = detail.replacen("return commanded (rtl)", "return commanded (hold)", 1);
+            }
+        })
+    });
+    caught(
+        &honest,
+        &forged,
+        2,
+        "fallback reported is not the one its engagement's stop released",
+    );
+}
+
+#[test]
+fn a_rejection_is_made_under_the_rejecting_operators_session() {
+    let honest = fixture(LIVE_V1);
+    let forged = forge(&honest, |ev| {
+        edit_each(ev, |b| {
+            if let EventBody::ApprovalRejected { by, .. } = b {
+                *by = OperatorId::new("op-7");
+            }
+        })
+    });
+    caught(
+        &honest,
+        &forged,
+        1,
+        "rejection under a session that is not the operator's",
+    );
+}
+
+/// Rules 4: scenario 01's engagement (op-1 nominates, op-2 and op-3 sign) from a clean
+/// build, its run.started naming the roster (op-1, op-2, op-3; engagement: op-2, op-3).
+const SCENARIO_V4: &str = "v4-engagement-scenario-01.jsonl";
+
+#[test]
+fn n4_an_operator_off_the_roster_fails_replay() {
+    // the reviewer's N4 on a rules 4 log: op-3, a signer, renamed op-9 everywhere (its
+    // session opened with engagement authority); the roster in run.started never named op-9
+    let honest = fixture(SCENARIO_V4);
+    // op-3 renamed op-9 after run.started (and, with `roster_too`, in its roster as well)
+    let rename = |roster_too: bool| -> String {
+        honest
+            .lines()
+            .enumerate()
+            .map(|(i, l)| {
+                let l = if i > 0 || roster_too {
+                    l.replace("\"op-3\"", "\"op-9\"")
+                } else {
+                    l.to_string()
+                };
+                l + "\n"
+            })
+            .collect()
+    };
+    let forged = forge(&rename(false), |_| {});
+    let r = caught(
+        &honest,
+        &forged,
+        4,
+        "session opened for an operator not on the run's roster",
+    );
+    assert_eq!(whats(&r).len(), 1, "{:#?}", r.mismatches);
+    // the proposer, op-1, given engagement authority it never had
+    let forged = forge(&honest, |ev| {
+        edit_each(ev, |b| {
+            if let EventBody::OperatorAction {
+                operator, grants, ..
+            } = b
+                && operator.as_str() == "op-1"
+            {
+                *grants = Some(Grants { engage: true });
+            }
+        })
+    });
+    caught(
+        &honest,
+        &forged,
+        4,
+        "engagement authority granted to an operator not on the run's engagement roster",
+    );
+    // a roster rewritten to admit op-9 passes replay: the first line is anchored, so only
+    // the anchors show it (tests/anchors.rs)
+    let both = forge(&rename(true), |_| {});
+    assert!(both.lines().next().unwrap().contains("\"op-9\""));
+    assert!(replay_as(&both, 4).ok());
+}
+
+#[test]
+fn the_engine_opens_sessions_only_for_its_roster() {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let roster = Roster::new(
+        vec![OperatorId::new("op-1"), OperatorId::new("op-2")],
+        vec![OperatorId::new("op-2")],
+    )
+    .unwrap();
+    let mut e = Engine::new(policy(), roster, Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    let refused = |r: Result<OperatorSession, EngineError>| matches!(r, Err(EngineError::NotOnRoster { .. }));
+    assert!(refused(e.open_operator_session(OperatorId::new("op-9"))));
+    assert!(refused(e.open_operator_session_with(OperatorId::new("op-1"), Grants { engage: true })));
+    e.open_operator_session(OperatorId::new("op-1")).unwrap();
+    e.open_operator_session_with(OperatorId::new("op-2"), Grants { engage: true })
+        .unwrap();
+    assert!(replay::replay_str(&log.text()).unwrap().ok());
+    // and the bridge's configuration is refused when an engagement operator is no operator
+    let err = Roster::new(vec![OperatorId::new("op-1")], vec![OperatorId::new("op-2")]).unwrap_err();
+    assert!(err.contains("op-2 is not on the operator roster"), "{err}");
+    assert!(Roster::new(Vec::new(), Vec::new()).is_err());
+    let twice = vec![OperatorId::new("op-1"), OperatorId::new("op-1")];
+    assert!(Roster::new(twice, Vec::new()).is_err());
+}
+
+#[test]
+fn the_engagement_orders_loiter_radius_is_the_platforms() {
+    // rules 4: the order carries the radius the platform loiters at (the switchblade's
+    // minimum turn radius with the rules' margin)
+    let honest = fixture(SCENARIO_V4);
+    assert!(honest.contains("\"loiter_radius_m\":"));
+    let forged = forge(&honest, |ev| {
+        edit_each(ev, |b| {
+            if let EventBody::IntentDispatched {
+                engage: Some(o), ..
+            } = b
+            {
+                o.loiter_radius_m = o.loiter_radius_m.map(|r| r + 500.0);
+            }
+        })
+    });
+    caught(
+        &honest,
+        &forged,
+        4,
+        "engagement order's loiter radius differs from the platform's",
+    );
+}

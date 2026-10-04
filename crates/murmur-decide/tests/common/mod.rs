@@ -142,9 +142,19 @@ pub fn agent() -> Source {
     }
 }
 
+/// The operators the tests act as (the bridge's `MURMUR_OPERATORS`), each also on the
+/// engagement roster (`MURMUR_ENGAGE_OPERATORS`): a session carries engagement authority only
+/// when opened with it.
+pub fn roster() -> Roster {
+    let ops: Vec<OperatorId> = ["op-1", "op-2", "op-3", "op-9", "op-late", "op", "me"]
+        .map(OperatorId::new)
+        .to_vec();
+    Roster::new(ops.clone(), ops).unwrap()
+}
+
 pub fn engine(clock: &ManualClock) -> (Engine, MemorySink) {
     let log = MemorySink::new();
-    let e = Engine::new(policy(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    let e = Engine::new(policy(), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
     (e, log)
 }
 
@@ -153,6 +163,7 @@ pub fn waiting_engine(clock: &ManualClock) -> (Engine, MemorySink) {
     let log = MemorySink::new();
     let e = Engine::new(
         waiting_policy(),
+        roster(),
         Box::new(clock.clone()),
         Box::new(log.clone()),
     )

@@ -18,8 +18,8 @@
 //!   time. Nothing here models a weapon.
 //! - **Operators.** `MURMUR_ENGAGE_OPERATORS` lists the operators whose sessions are opened
 //!   with engagement authority (a placeholder for real authentication, like
-//!   `MURMUR_OPERATORS`); only they can sign an engagement, never its proposer, and the
-//!   engagement tier asks for two of them.
+//!   `MURMUR_OPERATORS`, which must list them too); only they can sign an engagement, never
+//!   its proposer, and the engagement tier asks for two of them.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -190,6 +190,17 @@ impl Decision {
             murmur_decide::Order::Engage(o) => o,
             _ => return Err(DecisionError::new(500, "an engagement released another order")),
         };
+        // the loiter radius the order carries (rules 4 on), the one replay binds
+        let radius = o.loiter_radius_m.unwrap_or(radius);
+        let request = |p: [f64; 2]| TaskRequest {
+            task: "orbit".into(),
+            uids: vec![uid],
+            params: TaskParams {
+                center: Some(p),
+                radius: Some(radius),
+                ..TaskParams::default()
+            },
+        };
         let order = match TaskOrder::new(request([o.effect_point.lon, o.effect_point.lat]), &fleet) {
             Ok(order) => order,
             Err(e) => {
@@ -231,17 +242,15 @@ impl Decision {
             .get(&uid)
             .and_then(|c| c.read(|v| v.pos))
             .map(|(lat, lon)| [lon, lat]);
-        let (task, params) = match f.fallback {
-            Fallback::Abort => ("hold", TaskParams::default()),
-            Fallback::Return => ("rtl", TaskParams::default()),
-            Fallback::Loiter => (
-                "orbit",
-                TaskParams {
-                    center: here,
-                    radius: Some(self.loiter_radius(&f.uid).max(150.0)),
-                    ..TaskParams::default()
-                },
-            ),
+        // the task is the fallback's (Fallback::task: replay checks the report names it)
+        let task = f.fallback.task();
+        let params = match f.fallback {
+            Fallback::Abort | Fallback::Return => TaskParams::default(),
+            Fallback::Loiter => TaskParams {
+                center: here,
+                radius: Some(self.loiter_radius(&f.uid).max(150.0)),
+                ..TaskParams::default()
+            },
         };
         let detail = format!("{} commanded ({task}): {}", f.fallback.as_str(), f.reason);
         let req = TaskRequest {

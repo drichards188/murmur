@@ -200,8 +200,10 @@ pub enum UnknownEndurance {
 /// The version of the decision rules: bumped whenever a change alters a decision (a new
 /// check, another threshold or model, another detail text), so replay recomputes every log
 /// with the rules it was produced under. `run.started` records it; a log without one was
-/// written by version 1. The changelog is in `crates/murmur-decide/README.md`.
-pub const RULES_VERSION: u32 = 3;
+/// written by version 1. The changelog is in `crates/murmur-decide/README.md`. Version 4
+/// changes no check: it logs the operator roster and the engagement order's loiter radius,
+/// which replay then binds (a log claiming 3 or earlier can't carry them).
+pub const RULES_VERSION: u32 = 4;
 
 /// The version of the policy file's schema: bumped when a key is added, renamed or removed.
 /// A renamed or removed key stays an optional field of its own, so an old log both parses

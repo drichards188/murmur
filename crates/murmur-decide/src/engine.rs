@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::areas::AreaSet;
 use crate::audit::{AuditSink, CheckPhase, Event, EventBody, LoggedAreas, OperatorView};
-use crate::authority::{EngagementAuthority, Grants, HumanAuthority, OperatorSession};
+use crate::authority::{EngagementAuthority, Grants, HumanAuthority, OperatorSession, Roster};
 use crate::engage::{
     self, EffectOrder, EffectRecord, EngageOrder, EngageWindow, EngagementEvent, FallbackOrder,
     FrozenPlan, PictureToken, PictureVerdict, StopCause, StopRecord, TrackIdentity,
@@ -80,6 +80,13 @@ pub enum EngineError {
     /// reject the log): nothing was logged.
     #[error("intent {id}: {why}")]
     NotItsOrder { id: IntentId, why: String },
+    /// The roster a run was started with is not one a bridge could be configured with.
+    #[error("operator roster: {0}")]
+    Roster(String),
+    /// A session for an operator the run's roster does not list, or with a grant it does not
+    /// give them: nothing was logged.
+    #[error("operator {operator}: {why}")]
+    NotOnRoster { operator: OperatorId, why: String },
 }
 
 /// A space answer computed outside the engine's lock (the bridge runs the SGP4 work first,
@@ -212,6 +219,12 @@ pub struct Engine {
     /// Picture tokens issued and not yet used or expired, by id.
     tokens: BTreeMap<u64, PictureToken>,
     next_token: u64,
+    /// Who may open an operator session, and with engagement authority (`run.started`).
+    roster: Roster,
+    /// The intent dispatched last: the only one that may supersede an engagement.
+    last_dispatched: Option<IntentId>,
+    /// Per vehicle, the intent dispatched to it last: an older one's order there was replaced.
+    newest_on: BTreeMap<Uid, IntentId>,
 }
 
 impl std::fmt::Debug for Engine {
@@ -224,26 +237,30 @@ impl std::fmt::Debug for Engine {
 }
 
 impl Engine {
-    /// Start a run: logs `run.started` with the full policy. The area set is logged (as
-    /// `areas.loaded`) the first time a decision reads one; [`Engine::with_areas`] logs it
-    /// in `run.started` instead.
+    /// Start a run: logs `run.started` with the full policy and the operator roster (only
+    /// operators on it can open a session, with engagement authority only those on its
+    /// engagement list). The area set is logged (as `areas.loaded`) the first time a
+    /// decision reads one; [`Engine::with_areas`] logs it in `run.started` instead.
     pub fn new(
         policy: Policy,
+        roster: Roster,
         clock: Box<dyn Clock + Send>,
         sink: Box<dyn AuditSink + Send>,
     ) -> Result<Self, EngineError> {
-        Self::with_areas(policy, None, clock, sink)
+        Self::with_areas(policy, None, roster, clock, sink)
     }
 
-    /// Start a run with the area set known up front: `run.started` carries the policy and
-    /// the area set with its content hash. Decisions reference the hash; if a snapshot
-    /// later brings a different set, it is logged once as `areas.loaded`.
+    /// Start a run with the area set known up front: `run.started` carries the policy, the
+    /// roster and the area set with its content hash. Decisions reference the hash; if a
+    /// snapshot later brings a different set, it is logged once as `areas.loaded`.
     pub fn with_areas(
         policy: Policy,
         areas: Option<AreaSet>,
+        roster: Roster,
         clock: Box<dyn Clock + Send>,
         sink: Box<dyn AuditSink + Send>,
     ) -> Result<Self, EngineError> {
+        roster.validate().map_err(EngineError::Roster)?;
         let areas = match areas {
             Some(a) => Some(LoggedAreas {
                 sha256: a.content_hash()?,
@@ -267,6 +284,9 @@ impl Engine {
             prepared_space: None,
             tokens: BTreeMap::new(),
             next_token: 1,
+            roster: roster.clone(),
+            last_dispatched: None,
+            newest_on: BTreeMap::new(),
         };
         let policy = e.policy.clone();
         e.emit(EventBody::RunStarted {
@@ -274,6 +294,7 @@ impl Engine {
             rules_version: Some(policy.rules.rules_version),
             policy_schema: Some(crate::rules::POLICY_SCHEMA),
             build: Some(crate::audit::BuildInfo::current()),
+            roster: Some(roster),
             policy,
             areas: areas.clone(),
         })?;
@@ -356,6 +377,12 @@ impl Engine {
         operator: OperatorId,
         grants: Grants,
     ) -> Result<OperatorSession, EngineError> {
+        if let Some(why) = self.roster.refuses(&operator, grants) {
+            return Err(EngineError::NotOnRoster {
+                operator,
+                why: why.into(),
+            });
+        }
         let session = SessionId(self.next_session);
         self.emit(EventBody::OperatorAction {
             operator: operator.clone(),
@@ -823,6 +850,11 @@ impl Engine {
             }
             return self.get(id);
         }
+        // where the platform will loiter over the point, from its facts on this world
+        let loiter = spec
+            .uids
+            .first()
+            .map(|u| engage::loiter_radius(u, &inputs, &self.policy.rules));
         let t = self.emit(EventBody::ApprovalGranted {
             intent: id,
             by: by.clone(),
@@ -853,6 +885,7 @@ impl Engine {
             e.plan = Some(plan);
         }
         e.snapshot = Some(snapshot);
+        e.loiter_radius_m = loiter;
         let reason = format!("approved by {by} (signature {n} of {of}) on the plan frozen by the first signature");
         self.transition(id, Transition::Approve, reason)?;
         self.get(id)
@@ -1043,17 +1076,21 @@ impl Engine {
     /// Another intent (`by`) was dispatched to an engagement's platform: that order stands,
     /// so the engagement (pending, approved or dispatched) is stopped with no fallback
     /// commanded. Logged as `engage.stopped`, cause `superseded` with `by` and its source.
-    /// Refused ([`EngineError::NotItsOrder`]) unless `by` is another intent, already
-    /// dispatched, to vehicles that include the engagement's platform: replay checks the same.
+    /// Refused ([`EngineError::NotItsOrder`]) unless `by` is another intent, the one
+    /// dispatched last and still under way, to vehicles that include the engagement's
+    /// platform (the bridge supersedes in the same step as that dispatch): replay checks the
+    /// same.
     pub fn supersede_engagement(&mut self, id: IntentId, by: IntentId) -> Result<(), EngineError> {
         let platform = self.get(id)?.spec().uids.first().cloned();
+        let last = self.last_dispatched == Some(by);
         let other = self.get(by)?;
         if let Some(why) = supersede_mismatch(
             id,
             by,
             platform.as_ref(),
             other.spec(),
-            other.history().iter().any(|h| h.state == State::Dispatched),
+            other.state(),
+            last,
         ) {
             return Err(EngineError::NotItsOrder { id, why: why.into() });
         }
@@ -1418,6 +1455,7 @@ impl Engine {
             intent.spec(),
             intent.space_answer(),
             intent.engagement().and_then(|e| e.snapshot.as_ref()),
+            intent.engagement().and_then(|e| e.loiter_radius_m),
             &self.policy.rules,
         )?;
         let reason = match &order {
@@ -1426,8 +1464,13 @@ impl Engine {
             Order::Cover(_) => "dispatched: coverage watch",
             Order::Engage(_) => "dispatched: platform sent to the effect point",
         };
+        let uids = intent.spec().uids.clone();
         self.emit(dispatched_event(intent.spec(), &order))?;
         self.transition(id, Transition::Dispatch, reason.into())?;
+        self.last_dispatched = Some(id);
+        for u in uids {
+            self.newest_on.insert(u, id);
+        }
         Ok(order)
     }
 
@@ -1450,10 +1493,12 @@ impl Engine {
             .engagement()
             .and_then(|e| e.stop.as_ref())
             .map(|s| s.fallback);
+        let replaced = self.newest_on.get(uid).is_some_and(|n| *n != id);
         if let Some(why) = op_state_mismatch(
             intent.spec(),
             intent.state(),
             dispatched,
+            replaced,
             fallback,
             uid,
             state,
@@ -1851,6 +1896,7 @@ pub(crate) fn order_for(
     spec: &IntentSpec,
     answer: Option<&crate::space::SpaceAnswer>,
     snapshot: Option<&engage::EngageSnapshot>,
+    loiter_radius_m: Option<f64>,
     rules: &crate::rules::RulesConfig,
 ) -> Result<Order, EngineError> {
     let id = spec.id;
@@ -1919,6 +1965,13 @@ pub(crate) fn order_for(
                 effect_radius_m: snap.preview.effect_radius_m,
                 fallback: snap.fallback,
                 window_until: snap.preview.window.until,
+                // rules 4 on: the loiter radius is part of the order (before, the bridge
+                // chose it and nothing logged it)
+                loiter_radius_m: if rules.rules_version >= 4 {
+                    Some(loiter_radius_m.ok_or_else(|| not("no loiter radius from the approval"))?)
+                } else {
+                    None
+                },
             })
         }
         _ => Order::Vehicles(DispatchOrder {
@@ -1949,14 +2002,17 @@ pub(crate) fn dispatched_event(spec: &IntentSpec, order: &Order) -> EventBody {
 }
 
 /// Why intent `by` can't be what superseded engagement `id`, if it can't: it must be another
-/// intent, dispatched (the order that stands), to vehicles that include the engagement's
-/// platform.
+/// intent, to vehicles that include the engagement's platform, dispatched and still under way
+/// (`by_state`), and the intent dispatched last (`by_last`): the bridge stops an engagement
+/// in the same step as the dispatch that takes its platform, so no other dispatch comes
+/// between (and the engagement's own dispatch, if any, came before it).
 pub(crate) fn supersede_mismatch(
     id: IntentId,
     by: IntentId,
     platform: Option<&Uid>,
     by_spec: &IntentSpec,
-    by_dispatched: bool,
+    by_state: State,
+    by_last: bool,
 ) -> Option<&'static str> {
     if by == id {
         return Some("an engagement can't supersede itself");
@@ -1964,8 +2020,17 @@ pub(crate) fn supersede_mismatch(
     if !platform.is_some_and(|p| by_spec.uids.contains(p)) {
         return Some("superseded by an order that does not take the engagement's platform");
     }
-    if !by_dispatched {
+    if !matches!(
+        by_state,
+        State::Dispatched | State::Effected | State::Aborted | State::Done | State::Failed
+    ) {
         return Some("superseded by an order that was not dispatched");
+    }
+    if by_state != State::Dispatched {
+        return Some("superseded by an order no longer under way");
+    }
+    if !by_last {
+        return Some("superseded by an order other than the one dispatched last");
     }
     None
 }
@@ -1989,16 +2054,25 @@ pub(crate) fn op_state_owner(spec: &IntentSpec, uid: &Uid) -> Result<(), String>
     }
 }
 
+/// The op states the task layer ends an op with: after a newer order took the vehicle, an
+/// older one's op can only be reported in one of these (it was replaced, or had ended).
+const TERMINAL_OPS: [&str; 3] = ["done", "failed", "superseded"];
+
 /// Why an op state can't be this intent's, if it can't: never dispatched; not one of its
-/// vehicles (or its order's resource); a vehicle or space task that already ended; an
-/// engagement's `fallback` report without a stop that released a fallback, or naming another
-/// fallback than that stop's (`"<fallback> commanded ..."`, `"<fallback> could not be
-/// commanded ..."`). `fallback` is the engagement's stop, if any: `Some(None)` when it
-/// stopped without commanding one. The engine refuses these; replay flags them.
+/// vehicles (or its order's resource); a vehicle or space task that already ended; on a
+/// vehicle a newer order took (`replaced`), anything but how its op ended; `superseded` with
+/// no newer order on the vehicle (an engagement's intercept excepted, which its own fallback
+/// replaces); an engagement's `fallback` report without a stop that released a fallback, or
+/// naming another fallback or task than that stop's (`"<fallback> commanded (<task>): ..."`,
+/// `"<fallback> could not be commanded ..."`). `fallback` is the engagement's stop, if any:
+/// `Some(None)` when it stopped without commanding one. The engine refuses these; replay
+/// flags them.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn op_state_mismatch(
     spec: &IntentSpec,
     state: State,
     dispatched: bool,
+    replaced: bool,
     fallback: Option<Option<engage::Fallback>>,
     uid: &Uid,
     op: &str,
@@ -2010,15 +2084,35 @@ pub(crate) fn op_state_mismatch(
     if op_state_owner(spec, uid).is_err() {
         return Some("op state for a vehicle or resource the intent was not dispatched to");
     }
-    if spec.kind() != TaskKind::Engage {
+    let engagement = spec.kind() == TaskKind::Engage;
+    if !engagement && state != State::Dispatched {
         // a vehicle or space task reports while it runs; its finish is final
-        return (state != State::Dispatched).then_some("op state for a task that already ended");
+        return Some("op state for a task that already ended");
     }
-    if op == "fallback" || op.starts_with("fallback ") {
+    if !spec.task.is_space() {
+        // the op state proper: an engagement reports its intercept and its fallback by name
+        let base = if engagement {
+            op.strip_prefix("intercept ").or_else(|| op.strip_prefix("fallback "))
+        } else {
+            Some(op)
+        };
+        if let Some(base) = base {
+            if replaced && !TERMINAL_OPS.contains(&base) {
+                return Some("op state for an order a newer dispatch replaced on that vehicle");
+            }
+            let own_fallback = op == "intercept superseded" && matches!(fallback, Some(Some(_)));
+            if base == "superseded" && !replaced && !own_fallback {
+                return Some("op state superseded with no newer order on that vehicle");
+            }
+        }
+    }
+    if engagement && (op == "fallback" || op.starts_with("fallback ")) {
         let Some(Some(f)) = fallback else {
             return Some("fallback reported for an engagement no stop released a fallback for");
         };
-        if op == "fallback" && !detail.starts_with(&format!("{} ", f.as_str())) {
+        let commanded = format!("{} commanded ({}): ", f.as_str(), f.task());
+        let refused = format!("{} could not be commanded", f.as_str());
+        if op == "fallback" && !detail.starts_with(&commanded) && !detail.starts_with(&refused) {
             return Some("fallback reported is not the one its engagement's stop released");
         }
     }

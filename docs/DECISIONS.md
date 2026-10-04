@@ -444,7 +444,30 @@ group. Dates are 2026.
   satisfies them, nothing needed gating), and the engine refuses the op states and
   supersedes they would reject. Not bound, stated: a vehicle event nothing quotes (replay
   doesn't know the fleet) and a task's done or failed against its op states (the task
-  layer's report). The forged logs are regressions in `tests/bindings.rs`.
+  layer's report). The forged logs are regressions in `tests/bindings.rs`. A second review
+  forged around the first bindings, and they were tightened (10-04): a superseding order is
+  the one dispatched last and still under way (the bridge supersedes in the same step as
+  that dispatch; an engagement aborted long before no longer qualifies); a failed picture is
+  stopped for the picture, never relabelled as a system stop, and a system stop that quotes
+  an intercept failure follows that report; after a newer order takes a vehicle an older
+  intent reports only how its op ended, and `superseded` needs something that replaced it
+  (op states can't be moved between orders on one vehicle); a fallback report names its
+  task; rejections and at-submission approvals are under the decider's own session. The
+  intercept's loiter radius, which the bridge chose and nothing logged, is now part of the
+  engagement order (rules 4) and recomputed; a loiter fallback's centre and radius are still
+  the bridge's and not logged.
+- **The operator roster is logged and checked** (10-04, second review of the bindings; rules
+  4). A log could credit a session, with engagement authority, to an operator the bridge was
+  never configured with (`MURMUR_OPERATORS` and `MURMUR_ENGAGE_OPERATORS` were not logged).
+  `run.started` now names the roster; the engine opens sessions only for operators on it,
+  with engagement authority only for its engagement operators, and replay checks every
+  session against it (a rules 4 log without a roster is a mismatch; the roster is a rules 4
+  marker, so an older claim can't carry it). Every engagement operator must be an operator
+  too, or the bridge does not start (before, an engagement operator outside
+  `MURMUR_OPERATORS` was admitted anyway). The roster is fixed for the run. Rules 1 to 3
+  logs carry no roster: accepting one with `--rules N` trusts its sessions. A roster
+  rewritten together with the sessions is caught only by the anchors (it is in the first
+  line).
 - **The hash chain is tamper-evident, not tamper-proof** (10-03, restated by the second
   review). A forger who removes a self-consistent set of events (a transient reset, the
   signature it dropped and its picture token) and recomputes the chain leaves a log replay
@@ -459,7 +482,8 @@ group. Dates are 2026.
   is not part of Murmur (`murmur-decide/README.md`).
 - **Still placeholders, stated** (10-03). Engagement authority comes from
   `MURMUR_ENGAGE_OPERATORS` and the `X-Murmur-Operator` header, as operators do from
-  `MURMUR_OPERATORS`: a stand-in for real authentication. The fallback is commanded by the
+  `MURMUR_OPERATORS`: a stand-in for real authentication (the lists are logged as the run's
+  roster from rules 4, which bounds who a log can name, not who sent a header). The fallback is commanded by the
   bridge after a stop; it is not preloaded into the vehicle as its lost-link action, so a
   platform that loses its link en route follows its own lost-link failsafe (the per-link
   timers above), not the engagement's fallback, until the link returns.

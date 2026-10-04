@@ -24,6 +24,9 @@
 //! against `MURMUR_OPERATORS` (comma-separated; default `op-1`). That is a placeholder for
 //! real authentication: anyone who can reach the port can claim any listed id. The legacy
 //! `POST /api/tasks` (the console, which sends no header) acts as the first listed operator.
+//! The engine logs the roster (`MURMUR_OPERATORS`, and `MURMUR_ENGAGE_OPERATORS`, who must be
+//! listed as operators too, or the bridge does not start) in `run.started`, and replay checks
+//! every session against it.
 //! Each operator gets one engine session, opened (and logged) on first use; nothing else
 //! calls `Engine::open_operator_session`. The agent path (Phase F's MCP server,
 //! `crate::mcp`) is [`agent`]: it gets an `AgentPort` per agent, never a session.
@@ -421,9 +424,16 @@ impl Decision {
     pub fn from_parts(world: Arc<World>, p: Parts) -> Result<Arc<Decision>, String> {
         let clock = SharedClock(p.clock);
         let rules = p.policy.rules.clone();
+        // the operators this run admits, logged in run.started: every engagement operator
+        // must be an operator too, or the bridge does not start
+        let roster = murmur_decide::Roster::new(p.operators.clone(), p.engage_operators.clone())
+            .map_err(|e| {
+                format!("{e} (MURMUR_OPERATORS: {:?}, MURMUR_ENGAGE_OPERATORS: {:?})", p.operators, p.engage_operators)
+            })?;
         let engine = Engine::with_areas(
             p.policy,
             Some(p.areas.clone()),
+            roster,
             Box::new(clock.clone()),
             p.sink,
         )

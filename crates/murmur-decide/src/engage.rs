@@ -101,6 +101,17 @@ impl Fallback {
             Fallback::Loiter => "loiter",
         }
     }
+
+    /// The task the bridge commands for it: hold, rtl, or an orbit around where the
+    /// platform is. Its report (`op.state fallback`, `"<fallback> commanded (<task>): ..."`)
+    /// names both, and replay checks them against the stop.
+    pub fn task(self) -> &'static str {
+        match self {
+            Fallback::Abort => "hold",
+            Fallback::Return => "rtl",
+            Fallback::Loiter => "orbit",
+        }
+    }
 }
 
 /// When the effect may happen, engine time (integer ms).
@@ -588,6 +599,10 @@ pub struct Engagement {
     /// The picture held at the final approval.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<EngageSnapshot>,
+    /// The radius the platform loiters at over the effect point ([`loiter_radius`] on the
+    /// final approval's world); the engagement order carries it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loiter_radius_m: Option<f64>,
     /// The last hold-the-picture verdict.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub watch: Option<PictureVerdict>,
@@ -634,6 +649,31 @@ pub struct EngageOrder {
     pub effect_radius_m: f64,
     pub fallback: Fallback,
     pub window_until: Time,
+    /// The radius the platform loiters at over the effect point ([`loiter_radius`], from its
+    /// catalog facts at the final signature). Rules 4 on; absent before (the bridge chose it
+    /// and nothing logged it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loiter_radius_m: Option<f64>,
+}
+
+/// The radius `uid` loiters at over an effect point: the rules' margin over its catalog
+/// minimum turn radius (the fixed-wing default for a fixed wing without one), rounded up to
+/// a metre, at least 30 m. The bridge flies the intercept at it; the engine puts it in the
+/// engagement order from the final signature's world, so replay recomputes it.
+pub fn loiter_radius(uid: &Uid, world: &WorldSnapshot, cfg: &RulesConfig) -> f64 {
+    let min = world
+        .vehicles
+        .get(uid)
+        .and_then(|v| v.platform.as_ref())
+        .and_then(|p| {
+            p.min_turn_radius_m.or_else(|| {
+                p.autopilot
+                    .filter(|a| a.is_fixed_wing())
+                    .map(|_| cfg.fixed_wing_default_min_turn_radius_m)
+            })
+        });
+    min.map_or(30.0, |m| (m * cfg.orbit_radius_margin).ceil())
+        .max(30.0)
 }
 
 /// The fallback the bridge must command when an engagement stops after dispatch.

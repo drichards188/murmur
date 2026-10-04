@@ -8,7 +8,9 @@
 //! Decision layer: MURMUR_POLICY (sim/policy.toml), MURMUR_AREAS (sim/areas),
 //! MURMUR_RUN_ID (audit log logs/audit/<run-id>.jsonl; default the UTC start time and pid),
 //! MURMUR_OPERATORS (operator ids accepted in X-Murmur-Operator, comma-separated; default
-//! op-1), MURMUR_TIDEWATER_URL (tidewater serve, for the domain rule; unset: "not
+//! op-1), MURMUR_ENGAGE_OPERATORS (those of them with engagement authority; one not in
+//! MURMUR_OPERATORS stops the bridge at start; both are logged in run.started),
+//! MURMUR_TIDEWATER_URL (tidewater serve, for the domain rule; unset: "not
 //! evaluated"), MURMUR_AT and MURMUR_RATE (scenario time for tidewater, as `make goldengate`).
 //! Link emulator: MURMUR_LINKEMU_URL (murmur-linkemu's stats endpoint, polled for
 //! `/api/links` and each link's `emu` state; unset: no emulator view). Behind the emulator

@@ -206,6 +206,52 @@ fn patrol(uid: Uid, route: Vec<[f64; 2]>) -> IntentRequest {
     }
 }
 
+#[test]
+fn the_bridge_does_not_start_with_an_engagement_operator_who_is_no_operator() {
+    let root = root();
+    let parts = |operators: Vec<OperatorId>, engage_operators: Vec<OperatorId>| Parts {
+        policy: Policy::load(&root.join("sim/policy.toml")).expect("policy"),
+        catalog: Catalog::load(&root.join("sim/platforms.toml")).expect("catalog"),
+        areas: AreaSet::empty("test", murmur_decide::Time(0)),
+        sink: Box::new(MemorySink::new()),
+        audit_path: PathBuf::from("memory"),
+        clock: Arc::new(ManualClock::new(murmur_decide::Time(0))),
+        terrain: Terrain::fixed(PolygonTerrain {
+            coverage: ring(-122.6, 37.7, -122.3, 37.9),
+            land: Vec::new(),
+            water_depth_m: 12.0,
+        }),
+        operators,
+        engage_operators,
+        tracks: None,
+    };
+    let world = || {
+        World::new(Config {
+            base_port: 0,
+            http_port: 0,
+            default_ports: 0,
+            manifest: root.join("sim/run/no-such-manifest.json"),
+            platforms: root.join("sim/platforms.toml"),
+            root: root.clone(),
+        })
+    };
+    // MURMUR_ENGAGE_OPERATORS=op-2 with MURMUR_OPERATORS=op-1: refused
+    let err = Decision::from_parts(world(), parts(vec![op1()], vec![OperatorId::new("op-2")]))
+        .err()
+        .expect("refused");
+    assert!(err.contains("op-2 is not on the operator roster"), "{err}");
+    // listed as an operator too: it starts, and run.started names the roster
+    let log = MemorySink::new();
+    let mut p = parts(vec![op1(), OperatorId::new("op-2")], vec![OperatorId::new("op-2")]);
+    p.sink = Box::new(log.clone());
+    Decision::from_parts(world(), p).expect("starts");
+    let first = log.lines().into_iter().next().expect("run.started");
+    assert!(
+        first.contains("\"roster\":{\"operators\":[\"op-1\",\"op-2\"],\"engage\":[\"op-2\"]}"),
+        "{first}"
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn auto_path_dispatches_and_finishes() {
     let r = rig();

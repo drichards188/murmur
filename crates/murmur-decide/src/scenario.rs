@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::areas::AreaSet;
 use crate::audit::{EventBody, MemorySink, parse_log};
-use crate::authority::{Grants, OperatorSession};
+use crate::authority::{Grants, OperatorSession, Roster};
 use crate::catalog::{Catalog, Domain};
 use crate::engage::{self, EngageWindow, EngagementEvent, Fallback, offset};
 use crate::engine::{Engine, Order};
@@ -503,9 +503,21 @@ pub fn run(
     let areas = AreaSet::load_dir(&rel(&sc.areas, "sim/areas"), T0).map_err(|e| setup(e.to_string()))?;
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();
+    // the operators the file lists, those with engagement authority on the engagement list
+    // (the bridge's MURMUR_OPERATORS and MURMUR_ENGAGE_OPERATORS)
+    let roster = Roster::new(
+        sc.operators.iter().map(|o| OperatorId::new(&o.id)).collect(),
+        sc.operators
+            .iter()
+            .filter(|o| o.engage)
+            .map(|o| OperatorId::new(&o.id))
+            .collect(),
+    )
+    .map_err(setup)?;
     let mut engine = Engine::with_areas(
         policy,
         Some(areas.clone()),
+        roster,
         Box::new(clock.clone()),
         Box::new(log.clone()),
     )

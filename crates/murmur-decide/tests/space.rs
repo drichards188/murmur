@@ -109,7 +109,7 @@ struct Run {
 fn run(policy: Policy, with_space: bool) -> Run {
     let clock = ManualClock::new(t0());
     let log = MemorySink::new();
-    let mut engine = Engine::new(policy, Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    let mut engine = Engine::new(policy, roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
     if with_space {
         engine.set_space(Box::new(segment())).unwrap();
     }
@@ -667,7 +667,7 @@ fn the_tasking_deadline_follows_a_fast_scenario_clock() {
     };
     let clock = ManualClock::new(engine_start);
     let log = MemorySink::new();
-    let mut engine = Engine::new(policy(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    let mut engine = Engine::new(policy(), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
     engine
         .set_space(Box::new(segment().with_scenario_map(map).unwrap()))
         .unwrap();
@@ -1023,6 +1023,7 @@ fn june_scenario_is_time_shifted_and_murmur_replay_recomputes_from_the_cache() {
     let log_path = tmp.join("audit.jsonl");
     let mut engine = Engine::new(
         waiting_policy(),
+        roster(),
         Box::new(clock.clone()),
         Box::new(JsonlFile::open(&log_path).unwrap()),
     )

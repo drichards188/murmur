@@ -110,6 +110,68 @@ pub struct Grants {
     pub engage: bool,
 }
 
+/// Who may act as an operator in a run, and who of them with engagement authority: the
+/// bridge's `MURMUR_OPERATORS` and `MURMUR_ENGAGE_OPERATORS` (a placeholder for real
+/// authentication), fixed when the run starts and logged in `run.started` (rules 4). The
+/// engine opens sessions only for operators on it, with engagement authority only for those
+/// on its engagement list, and replay checks every logged session against it, so a log can't
+/// gain an operator or a grant the run never had.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Roster {
+    /// Operators who may open a session.
+    pub operators: Vec<OperatorId>,
+    /// Those of them whose sessions carry engagement authority.
+    pub engage: Vec<OperatorId>,
+}
+
+impl Roster {
+    /// A roster, checked: at least one operator, no empty or repeated id, and every
+    /// engagement operator listed as an operator too.
+    pub fn new(operators: Vec<OperatorId>, engage: Vec<OperatorId>) -> Result<Roster, String> {
+        let r = Roster { operators, engage };
+        r.validate()?;
+        Ok(r)
+    }
+
+    /// Why this roster could not have been configured, if it couldn't.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.operators.is_empty() {
+            return Err("the roster lists no operator".into());
+        }
+        for (i, o) in self.operators.iter().enumerate() {
+            if o.as_str().trim().is_empty() {
+                return Err("the roster lists an empty operator id".into());
+            }
+            if self.operators[..i].contains(o) {
+                return Err(format!("the roster lists operator {o} twice"));
+            }
+        }
+        for (i, o) in self.engage.iter().enumerate() {
+            if !self.operators.contains(o) {
+                return Err(format!(
+                    "engagement operator {o} is not on the operator roster (list every engagement operator as an operator too)"
+                ));
+            }
+            if self.engage[..i].contains(o) {
+                return Err(format!("the roster lists engagement operator {o} twice"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Why `operator` may not open a session with `grants`, if they may not.
+    pub fn refuses(&self, operator: &OperatorId, grants: Grants) -> Option<&'static str> {
+        if !self.operators.contains(operator) {
+            Some("session opened for an operator not on the run's roster")
+        } else if grants.engage && !self.engage.contains(operator) {
+            Some("engagement authority granted to an operator not on the run's engagement roster")
+        } else {
+            None
+        }
+    }
+}
+
 /// An authenticated operator's session. The bridge opens one per operator login (its
 /// operator HTTP endpoint is the only caller of `Engine::open_operator_session`) and keeps
 /// it on the operator side; it is never handed to agent code.

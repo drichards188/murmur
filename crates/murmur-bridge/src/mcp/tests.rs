@@ -95,7 +95,7 @@ fn rig() -> Rig {
             audit_path: PathBuf::from("memory"),
             clock: Arc::new(clock.clone()),
             terrain,
-            operators: vec![OperatorId::new("op-1")],
+            operators: vec![OperatorId::new("op-1"), OperatorId::new("op-2"), OperatorId::new("op-3")],
             engage_operators: vec![OperatorId::new("op-2"), OperatorId::new("op-3")],
             tracks: Some(tracks.clone()),
         },

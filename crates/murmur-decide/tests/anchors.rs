@@ -30,6 +30,9 @@ fn anchored_run(dir: &Path, cmd: Option<String>) -> (MemorySink, String) {
     let mut e = Engine::with_areas(
         policy(),
         Some(areas()),
+        // the twelve operators the run opens sessions for
+        Roster::new((0..12).map(|n| OperatorId::new(format!("op-{n}"))).collect(), Vec::new())
+            .unwrap(),
         Box::new(clock.clone()),
         Box::new(anchors.sink(log.clone())),
     )
@@ -106,10 +109,15 @@ fn a_rewritten_log_does_not_match_its_anchors() {
     let dir = scratch("rewrite");
     let (log, anchors) = anchored_run(&dir, None);
     let mut ls = lines(&log.text());
-    ls[3] = ls[3].replacen("op-", "op-x", 1);
+    // a session credited to another operator on the roster (one off it, replay catches)
+    assert!(ls[3].contains("\"operator\":\"op-2\""), "{}", ls[3]);
+    ls[3] = ls[3].replacen("\"operator\":\"op-2\"", "\"operator\":\"op-11\"", 1);
     let forged = rechain(&ls);
     // the chain is consistent again: replay alone can't tell
     assert!(replay::replay_str(&forged).unwrap().ok());
+    let mut off = lines(&log.text());
+    off[3] = off[3].replacen("\"operator\":\"op-2\"", "\"operator\":\"op-x\"", 1);
+    assert!(!replay::replay_str(&rechain(&off)).unwrap().ok());
     let r = verify(&forged, &anchors);
     assert!(
         whats(&r)

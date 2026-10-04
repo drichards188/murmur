@@ -290,7 +290,7 @@ fn expiry_is_configurable() {
     let clock = ManualClock::new(T0);
     let mut p = waiting_policy();
     p.approval.expire_s = 5;
-    let mut e = Engine::new(p, Box::new(clock.clone()), Box::new(MemorySink::new())).unwrap();
+    let mut e = Engine::new(p, roster(), Box::new(clock.clone()), Box::new(MemorySink::new())).unwrap();
     let s = e.open_operator_session(OperatorId::new("op")).unwrap();
     let id = e
         .submit(
@@ -543,7 +543,7 @@ fn a_tier_with_submitter_authorizes_false_makes_the_submitter_wait() {
         }
     }
     let log = MemorySink::new();
-    let mut e = Engine::new(p, Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    let mut e = Engine::new(p, roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
     let s = e.open_operator_session(OperatorId::new("op-1")).unwrap();
     let armed = e
         .submit(
@@ -817,6 +817,7 @@ fn no_audit_record_no_change() {
     let budget = Arc::new(AtomicUsize::new(2)); // run.started + session.opened
     let mut e = Engine::new(
         waiting_policy(),
+        roster(),
         Box::new(ManualClock::new(T0)),
         Box::new(FlakySink(budget.clone())),
     )

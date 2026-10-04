@@ -164,6 +164,7 @@ fn engine_at(clock: &ManualClock, log: &MemorySink) -> Engine {
     Engine::with_areas(
         policy(),
         Some(areas()),
+        roster(),
         Box::new(clock.clone()),
         Box::new(log.clone()),
     )
@@ -211,7 +212,7 @@ fn the_policy_floor_holds_whatever_the_file_says() {
 fn floor_holds(p: Policy) {
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();
-    let mut e = Engine::new(p, Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    let mut e = Engine::new(p, roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
     let op = e
         .open_operator_session_with(OperatorId::new("op-1"), Grants { engage: true })
         .unwrap();
@@ -666,7 +667,7 @@ fn an_unclassified_target_classified_after_approval_voids() {
     // a file that would let an unclassified track be engaged: the reclassification check
     // must still see "unclassified then a kind" as a change
     p.rules.engage.as_mut().unwrap().min_identity_confidence = 0.3;
-    let mut e = Engine::with_areas(p, Some(areas()), Box::new(clock.clone()), Box::new(log.clone()))
+    let mut e = Engine::with_areas(p, Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone()))
         .unwrap();
     let snap_world = engage_world(T0);
     let (op2, op3, id) = two_signers(&mut e, &snap_world);
@@ -1171,6 +1172,224 @@ fn a_stop_for_a_failsafe_quotes_its_own_platforms_event_and_the_fallback_it_rele
             .any(|m| m.what == "stop quotes a vehicle event its platform did not report"),
         "{:?}",
         r.mismatches
+    );
+}
+
+/// Two engagements on blade-1, as in a live run (`phase-e-rules2c`): A dispatched, its
+/// intercept reported, aborted by an operator with its fallback commanded; later B
+/// nominated, signed, dispatched, its intercept reported, then stopped when holding its
+/// picture lapsed (a 12 s stall), its fallback commanded. Returns the log and (A, B).
+fn two_engagements_on_one_platform() -> (String, IntentId, IntentId) {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = engine_at(&clock, &log);
+    let w = engage_world(T0);
+    let (op2, op3, a) = two_signers(&mut e, &w);
+    sign(&mut e, a, &op2, &w).unwrap();
+    sign(&mut e, a, &op3, &w).unwrap();
+    e.dispatch_order(a).unwrap();
+    e.record_op_state(a, &uid("blade-1"), "intercept sent", "uploading 2 mission items")
+        .unwrap();
+    let f = e
+        .abort_engagement(a, op2.authority(), "not now")
+        .unwrap()
+        .unwrap();
+    let commanded = format!("{} commanded ({}): {}", f.fallback.as_str(), f.fallback.task(), f.reason);
+    e.record_op_state(a, &f.uid, "fallback", &commanded).unwrap();
+    e.record_op_state(a, &f.uid, "intercept superseded", "replaced by rtl #2")
+        .unwrap();
+    // B, a minute later
+    clock.advance_ms(60_000);
+    let w = engage_world(clock.now());
+    let op9 = e.open_operator_session(OperatorId::new("op-9")).unwrap();
+    let b = e.submit(op9.authority(), nomination(), &w, &terrain()).unwrap().id();
+    sign(&mut e, b, &op2, &w).unwrap();
+    sign(&mut e, b, &op3, &w).unwrap();
+    e.dispatch_order(b).unwrap();
+    // A's fallback is replaced by B's intercept
+    e.record_op_state(a, &uid("blade-1"), "fallback superseded", "replaced by orbit #3")
+        .unwrap();
+    clock.advance_ms(1000);
+    e.record_op_state(b, &uid("blade-1"), "intercept active", "2935 m from center")
+        .unwrap();
+    let out = e.step_engagements(&engage_world(clock.now()), &terrain());
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    clock.advance_ms(12_000);
+    let out = e.step_engagements(&engage_world(clock.now()), &terrain());
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    let Some(EngagementEvent::Stopped(f)) = out.events.into_iter().next() else {
+        panic!("B was not stopped: {:?}", e.intent(b).unwrap().history());
+    };
+    let commanded = format!("{} commanded ({}): {}", f.fallback.as_str(), f.fallback.task(), f.reason);
+    e.record_op_state(b, &f.uid, "fallback", &commanded).unwrap();
+    e.record_op_state(b, &f.uid, "intercept superseded", "replaced by rtl #4")
+        .unwrap();
+    assert_eq!(e.intent(a).unwrap().state(), State::Aborted);
+    assert_eq!(e.intent(b).unwrap().state(), State::Aborted);
+    (log.text(), a, b)
+}
+
+fn mismatches(text: &str) -> Vec<String> {
+    replay::replay_str(text)
+        .unwrap()
+        .mismatches
+        .into_iter()
+        .map(|m| m.what)
+        .collect()
+}
+
+#[test]
+fn a_stop_is_not_relabelled_as_superseded_by_an_old_engagement() {
+    // eG: B's picture stop relabelled "superseded by A" (aborted long before), no fallback,
+    // B's fallback reports gone
+    let (honest, a, b) = two_engagements_on_one_platform();
+    assert!(mismatches(&honest).is_empty(), "{:?}", mismatches(&honest));
+    let forged = forge(&honest, |ev| {
+        ev.retain(|e| {
+            !matches!(&e.body, audit::EventBody::OpState { intent, state, .. }
+                if *intent == b && (state == "fallback" || state == "intercept superseded"))
+        });
+        for e in ev.iter_mut() {
+            if let audit::EventBody::EngageStopped {
+                intent,
+                cause,
+                reason,
+                fallback,
+            } = &mut e.body
+                && *intent == b
+            {
+                *cause = StopCause::Superseded {
+                    by: a,
+                    source: Source::Human {
+                        id: OperatorId::new("op-1"),
+                    },
+                };
+                *reason = format!("superseded by {a} from human op-1: that order stands; no fallback commanded");
+                *fallback = None;
+            }
+        }
+    });
+    let w = mismatches(&forged);
+    assert!(w.iter().any(|m| m == "superseded by an order no longer under way"), "{w:?}");
+    assert!(
+        w.iter().any(|m| m == "a failed picture's stop reported with another cause than the picture"),
+        "{w:?}"
+    );
+}
+
+#[test]
+fn a_picture_stop_is_not_relabelled_as_a_system_stop() {
+    // eF3: B's picture stop relabelled as a system stop quoting an intercept failure
+    let (honest, _, b) = two_engagements_on_one_platform();
+    let forged = forge(&honest, |ev| {
+        for e in ev.iter_mut() {
+            if let audit::EventBody::EngageStopped {
+                intent,
+                cause,
+                reason,
+                ..
+            } = &mut e.body
+                && *intent == b
+            {
+                *cause = StopCause::System;
+                *reason = "system: the platform's intercept failed (lost)".into();
+            }
+        }
+    });
+    let w = mismatches(&forged);
+    assert!(
+        w.iter().any(|m| m == "a failed picture's stop reported with another cause than the picture"),
+        "{w:?}"
+    );
+    assert!(
+        w.iter().any(|m| m == "stop quotes an intercept report the engagement did not make"),
+        "{w:?}"
+    );
+}
+
+#[test]
+fn an_intercept_report_is_not_moved_to_an_earlier_engagement() {
+    // eH: B's "intercept active" credited to A, aborted before B took the platform
+    let (honest, a, b) = two_engagements_on_one_platform();
+    let forged = forge(&honest, |ev| {
+        for e in ev.iter_mut() {
+            if let audit::EventBody::OpState { intent, state, .. } = &mut e.body
+                && *intent == b
+                && state == "intercept active"
+            {
+                *intent = a;
+            }
+        }
+    });
+    let w = mismatches(&forged);
+    assert!(
+        w.iter().any(|m| m == "op state for an order a newer dispatch replaced on that vehicle"),
+        "{w:?}"
+    );
+}
+
+#[test]
+fn the_engine_refuses_reports_and_supersedes_a_newer_order_rules_out() {
+    // A aborted, then B dispatched to the same platform: A reports only how it ended
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = engine_at(&clock, &log);
+    let w = engage_world(T0);
+    let (op2, op3, first) = two_signers(&mut e, &w);
+    sign(&mut e, first, &op2, &w).unwrap();
+    sign(&mut e, first, &op3, &w).unwrap();
+    e.dispatch_order(first).unwrap();
+    e.abort_engagement(first, op2.authority(), "not now").unwrap();
+    let op9 = e.open_operator_session(OperatorId::new("op-9")).unwrap();
+    let second = e.submit(op9.authority(), nomination(), &w, &terrain()).unwrap().id();
+    sign(&mut e, second, &op2, &w).unwrap();
+    sign(&mut e, second, &op3, &w).unwrap();
+    e.dispatch_order(second).unwrap();
+    let blade = uid("blade-1");
+    assert!(not_its_order(e.record_op_state(first, &blade, "intercept active", "")));
+    assert!(not_its_order(e.record_op_state(second, &blade, "intercept superseded", "")));
+    e.record_op_state(first, &blade, "intercept superseded", "replaced by orbit #2")
+        .unwrap();
+    // an operator's hold dispatched to blade-1 supersedes B; A, long aborted, can't
+    let hold = e
+        .submit(op9.authority(), Proposal::new(Task::Hold {}, vec![blade.clone()]), &w, &terrain())
+        .unwrap()
+        .id();
+    e.dispatch(hold).unwrap();
+    assert!(not_its_order(e.supersede_engagement(second, first)));
+    e.supersede_engagement(second, hold).unwrap();
+    let r = replay::replay_str(&log.text()).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+}
+
+#[test]
+fn a_stop_for_a_failed_intercept_quotes_its_report() {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = engine_at(&clock, &log);
+    let w = engage_world(T0);
+    let (op2, op3, id) = two_signers(&mut e, &w);
+    sign(&mut e, id, &op2, &w).unwrap();
+    sign(&mut e, id, &op3, &w).unwrap();
+    e.dispatch_order(id).unwrap();
+    // the bridge logs the intercept's failure and stops the engagement quoting it
+    e.record_op_state(id, &uid("blade-1"), "intercept failed", "mission upload timed out")
+        .unwrap();
+    e.stop_engagement_system(id, "the platform's intercept failed: mission upload timed out")
+        .unwrap();
+    let honest = log.text();
+    assert!(mismatches(&honest).is_empty(), "{:?}", mismatches(&honest));
+    let forged = forge(&honest, |ev| {
+        for e in ev.iter_mut() {
+            if let audit::EventBody::EngageStopped { reason, .. } = &mut e.body {
+                *reason = "system: the platform's intercept failed: link lost".into();
+            }
+        }
+    });
+    assert!(
+        mismatches(&forged).iter().any(|m| m == "stop quotes an intercept report the engagement did not make"),
+        "{:?}",
+        mismatches(&forged)
     );
 }
 

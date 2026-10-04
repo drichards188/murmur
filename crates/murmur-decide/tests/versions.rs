@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 6] = [
+const LOGS: [(&str, u32); 7] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -34,7 +34,13 @@ const LOGS: [(&str, u32); 6] = [
     // circles (built from a clean 2146fef, anchored as it ran)
     ("v3-engagement-scenario-01.jsonl", 3),
     ("v3-engagement-live.jsonl", 3),
+    // rules 4: the same scenario, its run.started naming the operator roster and its
+    // engagement order the loiter radius
+    ("v4-engagement-scenario-01.jsonl", 4),
 ];
+
+/// The committed log of the current rules.
+const CURRENT: &str = "v4-engagement-scenario-01.jsonl";
 
 fn accepting(rules: RulesAccepted) -> ReplayOptions<'static> {
     ReplayOptions {
@@ -110,7 +116,7 @@ fn the_live_log_matches_the_anchors_written_as_it_ran() {
     assert_eq!(a.after_last, 0);
     // the bridge reported our circling fixed wing's circle, and the release went ahead
     assert!(log.contains("\"circling\":{\"value\":{\"center\""));
-    let r = replay_str(&log).unwrap();
+    let r = with(&log, RulesAccepted::Exactly(3));
     assert!(r.ok(), "{:?}", r.mismatches);
     assert_eq!((r.effects, r.assessments), (1, 1));
     assert_eq!(r.build.as_ref().map(|b| b.dirty), Some(Some(false)));
@@ -165,7 +171,7 @@ fn a_log_is_recomputed_with_its_own_rules_not_todays() {
 
 #[test]
 fn a_log_from_newer_rules_is_flagged() {
-    let mut events = parse_log(&fixture("v3-engagement-scenario-01.jsonl")).unwrap();
+    let mut events = parse_log(&fixture(CURRENT)).unwrap();
     for e in &mut events {
         if let EventBody::RunStarted { rules_version, .. } = &mut e.body {
             *rules_version = Some(RULES_VERSION + 1);
@@ -181,7 +187,7 @@ fn a_log_from_newer_rules_is_flagged() {
 
 #[test]
 fn a_run_records_its_rules_schema_and_build() {
-    let text = fixture("v3-engagement-scenario-01.jsonl");
+    let text = fixture(CURRENT);
     let first = text.lines().next().unwrap();
     assert!(
         first.contains(&format!("\"rules_version\":{RULES_VERSION}")),
@@ -192,13 +198,18 @@ fn a_run_records_its_rules_schema_and_build() {
         "{first}"
     );
     assert!(first.contains("\"build\":{\"commit\":\""), "{first}");
+    // rules 4: who could act as an operator, and with engagement authority
+    assert!(
+        first.contains("\"roster\":{\"operators\":[\"op-1\",\"op-2\",\"op-3\"],\"engage\":[\"op-2\",\"op-3\"]}"),
+        "{first}"
+    );
 }
 
 #[test]
 fn a_run_started_inside_a_log_is_flagged() {
-    // a second run.started, claiming rules 1, spliced into a rules 3 log: the rest would be
+    // a second run.started, claiming rules 1, spliced into a current log: the rest would be
     // recomputed with rules 1
-    let mut ls = lines(&fixture("v3-engagement-scenario-01.jsonl"));
+    let mut ls = lines(&fixture(CURRENT));
     let v1 = ls[0]
         .replacen(&format!("\"rules_version\":{RULES_VERSION},"), "", 1)
         .replacen(&format!("\"policy_schema\":{POLICY_SCHEMA},"), "", 1);
@@ -219,7 +230,7 @@ fn a_run_started_inside_a_log_is_flagged() {
 
 #[test]
 fn a_log_that_does_not_start_with_run_started_is_flagged() {
-    let ls = lines(&fixture("v3-engagement-scenario-01.jsonl"));
+    let ls = lines(&fixture(CURRENT));
     let r = replay_str(&rechain(&ls[1..])).unwrap();
     assert!(
         whats(&r)
@@ -258,16 +269,35 @@ fn a_downgraded_claim_is_caught_by_what_the_log_carries() {
     );
     // a rules 3 log claiming rules 2 still names its build, which only rules 3 builds write
     let mut ls = lines(&fixture("v3-engagement-scenario-01.jsonl"));
-    ls[0] = ls[0].replacen(
-        &format!("\"rules_version\":{RULES_VERSION},"),
-        "\"rules_version\":2,",
-        1,
-    );
+    assert!(ls[0].contains("\"rules_version\":3,"));
+    ls[0] = ls[0].replacen("\"rules_version\":3,", "\"rules_version\":2,", 1);
     let r = with(&rechain(&ls), RulesAccepted::Exactly(2));
     assert!(
         whats(&r)
             .iter()
             .any(|m| m.contains("the build in run.started") && m.contains("rules 3")),
+        "{:?}",
+        whats(&r)
+    );
+    // a rules 4 log claiming rules 3 still names its roster and its order's loiter radius
+    let mut ls = lines(&fixture(CURRENT));
+    assert!(ls[0].contains("\"rules_version\":4,"));
+    ls[0] = ls[0].replacen("\"rules_version\":4,", "\"rules_version\":3,", 1);
+    let r = with(&rechain(&ls), RulesAccepted::Exactly(3));
+    let w = whats(&r);
+    for marker in ["the operator roster in run.started", "loiter radius"] {
+        assert!(
+            w.iter().any(|m| m.contains(marker) && m.contains("only builds of rules 4")),
+            "{marker}: {w:?}"
+        );
+    }
+    // and one that dropped its roster still claims rules 4, which always name one
+    let mut ls = lines(&fixture(CURRENT));
+    let (b, p) = (ls[0].find(",\"roster\":{").unwrap(), ls[0].find(",\"policy\":").unwrap());
+    ls[0] = format!("{}{}", &ls[0][..b], &ls[0][p..]);
+    let r = with(&rechain(&ls), RulesAccepted::Exactly(4));
+    assert!(
+        whats(&r).contains(&"a rules 4 log names its operator roster in run.started"),
         "{:?}",
         whats(&r)
     );
@@ -295,7 +325,7 @@ fn a_policy_schema_claim_must_fit_its_keys() {
         whats(&r)
     );
     // a schema newer than replay knows
-    let mut ls = lines(&fixture("v3-engagement-scenario-01.jsonl"));
+    let mut ls = lines(&fixture(CURRENT));
     ls[0] = ls[0].replacen(
         &format!("\"policy_schema\":{POLICY_SCHEMA},"),
         &format!("\"policy_schema\":{},", POLICY_SCHEMA + 1),

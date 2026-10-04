@@ -632,6 +632,7 @@ fn area_set_given_at_start_is_in_run_started() {
     let mut e = Engine::with_areas(
         policy(),
         Some(areas()),
+        roster(),
         Box::new(clock.clone()),
         Box::new(log.clone()),
     )

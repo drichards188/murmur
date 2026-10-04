@@ -313,7 +313,8 @@ done with it (the review's forged logs released an engagement's effect from anot
 dispatched an engagement or an approved armed orbit to another vehicle, and moved that
 orbit's centre 2 km, and replay passed them). So replay also binds each executed fact to the
 approval, for every rules version (these are audit checks, not decision rules; every
-committed fixture and every log in `logs/audit` satisfies them):
+committed fixture, every log in `logs/audit` and every Phase G run log satisfies them), the
+roster and the loiter radius from rules 4 (older logs don't carry them):
 
 - `intent.dispatched` is exactly the approved intent's order: the same intent, its task and
   parameters (orbit centre and radius, patrol route, track target, the collect or cover as
@@ -322,8 +323,10 @@ committed fixture and every log in `logs/audit` satisfies them):
   uses): a collect's order is the chosen option as the answer its last check read has it
   (satellite, class, times, resolution, scene, that answer's hash), a cover's the approved
   service, an engagement's the frozen plan (point, time, radius, window) on the nominated
-  platform with its track and fallback. A dispatch transition needs its `intent.dispatched`
-  right before it, and an `intent.dispatched` is followed by its dispatch, nothing else.
+  platform with its track and fallback, and from rules 4 the radius the platform loiters at
+  over the point (`engage::loiter_radius`, from its catalog facts on the final signature's
+  world). A dispatch transition needs its `intent.dispatched` right before it, and an
+  `intent.dispatched` is followed by its dispatch, nothing else.
 - `engage.effect` comes from the engagement's platform (the one it was dispatched to), at the
   frozen plan's point and radius (as before), and the picture that released it lies inside
   the plan's time tolerance (`engage::release_window`: from the plan's time, or
@@ -332,22 +335,39 @@ committed fixture and every log in `logs/audit` satisfies them):
   it.
 - `op.state` is a dispatched intent's, on its own vehicles (a collect's `norad:<id>`, a
   cover's `satcom:<class>` or `gnss:<class>`), for a vehicle or space task only while it
-  runs (its finish is final); an engagement's `fallback` report follows a stop that released
-  a fallback and names that one first in its detail.
-- `engage.stopped` with cause `superseded` names another intent, already dispatched, whose
-  vehicles include the platform, and that intent's own source; a `system` stop that quotes
-  a vehicle event (`the platform's failsafe took over (...)`, `the platform left its
-  intercept (mode ...)`) follows that `vehicle.event` on the engagement's own platform since
-  its last picture; an engagement never ends with a task's `fail`.
+  runs (its finish is final). On a vehicle a newer dispatch took, an older intent reports
+  only how its op ended (`done`, `failed`, `superseded`: the task layer replaces an
+  unfinished op at the newer dispatch), and `superseded` needs a newer order on the vehicle
+  (an engagement's `intercept superseded` excepted, which its own fallback replaces). An
+  engagement's `fallback` report follows a stop that released a fallback and names it and
+  its task first (`"return commanded (rtl): ..."`, `Fallback::task`).
+- `engage.stopped`: a failed picture is stopped for the picture, never under another cause;
+  `superseded` names another intent whose vehicles include the platform, the one dispatched
+  last and still under way (the bridge supersedes in the same step as that dispatch), with
+  that intent's own source; a `system` stop that quotes a vehicle event (`the platform's
+  failsafe took over (...)`, `the platform left its intercept (mode ...)`) or the intercept's
+  report (`the platform's intercept <state>: <detail>`) follows that `vehicle.event` on the
+  engagement's own platform, or that `op.state` of its intercept, since its last picture.
+  An engagement never ends with a task's `fail`.
+- Sessions (rules 4): every `session.opened` is for an operator on the roster `run.started`
+  names, with engagement authority only for one on its engagement list; a rules 4 log always
+  names its roster. Rejections and at-submission approvals are under the deciding operator's
+  own session, as signatures already were.
 
-The engine refuses the op states and supersedes these checks reject
-(`EngineError::NotItsOrder`, nothing logged), so an honest engine can't write such a log.
-What stays unbound: a vehicle event that no decision or stop quotes (its vehicle id is the
-bridge's report; replay doesn't know the fleet), and whether a vehicle task's outcome (done,
-failed) matches its op states; both are the task layer's report, not a decision.
-`tests/bindings.rs` holds the review's forged logs as regressions (v1 and v2 byte for byte
-the reviewer's files, from `tests/data/audit/v3-armed-orbit-phase-g.jsonl`) and a test per
-binding.
+The engine refuses the op states, supersedes and sessions these checks reject
+(`EngineError::NotItsOrder`, `EngineError::NotOnRoster`, nothing logged), so an honest engine
+can't write such a log. What stays unbound: a vehicle event that no decision or stop quotes
+(its vehicle id is the bridge's report; replay doesn't know the fleet), whether a vehicle
+task's outcome (done, failed) matches its op states (the task layer's report, not a
+decision), the reason of a `system` stop that quotes nothing (the bridge's prerogative: a
+stop can only make the fleet safer), and what the bridge sends beyond the order when it
+commands a fallback: the task is bound through its report, but a loiter fallback's centre
+(where the platform is when it is commanded) and radius are not logged. A roster rewritten
+together with the sessions passes replay; the roster is in the first line, which the start
+anchor covers. `tests/bindings.rs` and the engagement tests hold the reviews' forged logs as
+regressions (v1, v2, vE and vE2 byte for byte the reviewers' files, from
+`tests/data/audit/v3-armed-orbit-phase-g.jsonl`; N2, N3 and the second review's probes as
+the same edits on committed or engine-written logs) and a test per binding.
 
 ## Decision rules versions
 
@@ -367,7 +387,8 @@ told otherwise (`ReplayOptions::rules`, `murmur-replay --rules N` / `--min-rules
 checks that the log fits its claim: `run.started` is the first event and the only one (a run
 can't start again, with other rules, inside a log), and nothing appears that only later
 builds write (`RULES_MARKERS` in `src/replay.rs`: a `checked_t`, a GPS fact, a
-`platform_free` check, a build, a circle, a fix from HIGH_LATENCY2; `rules_version` and
+`platform_free` check, a build, a circle, a fix from HIGH_LATENCY2, a roster, an order's
+loiter radius; `rules_version` and
 `policy_schema` themselves come with rules 2). A log of rules 1 carries no build and was
 never anchored: accepting one says the verifier trusts where it came from. A log that
 carries nothing of a later version and claims an older one replays under the older rules
@@ -421,6 +442,12 @@ Rules versions:
   velocity for at most 5 s (`CIRCLE_CARRY_S`), the nearer of the two counting.
   `platform_nav` says when its 3D fix is a HIGH_LATENCY2 report without its GPS failure
   flag (`gps_fix_from`); `run.started` names the build.
+- **4**: the second review of the replay bindings. No check changes; two facts are logged
+  so replay can bind them: `run.started` names the operator roster (`roster`: the bridge's
+  `MURMUR_OPERATORS`, and `MURMUR_ENGAGE_OPERATORS`, who must be operators too), against
+  which replay checks every session, and an engagement order carries the radius the
+  platform loiters at over the effect point (`loiter_radius_m`, which the bridge flies and
+  replay recomputes). A rules 4 log without a roster is a mismatch.
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
@@ -431,9 +458,12 @@ Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_s
 The full contract is in the crate docs (`src/lib.rs`). In short:
 
 1. At start: `Policy::load("sim/policy.toml")`, `Catalog::load("sim/platforms.toml")`,
-   `AreaSet::load_dir("sim/areas")`, `Engine::with_areas(policy, Some(areas), SystemClock,
-   JsonlFile at logs/audit/<run-id>.jsonl)` (`Engine::new` works too; the set is then
-   logged at first use).
+   `AreaSet::load_dir("sim/areas")`, `Roster::new(MURMUR_OPERATORS, MURMUR_ENGAGE_OPERATORS)`
+   (refused, and the bridge does not start, when an engagement operator is not an operator),
+   `Engine::with_areas(policy, Some(areas), roster, SystemClock, JsonlFile at
+   logs/audit/<run-id>.jsonl)` (`Engine::new` works too; the set is then logged at first
+   use). Sessions open only for operators on the roster, with engagement authority only for
+   those on its engagement list.
 2. Per decision call, build a `WorldSnapshot` keyed by `uid`: platform facts from the catalog,
    and timestamped facts from telemetry (autopilot kind, nav ready, position, home, battery).
    Unknown is `None`.

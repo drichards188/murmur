@@ -47,11 +47,16 @@
 //!   `engage.effect` comes from the engagement's platform and the picture that released it
 //!   lies inside the plan's time tolerance ([`engage::release_window`]), the effect never
 //!   before it; an `op.state` is a dispatched intent's, on its own vehicles (a collect's
-//!   satellite, a cover's service), a vehicle or space task's only while it runs, and a
-//!   reported fallback is the one its stop released; a superseded stop names a dispatched
-//!   order on the platform and that order's source; a `system` stop that quotes a failsafe
-//!   or mode change follows that `vehicle.event` on its own platform; an engagement never
-//!   fails like a task.
+//!   satellite, a cover's service), a vehicle or space task's only while it runs, after a
+//!   newer order took its vehicle only how its op ended, `superseded` only when something
+//!   replaced it, and a reported fallback is the one (and the task) its stop released; a
+//!   failed picture is stopped for the picture; a superseded stop names the order dispatched
+//!   last, still under way, on the platform, with that order's source; a `system` stop that
+//!   quotes a failsafe, a mode change or an intercept report follows it on its own platform;
+//!   an engagement never fails like a task;
+//! - sessions: from rules 4 every session is for an operator on the roster `run.started`
+//!   names, with engagement authority only for its engagement operators; rejections and
+//!   at-submission approvals are under the decider's own session.
 //!
 //! **Space recomputation.** [`replay_str_with_space`] also re-runs every logged space query
 //! on the segment given. If that segment is the one the query ran on (same
@@ -83,7 +88,7 @@ use serde::Serialize;
 
 use crate::areas::AreaSet;
 use crate::audit::{Event, EventBody, LogError, parse_log};
-use crate::authority::Grants;
+use crate::authority::{Grants, Roster};
 use crate::engage::{
     self, EffectRecord, EngageOrder, EngageSnapshot, Fallback, FrozenPlan, ObserveStep,
     PictureToken, StopCause, TrackIdentity,
@@ -225,6 +230,11 @@ struct Tracked {
     /// Engage: vehicle events its platform reported since its last picture (kind, text), the
     /// ones a stop of this tick may quote.
     platform_events: Vec<(String, String)>,
+    /// Engage: its intercept's reports since its last picture (state, detail), the ones a
+    /// stop for a failed intercept quotes.
+    intercept_reports: Vec<(String, String)>,
+    /// Engage: the loiter radius from the final approval's world (its order carries it).
+    loiter_radius_m: Option<f64>,
 }
 
 /// Which decision rules a replay accepts a log under.
@@ -334,6 +344,7 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (2, "\"rule\":\"platform_free\"", "a platform_free check"),
     (3, "\"gps_fix_from\":", "a GPS fix inferred from HIGH_LATENCY2"),
     (3, "\"circling\":", "a vehicle's circle"),
+    (4, "\"loiter_radius_m\":", "an engagement order's loiter radius"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.
@@ -343,6 +354,7 @@ fn check_claims<S: AsRef<str>>(r: &mut ReplayReport, events: &[Event], lines: &[
         rules_version,
         policy_schema,
         build,
+        roster,
         policy,
         ..
     } = &first.body
@@ -391,6 +403,32 @@ fn check_claims<S: AsRef<str>>(r: &mut ReplayReport, events: &[Event], lines: &[
     }
     if build.is_some() {
         floor.push((3, first.seq, "the build in run.started"));
+    }
+    // the operator roster: written from rules 4, and every rules 4 run has one (a log that
+    // dropped it would have its sessions go unchecked)
+    match roster {
+        Some(listed) => {
+            floor.push((4, first.seq, "the operator roster in run.started"));
+            if let Err(why) = listed.validate() {
+                bad(
+                    r,
+                    first,
+                    None,
+                    "logged roster is not one a bridge could be configured with",
+                    why,
+                    String::new(),
+                );
+            }
+        }
+        None if version >= 4 => bad(
+            r,
+            first,
+            None,
+            "a rules 4 log names its operator roster in run.started",
+            "none".into(),
+            "roster".into(),
+        ),
+        None => {}
     }
     for &(since, needle, what) in RULES_MARKERS {
         if since <= version {
@@ -474,6 +512,11 @@ fn replay_inner<S: AsRef<str>>(
     let mut sessions: BTreeMap<SessionId, (OperatorId, Grants)> = BTreeMap::new();
     // picture tokens issued and not used yet
     let mut issued: BTreeMap<u64, PictureToken> = BTreeMap::new();
+    // who may open a session, and with engagement authority (run.started, rules 4 on)
+    let mut roster: Option<Roster> = None;
+    // the intent dispatched last, and per vehicle the one dispatched to it last
+    let mut last_dispatch: Option<IntentId> = None;
+    let mut newest_on: BTreeMap<Uid, IntentId> = BTreeMap::new();
 
     for (i, e) in events.iter().enumerate() {
         let want_prev = if i == 0 {
@@ -521,8 +564,10 @@ fn replay_inner<S: AsRef<str>>(
                 policy: p,
                 areas: a,
                 rules_version,
+                roster: listed,
                 ..
             } => {
+                roster = listed.clone();
                 if i > 0 {
                     bad(
                         &mut r,
@@ -651,6 +696,8 @@ fn replay_inner<S: AsRef<str>>(
                         ready_t: None,
                         stop_fallback: None,
                         platform_events: Vec::new(),
+                        intercept_reports: Vec::new(),
+                        loiter_radius_m: None,
                     },
                 );
                 if intent.kind() == TaskKind::Engage {
@@ -991,6 +1038,11 @@ fn replay_inner<S: AsRef<str>>(
                 if tr.spec.kind() == TaskKind::Engage {
                     tr.last_picture_t = snapshot.as_ref().map(|s| s.t);
                     tr.snapshot = snapshot.clone();
+                    // where the platform loiters over the point, from the re-check's world
+                    tr.loiter_radius_m = match (&policy, tr.spec.uids.first(), tr.last_inputs.as_deref()) {
+                        (Some(pol), Some(u), Some(w)) => Some(engage::loiter_radius(u, w, &pol.rules)),
+                        _ => None,
+                    };
                 }
                 tr.signers.push(by.clone());
                 let needed = usize::try_from(tr.approvers).unwrap_or(usize::MAX);
@@ -1009,10 +1061,11 @@ fn replay_inner<S: AsRef<str>>(
             EventBody::ApprovalAtSubmission {
                 intent,
                 by,
+                session,
                 self_approved,
                 rule,
-                ..
             } => {
+                check_session(&mut r, e, *intent, by, *session, &sessions, "approval at submission");
                 let Some(tr) = intents.get_mut(intent) else {
                     bad(
                         &mut r,
@@ -1092,7 +1145,10 @@ fn replay_inner<S: AsRef<str>>(
                 r.approvals_at_submission += 1;
                 tr.granted_at_submission = submitter_ok && allowed;
             }
-            EventBody::ApprovalRejected { intent, .. } => {
+            EventBody::ApprovalRejected {
+                intent, by, session, ..
+            } => {
+                check_session(&mut r, e, *intent, by, *session, &sessions, "rejection");
                 if let Some(tr) = intents.get_mut(intent) {
                     tr.rejected_by_human = true;
                 }
@@ -1188,6 +1244,10 @@ fn replay_inner<S: AsRef<str>>(
                     Transition::Dispatch => {
                         tr.dispatch_logged = None;
                         tr.dispatched = true;
+                        last_dispatch = Some(*intent);
+                        for u in &tr.spec.uids {
+                            newest_on.insert(u.clone(), *intent);
+                        }
                     }
                     Transition::Release => {
                         tr.effect_logged = false;
@@ -1274,7 +1334,32 @@ fn replay_inner<S: AsRef<str>>(
                 ..
             } => {
                 if action == "session.opened" {
-                    sessions.insert(*session, (operator.clone(), grants.unwrap_or_default()));
+                    let grants = grants.unwrap_or_default();
+                    // only operators the run was configured with, engagement authority only
+                    // for its engagement operators (rules 4 on: before, no roster was logged)
+                    if let Some(why) = roster.as_ref().and_then(|ro| ro.refuses(operator, grants)) {
+                        bad(
+                            &mut r,
+                            e,
+                            None,
+                            why,
+                            json(&(operator, grants)),
+                            json(&roster),
+                        );
+                    }
+                    if sessions
+                        .insert(*session, (operator.clone(), grants))
+                        .is_some()
+                    {
+                        bad(
+                            &mut r,
+                            e,
+                            None,
+                            "session opened twice",
+                            session.0.to_string(),
+                            String::new(),
+                        );
+                    }
                 }
             }
             EventBody::EngagePicture {
@@ -1352,6 +1437,7 @@ fn replay_inner<S: AsRef<str>>(
                 tr.ready = h && rd;
                 tr.ready_t = tr.ready.then_some(w.t);
                 tr.platform_events.clear();
+                tr.intercept_reports.clear();
                 if !h {
                     r.picture_voids += 1;
                     tr.stop_due = Some(e.seq);
@@ -1450,9 +1536,9 @@ fn replay_inner<S: AsRef<str>>(
                 // the order that superseded it, as replay tracked it: its spec and whether it
                 // was dispatched
                 let superseder = match cause {
-                    StopCause::Superseded { by, .. } => {
-                        intents.get(by).map(|t| (t.spec.clone(), t.dispatched))
-                    }
+                    StopCause::Superseded { by, .. } => intents
+                        .get(by)
+                        .map(|t| (t.spec.clone(), t.state, last_dispatch == Some(*by))),
                     _ => None,
                 };
                 let Some(tr) = intents.get_mut(intent) else {
@@ -1467,6 +1553,16 @@ fn replay_inner<S: AsRef<str>>(
                         "stopped for the picture, but the picture held",
                         String::new(),
                         String::new(),
+                    ),
+                    // the engine stops a failed picture at once, for the picture: no other
+                    // stop can come between
+                    _ if tr.stop_due.is_some() && !matches!(cause, StopCause::Picture) => bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "a failed picture's stop reported with another cause than the picture",
+                        json(cause),
+                        "picture".into(),
                     ),
                     StopCause::Operator { by, session } => match sessions.get(session) {
                         Some((op, _)) if op == by => {}
@@ -1492,13 +1588,14 @@ fn replay_inner<S: AsRef<str>>(
                             by.to_string(),
                             String::new(),
                         ),
-                        Some((spec, by_dispatched)) => {
+                        Some((spec, by_state, by_last)) => {
                             if let Some(why) = supersede_mismatch(
                                 *intent,
                                 *by,
                                 tr.spec.uids.first(),
                                 spec,
-                                *by_dispatched,
+                                *by_state,
+                                *by_last,
                             ) {
                                 bad(
                                     &mut r,
@@ -1506,7 +1603,7 @@ fn replay_inner<S: AsRef<str>>(
                                     Some(*intent),
                                     why,
                                     by.to_string(),
-                                    json(&(&spec.uids, by_dispatched)),
+                                    json(&(&spec.uids, by_state, last_dispatch)),
                                 );
                             }
                             if *source != spec.source {
@@ -1538,6 +1635,24 @@ fn replay_inner<S: AsRef<str>>(
                         "stop quotes a vehicle event its platform did not report",
                         json(&quoted),
                         json(&tr.platform_events),
+                    );
+                }
+                // a stop for a failed intercept quotes the intercept's report (the bridge
+                // logs it in the same step, just before)
+                if let StopCause::System = cause
+                    && let Some(rest) = reason.strip_prefix("system: the platform's intercept ")
+                    && !tr
+                        .intercept_reports
+                        .iter()
+                        .any(|(s, d)| rest == format!("{s}: {d}"))
+                {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "stop quotes an intercept report the engagement did not make",
+                        rest.to_string(),
+                        json(&tr.intercept_reports),
                     );
                 }
                 tr.stop_fallback = Some(*fallback);
@@ -1640,7 +1755,7 @@ fn replay_inner<S: AsRef<str>>(
                 state,
                 detail,
             } => {
-                let Some(tr) = intents.get(intent) else {
+                let Some(tr) = intents.get_mut(intent) else {
                     bad(
                         &mut r,
                         e,
@@ -1651,10 +1766,14 @@ fn replay_inner<S: AsRef<str>>(
                     );
                     continue;
                 };
+                // a newer order took the vehicle since this intent's dispatch
+                let newest = newest_on.get(uid);
+                let replaced = newest.is_some_and(|n| n != intent);
                 if let Some(why) = op_state_mismatch(
                     &tr.spec,
                     tr.state,
                     tr.dispatched,
+                    replaced,
                     tr.stop_fallback,
                     uid,
                     state,
@@ -1667,8 +1786,11 @@ fn replay_inner<S: AsRef<str>>(
                         Some(*intent),
                         why,
                         json(&(uid, state, detail)),
-                        json(&(tr.state, tr.dispatched, reports_under, tr.stop_fallback)),
+                        json(&(tr.state, tr.dispatched, reports_under, tr.stop_fallback, newest)),
                     );
+                }
+                if let Some(s) = state.strip_prefix("intercept ") {
+                    tr.intercept_reports.push((s.to_string(), detail.clone()));
                 }
             }
             EventBody::VehicleEvent { uid, kind, text } => {
@@ -1742,6 +1864,29 @@ fn replay_inner<S: AsRef<str>>(
     }
     r.intents = intents.len();
     r
+}
+
+/// A human act (`what`) under a session opened earlier for that operator.
+fn check_session(
+    r: &mut ReplayReport,
+    e: &Event,
+    id: IntentId,
+    by: &OperatorId,
+    session: SessionId,
+    sessions: &BTreeMap<SessionId, (OperatorId, Grants)>,
+    what: &str,
+) {
+    match sessions.get(&session) {
+        Some((op, _)) if op == by => {}
+        other => bad(
+            r,
+            e,
+            Some(id),
+            &format!("{what} under a session that is not the operator's"),
+            by.to_string(),
+            json(&other.map(|o| &o.0)),
+        ),
+    }
 }
 
 /// One approval signature: by the operator the session was opened for; with engagement
@@ -1917,7 +2062,13 @@ fn check_dispatch(
     }
     let Some(pol) = policy else { return };
     let answer = tr.last_inputs.as_deref().and_then(|w| w.space.answer());
-    let want = match order_for(&tr.spec, answer, tr.snapshot.as_deref(), &pol.rules) {
+    let want = match order_for(
+        &tr.spec,
+        answer,
+        tr.snapshot.as_deref(),
+        tr.loiter_radius_m,
+        &pol.rules,
+    ) {
         Ok(o) => dispatched_event(&tr.spec, &o),
         Err(err) => {
             bad(
@@ -1998,6 +2149,16 @@ fn check_dispatch(
                     "engagement order's window differs from the approved plan's",
                     json(&o.window_until),
                     json(&w.window_until),
+                );
+            }
+            if o.loiter_radius_m != w.loiter_radius_m {
+                bad(
+                    r,
+                    e,
+                    id,
+                    "engagement order's loiter radius differs from the platform's",
+                    json(&o.loiter_radius_m),
+                    json(&w.loiter_radius_m),
                 );
             }
         }

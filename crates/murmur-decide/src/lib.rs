@@ -65,10 +65,14 @@
 //! never calls the bridge.
 //!
 //! 1. **Start of run.** Load [`Policy::load`]`("sim/policy.toml")`, [`Catalog::load`]`(
-//!    "sim/platforms.toml")`, [`AreaSet::load_dir`]`("sim/areas")`. Create the engine with
-//!    [`Engine::with_areas`] (policy, the area set, [`SystemClock`], a [`JsonlFile`] at
-//!    `logs/audit/<run-id>.jsonl`), so `run.started` carries the area set and its hash.
-//!    Pass the same set in every snapshot; a different one is logged once as `areas.loaded`.
+//!    "sim/platforms.toml")`, [`AreaSet::load_dir`]`("sim/areas")`, and the operator
+//!    [`Roster`] (`MURMUR_OPERATORS`, and `MURMUR_ENGAGE_OPERATORS`, who must be operators
+//!    too: [`Roster::new`] refuses otherwise, and the bridge does not start). Create the
+//!    engine with [`Engine::with_areas`] (policy, the area set, the roster, [`SystemClock`],
+//!    a [`JsonlFile`] at `logs/audit/<run-id>.jsonl`), so `run.started` carries the area set
+//!    and its hash and the roster. Pass the same set in every snapshot; a different one is
+//!    logged once as `areas.loaded`. Sessions open only for operators on the roster
+//!    ([`EngineError::NotOnRoster`]), and replay checks every logged session against it.
 //! 2. **World snapshot.** Before each decision call, build a [`WorldSnapshot`] from the
 //!    world model, keyed by `uid`: `t` = now; per vehicle, [`PlatformFacts`] from the catalog
 //!    (via the fleet manifest's platform id), and [`Fact`]s stamped with the time the
@@ -103,12 +107,17 @@
 //!    the world invalidates an intent before dispatch (vehicle lost, superseded), call
 //!    [`Engine::void`]. An engagement stopped after dispatch hands back a [`FallbackOrder`]:
 //!    report it as op state `fallback` on its platform with a detail that starts with the
-//!    fallback's name (`"return commanded (rtl): ..."`, or `"return could not be commanded:
-//!    ..."`), and its later progress as `fallback <state>`. A stop for the platform's own
-//!    failsafe or mode change quotes the `vehicle.event` logged for that platform just before
-//!    ([`Engine::stop_engagement_system`] with `the platform's failsafe took over (<text>)` or
-//!    `the platform left its intercept (mode <text>)`); [`Engine::supersede_engagement`] takes
-//!    the order already dispatched to the platform.
+//!    fallback's name and task ([`Fallback::task`]: `"return commanded (rtl): ..."`, or
+//!    `"return could not be commanded: ..."`), and its later progress as `fallback <state>`;
+//!    the intercept's as `intercept <state>`. Fly the intercept at the order's
+//!    `loiter_radius_m`. After a newer order takes a vehicle, report an older intent's op
+//!    there only as it ended (`done`, `failed`, `superseded`). A stop for the platform's own
+//!    failsafe or mode change quotes the `vehicle.event` logged for that platform just
+//!    before ([`Engine::stop_engagement_system`] with `the platform's failsafe took over
+//!    (<text>)` or `the platform left its intercept (mode <text>)`), one for a failed
+//!    intercept its report (`the platform's intercept <state>: <detail>`);
+//!    [`Engine::supersede_engagement`] takes the order just dispatched to the platform, in
+//!    the same step.
 //! 8. **Audit failures fail closed.** Every engine call returns `Err` without changing
 //!    state if the log write fails; the bridge must not dispatch on an `Err`.
 //! 9. **Head hash.** [`Engine::head_hash`] is the hash of the last event written. The log
@@ -175,7 +184,10 @@
 //! "#).unwrap();
 //! let clock = ManualClock::new(Time::from_secs(1_000));
 //! let log = MemorySink::new();
-//! let mut engine = Engine::new(policy, Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+//! // Who may act as an operator (the bridge's MURMUR_OPERATORS), none with engagement authority.
+//! let roster = Roster::new(vec![OperatorId::new("op-1")], Vec::new()).unwrap();
+//! let mut engine =
+//!     Engine::new(policy, roster, Box::new(clock.clone()), Box::new(log.clone())).unwrap();
 //!
 //! // A one-vehicle world: a copter, ready, with fresh facts.
 //! let t = Time::from_secs(1_000);
@@ -250,7 +262,7 @@ pub use audit::{
     AuditSink, BuildInfo, Event, EventBody, JsonlFile, LoggedAreas, MemorySink, OperatorView,
     ViewShown, parse_log,
 };
-pub use authority::{EngagementAuthority, Grants, HumanAuthority, OperatorSession};
+pub use authority::{EngagementAuthority, Grants, HumanAuthority, OperatorSession, Roster};
 pub use catalog::{AutopilotKind, Catalog, Domain, PlatformFacts, SensorFact};
 pub use engage::{
     AssessResult, Assessment, EffectOrder, EffectRecord, EngageOrder, EngagePreview, EngageRules,

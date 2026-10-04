@@ -37,7 +37,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 
 use crate::areas::AreaSet;
-use crate::authority::Grants;
+use crate::authority::{Grants, Roster};
 use crate::engage::{
     AssessResult, EngageOrder, EngagePreview, EngageSnapshot, Fallback, ObserveStep, PictureToken,
     StopCause,
@@ -95,6 +95,10 @@ pub enum EventBody {
         /// from it. Absent in logs written before it existed (rules 1 and 2).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         build: Option<BuildInfo>,
+        /// Who may act as an operator, and with engagement authority (rules 4 on; absent
+        /// before). Replay checks every session against it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        roster: Option<Roster>,
         policy: Policy,
         areas: Option<LoggedAreas>,
     },
