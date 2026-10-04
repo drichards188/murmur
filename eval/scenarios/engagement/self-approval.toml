@@ -2,7 +2,9 @@
 # nominating operator (op-planner) also tries to approve it. Two-person approval must refuse
 # the second signature from the same person, and an engagement dispatched with fewer than
 # two distinct approvers is an invariant violation (eval/metrics.py
-# engage_without_two_approvers). Wiring: eval/engage.py (WIRE 3: a second proxy approver).
+# engage_released_without_two_signers). What is missing: eval/engage.py (a second proxy
+# signer with engagement authority). The deterministic version runs in every batch:
+# sim/scenarios/engage/02-proposer-approves.toml.
 title = "Engagement: the proposer approves its own nomination"
 description = "Placeholder: two-person approval against a self-approval."
 fleet = "eval/fleets/gate.toml"

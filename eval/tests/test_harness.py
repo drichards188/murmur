@@ -427,3 +427,30 @@ def test_model_declines_and_the_guard_stops_it(monkeypatch):
     out = asyncio.run(m.propose({"task": "orbit", "uids": [4]}, "x"))
     assert out["id"] is None and "cost guard" in out["declined"]
     assert m.guard.calls == 1  # no call after the cap
+
+
+# ---- the engagement scenario suite (Phase E) ---------------------------------------------------
+
+
+def test_engagement_suite_runs_clean(tmp_path: Path):
+    """The real suite through the real murmur-scenarios binary (skipped without a release
+    build): every scenario ends as designed at seed 1 without noise, every log replays,
+    every forged log is caught, and the harness's own invariants find nothing."""
+    from eval import engage as E
+
+    if not E.BINARY.exists():
+        pytest.skip("no release build of murmur-scenarios")
+    ps = E.run_once(1, 0.0, tmp_path / "s1")
+    assert not ps.get("error"), ps
+    rs = ps["results"]
+    assert len(rs) >= 30
+    assert all(r["ok"] for r in rs), [r["scenario"] for r in rs if not r["ok"]]
+    assert all(r["replay_ok"] for r in rs)
+    assert all(r["tamper_detected"] for r in rs if r["tamper"] and not r["tamper_not_applicable"])
+    assert sum(r["harness"]["violations"] for r in rs) == 0
+    released = sum(r["harness"]["engage"]["released"] for r in rs)
+    assert released > 0  # the two-signer check had effects to check
+    summary = E.summarize([ps])
+    assert summary["totals"]["runs"] == len(rs) and summary["totals"]["violations"] == 0
+    # logs of runs that went as designed are not kept
+    assert not list((tmp_path / "s1" / "logs").glob("*.jsonl"))

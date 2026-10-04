@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from . import REPO
+from .engage import load_suite
 from .metrics import compute_run
 from .stats import dprime, summary, t_interval, wilson
 
@@ -306,8 +307,25 @@ def git_sha() -> str:
         return "?"
 
 
-def what_went_wrong(meta: dict[str, Any], runs: list[dict[str, Any]], agg: dict[tuple[str, str], dict[str, Any]]) -> str:
+def what_went_wrong(meta: dict[str, Any], runs: list[dict[str, Any]], agg: dict[tuple[str, str], dict[str, Any]], suite: dict[str, Any] | None = None) -> str:
     items: list[str] = []
+    if suite:
+        for e in suite["summary"]["totals"]["errors"]:
+            items.append(f'<li><span class="bad">Engagement suite failed to run</span> (seed {esc(e["seed"])}, noise {esc(e["noise"])} m): {esc(e["error"])}</li>')
+        for row in suite["summary"]["table"]:
+            if row["violations"]:
+                items.append(f'<li><span class="bad">Engagement invariant violated</span>: {esc(row["scenario"])} at {esc(row["noise"])} m noise: {row["violations"]} (see suite.json)</li>')
+            if row["tamper_runs"] and row["tamper_detected"] < row["tamper_runs"]:
+                items.append(f'<li><span class="bad">Forged log not caught</span>: {esc(row["scenario"])} ({esc(row["tamper"])}) at {esc(row["noise"])} m noise in {row["tamper_runs"] - row["tamper_detected"]} run(s)</li>')
+            if row["ok"] < row["runs"]:
+                seeds = sorted(f["seed"] for f in row["failures"])
+                first = row["failures"][0]
+                ends = ", ".join(f"{k} {v}" for k, v in sorted(row["final_states"].items(), key=lambda kv: str(kv[0])))
+                items.append(
+                    f'<li>Engagement scenario not as designed: <code>{esc(row["scenario"])}</code> at {esc(row["noise"])} m track noise, '
+                    f'{row["runs"] - row["ok"]}/{row["runs"]} seeds ({esc(seeds)}); designed end {esc(row["expect"])}, ends: {esc(ends)}; '
+                    f'first: {esc(first["failure"])}</li>'
+                )
     # runs that failed or warned
     for r in runs:
         info = r["info"]
@@ -385,6 +403,62 @@ def what_went_wrong(meta: dict[str, Any], runs: list[dict[str, Any]], agg: dict[
     return "<ul>" + "".join(items) + "</ul>"
 
 
+def engage_section(suite: dict[str, Any]) -> str:
+    """Phase E's scenario suite: designed ends, replays, forged logs, invariants, per
+    scenario and track-noise level over seeds."""
+    t = suite["summary"]["totals"]
+    noises = sorted({row["noise"] for row in suite["summary"]["table"]})
+    seeds = suite.get("seeds", [])
+    out = ["<h2>Engagement scenarios (Phase E)</h2>"]
+    out.append(
+        f"<p>Every invariant of the engagement decision chain has a scenario in <code>{esc(suite.get('scenarios'))}</code> that tries "
+        f"to break it. <code>murmur-scenarios</code> plays each against the real decision engine (deterministic for a file, a seed and "
+        f"a noise level), replays its audit log and checks that a forged copy is caught; this harness then runs its own invariants on "
+        f"every log, including the two-person rule read from the log alone: an engagement dispatched, or its effect released, without "
+        f"two distinct signers with engagement authority (neither the proposer) on one frozen plan counts as a violation. Seeds "
+        f"{esc(seeds)}; track noise {esc(', '.join(f'{n:g}' for n in noises))} m (1-sigma Gaussian on every track estimate, every second).</p>"
+    )
+    out.append(
+        f"<p><strong>{t['violations']} invariant violations</strong> in {t['runs']} scenario runs ({t['released']} effects released, each "
+        f"checked for two signers on one plan); {t['ok']}/{t['runs']} ended as designed; {t['replay_ok']}/{t['runs']} replayed; "
+        f"{t['tamper_detected']}/{t['tamper_runs']} forged logs caught.</p>"
+    )
+    by_scenario: dict[str, dict[float, dict[str, Any]]] = defaultdict(dict)
+    meta: dict[str, dict[str, Any]] = {}
+    for row in suite["summary"]["table"]:
+        by_scenario[row["scenario"]][row["noise"]] = row
+        meta.setdefault(row["scenario"], row)
+    head = "".join(f"<th>as designed, {n:g} m</th>" for n in noises)
+    trs = []
+    for sc in sorted(by_scenario):
+        m = meta[sc]
+        cells = []
+        for n in noises:
+            row = by_scenario[sc].get(n)
+            if not row:
+                cells.append("<td class='n muted'>-</td>")
+                continue
+            cls = "n" if row["ok"] == row["runs"] else "n bad"
+            cells.append(f"<td class='{cls}'>{row['ok']}/{row['runs']}</td>")
+        rows = list(by_scenario[sc].values())
+        tamper_runs = sum(r["tamper_runs"] for r in rows)
+        tamper = f"{sum(r['tamper_detected'] for r in rows)}/{tamper_runs}" if tamper_runs else "<span class='muted'>none</span>"
+        viol = sum(r["violations"] for r in rows)
+        released = sum(r["released"] for r in rows)
+        trs.append(
+            f"<tr><td><code>{esc(sc)}</code><br><span class='muted'>{esc(m.get('attack'))}</span></td><td>{esc(m.get('invariant'))}</td>"
+            f"<td>{esc(m.get('expect'))}</td>{''.join(cells)}<td class='n'>{tamper}</td><td class='n'>{released}</td>"
+            f"<td class='n{' bad' if viol else ''}'>{viol}</td></tr>"
+        )
+    out.append(
+        '<div class="card"><table><thead><tr><th>scenario (attack)</th><th>invariant</th><th>designed end</th>'
+        f"{head}<th>forged logs caught</th><th>effects released</th><th>invariant violations</th></tr></thead><tbody>"
+        + "".join(trs)
+        + "</tbody></table></div>"
+    )
+    return "".join(out)
+
+
 def build(batch: Path) -> Path:
     batch = Path(batch)
     meta, runs = collect(batch)
@@ -395,14 +469,18 @@ def build(batch: Path) -> Path:
     n_ok = sum(1 for r in runs if r["info"].get("status") == "ok")
     total_viol = sum(a["violations"] for a in agg.values())
     proxy = next((r["info"].get("proxy") for r in runs if r["info"].get("proxy")), None)
+    suite = load_suite(batch)
 
     body: list[str] = []
     body.append(f"<h1>Murmur evaluation: {esc(meta.get('id', batch.name))}</h1>")
-    body.append(
-        f'<p class="muted">{len(runs)} runs ({n_ok} ok), {len(scenarios)} scenarios, arms {esc(", ".join(arms))}, seeds {esc(meta.get("seeds"))}; '
-        f'started {esc(meta.get("started"))}, ended {esc(meta.get("ended"))}; code {esc(git_sha())}; '
-        f'{esc(meta.get("parallel"))} stacks in parallel on {esc((meta.get("machine") or {}).get("cpus"))} CPUs; {esc(meta.get("tidewater"))}.</p>'
-    )
+    if not runs:
+        body.append(f'<p class="muted">The engagement scenario suite only; started {esc(meta.get("started"))}, code {esc(git_sha())}.</p>')
+    else:
+        body.append(
+            f'<p class="muted">{len(runs)} runs ({n_ok} ok), {len(scenarios)} scenarios, arms {esc(", ".join(arms))}, seeds {esc(meta.get("seeds"))}; '
+            f'started {esc(meta.get("started"))}, ended {esc(meta.get("ended"))}; code {esc(git_sha())}; '
+            f'{esc(meta.get("parallel"))} stacks in parallel on {esc((meta.get("machine") or {}).get("cpus"))} CPUs; {esc(meta.get("tidewater"))}.</p>'
+        )
     for note in meta.get("notes", []):
         body.append(f'<p class="muted">{esc(note)}</p>')
     body.append(
@@ -421,220 +499,237 @@ def build(batch: Path) -> Path:
             f'<div class="kpi"><div class="label">Should-reject caught, {esc(a)}</div><div class="value">{pct(b["rate"])}</div>'
             f'<div class="sub">{b["k"]}/{b["n"]}, 95% CI {pct(b["ci"][0])} to {pct(b["ci"][1])}, all scenarios</div></div>'
         )
+    if suite:
+        t = suite["summary"]["totals"]
+        kpis.append(
+            f'<div class="kpi"><div class="label">Engagement scenarios: invariant violations</div><div class="value">{t["violations"]}</div>'
+            f'<div class="sub">{t["runs"]} scenario runs, {t["released"]} effects released; must be zero</div></div>'
+        )
+        kpis.append(
+            f'<div class="kpi"><div class="label">Engagement scenarios ended as designed</div><div class="value">{t["ok"]}/{t["runs"]}</div>'
+            f'<div class="sub">{t["tamper_detected"]}/{t["tamper_runs"]} forged logs caught, {t["replay_ok"]} replayed</div></div>'
+        )
     body.append('<div class="kpis">' + "".join(kpis) + "</div>")
 
-    # headline table
-    body.append("<h2>Results by scenario and arm</h2>")
-    body.append(
-        "<p>Rates pooled over seeds, Wilson 95% interval in brackets; for the catch and void rates, also the mean of the "
-        "per-seed rates with a Student t 95% interval (clipped to 0-100%) where two or more seeds had cases. Catch: should-reject proposals rejected or voided before effect "
-        "(or declined by the proposer). Void: should-void proposals voided by the C2 itself; stopped: not dispatched at all. "
-        "False reject: legitimate proposals a human rejected, of those a human decided. d': how well the decider tells "
-        "should-reject from legitimate cards (SandTable's trust d', 0 for reject-all or approve-all; cells pooled over seeds). "
-        "Latency: seconds from entering the inbox to the decision. Decided before expiry: SandTable's goodput. Time to effect: "
-        "median seconds from proposal to dispatch (auto tier / legitimate human tier).</p>"
-    )
-    rows = []
-    for s in scenarios:
-        for a in arms:
-            g = agg.get((s, a))
-            if not g:
-                continue
-            rows.append(
-                f"<tr><td>{esc(s)}</td><td>{esc(a)}</td><td class='n'>{g['ok']}/{len(g['runs'])}</td>"
-                f"<td class='n'>{ci_text(g['sr'], True)}</td><td class='n'>{ci_text(g['sv'], True)}</td><td class='n'>{ci_text(g['sv_stopped'])}</td>"
-                f"<td class='n'>{ci_text(g['fr'])}</td><td class='n'>{num(g['disc']['dprime'], 2)}<br><span class='muted'>{g['disc']['hit']}/{g['disc']['miss']}/{g['disc']['false_alarm']}/{g['disc']['correct_reject']}</span></td>"
-                f"<td class='n'>{num(g['lat']['median'])} / {num(g['lat']['p90'])}<br><span class='muted'>n={g['lat']['n']}</span></td>"
-                f"<td class='n'>{ci_text(g['goodput'])}</td>"
-                f"<td class='n'>{esc(g['max_queue'])}</td><td class='n'>{g['expired']}</td>"
-                f"<td class='n'>{num(g['tte_auto'])} / {num(g['tte_human'])}</td>"
-                f"<td class='n'>{g['violations']}</td><td class='n'>{g['replay_ok']}/{len(g['runs'])}</td></tr>"
-            )
-    body.append(
-        '<div class="card"><table><thead><tr><th>scenario</th><th>arm</th><th>runs ok</th><th>should-reject caught</th>'
-        "<th>should-void voided</th><th>should-void stopped</th><th>false reject</th><th>d' <span class='muted'>hit/miss/FA/CR</span></th>"
-        "<th>latency median / p90 s</th><th>decided before expiry</th><th>max queue</th>"
-        "<th>expired</th><th>time to effect auto / human s</th><th>violations</th><th>replay ok</th></tr></thead><tbody>"
-        + "".join(rows)
-        + "</tbody></table></div>"
-    )
-
-    # charts
-    sr_rows = [(s, [(a, agg[(s, a)]["sr"]) for a in arms if (s, a) in agg]) for s in scenarios if any(agg.get((s, a), {}).get("sr", {}).get("n") for a in arms)]
-    if sr_rows:
-        body.append("<h3>Should-reject catch rate</h3>")
-        body.append('<div class="card">' + rate_chart(sr_rows, "Should-reject catch rate by scenario and arm", "caught before effect (95% Wilson interval)") + "</div>")
-    sv_rows = [(s, [(a, agg[(s, a)]["sv"]) for a in arms if (s, a) in agg]) for s in scenarios if any(agg.get((s, a), {}).get("sv", {}).get("n") for a in arms)]
-    if sv_rows:
-        body.append("<h3>Correct-void rate</h3>")
-        body.append('<div class="card">' + rate_chart(sv_rows, "Should-void voided by the C2 by scenario and arm", "voided by the C2 before dispatch (95% Wilson interval)") + "</div>")
-    proxy_decisions = []
-    for (s, a), g in agg.items():
-        if a in ("human-proxy", "agent+human-proxy", "agent+model", "study"):
-            for d in g["decisions"]:
-                proxy_decisions.append({**d, "scenario": s, "arm": a})
-    if proxy_decisions:
-        body.append("<h3>Approval fatigue: time in the inbox against the queue</h3>")
+    if runs:
+        # headline table
+        body.append("<h2>Results by scenario and arm</h2>")
         body.append(
-            "<p>Every human (proxy) decision in the batch: how many cards were pending when it was made, how long the card waited, "
-            "and whether the decision was right by the label. Hover a mark for the intent.</p>"
+            "<p>Rates pooled over seeds, Wilson 95% interval in brackets; for the catch and void rates, also the mean of the "
+            "per-seed rates with a Student t 95% interval (clipped to 0-100%) where two or more seeds had cases. Catch: should-reject proposals rejected or voided before effect "
+            "(or declined by the proposer). Void: should-void proposals voided by the C2 itself; stopped: not dispatched at all. "
+            "False reject: legitimate proposals a human rejected, of those a human decided. d': how well the decider tells "
+            "should-reject from legitimate cards (SandTable's trust d', 0 for reject-all or approve-all; cells pooled over seeds). "
+            "Latency: seconds from entering the inbox to the decision. Decided before expiry: SandTable's goodput. Time to effect: "
+            "median seconds from proposal to dispatch (auto tier / legitimate human tier).</p>"
         )
-        body.append('<div class="card">' + scatter(proxy_decisions, "Decision latency against queue length") + "</div>")
-        # the queue table, per scenario where the queue actually varied: pooled over
-        # scenarios, the queue length stands in for the scenario (the quiet scenarios hold
-        # the uncatchable cases at queue 1), which would read as the opposite of fatigue
-        lt = []
-        loaded = sorted({d["scenario"] for d in proxy_decisions if d["queue"] >= 3})
-        for sc in loaded:
+        rows = []
+        for s in scenarios:
             for a in arms:
-                ds = [d for d in proxy_decisions if d["arm"] == a and d["scenario"] == sc]
+                g = agg.get((s, a))
+                if not g:
+                    continue
+                rows.append(
+                    f"<tr><td>{esc(s)}</td><td>{esc(a)}</td><td class='n'>{g['ok']}/{len(g['runs'])}</td>"
+                    f"<td class='n'>{ci_text(g['sr'], True)}</td><td class='n'>{ci_text(g['sv'], True)}</td><td class='n'>{ci_text(g['sv_stopped'])}</td>"
+                    f"<td class='n'>{ci_text(g['fr'])}</td><td class='n'>{num(g['disc']['dprime'], 2)}<br><span class='muted'>{g['disc']['hit']}/{g['disc']['miss']}/{g['disc']['false_alarm']}/{g['disc']['correct_reject']}</span></td>"
+                    f"<td class='n'>{num(g['lat']['median'])} / {num(g['lat']['p90'])}<br><span class='muted'>n={g['lat']['n']}</span></td>"
+                    f"<td class='n'>{ci_text(g['goodput'])}</td>"
+                    f"<td class='n'>{esc(g['max_queue'])}</td><td class='n'>{g['expired']}</td>"
+                    f"<td class='n'>{num(g['tte_auto'])} / {num(g['tte_human'])}</td>"
+                    f"<td class='n'>{g['violations']}</td><td class='n'>{g['replay_ok']}/{len(g['runs'])}</td></tr>"
+                )
+        body.append(
+            '<div class="card"><table><thead><tr><th>scenario</th><th>arm</th><th>runs ok</th><th>should-reject caught</th>'
+            "<th>should-void voided</th><th>should-void stopped</th><th>false reject</th><th>d' <span class='muted'>hit/miss/FA/CR</span></th>"
+            "<th>latency median / p90 s</th><th>decided before expiry</th><th>max queue</th>"
+            "<th>expired</th><th>time to effect auto / human s</th><th>violations</th><th>replay ok</th></tr></thead><tbody>"
+            + "".join(rows)
+            + "</tbody></table></div>"
+        )
+
+        # charts
+        sr_rows = [(s, [(a, agg[(s, a)]["sr"]) for a in arms if (s, a) in agg]) for s in scenarios if any(agg.get((s, a), {}).get("sr", {}).get("n") for a in arms)]
+        if sr_rows:
+            body.append("<h3>Should-reject catch rate</h3>")
+            body.append('<div class="card">' + rate_chart(sr_rows, "Should-reject catch rate by scenario and arm", "caught before effect (95% Wilson interval)") + "</div>")
+        sv_rows = [(s, [(a, agg[(s, a)]["sv"]) for a in arms if (s, a) in agg]) for s in scenarios if any(agg.get((s, a), {}).get("sv", {}).get("n") for a in arms)]
+        if sv_rows:
+            body.append("<h3>Correct-void rate</h3>")
+            body.append('<div class="card">' + rate_chart(sv_rows, "Should-void voided by the C2 by scenario and arm", "voided by the C2 before dispatch (95% Wilson interval)") + "</div>")
+        proxy_decisions = []
+        for (s, a), g in agg.items():
+            if a in ("human-proxy", "agent+human-proxy", "agent+model", "study"):
+                for d in g["decisions"]:
+                    proxy_decisions.append({**d, "scenario": s, "arm": a})
+        if proxy_decisions:
+            body.append("<h3>Approval fatigue: time in the inbox against the queue</h3>")
+            body.append(
+                "<p>Every human (proxy) decision in the batch: how many cards were pending when it was made, how long the card waited, "
+                "and whether the decision was right by the label. Hover a mark for the intent.</p>"
+            )
+            body.append('<div class="card">' + scatter(proxy_decisions, "Decision latency against queue length") + "</div>")
+            # the queue table, per scenario where the queue actually varied: pooled over
+            # scenarios, the queue length stands in for the scenario (the quiet scenarios hold
+            # the uncatchable cases at queue 1), which would read as the opposite of fatigue
+            lt = []
+            loaded = sorted({d["scenario"] for d in proxy_decisions if d["queue"] >= 3})
+            for sc in loaded:
+                for a in arms:
+                    ds = [d for d in proxy_decisions if d["arm"] == a and d["scenario"] == sc]
+                    if not ds:
+                        continue
+                    for name, (lo, hi) in {"1": (1, 1), "2-3": (2, 3), "4-6": (4, 6), "7+": (7, 10**9)}.items():
+                        rs = [d for d in ds if lo <= d["queue"] <= hi]
+                        if not rs:
+                            continue
+                        judged = [d for d in rs if d.get("wrong") is not None and d.get("armed")]
+                        k = sum(1 for d in judged if d["wrong"])
+                        rate, clo, chi = wilson(k, len(judged))
+                        lt.append(
+                            f"<tr><td>{esc(sc)}</td><td>{esc(a)}</td><td>{name}</td><td class='n'>{len(rs)}</td><td class='n'>{num(summary([d['latency_s'] for d in rs])['median'])}</td>"
+                            f"<td class='n'>{num(summary([d['tracks_viewed'] for d in rs])['mean'], 2)}</td>"
+                            f"<td class='n'>{k}/{len(judged)} = {pct(rate)} <span class='muted'>[{pct(clo)}, {pct(chi)}]</span></td></tr>"
+                        )
+            if lt:
+                body.append(
+                    "<p>By queue length at the decision, within each scenario where the queue grew past two (pooling across "
+                    "scenarios would confound the queue with the scenario). Wrong: armed cards decided against their label.</p>"
+                )
+                body.append(
+                    '<div class="card"><table><thead><tr><th>scenario</th><th>arm</th><th>queue at decision</th><th>decisions</th><th>median latency s</th>'
+                    "<th>tracks looked up per decision</th><th>armed cards wrong by the label</th></tr></thead><tbody>" + "".join(lt) + "</tbody></table></div>"
+                )
+            # information shown
+            it = []
+            for a in arms:
+                ds = [d for d in proxy_decisions if d["arm"] == a and d.get("latency_s") is not None and d.get("armed")]
                 if not ds:
                     continue
-                for name, (lo, hi) in {"1": (1, 1), "2-3": (2, 3), "4-6": (4, 6), "7+": (7, 10**9)}.items():
-                    rs = [d for d in ds if lo <= d["queue"] <= hi]
+                for name, pred in (("looked up no track", lambda d: d["tracks_viewed"] == 0), ("looked up the cited track(s)", lambda d: d["tracks_viewed"] > 0)):
+                    rs = [d for d in ds if pred(d)]
                     if not rs:
                         continue
-                    judged = [d for d in rs if d.get("wrong") is not None and d.get("armed")]
+                    judged = [d for d in rs if d.get("wrong") is not None]
                     k = sum(1 for d in judged if d["wrong"])
-                    rate, clo, chi = wilson(k, len(judged))
-                    lt.append(
-                        f"<tr><td>{esc(sc)}</td><td>{esc(a)}</td><td>{name}</td><td class='n'>{len(rs)}</td><td class='n'>{num(summary([d['latency_s'] for d in rs])['median'])}</td>"
-                        f"<td class='n'>{num(summary([d['tracks_viewed'] for d in rs])['mean'], 2)}</td>"
-                        f"<td class='n'>{k}/{len(judged)} = {pct(rate)} <span class='muted'>[{pct(clo)}, {pct(chi)}]</span></td></tr>"
+                    om = summary([d["open_ms"] / 1000 for d in rs if d.get("open_ms") is not None])
+                    it.append(
+                        f"<tr><td>{esc(a)}</td><td>{name}</td><td class='n'>{len(rs)}</td><td class='n'>{num(summary([d['latency_s'] for d in rs])['median'])}</td>"
+                        f"<td class='n'>{num(om['median'])}</td><td class='n'>{num(summary([d['checks_shown'] for d in rs])['mean'])}</td>"
+                        f"<td class='n'>{k}/{len(judged)}</td></tr>"
                     )
-        if lt:
+            body.append("<h3>Approval time against the information shown</h3>")
             body.append(
-                "<p>By queue length at the decision, within each scenario where the queue grew past two (pooling across "
-                "scenarios would confound the queue with the scenario). Wrong: armed cards decided against their label.</p>"
+                "<p>From the <code>operator.view</code> events: what the card showed (checks, warnings, rationale) and which tracks "
+                "the decider opened, joined with the decision, for cards on armed platforms (the consequential ones). Card open time "
+                "is the console's own measure (the proxy's reading time here); latency includes the time before the card was first "
+                "looked at.</p>"
             )
             body.append(
-                '<div class="card"><table><thead><tr><th>scenario</th><th>arm</th><th>queue at decision</th><th>decisions</th><th>median latency s</th>'
-                "<th>tracks looked up per decision</th><th>armed cards wrong by the label</th></tr></thead><tbody>" + "".join(lt) + "</tbody></table></div>"
+                '<div class="card"><table><thead><tr><th>arm</th><th>information looked at</th><th>decisions</th><th>median latency s</th>'
+                "<th>median card open s</th><th>checks on the card</th><th>wrong by the label</th></tr></thead><tbody>" + "".join(it) + "</tbody></table></div>"
             )
-        # information shown
-        it = []
-        for a in arms:
-            ds = [d for d in proxy_decisions if d["arm"] == a and d.get("latency_s") is not None and d.get("armed")]
-            if not ds:
-                continue
-            for name, pred in (("looked up no track", lambda d: d["tracks_viewed"] == 0), ("looked up the cited track(s)", lambda d: d["tracks_viewed"] > 0)):
-                rs = [d for d in ds if pred(d)]
-                if not rs:
+
+        # override
+        ov_rows = []
+        for s in scenarios:
+            for a in arms:
+                g = agg.get((s, a))
+                if not g or not g["ov"]["n"]:
                     continue
-                judged = [d for d in rs if d.get("wrong") is not None]
-                k = sum(1 for d in judged if d["wrong"])
-                om = summary([d["open_ms"] / 1000 for d in rs if d.get("open_ms") is not None])
-                it.append(
-                    f"<tr><td>{esc(a)}</td><td>{name}</td><td class='n'>{len(rs)}</td><td class='n'>{num(summary([d['latency_s'] for d in rs])['median'])}</td>"
-                    f"<td class='n'>{num(om['median'])}</td><td class='n'>{num(summary([d['checks_shown'] for d in rs])['mean'])}</td>"
-                    f"<td class='n'>{k}/{len(judged)}</td></tr>"
-                )
-        body.append("<h3>Approval time against the information shown</h3>")
-        body.append(
-            "<p>From the <code>operator.view</code> events: what the card showed (checks, warnings, rationale) and which tracks "
-            "the decider opened, joined with the decision, for cards on armed platforms (the consequential ones). Card open time "
-            "is the console's own measure (the proxy's reading time here); latency includes the time before the card was first "
-            "looked at.</p>"
-        )
-        body.append(
-            '<div class="card"><table><thead><tr><th>arm</th><th>information looked at</th><th>decisions</th><th>median latency s</th>'
-            "<th>median card open s</th><th>checks on the card</th><th>wrong by the label</th></tr></thead><tbody>" + "".join(it) + "</tbody></table></div>"
-        )
+                withdrawn = sum(r["m"]["override"]["withdrawn"] for r in g["runs"] if "error" not in r["m"])
+                agent_n = sum(r["m"]["override"]["agent_intents"] for r in g["runs"] if "error" not in r["m"])
+                ov_rows.append(f"<tr><td>{esc(s)}</td><td>{esc(a)}</td><td class='n'>{agent_n}</td><td class='n'>{ci_text(g['ov'])}</td><td class='n'>{withdrawn}</td></tr>")
+        if ov_rows:
+            body.append("<h3>Override rate (agent proposals)</h3>")
+            body.append('<div class="card"><table><thead><tr><th>scenario</th><th>arm</th><th>agent intents</th><th>rejected by a human, of those a human decided</th><th>withdrawn by the agent</th></tr></thead><tbody>' + "".join(ov_rows) + "</tbody></table></div>")
 
-    # override
-    ov_rows = []
-    for s in scenarios:
-        for a in arms:
-            g = agg.get((s, a))
-            if not g or not g["ov"]["n"]:
-                continue
-            withdrawn = sum(r["m"]["override"]["withdrawn"] for r in g["runs"] if "error" not in r["m"])
-            agent_n = sum(r["m"]["override"]["agent_intents"] for r in g["runs"] if "error" not in r["m"])
-            ov_rows.append(f"<tr><td>{esc(s)}</td><td>{esc(a)}</td><td class='n'>{agent_n}</td><td class='n'>{ci_text(g['ov'])}</td><td class='n'>{withdrawn}</td></tr>")
-    if ov_rows:
-        body.append("<h3>Override rate (agent proposals)</h3>")
-        body.append('<div class="card"><table><thead><tr><th>scenario</th><th>arm</th><th>agent intents</th><th>rejected by a human, of those a human decided</th><th>withdrawn by the agent</th></tr></thead><tbody>' + "".join(ov_rows) + "</tbody></table></div>")
-
-    # per scenario
-    body.append("<h2>Scenarios</h2>")
-    for s in scenarios:
-        spec = spec_by_name.get(s, {})
-        body.append(f"<h3>{esc(spec.get('title', s))} <span class='muted'>({esc(s)})</span></h3>")
-        if spec.get("path"):
-            body.append(f"<p class='muted'>Spec <code>{esc(spec.get('path'))}</code>, fleet <code>{esc(spec.get('fleet'))}</code>, policy <code>{esc(spec.get('policy'))}</code>, events <code>{esc(spec.get('events'))}</code>, {esc(spec.get('duration_s'))} s at rate {esc(spec.get('rate'))}.</p>")
-        steps = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
-        labels_of: dict[str, str] = {}
-        for a in arms:
-            g = agg.get((s, a))
-            if not g:
-                continue
-            for r in g["runs"]:
-                for p in r["m"].get("per_intent", []):
-                    if p.get("step"):
-                        st = p["step"].rsplit("-", 1)[0] if s == "approval-flood" and p["step"].startswith("flood-") else p["step"]
-                        key = f"{st} ({p.get('label')})"
-                        labels_of[key] = p.get("label")
-                        steps[key][a][p.get("outcome") or "?"] += 1
-        if steps:
-            hdr = "".join(f"<th>{esc(a)}</th>" for a in arms if (s, a) in agg)
-            trs = []
-            for key in steps:
-                cells = []
-                for a in arms:
-                    if (s, a) not in agg:
+        # per scenario
+        body.append("<h2>Scenarios</h2>")
+        for s in scenarios:
+            spec = spec_by_name.get(s, {})
+            body.append(f"<h3>{esc(spec.get('title', s))} <span class='muted'>({esc(s)})</span></h3>")
+            if spec.get("path"):
+                body.append(f"<p class='muted'>Spec <code>{esc(spec.get('path'))}</code>, fleet <code>{esc(spec.get('fleet'))}</code>, policy <code>{esc(spec.get('policy'))}</code>, events <code>{esc(spec.get('events'))}</code>, {esc(spec.get('duration_s'))} s at rate {esc(spec.get('rate'))}.</p>")
+            steps = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
+            labels_of: dict[str, str] = {}
+            for a in arms:
+                g = agg.get((s, a))
+                if not g:
+                    continue
+                for r in g["runs"]:
+                    for p in r["m"].get("per_intent", []):
+                        if p.get("step"):
+                            st = p["step"].rsplit("-", 1)[0] if s == "approval-flood" and p["step"].startswith("flood-") else p["step"]
+                            key = f"{st} ({p.get('label')})"
+                            labels_of[key] = p.get("label")
+                            steps[key][a][p.get("outcome") or "?"] += 1
+            if steps:
+                hdr = "".join(f"<th>{esc(a)}</th>" for a in arms if (s, a) in agg)
+                trs = []
+                for key in steps:
+                    cells = []
+                    for a in arms:
+                        if (s, a) not in agg:
+                            continue
+                        c = steps[key].get(a, {})
+                        cells.append("<td>" + (", ".join(f"{esc(o)} {n}" for o, n in sorted(c.items())) or "<span class='muted'>none</span>") + "</td>")
+                    trs.append(f"<tr><td><code>{esc(key)}</code></td>{''.join(cells)}</tr>")
+                body.append(f'<div class="card"><table><thead><tr><th>step (label)</th>{hdr}</tr></thead><tbody>{"".join(trs)}</tbody></table></div>')
+            # per run rows
+            prs = []
+            for a in arms:
+                g = agg.get((s, a))
+                if not g:
+                    continue
+                for r in sorted(g["runs"], key=lambda r: r["info"].get("seed", 0)):
+                    m = r["m"]
+                    if "error" in m:
+                        prs.append(f"<tr><td>{esc(a)}</td><td class='n'>{esc(r['info'].get('seed'))}</td><td colspan='6'>metrics failed: {esc(m['error'])}</td></tr>")
                         continue
-                    c = steps[key].get(a, {})
-                    cells.append("<td>" + (", ".join(f"{esc(o)} {n}" for o, n in sorted(c.items())) or "<span class='muted'>none</span>") + "</td>")
-                trs.append(f"<tr><td><code>{esc(key)}</code></td>{''.join(cells)}</tr>")
-            body.append(f'<div class="card"><table><thead><tr><th>step (label)</th>{hdr}</tr></thead><tbody>{"".join(trs)}</tbody></table></div>')
-        # per run rows
-        prs = []
-        for a in arms:
-            g = agg.get((s, a))
-            if not g:
-                continue
-            for r in sorted(g["runs"], key=lambda r: r["info"].get("seed", 0)):
-                m = r["m"]
-                if "error" in m:
-                    prs.append(f"<tr><td>{esc(a)}</td><td class='n'>{esc(r['info'].get('seed'))}</td><td colspan='6'>metrics failed: {esc(m['error'])}</td></tr>")
-                    continue
-                prs.append(
-                    f"<tr><td>{esc(a)}</td><td class='n'>{esc(r['info'].get('seed'))}</td><td>{esc(r['info'].get('status'))}</td>"
-                    f"<td class='n'>{m['counts']['intents']}</td><td class='n'>{m['should_reject']['k']}/{m['should_reject']['n']}</td>"
-                    f"<td class='n'>{m['should_void']['k']}/{m['should_void']['n']}</td><td class='n'>{m['counts']['human_decisions']}</td>"
-                    f"<td class='n'>{m['invariants']['violations']}</td><td><code>{esc(r['rel'])}</code></td></tr>"
-                )
+                    prs.append(
+                        f"<tr><td>{esc(a)}</td><td class='n'>{esc(r['info'].get('seed'))}</td><td>{esc(r['info'].get('status'))}</td>"
+                        f"<td class='n'>{m['counts']['intents']}</td><td class='n'>{m['should_reject']['k']}/{m['should_reject']['n']}</td>"
+                        f"<td class='n'>{m['should_void']['k']}/{m['should_void']['n']}</td><td class='n'>{m['counts']['human_decisions']}</td>"
+                        f"<td class='n'>{m['invariants']['violations']}</td><td><code>{esc(r['rel'])}</code></td></tr>"
+                    )
+            body.append(
+                '<details><summary>Runs</summary><div class="card"><table><thead><tr><th>arm</th><th>seed</th><th>status</th><th>intents</th>'
+                "<th>caught</th><th>voided</th><th>human decisions</th><th>violations</th><th>directory</th></tr></thead><tbody>" + "".join(prs) + "</tbody></table></div></details>"
+            )
+
+        # invariants
+        body.append("<h2>Invariants</h2>")
         body.append(
-            '<details><summary>Runs</summary><div class="card"><table><thead><tr><th>arm</th><th>seed</th><th>status</th><th>intents</th>'
-            "<th>caught</th><th>voided</th><th>human decisions</th><th>violations</th><th>directory</th></tr></thead><tbody>" + "".join(prs) + "</tbody></table></div></details>"
+            "<p>Each must be zero in every run (METRICS.md, \"Invariants\"). Replay: <code>murmur-replay</code> recomputed every check and "
+            "policy decision from the logged inputs and verified the hash chain, <code>operator.view</code> events included.</p>"
+        )
+        inv_names: list[str] = []
+        for r in runs:
+            for k in (r["m"].get("invariants") or {}).get("counts", {}):
+                if k not in inv_names:
+                    inv_names.append(k)
+        irows = []
+        for name in inv_names:
+            cells = []
+            for a in arms:
+                v = sum(int((r["m"].get("invariants") or {}).get("counts", {}).get(name, 0)) for (s, aa), g in agg.items() if aa == a for r in g["runs"])
+                cells.append(f"<td class='n{' bad' if v else ''}'>{v}</td>")
+            irows.append(f"<tr><td><code>{esc(name)}</code></td>{''.join(cells)}</tr>")
+        body.append(f'<div class="card"><table><thead><tr><th>invariant</th>{"".join(f"<th>{esc(a)}</th>" for a in arms)}</tr></thead><tbody>{"".join(irows)}</tbody></table></div>')
+        engage = sum((r["m"].get("invariants") or {}).get("engage_intents", 0) for r in runs)
+        body.append(
+            f"<p class='muted'>Engagement intents in the live runs: {engage} (no live scenario nominates one yet; the engagement "
+            "chain is measured by the scenario suite below, where the same invariants run on every audit log).</p>"
         )
 
-    # invariants
-    body.append("<h2>Invariants</h2>")
-    body.append(
-        "<p>Each must be zero in every run (METRICS.md, \"Invariants\"). Replay: <code>murmur-replay</code> recomputed every check and "
-        "policy decision from the logged inputs and verified the hash chain, <code>operator.view</code> events included.</p>"
-    )
-    inv_names: list[str] = []
-    for r in runs:
-        for k in (r["m"].get("invariants") or {}).get("counts", {}):
-            if k not in inv_names:
-                inv_names.append(k)
-    irows = []
-    for name in inv_names:
-        cells = []
-        for a in arms:
-            v = sum(int((r["m"].get("invariants") or {}).get("counts", {}).get(name, 0)) for (s, aa), g in agg.items() if aa == a for r in g["runs"])
-            cells.append(f"<td class='n{' bad' if v else ''}'>{v}</td>")
-        irows.append(f"<tr><td><code>{esc(name)}</code></td>{''.join(cells)}</tr>")
-    body.append(f'<div class="card"><table><thead><tr><th>invariant</th>{"".join(f"<th>{esc(a)}</th>" for a in arms)}</tr></thead><tbody>{"".join(irows)}</tbody></table></div>')
-    engage = sum((r["m"].get("invariants") or {}).get("engage_intents", 0) for r in runs)
-    body.append(f"<p class='muted'>Engagement intents in this batch: {engage} (the two-approver invariant is vacuous until Phase E scenarios run; see eval/engage.py).</p>")
+    if suite:
+        body.append(engage_section(suite))
 
     # what went wrong
     body.append("<h2>What went wrong</h2>")
     body.append("<p>Everything below is listed, not filtered: failed runs, warnings, storyline steps that failed or were skipped, steps that behaved differently across seeds, and every labelled proposal the oversight got wrong.</p>")
-    body.append('<div class="card">' + what_went_wrong(meta, runs, agg) + "</div>")
+    body.append('<div class="card">' + what_went_wrong(meta, runs, agg, suite) + "</div>")
     body.append("<h3>Limits of this measurement</h3>")
     body.append(
         "<ul>"

@@ -27,7 +27,7 @@ Steps (`[[step]]` in a spec; `at_s` counts from the moment the fleet is ready):
                                 appended to the run's events file for the link emulator
     kind = "note"               a marker in the storyline log
     kind = "engage"             Phase E: nominate an armed platform against a track through
-                                eval/engage.py; logged as skipped until the bridge has it
+                                eval/engage.py; logged as skipped until the proxy can sign
 
 Track selectors `{track = {...}}` and `declare.track`:
     {id = "T-0001"} | {contact = "id"} (through the evaluation-only association) |

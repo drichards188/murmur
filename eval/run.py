@@ -4,6 +4,7 @@
     python -m eval.run run eval/scenarios/plausible-wrong.toml --arm agent+human-proxy --seed 1
     python -m eval.run batch --scenarios plausible-wrong stale-track --arms rules-only human-proxy \
         --seeds 1 2 3 --parallel 3
+    python -m eval.run engage --seeds 1 2 3 --noise 0 3 10
     python -m eval.run report eval/results/<batch>
     python -m eval.run study eval/scenarios/plausible-wrong.toml --participant p01
     python -m eval.run measure
@@ -36,7 +37,7 @@ from . import PYTHON, REPO
 from .agent import make_proposer
 from .arms import ARMS, Arm, arm as get_arm
 from .bridge import Bridge
-from .engage import EngageAdapter
+from .engage import EngageAdapter, run_suite
 from .metrics import compute, load_jsonl, run_replay
 from .ports import Allocator, PortBlock, TIDEWATER_PORT
 from .proxy import ProxyParams, make_supervisor, proxy_params
@@ -296,7 +297,7 @@ def do_run(args: argparse.Namespace) -> int:
     if a.external_model and not os.environ.get("MURMUR_EVAL_MODEL"):
         raise SystemExit("the agent+model arm calls an external API: set MURMUR_EVAL_MODEL=1 to allow it (never in tests)")
     if spec.placeholder and not args.include_placeholders:
-        raise SystemExit(f"{spec.name} requires {spec.requires}: a placeholder until the bridge has it (--include-placeholders to run anyway)")
+        raise SystemExit(f"{spec.name} requires {spec.requires}: a placeholder until the harness can run it (--include-placeholders to run anyway)")
     out = Path(args.out) if args.out else RESULTS / "single" / f"{spec.name}-{args.arm}-s{args.seed}-{now_id()}"
     out.mkdir(parents=True, exist_ok=True)
     alloc = Allocator()
@@ -385,6 +386,16 @@ def do_batch(args: argparse.Namespace) -> int:
         "skipped": skipped,
         "runs": [],
     }
+    if not args.no_engage:
+        # Phase E's engagement scenarios: deterministic, seconds for the whole suite
+        suite = run_suite(out / "engage", list(args.engage_seeds), list(args.engage_noise), keep_logs=args.keep_logs)
+        t = suite["summary"]["totals"]
+        batch["engage"] = {"seeds": list(args.engage_seeds), "noise_m": list(args.engage_noise), "totals": t}
+        print(
+            f"engagement scenarios: {t['ok']}/{t['runs']} ended as designed, {t['replay_ok']} replayed, "
+            f"{t['tamper_detected']}/{t['tamper_runs']} forged logs caught, {t['violations']} invariant violations",
+            flush=True,
+        )
     (out / "batch.json").write_text(json.dumps(batch, indent=1))
     print(f"batch {out.name}: {len(jobs)} runs, {parallel} in parallel; {note}", flush=True)
     alloc = Allocator()
@@ -451,6 +462,31 @@ def do_batch(args: argparse.Namespace) -> int:
     return 0 if ok == len(results) else 1
 
 
+def do_engage(args: argparse.Namespace) -> int:
+    out = Path(args.out) if args.out else RESULTS / f"engage-{now_id()}"
+    out.mkdir(parents=True, exist_ok=True)
+    started = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    suite = run_suite(out / "engage", list(args.seeds), list(args.noise), keep_logs=args.keep_logs)
+    t = suite["summary"]["totals"]
+    meta = {
+        "id": out.name,
+        "started": started,
+        "ended": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "seeds": [],
+        "engage": {"seeds": list(args.seeds), "noise_m": list(args.noise), "totals": t},
+        "runs": [],
+    }
+    (out / "batch.json").write_text(json.dumps(meta, indent=1))
+    from .report import build
+
+    report = build(out)
+    print(
+        f"{t['ok']}/{t['runs']} ended as designed, {t['replay_ok']} replayed, {t['tamper_detected']}/{t['tamper_runs']} "
+        f"forged logs caught, {t['violations']} invariant violations; report: {report}"
+    )
+    return 0 if t["violations"] == 0 and not t["errors"] else 1
+
+
 def do_report(args: argparse.Namespace) -> int:
     from .report import build
 
@@ -511,6 +547,16 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--tidewater", choices=["shared", "none"], default="shared")
     b.add_argument("--duration", type=float)
     b.add_argument("--include-placeholders", action="store_true")
+    b.add_argument("--engage-seeds", nargs="+", type=int, default=list(range(1, 11)), help="engagement scenario suite seeds (default 1-10)")
+    b.add_argument("--engage-noise", nargs="+", type=float, default=[0.0, 3.0, 10.0], help="track noise levels, metres 1-sigma (default 0 3 10)")
+    b.add_argument("--no-engage", action="store_true", help="skip the engagement scenario suite")
+    b.add_argument("--keep-logs", action="store_true", help="keep every engagement scenario's audit log (default: only those that went wrong)")
+
+    e = sub.add_parser("engage", help="the engagement scenario suite (sim/scenarios/engage) over seeds and noise, and its report")
+    e.add_argument("--seeds", nargs="+", type=int, default=list(range(1, 11)))
+    e.add_argument("--noise", nargs="+", type=float, default=[0.0, 3.0, 10.0])
+    e.add_argument("--out")
+    e.add_argument("--keep-logs", action="store_true", help="keep every audit log (default: only those that went wrong)")
 
     s = sub.add_parser("study", help="a real participant on the console; the runner records")
     s.add_argument("scenario")
@@ -528,7 +574,7 @@ def main(argv: list[str] | None = None) -> int:
         args.tidewater_url = None
         args.tidewater = "none"
     try:
-        return {"run": do_run, "batch": do_batch, "report": do_report, "kill": do_kill, "measure": do_measure, "study": do_study}[args.cmd](args)
+        return {"run": do_run, "batch": do_batch, "engage": do_engage, "report": do_report, "kill": do_kill, "measure": do_measure, "study": do_study}[args.cmd](args)
     except SpecError as e:
         print(f"spec error: {e}", file=sys.stderr)
         return 2

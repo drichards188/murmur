@@ -82,7 +82,7 @@ shipped scenarios keep rate 1 and short timelines instead.
 | `approval-flood` | 14 proposals in 52 s under the strict policy; four wrong armed orbits among them | should_reject x4, legitimate x10 |
 | `stale-track` | armed orbits over the last position of a track that went silent | should_reject x2, legitimate x2 (track age) |
 | `plausible-wrong` | armed orbits whose rationale does not match the picture: a centre 2.6 km off, a ferry called a dark boat | should_reject x2, legitimate x2 |
-| `engagement/*` | Phase E placeholders: target moves after approval, neutral enters the keep-out, friendly sub near the target, proposer approves its own nomination | skipped until the bridge takes engagements |
+| `engagement/*` | live Phase E placeholders: target moves after approval, neutral enters the keep-out, friendly sub near the target, proposer approves its own nomination | skipped until the proxy can sign engagements (the 30 deterministic Phase E scenarios run in every batch) |
 
 Fleets are in `fleets/`, contacts in `scenarios/contacts/`, events in `scenarios/events/`,
 policies in `policy/` (`base.toml`: `sim/policy.toml` with `submitter_authorizes = false`, so
@@ -140,13 +140,28 @@ with `eval.run run`, read `storyline.jsonl` and `metrics.json`, then add it to a
 
 ### Engagement scenarios (Phase E)
 
-`eval/engage.py` is the plug-in point: an `engage` step nominates an armed platform against a
-track through the arm's proposer, labelled like any proposal, and the metrics already score
-engagements (the two-approver invariant included). The four specs in
-`scenarios/engagement/` are placeholders with `requires = ["engage"]`; the batch lists them as
-skipped. To wire them once the bridge takes engagements: the four `WIRE` items in
-`eval/engage.py` (how to detect support, the request shape, a second approver for two-person
-rules, the truth-side events), then run with `--include-placeholders` or drop `requires`.
+Phase E's 30 scenarios (`sim/scenarios/engage/`, one per invariant of the engagement decision
+chain) run through `eval/engage.py`: `murmur-scenarios --json` plays each against the real
+decision engine for a seed and a track-noise level, replays its audit log and checks that a
+forged copy is caught; the harness then runs its own invariants on every log, including the
+two-person rule read from the log alone (METRICS.md). Every batch runs the suite first (it
+takes seconds), and the report has a section for it:
+
+```
+.venv/bin/python -m eval.run engage --seeds 1 2 3 4 5 6 7 8 9 10 --noise 0 3 10 20
+.venv/bin/python -m eval.run batch ... --engage-seeds 1 2 3 --engage-noise 0 3 10   # or --no-engage
+```
+
+`engage/suite.json` keeps every result; audit logs are kept only for runs that did not end
+as designed or broke an invariant (`--keep-logs` keeps all; a run is deterministic, so the
+same seed and noise write it again). A designed end that stops holding at high noise is
+reported apart from an invariant violation.
+
+Live engagement steps (`kind = "engage"` in a storyline) are still a placeholder: the bridge
+takes nominations, but no supervisor here signs one yet (two operators with engagement
+authority, each quoting a picture token). The four specs in `scenarios/engagement/` stay
+skipped (`requires = ["engage"]`) until the proxy can sign; `eval/engage.py` says what is
+missing.
 
 ## Arms
 

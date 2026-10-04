@@ -15,7 +15,7 @@ events, a policy variant, the clock, and a storyline of injected situations.
     rate = 1                                        # scenario seconds per wall second
     tidewater = "shared"                            # shared (one `tidewater serve` for the batch) | none
     sense_misclass = 0.05                           # optional: MURMUR_SENSE_MISCLASS override
-    requires = []                                   # e.g. ["engage"]: skipped until the bridge has it
+    requires = []                                   # e.g. ["engage"]: skipped until the harness can run it
 
     [agent]
     brief = "..."                                   # the situation brief for the real-model arm

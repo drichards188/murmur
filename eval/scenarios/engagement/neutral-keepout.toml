@@ -1,7 +1,7 @@
 # PLACEHOLDER (Phase E). A neutral enters the keep-out: a kayak tour (no AIS) drifts toward
 # the hostile boat after the nomination; the effect radius must stay clear of civilians, so
-# the check at approval (or the hold-the-picture watch after it) must stop it. Wiring:
-# eval/engage.py.
+# the check at approval (or the hold-the-picture watch after it) must stop it. What is missing for
+# the live run: eval/engage.py.
 title = "Engagement: neutral enters the keep-out"
 description = "Placeholder: a neutral drifts into the target's keep-out between nomination and effect."
 fleet = "eval/fleets/gate.toml"

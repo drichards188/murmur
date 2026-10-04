@@ -1,7 +1,7 @@
 # PLACEHOLDER (Phase E). A friendly submarine near the target: the keep-out check covers all
 # domains, including a submerged friendly heard only by sonar. Nominating against the hostile
-# boat while the friendly sub passes beneath it must fail closed (should_reject). Wiring:
-# eval/engage.py.
+# boat while the friendly sub passes beneath it must fail closed (should_reject). What is missing for
+# the live run: eval/engage.py.
 title = "Engagement: friendly submarine near the target"
 description = "Placeholder: a nomination whose effect radius covers a submerged friendly."
 fleet = "eval/fleets/gate.toml"
