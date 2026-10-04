@@ -235,10 +235,12 @@ pub use catalog::{AutopilotKind, Catalog, Domain, PlatformFacts, SensorFact};
 pub use engage::{
     AssessResult, Assessment, EffectOrder, EffectRecord, EngageOrder, EngagePreview, EngageRules,
     EngageSnapshot, EngageWindow, Engagement, EngagementEvent, Fallback, FallbackOrder,
-    ObserveStep, PictureVerdict, ResetRecord, SeenPicture, SignedPicture, StopCause, StopRecord,
+    FrozenPlan, ObserveStep, PictureToken, PictureVerdict, ResetRecord, SignedPicture, StopCause,
+    StopRecord, TrackIdentity,
 };
 pub use engine::{
-    AgentPort, DispatchOrder, Engine, EngineError, Order, Preview, StepOutcome, TaskOutcome,
+    AgentPort, DispatchOrder, Engine, EngineError, Order, PREPARED_SPACE_MAX_AGE_MS,
+    PreparedSpace, Preview, StepOutcome, TaskOutcome, prepare_space,
 };
 pub use geo::{LonLat, Polygon};
 pub use ids::{AgentId, IntentId, OperatorId, SessionId, Uid};

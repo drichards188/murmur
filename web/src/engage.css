@@ -84,6 +84,21 @@
   color: #ffd39a;
   font-size: 12px;
 }
+.eg-plan {
+  margin: 6px 0;
+  padding: 6px 8px;
+  border-left: 3px solid #8ab4ff;
+  background: rgba(138, 180, 255, 0.08);
+  font-size: 12px;
+}
+.eg-shown {
+  flex-basis: 100%;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px solid #8ab4ff;
+  background: rgba(138, 180, 255, 0.1);
+  font-size: 12px;
+}
 .eg-approve:disabled {
   opacity: 0.45;
 }

@@ -290,6 +290,11 @@ pub struct WorldSnapshot {
     /// always goes to a human. Absent when empty.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub engaged: BTreeMap<Uid, IntentId>,
+    /// Engine-filled for an engagement's signature (and its hold while signatures wait):
+    /// the plan being signed, frozen by the first signature. Its checks read this plan, not a
+    /// fresh preview. Absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<Box<crate::engage::FrozenPlan>>,
 }
 
 /// A decision's inputs as logged: the [`WorldSnapshot`] with the area set replaced by its
@@ -312,6 +317,9 @@ pub struct LoggedInputs {
     /// The intent's vehicles with an engagement in play (absent when none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub engaged: BTreeMap<Uid, IntentId>,
+    /// The plan an engagement signature is on (absent otherwise).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<Box<crate::engage::FrozenPlan>>,
 }
 
 impl LoggedInputs {
@@ -333,6 +341,7 @@ impl LoggedInputs {
             },
             tracks: world.tracks.clone(),
             engaged: world.engaged.clone(),
+            plan: world.plan.clone(),
         }
     }
 
@@ -372,6 +381,7 @@ impl LoggedInputs {
             space,
             tracks: self.tracks.clone(),
             engaged: self.engaged.clone(),
+            plan: self.plan.clone(),
         }
     }
 }
@@ -413,6 +423,7 @@ impl WorldSnapshot {
             tracks: self.tracks.clone(),
             // engine-owned: filled from its own intents
             engaged: BTreeMap::new(),
+            plan: None,
         }
     }
 
@@ -431,7 +442,20 @@ impl WorldSnapshot {
         oracle: &dyn TerrainOracle,
         cfg: &RulesConfig,
     ) -> WorldSnapshot {
+        self.for_intent_plan(spec, oracle, cfg, None)
+    }
+
+    /// [`Self::for_intent_with`] for an engagement signature on `plan`: the plan goes into
+    /// the inputs (its checks read it) and the terrain point is the plan's effect point.
+    pub fn for_intent_plan(
+        &self,
+        spec: &IntentSpec,
+        oracle: &dyn TerrainOracle,
+        cfg: &RulesConfig,
+        plan: Option<&crate::engage::FrozenPlan>,
+    ) -> WorldSnapshot {
         let mut w = self.subset_for(spec);
+        w.plan = plan.map(|p| Box::new(p.clone()));
         if matches!(spec.task, Task::Engage { .. }) {
             w.terrain = match crate::engage::terrain_point(spec, &w, cfg) {
                 None => TerrainInputs::NotNeeded,

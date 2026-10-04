@@ -246,27 +246,31 @@ contacts `effect.rs`; console `EngagePanel`, `EngageCard`, `engageLayers.ts`):
    approvers; replay holds the same floor). Only an `EngagementAuthority` signs one
    (`Engine::approve_engagement`); it exists only in a session opened with engagement
    authority (`Grants`, logged with the session; the bridge grants it to
-   `MURMUR_ENGAGE_OPERATORS`). Each signature re-runs the checks, stores its own snapshot,
-   and carries the preview its signer was shown (`seen`; refused when older than
-   `seen_max_age_s` or not the engine's effect point); the first N-1 are
-   `approval.concurred`, the Nth `approval.granted`. When the track changes between
-   signatures (another identity or declaration, or beyond the deviation tolerance from an
-   earlier signature's prediction), at the next signature or in the loop's per-second hold
-   of waiting signatures, every signature is dropped (`approval.reset`) and must be given
-   again. Compile-fail doctests: no forged, cloned or deserialized engagement authority, a
-   plain operator authority is not one, and an `AgentPort` has no approve or abort method
-   for engagements.
+   `MURMUR_ENGAGE_OPERATORS`). A signer first asks for the picture (`issue_picture`, logged
+   `picture.issued`: a token bound to their session with the plan and the track's identity,
+   valid `token_ttl_s`) and the signature quotes it. The first signature freezes the plan
+   it was shown (effect point and time, radius, window, platform, fallback, the target's
+   identity); every later one signs that exact plan; the first N-1 are
+   `approval.concurred`, the Nth `approval.granted`, whose snapshot carries the plan. At
+   each later signature and every second while signatures wait the checks run on the plan
+   (track predicted within tolerance at the plan's point and time, zone, no-strike and
+   keep-outs there, the platform still able to make it, the same identity and declaration,
+   all signatures within `max_signing_s`); when it stops holding, every signature is dropped
+   with it (`approval.reset`) and a new plan must be signed. Compile-fail doctests: no
+   forged, cloned or deserialized engagement authority, a plain operator authority is not
+   one, and an `AgentPort` has no approve or abort method for engagements.
 5. **Hold the picture**: the final approval stores an `EngageSnapshot` (track facts, the
    preview, the platform's link). `Engine::step_engagements` (the bridge's 1 Hz loop)
    re-checks it every second (`engage.picture`): declared, reclassified, recency, deviation
    from the snapshot's prediction, keep-outs at the effect time, the platform's link against
-   the approval's assumption, the window and lateness, and first that the last check was at
-   most `max_picture_gap_s` ago (`picture_gap`: a stalled loop aborts, never resumes; the
+   the approval's assumption, GNSS navigation (`platform_nav`), the window and lateness, and
+   first that the last check was at most `max_picture_gap_s` ago (`picture_gap`: a stalled loop aborts, never resumes; the
    terrain fetch runs beside the loop). A failure voids it before dispatch and aborts it
    after (`engage.stopped`, cause `picture`), with the reason. While an engagement is in
    play (pending, approved, dispatched) on a vehicle, an agent's order for that vehicle
    always goes to a human; an operator's own order runs and supersedes it (cause
-   `superseded`, by that intent, `fallback: null`).
+   `superseded`, by that intent, `fallback: null`), and approving an order that would stop
+   one needs an acknowledgement (logged `supersedes`).
 6. **Execute with abort**: the platform is sent to loiter at the predicted effect point
    (an orbit through the task layer: no homing). Any operator may abort until the effect
    (`POST /api/intents/{id}/abort`); every stop commands the recorded fallback. The effect
@@ -295,15 +299,18 @@ State machine additions: `dispatched -release-> effected -complete-> done`,
 `dispatched -abort-> aborted` (terminal). `finish` and `dispatch` refuse engagements.
 
 **Adversarial scenarios** (`sim/scenarios/engage/`, format in its README; runner
-`murmur-scenarios`, library `murmur_decide::scenario`): 24 files, one or more per invariant
+`murmur-scenarios`, library `murmur_decide::scenario`): 30 files, one or more per invariant
 (agent authorizes, proposer approves, double signature, neutral enters the keep-out,
 reclassified, undeclared, target moves, link cut, friendly sub near and closing, stale
 track, outside the zone, no-strike, inferred suspect, operator abort, persists, unarmed,
 deleted signature, window too short, a policy file without the engagement tier, the target
 moving between signatures and stale previews, an agent's order on the engaging platform, a
-10 s gap in holding the picture, approvers stripped from the log). Each ends in reject,
-void or abort as designed and replays; the tampered logs are caught. Seeded noise turns
-each into a batch (Phase G).
+10 s gap in holding the picture, approvers stripped from the log, the effect point sliding
+and the target reversing between signatures, a transient reclassification, a picture taken
+before a reclassification, an approval that would stop an engagement, GNSS lost en route).
+Each ends in reject, void or abort as designed and replays; the tampered logs (including a
+loosened logged policy) are caught. Seeded noise (independent around the truth each step)
+turns each into a batch (Phase G); seeds 1, 2, 3, 7, 9 and 42 all pass.
 
 Live demo: `sim/fleets/engage-demo.toml` (stand-in switchblade, magura, ugv_armed, corsair,
 x10) with `sim/scenarios/golden-gate-engage.toml` (the fast boat holding west of the bridge,

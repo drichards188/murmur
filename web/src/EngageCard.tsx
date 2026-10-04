@@ -8,9 +8,11 @@ import {
   fmtRel,
   isEngage,
   previewOf,
+  requestPicture,
   RUNNING,
   STATE_LABEL,
   type EngagePreview,
+  type PictureToken,
 } from './engage'
 import './engage.css'
 import { distanceM } from './geo'
@@ -163,12 +165,14 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
   const expired = i.expires_t != null && i.expires_t <= now()
   const worse = (live?.changed ?? []).filter((c) => c.worse)
   const drift = live?.track_drift_m ?? null
-  // the preview on screen, and how old it is: a signature carries it, and the engine refuses
-  // one that is stale or no longer its picture
+  // how old the live checks on screen are; the signature itself quotes a picture token the
+  // engine issues when asked (look, then sign)
   const ageS = live ? (now() - live.t) / 1000 : null
-  const maxAgeS = view?.seen_max_age_s ?? 15
-  const stale = ageS == null || ageS > maxAgeS
+  const stale = ageS == null || ageS > 10
   const livePasses = live?.passed === true && live.preview != null
+  const plan = view?.plan ?? null
+  const [shown, setShown] = useState<PictureToken | null>(null)
+  const shownLeft = shown ? (shown.expires_t - now()) / 1000 : 0
   const signHint = isProposer
     ? `You (${operator}) proposed this: the proposer may not approve it (two-person rule).`
     : !hasAuthority
@@ -180,19 +184,31 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
           : !livePasses
             ? 'Some check fails on the world now: it cannot be signed as it stands.'
             : stale
-              ? `The preview on screen is ${Math.round(ageS ?? 0)} s old (limit ${maxAgeS} s): wait for a fresh one.`
-              : `Signing as ${operator}: signature ${signed.length + 1} of ${needed}, on the preview shown (${Math.round(ageS ?? 0)} s old).`
+              ? `The checks on screen are ${Math.round(ageS ?? 0)} s old: wait for fresh ones.`
+              : plan
+                ? `Signing as ${operator}: signature ${signed.length + 1} of ${needed}, on the plan ${plan.by} froze. Look first: the engine shows you exactly what you sign.`
+                : `Signing as ${operator}: signature 1 of ${needed}; your signature freezes the plan you are shown. Look first.`
   const canApprove = canSign && livePasses && !stale
+
+  // look: the engine shows the plan this signature would be on, and the track now
+  const look = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      setShown(await requestPicture(i.id))
+    } catch (e) {
+      setError((e as Error).message)
+    }
+    setBusy(false)
+  }
 
   const act = async (action: 'approve' | 'reject') => {
     setBusy(true)
     setError(null)
     try {
-      const seen =
-        action === 'approve' && live?.preview
-          ? { t: live.t, effect_point: live.preview.effect_point, effect_t: live.preview.effect_t }
-          : undefined
-      const r = await intentAction(i.id, action, note, seen)
+      const extra = action === 'approve' && shown ? { token: shown.id } : undefined
+      setShown(null)
+      const r = await intentAction(i.id, action, note, extra)
       const last = r.intent.history[r.intent.history.length - 1]
       if (action === 'reject') onDone(`i${i.id} engagement rejected by ${getOperator()}`, 'ok')
       else if (r.intent.state === 'pending_approval') onDone(`i${i.id} signed by ${getOperator()} (${(r.intent.concurrences?.length ?? 0)} of ${needed}); another approver must sign`, 'ok')
@@ -292,6 +308,11 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
             Signatures of {view.reset.dropped.join(', ')} dropped {fmtRel(view.reset.t - now())}: {view.reset.reason}. They must sign again on the picture as it is now.
           </p>
         )}
+        {plan && (
+          <p className="eg-plan">
+            Plan frozen by {plan.by}&apos;s signature {fmtRel(plan.t - now())}: effect at {ll(plan.effect_point)} {fmtRel(plan.effect_t - now())}, radius {Math.round(plan.effect_radius_m)} m, on {plan.track.id} ({plan.track.identity ?? 'unclassified'}, declared by {plan.track.declared_by ?? 'nobody'}). Every signature is on this exact plan; if it stops holding, the signatures are dropped.
+          </p>
+        )}
         {(view?.signatures ?? []).map((s) => (
           <p key={s.by} className="muted">
             {s.by} signed {fmtRel(s.t - now())} on the effect point {ll(s.effect_point)}.
@@ -310,9 +331,25 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
         <button className="ix-reject" disabled={busy || expired} onClick={() => act('reject')}>
           Reject
         </button>
-        <button className="ix-approve eg-approve" disabled={busy || expired || !canApprove} onClick={() => act('approve')} title={signHint}>
-          Approve {signed.length + 1}/{needed}
-        </button>
+        {shown ? (
+          <button className="ix-approve eg-approve" disabled={busy || expired || !canApprove || shownLeft <= 0} onClick={() => act('approve')} title={signHint}>
+            Sign this plan {signed.length + 1}/{needed}
+          </button>
+        ) : (
+          <button className="ix-approve eg-approve" disabled={busy || expired || !canApprove} onClick={look} title={signHint}>
+            Look to sign {signed.length + 1}/{needed}
+          </button>
+        )}
+        {shown && (
+          <div className="eg-shown" role="status">
+            <b>You would sign</b>: effect at {ll(shown.plan.effect_point)} {fmtRel(shown.plan.effect_t - now())}, radius {Math.round(shown.plan.effect_radius_m)} m, {platform}, fallback {FALLBACK_LABEL[p.fallback]}; {shown.track.id} {shown.track.identity ?? 'unclassified'}, {shown.track.affiliation} declared by {shown.track.declared_by ?? 'nobody'}.{' '}
+            {shown.frozen ? `The plan ${plan?.by ?? ''} froze.` : 'Your signature freezes this plan.'}{' '}
+            {shownLeft > 0 ? `Valid ${Math.ceil(shownLeft)} s.` : 'Expired: look again.'}{' '}
+            <button className="ghost mini" onClick={() => setShown(null)}>
+              Cancel
+            </button>
+          </div>
+        )}
         {error && <p className="error ix-error">{error}</p>}
       </footer>
     </article>

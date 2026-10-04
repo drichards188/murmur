@@ -69,9 +69,14 @@ pub struct Scenario {
     /// "may not approve it".
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expect_refusals: Vec<String>,
+    /// The signatures must have been dropped at least once (`approval.reset`): the frozen
+    /// plan stopped holding.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub expect_reset: bool,
     /// After the run, attack the log and require replay to catch it:
     /// `proposer_approval`, `agent_approval`, `suppress_void`, `edit_snapshot`,
-    /// `drop_signature`, `edit_effect`, `strip_approvers`, `drop_reset`, `agent_order_auto`.
+    /// `drop_signature`, `edit_effect`, `strip_approvers`, `drop_reset`, `agent_order_auto`,
+    /// `drop_ack`, `loosen_policy`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tamper: Option<String>,
     /// Seconds to run (default: the last step plus 10).
@@ -219,16 +224,20 @@ pub enum Action {
         #[serde(default)]
         window_s: Option<u32>,
     },
+    /// An operator with engagement authority asks for the picture of the last nomination
+    /// (a picture token, as the console does before a signature); the next `approve` by them
+    /// quotes it.
+    Look { by: String },
     /// An operator signs the last nomination (with engagement authority if they have it;
-    /// without it the engine refuses), with the preview a console would have shown: the
-    /// engine's on the world now, `seen_age_s` old and `seen_offset_m` metres north of it
-    /// (to play a signer looking at a stale or different picture).
-    Approve {
+    /// without it the engine refuses), quoting the picture token from their last `look`, or
+    /// one asked for now (the console's look-then-sign in one step).
+    Approve { by: String },
+    /// An operator approves the last `task` (an order waiting in the inbox); with
+    /// `acknowledge`, accepting that its dispatch stops an engagement in play.
+    ApproveTask {
         by: String,
         #[serde(default)]
-        seen_age_s: Option<u32>,
-        #[serde(default)]
-        seen_offset_m: Option<f64>,
+        acknowledge: bool,
     },
     /// Another order on some of our vehicles (hold or rtl) from an operator (`by`) or an
     /// agent (`agent`, with a rationale). Dispatched at once if its tier lets it run (as on
@@ -278,7 +287,7 @@ pub enum Action {
         silent: Option<bool>,
     },
     /// One of our vehicles changes: position, velocity, link (silent: no reports; a report
-    /// interval: the link class changed).
+    /// interval: the link class changed), navigation source (`gnss`, `dead_reckoning`).
     Vehicle {
         uid: String,
         #[serde(default)]
@@ -289,6 +298,8 @@ pub enum Action {
         silent: Option<bool>,
         #[serde(default)]
         report_interval_ms: Option<u32>,
+        #[serde(default)]
+        nav: Option<crate::world::NavSource>,
     },
     /// Check the last nomination now.
     Expect {
@@ -337,8 +348,15 @@ pub struct ScenarioResult {
     pub replay_events: usize,
     pub replay_mismatches: Vec<String>,
     pub tamper: Option<String>,
+    /// Replay caught the forged log (none: no tamper, or nothing in this run's log for it to
+    /// edit, see `tamper_not_applicable`).
     pub tamper_detected: Option<bool>,
+    /// Why the tamper had nothing to edit in this run's log (a seeded run can end
+    /// differently from the designed one).
+    pub tamper_not_applicable: Option<String>,
     pub tamper_mismatches: Vec<String>,
+    /// How many times the signatures were dropped (`approval.reset`).
+    pub resets: usize,
     /// The audit log, for the harness to keep.
     #[serde(skip)]
     pub log: String,
@@ -382,6 +400,7 @@ pub fn run_file(path: &Path, root: &Path, opts: &RunOptions) -> Result<ScenarioR
 
 struct VehicleSim {
     def: VehicleDef,
+    nav: crate::world::NavSource,
     pos: LonLat,
     vel: [f64; 2],
     home: LonLat,
@@ -395,6 +414,8 @@ struct VehicleSim {
 
 struct TrackSim {
     facts: TrackFacts,
+    /// Where the contact really is (the estimate is this plus the run's noise).
+    truth: LonLat,
     silent: bool,
 }
 
@@ -476,6 +497,7 @@ pub fn run(
             v.uid.clone(),
             VehicleSim {
                 def: v.clone(),
+                nav: crate::world::NavSource::Gnss,
                 pos: at,
                 vel: v.velocity,
                 home: at,
@@ -507,20 +529,23 @@ pub fn run(
     for s in 0..=end_s {
         let now = T0.plus_ms(i64::from(s) * 1000);
         clock.set(now);
-        // kinematics: tracks along their velocity, detected unless silent
+        // kinematics: the contacts move along their velocity; a detection estimates where
+        // one is (with independent noise around the truth each time), unless silent
         for (id, tr) in &mut tracks {
             let [e, n] = tr.facts.velocity_mps.unwrap_or([0.0, 0.0]);
-            let p = offset(tr.facts.position.value, e, n);
+            if s > 0 {
+                tr.truth = offset(tr.truth, e, n);
+            }
             let silent = tr.silent || target_out.as_deref() == Some(id.as_str());
             if s > 0 && !silent {
                 let noisy = if opts.track_noise_m > 0.0 && opts.seed.is_some() {
                     offset(
-                        p,
+                        tr.truth,
                         rng.gauss() * opts.track_noise_m,
                         rng.gauss() * opts.track_noise_m,
                     )
                 } else {
-                    p
+                    tr.truth
                 };
                 tr.facts.position = Fact::new(noisy, now);
                 tr.facts.last_seen_t = now;
@@ -582,7 +607,7 @@ pub fn run(
         let outcome = if s < extra.stall_until {
             crate::engine::StepOutcome::default()
         } else {
-            engine.step_engagements(&world)
+            engine.step_engagements(&world, &terrain)
         };
         for (id, e) in &outcome.errors {
             failures.push(format!("t={s}: step_engagements {id}: {e}"));
@@ -677,6 +702,13 @@ pub fn run(
         }
     }
     let text = log.text();
+    let resets = text
+        .lines()
+        .filter(|l| l.contains("\"type\":\"approval.reset\""))
+        .count();
+    if sc.expect_reset && resets == 0 {
+        failures.push("expected the signatures to be dropped (approval.reset), they never were".into());
+    }
     let report = replay::replay_str(&text).map_err(|e| setup(e.to_string()))?;
     let replay_mismatches: Vec<String> = report
         .mismatches
@@ -686,6 +718,7 @@ pub fn run(
     if !report.ok() {
         failures.push(format!("replay: {}", replay_mismatches.join("; ")));
     }
+    let mut tamper_not_applicable = None;
     let (tamper_detected, tamper_mismatches) = match &sc.tamper {
         None => (None, Vec::new()),
         Some(kind) => match tamper(&text, kind) {
@@ -693,7 +726,11 @@ pub fn run(
                 failures.push(format!("tamper {kind}: {e}"));
                 (Some(false), Vec::new())
             }
-            Ok(forged) => {
+            Ok(Tampered::NotApplicable(why)) => {
+                tamper_not_applicable = Some(why);
+                (None, Vec::new())
+            }
+            Ok(Tampered::Forged(forged)) => {
                 let r = replay::replay_str(&forged).map_err(|e| setup(e.to_string()))?;
                 let ms: Vec<String> = r
                     .mismatches
@@ -726,7 +763,9 @@ pub fn run(
         replay_mismatches,
         tamper: sc.tamper.clone(),
         tamper_detected,
+        tamper_not_applicable,
         tamper_mismatches,
+        resets,
         log: text,
     })
 }
@@ -735,6 +774,7 @@ fn track_sim(t: &TrackDef) -> TrackSim {
     let seen = T0.plus_ms(-((t.age_s * 1000.0).round() as i64));
     let speed = t.velocity[0].hypot(t.velocity[1]);
     TrackSim {
+        truth: LonLat::new(t.at[0], t.at[1]),
         facts: TrackFacts {
             position: Fact::new(LonLat::new(t.at[0], t.at[1]), seen),
             alt_m: None,
@@ -784,7 +824,7 @@ fn snapshot(
                 position: Some(Fact::new(v.pos, t)),
                 home: Some(Fact::new(v.home, T0)),
                 battery_pct: Some(Fact::new(v.def.battery, t)),
-                nav_source: None,
+                nav_source: Some(Fact::new(v.nav, t)),
                 report_interval_ms: Some(v.interval),
                 velocity_mps: Some(Fact::new(v.vel, t)),
                 platform: p,
@@ -893,33 +933,51 @@ fn act(
                 Err(e) => refusals.push(e.to_string()),
             }
         }
-        Action::Approve {
-            by,
-            seen_age_s,
-            seen_offset_m,
-        } => {
+        Action::Look { by } => {
+            let (Some(id), Some(sess)) = (*last, session(by)) else {
+                return failures.push(format!("t={s}: look: no nomination or unknown operator {by}"));
+            };
+            let Some(auth) = sess.engagement_authority() else {
+                refusals.push(format!("{by} has no engagement authority: no picture to sign"));
+                return;
+            };
+            let w = world(tracks, vehicles);
+            match engine.issue_picture(id, auth, &w) {
+                Ok(t) => {
+                    extra.looked.insert(by.clone(), t.id);
+                }
+                Err(e) => refusals.push(e.to_string()),
+            }
+        }
+        Action::Approve { by } => {
             let (Some(id), Some(sess)) = (*last, session(by)) else {
                 return failures.push(format!("t={s}: approve: no nomination or unknown operator {by}"));
             };
             let w = world(tracks, vehicles);
-            // what a console shows: the engine's preview on the world now
-            let shown = engine
-                .intent(id)
-                .and_then(|i| engage::preview(i.spec(), &w.subset_for(i.spec()), &engine.policy().rules).ok());
-            let seen = shown.map(|p| engage::SeenPicture {
-                t: now.plus_ms(-i64::from(seen_age_s.unwrap_or(0)) * 1000),
-                effect_point: offset(p.effect_point, 0.0, seen_offset_m.unwrap_or(0.0)),
-                effect_t: Some(p.effect_t),
-            });
-            let r = match (sess.engagement_authority(), seen) {
-                (Some(auth), Some(seen)) => engine
-                    .approve_engagement(id, auth, None, seen, &w, terrain)
-                    .map(|_| ()),
-                (Some(_), None) => {
-                    refusals.push("no preview to show the signer".into());
-                    Ok(())
+            let r = match sess.engagement_authority() {
+                Some(auth) => {
+                    // the picture from their last look, or one now
+                    let token = match extra.looked.remove(by) {
+                        Some(t) => Ok(t),
+                        None => engine.issue_picture(id, auth, &w).map(|t| t.id),
+                    };
+                    token.and_then(|t| engine.approve_engagement(id, auth, None, t, &w, terrain).map(|_| ()))
                 }
-                (None, _) => engine.approve(id, sess.authority(), None, &w, terrain).map(|_| ()),
+                None => engine.approve(id, sess.authority(), None, &w, terrain).map(|_| ()),
+            };
+            if let Err(e) = r {
+                refusals.push(e.to_string());
+            }
+        }
+        Action::ApproveTask { by, acknowledge } => {
+            let (Some(id), Some(sess)) = (extra.last_task, session(by)) else {
+                return failures.push(format!("t={s}: approve_task: no task or unknown operator {by}"));
+            };
+            let w = world(tracks, vehicles);
+            let r = if *acknowledge {
+                engine.approve_acknowledging(id, sess.authority(), None, &w, terrain)
+            } else {
+                engine.approve(id, sess.authority(), None, &w, terrain)
             };
             if let Err(e) = r {
                 refusals.push(e.to_string());
@@ -1045,7 +1103,8 @@ fn act(
                 })
             });
             if let Some(p) = at {
-                t.facts.position = Fact::new(LonLat::new(p[0], p[1]), now);
+                t.truth = LonLat::new(p[0], p[1]);
+                t.facts.position = Fact::new(t.truth, now);
                 t.facts.last_seen_t = now;
             }
             if let Some(v) = velocity {
@@ -1084,6 +1143,7 @@ fn act(
             velocity,
             silent,
             report_interval_ms,
+            nav,
         } => {
             let Some(v) = vehicles.get_mut(uid) else {
                 return failures.push(format!("t={s}: unknown vehicle {uid}"));
@@ -1099,6 +1159,9 @@ fn act(
             }
             if let Some(i) = report_interval_ms {
                 v.interval = *i;
+            }
+            if let Some(n) = nav {
+                v.nav = *n;
             }
         }
         Action::Expect {
@@ -1163,6 +1226,8 @@ struct Extra {
     stall_until: u32,
     /// The last `task` step's intent.
     last_task: Option<IntentId>,
+    /// The picture token each operator's last `look` got.
+    looked: BTreeMap<String, u64>,
 }
 
 fn dispatch_approved(
@@ -1227,6 +1292,22 @@ fn dispatch_approved(
                     v.goal = Some(o.effect_point);
                     v.orbit = true;
                 }
+                // as on the bridge: older orders still waiting for this vehicle are void
+                let stale: Vec<IntentId> = engine
+                    .intents()
+                    .filter(|i| {
+                        i.id() != id
+                            && !matches!(i.spec().task, Task::Engage { .. })
+                            && matches!(i.state(), State::PendingApproval | State::Approved)
+                            && i.spec().uids.contains(&o.uid)
+                    })
+                    .map(|i| i.id())
+                    .collect();
+                for other in stale {
+                    if let Err(e) = engine.void(other, &format!("superseded: {id} was dispatched to vehicle {}", o.uid)) {
+                        failures.push(format!("t={s}: void {other}: {e}"));
+                    }
+                }
                 engaging.insert(id, (o.uid.to_string(), o.effect_point));
             }
             Ok(_) => failures.push(format!("t={s}: {id} dispatched as something else")),
@@ -1237,10 +1318,28 @@ fn dispatch_approved(
 
 // ---- log attacks ------------------------------------------------------------------------
 
+/// A log attack's result.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Tampered {
+    /// The forged log, its chain recomputed.
+    Forged(String),
+    /// The log has nothing this attack edits (no reset to hide, no signature to drop...).
+    NotApplicable(String),
+}
+
 /// Attack a log the way a tamperer who can write the file would, recomputing `seq` and the
-/// hash chain so the chain itself verifies: only recomputation can catch it.
-pub fn tamper(text: &str, kind: &str) -> Result<String, String> {
-    let mut events = parse_log(text).map_err(|e| e.to_string())?;
+/// hash chain so the chain itself verifies: only recomputation can catch it. `Err`: an
+/// unknown attack.
+pub fn tamper(text: &str, kind: &str) -> Result<Tampered, String> {
+    match forge(text, kind) {
+        Ok(forged) => Ok(Tampered::Forged(forged)),
+        Err(e) if e.starts_with("unknown tamper") || e.starts_with("log:") => Err(e),
+        Err(e) => Ok(Tampered::NotApplicable(e)),
+    }
+}
+
+fn forge(text: &str, kind: &str) -> Result<String, String> {
+    let mut events = parse_log(text).map_err(|e| format!("log: {e}"))?;
     let engage_intent = events.iter().find_map(|e| match &e.body {
         EventBody::IntentCreated { intent } if matches!(intent.task, Task::Engage { .. }) => {
             Some(intent.clone())
@@ -1331,6 +1430,40 @@ pub fn tamper(text: &str, kind: &str) -> Result<String, String> {
             }
             if !done {
                 return Err("no decision on the agent's order".into());
+            }
+        }
+        "drop_ack" => {
+            // an approval that stopped an engagement, without saying so
+            let mut done = false;
+            for e in &mut events {
+                match &mut e.body {
+                    EventBody::ApprovalGranted { supersedes, .. }
+                    | EventBody::ApprovalConcurred { supersedes, .. }
+                        if !supersedes.is_empty() =>
+                    {
+                        supersedes.clear();
+                        done = true;
+                    }
+                    _ => {}
+                }
+            }
+            if !done {
+                return Err("no acknowledged approval to strip".into());
+            }
+        }
+        "loosen_policy" => {
+            // a log whose policy says picture tokens are good for a day
+            let mut done = false;
+            for e in &mut events {
+                if let EventBody::RunStarted { policy, .. } = &mut e.body {
+                    let mut r = policy.rules.engage_rules();
+                    r.token_ttl_s = 86_400.0;
+                    policy.rules.engage = Some(r);
+                    done = true;
+                }
+            }
+            if !done {
+                return Err("no run.started".into());
             }
         }
         "drop_reset" => {

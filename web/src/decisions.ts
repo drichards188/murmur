@@ -327,20 +327,17 @@ export interface ActionResult {
   dispatched: boolean
 }
 
-/** What an engagement's signer was shown: the preview's effect point and time, and when the
- *  bridge computed it. The engine refuses the signature when that is stale or no longer its
- *  picture. */
-export interface SeenPicture {
-  t: number
-  effect_point: [number, number]
-  effect_t: number
+/** What an approval adds beyond the note: an engagement's signature quotes the picture token
+ *  its signer was shown; an approval whose dispatch stops an engagement in play says so. */
+export interface ApproveExtra {
+  token?: number
+  acknowledge_supersede?: boolean
 }
 
 /** approve | reject | cancel. Throws an Error with the bridge's reason. */
-export async function intentAction(id: number, action: 'approve' | 'reject' | 'cancel', note: string, seen?: SeenPicture): Promise<ActionResult> {
-  const body: { note?: string; seen?: SeenPicture } = {}
+export async function intentAction(id: number, action: 'approve' | 'reject' | 'cancel', note: string, extra?: ApproveExtra): Promise<ActionResult> {
+  const body: { note?: string } & ApproveExtra = { ...(extra ?? {}) }
   if (note.trim()) body.note = note.trim()
-  if (seen) body.seen = seen
   const res = await fetch(`/api/intents/${id}/${action}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-murmur-operator': getOperator() },

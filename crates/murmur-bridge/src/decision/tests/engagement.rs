@@ -9,7 +9,7 @@
 //! on the target, the dispatch delay is zero); the full timeline is the decision layer's
 //! scenarios (`sim/scenarios/engage`).
 
-use murmur_decide::{Affiliation, SeenPicture};
+use murmur_decide::Affiliation;
 
 use super::*;
 use crate::tracks::Tracks;
@@ -172,27 +172,17 @@ impl Erig {
         }
     }
 
-    /// What the console shows a signer: the live preview of the pending nomination.
-    fn seen(&self, id: IntentId) -> Option<SeenPicture> {
-        let inbox = self.r.d.inbox_json();
-        let p = inbox["pending"]
-            .as_array()?
-            .iter()
-            .find(|p| p["intent"]["id"] == id.0 || p["id"] == id.0)?
-            .clone();
-        let live = &p["engage"]["live"];
-        Some(SeenPicture {
-            t: serde_json::from_value(live["t"].clone()).ok()?,
-            effect_point: serde_json::from_value(live["preview"]["effect_point"].clone()).ok()?,
-            effect_t: serde_json::from_value(live["preview"]["effect_t"].clone()).ok(),
-        })
+    /// What the console asks for before a signature: the picture token (the plan and the
+    /// track as the engine shows them to this operator).
+    fn look(&self, who: &str, id: IntentId) -> Result<Value, DecisionError> {
+        self.r.d.issue_picture(&op(who), id.0)
     }
 
-    /// A signature as the console sends it: with the preview it displays.
+    /// A signature as the console sends it: look, then sign quoting the token.
     async fn sign(&self, who: &str, id: IntentId) -> Result<Outcome, DecisionError> {
-        let seen = self.seen(id);
-        assert!(seen.is_some(), "no live preview for {id}");
-        self.r.d.approve_seen(&op(who), id.0, None, seen).await
+        // the console shows what refused the look (no authority, the proposer, signed)
+        let token = self.look(who, id)?["id"].as_u64();
+        self.r.d.approve_with(&op(who), id.0, None, token, false).await
     }
 
     /// Nominate (op-1) and sign twice (op-2, op-3): approved and dispatched.
@@ -334,33 +324,52 @@ async fn the_proposer_with_authority_still_cannot_sign() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_signature_carries_the_preview_it_was_shown() {
+async fn a_signature_quotes_the_picture_token_it_was_shown() {
     let e = engage_rig();
     e.r.vehicle(1, Firmware::Copter, "fpv", TARGET);
     sleep(Duration::from_millis(500)).await;
     e.picture().await;
     let id = e.r.d.submit(&op("op-1"), e.nomination("return")).await.expect("nominated").id;
-    // none: refused before the engine
-    let err = e.r.d.approve_seen(&op("op-2"), id.0, None, None).await.expect_err("no preview");
+    // no engagement authority: nothing to sign
+    let err = e.look("op-1", id).expect_err("no authority");
+    assert_eq!(err.status, 403, "{}", err.detail);
+    // no token: refused before the engine
+    let err = e.r.d.approve_with(&op("op-2"), id.0, None, None, false).await.expect_err("no token");
     assert_eq!(err.status, 400, "{}", err.detail);
-    // one a minute old: refused by the engine, logged
-    let mut old = e.seen(id).expect("live preview");
-    old.t = old.t.plus_ms(-60_000);
-    let err = e.r.d.approve_seen(&op("op-2"), id.0, None, Some(old)).await.expect_err("stale");
-    assert_eq!(err.status, 409, "{}", err.detail);
-    assert!(err.detail.contains("look again"), "{}", err.detail);
-    // one with another effect point: refused
-    let mut off = e.seen(id).expect("live preview");
-    off.effect_point = murmur_decide::engage::offset(off.effect_point, 0.0, 500.0);
-    let err = e.r.d.approve_seen(&op("op-2"), id.0, None, Some(off)).await.expect_err("moved");
+    // what op-2 is shown: the plan a first signature freezes, and the track
+    let shown = e.look("op-2", id).expect("token");
+    assert_eq!(shown["frozen"], false, "{shown}");
+    assert!(shown["plan"]["effect_point"].is_array(), "{shown}");
+    assert_eq!(shown["track"]["identity"], "small_fast_boat", "{shown}");
+    // another signer's token
+    let theirs = e.look("op-3", id).expect("token");
+    let err = e
+        .r
+        .d
+        .approve_with(&op("op-2"), id.0, None, theirs["id"].as_u64(), false)
+        .await
+        .expect_err("not mine");
     assert_eq!(err.status, 409, "{}", err.detail);
     assert_eq!(e.r.state(id), State::PendingApproval);
-    // the one on screen: signed, 1 of 2, and the console sees the signature's picture
+    // the one just shown: signed, 1 of 2; the plan is frozen and the console shows it
     e.sign("op-2", id).await.expect("signs");
     let inbox = e.r.d.inbox_json();
     let p = &inbox["pending"][0];
     assert_eq!(p["engage"]["signatures"][0]["by"], "op-2", "{p}");
-    assert!(p["engage"]["signatures"][0]["effect_point"].is_array(), "{p}");
+    assert_eq!(p["engage"]["plan"]["by"], "op-2", "{p}");
+    let next = e.look("op-3", id).expect("token");
+    assert_eq!(next["frozen"], true, "{next}");
+    assert_eq!(next["plan"]["effect_point"], p["engage"]["plan"]["effect_point"], "{next}");
+    // 20 s later that token has expired: refused by the engine, and logged
+    e.r.clock.advance_ms(20_000);
+    let err = e
+        .r
+        .d
+        .approve_with(&op("op-3"), id.0, None, next["id"].as_u64(), false)
+        .await
+        .expect_err("expired");
+    assert_eq!(err.status, 409, "{}", err.detail);
+    assert!(err.detail.contains("expired"), "{}", err.detail);
     let rep = replay::replay_str(&e.r.log.text()).expect("parses");
     assert!(rep.ok(), "{:?}", rep.mismatches);
     assert_eq!(rep.concurrences, 1);

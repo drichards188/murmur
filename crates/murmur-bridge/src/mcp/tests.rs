@@ -1179,11 +1179,30 @@ async fn an_agent_order_on_an_engaging_platform_waits_for_a_human() {
     let v = r.d.intent_json(held).expect("intent");
     assert_eq!(v["intent"]["policy"]["rule"], "(engagement in play)", "{v}");
     assert_eq!(r.events("engage.stopped"), 0);
-    // an operator's own hold still runs, and supersedes the engagement: no fallback
-    let req: crate::decision::IntentRequest =
-        serde_json::from_value(json!({ "task": "hold", "uids": [2] })).expect("request");
-    let o = r.d.submit(&OperatorId::new("op-1"), req).await.expect("operator hold");
+    // an operator approving the agent's hold must acknowledge that it stops the engagement
+    let err = r
+        .d
+        .approve_with(&OperatorId::new("op-1"), held, None, None, false)
+        .await
+        .expect_err("not acknowledged");
+    assert_eq!(err.status, 409, "{}", err.detail);
+    assert!(err.detail.contains("acknowledge"), "{}", err.detail);
+    assert_eq!(r.state(held), State::PendingApproval);
+    assert_eq!(r.state(eng), State::PendingApproval);
+    let o = r
+        .d
+        .approve_with(&OperatorId::new("op-1"), held, None, None, true)
+        .await
+        .expect("acknowledged");
     assert!(o.dispatched(), "{}", o.intent);
+    let granted = r
+        .log
+        .lines()
+        .into_iter()
+        .find(|l| l.contains("\"type\":\"approval.granted\""))
+        .expect("approval.granted");
+    assert!(granted.contains(&format!("\"supersedes\":[{eng}]")), "{granted}");
+    // it stops the engagement: superseded, no fallback
     assert_eq!(r.state(eng), State::Voided);
     let stop = r
         .log

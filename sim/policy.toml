@@ -102,7 +102,9 @@ keep_out_m = 200                            # keep-out = effect radius + this: n
                                             # operator declared hostile) predicted inside it at the effect time
 keep_out_sigma = 2                          # protected tracks count with this many sigma of uncertainty
 default_window_s = 600                      # a nomination without a window: open this long
-dispatch_delay_s = 20                       # the preview assumes the platform starts this long after approval
+dispatch_delay_s = 20                       # the preview assumes the platform starts this long after it
+                                            # (the time the signatures have; a frozen plan then allows
+                                            # late_s more for a holding track, less for a moving one)
 max_transit_s = 900                         # longest intercept allowed
 unknown_endurance_max_transit_s = 600       # no endurance figure: transit at most this long, battery above
                                             # the reserve now (a weaker check, stated in the detail)
@@ -116,6 +118,9 @@ late_s = 60                                 # not released this long after the p
 assess_grace_s = 3                          # detections this soon after the effect don't count
 assess_dwell_s = 15                         # ceased: covered this long with no detection of the target
 assess_window_s = 120                       # unknown: not covered long enough within this long
+max_picture_gap_s = 5                       # the picture checked at least this often, or it fails
+token_ttl_s = 15                            # a picture token (what a signer is shown) is good this long
+max_signing_s = 120                         # every signature on one plan within this of the first
 
 [[tier]]
 name = "safety-commands"

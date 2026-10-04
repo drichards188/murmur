@@ -71,4 +71,4 @@ state = "dispatched"
 at_s = 20
 action = "vehicle"
 uid = "remus-1"
-velocity = [10.0, 0.0]      # under way toward the target
+velocity = [11.0, 0.0]      # under way toward the target

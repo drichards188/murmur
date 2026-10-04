@@ -77,6 +77,7 @@ export interface Engagement {
   watch?: PictureVerdict
   effect?: { t: number; point: LngLat; radius_m: number; planned_t: number }
   stop?: { t: number; cause: { kind: 'operator' | 'picture' | 'system' | 'superseded'; by?: string | number }; reason: string; fallback?: Fallback | null }
+  plan?: { t: number; by: string; preview: EngagePreview; track: TrackIdentity }
   observe?: { covered_by: string[]; track_present: boolean; seen_after_effect_t?: number }
   covered_s: number
   assessment?: { t: number; result: 'persists' | 'ceased' | 'unknown'; evidence: string; covered_s: number }
@@ -94,10 +95,13 @@ export interface EngageView {
   engage_operators: string[]
   /** each current signature, when, and the effect point it was on */
   signatures?: { by: string; t: number; effect_point: LngLat; effect_t: number }[]
-  /** signatures dropped because the picture changed between them */
+  /** signatures dropped with their plan because it stopped holding */
   reset?: { t: number; dropped: string[]; reason: string } | null
-  /** the oldest preview a signature may carry */
-  seen_max_age_s?: number
+  /** how long a picture token is good for, and the most the signatures on one plan may take */
+  token_ttl_s?: number
+  max_signing_s?: number
+  /** the plan the first signature froze: every later signer signs it exactly */
+  plan?: { by: string; t: number; effect_point: LngLat; effect_t: number; effect_radius_m: number; track: TrackIdentity } | null
   track_now: {
     position: LngLat
     pos_sigma_m: number
@@ -115,6 +119,32 @@ export interface EngageView {
     changed: { rule: string; was: Check['outcome'] | null; now: Check['outcome']; detail: string; worse: boolean }[]
     track_drift_m: number | null
   }
+}
+
+export interface TrackIdentity {
+  id: string
+  identity?: string
+  affiliation: string
+  declared_by?: string
+}
+
+/** What the engine shows a signer (`POST /api/intents/{id}/picture`): the plan they would
+ *  sign and the track as identified now, bound to their session until `expires_t`. The
+ *  signature quotes its `id`. */
+export interface PictureToken {
+  id: number
+  intent: number
+  by: string
+  t: number
+  expires_t: number
+  plan: EngagePreview
+  frozen: boolean
+  track: TrackIdentity
+}
+
+/** Ask for the picture to sign (an operator with engagement authority who may sign it). */
+export async function requestPicture(id: number): Promise<PictureToken> {
+  return (await post(`/api/intents/${id}/picture`, {})) as PictureToken
 }
 
 export interface EngageParams {

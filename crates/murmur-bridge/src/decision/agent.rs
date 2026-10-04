@@ -67,10 +67,14 @@ impl Decision {
             })?;
         let proposal = self.agent_proposal(&req)?;
         self.prefetch(&proposal.task, &proposal.uids).await;
+        let prepared = self.prepare_space(&proposal.task).await;
         let out = {
             let mut guard = self.lock();
             let core = &mut *guard;
             let world = self.snapshot();
+            if let Some(p) = prepared {
+                core.engine.use_prepared_space(p);
+            }
             let id = core
                 .engine
                 .agent_port(agent.clone())
@@ -93,8 +97,12 @@ impl Decision {
     ) -> Result<Value, DecisionError> {
         let proposal = self.agent_proposal(&req)?;
         self.prefetch(&proposal.task, &proposal.uids).await;
+        let prepared = self.prepare_space(&proposal.task).await;
         let preview = {
             let mut guard = self.lock();
+            if let Some(p) = prepared {
+                guard.engine.use_prepared_space(p);
+            }
             guard
                 .engine
                 .agent_port(agent.clone())

@@ -34,8 +34,9 @@ The effect is an abstract event: a point, a radius, a time. Nothing here models 
   `refusals` (engine refusals met along the way), `fallback` (the one commanded),
   `replay_ok`, `replay_events`, `replay_mismatches`, `tamper`, `tamper_detected`,
   `tamper_mismatches`.
-- No physics and no truth process: tracks move along their velocity and are detected every
-  second unless silenced; the engaging platform flies straight to the effect point at its
+- No physics and no truth process: contacts move along their velocity and are detected every
+  second unless silenced (with `--noise`, each detection is the truth plus independent
+  Gaussian noise, not a random walk); the engaging platform flies straight to the effect point at its
   catalog cruise speed once dispatched and follows its fallback when stopped. After the
   effect the target stops being detected (`after_effect = "out_of_play"`) or not
   (`"persists"`). The live stack runs the same engine against stand-ins and the contacts
@@ -54,10 +55,13 @@ expect = "aborted"               # the designed end of the last nomination: reje
 expect_rule = "keep_out_tracks"  # optional: a check that must have failed at the end
 expect_assessment = "ceased"     # optional (done): persists, ceased, unknown
 expect_refusals = ["may not approve it"]   # optional: substrings of engine refusals met
+expect_reset = true              # optional: the signatures must have been dropped at least once
 tamper = "suppress_void"         # optional log attack replay must catch: proposer_approval,
                                  # agent_approval, suppress_void, edit_snapshot,
                                  # drop_signature, edit_effect, strip_approvers,
-                                 # drop_reset, agent_order_auto
+                                 # drop_reset, agent_order_auto, drop_ack, loosen_policy
+                                 # (one with nothing to edit in a run's log reports "not
+                                 # applicable")
 end_s = 120                      # seconds to run (default: the last step + 10)
 after_effect = "out_of_play"     # or "persists"
 # policy, catalog, areas = "path"  # optional, relative to the repo (defaults: sim/...)
@@ -106,14 +110,16 @@ Actions (each `[[step]]` has `at_s` and `action`):
 |---|---|---|
 | `declare` | `track`, `affiliation`, `by` | an operator's declaration (logged `operator.action track.declare`) |
 | `nominate` | `by` or `agent` (+ `rationale`), `platform`, `track`, `radius_m`, `fallback` (`abort`, `return`, `loiter`), `window_s` | a nomination; becomes "the last nomination" the other steps act on |
-| `approve` | `by`, optional `seen_age_s`, `seen_offset_m` | a signature: through `approve_engagement` if the session has engagement authority, else `approve` (which the engine refuses for an engagement). It carries what a console would have shown the signer: the engine's preview now, or one `seen_age_s` old, or with its effect point `seen_offset_m` metres north (a stale or different picture, which the engine refuses) |
+| `look` | `by` | an operator with engagement authority asks for the picture (a picture token: the plan and the track now); their next `approve` quotes it |
+| `approve` | `by` | a signature: through `approve_engagement` if the session has engagement authority (quoting the token from their last `look`, or one asked for now), else `approve` (which the engine refuses for an engagement) |
+| `approve_task` | `by`, `acknowledge` | an operator approves the last `task`; `acknowledge` accepts that its dispatch stops an engagement in play |
 | `task` | `by` or `agent` (+ `rationale`), `task` (`hold`, `rtl`), `uids` | another order on our vehicles; dispatched at once if its tier lets it run, superseding any engagement on them (no fallback commanded) |
 | `stall` | `seconds` | the loop that holds the picture stops for that long (no engagement step) |
 | `reject` | `by` | an operator rejects it |
 | `abort` | `by` | any operator stops it; the fallback is commanded |
 | `agent_approve` | `agent` | an agent "tries" to approve: there is no such method on its port, so it is recorded and the intent must not move |
 | `track` | `id` and any of `at`, `velocity`, `affiliation`, `declared_by`, `undeclare`, `identity`, `identity_confidence`, `sigma_m`, `domain`, `silent` | a track changes (or appears) |
-| `vehicle` | `uid` and any of `at`, `velocity`, `silent`, `report_interval_ms` | one of ours changes; `silent` cuts its link |
+| `vehicle` | `uid` and any of `at`, `velocity`, `silent`, `report_interval_ms`, `nav` (`gnss`, `dead_reckoning`) | one of ours changes; `silent` cuts its link |
 | `expect` | `state`, `rule`, `concurrences`, `task_state` | check the last nomination now (`task_state`: the last `task` step's intent) |
 
 Approved engagements are dispatched at once (as the bridge does). Every second the runner
@@ -143,7 +149,13 @@ calls `Engine::step_engagements` (hold the picture, release, observe, assess).
 | 18-drop-signature | two_person | a signature deleted from the log | done; tamper caught |
 | 19-window-too-short | reach | a window the platform can't make | rejected |
 | 20-policy-without-engagement-tier | two_person | a policy file without the engagement tier (one approver); the log forged to say one was enough | 1 of 2 after one signature; done; tamper caught |
-| 21-picture-moves-between-signatures | signed_picture | signers sign a 40 s old and a 400 m off preview; the target moves 880 m between signatures; the reset cut from the log | refusals; first signature dropped; done; tamper caught |
+| 21-picture-moves-between-signatures | signed_picture | a signer quotes an expired picture; the target moves 880 m between signatures; a signer quotes a picture of the dropped plan; the reset cut from the log | refusals; first plan dropped; done; tamper caught |
 | 22-agent-order-on-engaging-platform | engagement_in_play | an agent's hold, then rtl, on a platform with an engagement pending, then dispatched; an operator's hold; the log forged to make the agent's hold auto | the agent's orders wait for a human; the operator's supersedes (aborted, no fallback); tamper caught |
 | 23-picture-gap | picture_gap | the loop that holds the picture stops for 10 s | aborted (picture_gap), fallback return |
 | 24-strip-approvers | two_person | the logged policy and decision stripped of `approvers`, a signature dropped | done; tamper caught |
+| 25-plan-slides | signed_picture | the second signature 237 s after the first on a track running at 10 m/s | the plan stops holding (reach); a new plan signed by both; done |
+| 26-target-reverses | signed_picture | the target turns around just before the second signature | the plan dropped at once; a new plan; done |
+| 27-transient-reclassification | signed_picture | the identity flips to ferry and back while a signature waits; the reset cut from the log | plan dropped; signed again; done; tamper caught |
+| 28-look-before-reclassification | signed_picture | a signature quotes a picture taken before the target was reclassified; the logged policy loosened | refused; pending; tamper caught |
+| 29-approve-order-on-engaging-platform | engagement_in_play | an agent's hold on the engaging platform approved without acknowledging it stops the engagement; the acknowledgement cut from the log | refused, then acknowledged: voided (superseded); tamper caught |
+| 30-gnss-lost-en-route | platform_nav | the platform falls back to dead reckoning after dispatch | aborted (platform_nav), fallback return |

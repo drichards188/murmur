@@ -359,8 +359,8 @@ impl Decision {
         let active = core.engine.intents().any(|i| {
             matches!(i.spec().task, Task::Engage { .. })
                 && match i.state() {
-                    // signatures waiting for the rest are held on their picture too
-                    State::PendingApproval => !i.concurrences().is_empty(),
+                    // signatures waiting for the rest are held on their plan too
+                    State::PendingApproval => i.engagement().is_some_and(|e| e.plan.is_some()),
                     State::Approved | State::Dispatched | State::Effected => true,
                     _ => false,
                 }
@@ -368,7 +368,7 @@ impl Decision {
         // the world only when an engagement is in play (a snapshot of a large fleet is not free)
         if active {
             let world = self.snapshot();
-            let out = core.engine.step_engagements(&world);
+            let out = core.engine.step_engagements(&world, &self.terrain.oracle());
             // each engagement on its own: one that failed (an audit write) is reported, the
             // others' orders are still carried out
             for (id, e) in &out.errors {
@@ -521,7 +521,17 @@ impl Decision {
             "engage_operators": self.engage_operators,
             "signatures": signatures,
             "reset": reset,
-            "seen_max_age_s": self.rules.engage_rules().seen_max_age_s,
+            "token_ttl_s": self.rules.engage_rules().token_ttl_s,
+            "max_signing_s": self.rules.engage_rules().max_signing_s,
+            // the plan the first signature froze: every later signer signs it exactly
+            "plan": record.and_then(|e| e.plan.as_ref()).map(|p| json!({
+                "by": p.by,
+                "t": p.t,
+                "effect_point": p.preview.effect_point,
+                "effect_t": p.preview.effect_t,
+                "effect_radius_m": p.preview.effect_radius_m,
+                "track": p.track,
+            })),
         });
         let now_track: Option<&TrackFacts> = world.tracks.get(track);
         if let Some(t) = now_track {

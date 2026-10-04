@@ -1,0 +1,77 @@
+# A release rests on the platform's position (second review, item 10). Dispatched, the
+# platform loses GNSS (dead reckoning): the picture fails platform_nav and the engagement
+# aborts with its fallback before anything is released on a drifting position.
+title = "The platform loses GNSS en route"
+invariant = "platform_nav"
+attack = "the platform's navigation falls back to dead reckoning after dispatch"
+expect = "aborted"
+expect_rule = "platform_nav"
+end_s = 60
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[agent]]
+id = "agent-planner"
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km: it also covers the point for the assessment
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.495, 37.812]
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 900
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"
+
+[[step]]
+at_s = 20
+action = "vehicle"
+uid = "blade-1"
+nav = "dead_reckoning"
+
+[[step]]
+at_s = 21
+action = "expect"
+state = "aborted"

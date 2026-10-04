@@ -1,0 +1,86 @@
+# One plan for every signature (second review, P3). The target runs west at 8 m/s; op-2
+# signs at s=5 an effect point 1.4 km west of it. At s=20 it turns around: the plan's point
+# is now 2 km behind it, so the signatures are dropped at once. op-3 signs a new plan at
+# s=22 and op-2 signs it again; nobody signs a point they were not shown.
+title = "The target reverses between signatures"
+invariant = "signed_picture"
+attack = "the track turns around just before the second signature"
+expect = "done"
+expect_assessment = "ceased"
+expect_reset = true
+end_s = 400
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[agent]]
+id = "agent-planner"
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km: it also covers the point for the assessment
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.505, 37.815]
+velocity = [-8.0, 0.0]
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 900
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 20
+action = "track"
+id = "T-0001"
+velocity = [8.0, 0.0]
+
+[[step]]
+at_s = 21
+action = "expect"
+state = "pending_approval"
+concurrences = 0
+
+[[step]]
+at_s = 22
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 25
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 26
+action = "expect"
+state = "dispatched"

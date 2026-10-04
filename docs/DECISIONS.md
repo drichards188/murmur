@@ -44,20 +44,29 @@ group. Dates are 2026.
   policy or decision was edited to one is caught). This closes the gap left by "the
   operator's own command is the human decision": that rule stands for every other kind; for
   an engagement the submitter's own command is never the approval.
-- **Every signature is on the same picture** (10-03, Phase E review). Each signature stores
-  its own snapshot (the track's facts and the preview, from that signature's re-check), and
-  carries the preview its signer was shown (`seen`: effect point and time, and when the
-  bridge computed it; the console sends the one on screen). The engine refuses a signature
-  whose preview is older than `seen_max_age_s` (15 s) or whose effect point is beyond the
-  deviation tolerance from its own ("look again"). At each later signature, and every
-  second while signatures wait, the earlier signatures' pictures are compared with the
-  track now: a different track, identity or declaration, or the track beyond the deviation
-  tolerance from where an earlier signature's picture predicts it, drops every signature
-  (`approval.reset`, with why and the world it read) and the nomination needs its signers
-  again. The effect point itself is not compared (it slides along a moving track's path
-  while people decide); every signature re-runs the zone, no-strike and keep-out checks on
-  the point it would send the platform to. Replay recomputes each signature's snapshot and
-  every reset.
+- **One frozen plan for every signature** (10-03, second Phase E review; replaces comparing
+  each signature's own picture). The first signature freezes the plan it was shown: the
+  effect point and time, radius, window, platform, fallback, and the target as identified
+  then (`FrozenPlan`). Every later signer is shown that plan and signs it exactly; the
+  approval's snapshot carries it and the release executes it, never a recomputed one (two
+  signers can no longer approve points 2 km and a minute apart). At each later signature
+  and every second while signatures wait, the engagement checks run on the frozen plan:
+  the track still identified and declared as when it was frozen and predicted within the
+  deviation tolerance of the plan's point at the plan's time, zone, no-strike and keep-outs
+  on that point, the platform still able to be there by then (plus a slack: `late_s` for a
+  holding track, the time to leave the tolerance for a moving one), and every signature
+  within `max_signing_s` (120 s) of the first. When the plan stops holding every signature
+  is dropped with it (`approval.reset`) and a new plan must be signed; a signature that
+  finds it so is refused. Replay recomputes every plan check, reset and snapshot.
+- **A signer signs what the engine showed them** (10-03, second review). Before signing,
+  the console asks for the picture (`POST /api/intents/{id}/picture`): the engine issues a
+  token bound to the operator's session, with the plan (the frozen one, or the preview the
+  signature would freeze), the track's identity, affiliation and declaration then, and an
+  expiry (`token_ttl_s`, 15 s), logged as `picture.issued` with the world it was computed
+  on. The signature quotes the token, once; it is refused if the token expired, is another
+  session's, or its plan or track facts no longer match ("look again"). Replay checks each
+  signature against the issued token and recomputes an unfrozen token's plan. This replaces
+  a self-attested "seen" preview.
 - **No agent order slips past an engagement in play** (10-03, Phase E review). An agent's
   order on a vehicle with an engagement pending, approved or under way goes to a human,
   whatever its tier says (`(engagement in play)`; the engine logs the engagements in play
@@ -65,6 +74,13 @@ group. Dates are 2026.
   still runs at once and supersedes the engagement: stopped with cause `superseded` (the
   intent that superseded it and its source), `fallback: null` (that order stands; nothing
   else is commanded).
+- **An approval that stops an engagement says so** (10-03, second review). Approving an
+  order (an agent's, or an older one) whose dispatch would stop an engagement in play on its
+  vehicles is refused unless the approver acknowledges it; the acknowledged engagements are
+  logged as `supersedes` on the approval and replay checks them against the engagements in
+  play its re-check read. The console's card says which engagement it stops. An operator's
+  own new order still runs at once (it is the newest human command, and the console shows
+  the engagement on that vehicle).
 - **Hold the picture, then act or stop** (10-03, Phase E). What the approvers saw (the
   track's facts and the preview) is stored with the final approval and re-checked every
   second until the effect; any change beyond tolerance voids it (before dispatch) or aborts
@@ -73,8 +89,12 @@ group. Dates are 2026.
   interval more than doubling). Held every second or not at all: a picture more than
   `max_picture_gap_s` (5 s) after the last one fails `picture_gap` first, so a stalled loop
   aborts rather than resumes; the terrain fetch for pending nominations runs beside the
-  loop, never in its way. Replay recomputes the gap from the logged picture times and flags
-  an effect not released by a picture of the same step.
+  loop, never in its way, and space queries (a week of Starlink coverage takes over a
+  second) are answered before the decision lock is taken and used if still fresh (5 s), so
+  no agent can starve the tick. Replay recomputes the gap from the logged picture times and
+  flags an effect not released by a picture of the same step. After approval the platform
+  must navigate on GNSS: dead reckoning (or no solution) fails `platform_nav` and stops it
+  with its fallback, consistent with an unverified position blocking an engagement.
 - **Space as taskable infrastructure** (10-02, user direction): request coverage and
   capabilities from satellites when needed; don't fly or command satellite buses (no CCSDS).
   One theater map for earthbound nodes, plus a space timeline and a globe inset; one camera
@@ -197,10 +217,13 @@ group. Dates are 2026.
 - **Whole circle, not the point** (10-03, Phase E review). The effect circle must lie
   entirely inside one engagement zone (its centre at least the radius from the zone's
   edge) and entirely clear of every no-strike area.
-- **Engagement thresholds are bounded** (10-03, Phase E review). Each `[rules.engage]`
+- **Engagement thresholds are bounded** (10-03, Phase E reviews). Each `[rules.engage]`
   value must lie inside a fixed range (`EngageRules::validate`: no zero confidence, no zero
-  keep-out, no unbounded age, gap or preview age), so a policy file can tighten the chain but
-  not switch a check off; the values in force are logged with the policy.
+  keep-out, no unbounded age, gap, token lifetime or signing time), and so must the
+  freshness every rule trusts (`max_fact_age_s` 1..120, `fact_age_intervals` 1..10) and the
+  other rules thresholds, so a policy file can tighten the chain but not switch a check off.
+  Replay runs the same validation on the policy logged in `run.started`: a log whose policy
+  no file could carry is a mismatch.
 - **Reclassification is any change of identity** (10-03, Phase E review), unclassified to a
   kind included: the approvers judged the track as it was classified then.
 - **An engagement's effect point may take a near terrain sample, logged** (10-03, Phase E
@@ -208,6 +231,11 @@ group. Dates are 2026.
   come from the nearest cached sample within 50 m; the logged sample says where it was taken
   and how far. Samples that near which disagree (a shoreline, a coverage edge) leave it not
   evaluated, which fails closed for an engagement. Every other waypoint is answered exactly.
+- **The hash chain is tamper-evident, not tamper-proof** (10-03, restated by the second
+  review). A forger who removes a self-consistent set of events (a transient reset, the
+  signature it dropped and its picture token) and recomputes the chain leaves a log replay
+  accepts; only comparing the head hash with an external anchor shows the rewrite. Anchoring
+  the head is future work (`murmur-decide/README.md`).
 - **Still placeholders, stated** (10-03). Engagement authority comes from
   `MURMUR_ENGAGE_OPERATORS` and the `X-Murmur-Operator` header, as operators do from
   `MURMUR_OPERATORS`: a stand-in for real authentication. The fallback is commanded by the

@@ -28,14 +28,25 @@
 //!    check (replay recomputes it).
 //! 4. **Authorize**: only an operator session opened with engagement authority
 //!    ([`crate::EngagementAuthority`]), never the proposer, and as many distinct approvers as
-//!    the tier asks (`approvers = 2`). See [`crate::Engine::approve_engagement`].
+//!    the tier asks (at least two). A signer first asks for the picture
+//!    ([`crate::Engine::issue_picture`]): a [`PictureToken`] bound to their session, the plan
+//!    shown and the track's identity, affiliation and declaration then, valid
+//!    `token_ttl_s`; a signature quotes it. The first signature freezes the plan it was shown
+//!    ([`FrozenPlan`]: effect point and time, radius, window, platform, fallback, the track's
+//!    identity); every later signer signs that exact plan. At each later signature and every
+//!    second while signatures wait, the plan is checked again ([`evaluate`] with the plan:
+//!    the track predicted within tolerance of the plan's point at its time, zone, no-strike
+//!    and keep-outs on the plan's point, the platform still able to be there, the same
+//!    identity and declaration, the signatures within `max_signing_s`); if it no longer
+//!    holds, every signature is dropped and a new plan must be signed. See
+//!    [`crate::Engine::approve_engagement`].
 //! 5. **Hold the picture** ([`picture`]): the final approval stores an [`EngageSnapshot`]
-//!    (the track's facts, the preview, the platform's link assumption). Every step after
+//!    (the track's facts, the frozen plan, the platform's link assumption). Every step after
 //!    approval re-checks the picture against it and voids (before dispatch) or aborts (after)
 //!    when the track moved beyond tolerance from the snapshot's prediction, was reclassified
 //!    or undeclared, went stale, a protected track or one of our vehicles is predicted inside
-//!    the keep-out, the platform's link degraded past the approval's assumption, the window
-//!    closed or the platform was late.
+//!    the keep-out, the platform's link degraded past the approval's assumption or it lost
+//!    GNSS, the window closed or the platform was late.
 //! 6. **Execute with abort**: the platform is sent to the effect point through the task
 //!    layer (a loiter at the point); until the effect any operator may abort, and the
 //!    recorded fallback is commanded. The effect is released ([`picture`]'s `ready`) when the
@@ -157,9 +168,11 @@ pub struct EngageRules {
     /// The picture must be checked at least this often while an engagement is in play; a
     /// longer gap (a stalled loop) fails the picture, seconds.
     pub max_picture_gap_s: f64,
-    /// A signature carries the preview its signer saw; one older than this is refused,
-    /// seconds.
-    pub seen_max_age_s: f64,
+    /// A picture token (what a signer was shown) is valid this long, seconds.
+    pub token_ttl_s: f64,
+    /// Every signature on one plan within this long of the first, seconds; past it the
+    /// signatures are dropped and a new plan must be signed.
+    pub max_signing_s: f64,
 }
 
 impl Default for EngageRules {
@@ -186,7 +199,8 @@ impl Default for EngageRules {
             assess_dwell_s: 15.0,
             assess_window_s: 120.0,
             max_picture_gap_s: 5.0,
-            seen_max_age_s: 15.0,
+            token_ttl_s: 15.0,
+            max_signing_s: 120.0,
         }
     }
 }
@@ -228,7 +242,8 @@ impl EngageRules {
         within(self.assess_dwell_s, 1.0, 600.0, "assess_dwell_s")?;
         within(self.assess_window_s, 10.0, 3600.0, "assess_window_s")?;
         within(self.max_picture_gap_s, 1.0, 30.0, "max_picture_gap_s")?;
-        within(self.seen_max_age_s, 1.0, 120.0, "seen_max_age_s")?;
+        within(self.token_ttl_s, 1.0, 120.0, "token_ttl_s")?;
+        within(self.max_signing_s, 10.0, 900.0, "max_signing_s")?;
         if self.assess_window_s < self.assess_dwell_s {
             return Err("rules.engage.assess_window_s must be at least assess_dwell_s".into());
         }
@@ -328,17 +343,67 @@ pub enum StopCause {
     },
 }
 
-/// What a signer saw when signing an engagement: the preview's predicted effect point and
-/// time and when that preview was computed (the console sends it with the signature). A
-/// signature on a picture that is stale or no longer the engine's is refused.
+/// What a signer is shown of the target: its identity, affiliation and who declared it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SeenPicture {
-    /// When the preview the signer saw was computed (engine time).
-    pub t: Time,
-    pub effect_point: LonLat,
+pub struct TrackIdentity {
+    pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effect_t: Option<Time>,
+    pub identity: Option<String>,
+    pub affiliation: Affiliation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declared_by: Option<String>,
+}
+
+impl TrackIdentity {
+    pub fn of(id: &str, t: &TrackFacts) -> Self {
+        TrackIdentity {
+            id: id.to_string(),
+            identity: t.identity.clone(),
+            affiliation: t.affiliation.value,
+            declared_by: t.declared_by.clone(),
+        }
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "{} {} by {}",
+            self.identity.as_deref().unwrap_or("unclassified"),
+            self.affiliation.as_str(),
+            self.declared_by.as_deref().unwrap_or("nobody")
+        )
+    }
+}
+
+/// The plan the first signature froze: the effect point and time, radius and window (the
+/// preview its signer was shown), on the platform and with the fallback of the nomination,
+/// against the track as it was identified then. Every later signature signs it exactly; the
+/// approval's snapshot carries it and the release executes it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FrozenPlan {
+    /// When the first signature froze it, and whose it was.
+    pub t: Time,
+    pub by: OperatorId,
+    pub preview: EngagePreview,
+    pub track: TrackIdentity,
+}
+
+/// What the engine showed a signer ([`crate::Engine::issue_picture`], logged as
+/// `picture.issued`): bound to their session, the plan shown (the frozen one, or the preview
+/// a first signature would freeze) and the track's identity then, until `expires_t`. A
+/// signature quotes it; it is refused if the token expired, is another session's, or its
+/// plan or track facts no longer match. Used once.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PictureToken {
+    pub id: u64,
+    pub intent: IntentId,
+    pub by: OperatorId,
+    pub session: SessionId,
+    pub t: Time,
+    pub expires_t: Time,
+    pub plan: EngagePreview,
+    /// The plan was already frozen by an earlier signature when it was shown.
+    pub frozen: bool,
+    pub track: TrackIdentity,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -412,6 +477,9 @@ pub struct Engagement {
     /// The preview the last check computed (submission, then each approval re-check).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preview: Option<EngagePreview>,
+    /// The plan the first signature froze (cleared when the signatures are dropped).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan: Option<FrozenPlan>,
     /// The picture each signature so far is on (the final one's is `snapshot`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub signed: Vec<SignedPicture>,
@@ -790,6 +858,10 @@ pub fn evaluate(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
     let mut out = Vec::new();
     let track = world.tracks.get(track_id);
     out.extend(target_checks(track_id, track, world, &ec, radius));
+    if let Some(plan) = &world.plan {
+        out.extend(plan_checks(spec, plan, world, cfg));
+        return out;
+    }
     let pv = preview(spec, world, cfg);
     let no_preview = |rule| {
         check(
@@ -1292,43 +1364,80 @@ fn reach_check(
             ec.max_transit_s
         ));
     }
+    let tail = match endurance_and_surface(uid, v, platform, p.effect_point, p.distance_m, p.cruise_mps, transit, world, cfg, ec) {
+        Ok(t) => t,
+        Err(c) => return c,
+    };
+    check(
+        r,
+        uid,
+        Outcome::Pass,
+        format!(
+            "{:.0} m at {:.1} m/s: effect {} (window closes {}); {tail}",
+            p.distance_m,
+            p.cruise_mps,
+            rel(p.effect_t, world.t),
+            rel(window.until, world.t)
+        ),
+    )
+}
+
+/// The endurance and the surface part of `reach`: the battery (or, without an endurance
+/// figure, the weaker check) for a transit of `transit` seconds and the way home from
+/// `point`, and `point` on the surface the platform needs. `Ok`: the detail; `Err`: the
+/// failed check.
+#[allow(clippy::too_many_arguments)]
+fn endurance_and_surface(
+    uid: Option<&Uid>,
+    v: &crate::world::VehicleFacts,
+    platform: &crate::catalog::PlatformFacts,
+    point: LonLat,
+    distance_m: f64,
+    cruise_mps: f64,
+    transit: f64,
+    world: &WorldSnapshot,
+    cfg: &RulesConfig,
+    ec: &EngageRules,
+) -> Result<String, CheckResult> {
+    let r = RuleId::Reach;
+    let fail = |d: String| check(r, uid, Outcome::Fail, d);
     let battery = match fresh(&v.battery_pct, v, "battery level", world, cfg) {
         Ok(b) => *b,
-        Err(e) => return fail(e),
+        Err(e) => return Err(fail(e)),
     };
     let reserve = cfg.reserve_pct;
     let back_m = v
         .home
         .as_ref()
-        .map_or(0.0, |h| haversine_m(p.effect_point, h.value));
+        .map_or(0.0, |h| haversine_m(point, h.value));
     let endurance = match platform.endurance_h.filter(|e| *e > 0.0) {
         Some(h) => {
             let full = h * 3600.0;
             let usable = battery / 100.0 * full - reserve / 100.0 * full;
-            let need = transit + back_m / p.cruise_mps;
+            let need = transit + back_m / cruise_mps;
             if need > usable {
-                return fail(format!(
+                return Err(fail(format!(
                     "{:.0} km at {:.0} m/s and {:.1} km home need {need:.0} s; battery {battery:.0}% of {:.0} min leaves {usable:.0} s above the {reserve:.0}% reserve",
-                    p.distance_m / 1000.0,
-                    p.cruise_mps,
+                    distance_m / 1000.0,
+                    cruise_mps,
                     back_m / 1000.0,
                     full / 60.0
-                ));
+                )));
             }
             format!("endurance: needs {need:.0} s of {usable:.0} s above the {reserve:.0}% reserve")
         }
         None => {
             if battery < reserve {
-                return fail(format!(
+                return Err(fail(format!(
                     "endurance unknown for {} and battery {battery:.0}% is below the {reserve:.0}% reserve",
                     platform.id
-                ));
+                )));
             }
             if transit > ec.unknown_endurance_max_transit_s {
-                return fail(format!(
+                return Err(fail(format!(
                     "endurance unknown for {}: the intercept takes {transit:.0} s, above {:.0} s allowed without an endurance figure",
                     platform.id, ec.unknown_endurance_max_transit_s
-                ));
+                )));
             }
             format!(
                 "endurance unknown for {}: battery {battery:.0}% >= reserve {reserve:.0}%, transit {transit:.0} s <= {:.0} s (task cost not estimated)",
@@ -1339,26 +1448,26 @@ fn reach_check(
     let surface = match required_surface(platform.domain, platform.autopilot) {
         None => String::new(),
         Some(need) => match &world.terrain {
-            TerrainInputs::Sampled { .. } => match world.terrain.lookup(p.effect_point) {
+            TerrainInputs::Sampled { .. } => match world.terrain.lookup(point) {
                 Some(Surface::Land) if need == "land" => "; effect point on land".into(),
                 Some(Surface::Water { depth_m }) if need == "water" && *depth_m > 0.0 => {
                     "; effect point on water".into()
                 }
                 Some(Surface::OutsideCoverage) | None => {
-                    return fail(format!(
+                    return Err(fail(format!(
                         "cannot evaluate: no terrain answer for the effect point ({:.5}, {:.5})",
-                        p.effect_point.lon, p.effect_point.lat
-                    ));
+                        point.lon, point.lat
+                    )));
                 }
                 Some(_) => {
-                    return fail(format!(
+                    return Err(fail(format!(
                         "the effect point ({:.5}, {:.5}) is not {need}; {} needs {need}",
-                        p.effect_point.lon, p.effect_point.lat, platform.id
-                    ));
+                        point.lon, point.lat, platform.id
+                    )));
                 }
             },
             TerrainInputs::Unavailable { reason } => {
-                return check(
+                return Err(check(
                     r,
                     uid,
                     Outcome::NotEvaluated,
@@ -1366,25 +1475,271 @@ fn reach_check(
                         "terrain unavailable ({reason}): {} needs the effect point on {need}",
                         platform.id
                     ),
-                );
+                ));
             }
             TerrainInputs::NotQueried | TerrainInputs::NotNeeded => {
-                return fail("cannot evaluate: terrain was not sampled for the effect point".into());
+                return Err(fail(
+                    "cannot evaluate: terrain was not sampled for the effect point".into(),
+                ));
             }
         },
+    };
+    Ok(format!("{endurance}{surface}"))
+}
+
+// ---- the frozen plan ------------------------------------------------------------------------
+
+/// How late the platform may reach the plan's point and still execute it: `late_s` for a
+/// holding track, and for a moving one the time it takes to leave the deviation tolerance
+/// (a later effect would be somewhere the plan did not say), seconds.
+pub fn plan_slack_s(p: &EngagePreview, ec: &EngageRules) -> f64 {
+    let tol = (ec.deviation_fraction * p.effect_radius_m).max(ec.deviation_min_m);
+    if p.track_speed_mps < 0.3 {
+        ec.late_s
+    } else {
+        (tol / p.track_speed_mps).min(ec.late_s)
+    }
+}
+
+/// The checks on a frozen plan (after the target checks, which read the track now): the
+/// plan's circle in a zone and clear of no-strike, the keep-outs at the plan's point and
+/// time, the platform armed and still able to be at the point by the plan's time, the track
+/// still identified and declared as when the plan was frozen and predicted within tolerance
+/// of the plan's point at its time, and the signatures within `max_signing_s`.
+fn plan_checks(
+    spec: &IntentSpec,
+    plan: &FrozenPlan,
+    world: &WorldSnapshot,
+    cfg: &RulesConfig,
+) -> Vec<CheckResult> {
+    let ec = cfg.engage_rules();
+    let p = &plan.preview;
+    let uid = platform_of(spec);
+    let track_id = plan.track.id.as_str();
+    let mut out = Vec::new();
+    if p.effect_radius_m > ec.max_effect_radius_m {
+        out.push(check(
+            RuleId::EngagementZone,
+            None,
+            Outcome::Fail,
+            format!(
+                "effect radius {:.0} m is above the policy's maximum {:.0} m",
+                p.effect_radius_m, ec.max_effect_radius_m
+            ),
+        ));
+    } else {
+        out.push(zone_check(p, world));
+    }
+    out.push(no_strike_check(p, world));
+    out.push(keep_out_friendly(
+        p.effect_point,
+        p.effect_t,
+        p.keep_out_m,
+        uid,
+        world,
+        cfg,
+    ));
+    out.push(keep_out_tracks(
+        p.effect_point,
+        p.effect_t,
+        p.keep_out_m,
+        track_id,
+        world,
+        &ec,
+    ));
+    out.push(armed_check(uid, world));
+    out.push(plan_reach_check(uid, p, world, cfg, &ec));
+    out.push(plan_track_check(plan, world.tracks.get(track_id), world, &ec));
+    let took = secs(world.t.ms_since(plan.t)).max(0.0);
+    out.push(check(
+        RuleId::SigningTime,
+        None,
+        if took <= ec.max_signing_s {
+            Outcome::Pass
+        } else {
+            Outcome::Fail
+        },
+        format!(
+            "plan frozen by {} {took:.0} s ago (every signature within {:.0} s)",
+            plan.by, ec.max_signing_s
+        ),
+    ));
+    out
+}
+
+/// The track still identified and declared as when the plan was frozen, and predicted within
+/// the deviation tolerance of the plan's point at the plan's time.
+fn plan_track_check(
+    plan: &FrozenPlan,
+    track: Option<&TrackFacts>,
+    world: &WorldSnapshot,
+    ec: &EngageRules,
+) -> CheckResult {
+    let r = RuleId::Plan;
+    let p = &plan.preview;
+    let id = plan.track.id.as_str();
+    let Some(t) = track else {
+        return check(r, None, Outcome::Fail, format!("{id} is no longer in the picture"));
+    };
+    let now = TrackIdentity::of(id, t);
+    if now != plan.track {
+        return check(
+            r,
+            None,
+            Outcome::Fail,
+            format!(
+                "{id} changed since the plan was frozen: {} then, {} now",
+                plan.track.describe(),
+                now.describe()
+            ),
+        );
+    }
+    let tol = (ec.deviation_fraction * p.effect_radius_m).max(ec.deviation_min_m);
+    if world.t >= p.effect_t {
+        return check(
+            r,
+            None,
+            Outcome::Pass,
+            format!("the plan's effect time has come ({id} as frozen)"),
+        );
+    }
+    let d = haversine_m(track_at(t, p.effect_t), p.effect_point);
+    check(
+        r,
+        None,
+        if d <= tol { Outcome::Pass } else { Outcome::Fail },
+        format!(
+            "{id} predicted {d:.0} m from the plan's effect point at its time {} (tolerance {tol:.0} m)",
+            rel(p.effect_t, world.t)
+        ),
+    )
+}
+
+/// The platform can still be at the plan's point by the plan's time (plus
+/// [`plan_slack_s`]), inside the window and the transit limit, with the endurance, and the
+/// point on the surface it needs.
+fn plan_reach_check(
+    uid: Option<&Uid>,
+    p: &EngagePreview,
+    world: &WorldSnapshot,
+    cfg: &RulesConfig,
+    ec: &EngageRules,
+) -> CheckResult {
+    let r = RuleId::Reach;
+    let fail = |d: String| check(r, uid, Outcome::Fail, d);
+    let Some(v) = uid.and_then(|u| world.vehicles.get(u)) else {
+        return fail("cannot evaluate: platform not in the world model".into());
+    };
+    let Some(platform) = &v.platform else {
+        return fail("cannot evaluate: platform not in the catalog".into());
+    };
+    let pos = match fresh(&v.position, v, "platform position", world, cfg) {
+        Ok(p) => *p,
+        Err(e) => return fail(e),
+    };
+    let cruise = p.cruise_mps;
+    let distance = haversine_m(pos, p.effect_point);
+    let arrive = world.t.plus_ms(ms(distance / cruise));
+    let slack = plan_slack_s(p, ec);
+    if p.effect_t > p.window.until {
+        return fail(format!(
+            "the plan's effect {} is after the window closes ({})",
+            rel(p.effect_t, world.t),
+            rel(p.window.until, world.t)
+        ));
+    }
+    if arrive > p.effect_t.plus_ms(ms(slack)) {
+        return fail(format!(
+            "the platform, {distance:.0} m away at {cruise:.1} m/s, reaches the plan's point {}, after its time {} (slack {slack:.0} s): the plan no longer holds",
+            rel(arrive, world.t),
+            rel(p.effect_t, world.t)
+        ));
+    }
+    let transit = secs(arrive.max(p.effect_t).ms_since(world.t)).max(0.0);
+    if transit > ec.max_transit_s {
+        return fail(format!(
+            "the plan's effect is {transit:.0} s away, above the limit {:.0} s",
+            ec.max_transit_s
+        ));
+    }
+    let tail = match endurance_and_surface(uid, v, platform, p.effect_point, distance, cruise, transit, world, cfg, ec) {
+        Ok(t) => t,
+        Err(c) => return c,
     };
     check(
         r,
         uid,
         Outcome::Pass,
         format!(
-            "{:.0} m at {:.1} m/s: effect {} (window closes {}); {endurance}{surface}",
-            p.distance_m,
-            p.cruise_mps,
+            "{distance:.0} m at {cruise:.1} m/s: at the plan's point {}, its effect {} (slack {slack:.0} s, window closes {}); {tail}",
+            rel(arrive, world.t),
             rel(p.effect_t, world.t),
-            rel(window.until, world.t)
+            rel(p.window.until, world.t)
         ),
     )
+}
+
+/// Whether a picture token may be quoted for a signature now: issued for this intent to
+/// this operator's session, not expired, showing the plan in force (the frozen one, or none
+/// frozen since it was issued) and the track as it is now (identity, affiliation, who
+/// declared it). `Err` says why the signer must look again.
+#[allow(clippy::too_many_arguments)]
+pub fn check_token(
+    token: &PictureToken,
+    intent: IntentId,
+    by: &OperatorId,
+    session: SessionId,
+    now: Time,
+    track_now: Option<&TrackFacts>,
+    plan: Option<&FrozenPlan>,
+) -> Result<(), String> {
+    if token.intent != intent || token.by != *by || token.session != session {
+        return Err(format!(
+            "picture token {} was issued to {} (session {}) for {}: look again",
+            token.id, token.by, token.session.0, token.intent
+        ));
+    }
+    if now > token.expires_t {
+        return Err(format!(
+            "the picture you were shown expired {:.0} s ago: look again",
+            secs(now.ms_since(token.expires_t))
+        ));
+    }
+    match (plan, token.frozen) {
+        (Some(p), true) if p.preview == token.plan => {}
+        (Some(p), _) => {
+            return Err(format!(
+                "the plan was frozen by {}'s signature after you looked: look again",
+                p.by
+            ));
+        }
+        (None, true) => {
+            return Err("the plan you were shown was dropped (the picture changed): look again".into());
+        }
+        (None, false) => {}
+    }
+    let Some(t) = track_now else {
+        return Err(format!("{} is no longer in the picture", token.track.id));
+    };
+    let now_id = TrackIdentity::of(&token.track.id, t);
+    if now_id != token.track {
+        return Err(format!(
+            "{} changed since you looked: {} then, {} now: look again",
+            token.track.id,
+            token.track.describe(),
+            now_id.describe()
+        ));
+    }
+    Ok(())
+}
+
+/// Whether the nomination's platform needs a land or water answer for its effect point (a
+/// boat, a ground vehicle).
+pub fn surface_needed(spec: &IntentSpec, world: &WorldSnapshot) -> bool {
+    platform_of(spec)
+        .and_then(|u| world.vehicles.get(u))
+        .and_then(|v| v.platform.as_ref())
+        .is_some_and(|p| required_surface(p.domain, p.autopilot).is_some())
 }
 
 /// Whether the platform needs a land or water answer for the effect point, and the point.
@@ -1396,13 +1751,17 @@ pub fn terrain_point(
     let uid = platform_of(spec)?;
     let p = world.vehicles.get(uid)?.platform.as_ref()?;
     required_surface(p.domain, p.autopilot)?;
+    if let Some(plan) = &world.plan {
+        return Some(plan.preview.effect_point);
+    }
     preview(spec, world, cfg).ok().map(|p| p.effect_point)
 }
 
 // ---- the snapshot and the picture -----------------------------------------------------------
 
-/// The picture the final approval holds: the track's facts and the preview at the
-/// approval's re-check, and the platform's link then.
+/// The picture a signature holds: the track's facts at its re-check, the plan it signs (the
+/// world's frozen plan; without one, the preview on that world), and the platform's link
+/// then.
 pub fn snapshot(
     spec: &IntentSpec,
     world: &WorldSnapshot,
@@ -1414,7 +1773,10 @@ pub fn snapshot(
         .tracks
         .get(track_id)
         .ok_or_else(|| format!("track {track_id} is not in the picture"))?;
-    let preview = preview(spec, world, cfg)?;
+    let preview = match &world.plan {
+        Some(plan) => plan.preview.clone(),
+        None => preview(spec, world, cfg)?,
+    };
     let interval = platform_of(spec)
         .and_then(|u| world.vehicles.get(u))
         .and_then(|v| v.report_interval_ms);
@@ -1498,6 +1860,7 @@ pub fn picture(
         &ec,
     ));
     picture_checks.push(link_check(uid, snap, world));
+    picture_checks.push(nav_check(uid, world, cfg));
     picture_checks.push(window_check(snap, world, &ec, dispatched));
     let holds = picture_checks.iter().all(|c| c.outcome == Outcome::Pass);
     let mut out = picture_checks;
@@ -1597,6 +1960,28 @@ fn link_check(uid: Option<&Uid>, snap: &EngageSnapshot, world: &WorldSnapshot) -
     )
 }
 
+/// The platform navigates on GNSS: a fix lost after approval (dead reckoning, or no solution)
+/// stops the engagement, since the arrival and the release would rest on a position that
+/// drifts. Unknown counts as lost.
+fn nav_check(uid: Option<&Uid>, world: &WorldSnapshot, cfg: &RulesConfig) -> CheckResult {
+    use crate::world::NavSource;
+    let r = RuleId::PlatformNav;
+    let Some(v) = uid.and_then(|u| world.vehicles.get(u)) else {
+        return check(r, uid, Outcome::Fail, "platform is no longer in the world model");
+    };
+    match fresh(&v.nav_source, v, "navigation source", world, cfg) {
+        Ok(NavSource::Gnss) => check(r, uid, Outcome::Pass, "platform navigates on GNSS"),
+        Ok(NavSource::DeadReckoning) => check(
+            r,
+            uid,
+            Outcome::Fail,
+            "platform lost GNSS (dead reckoning): its position, and a release on it, can't be trusted",
+        ),
+        Ok(NavSource::None) => check(r, uid, Outcome::Fail, "platform has no navigation solution"),
+        Err(e) => check(r, uid, Outcome::Fail, format!("cannot evaluate: {e}")),
+    }
+}
+
 fn window_check(snap: &EngageSnapshot, world: &WorldSnapshot, ec: &EngageRules, dispatched: bool) -> CheckResult {
     let r = RuleId::EngageWindow;
     let p = &snap.preview;
@@ -1688,103 +2073,6 @@ fn release_checks(
         )),
     }
     out
-}
-
-// ---- one picture for every signature --------------------------------------------------------
-
-/// Whether a later signature's picture is the one an earlier signer approved: the track
-/// where the earlier snapshot predicts it now (within the picture's deviation tolerance, as
-/// the hold after approval), with the same identity and declaration. The predicted effect
-/// point itself is not compared: for a moving track it slides along the track's path as the
-/// decision takes time, and every signature re-runs the zone, no-strike and keep-out checks
-/// on the point it would send the platform to. `Ok` says how close, `Err` what changed.
-pub fn same_picture(
-    earlier: &EngageSnapshot,
-    now: &EngageSnapshot,
-    cfg: &RulesConfig,
-) -> Result<String, String> {
-    if earlier.track_id != now.track_id {
-        return Err(format!(
-            "the track changed: {} then, {} now",
-            earlier.track_id, now.track_id
-        ));
-    }
-    same_track(earlier, Some(&now.track), now.t, cfg)
-}
-
-/// [`same_picture`] against the track as it is at `t` (`None`: no longer in the picture):
-/// what holds a waiting engagement's signatures every second.
-pub fn same_track(
-    earlier: &EngageSnapshot,
-    now: Option<&TrackFacts>,
-    t: Time,
-    cfg: &RulesConfig,
-) -> Result<String, String> {
-    let ec = cfg.engage_rules();
-    let tol = (ec.deviation_fraction * earlier.preview.effect_radius_m).max(ec.deviation_min_m);
-    let id = &earlier.track_id;
-    let Some(track) = now else {
-        return Err(format!("{id} is no longer in the picture"));
-    };
-    if earlier.track.identity != track.identity {
-        return Err(format!(
-            "{id} reclassified between signatures: {} then, {} now",
-            earlier.track.identity.as_deref().unwrap_or("unclassified"),
-            track.identity.as_deref().unwrap_or("unclassified")
-        ));
-    }
-    if earlier.track.declared_by != track.declared_by
-        || earlier.track.affiliation.value != track.affiliation.value
-    {
-        return Err(format!(
-            "{id} declaration changed between signatures: {} by {} then, {} by {} now",
-            earlier.track.affiliation.value.as_str(),
-            earlier.track.declared_by.as_deref().unwrap_or("nobody"),
-            track.affiliation.value.as_str(),
-            track.declared_by.as_deref().unwrap_or("nobody")
-        ));
-    }
-    let moved = haversine_m(track_at(&earlier.track, t), track_at(track, t));
-    if moved > tol {
-        return Err(format!(
-            "{id} is {moved:.0} m from where the earlier signature's picture predicts it (tolerance {tol:.0} m)"
-        ));
-    }
-    Ok(format!(
-        "{id} within {moved:.0} m of where the earlier picture predicts it (tolerance {tol:.0} m)"
-    ))
-}
-
-/// Whether the preview a signer saw is the picture the engine signs on: recent enough, and
-/// its effect point within the deviation tolerance of the re-check's.
-pub fn check_seen(
-    seen: &SeenPicture,
-    now: &EngageSnapshot,
-    cfg: &RulesConfig,
-) -> Result<(), String> {
-    let ec = cfg.engage_rules();
-    let age = secs(now.t.ms_since(seen.t));
-    // a preview from the future was not computed by this engine
-    if age < -1.0 {
-        return Err(format!(
-            "the preview you saw is dated {:.0} s ahead of the engine: look again",
-            -age
-        ));
-    }
-    if age > ec.seen_max_age_s {
-        return Err(format!(
-            "the preview you saw is {age:.0} s old (limit {:.0} s): look again",
-            ec.seen_max_age_s
-        ));
-    }
-    let tol = (ec.deviation_fraction * now.preview.effect_radius_m).max(ec.deviation_min_m);
-    let d = haversine_m(seen.effect_point, now.preview.effect_point);
-    if d > tol {
-        return Err(format!(
-            "the effect point you saw is {d:.0} m from the engine's now (tolerance {tol:.0} m): look again"
-        ));
-    }
-    Ok(())
 }
 
 // ---- assessment -----------------------------------------------------------------------------

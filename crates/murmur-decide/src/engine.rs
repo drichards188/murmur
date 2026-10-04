@@ -8,7 +8,7 @@ use crate::audit::{AuditSink, CheckPhase, Event, EventBody, LoggedAreas};
 use crate::authority::{EngagementAuthority, Grants, HumanAuthority, OperatorSession};
 use crate::engage::{
     self, EffectOrder, EffectRecord, EngageOrder, EngageWindow, EngagementEvent, FallbackOrder,
-    PictureVerdict, SeenPicture, StopCause, StopRecord,
+    FrozenPlan, PictureToken, PictureVerdict, StopCause, StopRecord, TrackIdentity,
 };
 use crate::hash::{GENESIS, sha256_hex};
 use crate::ids::{AgentId, IntentId, OperatorId, SessionId, Uid};
@@ -68,6 +68,62 @@ pub enum EngineError {
     EngageLifecycle { id: IntentId, why: String },
     #[error("intent {id}: signature refused: {why}")]
     StalePicture { id: IntentId, why: String },
+    #[error("intent {id}: {why}; every signature was dropped: sign the new plan")]
+    PlanChanged { id: IntentId, why: String },
+    #[error("intent {id}: no picture to show: {why}")]
+    NoPicture { id: IntentId, why: String },
+    #[error("intent {id}: approving it would stop engagement(s) {list} on its vehicles: acknowledge that to approve it")]
+    SupersedesEngagement { id: IntentId, list: String },
+}
+
+/// A space answer computed outside the engine's lock (the bridge runs the SGP4 work first,
+/// then takes the lock): the next check of the same task uses it if it was computed within
+/// [`PREPARED_SPACE_MAX_AGE_MS`] of that check.
+#[derive(Clone, Debug)]
+pub struct PreparedSpace {
+    pub task: Task,
+    pub t: Time,
+    pub inputs: SpaceInputs,
+}
+
+/// How old a prepared space answer may be when the check that uses it runs, ms.
+pub const PREPARED_SPACE_MAX_AGE_MS: i64 = 5_000;
+
+/// Ask `oracle` the task's space question at engine time `t` (what [`Engine`] does inside
+/// its checks; the bridge calls this outside its lock and hands the result to
+/// [`Engine::use_prepared_space`]).
+pub fn prepare_space(
+    oracle: &dyn SpaceOracle,
+    task: &Task,
+    t: Time,
+    rules: &crate::rules::RulesConfig,
+) -> Result<PreparedSpace, EngineError> {
+    Ok(PreparedSpace {
+        task: task.clone(),
+        t,
+        inputs: space_inputs(oracle, task, t, rules)?,
+    })
+}
+
+fn space_inputs(
+    oracle: &dyn SpaceOracle,
+    task: &Task,
+    t: Time,
+    rules: &crate::rules::RulesConfig,
+) -> Result<SpaceInputs, EngineError> {
+    let now = oracle.scenario_time(t);
+    let query = match query_for(task, now, &rules.space_rules()) {
+        Some(Ok(q)) => q,
+        Some(Err(reason)) => return Ok(SpaceInputs::Unavailable { reason }),
+        None => return Ok(SpaceInputs::NotQueried),
+    };
+    Ok(match oracle.answer(&query) {
+        Ok(answer) => SpaceInputs::Answered {
+            sha256: answer.content_hash()?,
+            answer: Box::new(answer),
+        },
+        Err(reason) => SpaceInputs::Unavailable { reason },
+    })
 }
 
 /// What [`Engine::step_engagements`] did: what the bridge must act on, and the engagements
@@ -145,6 +201,11 @@ pub struct Engine {
     space: Option<Box<dyn SpaceOracle + Send>>,
     /// Space answers already logged as `space.query`, by hash.
     logged_space: BTreeSet<String>,
+    /// A space answer computed outside the lock for the next check ([`PreparedSpace`]).
+    prepared_space: Option<PreparedSpace>,
+    /// Picture tokens issued and not yet used or expired, by id.
+    tokens: BTreeMap<u64, PictureToken>,
+    next_token: u64,
 }
 
 impl std::fmt::Debug for Engine {
@@ -197,6 +258,9 @@ impl Engine {
             intents: BTreeMap::new(),
             space: None,
             logged_space: BTreeSet::new(),
+            prepared_space: None,
+            tokens: BTreeMap::new(),
+            next_token: 1,
         };
         let policy = e.policy.clone();
         e.emit(EventBody::RunStarted {
@@ -329,11 +393,40 @@ impl Engine {
     /// (`proposer_may_approve = false`, always for an engagement) the proposer's attempt is
     /// refused and logged (`operator.action approval.refused`). An engagement can't be
     /// approved here at all: it needs [`Engine::approve_engagement`].
+    ///
+    /// If dispatching it would stop an engagement in play on its vehicles (the newest order
+    /// stands), the approval is refused (`EngineError::SupersedesEngagement`, logged) unless
+    /// it is made with [`Engine::approve_acknowledging`].
     pub fn approve(
         &mut self,
         id: IntentId,
         by: &HumanAuthority,
         note: Option<String>,
+        world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
+    ) -> Result<&Intent, EngineError> {
+        self.approve_inner(id, by, note, false, world, terrain)
+    }
+
+    /// [`Engine::approve`], acknowledging that its dispatch stops the engagements in play on
+    /// its vehicles (logged as `supersedes` on the approval).
+    pub fn approve_acknowledging(
+        &mut self,
+        id: IntentId,
+        by: &HumanAuthority,
+        note: Option<String>,
+        world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
+    ) -> Result<&Intent, EngineError> {
+        self.approve_inner(id, by, note, true, world, terrain)
+    }
+
+    fn approve_inner(
+        &mut self,
+        id: IntentId,
+        by: &HumanAuthority,
+        note: Option<String>,
+        acknowledge: bool,
         world: &WorldSnapshot,
         terrain: &dyn TerrainOracle,
     ) -> Result<&Intent, EngineError> {
@@ -346,33 +439,101 @@ impl Engine {
             )?;
             return Err(EngineError::EngagementNeedsAuthority(id));
         }
-        self.sign(id, by.operator(), by.session(), note, None, world, terrain)
+        self.sign(id, by.operator(), by.session(), note, acknowledge, world, terrain)
+    }
+
+    /// Show a signer the picture they would sign ([`PictureToken`], logged as
+    /// `picture.issued` with the world it was computed on): the frozen plan, or (no signature
+    /// yet) the preview on the world now that their signature would freeze, and the track's
+    /// identity, affiliation and declaration, valid `token_ttl_s`. Only for an operator who
+    /// may sign it (engagement authority by type, not the proposer, not signed yet).
+    pub fn issue_picture(
+        &mut self,
+        id: IntentId,
+        by: &EngagementAuthority,
+        world: &WorldSnapshot,
+    ) -> Result<PictureToken, EngineError> {
+        let intent = self.get(id)?;
+        if intent.spec().kind() != TaskKind::Engage {
+            return Err(EngineError::NotAnEngagement(id));
+        }
+        next_state(intent.state(), Transition::Approve)
+            .map_err(|err| EngineError::Illegal { id, err })?;
+        let spec = intent.spec().clone();
+        let operator = by.operator().clone();
+        if intent.policy().is_some_and(|p| p.proposer_excluded) && is_self_approval(&spec.source, &operator) {
+            return Err(EngineError::ProposerCannotApprove { id, by: operator });
+        }
+        if intent.concurrences().iter().any(|a| a.by == operator) {
+            return Err(EngineError::AlreadySigned { id, by: operator });
+        }
+        let frozen = intent.engagement().and_then(|e| e.plan.clone());
+        let track_id = engage::params(&spec).map(|p| p.0.to_string()).unwrap_or_default();
+        let inputs = world.subset_for(&spec);
+        let plan = match &frozen {
+            Some(p) => p.preview.clone(),
+            None => engage::preview(&spec, &inputs, &self.policy.rules)
+                .map_err(|why| EngineError::NoPicture { id, why })?,
+        };
+        let track = inputs.tracks.get(&track_id).ok_or_else(|| EngineError::NoPicture {
+            id,
+            why: format!("{track_id} is not in the picture"),
+        })?;
+        let now = self.now();
+        let ttl = self.policy.rules.engage_rules().token_ttl_s;
+        let token = PictureToken {
+            id: self.next_token,
+            intent: id,
+            by: operator,
+            session: by.session(),
+            t: now,
+            expires_t: now.plus_ms((ttl * 1000.0).round() as i64),
+            plan,
+            frozen: frozen.is_some(),
+            track: TrackIdentity::of(&track_id, track),
+        };
+        let logged = self.log_inputs(&inputs)?;
+        self.emit(EventBody::PictureIssued {
+            token: Box::new(token.clone()),
+            inputs: logged,
+        })?;
+        self.next_token += 1;
+        self.tokens.retain(|_, t| t.expires_t >= now);
+        self.tokens.insert(token.id, token.clone());
+        Ok(token)
+    }
+
+    /// A picture token issued and not yet used or expired (the bridge reads its plan to
+    /// fetch the terrain the signature's checks will ask for).
+    pub fn picture_token(&self, token: u64) -> Option<&PictureToken> {
+        self.tokens.get(&token)
     }
 
     /// Approve (sign) an engagement. Needs an [`EngagementAuthority`] (a session opened with
     /// engagement authority), is never the proposer's, and needs as many distinct signers as
-    /// the tier asks (at least two). Every signature re-runs the checks on the current world
-    /// (a failure voids it) and is bound to the picture it was given on: the track's facts
-    /// and the preview (`snapshot` on `approval.concurred` and `approval.granted`), and the
-    /// preview the signer saw (`seen`: refused if older than `seen_max_age_s` or its effect
-    /// point is beyond the deviation tolerance of the engine's). If the track left an earlier
-    /// signer's prediction, was reclassified or its declaration changed, the earlier
-    /// signatures are dropped (`approval.reset`) and must be given again; the same is checked
-    /// every second while it waits ([`Engine::step_engagements`]). The last signature's
-    /// picture is held against every step after.
+    /// the tier asks (at least two). The signature quotes the picture token its signer was
+    /// shown ([`Engine::issue_picture`]); it is refused (logged) if the token expired, is
+    /// another session's, or its plan or the track's identity, affiliation or declaration
+    /// no longer match. The first signature freezes the token's plan; every later one signs
+    /// that exact plan. Each signature re-runs the checks on the plan against the world now:
+    /// before a plan is frozen a failure voids the nomination, after it the plan no longer
+    /// holds, so every signature is dropped with it (`approval.reset`) and this one refused.
+    /// The same plan checks run every second while signatures wait
+    /// ([`Engine::step_engagements`]). The last signature's picture (its snapshot carries the
+    /// plan) is held against every step after, and the release executes the plan.
     pub fn approve_engagement(
         &mut self,
         id: IntentId,
         by: &EngagementAuthority,
         note: Option<String>,
-        seen: SeenPicture,
+        token: u64,
         world: &WorldSnapshot,
         terrain: &dyn TerrainOracle,
     ) -> Result<&Intent, EngineError> {
         if self.get(id)?.spec().kind() != TaskKind::Engage {
             return Err(EngineError::NotAnEngagement(id));
         }
-        self.sign(id, by.operator(), by.session(), note, Some(seen), world, terrain)
+        self.sign_engagement(id, by.operator(), by.session(), note, token, world, terrain)
     }
 
     /// Log a refused approval attempt (nothing else changes).
@@ -393,7 +554,8 @@ impl Engine {
         Ok(())
     }
 
-    /// One approval signature (see [`Engine::approve`] and [`Engine::approve_engagement`]).
+    /// One approval signature on an intent that is not an engagement (see
+    /// [`Engine::approve`]).
     #[allow(clippy::too_many_arguments)]
     fn sign(
         &mut self,
@@ -401,7 +563,7 @@ impl Engine {
         by: &OperatorId,
         session: SessionId,
         note: Option<String>,
-        seen: Option<SeenPicture>,
+        acknowledge: bool,
         world: &WorldSnapshot,
         terrain: &dyn TerrainOracle,
     ) -> Result<&Intent, EngineError> {
@@ -428,16 +590,8 @@ impl Engine {
             self.refuse(by, session, id, "already signed: another operator must")?;
             return Err(EngineError::AlreadySigned { id, by: by.clone() });
         }
-        let engage = spec.kind() == TaskKind::Engage;
-        if engage && seen.is_none() {
-            self.refuse(by, session, id, "a signature on an engagement must say what preview it saw")?;
-            return Err(EngineError::StalePicture {
-                id,
-                why: "no preview given with the signature".into(),
-            });
-        }
         let (inputs, _, results, ok) =
-            self.run_checks(&spec, CheckPhase::Approve, world, terrain)?;
+            self.run_checks_plan(&spec, CheckPhase::Approve, world, terrain, None)?;
         if !ok {
             let reason = format!(
                 "checks failed at approval: {}",
@@ -446,46 +600,24 @@ impl Engine {
             self.transition(id, Transition::Void, reason)?;
             return Err(EngineError::ChecksFailedAtApproval(id));
         }
-        // An engagement's signature is on a picture: this re-check's.
-        let snapshot = if engage {
-            match engage::snapshot(&spec, &inputs, &self.policy.rules) {
-                Ok(s) => Some(s),
-                Err(why) => {
-                    self.transition(
-                        id,
-                        Transition::Void,
-                        format!("checks failed at approval: cannot hold the picture: {why}"),
-                    )?;
-                    return Err(EngineError::ChecksFailedAtApproval(id));
-                }
-            }
-        } else {
-            None
-        };
-        if let (Some(snap), Some(seen)) = (&snapshot, &seen)
-            && let Err(why) = engage::check_seen(seen, snap, &self.policy.rules)
-        {
-            self.refuse(by, session, id, &why)?;
-            return Err(EngineError::StalePicture { id, why });
-        }
-        // Earlier signatures on a picture that no longer holds are dropped.
-        if let Some(snap) = &snapshot {
-            let earlier = self
-                .get(id)?
-                .engagement()
-                .map(|e| e.signed.clone())
-                .unwrap_or_default();
-            let changed: Vec<String> = earlier
+        // dispatching it stops the engagements in play on its vehicles: only if the approver
+        // says so
+        let mut supersedes: Vec<IntentId> = inputs.engaged.values().copied().collect();
+        supersedes.sort();
+        supersedes.dedup();
+        if !supersedes.is_empty() && !acknowledge {
+            let list = supersedes
                 .iter()
-                .filter_map(|s| {
-                    engage::same_picture(&s.snapshot, snap, &self.policy.rules)
-                        .err()
-                        .map(|why| format!("{}'s signature: {why}", s.by))
-                })
-                .collect();
-            if !changed.is_empty() {
-                self.reset_signatures(id, changed.join("; "), None)?;
-            }
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            self.refuse(
+                by,
+                session,
+                id,
+                &format!("would stop engagement(s) {list} on its vehicles; not acknowledged"),
+            )?;
+            return Err(EngineError::SupersedesEngagement { id, list });
         }
         let n = u32::try_from(self.get(id)?.concurrences().len()).unwrap_or(u32::MAX) + 1;
         if n < of {
@@ -496,11 +628,11 @@ impl Engine {
                 n,
                 of,
                 note: note.clone(),
-                snapshot: snapshot.clone().map(Box::new),
-                seen: seen.clone(),
+                snapshot: None,
+                token: None,
+                supersedes,
             })?;
-            let intent = self.get_mut(id)?;
-            intent.push_concurrence(Approval {
+            self.get_mut(id)?.push_concurrence(Approval {
                 by: by.clone(),
                 session,
                 t,
@@ -508,13 +640,6 @@ impl Engine {
                 at_submission: false,
                 note,
             });
-            if let Some(s) = snapshot {
-                intent.engagement_mut().signed.push(engage::SignedPicture {
-                    by: by.clone(),
-                    t,
-                    snapshot: s,
-                });
-            }
             return self.get(id);
         }
         let t = self.emit(EventBody::ApprovalGranted {
@@ -523,11 +648,11 @@ impl Engine {
             session,
             self_approved,
             note: note.clone(),
-            snapshot: snapshot.clone().map(Box::new),
-            seen,
+            snapshot: None,
+            token: None,
+            supersedes,
         })?;
-        let intent = self.get_mut(id)?;
-        intent.set_approval(Approval {
+        self.get_mut(id)?.set_approval(Approval {
             by: by.clone(),
             session,
             t,
@@ -535,15 +660,6 @@ impl Engine {
             at_submission: false,
             note,
         });
-        if let Some(s) = snapshot {
-            let e = intent.engagement_mut();
-            e.signed.push(engage::SignedPicture {
-                by: by.clone(),
-                t,
-                snapshot: s.clone(),
-            });
-            e.snapshot = Some(s);
-        }
         let signers = if of > 1 {
             format!(" (signature {n} of {of})")
         } else {
@@ -558,8 +674,165 @@ impl Engine {
         self.get(id)
     }
 
-    /// Drop an engagement's signatures so far: their picture no longer holds. `inputs`:
-    /// the world the comparison read, when it is not a signature's own re-check.
+    /// One engagement signature (see [`Engine::approve_engagement`]).
+    #[allow(clippy::too_many_arguments)]
+    fn sign_engagement(
+        &mut self,
+        id: IntentId,
+        by: &OperatorId,
+        session: SessionId,
+        note: Option<String>,
+        token: u64,
+        world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
+    ) -> Result<&Intent, EngineError> {
+        let intent = self.get(id)?;
+        next_state(intent.state(), Transition::Approve)
+            .map_err(|err| EngineError::Illegal { id, err })?;
+        let spec = intent.spec().clone();
+        let expires = intent.expires_t();
+        let (of, proposer_excluded) = intent
+            .policy()
+            .map_or((1, false), |p| (p.approvers.max(1), p.proposer_excluded));
+        let signed_before = intent.concurrences().iter().any(|a| a.by == *by);
+        let frozen = intent.engagement().and_then(|e| e.plan.clone());
+        let now = self.now();
+        if expires.is_some_and(|e| now >= e) {
+            self.expire(id)?;
+            return Err(EngineError::Expired(id));
+        }
+        let self_approved = is_self_approval(&spec.source, by);
+        if proposer_excluded && self_approved {
+            self.refuse(by, session, id, "the proposer may not approve it (two-person rule)")?;
+            return Err(EngineError::ProposerCannotApprove { id, by: by.clone() });
+        }
+        if signed_before {
+            self.refuse(by, session, id, "already signed: another operator must")?;
+            return Err(EngineError::AlreadySigned { id, by: by.clone() });
+        }
+        // the picture this signer was shown
+        let track_id = engage::params(&spec).map(|p| p.0.to_string()).unwrap_or_default();
+        let shown = match self.tokens.get(&token) {
+            Some(t) => t.clone(),
+            None => {
+                let why = format!("no picture token {token} was issued (or it was used): look again");
+                self.refuse(by, session, id, &why)?;
+                return Err(EngineError::StalePicture { id, why });
+            }
+        };
+        if let Err(why) = engage::check_token(
+            &shown,
+            id,
+            by,
+            session,
+            now,
+            world.tracks.get(&track_id),
+            frozen.as_ref(),
+        ) {
+            self.refuse(by, session, id, &why)?;
+            return Err(EngineError::StalePicture { id, why });
+        }
+        // the plan this signature is on: the frozen one, or the one this signature freezes
+        let plan = frozen.clone().unwrap_or_else(|| FrozenPlan {
+            t: now,
+            by: by.clone(),
+            preview: shown.plan.clone(),
+            track: shown.track.clone(),
+        });
+        let (inputs, _, results, ok) =
+            self.run_checks_plan(&spec, CheckPhase::Approve, world, terrain, Some(&plan))?;
+        if !ok {
+            let failed = summarize_failures(&results);
+            if frozen.is_some() {
+                let why = format!("the plan no longer holds: {failed}");
+                self.reset_signatures(id, why.clone(), None)?;
+                self.refuse(by, session, id, &why)?;
+                return Err(EngineError::PlanChanged { id, why });
+            }
+            self.transition(id, Transition::Void, format!("checks failed at approval: {failed}"))?;
+            return Err(EngineError::ChecksFailedAtApproval(id));
+        }
+        let snapshot = match engage::snapshot(&spec, &inputs, &self.policy.rules) {
+            Ok(s) => s,
+            Err(why) => {
+                self.transition(
+                    id,
+                    Transition::Void,
+                    format!("checks failed at approval: cannot hold the picture: {why}"),
+                )?;
+                return Err(EngineError::ChecksFailedAtApproval(id));
+            }
+        };
+        self.tokens.remove(&token);
+        let n = u32::try_from(self.get(id)?.concurrences().len()).unwrap_or(u32::MAX) + 1;
+        if n < of {
+            let t = self.emit(EventBody::ApprovalConcurred {
+                intent: id,
+                by: by.clone(),
+                session,
+                n,
+                of,
+                note: note.clone(),
+                snapshot: Some(Box::new(snapshot.clone())),
+                token: Some(Box::new(shown)),
+                supersedes: Vec::new(),
+            })?;
+            let intent = self.get_mut(id)?;
+            intent.push_concurrence(Approval {
+                by: by.clone(),
+                session,
+                t,
+                self_approved,
+                at_submission: false,
+                note,
+            });
+            let e = intent.engagement_mut();
+            e.signed.push(engage::SignedPicture {
+                by: by.clone(),
+                t,
+                snapshot,
+            });
+            if e.plan.is_none() {
+                e.plan = Some(plan);
+            }
+            return self.get(id);
+        }
+        let t = self.emit(EventBody::ApprovalGranted {
+            intent: id,
+            by: by.clone(),
+            session,
+            self_approved,
+            note: note.clone(),
+            snapshot: Some(Box::new(snapshot.clone())),
+            token: Some(Box::new(shown)),
+            supersedes: Vec::new(),
+        })?;
+        let intent = self.get_mut(id)?;
+        intent.set_approval(Approval {
+            by: by.clone(),
+            session,
+            t,
+            self_approved,
+            at_submission: false,
+            note,
+        });
+        let e = intent.engagement_mut();
+        e.signed.push(engage::SignedPicture {
+            by: by.clone(),
+            t,
+            snapshot: snapshot.clone(),
+        });
+        if e.plan.is_none() {
+            e.plan = Some(plan);
+        }
+        e.snapshot = Some(snapshot);
+        let reason = format!("approved by {by} (signature {n} of {of}) on the plan frozen by the first signature");
+        self.transition(id, Transition::Approve, reason)?;
+        self.get(id)
+    }
+
+    /// Drop an engagement's signatures so far and its frozen plan: the plan no longer holds.
+    /// `inputs`: the world the checks read, when it is not a signature's own re-check.
     fn reset_signatures(
         &mut self,
         id: IntentId,
@@ -582,6 +855,7 @@ impl Engine {
         intent.clear_concurrences();
         let e = intent.engagement_mut();
         e.signed.clear();
+        e.plan = None;
         e.reset = Some(engage::ResetRecord { t, dropped, reason });
         Ok(())
     }
@@ -795,7 +1069,11 @@ impl Engine {
     /// (`engage.observe`) until the assessment (`engage.assessed`) finishes it. Each
     /// engagement is stepped on its own: an error on one (reported in `errors`) does not
     /// keep the others from being held, released or stopped.
-    pub fn step_engagements(&mut self, world: &WorldSnapshot) -> StepOutcome {
+    pub fn step_engagements(
+        &mut self,
+        world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
+    ) -> StepOutcome {
         let ids: Vec<IntentId> = self
             .intents
             .values()
@@ -805,13 +1083,13 @@ impl Engine {
                         i.state(),
                         State::Approved | State::Dispatched | State::Effected
                     ) || (i.state() == State::PendingApproval
-                        && i.engagement().is_some_and(|e| !e.signed.is_empty())))
+                        && i.engagement().is_some_and(|e| e.plan.is_some())))
             })
             .map(Intent::id)
             .collect();
         let mut out = StepOutcome::default();
         for id in ids {
-            match self.step_one(id, world) {
+            match self.step_one(id, world, terrain) {
                 Ok(Some(ev)) => out.events.push(ev),
                 Ok(None) => {}
                 Err(e) => out.errors.push((id, e)),
@@ -824,6 +1102,7 @@ impl Engine {
         &mut self,
         id: IntentId,
         world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
     ) -> Result<Option<EngagementEvent>, EngineError> {
         let intent = self.get(id)?;
         let spec = intent.spec().clone();
@@ -831,30 +1110,21 @@ impl Engine {
         let Some(eng) = intent.engagement().cloned() else {
             return Ok(None);
         };
-        let inputs = world.subset_for(&spec);
         if state == State::PendingApproval {
-            // hold what the signers signed: the track where their pictures predict it
-            let track_id = engage::params(&spec).map(|p| p.0.to_string()).unwrap_or_default();
-            let changed: Vec<String> = eng
-                .signed
-                .iter()
-                .filter_map(|s| {
-                    engage::same_track(
-                        &s.snapshot,
-                        inputs.tracks.get(&track_id),
-                        inputs.t,
-                        &self.policy.rules,
-                    )
-                    .err()
-                    .map(|why| format!("{}'s signature: {why}", s.by))
-                })
-                .collect();
-            if !changed.is_empty() {
+            // hold the plan the signers signed: the engagement checks on it, every second
+            let Some(plan) = eng.plan.clone() else {
+                return Ok(None);
+            };
+            let inputs = world.for_intent_plan(&spec, terrain, &self.policy.rules, Some(&plan));
+            let results = engage::evaluate(&spec, &inputs, &self.policy.rules);
+            if results.iter().any(|c| c.outcome != Outcome::Pass) {
                 let logged = self.log_inputs(&inputs)?;
-                self.reset_signatures(id, changed.join("; "), Some(logged))?;
+                let why = format!("the plan no longer holds: {}", summarize_failures(&results));
+                self.reset_signatures(id, why, Some(logged))?;
             }
             return Ok(None);
         }
+        let inputs = world.subset_for(&spec);
         let Some(snap) = eng.snapshot.clone() else {
             return Ok(None);
         };
@@ -998,13 +1268,19 @@ impl Engine {
         world: &WorldSnapshot,
         terrain: &dyn TerrainOracle,
     ) -> Option<(Vec<CheckResult>, Option<engage::EngagePreview>)> {
-        let spec = self.intents.get(&id)?.spec();
+        let intent = self.intents.get(&id)?;
+        let spec = intent.spec();
         if spec.kind() != TaskKind::Engage {
             return None;
         }
-        let inputs = world.for_intent_with(spec, terrain, &self.policy.rules);
+        // with a frozen plan: the checks on it, and it is what a signer signs
+        let plan = intent.engagement().and_then(|e| e.plan.as_ref());
+        let inputs = world.for_intent_plan(spec, terrain, &self.policy.rules, plan);
         let checks = rules::evaluate(spec, &inputs, &self.policy.rules);
-        let pv = engage::preview(spec, &inputs, &self.policy.rules).ok();
+        let pv = match plan {
+            Some(p) => Some(p.preview.clone()),
+            None => engage::preview(spec, &inputs, &self.policy.rules).ok(),
+        };
         Some((checks, pv))
     }
 
@@ -1349,7 +1625,19 @@ impl Engine {
         world: &WorldSnapshot,
         terrain: &dyn TerrainOracle,
     ) -> Result<(WorldSnapshot, LoggedInputs, Vec<CheckResult>, bool), EngineError> {
-        let mut inputs = world.for_intent_with(spec, terrain, &self.policy.rules);
+        self.run_checks_plan(spec, phase, world, terrain, None)
+    }
+
+    /// [`Engine::run_checks`] on an engagement plan (a signature's).
+    fn run_checks_plan(
+        &mut self,
+        spec: &IntentSpec,
+        phase: CheckPhase,
+        world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
+        plan: Option<&FrozenPlan>,
+    ) -> Result<(WorldSnapshot, LoggedInputs, Vec<CheckResult>, bool), EngineError> {
+        let mut inputs = world.for_intent_plan(spec, terrain, &self.policy.rules, plan);
         if spec.task.is_space() {
             inputs.space = self.ask_space(&spec.task, inputs.t)?;
         }
@@ -1357,7 +1645,11 @@ impl Engine {
         let results = rules::evaluate(spec, &inputs, &self.policy.rules);
         let passed = rules::passed(&results, spec.kind());
         let preview = (spec.kind() == TaskKind::Engage)
-            .then(|| engage::preview(spec, &inputs, &self.policy.rules).ok())
+            .then(|| {
+                let mut live = inputs.clone();
+                live.plan = None;
+                engage::preview(spec, &live, &self.policy.rules).ok()
+            })
             .flatten();
         let logged = self.log_inputs(&inputs)?;
         self.emit(EventBody::CheckResult {
@@ -1382,25 +1674,26 @@ impl Engine {
     /// Ask the space segment this task's question at snapshot time `t`. Failures become
     /// `Unavailable` (the space rule then fails, saying why); only a hashing error is an
     /// engine error.
-    fn ask_space(&self, task: &Task, t: Time) -> Result<SpaceInputs, EngineError> {
+    fn ask_space(&mut self, task: &Task, t: Time) -> Result<SpaceInputs, EngineError> {
+        // computed outside the lock for this very question, a moment ago
+        if let Some(p) = self.prepared_space.take()
+            && p.task == *task
+            && (t.ms_since(p.t)).abs() <= PREPARED_SPACE_MAX_AGE_MS
+        {
+            return Ok(p.inputs);
+        }
         let Some(oracle) = &self.space else {
             return Ok(SpaceInputs::Unavailable {
                 reason: "no space segment loaded".into(),
             });
         };
-        let now = oracle.scenario_time(t);
-        let query = match query_for(task, now, &self.policy.rules.space_rules()) {
-            Some(Ok(q)) => q,
-            Some(Err(reason)) => return Ok(SpaceInputs::Unavailable { reason }),
-            None => return Ok(SpaceInputs::NotQueried),
-        };
-        Ok(match oracle.answer(&query) {
-            Ok(answer) => SpaceInputs::Answered {
-                sha256: answer.content_hash()?,
-                answer: Box::new(answer),
-            },
-            Err(reason) => SpaceInputs::Unavailable { reason },
-        })
+        space_inputs(oracle.as_ref(), task, t, &self.policy.rules)
+    }
+
+    /// Use `prepared` (computed outside the engine, see [`prepare_space`]) for the next check
+    /// of the same task, if it is still fresh then; otherwise the engine asks again.
+    pub fn use_prepared_space(&mut self, prepared: PreparedSpace) {
+        self.prepared_space = Some(prepared);
     }
 
     /// An engagement without a window gets the default one, written into its spec (so the

@@ -247,6 +247,16 @@ impl Policy {
         // The file default: a human's own submission authorizes it. Written out explicitly
         // so the logged copy says so (an unset value in a log means false).
         p.approval.submitter_authorizes.get_or_insert(true);
+        p.validate()?;
+        Ok(p)
+    }
+
+    /// Every bound a policy file must meet (what [`Policy::from_toml`] checks after parsing).
+    /// Replay runs it on the logged policy too, so a log can't carry thresholds no file
+    /// could. The engagement floor (two approvers, never auto, never the proposer) is not a
+    /// bound here: `policy::decide` applies it whatever the file says.
+    pub fn validate(&self) -> Result<(), PolicyError> {
+        let p = self;
         if p.tiers.is_empty() {
             return Err(PolicyError::Invalid("no [[tier]] rules".into()));
         }
@@ -274,14 +284,40 @@ impl Policy {
             }
         }
         let r = &p.rules;
-        if !(r.orbit_radius_margin.is_finite() && r.orbit_radius_margin >= 1.0) {
+        if !(r.orbit_radius_margin.is_finite() && (1.0..=5.0).contains(&r.orbit_radius_margin)) {
             return Err(PolicyError::Invalid(
-                "rules.orbit_radius_margin must be >= 1".into(),
+                "rules.orbit_radius_margin must be within 1..5".into(),
             ));
         }
         if !(r.reserve_pct.is_finite() && (0.0..=100.0).contains(&r.reserve_pct)) {
             return Err(PolicyError::Invalid(
                 "rules.reserve_pct must be 0..100".into(),
+            ));
+        }
+        // freshness: what every rule (and an engagement's keep-outs) trusts a fact for
+        if !(1..=120).contains(&r.max_fact_age_s) {
+            return Err(PolicyError::Invalid(format!(
+                "rules.max_fact_age_s must be within 1..120, got {}",
+                r.max_fact_age_s
+            )));
+        }
+        if let Some(n) = r.fact_age_intervals
+            && !(1..=10).contains(&n)
+        {
+            return Err(PolicyError::Invalid(format!(
+                "rules.fact_age_intervals must be within 1..10, got {n}"
+            )));
+        }
+        if !(r.fixed_wing_default_min_turn_radius_m.is_finite()
+            && (5.0..=2000.0).contains(&r.fixed_wing_default_min_turn_radius_m))
+        {
+            return Err(PolicyError::Invalid(
+                "rules.fixed_wing_default_min_turn_radius_m must be within 5..2000".into(),
+            ));
+        }
+        if !(1..=86_400).contains(&r.task_duration_s) {
+            return Err(PolicyError::Invalid(
+                "rules.task_duration_s must be within 1..86400".into(),
             ));
         }
         if let Some(s) = &r.space {
@@ -298,7 +334,7 @@ impl Policy {
                 )));
             }
         }
-        Ok(p)
+        Ok(())
     }
 
     pub fn load(path: &Path) -> Result<Self, PolicyError> {

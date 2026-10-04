@@ -1,0 +1,76 @@
+# What the signer saw (second review, P6). op-2 asks for the picture at s=2 (a small fast
+# boat). The target is reclassified as a ferry at s=11; op-2 signs at s=12 quoting the
+# picture from s=2: refused, the track changed since they looked. Nothing is signed.
+# Afterwards the log's policy is loosened (picture tokens valid for a day) with a
+# recomputed chain; replay holds the logged policy to the same bounds as a file.
+title = "A signature on a picture taken before the target was reclassified"
+invariant = "signed_picture"
+attack = "the signer's picture predates a reclassification; the logged policy is loosened"
+expect = "pending_approval"
+expect_refusals = ["changed since you looked"]
+tamper = "loosen_policy"
+end_s = 30
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[agent]]
+id = "agent-planner"
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km: it also covers the point for the assessment
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.495, 37.812]
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 900
+
+[[step]]
+at_s = 2
+action = "look"
+by = "op-2"
+
+[[step]]
+at_s = 11
+action = "track"
+id = "T-0001"
+identity = "ferry"
+
+[[step]]
+at_s = 12
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 13
+action = "expect"
+state = "pending_approval"
+concurrences = 0

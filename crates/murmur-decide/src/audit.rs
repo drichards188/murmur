@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize};
 use crate::areas::AreaSet;
 use crate::authority::Grants;
 use crate::engage::{
-    AssessResult, EngageOrder, EngagePreview, EngageSnapshot, Fallback, ObserveStep, SeenPicture,
+    AssessResult, EngageOrder, EngagePreview, EngageSnapshot, Fallback, ObserveStep, PictureToken,
     StopCause,
 };
 use crate::geo::LonLat;
@@ -166,12 +166,17 @@ pub enum EventBody {
         self_approved: bool,
         note: Option<String>,
         /// Engage: the picture this approval holds (recomputed by replay from the re-check
-        /// just before it).
+        /// just before it); its preview is the frozen plan.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         snapshot: Option<Box<EngageSnapshot>>,
-        /// Engage: the preview the signer saw (the console sends it with the signature).
+        /// Engage: the picture token the signature quoted (what the signer was shown, as
+        /// issued in `picture.issued`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        seen: Option<SeenPicture>,
+        token: Option<Box<PictureToken>>,
+        /// The engagements in play on this intent's vehicles that its dispatch will stop
+        /// (superseded): the approver acknowledged them. Absent when none.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        supersedes: Vec<IntentId>,
     },
 
     /// A signature that is not yet enough: signature `n` of the `of` distinct approvers the
@@ -184,20 +189,33 @@ pub enum EventBody {
         n: u32,
         of: u32,
         note: Option<String>,
-        /// Engage: the picture this signature is on (every signature is bound to one;
-        /// replay recomputes it from the re-check just before).
+        /// Engage: the picture this signature is on, its preview the frozen plan (every
+        /// signature is bound to one; replay recomputes it from the re-check just before).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         snapshot: Option<Box<EngageSnapshot>>,
-        /// Engage: the preview the signer saw.
+        /// Engage: the picture token the signature quoted.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        seen: Option<SeenPicture>,
+        token: Option<Box<PictureToken>>,
+        /// As on `approval.granted`: the engagements this approval acknowledged stopping.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        supersedes: Vec<IntentId>,
     },
 
-    /// Engage: the signatures so far (`dropped`) were on a picture that no longer holds
-    /// (the track left the earlier signer's prediction, was reclassified or its declaration
-    /// changed), so they are dropped and must be given again. At a signature the picture is
-    /// that signature's re-check (`inputs` absent); while pending it is the world then
-    /// (`inputs` present). Replay recomputes the comparison.
+    /// Engage: the engine showed a signer the picture (`token`: the plan, the track's
+    /// identity, valid until `expires_t`, bound to the signer's session), on the world in
+    /// `inputs`. Replay recomputes the plan from them when none was frozen yet.
+    #[serde(rename = "picture.issued")]
+    PictureIssued {
+        token: Box<PictureToken>,
+        inputs: LoggedInputs,
+    },
+
+    /// Engage: the frozen plan no longer holds (the track left its prediction, was
+    /// reclassified or its declaration changed, a keep-out or the platform's reach failed on
+    /// it, or the signatures took longer than `max_signing_s`), so every signature so far
+    /// (`dropped`) is dropped with the plan and a new plan must be signed. At a signature the
+    /// world is that signature's re-check (`inputs` absent); while pending it is the world
+    /// then (`inputs` present). Replay recomputes the failed checks.
     #[serde(rename = "approval.reset")]
     ApprovalReset {
         intent: IntentId,

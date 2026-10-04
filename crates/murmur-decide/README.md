@@ -125,11 +125,12 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
   engage: true })` (the grants are logged with `session.opened`). `approve` refuses an
   engagement. Policy floor in `policy::decide`: never auto, never at submission, proposer
   excluded, never fewer than two approvers (`ENGAGE_MIN_APPROVERS`; replay holds it too).
-  Each signature carries the preview its signer saw (`SeenPicture`, refused when older than
-  `seen_max_age_s` or off the engine's effect point) and stores its own snapshot; when the
-  track changes between signatures (identity, declaration, beyond the deviation tolerance),
-  at the next signature or in `step_engagements`, every signature is dropped
-  (`approval.reset`). An agent's order on a vehicle with an engagement in play goes to a
+  A signer is shown the picture first (`Engine::issue_picture`, a `PictureToken` bound to
+  the session, logged `picture.issued`) and the signature quotes it
+  (`approve_engagement(id, &auth, note, token, world, terrain)`). The first signature
+  freezes the plan it was shown (`FrozenPlan`); every later signature signs that plan, and
+  the checks run on it (`WorldSnapshot::plan`); when it stops holding, at a signature or in
+  `step_engagements`, every signature is dropped with it (`approval.reset`). An agent's order on a vehicle with an engagement in play goes to a
   human (`(engagement in play)`; the engagements in play are logged with each decision as
   `engaged`).
 - **Hold the picture**: the final `approval.granted` carries an `EngageSnapshot`;

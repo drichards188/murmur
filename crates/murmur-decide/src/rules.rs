@@ -89,6 +89,14 @@ pub enum RuleId {
     Alignment,
     /// After approval: the picture was checked recently enough (no stalled watch).
     PictureGap,
+    /// The frozen plan still holds: the track is predicted within tolerance of the plan's
+    /// effect point at the plan's time.
+    Plan,
+    /// The signatures on one plan are given within `max_signing_s` of the first.
+    SigningTime,
+    /// After approval: the platform navigates on GNSS (a release on a dead-reckoned position
+    /// is not trusted).
+    PlatformNav,
 }
 
 impl RuleId {
@@ -120,6 +128,9 @@ impl RuleId {
             RuleId::EffectTime => "effect_time",
             RuleId::Alignment => "alignment",
             RuleId::PictureGap => "picture_gap",
+            RuleId::Plan => "plan",
+            RuleId::SigningTime => "signing_time",
+            RuleId::PlatformNav => "platform_nav",
         }
     }
 }

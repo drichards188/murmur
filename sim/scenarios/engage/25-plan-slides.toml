@@ -1,0 +1,82 @@
+# One plan for every signature (second review, P1). The target runs east at 10 m/s; op-2
+# signs at s=3, freezing the plan (the intercept point then). Before the reviewers' second
+# signature, 237 s later, the effect point a fresh preview would give has slid 1.7 km: the
+# frozen plan can no longer be executed (the platform can't be at its point by its time,
+# the signatures take longer than max_signing_s), so the signatures are dropped. op-3 then
+# signs a new plan and op-2 signs it again; the release executes that one.
+title = "The effect point slides while the second signer waits"
+invariant = "signed_picture"
+attack = "the second signature comes 237 s after the first on a constant-velocity track"
+expect = "done"
+expect_assessment = "ceased"
+expect_reset = true
+end_s = 600
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[agent]]
+id = "agent-planner"
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km: it also covers the point for the assessment
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.527, 37.815]
+velocity = [10.0, 0.0]
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 900
+
+[[step]]
+at_s = 3
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 240
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 241
+action = "expect"
+state = "pending_approval"
+concurrences = 1
+
+[[step]]
+at_s = 245
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 246
+action = "expect"
+state = "dispatched"

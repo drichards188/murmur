@@ -1,18 +1,20 @@
-# Every signature is on the same picture. op-2 signs; a signer looking at a preview 40 s old,
-# then at an effect point 400 m from the engine's, is refused ("look again"). The target
-# moves about 880 m west before op-3 signs (still inside the zone, still a valid
-# nomination): op-2's signature was on a picture that no longer holds, so it is dropped
-# (approval.reset) and op-3's is the first on the new one. op-2 signs again on the picture
-# as it is; dispatched. Afterwards the reset is cut from the log with a recomputed chain;
-# replay must catch signatures on two different pictures.
+# One plan for every signature. op-2 looks at the picture at s=2 and signs at s=20 on that
+# token: expired (15 s), refused. Signing on a fresh one freezes the plan (effect point and
+# time). op-3 looks at it; then the target jumps about 880 m west (still a valid
+# nomination where it is now): the frozen plan no longer holds (the track is predicted far
+# from the plan's point at its time), so every signature is dropped with the plan
+# (approval.reset). op-3's signature on the token from before the reset is refused; on a
+# fresh one it freezes a new plan, and op-2 signs that one. Afterwards the reset is cut
+# from the log with a recomputed chain; replay must catch signatures on two plans.
 title = "The target moves between signatures"
 invariant = "signed_picture"
-attack = "the track moves between the first and second signature; signers sign stale or different previews; the log hides the reset"
+attack = "a signer quotes an expired picture; the track moves between signatures; a signer quotes a picture of the dropped plan; the log hides the reset"
 expect = "done"
 expect_assessment = "ceased"
-expect_refusals = ["s old", "m from the engine's now"]
+expect_refusals = ["expired", "dropped"]
+expect_reset = true
 tamper = "drop_reset"
-end_s = 220
+end_s = 260
 
 [[operator]]
 id = "op-1"                 # nominates; no engagement authority
@@ -33,7 +35,7 @@ at = [-122.4700, 37.8160]
 
 [[track]]
 id = "T-0001"
-at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+at = [-122.495, 37.812]
 affiliation = "suspect"
 identity = "small_fast_boat"
 identity_confidence = 0.9
@@ -54,54 +56,68 @@ platform = "blade-1"
 track = "T-0001"
 radius_m = 75
 fallback = "return"
-window_s = 600
+window_s = 900
 
 [[step]]
-at_s = 5
+at_s = 2
+action = "look"
+by = "op-2"
+
+[[step]]
+at_s = 20
 action = "approve"
 by = "op-2"
 
 [[step]]
-at_s = 6
+at_s = 21
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 22
 action = "expect"
 state = "pending_approval"
 concurrences = 1
 
 [[step]]
-at_s = 6
+at_s = 23
+action = "look"
+by = "op-3"
+
+[[step]]
+at_s = 23
 action = "track"
 id = "T-0001"
 at = [-122.505, 37.812]
 
 [[step]]
-at_s = 7
-action = "approve"
-by = "op-3"
-seen_age_s = 40
-
-[[step]]
-at_s = 7
-action = "approve"
-by = "op-3"
-seen_offset_m = 400.0
-
-[[step]]
-at_s = 8
+at_s = 25
 action = "approve"
 by = "op-3"
 
 [[step]]
-at_s = 9
+at_s = 26
+action = "expect"
+state = "pending_approval"
+concurrences = 0
+
+[[step]]
+at_s = 27
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 28
 action = "expect"
 state = "pending_approval"
 concurrences = 1
 
 [[step]]
-at_s = 12
+at_s = 30
 action = "approve"
 by = "op-2"
 
 [[step]]
-at_s = 13
+at_s = 31
 action = "expect"
 state = "dispatched"

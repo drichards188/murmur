@@ -81,9 +81,10 @@ fn main() -> ExitCode {
             println!("{}", serde_json::to_string(&r).unwrap_or_default());
         } else {
             let mark = if r.ok { "ok  " } else { "FAIL" };
-            let tamper = match (&r.tamper, r.tamper_detected) {
-                (Some(t), Some(true)) => format!(", tamper {t} caught"),
-                (Some(t), _) => format!(", tamper {t} NOT caught"),
+            let tamper = match (&r.tamper, r.tamper_detected, &r.tamper_not_applicable) {
+                (Some(t), Some(true), _) => format!(", tamper {t} caught"),
+                (Some(t), None, Some(why)) => format!(", tamper {t} not applicable ({why})"),
+                (Some(t), _, _) => format!(", tamper {t} NOT caught"),
                 _ => String::new(),
             };
             println!(

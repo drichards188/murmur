@@ -566,6 +566,26 @@ pub trait SpaceOracle {
     }
 }
 
+/// A shared segment answers as the segment (the bridge keeps one to answer outside its
+/// lock, see [`crate::prepare_space`]).
+impl<T: SpaceOracle + ?Sized> SpaceOracle for Arc<T> {
+    fn segment(&self) -> &SegmentId {
+        (**self).segment()
+    }
+    fn answer(&self, query: &SpaceQuery) -> Result<SpaceAnswer, String> {
+        (**self).answer(query)
+    }
+    fn scenario_map(&self) -> ScenarioMap {
+        (**self).scenario_map()
+    }
+    fn pinned_shift_days(&self) -> Option<i64> {
+        (**self).pinned_shift_days()
+    }
+    fn scenario_time(&self, t: Time) -> Time {
+        (**self).scenario_time(t)
+    }
+}
+
 /// The real space segment: a loaded [`Space`] (cheap to share, immutable after load).
 pub struct SpaceSegment {
     space: Arc<Space>,

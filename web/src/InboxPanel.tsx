@@ -179,9 +179,12 @@ interface CardProps {
   selected: boolean
   onFocus: () => void
   onDone: (text: string, tone: 'ok' | 'bad') => void
+  /** engagements in play (pending, approved, under way) on this intent's vehicles: its
+   *  dispatch stops them, and the approval must say so */
+  engaged?: Intent[]
 }
 
-function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone }: CardProps) {
+function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone, engaged = [] }: CardProps) {
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -197,7 +200,8 @@ function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone }: C
     setBusy(true)
     setError(null)
     try {
-      const r = await intentAction(i.id, action, note)
+      const extra = action === 'approve' && engaged.length ? { acknowledge_supersede: true } : undefined
+      const r = await intentAction(i.id, action, note, extra)
       const last = r.intent.history[r.intent.history.length - 1]
       if (action === 'reject') onDone(`i${i.id} rejected by ${getOperator()}`, 'ok')
       else if (r.dispatched) onDone(`i${i.id} approved by ${getOperator()}${r.intent.approval?.self_approved ? ' (self-approval)' : ''} and dispatched`, 'ok')
@@ -301,6 +305,11 @@ function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone }: C
           You ({operator}) proposed this. Approving it is a self-approval, and the decision log records that.
         </p>
       )}
+      {engaged.length > 0 && (
+        <p className="eg-alarm" role="alert">
+          <b>Approving this stops {engaged.map((e) => `engagement i${e.id}`).join(', ')}</b> on the same vehicle (the newest order stands; no fallback is commanded). Your approval records that you accept it.
+        </p>
+      )}
       <footer className="ix-actions" onClick={(e) => e.stopPropagation()}>
         <input
           className="ix-note"
@@ -315,7 +324,7 @@ function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone }: C
           Reject
         </button>
         <button className="ix-approve" disabled={busy || expired} onClick={() => act('approve')} title={`as ${operator}`}>
-          {selfApproval ? 'Approve (self)' : 'Approve'}
+          {engaged.length ? `Approve and stop i${engaged.map((e) => e.id).join(', i')}` : selfApproval ? 'Approve (self)' : 'Approve'}
         </button>
         {error && <p className="error ix-error">{error}</p>}
       </footer>
@@ -610,6 +619,9 @@ export function InboxPanel({ decisions, vehicles, now, tab, setTab, selection, o
               <ApprovalCard
                 key={i.id}
                 intent={i}
+                engaged={(decisions?.intents ?? []).filter(
+                  (e) => isEngage(e) && e.id !== i.id && ['pending_approval', 'approved', 'dispatched'].includes(e.state) && e.uids.some((u) => i.uids.includes(u)),
+                )}
                 vehicles={vehicles}
                 now={now}
                 selected={selection?.kind === 'intent' && selection.id === i.id}

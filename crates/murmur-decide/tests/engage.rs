@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use common::*;
 use murmur_decide::scenario::{self, RunOptions};
 use murmur_decide::*;
+use murmur_decide::world::NavSource;
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -21,7 +22,7 @@ fn root() -> PathBuf {
 fn every_adversarial_scenario_ends_as_designed_and_replays() {
     let dir = root().join("sim/scenarios/engage");
     let files = scenario::files(&dir).unwrap();
-    assert!(files.len() >= 24, "{} scenarios", files.len());
+    assert!(files.len() >= 30, "{} scenarios", files.len());
     let mut invariants = Vec::new();
     for f in &files {
         let r = scenario::run_file(f, &root(), &RunOptions::default()).unwrap();
@@ -51,6 +52,7 @@ fn every_adversarial_scenario_ends_as_designed_and_replays() {
         "assessment",
         "audit",
         "signed_picture",
+        "platform_nav",
         "engagement_in_play",
         "picture_gap",
     ] {
@@ -105,10 +107,18 @@ fn engage_world(t: Time) -> WorldSnapshot {
     blade.position = Some(Fact::new(BLADE_AT, t));
     blade.autopilot = Some(Fact::new(AutopilotKind::Plane, t));
     blade.nav_ready = Some(Fact::new(true, t));
+    blade.nav_source = Some(Fact::new(NavSource::Gnss, t));
     blade.battery_pct = Some(Fact::new(95.0, t));
     blade.velocity_mps = Some(Fact::new([0.0, 0.0], t));
     w.vehicles.insert(uid("blade-1"), blade);
     w.tracks.insert("T-0001".into(), target(t, TARGET_AT, [0.0, 0.0], true));
+    w
+}
+
+/// `engage_world` with the target at `at`.
+fn world_with_target(t: Time, at: LonLat, vel: [f64; 2]) -> WorldSnapshot {
+    let mut w = engage_world(t);
+    w.tracks.insert("T-0001".into(), target(t, at, vel, true));
     w
 }
 
@@ -138,15 +148,12 @@ fn target(t: Time, at: LonLat, vel: [f64; 2], declared: bool) -> TrackFacts {
     }
 }
 
-/// What a console shows a signer: the engine's preview of intent `id` on `w`.
-fn seen(e: &Engine, id: IntentId, w: &WorldSnapshot) -> SeenPicture {
-    let spec = e.intent(id).unwrap().spec().clone();
-    let p = engage::preview(&spec, &w.subset_for(&spec), &e.policy().rules).unwrap();
-    SeenPicture {
-        t: w.t,
-        effect_point: p.effect_point,
-        effect_t: Some(p.effect_t),
-    }
+/// The console's look-then-sign: ask for the picture, sign it at once.
+fn sign(e: &mut Engine, id: IntentId, op: &OperatorSession, w: &WorldSnapshot) -> Result<State, EngineError> {
+    let auth = op.engagement_authority().unwrap();
+    let token = e.issue_picture(id, auth, w)?.id;
+    e.approve_engagement(id, auth, None, token, w, &terrain())
+        .map(|i| i.state())
 }
 
 fn engine_at(clock: &ManualClock, log: &MemorySink) -> Engine {
@@ -213,19 +220,14 @@ fn floor_holds(p: Policy) {
     assert!(!d.submitter_authorizes);
     assert!(d.proposer_excluded);
     assert_eq!(d.approvers, 2, "the two-person floor");
-    // and the proposer, with engagement authority, still can't approve it
+    // and the proposer, with engagement authority, can neither be shown the picture to sign
+    // nor sign it
     let id = i.id();
     let w = engage_world(T0);
-    let err = e
-        .approve_engagement(
-            id,
-            op.engagement_authority().unwrap(),
-            None,
-            seen(&e, id, &w),
-            &w,
-            &terrain(),
-        )
-        .unwrap_err();
+    let auth = op.engagement_authority().unwrap();
+    let err = e.issue_picture(id, auth, &w).unwrap_err();
+    assert!(matches!(err, EngineError::ProposerCannotApprove { .. }), "{err}");
+    let err = e.approve_engagement(id, auth, None, 1, &w, &terrain()).unwrap_err();
     assert!(matches!(err, EngineError::ProposerCannotApprove { .. }), "{err}");
     assert_eq!(e.intent(id).unwrap().state(), State::PendingApproval);
     assert!(replay::replay_str(&log.text()).unwrap().ok());
@@ -235,13 +237,7 @@ fn floor_holds(p: Policy) {
 fn authority_and_lifecycle_are_enforced_by_the_engine() {
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();
-    let mut e = Engine::with_areas(
-        policy(),
-        Some(areas()),
-        Box::new(clock.clone()),
-        Box::new(log.clone()),
-    )
-    .unwrap();
+    let mut e = engine_at(&clock, &log);
     let op1 = e.open_operator_session(OperatorId::new("op-1")).unwrap();
     let op2 = e
         .open_operator_session_with(OperatorId::new("op-2"), Grants { engage: true })
@@ -269,50 +265,36 @@ fn authority_and_lifecycle_are_enforced_by_the_engine() {
     assert!(e.finish(id, TaskOutcome::Done).is_err());
     assert!(e.abort_engagement(id, op1.authority(), "x").is_err());
     assert_eq!(e.intent(id).unwrap().state(), State::PendingApproval);
-    // two distinct approvers with authority
+    // two distinct approvers with authority, on one plan
     clock.advance_ms(2000);
     let w = engage_world(clock.now());
-    e.approve_engagement(
-        id,
-        op2.engagement_authority().unwrap(),
-        None,
-        seen(&e, id, &w),
-        &w,
-        &terrain(),
-    )
-    .unwrap();
-    assert_eq!(e.intent(id).unwrap().state(), State::PendingApproval);
+    assert_eq!(sign(&mut e, id, &op2, &w).unwrap(), State::PendingApproval);
     assert_eq!(e.intent(id).unwrap().concurrences().len(), 1);
-    let err = e
-        .approve_engagement(
-            id,
-            op2.engagement_authority().unwrap(),
-            None,
-            seen(&e, id, &w),
-            &w,
-            &terrain(),
-        )
-        .unwrap_err();
+    let plan = e.intent(id).unwrap().engagement().unwrap().plan.clone().unwrap();
+    assert_eq!(plan.by, OperatorId::new("op-2"));
+    let err = sign(&mut e, id, &op2, &w).unwrap_err();
     assert!(matches!(err, EngineError::AlreadySigned { .. }), "{err}");
-    e.approve_engagement(
-        id,
-        op3.engagement_authority().unwrap(),
-        None,
-        seen(&e, id, &w),
-        &w,
-        &terrain(),
-    )
-    .unwrap();
+    clock.advance_ms(3000);
+    let w = engage_world(clock.now());
+    // what op-3 is shown is the frozen plan, not a fresh preview
+    let token = e.issue_picture(id, op3.engagement_authority().unwrap(), &w).unwrap();
+    assert!(token.frozen);
+    assert_eq!(token.plan, plan.preview);
+    e.approve_engagement(id, op3.engagement_authority().unwrap(), None, token.id, &w, &terrain())
+        .unwrap();
     let i = e.intent(id).unwrap();
     assert_eq!(i.state(), State::Approved);
     let snap = i.engagement().unwrap().snapshot.clone().unwrap();
     assert_eq!(snap.track_id, "T-0001");
     assert_eq!(snap.track.declared_by.as_deref(), Some("op-1"));
+    // the approval holds the first signer's plan, and the platform is sent there
+    assert_eq!(snap.preview, plan.preview);
     let order = match e.dispatch_order(id).unwrap() {
         Order::Engage(o) => o,
         other => panic!("{other:?}"),
     };
-    assert_eq!(order.effect_point, snap.preview.effect_point);
+    assert_eq!(order.effect_point, plan.preview.effect_point);
+    assert_eq!(order.effect_t, plan.preview.effect_t);
     // any operator may stop it; the fallback comes back to be commanded
     let fb = e
         .abort_engagement(id, op1.authority(), "changed my mind")
@@ -329,19 +311,9 @@ fn authority_and_lifecycle_are_enforced_by_the_engine() {
 fn the_preview_intercepts_a_moving_track() {
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();
-    let mut e = Engine::with_areas(
-        policy(),
-        Some(areas()),
-        Box::new(clock.clone()),
-        Box::new(log.clone()),
-    )
-    .unwrap();
-    let mut w = engage_world(T0);
+    let mut e = engine_at(&clock, &log);
     // crossing south to north-west at 6 m/s
-    w.tracks.insert(
-        "T-0001".into(),
-        target(T0, LonLat::new(-122.5000, 37.8080), [-2.0, 5.5], true),
-    );
+    let w = world_with_target(T0, LonLat::new(-122.5000, 37.8080), [-2.0, 5.5]);
     let op = e.open_operator_session(OperatorId::new("op-1")).unwrap();
     let i = e.submit(op.authority(), nomination(), &w, &terrain()).unwrap();
     let p = i.engagement().unwrap().preview.clone().unwrap();
@@ -365,13 +337,7 @@ fn the_preview_intercepts_a_moving_track() {
 fn an_agent_nomination_needs_a_rationale_and_waits_for_humans() {
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();
-    let mut e = Engine::with_areas(
-        policy(),
-        Some(areas()),
-        Box::new(clock.clone()),
-        Box::new(log.clone()),
-    )
-    .unwrap();
+    let mut e = engine_at(&clock, &log);
     assert!(Rationale::new("  ").is_err());
     let mut port = e.agent_port(AgentId::new("agent-planner"));
     let i = port
@@ -412,115 +378,125 @@ fn has_event(log: &MemorySink, kind: &str) -> bool {
 }
 
 #[test]
-fn every_signature_is_on_the_same_picture() {
+fn every_signature_is_on_the_frozen_plan() {
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();
     let mut e = engine_at(&clock, &log);
     let w = engage_world(T0);
     let (op2, op3, id) = two_signers(&mut e, &w);
-    e.approve_engagement(id, op2.engagement_authority().unwrap(), None, seen(&e, id, &w), &w, &terrain())
-        .unwrap();
+    sign(&mut e, id, &op2, &w).unwrap();
+    let first = e.intent(id).unwrap().engagement().unwrap().plan.clone().unwrap();
     // the track jumps 300 m between the signatures (beyond the 75 m tolerance), still a
     // valid nomination where it is now
     clock.advance_ms(3000);
-    let mut moved = engage_world(clock.now());
-    moved.tracks.insert(
-        "T-0001".into(),
-        target(clock.now(), LonLat::new(-122.4985, 37.8130), [0.0, 0.0], true),
-    );
-    e.approve_engagement(
-        id,
-        op3.engagement_authority().unwrap(),
-        None,
-        seen(&e, id, &moved),
-        &moved,
-        &terrain(),
-    )
-    .unwrap();
-    // op-2's signature was dropped; op-3's is the first on the new picture
+    let moved = world_with_target(clock.now(), LonLat::new(-122.4985, 37.8130), [0.0, 0.0]);
+    // op-3 is shown the frozen plan and signs it: it no longer holds, every signature is
+    // dropped with it and this one refused
+    let err = sign(&mut e, id, &op3, &moved).unwrap_err();
+    assert!(matches!(err, EngineError::PlanChanged { .. }), "{err}");
     let i = e.intent(id).unwrap();
     assert_eq!(i.state(), State::PendingApproval, "{:?}", i.history());
-    assert_eq!(i.concurrences().len(), 1);
-    assert_eq!(i.concurrences()[0].by, OperatorId::new("op-3"));
+    assert!(i.concurrences().is_empty());
+    assert!(i.engagement().unwrap().plan.is_none());
     let reset = i.engagement().unwrap().reset.clone().unwrap();
     assert_eq!(reset.dropped, vec![OperatorId::new("op-2")]);
-    assert!(reset.reason.contains("predicts"), "{}", reset.reason);
+    assert!(reset.reason.contains("plan"), "{}", reset.reason);
     assert!(has_event(&log, "approval.reset"));
-    // op-2 signs again, on the picture as it is now
+    // a new plan: op-3 freezes it, op-2 signs it again
     clock.advance_ms(1000);
-    let w = {
-        let mut w = engage_world(clock.now());
-        w.tracks.insert(
-            "T-0001".into(),
-            target(clock.now(), LonLat::new(-122.4985, 37.8130), [0.0, 0.0], true),
-        );
-        w
-    };
-    e.approve_engagement(id, op2.engagement_authority().unwrap(), None, seen(&e, id, &w), &w, &terrain())
-        .unwrap();
-    assert_eq!(e.intent(id).unwrap().state(), State::Approved);
+    let w = world_with_target(clock.now(), LonLat::new(-122.4985, 37.8130), [0.0, 0.0]);
+    sign(&mut e, id, &op3, &w).unwrap();
+    let second = e.intent(id).unwrap().engagement().unwrap().plan.clone().unwrap();
+    assert_ne!(second.preview.effect_point, first.preview.effect_point);
+    assert_eq!(sign(&mut e, id, &op2, &w).unwrap(), State::Approved);
+    let snap = e.intent(id).unwrap().engagement().unwrap().snapshot.clone().unwrap();
+    assert_eq!(snap.preview, second.preview);
     let r = replay::replay_str(&log.text()).unwrap();
     assert!(r.ok(), "{:?}", r.mismatches);
 }
 
 #[test]
-fn a_waiting_signature_is_dropped_when_the_picture_moves() {
+fn a_waiting_signature_is_dropped_when_the_plan_stops_holding() {
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();
     let mut e = engine_at(&clock, &log);
     let w = engage_world(T0);
     let (op2, _, id) = two_signers(&mut e, &w);
-    e.approve_engagement(id, op2.engagement_authority().unwrap(), None, seen(&e, id, &w), &w, &terrain())
-        .unwrap();
+    sign(&mut e, id, &op2, &w).unwrap();
     // held while it holds
     clock.advance_ms(1000);
-    let out = e.step_engagements(&engage_world(clock.now()));
+    let out = e.step_engagements(&engage_world(clock.now()), &terrain());
     assert!(out.errors.is_empty(), "{:?}", out.errors);
     assert_eq!(e.intent(id).unwrap().concurrences().len(), 1);
     // reclassified while waiting for the second signature
     clock.advance_ms(1000);
     let mut w = engage_world(clock.now());
     w.tracks.get_mut("T-0001").unwrap().identity = Some("fishing_boat".into());
-    let out = e.step_engagements(&w);
+    let out = e.step_engagements(&w, &terrain());
     assert!(out.errors.is_empty(), "{:?}", out.errors);
     let i = e.intent(id).unwrap();
     assert_eq!(i.state(), State::PendingApproval);
     assert!(i.concurrences().is_empty());
-    assert!(i.engagement().unwrap().reset.as_ref().unwrap().reason.contains("reclassified"));
+    assert!(i.engagement().unwrap().plan.is_none());
+    assert!(i.engagement().unwrap().reset.as_ref().unwrap().reason.contains("changed since the plan was frozen"));
+    // and signatures that take too long drop it too
+    let w = engage_world(clock.now());
+    sign(&mut e, id, &op2, &w).unwrap();
+    clock.advance_ms(130_000);
+    let out = e.step_engagements(&engage_world(clock.now()), &terrain());
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    let i = e.intent(id).unwrap();
+    assert!(i.concurrences().is_empty());
+    let why = &i.engagement().unwrap().reset.as_ref().unwrap().reason;
+    assert!(why.contains("signing_time"), "{why}");
     let r = replay::replay_str(&log.text()).unwrap();
     assert!(r.ok(), "{:?}", r.mismatches);
 }
 
 #[test]
-fn a_signer_must_have_seen_the_current_preview() {
+fn a_signature_quotes_the_picture_its_signer_was_shown() {
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();
     let mut e = engine_at(&clock, &log);
     let w = engage_world(T0);
-    let (op2, _, id) = two_signers(&mut e, &w);
-    clock.advance_ms(30_000);
+    let (op2, op3, id) = two_signers(&mut e, &w);
+    let a2 = op2.engagement_authority().unwrap();
+    let a3 = op3.engagement_authority().unwrap();
+    // a token nobody issued
+    let err = e.approve_engagement(id, a2, None, 999, &w, &terrain()).unwrap_err();
+    assert!(matches!(err, EngineError::StalePicture { .. }), "{err}");
+    // another signer's token
+    let t3 = e.issue_picture(id, a3, &w).unwrap();
+    let err = e.approve_engagement(id, a2, None, t3.id, &w, &terrain()).unwrap_err();
+    assert!(err.to_string().contains("issued to op-3"), "{err}");
+    // an expired one
+    let t2 = e.issue_picture(id, a2, &w).unwrap();
+    clock.advance_ms(20_000);
     let now = engage_world(clock.now());
-    let auth = op2.engagement_authority().unwrap();
-    // a preview 30 s old
-    let mut old = seen(&e, id, &now);
-    old.t = T0;
-    let err = e.approve_engagement(id, auth, None, old, &now, &terrain()).unwrap_err();
-    assert!(matches!(err, EngineError::StalePicture { .. }), "{err}");
-    // an effect point 400 m from the engine's
-    let mut off = seen(&e, id, &now);
-    off.effect_point = engage::offset(off.effect_point, 0.0, 400.0);
-    let err = e.approve_engagement(id, auth, None, off, &now, &terrain()).unwrap_err();
-    assert!(matches!(err, EngineError::StalePicture { .. }), "{err}");
-    // a preview dated in the future
-    let mut ahead = seen(&e, id, &now);
-    ahead.t = clock.now().plus_ms(60_000);
-    let err = e.approve_engagement(id, auth, None, ahead, &now, &terrain()).unwrap_err();
-    assert!(matches!(err, EngineError::StalePicture { .. }), "{err}");
+    let err = e.approve_engagement(id, a2, None, t2.id, &now, &terrain()).unwrap_err();
+    assert!(err.to_string().contains("expired"), "{err}");
+    // one shown before the target was reclassified
+    let t2 = e.issue_picture(id, a2, &now).unwrap();
+    let mut reclassified = now.clone();
+    reclassified.tracks.get_mut("T-0001").unwrap().identity = Some("ferry".into());
+    let err = e
+        .approve_engagement(id, a2, None, t2.id, &reclassified, &terrain())
+        .unwrap_err();
+    assert!(err.to_string().contains("changed since you looked"), "{err}");
     assert!(e.intent(id).unwrap().concurrences().is_empty());
-    // the one on screen now is accepted
-    e.approve_engagement(id, auth, None, seen(&e, id, &now), &now, &terrain())
-        .unwrap();
-    assert_eq!(e.intent(id).unwrap().concurrences().len(), 1);
+    // one shown before another signature froze the plan
+    let t2 = e.issue_picture(id, a2, &now).unwrap();
+    clock.advance_ms(1000);
+    let later = engage_world(clock.now());
+    sign(&mut e, id, &op3, &later).unwrap();
+    let err = e.approve_engagement(id, a2, None, t2.id, &later, &terrain()).unwrap_err();
+    assert!(err.to_string().contains("frozen by op-3"), "{err}");
+    // the one shown now is accepted, once
+    let t2 = e.issue_picture(id, a2, &later).unwrap();
+    assert!(t2.frozen);
+    e.approve_engagement(id, a2, None, t2.id, &later, &terrain()).unwrap();
+    assert_eq!(e.intent(id).unwrap().state(), State::Approved);
+    assert!(has_event(&log, "picture.issued"));
     let r = replay::replay_str(&log.text()).unwrap();
     assert!(r.ok(), "{:?}", r.mismatches);
 }
@@ -540,6 +516,7 @@ fn an_agent_order_on_an_engaging_platform_goes_to_a_human() {
         .unwrap();
     assert_eq!(a.state(), State::PendingApproval, "{:?}", a.history());
     assert_eq!(a.policy().unwrap().rule, "(engagement in play)");
+    let aid = a.id();
     assert_eq!(e.intent(id).unwrap().state(), State::PendingApproval);
     // the agent's preview says so too
     let pv = e
@@ -547,19 +524,20 @@ fn an_agent_order_on_an_engaging_platform_goes_to_a_human() {
         .preview(hold(), &w, &terrain())
         .unwrap();
     assert_eq!(pv.would_reach, State::PendingApproval);
-    // an operator's own hold still runs, and supersedes the engagement (no fallback)
+    // approving the agent's order would stop the engagement: only acknowledged
     let op = e.open_operator_session(OperatorId::new("op-9")).unwrap();
-    let h = e.submit(op.authority(), hold(), &w, &terrain()).unwrap();
-    assert!(matches!(h.state(), State::AutoApproved | State::Approved), "{:?}", h.history());
-    let hid = h.id();
-    e.dispatch(hid).unwrap();
-    e.supersede_engagement(id, hid).unwrap();
+    let err = e.approve(aid, op.authority(), None, &w, &terrain()).unwrap_err();
+    assert!(matches!(err, EngineError::SupersedesEngagement { .. }), "{err}");
+    assert_eq!(e.intent(aid).unwrap().state(), State::PendingApproval);
+    e.approve_acknowledging(aid, op.authority(), None, &w, &terrain()).unwrap();
+    assert_eq!(e.intent(aid).unwrap().state(), State::Approved);
+    e.dispatch(aid).unwrap();
+    e.supersede_engagement(id, aid).unwrap();
     let i = e.intent(id).unwrap();
     assert_eq!(i.state(), State::Voided);
     let stop = i.engagement().unwrap().stop.clone().unwrap();
     assert_eq!(stop.fallback, None);
-    assert!(matches!(stop.cause, StopCause::Superseded { by, .. } if by == hid));
-    assert!(!stop.reason.contains("fallback return"), "{}", stop.reason);
+    assert!(matches!(stop.cause, StopCause::Superseded { by, .. } if by == aid));
     let line = log
         .text()
         .lines()
@@ -568,6 +546,13 @@ fn an_agent_order_on_an_engaging_platform_goes_to_a_human() {
         .to_string();
     assert!(line.contains("\"fallback\":null"), "{line}");
     assert!(line.contains("\"superseded\""), "{line}");
+    let granted = log
+        .text()
+        .lines()
+        .find(|l| l.contains("\"type\":\"approval.granted\""))
+        .unwrap()
+        .to_string();
+    assert!(granted.contains("\"supersedes\":[1]"), "{granted}");
     // with the engagement gone, the agent's next hold runs on its own again
     let mut port = e.agent_port(AgentId::new("agent-planner"));
     let b = port
@@ -585,24 +570,46 @@ fn a_gap_in_holding_the_picture_aborts() {
     let mut e = engine_at(&clock, &log);
     let w = engage_world(T0);
     let (op2, op3, id) = two_signers(&mut e, &w);
-    for op in [&op2, &op3] {
-        e.approve_engagement(id, op.engagement_authority().unwrap(), None, seen(&e, id, &w), &w, &terrain())
-            .unwrap();
-    }
+    sign(&mut e, id, &op2, &w).unwrap();
+    sign(&mut e, id, &op3, &w).unwrap();
     e.dispatch_order(id).unwrap();
     for _ in 0..3 {
         clock.advance_ms(1000);
-        let out = e.step_engagements(&engage_world(clock.now()));
+        let out = e.step_engagements(&engage_world(clock.now()), &terrain());
         assert!(out.errors.is_empty(), "{:?}", out.errors);
     }
     assert_eq!(e.intent(id).unwrap().state(), State::Dispatched);
     // the loop stalls for 12 s
     clock.advance_ms(12_000);
-    let out = e.step_engagements(&engage_world(clock.now()));
+    let out = e.step_engagements(&engage_world(clock.now()), &terrain());
     assert!(out.errors.is_empty(), "{:?}", out.errors);
     let i = e.intent(id).unwrap();
     assert_eq!(i.state(), State::Aborted, "{:?}", i.history());
     assert!(i.history().last().unwrap().reason.contains("picture_gap"), "{:?}", i.history());
+    let r = replay::replay_str(&log.text()).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+}
+
+#[test]
+fn losing_gnss_after_approval_aborts() {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = engine_at(&clock, &log);
+    let w = engage_world(T0);
+    let (op2, op3, id) = two_signers(&mut e, &w);
+    sign(&mut e, id, &op2, &w).unwrap();
+    sign(&mut e, id, &op3, &w).unwrap();
+    e.dispatch_order(id).unwrap();
+    clock.advance_ms(1000);
+    let mut w = engage_world(clock.now());
+    w.vehicles.get_mut(&uid("blade-1")).unwrap().nav_source =
+        Some(Fact::new(NavSource::DeadReckoning, clock.now()));
+    let out = e.step_engagements(&w, &terrain());
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    let i = e.intent(id).unwrap();
+    assert_eq!(i.state(), State::Aborted, "{:?}", i.history());
+    assert!(i.history().last().unwrap().reason.contains("platform_nav"));
+    assert!(matches!(out.events.as_slice(), [EngagementEvent::Stopped(f)] if f.fallback == Fallback::Return));
     let r = replay::replay_str(&log.text()).unwrap();
     assert!(r.ok(), "{:?}", r.mismatches);
 }
@@ -621,9 +628,8 @@ fn checks_cover_the_whole_effect_circle_and_protect_undeclared_tracks() {
     };
     // the effect point 40 m inside the zone's east edge (-122.481), the circle 75 m:
     // part of it outside the zone
-    let mut w = engage_world(T0);
     let edge = engage::offset(LonLat::new(-122.481, 37.8150), -40.0, 0.0);
-    w.tracks.insert("T-0001".into(), target(T0, edge, [0.0, 0.0], true));
+    let w = world_with_target(T0, edge, [0.0, 0.0]);
     let i = e.submit(op.authority(), nomination(), &w, &terrain()).unwrap();
     assert_eq!(rule(i, "engagement_zone"), Some(Outcome::Fail), "{:?}", i.checks());
     // another hostile track 100 m from the effect point, never declared by an operator:
@@ -653,17 +659,8 @@ fn an_unclassified_target_classified_after_approval_voids() {
         .unwrap();
     let snap_world = engage_world(T0);
     let (op2, op3, id) = two_signers(&mut e, &snap_world);
-    for op in [&op2, &op3] {
-        e.approve_engagement(
-            id,
-            op.engagement_authority().unwrap(),
-            None,
-            seen(&e, id, &snap_world),
-            &snap_world,
-            &terrain(),
-        )
-        .unwrap();
-    }
+    sign(&mut e, id, &op2, &snap_world).unwrap();
+    sign(&mut e, id, &op3, &snap_world).unwrap();
     let snap = e.intent(id).unwrap().engagement().unwrap().snapshot.clone().unwrap();
     let mut then = snap.track.clone();
     then.identity = None;
@@ -695,7 +692,8 @@ fn engage_thresholds_are_bounded() {
         ("min_identity_confidence", 0.0),
         ("max_track_age_s", 1e9),
         ("max_picture_gap_s", 600.0),
-        ("seen_max_age_s", 0.0),
+        ("token_ttl_s", 0.0),
+        ("max_signing_s", 1e6),
         ("deviation_fraction", f64::NAN),
     ] {
         let mut r = engage::EngageRules::default();
@@ -704,12 +702,72 @@ fn engage_thresholds_are_bounded() {
             "min_identity_confidence" => r.min_identity_confidence = v,
             "max_track_age_s" => r.max_track_age_s = v,
             "max_picture_gap_s" => r.max_picture_gap_s = v,
-            "seen_max_age_s" => r.seen_max_age_s = v,
+            "token_ttl_s" => r.token_ttl_s = v,
+            "max_signing_s" => r.max_signing_s = v,
             _ => r.deviation_fraction = v,
         }
         let err = r.validate().unwrap_err();
         assert!(err.contains(field), "{err}");
     }
     assert!(engage::EngageRules::default().validate().is_ok());
+    // and the freshness the keep-outs trust
+    let text = std::fs::read_to_string(sim_dir().join("policy.toml")).unwrap();
+    for (from, to) in [
+        ("max_fact_age_s = 10 ", "max_fact_age_s = 100000 "),
+        ("fact_age_intervals = 3 ", "fact_age_intervals = 500 "),
+    ] {
+        assert!(text.contains(from), "{from}");
+        let err = Policy::from_toml(&text.replace(from, to)).unwrap_err();
+        assert!(err.to_string().contains(from.split(' ').next().unwrap()), "{err}");
+    }
 }
 
+/// `terrain()`, but every effect point is answered from a sample 30 m east of it.
+struct NearSamples;
+
+impl TerrainOracle for NearSamples {
+    fn sample(&self, t: Time, points: &[LonLat]) -> Result<Vec<Surface>, String> {
+        terrain().sample(t, points)
+    }
+
+    fn sample_near(&self, t: Time, p: LonLat, _within_m: f64) -> Result<NearSample, String> {
+        let at = engage::offset(p, 30.0, 0.0);
+        Ok(NearSample {
+            surface: terrain().sample(t, &[at])?.remove(0),
+            at,
+            distance_m: geo::haversine_m(p, at),
+        })
+    }
+}
+
+#[test]
+fn a_near_terrain_sample_is_logged_and_bounded() {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = engine_at(&clock, &log);
+    let op = e.open_operator_session(OperatorId::new("op-1")).unwrap();
+    // an armed USV: the effect point must be on water
+    let mut w = engage_world(T0);
+    let mut boat = vehicle("magura", LonLat::new(-122.4800, 37.8250));
+    boat.nav_source = Some(Fact::new(NavSource::Gnss, T0));
+    w.vehicles.insert(uid("boat-1"), boat);
+    let mut p = nomination();
+    p.uids = vec![uid("boat-1")];
+    let i = e.submit(op.authority(), p, &w, &NearSamples).unwrap();
+    let reach = i.checks().iter().find(|c| c.rule.as_str() == "reach").unwrap();
+    assert_eq!(reach.outcome, Outcome::Pass, "{reach:?}");
+    assert!(reach.detail.contains("on water"), "{}", reach.detail);
+    let text = log.text();
+    assert!(text.contains("\"from\":{"), "the sample's own place is logged");
+    assert!(replay::replay_str(&text).unwrap().ok());
+    // a log that says the sample was 80 m away (beyond 50 m), or not where it says
+    for (from, to) in [("\"distance_m\":30.0", "\"distance_m\":80.0"), ("\"distance_m\":30.0", "\"distance_m\":10.0")] {
+        assert!(text.contains(from), "{from}");
+        let r = replay::replay_str(&text.replace(from, to)).unwrap();
+        assert!(
+            r.mismatches.iter().any(|m| m.what.contains("terrain answer from a sample")),
+            "{:?}",
+            r.mismatches
+        );
+    }
+}

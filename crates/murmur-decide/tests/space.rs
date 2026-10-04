@@ -1013,3 +1013,55 @@ fn an_operators_own_chosen_collect_is_approved_at_submission() {
     ));
     assert_replays(&run.log);
 }
+
+/// Counts the questions asked of a segment.
+struct Counting(SpaceSegment, Arc<std::sync::atomic::AtomicUsize>);
+
+impl SpaceOracle for Counting {
+    fn segment(&self) -> &SegmentId {
+        self.0.segment()
+    }
+    fn answer(&self, q: &SpaceQuery) -> Result<SpaceAnswer, String> {
+        self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.0.answer(q)
+    }
+}
+
+#[test]
+fn a_space_answer_computed_outside_the_engine_is_used_while_fresh() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut run = run(policy(), false);
+    run.engine
+        .set_space(Box::new(Counting(segment(), calls.clone())))
+        .unwrap();
+    let outside = Counting(segment(), calls.clone());
+    let session = run
+        .engine
+        .open_operator_session(OperatorId::new("op-1"))
+        .unwrap();
+    let task = collect(None).task;
+    // computed outside (the bridge, before its lock), used by a check 2 s later: the engine
+    // doesn't ask again
+    let prepared = prepare_space(&outside, &task, t0(), &policy().rules).unwrap();
+    assert_eq!(calls.load(SeqCst), 1);
+    run.engine.use_prepared_space(prepared);
+    run.advance_to(t0().plus_ms(2_000));
+    let world = run.world();
+    let i = run
+        .engine
+        .submit(session.authority(), collect(None), &world, &NoTerrain)
+        .unwrap();
+    assert_eq!(check(i, RuleId::SpaceQuery).outcome, Outcome::Pass);
+    assert_eq!(calls.load(SeqCst), 1);
+    // one computed 10 s before the check is stale: the engine asks itself
+    let prepared = prepare_space(&outside, &task, t0().plus_ms(2_000), &policy().rules).unwrap();
+    run.engine.use_prepared_space(prepared);
+    run.advance_to(t0().plus_ms(12_000));
+    let world = run.world();
+    run.engine
+        .submit(session.authority(), collect(None), &world, &NoTerrain)
+        .unwrap();
+    assert_eq!(calls.load(SeqCst), 3);
+    assert_replays(&run.log);
+}

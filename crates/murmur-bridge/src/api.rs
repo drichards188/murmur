@@ -9,10 +9,11 @@
 //! Intents: `POST /api/intents` (the task request plus optional `constraints` and
 //! `rationale`; `task: "engage"` with `track`, `effect_radius_m`, `window_s`, `fallback`
 //! nominates an engagement, Phase E), `GET /api/intents`, `GET /api/intents/{id}`, `POST
-//! /api/intents/{id}/approve|reject|cancel|abort` (optional body `{"note": "..."}`; an
-//! engagement's approve also carries `"seen": {"t", "effect_point", "effect_t"}`, the
-//! preview the signer was shown, which the engine refuses when stale; `abort` stops an
-//! approved or dispatched engagement before its effect, any operator), `GET
+//! /api/intents/{id}/approve|reject|cancel|abort|picture` (optional body `{"note": "..."}`;
+//! `picture` asks for what an operator with engagement authority would sign, a picture
+//! token, and an engagement's approve quotes it as `"token": <id>`; an approval whose
+//! dispatch would stop an engagement in play needs `"acknowledge_supersede": true`; `abort`
+//! stops an approved or dispatched engagement before its effect, any operator), `GET
 //! /api/inbox`, `GET /api/operators` (who may sign an engagement), `POST /api/engage/options`
 //! (the nomination form's dry run: which armed platforms could take it, with checks and
 //! preview; nothing is created or logged). These name the operator in the `X-Murmur-Operator` header, which must be one
@@ -236,21 +237,25 @@ async fn intent_action(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let (note, seen) = if body.iter().all(u8::is_ascii_whitespace) {
-        (None, None)
+    let (note, token, acknowledge) = if body.iter().all(u8::is_ascii_whitespace) {
+        (None, None, false)
     } else {
         match serde_json::from_slice::<Value>(&body) {
             Ok(v) => {
-                let seen = match v.get("seen").filter(|s| !s.is_null()) {
+                let token = match v.get("token").filter(|s| !s.is_null()) {
                     None => None,
-                    Some(s) => match serde_json::from_value::<murmur_decide::SeenPicture>(s.clone()) {
-                        Ok(s) => Some(s),
-                        Err(e) => {
-                            return error(StatusCode::UNPROCESSABLE_ENTITY, format!("seen: {e}"));
+                    Some(t) => match t.as_u64() {
+                        Some(t) => Some(t),
+                        None => {
+                            return error(StatusCode::UNPROCESSABLE_ENTITY, "token: a picture token id".to_string());
                         }
                     },
                 };
-                (v["note"].as_str().map(str::to_string), seen)
+                (
+                    v["note"].as_str().map(str::to_string),
+                    token,
+                    v["acknowledge_supersede"].as_bool().unwrap_or(false),
+                )
             }
             Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, format!("body: {e}")),
         }
@@ -259,15 +264,21 @@ async fn intent_action(
         Ok(op) => op,
         Err(e) => return decision_error(e),
     };
+    if action == "picture" {
+        return match app.decision.issue_picture(&op, id) {
+            Ok(v) => Json(v).into_response(),
+            Err(e) => decision_error(e),
+        };
+    }
     let result = match action.as_str() {
-        "approve" => app.decision.approve_seen(&op, id, note, seen).await,
+        "approve" => app.decision.approve_with(&op, id, note, token, acknowledge).await,
         "reject" => app.decision.reject(&op, id, note),
         "cancel" => app.decision.cancel(&op, id, note),
         "abort" => app.decision.abort(&op, id, note),
         _ => {
             return error(
                 StatusCode::NOT_FOUND,
-                format!("unknown action {action:?} (approve, reject, cancel, abort)"),
+                format!("unknown action {action:?} (approve, reject, cancel, abort, picture)"),
             );
         }
     };
