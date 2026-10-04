@@ -1293,8 +1293,37 @@ fn replay_inner(
             }
             EventBody::OpState { .. }
             | EventBody::VehicleEvent { .. }
-            | EventBody::OperatorView { .. }
             | EventBody::AgentAction { .. } => {}
+            // a display event decides nothing; it must be under the operator's own session
+            // and about an intent the log holds
+            EventBody::OperatorView {
+                operator,
+                session,
+                intent,
+                ..
+            } => {
+                match sessions.get(session) {
+                    Some((op, _)) if op == operator => {}
+                    other => bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "view under a session that is not the operator's",
+                        operator.to_string(),
+                        json(&other.map(|o| &o.0)),
+                    ),
+                }
+                if !intents.contains_key(intent) {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "view of an intent the log does not hold",
+                        intent.to_string(),
+                        String::new(),
+                    );
+                }
+            }
         }
     }
     let last_seq = events.last().map_or(0, |e| e.seq);

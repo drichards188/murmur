@@ -389,11 +389,28 @@ pub struct OperatorView {
 impl OperatorView {
     pub const EVENTS: [&'static str; 3] = ["open", "close", "decide"];
     pub const ACTIONS: [&'static str; 2] = ["approve", "reject"];
+    /// Bounds on what a view may carry: it is instrumentation, not a place to store data.
+    pub const MAX_ITEMS: usize = 64;
+    pub const MAX_TEXT: usize = 256;
 
-    /// A well-formed view: a known event, an action only on `decide` and then a known one.
+    /// A well-formed view: a known event, an action only on `decide` and then a known one,
+    /// at most [`Self::MAX_ITEMS`] checks, warnings and tracks, each at most
+    /// [`Self::MAX_TEXT`] bytes.
     pub fn validate(&self) -> Result<(), String> {
         if !Self::EVENTS.contains(&self.event.as_str()) {
             return Err(format!("event must be one of {}", Self::EVENTS.join(", ")));
+        }
+        for (name, items) in [
+            ("checks", &self.shown.checks),
+            ("warnings", &self.shown.warnings),
+            ("tracks", &self.shown.tracks),
+        ] {
+            if items.len() > Self::MAX_ITEMS {
+                return Err(format!("{name}: at most {} entries", Self::MAX_ITEMS));
+            }
+            if items.iter().any(|t| t.len() > Self::MAX_TEXT) {
+                return Err(format!("{name}: entries of at most {} bytes", Self::MAX_TEXT));
+            }
         }
         match (self.event.as_str(), self.action.as_deref()) {
             ("decide", Some(a)) if Self::ACTIONS.contains(&a) => Ok(()),

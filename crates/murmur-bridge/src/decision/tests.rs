@@ -526,7 +526,21 @@ async fn operator_views_are_logged_under_the_session() {
     .expect("decide");
     r.d.reject(&op1(), out.id.0, Some("not now".into()))
         .expect("reject");
-    assert_eq!(r.events("operator.view"), 2);
+    let late =
+        r.d.record_view(&op1(), out.id.0, view("decide", Some("approve"), Some(1)))
+            .expect_err("late");
+    assert_eq!(late.status, 409, "a decide view after the decision");
+    r.d.record_view(&op1(), out.id.0, view("close", None, Some(13_000)))
+        .expect("a close is taken after the decision");
+    // a burst beyond the budget is refused (instrumentation, not storage)
+    let refused = (0..60)
+        .filter_map(|_| {
+            r.d.record_view(&op1(), out.id.0, view("close", None, None))
+                .err()
+        })
+        .collect::<Vec<_>>();
+    assert!(!refused.is_empty() && refused.iter().all(|e| e.status == 429), "{refused:?}");
+    assert!(r.events("operator.view") < 3 + 60);
     assert!(
         r.log.lines().iter().any(
             |l| l.contains("\"type\":\"operator.view\"") && l.contains("\"operator\":\"op-1\"")

@@ -322,18 +322,61 @@ fn operator_views_are_logged_and_ignored_by_replay() {
         e.record_operator_view(a, id, view("decide", None)),
         Err(EngineError::Proposal(_))
     ));
+    let mut big = view("open", None);
+    big.shown.tracks = vec!["T-0001".into(); OperatorView::MAX_ITEMS + 1];
+    assert!(matches!(
+        e.record_operator_view(a, id, big),
+        Err(EngineError::Proposal(_))
+    ));
+    let mut long = view("open", None);
+    long.shown.warnings = vec!["x".repeat(OperatorView::MAX_TEXT + 1)];
+    assert!(matches!(
+        e.record_operator_view(a, id, long),
+        Err(EngineError::Proposal(_))
+    ));
     e.record_operator_view(a, id, view("open", None)).unwrap();
     e.record_operator_view(a, id, view("decide", Some("reject")))
         .unwrap();
     e.reject(id, a, Some("neutral track".into())).unwrap();
+    // after the decision: no late open or decide, a close is still taken
+    assert!(matches!(
+        e.record_operator_view(a, id, view("decide", Some("approve"))),
+        Err(EngineError::ViewNotPending { .. })
+    ));
+    assert!(matches!(
+        e.record_operator_view(a, id, view("open", None)),
+        Err(EngineError::ViewNotPending { .. })
+    ));
+    e.record_operator_view(a, id, view("close", None)).unwrap();
     let text = log.text();
-    assert_eq!(text.matches("\"type\":\"operator.view\"").count(), 2);
+    assert_eq!(text.matches("\"type\":\"operator.view\"").count(), 3);
     let r = replay_str(&text).unwrap();
     assert!(r.ok(), "{:#?}", r.mismatches);
     assert_eq!(e.intent(id).unwrap().state(), State::Rejected);
     // editing a view event breaks the chain like any other event
     let tampered = text.replacen("\"event\":\"open\"", "\"event\":\"close\"", 1);
     assert!(!replay_str(&tampered).unwrap().ok());
+    // a view moved to another operator's session, the chain recomputed: replay objects
+    let mut v: Vec<Value> = text
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let other = v
+        .iter()
+        .find(|e| e["type"] == "operator.action" && e["action"] == "session.opened")
+        .map(|e| e["session"].as_u64().unwrap() + 100)
+        .unwrap();
+    for e in v.iter_mut().filter(|e| e["type"] == "operator.view") {
+        e["session"] = Value::from(other);
+    }
+    rechain(&mut v);
+    let forged: String = v.iter().map(|e| canon(e) + "\n").collect();
+    let r = replay_str(&forged).unwrap();
+    assert!(
+        whats(&r).contains(&"view under a session that is not the operator's"),
+        "{:#?}",
+        r.mismatches
+    );
 }
 
 #[test]
