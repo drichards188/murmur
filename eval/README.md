@@ -28,7 +28,8 @@ make eval SCENARIOS="link-cut stale-track" ARMS="rules-only human-proxy" SEEDS="
 A batch writes `eval/results/<id>/` (git-ignored): `batch.json`, one directory per run
 (`<scenario>/<arm>/seed-<n>/`), `report.html` (self-contained: inline CSS and SVG, no
 scripts, nothing fetched) and `summary.json`. The report is recomputed from the raw logs, so a
-metric fixed later applies to old batches. Nothing is published anywhere.
+metric fixed later applies to old batches. Nothing is published anywhere. The first batch's
+report and summary are kept in `docs/eval/`.
 
 ## One run
 
@@ -60,9 +61,11 @@ terrain line of sight and the domain rule; `--tidewater none` runs without. SITL
 evaluation fleets are stand-ins only, and the runner refuses a fleet entry that would need it.
 
 **Parallelism.** One stack is about five light processes (the bridge a few percent of a core,
-the rest under one). `measure` suggests `min(free blocks, CPUs / 4, 6)`; on this 28-CPU
-machine 8 at once ran cleanly (each run about 240 s of wall time). The limit that bites first
-is the host's ephemeral UDP ports (each stand-in takes one), not CPU.
+the rest under one). `measure` suggests `min(free blocks, CPUs / 4, 6)`; on the 28-CPU
+development machine 8 at once ran cleanly: 72 runs of 240 s storylines in 39 minutes (240 to
+280 s of wall time each, startup and teardown included). The limit that bites first is the
+host's ephemeral UDP ports (each stand-in takes one), not CPU. Don't edit `eval/` while a
+batch runs: each run is a fresh process and picks up the code on disk.
 
 **Time.** `at_s` in a storyline counts wall seconds from the moment the fleet is ready.
 `rate` (scenario seconds per wall second) moves the contacts, the scenario clock and

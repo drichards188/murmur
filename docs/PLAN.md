@@ -287,12 +287,23 @@ Built (first cut; `eval/README.md` says how to run it, `eval/METRICS.md` defines
   moves after approval, neutral enters the keep-out, friendly sub near the target, proposer
   approves its own nomination) are placeholders in `eval/scenarios/engagement/` behind the
   plug-in point `eval/engage.py`, skipped until the bridge takes engagements.
-- First batch: 6 scenarios x 4 arms x 3 seeds (`eval/results/`, not committed; numbers in the
-  Phase G report).
+- First batch (2026-10-04, `docs/eval/phase-g-report.html`): 6 scenarios x 4 arms x 3 seeds,
+  72 runs (a full batch takes 39 min on 8 parallel stacks; stale-track was rerun after a
+  scenario fix, as the report says), every run ok, zero invariant violations, every log
+  replayed. With the proxy deciding, wrong armed orbits were caught where the card and the
+  track picture show the error (plausible but wrong 4/6, stale track 4/6) and not where the
+  picture itself is wrong (misclassified neutral 0/6, spoofed GNSS 0/6); under the approval
+  flood 2/12, with the queue at 12. A cut link voided the pending tasking in 4/6 cases; the
+  other two were approved 2.5 and 6.1 s into the cut, inside the 10 s freshness window, and
+  dispatched to a silent aircraft (the mission upload then timed out).
+  Approve-all caught nothing; reject-all caught everything and rejected every legitimate card
+  (d' 0 for both). These are a scripted proxy's numbers, not human data.
 
 Next: wire the engagement scenarios when Phase E lands; a cross-check that can catch a spoofed
 position (our own vehicles seen by our own sensors); track-age rules for vehicle tasks aimed
-at a track; study sessions with participants (consent, anonymous ids: `eval/README.md`).
+at a track; an approval re-check that refuses a vehicle whose link went silent after the
+card was opened (the link-cut window above); study sessions with participants (consent,
+anonymous ids: `eval/README.md`).
 Human-behavior claims need participants; the harness supports studies, it doesn't replace
 them.
 
