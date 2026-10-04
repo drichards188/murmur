@@ -31,7 +31,7 @@ const LOGS: [(&str, u32); 6] = [
     ("v2-engagement-live.jsonl", 2),
     ("v2-engagement-scenario-01.jsonl", 2),
     // rules 3: a scenario's effect, and a live effect by the USV while our fixed wing
-    // circles (built from a clean b35eef2, anchored as it ran)
+    // circles (built from a clean 2146fef, anchored as it ran)
     ("v3-engagement-scenario-01.jsonl", 3),
     ("v3-engagement-live.jsonl", 3),
 ];
