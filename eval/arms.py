@@ -5,12 +5,14 @@
 | rules-only          | scripted agent (MCP)              | auto-approve (approve all)      |
 | rules-only-reject   | scripted agent (MCP)              | auto-reject (reject all)        |
 | human-proxy         | a second human operator (REST)    | proxy operator (`eval/proxy.py`)|
-| agent+human-proxy   | scripted agent (MCP)              | proxy operator                  |
+| agent+human-proxy   | an agent's own proposals (MCP)    | proxy operator                  |
 | agent+model         | a real model via MCP (optional)   | proxy operator                  |
 | study               | scripted agent (MCP)              | a real participant, console     |
 
-The same storyline drives every arm; only the path the proposals take and who answers
-differ, so the arms are compared on the same seeds and the same injected situations.
+The same scenario (fleet, contacts, events, policy, seeds) drives every arm. In the
+storyline arms the storyline's proposals go through the proposer named; in agent+human-proxy
+the agent makes its own proposals from what it reads (eval/agent.py `AgentPolicy`), so its
+proposal stream differs from the storyline's and is labelled by truth the same way.
 """
 
 from __future__ import annotations
@@ -51,9 +53,9 @@ ARMS: dict[str, Arm] = {
         ),
         Arm(
             "agent+human-proxy",
-            "agent",
+            "agent-autonomous",
             "proxy",
-            "the scripted MCP agent proposes with a rationale, the proxy operator decides",
+            "an agent proposes on its own from the world model it reads over MCP (eval/agent.py AgentPolicy), the proxy operator decides",
         ),
         Arm(
             "agent+model",

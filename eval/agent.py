@@ -17,7 +17,9 @@ dispatched}`, plus `refused` when the rules rejected it at submission (the inten
 from __future__ import annotations
 
 import asyncio
+import math
 import sys
+from dataclasses import dataclass
 from typing import Any
 
 from . import REPO
@@ -151,11 +153,100 @@ class AgentProposer(Proposer):
         return await self._session.tracks()
 
 
+SUSPICION = {"hostile": 3, "suspect": 2, "unknown": 1}
+
+
+@dataclass
+class AgentPolicy:
+    """The agent arm's own proposer policy, written before any result was seen and the same
+    in every scenario: every `every_s` seconds from `start_s`, read the tracks and the fleet
+    through the MCP tools; among tracks that are not stale, estimated hostile, suspect or
+    unknown, within `watch_km` of the watch point, not yet proposed on, take the most
+    suspicious (then the nearest); put an armed aircraft that is navigation-ready, with a
+    fresh link and no proposal of this agent in the last `rest_s`, in an orbit of
+    `radius_m` over it, with a rationale naming the facts and their ages. At most one
+    proposal per look and `max_proposals` per run."""
+
+    start_s: float = 20.0
+    every_s: float = 15.0
+    max_proposals: int = 6
+    radius_m: float = 300.0
+    watch: tuple[float, float] = (-122.4783, 37.8199)  # the Golden Gate Bridge, mid-span
+    watch_km: float = 6.0
+    rest_s: float = 60.0
+
+
+def _haversine_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
+    r = 6371000.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    a = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lon2 - lon1) / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+
+class AutonomousAgent(AgentProposer):
+    """The agent arm: the same MCP session, but the agent chooses what to propose
+    (`AgentPolicy`) instead of passing the storyline's proposals through."""
+
+    autonomous = True
+
+    def __init__(self, mcp_url: str, agent: str = "agent-planner", policy: AgentPolicy | None = None):
+        super().__init__(mcp_url, agent)
+        self.policy = policy or AgentPolicy()
+        self.proposed: set[str] = set()
+        self.last_use: dict[int, float] = {}
+
+    async def choose(self, now: float) -> dict[str, Any] | None:
+        if self._session is None:
+            raise ProposeError("agent session not started")
+        p = self.policy
+        try:
+            tracks = await self._session.tracks(include_stale=False)
+            fleet = await self._session.fleet()
+        except RuntimeError as e:
+            raise ProposeError(str(e)) from e
+        candidates = []
+        for t in tracks:
+            if t["id"] in self.proposed or t.get("stale") or t.get("affiliation") not in SUSPICION:
+                continue
+            d = _haversine_m(p.watch[0], p.watch[1], t["position"][0], t["position"][1])
+            if d > p.watch_km * 1000:
+                continue
+            candidates.append((-SUSPICION[t["affiliation"]], d, t))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda c: (c[0], c[1]))
+        armed = []
+        for v in fleet.get("vehicles", []):
+            plat = v.get("platform") or {}
+            if not (plat.get("armed") and plat.get("domain") == "air"):
+                continue
+            if not (v.get("nav") or {}).get("ready") or (v.get("nav") or {}).get("stale") or (v.get("link") or {}).get("lost"):
+                continue
+            if now - self.last_use.get(int(v["uid"]), -1e9) < p.rest_s:
+                continue
+            armed.append(v)
+        if not armed:
+            return None
+        _, d, t = candidates[0]
+        v = armed[0]
+        self.proposed.add(t["id"])
+        self.last_use[int(v["uid"])] = now
+        kind = (t.get("identity") or {}).get("kind") or "unclassified contact"
+        rationale = (
+            f"Track {t['id']} ({kind}, estimated {t['affiliation']} {float(t.get('affiliation_confidence') or 0):.2f}: "
+            f"{t.get('affiliation_reason', '')}) is {d / 1000:.1f} km from the bridge, last seen {float(t.get('age_s') or 0):.0f} s ago. "
+            f"Put {v.get('callsign')} in an orbit over it so an effect is ready if it is declared hostile."
+        )
+        return {"track_id": t["id"], "uid": int(v["uid"]), "center": list(t["position"]), "radius_m": p.radius_m, "rationale": rationale}
+
+
 def make_proposer(kind: str, bridge: Bridge, mcp_url: str, model: str | None = None, brief: str = "") -> Proposer:
     if kind == "human":
         return HumanProposer(bridge)
     if kind == "agent":
         return AgentProposer(mcp_url)
+    if kind == "agent-autonomous":
+        return AutonomousAgent(mcp_url)
     if kind == "model":
         from .model_agent import ModelProposer
 
