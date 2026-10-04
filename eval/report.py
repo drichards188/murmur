@@ -364,11 +364,20 @@ def what_went_wrong(meta: dict[str, Any], runs: list[dict[str, Any]], agg: dict[
                     continue
                 g = groups.setdefault((what, scenario, arm, str(p.get("step"))), {"seeds": [], "why": p.get("label_basis") or "", "reason": p.get("decided_reason") or ""})
                 g["seeds"].append(r["info"].get("seed"))
+    # the scripted baselines fail by construction (approve-all lets every wrong card through,
+    # reject-all stops every right one): one line each, so the decider's failures stand out
+    baseline = {"rules-only", "rules-only-reject"}
+    by_construction: dict[tuple[str, str], int] = defaultdict(int)
     for (what, scenario, arm, step), g in groups.items():
+        if arm in baseline and not what.startswith("Not scored"):
+            by_construction[(arm, what)] += len(g["seeds"])
+            continue
         detail = esc(g["why"]) if what.startswith("Should-reject") else esc(g["reason"] or "(still pending when the run ended)")
         items.append(
             f'<li>{esc(what)}: {esc(scenario)} / {esc(arm)}, step <code>{esc(step)}</code>, seed(s) {esc(sorted(g["seeds"]))}: {detail}</li>'
         )
+    for (arm, what), n in sorted(by_construction.items()):
+        items.append(f'<li class="muted">By construction, {esc(arm)}: {esc(what)} x {n} over all scenarios and seeds (see the per-scenario tables).</li>')
     for s in meta.get("skipped", []):
         items.append(f'<li>Scenario <code>{esc(s.get("scenario"))}</code> not run: {esc(s.get("reason"))}</li>')
     if not items:
@@ -394,6 +403,8 @@ def build(batch: Path) -> Path:
         f'started {esc(meta.get("started"))}, ended {esc(meta.get("ended"))}; code {esc(git_sha())}; '
         f'{esc(meta.get("parallel"))} stacks in parallel on {esc((meta.get("machine") or {}).get("cpus"))} CPUs; {esc(meta.get("tidewater"))}.</p>'
     )
+    for note in meta.get("notes", []):
+        body.append(f'<p class="muted">{esc(note)}</p>')
     body.append(
         '<div class="note"><strong>The human-proxy is not a human.</strong> It is a scripted operator model with explicit '
         "parameters (eval/proxy.py, listed below), built to exercise the metrics end to end and to give the rules-only "
@@ -469,32 +480,41 @@ def build(batch: Path) -> Path:
             "and whether the decision was right by the label. Hover a mark for the intent.</p>"
         )
         body.append('<div class="card">' + scatter(proxy_decisions, "Decision latency against queue length") + "</div>")
-        # load table pooled per arm
+        # the queue table, per scenario where the queue actually varied: pooled over
+        # scenarios, the queue length stands in for the scenario (the quiet scenarios hold
+        # the uncatchable cases at queue 1), which would read as the opposite of fatigue
         lt = []
-        for a in arms:
-            ds = [d for d in proxy_decisions if d["arm"] == a]
-            if not ds:
-                continue
-            for name, (lo, hi) in {"1": (1, 1), "2-3": (2, 3), "4-6": (4, 6), "7+": (7, 10**9)}.items():
-                rs = [d for d in ds if lo <= d["queue"] <= hi]
-                if not rs:
+        loaded = sorted({d["scenario"] for d in proxy_decisions if d["queue"] >= 3})
+        for sc in loaded:
+            for a in arms:
+                ds = [d for d in proxy_decisions if d["arm"] == a and d["scenario"] == sc]
+                if not ds:
                     continue
-                judged = [d for d in rs if d.get("wrong") is not None]
-                k = sum(1 for d in judged if d["wrong"])
-                rate, clo, chi = wilson(k, len(judged))
-                lt.append(
-                    f"<tr><td>{esc(a)}</td><td>{name}</td><td class='n'>{len(rs)}</td><td class='n'>{num(summary([d['latency_s'] for d in rs])['median'])}</td>"
-                    f"<td class='n'>{num(summary([d['tracks_viewed'] for d in rs])['mean'], 2)}</td>"
-                    f"<td class='n'>{k}/{len(judged)} = {pct(rate)} <span class='muted'>[{pct(clo)}, {pct(chi)}]</span></td></tr>"
-                )
-        body.append(
-            '<div class="card"><table><thead><tr><th>arm</th><th>queue at decision</th><th>decisions</th><th>median latency s</th>'
-            "<th>tracks looked up per decision</th><th>wrong by the label</th></tr></thead><tbody>" + "".join(lt) + "</tbody></table></div>"
-        )
+                for name, (lo, hi) in {"1": (1, 1), "2-3": (2, 3), "4-6": (4, 6), "7+": (7, 10**9)}.items():
+                    rs = [d for d in ds if lo <= d["queue"] <= hi]
+                    if not rs:
+                        continue
+                    judged = [d for d in rs if d.get("wrong") is not None and d.get("armed")]
+                    k = sum(1 for d in judged if d["wrong"])
+                    rate, clo, chi = wilson(k, len(judged))
+                    lt.append(
+                        f"<tr><td>{esc(sc)}</td><td>{esc(a)}</td><td>{name}</td><td class='n'>{len(rs)}</td><td class='n'>{num(summary([d['latency_s'] for d in rs])['median'])}</td>"
+                        f"<td class='n'>{num(summary([d['tracks_viewed'] for d in rs])['mean'], 2)}</td>"
+                        f"<td class='n'>{k}/{len(judged)} = {pct(rate)} <span class='muted'>[{pct(clo)}, {pct(chi)}]</span></td></tr>"
+                    )
+        if lt:
+            body.append(
+                "<p>By queue length at the decision, within each scenario where the queue grew past two (pooling across "
+                "scenarios would confound the queue with the scenario). Wrong: armed cards decided against their label.</p>"
+            )
+            body.append(
+                '<div class="card"><table><thead><tr><th>scenario</th><th>arm</th><th>queue at decision</th><th>decisions</th><th>median latency s</th>'
+                "<th>tracks looked up per decision</th><th>armed cards wrong by the label</th></tr></thead><tbody>" + "".join(lt) + "</tbody></table></div>"
+            )
         # information shown
         it = []
         for a in arms:
-            ds = [d for d in proxy_decisions if d["arm"] == a and d.get("latency_s") is not None]
+            ds = [d for d in proxy_decisions if d["arm"] == a and d.get("latency_s") is not None and d.get("armed")]
             if not ds:
                 continue
             for name, pred in (("looked up no track", lambda d: d["tracks_viewed"] == 0), ("looked up the cited track(s)", lambda d: d["tracks_viewed"] > 0)):
@@ -512,8 +532,9 @@ def build(batch: Path) -> Path:
         body.append("<h3>Approval time against the information shown</h3>")
         body.append(
             "<p>From the <code>operator.view</code> events: what the card showed (checks, warnings, rationale) and which tracks "
-            "the decider opened, joined with the decision. Card open time is the console's own measure (the proxy's reading time "
-            "here); latency includes the time before the card was first looked at.</p>"
+            "the decider opened, joined with the decision, for cards on armed platforms (the consequential ones). Card open time "
+            "is the console's own measure (the proxy's reading time here); latency includes the time before the card was first "
+            "looked at.</p>"
         )
         body.append(
             '<div class="card"><table><thead><tr><th>arm</th><th>information looked at</th><th>decisions</th><th>median latency s</th>'

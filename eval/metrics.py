@@ -519,6 +519,7 @@ def compute(
                 "warnings_shown": len(shown.get("warnings", [])),
                 "rationale_shown": bool(shown.get("rationale")),
                 "tracks_viewed": len(t.tracks_viewed()),
+                "armed": bool(t.armed),
                 "has_view": bool(v),
             }
         )
