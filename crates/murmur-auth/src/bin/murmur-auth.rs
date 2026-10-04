@@ -1,0 +1,203 @@
+//! `murmur-auth`: manage Murmur's operator and agent credentials.
+//!
+//! ```text
+//! murmur-auth [--file PATH] list
+//! murmur-auth [--file PATH] add <operator> [--engage]     password from stdin
+//! murmur-auth [--file PATH] passwd <operator>             password from stdin
+//! murmur-auth [--file PATH] engage <operator> on|off      engagement authority
+//! murmur-auth [--file PATH] remove <operator>
+//! murmur-auth [--file PATH] agent-add <agent>             prints the new API key, once
+//! murmur-auth [--file PATH] agent-rotate <agent>          prints a new key; the old one stops working
+//! murmur-auth [--file PATH] agent-remove <agent>
+//! murmur-auth [--file PATH] path                          the file it uses
+//! ```
+//!
+//! The file: `--file`, else `MURMUR_CREDENTIALS`, else `$XDG_CONFIG_HOME/murmur/credentials.json`,
+//! else `~/.config/murmur/credentials.json`. Passwords come from stdin: at a terminal it
+//! prompts twice without echo; otherwise it reads one line (for scripts and tests:
+//! `printf '%s\n' "$PW" | murmur-auth add op-1 --engage`). A running bridge notices a change
+//! within seconds: a removed operator's or agent's sessions end, and so do an operator's
+//! after a new password or a change of authority. Exit 0 on success, 1 on a refused change,
+//! 2 on usage.
+
+use std::io::{BufRead as _, IsTerminal as _};
+use std::path::PathBuf;
+use std::process::ExitCode;
+
+use murmur_auth::{AuthError, CredentialFile, FileLock, default_path};
+
+const USAGE: &str = "usage: murmur-auth [--file PATH] list | add <operator> [--engage] | passwd <operator> | engage <operator> on|off | remove <operator> | agent-add <agent> | agent-rotate <agent> | agent-remove <agent> | path\n(passwords from stdin; see the module docs)";
+
+fn read_password(id: &str) -> Result<String, AuthError> {
+    let io = |e| AuthError::Io("stdin".into(), e);
+    if std::io::stdin().is_terminal() {
+        let a = rpassword::prompt_password(format!("password for {id}: ")).map_err(io)?;
+        let b = rpassword::prompt_password("again: ").map_err(io)?;
+        if a != b {
+            return Err(AuthError::Invalid("the two passwords differ".into()));
+        }
+        return Ok(a);
+    }
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line).map_err(io)?;
+    let pw = line.strip_suffix('\n').unwrap_or(&line);
+    let pw = pw.strip_suffix('\r').unwrap_or(pw);
+    if pw.is_empty() {
+        return Err(AuthError::Invalid("no password on stdin".into()));
+    }
+    Ok(pw.to_string())
+}
+
+/// `2026-10-04 12:34Z` from Unix seconds (UTC, proleptic Gregorian).
+fn utc(secs: u64) -> String {
+    let days = i64::try_from(secs / 86_400).unwrap_or(0);
+    let rem = secs % 86_400;
+    // days from civil (H. Hinnant), inverted
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}Z", rem / 3600, (rem % 3600) / 60)
+}
+
+fn run(args: &[String]) -> Result<(), (u8, String)> {
+    let usage = |m: &str| (2u8, format!("{m}\n{USAGE}"));
+    let refused = |e: AuthError| (1u8, e.to_string());
+    let mut it = args.iter().skip(1).peekable();
+    let mut file: Option<PathBuf> = None;
+    if it.peek().map(|a| a.as_str()) == Some("--file") {
+        it.next();
+        file = Some(PathBuf::from(it.next().ok_or_else(|| usage("--file needs a path"))?));
+    }
+    let cmd = it.next().ok_or_else(|| usage("no command"))?.clone();
+    let rest: Vec<String> = it.cloned().collect();
+    let path = file
+        .or_else(default_path)
+        .ok_or_else(|| usage("no credential file: set MURMUR_CREDENTIALS or HOME, or pass --file"))?;
+    let one = |what: &str| -> Result<String, (u8, String)> {
+        match rest.first() {
+            Some(id) if !id.starts_with("--") => Ok(id.clone()),
+            _ => Err(usage(&format!("{cmd} needs {what}"))),
+        }
+    };
+    if cmd == "path" {
+        println!("{}", path.display());
+        return Ok(());
+    }
+    if cmd == "list" {
+        let f = CredentialFile::load_or_new(&path).map_err(refused)?;
+        println!("credentials: {}", path.display());
+        if CredentialFile::readable_by_others(&path) {
+            println!("warning: readable by other users; chmod 600 it");
+        }
+        println!("operators ({}):", f.operators.len());
+        for (id, e) in &f.operators {
+            let auth = if e.engage { "engagement authority" } else { "operator" };
+            println!("  {id:<24} {auth:<22} changed {}", utc(e.updated_unix));
+        }
+        println!("agents ({}):", f.agents.len());
+        for (id, e) in &f.agents {
+            println!("  {id:<24} key mma_{}_...          changed {}", e.key_id, utc(e.updated_unix));
+        }
+        return Ok(());
+    }
+    let _lock = FileLock::acquire(&path).map_err(refused)?;
+    let mut f = CredentialFile::load_or_new(&path).map_err(refused)?;
+    let mut key = None;
+    let what = match cmd.as_str() {
+        "add" => {
+            let id = one("an operator id")?;
+            let engage = match rest.get(1).map(String::as_str) {
+                None => false,
+                Some("--engage") => true,
+                Some(o) => return Err(usage(&format!("unknown option {o}"))),
+            };
+            murmur_auth::validate_id(&id).map_err(|e| (1, e))?;
+            if f.operators.contains_key(&id) {
+                return Err((1, format!("operator {id} exists (passwd changes the password)")));
+            }
+            let pw = read_password(&id).map_err(refused)?;
+            f.add_operator(&id, &pw, engage).map_err(refused)?;
+            format!("operator {id} added{}", if engage { " with engagement authority" } else { "" })
+        }
+        "passwd" => {
+            let id = one("an operator id")?;
+            if !f.operators.contains_key(&id) {
+                return Err((1, format!("no operator {id}")));
+            }
+            let pw = read_password(&id).map_err(refused)?;
+            f.set_password(&id, &pw).map_err(refused)?;
+            format!("password of {id} changed; their sessions end")
+        }
+        "engage" => {
+            let id = one("an operator id")?;
+            let on = match rest.get(1).map(String::as_str) {
+                Some("on") => true,
+                Some("off") => false,
+                _ => return Err(usage("engage <operator> on|off")),
+            };
+            f.set_engage(&id, on).map_err(refused)?;
+            format!(
+                "{id}: engagement authority {}; their sessions end",
+                if on { "granted" } else { "revoked" }
+            )
+        }
+        "remove" => {
+            let id = one("an operator id")?;
+            f.remove_operator(&id).map_err(refused)?;
+            format!("operator {id} removed; their sessions end")
+        }
+        "agent-add" => {
+            let id = one("an agent id")?;
+            key = Some(f.add_agent(&id).map_err(refused)?);
+            format!("agent {id} added")
+        }
+        "agent-rotate" => {
+            let id = one("an agent id")?;
+            key = Some(f.rotate_agent(&id).map_err(refused)?);
+            format!("agent {id}: new key; the old one stops working")
+        }
+        "agent-remove" => {
+            let id = one("an agent id")?;
+            f.remove_agent(&id).map_err(refused)?;
+            format!("agent {id} removed")
+        }
+        other => return Err(usage(&format!("unknown command {other}"))),
+    };
+    f.save(&path).map_err(refused)?;
+    eprintln!("{what} ({})", path.display());
+    if let Some(k) = key {
+        // the key alone on stdout, so a script can capture it; it is shown only this once
+        println!("{k}");
+        eprintln!("the key above is shown once; give it to the agent as Authorization: Bearer <key>");
+    }
+    Ok(())
+}
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().collect();
+    match run(&args) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err((code, msg)) => {
+            eprintln!("murmur-auth: {msg}");
+            ExitCode::from(code)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::utc;
+
+    #[test]
+    fn dates() {
+        assert_eq!(utc(0), "1970-01-01 00:00Z");
+        assert_eq!(utc(1_790_000_000), "2026-09-21 14:13Z");
+        assert_eq!(utc(951_782_400), "2000-02-29 00:00Z");
+    }
+}

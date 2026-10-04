@@ -16,3 +16,8 @@ sim/space/cache/
 
 # evaluation batches (eval/run.py); reports are published by hand
 eval/results/
+
+# operator and agent credentials (murmur-auth) belong outside the repository
+# (~/.config/murmur/credentials.json or MURMUR_CREDENTIALS); never commit one placed here
+credentials*.json
+.murmur/

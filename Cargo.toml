@@ -10,3 +10,10 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 unwrap_used = "warn"
+
+# Password hashing is deliberately slow; unoptimized it is slower still, and the bridge's
+# and the auth crate's tests hash many passwords.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3

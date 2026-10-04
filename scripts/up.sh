@@ -52,7 +52,7 @@ fi
 # build first (a no-op when fresh), so vehicles don't wait on a bridge that is still compiling
 cargo="$(command -v cargo || echo "$HOME/.cargo/bin/cargo")"
 if [ -x "$cargo" ]; then
-  "$cargo" build --release -p murmur-bridge -p murmur-standins -p murmur-linkemu -p murmur-decide -p murmur-contacts
+  "$cargo" build --release -p murmur-bridge -p murmur-standins -p murmur-linkemu -p murmur-decide -p murmur-contacts -p murmur-auth
 elif [ ! -x target/release/murmur-bridge ] || [ ! -x target/release/murmur-standins ] \
   || { [ "$linkemu" = 1 ] && [ ! -x target/release/murmur-linkemu ]; } \
   || { [ -n "${MURMUR_CONTACTS:-}" ] && [ ! -x target/release/murmur-contacts ]; }; then
