@@ -4,6 +4,8 @@ pymavlink>=2.4.40
 websockets>=12
 # the official MCP SDK, for agents/scripted_agent.py (Phase F; the server is in the bridge)
 mcp>=2
+# unit tests of the evaluation harness (eval/tests, run by make check)
+pytest
 # ArduPilot SITL build deps (waf runs under this venv)
 empy==3.3.4
 future

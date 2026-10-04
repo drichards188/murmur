@@ -89,6 +89,46 @@ group. Dates are 2026.
   forces the simulated IMU feels; kinematic stops (zeroing velocity, clamping position)
   diverge the EKF.
 
+## Evaluation (Phase G)
+
+- **One isolated stand-in stack per run, Python runner** (10-03). `eval/run.py` starts the
+  link emulator, bridge, stand-ins and contacts on a port block of their own (UDP 35000-36999,
+  HTTP 10600-10699), with manifests, events and logs in the run directory, and stops them by
+  PID; batches run several at once. Stand-ins only (SITL is neither deterministic nor cheap),
+  and the same release binaries as `make goldengate`, so the evaluation measures the shipped
+  decision layer, not a model of it.
+- **Labels from truth at injection; metrics from logs only** (10-03). The storyline records
+  the perception and the truth it resolved when it injected a situation (track, contact,
+  affiliations, navigation offset); metrics read that plus the audit log and the replay, never
+  the runner's memory, and the report recomputes them from the raw logs. A label is the
+  scenario author's judgment applied by truth, so every spec says why each label holds.
+- **The proxy operator is a documented model, never human data** (10-03). Attention, reading
+  time, diligence decaying with queue length and a fixed rule book, all parameters recorded
+  per run and printed in the report beside the words "not a human". It exists to exercise the
+  metrics and give the rules-only baseline a comparison; human claims need study sessions.
+- **What the console showed is an audit event** (10-03). `POST /api/operator/view` logs
+  `operator.view` (card open, close, decide; checks, warnings, rationale, tracks looked up,
+  open time) under the operator's session. Additive: replay verifies the chain through it and
+  decides nothing from it. The console side is its own module (`web/src/operatorView.ts`) with
+  two calls in `InboxPanel.tsx`.
+- **One evaluation policy for every arm** (10-03). `eval/policy/base.toml` is `sim/policy.toml`
+  with `submitter_authorizes = false`, so a second human's consequential proposals wait in the
+  inbox as an agent's do; the strict variant routes every vehicle task to a human with no
+  `source` condition. Arms differ only in who proposes and who decides.
+- **Borrow SandTable's discrimination and goodput; define override ourselves** (10-03). The
+  report's d' is SandTable's `trust_dprime` (log-linear corrected, 0 at the reject-all and
+  approve-all corners) and its goodput is SandTable's `operator_goodput`; SandTable lists
+  override rates but defines no formula, so Murmur's is its own (METRICS.md). Catch rate alone
+  rewards rejecting everything; d' does not.
+- **A wrong picture and a wrong proposal are reported apart** (10-03). Some should-rejects
+  cannot be caught from what the C2 shows (a neutral that looks exactly like the hostile, a
+  spoofed position with good flags); those scenarios measure the picture, not the decider, so
+  the report keeps scenarios separate rather than averaging them into one catch rate.
+- **The real-model arm is opt-in and capped** (10-03). `MURMUR_EVAL_MODEL=1` or the runner
+  refuses; usage is priced after every call and the run stops calling past
+  `MURMUR_EVAL_MAX_USD` (default $2). The Anthropic SDK is not in `requirements.txt`; no test
+  calls an external API.
+
 ## Engineering
 
 - **The MCP server lives in the bridge, on in-process `AgentPort`s** (10-02, Phase F). Not a

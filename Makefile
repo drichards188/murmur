@@ -1,4 +1,4 @@
-.PHONY: setup build up goldengate down sim bridge web check
+.PHONY: setup build up goldengate down sim bridge web eval check
 
 FLEET ?= sandiego   # any sim/fleets/*.toml: sandiego, canaveral, golden-gate, ...
 CARGO ?= $(shell command -v cargo || echo $(HOME)/.cargo/bin/cargo)
@@ -6,8 +6,8 @@ CARGO ?= $(shell command -v cargo || echo $(HOME)/.cargo/bin/cargo)
 setup:   ## one-time: venv, Rust release build, ArduPilot SITL build, npm install
 	./scripts/setup.sh
 
-build:   ## release builds of the Rust bridge, stand-in engine, link emulator and murmur-replay (up.sh does this too)
-	$(CARGO) build --release -p murmur-bridge -p murmur-standins -p murmur-linkemu -p murmur-decide
+build:   ## release builds of the Rust bridge, stand-in engine, link emulator, contacts and murmur-replay (up.sh does this too)
+	$(CARGO) build --release -p murmur-bridge -p murmur-standins -p murmur-linkemu -p murmur-decide -p murmur-contacts
 
 up:      ## swarm + link emulator + bridge + web (MURMUR_LINKEMU=0 bypasses the emulator; ports: scripts/up.sh)
 	./scripts/up.sh --fleet $(FLEET) $(ARGS)
@@ -30,8 +30,13 @@ bridge:  ## MAVLink <-> WebSocket bridge on :8765 (crates/murmur-bridge)
 web:     ## console on http://127.0.0.1:5173
 	cd web && npx vite --host 127.0.0.1
 
-check:   ## typecheck + lint + Rust lint and tests
+eval: build ## evaluation batch on isolated stacks (eval/README.md): SCENARIOS=, ARMS=, SEEDS=, PARALLEL=
+	.venv/bin/python -m eval.run batch --scenarios $(or $(SCENARIOS),misclassified-neutral spoofed-gnss link-cut approval-flood stale-track plausible-wrong) \
+	  --arms $(or $(ARMS),rules-only human-proxy agent+human-proxy) --seeds $(or $(SEEDS),1 2 3) $(if $(PARALLEL),--parallel $(PARALLEL))
+
+check:   ## typecheck + lint + Rust lint and tests + evaluation unit tests
 	cd web && npx tsc -b && npx oxlint src
-	.venv/bin/python -m py_compile sim/swarm.py sim/tests/*.py scripts/*.py
+	.venv/bin/python -m py_compile sim/swarm.py sim/tests/*.py scripts/*.py agents/*.py eval/*.py eval/tests/*.py
+	.venv/bin/python -m pytest -q eval/tests
 	$(CARGO) clippy --workspace --all-targets -- -D warnings
 	$(CARGO) test --workspace

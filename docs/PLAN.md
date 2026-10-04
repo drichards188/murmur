@@ -2,7 +2,7 @@
 
 The working plan, in implementation order. Read with [DECISIONS.md](DECISIONS.md) (what was
 decided and why). Live task state is in `bd` (`bd ready`); this file is the design those
-issues point to. Last updated 2026-10-02.
+issues point to. Last updated 2026-10-03.
 
 ## What Murmur is
 
@@ -253,15 +253,48 @@ engine refuses an agent proposal without a rationale, and no tool reaches approv
 
 ## Phase G: evaluation harness
 
-- Headless scenario runner: seeded, stand-ins (and SITL at speedup where needed), batch.
-- Adversarial scenarios: misclassified neutral, target moves after approval, link cut
-  mid-engagement, friendly sub near target, time pressure.
-- Metrics: should-reject catch rate, approvals correctly voided, approval time against
-  information shown, override rate (borrow SandTable's definitions), invariant violations
-  (must be zero).
-- Compare agent+human, human-only, rules-only baseline on the same seeds.
-- Human-behavior claims need participants; the harness supports studies, it doesn't replace
-  them.
+Built (first cut; `eval/README.md` says how to run it, `eval/METRICS.md` defines every number):
+
+- **Headless runner** (`eval/run.py`, Python): a TOML spec (`eval/scenarios/*.toml`) bundles a
+  stand-in fleet, a contacts scenario, link and GNSS events, a policy variant, the clock, and a
+  scripted **storyline** of injected situations (`propose`, `flood`, `declare`, `link` cuts
+  appended to the run's own events file, `note`, `engage`). Each run gets an isolated stack on
+  its own port block (vehicle and bridge UDP bases in 35000-36999, HTTP 10600-10699; SITL
+  never), its own manifests and logs, and is torn down by PID. Batch mode runs scenarios x
+  arms x seeds several stacks at a time (`make eval`) and builds a self-contained HTML report
+  (`eval/report.py`) with confidence intervals, per-scenario tables, invariants and a
+  "what went wrong" section.
+- **Arms**: `rules-only` (policy plus approve-all) and `rules-only-reject` (reject-all);
+  `human-proxy` (a second operator proposes, a scripted proxy operator decides);
+  `agent+human-proxy` (the scripted MCP agent, `agents/policy_agent.py`, proposes);
+  `agent+model` (a real Claude model through the MCP server via the Anthropic API, opt-in,
+  cost-capped, never in tests); `study` (a participant in the console). The proxy is a
+  documented operator model (attention, reading time, diligence decaying with queue length,
+  a fixed rule book), labelled a proxy everywhere and never reported as human data.
+- **What was shown at decision time**: the console posts card open, close and decide events
+  (`web/src/operatorView.ts`) to `POST /api/operator/view`; the bridge logs them as
+  `operator.view` (additive; replay verifies the chain through them and decides nothing from
+  them).
+- **Metrics** from the audit log, the storyline log and truth: should-reject catch rate,
+  correct-void rate, false rejects, override rate, discrimination d' and goodput (borrowed from
+  SandTable), approval latency against the information shown and the queue, time to effect,
+  and invariants that must be zero (an agent authorization, a human-tier intent auto-approved,
+  an armed dispatch without a human, a dispatch with a failing check, an engagement without
+  two approvers, a replay mismatch, and more).
+- **Adversarial scenarios** (Golden Gate, seeded): misclassified neutral near the bridge,
+  spoofed GNSS on our own aircraft, link cut during an approval, approval flood under a strict
+  policy, stale track, plausible but wrong proposals. Phase E's engagement scenarios (target
+  moves after approval, neutral enters the keep-out, friendly sub near the target, proposer
+  approves its own nomination) are placeholders in `eval/scenarios/engagement/` behind the
+  plug-in point `eval/engage.py`, skipped until the bridge takes engagements.
+- First batch: 6 scenarios x 4 arms x 3 seeds (`eval/results/`, not committed; numbers in the
+  Phase G report).
+
+Next: wire the engagement scenarios when Phase E lands; a cross-check that can catch a spoofed
+position (our own vehicles seen by our own sensors); track-age rules for vehicle tasks aimed
+at a track; study sessions with participants (consent, anonymous ids: `eval/README.md`).
+Human-behavior claims need participants; the harness supports studies, it doesn't replace
+them.
 
 Exit: results published, including what went wrong.
 
