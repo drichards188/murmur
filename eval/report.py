@@ -260,12 +260,15 @@ def aggregate(runs: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any
             "sv": seed_block(rs, ["should_void"]),
             "sv_stopped": seed_block(rs, ["should_void", "stopped"]),
             "fr": seed_block(rs, ["legitimate", "false_reject"]),
+            "fr_kept": seed_block(rs, ["legitimate", "false_reject_without_changed"]),
             "lp": seed_block(rs, ["legitimate", "passed"]),
             "legit_c2_against": legit_shown,
             "ov": seed_block(rs, ["override"]),
             "goodput": seed_block(rs, ["goodput"]),
             "disc": disc(rs),
             "disc_armed": disc(rs, "discrimination_armed"),
+            "disc_kept": disc(rs, "discrimination_without_changed"),
+            "disc_armed_kept": disc(rs, "discrimination_armed_without_changed"),
             "lat": summary(lat),
             "max_queue": max((r["m"]["load"]["max_queue"] for r in rs), default=None),
             "expired": sum(r["m"]["load"]["expired"] for r in rs),
@@ -676,8 +679,10 @@ def results_table(agg: dict[tuple[str, str], dict[str, Any]], scenarios: list[st
                 f"<td class='n'>{ci_text(g['sr_shown'])}{read_text(g['read_shown']) if proxy else ''}</td>"
                 f"<td class='n'>{ci_text(g['sr_wrong_picture'])}{read_text(g['read_wrong_picture']) if proxy else ''}</td>"
                 f"<td class='n'>{ci_text(g['sv'])}<br><span class='muted'>stopped {g['sv_stopped']['k']}/{g['sv_stopped']['n']}</span></td>"
-                f"<td class='n'>{ci_text(g['fr'])}<br><span class='muted'>legitimate with the C2 against: {g['legit_c2_against']}</span></td>"
-                f"<td class='n'>{num(g['disc_armed']['dprime'], 2)} / {num(g['disc']['dprime'], 2)}<br><span class='muted'>armed {g['disc_armed']['hit']}/{g['disc_armed']['miss']}/{g['disc_armed']['false_alarm']}/{g['disc_armed']['correct_reject']}</span></td>"
+                f"<td class='n'>{ci_text(g['fr'])}<br><span class='muted'>without label-changed: {g['fr_kept']['k']}/{g['fr_kept']['n']}; "
+                f"legitimate with the C2 against: {g['legit_c2_against']}</span></td>"
+                f"<td class='n'>{num(g['disc_armed']['dprime'], 2)} / {num(g['disc_armed_kept']['dprime'], 2)}<br><span class='muted'>all cards {num(g['disc']['dprime'], 2)} / {num(g['disc_kept']['dprime'], 2)}; "
+                f"armed {g['disc_armed']['hit']}/{g['disc_armed']['miss']}/{g['disc_armed']['false_alarm']}/{g['disc_armed']['correct_reject']}</span></td>"
                 f"<td class='n'>{num(g['lat']['median'])} / {num(g['lat']['p90'])}<br><span class='muted'>n={g['lat']['n']}</span></td>"
                 f"<td class='n'>{ci_text(g['goodput'])}<br><span class='muted'>expired {g['expired']}, max queue {esc(g['max_queue'])}</span></td>"
                 f"<td class='n'>{num(g['tte_auto']['median_of_run_medians'])} / {num(g['tte_human']['median_of_run_medians'])}</td>"
@@ -691,7 +696,7 @@ def results_table(agg: dict[tuple[str, str], dict[str, Any]], scenarios: list[st
         '<div class="card"><table><thead><tr><th>scenario</th><th>arm</th><th>runs</th>'
         "<th>should-reject caught: the C2 showed it</th><th>should-reject caught: picture wrong</th>"
         "<th>should-void voided by the C2</th><th>legitimate rejected in the inbox</th>"
-        "<th>d' armed / all <span class='muted'>hit/miss/FA/CR</span></th><th>latency median / p90 s</th>"
+        "<th>d' armed: all / without label-changed <span class='muted'>hit/miss/FA/CR</span></th><th>latency median / p90 s</th>"
         "<th>decided in time, of all inbox cards</th><th>time to effect auto / human s</th><th>premises held</th>"
         "<th>label changed by the decision</th>"
         "<th>violations</th><th>replay ok</th></tr></thead><tbody>" + "".join(rows) + "</tbody></table></div>"
@@ -758,6 +763,130 @@ def scenario_sections(agg: dict[tuple[str, str], dict[str, Any]], scenarios: lis
             "<th>violations</th><th>directory</th></tr></thead><tbody>" + "".join(prs) + "</tbody></table></div></details>"
         )
     return "".join(body)
+
+
+AGENT_ARM = "agent+human-proxy"
+
+
+def _range(xs: list[float | None], digits: int = 2) -> str:
+    v = [x for x in xs if x is not None]
+    if not v:
+        return "n/a"
+    lo, hi = min(v), max(v)
+    return f"{lo:.{digits}f}" if lo == hi else f"{lo:.{digits}f} to {hi:.{digits}f}"
+
+
+def _counts(xs: list[Any]) -> str:
+    c: dict[str, int] = defaultdict(int)
+    for x in xs:
+        c[str(x)] += 1
+    return ", ".join(f"{esc(k)} {v}" for k, v in sorted(c.items()))
+
+
+def agent_cases(agg: dict[tuple[str, str], dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every proposal the agent arm made, with its run's scenario and seed and the model's
+    handling of it (from the run's decision records)."""
+    out = []
+    for (s, a), g in agg.items():
+        if a != AGENT_ARM:
+            continue
+        for r in g["runs"]:
+            dec = {d.get("intent_id"): d for d in r["info"].get("decisions", []) if "diligent" in d}
+            for p in r["m"].get("per_intent", []):
+                if not str(p.get("step") or "").startswith("agent-"):
+                    continue
+                d = dec.get(p.get("id")) or {}
+                out.append({**p, "scenario": s, "seed": r["info"].get("seed"), "read": d.get("diligent"), "if_read": d.get("if_read")})
+    return out
+
+
+def agent_section(agg: dict[tuple[str, str], dict[str, Any]], spec_by_name: dict[str, Any]) -> str:
+    """The agent arm, presented as what it is: one fixed policy that ignores the storyline,
+    so the scenarios sharing a picture replicate one situation."""
+    cases = agent_cases(agg)
+    if not cases:
+        return ""
+    by_scenario: dict[str, set[str]] = defaultdict(set)
+    for c in cases:
+        by_scenario[c["scenario"]].add(str(c.get("target_contact")))
+    # a situation is the set of contacts the agent proposed on: scenarios with the same set
+    # are replicates of it
+    situations: dict[frozenset, list[str]] = defaultdict(list)
+    for s, contacts in by_scenario.items():
+        situations[frozenset(contacts)].append(s)
+    out = ["<h2>The agent arm: two situations, replicated</h2>"]
+    out.append(
+        "<p>The agent arm's proposer (eval/agent.py <code>AgentPolicy</code>) ignores the storyline: every 15 s from 20 s it "
+        "proposes an armed orbit over the most suspicious live track near the bridge it has not proposed on yet. Scenarios that "
+        "share a picture therefore give it the same tracks at the same times, and its rows are replicates of the situations "
+        "below, not separate scenarios. Its cases are not comparable with the storyline arms' cases either: they are early "
+        "proposals on tracks whose evidence changes before the decision, where the storyline's catchable cases keep theirs.</p>"
+    )
+    shown = [c for c in cases if c.get("label") == "should_reject" and c.get("c2_shows_it")]
+    if shown:
+        read = [c for c in shown if c.get("read")]
+        fired = [c for c in read if c.get("if_read") == "reject"]
+        below = [c for c in shown if c.get("target_conf_at_decision") is not None and c["target_conf_at_decision"] < 0.5]
+        per = []
+        for contacts, scs in sorted(situations.items(), key=lambda kv: sorted(kv[0])):
+            xs = [c for c in shown if c["scenario"] in scs]
+            if xs:
+                per.append(f"{len(xs)} on {esc(', '.join(sorted({str(c.get('target_contact')) for c in xs})))}, decided "
+                           f"{_range([c.get('decided_after_s') for c in xs], 1)} s after the proposal")
+        out.append(
+            f"<p>Every wrong agent proposal the C2 showed something against ({len(shown)} cases: {'; '.join(per)}) was shown with "
+            f"an affiliation confidence of {_range([c.get('target_conf_at_proposal') for c in shown])} at proposal, under the rule "
+            f"book's 0.5, and the low confidence was the only evidence. By the decision the sensors had firmed it up: "
+            f"{_range([c.get('target_conf_at_decision') for c in shown])} in the last truth sample before the decision (taken "
+            f"every 5 s, so up to 5 s before it; {len(below)} of {len(shown)} still under 0.5 there). The model's rule book fired "
+            f"on {len(fired)} of the {len(read)} it read, so when it read the tracks the confidence was 0.5 or more: the "
+            "evidence the category rests on was gone by the time the decider looked.</p>"
+        )
+    for contacts, scs in sorted(situations.items(), key=lambda kv: sorted(kv[0])):
+        scs = sorted(scs)
+        cs = [c for c in cases if c["scenario"] in scs]
+        runs = sum(len(agg[(s, AGENT_ARM)]["runs"]) for s in scs)
+        out.append(f"<h3>Proposals on {esc(', '.join(sorted(contacts)))}: {len(scs)} scenarios, {runs} runs</h3>")
+        diffs = []
+        for s in scs:
+            spec = spec_by_name.get(s) or {}
+            links = any(st.get("kind") == "link" for st in spec.get("steps", []))
+            diffs.append(
+                f"<code>{esc(s)}</code> (fleet {esc(Path(str(spec.get('fleet') or '?')).stem)}, policy {esc(Path(str(spec.get('policy') or '?')).stem)}"
+                f"{', events ' + esc(Path(str(spec.get('events'))).stem) if spec.get('events') else ''}{', link cuts' if links else ''})"
+            )
+        out.append("<p class='muted'>Replicates: " + "; ".join(diffs) + ".</p>")
+        steps: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for c in cs:
+            steps[c["step"]].append(c)
+        trs = []
+        for step, xs in sorted(steps.items()):
+            read = [x for x in xs if x.get("read")]
+            trs.append(
+                f"<tr><td><code>{esc(step)}</code></td><td>{_counts([x.get('target_contact') for x in xs])}</td>"
+                f"<td class='n'>{_range([x.get('proposed_at_s') for x in xs], 0)}</td><td>{_counts([x.get('label') for x in xs])}</td>"
+                f"<td>{_counts(['shown' if x.get('c2_shows_it') else 'nothing' for x in xs])}</td>"
+                f"<td class='n'>{_range([x.get('target_conf_at_proposal') for x in xs])}</td><td class='n'>{_range([x.get('target_conf_at_decision') for x in xs])}</td>"
+                f"<td class='n'>{_range([x.get('decided_after_s') for x in xs], 1)}</td>"
+                f"<td class='n'>{len(read)}/{len(xs)} read, fired {sum(1 for x in read if x.get('if_read') == 'reject')}</td>"
+                f"<td>{_counts([x.get('outcome') for x in xs])}</td>"
+                f"<td class='n'>{sum(1 for x in xs if x.get('changed_before_decision'))}</td></tr>"
+            )
+        out.append(
+            '<div class="card"><table><thead><tr><th>step</th><th>target contact</th><th>proposed at s</th><th>label (truth at proposal)</th>'
+            "<th>what the C2 showed at proposal</th><th>target's affiliation confidence at proposal</th><th>at the decision</th>"
+            "<th>decided after s</th><th>model</th><th>outcome</th><th>label changed by the decision</th></tr></thead><tbody>"
+            + "".join(trs)
+            + "</tbody></table></div>"
+        )
+        if any(s == "heldout-friend-alongside" for s in scs):
+            times = [c.get("proposed_at_s") for c in cs if c["scenario"] == "heldout-friend-alongside"]
+            out.append(
+                f"<p class='muted'>In <code>heldout-friend-alongside</code> the agent proposes at {_range(times, 0)} s after the origin; the "
+                "police boat is alongside the raider only from about 150 s, so the agent arm never meets the situation that scenario "
+                "is about.</p>"
+            )
+    return "".join(out)
 
 
 def build(batch: Path) -> Path:
@@ -847,26 +976,32 @@ def build(batch: Path) -> Path:
             "(the scored one); each is listed under What went wrong.</p>"
         )
         body.append("<p>Deciders: " + "; ".join(f"<strong>{esc(a)}</strong>: {esc(DECIDER.get(a, '?'))}" for a in arms) + ". "
-                    "In <strong>agent+human-proxy</strong> the scripted agent makes its own proposals from the picture through the MCP "
-                    "tools (eval/agent.py `AgentPolicy`, the same in every scenario), so its cases are not the storyline's: compare its "
-                    "rates by category, not step by step.</p>")
+                    "The agent arm is not in these tables: it ignores the storyline, so its rows would be replicates of two "
+                    "situations; it has its own section below. Legitimate rejected and d' are shown with and without the "
+                    "proposals whose label changed before the decision (a rejection that was right by truth at the decision is "
+                    "scored a false alarm against the label at proposal).</p>")
         body.append("<h3>Development scenarios</h3>")
-        body.append(results_table(agg, dev, arms))
+        main_arms = [a for a in arms if a != AGENT_ARM]
+        body.append(results_table(agg, dev, main_arms))
         if heldout:
             body.append("<h3>Held-out scenarios</h3>")
             body.append(
-                "<p>Written after the rule book (eval/evidence.py) was committed and never used to write or tune it; checked only "
-                "for their own mechanics (premises). A result that holds on the development scenarios and not here is a result "
-                "about those scenarios.</p>"
+                "<p>The rule book (eval/evidence.py) was committed before these scenarios were written and was not changed for "
+                "them. But they were designed knowing the rule book, each around one rule it has (a protected track inside the "
+                "radius, a low affiliation confidence) or around a picture-wrong premise, and they were adjusted after the freeze "
+                "(the dark ferry went from a 9 m/s transit, which a fixed aim point would lose and the no-track-at-aim rule would "
+                "catch, to a drift; the police boat moved to its own contacts file; the early orbits of friend-alongside moved "
+                "earlier). Their results restate their premises times the model's P(read). They are not a test of how the rule "
+                "book generalises.</p>"
             )
-            body.append(results_table(agg, heldout, arms))
+            body.append(results_table(agg, heldout, main_arms))
 
         for title, key, label in (
             ("Should-reject caught, the C2 showed it", "sr_shown", "caught before dispatch: seed-mean and t interval where two seeds had cases, else pooled with Wilson"),
             ("Should-reject caught, picture wrong", "sr_wrong_picture", "caught before dispatch: seed-mean and t interval where two seeds had cases, else pooled with Wilson"),
             ("Should-void voided by the C2", "sv", "voided by the C2 before dispatch"),
         ):
-            rows = [(s, [(a, chart_block(agg[(s, a)][key])) for a in arms if (s, a) in agg]) for s in dev + heldout if any(agg.get((s, a), {}).get(key, {}).get("n") for a in arms)]
+            rows = [(s, [(a, chart_block(agg[(s, a)][key])) for a in main_arms if (s, a) in agg]) for s in dev + heldout if any(agg.get((s, a), {}).get(key, {}).get("n") for a in main_arms)]
             if rows:
                 body.append(f"<h3>{esc(title)}</h3>")
                 body.append('<div class="card">' + rate_chart(rows, title, label) + "</div>")
@@ -886,21 +1021,7 @@ def build(batch: Path) -> Path:
             )
             body.append('<div class="card">' + scatter(proxy_decisions, "Decision latency against queue length") + "</div>")
 
-        ov_rows = []
-        for s in dev + heldout:
-            for a in arms:
-                g = agg.get((s, a))
-                if not g or not g["ov"]["n"]:
-                    continue
-                withdrawn = sum(r["m"]["override"]["withdrawn"] for r in g["runs"])
-                agent_n = sum(r["m"]["override"]["agent_intents"] for r in g["runs"])
-                ov_rows.append(f"<tr><td>{esc(s)}</td><td>{esc(arm_label(a))}</td><td class='n'>{agent_n}</td><td class='n'>{ci_text(g['ov'])}</td><td class='n'>{withdrawn}</td></tr>")
-        if ov_rows:
-            body.append("<h3>Override rate (agent proposals)</h3>")
-            body.append(
-                '<div class="card"><table><thead><tr><th>scenario</th><th>arm</th><th>agent intents</th><th>rejected in the inbox by the arm\'s decider, '
-                "of those it decided</th><th>withdrawn by the agent</th></tr></thead><tbody>" + "".join(ov_rows) + "</tbody></table></div>"
-            )
+        body.append(agent_section(agg, spec_by_name))
 
         body.append("<h2>Scenarios</h2>")
         body.append(scenario_sections(agg, dev + heldout, arms, spec_by_name))

@@ -1,6 +1,6 @@
-"""What code a run ran: the git commit, whether tracked code had uncommitted changes (the
-changed paths are kept; documentation does not count), and the SHA-256 of every binary the
-stack started. Recorded in each run's `run.json` and in the
+"""What code a run ran: the git commit, whether code differed from it (changed tracked
+files and untracked files that are not ignored; the paths are kept; documentation does not
+count), and the SHA-256 of every binary the stack started. Recorded in each run's `run.json` and in the
 batch, and shown in the report, so a number can always be traced to the code behind it.
 """
 
@@ -54,7 +54,9 @@ def sha256(path: Path) -> str | None:
 def collect() -> dict[str, Any]:
     """The commit, the dirty flag (tracked files changed; results and other ignored files
     don't count) with the changed paths, and the binaries' hashes."""
-    status = _git("status", "--porcelain", "--untracked-files=no")
+    # untracked files count too (a new module the run imported is code the commit lacks);
+    # ignored ones (results, caches, build output) don't
+    status = _git("status", "--porcelain", "--untracked-files=all")
     changed = [line[3:] for line in (status or "").splitlines() if len(line) > 3]
     return {
         "commit": (_git("rev-parse", "HEAD") or "").strip() or None,

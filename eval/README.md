@@ -102,19 +102,30 @@ Development scenarios (used while the rule book was written):
 | `stale-track` | armed orbits over a track whose contact has left the picture | should_reject x2, legitimate x2 | the track shown stale |
 | `plausible-wrong` | armed orbits whose rationale does not match the picture: a centre 2.5 km off, a ferry called a dark boat | should_reject x2, legitimate x2 | no track at the aim; a neutral track there |
 
-Held-out scenarios (written after the rule book was committed, never used to tune it; the
-report shows them apart):
+Held-out scenarios (the report shows them apart). The rule book was frozen (3da26c7) before
+they were written and was not tuned to them, but they were designed knowing it, each around
+one rule it has (a protected track inside the radius, a low affiliation confidence) or around
+a picture-wrong premise, and they were adjusted after the freeze (1fbc6ca: the dark ferry went
+from a 9 m/s transit, which a fixed aim point loses and the no-track-at-aim rule would catch,
+to a drift; the police boat moved to its own contacts file; the clean orbits of
+friend-alongside moved earlier). Their results restate their premises times the proxy's
+P(read): they are not a test of how the rule book generalises.
 
 | spec | situation | labels (from truth) | what the C2 shows (premise) |
 | --- | --- | --- | --- |
 | `heldout-friend-alongside` | a police boat (AIS) comes alongside a hostile; armed orbits before and after | should_reject x2, legitimate x2 | the friendly track inside the radius |
 | `heldout-early-unknown` | armed orbits before the picture settles: a sailboat, a late hostile while still unknown | should_reject x2, legitimate x2 | shown: both sailboat cases and the early hostile (a right proposal the rule book argues against) |
 | `heldout-dark-ferry` | a neutral ferry adrift with its AIS out, shown suspect; armed orbits over it and a real hostile | should_reject x2, legitimate x2 | nothing against either: picture wrong |
-| `engagement/*` | live Phase E placeholders: target moves after approval, neutral enters the keep-out, friendly sub near the target, proposer approves its own nomination | | skipped until the proxy can sign engagements (the 30 deterministic Phase E scenarios run in every batch) |
+| `engagement/*` | live Phase E placeholders: target moves after approval, neutral enters the keep-out, friendly sub near the target, proposer approves its own nomination | | skipped until the proxy can sign engagements (the 39 deterministic Phase E scenarios run in every batch) |
 
-The targets of armed orbits loiter within 100 m, hold still or drift: an aim point is fixed
-when the proposal is made, and a target that moved 300 m by the time the decider looked would
-read as "no track there", for a reason that is not the scenario's.
+The targets of the clean and the picture-wrong armed orbits loiter within 100 m, hold still or
+drift: an aim point is fixed when the proposal is made, and a target that moved 300 m by the
+time the decider looked would read as "no track there", for a reason that is not the
+scenario's. The ferry (10 m/s) and the cutter (loitering at 5 m/s) do move: the wrong orbits
+over them (plausible-wrong's misdescribed-ferry, the flood's flood-3, flood-9 and flood-14)
+are shown neutral or friendly at proposal, but the proxy often rejects them at the decision
+because no track is left at the aim point. They count as caught either way; the rule that
+fired is in each run's decision records.
 
 Fleets are in `fleets/`, contacts in `scenarios/contacts/`, events in `scenarios/events/`,
 policies in `policy/` (`base.toml`: `sim/policy.toml` with `submitter_authorizes = false`, so
@@ -217,8 +228,12 @@ but chooses its own proposals: every 15 s from 20 s, it reads the tracks and the
 MCP, takes the most suspicious live track (hostile, suspect or unknown) within 6 km of the
 bridge it has not proposed on, and asks for a 300 m armed orbit over it with a ready armed
 aircraft, at most six per run (a policy written before any result and the same in every
-scenario). Its proposals are labelled by truth like any other, so its rates compare by
-category, not step by step. The policy is the same file for every arm (no `source`
+scenario). It ignores the storyline, so scenarios that share a picture give it the same
+tracks at the same times: its runs are replicates of two situations (the development
+contacts and the held-out ones), and the report shows it per situation, with the target's
+affiliation confidence at proposal and at the decision, not as nine scenarios. Its cases are
+not comparable with the storyline's: they are early proposals whose evidence changes before
+the decision. The policy is the same file for every arm (no `source`
 conditions), so it is never a confound. The rules-only arms are "no human judgment": policy
 auto tiers plus a constant answer for the human tier.
 
@@ -247,8 +262,9 @@ inbox:
 
 The rule book is one function, versioned (`RULEBOOK_VERSION`), and the metrics use it too, to
 sort wrong proposals into "the C2 showed it" and "picture wrong". It was written from what the
-console and the API show and committed before the held-out scenarios were written; changing
-it means re-running the held-out set as development data and writing new held-out scenarios.
+console and the API show and frozen before the held-out scenarios were written (which were
+still designed knowing it, above); changing it means treating the held-out set as development
+data and writing new held-out scenarios.
 
 Presets: `default`, `diligent`, `rubber-stamp`, `fatigued`, `trusting` (`--proxy <preset>`,
 or `[proxy]` in a spec, whose keys override the preset's).

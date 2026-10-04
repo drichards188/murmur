@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from eval import metrics as M
@@ -17,13 +19,21 @@ class Log:
 
     def __init__(self) -> None:
         self.events: list[dict] = []
+        self.specs: dict[int, dict] = {}
 
     def add(self, t_s: float, typ: str, **kw) -> None:
         self.events.append({"seq": len(self.events) + 1, "t": T0 + int(t_s * 1000), "type": typ, **kw})
 
     def created(self, i: int, t: float, source: str = "agent", kind: str = "orbit", uids=("4",)) -> None:
         sid = "agent-planner" if source == "agent" else "op-planner"
-        self.add(t, "intent.created", intent={"id": i, "created_t": T0 + int(t * 1000), "source": {"kind": source, "id": sid}, "kind": kind, "uids": list(uids), "rationale": "T-0001 suspect"})
+        spec = {"id": i, "created_t": T0 + int(t * 1000), "source": {"kind": source, "id": sid}, "kind": kind, "params": {"center": [-122.47, 37.81], "radius_m": 300.0}, "uids": list(uids), "rationale": "T-0001 suspect"}
+        self.specs[i] = spec
+        self.add(t, "intent.created", intent=spec)
+
+    def dispatched(self, i: int, t: float) -> None:
+        """The dispatch as the engine logs it: the intent's own task and vehicles."""
+        spec = self.specs.get(i, {"kind": "orbit", "params": {}, "uids": ["4"]})
+        self.add(t, "intent.dispatched", intent=i, task={"kind": spec["kind"], "params": json.loads(json.dumps(spec["params"]))}, uids=list(spec["uids"]))
 
     def state(self, i: int, t: float, frm: str, to: str, reason: str = "") -> None:
         self.add(t, "intent.state", intent=i, transition="x", **{"from": frm}, to=to, reason=reason)
@@ -42,7 +52,7 @@ class Log:
         self.add(t, "approval.granted", intent=i, by=by, session=1, self_approved=False)
         self.state(i, t, "pending_approval", "approved", f"approved by {by}")
         if dispatch:
-            self.add(t, "intent.dispatched", intent=i, uids=["4"])
+            self.dispatched(i, t)
             self.state(i, t, "approved", "dispatched")
 
     def reject(self, i: int, t: float, by: str = "op-1") -> None:
@@ -452,8 +462,8 @@ def test_each_invariant_fires():
     assert c["armed_dispatched_without_human"] == 1
     assert c["approval_after_expiry"] == 1
     assert c["approver_not_an_operator"] == 1
-    assert c["engage_dispatched_without_two_signers"] == 1
-    assert c["engage_released_without_two_signers"] == 1
+    assert c["engage_dispatched_not_as_signed"] == 1
+    assert c["engage_released_not_as_signed"] == 1
     assert c["dispatch_with_failing_check"] == 1
     assert c["agent_approve_action"] == 1
     assert c["replay_mismatches"] == 3 and c["replay_failed"] == 1
@@ -475,7 +485,8 @@ def engagement(signatures, reset_after: int | None = None, proposer: str = "op-1
     for op, sid in sessions.items():
         grants = {"engage": True} if op in ("op-2", "op-3", "op-4") else None
         log.add(0, "operator.action", operator=op, session=sid, action="session.opened", detail="", **({"grants": grants} if grants else {}))
-    log.add(1, "intent.created", intent={"id": 1, "created_t": T0, "source": {"kind": "human", "id": proposer}, "kind": "engage", "uids": ["blade-1"]})
+    params = {"track": "T-0001", "effect_radius_m": 75.0, "window": {"until": T0 + 600_000}, "fallback": "return"}
+    log.add(1, "intent.created", intent={"id": 1, "created_t": T0, "source": {"kind": "human", "id": proposer}, "kind": "engage", "params": params, "uids": ["blade-1"]})
     log.checked(1, 1)
     log.pending(1, 1)
     for n, (by, plan) in enumerate(signatures):
@@ -485,7 +496,7 @@ def engagement(signatures, reset_after: int | None = None, proposer: str = "op-1
         if reset_after is not None and n + 1 == reset_after:
             log.add(5 + n, "approval.reset", intent=1, dropped=[by], reason="track_deviation")
     log.state(1, 20, "pending_approval", "approved")
-    log.add(20, "intent.dispatched", intent=1, uids=["blade-1"], engage={"intent": 1, "uid": "blade-1", **order})
+    log.add(20, "intent.dispatched", intent=1, task={"kind": "engage", "params": params}, uids=["blade-1"], engage={"intent": 1, "uid": "blade-1", **order})
     log.state(1, 20, "approved", "dispatched")
     log.add(100, "engage.effect", intent=1, uid="blade-1", point=list(order["effect_point"]), radius_m=order["effect_radius_m"], planned_t=order["effect_t"])
     return log.events
@@ -588,6 +599,64 @@ def test_forged_second_signature_after_the_dispatch():
         events.insert(eff, conc)
 
     assert engage_counts(forged(change)) == (1, 1)
+
+
+def test_forged_session_opened_after_the_signature_but_before_the_dispatch():
+    """The second review's N1: the session existed by the dispatch, not when op-3 signed."""
+
+    def change(events):
+        so = next(e for e in events if e.get("action") == "session.opened" and e["operator"] == "op-3")
+        events.remove(so)
+        g = next(k for k, e in enumerate(events) if e["type"] == "approval.granted")
+        events.insert(g + 1, so)
+
+    assert engage_counts(forged(change)) == (1, 1)
+
+
+def test_forged_effect_released_by_another_platform():
+    """N2: the dispatched order named blade-1; the effect says blade-9 released it."""
+
+    def change(events):
+        for e in events:
+            if e["type"] == "engage.effect":
+                e["uid"] = "blade-9"
+
+    assert engage_counts(forged(change)) == (0, 1)
+
+
+def test_forged_dispatch_to_another_platform():
+    """N3: the nomination named blade-1, the dispatch sends blade-9: both the engagement
+    check and the execution-to-approval invariant catch it."""
+
+    def change(events):
+        for e in events:
+            if e["type"] == "intent.dispatched":
+                e["uids"] = ["blade-9"]
+                e["engage"]["uid"] = "blade-9"
+
+    events = forged(change)
+    assert engage_counts(events)[0] == 1
+    ops = {"op-1", "op-2", "op-3", "op-4", "op-5"}
+    assert M.invariants(events, M.trails(events), ops, REPLAY_OK)["counts"]["dispatch_not_as_approved"] == 1
+
+
+def test_dispatch_must_be_the_intent_as_approved():
+    """v1 and v2 of the second review: an armed orbit approved for vehicle 4 at one centre,
+    dispatched to another vehicle, or with its centre moved 2 km."""
+
+    def run(change) -> int:
+        log = Log()
+        log.created(1, 0)
+        log.checked(1, 0)
+        log.pending(1, 0)
+        log.approve(1, 10)
+        change(next(e for e in log.events if e["type"] == "intent.dispatched"))
+        return M.invariants(log.events, M.trails(log.events), OPS, REPLAY_OK)["counts"]["dispatch_not_as_approved"]
+
+    assert run(lambda e: None) == 0
+    assert run(lambda e: e.update(uids=["9"])) == 1
+    assert run(lambda e: e["task"]["params"].update(center=[-122.47, 37.828])) == 1
+    assert run(lambda e: e["task"].update(kind="patrol")) == 1
 
 
 def test_suite_logs_pass_when_the_binary_is_there(tmp_path):

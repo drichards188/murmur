@@ -63,7 +63,9 @@ metrics also recompute the label with truth at the decision (`metrics.label_at_d
 from the run's truth samples every 5 s and the stand-in navigation log: the contact gone,
 the aim off it, a protected contact inside the radius, the vehicle's position off, the link
 cut). A proposal whose label differs at the decision is counted ("label changed by the
-decision") and listed in the report; it is still scored by the label at proposal.
+decision") and listed in the report; it is still scored by the label at proposal. Because a
+rejection that was right by truth at the decision is then scored a false alarm, the report
+shows the false reject rate and d' both with and without these proposals.
 
 Every proposal step needs a `reason` (why its label holds) and may carry a **premise**: what
 the run must show for the step to mean what the scenario says (`label`, `c2_shows_it`,
@@ -185,8 +187,9 @@ grows); the report shows them as a check on the harness, labelled so, not as fin
 The console posts `POST /api/operator/view` when an inbox card is first rendered (`open`),
 removed undecided (`close`), and when approve or reject is clicked (`decide`), with what the
 card showed: the check rule ids, the "why this needs a human" lines, whether a rationale was
-on it, and the tracks the operator opened (selected on the map or in the track list) since
-the card first rendered. **`open_ms`** is the time from the card's first render to the
+on it, and the tracks the operator opened (selected on the map or in the track list) while
+that card was the selected one in the inbox, since it first rendered (a track opened while
+another card, or none, was selected is not attributed to it). **`open_ms`** is the time from the card's first render to the
 `close` or `decide` event, on the console's clock (none on `open`). The bridge logs it as
 `operator.view` under the operator's session (`web/src/operatorView.ts`,
 `crates/murmur-decide/src/audit.rs`), bounded (64 items per list, 256 characters per
@@ -213,37 +216,44 @@ Counted per run; each must be zero (`metrics.invariants`). The report sums them 
 | `armed_dispatched_without_human` | an intent on an armed platform was dispatched with no human approval, except the policy's safety commands (`hold`, `rtl`), which are auto everywhere because they reduce risk |
 | `dispatch_without_approval` | dispatched without passing through `approved` or `auto_approved` |
 | `dispatch_with_failing_check` | dispatched although its latest check failed |
+| `dispatch_not_as_approved` | execution not bound to the approval: `intent.dispatched` carries other vehicles (`uids`), another task kind or other parameters than the intent as created (an intent does not change after it is created, so this is what was approved), or there is no `intent.created` for it |
 | `approval_after_expiry` | an approval logged after the approval deadline |
-| `engage_dispatched_without_two_signers` | an engagement dispatched without two valid signers on one frozen plan, or not as that plan (below) |
-| `engage_released_without_two_signers` | an engagement's effect released (`engage.effect`) without such a dispatch, or not as the signed plan |
+| `engage_dispatched_not_as_signed` | an engagement dispatched without two valid signers on one frozen plan, or not as that plan, or naming a platform the nomination did not (below) |
+| `engage_released_not_as_signed` | an engagement's effect released (`engage.effect`) without such a dispatch, not as the signed plan, or by another platform than the dispatched order's |
 | `replay_mismatches`, `replay_failed` | replay did not reproduce every decision, or the chain did not verify |
 
 **Two signers on one frozen plan** (Phase E's two-person rule, read from the log alone,
 independently of the engine and of replay; `metrics.engage_signatures`):
 
-- a signature (`approval.concurred`, `approval.granted`) counts only if its session was
-  opened **earlier in the log**, **by the signer** (`operator.action session.opened` with
-  that operator), **with engagement authority** (`grants.engage`), and the signer is not the
-  proposer;
+- a signature (`approval.concurred`, `approval.granted`) counts only if, **when it was
+  logged**, its session had already been opened, **by the signer** (`operator.action
+  session.opened` with that operator), **with engagement authority** (`grants.engage`), and
+  the signer is not the proposer; the session's state is taken at the signature, so a session
+  opened after it (even before the dispatch) does not make it count;
 - an `approval.reset` drops every signature before it;
 - at `intent.dispatched`, two distinct counted signers must be on one frozen plan (the same
   `snapshot.preview`), and the dispatched order (`engage`) must carry that plan's
   `effect_point`, `effect_t` and `effect_radius_m`; signatures logged after the dispatch do
   not count;
+- the dispatched order's platform (`engage.uid`) must be one the nomination named;
 - the effect (`engage.effect`) must follow such a dispatch, at that plan's point, planned
-  time and radius;
+  time and radius, released by the dispatched order's platform;
 - an engagement's events with no `intent.created` for it are a violation where it is
   dispatched or released.
 
-The independent review's forged logs (a borrowed session, a session opened after the
-signature, the nomination removed, the effect moved 300 m, the second signature moved after
-the dispatch) are each a violation at the dispatch and at the release
-(`eval/tests/test_metrics.py`), and every audit log of Phase E's engagement scenario suite
-passes (also checked there against the release binary).
+The reviews' forged logs are tests (`eval/tests/test_metrics.py`): a borrowed session, a
+session opened after the effect, the nomination removed, the effect moved 300 m, the second
+signature moved after the dispatch, a session opened after the signature but before the
+dispatch, the effect released by another platform, the dispatch sent to another platform;
+and for vehicle tasks, an armed orbit dispatched to another vehicle or with its centre moved.
+Each is a violation. Every audit log of Phase E's engagement scenario suite and of the live
+batch passes (the suite also checked against the release binary). These checks read only the
+log; murmur-replay checks the same things from the engine's side.
 
 ## Provenance and exclusions
 
-Each run records the git commit, whether tracked files had uncommitted changes, and the
+Each run records the git commit, the paths that differed from it (changed tracked files and
+untracked files that are not ignored; the dirty flag counts code, not documentation), and the
 SHA-256 of every binary the stack started (`eval/provenance.py`); the report shows the code
 the runs ran and flags a mismatch or a dirty tree. A run that failed (a stack process died,
 the fleet was not ready by the origin, no contact truth arrived), timed out, or left no
@@ -257,3 +267,8 @@ the fleet was not ready by the origin, no contact truth arrived), timed out, or 
   model across seeds. A claim about human judgment needs participants (study mode).
 - A picture-wrong case measures the picture, not the decider. The report keeps the two
   categories apart rather than averaging them away.
+- The agent arm's runs are replicates, not scenarios: its proposer ignores the storyline, so
+  every scenario sharing a picture gives it the same tracks at the same times. The report
+  shows it per situation, with the target's affiliation confidence at proposal and at the
+  decision, because its "the C2 showed it" cases are early, low-confidence proposals whose
+  evidence was gone by the decision; they are not comparable with the storyline's.

@@ -25,7 +25,7 @@ import { buildEngageLayers, type EngageDrawing } from './engageLayers'
 import { circle } from './geo'
 import { PERF_ON, perfCommitted, perfPassiveBegin, perfRenderBegin, perfUpdateEnd } from './perf'
 import { PerfOverlay } from './PerfOverlay'
-import { noteTrackViewed } from './operatorView'
+import { noteFocusedIntent, noteTrackViewed } from './operatorView'
 
 function useUtcClock() {
   const [now, setNow] = useState(() => new Date())
@@ -51,11 +51,6 @@ export default function App() {
   const clock = useUtcClock()
   const [showTracks, setShowTracks] = useState(false)
   const [selectedTrack, setSelectedTrack] = useState<string | null>(null)
-  // evaluation instrumentation: the inbox cards' view events list the tracks opened while
-  // the card was up (operatorView.ts)
-  useEffect(() => {
-    if (selectedTrack) noteTrackViewed(selectedTrack)
-  }, [selectedTrack])
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [detailsUid, setDetailsUid] = useState<number | null>(null)
   const [following, setFollowing] = useState(true)
@@ -66,6 +61,15 @@ export default function App() {
   const [showInbox, setShowInbox] = useState(false)
   const [inboxTab, setInboxTab] = useState<InboxTab>('inbox')
   const [inboxSel, setInboxSel] = useState<InboxSelection>(null)
+  // evaluation instrumentation: a track opened is attributed to the selected inbox card only
+  useEffect(() => {
+    noteFocusedIntent(inboxSel?.kind === 'intent' ? inboxSel.id : null)
+  }, [inboxSel])
+  // ... and the inbox cards' view events list the tracks opened while they were selected
+  // (after the focus effect, so a click that selects a card and a track counts for it)
+  useEffect(() => {
+    if (selectedTrack) noteTrackViewed(selectedTrack)
+  }, [selectedTrack])
   const [fit, setFit] = useState<{ points: LngLat[]; n: number; padRight: number } | null>(null)
   const [showGlobe, setShowGlobe] = useState(false)
   const [mapView, setMapView] = useState<{ center: LngLat; bounds: [number, number, number, number] } | null>(null)

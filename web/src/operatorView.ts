@@ -15,42 +15,52 @@ export interface ViewShown {
   /** the "why this needs a human" lines */
   warnings: string[]
   rationale: boolean
-  /** track ids the operator opened (selected on the map or in the track list) while the
-   *  card was up, in the order first opened */
+  /** track ids the operator opened (selected on the map or in the track list) while this
+   *  card was the selected one in the inbox, since it first rendered, in the order first
+   *  opened */
   tracks: string[]
 }
 
+/** The inbox card the operator has selected (an intent id), or null: a track opened now is
+ *  attributed to that card only, not to every card that happens to be up. */
+let focused: number | null = null
+
+export function noteFocusedIntent(id: number | null) {
+  focused = id
+}
+
 /** Track openings in this console, newest last (bounded): `noteTrackViewed` is called by
- *  the app whenever the operator selects a track. */
-const opened: { id: string; at: number }[] = []
+ *  the app whenever the operator selects a track, with the card selected at that moment. */
+const opened: { id: string; at: number; intent: number | null }[] = []
 const MAX_OPENED = 256
 
 export function noteTrackViewed(id: string) {
-  opened.push({ id, at: performance.now() })
+  opened.push({ id, at: performance.now(), intent: focused })
   if (opened.length > MAX_OPENED) opened.splice(0, opened.length - MAX_OPENED)
 }
 
-/** Distinct track ids opened at or after `since` (performance.now() ms), first-opened
- *  order, at most 64 (the bridge's bound on a view's lists). */
-export function tracksViewedSince(since: number): string[] {
+/** Distinct track ids opened at or after `since` (performance.now() ms) while card
+ *  `intent` was the selected one, first-opened order, at most 64 (the bridge's bound on a
+ *  view's lists). */
+export function tracksViewedSince(since: number, intent: number): string[] {
   const out: string[] = []
   for (const o of opened) {
-    if (o.at >= since && !out.includes(o.id)) out.push(o.id)
+    if (o.at >= since && o.intent === intent && !out.includes(o.id)) out.push(o.id)
     if (out.length >= 64) break
   }
   return out
 }
 
 /** What a card for `i` shows: the checks (every one is rendered), the reasons and whether
- *  a rationale is on it, and the tracks the operator opened since the card first rendered
- *  (`openedAt`; none on the `open` event). The first `why` line is the policy rule, shown
+ *  a rationale is on it, and the tracks the operator opened while it was the selected card,
+ *  since it first rendered (`openedAt`; none on the `open` event). The first `why` line is the policy rule, shown
  *  as the tier. */
 export function shownOn(i: Intent, openedAt?: number): ViewShown {
   return {
     checks: i.checks.map((c) => (c.uid != null ? `${c.rule}:${c.uid}` : c.rule)),
     warnings: (i.why ?? []).slice(1),
     rationale: !!i.rationale,
-    tracks: openedAt == null ? [] : tracksViewedSince(openedAt),
+    tracks: openedAt == null ? [] : tracksViewedSince(openedAt, i.id),
   }
 }
 

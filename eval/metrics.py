@@ -359,6 +359,18 @@ def _sample_at(samples: list[dict], moment: float, max_gap_s: float = 10.0) -> d
     return best
 
 
+def track_conf_at(samples: list[dict], track_id: str | None, moment: float | None) -> float | None:
+    """A track's affiliation confidence as the C2 showed it at `moment` (the last truth
+    sample at or before it, within 10 s), or None."""
+    if track_id is None or moment is None:
+        return None
+    sm = _sample_at(samples, moment)
+    if sm is None:
+        return None
+    t = next((x for x in sm.get("tracks", []) if x.get("id") == track_id), None)
+    return None if t is None else t.get("affiliation_confidence")
+
+
 def label_at_decision(
     rec: dict[str, Any],
     t: Trail | None,
@@ -534,23 +546,28 @@ def _same_point(a: Any, b: Any, tol_deg: float = 1e-7) -> bool:
 def engage_signatures(events: list[dict]) -> dict[str, Any]:
     """Phase E's two-person rule, checked from the log alone (eval/METRICS.md):
 
-    - a signature (`approval.concurred`, `approval.granted`) counts only if its session was
-      opened earlier in the log, by the signer, with engagement authority, and the signer is
-      not the proposer;
+    - a signature (`approval.concurred`, `approval.granted`) counts only if, when it was
+      logged, its session had already been opened, by the signer, with engagement authority
+      (judged at the signature: a session opened later, even before the dispatch, does not
+      make it count), and the signer is not the proposer;
     - an `approval.reset` drops every signature before it;
     - at the dispatch, two distinct counted signers must be on one frozen plan (the same
       `snapshot.preview`), and the dispatched order must carry that plan's effect point,
       time and radius; signatures after the dispatch don't count;
-    - the released effect (`engage.effect`) must come after such a dispatch and at that
-      plan's point, time and radius;
+    - the dispatched order's platform (`engage.uid`) must be one the nomination named;
+    - the released effect (`engage.effect`) must come after such a dispatch, at that plan's
+      point, time and radius, by the dispatched order's platform;
     - an engagement's events without its `intent.created` (no nomination in the log) are a
       violation where it is dispatched or released."""
     sessions: dict[Any, tuple[str, bool]] = {}
     kind: dict[int, str] = {}
     created: set[int] = set()
     proposer: dict[int, tuple[str, str]] = {}
-    sigs: dict[int, list[tuple[str, Any, str | None, dict | None]]] = defaultdict(list)
+    uids: dict[int, set[str]] = {}
+    # (signer, valid when signed, plan key, plan)
+    sigs: dict[int, list[tuple[str, bool, str | None, dict | None]]] = defaultdict(list)
     frozen: dict[int, dict | None] = {}  # intent -> the plan the dispatch rested on (None: none)
+    order_uid: dict[int, str] = {}  # intent -> the platform the dispatched order named
     out: dict[str, Any] = {"engagements": 0, "dispatched": 0, "released": 0, "dispatched_bad": 0, "released_bad": 0, "bad": []}
 
     def bad(i: int, at: str, e: dict, why: str) -> None:
@@ -569,11 +586,8 @@ def engage_signatures(events: list[dict]) -> dict[str, Any]:
         src_kind, src_id = proposer.get(i, ("?", "?"))
         by_plan: dict[str, set[str]] = defaultdict(set)
         plans: dict[str, dict] = {}
-        for by, session, key, plan in sigs[i]:
-            if key is None:
-                continue
-            s = sessions.get(session)
-            if s is None or s[0] != by or not s[1]:
+        for by, valid, key, plan in sigs[i]:
+            if key is None or not valid:
                 continue
             if src_kind == "human" and by == src_id:
                 continue
@@ -597,6 +611,7 @@ def engage_signatures(events: list[dict]) -> dict[str, Any]:
             created.add(i)
             src = spec.get("source") or {}
             proposer[i] = (src.get("kind", "?"), src.get("id", "?"))
+            uids[i] = {str(u) for u in spec.get("uids", [])}
             if kind[i] == "engage":
                 out["engagements"] += 1
             continue
@@ -608,7 +623,9 @@ def engage_signatures(events: list[dict]) -> dict[str, Any]:
             continue
         if typ in ("approval.concurred", "approval.granted"):
             if i not in frozen:  # after the dispatch a signature no longer counts
-                sigs[i].append((e.get("by"), e.get("session"), _plan_key(e), _plan(e)))
+                ses = sessions.get(e.get("session"))  # the session as it stood when signed
+                valid = ses is not None and ses[0] == e.get("by") and ses[1]
+                sigs[i].append((e.get("by"), valid, _plan_key(e), _plan(e)))
         elif typ == "approval.reset":
             if i not in frozen:
                 sigs[i] = []
@@ -617,10 +634,13 @@ def engage_signatures(events: list[dict]) -> dict[str, Any]:
             plan, why = valid_plan(i)
             frozen[i] = plan
             order = e.get("engage") or {}
+            order_uid[i] = str(order.get("uid"))
             if i not in created:
                 bad(i, "dispatched", e, "no intent.created for this engagement in the log")
             elif plan is None:
                 bad(i, "dispatched", e, why)
+            elif order_uid[i] not in uids.get(i, set()):
+                bad(i, "dispatched", e, f"the dispatched order names platform {order_uid[i]}, not one the nomination named")
             elif not (_same_point(order.get("effect_point"), plan.get("effect_point")) and order.get("effect_t") == plan.get("effect_t")
                       and order.get("effect_radius_m") == plan.get("effect_radius_m")):
                 bad(i, "dispatched", e, "the dispatched order is not the signed plan's effect point, time and radius")
@@ -633,6 +653,8 @@ def engage_signatures(events: list[dict]) -> dict[str, Any]:
                 bad(i, "released", e, "released without a dispatch in the log")
             elif plan is None:
                 bad(i, "released", e, "the dispatch it follows had no two signers on one plan")
+            elif str(e.get("uid")) != order_uid.get(i):
+                bad(i, "released", e, f"released by platform {e.get('uid')}, not the dispatched order's {order_uid.get(i)}")
             elif not (_same_point(e.get("point"), plan.get("effect_point")) and e.get("planned_t") == plan.get("effect_t")
                       and e.get("radius_m") == plan.get("effect_radius_m")):
                 bad(i, "released", e, "released at another point, time or radius than the signed plan's")
@@ -644,8 +666,30 @@ def invariants(events: list[dict], tr: dict[int, Trail], operators: set[str], re
     agent_sourced = {i for i, t in tr.items() if t.source_kind == "agent"}
     agent_authorized = 0
     unknown_approver = 0
+    # execution bound to approval: what was dispatched is the intent as created (and so as
+    # approved: an intent does not change after it is created)
+    created_spec: dict[int, dict] = {}
+    dispatch_not_as_approved = 0
+    not_as_approved: list[dict] = []
     for e in events:
         typ = e.get("type")
+        if typ == "intent.created":
+            spec = e.get("intent") or {}
+            created_spec[int(spec.get("id"))] = spec
+        elif typ == "intent.dispatched":
+            i = int(e.get("intent"))
+            spec = created_spec.get(i)
+            task = e.get("task") or {}
+            why = None
+            if spec is None:
+                why = "no intent.created for it"
+            elif sorted(str(u) for u in e.get("uids", [])) != sorted(str(u) for u in spec.get("uids", [])):
+                why = f"dispatched to {e.get('uids')}, created for {spec.get('uids')}"
+            elif task.get("kind") != spec.get("kind") or task.get("params") != spec.get("params"):
+                why = "the dispatched task is not the created intent's kind and parameters"
+            if why:
+                dispatch_not_as_approved += 1
+                not_as_approved.append({"intent": i, "seq": e.get("seq"), "why": why})
         if typ == "approval.at_submission" and int(e["intent"]) in agent_sourced:
             agent_authorized += 1
         if typ in ("approval.granted", "approval.concurred", "approval.at_submission", "approval.rejected"):
@@ -693,9 +737,10 @@ def invariants(events: list[dict], tr: dict[int, Trail], operators: set[str], re
         "armed_dispatched_without_human": armed_without_human,
         "dispatch_without_approval": dispatch_without_approval,
         "dispatch_with_failing_check": dispatch_failing_check,
+        "dispatch_not_as_approved": dispatch_not_as_approved,
         "approval_after_expiry": approval_after_expiry,
-        "engage_dispatched_without_two_signers": engage["dispatched_bad"],
-        "engage_released_without_two_signers": engage["released_bad"],
+        "engage_dispatched_not_as_signed": engage["dispatched_bad"],
+        "engage_released_not_as_signed": engage["released_bad"],
         "replay_mismatches": int((replay or {}).get("mismatches", 0) or 0) if replay and replay.get("ran") else 0,
         "replay_failed": 1 if replay and replay.get("ran") and not replay.get("ok") else 0,
     }
@@ -705,6 +750,7 @@ def invariants(events: list[dict], tr: dict[int, Trail], operators: set[str], re
         "violations": total,
         "engage_intents": sum(1 for t in tr.values() if t.kind == "engage"),
         "engage": engage,
+        "not_as_approved": not_as_approved,
         "agent_approve_attempts_refused": agent_approve_attempts,
         "replay": {k: v for k, v in (replay or {"ran": False}).items() if k != "output"},
         "ok": total == 0,
@@ -870,6 +916,15 @@ def compute(
     lg_human = [r for r in lg_scored if r["t"] is not None and r["t"].human_decided]
     lg_rejected = sum(1 for r in lg_human if r["t"].decided_state == "rejected")
 
+    def changed(r: dict[str, Any]) -> bool:
+        return bool(r["at_decision"] and r["at_decision"][0] != r["L"].label)
+
+    # the same without the proposals whose label changed before the decision (a rejection
+    # that was right by truth at the decision is not a false alarm there)
+    lg_human_kept = [r for r in lg_human if not changed(r)]
+    lg_rejected_kept = sum(1 for r in lg_human_kept if r["t"].decided_state == "rejected")
+    changed_ids = {r["L"].intent_id for r in rows if changed(r)}
+
     sv = group("should_void")
     sv_scored = [r for r in sv if r["outcome"] not in NOT_SCORED]
     sv_voided = sum(1 for r in sv_scored if r["t"] is not None and r["t"].voided_by_system)
@@ -975,6 +1030,12 @@ def compute(
                 "outcome": outcome(t) if L else None,
                 "c2_shows_it": row["c2_shows_it"] if row else None,
                 "evidence": row["evidence"] if row else None,
+                "target_track": (L.target or {}).get("track_id") if L else None,
+                "target_contact": (L.target or {}).get("contact_id") if L else None,
+                "proposed_at_s": (recs.get(t.id) or {}).get("t_rel"),
+                "target_conf_at_proposal": (L.target or {}).get("track_affiliation_confidence") if L else None,
+                "target_conf_at_decision": track_conf_at(samples or [], (L.target or {}).get("track_id") if L else None, decision_moment(t)),
+                "decided_after_s": round(decision_moment(t) - t.created_t / 1000.0, 1) if decision_moment(t) is not None and t.created_t else None,
                 "label_at_decision": (row["at_decision"] or (None, None))[0] if row else None,
                 "label_at_decision_basis": (row["at_decision"] or (None, None))[1] if row else None,
                 "changed_before_decision": bool(row and row["at_decision"] and L and row["at_decision"][0] != L.label),
@@ -1013,6 +1074,7 @@ def compute(
         "legitimate": {
             "passed": _rate(lg_passed, len(lg_scored)),
             "false_reject": _rate(lg_rejected, len(lg_human)),
+            "false_reject_without_changed": _rate(lg_rejected_kept, len(lg_human_kept)),
             "outcomes": outcomes(lg),
             "proposed": len(lg),
         },
@@ -1030,6 +1092,8 @@ def compute(
         },
         "discrimination": disc(decision_rows),
         "discrimination_armed": disc([r for r in decision_rows if r["armed"]]),
+        "discrimination_without_changed": disc([r for r in decision_rows if r["intent_id"] not in changed_ids]),
+        "discrimination_armed_without_changed": disc([r for r in decision_rows if r["armed"] and r["intent_id"] not in changed_ids]),
         # SandTable's operator_goodput: decided in time, of every card that reached the inbox
         "goodput": {**_rate(served, len(inbox)), "expired": lapsed},
         "utilization": {"card_open_s": round(open_s, 1), "window_s": round(window, 1) if window else None, "rate": (open_s / window) if window else None},

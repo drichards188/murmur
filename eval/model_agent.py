@@ -22,6 +22,7 @@ Configuration (environment):
     MURMUR_EVAL_MODEL_ID                model id (default claude-opus-5-5; --model overrides)
     MURMUR_EVAL_MAX_USD                 hard cap per run, US dollars (default 2.00)
     MURMUR_EVAL_MAX_TURNS               tool-use turns per step (default 8)
+    MURMUR_EVAL_MAX_TOKENS              max_tokens per call (default 4096; the guard prices all of it)
     MURMUR_EVAL_EFFORT                  output_config.effort (default medium)
     MURMUR_EVAL_FALLBACKS=0             drop the server-side refusal fallback
     ANTHROPIC_API_KEY (or an `ant auth login` profile): the SDK's usual credentials
@@ -33,13 +34,22 @@ requirements.txt, since nothing else uses it).
                                         batch adds its spend to (under a file lock)
     MURMUR_EVAL_BATCH_MAX_USD           hard cap for the whole batch (default 20.00)
 
-The cost guard, before every call, estimates its worst case (the request's input, counted
-at 3 characters a token, plus the full `max_tokens` of output, at the requested model's
-list price; an unknown model at the most expensive row) and refuses the call if that would
-take the run past its cap or the batch's ledger past the batch cap. After the call it
-prices what was billed: each entry of `usage.iterations` at the model that served it (a
-server-side fallback can bill another model), else the response's own `model`. Cache reads
-are priced as fresh input (conservative). Once tripped it stays tripped: later steps are
+The cost guard, before every call, estimates its worst case and refuses the call if that
+would take the run past its cap or the batch past the batch cap:
+
+- the request's input counted at 2 characters a token (tool schemas and JSON tokenize
+  denser than prose) plus the full `max_tokens` of output;
+- priced at the requested model's list price, or, with the server-side fallback on, at the
+  most expensive row (the fallback may be served by a dearer model; an unknown model is
+  priced there too);
+- times two with the fallback on: a request declined mid-stream bills the partial first
+  attempt and then the fallback's whole attempt.
+
+The batch's share is reserved in the ledger in the same locked step as the check (two runs
+can't both pass a check the batch can only afford once); after the call the reservation is
+settled at what was billed: each entry of `usage.iterations` at the model that served it,
+else the response's own `model`. A call that fails keeps its reservation as spent. Cache
+reads are priced as fresh input. Once tripped the guard stays tripped: later steps are
 recorded as declined with `cost guard`.
 """
 
@@ -121,35 +131,58 @@ def billed(usage: Any, model: str | None) -> list[tuple[str | None, int, int]]:
 
 
 class Ledger:
-    """A batch's shared spend: a JSON file every run adds to, under an exclusive lock."""
+    """A batch's shared spend: a JSON file (`usd` settled, `reserved` for calls in flight)
+    every run of the batch reserves from and settles into, under an exclusive lock."""
 
     def __init__(self, path: Path, max_usd: float):
         self.path = Path(path)
         self.max_usd = max_usd
 
-    def _update(self, add: float) -> float:
+    def _locked(self, change: Any) -> dict[str, float]:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.path, "a+") as f:
             fcntl.flock(f, fcntl.LOCK_EX)
             try:
                 f.seek(0)
                 text = f.read()
-                usd = float(json.loads(text).get("usd", 0.0)) if text.strip() else 0.0
-                if add:
-                    usd += add
+                state = json.loads(text) if text.strip() else {}
+                state = {"usd": float(state.get("usd", 0.0)), "reserved": float(state.get("reserved", 0.0))}
+                new = change(dict(state))
+                if new is not None and new != state:
                     f.seek(0)
                     f.truncate()
-                    f.write(json.dumps({"usd": round(usd, 6), "max_usd": self.max_usd}))
+                    f.write(json.dumps({"usd": round(new["usd"], 6), "reserved": round(max(0.0, new["reserved"]), 6), "max_usd": self.max_usd}))
                     f.flush()
-                return usd
+                    state = new
+                return state
             finally:
                 fcntl.flock(f, fcntl.LOCK_UN)
 
     def spent(self) -> float:
-        return self._update(0.0)
+        """Settled spend plus what calls in flight have reserved."""
+        st = self._locked(lambda st: None)
+        return st["usd"] + st["reserved"]
+
+    def reserve(self, usd: float) -> bool:
+        """Reserve `usd` if the batch can afford it, in one locked step; False if not."""
+        ok = []
+
+        def change(st: dict[str, float]) -> dict[str, float] | None:
+            if st["usd"] + st["reserved"] + usd > self.max_usd:
+                return None
+            ok.append(True)
+            return {**st, "reserved": st["reserved"] + usd}
+
+        self._locked(change)
+        return bool(ok)
+
+    def settle(self, reserved: float, actual: float) -> None:
+        """A call reserved `reserved` and billed `actual`."""
+        self._locked(lambda st: {"usd": st["usd"] + actual, "reserved": st["reserved"] - reserved})
 
     def add(self, usd: float) -> float:
-        return self._update(usd)
+        st = self._locked(lambda st: {**st, "usd": st["usd"] + usd})
+        return st["usd"]
 
 
 @dataclass
@@ -160,7 +193,9 @@ class CostGuard:
     model: str
     max_usd: float
     ledger: Ledger | None = None
+    fallbacks: bool = False
     spent_usd: float = 0.0
+    reserved_usd: float = 0.0
     input_tokens: int = 0
     output_tokens: int = 0
     calls: int = 0
@@ -177,10 +212,11 @@ class CostGuard:
         return self.spent_usd
 
     def estimate(self, request_chars: int, max_tokens: int) -> float:
-        """The worst case of one call: its input at 3 characters a token and its whole
-        output budget, at the requested model's price."""
-        pin, pout = self.price
-        return ((request_chars / 3.0) * pin + max_tokens * pout) / 1e6
+        """The worst case of one call: its input at 2 characters a token and its whole output
+        budget; with the fallback on, at the dearest list price and for two attempts."""
+        pin, pout = WORST_PRICE if self.fallbacks else self.price
+        attempts = 2 if self.fallbacks else 1
+        return attempts * ((request_chars / 2.0) * pin + max_tokens * pout) / 1e6
 
     def check(self, estimate_usd: float = 0.0) -> None:
         why = None
@@ -189,9 +225,10 @@ class CostGuard:
         elif self.spent_usd + estimate_usd > self.max_usd:
             why = f"this call could cost ${estimate_usd:.2f}; ${self.spent_usd:.2f} of the run's ${self.max_usd:.2f} spent"
         elif self.ledger is not None:
-            batch = self.ledger.spent()
-            if batch + estimate_usd > self.ledger.max_usd:
-                why = f"this call could cost ${estimate_usd:.2f}; ${batch:.2f} of the batch's ${self.ledger.max_usd:.2f} spent"
+            if self.ledger.reserve(estimate_usd):
+                self.reserved_usd = estimate_usd
+            else:
+                why = f"this call could cost ${estimate_usd:.2f}; ${self.ledger.spent():.2f} of the batch's ${self.ledger.max_usd:.2f} spent or reserved"
         if why:
             self.tripped = True
             self.refused += 1
@@ -209,9 +246,18 @@ class CostGuard:
         self.calls += 1
         self.spent_usd += cost
         if self.ledger is not None:
-            self.ledger.add(cost)
+            self.ledger.settle(self.reserved_usd, cost)
+            self.reserved_usd = 0.0
         self.log.append({"call": self.calls, "billed": models, "usd": round(cost, 4), "run_usd": round(self.spent_usd, 4)})
         return cost
+
+    def failed(self) -> None:
+        """The call raised: what was billed is unknown, so its worst case counts as spent."""
+        if self.reserved_usd:
+            if self.ledger is not None:
+                self.ledger.settle(self.reserved_usd, self.reserved_usd)
+            self.spent_usd += self.reserved_usd
+            self.reserved_usd = 0.0
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -266,8 +312,9 @@ class ModelProposer(Proposer):
         ledger = None
         if os.environ.get("MURMUR_EVAL_LEDGER"):
             ledger = Ledger(Path(os.environ["MURMUR_EVAL_LEDGER"]), float(os.environ.get("MURMUR_EVAL_BATCH_MAX_USD", "20.00")))
-        self.guard = CostGuard(self.model, float(os.environ.get("MURMUR_EVAL_MAX_USD", "2.00")), ledger)
-        self.max_tokens = 16000
+        self.guard = CostGuard(self.model, float(os.environ.get("MURMUR_EVAL_MAX_USD", "2.00")), ledger, fallbacks=self.fallbacks)
+        # a turn here is tool calls and a short answer; the guard prices this whole budget
+        self.max_tokens = int(os.environ.get("MURMUR_EVAL_MAX_TOKENS", "4096"))
         self._client = client
         self._session = None
         self._tools: list[dict[str, Any]] = []
@@ -307,10 +354,14 @@ class ModelProposer(Proposer):
             "messages": messages,
             "output_config": {"effort": self.effort},
         }
-        if self.fallbacks:
-            r = await self._client.beta.messages.create(betas=["server-side-fallback-2026-07-01"], fallbacks="default", **kwargs)
-        else:
-            r = await self._client.messages.create(**kwargs)
+        try:
+            if self.fallbacks:
+                r = await self._client.beta.messages.create(betas=["server-side-fallback-2026-07-01"], fallbacks="default", **kwargs)
+            else:
+                r = await self._client.messages.create(**kwargs)
+        except Exception:
+            self.guard.failed()
+            raise
         served = getattr(r, "model", None)
         self.guard.add(r.usage, served if isinstance(served, str) else None)
         return r

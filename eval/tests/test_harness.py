@@ -287,7 +287,7 @@ def test_model_arm_needs_explicit_permission(monkeypatch):
 
 
 def test_cost_guard(tmp_path: Path):
-    from eval.model_agent import DEFAULT_MODEL, CostGuard, CostGuardExceeded, Ledger
+    from eval.model_agent import DEFAULT_MODEL, CostGuard, CostGuardExceeded
 
     assert DEFAULT_MODEL == "claude-opus-5-5"
 
@@ -299,15 +299,21 @@ def test_cost_guard(tmp_path: Path):
             self.iterations = iterations
 
     g = CostGuard("claude-opus-5-5", max_usd=0.50)
-    g.check(g.estimate(3_000, 16_000))  # 1000 x 4 + 16000 x 20 per million: 0.324
+    # 2 characters a token: 3,000 chars is 1,500 tokens x $4 plus 4,096 x $20 per million
+    assert g.estimate(3_000, 4_096) == pytest.approx((1_500 * 4 + 4_096 * 20) / 1e6)
+    g.check(g.estimate(3_000, 4_096))
     g.add(Usage(10_000, 2_000))  # 0.04 + 0.04
     assert g.usd == pytest.approx(0.08)
-    # the next call's worst case (its whole max_tokens) would pass the cap: refused before it
+    # the next call's worst case would pass the cap: refused before it
     with pytest.raises(CostGuardExceeded):
-        g.check(g.estimate(3_000, 16_000) + 0.2)
+        g.check(0.45)
     assert g.tripped and g.refused == 1
     with pytest.raises(CostGuardExceeded):
         g.check(0.0)  # stays tripped
+    # with the server-side fallback on: the dearest list price, two attempts (a request
+    # declined mid-stream bills the partial first attempt and the fallback's)
+    fb = CostGuard("claude-opus-5-5", max_usd=10.0, fallbacks=True)
+    assert fb.estimate(3_000, 4_096) == pytest.approx(2 * (1_500 * 10 + 4_096 * 50) / 1e6)
     unknown = CostGuard("some-future-model", max_usd=1.0)
     assert unknown.price == (10.0, 50.0)  # priced at the most expensive row
     # a fallback billed at the model that served it, per iteration
@@ -328,11 +334,17 @@ def test_cost_guard_batch_ledger(tmp_path: Path):
     ledger = Ledger(tmp_path / "ledger.json", max_usd=0.5)
     a = CostGuard("claude-opus-5-5", max_usd=1.0, ledger=ledger)
     b = CostGuard("claude-opus-5-5", max_usd=1.0, ledger=Ledger(tmp_path / "ledger.json", max_usd=0.5))
-    a.add(Usage())  # 0.40 to the batch
-    assert ledger.spent() == pytest.approx(0.4)
-    b.check(0.05)
+    # a's check reserves its worst case in the same locked step: b, another run of the
+    # batch, can't pass a check the batch could only afford once
+    a.check(0.3)
     with pytest.raises(CostGuardExceeded, match="batch"):
-        b.check(0.2)  # another run of the batch, under its own cap but not the batch's
+        b.check(0.3)
+    a.add(Usage())  # billed 0.40: the reservation is settled at what was billed
+    assert ledger.spent() == pytest.approx(0.4)
+    c = CostGuard("claude-opus-5-5", max_usd=1.0, ledger=Ledger(tmp_path / "ledger.json", max_usd=0.5))
+    c.check(0.05)
+    c.failed()  # the call raised: its worst case counts as spent
+    assert ledger.spent() == pytest.approx(0.45) and c.usd == pytest.approx(0.05)
 
 
 def test_tool_defs():
@@ -592,3 +604,12 @@ def test_provenance_counts_code_not_docs():
     p = V.collect()
     assert p["commit"] and len(p["commit"]) == 40 and set(p["binaries"]) == set(V.BINARIES)
     assert all(not c.startswith(" ") for c in p["changed"])
+
+
+def test_provenance_counts_untracked_code(monkeypatch):
+    from eval import provenance as V
+
+    status = " M docs/PLAN.md\n?? eval/new_module.py\n"
+    monkeypatch.setattr(V, "_git", lambda *a: status if a[0] == "status" else "abc1234")
+    p = V.collect()
+    assert p["changed"] == ["docs/PLAN.md", "eval/new_module.py"] and p["dirty"] is True

@@ -287,10 +287,12 @@ group. Dates are 2026.
   within its radius of the aim point as displayed: none there, any neutral or friendly, the
   nearest stale or below 0.5 affiliation confidence unless declared). The proxy applies it
   when it reads a card and the metrics apply it to sort wrong proposals into "the C2 showed
-  it" and "picture wrong", reported apart and never pooled. It was committed before three
-  held-out scenarios were written, which are reported separately. Revised after the review
-  found the proxy's earlier rules written per scenario, so its catch rates echoed the
-  scenarios' design.
+  it" and "picture wrong", reported apart and never pooled. It was frozen before three
+  held-out scenarios were written and not tuned to them, but they were designed knowing it
+  and adjusted after the freeze, each around one of its rules or a picture-wrong premise:
+  their results restate premise times P(read) and are not a generalisation test. Revised
+  after the review found the proxy's earlier rules written per scenario, so its catch rates
+  echoed the scenarios' design.
 - **The proxy operator is a documented model, never human data** (10-03, revised 10-04).
   Attention, reading time, a probability of reading that decays with queue length, and the
   rule book above; all parameters recorded per run and printed in the report. Its rates are
@@ -301,7 +303,11 @@ group. Dates are 2026.
   storyline's proposals through the MCP server, which made it the human-proxy arm with
   another source id. Its agent now reads the picture over MCP and chooses its own armed
   orbits by a fixed policy (`eval/agent.py` `AgentPolicy`, the same in every scenario); its
-  proposals are labelled by truth like any other and compared by category.
+  proposals are labelled by truth like any other. It ignores the storyline, so the report
+  shows it as replicates of two situations (one per picture), with each case's affiliation
+  confidence at proposal and at the decision, and not alongside the storyline arms: its
+  "C2 showed it" cases were low confidence at proposal that had firmed up by the decision,
+  unlike the storyline's, whose evidence persists (second review, 10-04).
 - **Intervals clustered by seed; one origin per run** (10-04). Proposals within a run share a
   stack, a picture and a decider, so the primary interval is over per-seed rates (Student t,
   exact quantile), the pooled Wilson interval second; study sessions cluster by participant.
