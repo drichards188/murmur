@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from . import REPO
-from .evidence import evidence
+from .evidence import evidence, haversine_m
 from .stats import dprime, spearman, summary, wilson
 
 TRUTH_WRONG = ("neutral", "assumed_friend")
@@ -334,6 +334,82 @@ def resolve_label(rec: dict[str, Any], t: Trail | None = None, cuts: list[tuple[
             if uid in t.uids and a <= moment <= b:
                 return "should_void", f"truth: vehicle {uid}'s link was cut when it was decided ({moment - a:.1f} s into the cut)"
     return "legitimate", "truth: nothing wrong when proposed or when decided"
+
+
+def _sample_at(samples: list[dict], moment: float, max_gap_s: float = 10.0) -> dict | None:
+    """The last truth sample at or before `moment` (wall seconds), if one is that recent."""
+    best = None
+    for sm in samples:
+        ts = sm.get("t")
+        if ts is None or ts > moment:
+            continue
+        if best is None or ts > best["t"]:
+            best = sm
+    if best is None or moment - best["t"] > max_gap_s:
+        return None
+    return best
+
+
+def label_at_decision(
+    rec: dict[str, Any],
+    t: Trail | None,
+    cuts: list[tuple[str, float, float]] | None,
+    samples: list[dict] | None,
+    nav: list[dict] | None,
+) -> tuple[str, str] | None:
+    """The label again, with truth when the intent was decided instead of when it was
+    proposed (the run's truth samples, every 5 s, and the stand-in navigation log): the
+    targeted contact gone, the aim point off it, a protected contact inside the radius, the
+    tasked vehicle's position off by over 50 m, or its link cut. None when it cannot be
+    told (an explicit label, no decision, no sample within 10 s of it). The metrics score
+    the label at proposal; this one says when the situation changed before the decision."""
+    if rec.get("label", "derived") != "derived" or t is None or not samples:
+        return None
+    moment = decision_moment(t)
+    if moment is None:
+        return None
+    why: list[str] = []
+    if t.armed:
+        sm = _sample_at(samples, moment)
+        if sm is None:
+            return None
+        contacts = {c["id"]: c for c in sm.get("contacts", [])}
+        target = rec.get("target") or {}
+        req = rec.get("request") or {}
+        center, r = req.get("center"), req.get("radius_m")
+        cid = target.get("contact_id")
+        if cid is not None and cid not in contacts:
+            why.append(f"truth at the decision: {cid} had left the picture")
+        if target.get("truth_affiliation") in TRUTH_WRONG:
+            why.append(f"truth: the target is {target['truth_affiliation']}")
+        if center is not None and r:
+            if cid in contacts:
+                c = contacts[cid]
+                d = haversine_m(center[0], center[1], c["lon"], c["lat"])
+                if d > float(r):
+                    why.append(f"truth at the decision: the aim point is {d:.0f} m from the target (radius {float(r):.0f} m)")
+            elif cid is None and not any(haversine_m(center[0], center[1], c["lon"], c["lat"]) <= float(r) for c in contacts.values()):
+                why.append("truth at the decision: nothing within the task's radius of the aim point")
+            for c in contacts.values():
+                if c["id"] != cid and c.get("affiliation") in TRUTH_WRONG:
+                    d = haversine_m(center[0], center[1], c["lon"], c["lat"])
+                    if d <= float(r):
+                        why.append(f"truth at the decision: {c['id']} ({c['affiliation']}) is {d:.0f} m from the aim point")
+        uids = set(t.uids)
+        last = None
+        for line in nav or []:
+            if str(line.get("uid")) in uids and line.get("t") is not None and line["t"] <= moment and (last is None or line["t"] > last["t"]):
+                last = line
+        if last is not None:
+            off = max(float(last.get("spoof_m") or 0.0), float(last.get("error_m") or 0.0))
+            if off > SPOOF_M:
+                why.append(f"truth at the decision: the vehicle's reported position is off by {off:.0f} m")
+    if why:
+        return "should_reject", "; ".join(why)
+    for uid, a, b in cuts or []:
+        if uid in t.uids and a <= moment <= b:
+            return "should_void", f"truth: vehicle {uid}'s link was cut when it was decided"
+    return "legitimate", "truth at the decision: nothing wrong"
 
 
 def c2_evidence(rec: dict[str, Any], t: Trail | None) -> list[str]:
@@ -729,8 +805,11 @@ def compute(
     replay: dict | None = None,
     arm: str | None = None,
     cuts: list[tuple[str, float, float]] | None = None,
+    samples: list[dict] | None = None,
+    nav: list[dict] | None = None,
 ) -> dict[str, Any]:
     tr = trails(events)
+    recs = {int(r["intent_id"]): r for r in storyline if r.get("kind") == "propose" and r.get("intent_id") is not None}
     labs = labels(storyline, tr, cuts)
     operators = operators or set()
     inv = invariants(events, tr, operators, replay)
@@ -746,7 +825,8 @@ def compute(
         bad = check_premise(L, shows)
         if bad:
             premise_failures.append({"step": L.step, "intent": L.intent_id, "failed": bad})
-        rows.append({"L": L, "t": t, "outcome": outcome(t, declined=bool(L.declined)), "c2_shows_it": shows, "evidence": ev})
+        at_dec = label_at_decision(recs.get(L.intent_id, {}), t, cuts, samples, nav) if L.intent_id is not None else None
+        rows.append({"L": L, "t": t, "outcome": outcome(t, declined=bool(L.declined)), "c2_shows_it": shows, "evidence": ev, "at_decision": at_dec})
 
     def group(name: str, shows: bool | None = None) -> list[dict[str, Any]]:
         return [r for r in rows if r["L"].label == name and (shows is None or r["c2_shows_it"] == shows)]
@@ -885,6 +965,9 @@ def compute(
                 "outcome": outcome(t) if L else None,
                 "c2_shows_it": row["c2_shows_it"] if row else None,
                 "evidence": row["evidence"] if row else None,
+                "label_at_decision": (row["at_decision"] or (None, None))[0] if row else None,
+                "label_at_decision_basis": (row["at_decision"] or (None, None))[1] if row else None,
+                "changed_before_decision": bool(row and row["at_decision"] and L and row["at_decision"][0] != L.label),
                 "tracks_viewed": t.tracks_viewed(),
                 "open_ms": (t.decide_view() or {}).get("open_ms"),
             }
@@ -910,6 +993,12 @@ def compute(
         "counts": counts,
         "invariants": inv,
         "premises": {"checked": sum(1 for L in labs if L.premise), "failed": premise_failures},
+        # the label again with truth at the decision; the scored label is the one at proposal
+        "changed_before_decision": [
+            {"step": r["L"].step, "intent": r["L"].intent_id, "at_proposal": r["L"].label, "at_decision": r["at_decision"][0], "why": r["at_decision"][1], "outcome": r["outcome"]}
+            for r in rows
+            if r["at_decision"] and r["at_decision"][0] != r["L"].label
+        ],
         "should_reject": {**sr_block(sr), "c2_shows_it": sr_block(group("should_reject", True)), "picture_wrong": sr_block(group("should_reject", False))},
         "legitimate": {
             "passed": _rate(lg_passed, len(lg_scored)),
@@ -970,7 +1059,9 @@ def compute_run(run_dir: Path, rerun_replay: bool = False, info: dict[str, Any] 
     if replay is None:
         replay = run_replay(run_dir / "audit.jsonl")
     cuts = link_cuts(run_dir, info.get("clocks"), story)
-    m = compute(events, story, operators, replay, arm=info.get("arm"), cuts=cuts)
+    samples = load_jsonl(run_dir / "truth.jsonl")
+    nav = load_jsonl(run_dir / "standins-truth.jsonl")
+    m = compute(events, story, operators, replay, arm=info.get("arm"), cuts=cuts, samples=samples, nav=nav)
     m["run"] = {k: info.get(k) for k in ("run_id", "scenario", "arm", "seed", "status", "error", "ready", "ready_at_s", "warnings", "clocks", "clock_checks")}
     return m
 

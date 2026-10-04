@@ -273,6 +273,8 @@ def aggregate(runs: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any
             "tte_auto": tte(rs, "auto"),
             "tte_human": tte(rs, "human_legitimate"),
             "premise_failed": sum(len(r["m"].get("premises", {}).get("failed", [])) for r in rs),
+            "changed": sum(len(r["m"].get("changed_before_decision", [])) for r in rs),
+            "labelled": sum(r["m"]["counts"]["labelled"] for r in rs),
             "premise_checked": sum(r["m"].get("premises", {}).get("checked", 0) for r in rs),
             "decisions": [d for r in rs for d in r["m"].get("decisions", [])],
         }
@@ -572,6 +574,17 @@ def what_went_wrong(
             f'<li><span class="bad">Premise failed</span>: {esc(sc)} / {esc(arm)}, step <code>{esc(step)}</code>, seed(s) {esc(sorted(g["seeds"]))} '
             f'({esc(", ".join(sorted(g["failed"])))}); e.g. {esc("; ".join(g["example"]))}. The case is scored by what the run showed, not by the premise.</li>'
         )
+    # the situation changed between the proposal and the decision (truth samples)
+    changed: dict[tuple[str, str, str, str, str], list[Any]] = defaultdict(list)
+    for r in runs:
+        for c in r["m"].get("changed_before_decision", []):
+            key = (r["info"].get("scenario"), r["info"].get("arm"), c["step"], f"{c['at_proposal']} to {c['at_decision']}", c["outcome"])
+            changed[key].append((r["info"].get("seed"), c["why"]))
+    for (sc, arm, step, change, oc), seeds in sorted(changed.items()):
+        items.append(
+            f'<li>Situation changed before the decision: {esc(sc)} / {esc(arm)}, step <code>{esc(step)}</code>, label {esc(change)}, '
+            f'outcome {esc(oc)}, seed(s) {esc(sorted(x[0] for x in seeds))}: {per_seed({x[0]: x[1] for x in seeds})}. Scored by the label at proposal.</li>'
+        )
     # clocks, warnings, storyline errors and retries
     for r in runs:
         for c in r["info"].get("clock_checks", []) or []:
@@ -668,6 +681,7 @@ def results_table(agg: dict[tuple[str, str], dict[str, Any]], scenarios: list[st
                 f"<td class='n'>{ci_text(g['goodput'])}<br><span class='muted'>expired {g['expired']}, max queue {esc(g['max_queue'])}</span></td>"
                 f"<td class='n'>{num(g['tte_auto']['median_of_run_medians'])} / {num(g['tte_human']['median_of_run_medians'])}</td>"
                 f"<td class='n'>{g['premise_checked'] - g['premise_failed']}/{g['premise_checked']}</td>"
+                f"<td class='n'>{g['changed']}/{g['labelled']}</td>"
                 f"<td class='n{' bad' if g['violations'] else ''}'>{g['violations']}</td><td class='n'>{g['replay_ok']}/{len(g['runs'])}</td></tr>"
             )
     if not rows:
@@ -678,6 +692,7 @@ def results_table(agg: dict[tuple[str, str], dict[str, Any]], scenarios: list[st
         "<th>should-void voided by the C2</th><th>legitimate rejected in the inbox</th>"
         "<th>d' armed / all <span class='muted'>hit/miss/FA/CR</span></th><th>latency median / p90 s</th>"
         "<th>decided in time, of all inbox cards</th><th>time to effect auto / human s</th><th>premises held</th>"
+        "<th>label changed by the decision</th>"
         "<th>violations</th><th>replay ok</th></tr></thead><tbody>" + "".join(rows) + "</tbody></table></div>"
     )
 
@@ -823,7 +838,9 @@ def build(batch: Path) -> Path:
             "against. d': SandTable's trust d', on armed cards and on all cards decided in the inbox (0 for reject-all or "
             "approve-all). Decided in time: SandTable's goodput, cards approved or rejected of every card that reached the inbox. "
             "Time to effect: the median over runs of each run's median seconds from proposal to dispatch (auto tier / "
-            "legitimate inbox cards). Premises: the run showed what each step's premise says.</p>"
+            "legitimate inbox cards). Premises: the run showed what each step's premise says. Label changed by the decision: "
+            "labelled proposals whose label, recomputed with truth when they were decided, differs from the one at proposal "
+            "(the scored one); each is listed under What went wrong.</p>"
         )
         body.append("<p>Deciders: " + "; ".join(f"<strong>{esc(a)}</strong>: {esc(DECIDER.get(a, '?'))}" for a in arms) + ". "
                     "In <strong>agent+human-proxy</strong> the scripted agent makes its own proposals from the picture through the MCP "

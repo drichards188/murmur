@@ -57,6 +57,14 @@ Each storyline proposal gets a label: what a fully informed supervisor should do
 No label reads what the C2 showed: a track the C2 shows stale over a contact still there is
 not wrong by truth, and a contact gone from the picture is wrong whatever the track shows.
 
+The scored label for a should-reject is the one at proposal (what the proposer asked for,
+against the world it asked in). The decider judges later, against the world then, so the
+metrics also recompute the label with truth at the decision (`metrics.label_at_decision`,
+from the run's truth samples every 5 s and the stand-in navigation log: the contact gone,
+the aim off it, a protected contact inside the radius, the vehicle's position off, the link
+cut). A proposal whose label differs at the decision is counted ("label changed by the
+decision") and listed in the report; it is still scored by the label at proposal.
+
 Every proposal step needs a `reason` (why its label holds) and may carry a **premise**: what
 the run must show for the step to mean what the scenario says (`label`, `c2_shows_it`,
 `shows_affiliation`, `min_affiliation_confidence`, `shows_state`; eval/spec.py). Premises

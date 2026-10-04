@@ -657,3 +657,26 @@ def test_refused_agent_attempts_and_safety_commands_are_not_violations():
     inv = M.invariants(log.events, M.trails(log.events), OPS, REPLAY_OK)
     assert inv["violations"] == 0, inv["counts"]
     assert inv["agent_approve_attempts_refused"] == 1
+
+
+def test_label_at_decision_follows_truth_then():
+    """The label recomputed with truth when the intent was decided: a contact that left in
+    between makes a legitimate proposal wrong at the decision (listed, not scored)."""
+    hostile = {"id": "fastboat", "affiliation": "hostile", "distance_m": 0.0}
+    rec = propose("c", 1, target=hostile_target(), context=at_aim(hostile), **orbit())
+    t = trail(decided_s=40)
+    there = [{"t": T0 / 1000 + 38, "contacts": [{"id": "fastboat", "affiliation": "hostile", "lon": AIM[0], "lat": AIM[1]}]}]
+    gone = [{"t": T0 / 1000 + 38, "contacts": []}]
+    assert M.label_at_decision(rec, t, [], there, [])[0] == "legitimate"
+    label, why = M.label_at_decision(rec, t, [], gone, [])
+    assert label == "should_reject" and "left the picture" in why
+    # a friendly that came alongside by then
+    friend = there[0]["contacts"] + [{"id": "police", "affiliation": "assumed_friend", "lon": AIM[0] + 0.001, "lat": AIM[1]}]
+    assert M.label_at_decision(rec, t, [], [{"t": T0 / 1000 + 38, "contacts": friend}], [])[0] == "should_reject"
+    # the vehicle's navigation went off in between
+    nav = [{"t": T0 / 1000 + 30, "uid": 4, "spoof_m": 400.0, "error_m": 0.0}]
+    assert M.label_at_decision(rec, t, [], there, nav)[0] == "should_reject"
+    # no sample near the decision, no decision, or an explicit label: cannot be told
+    assert M.label_at_decision(rec, t, [], [{"t": T0 / 1000 + 5, "contacts": []}], []) is None
+    assert M.label_at_decision(rec, trail(), [], there, []) is None
+    assert M.label_at_decision(propose("x", 1, label="legitimate"), t, [], there, []) is None
