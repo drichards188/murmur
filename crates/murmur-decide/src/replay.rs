@@ -69,14 +69,17 @@ use crate::areas::AreaSet;
 use crate::audit::{Event, EventBody, LogError, parse_log};
 use crate::authority::Grants;
 use crate::engage::{
-    self, EffectRecord, EngageSnapshot, FrozenPlan, ObserveStep, PictureToken, StopCause,
-    TrackIdentity,
+    self, EffectRecord, EngageOrder, EngageSnapshot, Fallback, FrozenPlan, ObserveStep,
+    PictureToken, StopCause, TrackIdentity,
 };
-use crate::engine::{engaged_vehicles, is_self_approval};
-use crate::ids::{OperatorId, SessionId};
+use crate::engine::{
+    dispatched_event, engaged_vehicles, is_self_approval, op_state_mismatch, op_state_owner,
+    order_for, supersede_mismatch,
+};
+use crate::ids::{OperatorId, SessionId, Uid};
 use crate::hash::{GENESIS, sha256_hex};
 use crate::ids::IntentId;
-use crate::intent::{IntentSpec, Source, State, TaskKind, Transition, next_state};
+use crate::intent::{IntentSpec, Source, State, Task, TaskKind, Transition, next_state};
 use crate::policy::{self, Policy, Tier};
 use crate::rules;
 use crate::space::{ScenarioMap, SpaceAnswer, SpaceOracle, SpaceOrder};
@@ -194,6 +197,18 @@ struct Tracked {
     /// Engage: when the picture was last checked (the final approval, then each
     /// `engage.picture`).
     last_picture_t: Option<Time>,
+    /// An `intent.dispatched` waiting for its dispatch transition (its seq).
+    dispatch_logged: Option<u64>,
+    /// The dispatch transition happened: op states may refer to the intent from here on.
+    dispatched: bool,
+    /// Engage: the world time of the last picture, if it held and was ready (the release
+    /// must follow it, inside the plan's time tolerance).
+    ready_t: Option<Time>,
+    /// Engage: the stop, with the fallback it released (`Some(None)`: none).
+    stop_fallback: Option<Option<Fallback>>,
+    /// Engage: vehicle events its platform reported since its last picture (kind, text), the
+    /// ones a stop of this tick may quote.
+    platform_events: Vec<(String, String)>,
 }
 
 /// Which decision rules a replay accepts a log under.
@@ -615,6 +630,11 @@ fn replay_inner<S: AsRef<str>>(
                         plan: None,
                         check_window: None,
                         last_picture_t: None,
+                        dispatch_logged: None,
+                        dispatched: false,
+                        ready_t: None,
+                        stop_fallback: None,
+                        platform_events: Vec::new(),
                     },
                 );
                 if intent.kind() == TaskKind::Engage {
@@ -1134,7 +1154,25 @@ fn replay_inner<S: AsRef<str>>(
                         "no evidence".into(),
                     );
                 }
+                // the engine writes an intent.dispatched and its transition back to back
+                if let Some(seq) = tr.dispatch_logged
+                    && *transition != Transition::Dispatch
+                {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "intent.dispatched followed by another transition than its dispatch",
+                        json(transition),
+                        format!("dispatch (intent.dispatched at seq {seq})"),
+                    );
+                    tr.dispatch_logged = None;
+                }
                 match transition {
+                    Transition::Dispatch => {
+                        tr.dispatch_logged = None;
+                        tr.dispatched = true;
+                    }
                     Transition::Release => {
                         tr.effect_logged = false;
                         r.effects += 1;
@@ -1150,74 +1188,67 @@ fn replay_inner<S: AsRef<str>>(
             }
             EventBody::IntentDispatched {
                 intent,
+                task,
+                uids,
                 space: order,
                 engage: engage_order,
-                ..
             } => {
-                if let Some(tr) = intents.get(intent) {
-                    if tr.spec.kind() == TaskKind::Engage {
-                        let want = tr.snapshot.as_ref().map(|s| {
-                            (
-                                s.preview.effect_point,
-                                s.preview.effect_t,
-                                s.preview.effect_radius_m,
-                                s.fallback,
-                            )
-                        });
-                        let got = engage_order.as_ref().map(|o| {
-                            (o.effect_point, o.effect_t, o.effect_radius_m, o.fallback)
-                        });
-                        if want.is_none() || want != got {
-                            bad(
-                                &mut r,
-                                e,
-                                Some(*intent),
-                                "engagement dispatched to something other than its approval's snapshot",
-                                json(engage_order),
-                                json(&tr.snapshot.as_ref().map(|s| &s.preview)),
-                            );
-                        }
-                        if let Some(seq) = tr.stop_due {
-                            bad(
-                                &mut r,
-                                e,
-                                Some(*intent),
-                                "engagement dispatched after its picture failed (void suppressed)",
-                                seq.to_string(),
-                                "engage.stopped".into(),
-                            );
-                        }
-                    } else if engage_order.is_some() {
-                        bad(
-                            &mut r,
-                            e,
-                            Some(*intent),
-                            "engagement order on an intent that is not an engagement",
-                            json(engage_order),
-                            "none".into(),
-                        );
-                    }
-                    if !matches!(tr.state, State::AutoApproved | State::Approved) {
-                        bad(
-                            &mut r,
-                            e,
-                            Some(*intent),
-                            "dispatched without approval",
-                            json(&tr.state),
-                            "auto_approved|approved".into(),
-                        );
-                    }
-                    if let Some(why) = order_mismatch(&tr.spec, order.as_ref()) {
-                        bad(
-                            &mut r,
-                            e,
-                            Some(*intent),
-                            why,
-                            json(order),
-                            json(&tr.spec.task),
-                        );
-                    }
+                let Some(tr) = intents.get_mut(intent) else {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "dispatch of an unknown intent",
+                        json(&(task, uids)),
+                        String::new(),
+                    );
+                    continue;
+                };
+                if let Some(seq) = tr.dispatch_logged {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "dispatched again before its dispatch transition",
+                        seq.to_string(),
+                        "intent.state dispatch".into(),
+                    );
                 }
+                tr.dispatch_logged = Some(e.seq);
+                if tr.spec.kind() == TaskKind::Engage
+                    && let Some(seq) = tr.stop_due
+                {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "engagement dispatched after its picture failed (void suppressed)",
+                        seq.to_string(),
+                        "engage.stopped".into(),
+                    );
+                }
+                if !matches!(tr.state, State::AutoApproved | State::Approved) {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "dispatched without approval",
+                        json(&tr.state),
+                        "auto_approved|approved".into(),
+                    );
+                }
+                check_dispatch(
+                    &mut r,
+                    e,
+                    tr,
+                    Dispatched {
+                        task,
+                        uids,
+                        space: order.as_ref(),
+                        engage: engage_order.as_ref(),
+                    },
+                    policy.as_ref(),
+                );
             }
             EventBody::OperatorAction {
                 operator,
@@ -1303,6 +1334,8 @@ fn replay_inner<S: AsRef<str>>(
                     );
                 }
                 tr.ready = h && rd;
+                tr.ready_t = tr.ready.then_some(w.t);
+                tr.platform_events.clear();
                 if !h {
                     r.picture_voids += 1;
                     tr.stop_due = Some(e.seq);
@@ -1310,15 +1343,43 @@ fn replay_inner<S: AsRef<str>>(
             }
             EventBody::EngageEffect {
                 intent,
+                uid,
                 point,
                 radius_m,
                 planned_t,
-                ..
             } => {
                 let Some(tr) = intents.get_mut(intent) else {
                     bad(&mut r, e, Some(*intent), "unknown intent", String::new(), String::new());
                     continue;
                 };
+                // released by the platform the engagement was dispatched to (its dispatch is
+                // bound to the nomination's platform), inside the plan's time tolerance
+                let platform = tr.spec.uids.first();
+                if platform != Some(uid) {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "effect released by another vehicle than the dispatched engagement's platform",
+                        uid.to_string(),
+                        json(&platform),
+                    );
+                }
+                // (without a ready picture it is flagged below)
+                if let (Some(pol), Some(snap), Some(at)) = (&policy, &tr.snapshot, tr.ready_t) {
+                    let (from, until) =
+                        engage::release_window(&snap.preview, &pol.rules.engage_rules());
+                    if !(from <= at && at <= until && from <= e.t) {
+                        bad(
+                            &mut r,
+                            e,
+                            Some(*intent),
+                            "effect released outside the plan's time tolerance",
+                            json(&(e.t, at)),
+                            json(&(from, until)),
+                        );
+                    }
+                }
                 if !tr.ready || tr.state != State::Dispatched {
                     bad(
                         &mut r,
@@ -1355,6 +1416,7 @@ fn replay_inner<S: AsRef<str>>(
                     );
                 }
                 tr.ready = false;
+                tr.ready_t = None;
                 tr.effect_logged = true;
                 tr.effect = Some(EffectRecord {
                     t: e.t,
@@ -1366,10 +1428,17 @@ fn replay_inner<S: AsRef<str>>(
             EventBody::EngageStopped {
                 intent,
                 cause,
+                reason,
                 fallback,
-                ..
             } => {
-                let known: std::collections::BTreeSet<IntentId> = intents.keys().copied().collect();
+                // the order that superseded it, as replay tracked it: its spec and whether it
+                // was dispatched
+                let superseder = match cause {
+                    StopCause::Superseded { by, .. } => {
+                        intents.get(by).map(|t| (t.spec.clone(), t.dispatched))
+                    }
+                    _ => None,
+                };
                 let Some(tr) = intents.get_mut(intent) else {
                     bad(&mut r, e, Some(*intent), "unknown intent", String::new(), String::new());
                     continue;
@@ -1397,18 +1466,65 @@ fn replay_inner<S: AsRef<str>>(
                     _ => {}
                 }
                 let superseded = matches!(cause, StopCause::Superseded { .. });
-                if let StopCause::Superseded { by, .. } = cause
-                    && !known.contains(by)
+                if let StopCause::Superseded { by, source } = cause {
+                    match &superseder {
+                        None => bad(
+                            &mut r,
+                            e,
+                            Some(*intent),
+                            "superseded by an intent that does not exist",
+                            by.to_string(),
+                            String::new(),
+                        ),
+                        Some((spec, by_dispatched)) => {
+                            if let Some(why) = supersede_mismatch(
+                                *intent,
+                                *by,
+                                tr.spec.uids.first(),
+                                spec,
+                                *by_dispatched,
+                            ) {
+                                bad(
+                                    &mut r,
+                                    e,
+                                    Some(*intent),
+                                    why,
+                                    by.to_string(),
+                                    json(&(&spec.uids, by_dispatched)),
+                                );
+                            }
+                            if *source != spec.source {
+                                bad(
+                                    &mut r,
+                                    e,
+                                    Some(*intent),
+                                    "superseded with another source than its superseding intent's",
+                                    json(source),
+                                    json(&spec.source),
+                                );
+                            }
+                        }
+                    }
+                }
+                // a stop for a vehicle event the platform reported (its failsafe took over, it
+                // left its mission mode) quotes it: the event must be the platform's own
+                if let StopCause::System = cause
+                    && let Some(quoted) = quoted_vehicle_event(reason)
+                    && !tr
+                        .platform_events
+                        .iter()
+                        .any(|(k, t)| (k.as_str(), t.as_str()) == quoted)
                 {
                     bad(
                         &mut r,
                         e,
                         Some(*intent),
-                        "superseded by an intent that does not exist",
-                        by.to_string(),
-                        String::new(),
+                        "stop quotes a vehicle event its platform did not report",
+                        json(&quoted),
+                        json(&tr.platform_events),
                     );
                 }
+                tr.stop_fallback = Some(*fallback);
                 let want = match tr.state {
                     State::Dispatched if !superseded => engage::params(&tr.spec).map(|p| p.3),
                     _ => None,
@@ -1502,13 +1618,69 @@ fn replay_inner<S: AsRef<str>>(
                 tr.assessed = true;
                 r.assessments += 1;
             }
-            EventBody::OpState { .. }
-            | EventBody::VehicleEvent { .. }
-            | EventBody::AgentAction { .. } => {}
+            EventBody::OpState {
+                intent,
+                uid,
+                state,
+                detail,
+            } => {
+                let Some(tr) = intents.get(intent) else {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "op state for an unknown intent",
+                        json(&(uid, state)),
+                        String::new(),
+                    );
+                    continue;
+                };
+                if let Some(why) = op_state_mismatch(
+                    &tr.spec,
+                    tr.state,
+                    tr.dispatched,
+                    tr.stop_fallback,
+                    uid,
+                    state,
+                    detail,
+                ) {
+                    let reports_under = op_state_owner(&tr.spec, uid).err();
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        why,
+                        json(&(uid, state, detail)),
+                        json(&(tr.state, tr.dispatched, reports_under, tr.stop_fallback)),
+                    );
+                }
+            }
+            EventBody::VehicleEvent { uid, kind, text } => {
+                // what a stop of an approved or dispatched engagement on this vehicle may quote
+                for tr in intents.values_mut().filter(|t| {
+                    t.spec.kind() == TaskKind::Engage
+                        && matches!(t.state, State::Approved | State::Dispatched)
+                        && t.spec.uids.first() == Some(uid)
+                }) {
+                    tr.platform_events.push((kind.clone(), text.clone()));
+                }
+            }
+            EventBody::AgentAction { .. } => {}
         }
     }
     let last_seq = events.last().map_or(0, |e| e.seq);
     for (id, tr) in &intents {
+        if let Some(seq) = tr.dispatch_logged
+            && seq < last_seq
+        {
+            r.mismatches.push(Mismatch {
+                seq,
+                intent: Some(*id),
+                what: "intent.dispatched never followed by its dispatch transition".into(),
+                logged: String::new(),
+                recomputed: "intent.state dispatch".into(),
+            });
+        }
         if let Some(seq) = tr.stop_due
             && seq < last_seq
         {
@@ -1656,21 +1828,189 @@ fn recompute_space(
     }
 }
 
-/// Why a dispatched order doesn't fit the intent, if it doesn't.
-fn order_mismatch(spec: &IntentSpec, order: Option<&SpaceOrder>) -> Option<&'static str> {
-    use crate::intent::Task;
-    match (&spec.task, order) {
-        (Task::Collect { chosen, .. }, Some(SpaceOrder::Collect(o))) => match chosen {
-            Some(c) if c.norad_id == o.norad_id && c.collect_time == o.collect_time => None,
-            _ => Some("dispatched collect is not the chosen option"),
-        },
-        (Task::Cover { service, .. }, Some(SpaceOrder::Cover(o))) if *service == o.service => None,
-        (Task::Collect { .. } | Task::Cover { .. }, _) => {
-            Some("space intent dispatched without its order")
-        }
-        (_, Some(_)) => Some("vehicle intent dispatched with a space order"),
-        (_, None) => None,
+/// What an `intent.dispatched` says was handed on.
+struct Dispatched<'a> {
+    task: &'a Task,
+    uids: &'a [Uid],
+    space: Option<&'a SpaceOrder>,
+    engage: Option<&'a EngageOrder>,
+}
+
+/// An `intent.dispatched` is exactly the approved intent's order, whatever the rules version
+/// (an audit check, not a decision rule): the task and vehicles as approved, and the space or
+/// engagement order that follows from the intent, the space answer its last check read and
+/// (engage) the approval's snapshot, the frozen plan ([`order_for`], what the engine
+/// dispatches).
+fn check_dispatch(
+    r: &mut ReplayReport,
+    e: &Event,
+    tr: &Tracked,
+    got: Dispatched<'_>,
+    policy: Option<&Policy>,
+) {
+    let id = Some(tr.spec.id);
+    if *got.task != tr.spec.task {
+        bad(
+            r,
+            e,
+            id,
+            "dispatched task differs from the approved intent's",
+            json(got.task),
+            json(&tr.spec.task),
+        );
     }
+    if got.uids != tr.spec.uids.as_slice() {
+        bad(
+            r,
+            e,
+            id,
+            "dispatched to other vehicles than the approved intent's",
+            json(&got.uids),
+            json(&tr.spec.uids),
+        );
+    }
+    let Some(pol) = policy else { return };
+    let answer = tr.last_inputs.as_deref().and_then(|w| w.space.answer());
+    let want = match order_for(&tr.spec, answer, tr.snapshot.as_deref(), &pol.rules) {
+        Ok(o) => dispatched_event(&tr.spec, &o),
+        Err(err) => {
+            bad(
+                r,
+                e,
+                id,
+                "dispatched although the approved intent gives no order",
+                json(&(got.space, got.engage)),
+                err.to_string(),
+            );
+            return;
+        }
+    };
+    let EventBody::IntentDispatched {
+        space: want_space,
+        engage: want_engage,
+        ..
+    } = want
+    else {
+        return;
+    };
+    match (got.engage, &want_engage) {
+        (None, None) => {}
+        (Some(o), None) => bad(
+            r,
+            e,
+            id,
+            "engagement order on an intent that is not an engagement",
+            json(o),
+            "none".into(),
+        ),
+        (None, Some(w)) => bad(
+            r,
+            e,
+            id,
+            "engagement dispatched without its order",
+            "none".into(),
+            json(w),
+        ),
+        (Some(o), Some(w)) => {
+            if o.uid != w.uid {
+                bad(
+                    r,
+                    e,
+                    id,
+                    "engagement order sends another platform than the approved nomination's",
+                    o.uid.to_string(),
+                    w.uid.to_string(),
+                );
+            }
+            if (o.intent, &o.track) != (w.intent, &w.track) {
+                bad(
+                    r,
+                    e,
+                    id,
+                    "engagement order names another intent or track than the approved one",
+                    json(&(o.intent, &o.track)),
+                    json(&(w.intent, &w.track)),
+                );
+            }
+            if (o.effect_point, o.effect_t, o.effect_radius_m, o.fallback)
+                != (w.effect_point, w.effect_t, w.effect_radius_m, w.fallback)
+            {
+                bad(
+                    r,
+                    e,
+                    id,
+                    "engagement dispatched to something other than its approval's snapshot",
+                    json(o),
+                    json(w),
+                );
+            }
+            if o.window_until != w.window_until {
+                bad(
+                    r,
+                    e,
+                    id,
+                    "engagement order's window differs from the approved plan's",
+                    json(&o.window_until),
+                    json(&w.window_until),
+                );
+            }
+        }
+    }
+    match (got.space, &want_space) {
+        (None, None) => {}
+        (Some(o), None) => bad(
+            r,
+            e,
+            id,
+            "vehicle intent dispatched with a space order",
+            json(o),
+            "none".into(),
+        ),
+        (None, Some(w)) => bad(
+            r,
+            e,
+            id,
+            "space intent dispatched without its order",
+            "none".into(),
+            json(w),
+        ),
+        (Some(o), Some(w)) if o != w => {
+            let chosen = matches!(
+                (o, w),
+                (SpaceOrder::Collect(a), SpaceOrder::Collect(b))
+                    if (a.norad_id, a.collect_time) != (b.norad_id, b.collect_time)
+            );
+            bad(
+                r,
+                e,
+                id,
+                if chosen {
+                    "dispatched collect is not the chosen option"
+                } else {
+                    "dispatched space order differs from the one its approved intent and last answer give"
+                },
+                json(o),
+                json(w),
+            );
+        }
+        (Some(_), Some(_)) => {}
+    }
+}
+
+/// The vehicle event a `system` stop quotes, as (kind, text): the bridge stops an engagement
+/// when its platform's failsafe takes over (`the platform's failsafe took over (<text>)`) or
+/// it leaves its mission mode (`the platform left its intercept (mode <text>)`), quoting the
+/// `vehicle.event` it logged for the platform.
+fn quoted_vehicle_event(reason: &str) -> Option<(&'static str, &str)> {
+    for (prefix, kind) in [
+        ("system: the platform's failsafe took over (", "failsafe"),
+        ("system: the platform left its intercept (mode ", "mode"),
+    ] {
+        if let Some(text) = reason.strip_prefix(prefix).and_then(|t| t.strip_suffix(')')) {
+            return Some((kind, text));
+        }
+    }
+    None
 }
 
 /// Decision inputs with the area reference resolved to the set in force and any space
@@ -1754,10 +2094,16 @@ fn unbacked(tr: &Tracked, t: Transition) -> Option<&'static str> {
         {
             Some("approved without the signatures the tier needs")
         }
+        Transition::Dispatch if tr.dispatch_logged.is_none() => {
+            Some("dispatched without its intent.dispatched order")
+        }
         Transition::Release if !tr.effect_logged => Some("released without an engage.effect"),
         Transition::Abort if !tr.stopped => Some("aborted without an engage.stopped"),
         Transition::Complete if tr.spec.kind() == TaskKind::Engage && !tr.assessed => {
             Some("engagement completed without an assessment")
+        }
+        Transition::Fail if tr.spec.kind() == TaskKind::Engage => {
+            Some("engagement failed like a task (it ends by its assessment or an abort)")
         }
         Transition::Reject if !tr.rejected_by_human => Some("rejected without a human rejection"),
         Transition::Expire if !tr.expired => Some("expired without an approval.expired"),

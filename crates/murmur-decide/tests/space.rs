@@ -314,6 +314,102 @@ fn chosen_option_is_approved_by_a_human_and_dispatched() {
     assert_replays(&run.log);
 }
 
+/// A forged log's mismatches (its chain recomputed).
+fn forged_whats(text: &str, edit: impl FnOnce(&mut Vec<Event>)) -> Vec<String> {
+    let r = replay_str(&forge(text, edit)).unwrap();
+    r.mismatches.into_iter().map(|m| m.what).collect()
+}
+
+fn edit_order(ev: &mut [Event], f: impl Fn(&mut Option<SpaceOrder>)) {
+    for e in ev {
+        if let audit::EventBody::IntentDispatched { space, .. } = &mut e.body {
+            f(space);
+        }
+    }
+}
+
+fn collect_order(o: &mut Option<SpaceOrder>) -> &mut CollectOrder {
+    match o {
+        Some(SpaceOrder::Collect(c)) => c,
+        other => panic!("not a collect order: {other:?}"),
+    }
+}
+
+#[test]
+fn a_dispatched_collect_is_the_chosen_option_as_its_last_answer_has_it() {
+    let mut run = run(waiting_policy(), true);
+    let (query, chosen) = first_option(&mut run);
+    let session = run
+        .engine
+        .open_operator_session(OperatorId::new("op-1"))
+        .unwrap();
+    let world = run.world();
+    let id = run
+        .engine
+        .amend_collect(session.authority(), query, chosen, &world, &NoTerrain)
+        .unwrap()
+        .id();
+    run.engine
+        .approve(id, session.authority(), None, &world, &NoTerrain)
+        .unwrap();
+    let Order::Collect(order) = run.engine.dispatch_order(id).unwrap() else {
+        panic!("not a collect order");
+    };
+    // reports go under the satellite the order names, nothing else
+    let other = Uid::new(format!("norad:{}", chosen.norad_id + 1));
+    assert!(matches!(
+        run.engine.record_op_state(id, &other, "tasked", "simulated"),
+        Err(EngineError::NotItsOrder { .. })
+    ));
+    run.engine
+        .record_op_state(id, &order.resource, "tasked", "simulated")
+        .unwrap();
+    run.engine.finish(id, TaskOutcome::Done).unwrap();
+    assert_replays(&run.log);
+    let honest = run.log.text();
+    const DIFFERS: &str =
+        "dispatched space order differs from the one its approved intent and last answer give";
+    type Edit = fn(&mut Option<SpaceOrder>);
+    let cases: [(Edit, &str); 6] = [
+        (|o| collect_order(o).satellite = "ANOTHER SAT".into(), DIFFERS),
+        (
+            |o| {
+                let c = collect_order(o);
+                c.product_time = c.product_time.map(|t| t.plus_ms(3_600_000));
+            },
+            DIFFERS,
+        ),
+        (|o| collect_order(o).answer_sha256 = "0".repeat(64), DIFFERS),
+        (|o| collect_order(o).resolution_m = Some(0.1), DIFFERS),
+        (
+            |o| {
+                let c = collect_order(o);
+                c.norad_id += 1;
+                c.resource = Uid::new(format!("norad:{}", c.norad_id));
+            },
+            "dispatched collect is not the chosen option",
+        ),
+        (|o| *o = None, "space intent dispatched without its order"),
+    ];
+    for (edit, want) in cases {
+        let w = forged_whats(&honest, |ev| edit_order(ev, edit));
+        assert!(w.iter().any(|m| m == want), "{want:?} not in {w:?}");
+    }
+    // a report under another satellite
+    let w = forged_whats(&honest, |ev| {
+        for e in ev {
+            if let audit::EventBody::OpState { uid, .. } = &mut e.body {
+                *uid = other.clone();
+            }
+        }
+    });
+    assert!(
+        w.iter()
+            .any(|m| m == "op state for a vehicle or resource the intent was not dispatched to"),
+        "{w:?}"
+    );
+}
+
 #[test]
 fn option_gone_by_approval_time_is_voided() {
     let mut run = run(patient_policy(), true);
@@ -668,6 +764,19 @@ fn satcom_cover_runs_on_its_own_and_dispatches_a_coverage_watch() {
     assert_eq!(order.resource, Uid::new("satcom:wgs"));
     run.engine.finish(id, TaskOutcome::Done).unwrap();
     assert_replays(&run.log);
+    // the watch handed on is the approved service's
+    let w = forged_whats(&run.log.text(), |ev| {
+        edit_order(ev, |o| {
+            if let Some(SpaceOrder::Cover(c)) = o {
+                c.resource = Uid::new("satcom:mil");
+            }
+        })
+    });
+    assert!(
+        w.iter().any(|m| m
+            == "dispatched space order differs from the one its approved intent and last answer give"),
+        "{w:?}"
+    );
 }
 
 #[test]

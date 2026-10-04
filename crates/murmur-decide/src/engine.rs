@@ -74,6 +74,10 @@ pub enum EngineError {
     NoPicture { id: IntentId, why: String },
     #[error("intent {id}: approving it would stop engagement(s) {list} on its vehicles: acknowledge that to approve it")]
     SupersedesEngagement { id: IntentId, list: String },
+    /// A report or stop that does not fit what the intent was dispatched with (replay would
+    /// reject the log): nothing was logged.
+    #[error("intent {id}: {why}")]
+    NotItsOrder { id: IntentId, why: String },
 }
 
 /// A space answer computed outside the engine's lock (the bridge runs the SGP4 work first,
@@ -1009,8 +1013,21 @@ impl Engine {
     /// Another intent (`by`) was dispatched to an engagement's platform: that order stands,
     /// so the engagement (pending, approved or dispatched) is stopped with no fallback
     /// commanded. Logged as `engage.stopped`, cause `superseded` with `by` and its source.
+    /// Refused ([`EngineError::NotItsOrder`]) unless `by` is another intent, already
+    /// dispatched, to vehicles that include the engagement's platform: replay checks the same.
     pub fn supersede_engagement(&mut self, id: IntentId, by: IntentId) -> Result<(), EngineError> {
-        let source = self.get(by)?.spec().source.clone();
+        let platform = self.get(id)?.spec().uids.first().cloned();
+        let other = self.get(by)?;
+        if let Some(why) = supersede_mismatch(
+            id,
+            by,
+            platform.as_ref(),
+            other.spec(),
+            other.history().iter().any(|h| h.state == State::Dispatched),
+        ) {
+            return Err(EngineError::NotItsOrder { id, why: why.into() });
+        }
+        let source = other.spec().source.clone();
         let who = match &source {
             Source::Human { id } => format!("human {id}"),
             Source::Agent { id } => format!("agent {id}"),
@@ -1367,125 +1384,29 @@ impl Engine {
         let intent = self.get(id)?;
         next_state(intent.state(), Transition::Dispatch)
             .map_err(|err| EngineError::Illegal { id, err })?;
-        let spec = intent.spec();
-        let order = match &spec.task {
-            Task::Collect { area, chosen, .. } => {
-                let not = |why: &str| EngineError::NotDispatchable {
-                    id,
-                    why: why.to_string(),
-                };
-                let chosen = chosen.ok_or_else(|| not("no option chosen"))?;
-                let answer = intent
-                    .space_answer()
-                    .ok_or_else(|| not("no space answer recorded"))?;
-                let result = answer
-                    .tasking()
-                    .ok_or_else(|| not("the space answer is not a tasking answer"))?;
-                let tol = self.policy.rules.space_rules().collect_match_tolerance_s;
-                let opt = matched_option(result, &chosen, tol)
-                    .ok_or_else(|| not("the chosen option is not in the last answer"))?;
-                let product_time = opt.product_time.map(|p| {
-                    chosen
-                        .collect_time
-                        .plus_ms(from_utc(p).ms_since(from_utc(opt.collect_time)))
-                });
-                Order::Collect(CollectOrder {
-                    intent: id,
-                    resource: Uid::new(format!("norad:{}", chosen.norad_id)),
-                    norad_id: chosen.norad_id,
-                    satellite: opt.satellite.clone(),
-                    class_id: opt.class_id.clone(),
-                    capability: opt.capability,
-                    collect_time: chosen.collect_time,
-                    product_time,
-                    resolution_m: opt.resolution_m,
-                    area: area.clone(),
-                    scene: opt
-                        .scene
-                        .as_ref()
-                        .map(|r| r.iter().map(|p| (*p).into()).collect()),
-                    answer_sha256: answer.content_hash()?,
-                })
-            }
-            Task::Cover {
-                area,
-                window,
-                service,
-                ..
-            } => {
-                let answer = intent
-                    .space_answer()
-                    .ok_or_else(|| EngineError::NotDispatchable {
-                        id,
-                        why: "no space answer recorded".into(),
-                    })?;
-                Order::Cover(CoverOrder {
-                    intent: id,
-                    resource: service.resource(),
-                    service: service.clone(),
-                    area: area.clone(),
-                    window: *window,
-                    answer_sha256: answer.content_hash()?,
-                })
-            }
-            Task::Engage { track, .. } => {
-                let not = |why: &str| EngineError::NotDispatchable {
-                    id,
-                    why: why.to_string(),
-                };
-                let snap = intent
-                    .engagement()
-                    .and_then(|e| e.snapshot.as_ref())
-                    .ok_or_else(|| not("no approval snapshot"))?;
-                let uid = spec
-                    .uids
-                    .first()
-                    .cloned()
-                    .ok_or_else(|| not("no platform"))?;
-                Order::Engage(EngageOrder {
-                    intent: id,
-                    uid,
-                    track: track.clone(),
-                    effect_point: snap.preview.effect_point,
-                    effect_t: snap.preview.effect_t,
-                    effect_radius_m: snap.preview.effect_radius_m,
-                    fallback: snap.fallback,
-                    window_until: snap.preview.window.until,
-                })
-            }
-            _ => Order::Vehicles(DispatchOrder {
-                intent: id,
-                task: spec.task.clone(),
-                uids: spec.uids.clone(),
-            }),
-        };
-        let (task, uids) = (spec.task.clone(), spec.uids.clone());
-        let space = match &order {
-            Order::Vehicles(_) | Order::Engage(_) => None,
-            Order::Collect(c) => Some(SpaceOrder::Collect(c.clone())),
-            Order::Cover(c) => Some(SpaceOrder::Cover(c.clone())),
-        };
-        let engage_order = match &order {
-            Order::Engage(o) => Some(o.clone()),
-            _ => None,
-        };
+        let order = order_for(
+            intent.spec(),
+            intent.space_answer(),
+            intent.engagement().and_then(|e| e.snapshot.as_ref()),
+            &self.policy.rules,
+        )?;
         let reason = match &order {
             Order::Vehicles(_) => "dispatched to the task layer",
             Order::Collect(_) => "dispatched: satellite tasking request",
             Order::Cover(_) => "dispatched: coverage watch",
             Order::Engage(_) => "dispatched: platform sent to the effect point",
         };
-        self.emit(EventBody::IntentDispatched {
-            intent: id,
-            task,
-            uids,
-            space,
-            engage: engage_order,
-        })?;
+        self.emit(dispatched_event(intent.spec(), &order))?;
         self.transition(id, Transition::Dispatch, reason.into())?;
         Ok(order)
     }
 
+    /// Report a dispatched intent's progress on one of its own vehicles (for a collect or
+    /// cover, under the resource its order names: `norad:<id>`, `satcom:<class>`,
+    /// `gnss:<class>`). Refused ([`EngineError::NotItsOrder`], nothing logged) for an intent
+    /// that was never dispatched, a vehicle or resource it was not dispatched to, a vehicle or
+    /// space task that already ended (its outcome is final), and an engagement's `fallback`
+    /// report without a stop that released that fallback: replay rejects each of these.
     pub fn record_op_state(
         &mut self,
         id: IntentId,
@@ -1493,7 +1414,23 @@ impl Engine {
         state: &str,
         detail: &str,
     ) -> Result<(), EngineError> {
-        self.get(id)?;
+        let intent = self.get(id)?;
+        let dispatched = intent.history().iter().any(|h| h.state == State::Dispatched);
+        let fallback = intent
+            .engagement()
+            .and_then(|e| e.stop.as_ref())
+            .map(|s| s.fallback);
+        if let Some(why) = op_state_mismatch(
+            intent.spec(),
+            intent.state(),
+            dispatched,
+            fallback,
+            uid,
+            state,
+            detail,
+        ) {
+            return Err(EngineError::NotItsOrder { id, why: why.into() });
+        }
         self.emit(EventBody::OpState {
             intent: id,
             uid: uid.clone(),
@@ -1872,6 +1809,190 @@ impl Engine {
 /// The approving operator is the human who proposed the intent.
 pub(crate) fn is_self_approval(source: &Source, approver: &OperatorId) -> bool {
     matches!(source, Source::Human { id } if id == approver)
+}
+
+/// The order an approved intent is dispatched with, from what the log holds: its spec (the
+/// task and vehicles that were approved), the space answer its last check read (a collect's
+/// chosen option as that answer has it, a cover's service) and the approval's snapshot (an
+/// engagement: the frozen plan's point, time, radius and window, the nomination's platform,
+/// track and fallback). [`Engine::dispatch_order`] logs it as `intent.dispatched`; replay
+/// recomputes it from the same logged facts and requires the logged order to be exactly it.
+pub(crate) fn order_for(
+    spec: &IntentSpec,
+    answer: Option<&crate::space::SpaceAnswer>,
+    snapshot: Option<&engage::EngageSnapshot>,
+    rules: &crate::rules::RulesConfig,
+) -> Result<Order, EngineError> {
+    let id = spec.id;
+    let not = |why: &str| EngineError::NotDispatchable {
+        id,
+        why: why.to_string(),
+    };
+    Ok(match &spec.task {
+        Task::Collect { area, chosen, .. } => {
+            let chosen = chosen.ok_or_else(|| not("no option chosen"))?;
+            let answer = answer.ok_or_else(|| not("no space answer recorded"))?;
+            let result = answer
+                .tasking()
+                .ok_or_else(|| not("the space answer is not a tasking answer"))?;
+            let tol = rules.space_rules().collect_match_tolerance_s;
+            let opt = matched_option(result, &chosen, tol)
+                .ok_or_else(|| not("the chosen option is not in the last answer"))?;
+            let product_time = opt.product_time.map(|p| {
+                chosen
+                    .collect_time
+                    .plus_ms(from_utc(p).ms_since(from_utc(opt.collect_time)))
+            });
+            Order::Collect(CollectOrder {
+                intent: id,
+                resource: Uid::new(format!("norad:{}", chosen.norad_id)),
+                norad_id: chosen.norad_id,
+                satellite: opt.satellite.clone(),
+                class_id: opt.class_id.clone(),
+                capability: opt.capability,
+                collect_time: chosen.collect_time,
+                product_time,
+                resolution_m: opt.resolution_m,
+                area: area.clone(),
+                scene: opt
+                    .scene
+                    .as_ref()
+                    .map(|r| r.iter().map(|p| (*p).into()).collect()),
+                answer_sha256: answer.content_hash()?,
+            })
+        }
+        Task::Cover {
+            area,
+            window,
+            service,
+            ..
+        } => {
+            let answer = answer.ok_or_else(|| not("no space answer recorded"))?;
+            Order::Cover(CoverOrder {
+                intent: id,
+                resource: service.resource(),
+                service: service.clone(),
+                area: area.clone(),
+                window: *window,
+                answer_sha256: answer.content_hash()?,
+            })
+        }
+        Task::Engage { track, .. } => {
+            let snap = snapshot.ok_or_else(|| not("no approval snapshot"))?;
+            let uid = spec.uids.first().cloned().ok_or_else(|| not("no platform"))?;
+            Order::Engage(EngageOrder {
+                intent: id,
+                uid,
+                track: track.clone(),
+                effect_point: snap.preview.effect_point,
+                effect_t: snap.preview.effect_t,
+                effect_radius_m: snap.preview.effect_radius_m,
+                fallback: snap.fallback,
+                window_until: snap.preview.window.until,
+            })
+        }
+        _ => Order::Vehicles(DispatchOrder {
+            intent: id,
+            task: spec.task.clone(),
+            uids: spec.uids.clone(),
+        }),
+    })
+}
+
+/// The `intent.dispatched` event for `order`: the approved task and vehicles, and the space
+/// or engagement order handed on.
+pub(crate) fn dispatched_event(spec: &IntentSpec, order: &Order) -> EventBody {
+    EventBody::IntentDispatched {
+        intent: spec.id,
+        task: spec.task.clone(),
+        uids: spec.uids.clone(),
+        space: match order {
+            Order::Vehicles(_) | Order::Engage(_) => None,
+            Order::Collect(c) => Some(SpaceOrder::Collect(c.clone())),
+            Order::Cover(c) => Some(SpaceOrder::Cover(c.clone())),
+        },
+        engage: match order {
+            Order::Engage(o) => Some(o.clone()),
+            _ => None,
+        },
+    }
+}
+
+/// Why intent `by` can't be what superseded engagement `id`, if it can't: it must be another
+/// intent, dispatched (the order that stands), to vehicles that include the engagement's
+/// platform.
+pub(crate) fn supersede_mismatch(
+    id: IntentId,
+    by: IntentId,
+    platform: Option<&Uid>,
+    by_spec: &IntentSpec,
+    by_dispatched: bool,
+) -> Option<&'static str> {
+    if by == id {
+        return Some("an engagement can't supersede itself");
+    }
+    if !platform.is_some_and(|p| by_spec.uids.contains(p)) {
+        return Some("superseded by an order that does not take the engagement's platform");
+    }
+    if !by_dispatched {
+        return Some("superseded by an order that was not dispatched");
+    }
+    None
+}
+
+/// Whether `uid` is one a dispatched intent reports op states under: a vehicle task's or an
+/// engagement's own vehicles, a collect's satellite (`norad:<id>`), a cover's service
+/// (`satcom:<class>`, `gnss:<class>`). `Err` lists the ones it does report under.
+pub(crate) fn op_state_owner(spec: &IntentSpec, uid: &Uid) -> Result<(), String> {
+    let own = match &spec.task {
+        Task::Collect {
+            chosen: Some(c), ..
+        } => vec![Uid::new(format!("norad:{}", c.norad_id))],
+        Task::Collect { chosen: None, .. } => Vec::new(),
+        Task::Cover { service, .. } => vec![service.resource()],
+        _ => spec.uids.clone(),
+    };
+    if own.contains(uid) {
+        Ok(())
+    } else {
+        Err(own.iter().map(Uid::as_str).collect::<Vec<_>>().join(", "))
+    }
+}
+
+/// Why an op state can't be this intent's, if it can't: never dispatched; not one of its
+/// vehicles (or its order's resource); a vehicle or space task that already ended; an
+/// engagement's `fallback` report without a stop that released a fallback, or naming another
+/// fallback than that stop's (`"<fallback> commanded ..."`, `"<fallback> could not be
+/// commanded ..."`). `fallback` is the engagement's stop, if any: `Some(None)` when it
+/// stopped without commanding one. The engine refuses these; replay flags them.
+pub(crate) fn op_state_mismatch(
+    spec: &IntentSpec,
+    state: State,
+    dispatched: bool,
+    fallback: Option<Option<engage::Fallback>>,
+    uid: &Uid,
+    op: &str,
+    detail: &str,
+) -> Option<&'static str> {
+    if !dispatched {
+        return Some("op state for an intent that was never dispatched");
+    }
+    if op_state_owner(spec, uid).is_err() {
+        return Some("op state for a vehicle or resource the intent was not dispatched to");
+    }
+    if spec.kind() != TaskKind::Engage {
+        // a vehicle or space task reports while it runs; its finish is final
+        return (state != State::Dispatched).then_some("op state for a task that already ended");
+    }
+    if op == "fallback" || op.starts_with("fallback ") {
+        let Some(Some(f)) = fallback else {
+            return Some("fallback reported for an engagement no stop released a fallback for");
+        };
+        if op == "fallback" && !detail.starts_with(&format!("{} ", f.as_str())) {
+            return Some("fallback reported is not the one its engagement's stop released");
+        }
+    }
+    None
 }
 
 fn amend_detail(old: IntentId, new: IntentId, chosen: &ChosenCollect) -> String {

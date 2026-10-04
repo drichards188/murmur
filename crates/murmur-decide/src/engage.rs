@@ -2430,6 +2430,30 @@ fn window_check(snap: &EngageSnapshot, world: &WorldSnapshot, ec: &EngageRules, 
     )
 }
 
+/// How early a plan's effect may be released (seconds before its time: `plan_slack_s` for a
+/// moving target, 0 for a holding one) and the earliest instant that allows (never before
+/// the window opens). Rules 2 on: rules 1 released from the plan's time, never earlier.
+fn release_from(p: &EngagePreview, ec: &EngageRules) -> (f64, Time) {
+    let early = if p.track_speed_mps >= 0.3 {
+        plan_slack_s(p, ec)
+    } else {
+        0.0
+    };
+    let early = if ec.v2() { early } else { 0.0 };
+    let earliest = p.effect_t.plus_ms(-ms(early));
+    (early, p.window.from.map_or(earliest, |f| f.max(earliest)))
+}
+
+/// The plan's time tolerance: the first and last instant its effect may be released at
+/// (from [`release_from`]; until `late_s` after the plan's time, never after the window
+/// closes). A picture is ready only inside it ([`picture`]: the effect time and window
+/// checks); replay bounds every `engage.effect` by it.
+pub fn release_window(p: &EngagePreview, ec: &EngageRules) -> (Time, Time) {
+    let (_, from) = release_from(p, ec);
+    let until = p.effect_t.plus_ms(ms(ec.late_s)).min(p.window.until);
+    (from, until)
+}
+
 /// arrival, effect time, alignment, uncertainty: whether the effect may be released now.
 fn release_checks(
     uid: Option<&Uid>,
@@ -2459,36 +2483,22 @@ fn release_checks(
     // the plan's time, within the same tolerance as its point: a moving target crosses the
     // deviation tolerance in plan_slack_s, so it may be released that much early (or late)
     // when it is at the point; a holding one waits for the time
-    if !ec.v2() {
-        // rules 1: from the plan's time, no earlier
-        let from = p.window.from.map_or(p.effect_t, |f| f.max(p.effect_t));
-        let o = if world.t >= from { Outcome::Pass } else { Outcome::Fail };
-        out.push(check(
-            RuleId::EffectTime,
-            None,
-            o,
-            format!("predicted effect time {}", rel(from, world.t)),
-        ));
-    }
-    let early = if p.track_speed_mps >= 0.3 {
-        plan_slack_s(p, ec)
-    } else {
-        0.0
-    };
-    let earliest = p.effect_t.plus_ms(-ms(early));
-    let from = p.window.from.map_or(earliest, |f| f.max(earliest));
+    let (early, from) = release_from(p, ec);
     let o = if world.t >= from { Outcome::Pass } else { Outcome::Fail };
-    if ec.v2() {
-        out.push(check(
-            RuleId::EffectTime,
-            None,
-            o,
+    out.push(check(
+        RuleId::EffectTime,
+        None,
+        o,
+        if ec.v2() {
             format!(
                 "predicted effect time {} (released from {early:.0} s before it)",
                 rel(p.effect_t, world.t)
-            ),
-        ));
-    }
+            )
+        } else {
+            // rules 1: from the plan's time, no earlier
+            format!("predicted effect time {}", rel(from, world.t))
+        },
+    ));
     // released before the plan's time: the keep-outs as they are now (the picture read them at
     // the plan's time)
     if ec.v2() && world.t < p.effect_t {

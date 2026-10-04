@@ -163,3 +163,21 @@ pub fn waiting_engine(clock: &ManualClock) -> (Engine, MemorySink) {
 pub fn rationale(s: &str) -> Rationale {
     Rationale::new(s).unwrap()
 }
+
+/// A forger who can write the file: parse the log, edit its events, renumber them and
+/// recompute every hash, so the chain verifies and only recomputation can catch the edit.
+pub fn forge(text: &str, edit: impl FnOnce(&mut Vec<Event>)) -> String {
+    let mut events = parse_log(text).unwrap();
+    edit(&mut events);
+    let mut prev = murmur_decide::hash::GENESIS.to_string();
+    let mut out = String::new();
+    for (i, e) in events.iter_mut().enumerate() {
+        e.seq = i as u64 + 1;
+        e.prev = prev.clone();
+        let line = serde_json::to_string(&*e).unwrap();
+        prev = murmur_decide::hash::sha256_hex(line.as_bytes());
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out
+}

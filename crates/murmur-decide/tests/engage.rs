@@ -1107,3 +1107,98 @@ fn a_fix_from_high_latency2_counts_and_says_so() {
     let r = replay::replay_str(&log.text()).unwrap();
     assert!(r.ok(), "{:?}", r.mismatches);
 }
+
+// ---- what was executed is what was approved (sixth review) -----------------------------------
+
+fn not_its_order<T: std::fmt::Debug>(r: Result<T, EngineError>) -> bool {
+    matches!(r, Err(EngineError::NotItsOrder { .. }))
+}
+
+#[test]
+fn a_stop_for_a_failsafe_quotes_its_own_platforms_event_and_the_fallback_it_released() {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = engine_at(&clock, &log);
+    let w = engage_world(T0);
+    let (op2, op3, id) = two_signers(&mut e, &w);
+    sign(&mut e, id, &op2, &w).unwrap();
+    sign(&mut e, id, &op3, &w).unwrap();
+    e.dispatch_order(id).unwrap();
+    clock.advance_ms(1000);
+    let out = e.step_engagements(&engage_world(clock.now()), &terrain());
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    // the intercept is reported on its own platform only, and no fallback before a stop
+    e.record_op_state(id, &uid("blade-1"), "intercept sent", "uploading")
+        .unwrap();
+    assert!(not_its_order(e.record_op_state(id, &uid("sky-1"), "intercept sent", "")));
+    assert!(not_its_order(e.record_op_state(
+        id,
+        &uid("blade-1"),
+        "fallback",
+        "return commanded (rtl): early"
+    )));
+    // the bridge logs the platform's failsafe and stops the engagement quoting it
+    let text = "[severity 4] GCS Failsafe On: switched to RTL";
+    e.record_vehicle_event(&uid("blade-1"), "failsafe", text)
+        .unwrap();
+    let f = e
+        .stop_engagement_system(id, &format!("the platform's failsafe took over ({text})"))
+        .unwrap()
+        .unwrap();
+    assert_eq!((f.uid.as_str(), f.fallback), ("blade-1", Fallback::Return));
+    // and reports the fallback it commanded: the stop's, not another
+    let wrong = format!("abort commanded (hold): {}", f.reason);
+    assert!(not_its_order(e.record_op_state(id, &f.uid, "fallback", &wrong)));
+    let right = format!("{} commanded (rtl): {}", f.fallback.as_str(), f.reason);
+    e.record_op_state(id, &f.uid, "fallback", &right).unwrap();
+    e.record_op_state(id, &f.uid, "fallback acked", "mode RTL")
+        .unwrap();
+    let honest = log.text();
+    let r = replay::replay_str(&honest).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+    // the failsafe pinned on another vehicle, its chain recomputed
+    let forged = forge(&honest, |ev| {
+        for e in ev.iter_mut() {
+            if let audit::EventBody::VehicleEvent { uid, .. } = &mut e.body {
+                *uid = Uid::new("sky-1");
+            }
+        }
+    });
+    let r = replay::replay_str(&forged).unwrap();
+    assert!(
+        r.mismatches
+            .iter()
+            .any(|m| m.what == "stop quotes a vehicle event its platform did not report"),
+        "{:?}",
+        r.mismatches
+    );
+}
+
+#[test]
+fn only_a_dispatched_order_on_the_platform_supersedes_an_engagement() {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = engine_at(&clock, &log);
+    let mut w = engage_world(T0);
+    w.vehicles.insert(uid("sky-1"), vehicle("x10", CRISSY));
+    let (_, _, id) = two_signers(&mut e, &w);
+    let op = e.open_operator_session(OperatorId::new("op-9")).unwrap();
+    let hold = |u: &str| Proposal::new(Task::Hold {}, vec![uid(u)]);
+    // an operator's own holds run at once: one on another vehicle, one on the platform
+    let elsewhere = e.submit(op.authority(), hold("sky-1"), &w, &terrain()).unwrap().id();
+    let here = e.submit(op.authority(), hold("blade-1"), &w, &terrain()).unwrap().id();
+    assert_eq!(e.intent(here).unwrap().state(), State::AutoApproved);
+    e.dispatch(elsewhere).unwrap();
+    let before = log.lines().len();
+    // not itself, not an order that does not take the platform, not one not yet dispatched
+    assert!(not_its_order(e.supersede_engagement(id, id)));
+    assert!(not_its_order(e.supersede_engagement(id, elsewhere)));
+    assert!(not_its_order(e.supersede_engagement(id, here)));
+    assert_eq!(log.lines().len(), before, "nothing logged");
+    assert_eq!(e.intent(id).unwrap().state(), State::PendingApproval);
+    e.dispatch(here).unwrap();
+    e.supersede_engagement(id, here).unwrap();
+    assert_eq!(e.intent(id).unwrap().state(), State::Voided);
+    let r = replay::replay_str(&log.text()).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+}
