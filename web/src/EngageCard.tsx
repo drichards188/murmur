@@ -325,6 +325,12 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
             Signatures of {view.reset.dropped.join(', ')} dropped {fmtRel(view.reset.t - now())}: {view.reset.reason}. They must sign again on the picture as it is now.
           </p>
         )}
+        {(view?.accepted ?? []).map((a) => (
+          <p key={a.engine_uid} className="eg-alarm" role="status">
+            Accepted as lost by {a.by}: {a.uid == null ? a.engine_uid : nameOf(vehicles, a.uid)}, position unknown{' '}
+            {a.since == null ? '(it never reported one)' : `since ${fmtRel(a.since - now())}`}. The friendly keep-out leaves it out while it stays lost since then; your signature covers this acceptance.
+          </p>
+        ))}
         {plan && (
           <p className="eg-plan">
             Plan frozen by {plan.by}&apos;s signature {fmtRel(plan.t - now())}: effect at {ll(plan.effect_point)} {fmtRel(plan.effect_t - now())}, radius {Math.round(plan.effect_radius_m)} m, on {plan.track.id} ({plan.track.identity ?? 'unclassified'}, declared by {plan.track.declared_by ?? 'nobody'}). Every signature is on this exact plan; if it stops holding, the signatures are dropped.

@@ -94,7 +94,7 @@ use crate::engage::{
     PictureToken, StopCause, TrackIdentity,
 };
 use crate::engine::{
-    PRELOAD_FAILED, dispatched_event, engaged_vehicles, is_self_approval, op_state_mismatch,
+    PRELOAD_CHANGED, PRELOAD_FAILED, dispatched_event, engaged_vehicles, is_self_approval, op_state_mismatch,
     op_state_owner, order_for, preload_mismatch, preload_verdict, supersede_mismatch,
 };
 use crate::ids::{OperatorId, SessionId, Uid};
@@ -160,6 +160,10 @@ pub struct ReplayReport {
     pub effects: usize,
     pub aborts: usize,
     pub assessments: usize,
+    /// Rules 5: platforms whose own lost-link values a preload replaced and that were still
+    /// owed back when the log ended (no confirmed restore): the next run carries them over
+    /// (`platform.restore`), but the operator should know. Not decision mismatches.
+    pub unrestored: Vec<String>,
 }
 
 impl ReplayReport {
@@ -171,6 +175,166 @@ impl ReplayReport {
     /// Every logged space query was re-run on the same segment and reproduced.
     pub fn space_reproduced(&self) -> bool {
         self.cache_mismatches.is_empty() && self.space_recomputed == self.space_queries
+    }
+}
+
+/// Rules 5: the platforms' own lost-link values owed back to them: from a preload set that
+/// changed them (or may have), or carried over from an earlier run (`platform.restore`),
+/// until a restore confirms them. Who owes them: the engagements that preloaded since.
+#[derive(Default)]
+struct Restores {
+    owed: BTreeMap<Uid, (BTreeMap<String, f64>, Vec<IntentId>)>,
+}
+
+impl Restores {
+    /// A preload set on `uid` read `before` as the platform's own values: while earlier
+    /// values are owed, those it shares with them must be them (a value read off a preloaded
+    /// platform is not its own); the others are owed too from now on. Err: the values owed.
+    fn owe(&mut self, uid: &Uid, intent: IntentId, before: &BTreeMap<String, f64>) -> Result<(), String> {
+        match self.owed.get_mut(uid) {
+            Some((values, by)) => {
+                by.push(intent);
+                let differs = before.iter().any(|(n, v)| values.get(n).is_some_and(|o| o != v));
+                let was = json(&*values);
+                for (n, v) in before {
+                    values.entry(n.clone()).or_insert(*v);
+                }
+                if differs {
+                    return Err(was);
+                }
+                Ok(())
+            }
+            None => {
+                self.owed.insert(uid.clone(), (before.clone(), vec![intent]));
+                Ok(())
+            }
+        }
+    }
+
+    /// A confirmed restore on `uid` read `readback`: paid when it shows every value owed.
+    fn paid(&mut self, uid: &Uid, readback: &BTreeMap<String, f64>) {
+        if self
+            .owed
+            .get(uid)
+            .is_some_and(|(values, _)| engage::restored(values, readback).is_ok())
+        {
+            self.owed.remove(uid);
+        }
+    }
+
+    /// The ledger after one logged event, as logged (no recomputation: replay checks it).
+    fn step(&mut self, e: &Event) {
+        match &e.body {
+            EventBody::EngagePreload {
+                intent,
+                uid,
+                phase,
+                before,
+                readback,
+                confirmed,
+                ..
+            } => match phase {
+                engage::PreloadPhase::Set if !before.is_empty() => {
+                    let _ = self.owe(uid, *intent, before);
+                }
+                engage::PreloadPhase::Restore if *confirmed => self.paid(uid, readback),
+                _ => {}
+            },
+            EventBody::PlatformRestore {
+                uid,
+                values,
+                carried,
+                readback,
+                confirmed,
+                ..
+            } => {
+                if *carried {
+                    self.owed.entry(uid.clone()).or_insert_with(|| (values.clone(), Vec::new()));
+                } else if *confirmed {
+                    self.paid(uid, readback);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn report(&self) -> Vec<String> {
+        self.owed
+            .iter()
+            .map(|(uid, (values, by))| {
+                let by: Vec<String> = by.iter().map(ToString::to_string).collect();
+                let by = if by.is_empty() {
+                    "carried over from an earlier run".to_string()
+                } else {
+                    format!("preloaded by {}", by.join(", "))
+                };
+                format!("{uid}: its own lost-link values {} never confirmed back ({by})", json(values))
+            })
+            .collect()
+    }
+}
+
+/// Rules 5: the platforms' own lost-link values a log still owed back when it ended (a
+/// preload set, or values carried over into it, never confirmed back), and the engagements
+/// that preloaded them. The bridge carries them over into its next run's log at start
+/// (`platform.restore` carried) and puts them back. Lines that do not parse (a torn last
+/// line) are skipped: this is a ledger, not a replay.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OwedRestore {
+    pub uid: Uid,
+    pub values: BTreeMap<String, f64>,
+    pub by: Vec<IntentId>,
+}
+
+pub fn owed_restores(text: &str) -> Vec<OwedRestore> {
+    let mut restores = Restores::default();
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        if let Ok(e) = serde_json::from_str::<Event>(line) {
+            restores.step(&e);
+        }
+    }
+    restores
+        .owed
+        .into_iter()
+        .map(|(uid, (values, by))| OwedRestore { uid, values, by })
+        .collect()
+}
+
+/// Rules 5: a `platform.restore`: carried values become owed (equal to any already owed);
+/// an attempt must put back the values owed, and its `confirmed` is recomputed.
+fn platform_restore(r: &mut ReplayReport, e: &Event, restores: &mut Restores) {
+    let EventBody::PlatformRestore {
+        uid,
+        values,
+        carried,
+        readback,
+        error,
+        confirmed,
+        ..
+    } = &e.body
+    else {
+        return;
+    };
+    let owed = restores.owed.get(uid).map(|(v, _)| v);
+    if *carried {
+        if owed.is_some_and(|v| v != values) || *confirmed || !readback.is_empty() {
+            bad(r, e, None, "carried restore differs from the values owed", json(values), json(&owed));
+        }
+        restores.owed.entry(uid.clone()).or_insert_with(|| (values.clone(), Vec::new()));
+        return;
+    }
+    if owed != Some(values) {
+        bad(r, e, None, "restore of values not owed back to the platform", json(values), json(&owed));
+    }
+    let verdict = match error {
+        Some(why) => Err(why.clone()),
+        None => engage::restored(values, readback),
+    };
+    if verdict.is_ok() != *confirmed {
+        bad(r, e, None, "restore confirmation differs from its read-back", confirmed.to_string(), json(&verdict));
+    }
+    if *confirmed {
+        restores.paid(uid, readback);
     }
 }
 
@@ -241,7 +405,10 @@ struct Tracked {
     preload: Option<engage::LostLinkPreload>,
     preload_set: Option<(BTreeMap<String, f64>, bool)>,
     restore_confirmed: bool,
-    preload_stop_due: Option<u64>,
+    /// Rules 5: the latest `set` or `verify` read-back of the preload: its time, confirmed.
+    preload_read: Option<(Time, bool)>,
+    /// the unconfirmed preload report a stop must follow: its seq and the stop's reason prefix
+    preload_stop_due: Option<(u64, &'static str)>,
     /// Engage, rules 5: our vehicles operators accepted as lost for it (`engage.accepted`).
     accepted: BTreeMap<Uid, engage::AcceptedUnknown>,
 }
@@ -358,6 +525,8 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (5, "\"preload\":", "an engagement order's lost-link preload"),
     (5, "\"type\":\"engage.preload\"", "a lost-link preload report"),
     (5, "\"type\":\"engage.accepted\"", "an acceptance of a lost vehicle"),
+    (5, "\"type\":\"engage.acceptance_revoked\"", "a revoked acceptance of a lost vehicle"),
+    (5, "\"type\":\"platform.restore\"", "a platform's own values owed back"),
     (5, "\"unknown_accepted\":", "an accepted lost vehicle in decision inputs"),
     (5, "\"alt_msl_m\":", "a vehicle's altitude fact"),
     (5, "\"climb_mps\":", "a platform's climb rate"),
@@ -526,6 +695,8 @@ fn replay_inner<S: AsRef<str>>(
     let mut pinned: Option<i64> = None;
     // operator sessions as opened: who, with what grants
     let mut sessions: BTreeMap<SessionId, (OperatorId, Grants)> = BTreeMap::new();
+    // rules 5: the platforms' own lost-link values owed back
+    let mut restores = Restores::default();
     // picture tokens issued and not used yet
     let mut issued: BTreeMap<u64, PictureToken> = BTreeMap::new();
     // who may open a session, and with engagement authority (run.started, rules 4 on)
@@ -717,6 +888,7 @@ fn replay_inner<S: AsRef<str>>(
                         preload: None,
                         preload_set: None,
                         restore_confirmed: false,
+                        preload_read: None,
                         preload_stop_due: None,
                         accepted: BTreeMap::new(),
                     },
@@ -1000,6 +1172,8 @@ fn replay_inner<S: AsRef<str>>(
                 }
                 tr.signers.clear();
                 tr.plan = None;
+                // rules 5: the acceptances go with the plan (given again, on the new picture)
+                tr.accepted.clear();
             }
             EventBody::ApprovalGranted {
                 intent,
@@ -1424,7 +1598,7 @@ fn replay_inner<S: AsRef<str>>(
                         "engage.stopped".into(),
                     );
                 }
-                if let Some(seq) = tr.preload_stop_due {
+                if let Some((seq, _)) = tr.preload_stop_due {
                     bad(
                         &mut r,
                         e,
@@ -1465,11 +1639,11 @@ fn replay_inner<S: AsRef<str>>(
                 let dispatched = tr.state == State::Dispatched;
                 let prev_t = tr.last_picture_t.unwrap_or(snap.t);
                 // rules 5: the release needs the platform's preload confirmed
-                let preloaded = tr
-                    .preload_set
-                    .as_ref()
-                    .filter(|(_, confirmed)| *confirmed)
-                    .and(tr.preload.as_ref());
+                let preloaded = tr.preload.as_ref().zip(
+                    tr.preload_read
+                        .filter(|(_, confirmed)| *confirmed)
+                        .map(|(t, _)| t),
+                );
                 let (again, h, rd) = engage::picture(
                     &tr.spec,
                     &snap,
@@ -1514,15 +1688,16 @@ fn replay_inner<S: AsRef<str>>(
                 // rules 5: never on a platform whose lost-link action was not confirmed as the
                 // fallback (the picture's release check says so; this binds it on its own)
                 if policy.as_ref().is_some_and(|p| p.rules.rules_version >= 5)
-                    && !tr.preload_set.as_ref().is_some_and(|(_, c)| *c)
+                    && !(tr.preload_set.as_ref().is_some_and(|(_, c)| *c)
+                        && tr.preload_read.is_some_and(|(_, c)| c))
                 {
                     bad(
                         &mut r,
                         e,
                         Some(*intent),
                         "effect released without the platform's lost-link preload confirmed",
-                        json(&tr.preload_set),
-                        "a confirmed engage.preload set".into(),
+                        json(&(&tr.preload_set, tr.preload_read)),
+                        "a confirmed engage.preload set, its latest read-back confirmed".into(),
                     );
                 }
                 // released by the platform the engagement was dispatched to (its dispatch is
@@ -1710,15 +1885,19 @@ fn replay_inner<S: AsRef<str>>(
                 }
                 // rules 5: a preload that did not confirm is stopped at once, for it, and a
                 // stop that says so follows such a report
-                let for_preload = reason.starts_with(&format!("system: {PRELOAD_FAILED}"));
-                if tr.preload_stop_due.is_some() && !(matches!(cause, StopCause::System) && for_preload) {
+                let for_preload = [PRELOAD_FAILED, PRELOAD_CHANGED]
+                    .iter()
+                    .any(|p| reason.starts_with(&format!("system: {p}")));
+                if let Some((_, want)) = tr.preload_stop_due
+                    && !(matches!(cause, StopCause::System) && reason.starts_with(&format!("system: {want}")))
+                {
                     bad(
                         &mut r,
                         e,
                         Some(*intent),
                         "a preload that did not confirm stopped for another reason",
                         reason.clone(),
-                        format!("system: {PRELOAD_FAILED}..."),
+                        format!("system: {want}..."),
                     );
                 }
                 if for_preload && tr.preload_stop_due.is_none() {
@@ -1728,7 +1907,7 @@ fn replay_inner<S: AsRef<str>>(
                         Some(*intent),
                         "stop quotes a preload failure the platform did not report",
                         reason.clone(),
-                        "an unconfirmed engage.preload set".into(),
+                        "an unconfirmed engage.preload set or verify".into(),
                     );
                 }
                 tr.preload_stop_due = None;
@@ -1851,14 +2030,24 @@ fn replay_inner<S: AsRef<str>>(
                 since,
                 by,
                 session,
+                world_t,
+                vehicle,
             } => {
                 let Some(tr) = intents.get_mut(intent) else {
                     bad(&mut r, e, Some(*intent), "acceptance for an unknown intent", String::new(), String::new());
                     continue;
                 };
-                // an operator's own session: an agent has none
+                // an operator's own session, with engagement authority: an agent has none
                 match sessions.get(session) {
-                    Some((op, _)) if op == by => {}
+                    Some((op, g)) if op == by && g.engage => {}
+                    Some((op, _)) if op == by => bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "acceptance of a lost vehicle without engagement authority",
+                        by.to_string(),
+                        "a session opened with grants.engage".into(),
+                    ),
                     other => bad(
                         &mut r,
                         e,
@@ -1867,6 +2056,29 @@ fn replay_inner<S: AsRef<str>>(
                         by.to_string(),
                         json(&other.map(|o| &o.0)),
                     ),
+                }
+                // the vehicle really was lost since that report, on the world logged with it
+                if (e.t.0 - world_t.0).abs() > engage::ACCEPT_WORLD_SKEW_MS {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "acceptance's world is not the one at the acceptance",
+                        json(world_t),
+                        json(&e.t),
+                    );
+                }
+                if let Some(pol) = &policy
+                    && let Err(why) = engage::lost_since_report(Some(vehicle), *since, *world_t, &pol.rules)
+                {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "acceptance of a vehicle that was not lost since that report",
+                        json(&(since, vehicle.position.as_ref().map(|p| p.t))),
+                        why,
+                    );
                 }
                 // at the nomination by its own (human) submitter, or while it waits with no
                 // signature
@@ -1891,6 +2103,33 @@ fn replay_inner<S: AsRef<str>>(
                     },
                 );
             }
+            EventBody::EngageAcceptanceRevoked {
+                intent,
+                uid,
+                by,
+                session,
+            } => {
+                check_session(&mut r, e, *intent, by, *session, &sessions, "revocation of an acceptance");
+                let Some(tr) = intents.get_mut(intent) else {
+                    bad(&mut r, e, Some(*intent), "revocation for an unknown intent", String::new(), String::new());
+                    continue;
+                };
+                if tr.accepted.remove(uid).is_none()
+                    || !matches!(tr.state, State::PendingApproval | State::Approved | State::Dispatched)
+                {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "revocation of an acceptance that is not in force",
+                        json(&(uid, tr.state)),
+                        "an acceptance of it, the engagement pending or under way".into(),
+                    );
+                }
+            }
+            EventBody::PlatformRestore { .. } => {
+                platform_restore(&mut r, e, &mut restores);
+            }
             EventBody::EngagePreload {
                 intent,
                 uid,
@@ -1909,7 +2148,7 @@ fn replay_inner<S: AsRef<str>>(
                     tr.state,
                     tr.dispatched,
                     tr.preload.as_ref(),
-                    tr.preload_set.is_some(),
+                    tr.preload_set.as_ref().map(|(_, c)| *c),
                     tr.restore_confirmed,
                     *phase,
                     uid,
@@ -1943,12 +2182,36 @@ fn replay_inner<S: AsRef<str>>(
                 match phase {
                     engage::PreloadPhase::Set => {
                         tr.preload_set = Some((before.clone(), verdict.is_ok()));
+                        tr.preload_read = Some((e.t, verdict.is_ok()));
                         if verdict.is_err() && tr.state == State::Dispatched {
-                            tr.preload_stop_due = Some(e.seq);
+                            tr.preload_stop_due = Some((e.seq, PRELOAD_FAILED));
+                        }
+                        // the platform's own values, owed back once it ends (a value read
+                        // off a platform still preloaded is not its own)
+                        if !before.is_empty()
+                            && let Err(owed) = restores.owe(uid, *intent, before)
+                        {
+                            bad(
+                                &mut r,
+                                e,
+                                Some(*intent),
+                                "preload read the platform's values while earlier ones were owed back to it",
+                                json(before),
+                                owed,
+                            );
+                        }
+                    }
+                    engage::PreloadPhase::Verify => {
+                        tr.preload_read = Some((e.t, verdict.is_ok()));
+                        if verdict.is_err() && tr.state == State::Dispatched {
+                            tr.preload_stop_due = Some((e.seq, PRELOAD_CHANGED));
                         }
                     }
                     engage::PreloadPhase::Restore => {
                         tr.restore_confirmed |= verdict.is_ok();
+                        if verdict.is_ok() {
+                            restores.paid(uid, readback);
+                        }
                     }
                 }
             }
@@ -2066,6 +2329,7 @@ fn replay_inner<S: AsRef<str>>(
         }
     }
     r.intents = intents.len();
+    r.unrestored = restores.report();
     r
 }
 
@@ -2661,6 +2925,17 @@ fn check_signed(
             json(&other),
         ),
     }
+    // rules 5: a token taken before the acceptances changed is refused
+    if tok.unknown_accepted != tr.accepted {
+        bad(
+            r,
+            e,
+            Some(id),
+            "signature on a picture token whose accepted lost vehicles have changed since",
+            json(&tok.unknown_accepted),
+            json(&tr.accepted),
+        );
+    }
     if tok.intent != id || tok.by != *by || tok.session != session {
         bad(
             r,
@@ -2833,6 +3108,17 @@ fn check_issued(
     let track = w.tracks.get(&tok.track.id).map(|t| TrackIdentity::of(&tok.track.id, t));
     if track.as_ref() != Some(&tok.track) {
         bad(r, e, Some(id), "picture token's track differs from the world it was issued on", json(&tok.track), json(&track));
+    }
+    // rules 5: every signer is shown the lost vehicles accepted for it
+    if tok.unknown_accepted != tr.accepted {
+        bad(
+            r,
+            e,
+            Some(id),
+            "picture token's accepted lost vehicles differ from the acceptances logged for it",
+            json(&tok.unknown_accepted),
+            json(&tr.accepted),
+        );
     }
     match &tr.plan {
         Some(frozen) => {

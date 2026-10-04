@@ -237,6 +237,9 @@ pub struct Settings {
     /// `MURMUR_ANCHOR_DIR`; every `MURMUR_ANCHOR_EVERY` events, 100; `MURMUR_ANCHOR_CMD` gets
     /// each one). `MURMUR_ANCHORS=0` turns them off.
     pub anchors: Option<AnchorConfig>,
+    /// Rules 5: the file naming this station's last audit log (`logs/audit/.last-run-<http
+    /// port>`): lost-link values it still owed back are carried over at start.
+    pub last_run: Option<PathBuf>,
 }
 
 impl Settings {
@@ -269,6 +272,10 @@ impl Settings {
             operators,
             engage_operators,
             tidewater: var("MURMUR_TIDEWATER_URL"),
+            last_run: Some(root.join("logs/audit").join(format!(
+                ".last-run-{}",
+                var("MURMUR_HTTP_PORT").and_then(|p| p.parse::<u16>().ok()).unwrap_or(8765)
+            ))),
             anchors: (var("MURMUR_ANCHORS").as_deref() != Some("0")).then(|| AnchorConfig {
                 path: var("MURMUR_ANCHOR_DIR")
                     .map_or_else(|| root.join("logs/anchors"), PathBuf::from)
@@ -309,9 +316,9 @@ struct Core {
     space_runs: BTreeMap<IntentId, space::SpaceRun>,
     /// dispatched engagements: the platform's intercept, then any fallback
     engagements: BTreeMap<IntentId, engage::EngageRun>,
-    /// rules 5: platforms whose own lost-link values go back once their engagement ended
-    /// (retried until the vehicle answers; outlives the engagement's run)
-    restores: BTreeMap<IntentId, engage::RestoreRun>,
+    /// rules 5: per platform, its one lost-link parameter job and its own values owed back
+    /// (outlives the engagements' runs)
+    params: BTreeMap<Uid, engage::ParamLane>,
     /// `operator.view` budget per operator: (tokens, monotonic seconds when last filled)
     view_budget: BTreeMap<OperatorId, (f64, f64)>,
 }
@@ -404,6 +411,9 @@ impl Decision {
         if let Some(a) = anchors {
             let _ = d.anchors.set(a);
         }
+        if let Some(pointer) = &s.last_run {
+            d.carry_restores(pointer);
+        }
         Ok(d)
     }
 
@@ -462,7 +472,7 @@ impl Decision {
                 taskings: BTreeMap::new(),
                 space_runs: BTreeMap::new(),
                 engagements: BTreeMap::new(),
-                restores: BTreeMap::new(),
+                params: BTreeMap::new(),
                 view_budget: BTreeMap::new(),
             }),
             updates: watch::channel(Arc::new(String::new())).0,
@@ -672,19 +682,23 @@ impl Decision {
             let session =
                 Self::session(&mut core.engine, &mut core.sessions, by, &self.engage_operators)?;
             // rules 5: the operator's acceptances of lost vehicles, as the check showed them
+            // (only with engagement authority: 403 otherwise)
             let accept: Vec<(DUid, Option<Time>)> =
                 req.engage.accept_unknown.iter().map(engage::AcceptUnknown::engine).collect();
-            let id = core
-                .engine
-                .submit_accepting(
-                    session.authority(),
-                    proposal,
-                    &accept,
-                    &world,
-                    &self.terrain.oracle(),
-                )
-                .map_err(engine_err)?
-                .id();
+            let submitted = if accept.is_empty() {
+                core.engine
+                    .submit(session.authority(), proposal, &world, &self.terrain.oracle())
+            } else {
+                let Some(auth) = session.engagement_authority() else {
+                    return Err(DecisionError::new(
+                        403,
+                        format!("{by} has no engagement authority: only an operator with it accepts a lost vehicle"),
+                    ));
+                };
+                core.engine
+                    .submit_accepting(auth, proposal, &accept, &world, &self.terrain.oracle())
+            };
+            let id = submitted.map_err(engine_err)?.id();
             self.after_decision(core, id)
         };
         self.publish();
@@ -1549,11 +1563,14 @@ impl Decision {
                 })
                 .collect()
         };
-        let alerts = alerts::alerts(
+        let mut alerts = alerts::alerts(
             &self.world.vehicles(),
             &self.world.tasks.current_ops(),
             clock::wall(),
         );
+        // rules 5: platforms whose own lost-link failsafe has not been confirmed back
+        alerts.extend(self.restore_alerts(&self.lock(), clock::wall()));
+        alerts.sort_by(|a, b| a.severity.cmp(&b.severity).then(a.since_t.total_cmp(&b.since_t)));
         json!({
             "pending": pending,
             "alerts": alerts,

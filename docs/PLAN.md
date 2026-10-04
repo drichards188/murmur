@@ -341,12 +341,14 @@ and the target reversing between signatures, a transient reclassification, a pic
 before a reclassification, an approval that would stop an engagement, GNSS lost en route, a
 wobbling velocity estimate, a second engagement on a platform, a GPS glitch en route, a
 first signer's stale picture, a target getting under way while a signature waits, a friendly
-closing to just outside the keep-out; from rules 5, 40 to 56: a fallback the firmware can't
-preload, a preload not answered, read back wrong, never reported or cut from the log, a
-distant and a near fast ferry, a track without a velocity estimate, friendlies and an
-aircraft track above the effect with their altitudes known or not, a lost friendly with and
-without an operator's acceptance, an agent trying to accept one, an accepted one reporting
-again).
+closing to just outside the keep-out; from rules 5, 40 to 63: a fallback the firmware can't
+preload, a preload not answered, read back wrong, never reported, cut from the log or
+changed before the release, a distant and a near fast ferry, a track without a velocity
+estimate, friendlies and an aircraft track above the effect with their altitudes known or
+not, ranged or passive, a ground target, a lost friendly with and without an operator's
+acceptance, an acceptance without engagement authority, a token from before an
+acceptance, a reset that clears one, a revoked one, an agent trying to accept one, an
+accepted one reporting again).
 Each ends in reject, void or abort as designed and replays; the tampered logs (including a
 loosened logged policy) are caught. Seeded noise turns each into a batch (Phase G): position
 noise independent around the truth each step (`--noise`), and a velocity-estimate error
@@ -366,23 +368,29 @@ Rules 5 follow-ups (murmur-der.2, murmur-der.3; `crates/murmur-decide/README.md`
   firmware) with its timer no longer than the approval's link-gap limit; the bridge reads
   the platform's own values, sets the preload, reads it back (`engage.preload`), and only
   then sends the intercept. One that doesn't confirm stops the engagement with its
-  fallback; nothing is released without a confirmed one; the platform's own values go back
-  when it ends. A fixed wing can take fallback `return` only (ArduPlane has no lost-link
-  action that holds where it is): `fallback_preload` fails the others at nomination.
+  fallback; nothing is released without a confirmed read-back at most 10 s old (re-read
+  every 5 s near the release); the platform's own values go back once no engagement holds
+  it (one parameter job at a time per platform; a newer engagement takes over the values
+  owed), retried and alerted, and carried over a bridge restart from its log. A fixed wing
+  can take fallback `return` only (ArduPlane has no lost-link action that holds where it
+  is): `fallback_preload` fails the others at nomination.
 - **Keep-out tuning.** Tracks predicted with acceleration noise (constant velocity, white
   acceleration noise by domain, the velocity estimate's error), not 0.3 x speed: a 20 m/s
   ferry 300 s out blocks 1.3 km around its predicted position, not 3.6 km; a track without
   a velocity estimate blocks by its reach. Keep-outs in 3D where both altitudes are known
-  (a ceiling and floor of the effect radius plus 200 m, each side's altitude error and
-  vertical reach counted). A lost friendly still blocks, unless an operator explicitly
-  accepts its unknown position for that engagement (logged, replay-checked, never an
-  agent's).
+  and a track's is ranged (a ceiling and floor of the effect radius plus 200 m, each side's
+  altitude error and vertical reach counted, a fixed wing's dive too); ground targets stay
+  2D. A lost friendly still blocks, unless an operator with engagement authority explicitly
+  accepts its unknown position for that engagement (logged with the vehicle's facts,
+  replay-checked, shown to every signer, cleared by a reset, revocable, never an agent's).
 
 Simplifications: straight-line intercept at cruise speed (no turn radius, no climb),
 keep-outs 2D wherever an altitude is unknown, the effect circle is checked against no-strike
 areas but the platform's own path only against no-go areas, the assessment trusts our sensor
 model's coverage figures, the engagement authority is the same placeholder authentication as
-`MURMUR_OPERATORS`, a preload is not persisted across a bridge restart, and another declared
+`MURMUR_OPERATORS`, ground targets have no terrain-referenced altitude (2D), an engagement
+does not survive a bridge restart (only the platform's own failsafe values are put back),
+and another declared
 hostile inside the keep-out is exempt like the target (an open design question,
 DECISIONS.md).
 

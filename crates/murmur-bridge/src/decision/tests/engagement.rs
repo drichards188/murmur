@@ -25,19 +25,28 @@ struct Erig {
 }
 
 fn engage_rig() -> Erig {
+    engage_rig_on(None)
+}
+
+/// The engagement rig, on `world` when given (a second run of the bridge beside the same
+/// vehicles).
+fn engage_rig_on(on: Option<(Arc<World>, Arc<Tracks>)>) -> Erig {
     let root = root();
     let mut policy = Policy::load(&root.join("sim/policy.toml")).expect("policy");
     let mut e = policy.rules.engage_rules();
     e.dispatch_delay_s = 0.0;
     policy.rules.engage = Some(e);
-    let tracks = Arc::new(Tracks::load(&root.join("sim/platforms.toml")).expect("sensors"));
-    let world = World::new(Config {
-        base_port: 0,
-        http_port: 0,
-        default_ports: 0,
-        manifest: root.join("sim/run/no-such-manifest.json"),
-        platforms: root.join("sim/platforms.toml"),
-        root: root.clone(),
+    let (world, tracks) = on.unwrap_or_else(|| {
+        let tracks = Arc::new(Tracks::load(&root.join("sim/platforms.toml")).expect("sensors"));
+        let world = World::new(Config {
+            base_port: 0,
+            http_port: 0,
+            default_ports: 0,
+            manifest: root.join("sim/run/no-such-manifest.json"),
+            platforms: root.join("sim/platforms.toml"),
+            root: root.clone(),
+        });
+        (world, tracks)
     });
     let clock = ManualClock::new(snapshot::ms(clock::wall()));
     let log = MemorySink::new();
@@ -222,7 +231,7 @@ impl Erig {
         for _ in 0..10 {
             sleep(Duration::from_millis(500)).await;
             let mut guard = self.r.d.lock();
-            self.r.d.step_preloads(&mut guard);
+            self.r.d.step_params(&mut guard);
             if guard.taskings.contains_key(&id) {
                 break;
             }
@@ -618,4 +627,201 @@ async fn an_agent_cannot_accept_a_lost_vehicle() {
     assert!(err.detail.contains("only an operator"), "{}", err.detail);
     assert_eq!(e.r.events("engage.accepted"), 0);
     assert_eq!(e.r.events("intent.created"), 0, "refused before any intent exists");
+}
+
+/// The `platform.restore` events of the log, as (carried, values, confirmed).
+fn platform_restores(log: &MemorySink) -> Vec<(bool, Value, bool)> {
+    log.lines()
+        .iter()
+        .filter(|l| l.contains("\"type\":\"platform.restore\""))
+        .map(|l| {
+            let v: Value = serde_json::from_str(l).expect("json");
+            (
+                v["carried"].as_bool().unwrap_or(false),
+                v["values"].clone(),
+                v["confirmed"].as_bool().unwrap_or(false),
+            )
+        })
+        .collect()
+}
+
+/// Nominate (op-1) and sign (op-2, op-3) on the platform already in the fleet: dispatched.
+async fn dispatch_again(e: &Erig, fallback: &str) -> IntentId {
+    let id = e.r.d.submit(&op("op-1"), e.nomination(fallback)).await.expect("nominated").id;
+    e.sign("op-2", id).await.expect("signs");
+    let o = e.sign("op-3", id).await.expect("signs");
+    assert_eq!(o.state, State::Dispatched, "{}", o.intent);
+    id
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_newer_engagement_takes_over_the_values_owed_and_a_restore_never_undoes_it() {
+    let e = engage_rig();
+    // A preloads the copter (FS_GCS_ENABLE 7) and is aborted; before its restore can run, B
+    // is dispatched on the same platform
+    let a = e.approved("abort").await;
+    e.r.d.abort(&op("op-1"), a.0, None).expect("aborted");
+    let b = dispatch_again(&e, "return").await;
+    e.preloaded(b).await;
+    // B's set did not read the preloaded 7 as the platform's own: it took over A's values
+    let lines = e.r.log.lines();
+    let sets: Vec<Value> = lines
+        .iter()
+        .filter(|l| l.contains("\"type\":\"engage.preload\"") && l.contains("\"phase\":\"set\""))
+        .map(|l| serde_json::from_str(l).expect("json"))
+        .collect();
+    assert_eq!(sets.len(), 2, "{sets:?}");
+    assert_eq!(sets[0]["readback"]["FS_GCS_ENABLE"], 7.0, "A preloaded: {sets:?}");
+    assert_eq!(sets[1]["before"]["FS_GCS_ENABLE"], 1.0, "its own, from A's set: {sets:?}");
+    // and no restore ran while B held the platform
+    assert!(preloads(&e.r.log).iter().all(|p| p.0 != "restore"), "{:?}", preloads(&e.r.log));
+    // B ends: its restore puts back the values from before A
+    e.r.d.abort(&op("op-1"), b.0, None).expect("aborted");
+    for _ in 0..8 {
+        e.tick(true).await;
+    }
+    let all = preloads(&e.r.log);
+    let restore = all.iter().find(|p| p.0 == "restore").expect("restored");
+    assert!(restore.2, "{all:?}");
+    assert_eq!(restore.1["FS_GCS_ENABLE"], 1.0, "{all:?}");
+    let rep = replay::replay_str(&e.r.log.text()).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+    assert!(rep.unrestored.is_empty(), "{:?}", rep.unrestored);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_preload_is_read_again_before_the_release() {
+    let e = engage_rig();
+    let id = e.approved("return").await;
+    // its window is open at once here: 6 s after the set the preload is due to be read again
+    e.r.clock.advance_ms(6_000);
+    for _ in 0..10 {
+        sleep(Duration::from_millis(500)).await;
+        let mut guard = e.r.d.lock();
+        e.r.d.step_params(&mut guard);
+        drop(guard);
+        if preloads(&e.r.log).iter().any(|p| p.0 == "verify") {
+            break;
+        }
+    }
+    let all = preloads(&e.r.log);
+    assert_eq!(all.iter().map(|p| (p.0.as_str(), p.2)).collect::<Vec<_>>(), [("set", true), ("verify", true)], "{all:?}");
+    assert_eq!(all[1].1["FS_GCS_ENABLE"], 1.0, "{all:?}");
+    assert_eq!(e.r.state(id), State::Dispatched, "{}", e.r.reason(id));
+    let rep = replay::replay_str(&e.r.log.text()).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+}
+
+#[tokio::test(start_paused = true)]
+async fn values_still_owed_when_the_bridge_stopped_are_carried_over_and_put_back() {
+    // the first run: preloaded, then aborted, and the bridge stops before the restore
+    let e = engage_rig();
+    let a = e.approved("abort").await;
+    e.r.d.abort(&op("op-1"), a.0, None).expect("aborted");
+    let first = replay::replay_str(&e.r.log.text()).expect("parses");
+    assert!(first.ok(), "{:?}", first.mismatches);
+    assert_eq!(first.unrestored.len(), 1, "replay reports it: {:?}", first.unrestored);
+    let dir = std::env::temp_dir().join(format!("murmur-carry-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let log = dir.join("run-1.jsonl");
+    std::fs::write(&log, e.r.log.text()).expect("log");
+    let pointer = dir.join(".last-run-0");
+    std::fs::write(&pointer, log.display().to_string()).expect("pointer");
+    // the next run beside the same vehicle: carried over from the first run's log at start,
+    // then put back once the platform answers
+    let e2 = engage_rig_on(Some((e.r.world.clone(), e.tracks.clone())));
+    e2.r.d.carry_restores(&pointer);
+    assert_eq!(std::fs::read_to_string(&pointer).expect("pointer"), "memory", "now names this run's log");
+    for _ in 0..4 {
+        e2.r.d.tick();
+        sleep(Duration::from_secs(1)).await;
+    }
+    let all = platform_restores(&e2.r.log);
+    assert_eq!(all.len(), 2, "{all:?}");
+    assert!(all[0].0 && !all[0].2, "carried: {all:?}");
+    assert_eq!(all[0].1["FS_GCS_ENABLE"], 1.0, "{all:?}");
+    assert!(!all[1].0 && all[1].2, "put back and confirmed: {all:?}");
+    let rep = replay::replay_str(&e2.r.log.text()).expect("parses");
+    assert!(rep.ok() && rep.unrestored.is_empty(), "{:?} {:?}", rep.mismatches, rep.unrestored);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_restore_that_does_not_confirm_is_retried_logged_and_alerted() {
+    let e = engage_rig();
+    e.r.vehicle(1, Firmware::Copter, "fpv", TARGET);
+    sleep(Duration::from_millis(500)).await;
+    // a previous run owed a value the vehicle never answers for
+    let clock = ManualClock::new(e.r.clock.now());
+    let prev = MemorySink::new();
+    let mut eng = murmur_decide::Engine::new(
+        Policy::load(&root().join("sim/policy.toml")).expect("policy"),
+        murmur_decide::Roster::new(vec![op("op-1")], vec![]).expect("roster"),
+        Box::new(clock),
+        Box::new(prev.clone()),
+    )
+    .expect("engine");
+    eng.record_platform_restore(murmur_decide::PlatformRestoreReport {
+        uid: duid(1),
+        values: [("FS_GCS_ENABLE".to_string(), 1.0), ("FS_NO_SUCH".to_string(), 3.0)].into_iter().collect(),
+        carried: true,
+        from: None,
+        readback: BTreeMap::new(),
+        error: None,
+    })
+    .expect("logged");
+    let dir = std::env::temp_dir().join(format!("murmur-alert-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let log = dir.join("run-0.jsonl");
+    std::fs::write(&log, prev.text()).expect("log");
+    let pointer = dir.join(".last-run-0");
+    std::fs::write(&pointer, log.display().to_string()).expect("pointer");
+    e.r.d.carry_restores(&pointer);
+    for _ in 0..90 {
+        e.r.d.tick();
+        sleep(Duration::from_secs(1)).await;
+    }
+    // every attempt logged, none confirmed
+    let all = platform_restores(&e.r.log);
+    let attempts: Vec<_> = all.iter().filter(|a| !a.0).collect();
+    assert!(attempts.len() >= 2, "{all:?}");
+    assert!(attempts.iter().all(|a| !a.2), "{all:?}");
+    // and the inbox says so
+    let inbox = e.r.d.inbox_json();
+    let alert = inbox["alerts"]
+        .as_array()
+        .expect("alerts")
+        .iter()
+        .find(|a| a["kind"] == "restore_pending")
+        .cloned()
+        .expect("a restore alert");
+    assert_eq!(alert["id"], "restore:1");
+    assert!(alert["detail"].as_str().unwrap_or_default().contains("FS_NO_SUCH 3"), "{alert}");
+    let rep = replay::replay_str(&e.r.log.text()).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+    assert_eq!(rep.unrestored.len(), 1, "{:?}", rep.unrestored);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(start_paused = true)]
+async fn only_engagement_authority_accepts_a_lost_vehicle() {
+    let e = engage_rig();
+    e.r.vehicle(1, Firmware::Copter, "fpv", TARGET);
+    sleep(Duration::from_millis(500)).await;
+    e.picture().await;
+    // op-1 has no engagement authority: its nomination with an acceptance is refused whole
+    let mut req = e.nomination("return");
+    req.engage.accept_unknown = vec![engage::AcceptUnknown { uid: 2, since: None }];
+    let err = e.r.d.submit(&op("op-1"), req).await.expect_err("refused");
+    assert_eq!(err.status, 403, "{}", err.detail);
+    assert!(err.detail.contains("engagement authority"), "{}", err.detail);
+    // and so is its acceptance on a waiting nomination
+    let id = e.r.d.submit(&op("op-1"), e.nomination("return")).await.expect("nominated").id;
+    let err = e
+        .r
+        .d
+        .accept_unknown(&op("op-1"), id.0, &engage::AcceptUnknown { uid: 2, since: None })
+        .expect_err("refused");
+    assert_eq!(err.status, 403, "{}", err.detail);
+    assert_eq!(e.r.events("engage.accepted"), 0);
 }

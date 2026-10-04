@@ -361,11 +361,13 @@ pub enum EventBody {
         fallback: Option<Fallback>,
     },
 
-    /// Engage, rules 5: an operator accepted that one of our vehicles is lost (its position
-    /// unknown since its report at `since`; null: it never reported one) for this
-    /// engagement, so its friendly keep-out leaves that vehicle out while it is lost since
-    /// exactly then. At the nomination or while it waits with no signature; never automatic,
-    /// never an agent's (replay checks the session is the operator's).
+    /// Engage, rules 5: an operator with engagement authority accepted that one of our
+    /// vehicles is lost (its position unknown since its report at `since`; null: it never
+    /// reported one) for this engagement, so its friendly keep-out leaves that vehicle out
+    /// while it is lost since exactly then. At the nomination or while it waits with no
+    /// signature; never automatic, never an agent's (replay checks the session is the
+    /// operator's, with grants.engage). Every signer's picture token carries the acceptances;
+    /// a reset of the signatures clears them.
     #[serde(rename = "engage.accepted")]
     EngageAccepted {
         intent: IntentId,
@@ -374,14 +376,51 @@ pub enum EventBody {
         since: Option<Time>,
         by: OperatorId,
         session: SessionId,
+        /// The world it was accepted on: the vehicle's facts then and the world's time (replay
+        /// checks it was lost since exactly `since`, by the link-aware freshness rule).
+        world_t: Time,
+        vehicle: Box<crate::world::VehicleFacts>,
+    },
+
+    /// Engage, rules 5: an operator withdrew an acceptance of a lost vehicle for this
+    /// engagement (any operator may: it only restricts). Its checks count the vehicle again.
+    #[serde(rename = "engage.acceptance_revoked")]
+    EngageAcceptanceRevoked {
+        intent: IntentId,
+        uid: Uid,
+        by: OperatorId,
+        session: SessionId,
+    },
+
+    /// Rules 5: a platform's own lost-link values owed back outside an engagement's own
+    /// restore: carried over at start from an earlier log whose preload was never confirmed
+    /// back (`carried`, `from`: that log and engagement), then each attempt to put them back
+    /// (`readback`, `error`, `confirmed`: replay recomputes it against the values owed); also
+    /// an engagement's restore the engine refused. Replay reports a platform whose values were
+    /// still owed when the log ended.
+    #[serde(rename = "platform.restore")]
+    PlatformRestore {
+        uid: Uid,
+        values: BTreeMap<String, f64>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        carried: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<String>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        readback: BTreeMap<String, f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        confirmed: bool,
     },
 
     /// Engage, rules 5: the platform's own lost-link action set as the engagement's fallback
-    /// (`set`: its own values read first, `before`, and the order's preload read back), or
-    /// its own values put back once the engagement ended (`restore`). `error` is what the
+    /// (`set`: its own values read first, `before`, or the ones still owed back from an earlier
+    /// preload, and the order's preload read back), read again near the release (`verify`),
+    /// or its own values put back once the engagement ended (`restore`). `error` is what the
     /// bridge met (no answer); `confirmed` that the read-back shows it in force (replay
-    /// recomputes it). A release needs a confirmed `set`; an unconfirmed one stops the
-    /// engagement with its fallback.
+    /// recomputes it). A release needs a confirmed `set` and a confirmed read-back at most
+    /// 10 s old; an unconfirmed `set` or `verify` stops the engagement with its fallback.
     #[serde(rename = "engage.preload")]
     EngagePreload {
         intent: IntentId,

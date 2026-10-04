@@ -97,6 +97,10 @@ export interface EngageView {
   signatures?: { by: string; t: number; effect_point: LngLat; effect_t: number }[]
   /** signatures dropped with their plan because it stopped holding */
   reset?: { t: number; dropped: string[]; reason: string } | null
+  /** rules 5: our vehicles an operator accepted as lost for this engagement (position unknown
+   *  since `since`, engine ms; null: never reported): its friendly keep-out leaves them out
+   *  while they stay lost since then. Every signer's picture carries them. */
+  accepted?: { uid: number | null; engine_uid: string; since: number | null; by: string }[]
   /** how long a picture token is good for, and the most the signatures on one plan may take */
   token_ttl_s?: number
   max_signing_s?: number

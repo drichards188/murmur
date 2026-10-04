@@ -84,7 +84,8 @@ pub struct Scenario {
     /// After the run, attack the log and require replay to catch it:
     /// `proposer_approval`, `agent_approval`, `suppress_void`, `edit_snapshot`,
     /// `drop_signature`, `edit_effect`, `strip_approvers`, `drop_reset`, `agent_order_auto`,
-    /// `drop_ack`, `loosen_policy`.
+    /// `drop_ack`, `loosen_policy`, and for rules 5 `drop_preload`, `forge_preload`,
+    /// `drop_verify`, `drop_acceptance`, `acceptance_by_agent`, `acceptance_without_authority`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tamper: Option<String>,
     /// Seconds to run (default: the last step plus 10).
@@ -98,7 +99,10 @@ pub struct Scenario {
     /// `confirm` (default: read back as set, a second later), `no_answer` (it never answers
     /// the parameter protocol: the bridge reports the error), `mismatch` (it answers with
     /// another lost-link action than the order's), `never` (nothing is reported: the release
-    /// waits for it until the engagement is late). A silent platform never answers.
+    /// waits for it until the engagement is late), `changed` (the set confirms, but by the
+    /// re-read near the release another station has changed the action). A silent
+    /// platform never answers. A confirmed platform is read again every 5 s from 30 s before
+    /// the release window opens (`engage.preload` verify).
     #[serde(default = "confirm")]
     pub preload: String,
     /// Paths relative to the repo root (defaults: sim/policy.toml, sim/platforms.toml,
@@ -266,15 +270,19 @@ pub enum Action {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         accept: Vec<String>,
     },
-    /// Rules 5: an operator accepts, for the last nomination while it waits with no
-    /// signature, that one of our vehicles is lost since its last report (or since
-    /// `since_s`, scenario seconds, to name another report: the engine refuses it).
+    /// Rules 5: an operator with engagement authority accepts, for the last nomination while
+    /// it waits with no signature, that one of our vehicles is lost since its last report
+    /// (or since `since_s`, scenario seconds, to name another report: the engine refuses
+    /// it). Without engagement authority it is refused.
     Accept {
         by: String,
         uid: String,
         #[serde(default)]
         since_s: Option<f64>,
     },
+    /// Rules 5: an operator withdraws an acceptance of a lost vehicle for the last
+    /// nomination (pending or under way).
+    Revoke { by: String, uid: String },
     /// An agent "tries" to accept a lost vehicle: there is no such method on its port, so it
     /// is recorded and nothing may change.
     AgentAccept { agent: String, uid: String },
@@ -464,7 +472,14 @@ pub enum ScenarioError {
 pub fn load(path: &Path) -> Result<Scenario, ScenarioError> {
     let name = path.display().to_string();
     let text = std::fs::read_to_string(path).map_err(|e| ScenarioError::Io(name.clone(), e))?;
-    toml::from_str(&text).map_err(|e| ScenarioError::Parse(name, e))
+    let sc: Scenario = toml::from_str(&text).map_err(|e| ScenarioError::Parse(name.clone(), e))?;
+    if !matches!(sc.preload.as_str(), "confirm" | "no_answer" | "mismatch" | "never" | "changed") {
+        return Err(ScenarioError::Parse(
+            name,
+            serde::de::Error::custom(format!("preload {:?}: confirm, no_answer, mismatch, never or changed", sc.preload)),
+        ));
+    }
+    Ok(sc)
 }
 
 /// Every `*.toml` in a directory, in name order.
@@ -814,9 +829,11 @@ pub fn run(
                 due_s: s + 1,
                 set: None,
                 before: BTreeMap::new(),
+                holds: BTreeMap::new(),
                 timer_s: None,
                 restored: false,
                 acted: false,
+                verified: 0,
             });
         }
     }
@@ -1128,9 +1145,18 @@ fn act(
                 (Some(by), _) => match session(by) {
                     Some(sess) => {
                         proposal.rationale = rationale.as_deref().map(Rationale::new).transpose().ok().flatten();
-                        engine
-                            .submit_accepting(sess.authority(), proposal, &accepted, &w, terrain)
-                            .map(|i| i.id())
+                        match (accepted.is_empty(), sess.engagement_authority()) {
+                            (true, _) => engine.submit(sess.authority(), proposal, &w, terrain).map(|i| i.id()),
+                            (false, Some(auth)) => engine
+                                .submit_accepting(auth, proposal, &accepted, &w, terrain)
+                                .map(|i| i.id()),
+                            // the bridge refuses the whole nomination (403): so does the runner
+                            (false, None) => {
+                                return refusals.push(format!(
+                                    "{by}: accepting a lost vehicle needs engagement authority (nomination refused)"
+                                ));
+                            }
+                        }
                     }
                     None => return failures.push(format!("t={s}: unknown operator {by}")),
                 },
@@ -1289,7 +1315,19 @@ fn act(
                 Some(x) => Some(T0.plus_ms((x * 1000.0).round() as i64)),
                 None => w.vehicles.get(&Uid::new(uid)).and_then(|v| v.position.as_ref()).map(|p| p.t),
             };
-            if let Err(e) = engine.accept_unknown_friendly(id, sess.authority(), Uid::new(uid), since, &w) {
+            // only engagement authority accepts (the bridge answers 403 otherwise)
+            let Some(auth) = sess.engagement_authority() else {
+                return refusals.push(format!("{by}: accepting a lost vehicle needs engagement authority"));
+            };
+            if let Err(e) = engine.accept_unknown_friendly(id, auth, Uid::new(uid), since, &w) {
+                refusals.push(e.to_string());
+            }
+        }
+        Action::Revoke { by, uid } => {
+            let (Some(id), Some(sess)) = (*last, session(by)) else {
+                return failures.push(format!("t={s}: revoke: no nomination or unknown operator {by}"));
+            };
+            if let Err(e) = engine.revoke_unknown_friendly(id, sess.authority(), Uid::new(uid)) {
                 refusals.push(e.to_string());
             }
         }
@@ -1543,11 +1581,15 @@ struct PreloadSim {
     set: Option<bool>,
     /// its own values, read before the preload
     before: BTreeMap<String, f64>,
+    /// what it holds once preloaded (what a re-read shows)
+    holds: BTreeMap<String, f64>,
     /// the timer it carries while preloaded, s
     timer_s: Option<f64>,
     restored: bool,
     /// it already followed its lost-link action
     acted: bool,
+    /// re-reads near the release so far
+    verified: u32,
 }
 
 /// What a stand-in of each firmware carries before a preload (`crates/murmur-standins`
@@ -1643,6 +1685,7 @@ fn preloads(
                 }
             };
             ps.before = report.before.clone();
+            ps.holds = report.readback.clone();
             ps.timer_s = report.readback.get(&preload.timer).copied();
             match engine.record_preload(id, report) {
                 Ok(stop) => {
@@ -1669,6 +1712,51 @@ fn preloads(
             continue;
         }
         let Some(ps) = extra.preloads.get_mut(&id) else { continue };
+        // read again near the release; with `changed`, another station changed its lost-link
+        // action after the set (the last parameter the preload sets, one off)
+        let due = intent
+            .engagement()
+            .is_some_and(|e| crate::engage::preload_verify_due(e, T0.plus_ms(i64::from(s) * 1000), &engine.policy().rules));
+        if ps.set == Some(true) && state == State::Dispatched && !silent && due {
+            let mut readback = ps.holds.clone();
+            if mode == "changed"
+                && let Some(p) = preload.set.last()
+            {
+                readback.insert(p.name.clone(), p.value + 1.0);
+            }
+            let report = PreloadReport {
+                uid: Uid::new(&ps.uid),
+                phase: PreloadPhase::Verify,
+                before: BTreeMap::new(),
+                readback,
+                error: None,
+            };
+            match engine.record_preload(id, report) {
+                Ok(stop) => {
+                    let confirmed = engine
+                        .intent(id)
+                        .and_then(|i| i.engagement())
+                        .and_then(|e| e.verified.as_ref())
+                        .is_some_and(|r| r.confirmed);
+                    if !confirmed || ps.verified == 0 {
+                        extra.preload_reports.push(format!(
+                            "t={s} verify {}",
+                            if confirmed { "confirmed" } else { "changed" }
+                        ));
+                    }
+                    ps.verified += 1;
+                    if let Some(f) = stop {
+                        *fallback_seen = Some(f.fallback.as_str().into());
+                        if let Some(v) = vehicles.get_mut(f.uid.as_str()) {
+                            follow(v, f.fallback);
+                        }
+                        engaging.remove(&f.intent);
+                    }
+                }
+                Err(e) => failures.push(format!("t={s}: verify {id}: {e}")),
+            }
+            continue;
+        }
         // cut off from the GCS for longer than its preloaded timer: its own failsafe
         if ps.set == Some(true)
             && !ps.restored
@@ -2074,6 +2162,20 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
                 return Err("no engage.preload set to drop".into());
             }
         }
+        "drop_verify" => {
+            // rules 5: hide the re-read near the release that found the preload changed
+            let before = events.len();
+            events.retain(|e| {
+                !matches!(
+                    &e.body,
+                    EventBody::EngagePreload { intent, phase: crate::engage::PreloadPhase::Verify, confirmed: false, .. }
+                        if *intent == spec.id
+                )
+            });
+            if events.len() == before {
+                return Err("no unconfirmed engage.preload verify to drop".into());
+            }
+        }
         "forge_preload" => {
             // rules 5: a preload the platform never confirmed made to look confirmed
             let mut done = false;
@@ -2113,6 +2215,40 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
                     && *intent == spec.id
                 {
                     *by = OperatorId::new("agent-planner");
+                    done = true;
+                }
+            }
+            if !done {
+                return Err("no engage.accepted to forge".into());
+            }
+        }
+        "acceptance_without_authority" => {
+            // rules 5: an acceptance re-credited to an operator whose session has no
+            // engagement authority (that session, as opened in the log)
+            let plain = events.iter().find_map(|e| match &e.body {
+                EventBody::OperatorAction {
+                    operator,
+                    session,
+                    action,
+                    grants,
+                    ..
+                } if action == "session.opened" && !grants.is_some_and(|g| g.engage) => {
+                    Some((operator.clone(), *session))
+                }
+                _ => None,
+            });
+            let Some((op, sess)) = plain else {
+                return Err("no session without engagement authority in the log".into());
+            };
+            let mut done = false;
+            for e in &mut events {
+                if let EventBody::EngageAccepted {
+                    intent, by, session, ..
+                } = &mut e.body
+                    && *intent == spec.id
+                {
+                    *by = op.clone();
+                    *session = sess;
                     done = true;
                 }
             }

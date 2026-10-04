@@ -1,0 +1,81 @@
+# Rules 5: any operator may withdraw an acceptance, at any time before the effect (it only
+# restricts). The engagement was approved with the lost quadcopter accepted; under way,
+# op-4 (no engagement authority) revokes it (engage.acceptance_revoked). The held picture
+# counts the quadcopter again: its reach covers the effect point, the engagement stops with
+# its fallback before any release.
+title = "A revoked acceptance stops the engagement"
+invariant = "keep_out_friendly"
+attack = "an acceptance is withdrawn while the engagement is under way"
+expect = "aborted"
+expect_rule = "keep_out_friendly"
+end_s = 60
+
+[[operator]]
+id = "op-1"                 # nominates and accepts: engagement authority, so never a signer
+engage = true
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+[[operator]]
+id = "op-4"                 # no engagement authority: may still revoke
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"
+at = [-122.4700, 37.8160]
+
+[[vehicle]]
+uid = "drone-1"
+platform = "x10"
+at = [-122.4723, 37.8120]   # 2 km east of the target, where it last reported
+lost_for_s = 60
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+accept = ["drone-1"]
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"
+
+[[step]]
+at_s = 12
+action = "revoke"
+by = "op-4"
+uid = "drone-1"

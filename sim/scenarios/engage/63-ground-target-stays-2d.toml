@@ -1,0 +1,58 @@
+# Rules 5, from the review (probe 8): a ground track's altitude is not its height above sea
+# level (the sensing model gives ground contacts 0 m whatever the terrain, which here is
+# about 250 m). One of our quadcopters 400 m MSL right over the target, so 150 m over the
+# real ground: a 3D keep-out on the logged 0 m would clear it. A ground target stays 2D: the
+# nomination is rejected.
+title = "A ground target keeps the keep-out 2D"
+invariant = "keep_out_friendly"
+attack = "one of our quadcopters 400 m MSL over a ground target logged at 0 m"
+expect = "rejected"
+expect_rule = "keep_out_friendly"
+end_s = 20
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"
+at = [-122.4700, 37.8160]
+
+[[vehicle]]
+uid = "drone-1"
+platform = "x10"
+at = [-122.4950, 37.8120]   # right over the target
+alt_m = 400
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]
+affiliation = "suspect"
+identity = "vehicle"
+identity_confidence = 0.9
+domain = "ground"
+sources = ["3:radar", "1:eo_ir"]
+alt_m = 0                   # the sensing model's ground contact altitude
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600

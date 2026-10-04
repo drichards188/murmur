@@ -126,8 +126,8 @@ export interface IntentSpace {
 export type Severity = 'high' | 'medium'
 
 export interface Alert {
-  id: string // link:<uid> or op:<op id>; stable while the condition lasts
-  kind: 'lost_link' | 'not_moving' | 'left_task' | 'task_failed' | 'ack_timeout'
+  id: string // link:<uid>, op:<op id> or restore:<uid>; stable while the condition lasts
+  kind: 'lost_link' | 'not_moving' | 'left_task' | 'task_failed' | 'ack_timeout' | 'restore_pending'
   severity: Severity
   uid: number
   callsign: string | null
@@ -245,6 +245,7 @@ export const ALERT_LABEL: Record<Alert['kind'], string> = {
   left_task: 'LEFT TASK',
   task_failed: 'TASK FAILED',
   ack_timeout: 'NO ACK',
+  restore_pending: 'FAILSAFE NOT RESTORED',
 }
 
 // ---- operator (placeholder authentication) ------------------------------------------------

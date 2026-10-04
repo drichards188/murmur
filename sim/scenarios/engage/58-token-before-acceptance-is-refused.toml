@@ -1,0 +1,106 @@
+# Rules 5: every signer sees the acceptances. op-2 looks at the picture at s=14; op-3, who
+# holds engagement authority, then accepts the lost quadcopter (engage.accepted, logged with
+# its facts). op-2's signature on the token from before the acceptance is refused (the
+# token carries the accepted set: look again); on a fresh one, which shows the acceptance,
+# it goes through, and op-3 signs too. Afterwards the acceptance is re-credited in the log
+# to a session without engagement authority; replay catches it.
+title = "A token from before an acceptance is refused"
+invariant = "signed_picture"
+attack = "op-2 signs on a picture token taken before op-3 accepted a lost friendly; the log credits the acceptance to an operator without engagement authority"
+expect = "done"
+expect_assessment = "ceased"
+expect_refusals = ["the lost vehicles accepted for it changed since you looked: look again"]
+tamper = "acceptance_without_authority"
+end_s = 200
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"
+at = [-122.4700, 37.8160]
+
+[[vehicle]]
+uid = "drone-1"
+platform = "x10"
+at = [-122.4950, 37.8264]   # 1.6 km north of the target; its link is cut at s=2
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 2
+action = "vehicle"
+uid = "drone-1"
+silent = true
+
+[[step]]
+at_s = 14
+action = "look"
+by = "op-2"
+
+[[step]]
+at_s = 15
+action = "accept"
+by = "op-3"
+uid = "drone-1"
+
+[[step]]
+at_s = 17
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 17
+action = "expect"
+state = "pending_approval"
+concurrences = 0
+
+[[step]]
+at_s = 18
+action = "look"
+by = "op-2"
+
+[[step]]
+at_s = 18
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 20
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 21
+action = "expect"
+state = "dispatched"

@@ -24,7 +24,8 @@ pub enum Severity {
 pub struct Alert {
     /// Stable while the condition lasts: `link:<uid>` or `op:<op id>`.
     pub id: String,
-    /// lost_link | not_moving | left_task | task_failed | ack_timeout
+    /// lost_link | not_moving | left_task | task_failed | ack_timeout | restore_pending (rules
+    /// 5: a platform's own lost-link failsafe not confirmed back after an engagement)
     pub kind: &'static str,
     pub severity: Severity,
     pub uid: Uid,
@@ -38,7 +39,7 @@ pub struct Alert {
     pub intent_id: Option<u64>,
 }
 
-fn callsign(cell: &VehicleCell) -> Option<String> {
+pub(super) fn callsign(cell: &VehicleCell) -> Option<String> {
     cell.read(|v| {
         v.identity
             .as_ref()

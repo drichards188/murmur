@@ -1,0 +1,81 @@
+# Rules 5: an acceptance goes with the plan it was given for. op-1, with engagement
+# authority, nominates accepting the lost quadcopter; op-2 signs, freezing the plan. The
+# target then jumps about 880 m west: the frozen plan no longer holds, the signatures are
+# dropped (approval.reset), and so is the acceptance. op-3 signs on the new picture: the
+# quadcopter counts again, its reach covers the effect point, the approval is void.
+title = "A reset of the signatures clears the acceptances"
+invariant = "keep_out_friendly"
+attack = "the plan an acceptance was given for is dropped; a signer signs the new one"
+expect = "voided"
+expect_rule = "keep_out_friendly"
+expect_reset = true
+end_s = 40
+
+[[operator]]
+id = "op-1"                 # nominates and accepts: engagement authority, so never a signer
+engage = true
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"
+at = [-122.4700, 37.8160]
+
+[[vehicle]]
+uid = "drone-1"
+platform = "x10"
+at = [-122.5100, 37.8264]   # 1.6 km north of where the target will be; lost
+lost_for_s = 60
+
+[[track]]
+id = "T-0001"
+at = [-122.495, 37.812]
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 900
+accept = ["drone-1"]
+
+[[step]]
+at_s = 3
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 4
+action = "expect"
+state = "pending_approval"
+concurrences = 1
+
+[[step]]
+at_s = 5
+action = "track"
+id = "T-0001"
+at = [-122.505, 37.812]
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"

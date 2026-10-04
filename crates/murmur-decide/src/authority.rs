@@ -97,6 +97,15 @@ impl EngagementAuthority {
     pub fn session(&self) -> SessionId {
         self.session
     }
+
+    /// The same operator and session as a plain human authority (engine-internal: an
+    /// engagement operator's submission is also a human's).
+    pub(crate) fn human(&self) -> HumanAuthority {
+        HumanAuthority {
+            operator: self.operator.clone(),
+            session: self.session,
+        }
+    }
 }
 
 /// What an operator session may do beyond tasking, fixed when the session opens and logged

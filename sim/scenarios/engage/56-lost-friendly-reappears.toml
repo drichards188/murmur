@@ -12,7 +12,8 @@ tamper = "acceptance_by_agent"
 end_s = 120
 
 [[operator]]
-id = "op-1"                 # nominates; no engagement authority
+id = "op-1"                 # nominates and accepts: engagement authority, so never a signer
+engage = true
 [[operator]]
 id = "op-2"
 engage = true

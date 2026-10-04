@@ -24,16 +24,24 @@
 //!   lost-link action ([`murmur_decide::LostLinkPreload`]); at dispatch the bridge reads the
 //!   platform's own values, sets the preload and reads it back (`super::preload`), reports it
 //!   (`engage.preload`), and sends the intercept only once it confirms. One that does not
-//!   confirm stops the engagement with its fallback; nothing is released without it. When
-//!   the engagement ends (effect, abort, superseded) its own values go back, retried until
-//!   the vehicle answers.
+//!   confirm stops the engagement with its fallback; nothing is released without it. From
+//!   30 s before the release window opens it reads the preload again every 5 s (`verify`:
+//!   the release needs a read-back at most 10 s old; one that changed stops it). One
+//!   parameter job at a time runs on a platform's link ([`ParamLane`]). The platform's own
+//!   values are owed back from the set on: a newer engagement on it takes them over (its set
+//!   does not read them off the preloaded vehicle), and they go back only when no engagement
+//!   holds it, retried with backoff, every attempt logged, an inbox alert while they stay
+//!   owed past [`RESTORE_ALERT_S`]. Values still owed when the bridge stops are carried over
+//!   from its log at the next start (`platform.restore`, [`Decision::carry_restores`]).
 //! - **Lost friendlies** (rules 5). A nomination may carry `accept_unknown`: our vehicles
 //!   whose position the nominating operator accepts as unknown since a named report
 //!   (`POST /api/intents/{id}/accept_unknown` does it while the nomination waits with no
-//!   signature). Only an operator: an agent's request with it is refused.
+//!   signature; `.../revoke_unknown` withdraws it). Only an operator with engagement
+//!   authority accepts (403 otherwise); an agent's request with it is refused. The card
+//!   shows the acceptances to every signer, and their picture tokens carry them.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use murmur_decide::{
     Clock,
@@ -97,12 +105,12 @@ pub(super) struct EngageRun {
     fallback: Option<Arc<Tasking>>,
     /// op id -> state last written to the log
     reported: HashMap<u64, OpState>,
-    /// rules 5: the platform, the intercept waiting for its lost-link preload to confirm, the
-    /// preload being set, the platform's own values it read, and whether it was reported
+    /// rules 5: the platform, the intercept waiting for its lost-link preload to confirm,
+    /// whether the set still waits for the platform's link, and whether it was reported
+    /// (or abandoned before it started)
     platform: Option<crate::vehicle::Uid>,
     pending: Option<TaskOrder>,
-    preload: Option<super::preload::Job>,
-    own: Arc<Mutex<BTreeMap<String, f64>>>,
+    want_set: bool,
     preload_reported: bool,
 }
 
@@ -114,26 +122,70 @@ impl EngageRun {
             reported: HashMap::new(),
             platform: None,
             pending: None,
-            preload: None,
-            own: Arc::new(Mutex::new(BTreeMap::new())),
+            want_set: false,
             preload_reported: false,
         }
     }
 }
 
-/// Rules 5: a platform's own lost-link values to put back once its engagement ended, tried
-/// every [`RESTORE_RETRY_S`] until the vehicle confirms them.
-pub(super) struct RestoreRun {
-    platform: crate::vehicle::Uid,
-    values: BTreeMap<String, f64>,
-    job: Option<super::preload::Job>,
-    next_try: f64,
-    /// an unconfirmed attempt was logged (later ones are not, until one confirms)
-    failed_logged: bool,
+/// Rules 5: one platform's lost-link parameters as the bridge handles them: the one job on
+/// its link, and its own values while a preload has replaced them.
+#[derive(Default)]
+pub(super) struct ParamLane {
+    job: Option<(Purpose, super::preload::Job)>,
+    owed: Option<Owed>,
 }
 
-/// Rules 5: seconds between attempts to put a platform's own lost-link values back.
+/// What a lane's job is for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Purpose {
+    Set(IntentId),
+    Verify(IntentId),
+    Restore,
+}
+
+/// Rules 5: a platform's own lost-link values, owed back to it.
+pub(super) struct Owed {
+    values: BTreeMap<String, f64>,
+    /// the engagement whose restore it is (the last one that preloaded the platform); none:
+    /// carried over from an earlier run's log
+    owner: Option<IntentId>,
+    /// when the restore became due (no engagement holds the platform) and the next attempt
+    /// (monotonic s), the attempts so far and the last one's error
+    due_since: Option<f64>,
+    next_try: f64,
+    attempts: u32,
+    last_error: Option<String>,
+}
+
+impl Owed {
+    pub(super) fn carried(values: BTreeMap<String, f64>) -> Owed {
+        Owed {
+            values,
+            owner: None,
+            due_since: None,
+            next_try: 0.0,
+            attempts: 0,
+            last_error: None,
+        }
+    }
+}
+
+impl ParamLane {
+    pub(super) fn carrying(values: BTreeMap<String, f64>) -> ParamLane {
+        ParamLane {
+            job: None,
+            owed: Some(Owed::carried(values)),
+        }
+    }
+}
+
+/// Rules 5: seconds before the first retry of a restore that did not confirm; each later one
+/// waits twice as long, up to [`RESTORE_RETRY_MAX_S`].
 const RESTORE_RETRY_S: f64 = 15.0;
+const RESTORE_RETRY_MAX_S: f64 = 300.0;
+/// Rules 5: how long a due restore may stay unconfirmed before the inbox says so, s.
+pub(super) const RESTORE_ALERT_S: f64 = 30.0;
 
 /// The engine proposal for an engage request.
 pub(super) fn proposal(req: &IntentRequest, now: Time) -> Result<Proposal, DecisionError> {
@@ -281,48 +333,33 @@ impl Decision {
                 return Ok(());
             }
         };
-        // rules 5: the fallback as the platform's own lost-link action first; the intercept
-        // goes out once its read-back confirms
-        if let Some(p) = o.preload.clone() {
+        // rules 5: the fallback as the platform's own lost-link action first (on the
+        // platform's lane, once any job there has finished); the intercept goes out once its
+        // read-back confirms
+        if o.preload.is_some() {
             let mut run = EngageRun::new(None);
             run.platform = Some(uid);
-            match fleet.get(&uid) {
-                Some(cell) => {
-                    // an earlier engagement's restore on this platform not done yet: its own
-                    // values are that restore's, and this engagement's restore puts them back
-                    let earlier: Vec<IntentId> = core
-                        .restores
-                        .iter()
-                        .filter(|(_, r)| r.platform == uid)
-                        .map(|(i, _)| *i)
-                        .collect();
-                    let known = earlier
-                        .iter()
-                        .find_map(|i| core.restores.get(i))
-                        .map(|r| r.values.clone());
-                    for i in earlier {
-                        core.restores.remove(&i);
-                    }
-                    run.preload = Some(super::preload::start_set(cell.clone(), p, run.own.clone(), known));
-                    run.pending = Some(order);
-                }
-                None => {
-                    // gone from the fleet: report it as a preload that could not be set
-                    let report = murmur_decide::PreloadReport {
-                        uid: spec.uids[0].clone(),
-                        phase: murmur_decide::PreloadPhase::Set,
-                        before: BTreeMap::new(),
-                        readback: BTreeMap::new(),
-                        error: Some("the platform is not in the fleet".into()),
-                    };
-                    run.preload_reported = true;
-                    if let Some(f) = core.engine.record_preload(id, report).map_err(engine_err)? {
-                        self.command_fallback(core, f);
-                    }
+            if fleet.contains_key(&uid) {
+                run.want_set = true;
+                run.pending = Some(order);
+                core.engagements.insert(id, run);
+            } else {
+                // gone from the fleet: report it as a preload that could not be set
+                let report = murmur_decide::PreloadReport {
+                    uid: spec.uids[0].clone(),
+                    phase: murmur_decide::PreloadPhase::Set,
+                    before: BTreeMap::new(),
+                    readback: BTreeMap::new(),
+                    error: Some("the platform is not in the fleet".into()),
+                };
+                run.preload_reported = true;
+                core.engagements.insert(id, run);
+                if let Some(f) = core.engine.record_preload(id, report).map_err(engine_err)? {
+                    self.command_fallback(core, f);
                 }
             }
-            core.engagements.insert(id, run);
             self.supersede(core, id, &[spec.uids[0].clone()]);
+            self.step_params(core);
             return Ok(());
         }
         let tasking = self.world.tasks.dispatch(super::AuthorizedOrder {
@@ -335,52 +372,134 @@ impl Decision {
         Ok(())
     }
 
-    /// Rules 5: each dispatched engagement's lost-link preload, once its job has finished:
-    /// reported to the engine (`engage.preload`), then the intercept sent if it confirmed and
-    /// the engagement is still under way, else (the engine stopped it) the fallback commanded.
-    pub(super) fn step_preloads(&self, core: &mut Core) {
+    /// Rules 5: the platforms' lost-link parameter jobs, one at a time per platform. First the
+    /// jobs that finished: a set reported to the engine (`engage.preload`; its own values are
+    /// owed back from then on, the engagement owning their restore), then the intercept sent
+    /// if it confirmed and the engagement is still under way, else (the engine stopped it)
+    /// the fallback commanded; a re-read near the release reported (one that changed stops
+    /// it); a restore reported (`engage.preload` restore by its owner, else, or when the
+    /// engine refuses it, `platform.restore`: never dropped), retried with backoff until it
+    /// confirms. Then, on each free lane: a set waiting, else a re-read due, else the
+    /// restore once no engagement holds the platform.
+    pub(super) fn step_params(&self, core: &mut Core) {
         let mut stops: Vec<FallbackOrder> = Vec::new();
         let mut sends: Vec<(IntentId, TaskOrder)> = Vec::new();
-        {
-            let Core {
-                engine,
-                engagements,
-                ..
-            } = core;
-            for (id, run) in engagements.iter_mut() {
-                if run.preload_reported {
-                    continue;
-                }
-                let Some(res) = run.preload.as_ref().and_then(super::preload::Job::take) else {
-                    continue;
-                };
-                run.preload_reported = true;
-                let Some(platform) = engine.intent(*id).and_then(|i| i.spec().uids.first().cloned()) else {
-                    continue;
-                };
-                let report = murmur_decide::PreloadReport {
-                    uid: platform,
-                    phase: murmur_decide::PreloadPhase::Set,
-                    before: res.before,
-                    readback: res.readback,
-                    error: res.error,
-                };
-                match engine.record_preload(*id, report) {
-                    Ok(Some(f)) => stops.push(f),
-                    Ok(None) => {
-                        let confirmed = engine
-                            .intent(*id)
-                            .and_then(Intent::engagement)
-                            .and_then(|e| e.preloaded.as_ref())
-                            .is_some_and(|r| r.confirmed);
-                        let under_way = engine.intent(*id).map(Intent::state) == Some(State::Dispatched);
-                        if confirmed && under_way
-                            && let Some(order) = run.pending.take()
-                        {
-                            sends.push((*id, order));
-                        }
+        let now_mono = crate::clock::mono();
+        let finished: Vec<(crate::vehicle::Uid, Purpose, super::preload::JobResult)> = core
+            .params
+            .iter_mut()
+            .filter_map(|(uid, lane)| {
+                let (purpose, job) = lane.job.as_ref()?;
+                let res = job.take()?;
+                let purpose = *purpose;
+                lane.job = None;
+                Some((*uid, purpose, res))
+            })
+            .collect();
+        for (uid, purpose, res) in finished {
+            match purpose {
+                Purpose::Set(id) => {
+                    if let Some(run) = core.engagements.get_mut(&id) {
+                        run.preload_reported = true;
                     }
-                    Err(e) => eprintln!("decision: preload {id}: {e}"),
+                    // the platform's own values are owed back from now on, this engagement
+                    // owning their restore (it took over any earlier owner's)
+                    if !res.before.is_empty() {
+                        let lane = core.params.entry(uid).or_default();
+                        let owed = lane.owed.get_or_insert_with(|| Owed::carried(BTreeMap::new()));
+                        for (n, v) in &res.before {
+                            owed.values.entry(n.clone()).or_insert(*v);
+                        }
+                        owed.owner = Some(id);
+                        owed.due_since = None;
+                    }
+                    let report = murmur_decide::PreloadReport {
+                        uid: duid(uid),
+                        phase: murmur_decide::PreloadPhase::Set,
+                        before: res.before,
+                        readback: res.readback,
+                        error: res.error,
+                    };
+                    match core.engine.record_preload(id, report) {
+                        Ok(Some(f)) => stops.push(f),
+                        Ok(None) => {
+                            let i = core.engine.intent(id);
+                            let confirmed = i
+                                .and_then(Intent::engagement)
+                                .and_then(|e| e.preloaded.as_ref())
+                                .is_some_and(|r| r.confirmed);
+                            let under_way = i.map(Intent::state) == Some(State::Dispatched);
+                            if confirmed
+                                && under_way
+                                && let Some(order) = core.engagements.get_mut(&id).and_then(|r| r.pending.take())
+                            {
+                                sends.push((id, order));
+                            }
+                        }
+                        Err(e) => eprintln!("decision: preload {id}: {e}"),
+                    }
+                }
+                Purpose::Verify(id) => {
+                    let report = murmur_decide::PreloadReport {
+                        uid: duid(uid),
+                        phase: murmur_decide::PreloadPhase::Verify,
+                        before: BTreeMap::new(),
+                        readback: res.readback,
+                        error: res.error,
+                    };
+                    match core.engine.record_preload(id, report) {
+                        Ok(Some(f)) => stops.push(f),
+                        Ok(None) => {}
+                        // ended meanwhile: the re-read changes nothing
+                        Err(e) => eprintln!("decision: preload re-read {id}: {e}"),
+                    }
+                }
+                Purpose::Restore => {
+                    let Some(owed) = core.params.get_mut(&uid).and_then(|l| l.owed.as_mut()) else {
+                        continue;
+                    };
+                    let confirmed = res.error.is_none() && engage::restored(&owed.values, &res.readback).is_ok();
+                    // by its owner's engagement when the engine takes it; else, or when it
+                    // refuses it, as the platform's own (logged either way)
+                    let by_owner = owed.owner.is_some_and(|id| {
+                        core.engine
+                            .record_preload(
+                                id,
+                                murmur_decide::PreloadReport {
+                                    uid: duid(uid),
+                                    phase: murmur_decide::PreloadPhase::Restore,
+                                    before: BTreeMap::new(),
+                                    readback: res.readback.clone(),
+                                    error: res.error.clone(),
+                                },
+                            )
+                            .is_ok()
+                    });
+                    if !by_owner
+                        && let Err(e) = core.engine.record_platform_restore(murmur_decide::PlatformRestoreReport {
+                            uid: duid(uid),
+                            values: owed.values.clone(),
+                            carried: false,
+                            from: None,
+                            readback: res.readback.clone(),
+                            error: res.error.clone(),
+                        })
+                    {
+                        eprintln!("decision: restore of {uid}: {e}");
+                    }
+                    if confirmed {
+                        if let Some(lane) = core.params.get_mut(&uid) {
+                            lane.owed = None;
+                        }
+                    } else {
+                        owed.attempts += 1;
+                        owed.last_error = Some(res.error.unwrap_or_else(|| {
+                            engage::restored(&owed.values, &res.readback).err().unwrap_or_default()
+                        }));
+                        let wait = (RESTORE_RETRY_S * 2f64.powi(owed.attempts.saturating_sub(1).min(8) as i32))
+                            .min(RESTORE_RETRY_MAX_S);
+                        owed.next_try = now_mono + wait;
+                    }
                 }
             }
         }
@@ -397,125 +516,168 @@ impl Decision {
         for f in stops {
             self.command_fallback(core, f);
         }
+        self.start_param_jobs(core, now_mono);
     }
 
-    /// Rules 5: an engagement no longer under way gets its platform's own lost-link values
-    /// back (what its preload read), tried until the vehicle confirms them; the result is
-    /// logged (`engage.preload` restore: the first attempt that fails, and the one that
-    /// confirms).
-    fn step_restores(&self, core: &mut Core) {
-        // runs that ended: their preload stops, their restore starts
-        let ended: Vec<IntentId> = core
-            .engagements
-            .iter()
-            .filter(|(id, run)| {
-                run.platform.is_some()
-                    && !core.restores.contains_key(id)
-                    && core.engine.intent(**id).map(Intent::state) != Some(State::Dispatched)
-            })
-            .map(|(id, _)| *id)
-            .collect();
-        for id in ended {
-            self.retire_preload(core, id);
-        }
-        let now = crate::clock::mono();
+    /// Rules 5: on each platform whose lane is free, the next job: a set waiting (its
+    /// engagement still under way; one that ended first never touches the vehicle), else a
+    /// re-read due near the release, else the restore of its own values once no engagement
+    /// holds it (none under way or waiting for its set: a restore never undoes a newer
+    /// engagement's preload).
+    fn start_param_jobs(&self, core: &mut Core, now_mono: f64) {
         let fleet = self.fleet();
-        let mut done: Vec<IntentId> = Vec::new();
-        for (id, r) in core.restores.iter_mut() {
-            // the set's report comes first (the engine refuses a restore without it)
-            let set_logged = core
-                .engine
-                .intent(*id)
-                .and_then(Intent::engagement)
-                .is_some_and(|e| e.preloaded.is_some());
-            if !set_logged {
+        let now = self.clock.now();
+        // engagements that ended before their set started: nothing to set or report
+        for (id, run) in core.engagements.iter_mut() {
+            let under_way = core.engine.intent(*id).map(Intent::state) == Some(State::Dispatched);
+            if run.want_set && !under_way {
+                run.want_set = false;
+                run.preload_reported = true;
+                run.pending = None;
+            }
+            if !under_way {
+                run.pending = None;
+            }
+        }
+        let mut platforms: Vec<crate::vehicle::Uid> = core.params.keys().copied().collect();
+        platforms.extend(core.engagements.values().filter_map(|r| r.platform));
+        platforms.sort_unstable();
+        platforms.dedup();
+        for uid in platforms {
+            if core.params.get(&uid).is_some_and(|l| l.job.is_some()) {
                 continue;
             }
-            match &r.job {
-                None if now >= r.next_try => {
-                    if let Some(cell) = fleet.get(&r.platform) {
-                        r.job = Some(super::preload::start_restore(cell.clone(), r.values.clone()));
-                    }
-                    r.next_try = now + RESTORE_RETRY_S;
+            let Some(cell) = fleet.get(&uid) else { continue };
+            let holding: Vec<IntentId> = core
+                .engagements
+                .iter()
+                .filter(|(id, r)| {
+                    r.platform == Some(uid)
+                        && (r.want_set || core.engine.intent(**id).map(Intent::state) == Some(State::Dispatched))
+                })
+                .map(|(id, _)| *id)
+                .collect();
+            // a set waiting
+            if let Some(&id) = holding.iter().find(|id| core.engagements.get(id).is_some_and(|r| r.want_set))
+                && let Some(p) = core.engine.intent(id).and_then(Intent::engagement).and_then(|e| e.preload.clone())
+            {
+                let known = core
+                    .params
+                    .get(&uid)
+                    .and_then(|l| l.owed.as_ref())
+                    .map(|o| o.values.clone())
+                    .unwrap_or_default();
+                if let Some(run) = core.engagements.get_mut(&id) {
+                    run.want_set = false;
                 }
-                None => {}
-                Some(job) => {
-                    let Some(res) = job.take() else { continue };
-                    r.job = None;
-                    let report = murmur_decide::PreloadReport {
-                        uid: duid(r.platform),
-                        phase: murmur_decide::PreloadPhase::Restore,
-                        before: BTreeMap::new(),
-                        readback: res.readback,
-                        error: res.error,
-                    };
-                    let confirmed = murmur_decide::engage::restored(&r.values, &report.readback).is_ok()
-                        && report.error.is_none();
-                    if confirmed || !r.failed_logged {
-                        match core.engine.record_preload(*id, report) {
-                            Ok(_) => r.failed_logged |= !confirmed,
-                            Err(e) => {
-                                eprintln!("decision: restore {id}: {e}");
-                                done.push(*id);
-                            }
-                        }
-                    }
-                    if confirmed {
-                        done.push(*id);
-                    }
-                }
+                core.params.entry(uid).or_default().job =
+                    Some((Purpose::Set(id), super::preload::start_set(cell.clone(), p, known)));
+                continue;
             }
-        }
-        for id in done {
-            core.restores.remove(&id);
+            // a re-read due
+            let rules = &self.rules;
+            if let Some((id, p)) = holding.iter().find_map(|id| {
+                let e = core.engine.intent(*id).and_then(Intent::engagement)?;
+                (core.engagements.get(id).is_some_and(|r| r.preload_reported)
+                    && engage::preload_verify_due(e, now, rules))
+                .then(|| (*id, e.preload.clone()))
+                .and_then(|(id, p)| Some((id, p?)))
+            }) {
+                core.params.entry(uid).or_default().job =
+                    Some((Purpose::Verify(id), super::preload::start_verify(cell.clone(), p)));
+                continue;
+            }
+            // the restore, once nothing holds the platform
+            if !holding.is_empty() {
+                continue;
+            }
+            let Some(lane) = core.params.get_mut(&uid) else { continue };
+            let Some(owed) = lane.owed.as_mut() else { continue };
+            owed.due_since.get_or_insert(now_mono);
+            if now_mono >= owed.next_try {
+                lane.job = Some((Purpose::Restore, super::preload::start_restore(cell.clone(), owed.values.clone())));
+            }
         }
     }
 
-    /// Rules 5: an engagement's run is ending: stop its preload if it still runs, and queue
-    /// its platform's own values to go back (when its preload read any).
-    pub(super) fn retire_preload(&self, core: &mut Core, id: IntentId) {
-        let Some(run) = core.engagements.get_mut(&id) else {
-            return;
-        };
-        if let Some(job) = &run.preload
-            && !run.preload_reported
+    /// Rules 5, at start: the platforms' own lost-link values this station's last run still
+    /// owed back when it ended (derived from its audit log, which `pointer` names), logged as
+    /// carried (`platform.restore`) and put back like any other once the platform answers.
+    /// Then `pointer` names this run's log. A missing pointer or log is a first start.
+    pub(super) fn carry_restores(&self, pointer: &std::path::Path) {
+        let previous = std::fs::read_to_string(pointer).ok().map(|s| std::path::PathBuf::from(s.trim()));
+        if let Some(prev) = previous.filter(|p| p != &self.audit_path)
+            && let Ok(text) = std::fs::read_to_string(&prev)
         {
-            // let the set finish reporting: the engine logs it (after the stop it changes
-            // nothing), then the restore follows
-            if let Some(res) = job.take() {
-                run.preload_reported = true;
-                if let Some(platform) = core.engine.intent(id).and_then(|i| i.spec().uids.first().cloned()) {
-                    let report = murmur_decide::PreloadReport {
-                        uid: platform,
-                        phase: murmur_decide::PreloadPhase::Set,
-                        before: res.before,
-                        readback: res.readback,
-                        error: res.error,
-                    };
-                    if let Err(e) = core.engine.record_preload(id, report) {
-                        eprintln!("decision: preload {id}: {e}");
+            let file = prev.file_name().map_or_else(|| prev.display().to_string(), |f| f.to_string_lossy().into_owned());
+            let mut guard = self.lock();
+            let core = &mut *guard;
+            for o in murmur_decide::replay::owed_restores(&text) {
+                let Some(uid) = bridge_uid(&o.uid) else { continue };
+                let by: Vec<String> = o.by.iter().map(ToString::to_string).collect();
+                let from = if by.is_empty() {
+                    format!("{file} (carried over into it)")
+                } else {
+                    format!("{file} (preloaded by {})", by.join(", "))
+                };
+                let report = murmur_decide::PlatformRestoreReport {
+                    uid: o.uid.clone(),
+                    values: o.values.clone(),
+                    carried: true,
+                    from: Some(from.clone()),
+                    readback: BTreeMap::new(),
+                    error: None,
+                };
+                match core.engine.record_platform_restore(report) {
+                    Ok(_) => {
+                        println!("lost-link values of vehicle {uid} owed back from {from}: restoring");
+                        core.params.insert(uid, ParamLane::carrying(o.values));
                     }
+                    Err(e) => eprintln!("decision: carry restore of {uid}: {e}"),
                 }
-            } else {
-                return; // still running: retired once it reports
             }
         }
-        let Some(platform) = run.platform else { return };
-        let values = run.own.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        run.pending = None;
-        if values.is_empty() || core.restores.contains_key(&id) {
-            return;
+        if let Err(e) = std::fs::write(pointer, self.audit_path.display().to_string()) {
+            eprintln!("decision: {}: {e}", pointer.display());
         }
-        core.restores.insert(
-            id,
-            RestoreRun {
-                platform,
-                values,
-                job: None,
-                next_try: 0.0,
-                failed_logged: false,
-            },
-        );
+    }
+
+    /// Rules 5: inbox alerts for platforms whose own lost-link values have been due back for
+    /// longer than [`RESTORE_ALERT_S`] without a confirmed restore.
+    pub(super) fn restore_alerts(&self, core: &Core, now_wall: f64) -> Vec<super::alerts::Alert> {
+        let fleet = self.fleet();
+        let now_mono = crate::clock::mono();
+        core.params
+            .iter()
+            .filter_map(|(uid, lane)| {
+                let owed = lane.owed.as_ref()?;
+                let due = owed.due_since?;
+                let since = now_wall - (now_mono - due);
+                (now_mono - due > RESTORE_ALERT_S).then(|| {
+                    let values: Vec<String> = owed.values.iter().map(|(n, v)| format!("{n} {v}")).collect();
+                    let last = owed
+                        .last_error
+                        .as_deref()
+                        .map(|e| format!("; last attempt: {e}"))
+                        .unwrap_or_default();
+                    super::alerts::Alert {
+                        id: format!("restore:{uid}"),
+                        kind: "restore_pending",
+                        severity: super::alerts::Severity::High,
+                        uid: *uid,
+                        callsign: fleet.get(uid).and_then(|c| super::alerts::callsign(c)),
+                        detail: format!(
+                            "its own lost-link failsafe ({}) is not confirmed back: {} attempt(s){last}",
+                            values.join(", "),
+                            owed.attempts
+                        ),
+                        since_t: since,
+                        op_id: None,
+                        intent_id: owed.owner.map(|i| i.0),
+                    }
+                })
+            })
+            .collect()
     }
 
     /// Command an engagement's recorded fallback (the engine released it with the stop).
@@ -596,16 +758,10 @@ impl Decision {
             if let Err(e) = core.engine.supersede_engagement(other, id) {
                 eprintln!("decision: supersede {other}: {e}");
             }
-            // rules 5: its platform's own lost-link values go back (the new order stands); a
-            // preload still being set is kept until it reports, then put back
-            self.retire_preload(core, other);
-            let setting = core
-                .engagements
-                .get(&other)
-                .is_some_and(|r| r.platform.is_some() && !r.preload_reported);
-            if !setting {
-                core.engagements.remove(&other);
-            }
+            // rules 5: no intercept for it; a set still on the platform's lane reports when it
+            // finishes (the lane knows whose it is), and its own values go back once nothing
+            // holds the platform
+            core.engagements.remove(&other);
         }
     }
 
@@ -613,7 +769,7 @@ impl Decision {
     /// intercept stops the engagement), then let the engine hold the picture, release
     /// effects and assess, and carry out what it says.
     pub(super) fn step_engagements(&self, core: &mut Core) {
-        self.step_preloads(core);
+        self.step_params(core);
         let mut failed: Vec<(IntentId, String)> = Vec::new();
         {
             let Core {
@@ -691,7 +847,7 @@ impl Decision {
                 }
             }
         }
-        self.step_restores(core);
+        self.step_params(core);
         self.forget_finished_engagements(core);
     }
 
@@ -710,8 +866,8 @@ impl Decision {
                 if !i.state().is_terminal() {
                     return false;
                 }
-                // rules 5: its preload reported and its restore queued first
-                if run.platform.is_some() && (!run.preload_reported || run.pending.is_some()) {
+                // rules 5: its preload reported first (or abandoned before it started)
+                if run.platform.is_some() && !run.preload_reported {
                     return false;
                 }
                 let ended = i.history().last().map_or(now, |h| h.t);
@@ -776,11 +932,12 @@ impl Decision {
         out
     }
 
-    /// `POST /api/intents/{id}/accept_unknown` (rules 5): an operator accepts, for a
-    /// nomination waiting with no signature yet, that one of our vehicles is lost since the
-    /// report the check names (`since`, engine ms; null: never reported). Logged as
-    /// `engage.accepted`; the next check reads it. Never automatic, never an agent's (agents
-    /// have no route here).
+    /// `POST /api/intents/{id}/accept_unknown` (rules 5): an operator with engagement
+    /// authority accepts, for a nomination waiting with no signature yet, that one of our
+    /// vehicles is lost since the report the check names (`since`, engine ms; null: never
+    /// reported). Logged as `engage.accepted` with the vehicle's facts; the next check reads
+    /// it, and every signer's picture shows it. 403 without engagement authority. Never
+    /// automatic, never an agent's (agents have no route here).
     pub fn accept_unknown(
         &self,
         by: &murmur_decide::OperatorId,
@@ -793,8 +950,37 @@ impl Decision {
             let mut guard = self.lock();
             let core = &mut *guard;
             let session = Self::session(&mut core.engine, &mut core.sessions, by, &self.engage_operators)?;
+            let Some(auth) = session.engagement_authority() else {
+                return Err(DecisionError::new(
+                    403,
+                    format!("{by} has no engagement authority: only an operator with it accepts a lost vehicle"),
+                ));
+            };
             let (uid, since) = accept.engine();
-            match core.engine.accept_unknown_friendly(id, session.authority(), uid, since, &world) {
+            match core.engine.accept_unknown_friendly(id, auth, uid, since, &world) {
+                Ok(_) => Ok(self.outcome(core, id)),
+                Err(e) => Err(self.with_intent(core, id, engine_err(e))),
+            }
+        };
+        self.publish();
+        out
+    }
+
+    /// `POST /api/intents/{id}/revoke_unknown` (rules 5): any operator withdraws an
+    /// acceptance of a lost vehicle (`engage.acceptance_revoked`); the checks count it again,
+    /// which stops an engagement it now blocks.
+    pub fn revoke_unknown(
+        &self,
+        by: &murmur_decide::OperatorId,
+        id: u64,
+        uid: crate::vehicle::Uid,
+    ) -> Result<super::Outcome, DecisionError> {
+        let id = IntentId(id);
+        let out = {
+            let mut guard = self.lock();
+            let core = &mut *guard;
+            let session = Self::session(&mut core.engine, &mut core.sessions, by, &self.engage_operators)?;
+            match core.engine.revoke_unknown_friendly(id, session.authority(), duid(uid)) {
                 Ok(_) => Ok(self.outcome(core, id)),
                 Err(e) => Err(self.with_intent(core, id, engine_err(e))),
             }
@@ -841,6 +1027,22 @@ impl Decision {
         let reset = record.and_then(|e| e.reset.as_ref()).map(|r| {
             json!({ "t": r.t, "dropped": r.dropped, "reason": r.reason })
         });
+        // rules 5: the lost vehicles accepted for it, shown to every signer
+        let accepted: Vec<Value> = record
+            .map(|e| {
+                e.accepted
+                    .iter()
+                    .map(|(uid, a)| {
+                        json!({
+                            "uid": bridge_uid(uid),
+                            "engine_uid": uid,
+                            "since": a.since,
+                            "by": a.by,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let eligible: Vec<String> = self
             .engage_operators
             .iter()
@@ -857,6 +1059,7 @@ impl Decision {
             "engage_operators": self.engage_operators,
             "signatures": signatures,
             "reset": reset,
+            "accepted": accepted,
             "token_ttl_s": self.rules.engage_rules().token_ttl(),
             "max_signing_s": self.rules.engage_rules().max_signing_s,
             // the plan the first signature froze: every later signer signs it exactly

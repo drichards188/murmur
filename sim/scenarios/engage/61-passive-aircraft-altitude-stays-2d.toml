@@ -1,0 +1,61 @@
+# Rules 5: a track's altitude counts for a 3D keep-out only when a sensor that ranges backs
+# it. The airliner of scenario 52 at 3,000 m over the effect point, but seen by EO/IR only
+# (a bearing and an elevation angle, no range): its altitude does not count, the keep-out
+# stays 2D, and the nomination is rejected.
+title = "A passive-only aircraft altitude keeps the keep-out 2D"
+invariant = "keep_out_tracks"
+attack = "a neutral airliner over the effect point whose altitude comes from EO/IR only"
+expect = "rejected"
+expect_rule = "keep_out_tracks"
+end_s = 20
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+alt_m = 0
+
+[[track]]
+id = "T-0002"
+at = [-122.4950, 37.8125]   # over the effect point
+velocity = [0.0, 0.0]
+affiliation = "neutral"
+identity = "airliner"
+identity_confidence = 0.9
+domain = "air"
+sources = ["1:eo_ir"]       # passive only
+alt_m = 3000
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600

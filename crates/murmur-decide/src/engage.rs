@@ -591,6 +591,11 @@ pub struct PictureToken {
     /// The plan was already frozen by an earlier signature when it was shown.
     pub frozen: bool,
     pub track: TrackIdentity,
+    /// Rules 5: the lost vehicles accepted for the engagement when it was shown (every signer
+    /// sees them); a signature quoting a token whose set differs from the engagement's now is
+    /// refused.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unknown_accepted: BTreeMap<Uid, AcceptedUnknown>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -704,6 +709,9 @@ pub struct Engagement {
     /// its own values afterwards.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preloaded: Option<PreloadRecord>,
+    /// Rules 5: the last re-read of it near the release.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verified: Option<PreloadRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub restored: Option<PreloadRecord>,
     /// Rules 5: our vehicles an operator accepted as lost for this engagement.
@@ -720,6 +728,40 @@ pub struct Engagement {
 pub struct AcceptedUnknown {
     pub since: Option<Time>,
     pub by: OperatorId,
+}
+
+/// Rules 5: how far apart an acceptance's logged world and the event may be, ms (both are the
+/// engine's clock at the call; replay binds them).
+pub const ACCEPT_WORLD_SKEW_MS: i64 = 5_000;
+
+/// Rules 5: whether vehicle `v` is lost at `t` since exactly its report at `since`: its
+/// position is not fresh by the link-aware age limit the checks use, and the last one it
+/// reported is at `since` (none: it never reported one). The engine refuses an acceptance
+/// otherwise; replay recomputes it from the vehicle's facts logged with `engage.accepted`.
+pub fn lost_since_report(
+    v: Option<&crate::world::VehicleFacts>,
+    since: Option<Time>,
+    t: Time,
+    cfg: &RulesConfig,
+) -> Result<(), String> {
+    let Some(v) = v else {
+        return Err("not one of ours in the world model".into());
+    };
+    let last = v.position.as_ref().map(|p| p.t);
+    if let Some(at) = last {
+        let (max_ms, _) = cfg.fact_age_limit_ms(v.report_interval_ms);
+        if t.ms_since(at) <= max_ms {
+            return Err("its position is fresh: it is not lost".into());
+        }
+    }
+    if last != since {
+        return Err(format!(
+            "lost since {}, not {}: accept what the check shows",
+            last.map_or("none".to_string(), |t| t.0.to_string()),
+            since.map_or("none".to_string(), |t| t.0.to_string())
+        ));
+    }
+    Ok(())
 }
 
 /// Rules 5: one parameter a lost-link preload sets, and its value.
@@ -766,6 +808,8 @@ pub struct LostLinkPreload {
 #[serde(rename_all = "snake_case")]
 pub enum PreloadPhase {
     Set,
+    /// Read back again while the engagement is under way, near its release: still in force.
+    Verify,
     Restore,
 }
 
@@ -1092,16 +1136,72 @@ fn preload_check(uid: Option<&Uid>, fallback: Fallback, world: &WorldSnapshot, e
     }
 }
 
-/// Rules 5, at the release: the platform confirmed its lost-link action is the fallback
-/// (`preloaded`: the preload its read-back confirmed, none until then).
-fn preloaded_check(uid: Option<&Uid>, preloaded: Option<&LostLinkPreload>) -> CheckResult {
+/// Rules 5: at the release, the platform's lost-link action must have been read back as the
+/// fallback this recently, ms (the bridge re-reads it every 5 s once the plan's time is
+/// within [`PRELOAD_VERIFY_LEAD_S`]): a value changed on the vehicle since the dispatch (by
+/// another station, a later job) shows before anything is released.
+pub const PRELOAD_FRESH_MS: i64 = 10_000;
+/// Rules 5: how long before the release window opens the bridge starts re-reading the
+/// preload, s.
+pub const PRELOAD_VERIFY_LEAD_S: f64 = 30.0;
+/// Rules 5: how often the bridge re-reads the preload once it does, ms.
+pub const PRELOAD_REREAD_MS: i64 = 5_000;
+
+/// Rules 5: whether the preload of an engagement under way is due to be read again: its set
+/// confirmed, the release window opening within [`PRELOAD_VERIFY_LEAD_S`] (or open), and its
+/// last read-back at least [`PRELOAD_REREAD_MS`] old. The bridge and the scenario runner
+/// read it again then (`engage.preload` verify), so the release check finds it fresh.
+pub fn preload_verify_due(e: &Engagement, now: Time, cfg: &RulesConfig) -> bool {
+    if !e.preloaded.as_ref().is_some_and(|r| r.confirmed) {
+        return false;
+    }
+    let Some(snap) = &e.snapshot else { return false };
+    let (from, until) = release_window(&snap.preview, &cfg.engage_rules());
+    if now < from.plus_ms(-ms(PRELOAD_VERIFY_LEAD_S)) || now > until {
+        return false;
+    }
+    let last = e.verified.as_ref().or(e.preloaded.as_ref()).map(|r| r.t);
+    last.is_none_or(|t| now.ms_since(t) >= PRELOAD_REREAD_MS)
+}
+
+/// The engagement's last read-back of its preload: the time of the latest `set` or
+/// `verify` report, if that report confirmed it (none if the latest did not, or none came).
+pub fn preload_confirmed_at(e: &Engagement) -> Option<Time> {
+    let latest = match (&e.preloaded, &e.verified) {
+        (_, Some(v)) => Some(v),
+        (Some(s), None) => Some(s),
+        (None, None) => None,
+    };
+    latest.filter(|r| r.confirmed).map(|r| r.t)
+}
+
+/// Rules 5, at the release: the platform confirmed its lost-link action is the fallback, by a
+/// read-back at most [`PRELOAD_FRESH_MS`] old (`preloaded`: the preload and when it was last
+/// read back confirmed; none until then).
+fn preloaded_check(uid: Option<&Uid>, preloaded: Option<(&LostLinkPreload, Time)>, now: Time) -> CheckResult {
     let r = RuleId::FallbackPreload;
     match preloaded {
-        Some(p) => check(
+        Some((p, at)) if now.ms_since(at) <= PRELOAD_FRESH_MS => check(
             r,
             uid,
             Outcome::Pass,
-            format!("the platform's lost-link action is the fallback, read back: {}", p.describe()),
+            format!(
+                "the platform's lost-link action is the fallback, read back {:.1} s ago: {}",
+                secs(now.ms_since(at)),
+                p.describe()
+            ),
+        ),
+        Some((_, at)) => check(
+            r,
+            uid,
+            Outcome::Fail,
+            format!(
+                "the platform's lost-link action was last read back {:.1} s ago: at the release it must be at most {:.0} s old (read again every {:.0} s from {:.0} s before the window opens)",
+                secs(now.ms_since(at)),
+                secs(PRELOAD_FRESH_MS),
+                secs(PRELOAD_REREAD_MS),
+                PRELOAD_VERIFY_LEAD_S
+            ),
         ),
         None => check(
             r,
@@ -2000,12 +2100,7 @@ pub fn keep_out_friendly(
             {
                 let alt_t = v.alt_msl_m.as_ref().map_or(pos.t, |f| f.t);
                 let alt_span = secs(effect_t.ms_since(alt_t)).max(0.0);
-                let rate = v
-                    .platform
-                    .as_ref()
-                    .and_then(|p| p.climb_mps)
-                    .unwrap_or(0.0)
-                    .max(ec.vertical_rate());
+                let rate = friendly_vertical_mps(v, &ec);
                 let m = ec.keep_out_sigma * VEHICLE_ALT_SIGMA_M + rate * alt_span;
                 if let Some(c) = vertical_clear(&e, *a, m) {
                     by_alt.push(format!(
@@ -2107,6 +2202,25 @@ pub fn track_vertical_mps(domain: Domain, ec: &EngageRules) -> f64 {
 /// Rules 5: the 1-sigma error of one of our vehicles' altitude (GNSS vertical), m.
 pub const VEHICLE_ALT_SIGMA_M: f64 = 10.0;
 
+/// Rules 5: the steepest dive counted for one of our fixed wings, degrees: ArduPlane's default
+/// pitch-down limit (`PTCH_LIM_MIN_DEG` -25, ArduPlane/config.h `PITCH_MIN`).
+pub const FIXED_WING_DIVE_DEG: f64 = 25.0;
+
+/// Rules 5: how fast one of our vehicles may climb or descend, m/s, either way: the largest of
+/// `vertical_rate_mps`, the catalog's climb rate, and for a fixed wing its dive at cruise
+/// speed down [`FIXED_WING_DIVE_DEG`] (a MALE aircraft at 90 m/s: 38 m/s).
+pub fn friendly_vertical_mps(v: &crate::world::VehicleFacts, ec: &EngageRules) -> f64 {
+    let p = v.platform.as_ref();
+    let climb = p.and_then(|p| p.climb_mps).unwrap_or(0.0);
+    let fixed_wing = platform_autopilot(v).is_some_and(AutopilotKind::is_fixed_wing);
+    let dive = if fixed_wing {
+        p.and_then(|p| p.cruise_mps).unwrap_or(0.0) * FIXED_WING_DIVE_DEG.to_radians().sin()
+    } else {
+        0.0
+    };
+    ec.vertical_rate().max(climb).max(dive)
+}
+
 /// Rules 5: the 1-sigma error of a protected track's predicted position `span_s` after its
 /// estimate, along its velocity: a constant-velocity prediction with white acceleration
 /// noise (Bar-Shalom, Li and Kirubarajan, Estimation with Applications to Tracking and
@@ -2136,6 +2250,28 @@ pub struct EffectAlt {
     pub half_height_m: f64,
 }
 
+/// Rules 5: a track's altitude where a 3D keep-out may use it, or None (2D). A sensor that
+/// ranges must back it: radar, sonar under water, or for a vessel its own AIS report (it is
+/// on the surface); an altitude from passive sensors only (EO/IR, ESM: a bearing, no range)
+/// does not count. A ground track's altitude does not count at all: the sensing model gives
+/// ground contacts 0 m whatever the terrain, and an altitude above the terrain is not one
+/// above mean sea level (a terrain-referenced height, DEM plus offset, is future work).
+pub fn track_altitude(t: &TrackFacts) -> Option<f64> {
+    let alt = t.alt_m.filter(|a| a.is_finite())?;
+    let has = |kind: &str| {
+        t.sources
+            .iter()
+            .any(|s| s.rsplit(':').next() == Some(kind))
+    };
+    let backed = match t.domain {
+        Domain::Ground => false,
+        Domain::Air => has("radar"),
+        Domain::Surface => has("radar") || has("ais"),
+        Domain::Subsurface => has("sonar"),
+    };
+    backed.then_some(alt)
+}
+
 /// See [`EffectAlt`].
 pub fn effect_alt(
     target: Option<&TrackFacts>,
@@ -2147,7 +2283,7 @@ pub fn effect_alt(
         return None;
     }
     let t = target?;
-    let alt_m = t.alt_m.filter(|a| a.is_finite())?;
+    let alt_m = track_altitude(t)?;
     let span = secs(effect_t.ms_since(t.position.t)).max(0.0);
     Some(EffectAlt {
         alt_m,
@@ -2257,8 +2393,8 @@ pub fn keep_out_tracks(
         let d = haversine_m(p, point);
         let edge = d - reach;
         if edge < keep_out_m {
-            // in 3D where both altitudes are known
-            if let (Some(e), Some(a)) = (alt, t.alt_m.filter(|a| a.is_finite())) {
+            // in 3D where both altitudes are known (and backed: track_altitude)
+            if let (Some(e), Some(a)) = (alt, track_altitude(t)) {
                 let m = ec.keep_out_sigma * track_alt_sigma_m(t.domain)
                     + track_vertical_mps(t.domain, ec) * span;
                 if let Some(c) = vertical_clear(&e, a, m) {
@@ -2275,7 +2411,7 @@ pub fn keep_out_tracks(
                 format!(
                     "track {} predicted {d:.0} m from the effect point at the effect time ({how}); keep-out {keep_out_m:.0} m{}",
                     describe_track(id, t),
-                    vertical_note(alt, t.alt_m.is_some())
+                    vertical_note(alt, track_altitude(t).is_some())
                 ),
             );
         }
@@ -2777,6 +2913,7 @@ pub fn check_token(
     now: Time,
     track_now: Option<&TrackFacts>,
     plan: Option<&FrozenPlan>,
+    accepted: &BTreeMap<Uid, AcceptedUnknown>,
 ) -> Result<(), String> {
     if token.intent != intent || token.by != *by || token.session != session {
         return Err(format!(
@@ -2802,6 +2939,12 @@ pub fn check_token(
             return Err("the plan you were shown was dropped (the picture changed): look again".into());
         }
         (None, false) => {}
+    }
+    // rules 5: the lost vehicles accepted for it, as the signer saw them
+    if token.unknown_accepted != *accepted {
+        return Err(
+            "the lost vehicles accepted for it changed since you looked: look again".into(),
+        );
     }
     let Some(t) = track_now else {
         return Err(format!("{} is no longer in the picture", token.track.id));
@@ -2880,8 +3023,9 @@ pub fn snapshot(
 ///
 /// `prev_t` is when the picture was last checked (the last `engage.picture`, or the final
 /// approval): a gap longer than `max_picture_gap_s` fails it, since nothing held it then.
-/// `preloaded` (rules 5) is the lost-link preload the platform confirmed by reading it back
-/// (`engage.preload`), none until then: the release needs it.
+/// `preloaded` (rules 5) is the lost-link preload and when the platform last confirmed it by
+/// reading it back (`engage.preload` set or verify), none until then: the release needs a
+/// read-back at most [`PRELOAD_FRESH_MS`] old.
 pub fn picture(
     spec: &IntentSpec,
     snap: &EngageSnapshot,
@@ -2889,7 +3033,7 @@ pub fn picture(
     cfg: &RulesConfig,
     dispatched: bool,
     prev_t: Time,
-    preloaded: Option<&LostLinkPreload>,
+    preloaded: Option<(&LostLinkPreload, Time)>,
 ) -> (Vec<CheckResult>, bool, bool) {
     let ec = cfg.engage_rules();
     let p = &snap.preview;
@@ -2964,7 +3108,7 @@ pub fn picture(
         let mut release = release_checks(uid, snap, track, world, cfg);
         // rules 5: the fallback is the platform's own lost-link action, read back
         if ec.v5() {
-            release.push(preloaded_check(uid, preloaded));
+            release.push(preloaded_check(uid, preloaded, world.t));
         }
         ready = release.iter().all(|c| c.outcome == Outcome::Pass);
         out.extend(release);

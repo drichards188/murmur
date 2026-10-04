@@ -9,8 +9,13 @@
 //! timer only if the platform's own is longer), and read each back. The engine logs the
 //! result (`engage.preload`) and decides from the read-back: the intercept goes out only once
 //! it confirms, nothing is released before, and one that does not confirm stops the
-//! engagement with its fallback. When the engagement ends, [`start_restore`] puts the
-//! platform's own values back and reads them back, retried until the vehicle answers.
+//! engagement with its fallback. Near the release [`start_verify`] reads it again (the
+//! release needs a confirmed read-back at most 10 s old). When no engagement holds the
+//! platform any more, [`start_restore`] puts its own values back and reads them back,
+//! retried until the vehicle answers.
+//!
+//! The engagement loop (`super::engage`) runs at most one of these jobs at a time on a
+//! platform's link, so a restore can never interleave with a newer engagement's set.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -70,17 +75,35 @@ impl Job {
     }
 }
 
-/// Read the preload's parameters, set them, read them back. `own` receives the platform's
-/// own values as soon as they are read (a restore needs them). `known`: the platform's own
-/// values when an earlier engagement's restore had not put them back yet (the vehicle still
-/// holds that preload): those are its own, not what it reads now.
+/// Read the preload's parameters, set them, read them back. `known`: the platform's own
+/// values still owed back to it from an earlier preload (the vehicle may still hold that
+/// preload): those are its own, and are not read again (what it holds now is not its own).
 pub fn start_set(
     cell: Arc<VehicleCell>,
     preload: LostLinkPreload,
-    own: Arc<Mutex<BTreeMap<String, f64>>>,
-    known: Option<BTreeMap<String, f64>>,
+    known: BTreeMap<String, f64>,
 ) -> Job {
-    Job::spawn(async move { set(&cell, &preload, &own, known).await })
+    Job::spawn(async move { set(&cell, &preload, &known).await })
+}
+
+/// Read the preload's parameters again (near the release: is it still in force?).
+pub fn start_verify(cell: Arc<VehicleCell>, preload: LostLinkPreload) -> Job {
+    Job::spawn(async move {
+        let mut out = JobResult::default();
+        for name in preload.names() {
+            match read(&cell, name).await {
+                Ok(v) => {
+                    out.readback.insert(name.to_string(), v);
+                }
+                Err(e) if e.starts_with(MISSING) && preload.clear_bits.iter().any(|b| b.name == name) => {}
+                Err(e) => {
+                    out.error = Some(e);
+                    break;
+                }
+            }
+        }
+        out
+    })
 }
 
 /// Put `values` back on the vehicle and read them back.
@@ -110,15 +133,15 @@ pub fn start_restore(cell: Arc<VehicleCell>, values: BTreeMap<String, f64>) -> J
     })
 }
 
-async fn set(
-    cell: &VehicleCell,
-    preload: &LostLinkPreload,
-    own: &Mutex<BTreeMap<String, f64>>,
-    known: Option<BTreeMap<String, f64>>,
-) -> JobResult {
+async fn set(cell: &VehicleCell, preload: &LostLinkPreload, known: &BTreeMap<String, f64>) -> JobResult {
     let mut out = JobResult::default();
-    // the platform's own values first: what a restore puts back
+    // the platform's own values first: what a restore puts back (those still owed from an
+    // earlier preload as they were, never read off a platform that may hold it)
     for name in preload.names() {
+        if let Some(v) = known.get(name) {
+            out.before.insert(name.to_string(), *v);
+            continue;
+        }
         match read(cell, name).await {
             Ok(v) => {
                 out.before.insert(name.to_string(), v);
@@ -131,15 +154,6 @@ async fn set(
             }
         }
     }
-    // an earlier preload not put back yet: the values from before it are the platform's own
-    if let Some(k) = known {
-        for (name, v) in k {
-            if out.before.contains_key(&name) {
-                out.before.insert(name, v);
-            }
-        }
-    }
-    *own.lock().unwrap_or_else(|e| e.into_inner()) = out.before.clone();
     // the values: the failsafe's action exactly, the bits cleared, the timer shortened only
     let mut want: Vec<(String, f64)> = preload
         .set

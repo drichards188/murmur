@@ -290,10 +290,19 @@ async fn intent_action(
                 );
             }
         },
+        // rules 5: {"uid": n}
+        "revoke_unknown" => match serde_json::from_slice::<crate::decision::engage::AcceptUnknown>(&body) {
+            Ok(a) => app.decision.revoke_unknown(&op, id, a.uid),
+            Err(e) => {
+                return error(StatusCode::UNPROCESSABLE_ENTITY, format!("revoke_unknown wants {{\"uid\": n}}: {e}"));
+            }
+        },
         _ => {
             return error(
                 StatusCode::NOT_FOUND,
-                format!("unknown action {action:?} (approve, reject, cancel, abort, picture, accept_unknown)"),
+                format!(
+                    "unknown action {action:?} (approve, reject, cancel, abort, picture, accept_unknown, revoke_unknown)"
+                ),
             );
         }
     };

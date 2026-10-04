@@ -121,14 +121,24 @@ group. Dates are 2026.
   no longer than the approval's link-gap limit (5 s on a streaming link instead of 30 s on
   LEO or 120 s on GEO). The bridge reads the platform's own values, sets the preload, reads
   it back, and sends the intercept only once that confirms; one that doesn't stops the
-  engagement with its fallback, and the release needs a confirmed one (fail closed: a lost
-  report means no effect). The platform's own values go back when the engagement ends. A
+  engagement with its fallback, and the release needs a confirmed read-back at most 10 s old
+  (fail closed: a lost report means no effect): from 30 s before the release window opens
+  the bridge reads it again every 5 s (`engage.preload` verify), and one that changed stops
+  the engagement. One parameter job at a time runs on a platform's link. The platform's own
+  values are owed back from the set on, and go back only when no engagement holds it: a newer
+  engagement dispatched on it first takes them over (its set never reads the preloaded
+  values as the platform's own), so a restore can't undo its preload. Restores are retried
+  with backoff, every attempt logged (`platform.restore` when no engagement of the run owns
+  them or the engine refuses one), with an inbox alert after 30 s; values still owed when
+  the bridge stops are derived from its log at the next start, logged as carried and put
+  back; replay reports any still owed at a log's end (review of 3318f25, findings 3 and 4). A
   fallback the firmware has no lost-link action for fails the nomination
   (`fallback_preload`): ArduPlane has none that holds where it is (continue, RTL, glide,
   parachute, AUTO, AUTOLAND), so a fixed wing takes `return` only (its "continue" would fly
   on to the effect point and circle there); ArduSub has no return. The stand-in copter now
   honours `FS_GCS_ENABLE` and `FS_OPTIONS` as ArduCopter does. Regressions: scenarios 08 (the
-  USV holds where it is on its own after its link is cut), 40 to 44.
+  USV holds where it is on its own after its link is cut), 40 to 44, 62 (changed before the
+  release).
 - **Keep-outs predict a track with acceleration noise, not with its speed** (10-04,
   murmur-der.3; rules 5). The tracker's growth law, `max(1, 0.3 x speed)` times the span at
   2-sigma, made a 20 m/s ferry 300 s out block 3.6 km around its predicted position while a
@@ -144,24 +154,37 @@ group. Dates are 2026.
   a track without a velocity estimate is anywhere it reaches at its domain's top speed (it
   was held where it was). Regressions: 45 (a distant fast ferry), 46 (a near one still
   blocks), 47.
-- **Keep-outs in 3D where both altitudes are known** (10-04, murmur-der.3; rules 5). The
-  keep-out reaches the effect radius plus `keep_out_vertical_m` (default `keep_out_m`, 200 m)
-  above and below the effect's altitude (the target's estimate), each side counted with
-  2-sigma of its altitude error and how far it could climb or descend by then (ours: 10 m/s
-  or the catalog's climb rate if faster; aircraft tracks 10 m/s; surface tracks none). An
-  unknown or stale altitude on either side leaves it 2D, as before. A MALE aircraft at 7 km
-  over a surface effect no longer blocks; a quadcopter at 120 m still does. Our vehicles'
-  altitude (MSL) is a world fact now. Regressions: 48 to 52.
+- **Keep-outs in 3D where both altitudes are known and ranged** (10-04, murmur-der.3; rules
+  5). The keep-out reaches the effect radius plus `keep_out_vertical_m` (default
+  `keep_out_m`, 200 m) above and below the effect's altitude (the target's estimate), each
+  side counted with 2-sigma of its altitude error and how far it could climb or descend by
+  then (ours: the largest of 10 m/s, the catalog's climb rate and, for a fixed wing, a 25
+  degree dive at cruise speed, ArduPlane's default pitch-down limit: an MQ-9B's 38 m/s,
+  either way; aircraft tracks 10 m/s; surface tracks none). A track's altitude counts only
+  when a sensor that ranges it backs it (radar; a vessel's own AIS; sonar): passive sensors
+  give none (the sensing model no longer hands EO/IR an air contact's exact altitude), and a
+  ground track's 0 m is not its height above sea level, so ground targets stay 2D until a
+  terrain-referenced altitude with a logged basis exists. An unknown, stale or unbacked
+  altitude on either side leaves it 2D, as before. A MALE aircraft at 7 km over a surface
+  effect no longer blocks; at 3 km, or a quadcopter at 120 m, it still does. Our vehicles'
+  altitude (MSL) is a world fact now. Regressions: 48 to 52, 61 (a passive-only aircraft
+  altitude), 63 (a ground target).
 - **A lost friendly blocks until an operator accepts it, explicitly and logged** (10-04,
   murmur-der.3; rules 5). Its reachable circle still grows without a cap (fail closed), but
   the check says since when its position is unknown, and an operator may accept it for one
   engagement ("vehicle X position unknown since T: accept"): at the nomination or while it
   waits with no signature (after one, the plan was signed without it), logged as
-  `engage.accepted` under the operator's session, read by every check of that engagement and
-  replay-checked. It covers that loss only: a vehicle that reports again counts like any
-  other, a newer loss needs a new acceptance. Never automatic and never an agent's: the
-  engine takes it only with a human authority, an agent's port has no such method and the
-  bridge refuses an agent's request carrying one. Regressions: 53 to 56.
+  `engage.accepted` under the operator's session with the vehicle's facts and the world's
+  time (replay recomputes that it was lost since then), read by every check of that
+  engagement and replay-checked. It covers that loss only: a vehicle that reports again
+  counts like any other, a newer loss needs a new acceptance. It is an engagement decision,
+  so it needs engagement authority (review of 3318f25, finding 1); every signer is shown
+  it, on the card and in the picture token, and a signature on a token from before it is
+  refused; a reset of the signatures clears it with the plan it was given for (given again
+  on the new picture, not carried over silently); any operator may revoke it, which stops
+  an engagement it now blocks. Never automatic and never an agent's: the engine takes it
+  only with an `EngagementAuthority`, an agent's port has no such method and the bridge
+  refuses an agent's request carrying one. Regressions: 53 to 60.
 - **A HIGH_LATENCY2 report without its GPS failure flag is a 3D fix** (10-04, fourth
   review). HIGH_LATENCY2 carries no fix type, so a platform on that link alone never had a
   fresh fix and could never release. The bridge now counts each one without
@@ -548,8 +571,9 @@ group. Dates are 2026.
   roster from rules 4, which bounds who a log can name, not who sent a header). Until rules
   5 the fallback was only commanded by the bridge after a stop, so a platform that lost its
   link en route followed its own lost-link failsafe; from rules 5 it is preloaded as that
-  failsafe (see above). The bridge does not persist a preload: restarted mid-engagement, it
-  leaves the platform's failsafe as preloaded.
+  failsafe (see above). A bridge restarted mid-engagement puts the platform's own failsafe
+  back from its last log's ledger (`.last-run-<port>` names that log); the engagement itself
+  does not survive the restart.
 - **Unknown endurance on an engagement: a weaker check, stated** (10-03). Most armed
   platforms have no endurance figure; engage is consequential (an unverified check would
   block it), so `reach` passes on a fresh battery above the reserve and a transit of at

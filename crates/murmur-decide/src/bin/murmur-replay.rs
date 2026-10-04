@@ -189,6 +189,10 @@ fn main() -> ExitCode {
     if let Some(head) = &report.head_sha256 {
         println!("head {head} (compare with an external anchor to detect a rewrite or truncation)");
     }
+    // rules 5: not a decision mismatch, but the operator should know
+    for u in &report.unrestored {
+        println!("UNRESTORED: {u}");
+    }
     let anchors_ok = match &anchors {
         None => true,
         Some((file, a)) => {

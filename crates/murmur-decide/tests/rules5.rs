@@ -233,6 +233,81 @@ fn a_preload_that_does_not_confirm_stops_the_engagement_with_its_fallback() {
     assert!(r.ok(), "{:?}", r.mismatches);
 }
 
+#[test]
+fn a_preload_changed_before_the_release_stops_the_engagement() {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = Engine::with_areas(policy(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    let (id, _) = dispatched(&mut e, &clock);
+    let refused = |e: &mut Engine, r: PreloadReport| matches!(e.record_preload(id, r), Err(EngineError::NotItsOrder { .. }));
+    assert!(refused(&mut e, report("blade-1", PreloadPhase::Verify, &[], SET)), "a re-read before any set");
+    assert!(e.record_preload(id, report("blade-1", PreloadPhase::Set, OWN, SET)).unwrap().is_none());
+    clock.advance_ms(5_000);
+    assert!(e.record_preload(id, report("blade-1", PreloadPhase::Verify, &[], SET)).unwrap().is_none());
+    let eng = e.intent(id).unwrap().engagement().unwrap().clone();
+    assert_eq!(engage::preload_confirmed_at(&eng), Some(clock.now()));
+    // another station put its own values back: the next re-read stops it with its fallback
+    clock.advance_ms(5_000);
+    let f = e.record_preload(id, report("blade-1", PreloadPhase::Verify, &[], OWN)).unwrap().unwrap();
+    assert_eq!(f.fallback, Fallback::Return);
+    let i = e.intent(id).unwrap();
+    assert_eq!(i.state(), State::Aborted);
+    let why = &i.engagement().unwrap().stop.as_ref().unwrap().reason;
+    assert!(why.contains("lost-link action changed: FS_LONG_TIMEOUT reads 120"), "{why}");
+    assert_eq!(engage::preload_confirmed_at(i.engagement().unwrap()), None);
+    let r = replay::replay_str(&log.text()).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+    // its own values are still owed (they were never confirmed back): replay says so
+    assert_eq!(r.unrestored.len(), 1, "{:?}", r.unrestored);
+    assert!(r.unrestored[0].starts_with("blade-1: its own lost-link values"), "{:?}", r.unrestored);
+}
+
+#[test]
+fn values_owed_back_are_reported_carried_and_never_taken_off_a_preloaded_platform() {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = Engine::with_areas(policy(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    let (id, _) = dispatched(&mut e, &clock);
+    e.record_preload(id, report("blade-1", PreloadPhase::Set, OWN, SET)).unwrap();
+    let op = e.open_operator_session(OperatorId::new("op-1")).unwrap();
+    e.abort_engagement(id, op.authority(), "stop").unwrap();
+    // its restore never confirmed: reported, not a mismatch
+    let r = replay::replay_str(&log.text()).unwrap();
+    assert!(r.ok() && r.unrestored.len() == 1, "{:?} {:?}", r.mismatches, r.unrestored);
+    // the bridge puts them back on its own (a refused engagement restore, a carried one)
+    let own: BTreeMap<String, f64> = OWN.iter().map(|(n, v)| ((*n).to_string(), *v)).collect();
+    let attempt = |readback: &BTreeMap<String, f64>, error: Option<&str>| PlatformRestoreReport {
+        uid: Uid::new("blade-1"),
+        values: own.clone(),
+        carried: false,
+        from: None,
+        readback: readback.clone(),
+        error: error.map(str::to_string),
+    };
+    assert!(!e.record_platform_restore(attempt(&BTreeMap::new(), Some("no answer"))).unwrap());
+    assert!(e.record_platform_restore(attempt(&own, None)).unwrap());
+    let r = replay::replay_str(&log.text()).unwrap();
+    assert!(r.ok() && r.unrestored.is_empty(), "{:?} {:?}", r.mismatches, r.unrestored);
+    // a log that carries them over from an earlier run owes them from its start; a preload
+    // that then reads the preloaded values as the platform's own is caught
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = Engine::with_areas(policy(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    let carried = PlatformRestoreReport {
+        uid: Uid::new("blade-1"),
+        values: own.clone(),
+        carried: true,
+        from: Some("20261004T000000Z-1.jsonl I-0001".into()),
+        readback: BTreeMap::new(),
+        error: None,
+    };
+    assert!(!e.record_platform_restore(carried).unwrap());
+    let (id, _) = dispatched(&mut e, &clock);
+    e.record_preload(id, report("blade-1", PreloadPhase::Set, SET, SET)).unwrap();
+    let w = whats(&log.text());
+    assert!(w.iter().any(|m| m.contains("while earlier ones were owed back")), "{w:?}");
+}
+
 /// A released engagement's log (scenario 01), its lines.
 fn released_log() -> Vec<String> {
     let f = root().join("sim/scenarios/engage/01-nominal.toml");
@@ -382,8 +457,9 @@ fn above(target_alt: Option<f64>, platform: &str, alt: Option<f64>) -> WorldSnap
 
 #[test]
 fn keep_outs_are_3d_only_where_both_altitudes_are_known() {
-    // a MALE aircraft at 7,000 m over a surface effect, 120 s out: clear in 3D (it can't get
-    // below 7,000 - 2 x 10 - 10 m/s x 120 s = 5,780 m), blocking in 2D
+    // a MALE aircraft at 7,000 m over a surface effect, 120 s out: clear in 3D (diving 25
+    // degrees at its 90 m/s cruise, 38 m/s, it can't get below 7,000 - 2 x 10 - 38 x 120 =
+    // 2,415 m), blocking in 2D
     let w = above(Some(0.0), "mq9b", Some(7_000.0));
     let c = friendly_check(&w, 120, 5);
     assert_eq!(c.outcome, Outcome::Pass, "{}", c.detail);
@@ -393,10 +469,16 @@ fn keep_outs_are_3d_only_where_both_altitudes_are_known() {
     let c = friendly_check(&above(Some(0.0), "x10", Some(120.0)), 120, 5);
     assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
     assert!(c.detail.contains("within the vertical keep-out too"), "{}", c.detail);
-    // the catalog's climb rate counts when it is faster: a CCA-class aircraft (40 m/s) at
-    // 3,000 m could be down at the effect in 120 s
-    assert_eq!(friendly_check(&above(Some(0.0), "cca", Some(3_000.0)), 120, 5).outcome, Outcome::Fail);
-    assert_eq!(friendly_check(&above(Some(0.0), "mq9b", Some(3_000.0)), 120, 5).outcome, Outcome::Pass);
+    // the faster of climb and dive counts, either way: a CCA-class aircraft (230 m/s cruise,
+    // 97 m/s diving) at 6,000 m could be down at the effect in 120 s; so could the MQ-9B
+    // from 3,000 m (its catalog climb, 10 m/s, would have kept it 1,800 m up)
+    assert_eq!(friendly_check(&above(Some(0.0), "cca", Some(6_000.0)), 120, 5).outcome, Outcome::Fail);
+    let c = friendly_check(&above(Some(0.0), "mq9b", Some(3_000.0)), 120, 5);
+    assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
+    assert_eq!(friendly_check(&above(Some(0.0), "mq9b", Some(6_000.0)), 120, 5).outcome, Outcome::Pass);
+    let mq9b = fresh(vehicle("mq9b", TARGET_AT), T0);
+    let rate = engage::friendly_vertical_mps(&mq9b, &rules(5).engage_rules());
+    assert!((rate - 90.0 * 25f64.to_radians().sin()).abs() < 1e-9, "{rate}");
     // unknown altitude, ours or the target's: 2D, no ceiling
     let c = friendly_check(&above(Some(0.0), "mq9b", None), 120, 5);
     assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
@@ -406,10 +488,12 @@ fn keep_outs_are_3d_only_where_both_altitudes_are_known() {
     let mut w = above(Some(0.0), "mq9b", Some(7_000.0));
     w.vehicles.get_mut(&Uid::new("over-1")).unwrap().alt_msl_m = Some(Fact::new(7_000.0, T0.plus_ms(-60_000)));
     assert_eq!(friendly_check(&w, 120, 5).outcome, Outcome::Fail);
-    // a protected aircraft track at 3,000 m over the effect: clear in 3D; at 450 m: not
+    // a protected aircraft track at 3,000 m over the effect, its altitude from radar: clear
+    // in 3D; at 450 m: not
     let mut w = world(T0);
     w.tracks.get_mut("T-0001").unwrap().alt_m = Some(0.0);
     let mut plane = track(T0, TARGET_AT, Some([0.0, 0.0]), Affiliation::Neutral, Domain::Air);
+    plane.sources = vec!["3:radar".into(), "1:eo_ir".into()];
     plane.alt_m = Some(3_000.0);
     w.tracks.insert("T-0002".into(), plane.clone());
     let c = tracks_check(&w, 120, 5);
@@ -418,8 +502,53 @@ fn keep_outs_are_3d_only_where_both_altitudes_are_known() {
     w.tracks.insert("T-0002".into(), plane.clone());
     assert_eq!(tracks_check(&w, 120, 5).outcome, Outcome::Fail);
     plane.alt_m = None;
-    w.tracks.insert("T-0002".into(), plane);
+    w.tracks.insert("T-0002".into(), plane.clone());
     assert_eq!(tracks_check(&w, 120, 5).outcome, Outcome::Fail, "its altitude unknown: 2D");
+    // seen by passive sensors only (a bearing, no range), its altitude does not count: 2D
+    plane.alt_m = Some(3_000.0);
+    plane.sources = vec!["1:eo_ir".into(), "2:esm".into()];
+    w.tracks.insert("T-0002".into(), plane);
+    let c = tracks_check(&w, 120, 5);
+    assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
+    assert!(c.detail.contains("altitude is unknown"), "{}", c.detail);
+}
+
+#[test]
+fn only_a_ranged_altitude_counts_and_a_ground_target_stays_2d() {
+    let mut t = track(T0, TARGET_AT, Some([0.0, 0.0]), Affiliation::Hostile, Domain::Air);
+    t.alt_m = Some(800.0);
+    for (sources, want) in [
+        (vec!["3:radar"], Some(800.0)),
+        (vec!["1:eo_ir"], None),
+        (vec!["2:esm", "1:eo_ir"], None),
+        (vec!["ais"], None),
+    ] {
+        t.sources = sources.iter().map(|s| (*s).to_string()).collect();
+        assert_eq!(engage::track_altitude(&t), want, "air {sources:?}");
+    }
+    t.domain = Domain::Surface;
+    for (sources, want) in [(vec!["ais"], Some(800.0)), (vec!["3:radar"], Some(800.0)), (vec!["1:eo_ir"], None)] {
+        t.sources = sources.iter().map(|s| (*s).to_string()).collect();
+        assert_eq!(engage::track_altitude(&t), want, "surface {sources:?}");
+    }
+    t.domain = Domain::Subsurface;
+    t.sources = vec!["4:sonar".into()];
+    assert_eq!(engage::track_altitude(&t), Some(800.0));
+    // a ground track's 0 m is not its altitude above sea level (the terrain under it is not
+    // modelled): no 3D keep-out, whatever saw it. The reviewer's probe: a ground target
+    // logged at 0 m with one of ours 400 m MSL right above it (150 m over the real terrain)
+    t.domain = Domain::Ground;
+    t.sources = vec!["3:radar".into()];
+    t.alt_m = Some(0.0);
+    assert_eq!(engage::track_altitude(&t), None);
+    let mut w = world(T0);
+    w.tracks.insert("T-0001".into(), t);
+    let mut v = fresh(vehicle("x10", TARGET_AT), T0);
+    v.alt_msl_m = Some(Fact::new(400.0, T0));
+    w.vehicles.insert(Uid::new("drone-1"), v);
+    let c = friendly_check(&w, 0, 5);
+    assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
+    assert!(engage::effect_alt(w.tracks.get("T-0001"), T0, 75.0, &rules(5).engage_rules()).is_none());
 }
 
 // ---- der.3 (b): lost friendlies ----------------------------------------------------------------
@@ -429,7 +558,8 @@ fn only_an_operator_accepts_a_lost_friendly_and_only_the_loss_it_names() {
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();
     let mut e = Engine::with_areas(policy(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
-    let op1 = e.open_operator_session(OperatorId::new("op-1")).unwrap();
+    let op1 = e.open_operator_session_with(OperatorId::new("op-1"), Grants { engage: true }).unwrap();
+    let a1 = op1.engagement_authority().unwrap();
     // our quadcopter went silent 2 km east of the target a minute ago
     clock.advance_ms(60_000);
     let mut w = world(clock.now());
@@ -456,16 +586,17 @@ fn only_an_operator_accepts_a_lost_friendly_and_only_the_loss_it_names() {
     // an acceptance must name the loss as it is: not another report, not a vehicle that is fine
     let n = log.lines().len();
     let wrong = [(Uid::new("drone-1"), Some(T0.plus_ms(1000)))];
-    assert!(matches!(e.submit_accepting(op1.authority(), nomination(), &wrong, &w, &terrain()), Err(EngineError::NotAccepted { .. })));
+    assert!(matches!(e.submit_accepting(a1, nomination(), &wrong, &w, &terrain()), Err(EngineError::NotAccepted { .. })));
     let fine = [(Uid::new("blade-1"), Some(clock.now()))];
-    assert!(matches!(e.submit_accepting(op1.authority(), nomination(), &fine, &w, &terrain()), Err(EngineError::NotAccepted { .. })));
+    assert!(matches!(e.submit_accepting(a1, nomination(), &fine, &w, &terrain()), Err(EngineError::NotAccepted { .. })));
     // and only on an engagement
     let hold = Proposal::new(Task::Hold {}, vec![Uid::new("blade-1")]);
     let right = [(Uid::new("drone-1"), Some(T0))];
-    assert!(matches!(e.submit_accepting(op1.authority(), hold, &right, &w, &terrain()), Err(EngineError::NotAccepted { .. })));
+    assert!(matches!(e.submit_accepting(a1, hold, &right, &w, &terrain()), Err(EngineError::NotAccepted { .. })));
     assert_eq!(log.lines().len(), n, "nothing logged");
-    // the loss as it is: accepted, logged before the checks, and the keep-out leaves it out
-    let i = e.submit_accepting(op1.authority(), nomination(), &right, &w, &terrain()).unwrap();
+    // the loss as it is: accepted, logged before the checks with the vehicle's facts, and the
+    // keep-out leaves it out
+    let i = e.submit_accepting(a1, nomination(), &right, &w, &terrain()).unwrap();
     assert_eq!(i.state(), State::PendingApproval, "{:?}", i.history());
     let c = i.checks().iter().find(|c| c.rule == RuleId::KeepOutFriendly).unwrap();
     assert!(c.detail.contains("position accepted as unknown: drone-1"), "{}", c.detail);
@@ -490,10 +621,126 @@ fn only_an_operator_accepts_a_lost_friendly_and_only_the_loss_it_names() {
     let auth = op2.engagement_authority().unwrap();
     let token = e.issue_picture(id, auth, &w2).unwrap().id;
     e.approve_engagement(id, auth, None, token, &w2, &terrain()).unwrap();
-    let err = e.accept_unknown_friendly(id, op1.authority(), Uid::new("drone-1"), Some(T0), &w2).unwrap_err();
+    let err = e.accept_unknown_friendly(id, a1, Uid::new("drone-1"), Some(T0), &w2).unwrap_err();
     assert!(matches!(err, EngineError::NotAccepted { .. }), "{err}");
     let rep = replay::replay_str(&log.text()).unwrap();
     assert!(rep.ok(), "{:?}", rep.mismatches);
+    // the acceptance as logged: replay checks the vehicle really was lost since then
+    let text = log.text();
+    let line = text.lines().find(|l| l.contains("\"type\":\"engage.accepted\"")).unwrap();
+    assert!(line.contains("\"world_t\":") && line.contains("\"vehicle\":{"), "{line}");
+}
+
+/// The lost-drone world of the acceptance tests at `t`: our quadcopter silent since T0, 2 km
+/// east of the target.
+fn lost_drone_world(t: Time) -> WorldSnapshot {
+    let mut w = world(t);
+    let lost_at = LonLat::new(TARGET_AT.lon + 2_000.0 / 87_943.0, TARGET_AT.lat);
+    let mut drone = fresh(vehicle("x10", lost_at), T0);
+    drone.autopilot = Some(Fact::new(AutopilotKind::Copter, T0));
+    w.vehicles.insert(Uid::new("drone-1"), drone);
+    w
+}
+
+fn engage_nomination() -> Proposal {
+    Proposal::new(
+        Task::Engage {
+            track: "T-0001".into(),
+            effect_radius_m: 75.0,
+            window: None,
+            fallback: Fallback::Return,
+        },
+        vec![Uid::new("blade-1")],
+    )
+}
+
+#[test]
+fn every_signer_sees_the_acceptances_and_a_token_from_before_one_is_refused() {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = Engine::with_areas(policy(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    let op1 = e.open_operator_session(OperatorId::new("op-1")).unwrap();
+    let op2 = e.open_operator_session_with(OperatorId::new("op-2"), Grants { engage: true }).unwrap();
+    let op3 = e.open_operator_session_with(OperatorId::new("op-3"), Grants { engage: true }).unwrap();
+    let (a2, a3) = (op2.engagement_authority().unwrap(), op3.engagement_authority().unwrap());
+    // nominated while the drone still reported (clear 2 km away)
+    let id = e.submit(op1.authority(), engage_nomination(), &lost_drone_world(T0), &terrain()).unwrap().id();
+    assert_eq!(e.intent(id).unwrap().state(), State::PendingApproval);
+    // a minute later it is lost; op-2 looks first
+    clock.advance_ms(60_000);
+    let w = lost_drone_world(clock.now());
+    let old = e.issue_picture(id, a2, &w).unwrap();
+    assert!(old.unknown_accepted.is_empty());
+    // op-3 accepts it (with engagement authority: the only way in)
+    e.accept_unknown_friendly(id, a3, Uid::new("drone-1"), Some(T0), &w).unwrap();
+    // op-2 signs on the token taken before: refused, look again
+    let err = e.approve_engagement(id, a2, None, old.id, &w, &terrain()).unwrap_err();
+    assert!(err.to_string().contains("changed since you looked: look again"), "{err}");
+    // the new token shows the acceptance; signed on it
+    let token = e.issue_picture(id, a2, &w).unwrap();
+    assert_eq!(token.unknown_accepted.keys().map(Uid::as_str).collect::<Vec<_>>(), ["drone-1"]);
+    e.approve_engagement(id, a2, None, token.id, &w, &terrain()).unwrap();
+    clock.advance_ms(1000);
+    let w = lost_drone_world(clock.now());
+    let token = e.issue_picture(id, a3, &w).unwrap();
+    assert_eq!(token.unknown_accepted.len(), 1);
+    e.approve_engagement(id, a3, None, token.id, &w, &terrain()).unwrap();
+    assert_eq!(e.intent(id).unwrap().state(), State::Approved);
+    // any operator withdraws it: the held picture counts the drone again and voids
+    e.revoke_unknown_friendly(id, op1.authority(), Uid::new("drone-1")).unwrap();
+    assert!(e.intent(id).unwrap().engagement().unwrap().accepted.is_empty());
+    assert!(e.revoke_unknown_friendly(id, op1.authority(), Uid::new("drone-1")).is_err(), "not in force");
+    clock.advance_ms(1000);
+    let out = e.step_engagements(&lost_drone_world(clock.now()), &terrain());
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    let i = e.intent(id).unwrap();
+    assert!(matches!(i.state(), State::Voided | State::Aborted), "{:?}", i.state());
+    let rep = replay::replay_str(&log.text()).unwrap();
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+    // a forged token without the acceptance, or an acceptance under a session without
+    // engagement authority, is caught by replay
+    let lines: Vec<String> = log.lines();
+    let forged: Vec<String> = lines
+        .iter()
+        .map(|l| {
+            if l.contains("\"type\":\"engage.accepted\"") {
+                l.replacen(&format!("\"session\":{}", op3.authority().session().0), &format!("\"session\":{}", op1.authority().session().0), 1)
+                    .replacen("\"by\":\"op-3\"", "\"by\":\"op-1\"", 1)
+            } else {
+                l.clone()
+            }
+        })
+        .collect();
+    let w = whats(&rechain(&forged));
+    assert!(w.iter().any(|m| m.contains("without engagement authority")), "{w:?}");
+}
+
+#[test]
+fn replay_checks_the_vehicle_was_lost_since_the_acceptance_says() {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = Engine::with_areas(policy(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    let op1 = e.open_operator_session_with(OperatorId::new("op-1"), Grants { engage: true }).unwrap();
+    clock.advance_ms(60_000);
+    let w = lost_drone_world(clock.now());
+    e.submit_accepting(op1.engagement_authority().unwrap(), engage_nomination(), &[(Uid::new("drone-1"), Some(T0))], &w, &terrain())
+        .unwrap();
+    assert!(replay::replay_str(&log.text()).unwrap().ok());
+    // the vehicle's logged report moved to just now: it was not lost
+    let now = clock.now().0;
+    let forged: Vec<String> = log
+        .lines()
+        .iter()
+        .map(|l| {
+            if l.contains("\"type\":\"engage.accepted\"") {
+                l.replace(&format!("\"t\":{}", T0.0), &format!("\"t\":{now}"))
+            } else {
+                l.clone()
+            }
+        })
+        .collect();
+    let w = whats(&rechain(&forged));
+    assert!(w.iter().any(|m| m.contains("not lost since that report")), "{w:?}");
 }
 
 #[test]

@@ -420,21 +420,23 @@ impl Engine {
         let source = Source::Human {
             id: by.operator().clone(),
         };
-        let id = self.submit_inner(source, Some(by), proposal, &[], world, terrain)?;
+        let id = self.submit_inner(source, Some(by), proposal, None, world, terrain)?;
         self.get(id)
     }
 
-    /// Rules 5: [`Engine::submit`] for an engagement nomination that also accepts, as its
-    /// submitter's explicit decision, that some of our vehicles are lost: each `(uid, since)`
-    /// names a vehicle whose position is unknown since its report at `since` (none: it never
-    /// reported one). Logged as `engage.accepted` before the checks; the friendly keep-out
-    /// then leaves each out while it is lost since exactly that report. Refused, with nothing
+    /// Rules 5: [`Engine::submit`] for an engagement nomination whose submitter, an operator
+    /// with engagement authority, also accepts, as their explicit decision, that some of our
+    /// vehicles are lost: each `(uid, since)` names a vehicle whose position is unknown since
+    /// its report at `since` (none: it never reported one). Logged as `engage.accepted`, with
+    /// the vehicle's facts and the world's time, before the checks; the friendly keep-out then
+    /// leaves each out while it is lost since exactly that report. Refused, with nothing
     /// logged, for another kind of intent, a vehicle that is not lost (its position fresh by
-    /// the link-aware rule) or not since that report. Only a human can: an agent's port has
-    /// no such path.
+    /// the link-aware rule) or not since that report. Only engagement authority accepts: an
+    /// operator without it, and an agent's port, have no such path. The submitter is the
+    /// proposer, so the two signers are others, and they are shown the acceptances.
     pub fn submit_accepting(
         &mut self,
-        by: &HumanAuthority,
+        by: &EngagementAuthority,
         proposal: Proposal,
         accept: &[(Uid, Option<Time>)],
         world: &WorldSnapshot,
@@ -454,20 +456,29 @@ impl Engine {
         let source = Source::Human {
             id: by.operator().clone(),
         };
-        let id = self.submit_inner(source, Some(by), proposal, accept, world, terrain)?;
+        let acceptor = Acceptor {
+            by: by.operator(),
+            session: by.session(),
+            list: accept,
+        };
+        let human = by.human();
+        let id = self.submit_inner(source, Some(&human), proposal, Some(acceptor), world, terrain)?;
         self.get(id)
     }
 
-    /// Rules 5: an operator accepts, for engagement `id` while it waits with no signature
-    /// yet, that vehicle `uid` is lost since its report at `since` (see
-    /// [`Engine::submit_accepting`]). Logged as `engage.accepted`; the next check reads it
-    /// (a signature's, or the console's live view). Refused, nothing logged, after a
-    /// signature (the plan it froze was signed without it: the plan must stop holding and be
-    /// signed again), or for a vehicle that is not lost since that report.
+    /// Rules 5: an operator with engagement authority accepts, for engagement `id` while it
+    /// waits with no signature yet, that vehicle `uid` is lost since its report at `since`
+    /// (see [`Engine::submit_accepting`]). Logged as `engage.accepted` with the vehicle's facts
+    /// and the world's time; the next check reads it, and every signer's picture token
+    /// carries the acceptances (a token taken before a change is refused: look again).
+    /// Refused, nothing logged, after a signature (the plan it froze was signed without it:
+    /// the plan must stop holding and be signed again), or for a vehicle that is not lost since
+    /// that report. A reset of the signatures clears the acceptances: they are given again,
+    /// on the new picture.
     pub fn accept_unknown_friendly(
         &mut self,
         id: IntentId,
-        by: &HumanAuthority,
+        by: &EngagementAuthority,
         uid: Uid,
         since: Option<Time>,
         world: &WorldSnapshot,
@@ -489,12 +500,15 @@ impl Engine {
             });
         }
         self.acceptable(&uid, since, world)?;
+        let vehicle = Box::new(world.vehicles.get(&uid).cloned().unwrap_or_default());
         self.emit(EventBody::EngageAccepted {
             intent: id,
             uid: uid.clone(),
             since,
             by: by.operator().clone(),
             session: by.session(),
+            world_t: world.t,
+            vehicle,
         })?;
         self.get_mut(id)?.engagement_mut().accepted.insert(
             uid,
@@ -503,6 +517,40 @@ impl Engine {
                 by: by.operator().clone(),
             },
         );
+        self.get(id)
+    }
+
+    /// Rules 5: any operator withdraws an acceptance of a lost vehicle for engagement `id`
+    /// (pending, approved or under way: it only restricts, like an abort). Logged as
+    /// `engage.acceptance_revoked`; its checks, and the picture held after approval, count
+    /// the vehicle again (which stops an engagement it now blocks).
+    pub fn revoke_unknown_friendly(
+        &mut self,
+        id: IntentId,
+        by: &HumanAuthority,
+        uid: Uid,
+    ) -> Result<&Intent, EngineError> {
+        let intent = self.get(id)?;
+        if intent.spec().kind() != TaskKind::Engage {
+            return Err(EngineError::NotAnEngagement(id));
+        }
+        if !matches!(
+            intent.state(),
+            State::PendingApproval | State::Approved | State::Dispatched
+        ) || !intent.engagement().is_some_and(|e| e.accepted.contains_key(&uid))
+        {
+            return Err(EngineError::NotAccepted {
+                uid,
+                why: format!("no acceptance of it is in force on {id}"),
+            });
+        }
+        self.emit(EventBody::EngageAcceptanceRevoked {
+            intent: id,
+            uid: uid.clone(),
+            by: by.operator().clone(),
+            session: by.session(),
+        })?;
+        self.get_mut(id)?.engagement_mut().accepted.remove(&uid);
         self.get(id)
     }
 
@@ -515,21 +563,7 @@ impl Engine {
         if self.policy.rules.rules_version < 5 {
             return Err(no("these decision rules have no acceptance of a lost vehicle".into()));
         }
-        let Some(v) = world.vehicles.get(uid) else {
-            return Err(no("not one of ours in the world model".into()));
-        };
-        if crate::rules::fresh(&v.position, v, "position", world, &self.policy.rules).is_ok() {
-            return Err(no("its position is fresh: it is not lost".into()));
-        }
-        let last = v.position.as_ref().map(|p| p.t);
-        if last != since {
-            return Err(no(format!(
-                "lost since {}, not {}: accept what the check shows",
-                last.map_or("none".to_string(), |t| t.0.to_string()),
-                since.map_or("none".to_string(), |t| t.0.to_string())
-            )));
-        }
-        Ok(())
+        engage::lost_since_report(world.vehicles.get(uid), since, world.t, &self.policy.rules).map_err(no)
     }
 
     /// Rules 5: the platform's report of its lost-link preload for dispatched engagement
@@ -559,7 +593,7 @@ impl Engine {
             intent.state(),
             dispatched,
             eng.preload.as_ref(),
-            eng.preloaded.is_some(),
+            eng.preloaded.as_ref().map(|r| r.confirmed),
             eng.restored.as_ref().is_some_and(|r| r.confirmed),
             report.phase,
             &report.uid,
@@ -595,6 +629,7 @@ impl Engine {
         let e = self.get_mut(id)?.engagement_mut();
         match report.phase {
             engage::PreloadPhase::Set => e.preloaded = Some(record),
+            engage::PreloadPhase::Verify => e.verified = Some(record),
             engage::PreloadPhase::Restore => e.restored = Some(record),
         }
         match (report.phase, verdict, state) {
@@ -604,8 +639,38 @@ impl Engine {
                 format!("system: {PRELOAD_FAILED}{why}"),
                 true,
             ),
+            (engage::PreloadPhase::Verify, Err(why), State::Dispatched) => self.stop_engagement(
+                id,
+                StopCause::System,
+                format!("system: {PRELOAD_CHANGED}{why}"),
+                true,
+            ),
             _ => Ok(None),
         }
+    }
+
+    /// Rules 5: a platform's own lost-link values owed back outside an engagement's own
+    /// restore, logged as `platform.restore`: carried over at start from an earlier log whose
+    /// preload was never confirmed back (`carried`), each attempt to put them back, and an
+    /// engagement's restore that [`Engine::record_preload`] refused. Returns whether the
+    /// attempt confirmed (the read-back shows every value back, no error; replay recomputes
+    /// it, and reports a platform whose values were still owed when the log ended).
+    pub fn record_platform_restore(&mut self, report: PlatformRestoreReport) -> Result<bool, EngineError> {
+        let confirmed = !report.carried
+            && match &report.error {
+                Some(_) => false,
+                None => engage::restored(&report.values, &report.readback).is_ok(),
+            };
+        self.emit(EventBody::PlatformRestore {
+            uid: report.uid,
+            values: report.values,
+            carried: report.carried,
+            from: report.from,
+            readback: report.readback,
+            error: report.error,
+            confirmed,
+        })?;
+        Ok(confirmed)
     }
 
     /// Approve a pending intent. Re-runs the checks against the current world first: an
@@ -716,6 +781,7 @@ impl Engine {
             plan,
             frozen: frozen.is_some(),
             track: TrackIdentity::of(&track_id, track),
+            unknown_accepted: self.accepted_for(id),
         };
         let logged = self.log_inputs(&inputs)?;
         self.emit(EventBody::PictureIssued {
@@ -947,6 +1013,7 @@ impl Engine {
                 return Err(EngineError::StalePicture { id, why });
             }
         };
+        let accepted = self.accepted_for(id);
         if let Err(why) = engage::check_token(
             &shown,
             id,
@@ -955,6 +1022,7 @@ impl Engine {
             now,
             world.tracks.get(&track_id),
             frozen.as_ref(),
+            &accepted,
         ) {
             self.refuse(by, session, id, &why)?;
             return Err(EngineError::StalePicture { id, why });
@@ -1108,6 +1176,9 @@ impl Engine {
         let e = intent.engagement_mut();
         e.signed.clear();
         e.plan = None;
+        // rules 5: the acceptances go with the plan they were given for (given again, on the
+        // new picture)
+        e.accepted.clear();
         e.reset = Some(engage::ResetRecord { t, dropped, reason });
         Ok(())
     }
@@ -1159,7 +1230,7 @@ impl Engine {
         let source = Source::Human {
             id: by.operator().clone(),
         };
-        let new_id = self.submit_inner(source, Some(by), proposal, &[], world, terrain)?;
+        let new_id = self.submit_inner(source, Some(by), proposal, None, world, terrain)?;
         if next_state(old_state, Transition::Void).is_ok() {
             self.transition(id, Transition::Void, format!("superseded by {new_id}"))?;
         }
@@ -1480,10 +1551,9 @@ impl Engine {
         // rules 5: the release needs the platform's lost-link action read back as the
         // fallback while it was dispatched
         let preloaded = eng
-            .preloaded
+            .preload
             .as_ref()
-            .filter(|r| r.confirmed)
-            .and(eng.preload.as_ref());
+            .zip(engage::preload_confirmed_at(&eng));
         let (results, holds, ready) = engage::picture(
             &spec,
             &snap,
@@ -2001,7 +2071,7 @@ impl Engine {
         source: Source,
         submitter: Option<&HumanAuthority>,
         proposal: Proposal,
-        accept: &[(Uid, Option<Time>)],
+        accept: Option<Acceptor<'_>>,
         world: &WorldSnapshot,
         terrain: &dyn TerrainOracle,
     ) -> Result<IntentId, EngineError> {
@@ -2023,21 +2093,23 @@ impl Engine {
         self.next_intent += 1;
         self.intents.insert(id, Intent::new(spec.clone()));
         // rules 5: the submitter's acceptances of lost vehicles, before the checks read them
-        // (only a human submission carries any: the agent paths pass none)
-        if let Some(by) = submitter {
-            for (uid, since) in accept {
+        // (only an engagement operator's submission carries any: the others pass none)
+        if let Some(a) = accept {
+            for (uid, since) in a.list {
                 self.emit(EventBody::EngageAccepted {
                     intent: id,
                     uid: uid.clone(),
                     since: *since,
-                    by: by.operator().clone(),
-                    session: by.session(),
+                    by: a.by.clone(),
+                    session: a.session,
+                    world_t: world.t,
+                    vehicle: Box::new(world.vehicles.get(uid).cloned().unwrap_or_default()),
                 })?;
                 self.get_mut(id)?.engagement_mut().accepted.insert(
                     uid.clone(),
                     engage::AcceptedUnknown {
                         since: *since,
-                        by: by.operator().clone(),
+                        by: a.by.clone(),
                     },
                 );
             }
@@ -2304,6 +2376,13 @@ pub(crate) fn op_state_owner(spec: &IntentSpec, uid: &Uid) -> Result<(), String>
     }
 }
 
+/// Rules 5: who accepts lost vehicles at a nomination, and which.
+struct Acceptor<'a> {
+    by: &'a OperatorId,
+    session: SessionId,
+    list: &'a [(Uid, Option<Time>)],
+}
+
 /// Rules 5: what the bridge reports of an engagement's lost-link preload
 /// ([`Engine::record_preload`]).
 #[derive(Clone, Debug, PartialEq)]
@@ -2319,9 +2398,29 @@ pub struct PreloadReport {
     pub error: Option<String>,
 }
 
+/// Rules 5: a platform's own lost-link values owed back outside an engagement's restore
+/// ([`Engine::record_platform_restore`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlatformRestoreReport {
+    pub uid: Uid,
+    /// The platform's own values, owed back.
+    pub values: BTreeMap<String, f64>,
+    /// Taken over at start from an earlier log (`from`: which log and engagement); no attempt.
+    pub carried: bool,
+    pub from: Option<String>,
+    /// An attempt: what the platform reported after putting the values back, and what went
+    /// wrong on the way.
+    pub readback: BTreeMap<String, f64>,
+    pub error: Option<String>,
+}
+
 /// Rules 5: how a stop for a preload that did not confirm begins (after `system: `); replay
 /// requires such a stop to follow an unconfirmed `engage.preload` set.
 pub(crate) const PRELOAD_FAILED: &str = "the platform's lost-link action could not be preloaded: ";
+
+/// Rules 5: how a stop for a re-read that no longer shows the preload begins; replay requires
+/// it to follow an unconfirmed `engage.preload` verify.
+pub(crate) const PRELOAD_CHANGED: &str = "the platform's lost-link action changed: ";
 
 /// Why a preload report can't be this engagement's, if it can't: never dispatched; another
 /// vehicle than its platform; an order without a preload (before rules 5); a second `set`;
@@ -2333,11 +2432,12 @@ pub(crate) fn preload_mismatch(
     state: State,
     dispatched: bool,
     preload: Option<&engage::LostLinkPreload>,
-    set_logged: bool,
+    set: Option<bool>,
     restore_confirmed: bool,
     phase: engage::PreloadPhase,
     uid: &Uid,
 ) -> Option<&'static str> {
+    let set_logged = set.is_some();
     if !dispatched {
         return Some("preload reported for an engagement that was never dispatched");
     }
@@ -2349,6 +2449,9 @@ pub(crate) fn preload_mismatch(
     }
     match phase {
         engage::PreloadPhase::Set if set_logged => Some("a second preload set for one engagement"),
+        engage::PreloadPhase::Verify if set != Some(true) || state != State::Dispatched => {
+            Some("a preload re-read without a confirmed set, or of an engagement not under way")
+        }
         engage::PreloadPhase::Restore if !set_logged => Some("a restore without a preload set"),
         engage::PreloadPhase::Restore if state == State::Dispatched => {
             Some("a restore while the engagement is under way")
@@ -2374,7 +2477,7 @@ pub(crate) fn preload_verdict(
         return Err(e.to_string());
     }
     match phase {
-        engage::PreloadPhase::Set => preload
+        engage::PreloadPhase::Set | engage::PreloadPhase::Verify => preload
             .ok_or_else(|| "no preload in the order".to_string())?
             .holds(readback),
         engage::PreloadPhase::Restore => engage::restored(
@@ -2586,7 +2689,7 @@ impl AgentPort<'_> {
         };
         let id = self
             .engine
-            .submit_inner(source, None, proposal, &[], world, terrain)?;
+            .submit_inner(source, None, proposal, None, world, terrain)?;
         self.engine.get(id)
     }
 
@@ -2719,7 +2822,7 @@ impl AgentPort<'_> {
         };
         let new_id = self
             .engine
-            .submit_inner(source, None, proposal, &[], world, terrain)?;
+            .submit_inner(source, None, proposal, None, world, terrain)?;
         if mine && next_state(old_state, Transition::Void).is_ok() {
             self.engine.transition(
                 id,

@@ -1,0 +1,91 @@
+# Rules 5, from the review of 3318f25 (probe A1): an operator without engagement authority
+# (op-4, not the proposer) tries to accept a lost friendly after op-2 looked at the picture.
+# Refused: only engagement authority accepts a lost vehicle (the bridge answers 403; the
+# engine API takes only an EngagementAuthority). op-2 signs on the picture as it is (again
+# on a fresh look if sensor noise moved the track since the first): the lost quadcopter's
+# reach covers the effect point, the approval is void.
+title = "An acceptance needs engagement authority"
+invariant = "keep_out_friendly"
+attack = "op-4 (no engagement authority, not the proposer) accepts a lost friendly after op-2 looked; op-2 signs on that token"
+expect = "voided"
+expect_rule = "keep_out_friendly"
+expect_refusals = ["op-4: accepting a lost vehicle needs engagement authority"]
+end_s = 30
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+[[operator]]
+id = "op-4"                 # no engagement authority
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"
+at = [-122.4700, 37.8160]
+
+[[vehicle]]
+uid = "drone-1"
+platform = "x10"
+at = [-122.4950, 37.8228]   # 1.2 km north of the target; its link is cut at s=2
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 2
+action = "vehicle"
+uid = "drone-1"
+silent = true
+
+[[step]]
+at_s = 14
+action = "look"
+by = "op-2"
+
+[[step]]
+at_s = 15
+action = "accept"
+by = "op-4"
+uid = "drone-1"
+
+[[step]]
+at_s = 17
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 18
+action = "look"
+by = "op-2"
+
+[[step]]
+at_s = 18
+action = "approve"
+by = "op-2"

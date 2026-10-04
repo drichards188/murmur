@@ -67,16 +67,20 @@ tamper = "suppress_void"         # optional log attack replay must catch: propos
                                  # drop_signature, edit_effect, strip_approvers,
                                  # drop_reset, agent_order_auto, drop_ack, loosen_policy,
                                  # and rules 5: drop_preload, forge_preload,
-                                 # drop_acceptance, acceptance_by_agent
+                                 # drop_verify, drop_acceptance, acceptance_by_agent,
+                                 # acceptance_without_authority
                                  # (one with nothing to edit in a run's log reports "not
                                  # applicable")
 end_s = 120                      # seconds to run (default: the last step + 10)
 after_effect = "out_of_play"     # or "persists"
 preload = "confirm"              # rules 5: how the platform answers its lost-link preload:
                                  # confirm (default), no_answer, mismatch (another action read
-                                 # back), never (nothing reported)
+                                 # back), never (nothing reported), changed (confirmed, then
+                                 # another action at the re-read near the release); a confirmed
+                                 # one is read again every 5 s from 30 s before the window opens
 expect_lost_link = "Loiter"      # optional: it followed its preloaded action on its own
-expect_preload = ["set confirmed", "restore confirmed"]   # optional, in order
+expect_preload = ["set confirmed", "restore confirmed"]   # optional, in order (also
+                                 # "verify confirmed", "verify changed")
 # policy, catalog, areas = "path"  # optional, relative to the repo (defaults: sim/...)
 
 [[operator]]                     # an operator session; engage = engagement authority
@@ -128,7 +132,8 @@ Actions (each `[[step]]` has `at_s` and `action`):
 |---|---|---|
 | `declare` | `track`, `affiliation`, `by` | an operator's declaration (logged `operator.action track.declare`) |
 | `nominate` | `by` or `agent` (+ `rationale`), `platform`, `track`, `radius_m`, `fallback` (`abort`, `return`, `loiter`), `window_s`, `accept` (rules 5: vehicles the operator accepts as lost, each since its last report) | a nomination; becomes "the last nomination" the other steps act on |
-| `accept` | `by`, `uid`, `since_s` (optional: another report than the last, which the engine refuses) | rules 5: an operator accepts a lost vehicle for the last nomination while it waits with no signature |
+| `accept` | `by`, `uid`, `since_s` (optional: another report than the last, which the engine refuses) | rules 5: an operator with engagement authority accepts a lost vehicle for the last nomination while it waits with no signature (without it: refused) |
+| `revoke` | `by`, `uid` | rules 5: any operator withdraws an acceptance from the last nomination (pending or under way) |
 | `agent_accept` | `agent`, `uid` | an agent "tries" to accept a lost vehicle: its port has no such method; recorded, nothing may move |
 | `look` | `by` | an operator with engagement authority asks for the picture (a picture token: the plan and the track now); their next `approve` quotes it |
 | `approve` | `by` | a signature: through `approve_engagement` if the session has engagement authority (quoting the token from their last `look`, or one asked for now), else `approve` (which the engine refuses for an engagement) |
@@ -205,3 +210,10 @@ calls `Engine::step_engagements` (hold the picture, release, observe, assess).
 | 54-lost-friendly-accepted | keep_out_friendly | the operator accepts the lost quadcopter; the acceptance cut from the log | done (ceased); tamper caught |
 | 55-agent-cannot-accept | keep_out_friendly | an agent nominates and tries to accept the lost quadcopter | refusals; rejected |
 | 56-lost-friendly-reappears | keep_out_friendly | the accepted quadcopter reports again 150 m from the point; the acceptance credited to an agent in the log | aborted (keep_out_friendly); tamper caught |
+| 57-acceptance-needs-engagement-authority | keep_out_friendly | the review's probe A1: an operator without engagement authority accepts a lost quadcopter after a signer looked | the acceptance refused; voided (keep_out_friendly) |
+| 58-token-before-acceptance-is-refused | signed_picture | a signer signs on a token from before another operator's acceptance; the log credits the acceptance to a session without engagement authority | refused (look again), then signed on a fresh token; done (ceased); tamper caught |
+| 59-reset-clears-acceptances | keep_out_friendly | the frozen plan an acceptance was given for is dropped; a signer signs the new one | reset; voided (keep_out_friendly: the acceptance went with the plan) |
+| 60-revoked-acceptance-stops-the-engagement | keep_out_friendly | an operator without engagement authority revokes the acceptance while the engagement is under way | aborted (keep_out_friendly), fallback |
+| 61-passive-aircraft-altitude-stays-2d | keep_out_tracks | the airliner of 52 over the effect point, its altitude from EO/IR only | rejected (2D) |
+| 62-preload-changed-before-release | fallback_preload | the lost-link action changed on the platform after the set; the re-read cut from the log | aborted at the re-read, fallback, own values back; tamper caught |
+| 63-ground-target-stays-2d | keep_out_friendly | the review's probe 8: our quadcopter 400 m MSL over a ground target logged at 0 m | rejected (2D) |

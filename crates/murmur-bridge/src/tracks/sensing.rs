@@ -395,8 +395,12 @@ pub fn detect(
                 let lat = c.lat + sigma * nn / 111_320.0;
                 let lon = c.lon + sigma * ne / (111_320.0 * c.lat.to_radians().cos());
                 let wrong = s.kind.classifier().is_some() && misclassified(&c.id, s.kind);
+                // an altitude only where the sensor ranges the contact: a passive sensor
+                // (ESM; EO/IR on an air contact) has a bearing and an elevation angle, no
+                // range, so no altitude (the decision rules count a track's altitude for a 3D
+                // keep-out only when a ranging source backs it)
                 let alt_m = match (s.kind, c.domain) {
-                    (SensorType::Esm, _) => None,
+                    (SensorType::Esm, _) | (SensorType::EoIr, Domain::Air) => None,
                     (_, Domain::Subsurface) => Some(c.alt_m + 5.0 * nn),
                     (SensorType::Radar, Domain::Air) => Some(c.alt_m + 30.0 * ne),
                     _ => Some(c.alt_m),

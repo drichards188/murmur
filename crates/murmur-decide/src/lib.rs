@@ -273,7 +273,7 @@ pub use engage::{
     StopRecord, TrackIdentity,
 };
 pub use engine::{
-    AgentPort, DispatchOrder, Engine, EngineError, Order, PREPARED_SPACE_MAX_AGE_MS, PreloadReport,
+    AgentPort, DispatchOrder, Engine, EngineError, Order, PREPARED_SPACE_MAX_AGE_MS, PlatformRestoreReport, PreloadReport,
     PreparedSpace, Preview, StepOutcome, TaskOutcome, prepare_space,
 };
 pub use geo::{LonLat, Polygon};
