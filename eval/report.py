@@ -38,7 +38,7 @@ from typing import Any
 from .engage import load_suite
 from .evidence import RULEBOOK_VERSION
 from .metrics import NOT_HUMAN, compute_run
-from .provenance import code_id
+from .provenance import code_id, is_doc
 from .stats import dprime, summary, t_interval, wilson
 
 ARM_ORDER = ["rules-only", "rules-only-reject", "human-proxy", "agent+human-proxy", "agent+model", "study"]
@@ -322,11 +322,11 @@ def rate_chart(rows: list[tuple[str, list[tuple[str, dict[str, Any]]]]], title: 
             out.append(f'<line x1="{x(lo):.1f}" y1="{y}" x2="{x(hi):.1f}" y2="{y}" stroke="var({arm_var(a)})" stroke-width="2" stroke-linecap="round"/>')
             out.append(
                 f'<circle cx="{x(b["rate"]):.1f}" cy="{y}" r="5" fill="var({arm_var(a)})" stroke="var(--surface-1)" stroke-width="2">'
-                f'<title>{esc(scenario)}, {esc(a)}: {b["k"]}/{b["n"]} = {pct(b["rate"])} (95% CI {pct(lo)} to {pct(hi)})</title></circle>'
+                f'<title>{esc(scenario)}, {esc(arm_label(a))}: {b["k"]}/{b["n"]} pooled; shown {pct(b["rate"])} (95% interval {pct(lo)} to {pct(hi)})</title></circle>'
             )
             out.append(f'<text x="{width - right + 8}" y="{y}" class="tick" dominant-baseline="middle">{b["k"]}/{b["n"]}</text>')
     out.append("</svg>")
-    return legend([(a, arm_var(a), "dot") for a in arms]) + "".join(out)
+    return legend([(arm_label(a), arm_var(a), "dot") for a in arms]) + "".join(out)
 
 
 def scatter(decisions: list[dict[str, Any]], title: str) -> str:
@@ -504,8 +504,12 @@ def provenance_text(runs: list[dict[str, Any]], meta: dict[str, Any]) -> tuple[s
     if len(ids) > 1:
         warnings.append(f"the runs ran different code: {dict(ids)}")
     if any("dirty" in k for k in ids):
-        changed = sorted({c for r in runs for c in ((r["info"].get("provenance") or {}).get("changed") or [])})
-        warnings.append(f"runs ran from a tree with uncommitted changes to tracked files: {', '.join(changed[:20])}")
+        changed = sorted({c for r in runs for c in ((r["info"].get("provenance") or {}).get("changed") or []) if not is_doc(c)})
+        warnings.append(f"runs ran from a tree with uncommitted code changes: {', '.join(changed[:20])}")
+    # (records written before the porcelain fix lost the first letter of the first path)
+    docs_only = sorted({("d" + c if c.startswith("ocs/") else c) for r in runs for c in ((r["info"].get("provenance") or {}).get("changed") or []) if is_doc(c)})
+    if docs_only:
+        warnings.append(f"documentation was being edited during the batch (no code change): {', '.join(docs_only[:10])}")
     for name, hs in bins.items():
         if len(hs) > 1:
             warnings.append(f"{name} differed between runs: {sorted(hs)}")
@@ -809,7 +813,7 @@ def build(batch: Path) -> Path:
         body.append(
             "<p>Each cell: the mean of the per-seed rates with a Student t 95% interval over the seeds that had cases (primary: "
             "proposals within one run share a stack, a picture and a decider, so they are not independent), then the pooled count "
-            "with its Wilson 95% interval (secondary). Wrong proposals are split by what the C2 showed when they were made "
+            "with its Wilson 95% interval (secondary; when every seed gives the same rate the t interval has zero width, and this is the one to read). Wrong proposals are split by what the C2 showed when they were made "
             "(the rule book on the recorded card and tracks): <em>the C2 showed it</em> (catchable from the picture) or "
             "<em>picture wrong</em> (nothing the C2 showed spoke against it); the two are never pooled. Caught: rejected or voided "
             "before dispatch, or declined by the proposer. For the proxy arms, the line under it says how the model handled those "

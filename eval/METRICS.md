@@ -109,6 +109,10 @@ Each rate is `k / n` for one run. Over a batch, for one scenario and arm, the re
 2. **Secondary, pooled**: the summed `k / n` with a Wilson 95% score interval
    (`stats.wilson`), which treats proposals as independent.
 
+When every seed gives the same rate (all 0% or all 100%, common with two cases a run), the t
+interval has zero width: it says the seeds agreed, not that the rate is known. Read the
+pooled Wilson interval then; it is never narrower than the counts allow.
+
 For the study arm, the unit is the participant: each participant's rate, then their mean and
 t interval (a participant is one cluster however many scenarios or seeds they play).
 

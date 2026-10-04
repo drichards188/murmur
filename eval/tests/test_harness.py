@@ -579,3 +579,16 @@ def test_eval_policies_follow_the_shipped_policy():
             assert tier_core(t) == tier_core(shipped[t["name"]]), (name, t["name"])
             if t["tier"] == "human":
                 assert not t.get("submitter_authorizes", False), (name, t["name"])
+
+
+def test_provenance_counts_code_not_docs():
+    from eval import provenance as V
+
+    assert V.is_doc("docs/PLAN.md") and V.is_doc("eval/README.md") and not V.is_doc("eval/metrics.py")
+    assert V.code_dirty({"dirty": True, "changed": ["docs/PLAN.md"]}) is False
+    assert V.code_dirty({"dirty": True, "changed": ["docs/PLAN.md", "eval/report.py"]}) is True
+    assert V.code_id({"short": "abc1234", "dirty": True, "changed": ["docs/PLAN.md"]}) == "abc1234"
+    assert V.code_id({"short": "abc1234", "dirty": True, "changed": ["eval/run.py"]}) == "abc1234 (dirty)"
+    p = V.collect()
+    assert p["commit"] and len(p["commit"]) == 40 and set(p["binaries"]) == set(V.BINARIES)
+    assert all(not c.startswith(" ") for c in p["changed"])
