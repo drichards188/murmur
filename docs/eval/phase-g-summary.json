@@ -5,7 +5,7 @@
  "started": "2026-10-04T07:33:10+00:00",
  "ended": "2026-10-04T09:02:13+00:00",
  "code": "code 54fa0fa (180 runs); binaries sha256 murmur-bridge 377368d1552f; murmur-contacts b715b43aca25; murmur-linkemu e38620c6483c; murmur-replay 25a0cbe1367d; murmur-scenarios de1b8c1e95cb; murmur-standins 67028151de82",
- "metrics_code": "b21de91",
+ "metrics_code": "a52b0c6",
  "provenance_warnings": [],
  "rulebook": "v2, 2026-10-04",
  "proxy_params": {
