@@ -190,7 +190,7 @@ export function VehicleDetails({ v, taskings, selected, onToggleSelect, onClose,
           <Item k="Navigation">
             {v.nav_ready ? 'ready' : 'not ready'}
             {v.nav_source === 'dead_reckoning' ? (
-              <b title="No GNSS: position from inertial navigation and DVL, error growing with distance travelled"> on dead reckoning</b>
+              <b title="No GNSS: position from inertial navigation and DVL (sub) or airspeed (fixed-wing), error growing with distance travelled"> on dead reckoning</b>
             ) : null}{' '}
             · GPS {v.gps_fix >= 3 ? '3D fix' : v.gps_fix === 2 ? '2D fix' : 'no fix'}{v.satellites ? `, ${v.satellites} sats` : ''}</Item>
           <Item k="Position">{v.position ? `${v.position[1].toFixed(5)}, ${v.position[0].toFixed(5)}` : '–'}</Item>

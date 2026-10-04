@@ -147,6 +147,8 @@ group. Dates are 2026.
   `sim/params/common.parm` zeroes ArduPilot default streams (`MAV1_*`, not `SR0_*` in this
   version). WebSocket sends full state once, then changes only.
 - **Readiness trusts the vehicle's EKF flags** (10-02): submerged AUVs have no GPS fix.
+  A fixed-wing on dead reckoning (10-03) is `unverified`, not failed: ArduPlane flies on
+  without GNSS, so a plane in a jammer can be tasked out of it, with a human judging it.
 - **Tasks use platform cruise altitude and minimum turn radius** from the manifest (10-02).
 - **Bridges lifted in 3D** by estimating deck height from the highest abutment along the
   bridge line (10-02). Documented in `web/src/bridges.ts`.

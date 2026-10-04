@@ -94,9 +94,13 @@ thresholds) are marked in `params.rs`.
 - **HIGH_LATENCY2** updates position, depth, heading, speed, battery, mode and waypoint, so a
   submerged AUV's track keeps moving. A link reporting by it is low-rate: it counts as lost
   after 3 expected intervals (60 s at 20 s) instead of 3 s (`link.expected_interval_ms`).
-- **Dead reckoning**: a sub with relative position only (EKF_POS_HORIZ_REL without ABS, or
-  HIGH_LATENCY2's GPS failure flag) is navigation-ready with `nav_source = dead_reckoning`,
-  shown as DR in the console and recorded by the readiness rule. Other kinds need GNSS.
+- **Dead reckoning**: a sub or a fixed-wing (plane, VTOL) with relative position only
+  (EKF_POS_HORIZ_REL without ABS, or HIGH_LATENCY2's GPS failure flag) is navigation-ready
+  with `nav_source = dead_reckoning`, shown as DR in the console. The readiness rule passes
+  a sub and makes a fixed-wing `unverified` ("position error grows with time"): an agent's
+  task waits for a human, the operator's own goes through flagged, so a plane in a GNSS
+  jammer can still be tasked out of it. Copters, rovers, boats and blimps need GNSS (their
+  EKF gives up the position, as ArduPilot's does).
 - **Hold** commands the mode that keeps a vehicle where it is with no RC transmitter and no
   further messages (`tasks/caps.rs` has the reasoning per kind): BRAKE for a copter (LOITER
   and POSHOLD read the throttle stick, so with no RC they descend, land and disarm), LOITER
