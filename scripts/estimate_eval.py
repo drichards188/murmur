@@ -106,12 +106,14 @@ def evaluate(m, dt, reach, cap):
                      "bearing_deg": br}
     if k == "line":
         d = m["speed_mps"] * dt
-        arrived = False
-        if m.get("stop_m") is not None and d >= m["stop_m"]:
-            d, arrived = m["stop_m"], True
-        pos = step(m["from"], m["bearing_deg"], d)
         along = bound(m["along0_m"] + m["along_mps"] * dt, m["along0_m"])
         across = bound(m["across0_m"] + m["across_mps"] * dt, m["across0_m"])
+        # arrived only once even a vehicle lagging by the along-track uncertainty would be there
+        arrived = False
+        if m.get("stop_m") is not None and d >= m["stop_m"]:
+            arrived = d >= m["stop_m"] + along
+            d = m["stop_m"]
+        pos = step(m["from"], m["bearing_deg"], d)
         a = m.get("arrive")
         if a and arrived and a["ring"]:
             return pos, {"kind": "arc", "center": a["center"], "radius_m": a["radius_m"],
@@ -222,6 +224,7 @@ def main():
                 "error_m": round(dist(p, truth), 1), "contained": contains(region, truth),
                 "region": region["kind"], "extent": round(extent(region), 1),
                 "last_known_error_m": round(dist(v["position"], truth), 1) if v.get("position") else None,
+                "truth": [round(truth[0], 6), round(truth[1], 6)], "est": [round(p[0], 6), round(p[1], 6)],
             }
             fs = est.get("failsafe")
             if fs and t >= fs["fires_t"]:

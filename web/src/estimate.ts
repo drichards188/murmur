@@ -116,14 +116,15 @@ export function evalMotion(m: Motion, dtIn: number, reachMps: number, capM: numb
     }
     case 'line': {
       let d = m.speed_mps * dt
-      let arrived = false
-      if (m.stop_m != null && d >= m.stop_m) {
-        d = m.stop_m
-        arrived = true
-      }
-      const position = step(m.from, m.bearing_deg, d)
       const along = bound(m.along0_m + m.along_mps * dt, m.along0_m)
       const across = bound(m.across0_m + m.across_mps * dt, m.across0_m)
+      // arrived only once even a vehicle lagging by the along-track uncertainty would be there
+      let arrived = false
+      if (m.stop_m != null && d >= m.stop_m) {
+        arrived = d >= m.stop_m + along
+        d = m.stop_m
+      }
+      const position = step(m.from, m.bearing_deg, d)
       const a = m.arrive
       if (a && arrived && a.ring) {
         return { position, region: { kind: 'arc', center: a.center, radius_m: a.radius_m, width_m: a.width_m, angle_deg: flatBearing(a.center, position), spread_deg: 180 } }

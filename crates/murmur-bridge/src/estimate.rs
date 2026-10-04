@@ -457,16 +457,20 @@ pub fn eval(m: &Motion, dt: f64, reach_mps: f64, cap_m: f64) -> (LngLat, Region)
             arrive,
         } => {
             let mut d = speed_mps * dt;
+            let along = bound(along0_m + along_mps * dt, *along0_m);
+            let across = bound(across0_m + across_mps * dt, *across0_m);
+            // the point stops at the destination; the region counts it as arrived only once
+            // even a vehicle lagging by the along-track uncertainty would be there (a turn
+            // out of an orbit, a slower speed over ground), the ellipse covering the lag
+            // until then
             let mut arrived = false;
             if let Some(stop) = stop_m
                 && d >= *stop
             {
+                arrived = d >= stop + along;
                 d = *stop;
-                arrived = true;
             }
             let position = step(*from, *bearing_deg, d);
-            let along = bound(along0_m + along_mps * dt, *along0_m);
-            let across = bound(across0_m + across_mps * dt, *across0_m);
             match arrive {
                 // on the ring it circles: where on it is unknown (the whole ring), how far
                 // off it is only the ring's own band
@@ -1749,6 +1753,37 @@ mod tests {
         // no timer known: no branch
         boat.lost_link = None;
         assert!(estimate(&boat).failsafe.is_none());
+    }
+
+    #[test]
+    fn a_line_counts_as_arrived_only_once_a_lagging_vehicle_would_be_there() {
+        // 1 km to go at 10 m/s with 100 m of initial uncertainty growing 1 m/s: the point
+        // stops at 100 s, the region keeps an ellipse (a vehicle up to `along` behind would
+        // still be on its way) until 10 dt >= 1000 + 100 + dt, at 122.2 s
+        let m = Motion::Line {
+            from: GATE,
+            bearing_deg: 0.0,
+            speed_mps: 10.0,
+            stop_m: Some(1000.0),
+            along0_m: 100.0,
+            along_mps: 1.0,
+            across0_m: 50.0,
+            across_mps: 0.0,
+            arrive: Some(Arrival {
+                center: step(GATE, 0.0, 1000.0),
+                radius_m: 15.0,
+                ring: false,
+                width_m: 0.0,
+            }),
+        };
+        let (p, r) = eval(&m, 100.0, 100.0, 25_000.0);
+        assert!((distance_m(GATE, p) - 1000.0).abs() < 1.0);
+        assert!(matches!(r, Region::Ellipse { semi_major_m, .. } if (semi_major_m - 200.0).abs() < 1e-9), "{r:?}");
+        let (p, r) = eval(&m, 122.0, 100.0, 25_000.0);
+        assert!((distance_m(GATE, p) - 1000.0).abs() < 1.0);
+        assert!(matches!(r, Region::Ellipse { .. }), "{r:?}");
+        let (_, r) = eval(&m, 123.0, 100.0, 25_000.0);
+        assert!(matches!(r, Region::Circle { radius_m, .. } if (radius_m - 115.0).abs() < 1e-9), "{r:?}");
     }
 
     #[test]
