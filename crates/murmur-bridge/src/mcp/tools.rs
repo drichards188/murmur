@@ -21,6 +21,14 @@ observed) and age_s; vehicle facts also carry stale, true when the fact is older
 freshness limit the rules apply to it (freshness_limit_s). A stale fact cannot support a \
 decision: treat it as uncertain and say so in your rationale.";
 
+/// What the vehicle views say about `estimate` (the console's dead reckoning for a silent
+/// vehicle, `crate::estimate`): read-only situational awareness, never a fact.
+pub const ESTIMATE_NOTE: &str = "A vehicle whose link is silent also carries estimate: \
+where the console shows it probably is (its task, mode or last velocity carried on, with a \
+growing uncertainty radius, and what its lost-link failsafe would be doing). That is a \
+display model with as_of and age_s, not an observed fact: the decision core does not read \
+it, and no rule accepts it as a position.";
+
 #[derive(Deserialize, JsonSchema)]
 pub struct NoParams {}
 
@@ -252,13 +260,13 @@ pub fn tools() -> Vec<Tool> {
                  platform's limits and the tasks its kind can do, position, navigation \
                  readiness and source, battery, home, link health and the task it is on. \
                  {STALE_NOTE} A vehicle whose link is lost or whose position is stale is not \
-                 taskable: the readiness check will refuse it."
+                 taskable: the readiness check will refuse it. {ESTIMATE_NOTE}"
             ),
             true,
         ),
         tool::<VehicleParams>(
             "get_vehicle",
-            format!("Read one vehicle by fleet uid, with the same facts as get_fleet. {STALE_NOTE}"),
+            format!("Read one vehicle by fleet uid, with the same facts as get_fleet. {STALE_NOTE} {ESTIMATE_NOTE}"),
             true,
         ),
         read(

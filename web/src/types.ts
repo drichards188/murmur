@@ -99,6 +99,8 @@ export interface Arrival {
   radius_m: number
   ring: boolean
   width_m: number
+  /** a ring's phase rate once joined, degrees/s, positive clockwise (0 for a circle) */
+  rate_dps: number
 }
 
 export interface FailsafeBranch {
@@ -108,18 +110,23 @@ export interface FailsafeBranch {
   profile: string
   detail: string
   motion: Motion
+  /** the timer has fired: the branch leads (`Estimate.leading`) */
+  fired: boolean
+  now?: { t: number; position: LngLat; radius_m: number }
 }
 
 export interface Estimate {
-  /** the last position report (bridge wall clock, s): the model's start */
+  /** the model's start (bridge wall clock, s): the last position report, or a drift track's last step */
   t0: number
-  basis: 'orbit' | 'patrol' | 'hold' | 'rtl' | 'velocity' | 'stationary'
+  basis: 'orbit' | 'patrol' | 'hold' | 'rtl' | 'velocity' | 'stationary' | 'drift'
   detail: string
   motion: Motion
   reach_mps: number
   cap_m: number
   note?: string
   failsafe?: FailsafeBranch
+  /** which hypothesis the bridge sees leading: the task model, or the failsafe branch once its timer fired */
+  leading: 'task' | 'failsafe'
   /** the bridge's own evaluation at a coarse step (API readers; the console evaluates itself) */
   now: { t: number; position: LngLat; radius_m: number }
 }

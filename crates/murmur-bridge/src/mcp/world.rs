@@ -153,6 +153,9 @@ fn vehicle_json(
             "t": s.t, "age_s": age(now_wall, s.t), "severity": s.severity, "text": s.text,
         })).collect::<Vec<_>>(),
         "tracking": v.tracking,
+        // while the link is silent: where the console shows the vehicle probably is. A
+        // display model, not a fact; the decision core does not read it (`crate::estimate`)
+        "estimate": v.estimate.as_ref().map(|e| crate::estimate::agent_view(e, now_wall)),
         "current_op": op.map(|o| json!({
             "intent_id": o.intent_id,
             "task": o.task.name(),
@@ -176,12 +179,18 @@ fn vehicles(mcp: &Mcp, only: Option<&[u64]>) -> (f64, Vec<Value>) {
         .map(|o| (o.uid, o))
         .collect();
     let mut out = Vec::new();
+    // silent vehicles carry the console's estimate too (display only, said so in the view)
+    let estimates = crate::estimate::FrameContext::new(&mcp.world, now_wall);
     for cell in mcp.world.vehicles() {
         if only.is_some_and(|u| !u.contains(&cell.uid)) {
             continue;
         }
         let link = cell.link_snapshot(now_mono);
-        let v = cell.read(|v| v.snapshot(cell.uid, cell.sysid, link, now_mono));
+        let v = cell.read(|v| {
+            let mut s = v.snapshot(cell.uid, cell.sysid, link, now_mono);
+            s.estimate = estimates.estimate(cell.uid, v, &s.link);
+            s
+        });
         let facts = snap.vehicles.get(&duid(cell.uid));
         out.push(vehicle_json(
             mcp,

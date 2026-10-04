@@ -41,10 +41,12 @@ function a(c: RGBA, k: number): RGBA {
   return [c[0], c[1], c[2], Math.round(c[3] * k)]
 }
 
-/** one drawn hypothesis: the estimate itself, or the lost-link branch */
+/** one drawn hypothesis: the task model, or the lost-link branch */
 interface Drawn {
   v: Vehicle
   branch: boolean
+  /** the leading hypothesis: the branch once its timer fired, else the task model */
+  lead: boolean
   at: Evaluated
   /** where its leader starts: the last known position, or the branch's start */
   from: LngLat
@@ -67,28 +69,33 @@ export function buildEstimateLayers({ vehicles, nowMs, focus }: EstimateLayerInp
     if (!e || !v.position) continue
     const silent = (v.link.since_last_ms ?? 0) / 1000
     const at = estimateAt(e, nowMs)
+    const fs = failsafeAt(e, nowMs)
+    // once the lost-link timer has fired the branch leads: the task model stays, dimmed, as
+    // the other hypothesis
+    const fired = !!(fs && e.failsafe)
     drawn.push({
       v,
       branch: false,
+      lead: !fired,
       at,
       from: v.position,
       rings: regionRings(at.region),
       band: bandPath(at.region),
-      label: `EST ${BASIS_LABEL[e.basis]} · silent ${fmtS(silent)}`,
+      label: fired ? `EST ${BASIS_LABEL[e.basis]} if it kept its task · silent ${fmtS(silent)}` : `EST ${BASIS_LABEL[e.basis]} · silent ${fmtS(silent)}`,
       focus: v.uid === focus,
     })
-    const fs = failsafeAt(e, nowMs)
     if (fs && e.failsafe) {
       const m = e.failsafe.motion
       const from: LngLat = m.kind === 'line' ? m.from : m.kind === 'point' ? m.at : at.position
       drawn.push({
         v,
         branch: true,
+        lead: true,
         at: fs,
         from,
         rings: regionRings(fs.region),
         band: bandPath(fs.region),
-        label: `${FAILSAFE_LABEL[e.failsafe.action]} if it lost us too · ${fmtS(nowMs / 1000 - e.failsafe.fires_t)}`,
+        label: `EST ${FAILSAFE_LABEL[e.failsafe.action]} on lost link · ${fmtS(nowMs / 1000 - e.failsafe.fires_t)} · silent ${fmtS(silent)}`,
         focus: v.uid === focus,
       })
     }
@@ -96,7 +103,7 @@ export function buildEstimateLayers({ vehicles, nowMs, focus }: EstimateLayerInp
   const z = (d: Drawn) => (is3d ? (d.v.alt_msl ?? 0) * HEIGHT_EXAGGERATION : 0)
   const at = (d: Drawn): XYZ => [d.at.position[0], d.at.position[1], z(d)]
   const color = (d: Drawn) => (d.branch ? BRANCH : OURS)
-  const dim = (d: Drawn) => (d.focus ? 1 : 0.7)
+  const dim = (d: Drawn) => (d.lead ? (d.focus ? 1 : 0.75) : 0.35)
   const tick = Math.floor(nowMs / 500)
   const triggers = { getPosition: tick, getPolygon: tick, getPath: tick, getSourcePosition: tick, getTargetPosition: tick, getText: tick, getFillColor: focus, getLineColor: focus, getColor: focus, getWidth: focus, getLineWidth: focus }
   const onTop = { depthCompare: 'always' as const, depthWriteEnabled: false }
@@ -107,9 +114,9 @@ export function buildEstimateLayers({ vehicles, nowMs, focus }: EstimateLayerInp
       getPolygon: (d) => d.rings,
       stroked: true,
       filled: true,
-      getFillColor: (d) => a(color(d), d.branch ? 0.05 : 0.08),
+      getFillColor: (d) => a(color(d), d.lead ? 0.08 : 0.03),
       getLineColor: (d) => a(color(d), 0.6 * dim(d)),
-      getLineWidth: (d) => (d.focus ? 2 : 1),
+      getLineWidth: (d) => (d.lead ? (d.focus ? 2.5 : 1.5) : 1),
       lineWidthUnits: 'pixels',
       updateTriggers: triggers,
       parameters: onTop,
@@ -133,7 +140,7 @@ export function buildEstimateLayers({ vehicles, nowMs, focus }: EstimateLayerInp
       getSourcePosition: (d) => [d.from[0], d.from[1], z(d)],
       getTargetPosition: at,
       getColor: (d) => a(color(d), 0.75 * dim(d)),
-      getWidth: (d) => (d.focus ? 2 : 1.5),
+      getWidth: (d) => (d.lead ? (d.focus ? 2.5 : 1.5) : 1),
       widthUnits: 'pixels',
       updateTriggers: triggers,
       parameters: onTop,
@@ -144,9 +151,9 @@ export function buildEstimateLayers({ vehicles, nowMs, focus }: EstimateLayerInp
       billboard: true,
       getPosition: at,
       getIcon: (d) => frameIcon(d.v, true),
-      getSize: (d) => frameIcon(d.v, true).size * (d.branch ? 0.8 : 1),
+      getSize: (d) => frameIcon(d.v, true).size * (d.lead ? 1 : 0.8),
       sizeUnits: 'pixels',
-      getColor: (d) => (d.branch ? [220, 200, 255, 120] : [255, 255, 255, 150]),
+      getColor: (d) => (d.branch ? [220, 200, 255, d.lead ? 170 : 80] : [255, 255, 255, d.lead ? 150 : 70]),
       updateTriggers: triggers,
       parameters: onTop,
     }),
@@ -165,7 +172,7 @@ export function buildEstimateLayers({ vehicles, nowMs, focus }: EstimateLayerInp
       fontFamily: FONT,
       fontWeight: 600,
       background: true,
-      getBackgroundColor: (d) => a(color(d), 0.28),
+      getBackgroundColor: (d) => a(color(d), d.lead ? 0.28 : 0.12),
       backgroundPadding: [5, 3, 5, 3],
       outlineWidth: 2,
       outlineColor: OUTLINE,

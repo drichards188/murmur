@@ -144,11 +144,15 @@ const fmtM = (m: number) => (m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math
  *  estimate, what the estimate rests on, how uncertain it is, and the lost-link branch. */
 function EstimateItems({ v, e, nowMs }: { v: Vehicle; e: Estimate; nowMs: number }) {
   if (!v.position) return null
-  const at = estimateAt(e, nowMs)
+  const task = estimateAt(e, nowMs)
   const silent = (v.link.since_last_ms ?? 0) / 1000
-  const away = flatDistance(v.position, at.position)
   const fs = e.failsafe
   const branch = failsafeAt(e, nowMs)
+  // once the timer has fired the branch leads (the vehicle is probably on it, if it lost us
+  // too); the task model stays as the other hypothesis
+  const lead = branch ?? task
+  const away = flatDistance(v.position, lead.position)
+  const what = fs?.detail.split('if it lost us too: ')[1] ?? fs?.detail
   return (
     <>
     <dl>
@@ -157,29 +161,35 @@ function EstimateItems({ v, e, nowMs }: { v: Vehicle; e: Estimate; nowMs: number
       </Item>
       <Item k="Last known">{fmtLL(v.position)}</Item>
       <Item k="Estimated" title="The bridge's motion model for this silence, evaluated now">
-        {fmtLL(at.position)}
-        {away >= 1 ? ` · ${fmtM(away)} on ${String(Math.round(flatBearing(v.position, at.position))).padStart(3, '0')}° from last known` : ' · where it was'}
+        {fmtLL(lead.position)}
+        {away >= 1 ? ` · ${fmtM(away)} on ${String(Math.round(flatBearing(v.position, lead.position))).padStart(3, '0')}° from last known` : ' · where it was'}
       </Item>
-      <Item k="Basis" title="What the estimate rests on, in order: the current task, the mode, the last velocity, else stationary">
-        {BASIS_LABEL[e.basis]}: {e.detail}
+      <Item k="Basis" title="What the estimate rests on: the lost-link failsafe once its timer fired, else in order the current task, the mode, the last velocity, else stationary">
+        {branch && fs ? (
+          <>
+            <b className="warn">lost-link failsafe: {fs.action.toUpperCase()} since {fmtDuration(nowMs / 1000 - fs.fires_t)}</b> (timer {Math.round(fs.after_s)} s, {fs.profile}), if it lost us too: {what}
+          </>
+        ) : (
+          <>
+            {BASIS_LABEL[e.basis]}: {e.detail}
+          </>
+        )}
       </Item>
       <Item k="Uncertainty" title={`Grows with the silence (platform top speed ${Math.round(e.reach_mps)} m/s, capped at ${fmtM(e.cap_m)}); about two sigma`}>
-        {regionText(at.region)}
+        {regionText(lead.region)}
       </Item>
-      {e.note && <Item k="Note">{e.note}</Item>}
-      {fs && (
-        <Item k="Lost link" title="The platform's GCS failsafe timer for its link profile (sim/links.toml lost_link_s) and what its firmware does when it fires">
-          {branch ? (
-            <>
-              <b className="warn">{fs.action.toUpperCase()} since {fmtDuration(nowMs / 1000 - fs.fires_t)}</b> if it lost us too (timer {Math.round(fs.after_s)} s, {fs.profile}) · est. {fmtLL(branch.position)} · {regionText(branch.region)}
-            </>
-          ) : (
-            <>
-              {fs.action.toUpperCase()} in {fmtDuration(fs.fires_t - nowMs / 1000)} if it lost us too (timer {Math.round(fs.after_s)} s, {fs.profile})
-            </>
-          )}
+      {branch ? (
+        <Item k="If it kept its task" title="The other hypothesis: the vehicle never heard the failsafe (it still hears us) and went on with what it was doing">
+          {BASIS_LABEL[e.basis]} ({e.detail}) · est. {fmtLL(task.position)} · {regionText(task.region)}
         </Item>
+      ) : (
+        fs && (
+          <Item k="Lost link" title="The platform's GCS failsafe timer for its link profile (sim/links.toml lost_link_s) and what its firmware does when it fires">
+            {fs.action.toUpperCase()} in {fmtDuration(fs.fires_t - nowMs / 1000)} if it lost us too (timer {Math.round(fs.after_s)} s, {fs.profile}); then that leads here
+          </Item>
+        )
       )}
+      {e.note && <Item k="Note">{e.note}</Item>}
     </dl>
     <p className="muted">Situational awareness only: the decision core keeps its own friendly-uncertainty model and does not read this.</p>
     </>

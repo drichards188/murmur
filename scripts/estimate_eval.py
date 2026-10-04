@@ -13,6 +13,10 @@ bucket. Lines go to `--out` as JSON.
 
     scripts/estimate_eval.py --bridge http://127.0.0.1:8765 --emu http://127.0.0.1:8766 \\
         --uids 2,17 --duration 180 --out logs/estimate-eval.jsonl
+
+A vehicle navigating without GNSS (a submerged AUV) reports its own drifting estimate, so
+the emulator's position is not its truth; for those, `--truth-log` names the stand-ins'
+truth log (MURMUR_STANDINS_TRUTH), whose latest line per uid is used instead.
 """
 
 import argparse
@@ -109,19 +113,27 @@ def evaluate(m, dt, reach, cap):
         along = bound(m["along0_m"] + m["along_mps"] * dt, m["along0_m"])
         across = bound(m["across0_m"] + m["across_mps"] * dt, m["across0_m"])
         # arrived only once even a vehicle lagging by the along-track uncertainty would be there
-        arrived = False
+        arrived = at_stop = False
         if m.get("stop_m") is not None and d >= m["stop_m"]:
             arrived = d >= m["stop_m"] + along
+            at_stop = True
             d = m["stop_m"]
-        pos = step(m["from"], m["bearing_deg"], d)
+        stop_point = step(m["from"], m["bearing_deg"], d)
         a = m.get("arrive")
+        pos = stop_point
+        # a ring joined: the point goes on around it from the moment it got there
+        if a and at_stop and a["ring"] and a["radius_m"] > 0:
+            since = max(0.0, dt - (m.get("stop_m") or 0) / max(m["speed_mps"], 1e-9))
+            angle = (bearing(a["center"], stop_point) + a.get("rate_dps", 0) * since) % 360
+            pos = step(a["center"], angle, a["radius_m"])
         if a and arrived and a["ring"]:
             return pos, {"kind": "arc", "center": a["center"], "radius_m": a["radius_m"],
                          "width_m": a["width_m"], "angle_deg": bearing(a["center"], pos),
                          "spread_deg": 180}
         if a and arrived:
             return pos, {"kind": "circle", "center": a["center"], "radius_m": a["radius_m"] + m["along0_m"]}
-        return pos, {"kind": "ellipse", "center": pos, "semi_major_m": along, "semi_minor_m": across,
+        # not surely there yet: the ellipse stays about the stop point
+        return pos, {"kind": "ellipse", "center": stop_point, "semi_major_m": along, "semi_minor_m": across,
                      "bearing_deg": m["bearing_deg"]}
     if k == "point":
         return m["at"], {"kind": "circle", "center": m["at"],
@@ -180,6 +192,28 @@ def get(url):
 BUCKETS = [(0, 15), (15, 30), (30, 60), (60, 120), (120, 300), (300, 10 ** 9)]
 
 
+def truth_from_log(path, uid, t, max_age_s=30.0):
+    """The latest truth the stand-ins logged for uid within max_age_s of t, as [lon, lat]."""
+    if not path:
+        return None
+    best = None
+    try:
+        with open(path) as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if r.get("uid") == uid and (best is None or r["t"] > best["t"]):
+                    best = r
+    except OSError:
+        return None
+    if best is None or t - best["t"] > max_age_s:
+        return None
+    lat, lon = best["truth"][0], best["truth"][1]
+    return [lon, lat]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--bridge", default="http://127.0.0.1:8765")
@@ -187,6 +221,8 @@ def main():
     ap.add_argument("--uids", required=True, help="comma-separated uids to follow")
     ap.add_argument("--duration", type=float, default=180.0, help="seconds to sample")
     ap.add_argument("--out", default=None, help="JSON lines of every sample")
+    ap.add_argument("--truth-log", default=None,
+                    help="the stand-ins' truth log (MURMUR_STANDINS_TRUTH): truth for GNSS-denied vehicles")
     args = ap.parse_args()
     uids = [int(u) for u in args.uids.split(",") if u]
     out = open(args.out, "w") if args.out else None
@@ -208,15 +244,17 @@ def main():
             est = v.get("estimate")
             if not est:
                 continue
-            try:
-                stats = get(f"{args.emu}/stats/{u}")
-            except Exception as e:  # noqa: BLE001
-                print(f"emu {u}: {e}", file=sys.stderr)
-                continue
-            pos = stats.get("pos") or {}
-            if pos.get("lat") is None or pos.get("lon") is None:
-                continue
-            truth = [pos["lon"], pos["lat"]]
+            truth = truth_from_log(args.truth_log, u, t)
+            if truth is None:
+                try:
+                    stats = get(f"{args.emu}/stats/{u}")
+                except Exception as e:  # noqa: BLE001
+                    print(f"emu {u}: {e}", file=sys.stderr)
+                    continue
+                pos = stats.get("pos") or {}
+                if pos.get("lat") is None or pos.get("lon") is None:
+                    continue
+                truth = [pos["lon"], pos["lat"]]
             silent = t - (v["link"]["last_rx_t"] or t)
             p, region = evaluate(est["motion"], t - est["t0"], est["reach_mps"], est["cap_m"])
             rec = {
