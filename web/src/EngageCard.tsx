@@ -10,6 +10,7 @@ import {
   isEngage,
   previewOf,
   requestPicture,
+  revokeUnknown,
   RUNNING,
   STATE_LABEL,
   type EngagePreview,
@@ -57,6 +58,40 @@ const ENGAGE_RULES = [
 function nameOf(vehicles: Vehicle[], uid: string | number) {
   const v = vehicles.find((x) => String(x.uid) === String(uid))
   return v ? callsign(v) : `vehicle ${uid}`
+}
+
+/** Rules 5: the lost vehicles an operator accepted for this engagement, shown to every signer
+ *  (and while it is under way), each with a button to withdraw it (any operator may). */
+function Acceptances({ intent: i, vehicles, now, onDone, signing }: Pick<CardProps, 'intent' | 'vehicles' | 'now' | 'onDone'> & { signing?: boolean }) {
+  const [error, setError] = useState<string | null>(null)
+  const accepted = i.engage?.accepted ?? []
+  if (!accepted.length) return null
+  const withdraw = async (uid: number) => {
+    setError(null)
+    try {
+      await revokeUnknown(i.id, uid)
+      onDone(`i${i.id}: acceptance of ${nameOf(vehicles, uid)} withdrawn by ${getOperator()}`, 'ok')
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
+  return (
+    <>
+      {accepted.map((a) => (
+        <p key={a.engine_uid} className="eg-alarm" role="status">
+          Accepted as lost by {a.by}: {a.uid == null ? a.engine_uid : nameOf(vehicles, a.uid)}, position unknown{' '}
+          {a.since == null ? '(it never reported one)' : `since ${fmtRel(a.since - now())}`}. The friendly keep-out leaves it out while it stays lost since then
+          {signing ? '; your signature covers this acceptance.' : '.'}{' '}
+          {a.uid != null && (
+            <button type="button" className="ghost mini" onClick={(ev) => { ev.stopPropagation(); void withdraw(a.uid as number) }}>
+              Withdraw
+            </button>
+          )}
+        </p>
+      ))}
+      {error && <p className="error ix-error">{error}</p>}
+    </>
+  )
 }
 
 function km(m: number) {
@@ -325,12 +360,7 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
             Signatures of {view.reset.dropped.join(', ')} dropped {fmtRel(view.reset.t - now())}: {view.reset.reason}. They must sign again on the picture as it is now.
           </p>
         )}
-        {(view?.accepted ?? []).map((a) => (
-          <p key={a.engine_uid} className="eg-alarm" role="status">
-            Accepted as lost by {a.by}: {a.uid == null ? a.engine_uid : nameOf(vehicles, a.uid)}, position unknown{' '}
-            {a.since == null ? '(it never reported one)' : `since ${fmtRel(a.since - now())}`}. The friendly keep-out leaves it out while it stays lost since then; your signature covers this acceptance.
-          </p>
-        ))}
+        <Acceptances intent={i} vehicles={vehicles} now={now} onDone={onDone} signing />
         {plan && (
           <p className="eg-plan">
             Plan frozen by {plan.by}&apos;s signature {fmtRel(plan.t - now())}: effect at {ll(plan.effect_point)} {fmtRel(plan.effect_t - now())}, radius {Math.round(plan.effect_radius_m)} m, on {plan.track.id} ({plan.track.identity ?? 'unclassified'}, declared by {plan.track.declared_by ?? 'nobody'}). Every signature is on this exact plan; if it stops holding, the signatures are dropped.
@@ -429,6 +459,7 @@ function RunCard({ intent: i, vehicles, now, selected, onFocus, onDone }: CardPr
             : `Picture changed: ${failing.map((c) => `${c.rule} (${c.detail})`).join('; ')}`}
         </p>
       )}
+      {abortable && <Acceptances intent={i} vehicles={vehicles} now={now} onDone={onDone} />}
       {e?.effect && (
         <p className="eg-effect">
           Effect released {fmtRel(e.effect.t - now())} at {ll(e.effect.point)} (radius {Math.round(e.effect.radius_m)} m, planned {fmtRel(e.effect.planned_t - e.effect.t)} from release)

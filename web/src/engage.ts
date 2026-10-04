@@ -211,6 +211,13 @@ export async function nominate(req: { track: string; uid: number; radius: number
   return b.intent as Intent
 }
 
+/** Rules 5: any operator withdraws an acceptance of a lost vehicle (pending or under way):
+ *  the checks count the vehicle again, which stops an engagement it now blocks. */
+export async function revokeUnknown(id: number, uid: number): Promise<Intent> {
+  const b = await post(`/api/intents/${id}/revoke_unknown`, { uid })
+  return b.intent as Intent
+}
+
 /** Any operator stops an approved or dispatched engagement; its fallback is commanded. */
 export async function abortEngagement(id: number, note: string): Promise<Intent> {
   const b = await post(`/api/intents/${id}/abort`, note.trim() ? { note: note.trim() } : {})
