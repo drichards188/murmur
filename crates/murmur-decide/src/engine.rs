@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::areas::AreaSet;
-use crate::audit::{AuditSink, CheckPhase, Event, EventBody, LoggedAreas};
+use crate::audit::{AuditSink, CheckPhase, Event, EventBody, LoggedAreas, OperatorView};
 use crate::authority::{EngagementAuthority, Grants, HumanAuthority, OperatorSession};
 use crate::engage::{
     self, EffectOrder, EffectRecord, EngageOrder, EngageWindow, EngagementEvent, FallbackOrder,
@@ -40,6 +40,8 @@ pub enum EngineError {
     },
     #[error("intent {0} expired before it was approved")]
     Expired(IntentId),
+    #[error("intent {id} is {state:?}: an open or decide view is only taken while it waits for a decision")]
+    ViewNotPending { id: IntentId, state: State },
     #[error("intent {0} failed its checks against the current world at approval and was voided")]
     ChecksFailedAtApproval(IntentId),
     #[error("agent {agent} can't withdraw intent {id}: not its own")]
@@ -976,6 +978,34 @@ impl Engine {
             action: action.into(),
             detail: detail.into(),
             grants: None,
+        })?;
+        Ok(())
+    }
+
+    /// Log what an operator's console showed for an intent (`operator.view`, Phase G):
+    /// the card opened, closed, or a decision button was clicked, with what was visible.
+    /// Decides nothing; replay makes no decision from it (it checks the session is the
+    /// operator's). The intent must exist, the view be well-formed
+    /// ([`OperatorView::validate`]), and an `open` or `decide` view is taken only while the
+    /// intent waits for a decision (`close` any time: a card can go away after its intent
+    /// ended), so a late decide view cannot follow the decision it describes.
+    pub fn record_operator_view(
+        &mut self,
+        by: &HumanAuthority,
+        intent: IntentId,
+        view: OperatorView,
+    ) -> Result<(), EngineError> {
+        let state = self.get(intent)?.state();
+        view.validate()
+            .map_err(|m| EngineError::Proposal(ProposalError::BadParams(m)))?;
+        if view.event != "close" && state != State::PendingApproval {
+            return Err(EngineError::ViewNotPending { id: intent, state });
+        }
+        self.emit(EventBody::OperatorView {
+            operator: by.operator().clone(),
+            session: by.session(),
+            intent,
+            view,
         })?;
         Ok(())
     }

@@ -1,0 +1,22 @@
+# PLACEHOLDER (Phase E). A friendly submarine near the target: the keep-out check covers all
+# domains, including a submerged friendly heard only by sonar. Nominating against the hostile
+# boat while the friendly sub passes beneath it must fail closed (should_reject). What is missing for
+# the live run: eval/engage.py.
+title = "Engagement: friendly submarine near the target"
+description = "Placeholder: a nomination whose effect radius covers a submerged friendly."
+fleet = "eval/fleets/gate.toml"
+contacts = "eval/scenarios/contacts/gate-engage.toml"
+policy = "eval/policy/base.toml"
+duration_s = 200
+requires = ["engage"]
+
+[[step]]
+id = "nominate"
+at_s = 30
+kind = "engage"
+track = { contact = "target-holds-then-runs" }
+vehicles = { callsign = "BLADE 1" }
+effect_radius_m = 400
+label = "should_reject"
+reason = "a friendly submarine is inside the keep-out (all domains)"
+rationale = "Track {track} ({kind}, estimated {affiliation} {confidence}: {reason}) is holding off Lime Point, last seen {age} ago. Nominate {callsign} against it."

@@ -1,0 +1,56 @@
+# Contacts for the held-out scenarios (eval/scenarios/heldout-*.toml), written after the
+# generic rule book (eval/evidence.py, v2) was committed and not used to write or tune it.
+# heldout-friend-alongside uses gate-heldout-friend.toml: these contacts plus the police boat.
+# Every contact an armed orbit is aimed at holds still or drifts, so that the aim point is
+# still on it when the decider looks (a target that moves off a fixed aim point would be
+# "no track there" by then, for a reason that is not the scenario's).
+# Same area and fleet as eval/scenarios/contacts/gate.toml, different situations. Points
+# are [lon, lat]; identities are fictional; everything here is truth, which only the
+# evaluation reads.
+title = "Evaluation: Golden Gate, held-out situations"
+seed = 23
+
+[sensing]
+misclassification_rate = 0.0
+
+# ---------------------------------------------------------------- hostile
+[[contact]]
+id = "raider"
+name = "Hostile fast boat holding north of the Marina, no AIS, no lights"
+affiliation = "hostile"
+domain = "surface"
+kind = "small_fast_boat"
+motion = "station"
+at = [-122.4520, 37.8140]
+
+[[contact]]
+id = "raider-late"
+name = "Second hostile fast boat, comes out of the Marina 100 s after the origin"
+affiliation = "hostile"
+domain = "surface"
+kind = "small_fast_boat"
+motion = "station"
+at = [-122.4400, 37.8130]
+start_s = 100
+
+# ---------------------------------------------------------------- protected
+[[contact]]
+id = "sloop"
+name = "Sailboat beating up toward Alcatraz (no AIS: not required)"
+affiliation = "neutral"
+domain = "surface"
+kind = "sailboat"
+speed_mps = 3
+motion = "route"
+route = [[-122.4750, 37.8260], [-122.4600, 37.8290]]
+reverse = true
+dwell_s = 30
+
+[[contact]]
+id = "ferry-dark"
+name = "Tiburon ferry adrift with an electrical fault: engines and AIS transponder out"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+motion = "drift"
+at = [-122.4550, 37.8400]

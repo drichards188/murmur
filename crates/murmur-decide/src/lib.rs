@@ -236,7 +236,8 @@ pub mod world;
 pub use areas::{Area, AreaKind, AreaSet};
 pub use anchor::{Anchor, AnchorConfig, AnchorReport, AnchoredSink, Anchors};
 pub use audit::{
-    AuditSink, BuildInfo, Event, EventBody, JsonlFile, LoggedAreas, MemorySink, parse_log,
+    AuditSink, BuildInfo, Event, EventBody, JsonlFile, LoggedAreas, MemorySink, OperatorView,
+    ViewShown, parse_log,
 };
 pub use authority::{EngagementAuthority, Grants, HumanAuthority, OperatorSession};
 pub use catalog::{AutopilotKind, Catalog, Domain, PlatformFacts, SensorFact};

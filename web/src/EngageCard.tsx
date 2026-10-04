@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Check, Intent } from './decisions'
 import { fmtDuration, getOperator, intentAction, useOperator, useOperators } from './decisions'
+import { reportView } from './operatorView'
 import {
   abortEngagement,
   engageParams,
@@ -193,6 +194,16 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
                 ? `Signing as ${operator}: signature ${signed.length + 1} of ${needed}, on the plan ${plan.by} froze. Look first: the engine shows you exactly what you sign.`
                 : `Signing as ${operator}: signature 1 of ${needed}; your signature freezes the plan you are shown. Look first.`
   const canApprove = canSign && livePasses && !stale
+  // evaluation instrumentation (operatorView.ts), as on the approval card
+  const viewed = useRef({ openedAt: performance.now(), decided: false })
+  useEffect(() => {
+    const v = viewed.current
+    reportView(i, 'open', v.openedAt)
+    return () => {
+      if (!v.decided) reportView(i, 'close', v.openedAt)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [i.id])
 
   // look: the engine shows the plan this signature would be on, and the track now
   const look = async () => {
@@ -209,6 +220,8 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
   const act = async (action: 'approve' | 'reject') => {
     setBusy(true)
     setError(null)
+    viewed.current.decided = true
+    reportView(i, 'decide', viewed.current.openedAt, action)
     try {
       const extra = action === 'approve' && shown ? { token: shown.id } : undefined
       setShown(null)

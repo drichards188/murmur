@@ -1,0 +1,118 @@
+# A stricter variant for the approval-flood scenario: every vehicle task except hold and rtl
+# needs a human, whatever the platform and whoever proposes it (no `source` condition, so a
+# second human operator's proposals and an agent's are routed alike and the arms stay
+# comparable). Routine proposals then land in the inbox too, which is how an inbox fills up.
+# Otherwise identical to eval/policy/base.toml (its comment explains submitter_authorizes).
+
+[approval]
+expire_s = 120
+submitter_authorizes = false
+
+[approval.kind.collect]
+until = "tasking_lead"
+
+[approval.kind.engage]
+expire_s = 300
+until = "window"
+
+[rules]
+max_fact_age_s = 10
+fact_age_intervals = 3
+orbit_radius_margin = 1.1
+fixed_wing_default_min_turn_radius_m = 60
+reserve_pct = 20
+task_duration_s = 900
+unknown_endurance = "human"
+
+[rules.space]
+epoch_mode = "auto"
+collect_match_tolerance_s = 120
+cover_min_fraction = 0.99
+gnss_min_visible = 4
+link_step_s = 60
+gnss_step_s = 300
+
+[rules.engage]
+# as sim/policy.toml (see its comments)
+min_identity_confidence = 0.6
+min_track_confidence = 0.5
+max_track_age_s = 5
+max_sigma_fraction = 0.5
+max_effect_radius_m = 250
+keep_out_m = 200
+keep_out_sigma = 2
+default_window_s = 600
+dispatch_delay_s = 20
+max_transit_s = 900
+unknown_endurance_max_transit_s = 600
+deviation_fraction = 1.0
+deviation_min_m = 50
+link_gap_s = 5
+link_gap_intervals = 3
+arrival_m = 150
+late_s = 60
+assess_grace_s = 3
+assess_dwell_s = 15
+assess_window_s = 120
+max_picture_gap_s = 5
+token_ttl_s = 15
+max_signing_s = 120
+plan_drift_max_m = 300
+holding_speed_mps = 1.5
+friendly_growth_mps = 1.0
+
+[[tier]]
+name = "safety-commands"
+when = { kind = ["hold", "rtl"] }
+tier = "auto"
+reason = "hold and rtl reduce risk"
+
+[[tier]]
+name = "satellite-collect"
+when = { kind = ["collect"] }
+tier = "human"
+reason = "a satellite collection is tasked on a human's say-so"
+
+[[tier]]
+name = "coverage-query"
+when = { kind = ["cover"] }
+tier = "auto"
+reason = "a coverage query commands nothing"
+
+[[tier]]
+name = "engagement"
+when = { kind = ["engage"] }
+tier = "human"
+reason = "an engagement needs two operators with engagement authority, neither the proposer (DoD Directive 3000.09)"
+submitter_authorizes = false
+proposer_may_approve = false
+approvers = 2
+
+[[tier]]
+name = "armed-platform"
+when = { armed = true }
+tier = "human"
+reason = "armed platforms always need a human (DoD Directive 3000.09)"
+
+[[tier]]
+name = "outside-approved-area"
+when = { leaves_approved_area = true }
+tier = "human"
+reason = "leaves the operator's approved area"
+
+[[tier]]
+name = "endurance-unknown"
+when = { unverified = ["reserves"] }
+tier = "human"
+reason = "endurance unknown: reserves after the task could not be estimated"
+
+[[tier]]
+name = "every-vehicle-task"
+when = { kind = ["orbit", "patrol", "track"] }
+tier = "human"
+reason = "strict variant: every vehicle task is a human decision (approval fatigue study)"
+
+[[tier]]
+name = "default"
+tier = "auto"
+reason = "routine task inside the approved area"

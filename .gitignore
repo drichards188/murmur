@@ -13,3 +13,6 @@ __pycache__/
 target/
 .claude/worktrees/
 sim/space/cache/
+
+# evaluation batches (eval/run.py); reports are published by hand
+eval/results/

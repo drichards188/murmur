@@ -489,6 +489,68 @@ async fn vehicle_events_reach_the_audit_log() {
     r.replays();
 }
 
+#[tokio::test(start_paused = true)]
+async fn operator_views_are_logged_under_the_session() {
+    let r = waiting_rig();
+    r.vehicle(2, Firmware::Copter, "switchblade", (LAT, LON)); // armed: waits
+    sleep(Duration::from_millis(500)).await;
+    let out = r.d.submit(&op1(), orbit(2)).await.expect("submit");
+    assert_eq!(out.state, State::PendingApproval);
+    let view = |event: &str, action: Option<&str>, open_ms: Option<u64>| OperatorView {
+        event: event.into(),
+        action: action.map(str::to_string),
+        shown: murmur_decide::ViewShown {
+            checks: vec!["capability".into(), "readiness".into()],
+            warnings: vec!["armed platform: vehicle 2".into()],
+            rationale: false,
+            tracks: vec!["T-0001".into()],
+        },
+        open_ms,
+        client_t: None,
+    };
+    r.d.record_view(&op1(), out.id.0, view("open", None, None))
+        .expect("open");
+    let bad =
+        r.d.record_view(&op1(), out.id.0, view("decide", None, Some(5)))
+            .expect_err("malformed");
+    assert_eq!(bad.status, 422);
+    let missing =
+        r.d.record_view(&op1(), 404, view("open", None, None))
+            .expect_err("unknown");
+    assert_eq!(missing.status, 404);
+    r.d.record_view(
+        &op1(),
+        out.id.0,
+        view("decide", Some("reject"), Some(12_000)),
+    )
+    .expect("decide");
+    r.d.reject(&op1(), out.id.0, Some("not now".into()))
+        .expect("reject");
+    let late =
+        r.d.record_view(&op1(), out.id.0, view("decide", Some("approve"), Some(1)))
+            .expect_err("late");
+    assert_eq!(late.status, 409, "a decide view after the decision");
+    r.d.record_view(&op1(), out.id.0, view("close", None, Some(13_000)))
+        .expect("a close is taken after the decision");
+    // a burst beyond the budget is refused (instrumentation, not storage)
+    let refused = (0..60)
+        .filter_map(|_| {
+            r.d.record_view(&op1(), out.id.0, view("close", None, None))
+                .err()
+        })
+        .collect::<Vec<_>>();
+    assert!(!refused.is_empty() && refused.iter().all(|e| e.status == 429), "{refused:?}");
+    assert!(r.events("operator.view") < 3 + 60);
+    assert!(
+        r.log.lines().iter().any(
+            |l| l.contains("\"type\":\"operator.view\"") && l.contains("\"operator\":\"op-1\"")
+        ),
+        "the view names the operator"
+    );
+    assert_eq!(r.state(out.id), State::Rejected);
+    r.replays();
+}
+
 /// Collect and cover through the bridge (`tests/space_tasking.rs`).
 mod space_tasking;
 

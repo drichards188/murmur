@@ -373,6 +373,92 @@ pub enum EventBody {
         evidence: String,
         covered_s: f64,
     },
+
+    /// What an operator's console showed for a pending intent (Phase G): when the card was
+    /// rendered (`open`), removed (`close`) and when approve or reject was clicked
+    /// (`decide`), with what was visible at the time. Additive: replay verifies the chain
+    /// through it and makes no decision from it. The evaluation joins it with the approval
+    /// events to relate decision latency to the information shown.
+    #[serde(rename = "operator.view")]
+    OperatorView {
+        operator: OperatorId,
+        session: SessionId,
+        intent: IntentId,
+        view: OperatorView,
+    },
+}
+
+/// One console display event for a pending intent (see [`EventBody::OperatorView`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OperatorView {
+    /// `open` (the card was rendered), `close` (it went away undecided), `decide` (approve
+    /// or reject was clicked; `action` says which).
+    pub event: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    /// What the card showed at that moment.
+    pub shown: ViewShown,
+    /// How long the card had been open, milliseconds (absent for `open`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_ms: Option<u64>,
+    /// The client's own clock, milliseconds since the epoch, when it happened (the event's
+    /// `t` is the bridge's clock when it was logged).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_t: Option<i64>,
+}
+
+impl OperatorView {
+    pub const EVENTS: [&'static str; 3] = ["open", "close", "decide"];
+    pub const ACTIONS: [&'static str; 2] = ["approve", "reject"];
+    /// Bounds on what a view may carry: it is instrumentation, not a place to store data.
+    pub const MAX_ITEMS: usize = 64;
+    pub const MAX_TEXT: usize = 256;
+
+    /// A well-formed view: a known event, an action only on `decide` and then a known one,
+    /// at most [`Self::MAX_ITEMS`] checks, warnings and tracks, each at most
+    /// [`Self::MAX_TEXT`] bytes.
+    pub fn validate(&self) -> Result<(), String> {
+        if !Self::EVENTS.contains(&self.event.as_str()) {
+            return Err(format!("event must be one of {}", Self::EVENTS.join(", ")));
+        }
+        for (name, items) in [
+            ("checks", &self.shown.checks),
+            ("warnings", &self.shown.warnings),
+            ("tracks", &self.shown.tracks),
+        ] {
+            if items.len() > Self::MAX_ITEMS {
+                return Err(format!("{name}: at most {} entries", Self::MAX_ITEMS));
+            }
+            if items.iter().any(|t| t.len() > Self::MAX_TEXT) {
+                return Err(format!("{name}: entries of at most {} bytes", Self::MAX_TEXT));
+            }
+        }
+        match (self.event.as_str(), self.action.as_deref()) {
+            ("decide", Some(a)) if Self::ACTIONS.contains(&a) => Ok(()),
+            ("decide", Some(a)) => Err(format!(
+                "action {a:?}: must be one of {}",
+                Self::ACTIONS.join(", ")
+            )),
+            ("decide", None) => Err("a decide event needs an action".into()),
+            (_, Some(_)) => Err("only a decide event carries an action".into()),
+            (_, None) => Ok(()),
+        }
+    }
+}
+
+/// What was visible on an intent's card: the rule ids of the checks shown, the warning
+/// lines ("why this needs a human"), whether the rationale was shown, and the tracks the
+/// operator opened while the card was up (by track id).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ViewShown {
+    #[serde(default)]
+    pub checks: Vec<String>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    #[serde(default)]
+    pub rationale: bool,
+    #[serde(default)]
+    pub tracks: Vec<String>,
 }
 
 /// The build a log was written by (`run.started`).

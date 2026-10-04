@@ -65,8 +65,9 @@ use std::time::Duration;
 
 use murmur_decide::{
     AnchorConfig, Anchors, AreaSet, AuditSink, Catalog, Clock, Constraints, Engine, EngineError,
-    Intent, IntentId, JsonlFile, LonLat, OperatorId, OperatorSession, Order, Policy, Proposal, Rationale,
-    ScenarioMap, SpaceSegment, State, Task, TaskOutcome, Time, Uid as DUid, rules,
+    Intent, IntentId, JsonlFile, LonLat, OperatorId, OperatorSession, OperatorView, Order, Policy,
+    Proposal, Rationale, ScenarioMap, SpaceSegment, State, Task, TaskOutcome, Time, Uid as DUid,
+    rules,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -174,6 +175,7 @@ fn engine_err(e: EngineError) -> DecisionError {
         EngineError::NotOwner { .. } => 403,
         EngineError::Illegal { .. }
         | EngineError::Expired(_)
+        | EngineError::ViewNotPending { .. }
         | EngineError::ChecksFailedAtApproval(_)
         | EngineError::SpaceIntent(_)
         | EngineError::NotDispatchable { .. }
@@ -302,7 +304,14 @@ struct Core {
     space_runs: BTreeMap<IntentId, space::SpaceRun>,
     /// dispatched engagements: the platform's intercept, then any fallback
     engagements: BTreeMap<IntentId, engage::EngageRun>,
+    /// `operator.view` budget per operator: (tokens, monotonic seconds when last filled)
+    view_budget: BTreeMap<OperatorId, (f64, f64)>,
 }
+
+/// `operator.view` events an operator may log: a burst of this many, refilled at
+/// [`VIEW_RATE_PER_S`] (a console posts a handful per card; more is not instrumentation).
+const VIEW_BURST: f64 = 40.0;
+const VIEW_RATE_PER_S: f64 = 10.0;
 
 pub struct Decision {
     world: Arc<World>,
@@ -438,6 +447,7 @@ impl Decision {
                 taskings: BTreeMap::new(),
                 space_runs: BTreeMap::new(),
                 engagements: BTreeMap::new(),
+                view_budget: BTreeMap::new(),
             }),
             updates: watch::channel(Arc::new(String::new())).0,
             recent: agent::RecentEvents::default(),
@@ -892,6 +902,38 @@ impl Decision {
         core.engine
             .record_operator_action(session.authority(), action, detail)
             .map_err(engine_err)
+    }
+
+    /// Log what an operator's console showed for a pending intent (`operator.view`, Phase
+    /// G): `POST /api/operator/view`. Unknown intent 404, malformed view 422, an `open` or
+    /// `decide` view of an intent no longer waiting for a decision 409, more than
+    /// [`VIEW_BURST`] views at once (refilled at [`VIEW_RATE_PER_S`] a second) 429.
+    pub fn record_view(
+        &self,
+        by: &OperatorId,
+        id: u64,
+        view: OperatorView,
+    ) -> Result<(), DecisionError> {
+        let mut guard = self.lock();
+        let core = &mut *guard;
+        let mono = clock::mono();
+        let budget = core.view_budget.entry(by.clone()).or_insert((VIEW_BURST, mono));
+        budget.0 = (budget.0 + (mono - budget.1).max(0.0) * VIEW_RATE_PER_S).min(VIEW_BURST);
+        budget.1 = mono;
+        if budget.0 < 1.0 {
+            return Err(DecisionError::new(
+                429,
+                "too many view events: this is instrumentation, a few per card",
+            ));
+        }
+        budget.0 -= 1.0;
+        let session = Self::session(&mut core.engine, &mut core.sessions, by, &self.engage_operators)?;
+        core.engine
+            .record_operator_view(session.authority(), IntentId(id), view)
+            .map_err(|e| match e {
+                EngineError::Proposal(p) => DecisionError::new(422, p.to_string()),
+                e => engine_err(e),
+            })
     }
 
     fn with_intent(&self, core: &Core, id: IntentId, mut e: DecisionError) -> DecisionError {

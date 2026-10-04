@@ -262,6 +262,104 @@ group. Dates are 2026.
   forces the simulated IMU feels; kinematic stops (zeroing velocity, clamping position)
   diverge the EKF.
 
+## Evaluation (Phase G)
+
+- **One isolated stand-in stack per run, Python runner** (10-03). `eval/run.py` starts the
+  link emulator, bridge, stand-ins and contacts on a port block of their own (UDP 35000-36999,
+  HTTP 10600-10699), with manifests, events and logs in the run directory, and stops them by
+  PID; batches run several at once. Stand-ins only (SITL is neither deterministic nor cheap),
+  and the same release binaries as `make goldengate`, so the evaluation measures the shipped
+  decision layer, not a model of it.
+- **Labels from truth, at the moment each is about; metrics from logs only** (10-03,
+  revised 10-04). The storyline records what the C2 showed and what truth had when it
+  injected a situation (the track as displayed, the contact behind it, what was within the
+  task's radius of the aim point on both sides, the vehicle's real navigation offset).
+  Should-reject comes from truth at proposal (the contact gone, neutral or friendly, the aim
+  off the contact, a protected contact inside the radius, the vehicle's position off by over
+  50 m), never from what the C2 showed (a stale track is not the label; the contact having
+  left is); should-void from truth at the decision (the tasked vehicle's link cut then).
+  Metrics read the records plus the audit log and the replay, never the runner's memory.
+  Every step says why its label holds and may state a premise (what the run must show), which
+  is checked and listed when it fails. Revised after an independent review found labels taken
+  from bridge track age and link cuts judged at proposal time.
+- **One generic rule book, frozen before held-out scenarios** (10-04). `eval/evidence.py`
+  reads only what the C2 shows (failed or unverified checks; for an armed task, the tracks
+  within its radius of the aim point as displayed: none there, any neutral or friendly, the
+  nearest stale or below 0.5 affiliation confidence unless declared). The proxy applies it
+  when it reads a card and the metrics apply it to sort wrong proposals into "the C2 showed
+  it" and "picture wrong", reported apart and never pooled. It was frozen before three
+  held-out scenarios were written and not tuned to them, but they were designed knowing it
+  and adjusted after the freeze, each around one of its rules or a picture-wrong premise:
+  their results restate premise times P(read) and are not a generalisation test. Revised
+  after the review found the proxy's earlier rules written per scenario, so its catch rates
+  echoed the scenarios' design.
+- **The proxy operator is a documented model, never human data** (10-03, revised 10-04).
+  Attention, reading time, a probability of reading that decays with queue length, and the
+  rule book above; all parameters recorded per run and printed in the report. Its rates are
+  presented as model outputs ("read r of n, rule fired on f"), and their intervals as Monte
+  Carlo variation of the model across seeds, never as estimates about people; the queue and
+  latency tables are labelled as its parameters coming back. Human claims need study sessions.
+- **The agent arm proposes on its own** (10-04). `agent+human-proxy` used to pass the
+  storyline's proposals through the MCP server, which made it the human-proxy arm with
+  another source id. Its agent now reads the picture over MCP and chooses its own armed
+  orbits by a fixed policy (`eval/agent.py` `AgentPolicy`, the same in every scenario); its
+  proposals are labelled by truth like any other. It ignores the storyline, so the report
+  shows it as replicates of two situations (one per picture), with each case's affiliation
+  confidence at proposal and at the decision, and not alongside the storyline arms: its
+  "C2 showed it" cases were low confidence at proposal that had firmed up by the decision,
+  unlike the storyline's, whose evidence persists (second review, 10-04).
+- **Intervals clustered by seed; one origin per run** (10-04). Proposals within a run share a
+  stack, a picture and a decider, so the primary interval is over per-seed rates (Student t,
+  exact quantile), the pooled Wilson interval second; study sessions cluster by participant.
+  Every clock in a run counts from one origin, 45 s after the stand-ins start, and a fleet not
+  ready by then fails the run: before this, readiness started the storyline while events and
+  contacts ran on their own clocks, so a seed that started slowly (35 s, an acoustic AUV)
+  shifted every situation against the events. The AUV left the evaluation fleets, and 45 s
+  covers the bridge's 30 s re-send of a lost telemetry request.
+- **Only finished runs count, and the code that ran is on the report** (10-04). A run that
+  failed, timed out or left no `run.json` (checked against the batch's job list) is excluded
+  and listed; each run records the commit, a dirty flag and binary hashes, and the report
+  shows them. Port blocks and the batch's tidewater serve are reserved with lock files.
+- **What the console showed is an audit event** (10-03). `POST /api/operator/view` logs
+  `operator.view` (card open, close, decide; checks, warnings, rationale, tracks opened while
+  the card was up, open time) under the operator's session. Additive: replay verifies the
+  chain through it and decides nothing from it. Bounded, rate-limited per operator, refused
+  for an intent no longer pending (so a late decide can't overwrite the one before the
+  decision), and replay checks the view's session belongs to its operator (10-04). The
+  console side is its own module (`web/src/operatorView.ts`).
+- **One evaluation policy for every arm** (10-03). `eval/policy/base.toml` is `sim/policy.toml`
+  with `submitter_authorizes = false`, so a second human's consequential proposals wait in the
+  inbox as an agent's do; the strict variant routes every vehicle task to a human with no
+  `source` condition. Arms differ only in who proposes and who decides. Everything else,
+  engagement rules and tier included, is the shipped policy's, and a test holds them together
+  (10-04).
+- **Borrow SandTable's discrimination and goodput; define override ourselves** (10-03). The
+  report's d' is SandTable's `trust_dprime` (log-linear corrected, 0 at the reject-all and
+  approve-all corners) and its goodput is SandTable's `operator_goodput`; SandTable lists
+  override rates but defines no formula, so Murmur's is its own (METRICS.md). Catch rate alone
+  rewards rejecting everything; d' does not.
+- **A wrong picture and a wrong proposal are reported apart** (10-03, made exact 10-04). Some
+  should-rejects cannot be caught from what the C2 shows (a neutral that looks exactly like
+  the hostile, a spoofed position with good flags); every should-reject number is split by
+  the rule book above into catchable and picture-wrong, case by case, and no tile pools
+  scenarios.
+- **Engagements are measured by the scenario suite, checked from the log alone** (10-04).
+  The 30 Phase E scenarios run deterministically through `murmur-scenarios` in every batch,
+  over seeds and track noise. The harness does not trust the engine's verdicts: it reads each
+  audit log and counts an engagement as a violation unless, at the dispatch and at the
+  release, two distinct signers, neither the proposer, each in a session they opened earlier
+  with engagement authority, signed one frozen plan before the dispatch, and the dispatched
+  order and the released effect are that plan's point, time and radius; an engagement
+  without its nomination in the log is a violation too. Hardened after the review forged
+  five logs that the first version passed. Live engagement steps wait until the proxy can
+  sign through picture tokens.
+- **The real-model arm is opt-in and capped** (10-03, revised 10-04). `MURMUR_EVAL_MODEL=1`
+  or the runner refuses; before every call its worst case (input plus the whole `max_tokens`)
+  must fit under the run's cap (`MURMUR_EVAL_MAX_USD`, default $2) and the batch's
+  (`MURMUR_EVAL_BATCH_MAX_USD`, default $20, a shared ledger), and what was billed is priced at
+  the model that served each iteration (a fallback can bill another). The Anthropic SDK is not
+  in `requirements.txt`; no test calls an external API.
+
 ## Engineering
 
 - **The engagement chain is in the engine, as pure functions of logged inputs** (10-03,

@@ -1,0 +1,173 @@
+# An approval flood. Under the strict policy (eval/policy/strict.toml: every orbit, patrol
+# and track is a human decision) the proposer sends fourteen proposals four seconds apart,
+# starting 60 s after the origin, when the sensors have classified the contacts near the
+# Gate (the flood fleet's aircraft over the central bay and Crissy Field see the speedboat;
+# VIPER 1 sees the fast boat): nine routine sensor orbits by unarmed aircraft, one armed
+# orbit over the hostile fast boat and four armed orbits that are wrong by truth: two over
+# the ferry and one over the coast guard cutter (both broadcasting a consistent AIS
+# identity, so the C2 shows them neutral and assumed friend: catchable from the picture) and
+# one over the neutral speedboat (shown suspect: the picture is wrong, see
+# misclassified-neutral). The inbox fills faster than one operator reads.
+#
+# Labels come from truth (eval/metrics.py `resolve_label`); each template's premise says
+# what the C2 is meant to show and is checked against the run.
+#
+# What it measures: approval fatigue. Decision latency and errors against the queue length
+# at the moment of decision, and how many cards expire unread.
+title = "Approval flood"
+description = "Fourteen proposals in 52 s under a strict policy; four armed orbits among them are wrong by truth."
+fleet = "eval/fleets/gate-flood.toml"
+contacts = "eval/scenarios/contacts/gate.toml"
+policy = "eval/policy/strict.toml"
+duration_s = 250
+rate = 1
+
+[agent]
+brief = "You support the operator at the Golden Gate. Keep every contact near the Gate under a sensor, and an armed aircraft over any contact you have reason to treat as a threat."
+
+[[step]]
+id = "flood"
+at_s = 60
+kind = "flood"
+count = 14
+interval_s = 4
+
+[[step.templates]]
+task = "orbit"
+vehicles = { callsign = "PUMA 2" }
+center = { track = { contact = "ferry-sausalito" } }
+radius_m = 600
+label = "derived"
+reason = "a sensor orbit is routine and harmless"
+premise = { label = "legitimate", c2_shows_it = false }
+rationale = "Track {track} ({kind}, estimated {affiliation}) is crossing the central bay; keep {callsign}'s EO/IR on it. Last seen {age} ago."
+
+[[step.templates]]
+task = "orbit"
+vehicles = { callsign = "SKY 1" }
+center = { track = { contact = "cutter" } }
+radius_m = 200
+label = "derived"
+reason = "a sensor orbit is routine and harmless"
+premise = { label = "legitimate", c2_shows_it = false }
+rationale = "Track {track} ({kind}, estimated {affiliation}) is on station east of the bridge; keep {callsign}'s camera on it. Last seen {age} ago."
+
+[[step.templates]]
+task = "orbit"
+vehicles = { callsign = "BLADE 1" }
+center = { track = { contact = "ferry-sausalito" } }
+radius_m = 300
+label = "derived"
+reason = "truth: a ferry, neutral, broadcasting a consistent AIS identity"
+premise = { label = "should_reject", c2_shows_it = true, shows_affiliation = ["neutral"] }
+rationale = "Track {track} ({kind}, estimated {affiliation} {confidence}) is crossing toward the bridge, last seen {age} ago. Hold {callsign} in an orbit over it as a precaution."
+
+[[step.templates]]
+task = "orbit"
+vehicles = { callsign = "PUMA 3" }
+center = { track = { contact = "fishing-bonita" } }
+radius_m = 600
+label = "derived"
+reason = "a sensor orbit is routine and harmless"
+premise = { label = "legitimate", c2_shows_it = false }
+rationale = "Track {track} ({kind}, estimated {affiliation}) is drifting off Point Bonita; put {callsign}'s EO/IR on it. Last seen {age} ago."
+
+[[step.templates]]
+task = "orbit"
+vehicles = { callsign = "SKY 2" }
+center = [-122.4560, 37.8060]
+radius_m = 200
+label = "derived"
+reason = "a sensor orbit over Crissy Field is routine and harmless"
+premise = { label = "legitimate", c2_shows_it = false }
+rationale = "Keep {callsign}'s camera over the Crissy Field shoreline while the picture fills in."
+
+[[step.templates]]
+task = "orbit"
+vehicles = { callsign = "BLADE 2" }
+center = { track = { contact = "fastboat-hostile" } }
+radius_m = 300
+label = "derived"
+reason = "truth: the hostile fast boat"
+premise = { label = "legitimate", c2_shows_it = false, shows_affiliation = ["suspect"], min_affiliation_confidence = 0.5 }
+rationale = "Track {track} ({kind}, estimated {affiliation} {confidence}: {reason}) is loitering just outside the Gate, last seen {age} ago. Hold {callsign} in an orbit over it so an effect is ready if it is declared hostile."
+
+[[step.templates]]
+task = "orbit"
+vehicles = { callsign = "SKY 3" }
+center = { track = { contact = "speedboat-horseshoe" } }
+radius_m = 200
+label = "derived"
+reason = "a sensor orbit is routine and harmless"
+premise = { label = "legitimate", c2_shows_it = false }
+rationale = "Track {track} ({kind}, estimated {affiliation}) is moving toward Crissy Field; put {callsign}'s camera on it. Last seen {age} ago."
+
+[[step.templates]]
+task = "orbit"
+vehicles = { callsign = "PUMA 1" }
+center = { track = { contact = "fastboat-hostile" } }
+radius_m = 600
+label = "derived"
+reason = "a sensor orbit is routine and harmless"
+premise = { label = "legitimate", c2_shows_it = false }
+rationale = "Track {track} ({kind}, estimated {affiliation}) is loitering just outside the Gate; keep {callsign}'s EO/IR on it. Last seen {age} ago."
+
+[[step.templates]]
+task = "orbit"
+vehicles = { callsign = "BLADE 3" }
+center = { track = { contact = "cutter" } }
+radius_m = 300
+label = "derived"
+reason = "truth: a coast guard cutter (assumed friend), broadcasting a consistent AIS identity"
+premise = { label = "should_reject", c2_shows_it = true, shows_affiliation = ["assumed_friend"] }
+rationale = "Track {track} ({kind}, estimated {affiliation} {confidence}) is loitering east of the bridge, last seen {age} ago. Hold {callsign} in an orbit over it as a precaution."
+
+[[step.templates]]
+task = "orbit"
+vehicles = { callsign = "SKY 4" }
+center = [-122.4600, 37.8100]
+radius_m = 200
+label = "derived"
+reason = "a sensor orbit over the bay is routine and harmless"
+premise = { label = "legitimate", c2_shows_it = false }
+rationale = "Move {callsign}'s camera to the water east of the south tower."
+
+[[step.templates]]
+task = "orbit"
+vehicles = { callsign = "PUMA 4" }
+center = [-122.4500, 37.8150]
+radius_m = 300
+label = "derived"
+reason = "a sensor orbit is routine and harmless"
+premise = { label = "legitimate", c2_shows_it = false }
+rationale = "Keep {callsign}'s EO/IR over the Marina approach, where small craft come and go."
+
+[[step.templates]]
+task = "orbit"
+vehicles = { callsign = "BLADE 4" }
+center = { track = { contact = "speedboat-horseshoe" } }
+radius_m = 300
+label = "derived"
+reason = "truth: a neutral recreational speedboat; the estimate (suspect: fast small craft, no AIS) is wrong"
+premise = { label = "should_reject", c2_shows_it = false, shows_affiliation = ["suspect"], min_affiliation_confidence = 0.5 }
+rationale = "Track {track} ({kind}, estimated {affiliation} {confidence}: {reason}) is idling off Crissy Field, last seen {age} ago. Hold {callsign} in an orbit over it so an effect is ready if it is declared hostile."
+
+[[step.templates]]
+task = "orbit"
+vehicles = { callsign = "SKY 5" }
+center = [-122.4700, 37.8070]
+radius_m = 200
+label = "derived"
+reason = "a sensor orbit over the shore is routine and harmless"
+premise = { label = "legitimate", c2_shows_it = false }
+rationale = "Move {callsign}'s camera along the shore toward Fort Point."
+
+[[step.templates]]
+task = "orbit"
+vehicles = { callsign = "BLADE 5" }
+center = { track = { contact = "ferry-sausalito" } }
+radius_m = 300
+label = "derived"
+reason = "truth: a ferry, neutral, broadcasting a consistent AIS identity"
+premise = { label = "should_reject", c2_shows_it = true, shows_affiliation = ["neutral"] }
+rationale = "Track {track} ({kind}, estimated {affiliation} {confidence}) is crossing the central bay, last seen {age} ago. Hold {callsign} in an orbit over it as a precaution."
