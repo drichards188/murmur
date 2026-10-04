@@ -64,7 +64,9 @@ meaningful. Decision and command, not weapons.
 - `murmur-replay` accepts only the current decision-rules version by default: replay older logs with
   `--rules N` / `--min-rules N` (versions and changelog in `crates/murmur-decide/README.md`). The bridge
   writes run-time anchors to `logs/anchors/<run>.anchors`; verify with `murmur-replay <log> --anchors <file>`.
-  Engagements: `MURMUR_ENGAGE_OPERATORS` (two distinct signers), scenarios `murmur-scenarios` (`sim/scenarios/engage/`).
+  Engagements: `MURMUR_ENGAGE_OPERATORS` (two distinct signers; each must also be in `MURMUR_OPERATORS`,
+  or the bridge refuses to start; both lists are logged as the run's roster), scenarios `murmur-scenarios`
+  (`sim/scenarios/engage/`).
 - Stand-ins each take one ephemeral UDP port (`net.ipv4.ip_local_port_range`, ~4,000 here,
   shared with everything else on the host): that, not CPU, caps a stand-in fleet near 4,000.
 - A stack uses two UDP ranges now (vehicle base + N and bridge base + N): pick both clear of
