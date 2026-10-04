@@ -22,6 +22,8 @@ import { ErrorBoundary } from './ErrorBoundary'
 import { EngagePanel } from './EngagePanel'
 import { isEngage, previewOf, RUNNING, type EngagePreview } from './engage'
 import { buildEngageLayers, type EngageDrawing } from './engageLayers'
+import { estimated } from './estimate'
+import { buildEstimateLayers } from './estimateLayers'
 import { circle } from './geo'
 import { PERF_ON, perfCommitted, perfPassiveBegin, perfRenderBegin, perfUpdateEnd } from './perf'
 import { PerfOverlay } from './PerfOverlay'
@@ -166,10 +168,19 @@ export default function App() {
     setFit((f) => ({ points: [...engageDraft.path, ...ring], n: (f?.n ?? 0) + 1, padRight: 430 }))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draftKey])
-  const mapLayers = useCallback<MapLayers>(
-    (view) => [...trackLayers(view), ...(engageDrawings.length ? buildEngageLayers(engageDrawings, now(), view) : [])],
+  // silent vehicles' estimates (murmur-4y9): the bridge's motion models evaluated every clock
+  // tick, so the callback changes identity each tick only while something is silent
+  const silent = useMemo(() => (state ? estimated(state.vehicles) : []), [state])
+  const estimateTick = silent.length ? Math.floor(now() / 500) : 0
+  const estimateLayers = useCallback<MapLayers>(
+    (view) => (silent.length ? buildEstimateLayers({ vehicles: silent, nowMs: now(), focus: detailsUid }, view) : []),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [trackLayers, engageDrawings],
+    [silent, estimateTick, detailsUid],
+  )
+  const mapLayers = useCallback<MapLayers>(
+    (view) => [...estimateLayers(view), ...trackLayers(view), ...(engageDrawings.length ? buildEngageLayers(engageDrawings, now(), view) : [])],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [estimateLayers, trackLayers, engageDrawings],
   )
   const focusTrack = useCallback(
     (t: Track) => setFit((f) => ({ points: [trackPredicted(t, now())], n: (f?.n ?? 0) + 1, padRight: 400 })),
@@ -410,6 +421,7 @@ export default function App() {
           <VehicleDetails
             v={byUidDetails(vehicles, detailsUid)!}
             taskings={taskings}
+            now={now}
             selected={selected.has(detailsUid)}
             onToggleSelect={() => toggle(detailsUid)}
             onClose={() => setDetailsUid(null)}

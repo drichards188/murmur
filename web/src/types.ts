@@ -80,6 +80,48 @@ export interface Vehicle {
   link: LinkHealth
   trail: [number, number, number][] // lon, lat, metres above mean sea level
   statustext: { t: number; severity: number; text: string }[]
+  /** Where the vehicle probably is while its link is silent (bridge `estimate` module, murmur-4y9):
+   *  present only past the stale threshold. A motion model from `t0`, evaluated here by
+   *  estimate.ts on every clock tick. Display only: nothing in the decision core reads it. */
+  estimate?: Estimate | null
+}
+
+/** [lon, lat]; metres, seconds, degrees clockwise from north. The fields are the region's
+ *  half-extents (about two sigma), see the bridge's `estimate.rs` for the growth law. */
+export type Motion =
+  | { kind: 'ring'; center: LngLat; radius_m: number; width_m: number; angle0_deg: number; rate_dps: number; spread0_deg: number; spread_dps: number }
+  | { kind: 'route'; route: LngLat[]; lead?: LngLat; seg0: number; frac0: number; speed_mps: number; along0_m: number; along_mps: number; across0_m: number; across_mps: number }
+  | { kind: 'line'; from: LngLat; bearing_deg: number; speed_mps: number; stop_m?: number; along0_m: number; along_mps: number; across0_m: number; across_mps: number; arrive?: Arrival }
+  | { kind: 'point'; at: LngLat; radius0_m: number; rate_mps: number }
+
+export interface Arrival {
+  center: LngLat
+  radius_m: number
+  ring: boolean
+  width_m: number
+}
+
+export interface FailsafeBranch {
+  action: 'rtl' | 'surface' | 'land' | 'disarm'
+  after_s: number
+  fires_t: number
+  profile: string
+  detail: string
+  motion: Motion
+}
+
+export interface Estimate {
+  /** the last position report (bridge wall clock, s): the model's start */
+  t0: number
+  basis: 'orbit' | 'patrol' | 'hold' | 'rtl' | 'velocity' | 'stationary'
+  detail: string
+  motion: Motion
+  reach_mps: number
+  cap_m: number
+  note?: string
+  failsafe?: FailsafeBranch
+  /** the bridge's own evaluation at a coarse step (API readers; the console evaluates itself) */
+  now: { t: number; position: LngLat; radius_m: number }
 }
 
 export type OpState = 'queued' | 'sent' | 'acked' | 'active' | 'done' | 'failed' | 'superseded'

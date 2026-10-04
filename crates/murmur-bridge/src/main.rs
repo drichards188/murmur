@@ -24,6 +24,7 @@ mod clock;
 mod cot;
 mod decision;
 mod emu;
+mod estimate;
 mod geo;
 mod heartbeat;
 mod link;

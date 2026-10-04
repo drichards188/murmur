@@ -81,6 +81,11 @@ function Row({ v, selected, open, onToggle, onDeselect, onDetails }: RowProps) {
               DR
             </span>
           )}
+          {stale && v.estimate && (
+            <span className="vrow-standin" title={`Silent: the map shows where it probably is (${v.estimate.detail})`}>
+              EST
+            </span>
+          )}
         </span>
         {v.identity && (
           <span className="vrow-model" title={`${v.identity.name} · ${v.identity.role}`}>

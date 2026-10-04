@@ -109,6 +109,10 @@ pub struct VehicleSnapshot {
     pub home: Option<[f64; 2]>,
     pub link: LinkSnapshot,
     pub statustext: Vec<StatusText>,
+    /// Where the vehicle probably is while its link is silent (`crate::estimate`): set by the
+    /// push frame for vehicles past their stale threshold, absent otherwise. Display only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimate: Option<crate::estimate::Estimate>,
 }
 
 /// Decoded state of one vehicle. Plain data: only its cell's lock guards it.
@@ -673,6 +677,7 @@ impl Vehicle {
                 .rev()
                 .cloned()
                 .collect(),
+            estimate: None,
         }
     }
 }

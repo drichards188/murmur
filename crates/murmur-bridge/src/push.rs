@@ -39,6 +39,8 @@ pub struct TrailCache(HashMap<Uid, (u64, Arc<Vec<Point>>)>);
 
 pub fn build_frame(world: &World, cache: &mut TrailCache) -> PushFrame {
     let now = clock::mono();
+    // silent vehicles get a dead-reckoning estimate (crate::estimate), the rest none
+    let estimates = crate::estimate::FrameContext::new(world, clock::wall());
     let mut vehicles = Vec::new();
     for cell in world.vehicles() {
         let link = cell.link_snapshot(now);
@@ -47,11 +49,9 @@ pub fn build_frame(world: &World, cache: &mut TrailCache) -> PushFrame {
                 Some((count, trail)) if *count == v.trail_count => trail.clone(),
                 _ => Arc::new(v.trail.iter().copied().collect()),
             };
-            (
-                v.snapshot(cell.uid, cell.sysid, link, now),
-                v.trail_count,
-                trail,
-            )
+            let mut snap = v.snapshot(cell.uid, cell.sysid, link, now);
+            snap.estimate = estimates.estimate(cell.uid, v, &snap.link);
+            (snap, v.trail_count, trail)
         });
         cache.0.insert(cell.uid, (trail_count, trail.clone()));
         let snap = serde_json::to_string(&snap).unwrap_or_else(|_| "{}".into());
