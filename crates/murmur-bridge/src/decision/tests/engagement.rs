@@ -423,3 +423,51 @@ async fn a_fleet_vehicle_never_heard_from_is_not_clear_of_the_keep_out() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+
+#[tokio::test(start_paused = true)]
+async fn a_platform_leaving_its_intercept_stops_the_engagement() {
+    let e = engage_rig();
+    let id = e.approved("return").await;
+    let cell = e.r.world.vehicles().into_iter().find(|c| c.uid == 1).expect("platform");
+    let mode = |text: &str| {
+        cell.write(|v| {
+            v.events.push_back(crate::vehicle::VehicleEvent {
+                kind: "mode",
+                text: text.into(),
+            });
+        });
+    };
+    // entering the mission mode is the intercept starting, not leaving it
+    mode("RTL -> AUTO");
+    e.r.d.tick();
+    assert_eq!(e.r.state(id), State::Dispatched, "{}", e.r.reason(id));
+    // its GCS failsafe switched it to RTL, and the failsafe's message was lost on the link
+    // that failed: only the mode change arrives
+    mode("AUTO -> RTL");
+    e.r.d.tick();
+    assert_eq!(e.r.state(id), State::Aborted, "{}", e.r.reason(id));
+    assert!(e.r.reason(id).contains("left its intercept (mode AUTO -> RTL)"), "{}", e.r.reason(id));
+    assert!(e.tracks.take_effects().is_empty(), "no effect");
+    let rep = replay::replay_str(&e.r.log.text()).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_platforms_own_failsafe_stops_the_engagement() {
+    let e = engage_rig();
+    let id = e.approved("return").await;
+    // the platform's GCS failsafe takes over (it switched to RTL on its own)
+    let cell = e.r.world.vehicles().into_iter().find(|c| c.uid == 1).expect("platform");
+    cell.write(|v| {
+        v.events.push_back(crate::vehicle::VehicleEvent {
+            kind: "failsafe",
+            text: "[severity 4] GCS Failsafe On: switched to RTL".into(),
+        });
+    });
+    e.r.d.tick();
+    assert_eq!(e.r.state(id), State::Aborted, "{}", e.r.reason(id));
+    assert!(e.r.reason(id).contains("failsafe took over"), "{}", e.r.reason(id));
+    assert!(e.tracks.take_effects().is_empty(), "no effect");
+    let rep = replay::replay_str(&e.r.log.text()).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+}

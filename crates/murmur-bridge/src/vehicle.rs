@@ -478,6 +478,25 @@ impl Vehicle {
         Some((self.has_position(now), t))
     }
 
+    /// The GPS receiver's fix type as a fact (GPS_RAW_INT, or 0 from HIGH_LATENCY2's GPS
+    /// failure flag), stamped when it was reported.
+    pub fn gps_fix_fact(&self) -> Option<(u8, f64)> {
+        self.seen.gps.map(|t| (self.gps_fix, t))
+    }
+
+    /// Whether the navigation filter flags its GPS as glitching (EKF_STATUS_REPORT's
+    /// EKF_GPS_GLITCHING; on HIGH_LATENCY2, its GPS failure flag), stamped with that report.
+    /// ArduPilot keeps its absolute-position flag for seconds after GPS loss and while it
+    /// rejects a glitching (or spoofed) fix, so an engagement's release reads this too.
+    pub fn gps_glitch_fact(&self) -> Option<(bool, f64)> {
+        match self.nav_report()? {
+            NavReport::Ekf(f, t) => t.map(|t| (f.contains(apm::EkfStatusFlags::EKF_GPS_GLITCHING), t)),
+            NavReport::HighLatency(f, t) => {
+                t.map(|t| (f.contains(apm::HlFailureFlag::HL_FAILURE_FLAG_GPS), t))
+            }
+        }
+    }
+
     /// The navigation source as a fact, stamped like [`Self::nav_ready_fact`].
     pub fn nav_source_fact(&self, now: f64) -> Option<(NavSource, f64)> {
         let t = self.nav_report_t()?;

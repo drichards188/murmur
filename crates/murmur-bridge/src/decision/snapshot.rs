@@ -81,6 +81,8 @@ pub fn vehicle_facts(
         nav_source: v
             .nav_source_fact(now_mono)
             .map(|(source, t)| Fact::new(source, ms(t))),
+        gps_fix: v.gps_fix_fact().map(|(f, t)| Fact::new(f, ms(t))),
+        gps_glitch: v.gps_glitch_fact().map(|(g, t)| Fact::new(g, ms(t))),
         report_interval_ms: Some(report_interval_ms),
         // velocity over ground, observed with the position (an engagement's keep-out carries
         // our vehicles along it)

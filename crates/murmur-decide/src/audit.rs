@@ -81,6 +81,13 @@ pub enum EventBody {
     #[serde(rename = "run.started")]
     RunStarted {
         crate_version: String,
+        /// The decision rules this run decides under (`crate::RULES_VERSION`) and the policy
+        /// file schema it was given (`crate::POLICY_SCHEMA`). Absent in logs written before
+        /// they existed: version 1 of both. Replay recomputes with these rules.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rules_version: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        policy_schema: Option<u32>,
         policy: Policy,
         areas: Option<LoggedAreas>,
     },
@@ -177,6 +184,9 @@ pub enum EventBody {
         /// (superseded): the approver acknowledged them. Absent when none.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         supersedes: Vec<IntentId>,
+        /// Engage: the instant the signature was checked at.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        checked_t: Option<Time>,
     },
 
     /// A signature that is not yet enough: signature `n` of the `of` distinct approvers the
@@ -199,6 +209,10 @@ pub enum EventBody {
         /// As on `approval.granted`: the engagements this approval acknowledged stopping.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         supersedes: Vec<IntentId>,
+        /// Engage: the instant the signature was checked at (the token's expiry and the
+        /// plan's freeze time are read against it).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        checked_t: Option<Time>,
     },
 
     /// Engage: the engine showed a signer the picture (`token`: the plan, the track's

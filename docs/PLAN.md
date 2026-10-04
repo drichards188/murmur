@@ -253,17 +253,24 @@ contacts `effect.rs`; console `EngagePanel`, `EngageCard`, `engageLayers.ts`):
    identity); every later one signs that exact plan; the first N-1 are
    `approval.concurred`, the Nth `approval.granted`, whose snapshot carries the plan. At
    each later signature and every second while signatures wait the checks run on the plan
-   (track predicted within tolerance at the plan's point and time, zone, no-strike and
-   keep-outs there, the platform still able to make it, the same identity and declaration,
-   all signatures within `max_signing_s`); when it stops holding, every signature is dropped
-   with it (`approval.reset`) and a new plan must be signed. Compile-fail doctests: no
+   (the track where the plan's track path puts it now and, carried to the plan's time, at
+   its point, each within the tolerance plus a bounded allowance for velocity-estimate
+   uncertainty; zone, no-strike and keep-outs there; the platform still able to make it;
+   the same identity and declaration; all signatures within `max_signing_s`); when it stops
+   holding, every signature is dropped with it (`approval.reset`) and a new plan must be
+   signed. The effective signing window is `dispatch_delay_s` plus the arrival slack:
+   about 85 s for a holding target, 30 to 35 s for a fast mover (DECISIONS.md). A first
+   signer whose picture went stale looks again; nothing is voided while the nomination
+   holds. One engagement per platform (`platform_free`). Our vehicles count in the keep-out
+   with their prediction uncertainty (`friendly_growth_mps`). Compile-fail doctests: no
    forged, cloned or deserialized engagement authority, a plain operator authority is not
    one, and an `AgentPort` has no approve or abort method for engagements.
 5. **Hold the picture**: the final approval stores an `EngageSnapshot` (track facts, the
    preview, the platform's link). `Engine::step_engagements` (the bridge's 1 Hz loop)
    re-checks it every second (`engage.picture`): declared, reclassified, recency, deviation
    from the snapshot's prediction, keep-outs at the effect time, the platform's link against
-   the approval's assumption, GNSS navigation (`platform_nav`), the window and lateness, and
+   the approval's assumption, GNSS navigation (`platform_nav`: the filter on an absolute
+   position, a 3D receiver fix, no GPS glitch flagged), the window and lateness, and
    first that the last check was at most `max_picture_gap_s` ago (`picture_gap`: a stalled loop aborts, never resumes; the
    terrain fetch runs beside the loop). A failure voids it before dispatch and aborts it
    after (`engage.stopped`, cause `picture`), with the reason. While an engagement is in
@@ -295,11 +302,15 @@ contacts `effect.rs`; console `EngagePanel`, `EngageCard`, `engageLayers.ts`):
    the policy and decision, a hidden reset, an agent's order made to look automatic) is
    caught even with a recomputed chain.
 
+Decision rules are versioned (`RULES_VERSION`, recorded in `run.started`): replay
+recomputes every log with the rules it was produced under, and committed logs of every
+version replay in the decide crate's tests.
+
 State machine additions: `dispatched -release-> effected -complete-> done`,
 `dispatched -abort-> aborted` (terminal). `finish` and `dispatch` refuse engagements.
 
 **Adversarial scenarios** (`sim/scenarios/engage/`, format in its README; runner
-`murmur-scenarios`, library `murmur_decide::scenario`): 30 files, one or more per invariant
+`murmur-scenarios`, library `murmur_decide::scenario`): 36 files, one or more per invariant
 (agent authorizes, proposer approves, double signature, neutral enters the keep-out,
 reclassified, undeclared, target moves, link cut, friendly sub near and closing, stale
 track, outside the zone, no-strike, inferred suspect, operator abort, persists, unarmed,
@@ -307,10 +318,17 @@ deleted signature, window too short, a policy file without the engagement tier, 
 moving between signatures and stale previews, an agent's order on the engaging platform, a
 10 s gap in holding the picture, approvers stripped from the log, the effect point sliding
 and the target reversing between signatures, a transient reclassification, a picture taken
-before a reclassification, an approval that would stop an engagement, GNSS lost en route).
+before a reclassification, an approval that would stop an engagement, GNSS lost en route, a
+wobbling velocity estimate, a second engagement on a platform, a GPS glitch en route, a
+first signer's stale picture, a target getting under way while a signature waits, a friendly
+closing to just outside the keep-out).
 Each ends in reject, void or abort as designed and replays; the tampered logs (including a
-loosened logged policy) are caught. Seeded noise (independent around the truth each step)
-turns each into a batch (Phase G); seeds 1, 2, 3, 7, 9 and 42 all pass.
+loosened logged policy) are caught. Seeded noise turns each into a batch (Phase G): position
+noise independent around the truth each step (`--noise`), and a velocity-estimate error
+correlated over about 10 s (`--vnoise`). Seeds 1 to 10 and 42 pass every scenario at 0, 3,
+10 and 20 m with 0, 0.3 and 0.5 m/s (4,320 runs); at 1 m/s per axis some long-lead releases
+on moving targets abort late (the plan's point is off by the velocity error times the
+lead): the chain fails safe, never releasing off the plan.
 
 Live demo: `sim/fleets/engage-demo.toml` (stand-in switchblade, magura, ugv_armed, corsair,
 x10) with `sim/scenarios/golden-gate-engage.toml` (the fast boat holding west of the bridge,

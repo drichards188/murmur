@@ -1,5 +1,5 @@
 # No-strike list: the target is inside the engagement zone but 120 m from the Golden Gate
-# Bridge; with a 150 m effect radius the effect circle touches the bridge's no-strike area,
+# Bridge; with a 220 m effect radius the effect circle reaches well over the bridge's no-strike area,
 # and the nomination is rejected (no_strike).
 title = "The effect circle touches a no-strike area"
 invariant = "no_strike"
@@ -43,5 +43,5 @@ action = "nominate"
 by = "op-1"
 platform = "blade-1"
 track = "T-0001"
-radius_m = 150
+radius_m = 220
 fallback = "return"

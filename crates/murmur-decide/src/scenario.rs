@@ -285,6 +285,10 @@ pub enum Action {
         /// Stop (true) or resume (false) detections.
         #[serde(default)]
         silent: Option<bool>,
+        /// The tracker's velocity estimate is off by this much (east, north m/s) from the
+        /// contact's real velocity, until set again: an estimate that wobbles, not a turn.
+        #[serde(default)]
+        velocity_error: Option<[f64; 2]>,
     },
     /// One of our vehicles changes: position, velocity, link (silent: no reports; a report
     /// interval: the link class changed), navigation source (`gnss`, `dead_reckoning`).
@@ -300,6 +304,12 @@ pub enum Action {
         report_interval_ms: Option<u32>,
         #[serde(default)]
         nav: Option<crate::world::NavSource>,
+        /// The GPS receiver's fix type (3: a 3D fix).
+        #[serde(default)]
+        gps_fix: Option<u8>,
+        /// The navigation filter flags the GPS as glitching.
+        #[serde(default)]
+        gps_glitch: Option<bool>,
     },
     /// Check the last nomination now.
     Expect {
@@ -320,8 +330,12 @@ pub enum Action {
 pub struct RunOptions {
     /// Seed for the track estimate noise (none: no noise).
     pub seed: Option<u64>,
-    /// 1-sigma Gaussian noise added to every track estimate each tick, metres.
+    /// 1-sigma Gaussian noise added to every track position estimate each tick, metres
+    /// (independent around the truth).
     pub track_noise_m: f64,
+    /// 1-sigma error of every track's velocity estimate, m/s, correlated over about 10 s
+    /// (as a tracker's smoothed velocity wobbles: a first-order Gauss-Markov process).
+    pub velocity_noise_mps: f64,
 }
 
 /// What a run produced.
@@ -401,6 +415,8 @@ pub fn run_file(path: &Path, root: &Path, opts: &RunOptions) -> Result<ScenarioR
 struct VehicleSim {
     def: VehicleDef,
     nav: crate::world::NavSource,
+    gps_fix: u8,
+    gps_glitch: bool,
     pos: LonLat,
     vel: [f64; 2],
     home: LonLat,
@@ -414,8 +430,13 @@ struct VehicleSim {
 
 struct TrackSim {
     facts: TrackFacts,
-    /// Where the contact really is (the estimate is this plus the run's noise).
+    /// Where the contact really is and how it moves (the estimates are these plus the
+    /// run's noise and any scripted velocity error).
     truth: LonLat,
+    truth_vel: [f64; 2],
+    vel_error: [f64; 2],
+    /// The correlated part of the velocity estimate's error (`velocity_noise_mps`).
+    vel_noise: [f64; 2],
     silent: bool,
 }
 
@@ -498,6 +519,8 @@ pub fn run(
             VehicleSim {
                 def: v.clone(),
                 nav: crate::world::NavSource::Gnss,
+                gps_fix: 3,
+                gps_glitch: false,
                 pos: at,
                 vel: v.velocity,
                 home: at,
@@ -511,7 +534,12 @@ pub fn run(
     }
     let mut tracks: BTreeMap<String, TrackSim> = BTreeMap::new();
     for t in &sc.tracks {
-        tracks.insert(t.id.clone(), track_sim(t));
+        let mut sim = track_sim(t);
+        // a tracker fed noisier detections says so in its position uncertainty
+        if opts.seed.is_some() {
+            sim.facts.pos_sigma_m = sim.facts.pos_sigma_m.max(opts.track_noise_m);
+        }
+        tracks.insert(t.id.clone(), sim);
     }
 
     let end_s = sc
@@ -532,12 +560,26 @@ pub fn run(
         // kinematics: the contacts move along their velocity; a detection estimates where
         // one is (with independent noise around the truth each time), unless silent
         for (id, tr) in &mut tracks {
-            let [e, n] = tr.facts.velocity_mps.unwrap_or([0.0, 0.0]);
+            let [e, n] = tr.truth_vel;
             if s > 0 {
                 tr.truth = offset(tr.truth, e, n);
             }
             let silent = tr.silent || target_out.as_deref() == Some(id.as_str());
             if s > 0 && !silent {
+                // the velocity estimate: the real one, plus a scripted error, plus a
+                // wobble correlated over about 10 s
+                if opts.velocity_noise_mps > 0.0 && opts.seed.is_some() {
+                    let rho = (-0.1f64).exp();
+                    let k = (1.0 - rho * rho).sqrt() * opts.velocity_noise_mps;
+                    tr.vel_noise = [
+                        rho * tr.vel_noise[0] + k * rng.gauss(),
+                        rho * tr.vel_noise[1] + k * rng.gauss(),
+                    ];
+                }
+                tr.facts.velocity_mps = Some([
+                    tr.truth_vel[0] + tr.vel_error[0] + tr.vel_noise[0],
+                    tr.truth_vel[1] + tr.vel_error[1] + tr.vel_noise[1],
+                ]);
                 let noisy = if opts.track_noise_m > 0.0 && opts.seed.is_some() {
                     offset(
                         tr.truth,
@@ -775,6 +817,9 @@ fn track_sim(t: &TrackDef) -> TrackSim {
     let speed = t.velocity[0].hypot(t.velocity[1]);
     TrackSim {
         truth: LonLat::new(t.at[0], t.at[1]),
+        truth_vel: t.velocity,
+        vel_error: [0.0, 0.0],
+        vel_noise: [0.0, 0.0],
         facts: TrackFacts {
             position: Fact::new(LonLat::new(t.at[0], t.at[1]), seen),
             alt_m: None,
@@ -825,6 +870,8 @@ fn snapshot(
                 home: Some(Fact::new(v.home, T0)),
                 battery_pct: Some(Fact::new(v.def.battery, t)),
                 nav_source: Some(Fact::new(v.nav, t)),
+                gps_fix: Some(Fact::new(v.gps_fix, t)),
+                gps_glitch: Some(Fact::new(v.gps_glitch, t)),
                 report_interval_ms: Some(v.interval),
                 velocity_mps: Some(Fact::new(v.vel, t)),
                 platform: p,
@@ -1084,6 +1131,7 @@ fn act(
             sigma_m,
             domain,
             silent,
+            velocity_error,
         } => {
             let t = tracks.entry(id.clone()).or_insert_with(|| {
                 track_sim(&TrackDef {
@@ -1108,8 +1156,16 @@ fn act(
                 t.facts.last_seen_t = now;
             }
             if let Some(v) = velocity {
+                t.truth_vel = *v;
                 t.facts.velocity_mps = Some(*v);
                 t.facts.sigma_growth_mps = Some((0.3 * v[0].hypot(v[1])).max(1.0));
+            }
+            if let Some(err) = velocity_error {
+                t.vel_error = *err;
+                t.facts.velocity_mps = Some([
+                    t.truth_vel[0] + err[0] + t.vel_noise[0],
+                    t.truth_vel[1] + err[1] + t.vel_noise[1],
+                ]);
             }
             if let Some(a) = affiliation {
                 t.facts.affiliation = Fact::new(*a, now);
@@ -1144,6 +1200,8 @@ fn act(
             silent,
             report_interval_ms,
             nav,
+            gps_fix,
+            gps_glitch,
         } => {
             let Some(v) = vehicles.get_mut(uid) else {
                 return failures.push(format!("t={s}: unknown vehicle {uid}"));
@@ -1162,6 +1220,12 @@ fn act(
             }
             if let Some(n) = nav {
                 v.nav = *n;
+            }
+            if let Some(f) = gps_fix {
+                v.gps_fix = *f;
+            }
+            if let Some(g) = gps_glitch {
+                v.gps_glitch = *g;
             }
         }
         Action::Expect {
@@ -1307,6 +1371,25 @@ fn dispatch_approved(
                     if let Err(e) = engine.void(other, &format!("superseded: {id} was dispatched to vehicle {}", o.uid)) {
                         failures.push(format!("t={s}: void {other}: {e}"));
                     }
+                }
+                // and, as the bridge does, any other engagement in play on it (none can be:
+                // one engagement per platform, the platform_free check)
+                let others: Vec<IntentId> = engine
+                    .intents()
+                    .filter(|i| {
+                        i.id() != id
+                            && matches!(i.spec().task, Task::Engage { .. })
+                            && matches!(i.state(), State::PendingApproval | State::Approved | State::Dispatched)
+                            && i.spec().uids.contains(&o.uid)
+                    })
+                    .map(|i| i.id())
+                    .collect();
+                for other in others {
+                    failures.push(format!("t={s}: engagement {other} was in play on {} when {id} was dispatched", o.uid));
+                    if let Err(e) = engine.supersede_engagement(other, id) {
+                        failures.push(format!("t={s}: supersede {other}: {e}"));
+                    }
+                    engaging.remove(&other);
                 }
                 engaging.insert(id, (o.uid.to_string(), o.effect_point));
             }
@@ -1457,7 +1540,8 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             for e in &mut events {
                 if let EventBody::RunStarted { policy, .. } = &mut e.body {
                     let mut r = policy.rules.engage_rules();
-                    r.token_ttl_s = 86_400.0;
+                    r.token_ttl_s = Some(86_400.0);
+                    r.seen_max_age_s = None;
                     policy.rules.engage = Some(r);
                     done = true;
                 }

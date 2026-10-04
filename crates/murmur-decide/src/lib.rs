@@ -184,6 +184,8 @@
 //!     nav_source: None,
 //!     report_interval_ms: None,
 //!     velocity_mps: None,
+//!     gps_fix: None,
+//!     gps_glitch: None,
 //! });
 //!
 //! // An agent proposes; policy sends it to the inbox.
@@ -253,7 +255,9 @@ pub use intent::{
 };
 pub use policy::{DeadlineBasis, KindApproval, Policy, PolicyDecision, Tier, Until};
 pub use route::{LegKind, Route, Segment};
-pub use rules::{CheckResult, Outcome, RuleId, RulesConfig, UnknownEndurance};
+pub use rules::{
+    CheckResult, Outcome, POLICY_SCHEMA, RULES_VERSION, RuleId, RulesConfig, UnknownEndurance,
+};
 pub use space::{
     ChosenCollect, CollectCapability, CollectOrder, CoverOrder, CoverService, ScenarioMap,
     SegmentId, SpaceAnswer, SpaceArea, SpaceOracle, SpaceOrder, SpaceQuery, SpaceRules,

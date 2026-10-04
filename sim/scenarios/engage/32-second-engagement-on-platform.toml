@@ -1,0 +1,95 @@
+# One engagement per platform (third review, Q2). blade-1 is under way on T-0001; a
+# second nomination on blade-1 (T-0002) would, once signed and dispatched, stop the first
+# without anyone acknowledging it. It is rejected (platform_free): the platform has an
+# engagement in play.
+title = "A second engagement on a platform with one in play"
+invariant = "platform_free"
+attack = "nominate and sign a second engagement on the platform while the first is under way"
+expect = "rejected"
+expect_rule = "platform_free"
+end_s = 20
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km: it also covers the point for the assessment
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.495, 37.812]
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[track]]
+id = "T-0002"
+at = [-122.51, 37.815]
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0002"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 2
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 3
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 4
+action = "expect"
+state = "dispatched"
+
+[[step]]
+at_s = 5
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0002"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 6
+action = "expect"
+state = "rejected"
+rule = "platform_free"

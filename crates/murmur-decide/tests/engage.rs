@@ -22,7 +22,7 @@ fn root() -> PathBuf {
 fn every_adversarial_scenario_ends_as_designed_and_replays() {
     let dir = root().join("sim/scenarios/engage");
     let files = scenario::files(&dir).unwrap();
-    assert!(files.len() >= 30, "{} scenarios", files.len());
+    assert!(files.len() >= 36, "{} scenarios", files.len());
     let mut invariants = Vec::new();
     for f in &files {
         let r = scenario::run_file(f, &root(), &RunOptions::default()).unwrap();
@@ -53,6 +53,7 @@ fn every_adversarial_scenario_ends_as_designed_and_replays() {
         "audit",
         "signed_picture",
         "platform_nav",
+        "platform_free",
         "engagement_in_play",
         "picture_gap",
     ] {
@@ -69,6 +70,7 @@ fn scenarios_are_deterministic_and_seedable() {
     let noisy = RunOptions {
         seed: Some(7),
         track_noise_m: 3.0,
+        velocity_noise_mps: 0.5,
     };
     let c = scenario::run_file(&f, &root(), &noisy).unwrap();
     let d = scenario::run_file(&f, &root(), &noisy).unwrap();
@@ -108,6 +110,8 @@ fn engage_world(t: Time) -> WorldSnapshot {
     blade.autopilot = Some(Fact::new(AutopilotKind::Plane, t));
     blade.nav_ready = Some(Fact::new(true, t));
     blade.nav_source = Some(Fact::new(NavSource::Gnss, t));
+    blade.gps_fix = Some(Fact::new(3, t));
+    blade.gps_glitch = Some(Fact::new(false, t));
     blade.battery_pct = Some(Fact::new(95.0, t));
     blade.velocity_mps = Some(Fact::new([0.0, 0.0], t));
     w.vehicles.insert(uid("blade-1"), blade);
@@ -339,6 +343,13 @@ fn an_agent_nomination_needs_a_rationale_and_waits_for_humans() {
     let log = MemorySink::new();
     let mut e = engine_at(&clock, &log);
     assert!(Rationale::new("  ").is_err());
+    // the agent's preview never says it would be approved
+    let pv = e
+        .agent_port(AgentId::new("agent-planner"))
+        .preview(nomination(), &engage_world(T0), &terrain())
+        .unwrap();
+    assert_eq!(pv.would_reach, State::PendingApproval);
+    assert!(pv.engage.is_some());
     let mut port = e.agent_port(AgentId::new("agent-planner"));
     let i = port
         .propose(
@@ -350,13 +361,13 @@ fn an_agent_nomination_needs_a_rationale_and_waits_for_humans() {
         .unwrap();
     assert_eq!(i.state(), State::PendingApproval);
     assert!(i.policy().unwrap().proposer_excluded);
-    // the agent's preview never says it would be approved
+    // one engagement per platform: a second nomination on blade-1 is rejected
     let pv = e
         .agent_port(AgentId::new("agent-planner"))
         .preview(nomination(), &engage_world(T0), &terrain())
         .unwrap();
-    assert_eq!(pv.would_reach, State::PendingApproval);
-    assert!(pv.engage.is_some());
+    assert_eq!(pv.would_reach, State::Rejected);
+    assert!(pv.checks.iter().any(|c| c.rule.as_str() == "platform_free" && c.outcome == Outcome::Fail));
     assert!(replay::replay_str(&log.text()).unwrap().ok());
 }
 
@@ -702,7 +713,7 @@ fn engage_thresholds_are_bounded() {
             "min_identity_confidence" => r.min_identity_confidence = v,
             "max_track_age_s" => r.max_track_age_s = v,
             "max_picture_gap_s" => r.max_picture_gap_s = v,
-            "token_ttl_s" => r.token_ttl_s = v,
+            "token_ttl_s" => r.token_ttl_s = Some(v),
             "max_signing_s" => r.max_signing_s = v,
             _ => r.deviation_fraction = v,
         }
@@ -770,4 +781,138 @@ fn a_near_terrain_sample_is_logged_and_bounded() {
             r.mismatches
         );
     }
+}
+
+#[test]
+fn a_signature_logs_the_instant_its_token_was_checked_at() {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = engine_at(&clock, &log);
+    let w = engage_world(T0);
+    let (op2, _, id) = two_signers(&mut e, &w);
+    clock.advance_ms(2000);
+    let w = engage_world(clock.now());
+    sign(&mut e, id, &op2, &w).unwrap();
+    let text = log.text();
+    let line = text
+        .lines()
+        .find(|l| l.contains("\"type\":\"approval.concurred\""))
+        .unwrap()
+        .to_string();
+    let at = (T0.0 + 2000).to_string();
+    assert!(line.contains(&format!("\"checked_t\":{at}")), "{line}");
+    assert!(replay::replay_str(&text).unwrap().ok());
+    // a log that moves the instant out of the signature's re-check (to make an expired
+    // token look fresh, say) is caught
+    for forged in [(T0.0 - 60_000).to_string(), (T0.0 + 60_000).to_string()] {
+        let r = replay::replay_str(&text.replace(&format!("\"checked_t\":{at}"), &format!("\"checked_t\":{forged}")))
+            .unwrap();
+        assert!(
+            r.mismatches.iter().any(|m| m.what.contains("checked at an instant outside")),
+            "{:?}",
+            r.mismatches
+        );
+    }
+}
+
+#[test]
+fn one_engagement_per_platform() {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = engine_at(&clock, &log);
+    let w = engage_world(T0);
+    let (op2, op3, id) = two_signers(&mut e, &w);
+    sign(&mut e, id, &op2, &w).unwrap();
+    sign(&mut e, id, &op3, &w).unwrap();
+    e.dispatch_order(id).unwrap();
+    // a second nomination on blade-1, for another declared hostile: its dispatch would stop
+    // the first, so it is rejected
+    let mut w = engage_world(T0);
+    w.tracks.insert("T-0002".into(), target(T0, LonLat::new(-122.5100, 37.8150), [0.0, 0.0], true));
+    let op = e.open_operator_session(OperatorId::new("op-9")).unwrap();
+    let mut p = nomination();
+    if let Task::Engage { track, .. } = &mut p.task {
+        *track = "T-0002".into();
+    }
+    let i = e.submit(op.authority(), p, &w, &terrain()).unwrap();
+    assert_eq!(i.state(), State::Rejected, "{:?}", i.history());
+    let free = i.checks().iter().find(|c| c.rule.as_str() == "platform_free").unwrap();
+    assert_eq!(free.outcome, Outcome::Fail, "{free:?}");
+    assert!(free.detail.contains(&id.to_string()), "{}", free.detail);
+    assert!(replay::replay_str(&log.text()).unwrap().ok());
+}
+
+#[test]
+fn a_stale_first_picture_is_refused_not_fatal() {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = engine_at(&clock, &log);
+    // the target crosses at 8 m/s
+    let w = world_with_target(T0, LonLat::new(-122.5050, 37.8150), [-8.0, 0.0]);
+    let (op2, _, id) = two_signers(&mut e, &w);
+    let auth = op2.engagement_authority().unwrap();
+    let token = e.issue_picture(id, auth, &w).unwrap();
+    // it turns around before op-2 signs: the plan shown no longer holds, the nomination does
+    clock.advance_ms(5000);
+    let turned = world_with_target(clock.now(), LonLat::new(-122.5055, 37.8150), [8.0, 0.0]);
+    let err = e
+        .approve_engagement(id, auth, None, token.id, &turned, &terrain())
+        .unwrap_err();
+    assert!(err.to_string().contains("look again"), "{err}");
+    assert_eq!(e.intent(id).unwrap().state(), State::PendingApproval);
+    // a fresh look signs
+    assert_eq!(sign(&mut e, id, &op2, &turned).unwrap(), State::PendingApproval);
+    assert_eq!(e.intent(id).unwrap().concurrences().len(), 1);
+    let r = replay::replay_str(&log.text()).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+}
+
+#[test]
+fn a_wobbling_velocity_estimate_keeps_the_plan_a_real_turn_drops_it() {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = engine_at(&clock, &log);
+    let w = engage_world(T0);
+    let (op2, _, id) = two_signers(&mut e, &w);
+    sign(&mut e, id, &op2, &w).unwrap();
+    // the holding target's velocity estimate wobbles by 1.2 m/s: the plan holds
+    for (k, v) in [[1.2, 0.0], [-0.8, 0.9], [0.4, -1.1]].into_iter().enumerate() {
+        clock.advance_ms(1000);
+        let mut w = engage_world(clock.now());
+        w.tracks.get_mut("T-0001").unwrap().velocity_mps = Some(v);
+        let out = e.step_engagements(&w, &terrain());
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert_eq!(e.intent(id).unwrap().concurrences().len(), 1, "wobble {k}");
+    }
+    // it gets under way at 4 m/s: dropped at once
+    clock.advance_ms(1000);
+    let w = world_with_target(clock.now(), TARGET_AT, [-4.0, 0.0]);
+    e.step_engagements(&w, &terrain());
+    let i = e.intent(id).unwrap();
+    assert!(i.concurrences().is_empty());
+    assert!(i.engagement().unwrap().reset.as_ref().unwrap().reason.contains("plan"));
+    let r = replay::replay_str(&log.text()).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+}
+
+#[test]
+fn a_gps_glitch_after_approval_aborts() {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = engine_at(&clock, &log);
+    let w = engage_world(T0);
+    let (op2, op3, id) = two_signers(&mut e, &w);
+    sign(&mut e, id, &op2, &w).unwrap();
+    sign(&mut e, id, &op3, &w).unwrap();
+    e.dispatch_order(id).unwrap();
+    clock.advance_ms(1000);
+    // the filter still says GNSS, but flags the GPS as glitching
+    let mut w = engage_world(clock.now());
+    w.vehicles.get_mut(&uid("blade-1")).unwrap().gps_glitch = Some(Fact::new(true, clock.now()));
+    e.step_engagements(&w, &terrain());
+    let i = e.intent(id).unwrap();
+    assert_eq!(i.state(), State::Aborted, "{:?}", i.history());
+    assert!(i.history().last().unwrap().reason.contains("glitching"));
+    let r = replay::replay_str(&log.text()).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
 }

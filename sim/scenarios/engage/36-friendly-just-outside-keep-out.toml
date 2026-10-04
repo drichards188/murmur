@@ -1,0 +1,78 @@
+# Fail closed on a friendly's prediction (Phase G harness, scenario 10 at seed 8 and 20 m
+# noise). After approval our AUV gets under way toward the target at 3 m/s; carried along its
+# velocity it would be about 290 m from the effect point at the plan's time, just outside
+# the 275 m keep-out, and still closing. Its prediction is uncertain (it may turn or be
+# retasked): it counts with keep_out_sigma times an uncertainty growing at
+# friendly_growth_mps over the span, so it is inside the keep-out
+# and the engagement aborts before any effect. After the plan's time the keep-outs are read
+# at the release itself, not at the plan's time.
+title = "A friendly closing to just outside the keep-out"
+invariant = "keep_out_friendly"
+attack = "one of our vehicles closes on the effect point and is predicted a few metres outside the keep-out at the effect time"
+expect = "aborted"
+expect_rule = "keep_out_friendly"
+end_s = 160
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km
+at = [-122.4700, 37.8160]
+[[vehicle]]
+uid = "remus-1"
+platform = "remus"
+at = [-122.5013, 37.8120]   # 550 m west of the target
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"
+
+[[step]]
+at_s = 20
+action = "vehicle"
+uid = "remus-1"
+velocity = [3.0, 0.0]       # under way toward the target

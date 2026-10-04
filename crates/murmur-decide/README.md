@@ -130,7 +130,10 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
   (`approve_engagement(id, &auth, note, token, world, terrain)`). The first signature
   freezes the plan it was shown (`FrozenPlan`); every later signature signs that plan, and
   the checks run on it (`WorldSnapshot::plan`); when it stops holding, at a signature or in
-  `step_engagements`, every signature is dropped with it (`approval.reset`). An agent's order on a vehicle with an engagement in play goes to a
+  `step_engagements`, every signature is dropped with it (`approval.reset`). The target is
+  predicted with `target_velocity` (none below `holding_speed_mps`), and the plan and
+  deviation checks allow `sigma_growth_mps` times the span for velocity-estimate wobble,
+  at most `plan_drift_max_m`. One engagement per platform (`platform_free`). An agent's order on a vehicle with an engagement in play goes to a
   human (`(engagement in play)`; the engagements in play are logged with each decision as
   `engaged`).
 - **Hold the picture**: the final `approval.granted` carries an `EngageSnapshot`;
@@ -274,6 +277,48 @@ Determinism: injected clock, integer-millisecond times, `BTreeMap`s, fixed outpu
 fixed-precision detail strings, `serde_json` with `float_roundtrip`, terrain samples keyed at
 1e-7 degree. Replay proves decisions follow from the logged inputs; it can't prove the inputs
 were true of the world.
+
+## Decision rules versions
+
+A rules change that alters a decision (a new check, another threshold or model, another
+detail text) must not invalidate the logs released code wrote. `RULES_VERSION`
+(`src/rules.rs`) is bumped with such a change, the change is gated on it
+(`RulesConfig::rules_version`, copied into `EngageRules`), and `run.started` records the
+version a run decides under (`rules_version`; a log without it is version 1). Replay sets the
+logged version on the logged policy and recomputes every decision with those rules, so each
+log is checked against the rules it was produced under; a log of newer rules than replay
+knows is a mismatch. `POLICY_SCHEMA` versions the policy file the same way, and its keys
+change so that an older log both parses and is still its lines' serialization (replay
+requires each line to be its event's serialization, so a serde alias, which parses an old
+name but writes the new one back, isn't enough):
+
+- a new key is an `Option`, skipped when absent, read through an accessor with its
+  default (`plan_drift_max()`);
+- a renamed key keeps its old name as an `Option` field of its own beside the new one,
+  read through the new key's accessor, and setting both is an error (`seen_max_age_s`
+  beside `token_ttl_s`, read by `token_ttl()`);
+- a removed key stays as an `Option` field nothing reads, documented as such.
+
+`tests/versions.rs` replays a committed log of every version (`tests/data/audit/`): add one
+with each bump.
+
+Rules versions:
+
+- **1**: everything up to master `977854f` (logs without `rules_version`), Phase E's first
+  frozen-plan chain included.
+- **2**: the third Phase E review. A target slower than `holding_speed_mps` is predicted
+  where it is; the frozen plan is held against where its track path puts the track now and,
+  at its time, against its point, with allowances for position noise and velocity
+  uncertainty (`plan_drift_max_m`), the deviation check after approval too; reach slack
+  allows a fixed wing's waiting circle; `platform_free` (one engagement per platform);
+  `platform_nav` also needs a 3D GPS fix and no GPS glitch; our vehicles count in the
+  keep-out with `friendly_growth_mps` of prediction uncertainty; after the plan's time the
+  keep-outs are read at the release, and a moving target may be released within the plan's
+  time tolerance; signatures log `checked_t`, which replay requires and bounds.
+
+Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
+`friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
+`seen_max_age_s`, an unreleased build's name for it, is still read.
 
 ## Integration contract for the bridge
 

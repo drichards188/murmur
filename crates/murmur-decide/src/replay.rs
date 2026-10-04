@@ -109,6 +109,9 @@ pub struct ReplayReport {
     pub space_queries: usize,
     /// Space queries re-run on the given segment and found equal (or not: see mismatches).
     pub space_recomputed: usize,
+    /// The decision rules the log was produced under (`run.started`; 1 when absent), which
+    /// replay recomputes with.
+    pub rules_version: u32,
     /// Space queries that could not be recomputed because the segment given to replay is
     /// not the one they ran on. Not decision mismatches: [`Self::ok`] ignores them.
     pub cache_mismatches: Vec<Mismatch>,
@@ -175,6 +178,9 @@ struct Tracked {
     assessed: bool,
     /// Engage: the plan the first signature froze (dropped on `approval.reset`).
     plan: Option<FrozenPlan>,
+    /// The last check.result's time and the time of the event before it: a signature's
+    /// `checked_t` lies between them.
+    check_window: Option<(Time, Time)>,
     /// Engage: when the picture was last checked (the final approval, then each
     /// `engage.picture`).
     last_picture_t: Option<Time>,
@@ -302,14 +308,28 @@ fn replay_inner(
                 );
             }
         }
+        let before_t = prev.map_or(Time(i64::MIN), |p| p.t);
         prev = Some(e);
 
         match &e.body {
             EventBody::RunStarted {
                 policy: p,
                 areas: a,
+                rules_version,
                 ..
             } => {
+                let version = rules_version.unwrap_or(1);
+                if version > crate::rules::RULES_VERSION {
+                    bad(
+                        &mut r,
+                        e,
+                        None,
+                        "log written under newer decision rules than this replay knows",
+                        version.to_string(),
+                        crate::rules::RULES_VERSION.to_string(),
+                    );
+                }
+                r.rules_version = version;
                 if let Err(why) = p.validate() {
                     bad(
                         &mut r,
@@ -320,7 +340,10 @@ fn replay_inner(
                         String::new(),
                     );
                 }
-                policy = Some(p.clone());
+                // recompute with the rules the log was produced under
+                let mut p = p.clone();
+                p.rules.rules_version = version;
+                policy = Some(p);
                 areas = None;
                 if let Some(a) = a {
                     areas = Some(load_areas(&mut r, e, &a.sha256, &a.areas));
@@ -406,6 +429,7 @@ fn replay_inner(
                         last_step: None,
                         assessed: false,
                         plan: None,
+                        check_window: None,
                         last_picture_t: None,
                     },
                 );
@@ -489,6 +513,7 @@ fn replay_inner(
                 }
                 tr.last_check_passed = Some(again_passed);
                 tr.last_inputs = Some(Box::new(inputs));
+                tr.check_window = Some((before_t, e.t));
             }
             EventBody::PolicyDecision {
                 intent,
@@ -587,6 +612,7 @@ fn replay_inner(
                 snapshot,
                 token,
                 supersedes,
+                checked_t,
                 ..
             } => {
                 let Some(tr) = intents.get_mut(intent) else {
@@ -612,7 +638,7 @@ fn replay_inner(
                         json(&want),
                     );
                 }
-                check_signed(&mut r, e, *intent, tr, by, *session, snapshot, token, supersedes, &mut issued, policy.as_ref());
+                check_signed(&mut r, e, *intent, tr, by, *session, snapshot, token, supersedes, *checked_t, &mut issued, policy.as_ref());
                 tr.signers.push(by.clone());
                 r.concurrences += 1;
             }
@@ -690,6 +716,7 @@ fn replay_inner(
                 snapshot,
                 token,
                 supersedes,
+                checked_t,
                 ..
             } => {
                 let Some(tr) = intents.get_mut(intent) else {
@@ -740,7 +767,7 @@ fn replay_inner(
                     r.self_approvals += 1;
                 }
                 check_signature(&mut r, e, *intent, tr, by, *session, &sessions);
-                check_signed(&mut r, e, *intent, tr, by, *session, snapshot, token, supersedes, &mut issued, policy.as_ref());
+                check_signed(&mut r, e, *intent, tr, by, *session, snapshot, token, supersedes, *checked_t, &mut issued, policy.as_ref());
                 if tr.spec.kind() == TaskKind::Engage {
                     tr.last_picture_t = snapshot.as_ref().map(|s| s.t);
                     tr.snapshot = snapshot.clone();
@@ -1627,6 +1654,7 @@ fn check_signed(
     snapshot: &Option<Box<EngageSnapshot>>,
     token: &Option<Box<PictureToken>>,
     supersedes: &[IntentId],
+    checked_t: Option<Time>,
     issued: &mut BTreeMap<u64, PictureToken>,
     policy: Option<&Policy>,
 ) {
@@ -1641,7 +1669,7 @@ fn check_signed(
         );
     }
     if tr.spec.kind() != TaskKind::Engage {
-        if snapshot.is_some() || token.is_some() {
+        if snapshot.is_some() || token.is_some() || checked_t.is_some() {
             bad(
                 r,
                 e,
@@ -1699,8 +1727,33 @@ fn check_signed(
             json(&(id, by, session)),
         );
     }
-    if e.t > tok.expires_t {
-        bad(r, e, Some(id), "signature on an expired picture token", json(&tok.expires_t), json(&e.t));
+    // the instant the engine read for the signature: after the event before its re-check,
+    // not after the re-check itself; the token's expiry and the plan's freeze time are
+    // read against it
+    // rules 1 logged no instant: the approval's own time stands in for it
+    let at = match checked_t {
+        Some(at) => at,
+        None if pol.rules.rules_version < 2 => e.t,
+        None => {
+            bad(r, e, Some(id), "engagement signature without the instant it was checked at", "none".into(), String::new());
+            return;
+        }
+    };
+    let v2 = pol.rules.rules_version >= 2;
+    match tr.check_window {
+        _ if !v2 => {}
+        Some((lo, hi)) if lo <= at && at <= hi => {}
+        other => bad(
+            r,
+            e,
+            Some(id),
+            "signature checked at an instant outside its re-check",
+            json(&at),
+            json(&other),
+        ),
+    }
+    if at > tok.expires_t {
+        bad(r, e, Some(id), "signature on an expired picture token", json(&tok.expires_t), json(&at));
     }
     let Some(w) = tr.last_inputs.as_deref() else {
         bad(r, e, Some(id), "engagement signature without its re-check", String::new(), String::new());
@@ -1739,6 +1792,7 @@ fn check_signed(
                 || plan.preview != tok.plan
                 || plan.by != *by
                 || plan.track != tok.track
+                || (v2 && plan.t != at)
                 || plan.t > e.t
             {
                 bad(
@@ -1814,7 +1868,7 @@ fn check_issued(
         bad(r, e, Some(id), "picture token for someone who may not sign it", tok.by.to_string(), String::new());
     }
     let Some(pol) = policy else { return };
-    let ttl = (pol.rules.engage_rules().token_ttl_s * 1000.0).round() as i64;
+    let ttl = (pol.rules.engage_rules().token_ttl() * 1000.0).round() as i64;
     if tok.expires_t != tok.t.plus_ms(ttl) || tok.t > e.t {
         bad(
             r,

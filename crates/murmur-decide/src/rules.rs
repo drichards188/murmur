@@ -97,6 +97,8 @@ pub enum RuleId {
     /// After approval: the platform navigates on GNSS (a release on a dead-reckoned position
     /// is not trusted).
     PlatformNav,
+    /// The platform has no other engagement in play (one engagement per platform).
+    PlatformFree,
 }
 
 impl RuleId {
@@ -131,6 +133,7 @@ impl RuleId {
             RuleId::Plan => "plan",
             RuleId::SigningTime => "signing_time",
             RuleId::PlatformNav => "platform_nav",
+            RuleId::PlatformFree => "platform_free",
         }
     }
 }
@@ -194,10 +197,30 @@ pub enum UnknownEndurance {
     BatteryNow,
 }
 
+/// The version of the decision rules: bumped whenever a change alters a decision (a new
+/// check, another threshold or model, another detail text), so replay recomputes every log
+/// with the rules it was produced under. `run.started` records it; a log without one was
+/// written by version 1. The changelog is in `crates/murmur-decide/README.md`.
+pub const RULES_VERSION: u32 = 2;
+
+/// The version of the policy file's schema: bumped when a key is added, renamed or removed.
+/// A renamed or removed key keeps parsing through an alias, so an old log never fails to
+/// parse; `run.started` records it (absent: 1).
+pub const POLICY_SCHEMA: u32 = 2;
+
+fn current_rules_version() -> u32 {
+    RULES_VERSION
+}
+
 /// Rule settings, from `[rules]` in `sim/policy.toml`. Logged with the policy at run start.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RulesConfig {
+    /// The rules version the checks run under: [`RULES_VERSION`] for a run, the logged one
+    /// in a replay. Not a policy key, and not logged with the policy (`run.started` carries
+    /// it on its own).
+    #[serde(skip, default = "current_rules_version")]
+    pub rules_version: u32,
     /// A fact older than this (against the snapshot time) can't be relied on.
     pub max_fact_age_s: u32,
     /// Link-aware freshness: a vehicle's limit is the larger of `max_fact_age_s` and this many
@@ -243,13 +266,16 @@ impl RulesConfig {
 
     /// `[rules.engage]`, or its defaults.
     pub fn engage_rules(&self) -> EngageRules {
-        self.engage.clone().unwrap_or_default()
+        let mut e = self.engage.clone().unwrap_or_default();
+        e.rules_version = self.rules_version;
+        e
     }
 }
 
 impl Default for RulesConfig {
     fn default() -> Self {
         RulesConfig {
+            rules_version: RULES_VERSION,
             max_fact_age_s: 10,
             fact_age_intervals: None,
             orbit_radius_margin: 1.1,
