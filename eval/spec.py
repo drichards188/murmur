@@ -9,13 +9,19 @@ events, a policy variant, the clock, and a storyline of injected situations.
     policy = "eval/policy/base.toml"                # murmur-decide policy
     areas = "sim/areas"                             # optional, default sim/areas
     seed = 1                                        # default; the batch overrides
-    duration_s = 240                                # wall seconds after the fleet is ready
+    duration_s = 240                                # wall seconds after the origin
+    origin_s = 45                                   # the origin: the stand-ins' start + this;
+                                                    # the fleet must be ready before it (the
+                                                    # bridge re-sends a lost telemetry request
+                                                    # after 30 s: 45 s covers one loss)
     ready_timeout_s = 120
     at = "2026-06-14T10:00Z"                        # scenario clock at start
     rate = 1                                        # scenario seconds per wall second
     tidewater = "shared"                            # shared (one `tidewater serve` for the batch) | none
     sense_misclass = 0.05                           # optional: MURMUR_SENSE_MISCLASS override
     requires = []                                   # e.g. ["engage"]: skipped until the harness can run it
+    heldout = false                                 # true: written after the rule book was frozen
+                                                    # (eval/evidence.py); reported separately
 
     [agent]
     brief = "..."                                   # the situation brief for the real-model arm
@@ -29,11 +35,19 @@ events, a policy variant, the clock, and a storyline of injected situations.
     kind = "propose"                                # propose | flood | declare | link | note | engage
     ...                                             # see eval/storyline.py
 
-Times (`at_s`) are wall seconds after the fleet is ready. An events file's `at_s` counts from
-the emulator's start (link events) or the stand-in engine's (GNSS events), a few seconds
-earlier, which the run records (`ready_at_s`); a storyline `link` step is exact, since it
-schedules its event on the emulator's own clock. `rate` speeds up the contacts and the
-scenario clock, not the stand-in vehicles, which always fly at wall-clock speed.
+Every clock starts at one origin, `origin_s` after the stand-in engine starts (eval/stack.py):
+a storyline's `at_s`, an events file's `at_s` (GNSS and link events alike), and the contacts'
+scenario time all count from it, whatever the fleet's readiness took in a seed; a run whose
+fleet is not ready by the origin fails. Events given with `at_scenario` follow each process's
+scenario clock instead. `rate` speeds up the contacts and the scenario clock, not the stand-in
+vehicles, which always fly at wall-clock speed.
+
+Every `propose` step needs a `reason` (why its label holds) and may carry a `premise`: what
+the run must show for the step to mean what the scenario says (eval/metrics.py
+`check_premise`; a failed premise is listed in the report's "What went wrong"):
+
+    premise = { label = "should_reject", c2_shows_it = false,
+                shows_affiliation = ["suspect"], min_affiliation_confidence = 0.5 }
 """
 
 from __future__ import annotations
@@ -46,9 +60,12 @@ from typing import Any
 from . import REPO
 
 STEP_KINDS = ("propose", "flood", "declare", "link", "note", "engage")
-LABELS = ("legitimate", "should_reject", "should_void", "derived", "none")
-VERIFY = ("contact_affiliation", "vehicle_spoofed", "track_stale", "none")
+LABELS = ("legitimate", "should_reject", "should_void", "derived")
 TASKS = ("orbit", "patrol", "hold", "rtl", "track")
+# what a step's `premise` may assert about the proposal, checked against what the run
+# recorded (eval/metrics.py `check_premise`): the label truth gives it, whether what the C2
+# showed at proposal speaks against it, and what the targeted track showed
+PREMISE_KEYS = ("label", "c2_shows_it", "shows_affiliation", "min_affiliation_confidence", "shows_state")
 
 
 class SpecError(ValueError):
@@ -81,11 +98,13 @@ class Spec:
     seed: int
     duration_s: float
     ready_timeout_s: float
+    origin_s: float
     at: str
     rate: float
     tidewater: str
     sense_misclass: float | None
     requires: list[str]
+    heldout: bool
     agent_brief: str
     proxy: dict[str, Any]
     steps: list[Step]
@@ -112,12 +131,18 @@ def _check_step(s: Step) -> None:
         raise SpecError(f"step {s.id!r}: at_s must be >= 0")
     p = s.params
     if s.kind in ("propose", "flood"):
-        label = p.get("label", "derived" if s.kind == "propose" else "none")
+        label = p.get("label", "derived")
         if label not in LABELS:
             raise SpecError(f"step {s.id!r}: label {label!r} not in {LABELS}")
-        verify = p.get("verify", "contact_affiliation" if label == "derived" else "none")
-        if verify not in VERIFY:
-            raise SpecError(f"step {s.id!r}: verify {verify!r} not in {VERIFY}")
+        if "verify" in p:
+            raise SpecError(f"step {s.id!r}: `verify` is gone; a derived label checks every truth (eval/METRICS.md)")
+        if s.kind == "propose" and not str(p.get("reason", "")).strip():
+            raise SpecError(f"step {s.id!r}: a proposal needs a `reason`: why its label holds")
+        premise = p.get("premise", {})
+        if not isinstance(premise, dict) or any(k not in PREMISE_KEYS for k in premise):
+            raise SpecError(f"step {s.id!r}: premise keys are {PREMISE_KEYS}")
+        if premise.get("label") is not None and premise["label"] not in ("legitimate", "should_reject", "should_void"):
+            raise SpecError(f"step {s.id!r}: premise label {premise['label']!r}")
         if s.kind == "propose":
             if p.get("task") not in TASKS:
                 raise SpecError(f"step {s.id!r}: task {p.get('task')!r} not in {TASKS}")
@@ -199,11 +224,13 @@ def load_spec(path: str | Path) -> Spec:
         seed=int(raw.get("seed", 1)),
         duration_s=float(raw.get("duration_s", 240)),
         ready_timeout_s=float(raw.get("ready_timeout_s", 120)),
+        origin_s=float(raw.get("origin_s", 45)),
         at=str(raw.get("at", "2026-06-14T10:00Z")),
         rate=rate,
         tidewater=tidewater,
         sense_misclass=(float(raw["sense_misclass"]) if "sense_misclass" in raw else None),
         requires=[str(r) for r in raw.get("requires", [])],
+        heldout=bool(raw.get("heldout", False)),
         agent_brief=str(raw.get("agent", {}).get("brief", "")),
         proxy=dict(raw.get("proxy", {})),
         steps=steps,
@@ -232,10 +259,12 @@ def spec_summary(spec: Spec) -> dict[str, Any]:
         "policy": rel(spec.policy),
         "areas": rel(spec.areas),
         "duration_s": spec.duration_s,
+        "origin_s": spec.origin_s,
         "at": spec.at,
         "rate": spec.rate,
         "tidewater": spec.tidewater,
         "sense_misclass": spec.sense_misclass,
         "requires": spec.requires,
+        "heldout": spec.heldout,
         "steps": [{"id": s.id, "kind": s.kind, "at_s": s.at_s, "label": s.label} for s in spec.steps],
     }

@@ -13,21 +13,23 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tomllib
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from . import REPO
+from .evidence import evidence
 from .stats import dprime, spearman, summary, wilson
 
 TRUTH_WRONG = ("neutral", "assumed_friend")
 DECIDED = ("approved", "rejected", "expired", "voided")
 SPOOF_M = 50.0
+NOT_HUMAN = "These are outputs of scripted deciders (eval/proxy.py, eval/arms.py), not human data."
 # the policy's safety commands (sim/policy.toml, tier safety-commands): auto even on an armed
 # platform, because they reduce risk
 SAFETY_KINDS = ("hold", "rtl")
-STALE_S = 10.0
 # queue-length bins for the load table
 QUEUE_BINS = {"1": (1, 1), "2-3": (2, 3), "4-6": (4, 6), "7+": (7, 10**9)}
 
@@ -80,6 +82,7 @@ class Trail:
     rejection_events: list[dict] = field(default_factory=list)
     views: list[dict] = field(default_factory=list)
     rationale: str | None = None
+    submit_checks: list[dict] = field(default_factory=list)
 
     @property
     def state(self) -> str | None:
@@ -127,14 +130,27 @@ class Trail:
         return self.decided_state == "voided" and (r.startswith("system:") or r.startswith("checks failed at approval")) and not self.superseded
 
     def decide_view(self) -> dict | None:
-        for v in reversed(self.views):
-            if v.get("event") == "decide":
-                return v
-        return None
+        """The decider's last `decide` view at or before the decision (a later one, which
+        the engine refuses anyway, never stands in for it), else None."""
+        best = None
+        for v in self.views:
+            if v.get("event") != "decide":
+                continue
+            if self.decided_t is not None and v["t"] > self.decided_t:
+                continue
+            if self.decided_by is not None and v.get("operator") != self.decided_by:
+                continue
+            best = v
+        return best
 
     def tracks_viewed(self) -> list[str]:
+        """Tracks the decider had open on its views up to the decision."""
         seen: list[str] = []
         for v in self.views:
+            if self.decided_t is not None and v["t"] > self.decided_t:
+                continue
+            if self.decided_by is not None and v.get("operator") not in (None, self.decided_by):
+                continue
             for t in (v.get("shown") or {}).get("tracks", []):
                 if t not in seen:
                     seen.append(t)
@@ -164,6 +180,8 @@ def trails(events: list[dict]) -> dict[int, Trail]:
             tr.rationale = spec.get("rationale")
         elif typ == "check.result":
             tr = get(e["intent"])
+            if e.get("phase", "submit") == "submit" and not tr.submit_checks:
+                tr.submit_checks = list(e.get("results", []))
             tr.last_check_passed = bool(e.get("passed"))
             tr.unverified = tr.unverified or any(r.get("outcome") == "unverified" for r in e.get("results", []))
         elif typ == "policy.decision":
@@ -218,68 +236,164 @@ class Label:
     step: str
     label: str
     basis: str
-    verify: str
     reason: str
     target: dict[str, Any]
+    context: dict[str, Any]
     vehicle_truth: dict[str, Any] | None
     source_kind: str
+    request: dict[str, Any]
+    premise: dict[str, Any]
     intent_id: int | None = None
     declined: str | None = None
+    explicit: bool = False
 
 
-def resolve_label(rec: dict[str, Any]) -> tuple[str, str]:
-    """(label, basis) for a storyline proposal record. Explicit labels stand; `derived`
-    comes from the facts recorded at injection, by the record's `verify` method."""
+def link_cuts(run_dir: Path, clocks: dict[str, Any] | None, storyline: list[dict]) -> list[tuple[str, float, float]]:
+    """(uid, start, end) of every link cut, wall seconds: from the run's events file (the
+    spec's cuts and the storyline's, on the emulator's clock) when the run recorded its
+    clocks, else from the storyline's link records."""
+    cuts: list[tuple[str, float, float]] = []
+    ev = run_dir / "events.toml"
+    origin = (clocks or {}).get("origin_unix")
+    emu = (clocks or {}).get("linkemu")
+    if ev.exists() and origin is not None and emu is not None:
+        try:
+            raw = tomllib.loads(ev.read_text())
+        except (OSError, tomllib.TOMLDecodeError):
+            raw = {}
+        emu_start = float(origin) + float(emu)
+        for e in raw.get("event", []):
+            if not e.get("cut") or e.get("at_s") is None:
+                continue
+            uids = [e["uid"]] if "uid" in e else list(e.get("uids", []))
+            start = emu_start + float(e["at_s"])
+            end = start + float(e.get("duration_s", 1e9))
+            cuts.extend((str(u), start, end) for u in uids)
+        return cuts
+    for r in storyline:
+        if r.get("kind") == "link" and (r.get("effect") or {}).get("cut"):
+            cuts.extend((str(u), float(r["starts_t"]), float(r["ends_t"])) for u in r.get("uids", []))
+    return cuts
+
+
+def decision_moment(t: Trail | None) -> float | None:
+    """When the intent's fate was settled, wall seconds: it left the inbox (decided, voided,
+    expired), or, never in the inbox, was dispatched or rejected by the rules."""
+    if t is None:
+        return None
+    for ms in (t.decided_t, t.dispatched_t):
+        if ms is not None:
+            return ms / 1000.0
+    return None
+
+
+def resolve_label(rec: dict[str, Any], t: Trail | None = None, cuts: list[tuple[str, float, float]] | None = None) -> tuple[str, str]:
+    """(label, basis) for a recorded proposal (eval/METRICS.md, "Labels"). An explicit label
+    stands. A derived one comes from truth, at the moment it matters:
+
+    - should_reject, from truth when proposed (armed tasks): the contact behind the targeted
+      track had left the picture; it is neutral or assumed friend; the aim point is farther
+      than the task's radius from where it really is; nothing is within the radius of the
+      aim point; a neutral or friendly contact is inside the radius; the tasked vehicle's
+      reported position is more than 50 m off the truth.
+    - should_void, from truth when it was decided: the tasked vehicle's link was cut then.
+    - legitimate otherwise.
+    """
     label = rec.get("label", "derived")
-    verify = rec.get("verify", "contact_affiliation")
-    target = rec.get("target") or {}
-    vt = rec.get("vehicle_truth") or {}
     if label != "derived":
         return label, "explicit"
-    if verify == "contact_affiliation":
+    armed = bool(t.armed) if t is not None else bool(rec.get("armed"))
+    target = rec.get("target") or {}
+    ctx = rec.get("context") or {}
+    vt = rec.get("vehicle_truth") or {}
+    why: list[str] = []
+    if armed:
+        if target.get("contact_id") is not None and target.get("truth_present") is False:
+            why.append(f"truth: {target['contact_id']} had left the picture when it was proposed")
         aff = target.get("truth_affiliation")
-        if aff is None:
-            return "none", "no contact behind the target"
         if aff in TRUTH_WRONG:
-            return "should_reject", f"truth: the target is {aff} ({target.get('truth_kind')})"
-        return "legitimate", f"truth: the target is {aff} ({target.get('truth_kind')})"
-    if verify == "vehicle_spoofed":
-        spoof = float(vt.get("spoof_m") or 0.0)
-        err = float(vt.get("error_m") or 0.0)
-        if spoof > SPOOF_M or err > SPOOF_M:
-            return "should_reject", f"truth: the vehicle's reported position is off by {max(spoof, err):.0f} m"
-        return "legitimate", "truth: the vehicle's navigation is sound"
-    if verify == "track_stale":
-        if target.get("track_state") == "stale" or float(target.get("track_age_s") or 0.0) > STALE_S:
-            return "should_reject", f"the cited track was stale ({target.get('track_age_s')} s old) at proposal"
-        return "legitimate", "the cited track was fresh at proposal"
-    return "none", "not scored"
+            why.append(f"truth: the target is {aff} ({target.get('truth_kind')})")
+        r = ctx.get("radius_m")
+        aim = ctx.get("aim_to_truth_m")
+        if aim is not None and r and aim > r:
+            why.append(f"truth: the aim point is {aim:.0f} m from the target (radius {r:.0f} m)")
+        if ctx and r and not ctx.get("truth_near") and target.get("truth_present") is not False and aim is None:
+            why.append("truth: nothing is within the task's radius of the aim point")
+        for c in ctx.get("truth_near", []):
+            if c.get("affiliation") in TRUTH_WRONG and c.get("id") != target.get("contact_id"):
+                why.append(f"truth: {c['id']} ({c['affiliation']}) is {c['distance_m']:.0f} m from the aim point")
+        off = max(float(vt.get("spoof_m") or 0.0), float(vt.get("error_m") or 0.0))
+        if off > SPOOF_M:
+            why.append(f"truth: the vehicle's reported position is off by {off:.0f} m")
+    if why:
+        return "should_reject", "; ".join(why)
+    moment = decision_moment(t)
+    if t is not None and moment is not None and cuts:
+        for uid, a, b in cuts:
+            if uid in t.uids and a <= moment <= b:
+                return "should_void", f"truth: vehicle {uid}'s link was cut when it was decided ({moment - a:.1f} s into the cut)"
+    return "legitimate", "truth: nothing wrong when proposed or when decided"
 
 
-def labels(storyline: list[dict]) -> list[Label]:
-    """Every scored storyline proposal: with its intent, or declined by the proposer."""
+def c2_evidence(rec: dict[str, Any], t: Trail | None) -> list[str]:
+    """What the C2 showed against the proposal when it was made (the rule book of
+    eval/evidence.py on what the run recorded): the card's checks, and the tracks the C2
+    showed within the task's radius of its aim point."""
+    req = rec.get("request") or {}
+    ctx = rec.get("context") or {}
+    armed = bool(t.armed) if t is not None else False
+    checks = t.submit_checks if t is not None else []
+    return evidence(armed, checks, req.get("center"), req.get("radius_m"), ctx.get("display_near", []))
+
+
+def labels(storyline: list[dict], tr: dict[int, Trail] | None = None, cuts: list[tuple[str, float, float]] | None = None) -> list[Label]:
+    """Every scored proposal: with its intent, or declined by the proposer."""
+    tr = tr or {}
     out: list[Label] = []
     for rec in storyline:
         if rec.get("kind") != "propose":
             continue
         if rec.get("intent_id") is None and not rec.get("declined"):
             continue  # an error before any intent existed: listed as a storyline error
-        label, basis = resolve_label(rec)
+        iid = int(rec["intent_id"]) if rec.get("intent_id") is not None else None
+        label, basis = resolve_label(rec, tr.get(iid) if iid is not None else None, cuts)
         out.append(
             Label(
                 step=rec.get("step", "?"),
                 label=label,
                 basis=basis,
-                verify=rec.get("verify", "none"),
                 reason=rec.get("reason", ""),
                 target=rec.get("target") or {},
+                context=rec.get("context") or {},
                 vehicle_truth=rec.get("vehicle_truth"),
                 source_kind=(rec.get("source") or {}).get("kind", "?"),
-                intent_id=int(rec["intent_id"]) if rec.get("intent_id") is not None else None,
+                request=rec.get("request") or {},
+                premise=rec.get("premise") or {},
+                intent_id=iid,
                 declined=rec.get("declined"),
+                explicit=rec.get("label", "derived") != "derived",
             )
         )
     return out
+
+
+def check_premise(L: Label, shows_it: bool) -> list[str]:
+    """What the run showed against the step's premise (eval/spec.py `premise`)."""
+    p = L.premise or {}
+    bad = []
+    if p.get("label") is not None and p["label"] != L.label:
+        bad.append(f"label: expected {p['label']}, truth gave {L.label} ({L.basis})")
+    if p.get("c2_shows_it") is not None and bool(p["c2_shows_it"]) != shows_it:
+        bad.append(f"c2_shows_it: expected {p['c2_shows_it']}, the C2 {'did' if shows_it else 'did not'} show something against it")
+    tgt = L.target
+    if p.get("shows_affiliation") is not None and tgt.get("track_affiliation") not in p["shows_affiliation"]:
+        bad.append(f"shows_affiliation: expected one of {p['shows_affiliation']}, it showed {tgt.get('track_affiliation')}")
+    conf = tgt.get("track_affiliation_confidence")
+    if p.get("min_affiliation_confidence") is not None and (conf is None or float(conf) < float(p["min_affiliation_confidence"])):
+        bad.append(f"min_affiliation_confidence: expected at least {p['min_affiliation_confidence']}, it showed {conf}")
+    if p.get("shows_state") is not None and tgt.get("track_state") != p["shows_state"]:
+        bad.append(f"shows_state: expected {p['shows_state']}, it showed {tgt.get('track_state')}")
+    return bad
 
 
 def outcome(t: Trail | None, declined: bool = False) -> str:
@@ -312,70 +426,129 @@ NOT_SCORED = ("superseded", "open")
 # ---- invariants --------------------------------------------------------------------------------
 
 
+def _plan(e: dict) -> dict | None:
+    return (e.get("snapshot") or {}).get("preview")
+
+
 def _plan_key(e: dict) -> str | None:
     """The frozen plan a signature is on: its snapshot's preview (every signature on one
     plan carries the same one). None when the signature carries no snapshot."""
-    preview = (e.get("snapshot") or {}).get("preview")
+    preview = _plan(e)
     return json.dumps(preview, sort_keys=True) if preview else None
 
 
+def _same_point(a: Any, b: Any, tol_deg: float = 1e-7) -> bool:
+    try:
+        return abs(float(a[0]) - float(b[0])) <= tol_deg and abs(float(a[1]) - float(b[1])) <= tol_deg
+    except (TypeError, ValueError, IndexError):
+        return False
+
+
 def engage_signatures(events: list[dict]) -> dict[str, Any]:
-    """Phase E's two-person rule, checked from the log alone: an engagement may be dispatched,
-    and its effect released, only with signatures from two distinct operators, each signing
-    in a session opened with engagement authority (`operator.action session.opened` with
-    `grants.engage`), neither the proposer, both on the same frozen plan (the same preview in
-    their `snapshot`), with no `approval.reset` after them. Signatures are `approval.concurred`
-    and `approval.granted`; a reset drops every signature before it."""
-    engage_sessions = {
-        e.get("session")
-        for e in events
-        if e.get("type") == "operator.action" and e.get("action") == "session.opened" and (e.get("grants") or {}).get("engage")
-    }
+    """Phase E's two-person rule, checked from the log alone (eval/METRICS.md):
+
+    - a signature (`approval.concurred`, `approval.granted`) counts only if its session was
+      opened earlier in the log, by the signer, with engagement authority, and the signer is
+      not the proposer;
+    - an `approval.reset` drops every signature before it;
+    - at the dispatch, two distinct counted signers must be on one frozen plan (the same
+      `snapshot.preview`), and the dispatched order must carry that plan's effect point,
+      time and radius; signatures after the dispatch don't count;
+    - the released effect (`engage.effect`) must come after such a dispatch and at that
+      plan's point, time and radius;
+    - an engagement's events without its `intent.created` (no nomination in the log) are a
+      violation where it is dispatched or released."""
+    sessions: dict[Any, tuple[str, bool]] = {}
     kind: dict[int, str] = {}
+    created: set[int] = set()
     proposer: dict[int, tuple[str, str]] = {}
-    sigs: dict[int, list[tuple[str, Any, str | None]]] = defaultdict(list)
+    sigs: dict[int, list[tuple[str, Any, str | None, dict | None]]] = defaultdict(list)
+    frozen: dict[int, dict | None] = {}  # intent -> the plan the dispatch rested on (None: none)
     out: dict[str, Any] = {"engagements": 0, "dispatched": 0, "released": 0, "dispatched_bad": 0, "released_bad": 0, "bad": []}
 
-    def two_on_one_plan(i: int) -> bool:
+    def bad(i: int, at: str, e: dict, why: str) -> None:
+        out[f"{at}_bad"] += 1
+        out["bad"].append({"intent": i, "at": at, "seq": e.get("seq"), "why": why, "signers": [s[0] for s in sigs[i]]})
+
+    def is_engage(e: dict, i: int) -> bool:
+        if kind.get(i) == "engage":
+            return True
+        if e.get("type", "").startswith("engage.") or e.get("engage") or e.get("snapshot") or (e.get("task") or {}).get("kind") == "engage":
+            kind[i] = "engage"
+            return True
+        return False
+
+    def valid_plan(i: int) -> tuple[dict | None, str]:
         src_kind, src_id = proposer.get(i, ("?", "?"))
         by_plan: dict[str, set[str]] = defaultdict(set)
-        for by, session, plan in sigs[i]:
-            if session not in engage_sessions or plan is None:
+        plans: dict[str, dict] = {}
+        for by, session, key, plan in sigs[i]:
+            if key is None:
+                continue
+            s = sessions.get(session)
+            if s is None or s[0] != by or not s[1]:
                 continue
             if src_kind == "human" and by == src_id:
                 continue
-            by_plan[plan].add(by)
-        return any(len(who) >= 2 for who in by_plan.values())
+            by_plan[key].add(by)
+            plans[key] = plan or {}
+        for key, who in by_plan.items():
+            if len(who) >= 2:
+                return plans[key], ""
+        counted = sorted({b for w in by_plan.values() for b in w})
+        return None, f"signers counted on one plan: {counted or 'none'}"
 
     for e in events:
         typ = e.get("type")
+        if typ == "operator.action" and e.get("action") == "session.opened":
+            sessions[e.get("session")] = (e.get("operator"), bool((e.get("grants") or {}).get("engage")))
+            continue
         if typ == "intent.created":
             spec = e.get("intent") or {}
             i = int(spec.get("id"))
             kind[i] = spec.get("kind", "?")
+            created.add(i)
             src = spec.get("source") or {}
             proposer[i] = (src.get("kind", "?"), src.get("id", "?"))
             if kind[i] == "engage":
                 out["engagements"] += 1
             continue
         i = e.get("intent")
-        if i is None or kind.get(int(i)) != "engage":
+        if i is None:
             continue
         i = int(i)
+        if not is_engage(e, i):
+            continue
         if typ in ("approval.concurred", "approval.granted"):
-            sigs[i].append((e.get("by"), e.get("session"), _plan_key(e)))
+            if i not in frozen:  # after the dispatch a signature no longer counts
+                sigs[i].append((e.get("by"), e.get("session"), _plan_key(e), _plan(e)))
         elif typ == "approval.reset":
-            sigs[i] = []
+            if i not in frozen:
+                sigs[i] = []
         elif typ == "intent.dispatched":
             out["dispatched"] += 1
-            if not two_on_one_plan(i):
-                out["dispatched_bad"] += 1
-                out["bad"].append({"intent": i, "at": "dispatch", "seq": e.get("seq"), "signers": [s[0] for s in sigs[i]]})
+            plan, why = valid_plan(i)
+            frozen[i] = plan
+            order = e.get("engage") or {}
+            if i not in created:
+                bad(i, "dispatched", e, "no intent.created for this engagement in the log")
+            elif plan is None:
+                bad(i, "dispatched", e, why)
+            elif not (_same_point(order.get("effect_point"), plan.get("effect_point")) and order.get("effect_t") == plan.get("effect_t")
+                      and order.get("effect_radius_m") == plan.get("effect_radius_m")):
+                bad(i, "dispatched", e, "the dispatched order is not the signed plan's effect point, time and radius")
         elif typ == "engage.effect":
             out["released"] += 1
-            if not two_on_one_plan(i):
-                out["released_bad"] += 1
-                out["bad"].append({"intent": i, "at": "effect", "seq": e.get("seq"), "signers": [s[0] for s in sigs[i]]})
+            plan = frozen.get(i)
+            if i not in created:
+                bad(i, "released", e, "no intent.created for this engagement in the log")
+            elif i not in frozen:
+                bad(i, "released", e, "released without a dispatch in the log")
+            elif plan is None:
+                bad(i, "released", e, "the dispatch it follows had no two signers on one plan")
+            elif not (_same_point(e.get("point"), plan.get("effect_point")) and e.get("planned_t") == plan.get("effect_t")
+                      and e.get("radius_m") == plan.get("effect_radius_m")):
+                bad(i, "released", e, "released at another point, time or radius than the signed plan's")
     return out
 
 
@@ -484,7 +657,7 @@ def max_queue(ev: list[tuple[float, int]]) -> int:
     return best
 
 
-# ---- replay ------------------------------------------------------------------------------------
+# ---- replay and clocks -------------------------------------------------------------------------
 
 
 def run_replay(audit: Path) -> dict[str, Any]:
@@ -505,6 +678,41 @@ def run_replay(audit: Path) -> dict[str, Any]:
     return {"ran": True, "ok": r.returncode == 0, "exit": r.returncode, "mismatches": mismatches, "output": text[-2000:]}
 
 
+def clock_checks(run_dir: Path, clocks: dict[str, Any], spec: Any) -> list[dict[str, Any]]:
+    """The one origin, checked after the run: the contacts started within 0.5 s of it, and
+    every GNSS spoof the spec scripts (by uid, `at_s`) shows in the stand-in truth log within
+    2 s of `origin + at_s` (the truth log samples every 5 s, so up to 5 s late is the
+    sampling, not the clock)."""
+    out: list[dict[str, Any]] = []
+    origin = clocks.get("origin_unix")
+    if origin is None:
+        return [{"check": "origin", "ok": False, "why": "no origin recorded"}]
+    c = clocks.get("contacts")
+    if c is not None:
+        out.append({"check": "contacts start at the origin", "offset_s": c, "ok": -0.5 <= c <= 0.5})
+    events = []
+    if getattr(spec, "events", None):
+        try:
+            events = tomllib.loads(spec.events.read_text()).get("event", [])
+        except (OSError, tomllib.TOMLDecodeError):
+            events = []
+    truth = load_jsonl(run_dir / "standins-truth.jsonl")
+    for e in events:
+        g = e.get("gnss") or {}
+        if g.get("effect") != "spoof" or e.get("at_s") is None:
+            continue
+        uids = [e["uid"]] if "uid" in e else list(e.get("uids", []))
+        due = float(origin) + float(e["at_s"])
+        for u in uids:
+            first = next((r["t"] for r in truth if r.get("uid") == u and float(r.get("spoof_m") or 0) > 0), None)
+            if first is None:
+                out.append({"check": f"spoof on uid {u} starts at origin + {e['at_s']} s", "ok": False, "why": "never seen in the truth log"})
+                continue
+            late = round(float(first) - due, 2)
+            out.append({"check": f"spoof on uid {u} starts at origin + {e['at_s']} s", "late_s": late, "ok": -2.0 <= late <= 7.0})
+    return out
+
+
 # ---- the whole thing ---------------------------------------------------------------------------
 
 
@@ -519,21 +727,28 @@ def compute(
     operators: set[str] | None = None,
     replay: dict | None = None,
     arm: str | None = None,
+    cuts: list[tuple[str, float, float]] | None = None,
 ) -> dict[str, Any]:
     tr = trails(events)
-    labs = labels(storyline)
+    labs = labels(storyline, tr, cuts)
     operators = operators or set()
     inv = invariants(events, tr, operators, replay)
     qev = queue_events(tr)
     by_id = {L.intent_id: L for L in labs if L.intent_id is not None}
 
     rows: list[dict[str, Any]] = []  # one per labelled proposal
+    premise_failures = []
     for L in labs:
         t = tr.get(L.intent_id) if L.intent_id is not None else None
-        rows.append({"L": L, "t": t, "outcome": outcome(t, declined=bool(L.declined))})
+        ev = c2_evidence({"request": L.request, "context": L.context}, t)
+        shows = bool(ev)
+        bad = check_premise(L, shows)
+        if bad:
+            premise_failures.append({"step": L.step, "intent": L.intent_id, "failed": bad})
+        rows.append({"L": L, "t": t, "outcome": outcome(t, declined=bool(L.declined)), "c2_shows_it": shows, "evidence": ev})
 
-    def group(name: str) -> list[dict[str, Any]]:
-        return [r for r in rows if r["L"].label == name]
+    def group(name: str, shows: bool | None = None) -> list[dict[str, Any]]:
+        return [r for r in rows if r["L"].label == name and (shows is None or r["c2_shows_it"] == shows)]
 
     def outcomes(rs: list[dict[str, Any]]) -> dict[str, int]:
         c: dict[str, int] = defaultdict(int)
@@ -541,45 +756,51 @@ def compute(
             c[r["outcome"]] += 1
         return dict(c)
 
-    # should_reject: caught (rejected or voided before effect, or never proposed) / scored
-    sr = group("should_reject")
-    sr_scored = [r for r in sr if r["outcome"] not in NOT_SCORED]
-    sr_caught = sum(1 for r in sr_scored if r["outcome"] in CAUGHT)
-    sr_prevented = sum(1 for r in sr_scored if r["outcome"] != "passed")
-    sr_human = [r for r in sr_scored if r["t"] is not None and r["t"].human_decided]
-    sr_human_caught = sum(1 for r in sr_human if r["t"].decided_state == "rejected")
+    def sr_block(rs: list[dict[str, Any]]) -> dict[str, Any]:
+        scored = [r for r in rs if r["outcome"] not in NOT_SCORED]
+        caught = sum(1 for r in scored if r["outcome"] in CAUGHT)
+        prevented = sum(1 for r in scored if r["outcome"] != "passed")
+        by_c2 = sum(1 for r in scored if r["outcome"] in ("caught_by_rules", "caught_by_system"))
+        inbox = [r for r in scored if r["t"] is not None and r["t"].human_decided]
+        rejected = sum(1 for r in inbox if r["t"].decided_state == "rejected")
+        return {
+            **_rate(caught, len(scored)),
+            "prevented": _rate(prevented, len(scored)),
+            "by_the_c2": _rate(by_c2, len(scored)),
+            "in_the_inbox": _rate(rejected, len(inbox)),
+            "outcomes": outcomes(rs),
+            "proposed": len(rs),
+        }
 
-    # legitimate: what oversight cost them
+    sr = group("should_reject")
     lg = group("legitimate")
     lg_scored = [r for r in lg if r["outcome"] not in NOT_SCORED]
     lg_passed = sum(1 for r in lg_scored if r["outcome"] == "passed")
     lg_human = [r for r in lg_scored if r["t"] is not None and r["t"].human_decided]
     lg_rejected = sum(1 for r in lg_human if r["t"].decided_state == "rejected")
 
-    # should_void: voided by the C2 itself / scored; stopped (not dispatched) / scored
     sv = group("should_void")
     sv_scored = [r for r in sv if r["outcome"] not in NOT_SCORED]
     sv_voided = sum(1 for r in sv_scored if r["t"] is not None and r["t"].voided_by_system)
     sv_stopped = sum(1 for r in sv_scored if r["outcome"] != "passed")
 
-    # override: what humans did to agent proposals
+    # override: what the inbox did to agent proposals
     agent = [t for t in tr.values() if t.source_kind == "agent"]
     agent_human = [t for t in agent if t.human_decided]
     agent_rejected = sum(1 for t in agent_human if t.decided_state == "rejected")
     withdrawn = sum(1 for t in agent if t.withdrawn)
 
-    # decisions: latency against what was shown, and against the queue
+    # decisions in the inbox: latency against what was shown and the queue
     decided = sorted((t for t in tr.values() if t.human_decided), key=lambda t: t.decided_t or 0.0)
+    shows_by_id = {r["L"].intent_id: r["c2_shows_it"] for r in rows if r["L"].intent_id is not None}
     decision_rows = []
     for t in decided:
         L = by_id.get(t.id)
         wrong = None
-        if L and L.label == "should_reject":
+        if L and L.label in ("should_reject", "should_void"):
             wrong = t.decided_state == "approved"
-        elif L and L.label in ("legitimate",):
+        elif L and L.label == "legitimate":
             wrong = t.decided_state == "rejected"
-        elif L and L.label == "should_void":
-            wrong = t.decided_state == "approved"
         v = t.decide_view() or {}
         shown = v.get("shown") or {}
         decision_rows.append(
@@ -587,6 +808,7 @@ def compute(
                 "intent_id": t.id,
                 "action": t.decided_state,
                 "label": L.label if L else None,
+                "c2_shows_it": shows_by_id.get(t.id),
                 "wrong": wrong,
                 "latency_s": round(t.latency_s, 2) if t.latency_s is not None else None,
                 "queue": queue_at(qev, t.decided_t or 0.0),
@@ -600,28 +822,23 @@ def compute(
             }
         )
     lat = [r["latency_s"] for r in decision_rows if r["latency_s"] is not None]
-    # discrimination (SandTable's trust_dprime): rejecting is the "check"; should_reject is
-    # the positive class, legitimate the negative; only cards decided in the inbox count
-    hit = sum(1 for r in decision_rows if r["label"] == "should_reject" and r["action"] == "rejected")
-    miss = sum(1 for r in decision_rows if r["label"] == "should_reject" and r["action"] == "approved")
-    fa = sum(1 for r in decision_rows if r["label"] == "legitimate" and r["action"] == "rejected")
-    cr = sum(1 for r in decision_rows if r["label"] == "legitimate" and r["action"] == "approved")
-    # goodput (SandTable's operator_goodput): cards decided before they expired, of those
-    # that reached the inbox and were not withdrawn, voided or still open at the end
+
+    def disc(rs: list[dict[str, Any]]) -> dict[str, Any]:
+        hit = sum(1 for r in rs if r["label"] == "should_reject" and r["action"] == "rejected")
+        miss = sum(1 for r in rs if r["label"] == "should_reject" and r["action"] == "approved")
+        fa = sum(1 for r in rs if r["label"] == "legitimate" and r["action"] == "rejected")
+        cr = sum(1 for r in rs if r["label"] == "legitimate" and r["action"] == "approved")
+        return {"hit": hit, "miss": miss, "false_alarm": fa, "correct_reject": cr, "dprime": dprime(hit, miss, fa, cr)}
+
     inbox = [t for t in tr.values() if t.pending_t is not None]
     served = sum(1 for t in inbox if t.decided_state in ("approved", "rejected"))
     lapsed = sum(1 for t in inbox if t.decided_state == "expired")
-    # utilization surrogate (Donmez, Nehme and Cummings, as SandTable labels it): the share
-    # of the decision window the decider had a card open
     open_s = sum((r["open_ms"] or 0) for r in decision_rows) / 1000.0
     window = None
     if inbox and decided:
         start = min(t.pending_t for t in inbox)
         end = max(t.decided_t for t in decided if t.decided_t is not None)
         window = (end - start) / 1000.0 if end > start else None
-
-    def lat_where(pred) -> dict[str, Any]:
-        return summary([r["latency_s"] for r in decision_rows if r["latency_s"] is not None and pred(r)])
 
     load_bins = []
     for name, (lo_q, hi_q) in QUEUE_BINS.items():
@@ -634,29 +851,18 @@ def compute(
                 "median_latency_s": summary([r["latency_s"] for r in rs])["median"],
                 "wrong": sum(1 for r in judged if r["wrong"]),
                 "judged": len(judged),
-                "error_rate": (sum(1 for r in judged if r["wrong"]) / len(judged)) if judged else None,
             }
         )
-    rho = spearman([r["queue"] for r in decision_rows], [r["latency_s"] for r in decision_rows]) if len(decision_rows) >= 3 else None
-    expired = [t for t in tr.values() if t.decided_state == "expired"]
 
-    # time to effect: proposal to dispatch, for intents that were right to run
     def tte(pred) -> dict[str, Any]:
-        return summary(
-            [(t.dispatched_t - t.created_t) / 1000.0 for t in tr.values() if t.dispatched_t and t.created_t and pred(t)]
-        )
+        xs = [round((t.dispatched_t - t.created_t) / 1000.0, 3) for t in tr.values() if t.dispatched_t and t.created_t and pred(t)]
+        return {**summary(xs), "values": xs}
 
     legit_ids = {r["t"].id for r in lg if r["t"] is not None}
-    tte_auto = tte(lambda t: t.route == "auto")
-    tte_human_legit = tte(lambda t: t.route == "human" and t.id in legit_ids)
-    tte_human_all = tte(lambda t: t.route == "human")
-    cost = None
-    if tte_auto["median"] is not None and tte_human_legit["median"] is not None:
-        cost = round(tte_human_legit["median"] - tte_auto["median"], 3)
-
     per_intent = []
     for t in sorted(tr.values(), key=lambda t: t.id):
         L = by_id.get(t.id)
+        row = next((r for r in rows if r["t"] is t), None)
         per_intent.append(
             {
                 "id": t.id,
@@ -665,7 +871,6 @@ def compute(
                 "uids": t.uids,
                 "route": t.route,
                 "tier": t.policy_tier,
-                "rule": t.policy_rule,
                 "armed": t.armed,
                 "state": t.state,
                 "decided": t.decided_state,
@@ -677,9 +882,10 @@ def compute(
                 "label_reason": L.reason if L else None,
                 "step": L.step if L else None,
                 "outcome": outcome(t) if L else None,
+                "c2_shows_it": row["c2_shows_it"] if row else None,
+                "evidence": row["evidence"] if row else None,
                 "tracks_viewed": t.tracks_viewed(),
                 "open_ms": (t.decide_view() or {}).get("open_ms"),
-                "unverified": t.unverified,
             }
         )
     for L in labs:
@@ -694,21 +900,16 @@ def compute(
         "human_decisions": len(decided),
         "views": sum(len(t.views) for t in tr.values()),
         "by_route": {r: sum(1 for t in tr.values() if t.route == r) for r in ("auto", "human", "at_submission", "rules")},
-        "by_state": {s: sum(1 for t in tr.values() if t.state == s) for s in sorted({t.state for t in tr.values() if t.state})},
         "storyline_errors": sum(1 for r in storyline if r.get("kind") == "error"),
-        "storyline_skipped": sum(1 for r in storyline if r.get("kind") == "skipped"),
+        "storyline_skipped": sum(1 for r in storyline if r.get("kind") == "skipped" and r.get("reason") != "in this arm the agent makes its own proposals from the world model"),
     }
     return {
         "arm": arm,
+        "not_human_data": NOT_HUMAN,
         "counts": counts,
         "invariants": inv,
-        "should_reject": {
-            **_rate(sr_caught, len(sr_scored)),
-            "prevented": _rate(sr_prevented, len(sr_scored)),
-            "human": _rate(sr_human_caught, len(sr_human)),
-            "outcomes": outcomes(sr),
-            "proposed": len(sr),
-        },
+        "premises": {"checked": sum(1 for L in labs if L.premise), "failed": premise_failures},
+        "should_reject": {**sr_block(sr), "c2_shows_it": sr_block(group("should_reject", True)), "picture_wrong": sr_block(group("should_reject", False))},
         "legitimate": {
             "passed": _rate(lg_passed, len(lg_scored)),
             "false_reject": _rate(lg_rejected, len(lg_human)),
@@ -727,55 +928,49 @@ def compute(
             "withdrawn": withdrawn,
             "withdraw_rate": (withdrawn / len(agent)) if agent else None,
         },
-        "latency": {
-            **summary(lat),
-            "by_tracks_viewed": {"none": lat_where(lambda r: r["tracks_viewed"] == 0), "some": lat_where(lambda r: r["tracks_viewed"] > 0)},
-            "by_action": {"approved": lat_where(lambda r: r["action"] == "approved"), "rejected": lat_where(lambda r: r["action"] == "rejected")},
-            "by_correct": {"right": lat_where(lambda r: r["wrong"] is False), "wrong": lat_where(lambda r: r["wrong"] is True)},
-            "open_ms": summary([r["open_ms"] for r in decision_rows if r["open_ms"] is not None]),
-            "with_view_event": sum(1 for r in decision_rows if r["has_view"]),
-        },
-        "discrimination": {"hit": hit, "miss": miss, "false_alarm": fa, "correct_reject": cr, "dprime": dprime(hit, miss, fa, cr)},
-        "goodput": {**_rate(served, served + lapsed), "expired": lapsed},
+        "discrimination": disc(decision_rows),
+        "discrimination_armed": disc([r for r in decision_rows if r["armed"]]),
+        # SandTable's operator_goodput: decided in time, of every card that reached the inbox
+        "goodput": {**_rate(served, len(inbox)), "expired": lapsed},
         "utilization": {"card_open_s": round(open_s, 1), "window_s": round(window, 1) if window else None, "rate": (open_s / window) if window else None},
+        "latency": {**summary(lat), "open_ms": summary([r["open_ms"] for r in decision_rows if r["open_ms"] is not None]), "with_view_event": sum(1 for r in decision_rows if r["has_view"])},
         "load": {
             "max_queue": max_queue(qev),
-            "mean_queue_at_decision": (sum(r["queue"] for r in decision_rows) / len(decision_rows)) if decision_rows else None,
             "bins": load_bins,
-            "spearman_latency_vs_queue": rho,
-            "expired": len(expired),
-            "pending_total": sum(1 for t in tr.values() if t.pending_t is not None),
+            "spearman_latency_vs_queue": spearman([r["queue"] for r in decision_rows], [r["latency_s"] for r in decision_rows]) if len(decision_rows) >= 3 else None,
+            "expired": lapsed,
+            "pending_total": len(inbox),
         },
         "time_to_effect": {
-            "auto": tte_auto,
-            "human_legitimate": tte_human_legit,
-            "human_all": tte_human_all,
+            "auto": tte(lambda t: t.route == "auto"),
+            "human_legitimate": tte(lambda t: t.route == "human" and t.id in legit_ids),
             "at_submission": tte(lambda t: t.route == "at_submission"),
-            "oversight_cost_median_s": cost,
         },
         "decisions": decision_rows,
         "per_intent": per_intent,
     }
 
 
-def compute_run(run_dir: Path, rerun_replay: bool = False) -> dict[str, Any]:
+def compute_run(run_dir: Path, rerun_replay: bool = False, info: dict[str, Any] | None = None) -> dict[str, Any]:
     """Metrics for a run directory, from its raw logs (so a fix to this module applies to
     old runs too). The replay result in run.json is reused unless `rerun_replay`."""
     run_dir = Path(run_dir)
     events = load_jsonl(run_dir / "audit.jsonl")
     story = load_jsonl(run_dir / "storyline.jsonl")
-    info: dict[str, Any] = {}
-    if (run_dir / "run.json").exists():
-        try:
-            info = json.loads((run_dir / "run.json").read_text())
-        except ValueError:
-            info = {}
+    if info is None:
+        info = {}
+        if (run_dir / "run.json").exists():
+            try:
+                info = json.loads((run_dir / "run.json").read_text())
+            except ValueError:
+                info = {}
     operators = set(info.get("operators") or [])
     replay = None if rerun_replay else info.get("replay")
     if replay is None:
         replay = run_replay(run_dir / "audit.jsonl")
-    m = compute(events, story, operators, replay, arm=info.get("arm"))
-    m["run"] = {k: info.get(k) for k in ("run_id", "scenario", "arm", "seed", "status", "error", "ready", "ready_at_s", "warnings")}
+    cuts = link_cuts(run_dir, info.get("clocks"), story)
+    m = compute(events, story, operators, replay, arm=info.get("arm"), cuts=cuts)
+    m["run"] = {k: info.get(k) for k in ("run_id", "scenario", "arm", "seed", "status", "error", "ready", "ready_at_s", "warnings", "clocks", "clock_checks")}
     return m
 
 

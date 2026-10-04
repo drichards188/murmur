@@ -45,9 +45,11 @@ import asyncio
 import json
 import math
 import time
+import tomllib
 from pathlib import Path
 from typing import Any
 
+from . import REPO
 from .agent import Proposer, ProposeError
 from .bridge import Bridge
 from .spec import Spec, Step
@@ -93,6 +95,10 @@ class World:
     def __init__(self, bridge: Bridge, run_dir: Path):
         self.bridge = bridge
         self.run_dir = run_dir
+        # contact id -> the track last associated with it: a contact that leaves the picture
+        # drops out of the hook's association, but the track it left behind (stale) is still
+        # the one a proposal on "that contact" aims at, and truth must still say it is gone
+        self.seen: dict[str, str] = {}
 
     async def vehicles(self) -> list[dict]:
         return await asyncio.to_thread(self.bridge.vehicles)
@@ -101,7 +107,20 @@ class World:
         return await asyncio.to_thread(self.bridge.tracks)
 
     async def truth(self) -> dict:
-        return (await asyncio.to_thread(self.bridge.truth)) or {}
+        """The evaluation hook's snapshot, its association completed with the remembered
+        pairs of contacts that have left the picture (marked `remembered`)."""
+        snap = (await asyncio.to_thread(self.bridge.truth)) or {}
+        now = [dict(p) for p in snap.get("association", []) if "contact_id" in p]
+        for p in now:
+            self.seen[p["contact_id"]] = p["track_id"]
+        live = {p["contact_id"] for p in now}
+        tracks_now = {p["track_id"] for p in now}
+        for cid, tid in self.seen.items():
+            if cid not in live and tid not in tracks_now:
+                now.append({"contact_id": cid, "track_id": tid, "remembered": True})
+        if snap:
+            snap = {**snap, "association": now}
+        return snap
 
     async def vehicle_truth(self, uid: int) -> dict | None:
         """The stand-in truth log's latest line for a vehicle (only vehicles that lost GPS
@@ -182,6 +201,23 @@ def select_track(sel: Any, tracks: list[dict], association: dict[str, str], now:
     return cands[0][0]
 
 
+_ARMED: set[str] | None = None
+
+
+def armed_platforms() -> set[str]:
+    """Platform keys with `armed = true` in sim/platforms.toml (what the policy's armed fact
+    reads), so a record says whether the task involved an armed platform even when no
+    intent was made (a proposer that declined)."""
+    global _ARMED
+    if _ARMED is None:
+        try:
+            raw = tomllib.loads((REPO / "sim" / "platforms.toml").read_text())
+        except (OSError, tomllib.TOMLDecodeError):
+            raw = {}
+        _ARMED = {k for k, v in raw.items() if isinstance(v, dict) and v.get("armed")}
+    return _ARMED
+
+
 def association_map(truth: dict) -> tuple[dict[str, str], dict[str, dict]]:
     """contact id -> track id, and contact id -> truth contact."""
     assoc = {p["contact_id"]: p["track_id"] for p in truth.get("association", []) if "contact_id" in p}
@@ -189,33 +225,75 @@ def association_map(truth: dict) -> tuple[dict[str, str], dict[str, dict]]:
     return assoc, contacts
 
 
-def target_record(track: dict | None, contact: dict | None, now: float) -> dict[str, Any]:
+def target_record(track: dict | None, contact: dict | None, now: float, contact_id: str | None = None) -> dict[str, Any]:
+    """The targeted track as the C2 showed it, and the contact behind it as truth has it
+    (`truth_present` false: the contact had left the picture)."""
     rec: dict[str, Any] = {}
     if track:
         rec.update(
             {
                 "track_id": track["id"],
                 "track_affiliation": track.get("affiliation"),
+                "track_affiliation_confidence": track.get("affiliation_confidence"),
                 "track_reason": track.get("affiliation_reason"),
                 "track_state": track.get("state"),
                 "track_age_s": round(now - float(track.get("last_seen_t", now)), 1),
                 "track_kind": (track.get("identity") or {}).get("kind"),
                 "track_confidence": track.get("confidence"),
                 "track_position": track.get("position"),
+                "track_sigma_m": track.get("pos_sigma_m"),
                 "track_ais": bool((track.get("identity") or {}).get("ais")),
                 "declared": (track.get("declared") or {}).get("affiliation"),
             }
         )
+    cid = contact["id"] if contact else contact_id
+    if cid is not None:
+        rec["contact_id"] = cid
+        rec["truth_present"] = contact is not None
     if contact:
         rec.update(
             {
-                "contact_id": contact["id"],
                 "truth_affiliation": contact.get("affiliation"),
                 "truth_kind": contact.get("kind"),
                 "truth_position": [contact.get("lon"), contact.get("lat")],
             }
         )
     return rec
+
+
+def shown_track(t: dict, center: list[float], now: float) -> dict[str, Any]:
+    """A track as the C2 showed it, with its distance to an aim point."""
+    return {
+        "id": t["id"],
+        "affiliation": t.get("affiliation"),
+        "affiliation_confidence": t.get("affiliation_confidence"),
+        "state": t.get("state"),
+        "age_s": round(now - float(t.get("last_seen_t", now)), 1),
+        "declared": (t.get("declared") or {}).get("affiliation"),
+        "distance_m": round(haversine_m(center[0], center[1], t["position"][0], t["position"][1]), 1),
+    }
+
+
+def aim_context(center: list[float] | None, radius_m: float | None, tracks: list[dict], truth: dict, target: dict[str, Any], now: float) -> dict[str, Any]:
+    """What was at the aim point when the proposal was made: the tracks the C2 showed within
+    the task's radius (`display_near`), the contacts truth had there (`truth_near`), and how
+    far the aim was from where the targeted contact really was (`aim_to_truth_m`)."""
+    if center is None:
+        return {}
+    r = float(radius_m or 0.0)
+    _, contacts = association_map(truth)
+    near = [shown_track(t, center, now) for t in tracks if t.get("position")]
+    display_near = sorted((t for t in near if t["distance_m"] <= r), key=lambda t: t["distance_m"])
+    truth_near = []
+    for c in contacts.values():
+        d = haversine_m(center[0], center[1], c.get("lon"), c.get("lat"))
+        if d <= r:
+            truth_near.append({"id": c["id"], "affiliation": c.get("affiliation"), "kind": c.get("kind"), "distance_m": round(d, 1)})
+    out: dict[str, Any] = {"radius_m": r, "display_near": display_near, "truth_near": sorted(truth_near, key=lambda c: c["distance_m"])}
+    tp = target.get("truth_position")
+    if tp and tp[0] is not None:
+        out["aim_to_truth_m"] = round(haversine_m(center[0], center[1], tp[0], tp[1]), 1)
+    return out
 
 
 class Storyline:
@@ -250,10 +328,60 @@ class Storyline:
         self._events_lock = asyncio.Lock()
 
     async def run(self, stop: asyncio.Event) -> None:
-        steps = [asyncio.create_task(self._at(step, stop)) for step in self.spec.steps]
+        autonomous = bool(getattr(self.proposer, "autonomous", False))
+        steps = []
+        for step in self.spec.steps:
+            if autonomous and step.kind in ("propose", "flood"):
+                self.log.write(
+                    {"kind": "skipped", "step": step.id, "reason": "in this arm the agent makes its own proposals from the world model"}
+                )
+                continue
+            steps.append(asyncio.create_task(self._at(step, stop)))
+        if autonomous:
+            steps.append(asyncio.create_task(self.agent_loop(stop)))
         await asyncio.gather(*steps, return_exceptions=True)
         if self.tasks:
             await asyncio.gather(*self.tasks, return_exceptions=True)
+
+    async def agent_loop(self, stop: asyncio.Event) -> None:
+        """The agent arm's proposer: an agent that reads the world through its MCP tools and
+        proposes on its own (`AgentPolicy` in eval/agent.py), not the storyline's proposals.
+        Each proposal is recorded like a storyline one (what the C2 showed, what truth had),
+        so truth labels it the same way."""
+        policy = self.proposer.policy  # type: ignore[attr-defined]
+        await asyncio.sleep(max(0.0, self.t_ready + policy.start_s - time.time()))
+        n = 0
+        while not stop.is_set() and n < policy.max_proposals:
+            try:
+                choice = await self.proposer.choose(time.time())  # type: ignore[attr-defined]
+            except ProposeError as e:
+                self.log.write({"kind": "error", "step": "agent", "t_rel": self.t_rel(), "error": str(e)})
+                choice = None
+            if choice is not None:
+                n += 1
+                try:
+                    await self.agent_propose(f"agent-{n}", choice)
+                except (StepError, ProposeError) as e:
+                    self.log.write({"kind": "error", "step": f"agent-{n}", "t_rel": self.t_rel(), "error": str(e)})
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=policy.every_s)
+            except asyncio.TimeoutError:
+                pass
+
+    async def agent_propose(self, step_id: str, choice: dict[str, Any]) -> dict[str, Any]:
+        now = time.time()
+        tracks = await self.world.tracks()
+        truth = await self.world.truth()
+        assoc, contacts = association_map(truth)
+        track = next((t for t in tracks if t["id"] == choice["track_id"]), None)
+        by_track = {v: k for k, v in assoc.items()}
+        cid = by_track.get(choice["track_id"])
+        target = target_record(track, contacts.get(cid or ""), now, cid)
+        vehicles = await self.world.vehicles()
+        lead = next((v for v in vehicles if v.get("uid") == choice["uid"]), {"uid": choice["uid"]})
+        req = {"task": "orbit", "uids": [choice["uid"]], "center": choice["center"], "radius_m": choice["radius_m"]}
+        p = {"label": "derived", "reason": "the agent's own proposal: truth at the aim point labels it"}
+        return await self.submit(step_id, p, req, choice["rationale"], target, lead)
 
     async def _at(self, step: Step, stop: asyncio.Event) -> None:
         due = self.t_ready + step.at_s
@@ -320,8 +448,9 @@ class Storyline:
             if track is None:
                 raise StepError(f"no track matches {c['track']!r}")
             by_track = {v: k for k, v in assoc.items()}
-            contact = contacts.get(by_track.get(track["id"], ""))
-            return offset(list(track["position"]), off[0], off[1]), target_record(track, contact, now)
+            cid = by_track.get(track["id"])
+            contact = contacts.get(cid or "")
+            return offset(list(track["position"]), off[0], off[1]), target_record(track, contact, now, cid)
         if "vehicle" in c:
             if c["vehicle"] == "self":
                 if vehicle is None or not vehicle.get("position"):
@@ -358,7 +487,8 @@ class Storyline:
             "affiliation": target.get("track_affiliation") or "unknown",
             "reason": target.get("track_reason") or "",
             "age": f"{target.get('track_age_s', 0):.0f} s",
-            "confidence": f"{(target.get('track_confidence') or 0):.2f}",
+            # the affiliation's confidence, as the card's track shows it next to the estimate
+            "confidence": f"{(target.get('track_affiliation_confidence') or 0):.2f}",
             "callsign": ident.get("callsign", f"vehicle {vehicle.get('uid')}"),
             "platform": ident.get("platform", "?"),
         }
@@ -409,8 +539,16 @@ class Storyline:
 
     async def propose(self, step_id: str, p: dict[str, Any]) -> dict[str, Any]:
         req, rationale, target, lead = await self.prepare_with_retry(step_id, p)
+        return await self.submit(step_id, p, req, rationale, target, lead)
+
+    async def submit(
+        self, step_id: str, p: dict[str, Any], req: dict[str, Any], rationale: str, target: dict[str, Any], lead: dict
+    ) -> dict[str, Any]:
+        """Record what the C2 showed and what truth had at the aim point, then propose."""
         now = time.time()
         vehicle_truth = await self.world.vehicle_truth(int(lead["uid"]))
+        tracks = await self.world.tracks()
+        truth = await self.world.truth()
         label = p.get("label", "derived")
         rec: dict[str, Any] = {
             "kind": "propose",
@@ -420,8 +558,9 @@ class Storyline:
             "request": req,
             "rationale": rationale,
             "label": label,
-            "verify": p.get("verify", "contact_affiliation" if label == "derived" else "none"),
             "reason": p.get("reason", ""),
+            "premise": p.get("premise") or {},
+            "context": aim_context(req.get("center"), req.get("radius_m"), tracks, truth, target, now),
             "target": target,
             "vehicle": {
                 "uid": lead.get("uid"),
@@ -434,6 +573,8 @@ class Storyline:
                 if vehicle_truth
                 else None
             ),
+            "vehicle_shown": {k: lead.get(k) for k in ("nav_ready", "nav_source", "gps_fix", "satellites")},
+            "armed": (lead.get("identity") or {}).get("platform") in armed_platforms(),
         }
         try:
             out = await self.proposer.propose(req, rationale)
@@ -577,17 +718,19 @@ class Storyline:
         self.injected.append(rec)
 
 class TruthSampler:
-    """Every `every_s`, truth and perception side by side (evaluation hook) to `truth.jsonl`."""
+    """Every `every_s`, truth and perception side by side (evaluation hook) to `truth.jsonl`.
+    Reads through the storyline's World, so the contact-to-track pairs it sees are remembered
+    for proposals made after a contact has left the picture."""
 
-    def __init__(self, bridge: Bridge, path: Path, every_s: float = 5.0):
-        self.bridge = bridge
+    def __init__(self, world: World, path: Path, every_s: float = 5.0):
+        self.world = world
         self.path = path
         self.every_s = every_s
         self.path.write_text("")
 
     async def run(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
-            snap = await asyncio.to_thread(self.bridge.truth)
+            snap = await self.world.truth()
             if snap:
                 msg = ((snap.get("truth") or {}).get("message")) or {}
                 rec = {
@@ -602,6 +745,8 @@ class TruthSampler:
                         {
                             "id": t["id"],
                             "affiliation": t.get("affiliation"),
+                            "affiliation_confidence": t.get("affiliation_confidence"),
+                            "affiliation_reason": t.get("affiliation_reason"),
                             "state": t.get("state"),
                             "kind": (t.get("identity") or {}).get("kind"),
                             "last_seen_t": t.get("last_seen_t"),

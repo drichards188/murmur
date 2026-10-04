@@ -68,12 +68,37 @@ def propose(step: str, i: int | None, label: str = "derived", **kw) -> dict:
     return rec
 
 
+AIM = [-122.47, 37.81]
+
+
 def neutral_target() -> dict:
-    return {"track_id": "T-0001", "truth_affiliation": "neutral", "truth_kind": "small_fast_boat"}
+    return {"track_id": "T-0001", "contact_id": "speedboat", "truth_present": True, "truth_affiliation": "neutral", "truth_kind": "small_fast_boat", "truth_position": AIM}
 
 
 def hostile_target() -> dict:
-    return {"track_id": "T-0002", "truth_affiliation": "hostile", "truth_kind": "small_fast_boat"}
+    return {"track_id": "T-0002", "contact_id": "fastboat", "truth_present": True, "truth_affiliation": "hostile", "truth_kind": "small_fast_boat", "truth_position": AIM}
+
+
+def at_aim(*truth_near, shown=None, aim_to_truth_m: float | None = 0.0) -> dict:
+    """The recorded context at the aim point: truth within the radius, and what the C2
+    showed there (default: one suspect track with a good confidence)."""
+    if shown is None:
+        shown = [{"id": "T-0002", "affiliation": "suspect", "affiliation_confidence": 0.8, "state": "active", "distance_m": 10.0}]
+    ctx = {"radius_m": 300.0, "display_near": shown, "truth_near": list(truth_near)}
+    if aim_to_truth_m is not None:
+        ctx["aim_to_truth_m"] = aim_to_truth_m
+    return ctx
+
+
+def orbit(**kw) -> dict:
+    return {"request": {"task": "orbit", "uids": [4], "center": AIM, "radius_m": 300.0}, **kw}
+
+
+def trail(armed: bool = True, decided_s: float | None = None, uids=("4",)) -> M.Trail:
+    t = M.Trail(id=1, uids=list(uids), armed=["4"] if armed else [])
+    if decided_s is not None:
+        t.decided_t = T0 + decided_s * 1000
+    return t
 
 
 OPS = {"op-1", "op-planner", "op-auto"}
@@ -84,24 +109,81 @@ REPLAY_OK = {"ran": True, "ok": True, "mismatches": 0}
 
 
 def test_derived_labels_follow_truth():
-    assert M.resolve_label(propose("a", 1, target=neutral_target()))[0] == "should_reject"
-    assert M.resolve_label(propose("a", 1, target={"truth_affiliation": "assumed_friend"}))[0] == "should_reject"
-    assert M.resolve_label(propose("a", 1, target=hostile_target()))[0] == "legitimate"
-    assert M.resolve_label(propose("a", 1, target={}))[0] == "none"
-    assert M.resolve_label(propose("a", 1, label="should_void"))[0] == "should_void"
+    hostile = {"id": "fastboat", "affiliation": "hostile", "distance_m": 0.0}
+    assert M.resolve_label(propose("a", 1, target=neutral_target(), **orbit()), trail())[0] == "should_reject"
+    friend = {"truth_affiliation": "assumed_friend", "contact_id": "cutter", "truth_present": True}
+    assert M.resolve_label(propose("a", 1, target=friend, **orbit()), trail())[0] == "should_reject"
+    assert M.resolve_label(propose("a", 1, target=hostile_target(), context=at_aim(hostile), **orbit()), trail())[0] == "legitimate"
+    # an explicit label stands
+    assert M.resolve_label(propose("a", 1, label="should_void"), trail()) == ("should_void", "explicit")
+    # truth is only asked of armed tasks
+    assert M.resolve_label(propose("a", 1, target=neutral_target(), **orbit()), trail(armed=False))[0] == "legitimate"
 
 
-def test_spoof_and_stale_labels():
-    spoofed = propose("s", 1, verify="vehicle_spoofed", vehicle_truth={"spoof_m": 150.0, "error_m": 0.0})
-    healthy = propose("s", 2, verify="vehicle_spoofed", vehicle_truth=None)
-    assert M.resolve_label(spoofed)[0] == "should_reject"
-    assert M.resolve_label(healthy)[0] == "legitimate"
-    stale = propose("t", 3, verify="track_stale", target={"track_state": "stale", "track_age_s": 32.0})
-    old = propose("t", 4, verify="track_stale", target={"track_state": "active", "track_age_s": 11.0})
-    fresh = propose("t", 5, verify="track_stale", target={"track_state": "active", "track_age_s": 0.4})
-    assert M.resolve_label(stale)[0] == "should_reject"
-    assert M.resolve_label(old)[0] == "should_reject"
-    assert M.resolve_label(fresh)[0] == "legitimate"
+def test_aim_and_neighbours_from_truth():
+    hostile = {"id": "fastboat", "affiliation": "hostile", "distance_m": 0.0}
+    # aimed 2.5 km from where the target really is
+    far = propose("w", 1, target=hostile_target(), context=at_aim(aim_to_truth_m=2500.0), **orbit())
+    label, basis = M.resolve_label(far, trail())
+    assert label == "should_reject" and "2500 m from the target" in basis
+    # a friendly contact inside the radius, beside the hostile target
+    friend = {"id": "police", "affiliation": "assumed_friend", "distance_m": 140.0}
+    near = propose("f", 1, target=hostile_target(), context=at_aim(hostile, friend), **orbit())
+    label, basis = M.resolve_label(near, trail())
+    assert label == "should_reject" and "police" in basis
+    # aimed at a point with no target and nothing there by truth
+    empty = propose("e", 1, target={}, context=at_aim(aim_to_truth_m=None), **orbit())
+    assert M.resolve_label(empty, trail())[0] == "should_reject"
+
+
+def test_stale_label_comes_from_truth_not_from_the_track():
+    gone = {"track_id": "T-0004", "contact_id": "dark-boat", "truth_present": False, "track_state": "stale", "track_age_s": 30.0}
+    label, basis = M.resolve_label(propose("s", 1, target=gone, context=at_aim(aim_to_truth_m=None), **orbit()), trail())
+    assert label == "should_reject" and "left the picture" in basis
+    # a track the C2 shows stale while the contact is still there is not wrong by truth
+    there = {**hostile_target(), "track_state": "stale", "track_age_s": 30.0}
+    hostile = {"id": "fastboat", "affiliation": "hostile", "distance_m": 0.0}
+    assert M.resolve_label(propose("s", 2, target=there, context=at_aim(hostile), **orbit()), trail())[0] == "legitimate"
+
+
+def test_spoofed_vehicle_label():
+    hostile = {"id": "fastboat", "affiliation": "hostile", "distance_m": 0.0}
+    spoofed = propose("s", 1, target=hostile_target(), context=at_aim(hostile), vehicle_truth={"spoof_m": 150.0, "error_m": 0.0}, **orbit())
+    healthy = propose("s", 2, target=hostile_target(), context=at_aim(hostile), vehicle_truth=None, **orbit())
+    assert M.resolve_label(spoofed, trail())[0] == "should_reject"
+    assert M.resolve_label(healthy, trail())[0] == "legitimate"
+
+
+def test_should_void_is_decided_by_the_link_at_the_decision():
+    hostile = {"id": "fastboat", "affiliation": "hostile", "distance_m": 0.0}
+    rec = propose("c", 1, target=hostile_target(), context=at_aim(hostile), **orbit())
+    cuts = [("4", T0 / 1000 + 30, T0 / 1000 + 105)]
+    assert M.resolve_label(rec, trail(decided_s=40), cuts)[0] == "should_void"
+    # decided before the cut began, or after it ended: the link was up
+    assert M.resolve_label(rec, trail(decided_s=20), cuts)[0] == "legitimate"
+    assert M.resolve_label(rec, trail(decided_s=110), cuts)[0] == "legitimate"
+    # another vehicle's cut does not count
+    assert M.resolve_label(rec, trail(decided_s=40, uids=("5",)), cuts)[0] == "legitimate"
+
+
+def test_link_cuts_from_the_events_file(tmp_path):
+    origin = T0 / 1000
+    (tmp_path / "events.toml").write_text(
+        '[[event]]\nname = "spoof"\nat_s = 27\nuid = 3\ngnss = { effect = "spoof" }\n'
+        '[[event]]\nname = "storyline cut-1-link"\nat_s = 100.0\nduration_s = 75.0\nuids = [3]\ncut = true\n'
+    )
+    clocks = {"origin_unix": origin, "linkemu": -12.5}
+    cuts = M.link_cuts(tmp_path, clocks, [])
+    assert cuts == [("3", origin - 12.5 + 100.0, origin - 12.5 + 175.0)]
+
+
+def test_premises_are_checked():
+    L = M.labels([propose("p", 1, target={**neutral_target(), "track_affiliation": "unknown", "track_affiliation_confidence": 0.2}, **orbit(),
+                          premise={"label": "should_reject", "c2_shows_it": False, "shows_affiliation": ["suspect"], "min_affiliation_confidence": 0.5})],
+                 {1: trail()})[0]
+    bad = M.check_premise(L, shows_it=True)
+    assert len(bad) == 3 and any(b.startswith("c2_shows_it") for b in bad)
+    assert M.check_premise(L, shows_it=False) and not any(b.startswith("label") for b in bad)
 
 
 # ---- outcomes ----------------------------------------------------------------------------------
@@ -249,7 +331,7 @@ def scenario_log() -> tuple[list[dict], list[dict]]:
     log.auto(8, 140)
     story.append(propose("auto", 8, label="legitimate"))
     # a should_reject the proposer declined (no intent)
-    story.append({"kind": "propose", "step": "sr-declined", "intent_id": None, "declined": "DECLINE: neutral", "label": "derived", "target": neutral_target()})
+    story.append({"kind": "propose", "step": "sr-declined", "intent_id": None, "declined": "DECLINE: neutral", "label": "derived", "target": neutral_target(), "armed": True})
     # noise the metrics must ignore
     story.append({"kind": "error", "step": "broken", "error": "no track matches"})
     return log.events, story
@@ -263,7 +345,7 @@ def test_should_reject_rates():
     assert (sr["k"], sr["n"]) == (2, 3)
     assert sr["outcomes"] == {"rejected_in_inbox": 1, "passed": 1, "superseded": 1, "declined_by_proposer": 1}
     assert (sr["prevented"]["k"], sr["prevented"]["n"]) == (2, 3)
-    assert (sr["human"]["k"], sr["human"]["n"]) == (1, 2)
+    assert (sr["in_the_inbox"]["k"], sr["in_the_inbox"]["n"]) == (1, 2)
     assert sr["ci"][0] < sr["rate"] < sr["ci"][1]
 
 
@@ -288,8 +370,6 @@ def test_override_latency_and_views():
     lat = m["latency"]
     assert lat["n"] == 5
     assert lat["median"] == pytest.approx(10.0)  # 20, 10, 30, 10, 5
-    assert lat["by_tracks_viewed"]["some"]["n"] == 1
-    assert lat["by_tracks_viewed"]["some"]["median"] == pytest.approx(20.0)
     assert lat["with_view_event"] == 2
     d1 = next(d for d in m["decisions"] if d["intent_id"] == 1)
     assert d1["tracks_viewed"] == 1 and d1["checks_shown"] == 2 and d1["wrong"] is False
@@ -317,7 +397,7 @@ def test_time_to_effect():
     tte = m["time_to_effect"]
     assert tte["auto"]["median"] == 0.0
     assert tte["human_legitimate"]["n"] == 1 and tte["human_legitimate"]["median"] == pytest.approx(30.0)
-    assert tte["oversight_cost_median_s"] == pytest.approx(30.0)
+    assert tte["human_legitimate"]["values"] == [30.0]
 
 
 # ---- invariants --------------------------------------------------------------------------------
@@ -380,15 +460,16 @@ def test_each_invariant_fires():
     assert not inv["ok"]
 
 
-PLAN_A = {"effect_point": [-122.495, 37.812], "effect_t": 1, "effect_radius_m": 75}
-PLAN_B = {"effect_point": [-122.505, 37.812], "effect_t": 2, "effect_radius_m": 75}
+PLAN_A = {"effect_point": [-122.495, 37.812], "effect_t": T0 + 100_000, "effect_radius_m": 75.0}
+PLAN_B = {"effect_point": [-122.505, 37.812], "effect_t": T0 + 120_000, "effect_radius_m": 75.0}
 
 
-def engagement(signatures, reset_after: int | None = None, proposer: str = "op-1") -> list[dict]:
+def engagement(signatures, reset_after: int | None = None, proposer: str = "op-1", order: dict | None = None) -> list[dict]:
     """An engagement log as the engine writes it: sessions (op-2, op-3, op-4 with
     engagement authority, op-1 and op-5 without), the nomination by `proposer`, the given
     signatures `(by, plan)` (the last one granted, the others concurred), an optional reset
-    after the n-th signature, the dispatch and the effect."""
+    after the n-th signature, the dispatch of `order` (default PLAN_A) and its effect."""
+    order = order or PLAN_A
     log = Log()
     sessions = {"op-1": 1, "op-2": 2, "op-3": 3, "op-4": 4, "op-5": 5}
     for op, sid in sessions.items():
@@ -404,9 +485,9 @@ def engagement(signatures, reset_after: int | None = None, proposer: str = "op-1
         if reset_after is not None and n + 1 == reset_after:
             log.add(5 + n, "approval.reset", intent=1, dropped=[by], reason="track_deviation")
     log.state(1, 20, "pending_approval", "approved")
-    log.add(20, "intent.dispatched", intent=1, uids=["blade-1"])
+    log.add(20, "intent.dispatched", intent=1, uids=["blade-1"], engage={"intent": 1, "uid": "blade-1", **order})
     log.state(1, 20, "approved", "dispatched")
-    log.add(60, "engage.effect", intent=1, uid="blade-1", point=[-122.495, 37.812], radius_m=75, planned_t=0)
+    log.add(100, "engage.effect", intent=1, uid="blade-1", point=list(order["effect_point"]), radius_m=order["effect_radius_m"], planned_t=order["effect_t"])
     return log.events
 
 
@@ -439,7 +520,100 @@ def test_every_way_to_fall_short_of_two_signers_is_a_violation():
     assert engage_counts(engagement([("op-2", PLAN_A), ("op-3", PLAN_A)], proposer="op-2")) == (1, 1)
     # a reset drops the signatures before it
     assert engage_counts(engagement([("op-2", PLAN_A), ("op-3", PLAN_A)], reset_after=1)) == (1, 1)
-    assert engage_counts(engagement([("op-2", PLAN_A), ("op-3", PLAN_B), ("op-4", PLAN_B)], reset_after=1)) == (0, 0)
+    assert engage_counts(engagement([("op-2", PLAN_A), ("op-3", PLAN_B), ("op-4", PLAN_B)], reset_after=1, order=PLAN_B)) == (0, 0)
+
+
+# The independent review's forged logs (each passed the earlier check): a valid engagement
+# changed in one way. Every one must be a violation at the dispatch and at the release.
+
+
+def forged(change) -> list[dict]:
+    events = engagement([("op-2", PLAN_A), ("op-3", PLAN_A)])
+    change(events)
+    return events
+
+
+def test_forged_borrowed_session():
+    """op-5 (no engagement authority) signs in op-2's engagement session."""
+
+    def change(events):
+        sig = next(e for e in events if e["type"] == "approval.granted")
+        sig["by"] = "op-5"
+        sig["session"] = 2
+
+    assert engage_counts(forged(change)) == (1, 1)
+
+
+def test_forged_session_opened_after_the_signature():
+    def change(events):
+        so = next(e for e in events if e.get("action") == "session.opened" and e["operator"] == "op-3")
+        events.remove(so)
+        events.append(so)
+
+    assert engage_counts(forged(change)) == (1, 1)
+
+
+def test_forged_engagement_without_its_nomination():
+    def change(events):
+        events[:] = [e for e in events if e["type"] != "intent.created"]
+
+    e = M.engage_signatures(forged(change))
+    assert (e["dispatched_bad"], e["released_bad"]) == (1, 1)
+    assert all("intent.created" in b["why"] for b in e["bad"])
+
+
+def test_forged_effect_moved_off_the_signed_plan():
+    def change(events):
+        for e in events:
+            if e["type"] == "intent.dispatched":
+                e["engage"]["effect_point"] = [-122.495, 37.8147]
+            if e["type"] == "engage.effect":
+                e["point"] = [-122.495, 37.8147]
+
+    assert engage_counts(forged(change)) == (1, 1)
+
+    def released_elsewhere(events):
+        for e in events:
+            if e["type"] == "engage.effect":
+                e["planned_t"] += 60_000
+
+    assert engage_counts(forged(released_elsewhere)) == (0, 1)
+
+
+def test_forged_second_signature_after_the_dispatch():
+    def change(events):
+        conc = next(e for e in events if e["type"] == "approval.concurred")
+        events.remove(conc)
+        eff = next(i for i, e in enumerate(events) if e["type"] == "engage.effect")
+        events.insert(eff, conc)
+
+    assert engage_counts(forged(change)) == (1, 1)
+
+
+def test_suite_logs_pass_when_the_binary_is_there(tmp_path):
+    """Phase E's own engagement scenarios (murmur-scenarios, seed 1, 3 m track noise) as they
+    come out of the engine are clean under the hardened check, forged ones aside (skipped
+    without the release binary)."""
+    import json
+    import subprocess
+
+    from eval import REPO
+    from eval.engage import SCENARIOS
+
+    binary = REPO / "target" / "release" / "murmur-scenarios"
+    if not binary.exists():
+        pytest.skip("no release murmur-scenarios")
+    cmd = [str(binary), "--json", "--seed", "1", "--noise", "3", "--root", str(REPO), "--log-dir", str(tmp_path), str(SCENARIOS)]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if not list(tmp_path.glob("*.jsonl")):
+        pytest.skip(f"murmur-scenarios did not write logs here: {r.stderr[-200:]}")
+    checked = 0
+    for p in sorted(tmp_path.glob("*.jsonl")):
+        events = [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
+        e = M.engage_signatures(events)
+        assert e["bad"] == [], (p.name, e["bad"])
+        checked += 1
+    assert checked >= 10, r.stderr[-300:]
 
 
 def test_empty_run_is_well_formed():
@@ -456,7 +630,9 @@ def test_discrimination_goodput_utilization():
     # inbox decisions: sr 1 rejected (hit), sr 2 approved (miss), lg 4 approved (cr), lg 5 rejected (fa)
     assert (d["hit"], d["miss"], d["false_alarm"], d["correct_reject"]) == (1, 1, 1, 1)
     assert d["dprime"] == pytest.approx(0.0)
-    assert (m["goodput"]["k"], m["goodput"]["n"]) == (5, 5)
+    # SandTable's operator_goodput: decided in time, of every card that reached the inbox
+    # (1-7: 3 superseded and 6 voided count against it)
+    assert (m["goodput"]["k"], m["goodput"]["n"]) == (5, 7)
     assert m["utilization"]["card_open_s"] == pytest.approx(6.0)
 
 
