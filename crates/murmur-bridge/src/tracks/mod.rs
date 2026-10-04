@@ -335,6 +335,20 @@ impl Tracks {
         self.updates.subscribe()
     }
 
+    /// Every track's last fix and estimated affiliation, for the console's cluster counts
+    /// (`crate::push`).
+    pub fn marks(&self) -> Vec<crate::push::TrackMark> {
+        lock(&self.inner)
+            .tracks
+            .values()
+            .map(|t| crate::push::TrackMark {
+                lon: t.lon,
+                lat: t.lat,
+                affiliation: t.affiliation().0,
+            })
+            .collect()
+    }
+
     /// The decision layer's track facts at wall time `now`.
     pub fn facts(&self, now: f64) -> BTreeMap<String, TrackFacts> {
         lock(&self.inner)

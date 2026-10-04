@@ -84,6 +84,9 @@ pub struct StatusText {
 pub struct VehicleSnapshot {
     pub uid: Uid,
     pub sysid: u8,
+    /// The push layer takes this out before serializing (it goes to each client once,
+    /// `push.rs`), so a snapshot without one has no `identity` key.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub identity: Option<Arc<Identity>>,
     pub kind: Option<Kind>,
     pub mode: Option<String>,

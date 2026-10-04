@@ -29,7 +29,7 @@ use axum::Router;
 use axum::body::Bytes;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -41,7 +41,7 @@ use tokio::sync::watch;
 use crate::clock;
 use crate::decision::{Decision, DecisionError, IntentRequest, Outcome};
 use crate::platforms;
-use crate::push::{self, ClientView, PushFrame, TrailCache};
+use crate::push::{self, ClientView, FrameCache, LodSettings, PushFrame, Subscription};
 use crate::tasks::TaskRequest;
 use crate::tracks::Tracks;
 use crate::world::World;
@@ -55,6 +55,8 @@ pub struct App {
     pub decision: Arc<Decision>,
     /// contacts that are not ours, as our sensors see them (Phase C2)
     pub tracks: Arc<Tracks>,
+    /// the console feed's level-of-detail limits (`/ws?lod=1`, see `push`)
+    pub lod: LodSettings,
 }
 
 pub fn router(app: App) -> Router {
@@ -112,7 +114,7 @@ fn raw_json(body: String) -> Response {
 async fn state(State(app): State<App>) -> Response {
     raw_json(push::state_json(&push::build_frame(
         &app.world,
-        &mut TrailCache::default(),
+        &mut FrameCache::default(),
     )))
 }
 
@@ -391,14 +393,23 @@ async fn stats(State(app): State<App>) -> Response {
         .into_response()
 }
 
-async fn ws(State(app): State<App>, upgrade: WebSocketUpgrade) -> Response {
-    upgrade.on_upgrade(move |socket| client(socket, app))
+/// `/ws` is the feed as it always was; `/ws?lod=1` asks for level of detail by the view
+/// the client then sends (`{"type":"view",...}` messages, see `push`).
+#[derive(Deserialize)]
+struct WsQuery {
+    #[serde(default)]
+    lod: Option<String>,
 }
 
-async fn client(mut socket: WebSocket, app: App) {
+async fn ws(State(app): State<App>, Query(q): Query<WsQuery>, upgrade: WebSocketUpgrade) -> Response {
+    let lod = matches!(q.lod.as_deref(), Some("1" | "true" | "yes"));
+    upgrade.on_upgrade(move |socket| client(socket, app, lod))
+}
+
+async fn client(mut socket: WebSocket, app: App, lod: bool) {
     let mut frames = app.frames.subscribe();
-    let (mut view, full) =
-        ClientView::full_state(&push::build_frame(&app.world, &mut TrailCache::default()));
+    let mut view = ClientView::new(lod.then_some(app.lod));
+    let full = view.full_state(&push::build_frame(&app.world, &mut FrameCache::default()));
     if socket.send(Message::Text(full.into())).await.is_err() {
         return;
     }
@@ -452,9 +463,21 @@ async fn client(mut socket: WebSocket, app: App) {
                     break;
                 }
             }
-            // client->server traffic goes over REST; this just notices the close
+            // tasks go over REST; the only message a client sends here is its view, which
+            // gets a delta at once so a pan does not wait for the next tick
             incoming = socket.recv() => match incoming {
                 None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
+                Some(Ok(Message::Text(text))) => {
+                    if let Some(sub) = Subscription::parse(&text) {
+                        view.subscribe(sub);
+                        let frame = frames.borrow().clone();
+                        if let Some(frame) = frame
+                            && socket.send(Message::Text(view.delta(&frame).into())).await.is_err()
+                        {
+                            break;
+                        }
+                    }
+                }
                 Some(Ok(_)) => {}
             },
         }

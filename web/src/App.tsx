@@ -48,7 +48,7 @@ function PerfMark() {
 }
 
 export default function App() {
-  const { state, status, decisions, tracks } = useBridge()
+  const { state, status, decisions, tracks, setView } = useBridge()
   perfRenderBegin()
   const clock = useUtcClock()
   const [showTracks, setShowTracks] = useState(false)
@@ -74,7 +74,7 @@ export default function App() {
   }, [selectedTrack])
   const [fit, setFit] = useState<{ points: LngLat[]; n: number; padRight: number } | null>(null)
   const [showGlobe, setShowGlobe] = useState(false)
-  const [mapView, setMapView] = useState<{ center: LngLat; bounds: [number, number, number, number] } | null>(null)
+  const [mapView, setMapView] = useState<{ center: LngLat; bounds: [number, number, number, number]; zoom: number } | null>(null)
   const [drawing, setDrawing] = useState<LngLat | 'start' | null>(null)
   const [box, setBox] = useState<LngLat[] | null>(null)
   const [spaceSel, setSpaceSel] = useState<SpaceSelection>({ scene: null, norad: null })
@@ -117,7 +117,7 @@ export default function App() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [drawing])
-  const onView = useCallback((center: LngLat, bounds: [number, number, number, number]) => setMapView({ center, bounds }), [])
+  const onView = useCallback((center: LngLat, bounds: [number, number, number, number], zoom: number) => setMapView({ center, bounds, zoom }), [])
 
   const vehicles = state?.vehicles ?? []
   const now = useBridgeClock(state?.t)
@@ -189,6 +189,20 @@ export default function App() {
   const { mem: alertMem, hidden: hiddenAlerts } = useHiddenAlerts(decisions)
   const pending = decisions?.inbox.pending
   const pendingIds = useMemo(() => new Set((pending ?? []).map((i) => i.id)), [pending])
+  // The bridge's level of detail follows the view (murmur-and): what the map shows gets full
+  // detail, and so do the vehicles the operator is looking at some other way: selected,
+  // followed (details open), named by a pending intent or an alert.
+  const alerts = decisions?.inbox.alerts
+  const pins = useMemo(() => {
+    const set = new Set<number>(selected)
+    if (detailsUid != null) set.add(detailsUid)
+    for (const i of pending ?? []) for (const u of i.uids) if (Number.isFinite(Number(u))) set.add(Number(u))
+    for (const a of alerts ?? []) set.add(a.uid)
+    return [...set].sort((a, b) => a - b)
+  }, [selected, detailsUid, pending, alerts])
+  useEffect(() => {
+    if (mapView) setView({ bounds: mapView.bounds, zoom: mapView.zoom, pin: pins })
+  }, [mapView, pins, setView])
   const selIntent = inboxSel?.kind === 'intent' ? inboxSel.id : null
   const preview = useMemo(
     () => (pending && pending.length ? previewFeatures(pending, state?.vehicles ?? [], selIntent) : EMPTY_PREVIEW),
@@ -326,6 +340,7 @@ export default function App() {
           space={overlay}
           onView={onView}
           layers={mapLayers}
+          clusters={state?.clusters ?? null}
         />
         </ErrorBoundary>
         {showTracks && (
