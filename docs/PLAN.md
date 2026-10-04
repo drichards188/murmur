@@ -378,72 +378,100 @@ engine refuses an agent proposal without a rationale, and no tool reaches approv
 
 ## Phase G: evaluation harness
 
-Built (first cut; `eval/README.md` says how to run it, `eval/METRICS.md` defines every number):
+Built (`eval/README.md` says how to run it, `eval/METRICS.md` defines every number). Revised
+after an independent review (10-04) found the first report's claims did not hold: the proxy's
+rules had been written per scenario, the agent arm was the human arm with another id, labels
+came from the bridge's track age and from link state at proposal time, three premises were
+contradicted by the runs, the two-signer check passed five forged logs, failed runs were
+pooled, and a slow seed shifted every situation against its events. All fixed below; the
+numbers further down come from the re-run.
 
 - **Headless runner** (`eval/run.py`, Python): a TOML spec (`eval/scenarios/*.toml`) bundles a
   stand-in fleet, a contacts scenario, link and GNSS events, a policy variant, the clock, and a
   scripted **storyline** of injected situations (`propose`, `flood`, `declare`, `link` cuts
   appended to the run's own events file, `note`, `engage`). Each run gets an isolated stack on
-  its own port block (vehicle and bridge UDP bases in 35000-36999, HTTP 10600-10699; SITL
-  never), its own manifests and logs, and is torn down by PID. Batch mode runs scenarios x
-  arms x seeds several stacks at a time (`make eval`) and builds a self-contained HTML report
-  (`eval/report.py`) with confidence intervals, per-scenario tables, invariants and a
-  "what went wrong" section.
+  its own port block (vehicle and bridge UDP bases in 35000-36999, HTTP 10600-10699, reserved
+  with lock files; SITL never), its own manifests and logs, a time limit, and is torn down by
+  PID. Every clock of a run counts from one origin (45 s after the stand-ins start; a fleet
+  not ready by then fails the run). Each run records the commit, a dirty flag and the
+  binaries' hashes. Batch mode runs scenarios x arms x seeds several stacks at a time (`make
+  eval`) with its own tidewater serve, and builds a self-contained HTML report
+  (`eval/report.py`).
 - **Arms**: `rules-only` (policy plus approve-all) and `rules-only-reject` (reject-all);
-  `human-proxy` (a second operator proposes, a scripted proxy operator decides);
-  `agent+human-proxy` (the scripted MCP agent, `agents/policy_agent.py`, proposes);
-  `agent+model` (a real Claude model through the MCP server via the Anthropic API, opt-in,
-  cost-capped, never in tests); `study` (a participant in the console). The proxy is a
-  documented operator model (attention, reading time, diligence decaying with queue length,
-  a fixed rule book), labelled a proxy everywhere and never reported as human data.
-- **What was shown at decision time**: the console posts card open, close and decide events
-  (`web/src/operatorView.ts`) to `POST /api/operator/view`; the bridge logs them as
-  `operator.view` (additive; replay verifies the chain through them and decides nothing from
+  `human-proxy` (a second operator proposes the storyline, the proxy decides);
+  `agent+human-proxy` (an agent reads the picture over MCP and makes its own proposals by a
+  fixed policy, the proxy decides); `agent+model` (a real Claude model through the MCP server,
+  opt-in, worst-case cost checked before every call, per run and per batch, never in tests);
+  `study` (a participant in the console). The proxy is a documented operator model: it reads
+  a card with a probability that decays with the queue and, when it reads, applies a generic
+  rule book (`eval/evidence.py`) to what the C2 shows. It is a model everywhere in the report,
+  never human data.
+- **Labels and categories**: derived from truth at the moment each is about (what a proposal
+  targets when it is proposed; whether the tasked vehicle's link was cut when it is decided).
+  The same rule book sorts every wrong proposal by what the C2 showed when it was made: "the
+  C2 showed it" (catchable from the picture) or "picture wrong". The rule book was committed
+  before three held-out scenarios were written; they are reported apart. Every step states
+  its premise (what the run must show), checked against the record.
+- **What was shown at decision time**: the console posts card open, close and decide events,
+  with the tracks the operator opened while the card was up (`web/src/operatorView.ts`), to
+  `POST /api/operator/view`; the bridge logs them as `operator.view` (bounded, rate-limited,
+  refused once the intent is decided; replay checks the session and decides nothing from
   them).
-- **Metrics** from the audit log, the storyline log and truth: should-reject catch rate,
-  correct-void rate, false rejects, override rate, discrimination d' and goodput (borrowed from
-  SandTable), approval latency against the information shown and the queue, time to effect,
-  and invariants that must be zero (an agent authorization, a human-tier intent auto-approved,
-  an armed dispatch without a human, a dispatch with a failing check, an engagement dispatched
-  or released without two signers with engagement authority on one frozen plan, read from the
-  log alone, a replay mismatch, and more).
-- **Adversarial scenarios** (Golden Gate, seeded): misclassified neutral near the bridge,
+- **Metrics** from the audit log, the storyline log and truth: should-reject caught per
+  category, correct-void rate, false rejects, override rate, discrimination d' on armed cards
+  and on all, goodput (SandTable's definitions), approval latency, time to effect, and
+  invariants that must be zero (an agent authorization, a human-tier intent auto-approved, an
+  armed dispatch without a human, a dispatch with a failing check, an engagement dispatched or
+  released without two signers in sessions they opened with engagement authority on one
+  frozen plan, or not as that plan, read from the log alone, a replay mismatch, and more).
+  Intervals are clustered by seed (Student t over per-seed rates), pooled Wilson second.
+- **Scenarios** (Golden Gate, seeded): development: misclassified neutral near the bridge,
   spoofed GNSS on our own aircraft, link cut during an approval, approval flood under a strict
-  policy, stale track, plausible but wrong proposals.
+  policy, a track whose contact left the picture, plausible but wrong proposals; held out:
+  a friendly boat alongside the target, armed orbits before the picture settles, a neutral
+  ferry with its AIS out.
 - **Engagement scenarios** (Phase E): every batch runs the 30 scenarios of
   `sim/scenarios/engage/` through `eval/engage.py` (`murmur-scenarios --json` over seeds and
   track-noise levels: the real engine, its replay and the forged-log checks) and the
-  harness's own invariants on every audit log; the report has a section for it. Live
-  engagement steps in a storyline stay placeholders until the proxy can sign an engagement
-  (two operators with engagement authority quoting picture tokens).
-- First batch (2026-10-04, `docs/eval/phase-g-report.html`): 6 scenarios x 4 arms x 3 seeds,
-  72 runs (a full batch takes 39 min on 8 parallel stacks; stale-track was rerun after a
-  scenario fix, as the report says), every run ok, zero invariant violations, every log
-  replayed. With the proxy deciding, wrong armed orbits were caught where the card and the
-  track picture show the error (plausible but wrong 4/6, stale track 4/6) and not where the
-  picture itself is wrong (misclassified neutral 0/6, spoofed GNSS 0/6); under the approval
-  flood 2/12, with the queue at 12. A cut link voided the pending tasking in 4/6 cases; the
-  other two were approved 2.5 and 6.1 s into the cut, inside the 10 s freshness window, and
-  dispatched to a silent aircraft (the mission upload then timed out).
-  Approve-all caught nothing; reject-all caught everything and rejected every legitimate card
-  (d' 0 for both). These are a scripted proxy's numbers, not human data.
-- Engagement suite on the merged Phase E code (10 seeds x track noise 0, 3, 10, 20 m: 1,200
-  scenario runs): zero invariant violations (380 effects released, each with two signers
-  with engagement authority on one frozen plan), every log replayed, 511/511 forged logs
-  caught. Every scenario ended as designed at 0, 3 and 10 m; at 20 m 91 of 300 did not, all
-  but one on the safe side (the picture watch aborted, or the signatures never completed, on
-  a noisy track). The one release the design did not expect (scenario 10, seed 8) came
-  earlier than designed, when the engine's prediction put the friendly AUV 282 m from the
-  effect point, 7 m outside the 275 m keep-out; it kept closing afterwards. The velocity-noise
-  follow-up in murmur-decide is about this kind of case.
+  harness's own invariants on every audit log. Live engagement steps in a storyline stay
+  placeholders until the proxy can sign an engagement (two operators with engagement
+  authority quoting picture tokens).
+- **Results** (2026-10-04, `docs/eval/phase-g-report.html`, `phase-g-summary.json`): 9
+  scenarios (3 held out) x 4 arms x 5 seeds, 180 runs on 54fa0fa, every run scored (none
+  failed, timed out or missing), every fleet ready before its origin (1 to 3 s, or 30 s when
+  a lost telemetry request waited for the bridge's re-send), zero invariant violations, every
+  log replayed, 762 of 765 premises held (listed: two clean orbits decided inside a later link
+  cut, one stopped by the geofence on a transit leg past a tower). The same runs on the
+  commit before the merge gave the same numbers, and 36 runs on the final commit (0c7da6b)
+  matched these run for run. What they are: outputs of the proxy model. On the wrong armed
+  orbits the C2 showed something against, it caught about the share of cards it read
+  (plausible but wrong 9/10, a contact gone with its track shown stale 8/9, held-out friend
+  alongside 8/10, held-out early unknown 7/10; under the flood 7/15, as its reading probability
+  fell with the queue); on those the C2 showed nothing against, none (misclassified neutral
+  0/10, spoofed GNSS 0/10, held-out ferry with its AIS out 0/10, the flood's speedboat 0/5):
+  when it read, its rule book fired on every catchable card and on no picture-wrong one, by
+  construction. That says what the picture lets a fixed rule book catch, not what people do.
+  Link cut, labelled at the decision: of 10 should-void cards the C2 voided 6, the geofence
+  stopped 1, and 3 were approved inside a cut and dispatched to an aircraft that could not hear
+  them (one 3.3 s into the cut, before the bridge's 11 s heartbeat limit; two clean orbits
+  whose decisions fell inside the second cut). The agent arm, proposing early on tracks the
+  sensors had not settled, made wrong orbits the C2 showed something against at proposal; by
+  the decision 40 to 90 s later the picture had firmed up, so the model's rule book fired on
+  none of those it read, and it rejected up to 4 of 10 right ones in a scenario (a dark boat
+  gone by the decision, a late hostile still unknown): what counts as catchable depends on the moment,
+  and the report counts the labels that changed between proposal and decision (16 of 900).
+  Approve-all stopped only what the rules did; reject-all stopped everything, legitimate
+  cards included (d' 0 for both).
+- Engagement suite on the final code (0c7da6b): 39 scenarios x 10 seeds x track noise 0, 3,
+  10 and 20 m, 1,560 scenario runs: every one ended as designed and replayed, 520/520 forged
+  logs caught, zero violations of the hardened two-signer check (600 effects released).
 
-Next: wire the engagement scenarios when Phase E lands; a cross-check that can catch a spoofed
-position (our own vehicles seen by our own sensors); track-age rules for vehicle tasks aimed
-at a track; an approval re-check that refuses a vehicle whose link went silent after the
-card was opened (the link-cut window above); study sessions with participants (consent,
-anonymous ids: `eval/README.md`).
-Human-behavior claims need participants; the harness supports studies, it doesn't replace
-them.
+Next: a cross-check that can catch a spoofed position (our own vehicles seen by our own
+sensors); track-age rules for vehicle tasks aimed at a track; an approval re-check that
+refuses a vehicle whose link went silent after the card was opened; the bridge confirming a
+vehicle's telemetry plan (a lost SET_MESSAGE_INTERVAL waits for the 30 s re-send); study
+sessions with participants (consent, anonymous ids: `eval/README.md`). Human-behavior claims
+need participants; the harness supports studies, it doesn't replace them.
 
 Exit: results published, including what went wrong.
 

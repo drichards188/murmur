@@ -1,4 +1,7 @@
 {
+ "not_human_data": true,
+ "note": "Phase E's engagement scenarios through the real decision engine (murmur-scenarios), deterministic per scenario, seed and track-noise level; the harness's own invariants on every audit log, including the two-signer rule read from the log alone (eval/METRICS.md). No person decides here.",
+ "code": "0c7da6b",
  "scenarios": "sim/scenarios/engage",
  "seeds": [
   1,
@@ -91,46 +94,18 @@
     "attack": "edit the approval's track snapshot (and the dispatch order to match) after the fact",
     "expect": "done",
     "runs": 10,
-    "ok": 5,
+    "ok": 10,
     "replay_ok": 10,
     "tamper": "edit_snapshot",
-    "tamper_runs": 9,
-    "tamper_detected": 9,
+    "tamper_runs": 10,
+    "tamper_detected": 10,
     "violations": 0,
-    "released": 5,
-    "dispatched": 9,
+    "released": 10,
+    "dispatched": 10,
     "final_states": {
-     "aborted": 4,
-     "done": 5,
-     "pending_approval": 1
+     "done": 10
     },
-    "failures": [
-     {
-      "seed": 1,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 77 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 4,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 80 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 5,
-      "final_state": "pending_approval",
-      "failure": "t=9: expected dispatched, got pending_approval (policy engagement: an engagement needs two operators with engagement authority, neither the proposer (DoD Directive 3000.09))"
-     },
-     {
-      "seed": 9,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 90 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 10,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 80 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     }
-    ]
+    "failures": []
    },
    {
     "scenario": "02-proposer-approves",
@@ -203,46 +178,18 @@
     "attack": "the proposer signs their own nomination; one approver signs twice; the log is forged to name the proposer as approver",
     "expect": "done",
     "runs": 10,
-    "ok": 5,
+    "ok": 10,
     "replay_ok": 10,
     "tamper": "proposer_approval",
-    "tamper_runs": 9,
-    "tamper_detected": 9,
+    "tamper_runs": 10,
+    "tamper_detected": 10,
     "violations": 0,
-    "released": 5,
-    "dispatched": 9,
+    "released": 10,
+    "dispatched": 10,
     "final_states": {
-     "aborted": 4,
-     "done": 5,
-     "pending_approval": 1
+     "done": 10
     },
-    "failures": [
-     {
-      "seed": 1,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 77 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 4,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 80 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 5,
-      "final_state": "pending_approval",
-      "failure": "t=7: expected 1 concurrences, got Some(0)"
-     },
-     {
-      "seed": 9,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 90 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 10,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 80 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     }
-    ]
+    "failures": []
    },
    {
     "scenario": "03-agent-authorize",
@@ -315,46 +262,18 @@
     "attack": "an agent approves its nomination; an operator without engagement authority approves; the log is forged to show the agent approving",
     "expect": "done",
     "runs": 10,
-    "ok": 5,
+    "ok": 10,
     "replay_ok": 10,
     "tamper": "agent_approval",
-    "tamper_runs": 9,
-    "tamper_detected": 9,
+    "tamper_runs": 10,
+    "tamper_detected": 10,
     "violations": 0,
-    "released": 5,
-    "dispatched": 9,
+    "released": 10,
+    "dispatched": 10,
     "final_states": {
-     "aborted": 4,
-     "done": 5,
-     "pending_approval": 1
+     "done": 10
     },
-    "failures": [
-     {
-      "seed": 1,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 77 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 4,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 80 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 5,
-      "final_state": "pending_approval",
-      "failure": "t=9: expected dispatched, got pending_approval (policy engagement: an engagement needs two operators with engagement authority, neither the proposer (DoD Directive 3000.09))"
-     },
-     {
-      "seed": 9,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 90 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 10,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 80 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     }
-    ]
+    "failures": []
    },
    {
     "scenario": "04-neutral-enters-keepout",
@@ -427,35 +346,18 @@
     "attack": "a neutral boat closes on the effect point after approval; the void is suppressed in the log",
     "expect": "aborted",
     "runs": 10,
-    "ok": 7,
+    "ok": 10,
     "replay_ok": 10,
     "tamper": "suppress_void",
-    "tamper_runs": 9,
-    "tamper_detected": 9,
+    "tamper_runs": 10,
+    "tamper_detected": 10,
     "violations": 0,
     "released": 0,
-    "dispatched": 9,
+    "dispatched": 10,
     "final_states": {
-     "aborted": 9,
-     "pending_approval": 1
+     "aborted": 10
     },
-    "failures": [
-     {
-      "seed": 1,
-      "final_state": "aborted",
-      "failure": "expected check keep_out_tracks to fail, failed: [track_deviation]"
-     },
-     {
-      "seed": 5,
-      "final_state": "pending_approval",
-      "failure": "t=9: expected dispatched, got pending_approval (policy engagement: an engagement needs two operators with engagement authority, neither the proposer (DoD Directive 3000.09))"
-     },
-     {
-      "seed": 10,
-      "final_state": "aborted",
-      "failure": "expected check keep_out_tracks to fail, failed: [track_deviation]"
-     }
-    ]
+    "failures": []
    },
    {
     "scenario": "05-target-reclassified",
@@ -528,40 +430,18 @@
     "attack": "the target's identity changes after approval",
     "expect": "aborted",
     "runs": 10,
-    "ok": 6,
+    "ok": 10,
     "replay_ok": 10,
     "tamper": null,
     "tamper_runs": 0,
     "tamper_detected": 0,
     "violations": 0,
     "released": 0,
-    "dispatched": 9,
+    "dispatched": 10,
     "final_states": {
-     "aborted": 9,
-     "pending_approval": 1
+     "aborted": 10
     },
-    "failures": [
-     {
-      "seed": 1,
-      "final_state": "aborted",
-      "failure": "expected check target_identity to fail, failed: [track_deviation]"
-     },
-     {
-      "seed": 5,
-      "final_state": "pending_approval",
-      "failure": "t=9: expected dispatched, got pending_approval (policy engagement: an engagement needs two operators with engagement authority, neither the proposer (DoD Directive 3000.09))"
-     },
-     {
-      "seed": 9,
-      "final_state": "aborted",
-      "failure": "expected check target_identity to fail, failed: [track_deviation]"
-     },
-     {
-      "seed": 10,
-      "final_state": "aborted",
-      "failure": "expected check target_identity to fail, failed: [track_deviation]"
-     }
-    ]
+    "failures": []
    },
    {
     "scenario": "06-target-undeclared",
@@ -634,40 +514,18 @@
     "attack": "the declaration is withdrawn after approval",
     "expect": "aborted",
     "runs": 10,
-    "ok": 6,
+    "ok": 10,
     "replay_ok": 10,
     "tamper": null,
     "tamper_runs": 0,
     "tamper_detected": 0,
     "violations": 0,
     "released": 0,
-    "dispatched": 9,
+    "dispatched": 10,
     "final_states": {
-     "aborted": 9,
-     "pending_approval": 1
+     "aborted": 10
     },
-    "failures": [
-     {
-      "seed": 1,
-      "final_state": "aborted",
-      "failure": "expected check target_declared to fail, failed: [track_deviation]"
-     },
-     {
-      "seed": 5,
-      "final_state": "pending_approval",
-      "failure": "t=9: expected dispatched, got pending_approval (policy engagement: an engagement needs two operators with engagement authority, neither the proposer (DoD Directive 3000.09))"
-     },
-     {
-      "seed": 9,
-      "final_state": "aborted",
-      "failure": "expected check target_declared to fail, failed: [track_deviation]"
-     },
-     {
-      "seed": 10,
-      "final_state": "aborted",
-      "failure": "expected check target_declared to fail, failed: [track_deviation]"
-     }
-    ]
+    "failures": []
    },
    {
     "scenario": "07-target-moves",
@@ -740,25 +598,18 @@
     "attack": "the target leaves the predicted position after approval",
     "expect": "aborted",
     "runs": 10,
-    "ok": 9,
+    "ok": 10,
     "replay_ok": 10,
     "tamper": null,
     "tamper_runs": 0,
     "tamper_detected": 0,
     "violations": 0,
     "released": 0,
-    "dispatched": 9,
+    "dispatched": 10,
     "final_states": {
-     "aborted": 9,
-     "pending_approval": 1
+     "aborted": 10
     },
-    "failures": [
-     {
-      "seed": 5,
-      "final_state": "pending_approval",
-      "failure": "t=9: expected dispatched, got pending_approval (policy engagement: an engagement needs two operators with engagement authority, neither the proposer (DoD Directive 3000.09))"
-     }
-    ]
+    "failures": []
    },
    {
     "scenario": "08-link-cut",
@@ -831,40 +682,18 @@
     "attack": "cut the platform's link after dispatch",
     "expect": "aborted",
     "runs": 10,
-    "ok": 6,
+    "ok": 10,
     "replay_ok": 10,
     "tamper": null,
     "tamper_runs": 0,
     "tamper_detected": 0,
     "violations": 0,
     "released": 0,
-    "dispatched": 9,
+    "dispatched": 10,
     "final_states": {
-     "aborted": 9,
-     "pending_approval": 1
+     "aborted": 10
     },
-    "failures": [
-     {
-      "seed": 1,
-      "final_state": "aborted",
-      "failure": "expected check platform_link to fail, failed: [track_deviation]"
-     },
-     {
-      "seed": 5,
-      "final_state": "pending_approval",
-      "failure": "t=9: expected dispatched, got pending_approval (policy engagement: an engagement needs two operators with engagement authority, neither the proposer (DoD Directive 3000.09))"
-     },
-     {
-      "seed": 9,
-      "final_state": "aborted",
-      "failure": "expected check platform_link to fail, failed: [track_deviation]"
-     },
-     {
-      "seed": 10,
-      "final_state": "aborted",
-      "failure": "expected check platform_link to fail, failed: [track_deviation]"
-     }
-    ]
+    "failures": []
    },
    {
     "scenario": "09-friendly-sub-near-target",
@@ -1021,41 +850,18 @@
     "attack": "one of our vehicles heads into the keep-out after approval",
     "expect": "aborted",
     "runs": 10,
-    "ok": 6,
+    "ok": 10,
     "replay_ok": 10,
     "tamper": null,
     "tamper_runs": 0,
     "tamper_detected": 0,
     "violations": 0,
-    "released": 1,
-    "dispatched": 9,
+    "released": 0,
+    "dispatched": 10,
     "final_states": {
-     "aborted": 8,
-     "pending_approval": 1,
-     "done": 1
+     "aborted": 10
     },
-    "failures": [
-     {
-      "seed": 1,
-      "final_state": "aborted",
-      "failure": "expected check keep_out_friendly to fail, failed: [track_deviation]"
-     },
-     {
-      "seed": 5,
-      "final_state": "pending_approval",
-      "failure": "t=9: expected dispatched, got pending_approval (policy engagement: an engagement needs two operators with engagement authority, neither the proposer (DoD Directive 3000.09))"
-     },
-     {
-      "seed": 8,
-      "final_state": "done",
-      "failure": "expected the engagement to end aborted, it is done (assessed ceased: no detection of T-0001 where expected: the effect point was covered for 15.0 s after the effect (by blade-1:eo_ir 0 m, remus-1:sonar 106 m))"
-     },
-     {
-      "seed": 10,
-      "final_state": "aborted",
-      "failure": "expected check keep_out_friendly to fail, failed: [track_deviation]"
-     }
-    ]
+    "failures": []
    },
    {
     "scenario": "11-stale-track",
@@ -1464,25 +1270,18 @@
     "attack": "abort while the platform is en route",
     "expect": "aborted",
     "runs": 10,
-    "ok": 9,
+    "ok": 10,
     "replay_ok": 10,
     "tamper": null,
     "tamper_runs": 0,
     "tamper_detected": 0,
     "violations": 0,
     "released": 0,
-    "dispatched": 9,
+    "dispatched": 10,
     "final_states": {
-     "aborted": 9,
-     "pending_approval": 1
+     "aborted": 10
     },
-    "failures": [
-     {
-      "seed": 5,
-      "final_state": "pending_approval",
-      "failure": "t=9: expected dispatched, got pending_approval (policy engagement: an engagement needs two operators with engagement authority, neither the proposer (DoD Directive 3000.09))"
-     }
-    ]
+    "failures": []
    },
    {
     "scenario": "16-target-persists",
@@ -1555,46 +1354,18 @@
     "attack": "the target is still detected after the effect; the effect point is edited in the log",
     "expect": "done",
     "runs": 10,
-    "ok": 5,
+    "ok": 10,
     "replay_ok": 10,
     "tamper": "edit_effect",
-    "tamper_runs": 5,
-    "tamper_detected": 5,
+    "tamper_runs": 10,
+    "tamper_detected": 10,
     "violations": 0,
-    "released": 5,
-    "dispatched": 9,
+    "released": 10,
+    "dispatched": 10,
     "final_states": {
-     "aborted": 4,
-     "done": 5,
-     "pending_approval": 1
+     "done": 10
     },
-    "failures": [
-     {
-      "seed": 1,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 77 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 4,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 80 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 5,
-      "final_state": "pending_approval",
-      "failure": "t=9: expected dispatched, got pending_approval (policy engagement: an engagement needs two operators with engagement authority, neither the proposer (DoD Directive 3000.09))"
-     },
-     {
-      "seed": 9,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 90 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 10,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 80 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     }
-    ]
+    "failures": []
    },
    {
     "scenario": "17-unarmed-platform",
@@ -1751,46 +1522,18 @@
     "attack": "delete the first approver's signature from the log",
     "expect": "done",
     "runs": 10,
-    "ok": 5,
+    "ok": 10,
     "replay_ok": 10,
     "tamper": "drop_signature",
     "tamper_runs": 10,
     "tamper_detected": 10,
     "violations": 0,
-    "released": 5,
-    "dispatched": 9,
+    "released": 10,
+    "dispatched": 10,
     "final_states": {
-     "aborted": 4,
-     "done": 5,
-     "pending_approval": 1
+     "done": 10
     },
-    "failures": [
-     {
-      "seed": 1,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 77 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 4,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 80 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 5,
-      "final_state": "pending_approval",
-      "failure": "t=9: expected dispatched, got pending_approval (policy engagement: an engagement needs two operators with engagement authority, neither the proposer (DoD Directive 3000.09))"
-     },
-     {
-      "seed": 9,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 90 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 10,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 80 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     }
-    ]
+    "failures": []
    },
    {
     "scenario": "19-window-too-short",
@@ -1947,46 +1690,18 @@
     "attack": "the policy file lacks the engagement tier; the log is forged to show one approver was enough",
     "expect": "done",
     "runs": 10,
-    "ok": 5,
+    "ok": 10,
     "replay_ok": 10,
     "tamper": "strip_approvers",
     "tamper_runs": 10,
     "tamper_detected": 10,
     "violations": 0,
-    "released": 5,
-    "dispatched": 9,
+    "released": 10,
+    "dispatched": 10,
     "final_states": {
-     "aborted": 4,
-     "done": 5,
-     "pending_approval": 1
+     "done": 10
     },
-    "failures": [
-     {
-      "seed": 1,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 77 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 4,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 80 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 5,
-      "final_state": "pending_approval",
-      "failure": "t=9: expected dispatched, got pending_approval (policy armed-platform: armed platforms always need a human (DoD Directive 3000.09))"
-     },
-     {
-      "seed": 9,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 90 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 10,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 80 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     }
-    ]
+    "failures": []
    },
    {
     "scenario": "21-picture-moves-between-signatures",
@@ -2059,56 +1774,18 @@
     "attack": "a signer quotes an expired picture; the track moves between signatures; a signer quotes a picture of the dropped plan; the log hides the reset",
     "expect": "done",
     "runs": 10,
-    "ok": 3,
+    "ok": 10,
     "replay_ok": 10,
     "tamper": "drop_reset",
     "tamper_runs": 10,
     "tamper_detected": 10,
     "violations": 0,
-    "released": 3,
-    "dispatched": 9,
+    "released": 10,
+    "dispatched": 10,
     "final_states": {
-     "aborted": 6,
-     "done": 3,
-     "voided": 1
+     "done": 10
     },
-    "failures": [
-     {
-      "seed": 1,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 76 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 5,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 76 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 6,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 81 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 7,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 90 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 8,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 81 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 9,
-      "final_state": "voided",
-      "failure": "t=26: expected pending_approval, got voided (checks failed at approval: plan: T-0001 predicted 927 m from the plan's effect point at its time +97.3 s (tolerance 75 m))"
-     },
-     {
-      "seed": 10,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 88 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     }
-    ]
+    "failures": []
    },
    {
     "scenario": "22-agent-order-on-engaging-platform",
@@ -2181,35 +1858,18 @@
     "attack": "an agent's hold and rtl on a platform with a pending, then dispatched, engagement",
     "expect": "aborted",
     "runs": 10,
-    "ok": 7,
+    "ok": 10,
     "replay_ok": 10,
     "tamper": "agent_order_auto",
     "tamper_runs": 10,
     "tamper_detected": 10,
     "violations": 0,
     "released": 0,
-    "dispatched": 9,
+    "dispatched": 10,
     "final_states": {
-     "aborted": 9,
-     "voided": 1
+     "aborted": 10
     },
-    "failures": [
-     {
-      "seed": 1,
-      "final_state": "aborted",
-      "failure": "t=16: expected the task pending_approval, got dispatched"
-     },
-     {
-      "seed": 5,
-      "final_state": "voided",
-      "failure": "t=7: expected 1 concurrences, got Some(0)"
-     },
-     {
-      "seed": 10,
-      "final_state": "aborted",
-      "failure": "t=16: expected the task pending_approval, got dispatched"
-     }
-    ]
+    "failures": []
    },
    {
     "scenario": "23-picture-gap",
@@ -2282,35 +1942,18 @@
     "attack": "the loop that holds the picture stops for 10 s after dispatch",
     "expect": "aborted",
     "runs": 10,
-    "ok": 7,
+    "ok": 10,
     "replay_ok": 10,
     "tamper": null,
     "tamper_runs": 0,
     "tamper_detected": 0,
     "violations": 0,
     "released": 0,
-    "dispatched": 9,
+    "dispatched": 10,
     "final_states": {
-     "aborted": 9,
-     "pending_approval": 1
+     "aborted": 10
     },
-    "failures": [
-     {
-      "seed": 1,
-      "final_state": "aborted",
-      "failure": "expected check picture_gap to fail, failed: [track_deviation]"
-     },
-     {
-      "seed": 5,
-      "final_state": "pending_approval",
-      "failure": "t=9: expected dispatched, got pending_approval (policy engagement: an engagement needs two operators with engagement authority, neither the proposer (DoD Directive 3000.09))"
-     },
-     {
-      "seed": 10,
-      "final_state": "aborted",
-      "failure": "expected check picture_gap to fail, failed: [track_deviation]"
-     }
-    ]
+    "failures": []
    },
    {
     "scenario": "24-strip-approvers",
@@ -2383,46 +2026,18 @@
     "attack": "strip approvers from the logged policy and decision and drop a signature",
     "expect": "done",
     "runs": 10,
-    "ok": 5,
+    "ok": 10,
     "replay_ok": 10,
     "tamper": "strip_approvers",
     "tamper_runs": 10,
     "tamper_detected": 10,
     "violations": 0,
-    "released": 5,
-    "dispatched": 9,
+    "released": 10,
+    "dispatched": 10,
     "final_states": {
-     "aborted": 4,
-     "done": 5,
-     "pending_approval": 1
+     "done": 10
     },
-    "failures": [
-     {
-      "seed": 1,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 77 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 4,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 80 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 5,
-      "final_state": "pending_approval",
-      "failure": "t=9: expected dispatched, got pending_approval (policy engagement: an engagement needs two operators with engagement authority, neither the proposer (DoD Directive 3000.09))"
-     },
-     {
-      "seed": 9,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 90 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 10,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 80 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     }
-    ]
+    "failures": []
    },
    {
     "scenario": "25-plan-slides",
@@ -2495,45 +2110,18 @@
     "attack": "the second signature comes 237 s after the first on a constant-velocity track",
     "expect": "done",
     "runs": 10,
-    "ok": 5,
+    "ok": 10,
     "replay_ok": 10,
     "tamper": null,
     "tamper_runs": 0,
     "tamper_detected": 0,
     "violations": 0,
-    "released": 5,
+    "released": 10,
     "dispatched": 10,
     "final_states": {
-     "aborted": 5,
-     "done": 5
+     "done": 10
     },
-    "failures": [
-     {
-      "seed": 1,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 77 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 2,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 79 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 4,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 78 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 6,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 80 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 9,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 80 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     }
-    ]
+    "failures": []
    },
    {
     "scenario": "26-target-reverses",
@@ -2606,61 +2194,18 @@
     "attack": "the track turns around just before the second signature",
     "expect": "done",
     "runs": 10,
-    "ok": 2,
+    "ok": 10,
     "replay_ok": 10,
     "tamper": null,
     "tamper_runs": 0,
     "tamper_detected": 0,
     "violations": 0,
-    "released": 2,
-    "dispatched": 9,
+    "released": 10,
+    "dispatched": 10,
     "final_states": {
-     "aborted": 7,
-     "done": 2,
-     "expired": 1
+     "done": 10
     },
-    "failures": [
-     {
-      "seed": 1,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 83 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 2,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 81 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 4,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 81 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 6,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 99 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 7,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 100 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 8,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 81 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 9,
-      "final_state": "expired",
-      "failure": "t=26: expected dispatched, got pending_approval (policy engagement: an engagement needs two operators with engagement authority, neither the proposer (DoD Directive 3000.09))"
-     },
-     {
-      "seed": 10,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 94 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     }
-    ]
+    "failures": []
    },
    {
     "scenario": "27-transient-reclassification",
@@ -2733,50 +2278,18 @@
     "attack": "the identity flips and back while one signature waits; the log hides the reset",
     "expect": "done",
     "runs": 10,
-    "ok": 4,
+    "ok": 10,
     "replay_ok": 10,
     "tamper": "drop_reset",
     "tamper_runs": 10,
     "tamper_detected": 10,
     "violations": 0,
-    "released": 4,
+    "released": 10,
     "dispatched": 10,
     "final_states": {
-     "done": 4,
-     "aborted": 6
+     "done": 10
     },
-    "failures": [
-     {
-      "seed": 3,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 75 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 4,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 78 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 5,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 76 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 6,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 75 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 9,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 87 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     },
-     {
-      "seed": 10,
-      "final_state": "aborted",
-      "failure": "expected the engagement to end done, it is aborted (picture changed: track_deviation: T-0001 is 79 m from where the approval's snapshot predicts it now (tolerance 75 m); fallback return)"
-     }
-    ]
+    "failures": []
    },
    {
     "scenario": "28-look-before-reclassification",
@@ -3017,45 +2530,784 @@
     "attack": "the platform's navigation falls back to dead reckoning after dispatch",
     "expect": "aborted",
     "runs": 10,
-    "ok": 7,
+    "ok": 10,
     "replay_ok": 10,
     "tamper": null,
     "tamper_runs": 0,
     "tamper_detected": 0,
     "violations": 0,
     "released": 0,
-    "dispatched": 9,
+    "dispatched": 10,
     "final_states": {
-     "aborted": 9,
-     "pending_approval": 1
+     "aborted": 10
     },
-    "failures": [
-     {
-      "seed": 1,
-      "final_state": "aborted",
-      "failure": "expected check platform_nav to fail, failed: [track_deviation]"
-     },
-     {
-      "seed": 5,
-      "final_state": "pending_approval",
-      "failure": "t=9: expected dispatched, got pending_approval (policy engagement: an engagement needs two operators with engagement authority, neither the proposer (DoD Directive 3000.09))"
-     },
-     {
-      "seed": 10,
-      "final_state": "aborted",
-      "failure": "expected check platform_nav to fail, failed: [track_deviation]"
-     }
-    ]
+    "failures": []
+   },
+   {
+    "scenario": "31-velocity-estimate-wobbles",
+    "noise": 0.0,
+    "title": "The velocity estimate wobbles while the target holds",
+    "invariant": "signed_picture",
+    "attack": "the tracker's velocity estimate changes by 0.8 m/s between a look and a signature, and while a signature waits",
+    "expect": "done",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 10,
+    "dispatched": 10,
+    "final_states": {
+     "done": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "31-velocity-estimate-wobbles",
+    "noise": 3.0,
+    "title": "The velocity estimate wobbles while the target holds",
+    "invariant": "signed_picture",
+    "attack": "the tracker's velocity estimate changes by 0.8 m/s between a look and a signature, and while a signature waits",
+    "expect": "done",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 10,
+    "dispatched": 10,
+    "final_states": {
+     "done": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "31-velocity-estimate-wobbles",
+    "noise": 10.0,
+    "title": "The velocity estimate wobbles while the target holds",
+    "invariant": "signed_picture",
+    "attack": "the tracker's velocity estimate changes by 0.8 m/s between a look and a signature, and while a signature waits",
+    "expect": "done",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 10,
+    "dispatched": 10,
+    "final_states": {
+     "done": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "31-velocity-estimate-wobbles",
+    "noise": 20.0,
+    "title": "The velocity estimate wobbles while the target holds",
+    "invariant": "signed_picture",
+    "attack": "the tracker's velocity estimate changes by 0.8 m/s between a look and a signature, and while a signature waits",
+    "expect": "done",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 10,
+    "dispatched": 10,
+    "final_states": {
+     "done": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "32-second-engagement-on-platform",
+    "noise": 0.0,
+    "title": "A second engagement on a platform with one in play",
+    "invariant": "platform_free",
+    "attack": "nominate and sign a second engagement on the platform while the first is under way",
+    "expect": "rejected",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 0,
+    "dispatched": 10,
+    "final_states": {
+     "rejected": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "32-second-engagement-on-platform",
+    "noise": 3.0,
+    "title": "A second engagement on a platform with one in play",
+    "invariant": "platform_free",
+    "attack": "nominate and sign a second engagement on the platform while the first is under way",
+    "expect": "rejected",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 0,
+    "dispatched": 10,
+    "final_states": {
+     "rejected": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "32-second-engagement-on-platform",
+    "noise": 10.0,
+    "title": "A second engagement on a platform with one in play",
+    "invariant": "platform_free",
+    "attack": "nominate and sign a second engagement on the platform while the first is under way",
+    "expect": "rejected",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 0,
+    "dispatched": 10,
+    "final_states": {
+     "rejected": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "32-second-engagement-on-platform",
+    "noise": 20.0,
+    "title": "A second engagement on a platform with one in play",
+    "invariant": "platform_free",
+    "attack": "nominate and sign a second engagement on the platform while the first is under way",
+    "expect": "rejected",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 0,
+    "dispatched": 10,
+    "final_states": {
+     "rejected": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "33-gps-glitch-en-route",
+    "noise": 0.0,
+    "title": "The platform's GPS glitches en route",
+    "invariant": "platform_nav",
+    "attack": "the navigation filter flags the GPS as glitching after dispatch while keeping its absolute-position flag",
+    "expect": "aborted",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 0,
+    "dispatched": 10,
+    "final_states": {
+     "aborted": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "33-gps-glitch-en-route",
+    "noise": 3.0,
+    "title": "The platform's GPS glitches en route",
+    "invariant": "platform_nav",
+    "attack": "the navigation filter flags the GPS as glitching after dispatch while keeping its absolute-position flag",
+    "expect": "aborted",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 0,
+    "dispatched": 10,
+    "final_states": {
+     "aborted": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "33-gps-glitch-en-route",
+    "noise": 10.0,
+    "title": "The platform's GPS glitches en route",
+    "invariant": "platform_nav",
+    "attack": "the navigation filter flags the GPS as glitching after dispatch while keeping its absolute-position flag",
+    "expect": "aborted",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 0,
+    "dispatched": 10,
+    "final_states": {
+     "aborted": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "33-gps-glitch-en-route",
+    "noise": 20.0,
+    "title": "The platform's GPS glitches en route",
+    "invariant": "platform_nav",
+    "attack": "the navigation filter flags the GPS as glitching after dispatch while keeping its absolute-position flag",
+    "expect": "aborted",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 0,
+    "dispatched": 10,
+    "final_states": {
+     "aborted": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "34-first-token-goes-stale",
+    "noise": 0.0,
+    "title": "The first signer's picture goes stale before they sign",
+    "invariant": "signed_picture",
+    "attack": "the target turns between the first signer's look and signature",
+    "expect": "done",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 10,
+    "dispatched": 10,
+    "final_states": {
+     "done": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "34-first-token-goes-stale",
+    "noise": 3.0,
+    "title": "The first signer's picture goes stale before they sign",
+    "invariant": "signed_picture",
+    "attack": "the target turns between the first signer's look and signature",
+    "expect": "done",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 10,
+    "dispatched": 10,
+    "final_states": {
+     "done": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "34-first-token-goes-stale",
+    "noise": 10.0,
+    "title": "The first signer's picture goes stale before they sign",
+    "invariant": "signed_picture",
+    "attack": "the target turns between the first signer's look and signature",
+    "expect": "done",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 10,
+    "dispatched": 10,
+    "final_states": {
+     "done": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "34-first-token-goes-stale",
+    "noise": 20.0,
+    "title": "The first signer's picture goes stale before they sign",
+    "invariant": "signed_picture",
+    "attack": "the target turns between the first signer's look and signature",
+    "expect": "done",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 10,
+    "dispatched": 10,
+    "final_states": {
+     "done": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "35-real-course-change-while-waiting",
+    "noise": 0.0,
+    "title": "The target gets under way while a signature waits",
+    "invariant": "signed_picture",
+    "attack": "a holding target starts moving at 6 m/s between the signatures",
+    "expect": "done",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 10,
+    "dispatched": 10,
+    "final_states": {
+     "done": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "35-real-course-change-while-waiting",
+    "noise": 3.0,
+    "title": "The target gets under way while a signature waits",
+    "invariant": "signed_picture",
+    "attack": "a holding target starts moving at 6 m/s between the signatures",
+    "expect": "done",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 10,
+    "dispatched": 10,
+    "final_states": {
+     "done": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "35-real-course-change-while-waiting",
+    "noise": 10.0,
+    "title": "The target gets under way while a signature waits",
+    "invariant": "signed_picture",
+    "attack": "a holding target starts moving at 6 m/s between the signatures",
+    "expect": "done",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 10,
+    "dispatched": 10,
+    "final_states": {
+     "done": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "35-real-course-change-while-waiting",
+    "noise": 20.0,
+    "title": "The target gets under way while a signature waits",
+    "invariant": "signed_picture",
+    "attack": "a holding target starts moving at 6 m/s between the signatures",
+    "expect": "done",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 10,
+    "dispatched": 10,
+    "final_states": {
+     "done": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "36-friendly-just-outside-keep-out",
+    "noise": 0.0,
+    "title": "A friendly closing to just outside the keep-out",
+    "invariant": "keep_out_friendly",
+    "attack": "one of our vehicles closes on the effect point and is predicted a few metres outside the keep-out at the effect time",
+    "expect": "aborted",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 0,
+    "dispatched": 10,
+    "final_states": {
+     "aborted": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "36-friendly-just-outside-keep-out",
+    "noise": 3.0,
+    "title": "A friendly closing to just outside the keep-out",
+    "invariant": "keep_out_friendly",
+    "attack": "one of our vehicles closes on the effect point and is predicted a few metres outside the keep-out at the effect time",
+    "expect": "aborted",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 0,
+    "dispatched": 10,
+    "final_states": {
+     "aborted": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "36-friendly-just-outside-keep-out",
+    "noise": 10.0,
+    "title": "A friendly closing to just outside the keep-out",
+    "invariant": "keep_out_friendly",
+    "attack": "one of our vehicles closes on the effect point and is predicted a few metres outside the keep-out at the effect time",
+    "expect": "aborted",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 0,
+    "dispatched": 10,
+    "final_states": {
+     "aborted": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "36-friendly-just-outside-keep-out",
+    "noise": 20.0,
+    "title": "A friendly closing to just outside the keep-out",
+    "invariant": "keep_out_friendly",
+    "attack": "one of our vehicles closes on the effect point and is predicted a few metres outside the keep-out at the effect time",
+    "expect": "aborted",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 0,
+    "dispatched": 10,
+    "final_states": {
+     "aborted": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "37-friendly-circling-near-target",
+    "noise": 0.0,
+    "title": "A friendly circling near the target",
+    "invariant": "keep_out_friendly",
+    "attack": "one of our fixed wings circles 800 m from the effect point, its heading sweeping across it every lap",
+    "expect": "done",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 10,
+    "dispatched": 10,
+    "final_states": {
+     "done": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "37-friendly-circling-near-target",
+    "noise": 3.0,
+    "title": "A friendly circling near the target",
+    "invariant": "keep_out_friendly",
+    "attack": "one of our fixed wings circles 800 m from the effect point, its heading sweeping across it every lap",
+    "expect": "done",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 10,
+    "dispatched": 10,
+    "final_states": {
+     "done": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "37-friendly-circling-near-target",
+    "noise": 10.0,
+    "title": "A friendly circling near the target",
+    "invariant": "keep_out_friendly",
+    "attack": "one of our fixed wings circles 800 m from the effect point, its heading sweeping across it every lap",
+    "expect": "done",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 10,
+    "dispatched": 10,
+    "final_states": {
+     "done": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "37-friendly-circling-near-target",
+    "noise": 20.0,
+    "title": "A friendly circling near the target",
+    "invariant": "keep_out_friendly",
+    "attack": "one of our fixed wings circles 800 m from the effect point, its heading sweeping across it every lap",
+    "expect": "done",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 10,
+    "dispatched": 10,
+    "final_states": {
+     "done": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "38-friendly-off-its-reported-circle",
+    "noise": 0.0,
+    "title": "A friendly off its reported circle",
+    "invariant": "keep_out_friendly",
+    "attack": "a fresh circle fact far from the effect point, for a friendly right next to it",
+    "expect": "rejected",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 0,
+    "dispatched": 0,
+    "final_states": {
+     "rejected": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "38-friendly-off-its-reported-circle",
+    "noise": 3.0,
+    "title": "A friendly off its reported circle",
+    "invariant": "keep_out_friendly",
+    "attack": "a fresh circle fact far from the effect point, for a friendly right next to it",
+    "expect": "rejected",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 0,
+    "dispatched": 0,
+    "final_states": {
+     "rejected": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "38-friendly-off-its-reported-circle",
+    "noise": 10.0,
+    "title": "A friendly off its reported circle",
+    "invariant": "keep_out_friendly",
+    "attack": "a fresh circle fact far from the effect point, for a friendly right next to it",
+    "expect": "rejected",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 0,
+    "dispatched": 0,
+    "final_states": {
+     "rejected": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "38-friendly-off-its-reported-circle",
+    "noise": 20.0,
+    "title": "A friendly off its reported circle",
+    "invariant": "keep_out_friendly",
+    "attack": "a fresh circle fact far from the effect point, for a friendly right next to it",
+    "expect": "rejected",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 0,
+    "dispatched": 0,
+    "final_states": {
+     "rejected": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "39-friendly-on-its-circles-slack-band",
+    "noise": 0.0,
+    "title": "A friendly on its circle's slack band at the release",
+    "invariant": "keep_out_friendly",
+    "attack": "a friendly reported inside the keep-out, on the slack band of its circle, its position a few seconds old at the release",
+    "expect": "aborted",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 0,
+    "dispatched": 10,
+    "final_states": {
+     "aborted": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "39-friendly-on-its-circles-slack-band",
+    "noise": 3.0,
+    "title": "A friendly on its circle's slack band at the release",
+    "invariant": "keep_out_friendly",
+    "attack": "a friendly reported inside the keep-out, on the slack band of its circle, its position a few seconds old at the release",
+    "expect": "aborted",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 0,
+    "dispatched": 10,
+    "final_states": {
+     "aborted": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "39-friendly-on-its-circles-slack-band",
+    "noise": 10.0,
+    "title": "A friendly on its circle's slack band at the release",
+    "invariant": "keep_out_friendly",
+    "attack": "a friendly reported inside the keep-out, on the slack band of its circle, its position a few seconds old at the release",
+    "expect": "aborted",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 0,
+    "dispatched": 10,
+    "final_states": {
+     "aborted": 10
+    },
+    "failures": []
+   },
+   {
+    "scenario": "39-friendly-on-its-circles-slack-band",
+    "noise": 20.0,
+    "title": "A friendly on its circle's slack band at the release",
+    "invariant": "keep_out_friendly",
+    "attack": "a friendly reported inside the keep-out, on the slack band of its circle, its position a few seconds old at the release",
+    "expect": "aborted",
+    "runs": 10,
+    "ok": 10,
+    "replay_ok": 10,
+    "tamper": null,
+    "tamper_runs": 0,
+    "tamper_detected": 0,
+    "violations": 0,
+    "released": 0,
+    "dispatched": 10,
+    "final_states": {
+     "aborted": 10
+    },
+    "failures": []
    }
   ],
   "totals": {
-   "runs": 1200,
-   "ok": 1109,
-   "replay_ok": 1200,
-   "tamper_runs": 511,
-   "tamper_detected": 511,
+   "runs": 1560,
+   "ok": 1560,
+   "replay_ok": 1560,
+   "tamper_runs": 520,
+   "tamper_detected": 520,
    "violations": 0,
-   "released": 380,
+   "released": 600,
    "errors": []
   }
  }
