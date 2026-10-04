@@ -1198,7 +1198,9 @@ impl Decision {
     /// `GET /api/inbox`: pending approvals (soonest expiry first, with why each needs a
     /// human) and alerts (most severe first).
     pub fn inbox_json(&self) -> Value {
-        let world = self.snapshot();
+        // the world only when an engagement waits (its live picture); a snapshot of a large
+        // fleet is not free
+        let world = self.engagements_in_view().then(|| self.snapshot());
         let pending: Vec<Value> = {
             let core = self.lock();
             core.engine
@@ -1207,7 +1209,9 @@ impl Decision {
                 .map(|i| {
                     let mut v = intent_json(i, None, self.tol());
                     v["why"] = json!(why_human(i));
-                    if let Some(e) = self.engage_view(&core, i, &world) {
+                    if let Some(w) = &world
+                        && let Some(e) = self.engage_view(&core, i, w)
+                    {
                         v["engage"] = e;
                     }
                     v
@@ -1227,9 +1231,24 @@ impl Decision {
     }
 
     /// The WebSocket message (`type: "decisions"`): the inbox and the latest intents.
+    /// Whether any engagement is among the intents the console sees.
+    fn engagements_in_view(&self) -> bool {
+        let core = self.lock();
+        let all: Vec<&Intent> = core.engine.intents().collect();
+        all.into_iter()
+            .rev()
+            .take(PUSH_INTENTS)
+            .any(|i| matches!(i.spec().task, Task::Engage { .. }))
+            || core
+                .engine
+                .inbox()
+                .iter()
+                .any(|i| matches!(i.spec().task, Task::Engage { .. }))
+    }
+
     fn message(&self) -> String {
         let inbox = self.inbox_json();
-        let world = self.snapshot();
+        let world = self.engagements_in_view().then(|| self.snapshot());
         let intents: Vec<Value> = {
             let core = self.lock();
             let all: Vec<&Intent> = core.engine.intents().collect();
@@ -1240,7 +1259,8 @@ impl Decision {
                     let mut v =
                         intent_json(i, core.taskings.get(&i.id()).map(|t| t.id), self.tol());
                     if i.state() != State::PendingApproval
-                        && let Some(e) = self.engage_view(&core, i, &world)
+                        && let Some(w) = &world
+                        && let Some(e) = self.engage_view(&core, i, w)
                     {
                         v["engage"] = e;
                     }

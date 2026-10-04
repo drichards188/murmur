@@ -353,20 +353,29 @@ impl Decision {
                 Err(e) => eprintln!("decision: stop {id}: {e}"),
             }
         }
-        let world = self.snapshot();
-        let events = match core.engine.step_engagements(&world) {
-            Ok(ev) => ev,
-            Err(e) => {
-                eprintln!("decision: engagements: {e}");
-                return;
-            }
-        };
-        for ev in events {
-            match ev {
-                murmur_decide::EngagementEvent::Stopped(f) => self.command_fallback(core, f),
-                murmur_decide::EngagementEvent::Effect(e) => self.send_effect(&e, &world),
-                murmur_decide::EngagementEvent::Voided { .. }
-                | murmur_decide::EngagementEvent::Assessed { .. } => {}
+        let active = core.engine.intents().any(|i| {
+            matches!(i.spec().task, Task::Engage { .. })
+                && matches!(i.state(), State::Approved | State::Dispatched | State::Effected)
+        });
+        // the world only when an engagement is in play (a snapshot of a large fleet is not free)
+        if active {
+            let world = self.snapshot();
+            match core.engine.step_engagements(&world) {
+                Ok(events) => {
+                    for ev in events {
+                        match ev {
+                            murmur_decide::EngagementEvent::Stopped(f) => {
+                                self.command_fallback(core, f);
+                            }
+                            murmur_decide::EngagementEvent::Effect(e) => {
+                                self.send_effect(&e, &world);
+                            }
+                            murmur_decide::EngagementEvent::Voided { .. }
+                            | murmur_decide::EngagementEvent::Assessed { .. } => {}
+                        }
+                    }
+                }
+                Err(e) => eprintln!("decision: engagements: {e}"),
             }
         }
         // forget runs whose intent ended long enough ago that nothing more will happen
