@@ -109,6 +109,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let frames = Arc::new(watch::channel(None).0);
     tokio::spawn(push::pusher(world.clone(), frames.clone()));
+    // the current under silent surface vehicles, for their drift estimate (tidewater)
+    tokio::spawn(estimate::water_sampler(world.clone()));
     cot::spawn(world.clone());
     let emu = emu::Emu::from_env();
     if emu.enabled() {

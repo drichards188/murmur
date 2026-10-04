@@ -50,11 +50,13 @@
 use std::cell::OnceCell;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
-use crate::clock::round;
+use crate::clock::{self, round};
 use crate::link::LinkSnapshot;
 use crate::mav::Kind;
 use crate::tasks::{OpState, TaskKind, TaskParams};
@@ -72,6 +74,12 @@ const MIN_ALONG_MPS: f64 = 0.5;
 const DRIFT_MPS: f64 = 1.0;
 /// A navigation target reported within this long before the silence counts as current.
 const NAV_TARGET_FRESH_S: f64 = 15.0;
+/// How often the water under silent surface vehicles is sampled and their drift integrated.
+pub const WATER_STEP_S: f64 = 5.0;
+/// The share of the wind a drifting hull takes on. GUESS.
+pub const WINDAGE: f64 = 0.02;
+/// A water sample older than this is not trusted (tidewater went away).
+const WATER_FRESH_S: f64 = 60.0;
 
 /// [lon, lat], as positions are everywhere in the API.
 pub type LngLat = [f64; 2];
@@ -79,8 +87,12 @@ pub type LngLat = [f64; 2];
 /// What the console draws and the details card explains.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Estimate {
-    /// When the model starts: the last position report (wall clock, s). `dt` counts from it.
+    /// When the model starts (wall clock, s): the last position report, or a drift track's
+    /// last step. `dt` counts from it.
     pub t0: f64,
+    /// The last report the estimate rests on: the link's last packet (wall clock, s). The
+    /// silence is counted from here, whatever the model's start.
+    pub since_t: f64,
     /// orbit | patrol | hold | rtl | velocity | stationary
     pub basis: &'static str,
     /// One line for the operator: "orbit #3, 160 m/s clockwise on a 9.0 km ring".
@@ -96,6 +108,10 @@ pub struct Estimate {
     /// What the autopilot's lost-link failsafe would make of this silence.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failsafe: Option<FailsafeBranch>,
+    /// Which hypothesis leads: `task` (the model above) until the lost-link timer fires,
+    /// `failsafe` from then on (the console draws the branch as the estimate and keeps the
+    /// task model alongside as "if it kept its task").
+    pub leading: &'static str,
     /// The model evaluated at `t` (the last `NOW_STEP_S` boundary of the silence): for API
     /// readers; the console evaluates the model itself.
     pub now: At,
@@ -174,6 +190,8 @@ pub struct Arrival {
     pub ring: bool,
     /// a ring's band, m
     pub width_m: f64,
+    /// a ring's phase rate once joined, degrees/s, positive clockwise (0 for a circle)
+    pub rate_dps: f64,
 }
 
 /// The lost-link failsafe hypothesis: from `fires_t` the vehicle is probably on `motion`.
@@ -187,6 +205,11 @@ pub struct FailsafeBranch {
     pub profile: String,
     pub detail: String,
     pub motion: Motion,
+    /// the timer has fired: the branch leads
+    pub fired: bool,
+    /// the branch evaluated at the estimate's `now.t`, once fired
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub now: Option<At>,
 }
 
 /// The region a model gives at some time.
@@ -464,13 +487,24 @@ pub fn eval(m: &Motion, dt: f64, reach_mps: f64, cap_m: f64) -> (LngLat, Region)
             // out of an orbit, a slower speed over ground), the ellipse covering the lag
             // until then
             let mut arrived = false;
+            let mut at_stop = false;
             if let Some(stop) = stop_m
                 && d >= *stop
             {
                 arrived = d >= stop + along;
+                at_stop = true;
                 d = *stop;
             }
-            let position = step(*from, *bearing_deg, d);
+            let stop_point = step(*from, *bearing_deg, d);
+            // a ring joined: the point goes on around it from the moment it got there
+            let position = match arrive {
+                Some(a) if at_stop && a.ring && a.radius_m > 0.0 => {
+                    let since = dt - stop_m.unwrap_or(0.0) / speed_mps.max(1e-9);
+                    let angle = bearing(a.center, stop_point) + a.rate_dps * since.max(0.0);
+                    step(a.center, angle.rem_euclid(360.0), a.radius_m)
+                }
+                _ => stop_point,
+            };
             match arrive {
                 // on the ring it circles: where on it is unknown (the whole ring), how far
                 // off it is only the ring's own band
@@ -491,10 +525,12 @@ pub fn eval(m: &Motion, dt: f64, reach_mps: f64, cap_m: f64) -> (LngLat, Region)
                         radius_m: a.radius_m + along0_m,
                     },
                 ),
+                // not surely there yet: the ellipse stays about the stop point, where a
+                // lagging vehicle is still heading
                 _ => (
                     position,
                     Region::Ellipse {
-                        center: position,
+                        center: stop_point,
                         semi_major_m: along,
                         semi_minor_m: across,
                         bearing_deg: *bearing_deg,
@@ -722,6 +758,161 @@ fn cap_for(domain: &str) -> f64 {
     }
 }
 
+// ---- the water under silent surface vehicles ------------------------------------------------
+
+/// Where a silent surface vehicle has drifted to: its last known position carried along
+/// tidewater's current (plus windage) every [`WATER_STEP_S`] by [`water_sampler`], with the
+/// uncertainty that accumulates as the current field changes under it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WaterTrack {
+    /// the integrated position, [lon, lat]
+    pub pos: LngLat,
+    /// when it was last stepped (wall, s)
+    pub t: f64,
+    /// the region's half-extent then, m
+    pub sigma_m: f64,
+    /// the drift velocity now, [east, north] m/s (current + windage)
+    pub drift_en: [f64; 2],
+    pub current_en: [f64; 2],
+    pub wind_en: [f64; 2],
+}
+
+fn norm(v: [f64; 2]) -> f64 {
+    v[0].hypot(v[1])
+}
+
+/// How fast a drift region grows: the current changes over the distance drifted and with
+/// the tide, the wind over time, and waves jitter the hull. GUESS.
+pub fn drift_growth_mps(current: [f64; 2], wind: [f64; 2]) -> f64 {
+    0.3 * norm(current) + WINDAGE * norm(wind) + 0.1
+}
+
+fn water_tracks() -> MutexGuard<'static, HashMap<Uid, WaterTrack>> {
+    static TRACKS: OnceLock<Mutex<HashMap<Uid, WaterTrack>>> = OnceLock::new();
+    TRACKS
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// The drift track of a vehicle, if the sampler keeps one that is fresh.
+pub fn water_track(uid: Uid, now: f64) -> Option<WaterTrack> {
+    water_tracks()
+        .get(&uid)
+        .copied()
+        .filter(|t| now - t.t <= WATER_FRESH_S)
+}
+
+/// Tests: a track as the sampler would keep it.
+#[cfg(test)]
+pub fn set_water_track(uid: Uid, track: WaterTrack) {
+    water_tracks().insert(uid, track);
+}
+
+/// Step every surface (and subsurface: a surfaced AUV drifts too) vehicle's drift track: a
+/// vehicle heard from is reset to where it is;
+/// a silent one is carried along the current sampled at its track every step (the drifting
+/// buoy's own motion is exactly this, `crates/murmur-standins/src/behavior/drifter.rs`).
+/// Without `MURMUR_TIDEWATER_URL` there is no track and the estimate falls back to its
+/// documented default bound (`DRIFT_MPS`).
+pub async fn water_sampler(world: Arc<World>) {
+    let Some(client) = crate::decision::terrain::Tidewater::from_env() else {
+        println!("estimate: no MURMUR_TIDEWATER_URL: silent drifters get the default drift bound");
+        return;
+    };
+    let mut interval = tokio::time::interval(Duration::from_secs_f64(WATER_STEP_S));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut failed_at: Option<f64> = None;
+    loop {
+        interval.tick().await;
+        let wall = clock::wall();
+        let cfg = config(&world);
+        let mut rows: Vec<(Uid, bool, LngLat)> = Vec::new();
+        {
+            let tracks = water_tracks();
+            for cell in world.vehicles() {
+                let link = cell.link_snapshot(clock::mono());
+                let stale = link
+                    .last_rx_t
+                    .is_some_and(|t| wall - t > link.stale_after_s());
+                let (pos, platform, kind) = cell.read(|v| {
+                    (
+                        v.pos,
+                        v.identity.as_ref().and_then(|i| i.str("platform").map(str::to_string)),
+                        v.kind,
+                    )
+                });
+                let domain = platform
+                    .as_deref()
+                    .and_then(|p| cfg.limits.platforms.get(p))
+                    .map(|l| l.domain.clone())
+                    .unwrap_or_else(|| kind_defaults(kind).domain);
+                if domain != "surface" && domain != "subsurface" {
+                    continue;
+                }
+                let Some((lat, lon)) = pos else { continue };
+                let at = match (stale, tracks.get(&cell.uid)) {
+                    (true, Some(t)) => t.pos,
+                    _ => [lon, lat],
+                };
+                rows.push((cell.uid, stale, at));
+            }
+        }
+        if rows.is_empty() {
+            continue;
+        }
+        let points: Vec<murmur_decide::LonLat> = rows
+            .iter()
+            .map(|(_, _, p)| murmur_decide::LonLat { lon: p[0], lat: p[1] })
+            .collect();
+        let samples = match client.water(&points).await {
+            Ok(s) => s,
+            Err(e) => {
+                if failed_at.is_none_or(|t| wall - t > 60.0) {
+                    eprintln!("water sampler: {e}; drift estimates use what they have");
+                }
+                failed_at = Some(wall);
+                continue;
+            }
+        };
+        let mut tracks = water_tracks();
+        for ((uid, stale, at), w) in rows.into_iter().zip(samples) {
+            let current = w.current_en.unwrap_or([0.0, 0.0]);
+            let wind = w.wind_en.unwrap_or([0.0, 0.0]);
+            let drift = [current[0] + WINDAGE * wind[0], current[1] + WINDAGE * wind[1]];
+            let next = match (stale, tracks.get(&uid)) {
+                // carried along the drift it had since the last step; its region grows
+                (true, Some(prev)) => {
+                    let dt = (wall - prev.t).max(0.0);
+                    let (e, n) = (prev.drift_en[0] * dt, prev.drift_en[1] * dt);
+                    let pos = [
+                        prev.pos[0] + e / m_per_deg_lon(prev.pos[1]),
+                        prev.pos[1] + n / 111_320.0,
+                    ];
+                    WaterTrack {
+                        pos,
+                        t: wall,
+                        sigma_m: prev.sigma_m + drift_growth_mps(prev.current_en, prev.wind_en) * dt,
+                        drift_en: drift,
+                        current_en: current,
+                        wind_en: wind,
+                    }
+                }
+                // heard from (or no track yet): the track starts where it is
+                _ => WaterTrack {
+                    pos: at,
+                    t: wall,
+                    sigma_m: S0_M,
+                    drift_en: drift,
+                    current_en: current,
+                    wind_en: wind,
+                },
+            };
+            tracks.insert(uid, next);
+        }
+    }
+}
+
 // ---- the vehicle's inputs ------------------------------------------------------------------
 
 /// The vehicle's latest op, as the task layer reports it.
@@ -766,6 +957,18 @@ pub struct Inputs<'a> {
     pub min_turn_m: Option<f64>,
     pub task: Option<&'a Ordered>,
     pub lost_link: Option<(String, f64)>,
+    /// the drift track the water sampler keeps for a surface vehicle
+    pub water: Option<WaterTrack>,
+}
+
+/// A chosen model: what it rests on, from when, and how far the platform can get.
+struct Chosen {
+    basis: &'static str,
+    motion: Motion,
+    detail: String,
+    /// the model's start (the last report, or the drift track's last step)
+    t0: f64,
+    reach_mps: f64,
 }
 
 impl Inputs<'_> {
@@ -867,19 +1070,36 @@ impl Inputs<'_> {
                 .or(self.min_turn_m)
                 .unwrap_or(150.0)
                 .max(1.0);
-            // already on (or inside) its RTL circle: it circles home from here on
-            if dist <= r + self.ring_width(r) / 2.0 {
+            let band = self.ring_width(r) / 2.0;
+            // already on its RTL circle: it circles home from here on
+            if (dist - r).abs() <= band {
                 return Some(self.ring(from, home, r, along0));
             }
-            (
-                (dist - r).max(0.0),
-                Arrival {
+            // inside it: ArduPlane flies out to the circle; outside: in toward it. Then it
+            // circles, clockwise as ArduPilot loiters at a positive radius (a circle it was
+            // already flying went through `ring` above)
+            let (bearing_deg, stop) = if dist < r {
+                (bearing(home, from), r - dist)
+            } else {
+                (bearing(from, home), dist - r)
+            };
+            return Some(Motion::Line {
+                from,
+                bearing_deg,
+                speed_mps: speed,
+                stop_m: Some(stop),
+                along0_m: along0,
+                along_mps: along_mps.max(MIN_ALONG_MPS),
+                across0_m: along0,
+                across_mps: self.across_rate(),
+                arrive: Some(Arrival {
                     center: home,
                     radius_m: r,
                     ring: true,
                     width_m: self.ring_width(r),
-                },
-            )
+                    rate_dps: (speed / r).to_degrees(),
+                }),
+            });
         } else {
             let tol = match self.kind {
                 Some(Kind::Copter) | Some(Kind::Boat) => 15.0,
@@ -894,6 +1114,7 @@ impl Inputs<'_> {
                     radius_m: tol,
                     ring: false,
                     width_m: 0.0,
+                    rate_dps: 0.0,
                 },
             )
         };
@@ -951,6 +1172,55 @@ impl Inputs<'_> {
             drift
         };
         self.point(self.position, self.s0(), rate)
+    }
+
+    /// A drifter (no propulsion): carried along tidewater's current from the sampler's
+    /// track, the region growing with the current's uncertainty; without water data, its
+    /// last reported velocity (which is the water's) or the documented default bound.
+    fn drifting(&self) -> Chosen {
+        if let Some(w) = self.water {
+            let speed = norm(w.drift_en);
+            let growth = drift_growth_mps(w.current_en, w.wind_en);
+            let bearing_deg = w.drift_en[0].atan2(w.drift_en[1]).to_degrees().rem_euclid(360.0);
+            return Chosen {
+                basis: "drift",
+                motion: Motion::Line {
+                    from: w.pos,
+                    bearing_deg,
+                    speed_mps: speed,
+                    stop_m: None,
+                    along0_m: w.sigma_m,
+                    along_mps: growth,
+                    across0_m: w.sigma_m,
+                    across_mps: growth,
+                    arrive: None,
+                },
+                detail: format!(
+                    "drifting with the water: {:.1} m/s current, {:.0} m/s wind at its track (tidewater)",
+                    norm(w.current_en),
+                    norm(w.wind_en)
+                ),
+                t0: w.t,
+                reach_mps: speed + growth,
+            };
+        }
+        if let Some(m) = self.velocity() {
+            let speed = self.vel_en.map_or(0.0, norm);
+            return Chosen {
+                basis: "velocity",
+                motion: m,
+                detail: format!("drifting on at its last {} (no water data)", fmt_mps(speed)),
+                t0: self.t0,
+                reach_mps: speed + DRIFT_MPS,
+            };
+        }
+        Chosen {
+            basis: "stationary",
+            motion: self.point(self.position, self.s0(), DRIFT_MPS),
+            detail: format!("drifting: no water data, so a default {DRIFT_MPS:.0} m/s bound"),
+            t0: self.t0,
+            reach_mps: DRIFT_MPS,
+        }
     }
 
     /// The hold models: a fixed wing circles the loiter center it reported (fresh in this
@@ -1112,25 +1382,50 @@ fn fmt_mps(v: f64) -> String {
 
 /// The estimate for a silent vehicle. None when there is nothing to go on (no position).
 pub fn estimate(inp: &Inputs) -> Estimate {
-    let (basis, motion, detail) = inp
+    let chosen = inp
         .task_model()
         .or_else(|| inp.mode_model())
-        .or_else(|| {
-            inp.velocity().map(|m| {
-                let speed = inp.vel_en.map_or(0.0, |[e, n]| e.hypot(n));
-                ("velocity", m, format!("carried on at its last {} on heading {:.0}°", fmt_mps(speed), inp.heading.unwrap_or(0.0)))
-            })
+        .map(|(basis, motion, detail)| Chosen {
+            basis,
+            motion,
+            detail,
+            t0: inp.t0,
+            reach_mps: inp.limits.max_mps.max(inp.speed()),
         })
         .unwrap_or_else(|| {
-            let m = inp.stationary();
-            let why = if !inp.armed {
-                "not armed, so probably where it was"
-            } else {
-                "no velocity reported: probably where it was"
-            };
-            ("stationary", m, why.to_string())
+            if inp.limits.drifter {
+                return inp.drifting();
+            }
+            let (basis, motion, detail) = inp
+                .velocity()
+                .map(|m| {
+                    let speed = inp.vel_en.map_or(0.0, |[e, n]| e.hypot(n));
+                    ("velocity", m, format!("carried on at its last {} on heading {:.0}°", fmt_mps(speed), inp.heading.unwrap_or(0.0)))
+                })
+                .unwrap_or_else(|| {
+                    let m = inp.stationary();
+                    let why = if !inp.armed {
+                        "not armed, so probably where it was"
+                    } else {
+                        "no velocity reported: probably where it was"
+                    };
+                    ("stationary", m, why.to_string())
+                });
+            Chosen {
+                basis,
+                motion,
+                detail,
+                t0: inp.t0,
+                reach_mps: inp.limits.max_mps.max(inp.speed()),
+            }
         });
-    let reach_mps = inp.limits.max_mps.max(inp.speed());
+    let Chosen {
+        basis,
+        motion,
+        detail,
+        t0,
+        reach_mps,
+    } = chosen;
     let cap_m = cap_for(&inp.limits.domain);
     let note = (inp.link_class == Some("acoustic") && (inp.submerged || inp.report_s >= 10.0)).then(|| {
         format!(
@@ -1141,7 +1436,7 @@ pub fn estimate(inp: &Inputs) -> Estimate {
     let failsafe = inp.failsafe_action().and_then(|action| {
         let (profile, after_s) = inp.lost_link.clone()?;
         let fires_t = inp.last_rx_t + after_s;
-        let (p, region) = eval(&motion, fires_t - inp.t0, reach_mps, cap_m);
+        let (p, region) = eval(&motion, fires_t - t0, reach_mps, cap_m);
         // the first model's uncertainty when the timer fires, plus the turn toward home (a
         // reversal ends two turn radii beside the straight line)
         let s0 = region.radius_about(p) + S0_M + 2.0 * inp.min_turn_m.unwrap_or(0.0);
@@ -1158,9 +1453,17 @@ pub fn estimate(inp: &Inputs) -> Estimate {
                     "RTL: toward home at cruise speed"
                 },
             ),
+            // surfaced it drifts like a buoy: at the sampled current (plus its growth), else
+            // the default bound
             "surface" => (
-                inp.point(p, s0, 0.3),
-                "surfacing (FS_GCS_ENABLE 4), then on its surface radio",
+                inp.point(
+                    p,
+                    s0,
+                    inp.water
+                        .map(|w| norm(w.drift_en) + drift_growth_mps(w.current_en, w.wind_en))
+                        .unwrap_or(DRIFT_MPS),
+                ),
+                "surfacing (FS_GCS_ENABLE 4), then drifting on its surface radio",
             ),
             "land" => (inp.point(p, s0, 0.3), "landing where it is"),
             _ => (inp.point(p, s0, 0.0), "disarming where it is"),
@@ -1172,29 +1475,91 @@ pub fn estimate(inp: &Inputs) -> Estimate {
             detail: format!("lost-link failsafe after {after_s:.0} s ({profile}), if it lost us too: {what}"),
             profile,
             motion: branch,
+            fired: false,
+            now: None,
         })
     });
     let silent = (inp.now - inp.last_rx_t).max(0.0);
     let t_now = inp.last_rx_t + NOW_STEP_S * (silent / NOW_STEP_S).floor();
-    let (position, region) = eval(&motion, t_now - inp.t0, reach_mps, cap_m);
+    let at = |m: &Motion, t0: f64| {
+        let (position, region) = eval(m, t_now - t0, reach_mps, cap_m);
+        At {
+            t: round(t_now, 1),
+            position: [round(position[0], 6), round(position[1], 6)],
+            radius_m: round(region.radius_about(position), 0),
+        }
+    };
+    let now = at(&motion, t0);
+    let failsafe = failsafe.map(|f| {
+        let fired = t_now >= f.fires_t;
+        FailsafeBranch {
+            now: fired.then(|| at(&f.motion, f.fires_t)),
+            fired,
+            motion: round_motion(f.motion),
+            ..f
+        }
+    });
+    let leading = if failsafe.as_ref().is_some_and(|f| f.fired) {
+        "failsafe"
+    } else {
+        "task"
+    };
     Estimate {
-        t0: round(inp.t0, 1),
+        t0: round(t0, 1),
+        since_t: round(inp.last_rx_t, 1),
         basis,
         detail,
         motion: round_motion(motion),
         reach_mps: round(reach_mps, 1),
         cap_m,
         note,
-        failsafe: failsafe.map(|f| FailsafeBranch {
-            motion: round_motion(f.motion),
-            ..f
-        }),
-        now: At {
-            t: round(t_now, 1),
-            position: [round(position[0], 6), round(position[1], 6)],
-            radius_m: round(region.radius_about(position), 0),
-        },
+        failsafe,
+        leading,
+        now,
     }
+}
+
+/// What an agent reads about a silent vehicle (`mcp::world`): the leading hypothesis now,
+/// with the model's start as `as_of`, and the other hypothesis. A display estimate, never
+/// a fact: the decision core does not read it.
+pub fn agent_view(e: &Estimate, now: f64) -> Value {
+    let at = |m: &Motion, t0: f64| {
+        let (p, region) = eval(m, now - t0, e.reach_mps, e.cap_m);
+        json!({
+            "lon": round(p[0], 6),
+            "lat": round(p[1], 6),
+            "radius_m": round(region.radius_about(p), 0),
+        })
+    };
+    let task = json!({
+        "basis": e.basis,
+        "detail": e.detail,
+        "model_t0": e.t0,
+        "now": at(&e.motion, e.t0),
+    });
+    let failsafe = e.failsafe.as_ref().map(|f| {
+        json!({
+            "action": f.action,
+            "after_s": f.after_s,
+            "fires_t": f.fires_t,
+            "fired": f.fired,
+            "profile": f.profile,
+            "detail": f.detail,
+            "now": f.fired.then(|| at(&f.motion, f.fires_t)),
+        })
+    });
+    json!({
+        "note": "a display estimate of where the vehicle probably is while its link is silent, not an observed fact: the decision core does not read it, and nothing here is a position fix",
+        // the last report it rests on: the silence is this old, however fresh the model
+        "as_of": e.since_t,
+        "age_s": round((now - e.since_t).max(0.0), 1),
+        "leading": e.leading,
+        "task": task,
+        "failsafe": failsafe,
+        "acoustic_note": e.note,
+        "reach_mps": e.reach_mps,
+        "cap_m": e.cap_m,
+    })
 }
 
 /// Rounded so the serialized model is stable between frames (it is sent only on change).
@@ -1264,6 +1629,7 @@ fn round_motion(m: Motion) -> Motion {
                 radius_m: r(a.radius_m),
                 ring: a.ring,
                 width_m: r(a.width_m),
+                rate_dps: round(a.rate_dps, 4),
             }),
         },
         Motion::Point {
@@ -1371,6 +1737,7 @@ impl<'a> FrameContext<'a> {
             min_turn_m: ident.and_then(|i| i.num("min_turn_radius_m")),
             task: ordered.get(&uid),
             lost_link,
+            water: water_track(uid, self.wall),
         };
         Some(estimate(&inp))
     }
@@ -1420,6 +1787,7 @@ mod tests {
             min_turn_m: None,
             task: None,
             lost_link: Some(("los".into(), 5.0)),
+            water: None,
         }
     }
 
@@ -1500,10 +1868,55 @@ mod tests {
         buoy.armed = false;
         buoy.limits.drifter = true;
         let e = estimate(&buoy);
-        assert_eq!(e.reach_mps, 0.0);
-        // a drifter's reach is the water's: the bound is reach x dt + s0 with reach 0, so the
-        // region stays at s0 (an open question: give drifters the current as their reach)
-        assert_eq!(radius_of(&eval(&e.motion, 100.0, e.reach_mps, e.cap_m).1), 10.0);
+        // a drifter's reach is the water's: without tidewater, the documented default bound
+        assert_eq!((e.basis, e.reach_mps), ("stationary", DRIFT_MPS));
+        assert!(e.detail.contains("default"), "{}", e.detail);
+        assert_eq!(radius_of(&eval(&e.motion, 100.0, e.reach_mps, e.cap_m).1), 110.0);
+        // with its last reported velocity (the water's), carried on
+        let buoy = moving(buoy, 270.0, 1.6);
+        let e = estimate(&buoy);
+        assert_eq!((e.basis, e.reach_mps), ("velocity", 1.6 + DRIFT_MPS));
+    }
+
+    #[test]
+    fn a_drifter_follows_the_water_sampler_track() {
+        // the sampler carried the buoy 300 m east over its last 200 s of silence, where the
+        // flood runs 1.5 m/s east with a 5 m/s wind from the south
+        let mut buoy = base(Kind::Boat, 0.0, 0.0, "surface");
+        buoy.armed = false;
+        buoy.limits.drifter = true;
+        let track = WaterTrack {
+            pos: step(GATE, 90.0, 300.0),
+            t: 1200.0,
+            sigma_m: 10.0 + 200.0 * drift_growth_mps([1.5, 0.0], [0.0, 5.0]),
+            drift_en: [1.5, 0.0 + WINDAGE * 5.0],
+            current_en: [1.5, 0.0],
+            wind_en: [0.0, 5.0],
+        };
+        buoy.water = Some(track);
+        buoy.now = 1247.0;
+        let e = estimate(&buoy);
+        assert_eq!(e.basis, "drift");
+        assert_eq!(e.t0, 1200.0); // the model starts at the track's last step, not the last report
+        assert_eq!(e.since_t, 1000.0); // but the silence is counted from the last report
+        assert_eq!(agent_view(&e, 1247.0)["age_s"], 247.0);
+        assert!(e.detail.contains("tidewater"), "{}", e.detail);
+        let Motion::Line { from, speed_mps, bearing_deg, along0_m, along_mps, .. } = &e.motion else { panic!("{:?}", e.motion) };
+        assert!(distance_m(*from, track.pos) < 0.2);
+        assert!((speed_mps - (1.5f64).hypot(0.1)).abs() < 0.01);
+        assert!((bearing_deg - 86.19).abs() < 0.1, "{bearing_deg}");
+        assert!((along0_m - track.sigma_m).abs() < 0.01);
+        assert!((along_mps - (0.45 + 0.1 + 0.1)).abs() < 1e-9);
+        assert!((e.reach_mps - (speed_mps + along_mps)).abs() < 0.1);
+        // 100 s on: 150 m further east of the track, the region grown by 65 m
+        let (p, r) = eval(&e.motion, 100.0, e.reach_mps, e.cap_m);
+        assert!((distance_m(track.pos, p) - 150.3).abs() < 1.0, "{}", distance_m(track.pos, p));
+        assert!((radius_of(&r) - (track.sigma_m + 65.0)).abs() < 0.01);
+        // the sampler's store: a fresh track is served, an old one is not
+        set_water_track(99, track);
+        assert_eq!(water_track(99, 1250.0), Some(track));
+        assert_eq!(water_track(99, 1200.0 + WATER_FRESH_S + 1.0), None);
+        assert_eq!(water_track(98, 1250.0), None);
     }
 
     fn ordered(kind: TaskKind, state: OpState, params: TaskParams) -> Ordered {
@@ -1712,14 +2125,29 @@ mod tests {
         let (p, r) = eval(&e.motion, 10_000.0, e.reach_mps, e.cap_m);
         assert!((distance_m(p, home) - 1000.0).abs() < 2.0, "{}", distance_m(p, home));
         assert!(matches!(r, Region::Arc { radius_m, spread_deg, .. } if radius_m == 1000.0 && spread_deg == 180.0), "{r:?}");
-        // already inside its RTL circle (3.1 km from home, a 9 km circle): it circles home
-        // from here on (a ring, so the point estimate keeps moving around it)
+        // inside its RTL circle (3.1 km from home, a 9 km circle): ArduPlane flies out to the
+        // circle (a line away from home, 5.9 km) and circles from there, clockwise
         plane.rtl_radius_m = Some(9000.0);
         let e = estimate(&plane);
-        assert!(matches!(e.motion, Motion::Ring { radius_m, .. } if radius_m == 9000.0), "{:?}", e.motion);
-        let (p, _) = eval(&e.motion, 10_000.0, e.reach_mps, e.cap_m);
-        // flat earth about each end: a tenth of a percent apart over 9 km
-        assert!((distance_m(p, home) - 9000.0).abs() < 20.0, "{}", distance_m(p, home));
+        let Motion::Line { bearing_deg, stop_m, arrive: Some(a), .. } = &e.motion else { panic!("{:?}", e.motion) };
+        assert!((bearing_deg - bearing(home, GATE)).abs() < 0.1);
+        assert!(stop_m.is_some_and(|s| (s - (9000.0 - dist)).abs() < 1.0), "{stop_m:?}");
+        assert!(a.ring && a.rate_dps > 0.0 && (a.rate_dps - (160.0f64 / 9000.0).to_degrees()).abs() < 1e-3);
+        // 10 s out: 1.6 km along that line
+        let (p, _) = eval(&e.motion, 10.0, e.reach_mps, e.cap_m);
+        assert!((distance_m(GATE, p) - 1600.0).abs() < 2.0);
+        // on the ring at the stop (37 s), then a quarter turn further (88 s) around home
+        let t_stop = (9000.0 - dist) / 160.0;
+        let (p0, r) = eval(&e.motion, t_stop, e.reach_mps, e.cap_m);
+        assert!((distance_m(p0, home) - 9000.0).abs() < 20.0);
+        assert!(matches!(r, Region::Ellipse { .. }), "not surely there yet: {r:?}");
+        let (p1, _) = eval(&e.motion, t_stop + 88.36, e.reach_mps, e.cap_m);
+        assert!((distance_m(p1, home) - 9000.0).abs() < 20.0);
+        let turned = (bearing(home, p1) - bearing(home, p0)).rem_euclid(360.0);
+        assert!((turned - 90.0).abs() < 1.0, "{turned}");
+        // long after: anywhere on the ring
+        let (_, r) = eval(&e.motion, 10_000.0, e.reach_mps, e.cap_m);
+        assert!(matches!(r, Region::Arc { radius_m, spread_deg, .. } if radius_m == 9000.0 && spread_deg == 180.0), "{r:?}");
     }
 
     #[test]
@@ -1731,6 +2159,24 @@ mod tests {
         let e = estimate(&plane);
         let f = e.failsafe.as_ref().expect("a branch");
         assert_eq!((f.action, f.after_s, f.fires_t, f.profile.as_str()), ("rtl", 120.0, 1120.0, "satcom"));
+        // 200 s silent: the timer fired 80 s ago, so the branch leads and is evaluated too
+        assert!(f.fired && f.now.is_some() && e.leading == "failsafe");
+        assert_eq!(f.now.as_ref().map(|n| n.t), Some(1200.0));
+        let v = agent_view(&e, 1200.0);
+        assert_eq!(v["leading"], "failsafe");
+        assert_eq!(v["failsafe"]["fired"], true);
+        assert!(v["failsafe"]["now"]["radius_m"].as_f64().is_some_and(|r| r > 0.0));
+        assert_eq!(v["as_of"], 1000.0);
+        assert_eq!(v["age_s"], 200.0);
+        assert_eq!(v["task"]["model_t0"], 1000.0);
+        assert!(v["note"].as_str().is_some_and(|n| n.contains("not an observed fact")));
+        // before the timer: the task model leads
+        let mut early = plane.clone();
+        early.now = 1047.0;
+        let e = estimate(&early);
+        let f = e.failsafe.as_ref().expect("a branch");
+        assert!(!f.fired && f.now.is_none() && e.leading == "task");
+        assert_eq!(agent_view(&e, 1047.0)["failsafe"]["now"], serde_json::Value::Null);
         // the branch starts where the first model had it at 120 s, with its uncertainty then
         let (p120, r120) = eval(&e.motion, 120.0, e.reach_mps, e.cap_m);
         let Motion::Line { from, along0_m, speed_mps, arrive, .. } = &f.motion else { panic!() };
@@ -1774,6 +2220,7 @@ mod tests {
                 radius_m: 15.0,
                 ring: false,
                 width_m: 0.0,
+                rate_dps: 0.0,
             }),
         };
         let (p, r) = eval(&m, 100.0, 100.0, 25_000.0);
@@ -1835,7 +2282,19 @@ mod tests {
         assert_eq!(*along0_m, 30.0);
         let f = e.failsafe.expect("surfaces");
         assert_eq!(f.action, "surface");
-        assert!(matches!(f.motion, Motion::Point { .. }));
+        assert!(matches!(f.motion, Motion::Point { rate_mps, .. } if rate_mps == DRIFT_MPS), "{:?}", f.motion);
+        // with the water sampled under it: it drifts at the current, growing with it
+        auv.water = Some(WaterTrack {
+            pos: GATE,
+            t: 1000.0,
+            sigma_m: 10.0,
+            drift_en: [1.8, 0.0],
+            current_en: [1.8, 0.0],
+            wind_en: [0.0, 0.0],
+        });
+        let f = estimate(&auv).failsafe.expect("surfaces");
+        assert!(matches!(f.motion, Motion::Point { rate_mps, .. } if (rate_mps - (1.8 + 0.54 + 0.1)).abs() < 0.01), "{:?}", f.motion);
+        auv.water = None;
         // a tethered ROV disarms instead
         auv.link_class = Some("tether");
         auv.submerged = false;
