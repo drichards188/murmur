@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 7] = [
+const LOGS: [(&str, u32); 8] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -37,10 +37,13 @@ const LOGS: [(&str, u32); 7] = [
     // rules 4: the same scenario, its run.started naming the operator roster and its
     // engagement order the loiter radius
     ("v4-engagement-scenario-01.jsonl", 4),
+    // rules 5: the same scenario, its policy carrying the [queue] for unreachable vehicles
+    // (policy schema 3)
+    ("v5-engagement-scenario-01.jsonl", 5),
 ];
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v4-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v5-engagement-scenario-01.jsonl";
 
 fn accepting(rules: RulesAccepted) -> ReplayOptions<'static> {
     ReplayOptions {
@@ -280,7 +283,7 @@ fn a_downgraded_claim_is_caught_by_what_the_log_carries() {
         whats(&r)
     );
     // a rules 4 log claiming rules 3 still names its roster and its order's loiter radius
-    let mut ls = lines(&fixture(CURRENT));
+    let mut ls = lines(&fixture("v4-engagement-scenario-01.jsonl"));
     assert!(ls[0].contains("\"rules_version\":4,"));
     ls[0] = ls[0].replacen("\"rules_version\":4,", "\"rules_version\":3,", 1);
     let r = with(&rechain(&ls), RulesAccepted::Exactly(3));
@@ -292,7 +295,7 @@ fn a_downgraded_claim_is_caught_by_what_the_log_carries() {
         );
     }
     // and one that dropped its roster still claims rules 4, which always name one
-    let mut ls = lines(&fixture(CURRENT));
+    let mut ls = lines(&fixture("v4-engagement-scenario-01.jsonl"));
     let (b, p) = (ls[0].find(",\"roster\":{").unwrap(), ls[0].find(",\"policy\":").unwrap());
     ls[0] = format!("{}{}", &ls[0][..b], &ls[0][p..]);
     let r = with(&rechain(&ls), RulesAccepted::Exactly(4));
@@ -300,6 +303,25 @@ fn a_downgraded_claim_is_caught_by_what_the_log_carries() {
         whats(&r).contains(&"a rules 4 log names its operator roster in run.started"),
         "{:?}",
         whats(&r)
+    );
+    // a rules 5 log claiming rules 4 (and policy schema 2) still carries its [queue]
+    let mut ls = lines(&fixture(CURRENT));
+    assert!(ls[0].contains("\"rules_version\":5,\"policy_schema\":3,"));
+    ls[0] = ls[0].replacen(
+        "\"rules_version\":5,\"policy_schema\":3,",
+        "\"rules_version\":4,\"policy_schema\":2,",
+        1,
+    );
+    let r = with(&rechain(&ls), RulesAccepted::Exactly(4));
+    let w = whats(&r);
+    assert!(
+        w.iter()
+            .any(|m| m.contains("a [queue] policy") && m.contains("only builds of rules 5")),
+        "{w:?}"
+    );
+    assert!(
+        w.iter().any(|m| m.contains("a key of a later policy schema")),
+        "{w:?}"
     );
 }
 
