@@ -216,6 +216,13 @@ group. Dates are 2026.
   cannot be caught from what the C2 shows (a neutral that looks exactly like the hostile, a
   spoofed position with good flags); those scenarios measure the picture, not the decider, so
   the report keeps scenarios separate rather than averaging them into one catch rate.
+- **Engagements are measured by the scenario suite, checked from the log alone** (10-04).
+  The 30 Phase E scenarios run deterministically through `murmur-scenarios` in every batch,
+  over seeds and track noise. The harness does not trust the engine's verdicts: it reads each
+  audit log and counts an engagement dispatched or released without two distinct signers
+  with engagement authority, neither the proposer, on one frozen plan, as a violation,
+  beside the engine's own replay and forged-log checks. Live engagement steps wait until the
+  proxy can sign through picture tokens.
 - **The real-model arm is opt-in and capped** (10-03). `MURMUR_EVAL_MODEL=1` or the runner
   refuses; usage is priced after every call and the run stops calling past
   `MURMUR_EVAL_MAX_USD` (default $2). The Anthropic SDK is not in `requirements.txt`; no test

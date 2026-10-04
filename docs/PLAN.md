@@ -383,14 +383,18 @@ Built (first cut; `eval/README.md` says how to run it, `eval/METRICS.md` defines
   correct-void rate, false rejects, override rate, discrimination d' and goodput (borrowed from
   SandTable), approval latency against the information shown and the queue, time to effect,
   and invariants that must be zero (an agent authorization, a human-tier intent auto-approved,
-  an armed dispatch without a human, a dispatch with a failing check, an engagement without
-  two approvers, a replay mismatch, and more).
+  an armed dispatch without a human, a dispatch with a failing check, an engagement dispatched
+  or released without two signers with engagement authority on one frozen plan, read from the
+  log alone, a replay mismatch, and more).
 - **Adversarial scenarios** (Golden Gate, seeded): misclassified neutral near the bridge,
   spoofed GNSS on our own aircraft, link cut during an approval, approval flood under a strict
-  policy, stale track, plausible but wrong proposals. Phase E's engagement scenarios (target
-  moves after approval, neutral enters the keep-out, friendly sub near the target, proposer
-  approves its own nomination) are placeholders in `eval/scenarios/engagement/` behind the
-  plug-in point `eval/engage.py`, skipped until the bridge takes engagements.
+  policy, stale track, plausible but wrong proposals.
+- **Engagement scenarios** (Phase E): every batch runs the 30 scenarios of
+  `sim/scenarios/engage/` through `eval/engage.py` (`murmur-scenarios --json` over seeds and
+  track-noise levels: the real engine, its replay and the forged-log checks) and the
+  harness's own invariants on every audit log; the report has a section for it. Live
+  engagement steps in a storyline stay placeholders until the proxy can sign an engagement
+  (two operators with engagement authority quoting picture tokens).
 - First batch (2026-10-04, `docs/eval/phase-g-report.html`): 6 scenarios x 4 arms x 3 seeds,
   72 runs (a full batch takes 39 min on 8 parallel stacks; stale-track was rerun after a
   scenario fix, as the report says), every run ok, zero invariant violations, every log
@@ -402,6 +406,15 @@ Built (first cut; `eval/README.md` says how to run it, `eval/METRICS.md` defines
   dispatched to a silent aircraft (the mission upload then timed out).
   Approve-all caught nothing; reject-all caught everything and rejected every legitimate card
   (d' 0 for both). These are a scripted proxy's numbers, not human data.
+- Engagement suite on the merged Phase E code (10 seeds x track noise 0, 3, 10, 20 m: 1,200
+  scenario runs): zero invariant violations (380 effects released, each with two signers
+  with engagement authority on one frozen plan), every log replayed, 511/511 forged logs
+  caught. Every scenario ended as designed at 0, 3 and 10 m; at 20 m 91 of 300 did not, all
+  but one on the safe side (the picture watch aborted, or the signatures never completed, on
+  a noisy track). The one release the design did not expect (scenario 10, seed 8) came
+  earlier than designed, when the engine's prediction put the friendly AUV 282 m from the
+  effect point, 7 m outside the 275 m keep-out; it kept closing afterwards. The velocity-noise
+  follow-up in murmur-decide is about this kind of case.
 
 Next: wire the engagement scenarios when Phase E lands; a cross-check that can catch a spoofed
 position (our own vehicles seen by our own sensors); track-age rules for vehicle tasks aimed
