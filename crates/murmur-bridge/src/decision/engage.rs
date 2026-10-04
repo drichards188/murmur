@@ -377,6 +377,11 @@ impl Decision {
         // the world only when an engagement is in play (a snapshot of a large fleet is not free)
         if active {
             let world = self.snapshot();
+            // every vehicle event that came in before this picture (the receive loop runs
+            // beside the tick: a mode change can land after the tick's own drain) is handled
+            // before anything is decided on it: a platform whose failsafe took it out of its
+            // intercept is stopped first, never released on
+            self.log_vehicle_events(core);
             let out = core.engine.step_engagements(&world, &self.terrain.oracle());
             // each engagement on its own: one that failed (an audit write) is reported, the
             // others' orders are still carried out

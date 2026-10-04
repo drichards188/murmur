@@ -187,8 +187,12 @@ impl Erig {
 
     /// Nominate (op-1) and sign twice (op-2, op-3): approved and dispatched.
     async fn approved(&self, fallback: &str) -> IntentId {
-        self.r
-            .vehicle(1, Firmware::Copter, "fpv", TARGET); // armed, on the target
+        self.approved_at(fallback, TARGET).await // armed, on the target
+    }
+
+    /// [`Erig::approved`] with the platform starting at `at` (lat, lon).
+    async fn approved_at(&self, fallback: &str, at: (f64, f64)) -> IntentId {
+        self.r.vehicle(1, Firmware::Copter, "fpv", at);
         sleep(Duration::from_millis(500)).await;
         self.picture().await;
         let out = self
@@ -427,7 +431,10 @@ async fn a_fleet_vehicle_never_heard_from_is_not_clear_of_the_keep_out() {
 #[tokio::test(start_paused = true)]
 async fn a_platform_leaving_its_intercept_stops_the_engagement() {
     let e = engage_rig();
-    let id = e.approved("return").await;
+    // en route to the effect point, 500 m out: no release can be ready before it leaves (on
+    // the point, a picture whose sensed track reads as moving, 0.3 m/s or more, may release
+    // at once: the rig's noise draws follow the wall clock)
+    let id = e.approved_at("return", (TARGET.0, TARGET.1 + 0.0057)).await;
     let cell = e.r.world.vehicles().into_iter().find(|c| c.uid == 1).expect("platform");
     let mode = |text: &str| {
         cell.write(|v| {
@@ -490,6 +497,45 @@ async fn the_platforms_own_failsafe_stops_the_engagement() {
     assert_eq!(e.r.state(id), State::Aborted, "{}", e.r.reason(id));
     assert!(e.r.reason(id).contains("failsafe took over"), "{}", e.r.reason(id));
     assert!(e.tracks.take_effects().is_empty(), "no effect");
+    let rep = replay::replay_str(&e.r.log.text()).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_mode_change_received_before_the_release_picture_is_handled_before_the_release() {
+    // the platform's AUTO -> RTL reaches the bridge after this tick drained the vehicle
+    // events, before the engagement step takes the picture a release would rest on: it is
+    // handled first, so no effect is released on a platform that left its intercept
+    let e = engage_rig();
+    let id = e.approved("return").await;
+    // ready to release: on the point, past the plan's time, the track held
+    e.r.clock.advance_ms(2_000);
+    e.sense(true);
+    let cell = e.r.world.vehicles().into_iter().find(|c| c.uid == 1).expect("platform");
+    cell.write(|v| {
+        v.events.push_back(crate::vehicle::VehicleEvent {
+            kind: "mode",
+            text: "AUTO -> RTL".into(),
+        });
+    });
+    // the engagement step alone, as on a tick whose event drain came before the event
+    {
+        let mut core = e.r.d.lock();
+        e.r.d.step_engagements(&mut core);
+    }
+    assert_eq!(e.r.state(id), State::Aborted, "{}", e.r.reason(id));
+    assert!(e.r.reason(id).contains("left its intercept (mode AUTO -> RTL)"), "{}", e.r.reason(id));
+    assert!(e.tracks.take_effects().is_empty(), "no effect");
+    // without the mode change, the same picture releases (the test is not vacuous)
+    let e2 = engage_rig();
+    let id2 = e2.approved("return").await;
+    e2.r.clock.advance_ms(2_000);
+    e2.sense(true);
+    {
+        let mut core = e2.r.d.lock();
+        e2.r.d.step_engagements(&mut core);
+    }
+    assert_eq!(e2.r.state(id2), State::Effected, "{}", e2.r.reason(id2));
     let rep = replay::replay_str(&e.r.log.text()).expect("parses");
     assert!(rep.ok(), "{:?}", rep.mismatches);
 }
