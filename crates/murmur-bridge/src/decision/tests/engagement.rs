@@ -6,8 +6,10 @@
 //!
 //! Time: the engine's clock is advanced a second per tick while vehicle facts are stamped
 //! by the wall clock, so these runs stay within a few engine seconds (the platform starts
-//! on the target, the dispatch delay is zero); the full timeline is the decision layer's
-//! scenarios (`sim/scenarios/engage`).
+//! on the target unless a test says otherwise, the dispatch delay is zero); the full
+//! timeline is the decision layer's scenarios (`sim/scenarios/engage`). Sensing noise is
+//! drawn per wall-clock second, so a test whose platform starts on the target may find the
+//! release ready on its first tick at some start seconds (bd murmur-ek3).
 
 use murmur_decide::Affiliation;
 

@@ -380,7 +380,9 @@ impl Decision {
             // every vehicle event that came in before this picture (the receive loop runs
             // beside the tick: a mode change can land after the tick's own drain) is handled
             // before anything is decided on it: a platform whose failsafe took it out of its
-            // intercept is stopped first, never released on
+            // intercept is stopped first, never released on. The drain must stay after the
+            // snapshot: the snapshot carries no mode, so an event that lands between a drain
+            // placed before it and the snapshot would reopen the race (no test pins this order)
             self.log_vehicle_events(core);
             let out = core.engine.step_engagements(&world, &self.terrain.oracle());
             // each engagement on its own: one that failed (an audit write) is reported, the
