@@ -32,8 +32,22 @@ group. Dates are 2026.
   human tier is approved at submission (`approval.at_submission`, not `auto_approved`), so
   the operator never waits on themselves; agent proposals in those tiers still wait in the
   inbox. Checks still run first and fail closed. `submitter_authorizes = false` on a tier
-  restores the wait; a genuinely different second approver is Phase E work (today the same
-  operator could still approve it in the inbox).
+  restores the wait. Phase E added the genuinely different second approver
+  (`approvers`, `proposer_may_approve` per tier; always for an engagement, see below).
+- **Engagement: two operators with engagement authority, never the proposer** (10-03,
+  Phase E). An engagement (an abstract effect: a point, a radius, a time) waits for
+  `approvers = 2` distinct signatures from sessions opened with engagement authority
+  (`MURMUR_ENGAGE_OPERATORS`), and its proposer, human or agent, never signs it. The engine
+  holds a floor whatever `sim/policy.toml` says: never auto, never approved at submission,
+  never the proposer, at least one approver. This closes the gap left by "the operator's own
+  command is the human decision": that rule stands for every other kind; for an engagement
+  the submitter's own command is never the approval.
+- **Hold the picture, then act or stop** (10-03, Phase E). What the approvers saw (the
+  track's facts and the preview) is stored with the final approval and re-checked every
+  second until the effect; any change beyond tolerance voids it (before dispatch) or aborts
+  it (after) and commands the recorded fallback. Never a silent continue: link loss is a
+  void like any other (silence past the approval's assumption, or the platform's report
+  interval more than doubling).
 - **Space as taskable infrastructure** (10-02, user direction): request coverage and
   capabilities from satellites when needed; don't fly or command satellite buses (no CCSDS).
   One theater map for earthbound nodes, plus a space timeline and a globe inset; one camera
@@ -45,6 +59,20 @@ group. Dates are 2026.
 
 ## Fleet and simulation
 
+- **Engagement effects are abstract, on the truth side only** (10-03, Phase E). The bridge
+  hands the effect (point, radius, time) back to the contacts process on the labelled
+  simulation channel (in the answer to its next `POST /api/sim/contacts`). Contacts inside
+  the radius are flagged with the time; `on_effect = "out_of_play"` (default) takes one out
+  of the scenario (our sensors stop detecting it, which is all the assessment can see),
+  `"persists"` keeps it moving. What was inside, whether the intended contact was, and
+  collateral (other contacts, our vehicles by their reported positions) go to the evaluation
+  truth log only. No damage, blast or lethality model of any kind.
+- **The Magura-class USV is armed in the catalog** (10-03): its role is "small fast attack
+  USV"; with `armed = true` every task on it needs a human, and it can take an engagement.
+- **Assessment from perception** (10-03): after the effect, our vehicles whose catalog
+  sensors (radar, EO/IR, sonar by domain; not AIS or ESM) reach the effect point at their
+  nominal range cover it. Detected after the effect (beyond a grace for the truth side's
+  tick): persists; covered `assess_dwell_s` without a detection: ceased; else unknown.
 - **Truth and perception in separate processes, on a labelled channel** (10-02, Phase C2).
   Contacts that are not ours run in `crates/murmur-contacts`, not in the stand-in engine:
   stand-ins are our vehicles and speak their real protocol; contacts have none, and the
@@ -91,6 +119,48 @@ group. Dates are 2026.
 
 ## Engineering
 
+- **The engagement chain is in the engine, as pure functions of logged inputs** (10-03,
+  Phase E). Checks, preview, snapshot, picture watch, release, observation and assessment
+  live in `murmur-decide` (`engage.rs`) and every result is logged with its inputs, so
+  `murmur-replay` recomputes the voids and the assessment, not only the checks. The bridge
+  feeds the world each second (`Engine::step_engagements`) and carries out what the engine
+  releases (an intercept, a fallback, an effect). A picture verdict is logged every second
+  while an engagement is in play (`engage.picture`), so a suppressed void is detectable: a
+  failed picture must be followed by its stop before anything else happens to it.
+- **Engagement authority is a type** (10-03). `EngagementAuthority` exists only inside an
+  `OperatorSession` opened with `Grants { engage: true }` (logged with the session);
+  `approve_engagement` takes nothing else, and `approve` refuses an engagement. Two-person
+  approval is signatures in the engine (`approval.concurred` until the last,
+  `approval.granted`), checked again by replay against the logged sessions.
+- **No homing, no aim-point optimisation** (10-03). The preview is a straight-line intercept
+  at catalog cruise speed against the track's constant-velocity projection; the platform is
+  sent to loiter at the predicted point; the effect is released only when the picture holds,
+  the predicted time has come, the platform is at the point and the track is estimated
+  inside the radius. If not within `late_s`, it aborts.
+- **Keep-outs are conservative, in 2D** (10-03). Every vehicle of ours (all domains) but the
+  engaging platform, carried along its velocity to the effect time, or, without a fresh
+  velocity, wherever it could get at cruise speed; every track but the target and declared
+  hostiles (neutral, unknown, suspect, assumed friend, stale ones too) with 2-sigma of its
+  predicted uncertainty. A vertical cylinder of unlimited height: an aircraft high overhead
+  counts.
+- **Unknown endurance on an engagement: a weaker check, stated** (10-03). Most armed
+  platforms have no endurance figure; engage is consequential (an unverified check would
+  block it), so `reach` passes on a fresh battery above the reserve and a transit of at
+  most `unknown_endurance_max_transit_s`, and its detail says the task cost was not
+  estimated.
+- **Adversarial scenarios at the decision layer** (10-03). `sim/scenarios/engage/*.toml`
+  (a small world, a timeline, the designed end, optional log tamper) run against the real
+  engine by `murmur-scenarios` and `cargo test`; log attacks recompute the hash chain so
+  only recomputation can catch them. The Phase G harness loads the same files (seeded track
+  noise for batches). The live stack runs the same engine with stand-ins and contacts.
+- **Agents nominate engagements through `propose_intent`** (10-03). No new writer tool (the
+  only writers stay `propose_intent` and `withdraw_intent`); `get_nominations` is a read.
+  The forbidden-name test now also tries engagement names (approve, abort, release,
+  declare); nothing an agent can call signs, stops or releases one.
+- **The nomination form's dry run is not a decision** (10-03). `POST /api/engage/options`
+  runs the engagement checks and preview for every armed platform on the world now, creates
+  nothing and logs nothing; the decision is the nomination and its signatures, each
+  re-checked by the engine.
 - **The MCP server lives in the bridge, on in-process `AgentPort`s** (10-02, Phase F). Not a
   separate process over HTTP: there is no agent HTTP path, so the only way for agent code to
   reach the engine is the typed `AgentPort`, and "no approve tool" is the absence of a method,

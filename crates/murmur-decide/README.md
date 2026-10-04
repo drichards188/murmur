@@ -7,7 +7,7 @@ small binary (`murmur-replay`). It does not depend on the bridge; the bridge cal
 ## The model
 
 Every action, from a human or an AI agent, is an **intent**: what (orbit, patrol, hold, rtl,
-track; collect and cover for satellites; engage arrives in Phase E), to which vehicles (by
+track; collect and cover for satellites; engage, Phase E, below), to which vehicles (by
 `uid`; none for collect and cover, which request satellites, not fleet vehicles), with what
 constraints, why (required for agents), from whom. It moves through one state machine:
 
@@ -15,6 +15,8 @@ constraints, why (required for agents), from whom. It moves through one state ma
 proposed -> checked -> auto_approved | pending_approval
          -> approved | rejected | expired | voided -> dispatched -> done | failed
 checked -> approved   (authorize_at_submission: a human's own intent in a human tier)
+dispatched -> effected -> done | failed       (engage: release, then the assessment)
+dispatched -> aborted                         (engage: stopped before the effect)
 ```
 
 The full table is `intent::next_state`; anything else is a typed `IllegalTransition`.
@@ -75,8 +77,12 @@ The full table is `intent::next_state`; anything else is a typed `IllegalTransit
      whatever the policy says: the at-submission path needs a `HumanAuthority`, which the
      agent path doesn't have.
    - **`submitter_authorizes = false`** on a tier makes the submitter's own intent wait in
-     the inbox too (the hook for Phase E's two-person engagement; that the inbox approver
-     is someone else is not enforced yet).
+     the inbox too.
+   - **Two-person approval**: `approvers = N` on a tier needs N distinct signers (the first
+     N-1 logged as `approval.concurred`, the last as `approval.granted`), and
+     `proposer_may_approve = false` refuses the proposer (logged `operator.action
+     approval.refused`). An engagement always excludes its proposer and needs an
+     `EngagementAuthority` (below).
    Pending intents expire (default 120 s; per kind `[approval.kind.<kind>]` with its own
    `expire_s`, or for collect `until = "tasking_lead"`: the chosen pass's collect time minus
    the class's tasking lead time, mapped to engine time through the segment's scenario map,
@@ -93,6 +99,43 @@ The full table is `intent::next_state`; anything else is a typed `IllegalTransit
    `sha256` = SHA-256 of its canonical serialization (compact `serde_json`, fields in
    declaration order, no maps). Decision inputs carry `areas_sha256` instead of the
    polygons (about 700 bytes saved per decision event).
+
+## Engagements (Phase E)
+
+`engage.rs`: the engagement decision chain, a C2 decision study with an abstract effect (a
+point, a radius, a time); nothing models a weapon, guidance or an aim point. `Task::Engage
+{track, effect_radius_m, window, fallback}` names a perception track and one armed platform
+(`uids`); a missing window is written into the spec at creation.
+
+- **Checks** (`engage::evaluate`, after the vehicle rules, each pass / fail / unverified /
+  not evaluated; engage is consequential so the last two block): `target_declared`,
+  `target_identity`, `target_recency`, `target_uncertainty`, `engagement_zone`, `no_strike`
+  (area kinds `engagement_zone` and `no_strike` in `sim/areas/*.geojson`),
+  `keep_out_friendly`, `keep_out_tracks`, `platform_armed`, `reach`. Thresholds in
+  `[rules.engage]`.
+- **Preview** (`engage::preview`): straight-line intercept at catalog cruise speed against
+  the track's constant-velocity projection, after `dispatch_delay_s`; the effect point and
+  time; the uncertainty ellipse. Logged on every `check.result` (`preview`), recomputed by
+  replay.
+- **Authorize**: `Engine::approve_engagement(id, &EngagementAuthority, ...)`. The authority
+  lives only in a session opened with `Engine::open_operator_session_with(op, Grants {
+  engage: true })` (the grants are logged with `session.opened`). `approve` refuses an
+  engagement. Policy floor in `policy::decide`: never auto, never at submission, proposer
+  excluded, at least one approver.
+- **Hold the picture**: the final `approval.granted` carries an `EngageSnapshot`;
+  `Engine::step_engagements(world)` (once a second) logs `engage.picture` (declared,
+  reclassified, recency, deviation, keep-outs, the platform's link, the window and
+  lateness; once dispatched also arrival, effect time, alignment and uncertainty) and voids
+  (approved) or aborts (dispatched) with `engage.stopped` when it fails, releasing a
+  `FallbackOrder`; when it holds and is ready it logs `engage.effect` and returns an
+  `EffectOrder`. After the effect it logs `engage.observe` each second and finally
+  `engage.assessed` (persists, ceased, unknown).
+- **Stop**: `Engine::abort_engagement(id, &HumanAuthority, note)` (any operator) and
+  `Engine::stop_engagement_system(id, reason)` (the bridge: retasked, task failed).
+  `dispatch` and `finish` refuse engagements; `dispatch_order` returns `Order::Engage`.
+- **Scenarios** (`scenario.rs`, `murmur-scenarios`, `sim/scenarios/engage/`): the
+  adversarial set, one or more per invariant, with log tampering; see that directory's
+  README for the format.
 
 ## Satellite tasking: collect and cover
 
@@ -280,9 +323,9 @@ on the scenario clock.
   chain, or a cut tail, is not detected by replay alone (see the hash chain section).
 - Cross-platform replay: trigonometry goes through the platform libm. Same machine is exact;
   across machines a last-bit difference could in principle flip a boundary case.
-- Phase E pieces: engage, two-person approval (`submitter_authorizes = false` makes the
-  submitter wait, but nothing yet requires the inbox approver to be a different person),
-  approval holding a track snapshot.
+- Engagements: a straight-line intercept (no turn radius or climb), 2D keep-outs, the
+  platform's own path checked against no-go areas but not no-strike areas, engagement
+  authority on the same placeholder authentication as the operator header.
 - Satellite tasking: no cloud model (optical options note it), no sensitive-area or
   cost/priority tiers yet (every collect needs a human), no competing demand or agility
   model, one collect per intent. Cover reads the area's centroid only. The segment identity

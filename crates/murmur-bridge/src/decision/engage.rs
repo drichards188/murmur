@@ -25,6 +25,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use murmur_decide::{
+    Clock,
     CheckResult, EffectOrder, EngageOrder, EngageWindow, Fallback, FallbackOrder, Intent,
     IntentId, Outcome as CheckOutcome, Proposal, Rationale, State, Task, Time, TrackFacts,
     engage,
@@ -522,7 +523,107 @@ impl Decision {
     }
 }
 
+/// `POST /api/engage/options`: which armed platforms could take a nomination now.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OptionsRequest {
+    pub track: String,
+    pub effect_radius_m: f64,
+    #[serde(default)]
+    pub window_s: Option<u32>,
+    #[serde(default)]
+    pub fallback: Option<String>,
+    /// Only these vehicles (default: every armed vehicle in the fleet).
+    #[serde(default)]
+    pub uids: Option<Vec<crate::vehicle::Uid>>,
+}
+
 impl Decision {
+    /// A dry run for the nomination form (read-only, not a decision, not logged): for each
+    /// armed vehicle, the checks a nomination with it would get on the world now, and its
+    /// preview. Reachable ones (every check passes) first, soonest effect first.
+    pub async fn engage_options(&self, req: OptionsRequest) -> Result<Value, DecisionError> {
+        let fleet = self.fleet();
+        let armed: Vec<crate::vehicle::Uid> = fleet
+            .iter()
+            .filter(|(u, _)| req.uids.as_ref().is_none_or(|l| l.contains(u)))
+            .filter(|(_, c)| {
+                c.read(|v| {
+                    v.identity
+                        .as_ref()
+                        .and_then(|i| i.str("platform"))
+                        .and_then(|p| self.catalog.get(p))
+                        .is_some_and(|p| p.armed)
+                })
+            })
+            .map(|(u, _)| *u)
+            .collect();
+        let fallback: Fallback = req
+            .fallback
+            .as_deref()
+            .and_then(|f| serde_json::from_value(json!(f)).ok())
+            .unwrap_or(Fallback::Return);
+        let now = self.clock.now();
+        let window = EngageWindow {
+            from: None,
+            until: now.plus_ms(
+                i64::from(
+                    req.window_s
+                        .unwrap_or(self.rules.engage_rules().default_window_s),
+                ) * 1000,
+            ),
+        };
+        let mut out = Vec::new();
+        for uid in armed {
+            let spec = murmur_decide::IntentSpec {
+                id: IntentId(0),
+                created_t: now,
+                source: murmur_decide::Source::Human {
+                    id: murmur_decide::OperatorId::new("dry-run"),
+                },
+                task: Task::Engage {
+                    track: req.track.clone(),
+                    effect_radius_m: req.effect_radius_m,
+                    window: Some(window),
+                    fallback,
+                },
+                uids: vec![duid(uid)],
+                constraints: murmur_decide::Constraints::default(),
+                rationale: None,
+            };
+            self.prefetch(&spec.task, &spec.uids).await;
+            let world = self.snapshot();
+            let inputs = world.for_intent_with(&spec, &self.terrain.oracle(), &self.rules);
+            let checks = murmur_decide::rules::evaluate(&spec, &inputs, &self.rules);
+            let passed = murmur_decide::rules::passed(&checks, murmur_decide::TaskKind::Engage);
+            let preview = engage::preview(&spec, &inputs, &self.rules).ok();
+            let callsign = fleet.get(&uid).and_then(|c| {
+                c.read(|v| {
+                    v.identity
+                        .as_ref()
+                        .and_then(|i| i.str("callsign"))
+                        .map(str::to_string)
+                })
+            });
+            out.push(json!({
+                "uid": uid,
+                "callsign": callsign,
+                "passed": passed,
+                "checks": checks,
+                "preview": preview,
+            }));
+        }
+        out.sort_by(|a, b| {
+            let key = |v: &Value| {
+                (
+                    !v["passed"].as_bool().unwrap_or(false),
+                    v["preview"]["effect_t"].as_i64().unwrap_or(i64::MAX),
+                )
+            };
+            key(a).cmp(&key(b))
+        });
+        Ok(json!({ "t": now, "track": req.track, "options": out }))
+    }
+
     /// Every engagement intent, newest first, as the console and agents see it (the intent
     /// with its engagement record, and the signatures and live picture).
     pub fn nominations_json(&self) -> Vec<Value> {

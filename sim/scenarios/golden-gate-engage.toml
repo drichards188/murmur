@@ -1,0 +1,98 @@
+# Golden Gate traffic for the engagement demo (Phase E): the suspect fast boat comes in from
+# Richardson Bay under the bridge and holds west of it, inside the engagement zone
+# (sim/areas: ez-gate-west); a harbor tour boat circles nearby and passes through the
+# keep-out once a lap (the "neutral enters the keep-out" void); ferries, a sailboat, drifting
+# fishing boats, a light aircraft and the coast guard cutter as in golden-gate.toml, without
+# the traffic that crosses the holding area. Truth only: the C2 sees what our sensors make of
+# it. An engagement's effect is an abstract event (a point, a radius, a time): a contact
+# inside the radius is flagged and, with on_effect = "out_of_play" (the default), leaves the
+# scenario; nothing models damage.
+title = "Golden Gate traffic, engagement demo"
+seed = 11
+
+[sensing]
+misclassification_rate = 0.0     # deterministic identities for the demo
+
+# ---------------------------------------------------------------- the suspect
+[[contact]]
+id = "fastboat-richardson"
+name = "Fast boat out of Richardson Bay with a spoofed fishing-vessel AIS"
+affiliation = "hostile"
+domain = "surface"
+kind = "small_fast_boat"
+speed_mps = 15
+motion = "route"
+route = [[-122.4760, 37.8560], [-122.4740, 37.8360], [-122.4790, 37.8230], [-122.4950, 37.8120]]
+reverse = true
+dwell_s = 1500                   # 25 minutes holding west of the bridge
+ais = { mmsi = "366999302", name = "F/V PACIFIC DAWN", ship_type = "fishing", spoofed = true }
+
+# ---------------------------------------------------------------- the neutral that closes in
+[[contact]]
+id = "tour-boat"
+name = "Harbor tour boat circling off Baker Beach (AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 6
+motion = "loiter"
+center = [-122.5000, 37.8160]
+radius_m = 500
+ais = { mmsi = "366999104", name = "MV BAY EXPLORER", ship_type = "passenger" }
+on_effect = "persists"
+
+# ---------------------------------------------------------------- the rest of the picture
+[[contact]]
+id = "ferry-sausalito"
+name = "Sausalito ferry (Ferry Building to Sausalito)"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 10
+motion = "route"
+route = [[-122.3905, 37.7960], [-122.4120, 37.8130], [-122.4400, 37.8220], [-122.4620, 37.8390], [-122.4770, 37.8560]]
+reverse = true
+dwell_s = 600
+ais = { mmsi = "366999101", name = "MV GOLDEN BEAR", ship_type = "passenger" }
+
+[[contact]]
+id = "sailboat-bay"
+name = "Sailing yacht on a lap of the central bay (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "sailboat"
+speed_mps = 3
+motion = "route"
+route = [[-122.4500, 37.8150], [-122.4650, 37.8300], [-122.4400, 37.8400], [-122.4200, 37.8180]]
+
+[[contact]]
+id = "fishing-bonita"
+name = "Crab boat drifting off Point Bonita (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+motion = "drift"
+at = [-122.5400, 37.8050]
+
+[[contact]]
+id = "cessna-sightseeing"
+name = "Light aircraft on a sightseeing loop (transponder on)"
+affiliation = "neutral"
+domain = "air"
+kind = "light_aircraft"
+speed_mps = 55
+alt_m = 450
+motion = "route"
+route = [[-122.3700, 37.7600], [-122.4500, 37.8100], [-122.4400, 37.8700]]
+
+[[contact]]
+id = "uscg-cutter"
+name = "Coast guard patrol boat on station in the central bay (AIS)"
+affiliation = "assumed_friend"
+domain = "surface"
+kind = "patrol_boat"
+speed_mps = 6
+motion = "loiter"
+center = [-122.4350, 37.8200]
+radius_m = 1200
+ais = { mmsi = "366999401", name = "CGC TERN", ship_type = "law_enforcement" }

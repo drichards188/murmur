@@ -11,7 +11,9 @@
 //! nominates an engagement, Phase E), `GET /api/intents`, `GET /api/intents/{id}`, `POST
 //! /api/intents/{id}/approve|reject|cancel|abort` (optional body `{"note": "..."}`; `abort`
 //! stops an approved or dispatched engagement before its effect, any operator), `GET
-//! /api/inbox`, `GET /api/operators` (who may sign an engagement). These name the operator in the `X-Murmur-Operator` header, which must be one
+//! /api/inbox`, `GET /api/operators` (who may sign an engagement), `POST /api/engage/options`
+//! (the nomination form's dry run: which armed platforms could take it, with checks and
+//! preview; nothing is created or logged). These name the operator in the `X-Murmur-Operator` header, which must be one
 //! of `MURMUR_OPERATORS`: a placeholder for real authentication. The WebSocket also sends
 //! `{"type": "decisions", "inbox": ..., "intents": [...]}` and `{"type": "tracks", ...}`
 //! (Phase C2, see `tracks`) on connect and whenever they change (existing clients ignore
@@ -59,6 +61,7 @@ pub fn router(app: App) -> Router {
         .route("/api/intents/{id}/{action}", post(intent_action))
         .route("/api/inbox", get(inbox))
         .route("/api/operators", get(operators))
+        .route("/api/engage/options", post(engage_options))
         .route("/api/platforms", get(platforms))
         .route("/api/stats", get(stats))
         .route("/ws", get(ws))
@@ -269,6 +272,22 @@ async fn intent_action(
 
 async fn inbox(State(app): State<App>) -> Response {
     Json(app.decision.inbox_json()).into_response()
+}
+
+/// The nomination form's dry run: which armed platforms could take an engagement on a track
+/// now, each with its checks and preview (read-only; nothing is created or logged).
+async fn engage_options(
+    State(app): State<App>,
+    body: Result<Json<crate::decision::engage::OptionsRequest>, JsonRejection>,
+) -> Response {
+    let req = match body {
+        Ok(Json(req)) => req,
+        Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, e.body_text()),
+    };
+    match app.decision.engage_options(req).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => decision_error(e),
+    }
 }
 
 /// The operators the bridge accepts and those with engagement authority (placeholder

@@ -45,7 +45,8 @@
 //! the other side: no `approved` state in a log without an `approval.granted` by an
 //! operator before the deadline, or an `approval.at_submission` by the intent's own human
 //! source in a tier that allows it (never on an agent's intent). A human approving their
-//! own proposal in the inbox is allowed (two-person approval is Phase E) and flagged
+//! own proposal in the inbox is allowed where the tier lets the proposer approve (never for an
+//! engagement, which also needs an [`EngagementAuthority`] and N distinct signers) and flagged
 //! `self_approved` on the approval.
 //!
 //! **Limits, stated plainly.** Rust privacy is a code-structure guarantee, not a security

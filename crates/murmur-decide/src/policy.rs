@@ -18,8 +18,8 @@
 //! `[approval] submitter_authorizes`, default true), the submission itself is the approval
 //! ([`PolicyDecision::submitter_authorizes`]; the engine records it as
 //! `approval.at_submission`). Set it false on a tier to make even the submitter's own intent
-//! wait in the inbox (the hook for Phase E's two-person engagement; that the inbox approver
-//! is a different person is not enforced yet). It never applies to an agent-sourced intent. In a logged policy without the key (logs written before it
+//! wait in the inbox; `approvers` and `proposer_may_approve` (below) make the inbox approval
+//! two-person. It never applies to an agent-sourced intent. In a logged policy without the key (logs written before it
 //! existed) it reads as false, which is how those runs behaved.
 //!
 //! **Two-person approval** (Phase E). A human tier may set `approvers = N` (N distinct
