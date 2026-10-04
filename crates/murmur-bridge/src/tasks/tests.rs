@@ -99,6 +99,8 @@ pub(crate) struct Quirks {
     pub stuck_in_progress: Option<apm::MavCmd>,
     /// cut the link the moment the vehicle switched to AUTO, before its ACK goes (once)
     pub cut_after_auto: bool,
+    /// cut the link right after the arm command's ACK went, before a heartbeat says armed
+    pub cut_after_arm: bool,
     /// its clock runs at this rate of ours (0: 1.0): a simulator slower than the wall
     pub boot_rate: f64,
 }
@@ -283,6 +285,12 @@ impl Fake {
                     }
                     self.armed = c.param1 > 0.5;
                     self.ack(c.command, apm::MavResult::MAV_RESULT_ACCEPTED);
+                    if self.q.cut_after_arm
+                        && self.armed
+                        && let Some(cut) = &self.q.cut
+                    {
+                        cut.store(true, Ordering::SeqCst);
+                    }
                 }
                 apm::MavCmd::MAV_CMD_DO_SET_MODE => {
                     if !self.q.ignore_mode {
@@ -1663,4 +1671,27 @@ async fn a_vehicle_its_failsafe_sent_home_is_held_then_armed() {
     assert_eq!(s.state, Done, "{s:?}");
     assert_eq!(w.count("MAV_CMD_COMPONENT_ARM_DISARM"), 2, "refused in RTL, then armed");
     assert_eq!(w.count("MISSION_COUNT"), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_arm_acked_but_never_seen_armed_on_a_lost_link_goes_back_to_the_queue() {
+    // found live: the link went the moment the arm command was acknowledged, before a
+    // heartbeat said armed: a lost link (the order goes back to the queue), not a refusal
+    let (copter, w) = watched(
+        41,
+        Firmware::Copter,
+        Quirks {
+            cut_after_arm: true,
+            ..quick()
+        },
+    );
+    sleep(Duration::from_millis(500)).await;
+    let tm = TaskManager::default();
+    let mut order = patrol(41, &copter, short_patrol());
+    order.requeue = true;
+    let t = tm.dispatch_unchecked(order);
+    let s = settle(&t.ops[0], 120).await;
+    assert_eq!(s.state, Requeued, "{s:?}");
+    assert!(s.detail.contains("armed heartbeat"), "{}", s.detail);
+    assert_eq!(w.count("MAV_CMD_DO_SET_MODE"), 0, "the start never went out");
 }

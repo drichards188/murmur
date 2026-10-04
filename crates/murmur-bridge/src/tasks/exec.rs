@@ -210,6 +210,10 @@ async fn run_inner(ctx: &OpCtx) -> Result {
         let deadline = Instant::now() + READY_TIMEOUT;
         while !ctx.v.read(|s| s.has_position(clock::mono())) {
             if Instant::now() > deadline {
+                // silent all along: a lost link (back to the queue), not a vehicle without a fix
+                if link_silent(&ctx.v) {
+                    return Err(Stop::LinkLost("waiting for a position fix".into()));
+                }
                 return fail("vehicle never got a position fix");
             }
             sleep(POLL).await;
@@ -227,6 +231,14 @@ async fn run_inner(ctx: &OpCtx) -> Result {
         TaskKind::Hold => t.hold().await,
         TaskKind::Track => t.track().await,
     }
+}
+
+/// Nothing heard from the vehicle for its link's lost-link time (3 of its expected report
+/// intervals).
+fn link_silent(v: &VehicleCell) -> bool {
+    let heard = v.read(|s| s.heard_mono);
+    let stale = v.link_snapshot(clock::mono()).stale_after_s();
+    heard.is_none_or(|t| clock::mono() - t > stale)
 }
 
 /// Next message from the vehicle matching `pred`, or None on timeout.
@@ -476,9 +488,7 @@ impl Task<'_> {
     /// Nothing heard from the vehicle for its link's lost-link time (3 of its expected
     /// report intervals).
     fn link_silent(&self) -> bool {
-        let heard = self.v().read(|s| s.heard_mono);
-        let stale = self.v().link_snapshot(clock::mono()).stale_after_s();
-        heard.is_none_or(|t| clock::mono() - t > stale)
+        link_silent(self.v())
     }
 
     /// The exchange in progress could not finish: a lost link if the vehicle is silent, else
@@ -920,7 +930,11 @@ impl Task<'_> {
         if self.v().read(|s| s.armed) {
             return Ok(());
         }
-        fail("arm accepted but vehicle never reported armed")
+        // its heartbeat may be what was lost: a lost link, not a refusal
+        self.stopped(
+            "waiting for the armed heartbeat",
+            "arm accepted but vehicle never reported armed".into(),
+        )
     }
 
     /// Set a mode by name; returns the mode number to watch for in heartbeats. Autopilots

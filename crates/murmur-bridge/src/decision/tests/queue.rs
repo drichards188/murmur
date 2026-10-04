@@ -884,3 +884,22 @@ fn the_fleet_identity_takes_each_vehicles_spawn_point_from_the_manifest() {
     assert_eq!(f.get(&1).and_then(|v| v.home), Some([37.825, -122.44]));
     assert_eq!(f.get(&7).and_then(|v| v.callsign.clone()).as_deref(), Some("SKY 1"));
 }
+
+#[tokio::test(start_paused = true)]
+async fn the_pointer_lists_the_open_orders() {
+    use crate::decision::queue::Pointer;
+    let r = rig();
+    let dir = std::env::temp_dir().join(format!("murmur-pointer-open-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let ptr = dir.join(".resume-1.json");
+    let _ = r.d.pointer.set(ptr.clone());
+    let (cell, w) = r.watched(74, Firmware::Copter, "x10", (LAT, LON), quick());
+    sleep(Duration::from_secs(1)).await;
+    let a = r.d.submit(&op1(), orbit(74)).await.expect("submit");
+    assert_eq!(a.state, State::Dispatched);
+    r.d.tick();
+    let p: Pointer = serde_json::from_slice(&std::fs::read(&ptr).expect("pointer")).expect("json");
+    assert_eq!(p.open, vec![a.id.0], "{p:?}");
+    go_silent(&cell, &w, 5.0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
