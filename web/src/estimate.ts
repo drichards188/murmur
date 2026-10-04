@@ -120,17 +120,27 @@ export function evalMotion(m: Motion, dtIn: number, reachMps: number, capM: numb
       const across = bound(m.across0_m + m.across_mps * dt, m.across0_m)
       // arrived only once even a vehicle lagging by the along-track uncertainty would be there
       let arrived = false
+      let atStop = false
       if (m.stop_m != null && d >= m.stop_m) {
         arrived = d >= m.stop_m + along
+        atStop = true
         d = m.stop_m
       }
-      const position = step(m.from, m.bearing_deg, d)
+      const stopPoint = step(m.from, m.bearing_deg, d)
       const a = m.arrive
+      // a ring joined: the point goes on around it from the moment it got there
+      let position = stopPoint
+      if (a && atStop && a.ring && a.radius_m > 0) {
+        const since = Math.max(0, dt - (m.stop_m ?? 0) / Math.max(m.speed_mps, 1e-9))
+        const angle = flatBearing(a.center, stopPoint) + a.rate_dps * since
+        position = step(a.center, ((angle % 360) + 360) % 360, a.radius_m)
+      }
       if (a && arrived && a.ring) {
         return { position, region: { kind: 'arc', center: a.center, radius_m: a.radius_m, width_m: a.width_m, angle_deg: flatBearing(a.center, position), spread_deg: 180 } }
       }
       if (a && arrived) return { position, region: { kind: 'circle', center: a.center, radius_m: a.radius_m + m.along0_m } }
-      return { position, region: { kind: 'ellipse', center: position, semi_major_m: along, semi_minor_m: across, bearing_deg: m.bearing_deg } }
+      // not surely there yet: the ellipse stays about the stop point, where a lagging vehicle is still heading
+      return { position, region: { kind: 'ellipse', center: stopPoint, semi_major_m: along, semi_minor_m: across, bearing_deg: m.bearing_deg } }
     }
     case 'point':
       return { position: m.at, region: { kind: 'circle', center: m.at, radius_m: bound(m.radius0_m + m.rate_mps * dt, m.radius0_m) } }
@@ -147,6 +157,13 @@ export function failsafeAt(e: Estimate, nowMs: number): Evaluated | null {
   const f = e.failsafe
   if (!f || nowMs / 1000 < f.fires_t) return null
   return evalMotion(f.motion, nowMs / 1000 - f.fires_t, e.reach_mps, e.cap_m)
+}
+
+/** The hypothesis that leads now: the failsafe branch once its timer has fired (the vehicle is
+ *  then probably on it, if it lost us too), else the task model. */
+export function leadingAt(e: Estimate, nowMs: number): { hypothesis: 'task' | 'failsafe'; at: Evaluated } {
+  const branch = failsafeAt(e, nowMs)
+  return branch ? { hypothesis: 'failsafe', at: branch } : { hypothesis: 'task', at: estimateAt(e, nowMs) }
 }
 
 /** Vehicles the map should draw an estimate for: silent, with a model from the bridge. */
@@ -215,6 +232,7 @@ export const BASIS_LABEL: Record<Estimate['basis'], string> = {
   rtl: 'returning home',
   velocity: 'dead reckoned',
   stationary: 'stationary',
+  drift: 'drifting with the water',
 }
 
 export const FAILSAFE_LABEL: Record<FailsafeBranch['action'], string> = {

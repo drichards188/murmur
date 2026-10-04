@@ -259,8 +259,18 @@ fn kind(s: &Surface) -> &'static str {
     }
 }
 
+/// Water conditions at a point, for the drift of a silent surface vehicle
+/// (`crate::estimate`): the current and the wind, [east, north] m/s; None outside the
+/// scenario area or when tidewater has no figure.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Water {
+    pub in_area: bool,
+    pub current_en: Option<[f64; 2]>,
+    pub wind_en: Option<[f64; 2]>,
+}
+
 /// `POST /v1/sample` against `tidewater serve`.
-struct Tidewater {
+pub(crate) struct Tidewater {
     addr: String,
     /// (scenario start, real start, rate) when `MURMUR_AT` is set
     at: Option<(f64, f64, f64)>,
@@ -322,7 +332,29 @@ impl Tidewater {
         }
     }
 
+    /// The client the silent-vehicle estimate's water sampler uses, from
+    /// `MURMUR_TIDEWATER_URL`; None without one (the estimate then says so).
+    pub(crate) fn from_env() -> Option<Tidewater> {
+        let url = std::env::var("MURMUR_TIDEWATER_URL").ok()?;
+        match Tidewater::new(url.trim()) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                eprintln!("water sampler: {e}");
+                None
+            }
+        }
+    }
+
+    /// Current and wind at each point.
+    pub(crate) async fn water(&self, points: &[LonLat]) -> Result<Vec<Water>, String> {
+        Ok(self.sample_raw(points).await?.iter().map(water).collect())
+    }
+
     async fn sample(&self, points: &[LonLat]) -> Result<Vec<Surface>, String> {
+        Ok(self.sample_raw(points).await?.iter().map(surface).collect())
+    }
+
+    async fn sample_raw(&self, points: &[LonLat]) -> Result<Vec<Value>, String> {
         let t = self.scenario_t().await;
         let pts: Vec<Value> = points
             .iter()
@@ -343,7 +375,16 @@ impl Tidewater {
             .as_array()
             .filter(|s| s.len() == points.len())
             .ok_or("tidewater reply has the wrong number of samples")?;
-        Ok(samples.iter().map(surface).collect())
+        Ok(samples.clone())
+    }
+}
+
+fn water(s: &Value) -> Water {
+    let pair = |e: &str, n: &str| Some([s[e].as_f64()?, s[n].as_f64()?]);
+    Water {
+        in_area: !s["elevation_m"].is_null(),
+        current_en: pair("current_east", "current_north"),
+        wind_en: pair("wind_east", "wind_north"),
     }
 }
 
@@ -428,6 +469,18 @@ fn parse_response(raw: &[u8]) -> Result<(u16, Vec<u8>), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn water_from_samples() {
+        let s = serde_json::json!({"elevation_m": -20.0, "water_depth_m": 21.0,
+            "current_east": 1.2, "current_north": -0.4, "wind_east": 5.0, "wind_north": 0.0});
+        assert_eq!(
+            water(&s),
+            Water { in_area: true, current_en: Some([1.2, -0.4]), wind_en: Some([5.0, 0.0]) }
+        );
+        let out = serde_json::json!({"elevation_m": null, "water_depth_m": null});
+        assert_eq!(water(&out), Water::default());
+    }
 
     #[test]
     fn surfaces_from_samples() {
