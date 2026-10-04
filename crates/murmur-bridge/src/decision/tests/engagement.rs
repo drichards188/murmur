@@ -453,6 +453,28 @@ async fn a_platform_leaving_its_intercept_stops_the_engagement() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_failsafe_that_keeps_the_mission_does_not_stop_the_engagement() {
+    let e = engage_rig();
+    let id = e.approved("return").await;
+    let cell = e.r.world.vehicles().into_iter().find(|c| c.uid == 1).expect("platform");
+    for text in [
+        "[severity 4] Failsafe - Continuing Auto Mode",
+        "[severity 4] RC Short Failsafe On",
+        "[severity 4] Throttle failsafe off",
+        "system status MAV_STATE_CRITICAL",
+    ] {
+        cell.write(|v| {
+            v.events.push_back(crate::vehicle::VehicleEvent {
+                kind: "failsafe",
+                text: text.into(),
+            });
+        });
+        e.r.d.tick();
+        assert_ne!(e.r.state(id), State::Aborted, "{text}: {}", e.r.reason(id));
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn the_platforms_own_failsafe_stops_the_engagement() {
     let e = engage_rig();
     let id = e.approved("return").await;

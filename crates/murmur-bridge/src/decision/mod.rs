@@ -51,6 +51,7 @@ pub mod agent;
 mod alerts;
 mod civil;
 pub mod engage;
+mod failsafe;
 pub mod snapshot;
 pub mod space;
 mod terrain;
@@ -63,9 +64,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use murmur_decide::{
-    AreaSet, AuditSink, Catalog, Clock, Constraints, Engine, EngineError, Intent, IntentId,
-    JsonlFile, LonLat, OperatorId, OperatorSession, OperatorView, Order, Policy, Proposal,
-    Rationale, ScenarioMap, SpaceSegment, State, Task, TaskOutcome, Time, Uid as DUid, rules,
+    AnchorConfig, Anchors, AreaSet, AuditSink, Catalog, Clock, Constraints, Engine, EngineError,
+    Intent, IntentId, JsonlFile, LonLat, OperatorId, OperatorSession, OperatorView, Order, Policy,
+    Proposal, Rationale, ScenarioMap, SpaceSegment, State, Task, TaskOutcome, Time, Uid as DUid,
+    rules,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -226,6 +228,10 @@ pub struct Settings {
     /// Operators whose sessions carry engagement authority (`MURMUR_ENGAGE_OPERATORS`).
     pub engage_operators: Vec<OperatorId>,
     pub tidewater: Option<String>,
+    /// Run-time anchors of the audit log (`logs/anchors/<run-id>.anchors`, or
+    /// `MURMUR_ANCHOR_DIR`; every `MURMUR_ANCHOR_EVERY` events, 100; `MURMUR_ANCHOR_CMD` gets
+    /// each one). `MURMUR_ANCHORS=0` turns them off.
+    pub anchors: Option<AnchorConfig>,
 }
 
 impl Settings {
@@ -258,6 +264,15 @@ impl Settings {
             operators,
             engage_operators,
             tidewater: var("MURMUR_TIDEWATER_URL"),
+            anchors: (var("MURMUR_ANCHORS").as_deref() != Some("0")).then(|| AnchorConfig {
+                path: var("MURMUR_ANCHOR_DIR")
+                    .map_or_else(|| root.join("logs/anchors"), PathBuf::from)
+                    .join(format!("{run}.anchors")),
+                every: var("MURMUR_ANCHOR_EVERY")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(100),
+                cmd: var("MURMUR_ANCHOR_CMD"),
+            }),
         }
     }
 }
@@ -310,6 +325,8 @@ pub struct Decision {
     /// The track store (tests inject one; the bridge uses the process-wide one).
     tracks: Option<Arc<Tracks>>,
     audit_path: PathBuf,
+    /// The audit log's run-time anchors, when on (set once by [`Decision::load`]).
+    anchors: std::sync::OnceLock<Anchors>,
     core: Mutex<Core>,
     updates: watch::Sender<Arc<String>>,
     /// Vehicle events the loop logged, for agents (`agent::RecentEvents`).
@@ -344,17 +361,30 @@ impl Decision {
         if let Some(dir) = s.audit.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
-        let sink = JsonlFile::open(&s.audit).map_err(|e| format!("{}: {e}", s.audit.display()))?;
+        let file = JsonlFile::open(&s.audit).map_err(|e| format!("{}: {e}", s.audit.display()))?;
         if s.operators.is_empty() {
             return Err("MURMUR_OPERATORS lists no operator".into());
         }
-        Decision::from_parts(
+        // anchored from its first event on: an anchor file that can't be opened stops the
+        // bridge like an audit log that can't
+        let anchors = match &s.anchors {
+            Some(cfg) => Some(
+                Anchors::open(cfg, &s.audit)
+                    .map_err(|e| format!("anchors {}: {e}", cfg.path.display()))?,
+            ),
+            None => None,
+        };
+        let sink: Box<dyn AuditSink + Send> = match &anchors {
+            Some(a) => Box::new(a.sink(file)),
+            None => Box::new(file),
+        };
+        let d = Decision::from_parts(
             world,
             Parts {
                 policy,
                 catalog,
                 areas,
-                sink: Box::new(sink),
+                sink,
                 audit_path: s.audit.clone(),
                 clock,
                 terrain: Terrain::new(s.tidewater.as_deref()),
@@ -362,7 +392,30 @@ impl Decision {
                 engage_operators: s.engage_operators.clone(),
                 tracks: None,
             },
-        )
+        )?;
+        if let Some(a) = anchors {
+            let _ = d.anchors.set(a);
+        }
+        Ok(d)
+    }
+
+    /// The anchor file, when the log is anchored.
+    pub fn anchor_path(&self) -> Option<PathBuf> {
+        self.anchors.get().map(Anchors::path)
+    }
+
+    /// A clean shutdown: under the decision lock (no event being written, none after),
+    /// anchor the log's head and close it behind the anchor, let the anchor command finish,
+    /// and exit with the lock still held.
+    pub fn shutdown_and_exit(&self) -> ! {
+        let _core = self.lock();
+        if let Some(a) = self.anchors.get() {
+            match a.close() {
+                Ok(_) => a.flush_hook(),
+                Err(e) => eprintln!("anchor {}: {e}", a.path().display()),
+            }
+        }
+        std::process::exit(0)
     }
 
     pub fn from_parts(world: Arc<World>, p: Parts) -> Result<Arc<Decision>, String> {
@@ -386,6 +439,7 @@ impl Decision {
             rules,
             tracks: p.tracks,
             audit_path: p.audit_path,
+            anchors: std::sync::OnceLock::new(),
             core: Mutex::new(Core {
                 engine,
                 sessions: BTreeMap::new(),
@@ -1254,13 +1308,10 @@ impl Decision {
                 {
                     eprintln!("decision: vehicle event: {err}");
                 }
-                // a failsafe taking over (not one clearing, not the status coming back)
-                let lower = e.text.to_ascii_lowercase();
-                if e.kind == "failsafe"
-                    && !lower.contains("clear")
-                    && !lower.contains("mav_state_active")
-                    && !lower.contains("mav_state_standby")
-                {
+                // a failsafe that took control from the mission (a mode switch, a disarm, a
+                // landing: failsafe.rs); one that says nothing of what it did is left to
+                // the mode change below
+                if e.kind == "failsafe" && failsafe::failsafe_took_over(&e.text) {
                     failsafes.push((duid(cell.uid), e.text.clone()));
                 }
                 // the platform left the mission mode an intercept flies in: its failsafe's
@@ -1431,7 +1482,11 @@ impl Decision {
             .collect();
         json!({
             "intents": intents,
-            "audit": { "path": self.audit_path, "head": core.engine.head_hash() },
+            "audit": {
+                "path": self.audit_path,
+                "head": core.engine.head_hash(),
+                "anchors": self.anchor_path(),
+            },
         })
     }
 

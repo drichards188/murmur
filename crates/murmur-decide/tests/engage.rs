@@ -916,3 +916,194 @@ fn a_gps_glitch_after_approval_aborts() {
     let r = replay::replay_str(&log.text()).unwrap();
     assert!(r.ok(), "{:?}", r.mismatches);
 }
+
+fn circle(center: LonLat, radius_m: f64, t: Time) -> Fact<Circle> {
+    Fact::new(
+        Circle {
+            center,
+            radius_m,
+            source: Some(CircleSource::Loiter),
+            center_t: Some(t),
+        },
+        t,
+    )
+}
+
+/// One of our fixed wings at `at`, heading `vel`, with a reported circle.
+fn circling_friend(at: LonLat, vel: [f64; 2], c: Option<Fact<Circle>>) -> WorldSnapshot {
+    let mut w = engage_world(T0);
+    let mut f = vehicle("switchblade", at);
+    f.velocity_mps = Some(Fact::new(vel, T0));
+    f.circling = c;
+    w.vehicles.insert(uid("blade-2"), f);
+    w
+}
+
+fn friendly(w: &WorldSnapshot, effect_t: Time, version: u32) -> CheckResult {
+    let mut cfg = policy().rules;
+    cfg.rules_version = version;
+    engage::keep_out_friendly(TARGET_AT, effect_t, 275.0, Some(&uid("blade-1")), w, &cfg)
+}
+
+#[test]
+fn a_circling_friendly_is_predicted_on_its_circle_not_along_its_heading() {
+    // one of our fixed wings, 600 m north of the effect point on the south edge of a 200 m
+    // circle, heading straight at it: 30 s ahead its heading puts it on the point
+    let p = TARGET_AT;
+    let center = engage::offset(p, 0.0, 800.0);
+    let mut w = circling_friend(
+        engage::offset(p, 0.0, 600.0),
+        [0.0, -20.0],
+        Some(circle(center, 200.0, T0)),
+    );
+    let effect_t = T0.plus_ms(30_000);
+    // rules 2 carry it along its heading, circle or not
+    let c = friendly(&w, effect_t, 2);
+    assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
+    assert!(c.detail.contains("predicted along its velocity"), "{}", c.detail);
+    // rules 3: its disc (800 m out, less 200 m, the 50 m slack and 60 m of uncertainty: 490 m)
+    // or 5 s along its heading (500 m less 60 m: 440 m), the nearer
+    let c = friendly(&w, effect_t, 3);
+    assert_eq!(c.outcome, Outcome::Pass, "{}", c.detail);
+    assert!(
+        ["439", "440", "441"]
+            .iter()
+            .any(|d| c.detail.contains(&format!("blade-2 at {d} m"))),
+        "{}",
+        c.detail
+    );
+    // a circle that reaches into the keep-out still blocks it (the vehicle on its edge)
+    let v = w.vehicles.get_mut(&uid("blade-2")).unwrap();
+    v.circling = Some(circle(engage::offset(p, 0.0, 400.0), 200.0, T0));
+    let c = friendly(&w, effect_t, 3);
+    assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
+    assert!(c.detail.contains("circling within 200 m"), "{}", c.detail);
+    // and a circle whose center is old is not trusted: back to its heading
+    let v = w.vehicles.get_mut(&uid("blade-2")).unwrap();
+    v.circling = Some(circle(center, 200.0, T0.plus_ms(-60_000)));
+    let c = friendly(&w, effect_t, 3);
+    assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
+    assert!(c.detail.contains("predicted along its velocity"), "{}", c.detail);
+}
+
+#[test]
+fn a_circle_that_does_not_hold_the_friendly_is_not_trusted() {
+    // the fifth review's probe: our vehicle 50 m from the effect point, a fresh circle fact
+    // 1500 m north. The circle can't hold a vehicle that is not on it: its position counts
+    let p = TARGET_AT;
+    let w = circling_friend(
+        engage::offset(p, 0.0, 50.0),
+        [0.0, 0.0],
+        Some(circle(engage::offset(p, 0.0, 1500.0), 210.0, T0)),
+    );
+    for effect_t in [T0, T0.plus_ms(60_000)] {
+        let c = friendly(&w, effect_t, 3);
+        assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
+        assert!(c.detail.contains("does not hold its position"), "{}", c.detail);
+    }
+    // a vehicle just outside its circle, within the slack, is on it
+    let w = circling_friend(
+        engage::offset(p, 0.0, 1500.0 - 210.0 - 40.0),
+        [0.0, 0.0],
+        Some(circle(engage::offset(p, 0.0, 1500.0), 210.0, T0)),
+    );
+    let c = friendly(&w, T0.plus_ms(60_000), 3);
+    assert_eq!(c.outcome, Outcome::Pass, "{}", c.detail);
+}
+
+#[test]
+fn the_disc_is_never_farther_than_the_reported_position() {
+    // the targeted check's probe: at the release, our fixed wing reported 243 m from the
+    // effect point (inside the 275 m keep-out), on the slack band of its circle (210 m
+    // around a center 498 m north), heading in at 28 m/s, its position some seconds old.
+    // Whatever the span, it is no farther than where it was reported, less nothing
+    let p = TARGET_AT;
+    let center = engage::offset(p, 0.0, 498.0);
+    let at = engage::offset(center, 0.0, -(210.0 + 45.0));
+    for age_s in [0, 4, 5, 6, 7, 10] {
+        let pos_t = T0.plus_ms(-age_s * 1000);
+        let mut w = circling_friend(at, [0.0, -28.0], Some(circle(center, 210.0, pos_t)));
+        let v = w.vehicles.get_mut(&uid("blade-2")).unwrap();
+        v.position = Some(Fact::new(at, pos_t));
+        v.velocity_mps = Some(Fact::new([0.0, -28.0], pos_t));
+        let c = friendly(&w, T0, 3);
+        assert_eq!(c.outcome, Outcome::Fail, "{age_s} s: {}", c.detail);
+    }
+}
+
+#[test]
+fn a_circling_friendly_counts_from_its_position_too_without_a_cliff() {
+    // on its 200 m circle 600 m north of the effect point, 40 m outside the radius (within
+    // the slack)
+    let p = TARGET_AT;
+    let at = engage::offset(p, 0.0, 360.0);
+    let c600 = engage::offset(p, 0.0, 600.0);
+    // flying off its circle toward the point at 20 m/s: 5 s of its heading counts at every
+    // span, 30 s out (260 m less 60 m) as 5 s out (260 m less 10 m)
+    let w = circling_friend(at, [0.0, -20.0], Some(circle(c600, 200.0, T0)));
+    for span_ms in [30_000, 5_000] {
+        let c = friendly(&w, T0.plus_ms(span_ms), 3);
+        assert_eq!(c.outcome, Outcome::Fail, "{span_ms}: {}", c.detail);
+        assert!(c.detail.contains("for 5 s, then on its circle"), "{}", c.detail);
+    }
+    // flying along its circle (east): its disc counts, 30 s out (350 m less 60 m) as 5 s out
+    let w = circling_friend(at, [20.0, 0.0], Some(circle(c600, 200.0, T0)));
+    for span_ms in [30_000, 6_000, 5_000, 4_000] {
+        let c = friendly(&w, T0.plus_ms(span_ms), 3);
+        assert_eq!(c.outcome, Outcome::Pass, "{span_ms}: {}", c.detail);
+    }
+}
+
+#[test]
+fn a_circle_on_a_reduced_link_holds_its_friendly() {
+    // a reduced link: positions every 2 s, the navigation target every 5 s or so. The
+    // center 8 s old and the position 1 s old are each fresh on their own, so the circle
+    // holds; a center 13 s old does not
+    let p = TARGET_AT;
+    let center = engage::offset(p, 0.0, 800.0);
+    let at = engage::offset(p, 0.0, 600.0);
+    let pos_t = T0.plus_ms(-1_000);
+    let effect_t = T0.plus_ms(30_000);
+    let make = |center_age_ms: i64| {
+        let mut w = circling_friend(at, [0.0, -20.0], None);
+        let v = w.vehicles.get_mut(&uid("blade-2")).unwrap();
+        v.report_interval_ms = Some(2_000);
+        v.position = Some(Fact::new(at, pos_t));
+        v.velocity_mps = Some(Fact::new([0.0, -20.0], pos_t));
+        let ct = T0.plus_ms(-center_age_ms);
+        let mut c = circle(center, 200.0, ct);
+        c.t = if ct < pos_t { ct } else { pos_t };
+        v.circling = Some(c);
+        w
+    };
+    let c = friendly(&make(8_000), effect_t, 3);
+    assert_eq!(c.outcome, Outcome::Pass, "{}", c.detail);
+    let c = friendly(&make(13_000), effect_t, 3);
+    assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
+    assert!(c.detail.contains("does not hold its position"), "{}", c.detail);
+}
+
+#[test]
+fn a_fix_from_high_latency2_counts_and_says_so() {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = engine_at(&clock, &log);
+    let w = engage_world(T0);
+    let (op2, op3, id) = two_signers(&mut e, &w);
+    sign(&mut e, id, &op2, &w).unwrap();
+    sign(&mut e, id, &op3, &w).unwrap();
+    e.dispatch_order(id).unwrap();
+    clock.advance_ms(1000);
+    // the platform reports only HIGH_LATENCY2 now: no fix type, no GPS failure flag
+    let mut w = engage_world(clock.now());
+    w.vehicles.get_mut(&uid("blade-1")).unwrap().gps_fix_from = Some(GpsFixFrom::HighLatency2);
+    e.step_engagements(&w, &terrain());
+    let i = e.intent(id).unwrap();
+    assert_eq!(i.state(), State::Dispatched, "{:?}", i.history());
+    assert!(
+        log.text().contains("3D fix: a HIGH_LATENCY2 report without its GPS failure flag"),
+        "the picture says where the fix came from"
+    );
+    let r = replay::replay_str(&log.text()).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+}

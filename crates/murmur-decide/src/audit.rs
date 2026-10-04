@@ -23,8 +23,11 @@
 //! recompute every hash after an edit and produce a consistent chain, and truncating the
 //! tail (dropping the last events) leaves a valid shorter chain. The fix for both is to
 //! anchor the head hash ([`crate::Engine::head_hash`], printed by `murmur-replay`) outside
-//! the writer's control: a second machine, a signed checkpoint, a transparency log. That
-//! is future work; nothing here signs or anchors anything.
+//! the writer's control. [`crate::anchor`] writes run-time anchors to a separate file and
+//! hands them to a command that can post them elsewhere; an anchor kept where the log's
+//! writer can also write is no protection against that writer (a separate trust domain
+//! is needed: another machine, a signed checkpoint, a transparency log, none of which is
+//! here).
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -88,6 +91,10 @@ pub enum EventBody {
         rules_version: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         policy_schema: Option<u32>,
+        /// The build that wrote the log: its commit, and whether the working tree differed
+        /// from it. Absent in logs written before it existed (rules 1 and 2).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        build: Option<BuildInfo>,
         policy: Policy,
         areas: Option<LoggedAreas>,
     },
@@ -452,6 +459,30 @@ pub struct ViewShown {
     pub rationale: bool,
     #[serde(default)]
     pub tracks: Vec<String>,
+}
+
+/// The build a log was written by (`run.started`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildInfo {
+    /// The commit the binary was built from ("unknown" outside a git checkout).
+    pub commit: String,
+    /// The working tree had changes to tracked files (None: unknown).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dirty: Option<bool>,
+}
+
+impl BuildInfo {
+    /// This binary's build (`build.rs`).
+    pub fn current() -> BuildInfo {
+        BuildInfo {
+            commit: env!("MURMUR_BUILD_COMMIT").to_string(),
+            dirty: match env!("MURMUR_BUILD_DIRTY") {
+                "1" => Some(true),
+                "0" => Some(false),
+                _ => None,
+            },
+        }
+    }
 }
 
 /// Where events go. Implementations must append, never rewrite.

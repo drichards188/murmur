@@ -2,7 +2,8 @@
 //! fact stamped with when the message carrying it arrived, unknown left `None`.
 
 use murmur_decide::{
-    AreaSet, AutopilotKind, Catalog, Fact, LonLat, Time, Uid as DUid, VehicleFacts, WorldSnapshot,
+    AreaSet, AutopilotKind, Catalog, Circle, CircleSource, Fact, GpsFixFrom, LonLat, Time,
+    Uid as DUid, VehicleFacts, WorldSnapshot,
 };
 
 use crate::clock;
@@ -42,11 +43,15 @@ fn autopilot(kind: Kind) -> Option<AutopilotKind> {
 /// reports itself as a boat (its stand-in imitates ArduRover), so when the catalog says the
 /// platform is a drifter and the heartbeat says boat, the fact is "drifter" (as Q_ENABLE
 /// turns a plane heartbeat into a VTOL).
+///
+/// `orbit` is the circle an orbit task flies on station (from the task layer); a fixed wing
+/// loitering or circling home on its own reports its circle too ([`Vehicle::loiter_circle`]).
 pub fn vehicle_facts(
     v: &Vehicle,
     catalog: &Catalog,
     now_mono: f64,
     report_interval_ms: u32,
+    orbit: Option<([f64; 2], f64)>,
 ) -> VehicleFacts {
     let platform = v
         .identity
@@ -83,6 +88,25 @@ pub fn vehicle_facts(
             .map(|(source, t)| Fact::new(source, ms(t))),
         gps_fix: v.gps_fix_fact().map(|(f, t)| Fact::new(f, ms(t))),
         gps_glitch: v.gps_glitch_fact().map(|(g, t)| Fact::new(g, ms(t))),
+        gps_fix_from: (v.gps_fix_hl2 && v.seen.gps.is_some()).then_some(GpsFixFrom::HighLatency2),
+        // the circle it flies, stamped with the older of the position and its center
+        circling: v.seen.position.and_then(|pos_t| {
+            let (center, radius_m, source, center_t) = match orbit {
+                Some((c, r)) => (LonLat::new(c[0], c[1]), r, CircleSource::OrbitTask, None),
+                None => {
+                    let l = v.loiter_circle()?;
+                    let source = if l.rtl { CircleSource::Rtl } else { CircleSource::Loiter };
+                    (LonLat::new(l.center.1, l.center.0), l.radius_m, source, Some(l.center_t))
+                }
+            };
+            let circle = Circle {
+                center,
+                radius_m,
+                source: Some(source),
+                center_t: center_t.map(ms),
+            };
+            Some(Fact::new(circle, ms(center_t.map_or(pos_t, |c| c.min(pos_t)))))
+        }),
         report_interval_ms: Some(report_interval_ms),
         // velocity over ground, observed with the position (an engagement's keep-out carries
         // our vehicles along it)
@@ -107,7 +131,8 @@ pub fn build(
     let mut snap = WorldSnapshot::new(t);
     for cell in world.vehicles() {
         let interval = cell.link_snapshot(now).expected_interval_ms;
-        let facts = cell.read(|v| vehicle_facts(v, catalog, now, interval));
+        let orbit = world.tasks.orbit_of(&cell);
+        let facts = cell.read(|v| vehicle_facts(v, catalog, now, interval, orbit));
         snap.vehicles.insert(duid(cell.uid), facts);
     }
     for (uid, ident) in &world.manifest().identities {

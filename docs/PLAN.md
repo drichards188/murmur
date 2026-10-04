@@ -302,9 +302,12 @@ contacts `effect.rs`; console `EngagePanel`, `EngageCard`, `engageLayers.ts`):
    the policy and decision, a hidden reset, an agent's order made to look automatic) is
    caught even with a recomputed chain.
 
-Decision rules are versioned (`RULES_VERSION`, recorded in `run.started`): replay
-recomputes every log with the rules it was produced under, and committed logs of every
-version replay in the decide crate's tests.
+Decision rules are versioned (`RULES_VERSION`, recorded in `run.started` with the build):
+replay recomputes every log with the rules it was produced under, accepts an older version
+only when asked (`--rules N`, `--min-rules N`), and flags a log that carries more than its
+claim allows; committed logs of every version replay in the decide crate's tests. The
+bridge anchors its log as it grows (`logs/anchors/`, `MURMUR_ANCHOR_CMD` to post anchors
+elsewhere; `murmur-replay --anchors`).
 
 State machine additions: `dispatched -release-> effected -complete-> done`,
 `dispatched -abort-> aborted` (terminal). `finish` and `dispatch` refuse engagements.

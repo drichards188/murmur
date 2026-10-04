@@ -201,11 +201,12 @@ pub enum UnknownEndurance {
 /// check, another threshold or model, another detail text), so replay recomputes every log
 /// with the rules it was produced under. `run.started` records it; a log without one was
 /// written by version 1. The changelog is in `crates/murmur-decide/README.md`.
-pub const RULES_VERSION: u32 = 2;
+pub const RULES_VERSION: u32 = 3;
 
 /// The version of the policy file's schema: bumped when a key is added, renamed or removed.
-/// A renamed or removed key keeps parsing through an alias, so an old log never fails to
-/// parse; `run.started` records it (absent: 1).
+/// A renamed or removed key stays an optional field of its own, so an old log both parses
+/// and re-serializes byte for byte; `run.started` records it (absent: 1), and replay checks
+/// that the logged policy uses no key of a later schema ([`crate::EngageRules::schema_keys`]).
 pub const POLICY_SCHEMA: u32 = 2;
 
 fn current_rules_version() -> u32 {

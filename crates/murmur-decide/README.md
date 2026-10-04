@@ -211,11 +211,33 @@ events and renumbering `seq` (which otherwise leaves every decision consistent).
 
 What it doesn't protect against: anyone who can write the file can edit it and recompute
 the whole chain, and cutting the tail leaves a valid, shorter chain. Both change the head
-hash (`Engine::head_hash`, printed by `murmur-replay`), so the fix is to anchor the head
-outside the writer's reach (a second machine, signed checkpoints, a transparency log).
-That is future work; nothing here signs or anchors anything. Tests in `tests/replay.rs`
-show both sides: naive edits caught by the chain, a recomputed chain caught only by the
-head.
+hash (`Engine::head_hash`, printed by `murmur-replay`), so the head has to be anchored
+outside the log. Tests in `tests/replay.rs` show both sides: naive edits caught by the
+chain, a recomputed chain caught only by the head.
+
+**Run-time anchors** (`src/anchor.rs`). The bridge wraps its log's sink so that the hash of
+the first line (`run.started`) and the head are written, as the log grows, to a separate
+append-only file: after the first event, every `MURMUR_ANCHOR_EVERY` events (100), and at a
+clean shutdown (`logs/anchors/<run-id>.anchors`; `MURMUR_ANCHOR_DIR` moves it,
+`MURMUR_ANCHORS=0` turns it off). `MURMUR_ANCHOR_CMD`, a shell command, gets each anchor's
+JSON on its stdin (and in `MURMUR_ANCHOR`), run in order on a thread of its own, to post it
+elsewhere. `murmur-replay --anchors <file>` checks the log against them: the first line and
+every anchored event must hash as anchored, the log must reach the last anchor (a cut tail
+shows), the file must be whole (the start anchor on `run.started`, one anchor every N events
+as each declares in `every`, a shutdown anchor last, so a removed anchor line shows), and
+nothing may follow the shutdown anchor: the bridge closes the log behind it (later appends
+fail, so nothing is done that isn't logged) and exits with the decision lock held. A run
+that crashed has no shutdown anchor and fails the check: its tail can't be told from a cut
+one.
+
+**An anchor is only as strong as the separation between where it is kept and whoever can
+write the log.** The local anchor file sits in the same account as the log: it catches an
+accident, a crash that loses the tail, or someone who edits the log alone, but whoever can
+write both files can rewrite both. Real protection needs a separate trust domain:
+`MURMUR_ANCHOR_CMD` posting each anchor to another machine, a service or a timestamping
+authority the log's writer can't change. Nothing here signs anchors or runs such a
+service; that remains future work. `tests/anchors.rs` shows a re-chained rewrite, a cut tail
+and an append after shutdown caught by the anchors that replay alone passes.
 
 ## The guarantee: agents nominate, only humans authorize
 
@@ -259,8 +281,13 @@ human decision to measure.
 
 ```
 cargo run -p murmur-decide --bin murmur-replay -- logs/audit/<run-id>.jsonl \
+    [--rules N | --min-rules N] [--anchors logs/anchors/<run-id>.anchors] \
     [--space sim/space/constellations.toml sim/space/cache]
 ```
+
+A log is recomputed with the rules it records, but by default only the current rules are
+accepted: a log of older rules replays only with `--rules N` (exactly N) or `--min-rules N`
+(N or later), so a log can't pass by claiming older, looser rules (see below).
 
 Re-runs every `check.result` and `policy.decision` from its logged inputs and the logged
 policy (resolving `areas_sha256` to the logged set in force, whose own hash must match its
@@ -284,10 +311,23 @@ A rules change that alters a decision (a new check, another threshold or model, 
 detail text) must not invalidate the logs released code wrote. `RULES_VERSION`
 (`src/rules.rs`) is bumped with such a change, the change is gated on it
 (`RulesConfig::rules_version`, copied into `EngageRules`), and `run.started` records the
-version a run decides under (`rules_version`; a log without it is version 1). Replay sets the
-logged version on the logged policy and recomputes every decision with those rules, so each
-log is checked against the rules it was produced under; a log of newer rules than replay
-knows is a mismatch. `POLICY_SCHEMA` versions the policy file the same way, and its keys
+version a run decides under (`rules_version`; a log without it is version 1), with the
+policy schema and, from rules 3, the build (`build`: commit and whether the tree was dirty).
+Replay sets the logged version on the logged policy and recomputes every decision with
+those rules, so each log is checked against the rules it was produced under; a log of newer
+rules than replay knows is a mismatch.
+
+A claim of older rules is a downgrade risk: a log recomputed under rules 1 is judged by
+rules 1, however it would fare under today's. So replay accepts only the current rules unless
+told otherwise (`ReplayOptions::rules`, `murmur-replay --rules N` / `--min-rules N`), and
+checks that the log fits its claim: `run.started` is the first event and the only one (a run
+can't start again, with other rules, inside a log), and nothing appears that only later
+builds write (`RULES_MARKERS` in `src/replay.rs`: a `checked_t`, a GPS fact, a
+`platform_free` check, a build, a circle, a fix from HIGH_LATENCY2; `rules_version` and
+`policy_schema` themselves come with rules 2). A log of rules 1 carries no build and was
+never anchored: accepting one says the verifier trusts where it came from. A log that
+carries nothing of a later version and claims an older one replays under the older rules
+when they are accepted: that is what the explicit flag is for. `POLICY_SCHEMA` versions the policy file the same way, and its keys
 change so that an older log both parses and is still its lines' serialization (replay
 requires each line to be its event's serialization, so a serde alias, which parses an old
 name but writes the new one back, isn't enough):
@@ -299,8 +339,16 @@ name but writes the new one back, isn't enough):
   beside `token_ttl_s`, read by `token_ttl()`);
 - a removed key stays as an `Option` field nothing reads, documented as such.
 
-`tests/versions.rs` replays a committed log of every version (`tests/data/audit/`): add one
-with each bump.
+Replay also checks the schema a log claims against the keys its policy uses
+(`EngageRules::schema_keys`: a schema-1 claim with a schema-2 key is a mismatch), and a
+schema newer than it knows.
+
+To change a rule: bump `RULES_VERSION`, gate the change on it, add a marker for any field
+or check only the new builds write, add a line below, and commit a log of the new version
+to `tests/data/audit/` (a live one with its anchors in `tests/data/anchors/`) with an entry
+in `tests/versions.rs`, which replays a committed log of every version (each with its
+version accepted explicitly), checks the live log against its anchors, and checks the
+downgrade cases.
 
 Rules versions:
 
@@ -314,7 +362,21 @@ Rules versions:
   `platform_nav` also needs a 3D GPS fix and no GPS glitch; our vehicles count in the
   keep-out with `friendly_growth_mps` of prediction uncertainty; after the plan's time the
   keep-outs are read at the release, and a moving target may be released within the plan's
-  time tolerance; signatures log `checked_t`, which replay requires and bounds.
+  time tolerance; signatures log `checked_t`, which replay requires and bounds. Released
+  as master `6da8909`.
+- **3**: the fourth Phase E review. One of our vehicles known to fly a circle (`circling`:
+  an orbit task on station, a fixed wing loitering or circling its RTL point, with its
+  source and when its center was reported) is predicted anywhere on its disc, less the
+  same growing uncertainty, instead of along its momentary heading (a circling fixed wing
+  no longer blocks engagements kilometres away). The circle holds only a vehicle that is
+  on it, each report judged on its own freshness: the position fresh by the usual
+  link-aware rule and within the radius and 50 m of the center (`CIRCLE_SLACK_M`), the
+  center reported at most 12 s ago (`CIRCLE_CENTER_MAX_AGE_MS`); otherwise the vehicle is
+  predicted from its position. The disc includes the slack, so it is never farther than
+  where the vehicle was reported, and at every span the vehicle is also carried along its
+  velocity for at most 5 s (`CIRCLE_CARRY_S`), the nearer of the two counting.
+  `platform_nav` says when its 3D fix is a HIGH_LATENCY2 report without its GPS failure
+  flag (`gps_fix_from`); `run.started` names the build.
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that

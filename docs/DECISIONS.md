@@ -89,6 +89,34 @@ group. Dates are 2026.
   mission mode (`AUTO -> RTL`) is stopped the same way: a later live run lost the failsafe's
   own message on the link that failed, only `GCS Failsafe Cleared` and the mode change
   arrived, and the task layer stops watching the mode once an orbit is on station.
+  Only failsafe texts that say control changed stop it (fourth review): a switch to a mode
+  other than AUTO, a disarm, a landing (`decision/failsafe.rs`, ArduPilot's texts per
+  firmware); "Failsafe - Continuing Auto Mode", "RC Short Failsafe On" without an action,
+  "Throttle failsafe off" and every "Cleared" do not, and texts that don't say what was done
+  are left to the mode leaving AUTO.
+- **A circling friendly is predicted on its circle** (10-04, fourth review; rules 3). One
+  of our vehicles known to fly a circle (an orbit task on station and still in AUTO, a fixed
+  wing in LOITER around the point NAV_CONTROLLER_OUTPUT names, or circling home in RTL) is
+  reported with that circle (center, radius plus the tolerance it is flown to), and the
+  friendly keep-out counts it anywhere on the disc, less the same growing uncertainty as
+  any of ours. Carried along its momentary heading, a circling fixed wing pointed somewhere
+  every lap, and the live demo's loitering BLADE blocked engagements kilometres away. A
+  vehicle not known to circle is still carried along its velocity. Regression:
+  `37-friendly-circling-near-target`. The engine trusts a circle only while it holds the
+  vehicle (fifth review): the position, fresh by the usual link-aware rule, within the radius
+  and 50 m of the center, and the center at most 12 s old (each judged on its own, so a
+  reduced link's slower navigation target doesn't drop the circle); else the vehicle is
+  predicted from its position (regression `38-friendly-off-its-reported-circle`). The disc
+  includes the 50 m slack, so it is never farther than where the vehicle was reported, and
+  at every span the vehicle is also carried 5 s along its velocity, the nearer counting: no
+  cliff at a span boundary (regression `39-friendly-on-its-circles-slack-band`). The bridge takes a LOITER or RTL center from
+  NAV_CONTROLLER_OUTPUT reported in that mode and at most 12 s old, stamps the circle with
+  the older of the center and the position, and logs its source and center time.
+- **A HIGH_LATENCY2 report without its GPS failure flag is a 3D fix** (10-04, fourth
+  review). HIGH_LATENCY2 carries no fix type, so a platform on that link alone never had a
+  fresh fix and could never release. The bridge now counts each one without
+  HL_FAILURE_FLAG_GPS as a fresh 3D fix and logs where it came from (`gps_fix_from`), which
+  the navigation check states (rules 3).
 - **The effective signing window, by target speed** (10-04, third review). The plan gives
   the signatures `dispatch_delay_s` (20 s) before the platform was to leave, plus the slack
   it may arrive late (`late_s`, 60 s, for a holding target; the deviation tolerance over the
@@ -385,11 +413,26 @@ group. Dates are 2026.
   name but writes the new one back, and replay requires each line to be its event's
   serialization. Committed logs of every version replay in `tests/versions.rs`; the
   changelog is in `crates/murmur-decide/README.md`.
+- **An older rules version is accepted only when asked for** (10-04, fourth review). A log
+  that claims rules 1 is judged by rules 1, so the claim is a downgrade path. Replay accepts
+  only the current rules by default; `murmur-replay --rules N` or `--min-rules N` accepts
+  older ones explicitly. It also flags a `run.started` that is not the first event, a log
+  that carries what only later builds write (a `checked_t`, a GPS fact, a `platform_free`
+  check, a build, a circle) under an older claim, and a policy with keys of a later schema
+  than it claims. From rules 3, `run.started` names the build (commit, dirty flag). A
+  rules-1 log carries no build and no anchors: accepting one is trusting its provenance.
 - **The hash chain is tamper-evident, not tamper-proof** (10-03, restated by the second
   review). A forger who removes a self-consistent set of events (a transient reset, the
   signature it dropped and its picture token) and recomputes the chain leaves a log replay
-  accepts; only comparing the head hash with an external anchor shows the rewrite. Anchoring
-  the head is future work (`murmur-decide/README.md`).
+  accepts; only comparing the head hash with an external anchor shows the rewrite. Since
+  the fourth review the bridge writes run-time anchors (the first line's hash and the head,
+  every 100 events and at shutdown) to `logs/anchors/<run-id>.anchors` and hands each to
+  `MURMUR_ANCHOR_CMD`; `murmur-replay --anchors` checks a log against them, and the anchor
+  file's own completeness (start, the declared cadence, a shutdown anchor last; the log is
+  closed behind the shutdown anchor). A local anchor
+  file is only as strong as the separation between it and whoever can write the log:
+  protection against that writer needs a separate trust domain the command posts to, which
+  is not part of Murmur (`murmur-decide/README.md`).
 - **Still placeholders, stated** (10-03). Engagement authority comes from
   `MURMUR_ENGAGE_OPERATORS` and the `X-Murmur-Operator` header, as operators do from
   `MURMUR_OPERATORS`: a stand-in for real authentication. The fallback is commanded by the

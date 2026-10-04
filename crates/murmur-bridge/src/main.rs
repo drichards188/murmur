@@ -44,6 +44,23 @@ use tokio::sync::watch;
 use crate::decision::{Decision, Settings};
 use crate::world::{Config, World};
 
+/// SIGTERM or SIGINT.
+async fn shutdown_signal() {
+    use tokio::signal::unix::{SignalKind, signal};
+    match signal(SignalKind::terminate()) {
+        Ok(mut term) => {
+            tokio::select! {
+                _ = term.recv() => {}
+                _ = tokio::signal::ctrl_c() => {}
+            }
+        }
+        Err(e) => {
+            eprintln!("no SIGTERM handler ({e}): ^C only");
+            let _ = tokio::signal::ctrl_c().await;
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = Config::from_env();
@@ -54,6 +71,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let decision =
         Decision::load(world.clone(), &settings).map_err(|e| format!("decision layer: {e}"))?;
     println!("audit log {}", decision.audit_path().display());
+    match decision.anchor_path() {
+        Some(p) => println!("audit anchors {} (MURMUR_ANCHOR_CMD posts them elsewhere)", p.display()),
+        None => println!("audit anchors off (MURMUR_ANCHORS=0)"),
+    }
+    // a clean stop (TERM from make down, or ^C) anchors the log's head before exiting
+    {
+        let decision = decision.clone();
+        tokio::spawn(async move {
+            shutdown_signal().await;
+            decision.shutdown_and_exit();
+        });
+    }
     if !decision.terrain_configured() {
         println!("no MURMUR_TIDEWATER_URL: the domain rule records \"not evaluated\"");
     }

@@ -203,6 +203,29 @@ impl StallWatch {
     }
 }
 
+/// The circle an orbit task flies: its radius (the one asked, 200 m by default, widened to
+/// what the airframe can turn) and the tolerance it counts as on station within.
+pub(crate) fn orbit_geometry(
+    radius: Option<f64>,
+    min_turn: Option<f64>,
+    style: Option<OrbitStyle>,
+) -> (f64, bool, f64) {
+    let mut radius = radius.unwrap_or(200.0);
+    let mut widened = false;
+    if let Some(min_r) = min_turn.filter(|r| *r != 0.0)
+        && radius < min_r * 1.1
+    {
+        widened = true;
+        radius = round_int(min_r * 1.1) as f64; // a 160 m/s HALE can't fly a 250 m circle
+    }
+    let tol = if style == Some(OrbitStyle::Loiter) {
+        (radius * 0.4).max(60.0)
+    } else {
+        (radius * 0.3).max(25.0)
+    };
+    (radius, widened, tol)
+}
+
 /// "Left the task" detection: fail if the vehicle leaves `mode` (failsafe, pilot, another GCS)
 /// for longer than a grace period, quoting what the autopilot last said.
 struct ModeGuard {
@@ -652,24 +675,17 @@ impl Task<'_> {
         let Some([lon, lat]) = self.ctx.params.center else {
             return fail("orbit needs center [lon, lat]");
         };
-        let mut radius = self.ctx.params.radius.unwrap_or(200.0);
         let min_r = self
             .v()
             .read(|s| s.identity.as_ref().and_then(|i| i.num("min_turn_radius_m")));
-        let mut widened = false;
-        if let Some(min_r) = min_r.filter(|r| *r != 0.0)
-            && radius < min_r * 1.1
-        {
-            widened = true;
-            radius = round_int(min_r * 1.1) as f64; // a 160 m/s HALE can't fly a 250 m circle
-        }
+        let (radius, widened, tol) = orbit_geometry(self.ctx.params.radius, min_r, self.caps.orbit);
         let alt = self.task_alt();
         let mut items = self.mission_prefix(alt);
-        let (loop_from, tol) = if self.caps.orbit == Some(OrbitStyle::Loiter) {
+        let loop_from = if self.caps.orbit == Some(OrbitStyle::Loiter) {
             let mut it = Item::nav(apm::MavCmd::MAV_CMD_NAV_LOITER_UNLIM, lat, lon, alt);
             it.p[2] = radius as f32;
             items.push(it);
-            (None, (radius * 0.4).max(60.0))
+            None
         } else {
             // same-kind vehicles start spread around the ring
             let phase = 2.0 * std::f64::consts::PI * self.ctx.op.slot as f64
@@ -678,7 +694,7 @@ impl Task<'_> {
             for (plat, plon) in geo::circle_points(lat, lon, radius, 12, phase) {
                 items.push(Item::waypoint(plat, plon, alt));
             }
-            (Some(from), (radius * 0.3).max(25.0))
+            Some(from)
         };
         let kind = self.kind;
         let on_station = move |v: &Vehicle| {

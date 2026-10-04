@@ -22,6 +22,15 @@ pub fn circle_points(lat: f64, lon: f64, radius_m: f64, n: usize, phase: f64) ->
         .collect()
 }
 
+/// The point `dist_m` from (lat, lon) along `bearing_deg` (flat earth, like
+/// [`circle_points`]: fine for the few kilometres a navigation target is away).
+pub fn destination(lat: f64, lon: f64, bearing_deg: f64, dist_m: f64) -> (f64, f64) {
+    let a = bearing_deg.to_radians();
+    let dlat = dist_m * a.cos() / 111_320.0;
+    let dlon = dist_m * a.sin() / (111_320.0 * lat.to_radians().cos());
+    (lat + dlat, lon + dlon)
+}
+
 pub fn bearing_deg(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     let (p1, p2) = (lat1.to_radians(), lat2.to_radians());
     let dl = (lon2 - lon1).to_radians();

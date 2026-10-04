@@ -66,6 +66,53 @@ pub struct VehicleFacts {
     pub gps_fix: Option<Fact<u8>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gps_glitch: Option<Fact<bool>>,
+    /// Where `gps_fix` comes from when not from the receiver's own report: a HIGH_LATENCY2
+    /// report carries no fix type, so one without its GPS failure flag counts as a 3D fix,
+    /// and says so here. Absent: the receiver's report (GPS_RAW_INT). Rules 3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gps_fix_from: Option<GpsFixFrom>,
+    /// The circle the vehicle is flying (an orbit task on station, a fixed wing loitering or
+    /// circling home), stamped with the report it rests on: an engagement's friendly
+    /// keep-out predicts it anywhere on its disc instead of along its momentary heading.
+    /// Absent: not known to be circling. Rules 3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub circling: Option<Fact<Circle>>,
+}
+
+/// A circle a vehicle flies: its center and its radius with the tolerance it is flown to
+/// (the vehicle stays within `radius_m` of `center`). The friendly keep-out trusts it only
+/// while the vehicle's position is on it (rules 3).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Circle {
+    pub center: LonLat,
+    pub radius_m: f64,
+    /// Where the bridge knows it from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<CircleSource>,
+    /// When its center was reported (LOITER and RTL: NAV_CONTROLLER_OUTPUT's target); the
+    /// fact is stamped with the older of this and the position. None: a task's own center.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub center_t: Option<Time>,
+}
+
+/// See [`Circle::source`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CircleSource {
+    /// An orbit task on station, still in the mission's mode.
+    OrbitTask,
+    /// A fixed wing in LOITER around its navigation target.
+    Loiter,
+    /// A fixed wing in RTL circling its navigation target (home, or a rally point).
+    Rtl,
+}
+
+/// See [`VehicleFacts::gps_fix_from`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GpsFixFrom {
+    /// A HIGH_LATENCY2 report without HL_FAILURE_FLAG_GPS.
+    HighLatency2,
 }
 
 /// The standard identity (MIL-STD-2525 affiliation) a track is estimated or declared to

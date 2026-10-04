@@ -234,6 +234,31 @@ impl EngageRules {
     fn v2(&self) -> bool {
         self.rules_version >= 2
     }
+
+    /// The decisions of rules version 3 on (see the changelog).
+    fn v3(&self) -> bool {
+        self.rules_version >= 3
+    }
+
+    /// The optional keys this section sets, each with the policy schema that introduced it
+    /// (or, for an old name, the first schema whose builds read it): a log claiming an
+    /// older schema can't carry them (replay checks).
+    pub fn schema_keys(&self) -> Vec<(u32, &'static str)> {
+        let mut keys = Vec::new();
+        if self.seen_max_age_s.is_some() {
+            keys.push((2, "seen_max_age_s"));
+        }
+        if self.plan_drift_max_m.is_some() {
+            keys.push((2, "plan_drift_max_m"));
+        }
+        if self.holding_speed_mps.is_some() {
+            keys.push((2, "holding_speed_mps"));
+        }
+        if self.friendly_growth_mps.is_some() {
+            keys.push((2, "friendly_growth_mps"));
+        }
+        keys
+    }
 }
 
 impl Default for EngageRules {
@@ -1300,6 +1325,19 @@ fn no_strike_check(p: &EngagePreview, world: &WorldSnapshot) -> CheckResult {
 /// None of our vehicles but the engaging platform can be inside the keep-out at `effect_t`:
 /// with a fresh velocity, its position carried along it; otherwise its last position and how
 /// far it could go at catalog cruise speed since. No position at all fails.
+/// Rules 3: how far outside a circle's radius its vehicle may be and still be on it, m. The
+/// disc it is predicted on includes it, so the disc is never farther from the effect point
+/// than where the vehicle was reported.
+pub const CIRCLE_SLACK_M: f64 = 50.0;
+/// Rules 3: a circle's center (LOITER, RTL: the navigation target) older than this, as of
+/// the world's time, does not hold its vehicle, ms. A task's own center has no age; its
+/// fact must be fresh as any.
+pub const CIRCLE_CENTER_MAX_AGE_MS: i64 = 12_000;
+/// Rules 3: a circling vehicle is also carried from its position along its velocity, for at
+/// most this long (beyond it, it turns on its circle), s: the nearer of that and its disc
+/// counts, at every span.
+pub const CIRCLE_CARRY_S: f64 = 5.0;
+
 pub fn keep_out_friendly(
     point: LonLat,
     effect_t: Time,
@@ -1324,27 +1362,82 @@ pub fn keep_out_friendly(
                 format!("vehicle {uid} has no position: cannot clear the keep-out"),
             );
         };
+        let ec = cfg.engage_rules();
+        // rules 3: a vehicle flying a circle stays on it; its momentary heading, carried
+        // a minute or more ahead, would put it kilometres away in any direction. The circle
+        // holds only a vehicle that is on it: its position, reported with the circle, within
+        // the circle's radius and a small slack of the center. Otherwise the circle is
+        // wrong or stale, and the vehicle is predicted from where it is.
+        // Each report is judged on its own freshness: the position by the usual link-aware
+        // rule, the center by its own age.
+        let reported = v.circling.as_ref().filter(|_| ec.v3());
+        let pos_fresh = fresh(&v.position, v, "position", world, cfg).is_ok();
+        let circling = reported.filter(|c| {
+            let center_fresh = match c.value.center_t {
+                Some(ct) => world.t.ms_since(ct) <= CIRCLE_CENTER_MAX_AGE_MS,
+                None => fresh(&v.circling, v, "circle", world, cfg).is_ok(),
+            };
+            pos_fresh
+                && center_fresh
+                && haversine_m(pos.value, c.value.center) <= c.value.radius_m + CIRCLE_SLACK_M
+        });
         let vel = v
             .velocity_mps
             .as_ref()
             .filter(|_| fresh(&v.position, v, "position", world, cfg).is_ok())
             .and_then(|f| fresh(&v.velocity_mps, v, "velocity", world, cfg).ok().map(|_| f.value));
-        let (d, how) = match vel {
+        let span = secs(effect_t.ms_since(pos.t)).max(0.0);
+        let off_circle = reported.is_some() && circling.is_none();
+        // from where it is: along its velocity (or how far it could reach), over the whole
+        // span, or with a circle that holds it for at most CIRCLE_CARRY_S; the uncertainty
+        // grows over the whole span either way
+        let carry = if circling.is_some() {
+            span.min(CIRCLE_CARRY_S)
+        } else {
+            span
+        };
+        let disc = circling.map(|c| {
+            // anywhere on its disc, slack included, with the same uncertainty growth as any
+            // of ours (it may be retasked) since the older of its reports; fail closed on
+            // the near edge
+            let dt = secs(effect_t.ms_since(if c.t < pos.t { c.t } else { pos.t })).max(0.0);
+            let margin = ec.keep_out_sigma * ec.friendly_growth() * dt;
+            (
+                (haversine_m(c.value.center, point) - c.value.radius_m - CIRCLE_SLACK_M - margin)
+                    .max(0.0),
+                std::borrow::Cow::<'static, str>::from(format!(
+                    "circling within {:.0} m of its center, less its uncertainty",
+                    c.value.radius_m
+                )),
+            )
+        });
+        let here: Option<(f64, std::borrow::Cow<'static, str>)> = match vel {
             Some([e, n]) => {
                 // along its velocity, with an uncertainty that grows with the span (it may
                 // turn or be retasked); fail closed on the near edge
-                let ec = cfg.engage_rules();
-                let dt = secs(effect_t.ms_since(pos.t)).max(0.0);
-                let p = offset(pos.value, e * dt, n * dt);
-                if ec.v2() {
-                    let margin = ec.keep_out_sigma * ec.friendly_growth() * dt;
+                let p = offset(pos.value, e * carry, n * carry);
+                let margin = ec.keep_out_sigma * ec.friendly_growth() * span;
+                Some(if circling.is_some() {
                     (
                         (haversine_m(p, point) - margin).max(0.0),
-                        "predicted along its velocity, less its uncertainty",
+                        format!(
+                            "predicted along its velocity for {CIRCLE_CARRY_S:.0} s, then on its circle, less its uncertainty"
+                        )
+                        .into(),
+                    )
+                } else if off_circle {
+                    (
+                        (haversine_m(p, point) - margin).max(0.0),
+                        "predicted along its velocity, less its uncertainty; its reported circle does not hold its position".into(),
+                    )
+                } else if ec.v2() {
+                    (
+                        (haversine_m(p, point) - margin).max(0.0),
+                        "predicted along its velocity, less its uncertainty".into(),
                     )
                 } else {
-                    (haversine_m(p, point), "predicted along its velocity")
-                }
+                    (haversine_m(p, point), "predicted along its velocity".into())
+                })
             }
             None => {
                 let cruise = v
@@ -1362,11 +1455,29 @@ pub fn keep_out_friendly(
                         ),
                     );
                 };
-                let dt = secs(effect_t.ms_since(pos.t)).max(0.0);
-                (
-                    (haversine_m(pos.value, point) - cruise * dt).max(0.0),
-                    "how far it could reach at cruise speed",
-                )
+                Some((
+                    (haversine_m(pos.value, point) - cruise * carry).max(0.0),
+                    "how far it could reach at cruise speed".into(),
+                ))
+            }
+        };
+        let (d, how) = match (disc, here) {
+            (Some(a), Some(b)) => {
+                if b.0 < a.0 {
+                    b
+                } else {
+                    a
+                }
+            }
+            (Some(a), None) | (None, Some(a)) => a,
+            // no circle holds it and nothing from its position: fail closed
+            (None, None) => {
+                return check(
+                    r,
+                    Some(uid),
+                    Outcome::Fail,
+                    format!("vehicle {uid}: cannot predict it: cannot clear the keep-out"),
+                );
             }
         };
         if d < keep_out_m {
@@ -2264,7 +2375,15 @@ fn nav_check(uid: Option<&Uid>, world: &WorldSnapshot, cfg: &RulesConfig) -> Che
         }
         Err(e) => return check(r, uid, Outcome::Fail, format!("cannot evaluate: {e}")),
     }
+    let inferred = v.gps_fix_from == Some(crate::world::GpsFixFrom::HighLatency2);
     match fresh(&v.gps_glitch, v, "GPS glitch flag", world, cfg) {
+        // rules 3: a fix inferred from a HIGH_LATENCY2 report says so
+        Ok(false) if cfg.rules_version >= 3 && inferred => check(
+            r,
+            uid,
+            Outcome::Pass,
+            "platform navigates on GNSS (3D fix: a HIGH_LATENCY2 report without its GPS failure flag; no glitch)",
+        ),
         Ok(false) => check(r, uid, Outcome::Pass, "platform navigates on GNSS (3D fix, no glitch)"),
         Ok(true) => check(
             r,
