@@ -116,6 +116,10 @@ pub struct EngageWindow {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct EngageRules {
+    /// The rules version the checks run under (from [`RulesConfig::rules_version`]; not a
+    /// policy key).
+    #[serde(skip, default = "rules_version_now")]
+    pub rules_version: u32,
     /// The track's identity confidence must be at least this (0..1).
     pub min_identity_confidence: f64,
     /// The track's existence confidence now must be at least this (0..1).
@@ -168,28 +172,74 @@ pub struct EngageRules {
     /// The picture must be checked at least this often while an engagement is in play; a
     /// longer gap (a stalled loop) fails the picture, seconds.
     pub max_picture_gap_s: f64,
-    /// A picture token (what a signer was shown) is valid this long, seconds.
-    pub token_ttl_s: f64,
+    /// What an unreleased build called `token_ttl_s`. A renamed key stays a field of its
+    /// own, read through the accessor, so a log that used the old name parses and
+    /// re-serializes byte for byte (a serde alias would parse it but write the new name back,
+    /// and replay requires each line to be its event's serialization).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seen_max_age_s: Option<f64>,
+    /// A picture token (what a signer was shown) is valid this long, seconds. Default 15.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_ttl_s: Option<f64>,
     /// Every signature on one plan within this long of the first, seconds; past it the
     /// signatures are dropped and a new plan must be signed.
     pub max_signing_s: f64,
     /// A track's velocity estimate wobbles: a prediction carried over a span is allowed the
     /// track's uncertainty growth (`sigma_growth_mps`) times that span on top of the
-    /// deviation tolerance, at most this much, metres (0: none).
-    pub plan_drift_max_m: f64,
+    /// deviation tolerance, at most this much, metres (0: none). Default 300 (schema 2,
+    /// rules 2).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_drift_max_m: Option<f64>,
     /// A target slower than this is predicted where it is: a holding target's velocity
     /// estimate wobbles around zero, and carried a minute or two ahead the wobble would move
     /// the effect point by tens of metres, m/s (0: always carried along its estimate).
-    pub holding_speed_mps: f64,
+    /// Default 1.5 (schema 2, rules 2).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub holding_speed_mps: Option<f64>,
     /// One of our vehicles predicted along its velocity is uncertain too (it may turn, be
-    /// retasked): it counts with `keep_out_sigma` times its uncertainty, which grows at the
-    /// larger of this and 0.3 times its speed (the tracker's law for tracks), m/s.
-    pub friendly_growth_mps: f64,
+    /// retasked): it counts with `keep_out_sigma` times its uncertainty, which grows at this
+    /// rate over the prediction span, m/s. Not 0.3 times its speed as for tracks: a
+    /// fixed wing circling while it waits would then block every engagement within
+    /// kilometres. Default 1 (schema 2, rules 2).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub friendly_growth_mps: Option<f64>,
+}
+
+fn rules_version_now() -> u32 {
+    crate::rules::RULES_VERSION
+}
+
+impl EngageRules {
+    /// [`EngageRules::token_ttl_s`] (or its old name) or its default.
+    pub fn token_ttl(&self) -> f64 {
+        self.token_ttl_s.or(self.seen_max_age_s).unwrap_or(15.0)
+    }
+
+    /// [`EngageRules::plan_drift_max_m`] or its default.
+    pub fn plan_drift_max(&self) -> f64 {
+        self.plan_drift_max_m.unwrap_or(300.0)
+    }
+
+    /// [`EngageRules::holding_speed_mps`] or its default.
+    pub fn holding_speed(&self) -> f64 {
+        self.holding_speed_mps.unwrap_or(1.5)
+    }
+
+    /// [`EngageRules::friendly_growth_mps`] or its default.
+    pub fn friendly_growth(&self) -> f64 {
+        self.friendly_growth_mps.unwrap_or(1.0)
+    }
+
+    /// The decisions of rules version 2 on (see the changelog).
+    fn v2(&self) -> bool {
+        self.rules_version >= 2
+    }
 }
 
 impl Default for EngageRules {
     fn default() -> Self {
         EngageRules {
+            rules_version: crate::rules::RULES_VERSION,
             min_identity_confidence: 0.6,
             min_track_confidence: 0.5,
             max_track_age_s: 5.0,
@@ -211,11 +261,12 @@ impl Default for EngageRules {
             assess_dwell_s: 15.0,
             assess_window_s: 120.0,
             max_picture_gap_s: 5.0,
-            token_ttl_s: 15.0,
+            seen_max_age_s: None,
+            token_ttl_s: None,
             max_signing_s: 120.0,
-            plan_drift_max_m: 300.0,
-            holding_speed_mps: 1.5,
-            friendly_growth_mps: 1.0,
+            plan_drift_max_m: None,
+            holding_speed_mps: None,
+            friendly_growth_mps: None,
         }
     }
 }
@@ -257,11 +308,16 @@ impl EngageRules {
         within(self.assess_dwell_s, 1.0, 600.0, "assess_dwell_s")?;
         within(self.assess_window_s, 10.0, 3600.0, "assess_window_s")?;
         within(self.max_picture_gap_s, 1.0, 30.0, "max_picture_gap_s")?;
-        within(self.token_ttl_s, 1.0, 120.0, "token_ttl_s")?;
+        if self.token_ttl_s.is_some() && self.seen_max_age_s.is_some() {
+            return Err(
+                "rules.engage: token_ttl_s and its old name seen_max_age_s are both set".into(),
+            );
+        }
+        within(self.token_ttl(), 1.0, 120.0, "token_ttl_s")?;
         within(self.max_signing_s, 10.0, 900.0, "max_signing_s")?;
-        within(self.plan_drift_max_m, 0.0, 2000.0, "plan_drift_max_m")?;
-        within(self.holding_speed_mps, 0.0, 5.0, "holding_speed_mps")?;
-        within(self.friendly_growth_mps, 0.1, 10.0, "friendly_growth_mps")?;
+        within(self.plan_drift_max(), 0.0, 2000.0, "plan_drift_max_m")?;
+        within(self.holding_speed(), 0.0, 5.0, "holding_speed_mps")?;
+        within(self.friendly_growth(), 0.1, 10.0, "friendly_growth_mps")?;
         if self.assess_window_s < self.assess_dwell_s {
             return Err("rules.engage.assess_window_s must be at least assess_dwell_s".into());
         }
@@ -626,7 +682,11 @@ pub fn track_at(track: &TrackFacts, t: Time) -> LonLat {
 /// around zero).
 pub fn target_velocity(track: &TrackFacts, ec: &EngageRules) -> [f64; 2] {
     let v = track.velocity_mps.unwrap_or([0.0, 0.0]);
-    if v[0].hypot(v[1]) < ec.holding_speed_mps {
+    // rules 1: the estimate as it is
+    if !ec.v2() {
+        return v;
+    }
+    if v[0].hypot(v[1]) < ec.holding_speed() {
         [0.0, 0.0]
     } else {
         v
@@ -643,7 +703,7 @@ pub fn target_at(track: &TrackFacts, t: Time, ec: &EngageRules) -> LonLat {
 /// How far a prediction over `span_s` may be off because the velocity estimate it rests on
 /// wobbles: the track's uncertainty growth times the span, at most `plan_drift_max_m`.
 fn drift_allowance(track: &TrackFacts, span_s: f64, ec: &EngageRules) -> f64 {
-    (sigma_growth(track) * span_s.max(0.0)).min(ec.plan_drift_max_m)
+    (sigma_growth(track) * span_s.max(0.0)).min(ec.plan_drift_max())
 }
 
 /// Two position estimates of one track differ by their noise alone: twice the 1-sigma of
@@ -966,7 +1026,9 @@ pub fn evaluate(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
         }
     }
     out.push(armed_check(uid, world));
-    out.push(free_check(uid, world));
+    if ec.v2() {
+        out.push(free_check(uid, world));
+    }
     out.push(reach_check(uid, &pv, world, cfg, &ec));
     out
 }
@@ -1274,12 +1336,15 @@ pub fn keep_out_friendly(
                 let ec = cfg.engage_rules();
                 let dt = secs(effect_t.ms_since(pos.t)).max(0.0);
                 let p = offset(pos.value, e * dt, n * dt);
-                let growth = ec.friendly_growth_mps.max(0.3 * e.hypot(n));
-                let margin = ec.keep_out_sigma * growth * dt;
-                (
-                    (haversine_m(p, point) - margin).max(0.0),
-                    "predicted along its velocity, less its uncertainty",
-                )
+                if ec.v2() {
+                    let margin = ec.keep_out_sigma * ec.friendly_growth() * dt;
+                    (
+                        (haversine_m(p, point) - margin).max(0.0),
+                        "predicted along its velocity, less its uncertainty",
+                    )
+                } else {
+                    (haversine_m(p, point), "predicted along its velocity")
+                }
             }
             None => {
                 let cruise = v
@@ -1586,6 +1651,9 @@ pub fn plan_slack_s(p: &EngagePreview, ec: &EngageRules) -> f64 {
 /// diameter. This much more time is allowed for that, seconds (0 for a platform that can
 /// hold).
 fn waiting_allowance_s(v: &crate::world::VehicleFacts, cfg: &RulesConfig, cruise: f64) -> f64 {
+    if cfg.rules_version < 2 {
+        return 0.0;
+    }
     let Some(p) = &v.platform else { return 0.0 };
     let fixed_wing = v
         .autopilot
@@ -1649,7 +1717,9 @@ fn plan_checks(
         &ec,
     ));
     out.push(armed_check(uid, world));
-    out.push(free_check(uid, world));
+    if ec.v2() {
+        out.push(free_check(uid, world));
+    }
     out.push(plan_reach_check(uid, p, world, cfg, &ec));
     out.push(plan_track_check(plan, world.tracks.get(track_id), world, &ec));
     let took = secs(world.t.ms_since(plan.t)).max(0.0);
@@ -1703,6 +1773,19 @@ fn plan_track_check(
             None,
             Outcome::Pass,
             format!("the plan's effect time has come ({id} as frozen)"),
+        );
+    }
+    if !ec.v2() {
+        // rules 1: carried to the plan's time on today's estimate, the plain tolerance
+        let d = haversine_m(track_at(t, p.effect_t), p.effect_point);
+        return check(
+            r,
+            None,
+            if d <= tol { Outcome::Pass } else { Outcome::Fail },
+            format!(
+                "{id} predicted {d:.0} m from the plan's effect point at its time {} (tolerance {tol:.0} m)",
+                rel(p.effect_t, world.t)
+            ),
         );
     }
     // where the track is now against where the plan's track path puts it now (as the hold
@@ -1989,7 +2072,11 @@ pub fn picture(
     }
     // the keep-outs at the effect: the plan's time, or now once it has come (a release
     // waiting for the platform or the track happens now, and everyone kept moving)
-    let effect_at = p.effect_t.max(world.t);
+    let effect_at = if ec.v2() {
+        p.effect_t.max(world.t)
+    } else {
+        p.effect_t
+    };
     picture_checks.push(keep_out_friendly(
         p.effect_point,
         effect_at,
@@ -2049,6 +2136,17 @@ fn deviation_check(
     let estimate = target_at(now, world.t, ec);
     let d = haversine_m(expected, estimate);
     let base = (ec.deviation_fraction * snap.preview.effect_radius_m).max(ec.deviation_min_m);
+    if !ec.v2() {
+        // rules 1: the plain tolerance
+        return check(
+            RuleId::TrackDeviation,
+            None,
+            if d <= base { Outcome::Pass } else { Outcome::Fail },
+            format!(
+                "{id} is {d:.0} m from where the approval's snapshot predicts it now (tolerance {base:.0} m)"
+            ),
+        );
+    }
     // the snapshot's velocity estimate wobbles too: allow for it over the time since
     let since = secs(world.t.ms_since(snap.t)).max(0.0);
     let drift = drift_allowance(&snap.track, since, ec);
@@ -2122,6 +2220,20 @@ fn nav_check(uid: Option<&Uid>, world: &WorldSnapshot, cfg: &RulesConfig) -> Che
     let Some(v) = uid.and_then(|u| world.vehicles.get(u)) else {
         return check(r, uid, Outcome::Fail, "platform is no longer in the world model");
     };
+    if cfg.rules_version < 2 {
+        // rules 1: the filter's navigation source alone
+        return match fresh(&v.nav_source, v, "navigation source", world, cfg) {
+            Ok(NavSource::Gnss) => check(r, uid, Outcome::Pass, "platform navigates on GNSS"),
+            Ok(NavSource::DeadReckoning) => check(
+                r,
+                uid,
+                Outcome::Fail,
+                "platform lost GNSS (dead reckoning): its position, and a release on it, can't be trusted",
+            ),
+            Ok(NavSource::None) => check(r, uid, Outcome::Fail, "platform has no navigation solution"),
+            Err(e) => check(r, uid, Outcome::Fail, format!("cannot evaluate: {e}")),
+        };
+    }
     match fresh(&v.nav_source, v, "navigation source", world, cfg) {
         Ok(NavSource::Gnss) => {}
         Ok(NavSource::DeadReckoning) => {
@@ -2228,6 +2340,17 @@ fn release_checks(
     // the plan's time, within the same tolerance as its point: a moving target crosses the
     // deviation tolerance in plan_slack_s, so it may be released that much early (or late)
     // when it is at the point; a holding one waits for the time
+    if !ec.v2() {
+        // rules 1: from the plan's time, no earlier
+        let from = p.window.from.map_or(p.effect_t, |f| f.max(p.effect_t));
+        let o = if world.t >= from { Outcome::Pass } else { Outcome::Fail };
+        out.push(check(
+            RuleId::EffectTime,
+            None,
+            o,
+            format!("predicted effect time {}", rel(from, world.t)),
+        ));
+    }
     let early = if p.track_speed_mps >= 0.3 {
         plan_slack_s(p, ec)
     } else {
@@ -2236,18 +2359,20 @@ fn release_checks(
     let earliest = p.effect_t.plus_ms(-ms(early));
     let from = p.window.from.map_or(earliest, |f| f.max(earliest));
     let o = if world.t >= from { Outcome::Pass } else { Outcome::Fail };
-    out.push(check(
-        RuleId::EffectTime,
-        None,
-        o,
-        format!(
-            "predicted effect time {} (released from {early:.0} s before it)",
-            rel(p.effect_t, world.t)
-        ),
-    ));
+    if ec.v2() {
+        out.push(check(
+            RuleId::EffectTime,
+            None,
+            o,
+            format!(
+                "predicted effect time {} (released from {early:.0} s before it)",
+                rel(p.effect_t, world.t)
+            ),
+        ));
+    }
     // released before the plan's time: the keep-outs as they are now (the picture read them at
     // the plan's time)
-    if world.t < p.effect_t {
+    if ec.v2() && world.t < p.effect_t {
         out.push(keep_out_friendly(p.effect_point, world.t, p.keep_out_m, uid, world, cfg));
         out.push(keep_out_tracks(
             p.effect_point,

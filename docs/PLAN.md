@@ -302,6 +302,10 @@ contacts `effect.rs`; console `EngagePanel`, `EngageCard`, `engageLayers.ts`):
    the policy and decision, a hidden reset, an agent's order made to look automatic) is
    caught even with a recomputed chain.
 
+Decision rules are versioned (`RULES_VERSION`, recorded in `run.started`): replay
+recomputes every log with the rules it was produced under, and committed logs of every
+version replay in the decide crate's tests.
+
 State machine additions: `dispatched -release-> effected -complete-> done`,
 `dispatched -abort-> aborted` (terminal). `finish` and `dispatch` refuse engagements.
 

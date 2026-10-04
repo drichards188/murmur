@@ -252,7 +252,9 @@ pub use intent::{
 };
 pub use policy::{DeadlineBasis, KindApproval, Policy, PolicyDecision, Tier, Until};
 pub use route::{LegKind, Route, Segment};
-pub use rules::{CheckResult, Outcome, RuleId, RulesConfig, UnknownEndurance};
+pub use rules::{
+    CheckResult, Outcome, POLICY_SCHEMA, RULES_VERSION, RuleId, RulesConfig, UnknownEndurance,
+};
 pub use space::{
     ChosenCollect, CollectCapability, CollectOrder, CoverOrder, CoverService, ScenarioMap,
     SegmentId, SpaceAnswer, SpaceArea, SpaceOracle, SpaceOrder, SpaceQuery, SpaceRules,

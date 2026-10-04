@@ -521,7 +521,7 @@ impl Decision {
             "engage_operators": self.engage_operators,
             "signatures": signatures,
             "reset": reset,
-            "token_ttl_s": self.rules.engage_rules().token_ttl_s,
+            "token_ttl_s": self.rules.engage_rules().token_ttl(),
             "max_signing_s": self.rules.engage_rules().max_signing_s,
             // the plan the first signature froze: every later signer signs it exactly
             "plan": record.and_then(|e| e.plan.as_ref()).map(|p| json!({

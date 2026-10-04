@@ -265,6 +265,8 @@ impl Engine {
         let policy = e.policy.clone();
         e.emit(EventBody::RunStarted {
             crate_version: env!("CARGO_PKG_VERSION").to_string(),
+            rules_version: Some(policy.rules.rules_version),
+            policy_schema: Some(crate::rules::POLICY_SCHEMA),
             policy,
             areas: areas.clone(),
         })?;
@@ -480,7 +482,7 @@ impl Engine {
             why: format!("{track_id} is not in the picture"),
         })?;
         let now = self.now();
-        let ttl = self.policy.rules.engage_rules().token_ttl_s;
+        let ttl = self.policy.rules.engage_rules().token_ttl();
         let token = PictureToken {
             id: self.next_token,
             intent: id,

@@ -1200,8 +1200,12 @@ impl Decision {
 
     fn log_vehicle_events(&self, core: &mut Core) {
         let mut failsafes: Vec<(DUid, String)> = Vec::new();
+        let mut left: Vec<(DUid, String)> = Vec::new();
         for cell in self.world.vehicles() {
-            let events: Vec<_> = cell.write(|v| v.events.drain(..).collect());
+            let (events, mission_mode) = cell.write(|v| {
+                let events: Vec<_> = v.events.drain(..).collect();
+                (events, v.kind.and_then(crate::tasks::caps).map(|c| c.auto))
+            });
             for e in &events {
                 if let Err(err) = core
                     .engine
@@ -1218,8 +1222,40 @@ impl Decision {
                 {
                     failsafes.push((duid(cell.uid), e.text.clone()));
                 }
+                // the platform left the mission mode an intercept flies in: its failsafe's
+                // own message may have been lost on the link that failed, and the task layer
+                // stops watching the mode once the platform is on station (an orbit keeps
+                // orbiting)
+                if e.kind == "mode"
+                    && let Some(auto) = mission_mode
+                    && let Some((from, to)) = e.text.split_once(" -> ")
+                    && from.trim() == auto
+                    && to.trim() != auto
+                {
+                    left.push((duid(cell.uid), e.text.clone()));
+                }
             }
             self.remember_events(&cell, &events);
+        }
+        for (uid, text) in left {
+            let hit: Vec<IntentId> = core
+                .engine
+                .intents()
+                .filter(|i| {
+                    matches!(i.spec().task, Task::Engage { .. })
+                        && i.state() == State::Dispatched
+                        && i.spec().uids.contains(&uid)
+                })
+                .map(Intent::id)
+                .collect();
+            for id in hit {
+                let why = format!("the platform left its intercept (mode {text})");
+                match core.engine.stop_engagement_system(id, &why) {
+                    Ok(Some(f)) => self.command_fallback(core, f),
+                    Ok(None) => {}
+                    Err(e) => eprintln!("decision: stop {id}: {e}"),
+                }
+            }
         }
         // an engagement whose platform's own failsafe took over is stopped: the platform is
         // no longer flying the intercept, so nothing must be released on it

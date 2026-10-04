@@ -109,6 +109,9 @@ pub struct ReplayReport {
     pub space_queries: usize,
     /// Space queries re-run on the given segment and found equal (or not: see mismatches).
     pub space_recomputed: usize,
+    /// The decision rules the log was produced under (`run.started`; 1 when absent), which
+    /// replay recomputes with.
+    pub rules_version: u32,
     /// Space queries that could not be recomputed because the segment given to replay is
     /// not the one they ran on. Not decision mismatches: [`Self::ok`] ignores them.
     pub cache_mismatches: Vec<Mismatch>,
@@ -312,8 +315,21 @@ fn replay_inner(
             EventBody::RunStarted {
                 policy: p,
                 areas: a,
+                rules_version,
                 ..
             } => {
+                let version = rules_version.unwrap_or(1);
+                if version > crate::rules::RULES_VERSION {
+                    bad(
+                        &mut r,
+                        e,
+                        None,
+                        "log written under newer decision rules than this replay knows",
+                        version.to_string(),
+                        crate::rules::RULES_VERSION.to_string(),
+                    );
+                }
+                r.rules_version = version;
                 if let Err(why) = p.validate() {
                     bad(
                         &mut r,
@@ -324,7 +340,10 @@ fn replay_inner(
                         String::new(),
                     );
                 }
-                policy = Some(p.clone());
+                // recompute with the rules the log was produced under
+                let mut p = p.clone();
+                p.rules.rules_version = version;
+                policy = Some(p);
                 areas = None;
                 if let Some(a) = a {
                     areas = Some(load_areas(&mut r, e, &a.sha256, &a.areas));
@@ -1681,11 +1700,18 @@ fn check_signed(
     // the instant the engine read for the signature: after the event before its re-check,
     // not after the re-check itself; the token's expiry and the plan's freeze time are
     // read against it
-    let Some(at) = checked_t else {
-        bad(r, e, Some(id), "engagement signature without the instant it was checked at", "none".into(), String::new());
-        return;
+    // rules 1 logged no instant: the approval's own time stands in for it
+    let at = match checked_t {
+        Some(at) => at,
+        None if pol.rules.rules_version < 2 => e.t,
+        None => {
+            bad(r, e, Some(id), "engagement signature without the instant it was checked at", "none".into(), String::new());
+            return;
+        }
     };
+    let v2 = pol.rules.rules_version >= 2;
     match tr.check_window {
+        _ if !v2 => {}
         Some((lo, hi)) if lo <= at && at <= hi => {}
         other => bad(
             r,
@@ -1736,7 +1762,8 @@ fn check_signed(
                 || plan.preview != tok.plan
                 || plan.by != *by
                 || plan.track != tok.track
-                || plan.t != at
+                || (v2 && plan.t != at)
+                || plan.t > e.t
             {
                 bad(
                     r,
@@ -1811,7 +1838,7 @@ fn check_issued(
         bad(r, e, Some(id), "picture token for someone who may not sign it", tok.by.to_string(), String::new());
     }
     let Some(pol) = policy else { return };
-    let ttl = (pol.rules.engage_rules().token_ttl_s * 1000.0).round() as i64;
+    let ttl = (pol.rules.engage_rules().token_ttl() * 1000.0).round() as i64;
     if tok.expires_t != tok.t.plus_ms(ttl) || tok.t > e.t {
         bad(
             r,

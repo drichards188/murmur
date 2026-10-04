@@ -2,8 +2,8 @@
 # noise). After approval our AUV gets under way toward the target at 3 m/s; carried along its
 # velocity it would be about 290 m from the effect point at the plan's time, just outside
 # the 275 m keep-out, and still closing. Its prediction is uncertain (it may turn or be
-# retasked): it counts with keep_out_sigma times an uncertainty growing at the larger of
-# friendly_growth_mps and 0.3 times its speed over the span, so it is inside the keep-out
+# retasked): it counts with keep_out_sigma times an uncertainty growing at
+# friendly_growth_mps over the span, so it is inside the keep-out
 # and the engagement aborts before any effect. After the plan's time the keep-outs are read
 # at the release itself, not at the plan's time.
 title = "A friendly closing to just outside the keep-out"

@@ -81,6 +81,13 @@ pub enum EventBody {
     #[serde(rename = "run.started")]
     RunStarted {
         crate_version: String,
+        /// The decision rules this run decides under (`crate::RULES_VERSION`) and the policy
+        /// file schema it was given (`crate::POLICY_SCHEMA`). Absent in logs written before
+        /// they existed: version 1 of both. Replay recomputes with these rules.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rules_version: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        policy_schema: Option<u32>,
         policy: Policy,
         areas: Option<LoggedAreas>,
     },

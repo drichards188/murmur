@@ -123,8 +123,8 @@ token_ttl_s = 15                            # a picture token (what a signer is 
 max_signing_s = 120                         # every signature on one plan within this of the first
 plan_drift_max_m = 300                      # at most this allowance for a wobbling velocity estimate
 holding_speed_mps = 1.5                     # a target slower than this is predicted where it is
-friendly_growth_mps = 1.0                   # our vehicles count with keep_out_sigma x this (or 0.3 x their
-                                            # speed) x the prediction span of uncertainty
+friendly_growth_mps = 1.0                   # our vehicles count with keep_out_sigma x this x the
+                                            # prediction span of uncertainty
 
 [[tier]]
 name = "safety-commands"

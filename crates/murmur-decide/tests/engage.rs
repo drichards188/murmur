@@ -713,7 +713,7 @@ fn engage_thresholds_are_bounded() {
             "min_identity_confidence" => r.min_identity_confidence = v,
             "max_track_age_s" => r.max_track_age_s = v,
             "max_picture_gap_s" => r.max_picture_gap_s = v,
-            "token_ttl_s" => r.token_ttl_s = v,
+            "token_ttl_s" => r.token_ttl_s = Some(v),
             "max_signing_s" => r.max_signing_s = v,
             _ => r.deviation_fraction = v,
         }

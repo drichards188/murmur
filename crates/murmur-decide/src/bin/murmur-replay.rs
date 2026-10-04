@@ -65,7 +65,8 @@ fn main() -> ExitCode {
         }
     };
     println!(
-        "{path}: {} events, {} intents, {} checks and {} policy decisions recomputed, {} transitions verified",
+        "{path}: decision rules version {}; {} events, {} intents, {} checks and {} policy decisions recomputed, {} transitions verified",
+        report.rules_version,
         report.events,
         report.intents,
         report.checks_recomputed,

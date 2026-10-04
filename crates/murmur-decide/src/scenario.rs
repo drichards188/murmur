@@ -1540,7 +1540,8 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             for e in &mut events {
                 if let EventBody::RunStarted { policy, .. } = &mut e.body {
                     let mut r = policy.rules.engage_rules();
-                    r.token_ttl_s = 86_400.0;
+                    r.token_ttl_s = Some(86_400.0);
+                    r.seen_max_age_s = None;
                     policy.rules.engage = Some(r);
                     done = true;
                 }

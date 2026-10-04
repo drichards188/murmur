@@ -74,9 +74,10 @@ group. Dates are 2026.
 - **Friendlies count with their prediction uncertainty; the effect has a time tolerance**
   (10-04, Phase G harness: scenario 10 at seed 8 and 20 m noise released with our AUV
   predicted 7 m outside the keep-out and still closing). One of our vehicles predicted
-  along its velocity now counts with `keep_out_sigma` times an uncertainty growing at the
-  larger of `friendly_growth_mps` (1 m/s) and 0.3 times its speed (it may turn or be
-  retasked), failing closed; after the plan's time the keep-outs are read at the release
+  along its velocity now counts with `keep_out_sigma` times an uncertainty growing at
+  `friendly_growth_mps` (1 m/s) over the prediction span (it may turn or be retasked),
+  failing closed (not 0.3 times its speed as for tracks: a fixed wing circling while it
+  waits would then block every engagement within kilometres); after the plan's time the keep-outs are read at the release
   itself. A moving target may be released up to `plan_slack_s` before the plan's time when
   it is at the point (the same time tolerance as for arriving late), with the keep-outs
   read at that instant; a holding one waits for the time. Regression:
@@ -84,7 +85,10 @@ group. Dates are 2026.
 - **The platform's own failsafe stops its engagement** (10-04, live run). When the
   engaging platform reports a failsafe taking over (a GCS failsafe switching it to RTL,
   say), the bridge stops the engagement at once (cause `system`, the fallback commanded)
-  instead of waiting for the picture to time out.
+  instead of waiting for the picture to time out. A dispatched platform that leaves its
+  mission mode (`AUTO -> RTL`) is stopped the same way: a later live run lost the failsafe's
+  own message on the link that failed, only `GCS Failsafe Cleared` and the mode change
+  arrived, and the task layer stops watching the mode once an orbit is on station.
 - **The effective signing window, by target speed** (10-04, third review). The plan gives
   the signatures `dispatch_delay_s` (20 s) before the platform was to leave, plus the slack
   it may arrive late (`late_s`, 60 s, for a holding target; the deviation tolerance over the
@@ -280,6 +284,15 @@ group. Dates are 2026.
   come from the nearest cached sample within 50 m; the logged sample says where it was taken
   and how far. Samples that near which disagree (a shoreline, a coverage edge) leave it not
   evaluated, which fails closed for an engagement. Every other waypoint is answered exactly.
+- **Decision rules are versioned; old logs replay with their own rules** (10-04,
+  coordinator). A rule change that alters decisions bumps `RULES_VERSION` and is gated on
+  it; `run.started` records the version (none: 1) and the policy schema, and replay
+  recomputes each log with the rules it was produced under. New policy keys are optional
+  (absent from older logs, which re-serialize byte for byte); a renamed or removed key
+  stays an optional field under its old name, not a serde alias: an alias parses the old
+  name but writes the new one back, and replay requires each line to be its event's
+  serialization. Committed logs of every version replay in `tests/versions.rs`; the
+  changelog is in `crates/murmur-decide/README.md`.
 - **The hash chain is tamper-evident, not tamper-proof** (10-03, restated by the second
   review). A forger who removes a self-consistent set of events (a transient reset, the
   signature it dropped and its picture token) and recomputes the chain leaves a log replay
