@@ -1,0 +1,32 @@
+# Evaluation fleet (Phase G): a small stand-in-only fleet at the Golden Gate. Stand-ins
+# only, so runs are cheap and start in seconds; no HALE/MALE aircraft, whose radars would
+# see the whole bay and keep every track fresh. Every unit is inside the operator's
+# approved area (sim/areas/golden-gate.geojson), so the human tier carries only what the
+# evaluation policy sends there: armed platforms, routes that leave the area, unverifiable
+# reserves.
+#
+# uids follow the unit order (eval/stack.py plans with sim/swarm.py): 1 PUMA 1, 2 VIPER 1,
+# 3 REMUS 1, 4 BLADE 1, 5 BLADE 2. Scenario files select vehicles by callsign, except the
+# GNSS events (eval/scenarios/events/), which the stand-in engine selects by uid.
+title = "Evaluation: Golden Gate, five stand-ins"
+
+[[unit]]
+platform = "puma"                      # EO/IR 4 km, unarmed: the sensor the agent tasks
+sim = "standin"
+spawn = [37.8080, -122.4600, 120, 270] # east of the bridge (clear of the towers' no-go boxes)
+
+[[unit]]
+platform = "magura"                    # radar 8 km, EO/IR 5 km, AIS receiver
+sim = "standin"
+spawn = [37.8120, -122.4880, 0, 270]   # south side of the Gate
+
+[[unit]]
+platform = "remus"                     # sonar 3 km
+spawn = [37.8120, -122.5050, 0, 270]   # west of the Gate, at the surface
+
+[[unit]]
+platform = "switchblade"               # armed: every task is a human decision
+sim = "standin"
+spawn = [37.8040, -122.4650, 150, 270] # over Crissy Field
+count = 2
+spacing_m = 400

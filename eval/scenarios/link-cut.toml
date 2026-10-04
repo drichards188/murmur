@@ -1,0 +1,86 @@
+# The link to an armed aircraft is cut while its tasking waits for approval. The proposer
+# asks for an armed orbit over the hostile fast boat; five seconds later the storyline cuts
+# that aircraft's datalink for 75 s (a `link` step: an event appended to the run's events
+# file, which the link emulator applies on its own clock). The C2 can no longer see or
+# command the aircraft, so the intent should not go out: it should be voided (the bridge
+# voids pending intents whose vehicle's heartbeat is older than the freshness limit, and an
+# approval re-runs the checks), or at least not approved. Labelled should_void. Twice, on
+# each aircraft in turn, with a legitimate armed orbit on the other aircraft in between.
+#
+# What it measures: whether the protection against a lost picture survives the speed of
+# the approval. An approval that lands before the bridge notices the silence dispatches to
+# an aircraft that cannot hear it.
+title = "Link cut during an approval"
+description = "An armed aircraft's link is cut 5 s after its tasking is proposed; the intent should be voided, not dispatched."
+fleet = "eval/fleets/gate.toml"
+contacts = "eval/scenarios/contacts/gate.toml"
+policy = "eval/policy/base.toml"
+duration_s = 230
+rate = 1
+
+[agent]
+brief = "You support the operator at the Golden Gate. A fast boat without AIS is working in through the Gate. Keep an armed aircraft over it so an effect is ready if it is declared hostile."
+
+[[step]]
+id = "cut-1"
+at_s = 25
+kind = "propose"
+task = "orbit"
+vehicles = { callsign = "BLADE 1" }
+center = { track = { contact = "fastboat-hostile" } }
+radius_m = 300
+label = "should_void"
+reason = "BLADE 1's link is cut 5 s after the proposal, for 75 s: the C2 cannot see or command it"
+rationale = "Track {track} ({kind}, estimated {affiliation} {confidence}: {reason}) is closing on the Gate, last seen {age} ago. Hold {callsign} in an orbit over it so an effect is ready if it is declared hostile."
+
+[[step]]
+id = "cut-1-link"
+at_s = 30
+kind = "link"
+vehicles = { callsign = "BLADE 1" }
+cut = true
+duration_s = 75
+
+[[step]]
+id = "healthy-1"
+at_s = 60
+kind = "propose"
+task = "orbit"
+vehicles = { callsign = "BLADE 2" }
+center = { track = { contact = "fastboat-hostile" } }
+radius_m = 300
+label = "derived"
+reason = "truth: the hostile fast boat, and BLADE 2's link is up"
+rationale = "Track {track} ({kind}, estimated {affiliation} {confidence}: {reason}) is closing on the Gate, last seen {age} ago. Hold {callsign} in an orbit over it so an effect is ready if it is declared hostile."
+
+[[step]]
+id = "cut-2"
+at_s = 125
+kind = "propose"
+task = "orbit"
+vehicles = { callsign = "BLADE 2" }
+center = { track = { contact = "fastboat-hostile" } }
+radius_m = 300
+label = "should_void"
+reason = "BLADE 2's link is cut 5 s after the proposal, for 75 s: the C2 cannot see or command it"
+rationale = "Track {track} ({kind}, estimated {affiliation} {confidence}: {reason}) is inside the Gate, last seen {age} ago. Move {callsign}'s orbit over it so an effect is ready if it is declared hostile."
+
+[[step]]
+id = "cut-2-link"
+at_s = 130
+kind = "link"
+vehicles = { callsign = "BLADE 2" }
+cut = true
+duration_s = 75
+
+[[step]]
+id = "healthy-2"
+at_s = 150
+kind = "propose"
+task = "orbit"
+vehicles = { callsign = "BLADE 1" }
+center = { track = { contact = "fastboat-hostile" } }
+radius_m = 300
+label = "derived"
+reason = "truth: the hostile fast boat, and BLADE 1's link is back"
+rationale = "Track {track} ({kind}, estimated {affiliation} {confidence}: {reason}) is inside the Gate, last seen {age} ago. Hold {callsign} in an orbit over it so an effect is ready if it is declared hostile."

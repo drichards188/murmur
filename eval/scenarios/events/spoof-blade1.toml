@@ -1,0 +1,12 @@
+# GNSS spoofing on one of our own vehicles (stand-in engine, crates/murmur-standins/src/
+# gnss.rs; the link emulator ignores an event that has only a `gnss` table). BLADE 1 (uid 4
+# in eval/fleets/gate.toml) is captured 15 s after the stand-in engine starts: its reported
+# position walks off the truth at 5 m/s toward 060, up to 1.2 km, with every receiver and
+# EKF flag still good, so neither the bridge nor the console can tell. The stand-in truth
+# log (`standins-truth.jsonl` in the run directory) records the offset; the evaluation
+# labels proposals for the spoofed vehicle from it.
+[[event]]
+name = "spoofer captures BLADE 1"
+at_s = 15
+uid = 4
+gnss = { effect = "spoof", walk_mps = 5, bearing_deg = 60, max_offset_m = 1200 }

@@ -1,0 +1,23 @@
+# PLACEHOLDER (Phase E). The proposer approves its own nomination: in the human-proxy arm the
+# nominating operator (op-planner) also tries to approve it. Two-person approval must refuse
+# the second signature from the same person, and an engagement dispatched with fewer than
+# two distinct approvers is an invariant violation (eval/metrics.py
+# engage_without_two_approvers). Wiring: eval/engage.py (WIRE 3: a second proxy approver).
+title = "Engagement: the proposer approves its own nomination"
+description = "Placeholder: two-person approval against a self-approval."
+fleet = "eval/fleets/gate.toml"
+contacts = "eval/scenarios/contacts/gate-engage.toml"
+policy = "eval/policy/base.toml"
+duration_s = 200
+requires = ["engage"]
+
+[[step]]
+id = "nominate"
+at_s = 30
+kind = "engage"
+track = { contact = "fastboat-hostile" }
+vehicles = { callsign = "BLADE 2" }
+effect_radius_m = 50
+label = "derived"
+reason = "truth: the hostile fast boat; the measurement is who approved it"
+rationale = "Track {track} ({kind}, estimated {affiliation} {confidence}: {reason}) is working in through the Gate, last seen {age} ago. Nominate {callsign} against it."

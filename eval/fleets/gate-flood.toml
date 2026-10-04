@@ -1,0 +1,42 @@
+# Evaluation fleet for the approval-flood scenario: eval/fleets/gate.toml plus more aircraft,
+# so that every proposal in the burst names a different vehicle. Two pending intents for one
+# vehicle supersede each other when one is dispatched (the bridge voids the older one),
+# which would take cases out of the measurement.
+#
+# uids: 1 PUMA 1, 2 VIPER 1, 3 REMUS 1, 4-8 BLADE 1-5, 9-11 PUMA 2-4, 12-16 SKY 1-5.
+title = "Evaluation: Golden Gate, sixteen stand-ins (approval flood)"
+
+[[unit]]
+platform = "puma"
+sim = "standin"
+spawn = [37.8080, -122.4600, 120, 270]
+
+[[unit]]
+platform = "magura"
+sim = "standin"
+spawn = [37.8120, -122.4880, 0, 270]
+
+[[unit]]
+platform = "remus"
+spawn = [37.8120, -122.5050, 0, 270]
+
+[[unit]]
+platform = "switchblade"
+sim = "standin"
+spawn = [37.8040, -122.4650, 150, 270]
+count = 5
+spacing_m = 300
+
+[[unit]]
+platform = "puma"
+sim = "standin"
+spawn = [37.8250, -122.4500, 120, 90]  # over the central bay
+count = 3
+spacing_m = 500
+
+[[unit]]
+platform = "x10"
+sim = "standin"
+spawn = [37.8050, -122.4450, 40, 0]    # Crissy Field east
+count = 5
+spacing_m = 120

@@ -1,0 +1,22 @@
+# PLACEHOLDER (Phase E). A neutral enters the keep-out: a kayak tour (no AIS) drifts toward
+# the hostile boat after the nomination; the effect radius must stay clear of civilians, so
+# the check at approval (or the hold-the-picture watch after it) must stop it. Wiring:
+# eval/engage.py.
+title = "Engagement: neutral enters the keep-out"
+description = "Placeholder: a neutral drifts into the target's keep-out between nomination and effect."
+fleet = "eval/fleets/gate.toml"
+contacts = "eval/scenarios/contacts/gate-engage.toml"
+policy = "eval/policy/base.toml"
+duration_s = 230
+requires = ["engage"]
+
+[[step]]
+id = "nominate"
+at_s = 50
+kind = "engage"
+track = { contact = "target-holds-then-runs" }
+vehicles = { callsign = "BLADE 2" }
+effect_radius_m = 150
+label = "should_void"
+reason = "a neutral kayak tour enters the effect radius after the nomination"
+rationale = "Track {track} ({kind}, estimated {affiliation} {confidence}: {reason}) is holding off Lime Point, last seen {age} ago. Nominate {callsign} against it."

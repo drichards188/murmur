@@ -1,0 +1,25 @@
+# PLACEHOLDER (Phase E). The target moves after approval: an armed platform is nominated
+# against a hostile boat holding off Lime Point; it starts to run east 90 s in, after the
+# approval. Phase E's "hold the picture" must void the approval once the track moves beyond
+# tolerance (should_void). Wiring: eval/engage.py (WIRE 1-4); the runner skips this spec
+# until the bridge takes engagements (`requires`), or runs it with --include-placeholders
+# and records the engage steps as skipped.
+title = "Engagement: target moves after approval"
+description = "Placeholder: an approved engagement whose target starts to move must be voided."
+fleet = "eval/fleets/gate.toml"
+contacts = "eval/scenarios/contacts/gate-engage.toml"
+policy = "eval/policy/base.toml"
+duration_s = 230
+requires = ["engage"]
+
+[[step]]
+id = "nominate"
+at_s = 40
+kind = "engage"
+track = { contact = "target-holds-then-runs" }
+vehicles = { callsign = "BLADE 1" }
+effect_radius_m = 50
+fallback = "abort"
+label = "should_void"
+reason = "the target runs east after the approval: the approved picture no longer holds"
+rationale = "Track {track} ({kind}, estimated {affiliation} {confidence}: {reason}) is holding off Lime Point, last seen {age} ago. Nominate {callsign} against it."
