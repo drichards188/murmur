@@ -15,30 +15,54 @@ export interface ViewShown {
   /** the "why this needs a human" lines */
   warnings: string[]
   rationale: boolean
-  /** track ids the operator opened while the card was up (none yet: the console does not
-   *  link cards to tracks; the proxy operator fills this field) */
+  /** track ids the operator opened (selected on the map or in the track list) while the
+   *  card was up, in the order first opened */
   tracks: string[]
 }
 
+/** Track openings in this console, newest last (bounded): `noteTrackViewed` is called by
+ *  the app whenever the operator selects a track. */
+const opened: { id: string; at: number }[] = []
+const MAX_OPENED = 256
+
+export function noteTrackViewed(id: string) {
+  opened.push({ id, at: performance.now() })
+  if (opened.length > MAX_OPENED) opened.splice(0, opened.length - MAX_OPENED)
+}
+
+/** Distinct track ids opened at or after `since` (performance.now() ms), first-opened
+ *  order, at most 64 (the bridge's bound on a view's lists). */
+export function tracksViewedSince(since: number): string[] {
+  const out: string[] = []
+  for (const o of opened) {
+    if (o.at >= since && !out.includes(o.id)) out.push(o.id)
+    if (out.length >= 64) break
+  }
+  return out
+}
+
 /** What a card for `i` shows: the checks (every one is rendered), the reasons and whether
- *  a rationale is on it. The first `why` line is the policy rule, shown as the tier. */
-export function shownOn(i: Intent): ViewShown {
+ *  a rationale is on it, and the tracks the operator opened since the card first rendered
+ *  (`openedAt`; none on the `open` event). The first `why` line is the policy rule, shown
+ *  as the tier. */
+export function shownOn(i: Intent, openedAt?: number): ViewShown {
   return {
     checks: i.checks.map((c) => (c.uid != null ? `${c.rule}:${c.uid}` : c.rule)),
     warnings: (i.why ?? []).slice(1),
     rationale: !!i.rationale,
-    tracks: [],
+    tracks: openedAt == null ? [] : tracksViewedSince(openedAt),
   }
 }
 
 /** POST /api/operator/view; failures are swallowed (the log is instrumentation, not a
- *  decision path). */
+ *  decision path). `open_ms` is the time from the card's first render (`openedAt`) to this
+ *  event, on `close` and `decide` only (eval/METRICS.md, "Views"). */
 export function reportView(i: Intent, event: ViewEvent, openedAt: number, action?: 'approve' | 'reject') {
   const body = {
     intent_id: i.id,
     event,
     action,
-    shown: shownOn(i),
+    shown: shownOn(i, event === 'open' ? undefined : openedAt),
     open_ms: event === 'open' ? undefined : Math.max(0, Math.round(performance.now() - openedAt)),
     client_t: Date.now(),
   }

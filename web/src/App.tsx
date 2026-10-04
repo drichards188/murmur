@@ -25,6 +25,7 @@ import { buildEngageLayers, type EngageDrawing } from './engageLayers'
 import { circle } from './geo'
 import { PERF_ON, perfCommitted, perfPassiveBegin, perfRenderBegin, perfUpdateEnd } from './perf'
 import { PerfOverlay } from './PerfOverlay'
+import { noteTrackViewed } from './operatorView'
 
 function useUtcClock() {
   const [now, setNow] = useState(() => new Date())
@@ -50,6 +51,11 @@ export default function App() {
   const clock = useUtcClock()
   const [showTracks, setShowTracks] = useState(false)
   const [selectedTrack, setSelectedTrack] = useState<string | null>(null)
+  // evaluation instrumentation: the inbox cards' view events list the tracks opened while
+  // the card was up (operatorView.ts)
+  useEffect(() => {
+    if (selectedTrack) noteTrackViewed(selectedTrack)
+  }, [selectedTrack])
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [detailsUid, setDetailsUid] = useState<number | null>(null)
   const [following, setFollowing] = useState(true)
