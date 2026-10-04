@@ -150,6 +150,7 @@ function EstimateItems({ v, e, nowMs }: { v: Vehicle; e: Estimate; nowMs: number
   const fs = e.failsafe
   const branch = failsafeAt(e, nowMs)
   return (
+    <>
     <dl>
       <Item k="Silent">
         <b className="bad">{fmtDuration(silent)}</b> <span className="muted">(lost after {Math.round(staleMs(v) / 1000)} s)</span>
@@ -179,8 +180,9 @@ function EstimateItems({ v, e, nowMs }: { v: Vehicle; e: Estimate; nowMs: number
           )}
         </Item>
       )}
-      <p className="muted">Situational awareness only: the decision core keeps its own friendly-uncertainty model and does not read this.</p>
     </dl>
+    <p className="muted">Situational awareness only: the decision core keeps its own friendly-uncertainty model and does not read this.</p>
+    </>
   )
 }
 

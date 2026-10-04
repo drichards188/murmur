@@ -439,7 +439,7 @@ pub fn eval(m: &Motion, dt: f64, reach_mps: f64, cap_m: f64) -> (LngLat, Region)
                     Region::Ellipse {
                         center: position,
                         semi_major_m: along,
-                        semi_minor_m: across.min(along),
+                        semi_minor_m: across,
                         bearing_deg,
                     },
                 )
@@ -490,7 +490,7 @@ pub fn eval(m: &Motion, dt: f64, reach_mps: f64, cap_m: f64) -> (LngLat, Region)
                     Region::Ellipse {
                         center: position,
                         semi_major_m: along,
-                        semi_minor_m: across.min(along),
+                        semi_minor_m: across,
                         bearing_deg: *bearing_deg,
                     },
                 ),
@@ -792,14 +792,14 @@ impl Inputs<'_> {
     /// Clockwise around `center` (bearing increasing), from the last velocity; the default
     /// when not moving (ArduPilot loiters clockwise at a positive radius, the bridge's
     /// waypoint rings run clockwise too).
-    fn clockwise_about(&self, center: LngLat) -> bool {
+    fn clockwise_about(&self, center: LngLat, at: LngLat) -> bool {
         let Some([ve, vn]) = self.vel_en else {
             return true;
         };
         if ve.hypot(vn) < 0.3 {
             return true;
         }
-        let theta = bearing(center, self.position).to_radians();
+        let theta = bearing(center, at).to_radians();
         ve * theta.cos() - vn * theta.sin() >= 0.0
     }
 
@@ -812,24 +812,25 @@ impl Inputs<'_> {
         }
     }
 
-    fn ring(&self, center: LngLat, radius: f64) -> Motion {
+    /// Around `center` from the phase of `at`, with `spread0_m` of initial uncertainty along
+    /// the ring.
+    fn ring(&self, at: LngLat, center: LngLat, radius: f64, spread0_m: f64) -> Motion {
         let speed = self.task_speed();
         let rate = if radius > 0.0 {
             (speed / radius).to_degrees()
         } else {
             0.0
         };
-        let sign = if self.clockwise_about(center) { 1.0 } else { -1.0 };
-        let tol = self.ring_tolerance(radius);
+        let sign = if self.clockwise_about(center, at) { 1.0 } else { -1.0 };
         let along_mps = (0.3 * speed).max(MIN_ALONG_MPS);
         let to_deg = |m: f64| if radius > 0.0 { (m / radius).to_degrees() } else { 180.0 };
         Motion::Ring {
             center,
             radius_m: radius,
-            width_m: 2.0 * tol,
-            angle0_deg: bearing(center, self.position),
+            width_m: self.ring_width(radius),
+            angle0_deg: bearing(center, at),
             rate_dps: sign * rate,
-            spread0_deg: to_deg(self.s0()).min(180.0),
+            spread0_deg: to_deg(spread0_m).min(180.0),
             spread_dps: to_deg(along_mps),
         }
     }
@@ -843,8 +844,9 @@ impl Inputs<'_> {
     }
 
     /// Toward home at `speed`; a fixed wing stops on its RTL circle and circles, the rest stop
-    /// at home.
-    fn homeward(&self, from: LngLat, speed: f64, along0: f64) -> Option<Motion> {
+    /// at home. `along_mps` is the along-track growth: the speed's own uncertainty, plus what
+    /// the caller knows about wind or current.
+    fn homeward(&self, from: LngLat, speed: f64, along0: f64, along_mps: f64) -> Option<Motion> {
         let home = self.home?;
         let dist = distance_m(from, home);
         let (stop, arrive) = if self.fixed_wing() {
@@ -854,13 +856,17 @@ impl Inputs<'_> {
                 .or(self.min_turn_m)
                 .unwrap_or(150.0)
                 .max(1.0);
+            // already on (or inside) its RTL circle: it circles home from here on
+            if dist <= r + self.ring_width(r) / 2.0 {
+                return Some(self.ring(from, home, r, along0));
+            }
             (
                 (dist - r).max(0.0),
                 Arrival {
                     center: home,
                     radius_m: r,
                     ring: true,
-                    width_m: 2.0 * self.ring_tolerance(r),
+                    width_m: self.ring_width(r),
                 },
             )
         } else {
@@ -886,11 +892,18 @@ impl Inputs<'_> {
             speed_mps: speed,
             stop_m: Some(stop),
             along0_m: along0,
-            along_mps: (0.3 * speed).max(MIN_ALONG_MPS),
+            along_mps: along_mps.max(MIN_ALONG_MPS),
             across0_m: along0,
             across_mps: self.across_rate(),
             arrive: Some(arrive),
         })
+    }
+
+    /// The width of a ring region: the circle is flown to within a fraction of its radius
+    /// (wind pushes a loiter out; the task layer's on-station tolerance, 0.4 R, is looser than
+    /// where the vehicle really is). GUESS.
+    fn ring_width(&self, radius: f64) -> f64 {
+        2.0 * (radius * 0.15).max(60.0)
     }
 
     /// The last velocity carried on.
@@ -945,7 +958,7 @@ impl Inputs<'_> {
                 .max(self.min_turn_m.unwrap_or(0.0));
             if let Some((center, _)) = fresh {
                 return (
-                    self.ring(center, r),
+                    self.ring(self.position, center, r, self.s0()),
                     format!("{label}: circling its loiter center at {}", fmt_m(r)),
                 );
             }
@@ -985,10 +998,10 @@ impl Inputs<'_> {
                 let tol = self.ring_tolerance(radius);
                 let off = (distance_m(center, self.position) - radius).abs();
                 if task.state == OpState::Done || off <= 2.0 * tol {
-                    let turn = if self.clockwise_about(center) { "clockwise" } else { "counter-clockwise" };
+                    let turn = if self.clockwise_about(center, self.position) { "clockwise" } else { "counter-clockwise" };
                     return Some((
                         "orbit",
-                        self.ring(center, radius),
+                        self.ring(self.position, center, radius, self.s0()),
                         format!("orbit #{}: {} {turn} on its {} ring", task.tasking, fmt_mps(speed), fmt_m(radius)),
                     ));
                 }
@@ -1004,10 +1017,12 @@ impl Inputs<'_> {
                 let (seg, frac, off) = nearest_segment(&route, self.position, self.heading);
                 let across0 = if self.limits.domain == "air" { 90.0 } else { 25.0 };
                 let en_route = task.state == OpState::Active && off > 3.0 * across0 + self.s0();
-                let (lead, seg0, frac0, what) = if en_route {
-                    (Some(self.position), 0, 0.0, "en route to its first waypoint, then along its route".to_string())
+                // on the route the model snaps it onto the line: the region keeps how far off
+                // the line it really was
+                let (lead, seg0, frac0, across0, what) = if en_route {
+                    (Some(self.position), 0, 0.0, across0, "en route to its first waypoint, then along its route".to_string())
                 } else {
-                    (None, seg, frac, format!("along its {}-point route, leg {}", route.len(), seg + 1))
+                    (None, seg, frac, across0 + off, format!("along its {}-point route, leg {}", route.len(), seg + 1))
                 };
                 Some((
                     "patrol",
@@ -1030,7 +1045,7 @@ impl Inputs<'_> {
                 Some(("hold", m, d))
             }
             TaskKind::Rtl if mode == "RTL" || (self.kind == Some(Kind::Sub) && Some(mode) == auto) => {
-                let m = self.homeward(self.position, speed, self.s0())?;
+                let m = self.homeward(self.position, speed, self.s0(), 0.3 * speed)?;
                 Some(("rtl", m, format!("rtl #{}: {} toward home", task.tasking, fmt_mps(speed))))
             }
             _ => None,
@@ -1042,7 +1057,8 @@ impl Inputs<'_> {
         let mode = self.mode?;
         let hold = self.kind.and_then(crate::tasks::caps).map(|c| c.hold);
         if mode == "RTL" {
-            let m = self.homeward(self.position, self.task_speed(), self.s0())?;
+            let speed = self.task_speed();
+            let m = self.homeward(self.position, speed, self.s0(), 0.3 * speed)?;
             return Some(("rtl", m, format!("in RTL: {} toward home", fmt_mps(self.task_speed()))));
         }
         if Some(mode) == hold || (self.fixed_wing() && mode == "LOITER") {
@@ -1115,10 +1131,16 @@ pub fn estimate(inp: &Inputs) -> Estimate {
         let (profile, after_s) = inp.lost_link.clone()?;
         let fires_t = inp.last_rx_t + after_s;
         let (p, region) = eval(&motion, fires_t - inp.t0, reach_mps, cap_m);
-        let s0 = region.radius_about(p) + S0_M;
+        // the first model's uncertainty when the timer fires, plus the turn toward home (a
+        // reversal ends two turn radii beside the straight line)
+        let s0 = region.radius_about(p) + S0_M + 2.0 * inp.min_turn_m.unwrap_or(0.0);
+        // home at the catalog's cruise speed, through the air or water: the last ground speed
+        // says how much wind or current there is, and the branch grows by that much a second
+        let cruise = inp.limits.cruise_mps.max(0.5);
+        let drift = if inp.speed() >= 0.3 { (cruise - inp.speed()).abs() } else { 0.0 };
         let (branch, what) = match action {
             "rtl" => (
-                inp.homeward(p, inp.limits.cruise_mps.max(0.5), s0)?,
+                inp.homeward(p, cruise, s0, 0.3 * cruise + drift)?,
                 if inp.fixed_wing() {
                     "RTL: toward home at cruise speed, then circling home"
                 } else {
@@ -1422,9 +1444,10 @@ mod tests {
         let Region::Ellipse { semi_major_m: ab, semi_minor_m: bb, bearing_deg, .. } = rb else { panic!("{rb:?}") };
         let Region::Ellipse { semi_major_m: ap, semi_minor_m: bp, .. } = rp else { panic!("{rp:?}") };
         assert!((bearing_deg - 90.0).abs() < 0.5);
-        // along: 10 + 3 + (0.4 x 6 + 1.3) x 60 = 235 m; across: 13 + 0.3 x 13 x 60 = 247, capped to along
+        // along: 10 + 3 + (0.4 x 6 + 1.3) x 60 = 235 m; across: 13 + 0.3 x 13 x 60 = 247 (a boat
+        // may turn as much as it may speed up: across is not clamped to along)
         assert!((ab - 235.0).abs() < 1.0, "{ab}");
-        assert!((bb - 235.0).abs() < 1.0, "{bb}");
+        assert!((bb - 247.0).abs() < 1.0, "{bb}");
         // the plane's grows an order of magnitude faster: (64 + 17.5) x 60 + 90 = 4980 m
         assert!(ap > 10.0 * ab, "{ap} vs {ab}");
         assert!((ap - 4980.0).abs() < 2.0, "{ap}");
@@ -1505,7 +1528,7 @@ mod tests {
         assert!(e.detail.contains("clockwise"), "{}", e.detail);
         let Motion::Ring { rate_dps, angle0_deg, width_m, .. } = &e.motion else { panic!("{:?}", e.motion) };
         assert!(*rate_dps > 0.0 && (angle0_deg - 90.0).abs() < 0.1, "{rate_dps} {angle0_deg}");
-        assert!((width_m - 2.0 * 3600.0).abs() < 1e-6); // 0.4 x 9 km each side
+        assert!((width_m - 2.0 * 1350.0).abs() < 1e-6); // 0.15 x 9 km each side
         // a quarter turn: 2 pi 9000 / 4 / 160 = 88.4 s, now due south of the center
         let (p, r) = eval(&e.motion, 88.36, e.reach_mps, e.cap_m);
         assert!((bearing(center, p) - 180.0).abs() < 0.5, "{}", bearing(center, p));
@@ -1524,7 +1547,7 @@ mod tests {
         let (_, r) = eval(&e.motion, 3600.0, e.reach_mps, e.cap_m);
         let Region::Arc { spread_deg, .. } = r else { panic!() };
         assert_eq!(spread_deg, 180.0);
-        assert!((r.radius_about(p) - (2.0 * radius + 3600.0)).abs() < 1e-6);
+        assert!((r.radius_about(p) - (2.0 * radius + 1350.0)).abs() < 1e-6);
     }
 
     #[test]
@@ -1678,11 +1701,14 @@ mod tests {
         let (p, r) = eval(&e.motion, 10_000.0, e.reach_mps, e.cap_m);
         assert!((distance_m(p, home) - 1000.0).abs() < 2.0, "{}", distance_m(p, home));
         assert!(matches!(r, Region::Arc { radius_m, spread_deg, .. } if radius_m == 1000.0 && spread_deg == 180.0), "{r:?}");
-        // already inside its RTL circle (3.1 km from home, a 9 km circle): it is there now
+        // already inside its RTL circle (3.1 km from home, a 9 km circle): it circles home
+        // from here on (a ring, so the point estimate keeps moving around it)
         plane.rtl_radius_m = Some(9000.0);
         let e = estimate(&plane);
+        assert!(matches!(e.motion, Motion::Ring { radius_m, .. } if radius_m == 9000.0), "{:?}", e.motion);
         let (p, _) = eval(&e.motion, 10_000.0, e.reach_mps, e.cap_m);
-        assert!(distance_m(p, GATE) < 1.0);
+        // flat earth about each end: a tenth of a percent apart over 9 km
+        assert!((distance_m(p, home) - 9000.0).abs() < 20.0, "{}", distance_m(p, home));
     }
 
     #[test]

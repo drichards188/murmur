@@ -112,7 +112,7 @@ export function evalMotion(m: Motion, dtIn: number, reachMps: number, capM: numb
       const along = bound(m.along0_m + m.along_mps * dt, m.along0_m)
       const across = bound(m.across0_m + m.across_mps * dt, m.across0_m)
       if (!m.lead && loop > 0 && along >= loop / 2) return { position: position!, region: { kind: 'band', route: m.route, width_m: 2 * across } }
-      return { position: position!, region: { kind: 'ellipse', center: position!, semi_major_m: along, semi_minor_m: Math.min(across, along), bearing_deg: bearing } }
+      return { position: position!, region: { kind: 'ellipse', center: position!, semi_major_m: along, semi_minor_m: across, bearing_deg: bearing } }
     }
     case 'line': {
       let d = m.speed_mps * dt
@@ -129,7 +129,7 @@ export function evalMotion(m: Motion, dtIn: number, reachMps: number, capM: numb
         return { position, region: { kind: 'arc', center: a.center, radius_m: a.radius_m, width_m: a.width_m + 2 * m.along0_m, angle_deg: flatBearing(a.center, position), spread_deg: 180 } }
       }
       if (a && arrived) return { position, region: { kind: 'circle', center: a.center, radius_m: a.radius_m + m.along0_m } }
-      return { position, region: { kind: 'ellipse', center: position, semi_major_m: along, semi_minor_m: Math.min(across, along), bearing_deg: m.bearing_deg } }
+      return { position, region: { kind: 'ellipse', center: position, semi_major_m: along, semi_minor_m: across, bearing_deg: m.bearing_deg } }
     }
     case 'point':
       return { position: m.at, region: { kind: 'circle', center: m.at, radius_m: bound(m.radius0_m + m.rate_mps * dt, m.radius0_m) } }

@@ -150,6 +150,8 @@ export function buildEstimateLayers({ vehicles, nowMs, focus }: EstimateLayerInp
       updateTriggers: triggers,
       parameters: onTop,
     }),
+    // above the symbol: the last-known symbol's LOST badge is below its own, so the two don't
+    // collide when the estimate is still close to where the vehicle was last seen
     new TextLayer<Drawn>({
       id: 'estimate-labels',
       data: drawn,
@@ -158,8 +160,8 @@ export function buildEstimateLayers({ vehicles, nowMs, focus }: EstimateLayerInp
       getSize: 10,
       getColor: (d) => a(TEXT, dim(d)),
       getTextAnchor: 'middle',
-      getAlignmentBaseline: 'top',
-      getPixelOffset: (d) => [0, frameIcon(d.v, true).halfH + 4],
+      getAlignmentBaseline: 'bottom',
+      getPixelOffset: (d) => [0, -(frameIcon(d.v, true).halfH + 4)],
       fontFamily: FONT,
       fontWeight: 600,
       background: true,
