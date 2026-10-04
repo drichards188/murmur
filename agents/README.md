@@ -39,6 +39,22 @@ curl -X POST http://127.0.0.1:8765/api/intents/<id>/approve -H 'X-Murmur-Operato
 `--withdraw` to withdraw a proposal still pending at the end, `--url` and `--agent` for a
 second stack or a second agent id.
 
+### The policy agent (no model; the evaluation's proposer)
+
+`agents/policy_agent.py` is two things. As a library, `AgentSession` wraps an MCP session as
+one agent id with typed helpers (fleet, tracks, preview, propose, withdraw, explain); a
+proposal the rules refuse comes back as its intent with `refused`, not as an exception. The
+evaluation harness (`eval/agent.py`) proposes through it. As a program, it watches the tracks
+and proposes one sensor orbit per new suspect or unknown track near a point, with a rationale
+naming the facts and their ages:
+
+```
+.venv/bin/python agents/policy_agent.py --watch 120 --near -122.478,37.818 --radius-km 4
+```
+
+The evaluation's real-model arm (`eval/model_agent.py`, opt-in and cost-capped; see
+`eval/README.md`) relays these same tools to a Claude model through the Anthropic API.
+
 ### A real model
 
 Any MCP client that speaks streamable HTTP and can set a header works:
@@ -54,7 +70,7 @@ Any MCP client that speaks streamable HTTP and can set a header works:
   that client then acts as that agent, which is the placeholder-auth caveat above).
 
 Don't call an external model API from tests; the scripted agent is the test harness. Phase G
-(evaluation) runs agents against seeded scenarios with the same tools.
+(evaluation, `eval/`) runs agents against seeded scenarios with the same tools.
 
 ## Tools
 
