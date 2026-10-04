@@ -288,7 +288,22 @@ impl Decision {
             run.platform = Some(uid);
             match fleet.get(&uid) {
                 Some(cell) => {
-                    run.preload = Some(super::preload::start_set(cell.clone(), p, run.own.clone()));
+                    // an earlier engagement's restore on this platform not done yet: its own
+                    // values are that restore's, and this engagement's restore puts them back
+                    let earlier: Vec<IntentId> = core
+                        .restores
+                        .iter()
+                        .filter(|(_, r)| r.platform == uid)
+                        .map(|(i, _)| *i)
+                        .collect();
+                    let known = earlier
+                        .iter()
+                        .find_map(|i| core.restores.get(i))
+                        .map(|r| r.values.clone());
+                    for i in earlier {
+                        core.restores.remove(&i);
+                    }
+                    run.preload = Some(super::preload::start_set(cell.clone(), p, run.own.clone(), known));
                     run.pending = Some(order);
                 }
                 None => {
@@ -581,9 +596,16 @@ impl Decision {
             if let Err(e) = core.engine.supersede_engagement(other, id) {
                 eprintln!("decision: supersede {other}: {e}");
             }
-            // rules 5: its platform's own lost-link values go back (the new order stands)
+            // rules 5: its platform's own lost-link values go back (the new order stands); a
+            // preload still being set is kept until it reports, then put back
             self.retire_preload(core, other);
-            core.engagements.remove(&other);
+            let setting = core
+                .engagements
+                .get(&other)
+                .is_some_and(|r| r.platform.is_some() && !r.preload_reported);
+            if !setting {
+                core.engagements.remove(&other);
+            }
         }
     }
 

@@ -569,6 +569,37 @@ async fn the_fallback_is_preloaded_as_the_lost_link_action_then_restored() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn an_engagement_superseded_while_its_preload_is_set_gets_the_values_back() {
+    let e = engage_rig();
+    e.r.vehicle(1, Firmware::Copter, "fpv", TARGET);
+    sleep(Duration::from_millis(500)).await;
+    e.picture().await;
+    let id = e.r.d.submit(&op("op-1"), e.nomination("abort")).await.expect("nominated").id;
+    e.sign("op-2", id).await.expect("signs");
+    let o = e.sign("op-3", id).await.expect("signs");
+    assert_eq!(o.state, State::Dispatched);
+    // before the preload has reported, an operator's own hold takes the platform: the
+    // engagement stops (superseded), its intercept is never sent
+    let hold = e.r.d.submit(&op("op-1"), simple("hold", 1)).await.expect("hold");
+    assert_eq!(e.r.state(id), State::Aborted, "{}", e.r.reason(id));
+    for _ in 0..6 {
+        sleep(Duration::from_millis(500)).await;
+        e.r.d.tick();
+    }
+    assert!(!e.r.d.lock().taskings.contains_key(&id), "no intercept after the stop");
+    // the preload's report is logged, then the platform's own values go back
+    let all = preloads(&e.r.log);
+    assert_eq!(all.len(), 2, "{all:?}");
+    assert_eq!((all[0].0.as_str(), all[1].0.as_str()), ("set", "restore"));
+    assert_eq!(all[0].1["FS_GCS_ENABLE"], 7.0, "{all:?}");
+    assert!(all[1].2, "{all:?}");
+    assert_eq!(all[1].1["FS_GCS_ENABLE"], 1.0, "{all:?}");
+    assert_ne!(hold.id, id);
+    let rep = replay::replay_str(&e.r.log.text()).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+}
+
+#[tokio::test(start_paused = true)]
 async fn an_agent_cannot_accept_a_lost_vehicle() {
     let e = engage_rig();
     e.r.vehicle(1, Firmware::Copter, "fpv", TARGET);

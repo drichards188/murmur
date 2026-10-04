@@ -71,13 +71,16 @@ impl Job {
 }
 
 /// Read the preload's parameters, set them, read them back. `own` receives the platform's
-/// own values as soon as they are read (a restore needs them even if the job is stopped).
+/// own values as soon as they are read (a restore needs them). `known`: the platform's own
+/// values when an earlier engagement's restore had not put them back yet (the vehicle still
+/// holds that preload): those are its own, not what it reads now.
 pub fn start_set(
     cell: Arc<VehicleCell>,
     preload: LostLinkPreload,
     own: Arc<Mutex<BTreeMap<String, f64>>>,
+    known: Option<BTreeMap<String, f64>>,
 ) -> Job {
-    Job::spawn(async move { set(&cell, &preload, &own).await })
+    Job::spawn(async move { set(&cell, &preload, &own, known).await })
 }
 
 /// Put `values` back on the vehicle and read them back.
@@ -111,6 +114,7 @@ async fn set(
     cell: &VehicleCell,
     preload: &LostLinkPreload,
     own: &Mutex<BTreeMap<String, f64>>,
+    known: Option<BTreeMap<String, f64>>,
 ) -> JobResult {
     let mut out = JobResult::default();
     // the platform's own values first: what a restore puts back
@@ -124,6 +128,14 @@ async fn set(
             Err(e) => {
                 out.error = Some(e);
                 return out;
+            }
+        }
+    }
+    // an earlier preload not put back yet: the values from before it are the platform's own
+    if let Some(k) = known {
+        for (name, v) in k {
+            if out.before.contains_key(&name) {
+                out.before.insert(name, v);
             }
         }
     }
