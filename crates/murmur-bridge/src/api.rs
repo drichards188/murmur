@@ -4,7 +4,9 @@
 //! Every task goes through `crate::decision`: `POST /api/tasks` (the console) is a thin
 //! wrapper that creates a human intent. Its response is the tasking as before plus
 //! `intent_id`, `state` and `dispatched`; an intent that needs approval answers 202 with
-//! `dispatched: false` and why, one the rules reject answers 422 with the reasons.
+//! `dispatched: false` and why, one approved but held for a vehicle the link can't reach now
+//! (rules 5, state `queued`) answers 202 saying so, one the rules reject answers 422 with the
+//! reasons. `GET /api/inbox` lists the queue as `queued` (each with `reach_now`).
 //!
 //! Intents: `POST /api/intents` (the task request plus optional `constraints` and
 //! `rationale`; `task: "engage"` with `track`, `effect_radius_m`, `window_s`, `fallback`
