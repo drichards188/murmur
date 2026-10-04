@@ -514,6 +514,15 @@ def provenance_text(runs: list[dict[str, Any]], meta: dict[str, Any]) -> tuple[s
     return f"code {esc(text)}{'; binaries sha256 ' + esc(hashes) if hashes else ''}", warnings
 
 
+def per_seed(texts: dict[Any, str]) -> str:
+    """One text when every seed says the same, else each seed's own (a grouped line must
+    never show one seed's figure for all of them)."""
+    vals = set(texts.values())
+    if len(vals) == 1:
+        return esc(next(iter(vals)))
+    return "; ".join(f"seed {esc(k)}: {esc(v)}" for k, v in sorted(texts.items(), key=lambda kv: str(kv[0])))
+
+
 def what_went_wrong(
     meta: dict[str, Any],
     runs: list[dict[str, Any]],
@@ -608,8 +617,12 @@ def what_went_wrong(
                     what = f"Not scored ({oc})"
                 if what is None:
                     continue
-                g = groups.setdefault((what, scenario, arm, str(p.get("step"))), {"seeds": [], "why": p.get("label_basis") or "", "reason": p.get("decided_reason") or "", "evidence": p.get("evidence") or []})
-                g["seeds"].append(r["info"].get("seed"))
+                g = groups.setdefault((what, scenario, arm, str(p.get("step"))), {"seeds": [], "why": {}, "reason": {}, "evidence": {}})
+                seed = r["info"].get("seed")
+                g["seeds"].append(seed)
+                g["why"][seed] = p.get("label_basis") or ""
+                g["reason"][seed] = p.get("decided_reason") or ""
+                g["evidence"][seed] = "; ".join(p.get("evidence") or [])
     # the scripted baselines fail by construction (approve-all lets every wrong card through,
     # reject-all stops every right one): one line each, so the decider's failures stand out
     baseline = {"rules-only", "rules-only-reject"}
@@ -619,9 +632,9 @@ def what_went_wrong(
             by_construction[(arm, what)] += len(g["seeds"])
             continue
         if what.startswith("Should-reject"):
-            detail = esc(g["why"]) + (f"; the C2 showed: {esc('; '.join(g['evidence']))}" if g["evidence"] else "")
+            detail = per_seed(g["why"]) + (f"; the C2 showed: {per_seed(g['evidence'])}" if any(g["evidence"].values()) else "")
         else:
-            detail = esc(g["reason"] or "(still pending when the run ended)")
+            detail = per_seed({k: v or "(still pending when the run ended)" for k, v in g["reason"].items()})
         items.append(f'<li>{esc(what)}: {esc(scenario)} / {esc(arm)}, step <code>{esc(step)}</code>, seed(s) {esc(sorted(g["seeds"]))}: {detail}</li>')
     for (arm, what), n in sorted(by_construction.items()):
         items.append(f'<li class="muted">By construction, {esc(arm)}: {esc(what)} x {n} over all scenarios and seeds (see the per-scenario tables).</li>')
