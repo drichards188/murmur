@@ -64,6 +64,12 @@ export function intentPoints(i: Intent, vehicles: Vehicle[]): LngLat[] {
     if (pos) pts.push(pos)
   }
   const p = i.params
+  if (i.kind === 'engage') {
+    // the platform's path and the effect point, from the engagement's preview
+    const pv = i.engagement?.snapshot?.preview ?? i.engage?.live?.preview ?? i.engagement?.preview
+    if (pv) pts.push(...pv.path, ...pv.track_path, ...circle(pv.effect_point, pv.keep_out_m).filter((_, k) => k % 16 === 0))
+    return pts
+  }
   if (p.center) {
     // include the whole circle, not just its centre
     pts.push(...circle(p.center, p.radius_m ?? 200).filter((_, k) => k % 8 === 0))

@@ -19,6 +19,10 @@ import type { LngLat, Vehicle } from './types'
 import { DOMAIN_LABEL, domainOf, isStale } from './types'
 import { useBridge } from './useBridge'
 import { ErrorBoundary } from './ErrorBoundary'
+import { EngagePanel } from './EngagePanel'
+import { isEngage, previewOf, RUNNING, type EngagePreview } from './engage'
+import { buildEngageLayers, type EngageDrawing } from './engageLayers'
+import { circle } from './geo'
 import { PERF_ON, perfCommitted, perfPassiveBegin, perfRenderBegin, perfUpdateEnd } from './perf'
 import { PerfOverlay } from './PerfOverlay'
 
@@ -62,6 +66,10 @@ export default function App() {
   const [drawing, setDrawing] = useState<LngLat | 'start' | null>(null)
   const [box, setBox] = useState<LngLat[] | null>(null)
   const [spaceSel, setSpaceSel] = useState<SpaceSelection>({ scene: null, norad: null })
+  // the engagement nomination form (Phase E), opened from a declared-hostile track or an
+  // armed platform, and the preview of the platform it would use
+  const [engageForm, setEngageForm] = useState<{ track?: string; uid?: number } | null>(null)
+  const [engageDraft, setEngageDraft] = useState<EngagePreview | null>(null)
 
   // space data is fetched only while a space view is open
   const spaceOn = showSpace || showGlobe
@@ -117,6 +125,41 @@ export default function App() {
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [tracks, selectedTrack, trackTick, onTrackClick],
+  )
+  // engagements in play (and the form's draft) on the map: paths, effect, keep-out, ellipse
+  const allIntents = decisions?.intents
+  const engageTick = Math.floor(now() / 1000)
+  const engageDrawings = useMemo<EngageDrawing[]>(() => {
+    const out: EngageDrawing[] = []
+    const nowMs = now()
+    for (const i of allIntents ?? []) {
+      if (!isEngage(i)) continue
+      const p = previewOf(i)
+      if (!p) continue
+      const ended = ['aborted', 'voided', 'done', 'rejected', 'expired', 'failed'].includes(i.state)
+      const endT = i.history[i.history.length - 1]?.t ?? 0
+      if (ended && nowMs - endT > 120_000) continue
+      const phase: EngageDrawing['phase'] =
+        i.state === 'pending_approval' ? 'pending' : i.state === 'effected' ? 'effected' : RUNNING.includes(i.state) ? 'running' : 'ended'
+      const warn = (i.engagement?.watch && !i.engagement.watch.holds) || (i.engage?.live?.changed ?? []).some((c) => c.worse)
+      out.push({ key: `i${i.id}`, label: `ENGAGE i${i.id}`, preview: p, phase, selected: inboxSel?.kind === 'intent' && inboxSel.id === i.id, warn })
+    }
+    if (engageDraft) out.push({ key: 'draft', label: 'NOMINATION', preview: engageDraft, phase: 'draft', selected: true })
+    return out
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allIntents, engageDraft, inboxSel, engageTick])
+  // frame the form's preview when it first appears or the platform changes
+  const draftKey = engageDraft ? `${engageDraft.start[0].toFixed(3)},${engageDraft.start[1].toFixed(3)}` : null
+  useEffect(() => {
+    if (!engageDraft) return
+    const ring = circle(engageDraft.effect_point, engageDraft.keep_out_m).filter((_, k) => k % 8 === 0)
+    setFit((f) => ({ points: [...engageDraft.path, ...ring], n: (f?.n ?? 0) + 1, padRight: 430 }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftKey])
+  const mapLayers = useCallback<MapLayers>(
+    (view) => [...trackLayers(view), ...(engageDrawings.length ? buildEngageLayers(engageDrawings, now(), view) : [])],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [trackLayers, engageDrawings],
   )
   const focusTrack = useCallback(
     (t: Track) => setFit((f) => ({ points: [trackPredicted(t, now())], n: (f?.n ?? 0) + 1, padRight: 400 })),
@@ -261,7 +304,7 @@ export default function App() {
           onMapClick={onMapClick}
           space={overlay}
           onView={onView}
-          layers={trackLayers}
+          layers={mapLayers}
         />
         </ErrorBoundary>
         {showTracks && (
@@ -274,6 +317,10 @@ export default function App() {
             onSelect={setSelectedTrack}
             onFocus={focusTrack}
             onClose={() => setShowTracks(false)}
+            onEngage={(track) => {
+              setEngageForm({ track })
+              setShowTracks(false)
+            }}
           />
           </ErrorBoundary>
         )}
@@ -326,6 +373,28 @@ export default function App() {
           />
           </ErrorBoundary>
         )}
+        {engageForm && (
+          <ErrorBoundary name="Engagement" className="floating">
+          <EngagePanel
+            tracks={tracks}
+            vehicles={vehicles}
+            now={now}
+            initial={engageForm}
+            onPreview={setEngageDraft}
+            onNominated={(id) => {
+              setEngageForm(null)
+              setEngageDraft(null)
+              setShowInbox(true)
+              setInboxTab('inbox')
+              setInboxSel({ kind: 'intent', id })
+            }}
+            onClose={() => {
+              setEngageForm(null)
+              setEngageDraft(null)
+            }}
+          />
+          </ErrorBoundary>
+        )}
         {detailsUid != null && byUidDetails(vehicles, detailsUid) && (
           <ErrorBoundary name="Vehicle details" className="floating">
           <VehicleDetails
@@ -339,6 +408,7 @@ export default function App() {
               setFollowing(true)
               setFocus((f) => ({ uid: detailsUid, n: (f?.n ?? 0) + 1 }))
             }}
+            onEngage={() => setEngageForm({ uid: detailsUid })}
           />
           </ErrorBoundary>
         )}

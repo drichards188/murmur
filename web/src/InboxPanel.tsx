@@ -5,11 +5,13 @@ import {
   fmtDuration,
   getOperator,
   intentAction,
-  OPERATORS,
   useAlertMemory,
   useOperator,
+  useOperators,
   verdict,
 } from './decisions'
+import { EngageCard, EngagementsSection } from './EngageCard'
+import { isEngage } from './engage'
 import { distanceM } from './geo'
 import type { LngLat, Vehicle } from './types'
 import { callsign } from './types'
@@ -512,6 +514,7 @@ interface Notice {
 
 export function InboxPanel({ decisions, vehicles, now, tab, setTab, selection, onFocus, onClose, mem, hidden }: Props & { mem: ReturnType<typeof useAlertMemory>; hidden: Set<string> }) {
   const [operator, setOperator] = useOperator()
+  const ops = useOperators()
   const [notices, setNotices] = useState<Notice[]>([])
   const [showHidden, setShowHidden] = useState(false)
   const pending = decisions?.inbox.pending ?? []
@@ -551,8 +554,11 @@ export function InboxPanel({ decisions, vehicles, now, tab, setTab, selection, o
         <label>
           Acting as
           <select value={operator} onChange={(e) => setOperator(e.target.value)} aria-label="Operator">
-            {OPERATORS.map((o) => (
-              <option key={o}>{o}</option>
+            {(ops.operators.includes(operator) ? ops.operators : [operator, ...ops.operators]).map((o) => (
+              <option key={o} value={o}>
+                {o}
+                {ops.engage.includes(o) ? ' (engagement authority)' : ''}
+              </option>
             ))}
           </select>
         </label>
@@ -576,12 +582,31 @@ export function InboxPanel({ decisions, vehicles, now, tab, setTab, selection, o
           <DecisionsList intents={decisions?.intents ?? []} vehicles={vehicles} now={now} />
         ) : (
           <>
+            <EngagementsSection
+              intents={decisions?.intents ?? []}
+              vehicles={vehicles}
+              now={now}
+              selection={selection}
+              onFocus={(i) => onFocus({ kind: 'intent', id: i.id }, uidsOf(i), i)}
+              onDone={(text, tone) => setNotices((ns) => [...ns, { n: Date.now() + Math.random(), text, tone }])}
+            />
             <h3 className="ix-h">
               Approvals <span>{pending.length}</span>
               <small>soonest expiry first</small>
             </h3>
             {pending.length === 0 && <p className="empty">Nothing waiting for a human.</p>}
-            {pending.map((i) => (
+            {pending.map((i) =>
+              isEngage(i) ? (
+                <EngageCard
+                  key={i.id}
+                  intent={i}
+                  vehicles={vehicles}
+                  now={now}
+                  selected={selection?.kind === 'intent' && selection.id === i.id}
+                  onFocus={() => onFocus({ kind: 'intent', id: i.id }, uidsOf(i), i)}
+                  onDone={(text, tone) => setNotices((ns) => [...ns, { n: Date.now() + Math.random(), text, tone }])}
+                />
+              ) : (
               <ApprovalCard
                 key={i.id}
                 intent={i}
@@ -591,7 +616,8 @@ export function InboxPanel({ decisions, vehicles, now, tab, setTab, selection, o
                 onFocus={() => onFocus({ kind: 'intent', id: i.id }, uidsOf(i), i)}
                 onDone={(text, tone) => setNotices((ns) => [...ns, { n: Date.now() + Math.random(), text, tone }])}
               />
-            ))}
+              ),
+            )}
             <h3 className="ix-h">
               Alerts <span>{live.length}</span>
               <small>most severe first, then oldest</small>

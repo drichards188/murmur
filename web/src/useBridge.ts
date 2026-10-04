@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { getOperator, type Decisions, type Intent, type Authorization } from './decisions'
+import { getOperator, setBridgeOperators, type Decisions, type Intent, type Authorization } from './decisions'
 import { perfPush, perfUpdateStart } from './perf'
 import type { TracksMessage } from './tracks'
 import type { BridgeState, LngLat, TaskKind, Tasking, Vehicle } from './types'
@@ -72,7 +72,8 @@ export function useBridge() {
           current = withAges(msg as BridgeState)
           setState(current)
         } else if (msg.type === 'decisions') {
-          setDecisions({ inbox: msg.inbox, intents: msg.intents, space: msg.space })
+          setDecisions({ inbox: msg.inbox, intents: msg.intents, space: msg.space, operators: msg.operators })
+          setBridgeOperators(msg.operators)
         } else if (msg.type === 'tracks') {
           setTracks(msg as TracksMessage)
         } else if (msg.type === 'delta' && current) {

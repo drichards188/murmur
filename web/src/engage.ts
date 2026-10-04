@@ -1,0 +1,217 @@
+import { getOperator, type Check, type Intent } from './decisions'
+import type { LngLat } from './types'
+
+/** Engagements (Phase E): an abstract effect (a point, a radius, a time) on a track an
+ *  operator declared hostile, with one armed platform. The bridge's engine checks it, holds
+ *  it for two operators with engagement authority (never its proposer), stores the picture
+ *  they approved, holds that picture every second, releases the effect or stops it with its
+ *  recorded fallback, and assesses. Times are bridge (engine) milliseconds. */
+
+export type Fallback = 'abort' | 'return' | 'loiter'
+
+export const FALLBACK_LABEL: Record<Fallback, string> = {
+  abort: 'Abort: hold where it is',
+  return: 'Return home',
+  loiter: 'Loiter: orbit where it is',
+}
+
+export interface Ellipse {
+  center: LngLat
+  semi_major_m: number
+  semi_minor_m: number
+  bearing_deg: number
+}
+
+export interface EngagePreview {
+  t: number
+  window: { from?: number; until: number }
+  start: LngLat
+  start_t: number
+  cruise_mps: number
+  path: LngLat[]
+  distance_m: number
+  track_path: LngLat[]
+  track_speed_mps: number
+  effect_point: LngLat
+  effect_t: number
+  effect_radius_m: number
+  keep_out_m: number
+  track_sigma_m: number
+  ellipse: Ellipse
+}
+
+export interface TrackFactsSnap {
+  position: { value: LngLat; t: number }
+  velocity_mps?: [number, number]
+  pos_sigma_m: number
+  confidence: number
+  affiliation: { value: string; t: number }
+  identity?: string
+  identity_confidence: number
+  sources: string[]
+  domain: string
+  last_seen_t: number
+  declared_by?: string
+}
+
+export interface EngageSnapshot {
+  t: number
+  track_id: string
+  track: TrackFactsSnap
+  preview: EngagePreview
+  report_interval_ms?: number
+  link_gap_limit_ms: number
+  fallback: Fallback
+}
+
+export interface PictureVerdict {
+  t: number
+  holds: boolean
+  ready: boolean
+  results: Check[]
+}
+
+export interface Engagement {
+  preview?: EngagePreview
+  snapshot?: EngageSnapshot
+  watch?: PictureVerdict
+  effect?: { t: number; point: LngLat; radius_m: number; planned_t: number }
+  stop?: { t: number; cause: { kind: 'operator' | 'picture' | 'system'; by?: string }; reason: string; fallback?: Fallback }
+  observe?: { covered_by: string[]; track_present: boolean; seen_after_effect_t?: number }
+  covered_s: number
+  assessment?: { t: number; result: 'persists' | 'ceased' | 'unknown'; evidence: string; covered_s: number }
+}
+
+/** The bridge's view of an engagement for the console: signatures, and for a pending one
+ *  the checks on the world now and what changed since it was nominated. */
+export interface EngageView {
+  track: string
+  approvers_needed: number
+  signed: string[]
+  proposer: string | null
+  proposer_excluded: boolean
+  eligible: string[]
+  engage_operators: string[]
+  track_now: {
+    position: LngLat
+    pos_sigma_m: number
+    age_s: number
+    affiliation: string
+    declared_by: string | null
+    identity: string | null
+    identity_confidence: number
+  } | null
+  live?: {
+    t: number
+    passed: boolean
+    checks: Check[]
+    preview: EngagePreview | null
+    changed: { rule: string; was: Check['outcome'] | null; now: Check['outcome']; detail: string; worse: boolean }[]
+    track_drift_m: number | null
+  }
+}
+
+export interface EngageParams {
+  track: string
+  effect_radius_m: number
+  window?: { from?: number; until: number }
+  fallback: Fallback
+}
+
+export const isEngage = (i: Intent) => i.kind === 'engage'
+export const engageParams = (i: Intent) => i.params as unknown as EngageParams
+
+/** The preview to draw for an engagement: the approval's snapshot once approved, else the
+ *  live one (pending), else the nomination's. */
+export function previewOf(i: Intent): EngagePreview | null {
+  return i.engagement?.snapshot?.preview ?? i.engage?.live?.preview ?? i.engagement?.preview ?? null
+}
+
+/** An engagement still in play: approved, on its way, or effected and being assessed. */
+export const RUNNING: Intent['state'][] = ['approved', 'dispatched', 'effected']
+
+// ---- the bridge ---------------------------------------------------------------------------
+
+async function post(url: string, body: unknown) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-murmur-operator': getOperator() },
+    body: JSON.stringify(body),
+  })
+  const b = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(b.detail ?? `bridge returned ${res.status}`)
+  return b
+}
+
+export interface EngageOption {
+  uid: number
+  callsign: string | null
+  passed: boolean
+  checks: Check[]
+  preview: EngagePreview | null
+}
+
+/** The nomination form's dry run: which armed platforms could take it now (read-only). */
+export async function engageOptions(track: string, radius: number, windowS: number, fallback: Fallback): Promise<EngageOption[]> {
+  const b = await post('/api/engage/options', { track, effect_radius_m: radius, window_s: windowS, fallback })
+  return b.options ?? []
+}
+
+/** Nominate an engagement as the console's operator: it waits in the inbox. */
+export async function nominate(req: { track: string; uid: number; radius: number; windowS: number; fallback: Fallback; rationale: string }): Promise<Intent> {
+  const b = await post('/api/intents', {
+    task: 'engage',
+    uids: [req.uid],
+    track: req.track,
+    effect_radius_m: req.radius,
+    window_s: req.windowS,
+    fallback: req.fallback,
+    rationale: req.rationale.trim() || null,
+  })
+  return b.intent as Intent
+}
+
+/** Any operator stops an approved or dispatched engagement; its fallback is commanded. */
+export async function abortEngagement(id: number, note: string): Promise<Intent> {
+  const b = await post(`/api/intents/${id}/abort`, note.trim() ? { note: note.trim() } : {})
+  return b.intent as Intent
+}
+
+// ---- geometry -----------------------------------------------------------------------------
+
+/** An ellipse as a closed ring, the major axis along `bearing_deg`. */
+export function ellipseRing(e: Ellipse, n = 72): LngLat[] {
+  const [lon, lat] = e.center
+  const b = (e.bearing_deg * Math.PI) / 180
+  const mPerLon = 111_320 * Math.cos((lat * Math.PI) / 180)
+  const pts: LngLat[] = []
+  for (let k = 0; k <= n; k++) {
+    const a = (2 * Math.PI * k) / n
+    // along (major) and across (minor), rotated so the major axis points along the bearing
+    const along = e.semi_major_m * Math.cos(a)
+    const across = e.semi_minor_m * Math.sin(a)
+    const east = along * Math.sin(b) + across * Math.cos(b)
+    const north = along * Math.cos(b) - across * Math.sin(b)
+    pts.push([lon + east / mPerLon, lat + north / 111_320])
+  }
+  return pts
+}
+
+export function fmtRel(ms: number) {
+  const s = Math.round(ms / 1000)
+  const sign = s < 0 ? '-' : '+'
+  const a = Math.abs(s)
+  return a < 60 ? `${sign}${a}s` : `${sign}${Math.floor(a / 60)}m${String(a % 60).padStart(2, '0')}s`
+}
+
+export const STATE_LABEL: Partial<Record<Intent['state'], string>> = {
+  pending_approval: 'awaiting approval',
+  approved: 'approved',
+  dispatched: 'en route',
+  effected: 'effect released, assessing',
+  aborted: 'aborted',
+  voided: 'voided',
+  done: 'assessed',
+  rejected: 'rejected',
+  expired: 'expired',
+}

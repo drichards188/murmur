@@ -15,6 +15,8 @@ interface Props {
   /** the camera is following this vehicle; onFollow resumes after the operator panned away */
   following: boolean
   onFollow: () => void
+  /** armed platforms: open the engagement nomination form with this platform (Phase E) */
+  onEngage?: () => void
 }
 
 function fmt(n: number | null | undefined, digits = 0, unit = '') {
@@ -134,7 +136,7 @@ function EmuItems({ uid }: { uid: number }) {
 
 /** Everything known about one vehicle: identity, live state, link, platform limits and its
  *  current task. Opened by clicking a fleet row; selecting for tasking is a separate control. */
-export function VehicleDetails({ v, taskings, selected, onToggleSelect, onClose, following, onFollow }: Props) {
+export function VehicleDetails({ v, taskings, selected, onToggleSelect, onClose, following, onFollow, onEngage }: Props) {
   const limits = usePlatformLimits()
   const p = v.identity ? limits?.get(v.identity.platform) : undefined
   const stale = isStale(v)
@@ -176,6 +178,11 @@ export function VehicleDetails({ v, taskings, selected, onToggleSelect, onClose,
         </button>
       </header>
 
+      {v.identity?.armed && onEngage && (
+        <button className="vd-select eg-engage-btn" onClick={onEngage} title="Nominate an engagement with this armed platform on a declared-hostile track (two operators with engagement authority decide)">
+          Engage...
+        </button>
+      )}
       <button className={`vd-select ${selected ? 'on' : ''}`} onClick={onToggleSelect}>
         {selected ? '✓ Selected for tasking' : 'Select for tasking'}
       </button>

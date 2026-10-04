@@ -1,0 +1,283 @@
+/* Engagements (Phase E): nomination cards, running engagements, the nomination form.
+   Builds on inbox.css (ix-card, ix-check, ix-actions). */
+
+.eg-card {
+  border-left: 3px solid #ff5d5d;
+}
+.eg-card.eg-warn {
+  box-shadow: 0 0 0 1px #ffb347 inset;
+}
+.eg-kind {
+  color: #ff8a8a;
+  letter-spacing: 0.08em;
+}
+.eg-abstract {
+  margin: 4px 0 8px;
+  font-size: 11px;
+  color: #9aa6b2;
+}
+.eg-alarm {
+  margin: 6px 0;
+  padding: 6px 8px;
+  border: 1px solid #ffb347;
+  background: rgba(255, 179, 71, 0.1);
+  color: #ffd39a;
+  font-size: 12px;
+}
+.eg-alarm ul {
+  margin: 4px 0 0;
+  padding-left: 16px;
+}
+.eg-drift {
+  font-size: 12px;
+  color: #ffd39a;
+  margin: 2px 0 6px;
+}
+.eg-holds {
+  font-size: 12px;
+  color: #8fe0b0;
+  margin: 4px 0;
+}
+.eg-sec {
+  margin: 8px 0;
+}
+.eg-target {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+  align-items: baseline;
+}
+.eg-target b {
+  color: #ff8a8a;
+}
+.eg-facts {
+  display: grid;
+  grid-template-columns: 74px 1fr;
+  gap: 2px 8px;
+  margin: 4px 0;
+  font-size: 12px;
+}
+.eg-facts dt {
+  color: #9aa6b2;
+}
+.eg-facts dd {
+  margin: 0;
+}
+.eg-fallback {
+  font-size: 12px;
+  margin: 4px 0;
+}
+.eg-checks .ix-check.eg-changed {
+  outline: 1px solid #ffb347;
+}
+.eg-was {
+  color: #ffb347;
+  font-style: normal;
+  font-size: 11px;
+}
+.eg-sign p {
+  margin: 2px 0;
+  font-size: 12px;
+}
+.eg-hint {
+  color: #ffd39a;
+  font-size: 12px;
+}
+.eg-approve:disabled {
+  opacity: 0.45;
+}
+.eg-run {
+  border-left: 3px solid #7fb8ff;
+}
+.eg-run.effected {
+  border-left-color: #ff5d5d;
+}
+.eg-run.aborted,
+.eg-run.voided {
+  border-left-color: #ffb347;
+  opacity: 0.85;
+}
+.eg-run.done {
+  border-left-color: #5fd38d;
+  opacity: 0.85;
+}
+.eg-state {
+  font-size: 11px;
+  padding: 1px 6px;
+  border: 1px solid #3a4652;
+  border-radius: 3px;
+}
+.eg-state.dispatched,
+.eg-state.approved {
+  color: #7fb8ff;
+  border-color: #7fb8ff;
+}
+.eg-state.effected {
+  color: #ff8a8a;
+  border-color: #ff8a8a;
+}
+.eg-state.aborted,
+.eg-state.voided {
+  color: #ffb347;
+  border-color: #ffb347;
+}
+.eg-state.done {
+  color: #5fd38d;
+  border-color: #5fd38d;
+}
+.eg-eta {
+  margin-left: auto;
+  font-weight: 600;
+}
+.eg-effect,
+.eg-stop,
+.eg-assess {
+  font-size: 12px;
+  margin: 4px 0;
+}
+.eg-assess.ceased {
+  color: #8fe0b0;
+}
+.eg-assess.persists {
+  color: #ff8a8a;
+}
+.eg-assess.unknown {
+  color: #ffd39a;
+}
+.eg-abort {
+  background: #b33a3a;
+  color: #fff;
+  border: none;
+  padding: 6px 14px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+}
+.eg-abort:disabled {
+  opacity: 0.5;
+}
+
+/* the nomination form */
+.eg-panel {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 400px;
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
+  background: #0f151c;
+  border: 1px solid #ff5d5d;
+  padding: 10px 12px;
+  z-index: 6;
+  font-size: 13px;
+}
+.eg-top {
+  display: flex;
+  align-items: center;
+}
+.eg-top h2 {
+  margin: 0;
+  font-size: 15px;
+  flex: 1;
+}
+.eg-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 6px 0;
+  font-size: 12px;
+  color: #9aa6b2;
+}
+.eg-form select,
+.eg-form input,
+.eg-rationale textarea {
+  background: #0b0f14;
+  color: #d7dde4;
+  border: 1px solid #2c3742;
+  padding: 4px 6px;
+  font: inherit;
+}
+.eg-row {
+  display: flex;
+  gap: 10px;
+}
+.eg-row label {
+  flex: 1;
+}
+.eg-fallbacks {
+  border: 1px solid #2c3742;
+  margin: 6px 0;
+  padding: 4px 8px;
+}
+.eg-fallbacks legend {
+  font-size: 12px;
+  color: #9aa6b2;
+}
+.eg-fallbacks label {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0;
+  color: #d7dde4;
+}
+.eg-options {
+  margin: 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.eg-opt {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  text-align: left;
+  background: #121a22;
+  border: 1px solid #2c3742;
+  color: #d7dde4;
+  padding: 6px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.eg-opt.on {
+  border-color: #7fb8ff;
+  background: #16222e;
+}
+.eg-opt.bad {
+  opacity: 0.7;
+}
+.eg-opt.bad span {
+  color: #ffb3b3;
+}
+.eg-rationale {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: #9aa6b2;
+  margin: 6px 0;
+}
+.eg-nominate {
+  background: #8a2f2f;
+  color: #fff;
+  border: none;
+  padding: 6px 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.eg-nominate:disabled {
+  opacity: 0.5;
+}
+.eg-engage-btn {
+  border-color: #ff8a8a !important;
+  color: #ff8a8a !important;
+}
+
+@media (max-width: 720px) {
+  .eg-panel {
+    left: 8px;
+    right: 8px;
+    width: auto;
+  }
+}

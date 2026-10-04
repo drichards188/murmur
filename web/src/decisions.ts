@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import type { Engagement, EngageView } from './engage'
 import type { TaskOption } from './space'
 import type { LngLat } from './types'
 
@@ -16,6 +17,8 @@ export type IntentState =
   | 'expired'
   | 'voided'
   | 'dispatched'
+  | 'effected' // engage: the abstract effect was released; the assessment follows
+  | 'aborted' // engage: stopped after dispatch, before the effect; the fallback was commanded
   | 'done'
   | 'failed'
 
@@ -41,6 +44,10 @@ export interface PolicyDecision {
     area_detail: string
     unverified: string[]
   }
+  /** distinct approvers the tier needs (two-person: 2); absent means 1 */
+  approvers?: number
+  /** the proposer may not approve it (always for an engagement) */
+  proposer_excluded?: boolean
 }
 
 export interface Approval {
@@ -94,6 +101,12 @@ export interface Intent {
   why?: string[]
   /** collect and cover: the space answer the last check read, cut down */
   space?: IntentSpace
+  /** signatures before the last one, when the tier needs more than one approver */
+  concurrences?: Approval[]
+  /** engage: preview, approval snapshot, watch verdict, effect, stop, assessment */
+  engagement?: Engagement
+  /** engage: signatures and, while pending, the live picture (the bridge's view) */
+  engage?: EngageView
 }
 
 export interface IntentSpace {
@@ -135,6 +148,8 @@ export interface Decisions {
   intents: Intent[] // newest first, the latest 50
   /** satellite collect and cover runs (absent from bridges without the space executor) */
   space?: SpaceRuns
+  /** the operators the bridge accepts, and those with engagement authority */
+  operators?: { operators: string[]; engage: string[] }
 }
 
 // ---- satellite tasking: collect and cover runs ----------------------------------------------
@@ -241,11 +256,38 @@ export const OPERATORS = OPERATORS_ENV.split(',')
   .map((s) => s.trim())
   .filter(Boolean)
 
+/** The bridge's own list once it sends one (the decisions message carries it); until then
+ *  VITE_MURMUR_OPERATORS. */
+let bridgeOperators: { operators: string[]; engage: string[] } | null = null
+const bridgeOperatorListeners = new Set<() => void>()
+
+export function setBridgeOperators(ops: { operators: string[]; engage: string[] } | undefined) {
+  if (!ops) return
+  const same = bridgeOperators && bridgeOperators.operators.join() === ops.operators.join() && bridgeOperators.engage.join() === ops.engage.join()
+  if (same) return
+  bridgeOperators = ops
+  bridgeOperatorListeners.forEach((l) => l())
+}
+
+/** Every operator the console may act as, and who of them has engagement authority. */
+export function useOperators(): { operators: string[]; engage: string[] } {
+  return useSyncExternalStore(
+    (cb) => {
+      bridgeOperatorListeners.add(cb)
+      return () => bridgeOperatorListeners.delete(cb)
+    },
+    () => bridgeOperators ?? FALLBACK_OPERATORS,
+  )
+}
+
+const FALLBACK_OPERATORS = { operators: OPERATORS, engage: [] as string[] }
+
 const OPERATOR_KEY = 'murmur.operator'
 let operator = (() => {
   try {
     const saved = localStorage.getItem(OPERATOR_KEY)
-    if (saved && OPERATORS.includes(saved)) return saved
+    // checked against the bridge's list when it arrives (setOperator keeps any listed id)
+    if (saved) return saved
   } catch {
     // blocked storage: the first listed operator
   }
