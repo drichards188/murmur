@@ -825,3 +825,62 @@ async fn only_engagement_authority_accepts_a_lost_vehicle() {
     assert_eq!(err.status, 403, "{}", err.detail);
     assert_eq!(e.r.events("engage.accepted"), 0);
 }
+
+#[tokio::test(start_paused = true)]
+async fn every_signer_sees_an_acceptance_and_any_operator_withdraws_it() {
+    // the manifest names vehicle 2 (a USV) that never reports: it blocks the keep-out until
+    // an operator with engagement authority accepts it as lost
+    let dir = std::env::temp_dir().join(format!("murmur-accept-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let manifest = dir.join("fleet.json");
+    std::fs::write(
+        &manifest,
+        json!({ "vehicles": [
+            { "uid": 1, "sysid": 1, "port": 1, "platform": "fpv", "callsign": "FPV 1" },
+            { "uid": 2, "sysid": 2, "port": 2, "platform": "seahunter", "callsign": "USV 2" },
+        ]})
+        .to_string(),
+    )
+    .expect("manifest");
+    let world = World::new(Config {
+        base_port: 0,
+        http_port: 0,
+        default_ports: 0,
+        manifest,
+        platforms: root().join("sim/platforms.toml"),
+        root: root(),
+    });
+    world.load_manifest();
+    let tracks = Arc::new(Tracks::load(&root().join("sim/platforms.toml")).expect("sensors"));
+    let e = engage_rig_on(Some((world, tracks)));
+    e.r.vehicle(1, Firmware::Copter, "fpv", TARGET);
+    sleep(Duration::from_millis(500)).await;
+    e.picture().await;
+    // without it: rejected, vehicle 2 has no position
+    let out = e.r.d.submit(&op("op-1"), e.nomination("return")).await.expect("nominated");
+    assert_eq!(out.state, State::Rejected, "{}", out.intent);
+    // op-2 (engagement authority) nominates accepting it, lost since it never reported
+    let mut req = e.nomination("return");
+    req.engage.accept_unknown = vec![engage::AcceptUnknown { uid: 2, since: None }];
+    let out = e.r.d.submit(&op("op-2"), req).await.expect("nominated");
+    assert_eq!(out.state, State::PendingApproval, "{}", out.intent);
+    let id = out.id;
+    // the console's view shows it to every signer, and op-3's picture token carries it
+    let msg: Value = serde_json::from_str(&e.r.d.message()).expect("json");
+    let mine = msg["inbox"]["pending"].as_array().expect("pending").iter().find(|i| i["id"] == id.0).cloned().expect("intent");
+    assert_eq!(mine["engage"]["accepted"], json!([{ "uid": 2, "engine_uid": "2", "since": null, "by": "op-2" }]), "{mine}");
+    let token = e.look("op-3", id).expect("picture");
+    assert_eq!(token["unknown_accepted"]["2"]["by"], "op-2", "{token}");
+    // any operator withdraws it (op-1 has no engagement authority); op-3's token from before
+    // is refused, and on a fresh look the check counts vehicle 2 again: the approval is void
+    e.r.d.revoke_unknown(&op("op-1"), id.0, 2).expect("revoked");
+    let err = e.r.d.approve_with(&op("op-3"), id.0, None, token["id"].as_u64(), false).await.expect_err("old token");
+    assert!(err.detail.contains("changed since you looked"), "{}", err.detail);
+    let err = e.sign("op-3", id).await.expect_err("void");
+    assert!(err.detail.contains("keep_out_friendly 2: vehicle 2 has no position"), "{}", err.detail);
+    assert_eq!(e.r.state(id), State::Voided);
+    let rep = replay::replay_str(&e.r.log.text()).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+    assert_eq!((e.r.events("engage.accepted"), e.r.events("engage.acceptance_revoked")), (1, 1));
+    let _ = std::fs::remove_dir_all(&dir);
+}
