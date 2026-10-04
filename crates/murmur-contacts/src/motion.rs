@@ -37,6 +37,10 @@ pub struct Mover {
     /// loiter: angle around the centre, degrees
     phase_deg: f64,
     rng: Gauss,
+    /// An engagement's abstract effect reached it at this scenario time (unix s).
+    pub effect_t: Option<f64>,
+    /// Taken out of the scenario by an effect (`on_effect = "out_of_play"`).
+    pub out_of_play: bool,
 }
 
 fn offset(lat: f64, lon: f64, east_m: f64, north_m: f64) -> (f64, f64) {
@@ -81,6 +85,8 @@ impl Mover {
             holding: false,
             phase_deg: 0.0,
             rng: Gauss::new(seed.wrapping_mul(0x9E37_79B9).wrapping_add(index + 1)),
+            effect_t: None,
+            out_of_play: false,
             contact,
         }
     }
@@ -90,7 +96,7 @@ impl Mover {
     /// known. Returns false while the contact doesn't exist (before `start_s`, after `end_s`).
     pub fn step(&mut self, s: f64, dt: f64, current: Option<(f64, f64)>) -> bool {
         let c = &self.contact;
-        self.st.exists = s >= c.start_s && c.end_s.is_none_or(|e| s < e);
+        self.st.exists = !self.out_of_play && s >= c.start_s && c.end_s.is_none_or(|e| s < e);
         if !self.st.exists || dt <= 0.0 {
             return self.st.exists;
         }
@@ -223,6 +229,7 @@ mod tests {
             motion,
             start_s: 0.0,
             end_s: None,
+            on_effect: crate::scenario::OnEffect::OutOfPlay,
         }
     }
 

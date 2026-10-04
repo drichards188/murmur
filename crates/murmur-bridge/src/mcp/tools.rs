@@ -109,7 +109,9 @@ pub struct TaskingParams {
 pub struct IntentParams {
     /// The task kind: orbit, patrol, hold, rtl or track on fleet vehicles; collect (satellite
     /// imagery or SAR of an area) or cover (is SATCOM or GNSS service good enough over an
-    /// area) on the space segment.
+    /// area) on the space segment; engage (nominate an abstract effect on a track a human
+    /// operator declared hostile, with one armed platform: only human operators with
+    /// engagement authority can decide it, never its proposer).
     pub task: String,
     /// Fleet uids of the vehicles to task (from get_fleet): at least one for a vehicle task,
     /// none for collect and cover.
@@ -152,10 +154,28 @@ pub struct IntentParams {
     /// cover: the level required, a fraction of the window with SATCOM coverage (default
     /// 0.99) or satellites in view at every GNSS sample (default 4).
     pub min_level: Option<f64>,
+    /// engage: the track id (from get_tracks) a human operator declared hostile.
+    pub track_id: Option<String>,
+    /// engage: the effect radius in metres (the policy caps it).
+    pub effect_radius_m: Option<f64>,
+    /// engage: the window closes this many seconds from now (default from the policy).
+    pub window_s: Option<u32>,
+    /// engage: what the platform does if the engagement stops before its effect: abort
+    /// (hold where it is), return (home) or loiter (orbit where it is).
+    pub fallback: Option<String>,
     /// Why this task, on these vehicles, now. Required for propose_intent (the operator
     /// reads it in the inbox and it goes to the audit log); optional for preview_intent.
     /// Name the facts you relied on and any that were stale.
     pub rationale: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct NominationsParams {
+    /// Only nominations this agent made.
+    pub mine: Option<bool>,
+    /// Only nominations in this state: pending_approval, approved, dispatched, effected,
+    /// aborted, voided, rejected, expired or done.
+    pub state: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -195,6 +215,10 @@ impl IntentParams {
         put("chosen", self.chosen);
         put("service", self.service);
         put("min_level", self.min_level.map(|v| json!(v)));
+        put("track", self.track_id.map(Value::String));
+        put("effect_radius_m", self.effect_radius_m.map(|v| json!(v)));
+        put("window_s", self.window_s.map(|v| json!(v)));
+        put("fallback", self.fallback.map(Value::String));
         put(
             "constraints",
             Some(json!(Constraints {
@@ -326,7 +350,9 @@ pub fn tools() -> Vec<Tool> {
              a human would be needed, and the state the intent would reach: rejected, \
              auto_approved (policy lets it run) or pending_approval (an operator decides). \
              For a collect without a chosen option it is a tasking query: the space answer \
-             lists the ranked options and nothing is created. Nothing moves; the preview is \
+             lists the ranked options and nothing is created. For an engage nomination it \
+             also returns the preview: the platform's path forward, the predicted effect \
+             point and time, the uncertainty ellipse and the keep-out. Nothing moves; the preview is \
              logged under your agent id. Use it before propose_intent."
                 .into(),
             true,
@@ -335,8 +361,12 @@ pub fn tools() -> Vec<Tool> {
             "propose_intent",
             "Propose an intent: a task on one or more vehicles (orbit, patrol, hold, rtl, \
              track), a satellite collection (collect: area, window, capability, and chosen \
-             from the options of a preview or get_satellite_tasking_options) or a coverage \
-             query (cover: area, window, service), with constraints and a required \
+             from the options of a preview or get_satellite_tasking_options), a coverage \
+             query (cover: area, window, service), or an engagement nomination (engage: \
+             track_id of a track a human operator declared hostile, one armed platform in \
+             uids, effect_radius_m, fallback abort, return or loiter, optional window_s; it \
+             always waits for two human operators with engagement authority, never its \
+             proposer, and the effect is an abstract event), with constraints and a required \
              rationale. The engine checks it (fail closed) and the policy routes it: an auto \
              tier runs it at once (the response says dispatched true); a human tier puts it \
              in the operator's inbox with your id and rationale, where only a listed human \
@@ -346,6 +376,21 @@ pub fn tools() -> Vec<Tool> {
              explain_intent and withdraw it with withdraw_intent while it waits."
                 .into(),
             false,
+        ),
+        tool::<NominationsParams>(
+            "get_nominations",
+            format!(
+                "Read the engagement nominations of this run, newest first (read-only): for \
+                 each, the track and the armed platform, every check with its outcome and \
+                 detail, the preview (the platform's path forward, the predicted effect point \
+                 and time, the uncertainty ellipse, the keep-out), how many human signatures \
+                 it needs and who has signed, the picture held since approval with the last \
+                 watch verdict, the effect if there was one (an abstract event: a point, a \
+                 radius, a time), a stop and its reason, and the assessment (persists, ceased \
+                 or unknown, with the evidence). Only human operators with engagement \
+                 authority decide a nomination; nothing here can. {STALE_NOTE}"
+            ),
+            true,
         ),
         tool::<IdParams>(
             "explain_intent",
@@ -455,6 +500,15 @@ pub async fn call(
             ))
         }
         "get_inbox" => Ok(world::inbox(mcp)),
+        "get_nominations" => {
+            let p = params!(NominationsParams);
+            Ok(world::nominations(
+                mcp,
+                agent,
+                p.mine.unwrap_or(false),
+                p.state.as_deref(),
+            ))
+        }
         "get_recent_events" => {
             let p = params!(EventsParams);
             Ok(world::events(mcp, p.uid, p.limit.unwrap_or(50)))

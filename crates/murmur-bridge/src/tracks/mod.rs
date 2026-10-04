@@ -22,6 +22,13 @@
 //! misclassification rate come from the scenario (in the truth message); `MURMUR_SENSE_SEED`
 //! and `MURMUR_SENSE_MISCLASS` override them on the bridge.
 //!
+//! **Effects** (Phase E): an engagement's abstract effect (a point, a radius, a time) goes
+//! back to the contacts process on the same labelled channel, in the answer to its next
+//! `POST /api/sim/contacts` (`effects`), with the contact the target track was associated
+//! with (the private association, never serialized elsewhere) and where our vehicles
+//! reported themselves, for the evaluation truth log's collateral record. The contacts
+//! process marks the contacts inside the radius; nothing here models damage.
+//!
 //! Operators may declare a track's affiliation (`POST /api/tracks/{id}/declare`, operator
 //! header as for intents); the declaration is logged as an `operator.action` and overrides
 //! the estimate. Hostile is never derived by the model.
@@ -92,6 +99,10 @@ struct Inner {
     next_no: u64,
     /// detections folded in on the last truth message (for the POST answer and stats)
     last_detections: usize,
+    /// abstract effects waiting for the contacts process (the next POST's answer), and the
+    /// ones already handed over (evaluation view)
+    effects: Vec<Value>,
+    effects_sent: Vec<Value>,
 }
 
 pub struct Tracks {
@@ -116,6 +127,8 @@ impl Tracks {
                 by_contact: HashMap::new(),
                 next_no: 1,
                 last_detections: 0,
+                effects: Vec::new(),
+                effects_sent: Vec::new(),
             }),
             updates: watch::channel(Arc::new(String::new())).0,
         };
@@ -392,6 +405,33 @@ impl Tracks {
         Some(v)
     }
 
+    /// An engagement's abstract effect, for the contacts process (see the module docs).
+    pub fn queue_effect(&self, e: &murmur_decide::EffectOrder, ours: Vec<Value>) {
+        let mut inner = lock(&self.inner);
+        let contact = inner
+            .by_contact
+            .iter()
+            .find(|(_, t)| **t == e.track)
+            .map(|(c, _)| c.clone());
+        inner.effects.push(json!({
+            "intent": e.intent.0,
+            "track": e.track,
+            "target_contact": contact,
+            "t": e.t.0 as f64 / 1000.0,
+            "point": [e.point.lon, e.point.lat],
+            "radius_m": e.radius_m,
+            "ours": ours,
+        }));
+    }
+
+    /// The effects to hand the contacts process now (each once).
+    pub(crate) fn take_effects(&self) -> Vec<Value> {
+        let mut inner = lock(&self.inner);
+        let out: Vec<Value> = std::mem::take(&mut inner.effects);
+        inner.effects_sent.extend(out.iter().cloned());
+        out
+    }
+
     /// Evaluation only: truth and perception side by side, with the association.
     pub fn eval_json(&self, now: f64) -> Value {
         let inner = lock(&self.inner);
@@ -407,6 +447,7 @@ impl Tracks {
             "tracks": inner.tracks.values().map(|t| t.json(now)).collect::<Vec<_>>(),
             "association": pairs,
             "last_detections": inner.last_detections,
+            "effects_sent": inner.effects_sent,
         })
     }
 
@@ -541,6 +582,8 @@ async fn sim_contacts(
             "contacts": contacts,
             "detections": detections,
             "tracks": tracks,
+            // the simulation channel back: abstract effects for the truth side to apply
+            "effects": api.tracks.take_effects(),
         }))
         .into_response(),
         Err(e) => error(StatusCode::UNPROCESSABLE_ENTITY, e),

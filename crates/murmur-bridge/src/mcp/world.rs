@@ -303,6 +303,32 @@ pub fn intents(mcp: &Mcp, agent: &AgentId, state: Option<&str>, mine: bool, limi
     })
 }
 
+/// `get_nominations`: the engagement nominations, newest first, with their state, checks,
+/// preview, signatures, watch verdict, effect, stop and assessment.
+pub fn nominations(mcp: &Mcp, agent: &AgentId, mine: bool, state: Option<&str>) -> Value {
+    let now = clock::wall();
+    let mut list: Vec<Value> = mcp
+        .decision
+        .nominations_json()
+        .into_iter()
+        .filter(|i| state.is_none_or(|s| i["state"].as_str() == Some(s)))
+        .filter(|i| {
+            !mine
+                || (i["source"]["kind"].as_str() == Some("agent")
+                    && i["source"]["id"].as_str() == Some(agent.as_str()))
+        })
+        .collect();
+    for i in &mut list {
+        intent_ages(i, now);
+    }
+    json!({
+        "t": now,
+        "count": list.len(),
+        "note": "Newest first. An engagement is an abstract effect (a point, a radius, a time). It needs the human signatures listed in engage.approvers_needed by operators with engagement authority, never its proposer; after approval the picture is held every second and any change voids it.",
+        "nominations": list,
+    })
+}
+
 /// `get_inbox`: pending approvals and alerts, each with its age.
 pub fn inbox(mcp: &Mcp) -> Value {
     let now = clock::wall();

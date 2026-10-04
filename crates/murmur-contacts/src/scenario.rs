@@ -25,7 +25,9 @@
 //! radar or transponder an ESM receiver can hear; default per kind), `signature` (detection
 //! range multiplier; default per kind), `turn_dps`, `start_s` and `end_s` (scenario seconds
 //! the contact exists), `ais.spoofed = true` (the AIS identity is false: a suspect boat
-//! claiming to be a fishing vessel). `transit` moves once from `route[0]` to the last point
+//! claiming to be a fishing vessel), `on_effect` (what an engagement's abstract effect does
+//! to it: `"out_of_play"`, the default, removes it from the scenario, so our sensors stop
+//! detecting it; `"persists"` keeps it moving, flagged). `transit` moves once from `route[0]` to the last point
 //! and holds there; `loiter` needs `center` and `radius_m`; `station` and `drift` need
 //! `at`. Drift follows the tidewater current when the contacts process has conditions.
 
@@ -98,6 +100,17 @@ pub fn kind_defaults(kind: &str) -> Option<&'static KindDefaults> {
     KINDS.iter().find(|k| k.kind == kind)
 }
 
+/// What an engagement's abstract effect (Phase E) does to a contact inside its radius: a
+/// flag and a time, and either out of play (no longer in the truth, so our sensors stop
+/// detecting it) or unchanged. No damage, blast or lethality is modelled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OnEffect {
+    #[default]
+    OutOfPlay,
+    Persists,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 pub struct Sensing {
     /// Probability, per track, that a classifying sensor reports the wrong kind.
@@ -154,6 +167,8 @@ pub struct ContactSpec {
     pub start_s: f64,
     #[serde(default)]
     pub end_s: Option<f64>,
+    #[serde(default)]
+    pub on_effect: OnEffect,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -189,6 +204,7 @@ pub struct Contact {
     pub motion: Motion,
     pub start_s: f64,
     pub end_s: Option<f64>,
+    pub on_effect: OnEffect,
 }
 
 impl ContactSpec {
@@ -285,6 +301,7 @@ impl ContactSpec {
             motion,
             start_s: self.start_s.max(0.0),
             end_s: self.end_s,
+            on_effect: self.on_effect,
         })
     }
 }

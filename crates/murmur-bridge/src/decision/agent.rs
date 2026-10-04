@@ -225,6 +225,11 @@ impl Decision {
     /// [`space::proposal`] (no vehicles), else a vehicle task, refused before any intent
     /// exists when the task layer couldn't take it (as [`Decision::submit`] does).
     fn agent_proposal(&self, req: &IntentRequest) -> Result<Proposal, DecisionError> {
+        if req.task == "engage" {
+            // a nomination: the engine routes it to operators with engagement authority
+            self.check_vehicles(&req.uids)?;
+            return engage::proposal(req, self.clock.now());
+        }
         if matches!(req.task.as_str(), "collect" | "cover") {
             return space::proposal(
                 &req.task,
@@ -383,7 +388,7 @@ fn explain(i: &Intent) -> String {
                 s.push_str(" The proposing agent may withdraw it until then.");
             }
         }
-        State::Rejected | State::Expired | State::Voided | State::Failed => {
+        State::Rejected | State::Expired | State::Voided | State::Failed | State::Aborted => {
             if let Some(h) = i.history().last() {
                 s.push_str(&format!(" Last change: {}.", h.reason));
             }
@@ -398,7 +403,11 @@ fn explain(i: &Intent) -> String {
                 );
             }
         }
-        State::AutoApproved | State::Approved | State::Dispatched | State::Done => {
+        State::AutoApproved
+        | State::Approved
+        | State::Dispatched
+        | State::Effected
+        | State::Done => {
             match i.approval() {
                 Some(a) if a.at_submission => s.push_str(&format!(
                     " Authorized at submission by {} (the submitter's own command).",

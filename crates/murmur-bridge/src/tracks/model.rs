@@ -526,6 +526,7 @@ impl Track {
             alt_m: self.alt_m,
             velocity_mps: self.vel.map(|(e, n)| [e, n]),
             pos_sigma_m: self.sigma_at(now),
+            sigma_growth_mps: Some(sigma_growth_mps(self.speed_mps())),
             confidence: self.confidence_at(now),
             affiliation: Fact::new(
                 aff,

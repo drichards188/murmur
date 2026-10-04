@@ -1,0 +1,305 @@
+//! Engagements through the bridge: an operator nominates on a declared-hostile track, only
+//! operators with engagement authority (never the proposer) sign it, the platform is sent to
+//! loiter at the effect point, the loop releases the abstract effect onto the simulation
+//! channel; an operator's abort and a changed picture stop it with the recorded fallback.
+//! Every log replays.
+//!
+//! Time: the engine's clock is advanced a second per tick while vehicle facts are stamped
+//! by the wall clock, so these runs stay within a few engine seconds (the platform starts
+//! on the target, the dispatch delay is zero); the full timeline is the decision layer's
+//! scenarios (`sim/scenarios/engage`).
+
+use murmur_decide::Affiliation;
+
+use super::*;
+use crate::tracks::Tracks;
+use crate::tracks::sensing::{Observer, SensorSpec, SensorType};
+use crate::tracks::truth::{ContactTruth, Domain as TDomain, Sensing, TruthAffiliation, TruthMessage};
+
+/// In ez-gate-west, west of the bridge.
+const TARGET: (f64, f64) = (37.8120, -122.4950);
+
+struct Erig {
+    r: Rig,
+    tracks: Arc<Tracks>,
+}
+
+fn engage_rig() -> Erig {
+    let root = root();
+    let mut policy = Policy::load(&root.join("sim/policy.toml")).expect("policy");
+    let mut e = policy.rules.engage_rules();
+    e.dispatch_delay_s = 0.0;
+    policy.rules.engage = Some(e);
+    let tracks = Arc::new(Tracks::load(&root.join("sim/platforms.toml")).expect("sensors"));
+    let world = World::new(Config {
+        base_port: 0,
+        http_port: 0,
+        default_ports: 0,
+        manifest: root.join("sim/run/no-such-manifest.json"),
+        platforms: root.join("sim/platforms.toml"),
+        root: root.clone(),
+    });
+    let clock = ManualClock::new(snapshot::ms(clock::wall()));
+    let log = MemorySink::new();
+    let terrain = Terrain::fixed(PolygonTerrain {
+        coverage: ring(-122.6, 37.7, -122.3, 37.9),
+        land: vec![ring(-122.48, 37.79, -122.44, 37.808)],
+        water_depth_m: 12.0,
+    });
+    let d = Decision::from_parts(
+        world.clone(),
+        Parts {
+            policy,
+            catalog: Catalog::load(&root.join("sim/platforms.toml")).expect("catalog"),
+            areas: AreaSet::load_dir(&root.join("sim/areas"), clock.now()).expect("areas"),
+            sink: Box::new(log.clone()),
+            audit_path: PathBuf::from("memory"),
+            clock: Arc::new(clock.clone()),
+            terrain,
+            operators: vec![OperatorId::new("op-1")],
+            engage_operators: vec![OperatorId::new("op-2"), OperatorId::new("op-3")],
+            tracks: Some(tracks.clone()),
+        },
+    )
+    .expect("engine");
+    Erig {
+        r: Rig {
+            world,
+            d,
+            clock,
+            log,
+        },
+        tracks,
+    }
+}
+
+fn op(s: &str) -> OperatorId {
+    OperatorId::new(s)
+}
+
+impl Erig {
+    fn now_s(&self) -> f64 {
+        self.r.clock.now().0 as f64 / 1000.0
+    }
+
+    /// One truth tick: the hostile boat holding at TARGET, seen by a radar and EO/IR
+    /// observer 1.5 km east (not one of our fleet vehicles: an explicit observer).
+    fn sense(&self, with_target: bool) {
+        self.sense_at(self.now_s(), with_target);
+    }
+
+    fn sense_at(&self, now_s: f64, with_target: bool) {
+        let observer = Observer {
+            uid: 9,
+            lat: TARGET.0,
+            lon: TARGET.1 + 0.017,
+            alt_msl: 0.0,
+            mast_m: 4.0,
+            submerged: false,
+            sensors: vec![
+                SensorSpec { kind: SensorType::Radar, range_m: 8_000.0, guess: true },
+                SensorSpec { kind: SensorType::EoIr, range_m: 5_000.0, guess: true },
+            ],
+        };
+        let contacts = if with_target {
+            vec![ContactTruth {
+                id: "fastboat".into(),
+                name: "fast boat".into(),
+                affiliation: TruthAffiliation::Hostile,
+                domain: TDomain::Surface,
+                kind: "small_fast_boat".into(),
+                lat: TARGET.0,
+                lon: TARGET.1,
+                alt_m: 0.0,
+                speed_mps: 0.0,
+                course_deg: 0.0,
+                emits: false,
+                signature: 1.0,
+                ais: None,
+            }]
+        } else {
+            Vec::new()
+        };
+        let msg = TruthMessage {
+            t: now_s,
+            s: now_s,
+            seq: 0,
+            scenario: "test".into(),
+            seed: 1,
+            sensing: Sensing {
+                misclassification_rate: 0.0,
+            },
+            contacts,
+        };
+        self.tracks
+            .on_truth_with(msg, std::slice::from_ref(&observer), now_s)
+            .expect("sensing");
+    }
+
+    /// A minute of detections before anyone acts (identity confidence builds with dwell),
+    /// then the declaration.
+    async fn picture(&self) {
+        // the last 90 s, ending now (the vehicles' facts are stamped with the wall clock)
+        self.r.clock.set(snapshot::ms(clock::wall()));
+        let now = self.now_s();
+        for s in 0..90 {
+            self.sense_at(now - 90.0 + f64::from(s), true);
+        }
+        self.sense(true);
+        self.tracks
+            .declare("T-0001", Affiliation::Hostile, "op-1", None, self.now_s())
+            .expect("track");
+        self.r
+            .d
+            .record_action(&op("op-1"), "track.declare", "track T-0001 declared hostile")
+            .expect("logged");
+    }
+
+    fn nomination(&self, fallback: &str) -> IntentRequest {
+        IntentRequest {
+            task: "engage".into(),
+            uids: vec![1],
+            params: TaskParams::default(),
+            space: space::SpaceParams::default(),
+            engage: engage::EngageParams {
+                track: Some("T-0001".into()),
+                effect_radius_m: Some(100.0),
+                window_s: Some(300),
+                fallback: Some(fallback.into()),
+            },
+            constraints: Constraints::default(),
+            rationale: None,
+        }
+    }
+
+    /// Nominate (op-1) and sign twice (op-2, op-3): approved and dispatched.
+    async fn approved(&self, fallback: &str) -> IntentId {
+        self.r
+            .vehicle(1, Firmware::Copter, "fpv", TARGET); // armed, on the target
+        sleep(Duration::from_millis(500)).await;
+        self.picture().await;
+        let out = self
+            .r
+            .d
+            .submit(&op("op-1"), self.nomination(fallback))
+            .await
+            .expect("nominated");
+        assert_eq!(out.state, State::PendingApproval, "{}", out.intent);
+        let id = out.id;
+        // no authority, the proposer's own (would be refused for the proposer anyway)
+        let e = self.r.d.approve(&op("op-1"), id.0, None).await.expect_err("no authority");
+        assert_eq!(e.status, 403, "{}", e.detail);
+        let o = self.r.d.approve(&op("op-2"), id.0, None).await.expect("signs");
+        assert_eq!(o.state, State::PendingApproval);
+        let e = self.r.d.approve(&op("op-2"), id.0, None).await.expect_err("twice");
+        assert_eq!(e.status, 409, "{}", e.detail);
+        let o = self.r.d.approve(&op("op-3"), id.0, None).await.expect("signs");
+        assert_eq!(o.state, State::Dispatched, "{}", o.intent);
+        assert!(o.tasking.is_some());
+        id
+    }
+
+    /// One second: engine clock, a truth tick, the decision loop.
+    async fn tick(&self, with_target: bool) {
+        self.r.clock.advance_ms(1000);
+        self.sense(with_target);
+        self.r.d.tick();
+        sleep(Duration::from_secs(1)).await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_engagement_through_the_bridge_releases_an_abstract_effect() {
+    let e = engage_rig();
+    let id = e.approved("return").await;
+    for _ in 0..4 {
+        e.tick(true).await;
+        if e.r.state(id) == State::Effected {
+            break;
+        }
+    }
+    assert_eq!(e.r.state(id), State::Effected, "{}", e.r.reason(id));
+    // the effect waits on the simulation channel for the contacts process, with the
+    // contact the track was associated with (truth side only)
+    let effects = e.tracks.take_effects();
+    assert_eq!(effects.len(), 1, "{effects:?}");
+    assert_eq!(effects[0]["target_contact"], "fastboat");
+    assert_eq!(effects[0]["radius_m"], 100.0);
+    // the console's view: who signed, the engagement record
+    let msg: serde_json::Value = serde_json::from_str(&e.r.d.message()).expect("json");
+    let mine = msg["intents"]
+        .as_array()
+        .expect("intents")
+        .iter()
+        .find(|i| i["id"] == id.0)
+        .expect("intent")
+        .clone();
+    assert_eq!(mine["engage"]["signed"], json!(["op-2", "op-3"]));
+    assert!(!mine["engagement"]["effect"].is_null(), "{mine}");
+    assert_eq!(msg["operators"]["engage"], json!(["op-2", "op-3"]));
+    let rep = replay::replay_str(&e.r.log.text()).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+    assert_eq!((rep.concurrences, rep.approvals, rep.effects), (1, 1, 1));
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_operator_abort_commands_the_recorded_fallback() {
+    let e = engage_rig();
+    let id = e.approved("return").await;
+    // any operator, no engagement authority needed
+    let out = e.r.d.abort(&op("op-1"), id.0, Some("hold fire".into())).expect("aborted");
+    assert_eq!(out.state, State::Aborted, "{}", out.intent);
+    let ops = e.r.world.tasks.current_ops();
+    let op1 = ops.iter().find(|o| o.uid == 1).expect("an op on the platform");
+    assert_eq!(op1.task, crate::tasks::TaskKind::Rtl);
+    assert!(e.r.d.abort(&op("op-1"), id.0, None).is_err(), "only once");
+    let rep = replay::replay_str(&e.r.log.text()).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+    assert_eq!(rep.aborts, 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_changed_picture_aborts_with_the_fallback() {
+    let e = engage_rig();
+    let id = e.approved("abort").await;
+    // the declaration is withdrawn: the picture the approvers saw no longer holds
+    e.tracks
+        .declare("T-0001", Affiliation::Neutral, "op-1", None, e.now_s())
+        .expect("track");
+    e.tick(true).await;
+    assert_eq!(e.r.state(id), State::Aborted, "{}", e.r.reason(id));
+    assert!(e.r.reason(id).contains("target_declared"), "{}", e.r.reason(id));
+    let ops = e.r.world.tasks.current_ops();
+    let op1 = ops.iter().find(|o| o.uid == 1).expect("an op on the platform");
+    assert_eq!(op1.task, crate::tasks::TaskKind::Hold);
+    assert!(e.tracks.take_effects().is_empty(), "no effect after a void");
+    let rep = replay::replay_str(&e.r.log.text()).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+    assert_eq!(rep.picture_voids, 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_proposer_with_authority_still_cannot_sign() {
+    let e = engage_rig();
+    e.r.vehicle(1, Firmware::Copter, "fpv", TARGET);
+    sleep(Duration::from_millis(500)).await;
+    e.picture().await;
+    let id = e
+        .r
+        .d
+        .submit(&op("op-2"), e.nomination("loiter"))
+        .await
+        .expect("nominated")
+        .id;
+    let err = e.r.d.approve(&op("op-2"), id.0, None).await.expect_err("proposer");
+    assert_eq!(err.status, 403, "{}", err.detail);
+    assert!(err.detail.contains("may not approve"), "{}", err.detail);
+    assert_eq!(e.r.state(id), State::PendingApproval);
+    // the inbox says who may still sign
+    let inbox = e.r.d.inbox_json();
+    let p = &inbox["pending"][0];
+    assert_eq!(p["engage"]["eligible"], json!(["op-3"]), "{p}");
+    assert!(p["engage"]["live"]["checks"].is_array(), "{p}");
+    let rep = replay::replay_str(&e.r.log.text()).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+}

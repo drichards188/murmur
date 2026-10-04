@@ -7,9 +7,11 @@
 //! `dispatched: false` and why, one the rules reject answers 422 with the reasons.
 //!
 //! Intents: `POST /api/intents` (the task request plus optional `constraints` and
-//! `rationale`), `GET /api/intents`, `GET /api/intents/{id}`, `POST
-//! /api/intents/{id}/approve|reject|cancel` (optional body `{"note": "..."}`), `GET
-//! /api/inbox`. These name the operator in the `X-Murmur-Operator` header, which must be one
+//! `rationale`; `task: "engage"` with `track`, `effect_radius_m`, `window_s`, `fallback`
+//! nominates an engagement, Phase E), `GET /api/intents`, `GET /api/intents/{id}`, `POST
+//! /api/intents/{id}/approve|reject|cancel|abort` (optional body `{"note": "..."}`; `abort`
+//! stops an approved or dispatched engagement before its effect, any operator), `GET
+//! /api/inbox`, `GET /api/operators` (who may sign an engagement). These name the operator in the `X-Murmur-Operator` header, which must be one
 //! of `MURMUR_OPERATORS`: a placeholder for real authentication. The WebSocket also sends
 //! `{"type": "decisions", "inbox": ..., "intents": [...]}` and `{"type": "tracks", ...}`
 //! (Phase C2, see `tracks`) on connect and whenever they change (existing clients ignore
@@ -56,6 +58,7 @@ pub fn router(app: App) -> Router {
         .route("/api/intents/{id}", get(get_intent))
         .route("/api/intents/{id}/{action}", post(intent_action))
         .route("/api/inbox", get(inbox))
+        .route("/api/operators", get(operators))
         .route("/api/platforms", get(platforms))
         .route("/api/stats", get(stats))
         .route("/ws", get(ws))
@@ -244,10 +247,11 @@ async fn intent_action(
         "approve" => app.decision.approve(&op, id, note).await,
         "reject" => app.decision.reject(&op, id, note),
         "cancel" => app.decision.cancel(&op, id, note),
+        "abort" => app.decision.abort(&op, id, note),
         _ => {
             return error(
                 StatusCode::NOT_FOUND,
-                format!("unknown action {action:?} (approve, reject, cancel)"),
+                format!("unknown action {action:?} (approve, reject, cancel, abort)"),
             );
         }
     };
@@ -265,6 +269,12 @@ async fn intent_action(
 
 async fn inbox(State(app): State<App>) -> Response {
     Json(app.decision.inbox_json()).into_response()
+}
+
+/// The operators the bridge accepts and those with engagement authority (placeholder
+/// authentication: `MURMUR_OPERATORS`, `MURMUR_ENGAGE_OPERATORS`).
+async fn operators(State(app): State<App>) -> Response {
+    Json(app.decision.operators_json()).into_response()
 }
 
 /// Collect and cover runs: the scenario clock map and each run's states (also in the
