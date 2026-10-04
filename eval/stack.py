@@ -309,6 +309,9 @@ class Stack:
             "MURMUR_POLICY": str(self.spec.policy),
             "MURMUR_AREAS": str(self.spec.areas),
             "MURMUR_RUN_ID": self.run_id,
+            # every run starts clean: never carry another run's open intents over (port blocks
+            # are reused, and with them the bridge's resume pointer)
+            "MURMUR_RESUME": "0",
             "MURMUR_OPERATORS": ",".join(OPERATORS),
             "MURMUR_AGENTS": ",".join(AGENTS),
             "MURMUR_EVAL_TRUTH": "1",

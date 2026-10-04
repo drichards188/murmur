@@ -62,6 +62,30 @@ until = "tasking_lead"
 expire_s = 300
 until = "window"
 
+# Rules 5 (murmur-5p4): the safe command queue. An approved (or auto-approved) order for a
+# vehicle the link can't carry it to right now is held here, not sent into a dead link: one not
+# heard from within link_intervals of its link's report interval (3 s on a streaming link, 60 s
+# for an AUV reporting every 20 s), or a mission (orbit, patrol; rtl on a sub) for one whose
+# link reports less often than every 5 s (an AUV on its acoustic modem: an upload can't cross
+# it). When it can be reached its checks run again on the world then: it is sent if they pass,
+# back to the inbox if a human approved a picture that has since changed (a check, the tier, a
+# reboot, an engagement now in play), voided if a check fails. Past its wait it expires. Each
+# wait is also how long an order already under way waits for a link lost mid-exchange.
+# Bounds: expire_s 1..3600; per kind 0..3600 (0: never queued, sent at once whatever the link,
+# as before rules 5); link_intervals 1..10. The queue holds vehicle tasks only.
+[queue]
+expire_s = 900                              # an order waits at most this long for its vehicles
+link_intervals = 3                          # reachable: heard within this many of its link's
+                                            # expected report intervals (the bridge's lost-link rule)
+
+# Safety commands: a short wait. A hold or rtl delivered long after it was given may no longer
+# be what the operator wants (the vehicle's own lost-link failsafe has acted by then).
+[queue.kind.hold]
+expire_s = 60
+
+[queue.kind.rtl]
+expire_s = 120
+
 [rules]
 max_fact_age_s = 10                         # older telemetry can't support a decision
 fact_age_intervals = 3                      # ...but a vehicle's limit is at least this many of its link's

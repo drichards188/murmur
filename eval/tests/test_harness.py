@@ -567,8 +567,8 @@ def test_engagement_suite_runs_clean(tmp_path: Path):
 def test_eval_policies_follow_the_shipped_policy():
     """eval/policy/*.toml are sim/policy.toml with the documented differences only: every
     human tier leaves `submitter_authorizes` false (base.toml's header), and strict.toml adds
-    its `every-vehicle-task` tier before the default. Rules, approval kinds (engagement
-    included) and every other tier field are the shipped ones."""
+    its `every-vehicle-task` tier before the default. Rules, the queue for unreachable vehicles,
+    approval kinds (engagement included) and every other tier field are the shipped ones."""
     import tomllib
 
     sim = tomllib.loads((REPO / "sim" / "policy.toml").read_text())
@@ -579,6 +579,7 @@ def test_eval_policies_follow_the_shipped_policy():
     for name, extra in (("base", []), ("strict", ["every-vehicle-task"])):
         pol = tomllib.loads((REPO / "eval" / "policy" / f"{name}.toml").read_text())
         assert pol["rules"] == sim["rules"], name
+        assert pol.get("queue") == sim.get("queue"), name
         assert pol["approval"]["kind"] == sim["approval"]["kind"], name
         assert pol["approval"]["expire_s"] == sim["approval"]["expire_s"]
         assert pol["approval"]["submitter_authorizes"] is False
