@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 9] = [
+const LOGS: [(&str, u32); 10] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -37,12 +37,16 @@ const LOGS: [(&str, u32); 9] = [
     // rules 4: the same scenario, its run.started naming the operator roster and its
     // engagement order the loiter radius
     ("v4-engagement-scenario-01.jsonl", 4),
-    // rules 5 (clean builds of fcbe3c1 and 7c55ed3): the same scenario with the fallback preloaded as
-    // the platform's lost-link action (the order's preload, set and restore reports), and
-    // scenario 54, a lost friendly an operator accepted (engage.accepted, the catalog's climb
-    // rate in the world facts)
+    // rules 5 (clean builds of fcbe3c1 and 7c55ed3): the same scenario with the fallback
+    // preloaded as the platform's lost-link action (the order's preload, set and restore
+    // reports), and scenario 54, a lost friendly an operator accepted (engage.accepted, the
+    // catalog's climb rate in the world facts); and a live run (a clean 553a640, anchored as it
+    // ran): two nominations rejected for a fast ferry by the point, a third clear of a far
+    // fast ferry and, by altitude, of our aircraft at 7,000 m and an aircraft at 3,000 m, its
+    // USV's lost-link action preloaded, released, restored
     ("v5-engagement-scenario-01.jsonl", 5),
     ("v5-lost-friendly-accepted-scenario-54.jsonl", 5),
+    ("v5-engagement-live.jsonl", 5),
 ];
 
 /// The committed log of the current rules.
@@ -126,6 +130,49 @@ fn the_live_log_matches_the_anchors_written_as_it_ran() {
     assert!(r.ok(), "{:?}", r.mismatches);
     assert_eq!((r.effects, r.assessments), (1, 1));
     assert_eq!(r.build.as_ref().map(|b| b.dirty), Some(Some(false)));
+}
+
+#[test]
+fn the_rules_5_live_log_preloads_restores_and_reads_altitude() {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data/anchors/v5-engagement-live.anchors");
+    let anchors = std::fs::read_to_string(p).unwrap();
+    let log = fixture("v5-engagement-live.jsonl");
+    let a = anchor::verify(&log, &anchors);
+    assert!(a.ok(), "{:?}", a.problems);
+    assert!(a.shutdown, "a clean stop anchored the head");
+    let r = replay_str(&log).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert_eq!((r.engagements, r.effects, r.assessments), (3, 1, 1));
+    assert_eq!(r.build.as_ref().map(|b| b.dirty), Some(Some(false)));
+    // the fast ferry by the point blocked twice; then the USV's FS_ACTION 6 (Loiter) and its
+    // 5 s timer (its own: 1 and 30 s) read back before the intercept, and put back after
+    let events = parse_log(&log).unwrap();
+    let rejected = events
+        .iter()
+        .filter(|e| matches!(&e.body, EventBody::IntentState { to: State::Rejected, reason, .. } if reason.contains("keep_out_tracks: track T-0001 (neutral, ferry)")))
+        .count();
+    assert_eq!(rejected, 2);
+    let preloads: Vec<_> = events
+        .iter()
+        .filter_map(|e| match &e.body {
+            EventBody::EngagePreload { phase, before, readback, confirmed, .. } => Some((*phase, before.clone(), readback.clone(), *confirmed)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(preloads.len(), 2, "{preloads:?}");
+    let (set, restore) = (&preloads[0], &preloads[1]);
+    assert_eq!(set.0, engage::PreloadPhase::Set);
+    assert!(set.3);
+    assert_eq!((set.1["FS_ACTION"], set.1["FS_GCS_TIMEOUT"]), (1.0, 30.0));
+    assert_eq!((set.2["FS_ACTION"], set.2["FS_GCS_TIMEOUT"]), (6.0, 5.0));
+    assert_eq!(restore.0, engage::PreloadPhase::Restore);
+    assert!(restore.3);
+    assert_eq!(restore.2, set.1, "its own values back");
+    // our vehicles' altitude in the world facts, and the keep-outs read in 3D
+    assert!(log.contains("\"alt_msl_m\":{\"value\":7000.0"));
+    assert!(log.contains("clear by altitude: 5 at 7000 m"));
+    assert!(log.contains("clear by altitude: T-0003 at 3003 m"));
 }
 
 #[test]
@@ -296,6 +343,7 @@ fn a_downgraded_claim_is_caught_by_what_the_log_carries() {
             "v5-lost-friendly-accepted-scenario-54.jsonl",
             &["an acceptance of a lost vehicle", "an accepted lost vehicle in decision inputs", "a platform's climb rate"][..],
         ),
+        ("v5-engagement-live.jsonl", &["a vehicle's altitude fact", "a lost-link preload report"][..]),
     ] {
         let mut ls = lines(&fixture(name));
         assert!(ls[0].contains("\"rules_version\":5,"));

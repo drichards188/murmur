@@ -556,7 +556,12 @@ Rules versions:
   world facts: our vehicles' `alt_msl_m`, the catalog's `climb_mps`. Markers (a log
   claiming rules 4 or older can't carry them): a `fallback_preload` check, an order's
   `preload`, `engage.preload` and `engage.accepted` events, `unknown_accepted`,
-  `alt_msl_m`, `climb_mps`. Fixture: `tests/data/audit/v5-engagement-scenario-01.jsonl`.
+  `alt_msl_m`, `climb_mps`. Fixtures: `tests/data/audit/v5-engagement-scenario-01.jsonl`,
+  `v5-lost-friendly-accepted-scenario-54.jsonl`, and a live run with its anchors
+  (`v5-engagement-live.jsonl`, `tests/data/anchors/v5-engagement-live.anchors`: two
+  nominations rejected for a fast ferry by the point, a third clear by altitude of our
+  aircraft at 7,000 m and of an aircraft track at 3,000 m and of a far fast ferry, its USV's
+  lost-link action preloaded, the effect released, the USV's own values restored).
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
