@@ -312,7 +312,7 @@ export function VehicleDetails({ v, taskings, now, selected, onToggleSelect, onC
         {op ? (
           <dl>
             <Item k="Current">
-              {op.o.task.toUpperCase()} #{op.t.id} · <b className={op.o.state === 'failed' || op.o.state === 'superseded' || op.o.state === 'requeued' ? 'bad' : ''}>{opEnding(op.o) ?? op.o.state}</b>
+              {op.o.task.toUpperCase()} #{op.t.id} · <b className={op.o.state === 'failed' || op.o.state === 'superseded' || op.o.state === 'requeued' || op.o.state === 'unconfirmed' ? 'bad' : ''}>{opEnding(op.o) ?? op.o.state}</b>
             </Item>
             {op.o.detail && <Item k="Detail">{op.o.detail}</Item>}
             {op.o.progress && op.o.progress !== op.o.detail && <Item k="Progress">{op.o.progress}</Item>}

@@ -28,16 +28,39 @@ const NO_EKF_GRACE_S: f64 = 15.0;
 /// (messages of one burst carry times milliseconds apart; the links deliver in order).
 pub const REBOOT_SLACK_MS: u64 = 1_000;
 /// A reboot also shows when the time since boot did not go back (an outage longer than the
-/// uptime before it): the boot instant it implies (arrival less the time since boot) is
-/// later than the recent reports put it, by more than this (a slow link's delay), plus
-/// [`BOOT_JUMP_PER_SILENT_S`] of the silence before the report (a simulator that runs slower
-/// than the wall clock drifts while it is silent). A vehicle up for less than this before an
-/// outage that outlasts its new uptime is not seen to reboot.
+/// uptime before it): the boot instant it implies (arrival less the time since boot, at the
+/// rate the vehicle's clock runs against ours) is later than the recent reports put it, by
+/// more than this (a slow link's delay), plus a share of the silence before the report for
+/// what the rate estimate may be off by (see [`boot_rate`]). A reboot that came within this
+/// of the last report before an outage that outlasts the new uptime is not seen.
 pub const BOOT_JUMP_S: f64 = 30.0;
-pub const BOOT_JUMP_PER_SILENT_S: f64 = 0.05;
-/// How many recent reports the boot instant's baseline is the earliest of (it follows a slow
-/// drift, not a jump).
-const BOOT_BASELINE_KEEP: usize = 20;
+/// The vehicle's clock rate is estimated over the recent reports once they span this long
+/// (a simulator may run slower than the wall clock); before that it is taken as 1.
+const BOOT_RATE_SPAN_S: f64 = 30.0;
+/// The reports the rate and the boot instant's baseline come from: one a second, this far
+/// back.
+const BOOT_RATE_WINDOW_S: f64 = 300.0;
+/// How far off the arrival delays may put the rate estimate: this many seconds of delay
+/// across its span.
+const BOOT_DELAY_S: f64 = 3.0;
+/// The drift allowed per second of silence on top of the delays' share: a rate that changes.
+const BOOT_DRIFT_PER_S: f64 = 0.02;
+/// Allowed per second of silence while the rate is not known yet.
+const BOOT_DRIFT_UNKNOWN_PER_S: f64 = 0.15;
+
+/// The vehicle clock's rate against ours from (monotonic s, time since boot s) samples, and
+/// the drift to allow per second of silence for it: estimated over the samples' span once it
+/// is [`BOOT_RATE_SPAN_S`] (bounded to 0.5..1.5), else 1 with a wide allowance.
+pub fn boot_rate(samples: &VecDeque<(f64, f64)>) -> (f64, f64) {
+    match (samples.front(), samples.back()) {
+        (Some(a), Some(b)) if b.0 - a.0 >= BOOT_RATE_SPAN_S => {
+            let span = b.0 - a.0;
+            let rate = ((b.1 - a.1) / span).clamp(0.5, 1.5);
+            (rate, BOOT_DRIFT_PER_S + BOOT_DELAY_S / span)
+        }
+        _ => (1.0, BOOT_DRIFT_UNKNOWN_PER_S),
+    }
+}
 
 /// What the launcher's fleet manifest says a node is: callsign, platform, role, domain, link...
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -214,8 +237,9 @@ pub struct Vehicle {
     pub boot_epoch: u32,
     /// Reboots waiting for the audit log, oldest first.
     pub reboots: VecDeque<Reboot>,
-    /// The boot instants the recent reports imply (monotonic s), and when the last came.
-    boot_implied: VecDeque<f64>,
+    /// Recent reports' (monotonic s, time since boot s), one a second over the last
+    /// [`BOOT_RATE_WINDOW_S`], and when the last report came.
+    boot_samples: VecDeque<(f64, f64)>,
     boot_heard_mono: Option<f64>,
 }
 
@@ -550,16 +574,25 @@ impl Vehicle {
     fn observe_boot(&mut self, boot_ms: u64) {
         let wall = clock::wall();
         let mono = clock::mono();
-        let booted = wall - boot_ms as f64 / 1000.0;
-        let implied = mono - boot_ms as f64 / 1000.0;
+        let boot_s = boot_ms as f64 / 1000.0;
+        let booted = wall - boot_s;
         let silent = self.boot_heard_mono.map_or(0.0, |t| (mono - t).max(0.0));
         self.boot_heard_mono = Some(mono);
-        let baseline = self.boot_implied.iter().copied().fold(f64::INFINITY, f64::min);
+        // the boot instant each report implies at the vehicle clock's own rate: a constant
+        // (plus the link's delay) until it reboots
+        let (rate, drift) = boot_rate(&self.boot_samples);
+        let implied_at = |m: f64, b: f64| m - b / rate;
+        let implied = implied_at(mono, boot_s);
+        let baseline = self
+            .boot_samples
+            .iter()
+            .map(|(m, b)| implied_at(*m, *b))
+            .fold(f64::INFINITY, f64::min);
         let went_back = self
             .boot_ms
             .is_some_and(|before| boot_ms + REBOOT_SLACK_MS < before);
-        let jumped = baseline.is_finite()
-            && implied - baseline > BOOT_JUMP_S + BOOT_JUMP_PER_SILENT_S * silent;
+        let jumped =
+            baseline.is_finite() && implied - baseline > BOOT_JUMP_S + drift * silent;
         match self.boot_ms {
             Some(before) if went_back || jumped => {
                 self.boot_epoch += 1;
@@ -572,7 +605,7 @@ impl Vehicle {
                 };
                 self.booted_wall = Some(booted);
                 self.boot_ms = Some(boot_ms);
-                self.boot_implied.clear();
+                self.boot_samples.clear();
                 if self.reboots.len() == EVENTS_KEEP {
                     self.reboots.pop_front();
                 }
@@ -589,10 +622,17 @@ impl Vehicle {
                 self.booted_wall = Some(booted);
             }
         }
-        if self.boot_implied.len() == BOOT_BASELINE_KEEP {
-            self.boot_implied.pop_front();
+        if self.boot_samples.back().is_none_or(|(m, _)| mono - m >= 1.0) {
+            self.boot_samples.push_back((mono, boot_s));
         }
-        self.boot_implied.push_back(implied);
+        while self.boot_samples.len() > 1
+            && self
+                .boot_samples
+                .front()
+                .is_some_and(|(m, _)| mono - m > BOOT_RATE_WINDOW_S)
+        {
+            self.boot_samples.pop_front();
+        }
     }
 
     fn set_mode(&mut self, mav_type: apm::MavType, custom_mode: u32) {

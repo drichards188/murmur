@@ -37,7 +37,7 @@ function age(t: number) {
 }
 
 function Lifecycle({ state }: { state: string }) {
-  const failed = state === 'failed' || state === 'superseded' || state === 'requeued'
+  const failed = state === 'failed' || state === 'superseded' || state === 'requeued' || state === 'unconfirmed'
   const idx = LIFECYCLE.indexOf(state as never)
   return (
     <span className={`steps ${failed ? 'failed' : ''}`}>

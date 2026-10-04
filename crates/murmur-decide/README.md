@@ -129,14 +129,23 @@ link to fail, nor sent twice, nor sent stale.
   (3). Bounded (`QueueConfig::validate`: 1..3600 s, 0..3600 per kind, 1..3600 for a human's
   approval, 1..10 intervals, vehicle kinds only); replay validates the logged copy too.
 - **Requeue** (`Engine::requeue`): a dispatched order whose link was lost to every vehicle
-  before any started it (each vehicle's last op state `requeued`, none ever `acked`) goes
-  back to the queue (`intent.requeued`, its deadline the kind's wait from the approval,
-  bounded as above), re-checked like any queued order before it is sent again. The bridge
-  then delivers it asking the vehicle what it holds first (`Intent::dispatched_before`).
+  before any confirmed it goes back to the queue (`intent.requeued`, its deadline the kind's
+  wait from the approval, bounded as above), re-checked like any queued order before it is
+  sent again. Each vehicle's last op state is `requeued` (the link went before the start)
+  or `unconfirmed` (after it: an op `starting` means the start went out, the mission mode,
+  the hold or rtl mode, or new items to a vehicle already flying a mission), and none ever
+  `acked`. The bridge then delivers it asking the vehicle what it holds first
+  (`Intent::dispatched_before`); where it may have started (`Intent::maybe_started`) the
+  delivery only confirms it (`Intent::confirming`): followed if the vehicle runs it, and if
+  not (`unconfirmed` again) it is never started again on its own: `intent.requeued` with its
+  deadline now and `queue.expired` send it to the inbox, saying what the vehicle does. A
+  human's approval there may start it again. An order that ends or goes to the inbox while
+  it may be running says so in its reason.
 - **Never an older order over a newer one**: a dequeue voids the intent when a newer one for
   one of its vehicles stands (approved, queued, dispatched, or waiting for a human after a
-  human submitted it); a human's approved order waiting in the queue makes an agent's order
-  on that vehicle a human decision (the `waiting` fact, policy rule `(human order waiting)`).
+  human submitted it); a human's approved order waiting in the queue, or dispatched with no
+  vehicle started on it yet, makes an agent's order on that vehicle a human decision (the
+  `waiting` fact, policy rule `(human order waiting)`).
 - **Dequeue** (`Engine::dequeue`, the bridge offers every queued intent each second): past
   the deadline it expires (`queue.expired`, with why; or, `inbox`, back to the inbox with a
   new `approval.requested`); while a vehicle can't be reached nothing happens and nothing is
@@ -307,18 +316,21 @@ chain, a recomputed chain caught only by the head.
 
 **Run-time anchors** (`src/anchor.rs`). The bridge wraps its log's sink so that the hash of
 the first line (`run.started`) and the head are written, as the log grows, to a separate
-append-only file: after the first event, every `MURMUR_ANCHOR_EVERY` events (100), and at a
-clean shutdown (`logs/anchors/<run-id>.anchors`; `MURMUR_ANCHOR_DIR` moves it,
+append-only file: after the first event, every `MURMUR_ANCHOR_EVERY` events (100), after
+every event a restart carries intents over by (`intent.state`, `intent.resumed`,
+`op.state`: "decision"), and at a clean shutdown (`logs/anchors/<run-id>.anchors`;
+`MURMUR_ANCHOR_DIR` moves it,
 `MURMUR_ANCHORS=0` turns it off). `MURMUR_ANCHOR_CMD`, a shell command, gets each anchor's
 JSON on its stdin (and in `MURMUR_ANCHOR`), run in order on a thread of its own, to post it
 elsewhere. `murmur-replay --anchors <file>` checks the log against them: the first line and
 every anchored event must hash as anchored, the log must reach the last anchor (a cut tail
-shows), the file must be whole (the start anchor on `run.started`, one anchor every N events
-as each declares in `every`, a shutdown anchor last, so a removed anchor line shows), and
+shows), the file must be whole (the start anchor on `run.started`, a cadence anchor exactly N
+events after the anchor before it as each declares in `every`, a decision or shutdown anchor
+at most N after it, a shutdown anchor last, so a removed anchor line shows), and
 nothing may follow the shutdown anchor: the bridge closes the log behind it (later appends
 fail, so nothing is done that isn't logged) and exits with the decision lock held. A run
 that crashed has no shutdown anchor and fails the check: its tail can't be told from a cut
-one.
+one, but everything up to its last decision is anchored (a carry-over checks that much).
 
 **An anchor is only as strong as the separation between where it is kept and whoever can
 write the log.** The local anchor file sits in the same account as the log: it catches an
@@ -545,7 +557,9 @@ Rules versions:
   phase `dequeue`, `queue.recheck`: dispatch, back to the inbox, void), expired at its
   deadline (`queue.expired`, or back to the inbox for a human's approval held
   `human_expire_s`); a dispatched order whose link was lost before any vehicle started it
-  goes back to the queue (`intent.requeued`); an older queued order is voided when a newer
+  goes back to the queue (`intent.requeued`), and one whose start had gone out (op
+  `starting`, then `unconfirmed`) is only confirmed next time, or goes to a human when the
+  vehicle does not run it; an older queued order is voided when a newer
   one for its vehicle stands, and an agent's order on a vehicle with a human-approved order
   waiting needs a human (`waiting`); a direct dispatch logs the reach that allowed it; open
   intents are carried over a bridge restart (`intent.resumed`); reboots are logged

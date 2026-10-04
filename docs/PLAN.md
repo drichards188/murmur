@@ -240,8 +240,12 @@ in the console (`sim/fleets/contacts-demo.toml` shows coverage gaps at the Gate)
   ones re-checked (a human's approval back to the inbox), started ones followed and never
   re-sent, across any number of restarts. Reboots (time since boot going back, or the boot
   instant it implies jumping later after an outage longer than the uptime) are logged, end
-  the op, and send a human's queued approval back to the inbox. Review fixes (10-04, see
-  DECISIONS). Console: a Queue
+  the op, and send a human's queued approval back to the inbox. An order whose start went out
+  unconfirmed is only followed where the vehicle runs it, never restarted on its own (a
+  human decides), and one no longer in force that a vehicle runs raises an alert; a
+  carried-over order needs the same vehicle (fleet identity beside the log) and an anchored
+  log (every decision anchored). Review fixes (10-04, two rounds; see DECISIONS). Console:
+  a Queue
   drawer (why each waits, time left, cancel, how recent ones left), queued paths dashed with
   QUEUED, sent orders labelled until the vehicle's telemetry confirms them. Not covered: an
   engagement under way when the bridge restarts (not carried over; its platform keeps its

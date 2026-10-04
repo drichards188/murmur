@@ -1151,3 +1151,83 @@ fn a_vehicle_that_started_an_order_stays_started_across_a_second_restart() {
     assert_eq!(open_b.state, State::Queued);
     assert!(open_b.dispatched_before, "a vehicle may still hold it");
 }
+
+// ---- second review --------------------------------------------------------------------
+
+#[test]
+fn an_order_that_may_have_started_is_only_confirmed_and_goes_to_a_human_when_not_running() {
+    // review 2, P2b at the engine: the start went out (op `starting`), the link was lost
+    // (`unconfirmed`): back to the queue; the next delivery only confirms it there, and when
+    // the vehicle does not run it (`unconfirmed` again) a human decides
+    let mut fx = fx();
+    let w = world_now(&fx);
+    let id = fx.submit(orbit_sky(), &w);
+    fx.engine.dispatch_or_queue(id, &w).unwrap();
+    let sky = uid("sky-1");
+    fx.engine.record_op_state(id, &sky, "sent", "uploading").unwrap();
+    fx.engine.record_op_state(id, &sky, "starting", "starting mission: mission mode commanded").unwrap();
+    fx.engine
+        .record_op_state(id, &sky, "unconfirmed", "link lost waiting for the MAV_CMD_DO_SET_MODE ACK, after its start went out")
+        .unwrap();
+    fx.engine.requeue(id).unwrap();
+    assert_eq!(fx.state(id), State::Queued);
+    assert!(fx.engine.intent(id).unwrap().maybe_started().contains(&sky));
+    assert!(reason(&fx, id).contains("after its start went out"), "{}", reason(&fx, id));
+    fx.advance(20);
+    let w = world_now(&fx);
+    assert!(matches!(fx.engine.dequeue(id, &w, &terrain()).unwrap(), Dequeued::Dispatched(_)));
+    assert!(fx.engine.intent(id).unwrap().confirming().contains(&sky), "only confirmed");
+    fx.engine
+        .record_op_state(id, &sky, "unconfirmed", "it may have started before its link was lost, and does not run it now (mode RTL, mission still held): not started again; a human decides")
+        .unwrap();
+    fx.engine.requeue(id).unwrap();
+    let i = fx.engine.intent(id).unwrap();
+    assert_eq!(i.state(), State::PendingApproval);
+    assert!(i.maybe_started().is_empty(), "the human decides from here");
+    assert!(reason(&fx, id).contains("mode RTL"), "{}", reason(&fx, id));
+    let r = replays(&fx);
+    assert_eq!(r.requeued, 2);
+    // replay holds it to that: the second requeue made to go back to the queue instead
+    let whats = forged(&fx, |ev| {
+        let mut n = 0;
+        for e in ev.iter_mut() {
+            if let EventBody::IntentRequeued { inbox, expires_t, .. } = &mut e.body {
+                n += 1;
+                if n == 2 {
+                    *inbox = false;
+                    *expires_t = expires_t.plus_ms(600_000);
+                }
+            }
+        }
+    });
+    assert!(whats.iter().any(|w| w.contains("requeue deadline differs")), "{whats:?}");
+}
+
+#[test]
+fn an_agents_order_cant_replace_a_humans_order_no_vehicle_started_yet() {
+    // review 2, finding 7: a human's order dispatched, its vehicle not started yet (link
+    // slow, say): an agent's hold there goes to a human; once the vehicle started the
+    // human's order, it runs on its own as before
+    let mut fx = fx();
+    let w = world_now(&fx);
+    let id = fx.submit(orbit(NEAR_CRISSY, 200.0, &["blade-1"]), &w);
+    assert_eq!(fx.state(id), State::Approved);
+    fx.engine.dispatch_or_queue(id, &w).unwrap();
+    assert_eq!(fx.state(id), State::Dispatched);
+    fx.engine.record_op_state(id, &uid("blade-1"), "sent", "uploading").unwrap();
+    let agent = |fx: &mut Fx| {
+        let w = world_now(fx);
+        fx.engine
+            .agent_port(AgentId::new("planner"))
+            .propose(hold(&["blade-1"]), rationale("park it"), &w, &terrain())
+            .unwrap()
+            .id()
+    };
+    let a = agent(&mut fx);
+    assert_eq!(fx.state(a), State::PendingApproval);
+    assert_eq!(fx.engine.intent(a).unwrap().policy().unwrap().rule, "(human order waiting)");
+    fx.engine.record_op_state(id, &uid("blade-1"), "acked", "accepted").unwrap();
+    let b = agent(&mut fx);
+    assert_ne!(fx.engine.intent(b).unwrap().policy().unwrap().rule, "(human order waiting)");
+    replays(&fx);
+}

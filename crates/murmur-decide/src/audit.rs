@@ -377,6 +377,9 @@ pub enum EventBody {
         /// Each vehicle's platform as the previous run last checked it.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         platforms: BTreeMap<Uid, String>,
+        /// The vehicles that may have started it (its start went out, nothing confirmed it).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        maybe_started: Vec<Uid>,
     },
 
     /// Rules 5: a vehicle rebooted, and lost the mode and armed state (and, on a stand-in,

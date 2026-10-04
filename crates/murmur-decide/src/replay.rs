@@ -291,6 +291,10 @@ struct Tracked {
     basis_carried: bool,
     /// Each vehicle's platform as its last check saw it (or as carried over).
     platforms: BTreeMap<Uid, String>,
+    /// The vehicles that may have started it (an op `starting` or `unconfirmed`), and those
+    /// its current delivery only confirms.
+    maybe_started: BTreeSet<Uid>,
+    confirming: BTreeSet<Uid>,
 }
 
 impl Tracked {
@@ -351,6 +355,8 @@ impl Tracked {
             dispatched_before: false,
             basis_carried: false,
             platforms: BTreeMap::new(),
+            maybe_started: BTreeSet::new(),
+            confirming: BTreeSet::new(),
         }
     }
 
@@ -1461,6 +1467,7 @@ fn replay_inner<S: AsRef<str>>(
                         tr.dispatched = true;
                         tr.dispatched_before = true;
                         tr.ops.clear();
+                        tr.confirming = tr.maybe_started.clone();
                         last_dispatch = Some(*intent);
                         for u in &tr.spec.uids {
                             newest_on.insert(u.clone(), *intent);
@@ -1512,6 +1519,10 @@ fn replay_inner<S: AsRef<str>>(
                     tr.recheck_seq = None;
                     tr.queue_expired = false;
                     tr.queue_expired_inbox = false;
+                    // back to a human: their next approval decides, starting it again included
+                    if *transition == Transition::RequireApproval {
+                        tr.maybe_started.clear();
+                    }
                 }
                 tr.state = *to;
             }
@@ -2294,11 +2305,12 @@ fn replay_inner<S: AsRef<str>>(
                 }
                 // evidence: every vehicle's op ended with its link lost before the start, and
                 // none ever started the order
-                let lost = tr
-                    .spec
-                    .uids
-                    .iter()
-                    .all(|u| tr.ops.get(u).map(String::as_str) == Some(queue::REQUEUED_OP));
+                let lost = tr.spec.uids.iter().all(|u| {
+                    matches!(
+                        tr.ops.get(u).map(String::as_str),
+                        Some(queue::REQUEUED_OP | queue::UNCONFIRMED_OP)
+                    )
+                });
                 if !lost || !tr.committed.is_empty() {
                     bad(
                         &mut r,
@@ -2306,15 +2318,23 @@ fn replay_inner<S: AsRef<str>>(
                         Some(*intent),
                         "requeued without every vehicle's op ending with its link lost before the start (or after a vehicle started it)",
                         json(&(&tr.ops, &tr.committed)),
-                        format!("every op {}, none started", queue::REQUEUED_OP),
+                        format!(
+                            "every op {} or {}, none started",
+                            queue::REQUEUED_OP,
+                            queue::UNCONFIRMED_OP
+                        ),
                     );
                 }
                 let basis = tr
                     .basis
                     .clone()
                     .unwrap_or_else(|| crate::engine::no_basis(e.t));
-                let (want, want_inbox) =
-                    cfg.bound(cfg.wait_end(tr.spec.kind(), basis.t), &basis, e.t);
+                // a delivery that only confirmed it found a vehicle not running it: to a human
+                let (want, want_inbox) = if queue::confirm_failed(&tr.confirming, &tr.ops).is_empty() {
+                    cfg.bound(cfg.wait_end(tr.spec.kind(), basis.t), &basis, e.t)
+                } else {
+                    (e.t, true)
+                };
                 if (*expires_t, *inbox) != (want, want_inbox) {
                     bad(
                         &mut r,
@@ -2341,6 +2361,7 @@ fn replay_inner<S: AsRef<str>>(
                 committed,
                 dispatched_before,
                 platforms,
+                maybe_started,
             } => {
                 r.resumed += 1;
                 if intents.contains_key(&spec.id) {
@@ -2358,6 +2379,7 @@ fn replay_inner<S: AsRef<str>>(
                     committed: committed.clone(),
                     dispatched_before: *dispatched_before,
                     platforms: platforms.clone(),
+                    maybe_started: maybe_started.clone(),
                 };
                 if !queue::queueable(spec.kind())
                     || !matches!(state, State::Queued | State::Dispatched)
@@ -2385,6 +2407,7 @@ fn replay_inner<S: AsRef<str>>(
                 tr.committed = committed.iter().cloned().collect();
                 tr.dispatched_before = *dispatched_before;
                 tr.platforms = platforms.clone();
+                tr.maybe_started = maybe_started.iter().cloned().collect();
                 if let (Some(pol), Some(by_kind)) = (&policy, *expires_t) {
                     let cfg = pol.queue();
                     // not queued there: its kind's wait from the approval
@@ -2478,6 +2501,9 @@ fn replay_inner<S: AsRef<str>>(
                 }
                 if queue::committed_op(state) {
                     tr.committed.insert(uid.clone());
+                }
+                if queue::maybe_started_op(state) {
+                    tr.maybe_started.insert(uid.clone());
                 }
                 tr.ops.insert(uid.clone(), state.clone());
             }
@@ -2578,6 +2604,7 @@ fn replay_inner<S: AsRef<str>>(
                 committed: t.committed.iter().cloned().collect(),
                 dispatched_before: t.dispatched_before,
                 platforms: t.platforms.clone(),
+                maybe_started: t.maybe_started.iter().cloned().collect(),
             })
         })
         .collect();
@@ -2671,6 +2698,7 @@ fn check_resumed(r: &mut ReplayReport, resumed: &[ResumedEvent], opts: &ReplayOp
             &open.approval,
             &open.ops,
             (&open.committed, open.dispatched_before, &open.platforms),
+            &open.maybe_started,
         );
         let there = (
             &was.spec,
@@ -2679,6 +2707,7 @@ fn check_resumed(r: &mut ReplayReport, resumed: &[ResumedEvent], opts: &ReplayOp
             &was.approval,
             &was.ops,
             (&was.committed, was.dispatched_before, &was.platforms),
+            &was.maybe_started,
         );
         if carried != there {
             push(r, *seq, id, "carried over differently from how the previous log leaves it", json(&carried), json(&there));
@@ -3191,6 +3220,7 @@ fn check_waiting(
                 &t.spec,
                 t.state,
                 t.basis.as_ref().is_some_and(|b| b.by_human),
+                !t.committed.is_empty(),
             )
         }),
         &tr.spec,

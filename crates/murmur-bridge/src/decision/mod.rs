@@ -336,6 +336,8 @@ struct Core {
     follow: BTreeMap<IntentId, queue::PendingFollow>,
     /// the open intents last written to the pointer file, and when
     pointer_written: Option<(Vec<u64>, f64)>,
+    /// the fleet identity last written beside the log
+    fleet_written: Option<queue::FleetIdentity>,
 }
 
 /// `operator.view` events an operator may log: a burst of this many, refilled at
@@ -368,6 +370,8 @@ pub struct Decision {
     queue_cfg: murmur_decide::QueueConfig,
     /// The pointer file this run keeps ([`queue`]), if any (set once by [`Decision::load`]).
     pointer: std::sync::OnceLock<PathBuf>,
+    /// The fleet identity file beside the audit log (set once by [`Decision::load`]).
+    fleet_file: std::sync::OnceLock<PathBuf>,
 }
 
 /// Everything [`Decision::from_parts`] needs (tests pass a memory sink and a manual clock).
@@ -433,21 +437,49 @@ impl Decision {
         if let Some(p) = &s.pointer {
             let _ = d.pointer.set(p.clone());
         }
+        let _ = d.fleet_file.set(queue::fleet_file(&s.audit));
         // the previous run's open intents (queued, approved, under way), carried over
         if let Some(prev) = queue::previous_log(&s.resume, s.pointer.as_deref(), &s.audit) {
             let name = prev
                 .file_name()
                 .map_or_else(|| prev.display().to_string(), |n| n.to_string_lossy().into_owned());
-            // its anchors, where this run keeps its own (`<dir>/<log stem>.anchors`)
+            // its anchors, where this run keeps its own (`<dir>/<log stem>.anchors`), and the
+            // fleet it had (`<log>.fleet.json`): without either, nothing is carried unless
+            // MURMUR_RESUME_UNVERIFIED=1 says to go without
             let anchors = s.anchors.as_ref().and_then(|cfg| {
                 let stem = prev.file_stem()?.to_string_lossy().into_owned();
                 let file = cfg.path.parent()?.join(format!("{stem}.anchors"));
                 std::fs::read_to_string(file).ok()
             });
-            match std::fs::read_to_string(&prev)
-                .map_err(|e| format!("{}: {e}", prev.display()))
-                .and_then(|text| d.carry_over(&name, &text, anchors.as_deref()))
-            {
+            let fleet = std::fs::read(queue::fleet_file(&prev))
+                .ok()
+                .and_then(|b| serde_json::from_slice::<queue::FleetIdentity>(&b).ok());
+            let unverified = std::env::var("MURMUR_RESUME_UNVERIFIED").as_deref() == Ok("1");
+            let missing: Vec<&str> = [
+                anchors.is_none().then_some("its anchor file"),
+                fleet.is_none().then_some("its fleet identity"),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            let check = queue::CarryCheck { anchors, fleet };
+            let run = if missing.is_empty() || unverified {
+                if !missing.is_empty() {
+                    eprintln!(
+                        "decision: {name}: carried over without {} (MURMUR_RESUME_UNVERIFIED=1)",
+                        missing.join(" or ")
+                    );
+                }
+                std::fs::read_to_string(&prev)
+                    .map_err(|e| format!("{}: {e}", prev.display()))
+                    .and_then(|text| d.carry_over(&name, &text, &check))
+            } else {
+                Err(format!(
+                    "{name}: {} can't be read, so it can't be checked: nothing carried over (MURMUR_RESUME_UNVERIFIED=1 carries it over unchecked)",
+                    missing.join(" and ")
+                ))
+            };
+            match run {
                 Ok(ids) if ids.is_empty() => {}
                 Ok(ids) => println!(
                     "decision: carried {} open intent(s) over from {name}: {}",
@@ -524,12 +556,14 @@ impl Decision {
                 view_budget: BTreeMap::new(),
                 follow: BTreeMap::new(),
                 pointer_written: None,
+                fleet_written: None,
             }),
             updates: watch::channel(Arc::new(String::new())).0,
             recent: agent::RecentEvents::default(),
             space: std::sync::RwLock::new(None),
             queue_cfg,
             pointer: std::sync::OnceLock::new(),
+            fleet_file: std::sync::OnceLock::new(),
         });
         d.publish();
         Ok(d)
@@ -1352,6 +1386,7 @@ impl Decision {
             self.follow_space(core);
             self.step_engagements(core);
             self.write_pointer(core);
+            self.write_fleet(core);
         }
         self.publish();
     }
@@ -1501,7 +1536,12 @@ impl Decision {
                 run.reported.insert(op.id, key);
             }
             if snap.ops.iter().all(|o| o.state.is_terminal()) {
-                if !snap.ops.is_empty() && snap.ops.iter().all(|o| o.state == OpState::Requeued) {
+                if !snap.ops.is_empty()
+                    && snap
+                        .ops
+                        .iter()
+                        .all(|o| matches!(o.state, OpState::Requeued | OpState::Unconfirmed))
+                {
                     requeued.push(*id);
                     continue;
                 }

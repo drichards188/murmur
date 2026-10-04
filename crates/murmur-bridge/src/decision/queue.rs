@@ -82,6 +82,32 @@ pub struct Pointer {
     pub pid: u32,
 }
 
+/// A vehicle as this run's fleet names it (the manifest; a connected vehicle's own identity
+/// and home): what an order carried over a restart must find again under its uid. Written
+/// beside the audit log (`<log>.fleet.json`) as the run goes.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct VehicleIdentity {
+    pub platform: Option<String>,
+    pub callsign: Option<String>,
+    /// Its home, [lat, lon]: the manifest's spawn point, or where it reported its home.
+    pub home: Option<[f64; 2]>,
+}
+
+/// The fleet a run had, by uid.
+pub type FleetIdentity = BTreeMap<Uid, VehicleIdentity>;
+
+/// Two homes this close are the same vehicle's (a respawn of the same fleet), m.
+pub const HOME_TOLERANCE_M: f64 = 200.0;
+
+/// What a carry-over is checked against besides the log itself: the previous log's anchor
+/// file and its fleet identity. `None`: not checked (the caller decided: tests, or
+/// `MURMUR_RESUME_UNVERIFIED=1`).
+#[derive(Debug, Clone, Default)]
+pub struct CarryCheck {
+    pub anchors: Option<String>,
+    pub fleet: Option<FleetIdentity>,
+}
+
 /// A resumed intent some vehicle had started, waiting for its vehicles to connect before
 /// the follow tasking starts.
 pub(super) struct PendingFollow {
@@ -110,16 +136,19 @@ impl Decision {
     }
 
     /// A vehicle intent the engine approved: dispatched to its vehicles if the link can carry
-    /// it to each, else queued (older queued orders on those vehicles are voided).
+    /// it to each, else queued (older queued orders on those vehicles are voided). One sent
+    /// before (a human approved it again after it came back to the inbox) is delivered
+    /// asking each vehicle what it holds first, as from the queue.
     pub(super) fn dispatch_vehicles(
         &self,
         core: &mut Core,
         id: IntentId,
     ) -> Result<(), DecisionError> {
         let world = self.snapshot();
+        let resume = core.engine.intent(id).map(resume_modes).unwrap_or_default();
         match core.engine.dispatch_or_queue(id, &world).map_err(engine_err)? {
             Routed::Dispatched(Order::Vehicles(released)) => {
-                self.run_order(core, id, released, &HashMap::new());
+                self.run_order(core, id, released, &resume);
                 Ok(())
             }
             Routed::Dispatched(_) => Err(DecisionError::new(
@@ -311,9 +340,9 @@ impl Decision {
         &self,
         name: &str,
         text: &str,
-        anchors: Option<&str>,
+        check: &CarryCheck,
     ) -> Result<Vec<IntentId>, String> {
-        if let Some(a) = anchors
+        if let Some(a) = &check.anchors
             && let Some(why) = anchors_refuse(text, a)
         {
             return Err(format!(
@@ -339,13 +368,20 @@ impl Decision {
         }
         let head = report.head_sha256.clone().unwrap_or_default();
         let platforms = self.fleet_platforms();
+        let fleet_now = self.fleet_identity();
         let mut carried = Vec::new();
         {
             let mut guard = self.lock();
             let core = &mut *guard;
             core.engine.reserve_ids(report.next_intent);
             for open in &report.open {
-                if let Some(why) = refuse_carry(open, &platforms, &self.operators) {
+                let why = refuse_carry(open, &platforms, &self.operators).or_else(|| {
+                    check
+                        .fleet
+                        .as_ref()
+                        .and_then(|was| other_vehicle(&open.spec.uids, was, &fleet_now))
+                });
+                if let Some(why) = why {
                     eprintln!("decision: {} not carried over: {why}", open.spec.id);
                     continue;
                 }
@@ -403,6 +439,57 @@ impl Decision {
         out
     }
 
+    /// This run's fleet as it stands: the manifest's entries (platform, callsign, spawn
+    /// point), and a connected vehicle's own identity and reported home where the manifest
+    /// has none.
+    pub fn fleet_identity(&self) -> FleetIdentity {
+        let mut out: FleetIdentity = self
+            .world
+            .manifest()
+            .identities
+            .iter()
+            .map(|(uid, i)| (*uid, identity_of(i, None)))
+            .collect();
+        // at start the bridge has not read the manifest yet
+        if out.is_empty()
+            && let Some(data) = std::fs::read(&self.world.cfg.manifest)
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        {
+            let (m, _) = crate::world::Manifest::parse(&data);
+            for (uid, i) in &m.identities {
+                out.insert(*uid, identity_of(i, None));
+            }
+        }
+        for cell in self.world.vehicles() {
+            let (identity, home) = cell.read(|v| (v.identity.clone(), v.home));
+            let now = identity_of_opt(identity.as_deref(), home);
+            let e = out.entry(cell.uid).or_insert_with(|| now.clone());
+            e.platform = e.platform.clone().or(now.platform);
+            e.callsign = e.callsign.clone().or(now.callsign);
+            e.home = e.home.or(now.home);
+        }
+        out
+    }
+
+    /// Keep the fleet identity beside the audit log (`<log>.fleet.json`) as it changes: what
+    /// a next run checks a carried-over order's vehicles against.
+    pub(super) fn write_fleet(&self, core: &mut Core) {
+        let Some(path) = self.fleet_file.get() else {
+            return;
+        };
+        let fleet = self.fleet_identity();
+        if core.fleet_written.as_ref() == Some(&fleet) {
+            return;
+        }
+        let json = serde_json::to_vec_pretty(&fleet).unwrap_or_default();
+        let tmp = path.with_extension("tmp");
+        match std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, path)) {
+            Ok(()) => core.fleet_written = Some(fleet),
+            Err(e) => eprintln!("decision: {}: {e}", path.display()),
+        }
+    }
+
     /// Each tick: resumed intents a vehicle had started get their follow tasking once all
     /// their vehicles are connected; one whose vehicles don't connect within the kind's wait
     /// ends failed.
@@ -441,6 +528,7 @@ impl Decision {
                 continue;
             }
             let committed = intent.committed().clone();
+            let maybe_started = intent.maybe_started().clone();
             let Some(pending) = core.follow.get(&id) else {
                 continue;
             };
@@ -461,11 +549,13 @@ impl Decision {
                 .uids
                 .iter()
                 .filter_map(|u| {
-                    // started (in any run before: the set is sticky) and not ended: followed
+                    // started (in any run before: the set is sticky) and not ended: followed;
+                    // its start went out unconfirmed: followed only if the vehicle runs it
                     let mode = match pending.ops.get(u).map(String::as_str) {
                         Some(s) if dq::committed_op(s) => Resume::Adopt,
-                        Some(s) if dq::ended_op(s) => Resume::Ended,
                         _ if committed.contains(u) => Resume::Adopt,
+                        _ if maybe_started.contains(u) => Resume::Confirm,
+                        Some(s) if dq::ended_op(s) => Resume::Ended,
                         _ => Resume::Undelivered,
                     };
                     Some((bridge_uid(u)?, mode))
@@ -520,9 +610,11 @@ impl Decision {
     }
 }
 
-/// How a dequeued intent's ops deliver it: one dispatched before (in this run, before its
-/// link was lost, or in a run before a restart; never started, or it would not be queued) may
-/// be on the vehicle already, so each op asks the vehicle what it holds first.
+/// How an intent dispatched before (in this run, before its link was lost, or in a run
+/// before a restart; and now out of the queue, or approved again in the inbox) is delivered:
+/// each op asks its vehicle what it holds first (`Verify`); where its start went out and
+/// nothing confirmed it, it is only followed if the vehicle runs it (`Confirm`: never
+/// started again on its own). The engine's `confirming` set is the same.
 fn resume_modes(intent: &Intent) -> HashMap<Uid, Resume> {
     if !intent.dispatched_before() {
         return HashMap::new();
@@ -531,7 +623,14 @@ fn resume_modes(intent: &Intent) -> HashMap<Uid, Resume> {
         .spec()
         .uids
         .iter()
-        .filter_map(|u| Some((bridge_uid(u)?, Resume::Verify)))
+        .filter_map(|u| {
+            let mode = if intent.maybe_started().contains(u) {
+                Resume::Confirm
+            } else {
+                Resume::Verify
+            };
+            Some((bridge_uid(u)?, mode))
+        })
         .collect()
 }
 
@@ -573,6 +672,80 @@ fn refuse_carry(
     None
 }
 
+/// A manifest identity as a [`VehicleIdentity`]; its home from the manifest's spawn point
+/// (`home`: [lat, lon, alt, heading]), else `reported`.
+fn identity_of(i: &crate::vehicle::Identity, reported: Option<(f64, f64)>) -> VehicleIdentity {
+    let spawn = i.0.get("home").and_then(Value::as_array).and_then(|a| {
+        Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?])
+    });
+    VehicleIdentity {
+        platform: i.str("platform").map(str::to_string),
+        callsign: i.str("callsign").map(str::to_string),
+        home: spawn.or(reported.map(|(la, lo)| [la, lo])),
+    }
+}
+
+fn identity_of_opt(
+    i: Option<&crate::vehicle::Identity>,
+    reported: Option<(f64, f64)>,
+) -> VehicleIdentity {
+    match i {
+        Some(i) => identity_of(i, reported),
+        None => VehicleIdentity {
+            platform: None,
+            callsign: None,
+            home: reported.map(|(la, lo)| [la, lo]),
+        },
+    }
+}
+
+/// Why the vehicles under an order's uids in this run are not the ones of the run it comes
+/// from, if they are not: another platform or callsign, or a home farther than
+/// [`HOME_TOLERANCE_M`] (another vehicle of the same type elsewhere); or one side does not
+/// say (it can't be told the same).
+fn other_vehicle(
+    uids: &[murmur_decide::Uid],
+    was: &FleetIdentity,
+    now: &FleetIdentity,
+) -> Option<String> {
+    for u in uids {
+        let Some(b) = bridge_uid(u) else {
+            return Some(format!("vehicle {u} is not a fleet uid"));
+        };
+        let (Some(w), Some(n)) = (was.get(&b), now.get(&b)) else {
+            return Some(format!(
+                "vehicle {u} is not in both runs' fleets (the previous run's fleet identity, this run's manifest)"
+            ));
+        };
+        if w.platform != n.platform || w.callsign != n.callsign {
+            return Some(format!(
+                "vehicle {u} was {} ({}), is {} ({}) in this run's fleet",
+                w.callsign.as_deref().unwrap_or("?"),
+                w.platform.as_deref().unwrap_or("?"),
+                n.callsign.as_deref().unwrap_or("?"),
+                n.platform.as_deref().unwrap_or("?"),
+            ));
+        }
+        match (w.home, n.home) {
+            (Some(a), Some(c)) => {
+                let d = crate::geo::haversine_m(a[0], a[1], c[0], c[1]);
+                if d > HOME_TOLERANCE_M {
+                    return Some(format!(
+                        "vehicle {u} ({}) has its home {d:.0} m from the previous run's: another vehicle",
+                        n.callsign.as_deref().unwrap_or("?")
+                    ));
+                }
+            }
+            _ => {
+                return Some(format!(
+                    "vehicle {u}: no home position on one side, so it can't be told the same vehicle"
+                ));
+            }
+        }
+    }
+    None
+}
+
 fn write_atomic(path: &Path, p: &Pointer) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -602,6 +775,11 @@ pub fn previous_log(from: &ResumeFrom, pointer: Option<&Path>, ours: &Path) -> O
             (fresh && !writer_alive && p.log != ours && p.log.exists()).then_some(p.log)
         }
     }
+}
+
+/// The fleet identity file beside an audit log: `<log>.fleet.json`.
+pub fn fleet_file(log: &Path) -> PathBuf {
+    log.with_extension("fleet.json")
 }
 
 /// Delete the pointer file if it names `ours` (a clean shutdown: nothing is left to carry

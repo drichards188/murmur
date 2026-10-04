@@ -18,13 +18,16 @@ import { isStale } from './types'
  *    or at the vehicle for a mode (hold, rtl). The path itself is MapView's tasking line:
  *    dashed until the vehicle is seen executing it, solid after;
  *  - an order carried over a bridge restart that a vehicle had started, waiting for its
- *    vehicles to connect: "RESUMED ... waiting for the vehicle; followed, not sent again".
+ *    vehicles to connect: "RESUMED ... waiting for the vehicle; followed, not sent again";
+ *  - an order whose start went out before the link was lost, unconfirmed, and no longer in
+ *    force (voided, queued, in the inbox): "MAY BE RUNNING", its tasking line kept.
  *
  *  Drawn at ground level in both views, over terrain. */
 
 type RGBA = [number, number, number, number]
 const QUEUED: RGBA = [242, 193, 78, 235]
 const ORDERED: RGBA = [127, 184, 255, 235]
+const MAYBE: RGBA = [255, 128, 96, 240]
 const TEXT: RGBA = [235, 239, 244, 255]
 const OUTLINE: RGBA = [11, 15, 20, 255]
 const FONT = 'IBM Plex Mono, ui-monospace, monospace'
@@ -110,7 +113,12 @@ function shownAt(v: Vehicle, nowMs: number): LngLat | null {
 
 /** An op state in words for a label (the op's own "queued" is a wait for a position fix,
  *  not the decision queue). */
-const OP_WORDS: Record<string, string> = { queued: 'waiting for a fix', sent: 'sent', acked: 'accepted' }
+const OP_WORDS: Record<string, string> = {
+  queued: 'waiting for a fix',
+  sent: 'sent',
+  starting: 'start sent',
+  acked: 'accepted',
+}
 
 function shortReason(i: Intent): string {
   const r = (i.reach_now ?? i.queue?.reach ?? []).find((x) => !x.reachable)
@@ -157,7 +165,7 @@ export function buildOrderLayers(input: OrderInput, _view: ViewMode) {
     if (i.state !== 'dispatched' || i.tasking_id == null) continue
     const t = byId.get(i.tasking_id)
     if (!t) continue
-    const waiting = t.ops.filter((o) => ['queued', 'sent', 'acked'].includes(o.state))
+    const waiting = t.ops.filter((o) => ['queued', 'sent', 'starting', 'acked'].includes(o.state))
     if (waiting.length === 0) continue
     const at = anchorOf(i, input.vehicles)
     if (!at) continue
@@ -168,6 +176,15 @@ export function buildOrderLayers(input: OrderInput, _view: ViewMode) {
       text: `ORDERED i${i.id} ${i.kind} · not yet confirmed (${lost ? 'link lost, waiting' : states})`,
       color: ORDERED,
     })
+  }
+  // its start went out and nothing confirmed it, and its intent is no longer dispatched
+  // (voided, back to the queue or the inbox): it may be running all the same
+  for (const i of input.intents) {
+    if (i.state === 'dispatched' || i.tasking_id == null) continue
+    const t = byId.get(i.tasking_id)
+    if (!t || !t.ops.some((o) => o.state === 'unconfirmed' && !o.detail.includes('does not run it now'))) continue
+    const at = anchorOf(i, input.vehicles)
+    if (at) labels.push({ at, text: `MAY BE RUNNING i${i.id} ${i.kind} · its start went out unconfirmed (${i.state})`, color: MAYBE })
   }
   const tick = Math.floor(input.nowMs / 1000)
   return [

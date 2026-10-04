@@ -16,11 +16,16 @@
 //!   armed; the mission's current item) came back within the link's timeout: an ACK lost on
 //!   the way back does not make the vehicle execute it twice. After MAV_RESULT_IN_PROGRESS it
 //!   is never sent again: the op waits for the final answer, or fails.
-//! - A link that goes silent before the vehicle started the order (nothing heard for its
-//!   lost-link time) ends the op `requeued` when the order came through the queue's policy
+//! - A link that goes silent before the start went out (nothing heard for its lost-link
+//!   time) ends the op `requeued` when the order came through the queue's policy
 //!   (`requeue`): the decision layer puts the order back in the queue, where it is re-checked
 //!   on the world when the link is back, like any queued order, and then delivered with
-//!   `Resume::Verify`. Otherwise (rules before 5, a kind the policy never queues) the op fails.
+//!   `Resume::Verify`. Once the start went out (the op `starting`: the mission mode, the hold
+//!   or rtl mode, or a new mission to a vehicle already flying one) a lost link ends it
+//!   `unconfirmed`: the vehicle may run it. The order goes back to the queue too, and its next
+//!   delivery there is `Resume::Confirm`: followed if the vehicle runs it, never started
+//!   again on its own if it doesn't (the op ends `unconfirmed` again and a human decides).
+//!   Otherwise (rules before 5, a kind the policy never queues) the op fails.
 //! - An op told the vehicle may hold its order already (`Resume::Verify`: it was sent before a
 //!   lost link or a bridge restart, not started) asks the vehicle what it holds and runs (a
 //!   full mission download, compared item by item: command, frame, position, altitude,
@@ -75,6 +80,10 @@ pub enum Resume {
     /// The vehicle had started it before a bridge restart: follow it while it still runs it;
     /// otherwise the op ends (it is never sent again).
     Adopt,
+    /// Its start went out before the link was lost (or the bridge stopped) and nothing
+    /// confirmed it: the vehicle may run it. Follow it if it does; otherwise the op ends
+    /// `unconfirmed`, nothing sent, and a human decides whether to start it again.
+    Confirm,
     /// Another vehicle of the order had started it before a bridge restart, this one had not
     /// been sent it: it is not sent now (the op ends, failed, saying so).
     Undelivered,
@@ -93,6 +102,9 @@ enum Stop {
     /// The vehicle answered MAV_RESULT_IN_PROGRESS and never finished: the op fails, and no
     /// retry loop (mode change, arming) asks it again.
     Unfinished(String),
+    /// `Resume::Confirm`: the vehicle does not run the order that may have started: nothing
+    /// is sent, a human decides.
+    NotRunning(String),
 }
 
 type Result<T = ()> = std::result::Result<T, Stop>;
@@ -137,18 +149,42 @@ pub fn spawn(ctx: OpCtx) {
 async fn run(ctx: OpCtx) {
     match run_inner(&ctx).await {
         Ok(()) => {}
-        Err(Stop::Failed(why) | Stop::Unfinished(why)) => {
+        Err(Stop::Failed(why)) => {
             ctx.op.set(OpState::Failed, why);
         }
+        Err(Stop::NotRunning(why)) => {
+            ctx.op.set(OpState::Unconfirmed, why);
+        }
+        Err(Stop::Unfinished(why)) => {
+            // in progress once its start had gone out: it may be running
+            if ctx.requeue && ctx.op.state() == OpState::Starting {
+                ctx.op.set(
+                    OpState::Unconfirmed,
+                    format!("{why}: it may be running; back to the queue, and its next delivery only follows it if the vehicle runs it"),
+                );
+            } else {
+                ctx.op.set(OpState::Failed, why);
+            }
+        }
         Err(Stop::LinkLost(what)) => {
-            // not started yet: the order goes back to the queue, re-checked there before it
-            // is sent again; once started (or adopted), or with no queue, the op failed
-            let unstarted = matches!(ctx.op.state(), OpState::Queued | OpState::Sent);
-            if ctx.requeue && unstarted && ctx.resume != Resume::Adopt {
+            // before the start went out: the order goes back to the queue, re-checked there
+            // before it is sent again; after it, it may be running: back to the queue too,
+            // followed next time only if the vehicle runs it; once confirmed (or adopted), or
+            // with no queue, the op failed
+            let st = ctx.op.state();
+            let queue = ctx.requeue && ctx.resume != Resume::Adopt;
+            if queue && matches!(st, OpState::Queued | OpState::Sent) {
                 ctx.op.set(
                     OpState::Requeued,
                     format!(
                         "link lost {what}: back to the queue, re-checked before it is sent again"
+                    ),
+                );
+            } else if queue && st == OpState::Starting {
+                ctx.op.set(
+                    OpState::Unconfirmed,
+                    format!(
+                        "link lost {what}, after its start went out: it may be running; back to the queue, and its next delivery only follows it if the vehicle runs it"
                     ),
                 );
             } else {
@@ -1026,10 +1062,14 @@ impl Task<'_> {
     /// vehicle what it holds first.
     async fn deliver_mission(&self, items: &[Item], known: OnVehicle) -> Result {
         if known != OnVehicle::Stored {
-            self.op().set(
-                OpState::Sent,
-                format!("uploading {} mission items", items.len()),
-            );
+            let detail = format!("uploading {} mission items", items.len());
+            // a vehicle flying a mission takes the new items as they arrive: the upload is
+            // its start
+            if self.in_mission_mode() {
+                self.mark_starting(&format!("{detail} to a vehicle flying its mission"))?;
+            } else {
+                self.op().set(OpState::Sent, detail);
+            }
             self.upload_mission(items).await?;
         }
         self.start_mission().await
@@ -1044,11 +1084,48 @@ impl Task<'_> {
             MavMessage::HIGH_LATENCY2(h) => h.wp_num == 1,
             _ => false,
         };
+        // already in its mission mode: arming (or moving the current item) starts it
+        if self.in_mission_mode_any() {
+            self.mark_starting("starting mission (already in its mission mode)")?;
+        }
         self.command_long(apm::MavCmd::MAV_CMD_DO_SET_MISSION_CURRENT, &[1.0], first)
             .await?;
         self.ensure_armed().await?;
+        self.mark_starting("starting mission: mission mode commanded")?;
         self.set_mode(self.caps.auto).await?;
         Ok(())
+    }
+
+    /// Armed and in its mission mode: flying a mission (any).
+    fn in_mission_mode(&self) -> bool {
+        let auto = self.auto_mode();
+        self.v()
+            .read(|s| s.armed && auto.is_some() && s.custom_mode == auto)
+    }
+
+    /// In its mission mode, armed or not.
+    fn in_mission_mode_any(&self) -> bool {
+        let auto = self.auto_mode();
+        self.v().read(|s| auto.is_some() && s.custom_mode == auto)
+    }
+
+    /// The start goes out next: from here a lost link means the vehicle may run the order
+    /// (the op `starting`). Nothing is sent when the op ended meanwhile (abandoned, replaced).
+    fn mark_starting(&self, detail: &str) -> Result {
+        match self.op().state() {
+            OpState::Starting | OpState::Acked | OpState::Active => {
+                self.op().narrate(detail);
+                Ok(())
+            }
+            s if s.is_terminal() => fail(format!("ended before its start went out ({s:?})")),
+            _ => {
+                if self.op().set(OpState::Starting, detail) {
+                    Ok(())
+                } else {
+                    fail("ended before its start went out")
+                }
+            }
+        }
     }
 
     async fn run_mission(
@@ -1064,16 +1141,25 @@ impl Task<'_> {
                 self.deliver_mission(&items, OnVehicle::Other).await?;
                 false
             }
-            Resume::Verify | Resume::Adopt => {
+            Resume::Verify | Resume::Adopt | Resume::Confirm => {
                 let held = self.held_already(&candidates).await?;
+                let what = if held == OnVehicle::Stored {
+                    "mission still held"
+                } else {
+                    "another mission"
+                };
+                let mode = self.v().read(|s| s.mode.clone()).unwrap_or_default();
                 match (held, self.ctx.resume) {
                     (OnVehicle::Running, _) => true,
                     (_, Resume::Adopt) => {
-                        let mode = self.v().read(|s| s.mode.clone()).unwrap_or_default();
                         return fail(format!(
-                            "after the bridge restart the vehicle no longer runs it (mode {mode}, {}): it had started it, so it is not sent again",
-                            if held == OnVehicle::Stored { "mission still held" } else { "another mission" }
+                            "after the bridge restart the vehicle no longer runs it (mode {mode}, {what}): it had started it, so it is not sent again",
                         ));
+                    }
+                    (_, Resume::Confirm) => {
+                        return Err(Stop::NotRunning(format!(
+                            "it may have started before its link was lost, and does not run it now (mode {mode}, {what}): not started again; a human decides"
+                        )));
                     }
                     // held, not started: only the start goes; else the whole order
                     (h, _) => {
@@ -1244,20 +1330,26 @@ impl Task<'_> {
     /// After a bridge restart, for an order that is a mode (hold, rtl): whether the vehicle
     /// is in it. An order it had started (Adopt) and no longer is in ends here.
     fn mode_after_restart(&self, number: u32, what: &str) -> Result<bool> {
-        if !matches!(self.ctx.resume, Resume::Verify | Resume::Adopt) {
+        if !matches!(
+            self.ctx.resume,
+            Resume::Verify | Resume::Adopt | Resume::Confirm
+        ) {
             return Ok(false);
         }
         let (now, name) = self.v().read(|s| (s.custom_mode, s.mode.clone()));
         if now == Some(number) {
             return Ok(true);
         }
-        if self.ctx.resume == Resume::Adopt {
-            return fail(format!(
-                "after the bridge restart the vehicle is no longer {what} (mode {}): it had started it, so it is not sent again",
-                name.unwrap_or_default()
-            ));
+        let name = name.unwrap_or_default();
+        match self.ctx.resume {
+            Resume::Adopt => fail(format!(
+                "after the bridge restart the vehicle is no longer {what} (mode {name}): it had started it, so it is not sent again"
+            )),
+            Resume::Confirm => Err(Stop::NotRunning(format!(
+                "it may have started before its link was lost, and is not {what} now (mode {name}): not commanded again; a human decides"
+            ))),
+            _ => Ok(false),
         }
-        Ok(false)
     }
 
     async fn rtl(&self) -> Result {
@@ -1295,7 +1387,7 @@ impl Task<'_> {
                 n
             }
             _ => {
-                self.op().set(OpState::Sent, "commanding RTL");
+                self.mark_starting("commanding RTL")?;
                 let mode = self.set_mode(rtl).await?;
                 self.op().set(OpState::Acked, "accepted");
                 mode
@@ -1322,8 +1414,7 @@ impl Task<'_> {
             );
             return Ok(());
         }
-        self.op()
-            .set(OpState::Sent, format!("commanding {}", self.caps.hold));
+        self.mark_starting(&format!("commanding {}", self.caps.hold))?;
         let mode = self.set_mode(self.caps.hold).await?;
         self.op().set(OpState::Acked, "accepted");
         self.wait_mode(mode).await?;
@@ -1380,7 +1471,11 @@ impl Task<'_> {
                 "tracker did not confirm SYSID_TARGET".into(),
             );
         }
+        if self.in_mission_mode_any() {
+            self.mark_starting("arming in AUTO")?;
+        }
         self.ensure_armed().await?;
+        self.mark_starting("AUTO commanded")?;
         let auto = self.set_mode(self.caps.auto).await?;
         self.op().set(OpState::Acked, "accepted");
         self.wait_mode(auto).await?;

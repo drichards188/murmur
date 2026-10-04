@@ -78,11 +78,15 @@ meaningful. Decision and command, not weapons.
 - Rules 5 queue: an order for a vehicle the link can't carry it to now waits in the Queue
   (console button; `GET /api/inbox` `queued`), it is not an error; one whose link drops
   before the vehicle started it comes back there (`intent.requeued`). A human's approval is
-  held 120 s at most (`[queue] human_expire_s`), then back to the inbox. Open intents carry
-  into the next run only after a crash (the pointer `logs/audit/.resume-<port>.json` that a
-  clean stop, `make down`, deletes; within 15 min) or with `MURMUR_RESUME=<log>`, onto the
-  same platforms under the same uids; replay such a log with its predecessor beside it (or
-  `murmur-replay --prev`). `MURMUR_RESUME=0` turns it off.
+  held 120 s at most (`[queue] human_expire_s`), then back to the inbox. An order whose start
+  went out unconfirmed (op `unconfirmed`) may be running: it is only followed if the vehicle
+  runs it, else a human decides; a vehicle that runs one no longer in force raises a
+  `may_be_running` alert. Open intents carry into the next run only after a crash (the
+  pointer `logs/audit/.resume-<port>.json` that a clean stop, `make down`, deletes; within 15
+  min) or with `MURMUR_RESUME=<log>`, onto the same vehicles (platform, callsign, home within
+  200 m, from `<log>.fleet.json`) and a log matching its anchors; without those files nothing
+  carries unless `MURMUR_RESUME_UNVERIFIED=1`. Replay such a log with its predecessor beside
+  it (or `murmur-replay --prev`). `MURMUR_RESUME=0` turns it off.
 - The bridge's task-layer timeouts follow each link's measured round trip (`LinkTiming` in
   `crates/murmur-bridge/src/link.rs`; floors 1 s per ACK, 1.5 s per mission item, as before on
   fast links) and its telemetry plan follows the link class (`crates/murmur-bridge/src/

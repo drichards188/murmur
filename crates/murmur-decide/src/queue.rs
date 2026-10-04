@@ -21,7 +21,10 @@
 //! back to the inbox instead ([`QueueConfig::bound`]). Safety commands get a short queue or
 //! none (`[queue.kind.hold] expire_s`; 0 = never queued: dispatched at once whatever the
 //! link, as before). A dispatched order whose link was lost before any vehicle started it
-//! comes back to the queue (`intent.requeued`, op state [`REQUEUED_OP`]); an older queued
+//! comes back to the queue (`intent.requeued`, op state [`REQUEUED_OP`]). One whose start had
+//! gone out when its link was lost ([`STARTING_OP`], then [`UNCONFIRMED_OP`]) may be running:
+//! it comes back too, and its next delivery only follows it if the vehicle runs it; one the
+//! vehicle does not run is never started again on its own, it goes to a human. An older queued
 //! order never goes over a newer one for the same vehicle (the engine voids it).
 //!
 //! Everything here is a pure function of logged facts, so replay recomputes it.
@@ -582,6 +585,11 @@ pub struct OpenIntent {
     /// only onto the same platforms under those uids.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub platforms: BTreeMap<Uid, String>,
+    /// The vehicles that may have started it: its start went out (op `starting`) and nothing
+    /// confirmed it before the link was lost (or the bridge stopped). Its next delivery there
+    /// only follows it if the vehicle runs it; otherwise a human decides.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub maybe_started: Vec<Uid>,
 }
 
 impl OpenIntent {
@@ -610,8 +618,40 @@ pub fn committed_op(state: &str) -> bool {
 
 /// Op states an op ends in.
 pub fn ended_op(state: &str) -> bool {
-    matches!(state, "done" | "failed" | "superseded" | REQUEUED_OP)
+    matches!(
+        state,
+        "done" | "failed" | "superseded" | REQUEUED_OP | UNCONFIRMED_OP
+    )
 }
+
+/// The vehicles a delivery only confirmed (`confirming`: the order may have started there)
+/// whose op ended `unconfirmed`: they do not run it, so a human decides.
+pub fn confirm_failed(
+    confirming: &std::collections::BTreeSet<Uid>,
+    ops: &BTreeMap<Uid, String>,
+) -> Vec<Uid> {
+    confirming
+        .iter()
+        .filter(|u| ops.get(*u).map(String::as_str) == Some(UNCONFIRMED_OP))
+        .cloned()
+        .collect()
+}
+
+/// Op states that say the order's start went out to the vehicle and nothing confirmed it:
+/// the vehicle may have started it.
+pub fn maybe_started_op(state: &str) -> bool {
+    matches!(state, STARTING_OP | UNCONFIRMED_OP)
+}
+
+/// The op state of an op whose start went out (the mission mode, the hold or rtl mode, or a
+/// new mission to a vehicle already flying one): from here a lost link means it may have
+/// started.
+pub const STARTING_OP: &str = "starting";
+
+/// The op state of an op that ended with its start unconfirmed (rules 5): the link was lost
+/// after the start went out, or a later delivery found the vehicle not running it. The order
+/// goes back to the queue (with the first) or to a human (with the second).
+pub const UNCONFIRMED_OP: &str = "unconfirmed";
 
 /// The op state of an op whose link was lost before the vehicle started the order (rules 5):
 /// it ends, and when every op of the order ended so, the order goes back to the queue

@@ -532,6 +532,22 @@ group. Dates are 2026.
   outage. Copters arm in GUIDED (not BRAKE). A command answered IN_PROGRESS is never sent
   again. Replay rejects a re-check at or after its deadline, a dispatch not right after its
   re-check, and (rules 5) a direct dispatch without the reach that allowed it.
+- **A start that went out unconfirmed may be running; it is never started again on its own**
+  (10-04, second review of the queue). An ACK lost after the vehicle took the mission mode
+  left the op looking unstarted, so a later delivery restarted a mission the vehicle's
+  failsafe had stopped. The op now marks the moment its start goes out (`starting`: the
+  mission mode, a hold or rtl mode, new items to a vehicle already flying a mission); a link
+  lost after it ends the op `unconfirmed`, the order goes back to the queue, and its next
+  delivery only follows it if the vehicle runs it; if it does not, a human decides (the
+  inbox, saying the vehicle's mode). Every path that delivers an order sent before asks the
+  vehicle first, a human's re-approval included. An order that ends while it may be
+  running says so, keeps its tasking on the map, and a vehicle running it raises an alert.
+  A carried-over order needs the same vehicle, not only the same platform (callsign and
+  home within 200 m, from a fleet identity written beside the log), and a log whose anchors
+  and fleet identity can be read (or `MURMUR_RESUME_UNVERIFIED=1`); every decision is
+  anchored as it is written, so a crashed log is covered to its last decision. A reboot is
+  judged at the vehicle clock's own rate (a slow simulator is not a reboot). An agent may
+  not replace a human's order that no vehicle has started yet.
 - **The operator roster is logged and checked** (10-04, second review of the bindings; rules
   4). A log could credit a session, with engagement authority, to an operator the bridge was
   never configured with (`MURMUR_OPERATORS` and `MURMUR_ENGAGE_OPERATORS` were not logged).

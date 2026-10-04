@@ -7,6 +7,7 @@
 use std::sync::atomic::Ordering;
 
 use super::*;
+use crate::decision::queue::CarryCheck;
 use crate::tasks::tests::{Quirks, Watch};
 use murmur_decide::replay::{ReplayOptions, replay_str_with};
 
@@ -250,7 +251,7 @@ async fn a_bridge_restart_mid_queue_resumes_and_sends_once() {
     r.replays();
     // the bridge dies; a new one starts and carries the queued order over from the log
     let (b, blog) = restart(&r);
-    let carried = b.carry_over("a.jsonl", &r.log.text(), None).expect("carried");
+    let carried = b.carry_over("a.jsonl", &r.log.text(), &CarryCheck::default()).expect("carried");
     assert_eq!(carried, vec![out.id]);
     let state = |id: IntentId| b.lock().engine.intent(id).map(Intent::state);
     assert_eq!(state(out.id), Some(State::Queued));
@@ -295,7 +296,7 @@ async fn a_bridge_restart_with_an_order_under_way_follows_it_without_a_resend() 
     }
     assert!(r.log.text().contains("\"state\":\"active\""));
     let (b, blog) = restart(&r);
-    b.carry_over("a.jsonl", &r.log.text(), None).expect("carried");
+    b.carry_over("a.jsonl", &r.log.text(), &CarryCheck::default()).expect("carried");
     let state = |id: IntentId| b.lock().engine.intent(id).map(Intent::state);
     assert_eq!(state(out.id), Some(State::Dispatched), "resumed under way");
     for _ in 0..600 {
@@ -473,7 +474,7 @@ async fn another_fleet_under_the_same_uids_inherits_nothing_and_a_carried_approv
     let r2 = rig();
     let (_cell2, w2) = r2.watched(70, Firmware::Rover, "seahunter", SEA, quick());
     sleep(Duration::from_secs(2)).await;
-    let carried = r2.d.carry_over("a.jsonl", &r.log.text(), None).expect("replays");
+    let carried = r2.d.carry_over("a.jsonl", &r.log.text(), &CarryCheck::default()).expect("replays");
     assert!(carried.is_empty(), "{carried:?}");
     for _ in 0..10 {
         r2.d.tick();
@@ -489,7 +490,7 @@ async fn another_fleet_under_the_same_uids_inherits_nothing_and_a_carried_approv
     let out = r.d.submit(&op1(), orbit(73)).await.expect("submit");
     assert_eq!(out.state, State::Queued, "{}", r.reason(out.id));
     let (b, blog) = restart(&r);
-    let carried = b.carry_over("a.jsonl", &r.log.text(), None).expect("carried");
+    let carried = b.carry_over("a.jsonl", &r.log.text(), &CarryCheck::default()).expect("carried");
     assert_eq!(carried, vec![out.id]);
     w.set_cut(false);
     sleep(Duration::from_secs(1)).await;
@@ -508,7 +509,7 @@ async fn another_fleet_under_the_same_uids_inherits_nothing_and_a_carried_approv
     // a log that does not match its anchors carries nothing
     let anchors = "{\"seq\":1,\"t\":0,\"head\":\"00\",\"first\":\"00\",\"why\":\"start\"}\n";
     let (c, _) = restart(&r);
-    assert!(c.carry_over("a.jsonl", &r.log.text(), Some(anchors)).is_err());
+    assert!(c.carry_over("a.jsonl", &r.log.text(), &CarryCheck { anchors: Some(anchors.into()), fleet: None }).is_err());
 }
 
 #[tokio::test(start_paused = true)]
@@ -551,7 +552,7 @@ async fn a_second_restart_still_follows_an_order_started_two_runs_ago() {
     assert_eq!(out.state, State::Dispatched, "{}", r.reason(out.id));
     assert!(tick_until(&r, 60, |r| r.log.text().contains("\"state\":\"active\"")).await);
     let (b, blog) = restart(&r);
-    b.carry_over("a.jsonl", &r.log.text(), None).expect("carried");
+    b.carry_over("a.jsonl", &r.log.text(), &CarryCheck::default()).expect("carried");
     // B's follow op reports its first state, then B crashes
     for _ in 0..3 {
         b.tick();
@@ -568,7 +569,7 @@ async fn a_second_restart_still_follows_an_order_started_two_runs_ago() {
         .collect();
     assert!(cut.contains("\"type\":\"op.state\""), "{cut}");
     let (c, clog) = restart(&r);
-    let carried = c.carry_over("b.jsonl", &cut, None).expect("carried");
+    let carried = c.carry_over("b.jsonl", &cut, &CarryCheck::default()).expect("carried");
     assert_eq!(carried, vec![out.id]);
     let state = |id: IntentId| c.lock().engine.intent(id).map(Intent::state);
     assert_eq!(state(out.id), Some(State::Dispatched), "followed, as it started in run A");
@@ -591,4 +592,281 @@ async fn a_second_restart_still_follows_an_order_started_two_runs_ago() {
     )
     .expect("parses");
     assert!(rc.ok(), "{:?}", rc.mismatches);
+}
+
+// ---- second review --------------------------------------------------------------------
+
+fn ops_of(r: &Rig) -> Vec<(u64, OpState, String)> {
+    r.d.world
+        .tasks
+        .current_ops()
+        .iter()
+        .map(|o| (o.intent_id, o.state, o.detail.clone()))
+        .collect()
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_order_whose_start_went_out_unconfirmed_is_followed_when_the_vehicle_runs_it() {
+    // review 2, P2a: the copter switched to AUTO (it started the orbit) but the link died
+    // before the ACK. The op ends `unconfirmed`, the order goes back to the queue; when the
+    // link is back it is re-checked and only confirmed: the copter runs it, so it is
+    // followed, nothing sent again
+    let r = rig();
+    let q = Quirks {
+        cut_after_auto: true,
+        ..quick()
+    };
+    let (_cell, w) = r.watched(80, Firmware::Copter, "x10", (LAT, LON), q);
+    sleep(Duration::from_secs(1)).await;
+    let out = r.d.submit(&op1(), orbit(80)).await.expect("submit");
+    assert_eq!(out.state, State::Dispatched);
+    assert!(tick_until(&r, 60, |r| r.state(out.id) == State::Queued).await, "{}", r.reason(out.id));
+    assert!(r.reason(out.id).contains("after its start went out"), "{}", r.reason(out.id));
+    assert!(r.log.text().contains("\"state\":\"unconfirmed\""));
+    sleep(Duration::from_secs(20)).await;
+    w.set_cut(false);
+    sleep(Duration::from_secs(1)).await;
+    assert_eq!(tick_until_dequeued(&r, out.id, 10).await, State::Dispatched, "{}", r.reason(out.id));
+    assert!(tick_until(&r, 30, |r| ops_of(r).iter().any(|(i, s, _)| *i == out.id.0 && matches!(s, OpState::Active | OpState::Done))).await, "{:?}", ops_of(&r));
+    assert_eq!(w.count("MISSION_COUNT"), 1);
+    assert_eq!(w.count("MAV_CMD_DO_SET_MISSION_CURRENT"), 1);
+    assert_eq!(w.count("MAV_CMD_DO_SET_MODE"), 1, "followed, not started again");
+    r.replays();
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_order_that_may_have_started_and_does_not_run_goes_to_a_human() {
+    // review 2, P2b: as above, but the copter's failsafe took it out of AUTO during the
+    // outage. The confirming delivery finds the orbit held, not running: it is not started
+    // again on its own (no second SET_MISSION_CURRENT or AUTO); a human decides, and when one
+    // approves it again it is only started (it is held)
+    let r = rig();
+    let q = Quirks {
+        cut_after_auto: true,
+        bail_after: Some((5.0, "RTL", "Failsafe: GCS")),
+        ..quick()
+    };
+    let (cell, w) = r.watched(81, Firmware::Copter, "x10", (LAT, LON), q);
+    sleep(Duration::from_secs(1)).await;
+    let out = r.d.submit(&op1(), orbit(81)).await.expect("submit");
+    assert!(tick_until(&r, 60, |r| r.state(out.id) == State::Queued).await);
+    sleep(Duration::from_secs(20)).await;
+    w.set_cut(false);
+    sleep(Duration::from_secs(1)).await;
+    assert!(
+        tick_until(&r, 30, |r| r.state(out.id) == State::PendingApproval).await,
+        "{} {:?}",
+        r.reason(out.id),
+        ops_of(&r)
+    );
+    let why = r.reason(out.id);
+    assert!(why.contains("does not run now") && why.contains("a human decides"), "{why}");
+    assert!(why.contains("mode RTL"), "{why}");
+    assert_eq!(w.count("MAV_CMD_DO_SET_MISSION_CURRENT"), 1, "not started again");
+    assert_eq!(w.count("MAV_CMD_DO_SET_MODE"), 1);
+    assert_eq!(cell.read(|v| v.mode.clone()).as_deref(), Some("RTL"), "the failsafe's mode stands");
+    r.replays();
+    // a human approves it again: asked first, it is held, so only the start goes
+    let a = r.d.approve(&OperatorId::new("op-2"), out.id.0, None).await.expect("approve");
+    assert_eq!(a.state, State::Dispatched, "{}", r.reason(out.id));
+    assert!(tick_until(&r, 60, |r| ops_of(r).iter().any(|(i, s, _)| *i == out.id.0 && matches!(s, OpState::Active | OpState::Done))).await, "{:?}", ops_of(&r));
+    assert_eq!(w.count("MISSION_COUNT"), 1, "held: not uploaded again");
+    assert_eq!(w.count("MAV_CMD_DO_SET_MISSION_CURRENT"), 2, "started again, as the human decided");
+    r.replays();
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_order_that_may_be_running_says_so_and_the_vehicle_running_it_raises_an_alert() {
+    // review 2, P2c: as P2a; during the outage the operator orders a hold (queued): it voids
+    // the orbit, then expires. The orbit's end says it may be running; when the link is back
+    // the copter flies it, armed: an alert says so, and its tasking stays on the map
+    let r = rig();
+    let q = Quirks {
+        cut_after_auto: true,
+        ..quick()
+    };
+    let (cell, w) = r.watched(82, Firmware::Copter, "x10", (LAT, LON), q);
+    sleep(Duration::from_secs(1)).await;
+    let out = r.d.submit(&op1(), orbit(82)).await.expect("submit");
+    assert!(tick_until(&r, 60, |r| r.state(out.id) == State::Queued).await);
+    go_silent(&cell, &w, 5.0);
+    let h = r.d.submit(&op1(), simple("hold", 82)).await.expect("submit");
+    assert_eq!(h.state, State::Queued);
+    assert_eq!(r.state(out.id), State::Voided);
+    assert!(r.reason(out.id).contains("may be running on vehicle(s) 82"), "{}", r.reason(out.id));
+    r.clock.set(r.clock.now().plus_ms(61_000));
+    r.d.tick();
+    assert_eq!(r.state(h.id), State::Expired);
+    sleep(Duration::from_secs(240)).await;
+    w.set_cut(false);
+    for _ in 0..10 {
+        r.d.tick();
+        sleep(Duration::from_secs(1)).await;
+    }
+    assert_eq!(cell.read(|v| (v.mode.clone(), v.armed)), (Some("AUTO".into()), true));
+    let alerts = r.d.inbox_json()["alerts"].clone();
+    let a = alerts
+        .as_array()
+        .and_then(|a| a.iter().find(|a| a["kind"] == "may_be_running"))
+        .cloned()
+        .unwrap_or_else(|| panic!("{alerts}"));
+    assert_eq!(a["severity"], "high");
+    assert!(a["detail"].as_str().unwrap_or("").contains("in AUTO, armed"), "{a}");
+    assert!(
+        r.d.world.tasks.current_ops().iter().any(|o| o.intent_id == out.id.0 && o.state == OpState::Unconfirmed),
+        "its tasking stays on the map"
+    );
+    assert_eq!(w.count("MAV_CMD_DO_SET_MODE"), 1);
+    r.replays();
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_op_whose_start_went_out_is_not_abandoned_as_unstarted() {
+    // review 2, P3: a newer order queued while the older one's AUTO went out unconfirmed:
+    // the older op is not "abandoned before the vehicle started it"; it ends unconfirmed, and
+    // the older order's end says it may be running
+    let r = rig();
+    let q = Quirks {
+        cut_after_auto: true,
+        ..quick()
+    };
+    let (cell, w) = r.watched(83, Firmware::Copter, "x10", (LAT, LON), q);
+    sleep(Duration::from_secs(1)).await;
+    let out = r.d.submit(&op1(), orbit(83)).await.expect("submit");
+    for _ in 0..2000 {
+        if w.cut.load(Ordering::SeqCst) {
+            break;
+        }
+        sleep(Duration::from_millis(5)).await;
+    }
+    go_silent(&cell, &w, 5.0);
+    let h = r.d.submit(&op1(), simple("hold", 83)).await.expect("submit");
+    assert_eq!(h.state, State::Queued);
+    assert!(tick_until(&r, 60, |r| r.state(out.id).is_terminal()).await, "{}", r.reason(out.id));
+    let ops = ops_of(&r);
+    assert!(
+        ops.iter().all(|(_, _, d)| !d.contains("abandoned before the vehicle started it")),
+        "{ops:?}"
+    );
+    assert!(ops.iter().any(|(i, s, _)| *i == out.id.0 && *s == OpState::Unconfirmed), "{ops:?}");
+    assert!(r.reason(out.id).contains("may be running"), "{}", r.reason(out.id));
+    r.replays();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_carried_order_needs_the_same_vehicle_not_only_the_same_platform() {
+    // review 2, P5: a crash, then a run whose uid 70 is the same platform (and callsign) but
+    // another vehicle 1.4 km away: not carried. The same vehicle (its home where it was):
+    // carried
+    let r = rig();
+    let (cell, w) = r.watched(70, Firmware::Copter, "x10", (LAT, LON), quick());
+    sleep(Duration::from_secs(1)).await;
+    go_silent(&cell, &w, 5.0);
+    let out = r.d.submit(&op1(), orbit(70)).await.expect("submit");
+    assert_eq!(out.state, State::Queued);
+    let was = r.d.fleet_identity();
+    assert!(was.get(&70).and_then(|v| v.home).is_some(), "{was:?}");
+    let check = CarryCheck {
+        anchors: None,
+        fleet: Some(was),
+    };
+    let r2 = rig();
+    let (_c2, w2) = r2.watched(70, Firmware::Copter, "x10", (LAT - 0.01, LON - 0.01), quick());
+    sleep(Duration::from_secs(2)).await;
+    let carried = r2.d.carry_over("a.jsonl", &r.log.text(), &check).expect("replays");
+    assert!(carried.is_empty(), "{carried:?}");
+    for _ in 0..20 {
+        r2.d.tick();
+        sleep(Duration::from_secs(1)).await;
+    }
+    assert_eq!(w2.count("MISSION_COUNT"), 0, "nothing sent to another vehicle");
+    let (b, _) = restart(&r);
+    let carried = b.carry_over("a.jsonl", &r.log.text(), &check).expect("carried");
+    assert_eq!(carried, vec![out.id], "the same vehicle");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_slow_simulator_clock_is_not_a_reboot() {
+    // review 2, P6b: no reboot; a simulator whose clock runs at 0.9 of ours, silent 700 s:
+    // its time since boot lags the silence by 70 s, which the clock rate it showed explains
+    let r = rig();
+    let q = Quirks {
+        boot_rate: 0.9,
+        ..quick()
+    };
+    let (cell, w) = r.watched(85, Firmware::Copter, "x10", (LAT, LON), q);
+    sleep(Duration::from_secs(60)).await;
+    w.set_cut(true);
+    sleep(Duration::from_secs(700)).await;
+    w.set_cut(false);
+    sleep(Duration::from_secs(3)).await;
+    r.d.tick();
+    assert_eq!(cell.read(|v| v.boot_epoch), 0);
+    assert_eq!(r.events("vehicle.rebooted"), 0);
+    // a real reboot on that clock, in an outage longer than the uptime, is still seen
+    sleep(Duration::from_secs(120)).await;
+    w.set_cut(true);
+    w.reboot.store(true, Ordering::SeqCst);
+    sleep(Duration::from_secs(300)).await;
+    w.set_cut(false);
+    sleep(Duration::from_secs(3)).await;
+    r.d.tick();
+    assert_eq!(cell.read(|v| v.boot_epoch), 1);
+    assert_eq!(r.events("vehicle.rebooted"), 1);
+    r.replays();
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_order_approved_again_after_a_restart_asks_the_vehicle_first() {
+    // review 2, P8: a human-approved orbit; the copter switched to AUTO but the ACK was lost
+    // with the link, and the bridge crashed then. The next run carries it over, its re-check
+    // sends it to the inbox (approved before a restart), a human approves it again: it is
+    // delivered asking the copter first, which runs it: followed, nothing sent again
+    let r = rig();
+    let q = Quirks {
+        cut_after_auto: true,
+        ..quick()
+    };
+    let (cell, w) = r.watched(86, Firmware::Copter, "switchblade", (LAT, LON), q);
+    sleep(Duration::from_secs(1)).await;
+    let out = r.d.submit(&op1(), orbit(86)).await.expect("submit");
+    assert_eq!(out.state, State::Dispatched, "{}", r.reason(out.id));
+    for _ in 0..2000 {
+        if w.cut.load(Ordering::SeqCst) {
+            break;
+        }
+        sleep(Duration::from_millis(5)).await;
+    }
+    r.d.tick();
+    let crashed = r.log.text();
+    assert!(crashed.contains("\"state\":\"starting\""), "the start went out");
+    let (b, blog) = restart(&r);
+    let carried = b.carry_over("a.jsonl", &crashed, &CarryCheck::default()).expect("carried");
+    assert_eq!(carried, vec![out.id]);
+    let state = |id: IntentId| b.lock().engine.intent(id).map(Intent::state);
+    w.set_cut(false);
+    sleep(Duration::from_secs(2)).await;
+    for _ in 0..10 {
+        b.tick();
+        if state(out.id) != Some(State::Queued) {
+            break;
+        }
+        sleep(Duration::from_secs(1)).await;
+    }
+    assert_eq!(state(out.id), Some(State::PendingApproval));
+    assert_eq!(cell.read(|v| v.mode.clone()).as_deref(), Some("AUTO"));
+    let a = b.approve(&OperatorId::new("op-2"), out.id.0, None).await.expect("approve");
+    assert_eq!(a.state, State::Dispatched);
+    for _ in 0..20 {
+        b.tick();
+        sleep(Duration::from_secs(1)).await;
+    }
+    assert_eq!(w.count("MISSION_COUNT"), 1, "not uploaded again");
+    assert_eq!(w.count("MAV_CMD_DO_SET_MISSION_CURRENT"), 1, "not started again");
+    let b_text = blog.text();
+    assert!(
+        !b_text.contains("\"state\":\"sent\"") && !b_text.contains("\"state\":\"starting\""),
+        "followed: nothing sent in the second run"
+    );
+    replays_after(&blog, &r.log);
 }

@@ -176,17 +176,23 @@ pub(crate) fn engaged_vehicles<'a>(
     out
 }
 
-/// Rules 5: the orders a human approved that wait in the queue on `spec`'s vehicles, other
-/// than `spec` itself, by vehicle (the lowest id when there are several). The engine logs this
-/// with each decision (`waiting`); replay recomputes it from its own intents. `intents`:
-/// (id, spec, state, approved by a human).
+/// Rules 5: the orders a human approved that wait on `spec`'s vehicles, other than `spec`
+/// itself, by vehicle (the lowest id when there are several): queued, or dispatched with no
+/// vehicle having started them yet (an agent's order there would replace them before they
+/// run). The engine logs this with each decision (`waiting`); replay recomputes it from its
+/// own intents. `intents`: (id, spec, state, approved by a human, some vehicle started it).
 pub(crate) fn waiting_vehicles<'a>(
-    intents: impl Iterator<Item = (IntentId, &'a IntentSpec, State, bool)>,
+    intents: impl Iterator<Item = (IntentId, &'a IntentSpec, State, bool, bool)>,
     spec: &IntentSpec,
 ) -> BTreeMap<Uid, IntentId> {
     let mut out: BTreeMap<Uid, IntentId> = BTreeMap::new();
-    for (id, s, state, by_human) in intents {
-        if id == spec.id || state != State::Queued || !by_human {
+    for (id, s, state, by_human, started) in intents {
+        let waits = match state {
+            State::Queued => true,
+            State::Dispatched => !started,
+            _ => false,
+        };
+        if id == spec.id || !waits || !by_human || s.kind() == TaskKind::Engage {
             continue;
         }
         for u in spec.uids.iter().filter(|u| s.uids.contains(u)) {
@@ -1435,6 +1441,7 @@ impl Engine {
                     i.spec(),
                     i.state(),
                     i.basis().is_some_and(|b| b.by_human),
+                    !i.committed().is_empty(),
                 )
             }),
             spec,
@@ -1504,8 +1511,29 @@ impl Engine {
     /// The bridge voids an intent whose basis no longer holds (vehicle lost, superseded).
     /// Anyone can stop an action; only a human can authorize one.
     pub fn void(&mut self, id: IntentId, reason: &str) -> Result<&Intent, EngineError> {
-        self.transition(id, Transition::Void, format!("system: {reason}"))?;
+        let note = self.running_note(id);
+        self.transition(id, Transition::Void, format!("system: {reason}{note}"))?;
         self.get(id)
+    }
+
+    /// Rules 5: what a vehicle may still be doing with an intent that ends or goes to a human
+    /// unconfirmed: running it (its start went out and nothing confirmed it), or holding it
+    /// (it was sent before its link was lost). Empty otherwise.
+    fn running_note(&self, id: IntentId) -> String {
+        let Some(i) = self.intents.get(&id) else {
+            return String::new();
+        };
+        if !i.maybe_started().is_empty() {
+            let who: Vec<String> = i.maybe_started().iter().map(ToString::to_string).collect();
+            return format!(
+                " (it may be running on vehicle(s) {}: its start went out before the link was lost, and nothing confirmed it since; look at the vehicle)",
+                who.join(", ")
+            );
+        }
+        if i.dispatched_before() && i.state() == State::Queued {
+            return " (it was sent before its link was lost: the vehicle may hold it; look at the vehicle)".into();
+        }
+        String::new()
     }
 
     /// Expire every pending approval past its deadline. Call periodically.
@@ -1763,11 +1791,12 @@ impl Engine {
         }
         // never an older order over a newer one for the same vehicle: the newest stands
         if let Some((newer, uid)) = self.newer_on(&spec) {
+            let note = self.running_note(id);
             self.transition(
                 id,
                 Transition::Void,
                 format!(
-                    "system: superseded: {newer} is a newer order for vehicle {uid} (the newest order stands)"
+                    "system: superseded: {newer} is a newer order for vehicle {uid} (the newest order stands){note}"
                 ),
             )?;
             return Ok(Dequeued::Voided);
@@ -1788,7 +1817,6 @@ impl Engine {
         // without a basis (none was recorded), a human decides: nothing to compare with
         let intent = self.get(id)?;
         let carried = intent.basis_carried();
-        let sent_before = intent.dispatched_before();
         let basis = intent
             .basis()
             .cloned()
@@ -1828,16 +1856,12 @@ impl Engine {
                 Ok(Dequeued::Inbox)
             }
             _ => {
-                let held = if sent_before {
-                    " (it was sent before its link was lost: the vehicle may hold or run it; look at the vehicle)"
-                } else {
-                    ""
-                };
+                let note = self.running_note(id);
                 self.transition(
                     id,
                     Transition::Void,
                     format!(
-                        "re-check failed at dequeue: {}{held}",
+                        "re-check failed at dequeue: {}{note}",
                         recheck.changes.join("; ")
                     ),
                 )?;
@@ -1856,11 +1880,14 @@ impl Engine {
         reason: String,
     ) -> Result<(), EngineError> {
         let task = self.get(id)?.spec().task.clone();
+        let reason = format!("{reason}{}", self.running_note(id));
         let intent = self.get_mut(id)?;
         if let Some(d) = decision {
             intent.set_policy(d);
         }
         intent.clear_approval();
+        // the human's next approval decides, starting it again included
+        intent.clear_maybe_started();
         let now = self.now();
         let (expires_t, until) =
             policy::approval_deadline(&self.policy, &task, None, &self.scenario_map(), now);
@@ -1898,9 +1925,15 @@ impl Engine {
                 self.policy.queue().human_expire_s()
             )
         } else if why.is_empty() {
-            format!("not dispatched within {waited} s: its vehicles could not be reached")
+            format!(
+                "not dispatched within {waited} s: its vehicles could not be reached{}",
+                self.running_note(id)
+            )
         } else {
-            format!("not dispatched within {waited} s: its vehicles could not be reached ({why})")
+            format!(
+                "not dispatched within {waited} s: its vehicles could not be reached ({why}){}",
+                self.running_note(id)
+            )
         };
         self.emit(EventBody::QueueExpired {
             intent: id,
@@ -1917,10 +1950,15 @@ impl Engine {
     }
 
     /// Rules 5: a dispatched intent whose link was lost to every one of its vehicles before
-    /// any of them started it (each vehicle's last op state `requeued`, none ever committed)
-    /// goes back to the queue (`intent.requeued`): re-checked on the world before it is sent
-    /// again (then asking each vehicle what it holds first), until its kind's wait from the
-    /// approval at the latest. Refused, nothing logged, otherwise.
+    /// any of them confirmed it (each vehicle's last op state `requeued`, or `unconfirmed`
+    /// when its start had gone out; none ever committed) goes back to the queue
+    /// (`intent.requeued`): re-checked on the world before it is sent again (then asking each
+    /// vehicle what it holds first, and only following it where it may have started), until
+    /// its kind's wait from the approval at the latest. When a delivery that only confirmed
+    /// an order that may have started found a vehicle not running it (`unconfirmed` there),
+    /// it is not started again on its own: it goes back to a human at once (`intent.requeued`
+    /// with its deadline now, then `queue.expired` to the inbox). Refused, nothing logged,
+    /// otherwise.
     pub fn requeue(&mut self, id: IntentId) -> Result<Time, EngineError> {
         let intent = self.get(id)?;
         let refuse = |why: &str| EngineError::NotDispatchable {
@@ -1939,18 +1977,35 @@ impl Engine {
         let lost: Vec<String> = spec
             .uids
             .iter()
-            .filter(|u| intent.ops().get(*u).map(String::as_str) == Some(queue::REQUEUED_OP))
+            .filter(|u| {
+                matches!(
+                    intent.ops().get(*u).map(String::as_str),
+                    Some(queue::REQUEUED_OP | queue::UNCONFIRMED_OP)
+                )
+            })
             .map(|u| u.to_string())
             .collect();
         if lost.len() != spec.uids.len() {
             return Err(refuse(
-                "requeued only when every vehicle's op ended with its link lost before the start",
+                "requeued only when every vehicle's op ended with its link lost before it was confirmed",
             ));
         }
+        // a delivery that only confirmed it, to a vehicle that does not run it
+        let not_running: Vec<String> = queue::confirm_failed(intent.confirming(), intent.ops())
+            .iter()
+            .map(|u| {
+                let detail = intent.op_details().get(u).cloned().unwrap_or_default();
+                format!("vehicle {u}: {detail}")
+            })
+            .collect();
         let cfg = self.policy.queue();
         let now = self.now();
         let basis = intent.basis().cloned().unwrap_or_else(|| no_basis(now));
-        let (expires_t, inbox) = cfg.bound(cfg.wait_end(spec.kind(), basis.t), &basis, now);
+        let (expires_t, inbox) = if not_running.is_empty() {
+            cfg.bound(cfg.wait_end(spec.kind(), basis.t), &basis, now)
+        } else {
+            (now, true)
+        };
         self.emit_at(
             now,
             EventBody::IntentRequeued {
@@ -1966,11 +2021,46 @@ impl Engine {
             reach: Vec::new(),
             recheck: None,
         }));
+        if !not_running.is_empty() {
+            self.transition(
+                id,
+                Transition::Requeue,
+                "back to the queue, on its way to a human: it may have started, and does not run now".into(),
+            )?;
+            let reason = format!(
+                "it may have started before its link was lost, and does not run now: not started again on its own; a human decides ({})",
+                not_running.join("; ")
+            );
+            self.emit(EventBody::QueueExpired {
+                intent: id,
+                expires_t,
+                reason: reason.clone(),
+                inbox: true,
+            })?;
+            // it is not running there: the reason says so, not "may be running"
+            self.get_mut(id)?.clear_maybe_started();
+            self.back_to_inbox(id, None, reason)?;
+            return Ok(expires_t);
+        }
+        let started: Vec<String> = spec
+            .uids
+            .iter()
+            .filter(|u| intent_ops_unconfirmed(self.get(id).ok(), u))
+            .map(ToString::to_string)
+            .collect();
+        let how = if started.is_empty() {
+            "before the order started".to_string()
+        } else {
+            format!(
+                "after its start went out to {} (it may be running: its next delivery only follows it there)",
+                started.join(", ")
+            )
+        };
         self.transition(
             id,
             Transition::Requeue,
             format!(
-                "back to the queue: the link to vehicle(s) {} was lost before the order started; re-checked before it is sent again (for {} s at most)",
+                "back to the queue: the link to vehicle(s) {} was lost {how}; re-checked before it is sent again (for {} s at most)",
                 lost.join(", "),
                 expires_t.ms_since(now) / 1000
             ),
@@ -2022,6 +2112,7 @@ impl Engine {
             committed: open.committed.clone(),
             dispatched_before: open.dispatched_before,
             platforms: open.platforms.clone(),
+            maybe_started: open.maybe_started.clone(),
         })?;
         let mut intent = Intent::new(open.spec.clone());
         intent.set_checks(open.basis.checks.clone());
@@ -2036,6 +2127,7 @@ impl Engine {
             open.committed.iter().cloned().collect(),
             open.dispatched_before,
             true,
+            open.maybe_started.iter().cloned().collect(),
         );
         intent.set_resumed(crate::intent::Resumed {
             from: from.clone(),
@@ -2154,7 +2246,7 @@ impl Engine {
             detail: detail.into(),
         })?;
         self.get_mut(id)?
-            .record_op(uid, state, queue::committed_op(state));
+            .record_op(uid, state, detail, queue::committed_op(state));
         Ok(())
     }
 
@@ -2785,6 +2877,11 @@ pub(crate) fn op_state_mismatch(
         }
     }
     None
+}
+
+/// Whether `uid`'s last op on the intent ended `unconfirmed` (its start went out).
+fn intent_ops_unconfirmed(intent: Option<&Intent>, uid: &Uid) -> bool {
+    intent.is_some_and(|i| i.ops().get(uid).map(String::as_str) == Some(queue::UNCONFIRMED_OP))
 }
 
 /// A basis that forces a human: no checks to compare with (every result is a change), by a

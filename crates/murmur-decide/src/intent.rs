@@ -725,9 +725,20 @@ pub struct Intent {
     /// Rules 5: its basis (a human's approval) comes from the run before a bridge restart.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     basis_carried: bool,
-    /// Each vehicle's last op state in this run (op.state).
+    /// Rules 5: the vehicles that may have started it (its start went out, an op `starting`,
+    /// and nothing confirmed it): its next delivery there only follows it if the vehicle runs
+    /// it. Cleared when it goes back to a human.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    maybe_started: BTreeSet<Uid>,
+    /// The vehicles its current delivery only confirms (`maybe_started` when it went out):
+    /// one that does not run it sends it to a human.
+    #[serde(skip)]
+    confirming: BTreeSet<Uid>,
+    /// Each vehicle's last op state in this run (op.state), and its detail.
     #[serde(skip)]
     ops: BTreeMap<Uid, String>,
+    #[serde(skip)]
+    op_details: BTreeMap<Uid, String>,
 }
 
 /// An intent carried over from the previous run: where from, and each vehicle's last op
@@ -763,7 +774,10 @@ impl Intent {
             committed: BTreeSet::new(),
             dispatched_before: false,
             basis_carried: false,
+            maybe_started: BTreeSet::new(),
+            confirming: BTreeSet::new(),
             ops: BTreeMap::new(),
+            op_details: BTreeMap::new(),
         }
     }
 
@@ -831,6 +845,18 @@ impl Intent {
     pub fn ops(&self) -> &BTreeMap<Uid, String> {
         &self.ops
     }
+    /// Each vehicle's last op detail in this run.
+    pub fn op_details(&self) -> &BTreeMap<Uid, String> {
+        &self.op_details
+    }
+    /// The vehicles that may have started it (see the field).
+    pub fn maybe_started(&self) -> &BTreeSet<Uid> {
+        &self.maybe_started
+    }
+    /// The vehicles its current delivery only confirms.
+    pub fn confirming(&self) -> &BTreeSet<Uid> {
+        &self.confirming
+    }
 
     pub(crate) fn apply(
         &mut self,
@@ -891,21 +917,34 @@ impl Intent {
         committed: BTreeSet<Uid>,
         dispatched_before: bool,
         basis_carried: bool,
+        maybe_started: BTreeSet<Uid>,
     ) {
         self.committed = committed;
         self.dispatched_before = dispatched_before;
         self.basis_carried = basis_carried;
+        self.maybe_started = maybe_started;
     }
-    /// Dispatched (again): a vehicle may hold it from now on; its op states start over.
+    /// Dispatched (again): a vehicle may hold it from now on; its op states start over, and
+    /// the vehicles that may have started it are only confirmed this time.
     pub(crate) fn mark_dispatched(&mut self) {
         self.dispatched_before = true;
         self.ops.clear();
+        self.op_details.clear();
+        self.confirming = self.maybe_started.clone();
+    }
+    /// Back to a human: their next approval decides, starting it again included.
+    pub(crate) fn clear_maybe_started(&mut self) {
+        self.maybe_started.clear();
     }
     /// An op state reported for `uid` (`committed`: the vehicle accepted and started it).
-    pub(crate) fn record_op(&mut self, uid: &Uid, state: &str, committed: bool) {
+    pub(crate) fn record_op(&mut self, uid: &Uid, state: &str, detail: &str, committed: bool) {
         self.ops.insert(uid.clone(), state.to_string());
+        self.op_details.insert(uid.clone(), detail.to_string());
         if committed {
             self.committed.insert(uid.clone());
+        }
+        if crate::queue::maybe_started_op(state) {
+            self.maybe_started.insert(uid.clone());
         }
     }
     /// Back to the inbox from the queue: a new decision is needed, so the old approval and

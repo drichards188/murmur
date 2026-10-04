@@ -565,7 +565,9 @@ fn an_agent_order_on_an_engaging_platform_goes_to_a_human() {
         .unwrap()
         .to_string();
     assert!(granted.contains("\"supersedes\":[1]"), "{granted}");
-    // with the engagement gone, the agent's next hold runs on its own again
+    // with the engagement gone (and the operator's hold under way: rules 5 protects a human's
+    // order no vehicle started yet), the agent's next hold runs on its own again
+    e.record_op_state(aid, &uid("blade-1"), "done", "holding").unwrap();
     let mut port = e.agent_port(AgentId::new("agent-planner"));
     let b = port
         .propose(hold(), Rationale::new("hold it there").unwrap(), &w, &terrain())
