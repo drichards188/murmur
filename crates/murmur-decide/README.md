@@ -771,7 +771,7 @@ Rules versions:
   nominations rejected for a fast ferry by the point, a third clear of a far fast ferry and
   by altitude of our aircraft at 9,000 m (diving at 44 m/s it can't get down by the effect
   time), its USV's own lost-link values logged ahead of the write (with its identity), the
-  preload set, read again seven times before the release (the last 5 s before it), the
+  preload set, read again seven times before the release (the last 3 s before it), the
   effect released, the USV's own values restored; an acceptance by an operator without
   engagement authority refused with a 403, nothing logged).
 
