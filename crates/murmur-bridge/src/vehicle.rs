@@ -206,8 +206,10 @@ enum NavReport {
 }
 
 /// How old a navigation target may be to center a loiter circle, s (NAV_CONTROLLER_OUTPUT
-/// comes every 2 s on a full link, every 5 s on a reduced one).
-pub const NAV_TARGET_MAX_AGE_S: f64 = 12.0;
+/// comes every 2 s on a full link, every 5 s on a reduced one): the engine's own bound on a
+/// circle's center, so the bridge reports no circle the engine would refuse for its age.
+pub const NAV_TARGET_MAX_AGE_S: f64 =
+    murmur_decide::engage::CIRCLE_CENTER_MAX_AGE_MS as f64 / 1000.0;
 
 /// A circle a fixed wing flies on its own ([`Vehicle::loiter_circle`]).
 #[derive(Debug, Clone, Copy, PartialEq)]

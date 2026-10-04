@@ -1,0 +1,82 @@
+# A friendly on the slack band of its circle, inside the keep-out, at the release (the
+# targeted check's probe). Six seconds before the effect one of our fixed wings is reported
+# 243 m from the target, on the outer edge of the slack around its circle (210 m around a
+# center 498 m north), and goes quiet: at the release its position is 6 s old. A vehicle
+# within the slack counts as on its circle, so its disc includes the slack: the disc is never
+# farther from the effect point than where the vehicle was reported. 498 m less 260 m and
+# 12 m of uncertainty is inside the 275 m keep-out, and the engagement aborts before any
+# effect. (Before the fix the disc left the slack out and passed at 276 m.)
+title = "A friendly on its circle's slack band at the release"
+invariant = "keep_out_friendly"
+attack = "a friendly reported inside the keep-out, on the slack band of its circle, its position a few seconds old at the release"
+expect = "aborted"
+expect_rule = "keep_out_friendly"
+end_s = 160
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km
+at = [-122.4700, 37.8160]
+[[vehicle]]
+uid = "blade-2"
+platform = "switchblade"    # ours, not engaging: far east until the end
+at = [-122.4300, 37.8000]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"
+
+# about 6 s before the plan's effect time (about 105 s): on the slack band, then quiet
+[[step]]
+at_s = 100
+action = "vehicle"
+uid = "blade-2"
+at = [-122.4950, 37.8141829]                    # 243 m north of the target
+velocity = [0.0, 0.0]
+reported_circle = [-122.4950, 37.8164736, 210.0] # 498 m north, 210 m: 45 m outside it
+silent = true

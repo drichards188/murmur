@@ -369,10 +369,12 @@ Rules versions:
   source and when its center was reported) is predicted anywhere on its disc, less the
   same growing uncertainty, instead of along its momentary heading (a circling fixed wing
   no longer blocks engagements kilometres away). The circle holds only a vehicle that is
-  on it: its position, reported within 2 s of the circle, within the radius and 50 m of
-  the center (`CIRCLE_POSITION_SKEW_MS`, `CIRCLE_SLACK_M`); otherwise it is predicted from
-  its position. An effect within 5 s of its position (a release, `CIRCLE_NEAR_EFFECT_S`)
-  reads that position along its velocity as well, the nearer of the two counting.
+  on it, each report judged on its own freshness: the position fresh by the usual
+  link-aware rule and within the radius and 50 m of the center (`CIRCLE_SLACK_M`), the
+  center reported at most 12 s ago (`CIRCLE_CENTER_MAX_AGE_MS`); otherwise the vehicle is
+  predicted from its position. The disc includes the slack, so it is never farther than
+  where the vehicle was reported, and at every span the vehicle is also carried along its
+  velocity for at most 5 s (`CIRCLE_CARRY_S`), the nearer of the two counting.
   `platform_nav` says when its 3D fix is a HIGH_LATENCY2 report without its GPS failure
   flag (`gps_fix_from`); `run.started` names the build.
 

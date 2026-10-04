@@ -103,10 +103,13 @@ group. Dates are 2026.
   every lap, and the live demo's loitering BLADE blocked engagements kilometres away. A
   vehicle not known to circle is still carried along its velocity. Regression:
   `37-friendly-circling-near-target`. The engine trusts a circle only while it holds the
-  vehicle (fifth review): the position, reported within 2 s of it, within the radius and
-  50 m of the center, else the vehicle is predicted from its position (regression
-  `38-friendly-off-its-reported-circle`); within 5 s of the effect (a release) its position
-  counts as well, the nearer of the two. The bridge takes a LOITER or RTL center from
+  vehicle (fifth review): the position, fresh by the usual link-aware rule, within the radius
+  and 50 m of the center, and the center at most 12 s old (each judged on its own, so a
+  reduced link's slower navigation target doesn't drop the circle); else the vehicle is
+  predicted from its position (regression `38-friendly-off-its-reported-circle`). The disc
+  includes the 50 m slack, so it is never farther than where the vehicle was reported, and
+  at every span the vehicle is also carried 5 s along its velocity, the nearer counting: no
+  cliff at a span boundary (regression `39-friendly-on-its-circles-slack-band`). The bridge takes a LOITER or RTL center from
   NAV_CONTROLLER_OUTPUT reported in that mode and at most 12 s old, stamps the circle with
   the older of the center and the position, and logs its source and center time.
 - **A HIGH_LATENCY2 report without its GPS failure flag is a 3D fix** (10-04, fourth
