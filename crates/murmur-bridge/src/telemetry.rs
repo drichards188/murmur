@@ -197,8 +197,12 @@ pub fn messages(tier: Tier, kind: Option<Kind>, air: bool) -> Vec<(u32, f64)> {
         (apm::GPS_RAW_INT_DATA::ID, slow),
         (apm::EKF_STATUS_REPORT_DATA::ID, slow),
     ];
-    if kind == Some(Kind::Tracker) {
-        plan.push((apm::NAV_CONTROLLER_OUTPUT_DATA::ID, fast));
+    match kind {
+        Some(Kind::Tracker) => plan.push((apm::NAV_CONTROLLER_OUTPUT_DATA::ID, fast)),
+        // a fixed wing's navigation target: the center of the circle it loiters on, so an
+        // engagement's friendly keep-out can count it on its circle (rules 3)
+        Some(Kind::Plane | Kind::Vtol) => plan.push((apm::NAV_CONTROLLER_OUTPUT_DATA::ID, slow)),
+        _ => {}
     }
     plan
 }
@@ -384,7 +388,7 @@ mod tests {
 
     #[test]
     fn full_plan_matches_the_old_one() {
-        let plan = messages(Tier::Full, Some(Kind::Plane), true);
+        let plan = messages(Tier::Full, Some(Kind::Copter), true);
         assert_eq!(plan[0], (33, 2.0));
         assert_eq!(plan.len(), 7);
         assert_eq!(
@@ -394,6 +398,10 @@ mod tests {
         let (n, b) = load(&plan);
         assert_eq!(n, 7.5);
         assert!((250.0..300.0).contains(&b), "{b}");
+        // a fixed wing also streams its navigation target slowly (its loiter center)
+        let plane = messages(Tier::Full, Some(Kind::Plane), true);
+        assert_eq!(plane.len(), 8);
+        assert_eq!(plane.last(), Some(&(62, 0.5)));
     }
 
     #[test]
