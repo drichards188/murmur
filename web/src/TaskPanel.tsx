@@ -113,7 +113,9 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings, pendi
         ...(kind === 'orbit' ? { center: draft.center!, radius: draft.radius } : {}),
         ...(kind === 'patrol' ? { route: draft.route } : {}),
       })
-      if (answer.status === 202 && answer.intent_id != null) {
+      if (answer.status === 202 && answer.intent_id != null && answer.state === 'queued') {
+        setOutcome({ kind: 'queued', intentId: answer.intent_id, detail: answer.detail ?? '' })
+      } else if (answer.status === 202 && answer.intent_id != null) {
         setOutcome({ kind: 'wait', intentId: answer.intent_id, detail: answer.detail ?? '', expires_t: answer.expires_t ?? null })
       } else if (answer.authorization && answer.intent_id != null) {
         const a = answer.authorization
