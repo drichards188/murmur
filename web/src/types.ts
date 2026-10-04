@@ -22,8 +22,11 @@ export const AIR_KINDS: Kind[] = ['plane', 'vtol', 'copter', 'blimp']
 export const SEA_KINDS: Kind[] = ['boat', 'sub']
 
 export interface LinkHealth {
-  last_rx_t: number | null // bridge clock, seconds
+  /** bridge clock, seconds; a lite snapshot carries it only once the link is lost */
+  last_rx_t?: number | null
   since_last_ms: number | null // computed in the browser from last_rx_t and the message time
+  /** lite snapshots: the bridge's own verdict (a live link then costs nothing to keep reporting) */
+  stale?: boolean
   loss_pct: number | null
   rtt_ms: number | null
   /** How often the link should be heard from: 1000 streaming, 20000 on HIGH_LATENCY2 (Rust bridge only). */
@@ -56,6 +59,10 @@ export type NavSource = 'gnss' | 'dead_reckoning' | 'none'
 export interface Vehicle {
   uid: number // fleet-unique; what the console keys on
   sysid: number // MAVLink system ID: unique per link only, wraps in fleets over 250
+  /** Level of detail (murmur-and): `lite` is what the bridge sends for a vehicle outside
+   *  the view (identity, a coarse position, mode, link state, once a second, no trail);
+   *  absent or `full` is the whole snapshot at 4 Hz. */
+  lod?: 'full' | 'lite'
   identity: Identity | null
   kind: Kind | null
   mode: string | null
@@ -80,6 +87,48 @@ export interface Vehicle {
   link: LinkHealth
   trail: [number, number, number][] // lon, lat, metres above mean sea level
   statustext: { t: number; severity: number; text: string }[]
+  /** Where the vehicle probably is while its link is silent (bridge `estimate` module, murmur-4y9):
+   *  present only past the stale threshold. A motion model from `t0`, evaluated here by
+   *  estimate.ts on every clock tick. Display only: nothing in the decision core reads it. */
+  estimate?: Estimate | null
+}
+
+/** [lon, lat]; metres, seconds, degrees clockwise from north. The fields are the region's
+ *  half-extents (about two sigma), see the bridge's `estimate.rs` for the growth law. */
+export type Motion =
+  | { kind: 'ring'; center: LngLat; radius_m: number; width_m: number; angle0_deg: number; rate_dps: number; spread0_deg: number; spread_dps: number }
+  | { kind: 'route'; route: LngLat[]; lead?: LngLat; seg0: number; frac0: number; speed_mps: number; along0_m: number; along_mps: number; across0_m: number; across_mps: number }
+  | { kind: 'line'; from: LngLat; bearing_deg: number; speed_mps: number; stop_m?: number; along0_m: number; along_mps: number; across0_m: number; across_mps: number; arrive?: Arrival }
+  | { kind: 'point'; at: LngLat; radius0_m: number; rate_mps: number }
+
+export interface Arrival {
+  center: LngLat
+  radius_m: number
+  ring: boolean
+  width_m: number
+}
+
+export interface FailsafeBranch {
+  action: 'rtl' | 'surface' | 'land' | 'disarm'
+  after_s: number
+  fires_t: number
+  profile: string
+  detail: string
+  motion: Motion
+}
+
+export interface Estimate {
+  /** the last position report (bridge wall clock, s): the model's start */
+  t0: number
+  basis: 'orbit' | 'patrol' | 'hold' | 'rtl' | 'velocity' | 'stationary'
+  detail: string
+  motion: Motion
+  reach_mps: number
+  cap_m: number
+  note?: string
+  failsafe?: FailsafeBranch
+  /** the bridge's own evaluation at a coarse step (API readers; the console evaluates itself) */
+  now: { t: number; position: LngLat; radius_m: number }
 }
 
 export type OpState = 'queued' | 'sent' | 'acked' | 'active' | 'done' | 'failed' | 'superseded'
@@ -111,6 +160,39 @@ export interface BridgeState {
   t: number
   vehicles: Vehicle[]
   taskings: Tasking[]
+  /** Counts per map tile while the view holds more vehicles than the bridge sends in full
+   *  (zoomed out over a large fleet); null or absent otherwise. */
+  clusters?: Clusters | null
+}
+
+/** One map tile with something in it (`push.rs` clusters). */
+export interface Cluster {
+  x: number
+  y: number
+  /** centroid of what is in the tile, lon lat: where the marker goes */
+  c: LngLat
+  /** vehicles in the tile */
+  n: number
+  /** of them: air, ground, surface, subsurface */
+  d: [number, number, number, number]
+  /** of them: links lost */
+  lost: number
+  /** tracks in the tile: hostile, suspect, unknown, neutral, assumed friend */
+  tk: [number, number, number, number, number]
+}
+
+export interface Clusters {
+  /** the tile zoom the cells are at (web mercator tiles) */
+  z: number
+  cells: Cluster[]
+}
+
+/** What the console looks at, sent to the bridge (`/ws?lod=1`): the map's bounds (w, s, e,
+ *  n) and zoom, and the vehicles it wants at full detail whatever the view. */
+export interface ViewSubscription {
+  bounds: [number, number, number, number] | null
+  zoom: number
+  pin: number[]
 }
 
 export const LIFECYCLE: OpState[] = ['queued', 'sent', 'acked', 'active', 'done']
@@ -161,5 +243,5 @@ export function staleMs(v: Pick<Vehicle, 'link'>): number {
 }
 
 export function isStale(v: Pick<Vehicle, 'link'>): boolean {
-  return (v.link.since_last_ms ?? 0) > staleMs(v)
+  return v.link.stale ?? (v.link.since_last_ms ?? 0) > staleMs(v)
 }

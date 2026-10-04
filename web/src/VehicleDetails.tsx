@@ -1,14 +1,17 @@
 import { useEffect } from 'react'
 import { LINKS, PROTOCOLS, type Protocol } from './catalogLabels'
+import { BASIS_LABEL, estimateAt, failsafeAt, flatBearing, flatDistance, regionText } from './estimate'
 import { type EmuDir, emuCause, fmtBps, fmtDuration, useEmuLink } from './linkEmu'
 import { symbolSvg } from './symbols'
 import { orbitRange, usePlatformLimits } from './taskDefaults'
-import type { Tasking, TelemetryPlan, Vehicle } from './types'
-import { callsign, DOMAIN_LABEL, domainOf, isStale } from './types'
+import type { Estimate, Tasking, TelemetryPlan, Vehicle } from './types'
+import { callsign, DOMAIN_LABEL, domainOf, isStale, staleMs } from './types'
 
 interface Props {
   v: Vehicle
   taskings: Tasking[]
+  /** bridge clock, ms (useBridgeClock): the estimate of a silent vehicle advances with it */
+  now: () => number
   selected: boolean
   onToggleSelect: () => void
   onClose: () => void
@@ -134,9 +137,58 @@ function EmuItems({ uid }: { uid: number }) {
   )
 }
 
+const fmtLL = (p: [number, number]) => `${p[1].toFixed(5)}, ${p[0].toFixed(5)}`
+const fmtM = (m: number) => (m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.round(m)} m`)
+
+/** Where a silent vehicle probably is (bridge `estimate`, murmur-4y9): last known against the
+ *  estimate, what the estimate rests on, how uncertain it is, and the lost-link branch. */
+function EstimateItems({ v, e, nowMs }: { v: Vehicle; e: Estimate; nowMs: number }) {
+  if (!v.position) return null
+  const at = estimateAt(e, nowMs)
+  const silent = (v.link.since_last_ms ?? 0) / 1000
+  const away = flatDistance(v.position, at.position)
+  const fs = e.failsafe
+  const branch = failsafeAt(e, nowMs)
+  return (
+    <>
+    <dl>
+      <Item k="Silent">
+        <b className="bad">{fmtDuration(silent)}</b> <span className="muted">(lost after {Math.round(staleMs(v) / 1000)} s)</span>
+      </Item>
+      <Item k="Last known">{fmtLL(v.position)}</Item>
+      <Item k="Estimated" title="The bridge's motion model for this silence, evaluated now">
+        {fmtLL(at.position)}
+        {away >= 1 ? ` · ${fmtM(away)} on ${String(Math.round(flatBearing(v.position, at.position))).padStart(3, '0')}° from last known` : ' · where it was'}
+      </Item>
+      <Item k="Basis" title="What the estimate rests on, in order: the current task, the mode, the last velocity, else stationary">
+        {BASIS_LABEL[e.basis]}: {e.detail}
+      </Item>
+      <Item k="Uncertainty" title={`Grows with the silence (platform top speed ${Math.round(e.reach_mps)} m/s, capped at ${fmtM(e.cap_m)}); about two sigma`}>
+        {regionText(at.region)}
+      </Item>
+      {e.note && <Item k="Note">{e.note}</Item>}
+      {fs && (
+        <Item k="Lost link" title="The platform's GCS failsafe timer for its link profile (sim/links.toml lost_link_s) and what its firmware does when it fires">
+          {branch ? (
+            <>
+              <b className="warn">{fs.action.toUpperCase()} since {fmtDuration(nowMs / 1000 - fs.fires_t)}</b> if it lost us too (timer {Math.round(fs.after_s)} s, {fs.profile}) · est. {fmtLL(branch.position)} · {regionText(branch.region)}
+            </>
+          ) : (
+            <>
+              {fs.action.toUpperCase()} in {fmtDuration(fs.fires_t - nowMs / 1000)} if it lost us too (timer {Math.round(fs.after_s)} s, {fs.profile})
+            </>
+          )}
+        </Item>
+      )}
+    </dl>
+    <p className="muted">Situational awareness only: the decision core keeps its own friendly-uncertainty model and does not read this.</p>
+    </>
+  )
+}
+
 /** Everything known about one vehicle: identity, live state, link, platform limits and its
  *  current task. Opened by clicking a fleet row; selecting for tasking is a separate control. */
-export function VehicleDetails({ v, taskings, selected, onToggleSelect, onClose, following, onFollow, onEngage }: Props) {
+export function VehicleDetails({ v, taskings, now, selected, onToggleSelect, onClose, following, onFollow, onEngage }: Props) {
   const limits = usePlatformLimits()
   const p = v.identity ? limits?.get(v.identity.platform) : undefined
   const stale = isStale(v)
@@ -217,6 +269,13 @@ export function VehicleDetails({ v, taskings, selected, onToggleSelect, onClose,
           <Item k="Domain">{DOMAIN_LABEL[domain]}</Item>
         </dl>
       </section>
+
+      {stale && v.estimate && (
+        <section>
+          <h4>Estimate</h4>
+          <EstimateItems v={v} e={v.estimate} nowMs={now()} />
+        </section>
+      )}
 
       <section>
         <h4>Link</h4>

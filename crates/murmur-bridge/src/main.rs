@@ -24,6 +24,7 @@ mod clock;
 mod cot;
 mod decision;
 mod emu;
+mod estimate;
 mod geo;
 mod heartbeat;
 mod link;
@@ -116,11 +117,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let listener = TcpListener::bind(("127.0.0.1", http_port)).await?;
     println!("murmur-bridge on http://127.0.0.1:{http_port}");
+    let lod = push::LodSettings::from_env();
+    println!(
+        "console feed: level of detail above {} vehicles, clusters above {} in view (/ws?lod=1)",
+        lod.min_fleet, lod.max_full
+    );
     let api = api::router(api::App {
         world: world.clone(),
         frames,
         decision: decision.clone(),
         tracks,
+        lod,
     })
     .merge(emu::router(emu));
     // the MCP server for agents: in-process AgentPorts, read-only reuse of the API above

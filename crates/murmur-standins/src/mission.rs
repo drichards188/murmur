@@ -2,10 +2,12 @@
 //!
 //! The walker follows ArduPilot's AP_Mission and each firmware's start_command/verify_command
 //! (ArduPlane/commands_logic.cpp, Rover/mode_auto.cpp, ArduSub/commands_logic.cpp):
-//! DO_ and CONDITION_ items run as they are passed and are never flown to, navigation items a
-//! firmware doesn't support are skipped with "Skipping invalid cmd #<id>", and when the
-//! mission runs out each firmware does its own thing (Plane: RTL; Rover and Sub: hold at the
-//! last waypoint, in AUTO).
+//! "Mission: N Type" as each command starts (AP_Mission::start_command, again when AUTO is
+//! re-entered or the GCS sets the current item), DO_ and CONDITION_ items run as they are
+//! passed and are never flown to (with the firmware's own text, Plane's "Set airspeed N m/s",
+//! Rover's "speed: N.N m/s"), navigation items a firmware doesn't support are skipped with
+//! "Skipping invalid cmd #<id>", and when the mission runs out each firmware does its own
+//! thing (Plane: RTL; Rover and Sub: hold at the last waypoint, in AUTO).
 
 use std::collections::HashMap;
 
@@ -14,7 +16,7 @@ use mavlink::dialects::ardupilotmega::{
     MissionState,
 };
 
-use crate::behavior::Firmware;
+use crate::behavior::{Firmware, apmission};
 use crate::geo::distance_m;
 use crate::kinematics::{Out, State, Target, TargetKind};
 
@@ -70,7 +72,7 @@ impl Default for NavCfg {
 pub struct Mission {
     pub items: Vec<MISSION_ITEM_INT_DATA>,
     pub seq: u16,
-    /// DO_JUMP repeats left, by the jump item's seq
+    /// how often each DO_JUMP has run, by the jump item's seq (AP_Mission's jump tracking)
     pub jumps: HashMap<u16, i32>,
     pub upload: Option<Upload>,
     pub fence: Vec<MISSION_ITEM_INT_DATA>,
@@ -80,11 +82,10 @@ pub struct Mission {
     pub speed: Option<f64>,
     /// AUTO ran out of items (AP_Mission MISSION_COMPLETE)
     pub complete: bool,
-    /// events from the walker itself (texts, MISSION_CURRENT, mode changes), sent after the
-    /// tick like the behavior's own
-    pub out: Vec<Out>,
     /// DO_SET_HOME passed: (lat, lon, alt)
     pub new_home: Option<(f64, f64, f64)>,
+    /// the navigation item whose start AP_Mission has announced ("Mission: N WP")
+    announced: Option<u16>,
     /// timed item in progress: (seq, arrived at)
     loiter: Option<(u16, f64)>,
     last_nav: Option<(f64, f64, f64)>,
@@ -180,20 +181,51 @@ impl Mission {
         self.items.len().saturating_sub(1) as u16
     }
 
-    pub fn reached(&mut self, out: &mut Vec<Out>) {
-        self.reached_at(out, 0.0);
-    }
-
     /// A waypoint reached at `dist` metres: MISSION_ITEM_REACHED and the firmware's text.
-    pub fn reached_at(&mut self, out: &mut Vec<Out>, dist: f64) {
-        out.push(Out::ItemReached(self.seq));
+    pub fn reached_at(&mut self, st: &State, out: &mut Vec<Out>, dist: f64) {
         let text = match self.cfg.firmware {
             Firmware::Plane => format!("Reached waypoint #{} dist {}m", self.seq, dist.round()),
             Firmware::Sub => format!("Reached command #{}", self.seq),
             _ => format!("Reached waypoint #{}", self.seq),
         };
-        out.push(Out::Text(MavSeverity::MAV_SEVERITY_INFO, text));
-        self.advance(out);
+        self.nav_done(st, out, Some(text));
+    }
+
+    /// A takeoff item done at `rel_alt` metres above home: ArduPlane's text (every firmware
+    /// sends MISSION_ITEM_REACHED for it, as for any navigation command).
+    pub fn takeoff_done(&mut self, st: &State, out: &mut Vec<Out>, rel_alt: f64) {
+        let text = (self.cfg.firmware == Firmware::Plane)
+            .then(|| format!("Takeoff complete at {rel_alt:.2}m"));
+        self.nav_done(st, out, text);
+    }
+
+    /// The current navigation item is done: MISSION_ITEM_REACHED, the firmware's text, and the
+    /// DO commands right after it, which AP_Mission starts and completes in the same update
+    /// (seen in SITL: their MISSION_ITEM_REACHED takes the waypoint's place, GCS_MAVLINK
+    /// keeping one deferred index). Then the next navigation item is the current one.
+    pub fn nav_done(&mut self, st: &State, out: &mut Vec<Out>, text: Option<String>) {
+        let at = out.len();
+        let mut reached = self.seq;
+        if let Some(text) = text {
+            out.push(Out::Text(MavSeverity::MAV_SEVERITY_INFO, text));
+        }
+        self.seq = self.seq.saturating_add(1);
+        self.loiter = None;
+        while let Some(it) = self.items.get(usize::from(self.seq)).cloned() {
+            if is_nav(it.command) || it.command == MavCmd::MAV_CMD_DO_JUMP {
+                break;
+            }
+            apmission::started(self.seq, it.command, out);
+            if let Some(text) = self.do_command(&it, st) {
+                out.push(Out::Text(MavSeverity::MAV_SEVERITY_INFO, text));
+            }
+            reached = self.seq;
+            self.seq += 1;
+        }
+        out.insert(at, Out::ItemReached(reached));
+        // past the last item the mission is over, and AP_Mission keeps reporting the last one
+        // (the walker settles on it in `finish`)
+        out.push(Out::MissionCurrent(self.seq.min(self.last())));
     }
 
     /// Install a completed upload. Same bookkeeping as ArduPilot: the current item stays 0
@@ -208,6 +240,7 @@ impl Mission {
         self.jumps.clear();
         self.speed = None;
         self.complete = false;
+        self.announced = None;
         self.loiter = None;
         self.last_nav = None;
         self.end_point = None;
@@ -225,13 +258,33 @@ impl Mission {
             self.seq = if self.present() { 1 } else { 0 };
             self.restart_state();
         }
+        // resuming restarts the current command (AP_Mission::resume): it is announced again
+        self.announced = None;
         self.loiter = None;
+    }
+
+    /// Entering AUTO, AP_Mission starts the current navigation command in the mode change
+    /// itself, so its "Mission: N Type" precedes the COMMAND_ACK (and anything the GCS sends
+    /// next); the walker on the following tick then has nothing to announce.
+    pub fn announce_current(&mut self, out: &mut Vec<Out>) {
+        if self.complete || !self.present() {
+            return;
+        }
+        let seq = self.seq.max(1);
+        if self.announced != Some(seq)
+            && let Some(it) = self.items.get(usize::from(seq))
+            && is_nav(it.command)
+        {
+            self.announced = Some(seq);
+            apmission::started(seq, it.command, out);
+        }
     }
 
     /// DO_SET_MISSION_CURRENT / MISSION_SET_CURRENT.
     pub fn set_current(&mut self, seq: u16) {
         self.seq = seq;
         self.complete = false;
+        self.announced = None;
         self.loiter = None;
         self.end_point = None;
     }
@@ -268,13 +321,16 @@ impl Mission {
 
     /// The target for AUTO: run DO items and DO_JUMPs up to the current navigation item.
     /// `hold_r` is the behavior's circle for holding (fixed wing) or 0 (it can stop),
-    /// `loiter_default` its loiter radius when an item gives none.
+    /// `loiter_default` its loiter radius when an item gives none. What AP_Mission says and
+    /// does on the way (texts, MISSION_CURRENT, a mode change at the end) goes to `out`, in
+    /// order with the behavior's own events.
     pub fn auto_target(
         &mut self,
         st: &State,
         cruise: f64,
         hold_r: f64,
         loiter_default: f64,
+        out: &mut Vec<Out>,
     ) -> Target {
         if self.complete {
             return self.end_hold(st, cruise, hold_r);
@@ -284,7 +340,13 @@ impl Mission {
         let n = self.items.len();
         // AP_Mission gives up on DO_JUMP cycles with no navigation item; so does this
         let mut budget = 4 * n + 16;
-        while (self.seq as usize) < n && budget > 0 {
+        // DO commands passed on the way complete at once; one MISSION_ITEM_REACHED for the
+        // last of them (see `complete_nav`)
+        let mut reached = None;
+        let target = loop {
+            if (self.seq as usize) >= n || budget == 0 {
+                break None;
+            }
             budget -= 1;
             if self.seq == 0 {
                 self.seq = 1;
@@ -292,24 +354,36 @@ impl Mission {
             }
             let it = self.items[self.seq as usize].clone();
             if it.command == MavCmd::MAV_CMD_DO_JUMP {
-                let left = *self.jumps.get(&self.seq).unwrap_or(&(it.param2 as i32));
-                if left == 0 {
+                // AP_Mission::get_next_cmd: run it while it has repeats left, saying so each
+                // time; a finished loop's counter is zeroed, so it repeats if reached again
+                let times = it.param2 as i32;
+                let runs = self.jumps.entry(self.seq).or_insert(0);
+                if times < 0 || *runs < times {
+                    *runs += 1;
+                    let text = apmission::jump_text(self.seq, *runs, times);
+                    out.push(Out::Text(MavSeverity::MAV_SEVERITY_INFO, text));
+                    self.seq = it.param1 as u16;
+                } else {
+                    *runs = 0;
                     self.seq += 1;
-                    continue;
                 }
-                if left > 0 {
-                    self.jumps.insert(self.seq, left - 1);
-                }
-                self.seq = it.param1 as u16;
                 continue;
             }
             if !is_nav(it.command) {
-                self.do_command(&it, st);
+                apmission::started(self.seq, it.command, out);
+                if let Some(text) = self.do_command(&it, st) {
+                    out.push(Out::Text(MavSeverity::MAV_SEVERITY_INFO, text));
+                }
+                reached = Some(self.seq);
                 self.seq += 1;
                 continue;
             }
+            if self.announced != Some(self.seq) {
+                self.announced = Some(self.seq);
+                apmission::started(self.seq, it.command, out);
+            }
             if !supported(fw, it.command) {
-                self.out.push(Out::Text(
+                out.push(Out::Text(
                     MavSeverity::MAV_SEVERITY_WARNING,
                     format!("Skipping invalid cmd #{}", it.command as u32),
                 ));
@@ -320,15 +394,20 @@ impl Mission {
                 self.seq += 1;
                 continue;
             }
-            let target = self.nav_target(&it, st, cruise, hold_r, loiter_default);
-            self.last_nav = Some((target.lat, target.lon, target.alt));
-            if self.seq != entry {
-                self.out.push(Out::MissionCurrent(self.seq));
-            }
-            return target;
+            break Some(self.nav_target(&it, st, cruise, hold_r, loiter_default, out));
+        };
+        if let Some(seq) = reached {
+            out.push(Out::ItemReached(seq));
         }
-        self.finish(st);
-        self.end_hold(st, cruise, hold_r)
+        let Some(target) = target else {
+            self.finish(st, out);
+            return self.end_hold(st, cruise, hold_r);
+        };
+        self.last_nav = Some((target.lat, target.lon, target.alt));
+        if self.seq != entry {
+            out.push(Out::MissionCurrent(self.seq));
+        }
+        target
     }
 
     fn nav_target(
@@ -338,6 +417,7 @@ impl Mission {
         cruise: f64,
         hold_r: f64,
         loiter_default: f64,
+        out: &mut Vec<Out>,
     ) -> Target {
         use MavCmd::*;
         let fw = self.cfg.firmware;
@@ -383,7 +463,7 @@ impl Mission {
             }
             MAV_CMD_NAV_RETURN_TO_LAUNCH if fw == Firmware::Plane => {
                 // ArduPlane switches to RTL mode
-                self.out.push(Out::SetMode("RTL"));
+                out.push(Out::SetMode("RTL"));
                 t(st.home.0, st.home.1, st.alt, hold_r, TargetKind::Rtl)
             }
             MAV_CMD_NAV_RETURN_TO_LAUNCH => {
@@ -413,6 +493,7 @@ impl Mission {
                     st,
                     t(lat, lon, alt, r, TargetKind::Loiter),
                     f64::from(it.param1),
+                    out,
                 )
             }
             MAV_CMD_NAV_LOITER_TURNS => {
@@ -420,25 +501,26 @@ impl Mission {
                 let r = circle(it.param3).max(1.0);
                 let lap = std::f64::consts::TAU * r / speed.max(0.1);
                 let tgt = t(lat, lon, alt, r, TargetKind::Loiter);
-                self.timed(st, tgt, f64::from(it.param1).max(0.0) * lap)
+                self.timed(st, tgt, f64::from(it.param1).max(0.0) * lap, out)
             }
             MAV_CMD_NAV_DELAY => {
                 let r = if hold_r == 0.0 { 0.0 } else { hold_r };
                 let here = t(st.lat, st.lon, st.alt, r, TargetKind::Loiter);
-                self.timed(st, here, f64::from(it.param1).max(0.0))
+                self.timed(st, here, f64::from(it.param1).max(0.0), out)
             }
             // Rover / Sub / Copter: param1 of a waypoint is a hold time there, s
             MAV_CMD_NAV_WAYPOINT if fw != Firmware::Plane && it.param1 > 0.0 => self.timed(
                 st,
                 t(lat, lon, alt, 0.0, TargetKind::Loiter),
                 f64::from(it.param1),
+                out,
             ),
             _ => t(lat, lon, alt, 0.0, TargetKind::Waypoint),
         }
     }
 
     /// Hold `tgt` for `secs` once there, then complete the item.
-    fn timed(&mut self, st: &State, tgt: Target, secs: f64) -> Target {
+    fn timed(&mut self, st: &State, tgt: Target, secs: f64, out: &mut Vec<Out>) -> Target {
         let now = self.cfg.now;
         let dist = distance_m(st.lat, st.lon, tgt.lat, tgt.lon);
         let tol = self.cfg.wp_radius.max(tgt.radius * 0.25);
@@ -450,10 +532,7 @@ impl Mission {
         match self.loiter {
             Some((seq, since)) if seq == self.seq => {
                 if now - since >= secs {
-                    let mut out = std::mem::take(&mut self.out);
-                    out.push(Out::ItemReached(self.seq));
-                    self.advance(&mut out);
-                    self.out = out;
+                    self.nav_done(st, out, None);
                 }
             }
             _ if there => {
@@ -466,7 +545,7 @@ impl Mission {
                     )
                 });
                 if self.cfg.firmware == Firmware::Rover && waits {
-                    self.out.push(Out::Text(
+                    out.push(Out::Text(
                         MavSeverity::MAV_SEVERITY_INFO,
                         format!(
                             "Reached waypoint #{}. Loiter for {} seconds",
@@ -481,11 +560,21 @@ impl Mission {
         tgt
     }
 
-    fn do_command(&mut self, it: &MISSION_ITEM_INT_DATA, st: &State) {
+    /// Run a DO_ / CONDITION_ item; the firmware's text about it, if it says one.
+    fn do_command(&mut self, it: &MISSION_ITEM_INT_DATA, st: &State) -> Option<String> {
         match it.command {
-            // param2: speed, m/s; -1 (or 0) = no change
+            // param2: speed, m/s; -1 (or 0) = no change. Plane says what it set
+            // (Plane::do_change_speed), Rover too (ModeAuto::do_change_speed), Sub nothing
             MavCmd::MAV_CMD_DO_CHANGE_SPEED if it.param2 > 0.0 => {
                 self.speed = Some(f64::from(it.param2).min(self.cfg.max_speed));
+                match self.cfg.firmware {
+                    Firmware::Plane if it.param1 == 1.0 => {
+                        Some(format!("Set groundspeed {}", it.param2 as u32))
+                    }
+                    Firmware::Plane => Some(format!("Set airspeed {} m/s", it.param2 as u32)),
+                    Firmware::Rover => Some(format!("speed: {:.1} m/s", it.param2)),
+                    _ => None,
+                }
             }
             MavCmd::MAV_CMD_DO_SET_HOME => {
                 self.new_home = Some(if it.param1 == 1.0 || (it.x == 0 && it.y == 0) {
@@ -497,27 +586,28 @@ impl Mission {
                         f64::from(it.z),
                     )
                 });
+                None
             }
             // every other DO_ / CONDITION_ item: done (or not modelled), never flown
-            _ => {}
+            _ => None,
         }
     }
 
     /// The mission ran out (exit_mission / exit_mission_callback). The current item stays the
     /// last one, as AP_Mission keeps reporting it.
-    fn finish(&mut self, st: &State) {
+    fn finish(&mut self, st: &State, out: &mut Vec<Out>) {
         self.complete = true;
         self.seq = self.last();
         self.end_point = self.last_nav.or(Some((st.lat, st.lon, st.alt)));
         match self.cfg.firmware {
             Firmware::Plane => {
-                self.out.push(Out::SetMode("RTL"));
-                self.out.push(Out::Text(
+                out.push(Out::SetMode("RTL"));
+                out.push(Out::Text(
                     MavSeverity::MAV_SEVERITY_INFO,
                     "Mission complete, changing mode to RTL".into(),
                 ));
             }
-            Firmware::Rover => self.out.push(Out::Text(
+            Firmware::Rover => out.push(Out::Text(
                 MavSeverity::MAV_SEVERITY_NOTICE,
                 "Mission Complete".into(),
             )),
@@ -556,7 +646,9 @@ impl Mission {
         })
     }
 
-    /// One item for a download. Item 0 of the mission is the current home, absolute altitude.
+    /// One item for a download, as AP_Mission::mission_cmd_to_mavlink_int reports what it
+    /// stored: item 0 of the mission is the current home (absolute altitude), commands without
+    /// a location are in the global frame, and NAV_LAND's param4 is its yaw direction (+-1).
     pub fn download_item(
         &self,
         ty: MavMissionType,
@@ -581,7 +673,14 @@ impl Mission {
         it.seq = seq;
         it.mission_type = ty;
         it.current = 0;
-        it.frame = plain_frame(it.frame);
+        it.frame = if is_nav(it.command) {
+            plain_frame(it.frame)
+        } else {
+            MavFrame::MAV_FRAME_GLOBAL
+        };
+        if it.command == MavCmd::MAV_CMD_NAV_LAND {
+            it.param4 = if it.param4 < 0.0 { -1.0 } else { 1.0 };
+        }
         Some(it)
     }
 
@@ -687,6 +786,7 @@ mod tests {
 
     #[test]
     fn do_jump_repeats_then_falls_through() {
+        let mut out = Vec::new();
         let jump = MavCmd::MAV_CMD_DO_JUMP;
         let mut m = mission(
             Firmware::Rover,
@@ -698,29 +798,31 @@ mod tests {
             ],
         );
         let st = state();
-        assert_eq!(m.auto_target(&st, 5.0, 0.0, 200.0).alt, 60.0);
+        assert_eq!(m.auto_target(&st, 5.0, 0.0, 200.0, &mut out).alt, 60.0);
         m.seq = 2;
-        m.auto_target(&st, 5.0, 0.0, 200.0);
+        m.auto_target(&st, 5.0, 0.0, 200.0, &mut out);
         assert_eq!(m.seq, 1, "first pass jumps back");
         m.seq = 2;
-        m.auto_target(&st, 5.0, 0.0, 200.0);
+        m.auto_target(&st, 5.0, 0.0, 200.0, &mut out);
         assert_eq!(m.seq, 3, "repeat count used up");
     }
 
     #[test]
     fn jump_cycle_without_navigation_does_not_hang() {
+        let mut out = Vec::new();
         let jump = MavCmd::MAV_CMD_DO_JUMP;
         let mut m = mission(
             Firmware::Rover,
             vec![wp(0, NAV, 0., 0.), wp(1, jump, 1., -1.)],
         );
-        let t = m.auto_target(&state(), 5.0, 0.0, 200.0);
+        let t = m.auto_target(&state(), 5.0, 0.0, 200.0, &mut out);
         assert_eq!(t.kind, TargetKind::Hold);
         assert!(m.complete);
     }
 
     #[test]
     fn do_items_are_run_not_flown() {
+        let mut out = Vec::new();
         let mut speed = wp(1, MavCmd::MAV_CMD_DO_CHANGE_SPEED, 1., 3.5);
         speed.x = 0;
         speed.y = 0;
@@ -731,16 +833,17 @@ mod tests {
             Firmware::Rover,
             vec![wp(0, NAV, 0., 0.), speed, servo, wp(3, NAV, 0., 0.)],
         );
-        let t = m.auto_target(&state(), 5.0, 0.0, 200.0);
+        let t = m.auto_target(&state(), 5.0, 0.0, 200.0, &mut out);
         assert_eq!(m.seq, 3);
         assert_eq!(t.kind, TargetKind::Waypoint);
         assert!((t.lat - 37.803).abs() < 1e-9, "flies to item 3, not to 0,0");
         assert_eq!(t.speed, 3.5, "DO_CHANGE_SPEED applied");
-        assert!(m.out.contains(&Out::MissionCurrent(3)));
+        assert!(out.contains(&Out::MissionCurrent(3)));
     }
 
     #[test]
     fn unsupported_nav_items_are_skipped_with_ardupilots_text() {
+        let mut out = Vec::new();
         let mut m = mission(
             Firmware::Rover,
             vec![
@@ -749,9 +852,9 @@ mod tests {
                 wp(2, NAV, 0., 0.),
             ],
         );
-        m.auto_target(&state(), 5.0, 0.0, 200.0);
+        m.auto_target(&state(), 5.0, 0.0, 200.0, &mut out);
         assert_eq!(m.seq, 2);
-        assert!(m.out.contains(&Out::Text(
+        assert!(out.contains(&Out::Text(
             MavSeverity::MAV_SEVERITY_WARNING,
             "Skipping invalid cmd #22".into()
         )));
@@ -759,6 +862,7 @@ mod tests {
 
     #[test]
     fn loiter_time_holds_then_moves_on() {
+        let mut out = Vec::new();
         let mut st = state();
         let mut m = mission(
             Firmware::Rover,
@@ -769,47 +873,75 @@ mod tests {
             ],
         );
         st.lat = 37.801; // at item 1
-        let t = m.auto_target(&st, 5.0, 0.0, 200.0);
+        let t = m.auto_target(&st, 5.0, 0.0, 200.0, &mut out);
         assert_eq!(
             (t.kind, t.radius),
             (TargetKind::Loiter, 0.0),
             "a boat holds the point"
         );
         m.cfg.now = 29.0;
-        m.auto_target(&st, 5.0, 0.0, 200.0);
+        m.auto_target(&st, 5.0, 0.0, 200.0, &mut out);
         assert_eq!(m.seq, 1);
         m.cfg.now = 30.5;
-        m.auto_target(&st, 5.0, 0.0, 200.0);
+        m.auto_target(&st, 5.0, 0.0, 200.0, &mut out);
         assert_eq!(m.seq, 2);
-        assert!(m.out.contains(&Out::ItemReached(1)));
+        assert!(out.contains(&Out::ItemReached(1)));
+    }
+
+    #[test]
+    fn a_hold_time_waypoint_before_a_jump_is_reported_reached() {
+        let mut out = Vec::new();
+        let mut st = state();
+        let mut m = mission(
+            Firmware::Rover,
+            vec![
+                wp(0, NAV, 0., 0.),
+                wp(1, NAV, 5., 0.),
+                wp(2, MavCmd::MAV_CMD_DO_JUMP, 1., 1.),
+            ],
+        );
+        st.lat = 37.801; // at item 1
+        m.auto_target(&st, 5.0, 0.0, 200.0, &mut out);
+        assert_eq!(m.seq, 1);
+        m.cfg.now = 6.0;
+        m.auto_target(&st, 5.0, 0.0, 200.0, &mut out);
+        assert!(out.contains(&Out::ItemReached(1)), "{out:?}");
+        assert_eq!(m.seq, 2, "on the jump, run next tick");
+        m.auto_target(&st, 5.0, 0.0, 200.0, &mut out);
+        assert_eq!(m.seq, 1, "jumped back");
+        assert!(out.contains(&Out::Text(
+            MavSeverity::MAV_SEVERITY_INFO,
+            "Mission: 2 Jump 1/1".into()
+        )));
     }
 
     #[test]
     fn mission_end_per_firmware() {
+        let mut out = Vec::new();
         let items = || vec![wp(0, NAV, 0., 0.), wp(1, NAV, 0., 0.)];
         let st = state();
         // Rover: holds at the last waypoint, not where AUTO started
         let mut m = mission(Firmware::Rover, items());
         m.seq = 2;
-        let t = m.auto_target(&st, 5.0, 0.0, 200.0);
+        let t = m.auto_target(&st, 5.0, 0.0, 200.0, &mut out);
         assert_eq!(t.kind, TargetKind::Hold);
         assert!(m.complete);
         assert!((t.lat - st.lat).abs() < 1e-9, "no waypoint flown yet: here");
         let mut m = mission(Firmware::Rover, items());
-        let first = m.auto_target(&st, 5.0, 0.0, 200.0);
+        let first = m.auto_target(&st, 5.0, 0.0, 200.0, &mut out);
         m.seq = 2;
-        let t = m.auto_target(&st, 5.0, 0.0, 200.0);
+        let t = m.auto_target(&st, 5.0, 0.0, 200.0, &mut out);
         assert_eq!((t.lat, t.lon, t.radius), (first.lat, first.lon, 0.0));
         assert!(
-            m.out
+            out
                 .iter()
                 .any(|o| matches!(o, Out::Text(_, s) if s == "Mission Complete"))
         );
         // Plane: RTL
         let mut m = mission(Firmware::Plane, items());
         m.seq = 2;
-        m.auto_target(&st, 5.0, 300.0, 300.0);
-        assert!(m.out.contains(&Out::SetMode("RTL")));
+        m.auto_target(&st, 5.0, 300.0, 300.0, &mut out);
+        assert!(out.contains(&Out::SetMode("RTL")));
         // entering AUTO again restarts a finished mission
         m.start_or_resume(false);
         assert_eq!((m.seq, m.complete), (1, false));
@@ -817,6 +949,7 @@ mod tests {
 
     #[test]
     fn a_mission_is_at_item_0_until_it_starts_and_keeps_its_last_item_at_the_end() {
+        let mut out = Vec::new();
         let items = || vec![wp(0, NAV, 0., 0.), wp(1, NAV, 0., 0.), wp(2, NAV, 0., 0.)];
         let st = state();
         let mut m = mission(Firmware::Rover, items());
@@ -824,9 +957,9 @@ mod tests {
             m.seq, 0,
             "installed, not started: AP_Mission has no current command"
         );
-        m.auto_target(&st, 5.0, 0.0, 200.0);
+        m.auto_target(&st, 5.0, 0.0, 200.0, &mut out);
         assert_eq!(m.seq, 1, "AUTO starts at item 1");
-        assert!(m.out.contains(&Out::MissionCurrent(1)));
+        assert!(out.contains(&Out::MissionCurrent(1)));
         // both items done: the walker runs off the end, the current item stays the last one
         let mut out = Vec::new();
         m.advance(&mut out);
@@ -836,12 +969,13 @@ mod tests {
             Some(&Out::MissionCurrent(2)),
             "never reports past the end"
         );
-        let t = m.auto_target(&st, 5.0, 0.0, 200.0);
+        let t = m.auto_target(&st, 5.0, 0.0, 200.0, &mut out);
         assert_eq!((m.seq, m.complete, t.kind), (2, true, TargetKind::Hold));
     }
 
     #[test]
     fn plane_mission_rtl_item_switches_mode_rover_flies_home() {
+        let mut out = Vec::new();
         let items = || {
             vec![
                 wp(0, NAV, 0., 0.),
@@ -850,11 +984,11 @@ mod tests {
         };
         let st = state();
         let mut p = mission(Firmware::Plane, items());
-        let t = p.auto_target(&st, 5.0, 300.0, 300.0);
+        let t = p.auto_target(&st, 5.0, 300.0, 300.0, &mut out);
         assert_eq!(t.kind, TargetKind::Rtl);
-        assert!(p.out.contains(&Out::SetMode("RTL")));
+        assert!(out.contains(&Out::SetMode("RTL")));
         let mut r = mission(Firmware::Rover, items());
-        let t = r.auto_target(&st, 5.0, 0.0, 300.0);
+        let t = r.auto_target(&st, 5.0, 0.0, 300.0, &mut out);
         assert_eq!((t.kind, t.lat, t.lon), (TargetKind::Waypoint, 37.8, -122.5));
     }
 

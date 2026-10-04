@@ -2,11 +2,16 @@
 //!
 //! GCS: only heartbeats from MAV_GCS_SYSID count, and nothing triggers before the first one
 //! (GCS_MAVLINK::handle_heartbeat, sysid_mygcs_seen). Then, per firmware:
-//! - Plane (FS_GCS_ENABL, FS_LONG_TIMEOUT, FS_LONG_ACTN; events.cpp failsafe_long_on_event):
-//!   in AUTO/GUIDED continue (FS_LONG_ACTN 0) or RTL (1); in other modes RTL; "GCS Failsafe On:
+//! - Plane (FS_GCS_ENABL, FS_LONG_TIMEOUT, FS_LONG_ACTN; events.cpp failsafe_long_on_event,
+//!   system.cpp check_long_failsafe): armed or not, except in the landing flight stage; in
+//!   AUTO/GUIDED continue (FS_LONG_ACTN 0) or RTL (1); in other modes RTL; "GCS Failsafe On:
 //!   switched to <mode>", later "GCS Failsafe Cleared".
 //! - Rover (FS_GCS_ENABLE, FS_GCS_TIMEOUT, then FS_TIMEOUT, FS_ACTION; failsafe.cpp
-//!   failsafe_trigger): not in RTL or HOLD; "GCS Failsafe", "GCS Failsafe Cleared".
+//!   failsafe_trigger): not in RTL or HOLD, armed or not. Announced as "Radio Failsafe": the
+//!   text names whichever check calls failsafe_trigger first once FS_TIMEOUT has passed, and
+//!   the radio check (50 Hz, on while FS_THR_ENABLE is set) beats the GCS check (10 Hz) to it
+//!   (seen in the motorboat SITL); "GCS Failsafe" with the radio failsafe off. Cleared by the
+//!   GCS check alone: "GCS Failsafe Cleared".
 //! - Copter (FS_GCS_ENABLE action, FS_GCS_TIMEOUT, FS_OPTIONS; events.cpp
 //!   failsafe_gcs_on_event): armed, "GCS Failsafe", then RTL (1, 2), SmartRTL or RTL (3),
 //!   SmartRTL or Land (4), Land (5), AUTO_RTL or RTL (6), Brake or Land (7), each falling back
@@ -285,7 +290,10 @@ impl Vehicle {
             Firmware::Plane => {
                 let enabled = p(self, "FS_GCS_ENABL", 0.0) != 0.0;
                 let lost = enabled && self.gcs_lost(now, p(self, "FS_LONG_TIMEOUT", 5.0));
-                if lost && !self.fs.gcs && self.st.armed {
+                // flight_stage LAND: a landing in progress is never interrupted
+                let landing =
+                    self.st.mode == "AUTO" && self.mission.landing() && !self.mission.complete;
+                if lost && !self.fs.gcs && !landing {
                     self.fs.gcs = true;
                     GCS_FAILSAFES.fetch_add(1, Ordering::Relaxed);
                     let action = p(self, "FS_LONG_ACTN", 0.0) as i64;
@@ -332,7 +340,12 @@ impl Vehicle {
                 }
                 self.fs.gcs = true;
                 GCS_FAILSAFES.fetch_add(1, Ordering::Relaxed);
-                self.text(WARN, "GCS Failsafe");
+                let announced = if p(self, "FS_THR_ENABLE", 1.0) != 0.0 {
+                    "Radio Failsafe"
+                } else {
+                    "GCS Failsafe"
+                };
+                self.text(WARN, announced);
                 if mode == "AUTO" && enable == 2 {
                     self.text(WARN, "Failsafe - Continuing Auto Mode");
                 } else {

@@ -84,6 +84,9 @@ pub struct StatusText {
 pub struct VehicleSnapshot {
     pub uid: Uid,
     pub sysid: u8,
+    /// The push layer takes this out before serializing (it goes to each client once,
+    /// `push.rs`), so a snapshot without one has no `identity` key.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub identity: Option<Arc<Identity>>,
     pub kind: Option<Kind>,
     pub mode: Option<String>,
@@ -109,6 +112,10 @@ pub struct VehicleSnapshot {
     pub home: Option<[f64; 2]>,
     pub link: LinkSnapshot,
     pub statustext: Vec<StatusText>,
+    /// Where the vehicle probably is while its link is silent (`crate::estimate`): set by the
+    /// push frame for vehicles past their stale threshold, absent otherwise. Display only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimate: Option<crate::estimate::Estimate>,
 }
 
 /// Decoded state of one vehicle. Plain data: only its cell's lock guards it.
@@ -673,6 +680,7 @@ impl Vehicle {
                 .rev()
                 .cloned()
                 .collect(),
+            estimate: None,
         }
     }
 }

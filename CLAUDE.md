@@ -72,8 +72,9 @@ meaningful. Decision and command, not weapons.
 - A stack uses two UDP ranges now (vehicle base + N and bridge base + N): pick both clear of
   every other stack's ranges, including a large load test's (a 3,000-node test spans 3,000
   ports from its base). A bridge that finds a port taken drops it for good.
-- Keep fixed port bases (vehicle, bridge) below the ephemeral range (39160 here): stand-ins and
-  clients draw from 39160-43255, and a fixed base inside it collides at random.
+- Keep fixed port bases (vehicle, bridge) below the ephemeral range: stand-ins and clients draw
+  from it, and a fixed base inside it collides at random. It can change between boots: check
+  `sysctl net.ipv4.ip_local_port_range` (37795-41890 as of 2026-10-04; was 39160-43255).
 - The bridge's task-layer timeouts follow each link's measured round trip (`LinkTiming` in
   `crates/murmur-bridge/src/link.rs`; floors 1 s per ACK, 1.5 s per mission item, as before on
   fast links) and its telemetry plan follows the link class (`crates/murmur-bridge/src/

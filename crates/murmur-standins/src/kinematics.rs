@@ -98,11 +98,12 @@ pub fn guide(
     let dist = distance_m(st.lat, st.lon, t.lat, t.lon);
     let btc = bearing_deg(st.lat, st.lon, t.lat, t.lon);
     if t.kind == TargetKind::Takeoff {
-        if st.alt >= t.alt - 5.0 {
-            mission.advance(out);
+        // done at the takeoff altitude (ArduPlane's verify_takeoff: relative altitude reached)
+        if st.alt >= t.alt - 0.5 {
+            mission.takeoff_done(st, out, st.alt - st.home.2);
         }
     } else if t.kind == TargetKind::Land {
-        // a ~4.6 degree glide path to the touchdown point
+        // a ~4.6 degree glide path to a touchdown `reach_m` short of the point (the roll-out)
         want.heading = btc;
         want.alt = (t.alt + (dist - reach_m).max(0.0) * 0.08).min(st.alt);
     } else if t.radius != 0.0 {
@@ -116,7 +117,7 @@ pub fn guide(
             TargetKind::Rtl | TargetKind::Hold | TargetKind::Loiter
         );
         if dist < reach_m && t.kind == TargetKind::Waypoint {
-            mission.reached_at(out, dist);
+            mission.reached_at(st, out, dist);
         } else if holds && stop_at_rtl {
             if dist < reach_m {
                 want.speed = 0.0;

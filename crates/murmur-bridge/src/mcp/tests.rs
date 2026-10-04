@@ -106,6 +106,7 @@ fn rig() -> Rig {
         frames: Arc::new(watch::channel(None).0),
         decision: d.clone(),
         tracks: tracks.clone(),
+        lod: crate::push::LodSettings::default(),
     });
     let mcp = Mcp::new(
         Settings {

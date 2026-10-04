@@ -260,6 +260,17 @@ group. Dates are 2026.
   sensors (radar, EO/IR, sonar by domain; not AIS or ESM) reach the effect point at their
   nominal range cover it. Detected after the effect (beyond a grace for the truth side's
   tick): persists; covered `assess_dwell_s` without a detection: ceased; else unknown.
+- **A silent vehicle's estimate is situational awareness, not a decision input** (10-04,
+  murmur-4y9). The bridge's `estimate` module projects a silent vehicle from its last report
+  (task, mode, velocity, else stationary) with a region that grows with the silence, and
+  models the lost-link failsafe as a labelled second branch. It is sent to the console and
+  the API only; the decision core keeps its own conservative friendly-uncertainty model
+  (`keep_out_friendly`: along the velocity, else as far as cruise speed reaches), so a
+  display guess can never tighten an engagement check. The snapshot carries the *model*,
+  frozen at the last report and evaluated by the console every tick (as tracks are), so the
+  change-only push sends a silent vehicle once per `NOW_STEP_S`, not per frame: a thousand
+  silent nodes cost the bridge nothing per frame. Growth rates are stated GUESSes in the
+  module header (about two sigma); `scripts/estimate_eval.py` measures containment.
 - **Lost-link timers follow the link, failsafes stay on** (10-03, murmur-nb1). One table,
   `lost_link_s` per profile in `sim/links.toml` (5 s LOS and tether, 10 s mesh, 30 s LEO,
   120 s GEO, Iridium and acoustic; sources and guesses marked), written by `sim/swarm.py`

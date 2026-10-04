@@ -189,8 +189,25 @@ in the console (`sim/fleets/contacts-demo.toml` shows coverage gaps at the Gate)
   scenario ("30% loss on all LOS links from minute 5"). Supersedes the netem plan (murmur-p1f);
   `tc netem` only as a one-off cross-check.
 - Bridge behaviors: dead reckoning with a growing uncertainty area for silent vehicles
-  (murmur-4y9); intents queued for unreachable vehicles with expiry (murmur-5p4); fallback
-  rules per action class; telemetry priority under low bandwidth (murmur-f6q).
+  (murmur-4y9, built: `crates/murmur-bridge/src/estimate.rs`, console `estimate.ts`,
+  `estimateLayers.ts`); intents queued for unreachable vehicles with expiry (murmur-5p4);
+  fallback rules per action class; telemetry priority under low bandwidth (murmur-f6q).
+- **Dead reckoning for silent vehicles** (murmur-4y9). Past its link's stale threshold a
+  vehicle's snapshot carries an `estimate`: a motion model frozen at its last report, in
+  order of what is known best: its current task (an orbit: somewhere on the ring, the phase
+  advancing at the last speed; a patrol: along its route; a hold: near the hold point, a
+  fixed wing on its loiter circle; RTL: toward home, a fixed wing then circling home at its
+  RTL radius), else the mode, else the last velocity carried on, else stationary. The region
+  grows with the silence from the platform's top speed and kind (an aircraft's at tens of
+  metres a second, a boat's at a few), never beyond its reach or a cap per domain; an AUV on
+  its acoustic cadence is said to be silent by design. The lost-link failsafe is modelled as
+  a second, labelled branch: after the profile's `lost_link_s` the vehicle is probably on
+  the firmware's action (RTL, surface, land, disarm), drawn in violet "if it lost us too".
+  The console evaluates the model every clock tick (region, leader from the last known
+  position, faded symbol, "EST on its orbit, silent 47 s"); the details card shows last
+  known against the estimate, the basis, the uncertainty and the branch. Display only: the
+  decision core keeps its own conservative friendly-uncertainty model and never reads this.
+  `scripts/estimate_eval.py` measures the estimate against the emulator's view of the truth.
 
 - **Space segment** (`crates/murmur-space`, murmur-0nv.1): satellites as taskable
   infrastructure, not flown nodes. The operator requests a capability over an area and time
