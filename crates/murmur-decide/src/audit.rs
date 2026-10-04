@@ -29,6 +29,7 @@
 //! is needed: another machine, a signed checkpoint, a transparency log, none of which is
 //! here).
 
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
@@ -46,6 +47,7 @@ use crate::geo::LonLat;
 use crate::ids::{AgentId, IntentId, OperatorId, SessionId, Uid};
 use crate::intent::{IntentSpec, State, Task, Transition};
 use crate::policy::{DeadlineBasis, Policy, PolicyDecision};
+use crate::queue::{Basis, CarriedApproval, Reach, ResumedFrom, Verdict};
 use crate::rules::CheckResult;
 use crate::space::{ScenarioMap, SegmentId, SpaceAnswer, SpaceOrder};
 use crate::time::Time;
@@ -68,12 +70,14 @@ pub struct LoggedAreas {
     pub areas: AreaSet,
 }
 
-/// When a check ran: at submission, or again at approval against the then-current world.
+/// When a check ran: at submission, again at approval against the then-current world, or
+/// (rules 5) when a queued intent's vehicles are reachable again, before it may go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CheckPhase {
     Submit,
     Approve,
+    Dequeue,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -287,6 +291,71 @@ pub enum EventBody {
         /// Engage: where the platform is sent (the approval snapshot's effect point).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         engage: Option<EngageOrder>,
+    },
+
+    /// Rules 5: an approved intent held for vehicles that can't be reached now (`reach`,
+    /// recomputed by replay from `inputs`), until `expires_t` at the latest.
+    #[serde(rename = "intent.queued")]
+    IntentQueued {
+        intent: IntentId,
+        inputs: LoggedInputs,
+        reach: Vec<Reach>,
+        expires_t: Time,
+    },
+
+    /// Rules 5: a queued intent's vehicles are reachable again and its checks ran on the
+    /// world now (the `check.result`, phase `dequeue`, just before): the policy decision on
+    /// those inputs (absent when a check failed) and what follows (`verdict`: dispatch, back
+    /// to the inbox, void), with what changed since the approval. Replay recomputes all of it.
+    #[serde(rename = "queue.recheck")]
+    QueueRecheck {
+        intent: IntentId,
+        reach: Vec<Reach>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decision: Option<PolicyDecision>,
+        verdict: Verdict,
+        changes: Vec<String>,
+    },
+
+    /// Rules 5: a queued intent's deadline passed before its vehicles could be reached.
+    #[serde(rename = "queue.expired")]
+    QueueExpired {
+        intent: IntentId,
+        expires_t: Time,
+        reason: String,
+    },
+
+    /// Rules 5: an intent the previous run left open (queued, approved, or dispatched and
+    /// still running), carried into this one after a bridge restart: its spec and id, where
+    /// it comes from (that log, its head and last seq), the state it continues in here
+    /// (`queued`: re-checked before it goes; `dispatched`: some vehicle had started it, so it
+    /// is followed, never sent again), what its approval rested on, and per vehicle its last
+    /// op state there. Replay checks it against the previous log when given it.
+    #[serde(rename = "intent.resumed")]
+    IntentResumed {
+        intent: IntentSpec,
+        from: ResumedFrom,
+        state: State,
+        basis: Basis,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        policy: Option<PolicyDecision>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        approval: Option<CarriedApproval>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_t: Option<Time>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        ops: BTreeMap<Uid, String>,
+    },
+
+    /// Rules 5: a vehicle's time since boot went back: it rebooted, and lost the mode and
+    /// armed state (and, on a stand-in, the mission) its orders had set. `booted_t` is the
+    /// new boot instant the bridge reports from here on.
+    #[serde(rename = "vehicle.rebooted")]
+    VehicleRebooted {
+        uid: Uid,
+        boot_ms_before: u64,
+        boot_ms: u64,
+        booted_t: Time,
     },
 
     /// Per-vehicle task progress from the task layer (sent, acked, active, done, failed).

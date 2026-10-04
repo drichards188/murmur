@@ -918,6 +918,7 @@ fn snapshot(
                 report_interval_ms: Some(v.interval),
                 velocity_mps: Some(Fact::new(v.vel, t)),
                 platform: p,
+                booted_t: None,
             },
         );
     }

@@ -77,6 +77,12 @@ pub struct VehicleFacts {
     /// Absent: not known to be circling. Rules 3.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub circling: Option<Fact<Circle>>,
+    /// When the autopilot booted (engine time), estimated by the bridge from the time since
+    /// boot its messages carry, and replaced when it detects a reboot. A queued order
+    /// compares it with its approval: a vehicle that booted since lost its mission and mode.
+    /// Absent before rules 5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub booted_t: Option<Time>,
 }
 
 /// A circle a vehicle flies: its center and its radius with the tolerance it is flown to

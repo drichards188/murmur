@@ -76,6 +76,7 @@ pub fn vehicle(platform: &str, at: LonLat) -> VehicleFacts {
         gps_glitch: None,
         gps_fix_from: None,
         circling: None,
+        booted_t: None,
     }
 }
 

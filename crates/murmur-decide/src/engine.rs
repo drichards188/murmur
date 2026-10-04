@@ -17,6 +17,10 @@ use crate::intent::{
     State, Task, TaskKind, Transition, next_state,
 };
 use crate::policy::{self, Policy, PolicyDecision, Tier};
+use crate::queue::{
+    self as queue, Basis, CarriedApproval, OpenIntent, QueueState, Reach, RecheckRecord,
+    ResumedFrom, Verdict,
+};
 use crate::rules::{self, CheckResult, Outcome};
 use serde::Serialize;
 use crate::space::{
@@ -195,6 +199,30 @@ pub enum Order {
 pub enum TaskOutcome {
     Done,
     Failed { detail: String },
+}
+
+/// What [`Engine::dispatch_or_queue`] did with an approved intent.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Routed {
+    /// Every vehicle could be reached: handed on now.
+    Dispatched(Order),
+    /// Some vehicle can't be reached now: held (`intent.queued`) until `expires_t`.
+    Queued { expires_t: Time, reach: Vec<Reach> },
+}
+
+/// What [`Engine::dequeue`] did with a queued intent.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Dequeued {
+    /// A vehicle still can't be reached: nothing logged, still queued.
+    Waiting(Vec<Reach>),
+    /// Re-checked and dispatched: execute the order.
+    Dispatched(Order),
+    /// Re-checked: a human must decide again; it waits in the inbox.
+    Inbox,
+    /// Re-checked: a check failed on the world now; voided.
+    Voided,
+    /// Its deadline passed first; expired.
+    Expired,
 }
 
 pub struct Engine {
@@ -708,7 +736,16 @@ impl Engine {
         } else {
             format!("approved by {by}{signers}")
         };
-        self.transition(id, Transition::Approve, reason)?;
+        let t = self.transition_at(id, Transition::Approve, reason)?;
+        // what this approval rests on: its re-check, the decision that asked for it
+        let policy = self.get(id)?.policy().cloned();
+        self.get_mut(id)?.set_basis(Basis {
+            t,
+            by_human: true,
+            checks: results,
+            policy,
+            engaged: inputs.engaged.clone(),
+        });
         self.get(id)
     }
 
@@ -1422,7 +1459,19 @@ impl Engine {
         for id in &due {
             self.expire(*id)?;
         }
-        Ok(due)
+        // rules 5: queued intents whose vehicles were not reachable before their deadline
+        let queued: Vec<IntentId> = self
+            .intents
+            .values()
+            .filter(|i| {
+                i.state() == State::Queued && i.queue().is_some_and(|q| now >= q.expires_t)
+            })
+            .map(Intent::id)
+            .collect();
+        for id in &queued {
+            self.expire_queued(*id)?;
+        }
+        Ok(due.into_iter().chain(queued).collect())
     }
 
     /// Hand an approved (or auto-approved) vehicle intent to the task layer. A collect or
@@ -1472,6 +1521,310 @@ impl Engine {
             self.newest_on.insert(u, id);
         }
         Ok(order)
+    }
+
+    /// Rules 5: dispatch an approved (or auto-approved) vehicle intent if the link can carry
+    /// it to every one of its vehicles now ([`queue::reach`] on `world`), else hold it in the
+    /// queue (`intent.queued`, with the vehicle facts that judgement read and its deadline,
+    /// `[queue]` per kind). Space intents, engagements, kinds the policy never queues and
+    /// rules before 5 are dispatched as [`Engine::dispatch_order`] does.
+    pub fn dispatch_or_queue(
+        &mut self,
+        id: IntentId,
+        world: &WorldSnapshot,
+    ) -> Result<Routed, EngineError> {
+        let intent = self.get(id)?;
+        let state = intent.state();
+        if !matches!(state, State::Approved | State::AutoApproved) {
+            let err = next_state(state, Transition::Queue)
+                .err()
+                .unwrap_or(IllegalTransition {
+                    from: state,
+                    transition: Transition::Queue,
+                });
+            return Err(EngineError::Illegal { id, err });
+        }
+        let spec = intent.spec().clone();
+        let cfg = self.policy.queue();
+        if self.policy.rules.rules_version < 5 || !cfg.queues(spec.kind()) {
+            return Ok(Routed::Dispatched(self.dispatch_order(id)?));
+        }
+        let inputs = world.subset_for(&spec);
+        let reach = queue::reach(&spec, &inputs, &cfg);
+        if queue::all_reachable(&reach) {
+            return Ok(Routed::Dispatched(self.dispatch_order(id)?));
+        }
+        let logged = self.log_inputs(&inputs)?;
+        // one instant for the deadline and the event, so replay recomputes it from e.t
+        let now = self.now();
+        let expires_t = now.plus_ms(i64::from(cfg.expire_s(spec.kind())) * 1000);
+        self.emit_at(
+            now,
+            EventBody::IntentQueued {
+                intent: id,
+                inputs: logged,
+                reach: reach.clone(),
+                expires_t,
+            },
+        )?;
+        self.get_mut(id)?.set_queue(Some(QueueState {
+            t: now,
+            expires_t,
+            reach: reach.clone(),
+            recheck: None,
+        }));
+        let why = queue::unreachable_summary(&reach);
+        self.transition(
+            id,
+            Transition::Queue,
+            format!(
+                "queued for at most {} s: {why}",
+                expires_t.ms_since(now) / 1000
+            ),
+        )?;
+        Ok(Routed::Queued { expires_t, reach })
+    }
+
+    /// Rules 5: try a queued intent again. Past its deadline it expires. While some vehicle
+    /// still can't be reached it stays queued and nothing is logged. Otherwise its checks run
+    /// on the world now (`check.result`, phase `dequeue`), the policy decides on the same
+    /// inputs, and the verdict ([`queue::assess`] against what the approval rested on) is
+    /// logged as `queue.recheck`: dispatch the approved order, back to the inbox (a human
+    /// must decide again), or void.
+    pub fn dequeue(
+        &mut self,
+        id: IntentId,
+        world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
+    ) -> Result<Dequeued, EngineError> {
+        let intent = self.get(id)?;
+        if intent.state() != State::Queued {
+            let err = next_state(intent.state(), Transition::Dispatch)
+                .err()
+                .unwrap_or(IllegalTransition {
+                    from: intent.state(),
+                    transition: Transition::Dispatch,
+                });
+            return Err(EngineError::Illegal { id, err });
+        }
+        let spec = intent.spec().clone();
+        let deadline = intent.queue().map(|q| q.expires_t);
+        if deadline.is_some_and(|d| self.now() >= d) {
+            self.expire_queued(id)?;
+            return Ok(Dequeued::Expired);
+        }
+        let cfg = self.policy.queue();
+        let reach = queue::reach(&spec, &world.subset_for(&spec), &cfg);
+        if !queue::all_reachable(&reach) {
+            return Ok(Dequeued::Waiting(reach));
+        }
+        let (inputs, _, results, passed) =
+            self.run_checks(&spec, CheckPhase::Dequeue, world, terrain)?;
+        let decision = passed.then(|| policy::decide(&spec, &inputs, &self.policy));
+        // without a basis (none was recorded), a human decides: nothing to compare with
+        let basis = self
+            .get(id)?
+            .basis()
+            .cloned()
+            .unwrap_or_else(|| no_basis(inputs.t));
+        let recheck = queue::assess(&spec, &basis, &results, passed, decision.as_ref(), &inputs);
+        let t = self.emit(EventBody::QueueRecheck {
+            intent: id,
+            reach,
+            decision: decision.clone(),
+            verdict: recheck.verdict,
+            changes: recheck.changes.clone(),
+        })?;
+        if let Some(q) = self.get_mut(id)?.queue_mut() {
+            q.recheck = Some(RecheckRecord {
+                t,
+                verdict: recheck.verdict,
+                changes: recheck.changes.clone(),
+            });
+        }
+        match (recheck.verdict, decision) {
+            (Verdict::Dispatch, _) => Ok(Dequeued::Dispatched(self.dispatch_order(id)?)),
+            (Verdict::Inbox, Some(decision)) => {
+                let intent = self.get_mut(id)?;
+                intent.set_policy(decision);
+                intent.clear_approval();
+                let now = self.now();
+                let (expires_t, until) = policy::approval_deadline(
+                    &self.policy,
+                    &spec.task,
+                    None,
+                    &self.scenario_map(),
+                    now,
+                );
+                self.emit_at(
+                    now,
+                    EventBody::ApprovalRequested {
+                        intent: id,
+                        expires_t,
+                        until,
+                    },
+                )?;
+                self.get_mut(id)?.set_expires(expires_t);
+                self.transition(
+                    id,
+                    Transition::RequireApproval,
+                    format!(
+                        "back to the inbox from the queue: {}",
+                        recheck.changes.join("; ")
+                    ),
+                )?;
+                Ok(Dequeued::Inbox)
+            }
+            _ => {
+                self.transition(
+                    id,
+                    Transition::Void,
+                    format!("re-check failed at dequeue: {}", recheck.changes.join("; ")),
+                )?;
+                Ok(Dequeued::Voided)
+            }
+        }
+    }
+
+    /// A queued intent's deadline passed: `queue.expired`, then expired.
+    fn expire_queued(&mut self, id: IntentId) -> Result<(), EngineError> {
+        let intent = self.get(id)?;
+        next_state(intent.state(), Transition::Expire)
+            .map_err(|err| EngineError::Illegal { id, err })?;
+        let (expires_t, since, why) = intent
+            .queue()
+            .map_or((Time(0), Time(0), String::new()), |q| {
+                (q.expires_t, q.t, queue::unreachable_summary(&q.reach))
+            });
+        let waited = expires_t.ms_since(since) / 1000;
+        let reason = if why.is_empty() {
+            format!("not dispatched within {waited} s: its vehicles could not be reached")
+        } else {
+            format!("not dispatched within {waited} s: its vehicles could not be reached ({why})")
+        };
+        self.emit(EventBody::QueueExpired {
+            intent: id,
+            expires_t,
+            reason: reason.clone(),
+        })?;
+        self.transition(id, Transition::Expire, reason)?;
+        Ok(())
+    }
+
+    /// Rules 5: carry an intent the previous run left open into this one (`intent.resumed`),
+    /// keeping its id. It continues queued (re-checked on the world before it goes, delivered
+    /// once) unless some vehicle had already started it, when it continues dispatched: the
+    /// bridge follows it there and never sends it again. Ids after the previous run's are
+    /// reserved with [`Engine::reserve_ids`].
+    pub fn resume(
+        &mut self,
+        open: &OpenIntent,
+        from: ResumedFrom,
+    ) -> Result<IntentId, EngineError> {
+        let id = open.spec.id;
+        let refuse = |why: &str| EngineError::NotDispatchable {
+            id,
+            why: why.to_string(),
+        };
+        if self.policy.rules.rules_version < 5 {
+            return Err(refuse("intents are carried over from rules 5 on"));
+        }
+        if self.intents.contains_key(&id) {
+            return Err(refuse("an intent with that id already exists in this run"));
+        }
+        if !queue::queueable(open.spec.kind()) {
+            return Err(refuse("only vehicle tasks are carried over"));
+        }
+        let state = open.resumes_as();
+        let cfg = self.policy.queue();
+        let expires_t = (state == State::Queued).then(|| {
+            open.expires_t.unwrap_or_else(|| {
+                open.basis
+                    .t
+                    .plus_ms(i64::from(cfg.expire_s(open.spec.kind())) * 1000)
+            })
+        });
+        let t = self.emit(EventBody::IntentResumed {
+            intent: open.spec.clone(),
+            from: from.clone(),
+            state,
+            basis: open.basis.clone(),
+            policy: open.policy.clone(),
+            approval: open.approval.clone(),
+            expires_t,
+            ops: open.ops.clone(),
+        })?;
+        let mut intent = Intent::new(open.spec.clone());
+        intent.set_checks(open.basis.checks.clone());
+        if let Some(p) = &open.policy {
+            intent.set_policy(p.clone());
+        }
+        if let Some(a) = &open.approval {
+            intent.set_approval(carried_approval(a));
+        }
+        intent.set_basis(open.basis.clone());
+        intent.set_resumed(crate::intent::Resumed {
+            from: from.clone(),
+            ops: open.ops.clone(),
+        });
+        if let Some(expires_t) = expires_t {
+            intent.set_queue(Some(QueueState {
+                t,
+                expires_t,
+                reach: Vec::new(),
+                recheck: None,
+            }));
+        }
+        let reason = match state {
+            State::Dispatched => format!(
+                "resumed after a restart from {} ({}): started on {}; followed, never sent again",
+                from.log,
+                state_name(from.was),
+                open.committed()
+                    .iter()
+                    .map(Uid::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            _ => format!(
+                "resumed after a restart from {} ({}): queued until it can be re-checked and sent",
+                from.log,
+                state_name(from.was)
+            ),
+        };
+        intent.resume_in(state, t, reason);
+        if state == State::Dispatched {
+            for u in &open.spec.uids {
+                self.newest_on.insert(u.clone(), id);
+            }
+        }
+        self.intents.insert(id, intent);
+        self.next_intent = self.next_intent.max(id.0 + 1);
+        Ok(id)
+    }
+
+    /// New intents get ids from `next` on (after a restart: past every id of the previous
+    /// run, so an id names one intent across the carried-over logs).
+    pub fn reserve_ids(&mut self, next: u64) {
+        self.next_intent = self.next_intent.max(next);
+    }
+
+    /// Rules 5: a vehicle rebooted (its time since boot went back): logged as
+    /// `vehicle.rebooted` with both readings and the new boot instant.
+    pub fn record_reboot(
+        &mut self,
+        uid: &Uid,
+        boot_ms_before: u64,
+        boot_ms: u64,
+        booted_t: Time,
+    ) -> Result<(), EngineError> {
+        self.emit(EventBody::VehicleRebooted {
+            uid: uid.clone(),
+            boot_ms_before,
+            boot_ms,
+            booted_t,
+        })?;
+        Ok(())
     }
 
     /// Report a dispatched intent's progress on one of its own vehicles (for a collect or
@@ -1633,6 +1986,17 @@ impl Engine {
         self.get_mut(id)?
             .apply(transition, t, reason)
             .map_err(|err| EngineError::Illegal { id, err })
+    }
+
+    /// [`Self::transition`], returning the time the state change was logged at.
+    fn transition_at(
+        &mut self,
+        id: IntentId,
+        transition: Transition,
+        reason: String,
+    ) -> Result<Time, EngineError> {
+        self.transition(id, transition, reason)?;
+        Ok(self.last_t)
     }
 
     fn expire(&mut self, id: IntentId) -> Result<(), EngineError> {
@@ -1828,10 +2192,20 @@ impl Engine {
             .flatten()
             .filter(|by| is_self_approval(&spec.source, by.operator()));
         let rule = decision.rule.clone();
+        // what an approval here rests on (auto, or the submitter's own): these checks and
+        // this decision, on these inputs
+        let basis = Basis {
+            t: inputs.t,
+            by_human: tier == Tier::Human && at_submission.is_some(),
+            checks: results.clone(),
+            policy: Some(decision.clone()),
+            engaged: inputs.engaged.clone(),
+        };
         self.get_mut(id)?.set_policy(decision);
         match (tier, at_submission) {
             (Tier::Auto, _) => {
-                self.transition(id, Transition::AutoApprove, reason)?;
+                let t = self.transition_at(id, Transition::AutoApprove, reason)?;
+                self.get_mut(id)?.set_basis(Basis { t, ..basis });
             }
             (Tier::Human, Some(by)) => {
                 let t = self.emit(EventBody::ApprovalAtSubmission {
@@ -1849,11 +2223,12 @@ impl Engine {
                     at_submission: true,
                     note: None,
                 });
-                self.transition(
+                let t = self.transition_at(
                     id,
                     Transition::AuthorizeAtSubmission,
                     format!("{reason}; authorized at submission by {}", by.operator()),
                 )?;
+                self.get_mut(id)?.set_basis(Basis { t, ..basis });
             }
             (Tier::Human, None) => {
                 // one instant for the deadline and the event, so replay recomputes it from e.t
@@ -2117,6 +2492,30 @@ pub(crate) fn op_state_mismatch(
         }
     }
     None
+}
+
+/// A basis that forces a human: no checks to compare with (every result is a change), by a
+/// human. Used for a queued intent with no recorded basis (never written by this engine).
+pub(crate) fn no_basis(t: Time) -> Basis {
+    Basis {
+        t,
+        by_human: true,
+        checks: Vec::new(),
+        policy: None,
+        engaged: BTreeMap::new(),
+    }
+}
+
+/// The approval a resumed intent carries, as the engine records approvals.
+fn carried_approval(a: &CarriedApproval) -> Approval {
+    Approval {
+        by: a.by.clone(),
+        session: a.session,
+        t: a.t,
+        self_approved: a.self_approved,
+        at_submission: a.at_submission,
+        note: None,
+    }
 }
 
 fn amend_detail(old: IntentId, new: IntentId, chosen: &ChosenCollect) -> String {

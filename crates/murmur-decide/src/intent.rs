@@ -6,9 +6,12 @@
 //! fields are private and change only through the [`crate::Engine`], which logs every change
 //! before making it. The legal state changes are the table in [`next_state`].
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::geo::{LonLat, TaskPath, circle_points};
+use crate::queue::{Basis, QueueState, ResumedFrom};
 use crate::ids::{AgentId, IntentId, OperatorId, SessionId, Uid};
 use crate::policy::PolicyDecision;
 use crate::rules::CheckResult;
@@ -486,6 +489,11 @@ pub enum State {
     Dispatched,
     /// Engage only: the abstract effect was released; the assessment follows.
     Effected,
+    /// Rules 5: approved (or auto-approved), but a vehicle it is for can't be reached now (a
+    /// silent link, an AUV whose acoustic modem can't carry a mission upload): held, with
+    /// an expiry, until it can. Dispatched only after its checks pass again on the world
+    /// then; back to the inbox when a human approved a picture that has since changed.
+    Queued,
     /// Engage only: stopped after dispatch and before the effect (an operator's abort, a
     /// void when the picture changed, link loss, the window closing); the platform was sent
     /// its recorded fallback.
@@ -495,7 +503,7 @@ pub enum State {
 }
 
 impl State {
-    pub const ALL: [State; 13] = [
+    pub const ALL: [State; 14] = [
         State::Proposed,
         State::Checked,
         State::AutoApproved,
@@ -506,6 +514,7 @@ impl State {
         State::Voided,
         State::Dispatched,
         State::Effected,
+        State::Queued,
         State::Aborted,
         State::Done,
         State::Failed,
@@ -556,10 +565,12 @@ pub enum Transition {
     Abort,
     Complete,
     Fail,
+    /// Rules 5: held for a vehicle that can't be reached now (`intent.queued`).
+    Queue,
 }
 
 impl Transition {
-    pub const ALL: [Transition; 14] = [
+    pub const ALL: [Transition; 15] = [
         Transition::Check,
         Transition::ChecksFailed,
         Transition::AutoApprove,
@@ -574,6 +585,7 @@ impl Transition {
         Transition::Abort,
         Transition::Complete,
         Transition::Fail,
+        Transition::Queue,
     ];
 }
 
@@ -596,7 +608,15 @@ pub struct IllegalTransition {
 /// auto_approved | approved -dispatch-> dispatched -complete-> done | -fail-> failed
 /// dispatched -release-> effected -complete-> done | -fail-> failed       (engage)
 /// dispatched -abort-> aborted                                            (engage)
+/// auto_approved | approved -queue-> queued                               (rules 5)
+/// queued -dispatch-> dispatched | -require_approval-> pending_approval
+///        | -void-> voided | -expire-> expired                           (rules 5)
 /// ```
+///
+/// A queued intent leaves the queue only through a re-check against the world at that
+/// moment (`queue.recheck`): dispatched when it passes (and, for a human's approval, the
+/// picture it rested on still holds), back to the inbox when a human must look again, void
+/// when a check fails; expired at its deadline.
 ///
 /// Approved is reachable only through `Approve` and `AuthorizeAtSubmission`, which the
 /// engine performs only with a `HumanAuthority` (the second only for the submitter's own
@@ -613,8 +633,11 @@ pub fn next_state(from: State, transition: Transition) -> Result<State, IllegalT
         (S::PendingApproval, T::Approve) => S::Approved,
         (S::PendingApproval, T::Reject) => S::Rejected,
         (S::PendingApproval, T::Expire) => S::Expired,
-        (S::PendingApproval | S::AutoApproved | S::Approved, T::Void) => S::Voided,
-        (S::AutoApproved | S::Approved, T::Dispatch) => S::Dispatched,
+        (S::PendingApproval | S::AutoApproved | S::Approved | S::Queued, T::Void) => S::Voided,
+        (S::AutoApproved | S::Approved | S::Queued, T::Dispatch) => S::Dispatched,
+        (S::AutoApproved | S::Approved, T::Queue) => S::Queued,
+        (S::Queued, T::RequireApproval) => S::PendingApproval,
+        (S::Queued, T::Expire) => S::Expired,
         (S::Dispatched, T::Complete) => S::Done,
         (S::Dispatched, T::Fail) => S::Failed,
         (S::Dispatched, T::Release) => S::Effected,
@@ -672,6 +695,26 @@ pub struct Intent {
     /// effect, a stop, and the assessment.
     #[serde(skip_serializing_if = "Option::is_none")]
     engagement: Option<Box<Engagement>>,
+    /// Rules 5: held for an unreachable vehicle (or once was): when, until when, why, and
+    /// the last re-check's verdict.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    queue: Option<Box<QueueState>>,
+    /// What the approval rested on (checks, policy, engagements in play, who), for the
+    /// dequeue re-check. Not serialized: the checks and policy are already on the intent.
+    #[serde(skip)]
+    basis: Option<Box<Basis>>,
+    /// Rules 5: carried over from the previous run after a bridge restart.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resumed: Option<Box<Resumed>>,
+}
+
+/// An intent carried over from the previous run: where from, and each vehicle's last op
+/// state there (a vehicle that had started it is followed, never sent it again).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Resumed {
+    pub from: ResumedFrom,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub ops: BTreeMap<Uid, String>,
 }
 
 impl Intent {
@@ -692,6 +735,9 @@ impl Intent {
             space: None,
             concurrences: Vec::new(),
             engagement: None,
+            queue: None,
+            basis: None,
+            resumed: None,
         }
     }
 
@@ -730,6 +776,18 @@ impl Intent {
     /// Engage: where the engagement stands.
     pub fn engagement(&self) -> Option<&Engagement> {
         self.engagement.as_deref()
+    }
+    /// Rules 5: where it stands in the queue (or stood).
+    pub fn queue(&self) -> Option<&QueueState> {
+        self.queue.as_deref()
+    }
+    /// What the approval rested on (the dequeue re-check compares the world with it).
+    pub fn basis(&self) -> Option<&Basis> {
+        self.basis.as_deref()
+    }
+    /// Carried over from the previous run after a bridge restart.
+    pub fn resumed(&self) -> Option<&Resumed> {
+        self.resumed.as_deref()
     }
 
     pub(crate) fn apply(
@@ -775,5 +833,29 @@ impl Intent {
     }
     pub(crate) fn engagement_mut(&mut self) -> &mut Engagement {
         self.engagement.get_or_insert_with(Default::default)
+    }
+    pub(crate) fn set_queue(&mut self, q: Option<QueueState>) {
+        self.queue = q.map(Box::new);
+    }
+    pub(crate) fn queue_mut(&mut self) -> Option<&mut QueueState> {
+        self.queue.as_deref_mut()
+    }
+    pub(crate) fn set_basis(&mut self, b: Basis) {
+        self.basis = Some(Box::new(b));
+    }
+    /// Back to the inbox from the queue: a new decision is needed, so the old approval and
+    /// any signatures are dropped (the history keeps them).
+    pub(crate) fn clear_approval(&mut self) {
+        self.approval = None;
+        self.concurrences.clear();
+    }
+    pub(crate) fn set_resumed(&mut self, r: Resumed) {
+        self.resumed = Some(Box::new(r));
+    }
+    /// A resumed intent enters this run in `state` (queued or dispatched) directly: its
+    /// approval was logged in the previous run.
+    pub(crate) fn resume_in(&mut self, state: State, t: Time, reason: String) {
+        self.state = state;
+        self.history.push(StateChange { state, t, reason });
     }
 }

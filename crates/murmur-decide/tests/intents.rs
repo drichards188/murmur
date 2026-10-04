@@ -37,6 +37,13 @@ fn every_transition_legal_and_illegal() {
         (S::Dispatched, T::Abort, S::Aborted),
         (S::Effected, T::Complete, S::Done),
         (S::Effected, T::Fail, S::Failed),
+        // rules 5: the queue for unreachable vehicles
+        (S::AutoApproved, T::Queue, S::Queued),
+        (S::Approved, T::Queue, S::Queued),
+        (S::Queued, T::Dispatch, S::Dispatched),
+        (S::Queued, T::RequireApproval, S::PendingApproval),
+        (S::Queued, T::Void, S::Voided),
+        (S::Queued, T::Expire, S::Expired),
     ];
     let mut checked = 0;
     for from in State::ALL {
@@ -53,7 +60,7 @@ fn every_transition_legal_and_illegal() {
             checked += 1;
         }
     }
-    assert_eq!(checked, 13 * 14);
+    assert_eq!(checked, 14 * 15);
     for s in State::ALL {
         if s.is_terminal() {
             assert!(

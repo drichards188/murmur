@@ -229,6 +229,11 @@ pub struct Policy {
     pub rules: RulesConfig,
     #[serde(rename = "tier")]
     pub tiers: Vec<TierRule>,
+    /// `[queue]` (rules 5, policy schema 3): how long orders for unreachable vehicles are
+    /// held, per kind, and when a vehicle counts as reachable. Absent: the defaults
+    /// ([`crate::QueueConfig::default`]); absent from logs written before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue: Option<crate::queue::QueueConfig>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -326,6 +331,9 @@ impl Policy {
         if let Some(e) = &r.engage {
             e.validate().map_err(PolicyError::Invalid)?;
         }
+        if let Some(q) = &p.queue {
+            q.validate().map_err(PolicyError::Invalid)?;
+        }
         for t in &p.tiers {
             if t.approvers == Some(0) {
                 return Err(PolicyError::Invalid(format!(
@@ -341,6 +349,11 @@ impl Policy {
         let text = std::fs::read_to_string(path)
             .map_err(|e| PolicyError::Io(path.display().to_string(), e))?;
         Self::from_toml(&text)
+    }
+
+    /// `[queue]`, or its defaults.
+    pub fn queue(&self) -> crate::queue::QueueConfig {
+        self.queue.clone().unwrap_or_default()
     }
 
     /// Whether a human's own submission authorizes an intent routed to `tier` (`None`: the

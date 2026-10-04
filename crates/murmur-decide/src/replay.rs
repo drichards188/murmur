@@ -87,7 +87,7 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::areas::AreaSet;
-use crate::audit::{Event, EventBody, LogError, parse_log};
+use crate::audit::{CheckPhase, Event, EventBody, LogError, parse_log};
 use crate::authority::{Grants, Roster};
 use crate::engage::{
     self, EffectRecord, EngageOrder, EngageSnapshot, Fallback, FrozenPlan, ObserveStep,
@@ -101,8 +101,9 @@ use crate::ids::{OperatorId, SessionId, Uid};
 use crate::hash::{GENESIS, sha256_hex};
 use crate::ids::IntentId;
 use crate::intent::{IntentSpec, Source, State, Task, TaskKind, Transition, next_state};
-use crate::policy::{self, Policy, Tier};
-use crate::rules;
+use crate::policy::{self, Policy, PolicyDecision, Tier};
+use crate::queue::{self as queue, Basis, CarriedApproval, OpenIntent, Verdict};
+use crate::rules::{self, CheckResult};
 use crate::space::{ScenarioMap, SpaceAnswer, SpaceOracle, SpaceOrder};
 use crate::time::Time;
 use crate::world::{LoggedInputs, LoggedSpace, WorldSnapshot};
@@ -160,6 +161,25 @@ pub struct ReplayReport {
     pub effects: usize,
     pub aborts: usize,
     pub assessments: usize,
+    /// Rules 5: intents queued for unreachable vehicles, queue re-checks recomputed (and
+    /// how many dispatched, went back to the inbox, voided), queue expiries, intents carried
+    /// over from a previous run, and vehicle reboots.
+    pub queued: usize,
+    pub rechecks: usize,
+    pub recheck_dispatched: usize,
+    pub recheck_inbox: usize,
+    pub recheck_voided: usize,
+    pub queue_expired: usize,
+    pub resumed: usize,
+    pub reboots: usize,
+    /// The intents the log leaves open (a vehicle task queued, approved but not dispatched,
+    /// or dispatched with ops still running): what a restarted bridge carries over.
+    #[serde(skip)]
+    pub open: Vec<OpenIntent>,
+    /// One past the highest intent id the log holds (a restarted bridge numbers on from it).
+    pub next_intent: u64,
+    /// The last event's seq.
+    pub last_seq: u64,
 }
 
 impl ReplayReport {
@@ -235,6 +255,88 @@ struct Tracked {
     intercept_reports: Vec<(String, String)>,
     /// Engage: the loiter radius from the final approval's world (its order carries it).
     loiter_radius_m: Option<f64>,
+    /// The last check's recomputed results, its phase and seq.
+    last_results: Vec<CheckResult>,
+    last_phase: Option<CheckPhase>,
+    last_check_seq: u64,
+    /// The last recomputed policy decision (submission, or a queue re-check's).
+    decision: Option<PolicyDecision>,
+    /// Rules 5: what the approval rested on (taken at approved / auto_approved).
+    basis: Option<Basis>,
+    /// Who approved it, as a next run would carry it.
+    approval_rec: Option<CarriedApproval>,
+    /// Rules 5: the queue deadline, an `intent.queued` waiting for its transition, the last
+    /// re-check's verdict waiting for its own, a `queue.expired` waiting for the expiry.
+    queue_expires: Option<Time>,
+    queued_logged: Option<u64>,
+    recheck: Option<Verdict>,
+    queue_expired: bool,
+    /// Each vehicle's last op state.
+    ops: BTreeMap<Uid, String>,
+}
+
+impl Tracked {
+    fn new(spec: IntentSpec, state: State) -> Tracked {
+        Tracked {
+            spec,
+            state,
+            last_check_passed: None,
+            tier: None,
+            rule: None,
+            submitter_authorizes: false,
+            expires_t: None,
+            granted: false,
+            granted_at_submission: false,
+            rejected_by_human: false,
+            expired: false,
+            answer: None,
+            approvers: 1,
+            proposer_excluded: false,
+            signers: Vec::new(),
+            last_inputs: None,
+            snapshot: None,
+            stop_due: None,
+            ready: false,
+            effect_logged: false,
+            effect: None,
+            stopped: false,
+            covered_s: 0.0,
+            last_observe: None,
+            last_step: None,
+            assessed: false,
+            plan: None,
+            check_window: None,
+            last_picture_t: None,
+            dispatch_logged: None,
+            dispatched: false,
+            ready_t: None,
+            stop_fallback: None,
+            platform_events: Vec::new(),
+            intercept_reports: Vec::new(),
+            loiter_radius_m: None,
+            last_results: Vec::new(),
+            last_phase: None,
+            last_check_seq: 0,
+            decision: None,
+            basis: None,
+            approval_rec: None,
+            queue_expires: None,
+            queued_logged: None,
+            recheck: None,
+            queue_expired: false,
+            ops: BTreeMap::new(),
+        }
+    }
+
+    /// The decision's routing on this intent: tier, rule, approvers, who may approve.
+    fn route(&mut self, d: &PolicyDecision) {
+        self.tier = Some(d.tier);
+        self.submitter_authorizes = d.submitter_authorizes;
+        self.approvers = d.approvers.max(1);
+        self.proposer_excluded = d.proposer_excluded;
+        self.rule = Some(d.rule.clone());
+        self.decision = Some(d.clone());
+    }
 }
 
 /// Which decision rules a replay accepts a log under.
@@ -259,6 +361,15 @@ pub struct ReplayOptions<'a> {
     pub rules: RulesAccepted,
     /// Re-run every logged space query on this segment (see the module docs).
     pub space: Option<&'a dyn SpaceOracle>,
+    /// Rules 5: the previous run's log, which this one's `intent.resumed` events carry
+    /// intents from. Each resumed intent must be one that log leaves open, exactly as it
+    /// was there, and the log must be the one named (its head and last seq). One generation:
+    /// that log's own resumed intents are trusted (replay it with its own predecessor).
+    pub previous: Option<&'a str>,
+    /// Accept `intent.resumed` events without the previous log (trusting where they came
+    /// from, as accepting an older rules version trusts its log). Without this or
+    /// `previous`, a resumed intent is a mismatch.
+    pub trust_resumed: bool,
 }
 
 /// Replay a JSONL log. The chain is checked over the lines exactly as they are in the
@@ -345,6 +456,14 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (3, "\"gps_fix_from\":", "a GPS fix inferred from HIGH_LATENCY2"),
     (3, "\"circling\":", "a vehicle's circle"),
     (4, "\"loiter_radius_m\":", "an engagement order's loiter radius"),
+    (5, "\"type\":\"intent.queued\"", "a queued intent"),
+    (5, "\"type\":\"queue.recheck\"", "a queue re-check"),
+    (5, "\"type\":\"queue.expired\"", "a queue expiry"),
+    (5, "\"type\":\"intent.resumed\"", "an intent carried over from a previous run"),
+    (5, "\"type\":\"vehicle.rebooted\"", "a vehicle reboot"),
+    (5, "\"booted_t\":", "a vehicle's boot instant"),
+    (5, "\"phase\":\"dequeue\"", "a dequeue check"),
+    (5, "\"queue\":{", "a [queue] policy"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.
@@ -461,6 +580,16 @@ fn check_claims<S: AsRef<str>>(r: &mut ReplayReport, events: &[Event], lines: &[
             crate::rules::POLICY_SCHEMA.to_string(),
         );
     }
+    if policy.queue.is_some() && schema < 3 {
+        bad(
+            r,
+            first,
+            None,
+            "logged policy uses a key of a later policy schema than it claims",
+            "queue (schema 3)".into(),
+            format!("schema {schema}"),
+        );
+    }
     if let Some(e) = &policy.rules.engage {
         for (since, key) in e.schema_keys() {
             if since > schema {
@@ -517,6 +646,8 @@ fn replay_inner<S: AsRef<str>>(
     // the intent dispatched last, and per vehicle the one dispatched to it last
     let mut last_dispatch: Option<IntentId> = None;
     let mut newest_on: BTreeMap<Uid, IntentId> = BTreeMap::new();
+    // intents carried over from a previous run, checked against it after the loop
+    let mut resumed: Vec<ResumedEvent> = Vec::new();
 
     for (i, e) in events.iter().enumerate() {
         let want_prev = if i == 0 {
@@ -659,58 +790,18 @@ fn replay_inner<S: AsRef<str>>(
                     );
                     continue;
                 }
-                intents.insert(
-                    intent.id,
-                    Tracked {
-                        spec: intent.clone(),
-                        state: State::Proposed,
-                        last_check_passed: None,
-                        tier: None,
-                        rule: None,
-                        submitter_authorizes: false,
-                        expires_t: None,
-                        granted: false,
-                        granted_at_submission: false,
-                        rejected_by_human: false,
-                        expired: false,
-                        answer: None,
-                        approvers: 1,
-                        proposer_excluded: false,
-                        signers: Vec::new(),
-                        last_inputs: None,
-                        snapshot: None,
-                        stop_due: None,
-                        ready: false,
-                        effect_logged: false,
-                        effect: None,
-                        stopped: false,
-                        covered_s: 0.0,
-                        last_observe: None,
-                        last_step: None,
-                        assessed: false,
-                        plan: None,
-                        check_window: None,
-                        last_picture_t: None,
-                        dispatch_logged: None,
-                        dispatched: false,
-                        ready_t: None,
-                        stop_fallback: None,
-                        platform_events: Vec::new(),
-                        intercept_reports: Vec::new(),
-                        loiter_radius_m: None,
-                    },
-                );
+                intents.insert(intent.id, Tracked::new(intent.clone(), State::Proposed));
                 if intent.kind() == TaskKind::Engage {
                     r.engagements += 1;
                 }
             }
             EventBody::CheckResult {
                 intent,
+                phase,
                 inputs,
                 results,
                 passed,
                 preview,
-                ..
             } => {
                 check_engaged(&mut r, e, *intent, &inputs.engaged, &intents);
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
@@ -781,6 +872,19 @@ fn replay_inner<S: AsRef<str>>(
                 tr.last_check_passed = Some(again_passed);
                 tr.last_inputs = Some(Box::new(inputs));
                 tr.check_window = Some((before_t, e.t));
+                tr.last_results = again;
+                tr.last_phase = Some(*phase);
+                tr.last_check_seq = e.seq;
+                if *phase == CheckPhase::Dequeue && tr.state != State::Queued {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "dequeue check of an intent that is not queued",
+                        json(&tr.state),
+                        json(&State::Queued),
+                    );
+                }
             }
             EventBody::PolicyDecision {
                 intent,
@@ -826,11 +930,7 @@ fn replay_inner<S: AsRef<str>>(
                         json(&again),
                     );
                 }
-                tr.tier = Some(again.tier);
-                tr.submitter_authorizes = again.submitter_authorizes;
-                tr.approvers = again.approvers.max(1);
-                tr.proposer_excluded = again.proposer_excluded;
-                tr.rule = Some(again.rule);
+                tr.route(&again);
                 tr.answer = inputs.space.answer().map(|a| Box::new(a.clone()));
             }
             EventBody::ApprovalRequested {
@@ -867,6 +967,16 @@ fn replay_inner<S: AsRef<str>>(
                             json(&(want, basis)),
                         );
                     }
+                }
+                if tr.state == State::Queued && tr.recheck != Some(Verdict::Inbox) {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "a queued intent sent for approval without a re-check that says so",
+                        json(&tr.recheck),
+                        json(&Verdict::Inbox),
+                    );
                 }
                 tr.expires_t = Some(*expires_t);
             }
@@ -1057,6 +1167,13 @@ fn replay_inner<S: AsRef<str>>(
                     );
                 }
                 tr.granted = true;
+                tr.approval_rec = Some(CarriedApproval {
+                    by: by.clone(),
+                    session: *session,
+                    t: e.t,
+                    at_submission: false,
+                    self_approved: *self_approved,
+                });
             }
             EventBody::ApprovalAtSubmission {
                 intent,
@@ -1144,6 +1261,13 @@ fn replay_inner<S: AsRef<str>>(
                 }
                 r.approvals_at_submission += 1;
                 tr.granted_at_submission = submitter_ok && allowed;
+                tr.approval_rec = Some(CarriedApproval {
+                    by: by.clone(),
+                    session: *session,
+                    t: e.t,
+                    at_submission: true,
+                    self_approved: true,
+                });
             }
             EventBody::ApprovalRejected {
                 intent, by, session, ..
@@ -1226,6 +1350,27 @@ fn replay_inner<S: AsRef<str>>(
                         "no evidence".into(),
                     );
                 }
+                // a queue re-check's verdict is carried out by the next transition, nothing
+                // else (dispatch, back to the inbox, void)
+                if tr.state == State::Queued
+                    && let Some(v) = tr.recheck
+                {
+                    let follows = match v {
+                        Verdict::Dispatch => Transition::Dispatch,
+                        Verdict::Inbox => Transition::RequireApproval,
+                        Verdict::Void => Transition::Void,
+                    };
+                    if *transition != follows {
+                        bad(
+                            &mut r,
+                            e,
+                            Some(*intent),
+                            "a queue re-check's verdict not carried out",
+                            json(transition),
+                            json(&follows),
+                        );
+                    }
+                }
                 // the engine writes an intent.dispatched and its transition back to back
                 if let Some(seq) = tr.dispatch_logged
                     && *transition != Transition::Dispatch
@@ -1258,7 +1403,35 @@ fn replay_inner<S: AsRef<str>>(
                         r.aborts += 1;
                     }
                     Transition::Void => tr.stopped = false,
+                    Transition::Queue => {
+                        tr.queued_logged = None;
+                        r.queued += 1;
+                    }
+                    Transition::Expire if tr.state == State::Queued => {
+                        tr.queue_expired = false;
+                        r.queue_expired += 1;
+                    }
+                    // what the approval rests on, as the engine records it: the last check,
+                    // the decision that routed it, the engagements in play then, who
+                    Transition::AutoApprove
+                    | Transition::Approve
+                    | Transition::AuthorizeAtSubmission => {
+                        tr.basis = Some(Basis {
+                            t: e.t,
+                            by_human: *transition != Transition::AutoApprove,
+                            checks: tr.last_results.clone(),
+                            policy: tr.decision.clone(),
+                            engaged: tr
+                                .last_inputs
+                                .as_deref()
+                                .map(|w| w.engaged.clone())
+                                .unwrap_or_default(),
+                        });
+                    }
                     _ => {}
+                }
+                if tr.state == State::Queued {
+                    tr.recheck = None;
                 }
                 tr.state = *to;
             }
@@ -1303,14 +1476,19 @@ fn replay_inner<S: AsRef<str>>(
                         "engage.stopped".into(),
                     );
                 }
-                if !matches!(tr.state, State::AutoApproved | State::Approved) {
+                let from_queue = tr.state == State::Queued && tr.recheck == Some(Verdict::Dispatch);
+                if !(matches!(tr.state, State::AutoApproved | State::Approved) || from_queue) {
                     bad(
                         &mut r,
                         e,
                         Some(*intent),
-                        "dispatched without approval",
+                        if tr.state == State::Queued {
+                            "dispatched from the queue without a passing re-check"
+                        } else {
+                            "dispatched without approval"
+                        },
                         json(&tr.state),
-                        "auto_approved|approved".into(),
+                        "auto_approved|approved, or queued after a re-check that dispatches".into(),
                     );
                 }
                 check_dispatch(
@@ -1749,6 +1927,257 @@ fn replay_inner<S: AsRef<str>>(
                 tr.assessed = true;
                 r.assessments += 1;
             }
+            EventBody::IntentQueued {
+                intent,
+                inputs,
+                reach,
+                expires_t,
+            } => {
+                let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
+                    bad(&mut r, e, Some(*intent), "queued without run.started or intent.created", String::new(), String::new());
+                    continue;
+                };
+                if !matches!(tr.state, State::Approved | State::AutoApproved) {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "queued without approval",
+                        json(&tr.state),
+                        "auto_approved|approved".into(),
+                    );
+                }
+                let cfg = pol.queue();
+                if !cfg.queues(tr.spec.kind()) {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "queued although the policy never queues its kind",
+                        tr.spec.kind().as_str().into(),
+                        json(&cfg.expire_s(tr.spec.kind())),
+                    );
+                }
+                let w = match resolve(inputs, &areas, &answers) {
+                    Ok(w) => w,
+                    Err(why) => {
+                        bad(&mut r, e, Some(*intent), why, String::new(), String::new());
+                        continue;
+                    }
+                };
+                let again = queue::reach(&tr.spec, &w, &cfg);
+                if &again != reach {
+                    bad(&mut r, e, Some(*intent), "reach differs", json(reach), json(&again));
+                }
+                if queue::all_reachable(&again) {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "queued although every vehicle could be reached",
+                        json(reach),
+                        json(&again),
+                    );
+                }
+                let want = e.t.plus_ms(i64::from(cfg.expire_s(tr.spec.kind())) * 1000);
+                if *expires_t != want {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "queue deadline differs from policy",
+                        json(expires_t),
+                        json(&want),
+                    );
+                }
+                tr.queued_logged = Some(e.seq);
+                tr.queue_expires = Some(*expires_t);
+            }
+            EventBody::QueueRecheck {
+                intent,
+                reach,
+                decision,
+                verdict,
+                changes,
+            } => {
+                let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
+                    bad(&mut r, e, Some(*intent), "re-check without run.started or intent.created", String::new(), String::new());
+                    continue;
+                };
+                r.rechecks += 1;
+                if tr.state != State::Queued {
+                    bad(&mut r, e, Some(*intent), "re-check of an intent that is not queued", json(&tr.state), json(&State::Queued));
+                }
+                // the checks it judges are the dequeue check just before it
+                let Some(w) = tr
+                    .last_inputs
+                    .as_deref()
+                    .filter(|_| {
+                        tr.last_phase == Some(CheckPhase::Dequeue) && tr.last_check_seq + 1 == e.seq
+                    })
+                    .cloned()
+                else {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "re-check without its dequeue check just before",
+                        json(&(tr.last_phase, tr.last_check_seq)),
+                        json(&(CheckPhase::Dequeue, e.seq.saturating_sub(1))),
+                    );
+                    continue;
+                };
+                let cfg = pol.queue();
+                let again = queue::reach(&tr.spec, &w, &cfg);
+                if &again != reach {
+                    bad(&mut r, e, Some(*intent), "reach differs", json(reach), json(&again));
+                }
+                if !queue::all_reachable(&again) {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "dequeued while a vehicle could not be reached",
+                        json(reach),
+                        json(&again),
+                    );
+                }
+                let passed = tr.last_check_passed == Some(true);
+                let d = passed.then(|| policy::decide(&tr.spec, &w, pol));
+                if d.as_ref() != decision.as_ref() {
+                    bad(&mut r, e, Some(*intent), "re-check policy decision differs", json(decision), json(&d));
+                }
+                let basis = tr
+                    .basis
+                    .clone()
+                    .unwrap_or_else(|| crate::engine::no_basis(w.t));
+                let rc = queue::assess(&tr.spec, &basis, &tr.last_results, passed, d.as_ref(), &w);
+                if (rc.verdict, &rc.changes) != (*verdict, changes) {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "re-check verdict differs",
+                        json(&(verdict, changes)),
+                        json(&(rc.verdict, &rc.changes)),
+                    );
+                }
+                match rc.verdict {
+                    Verdict::Dispatch => r.recheck_dispatched += 1,
+                    Verdict::Inbox => r.recheck_inbox += 1,
+                    Verdict::Void => r.recheck_voided += 1,
+                }
+                tr.recheck = Some(rc.verdict);
+                if rc.verdict == Verdict::Inbox
+                    && let Some(d) = &d
+                {
+                    // a new decision: who approves it is this decision's, from scratch
+                    tr.route(d);
+                    tr.signers.clear();
+                    tr.granted = false;
+                    tr.granted_at_submission = false;
+                    tr.expires_t = None;
+                    tr.approval_rec = None;
+                }
+            }
+            EventBody::QueueExpired {
+                intent,
+                expires_t,
+                ..
+            } => {
+                let Some(tr) = intents.get_mut(intent) else {
+                    bad(&mut r, e, Some(*intent), "unknown intent", String::new(), String::new());
+                    continue;
+                };
+                if tr.state != State::Queued
+                    || Some(*expires_t) != tr.queue_expires
+                    || e.t < *expires_t
+                {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "expired from the queue before its deadline (or not queued)",
+                        json(&(e.t, expires_t, tr.state)),
+                        json(&tr.queue_expires),
+                    );
+                }
+                tr.queue_expired = true;
+            }
+            EventBody::IntentResumed {
+                intent: spec,
+                from,
+                state,
+                basis,
+                policy: carried,
+                approval,
+                expires_t,
+                ops,
+            } => {
+                r.resumed += 1;
+                if intents.contains_key(&spec.id) {
+                    bad(&mut r, e, Some(spec.id), "intent created twice", String::new(), String::new());
+                    continue;
+                }
+                let open = OpenIntent {
+                    spec: spec.clone(),
+                    state: from.was,
+                    basis: basis.clone(),
+                    policy: carried.clone(),
+                    approval: approval.clone(),
+                    expires_t: *expires_t,
+                    ops: ops.clone(),
+                };
+                if !queue::queueable(spec.kind())
+                    || !matches!(state, State::Queued | State::Dispatched)
+                    || *state != open.resumes_as()
+                    || (*state == State::Queued) != expires_t.is_some()
+                {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(spec.id),
+                        "resumed in a state its kind, op states or deadline don't allow",
+                        json(&(state, expires_t)),
+                        json(&open.resumes_as()),
+                    );
+                }
+                let mut tr = Tracked::new(spec.clone(), *state);
+                if let Some(d) = carried {
+                    tr.route(d);
+                }
+                tr.basis = Some(basis.clone());
+                tr.last_results = basis.checks.clone();
+                tr.approval_rec = approval.clone();
+                tr.queue_expires = *expires_t;
+                tr.ops = ops.clone();
+                if *state == State::Dispatched {
+                    tr.dispatched = true;
+                    for u in &spec.uids {
+                        newest_on.insert(u.clone(), spec.id);
+                    }
+                }
+                resumed.push((e.seq, from.clone(), open, *state));
+                intents.insert(spec.id, tr);
+            }
+            EventBody::VehicleRebooted {
+                uid,
+                boot_ms_before,
+                boot_ms,
+                ..
+            } => {
+                r.reboots += 1;
+                if boot_ms >= boot_ms_before {
+                    bad(
+                        &mut r,
+                        e,
+                        None,
+                        "reboot without the time since boot going back",
+                        json(&(uid, boot_ms_before, boot_ms)),
+                        String::new(),
+                    );
+                }
+            }
             EventBody::OpState {
                 intent,
                 uid,
@@ -1792,6 +2221,7 @@ fn replay_inner<S: AsRef<str>>(
                 if let Some(s) = state.strip_prefix("intercept ") {
                     tr.intercept_reports.push((s.to_string(), detail.clone()));
                 }
+                tr.ops.insert(uid.clone(), state.clone());
             }
             EventBody::VehicleEvent { uid, kind, text } => {
                 // what a stop of an approved or dispatched engagement on this vehicle may quote
@@ -1863,7 +2293,125 @@ fn replay_inner<S: AsRef<str>>(
         }
     }
     r.intents = intents.len();
+    r.last_seq = last_seq;
+    r.next_intent = intents.keys().map(|i| i.0 + 1).max().unwrap_or(1);
+    r.open = intents
+        .values()
+        .filter(|t| {
+            queue::queueable(t.spec.kind())
+                && matches!(
+                    t.state,
+                    State::Queued | State::Approved | State::AutoApproved | State::Dispatched
+                )
+        })
+        .filter_map(|t| {
+            Some(OpenIntent {
+                spec: t.spec.clone(),
+                state: t.state,
+                basis: t.basis.clone()?,
+                policy: t.decision.clone(),
+                approval: t.approval_rec.clone(),
+                expires_t: if t.state == State::Queued {
+                    t.queue_expires
+                } else {
+                    None
+                },
+                ops: t.ops.clone(),
+            })
+        })
+        .collect();
+    if !resumed.is_empty() {
+        check_resumed(&mut r, &resumed, opts);
+    }
     r
+}
+
+/// A resumed intent as its `intent.resumed` event carries it (seq, from, the open intent).
+type ResumedEvent = (u64, crate::queue::ResumedFrom, OpenIntent, State);
+
+/// Every `intent.resumed` against the previous log (one generation): that log is the one
+/// named (its head and last seq), it replays, and it leaves the intent open exactly as
+/// carried (spec, state, basis, policy, approval, op states, deadline), in the state it
+/// resumes in here. Without the previous log, a mismatch unless the caller trusts it.
+fn check_resumed(r: &mut ReplayReport, resumed: &[ResumedEvent], opts: &ReplayOptions<'_>) {
+    let Some(text) = opts.previous else {
+        if !opts.trust_resumed {
+            for (seq, from, open, _) in resumed {
+                r.mismatches.push(Mismatch {
+                    seq: *seq,
+                    intent: Some(open.spec.id),
+                    what: format!(
+                        "intent carried over from {} not verified: replay with that log (murmur-replay --prev), or trust it (--trust-resumed)",
+                        from.log
+                    ),
+                    logged: String::new(),
+                    recomputed: String::new(),
+                });
+            }
+        }
+        return;
+    };
+    let prev = replay_str_with(
+        text,
+        &ReplayOptions {
+            rules: RulesAccepted::AtLeast(5),
+            trust_resumed: true,
+            ..ReplayOptions::default()
+        },
+    );
+    let push = |r: &mut ReplayReport, seq: u64, id: IntentId, what: &str, logged: String, want: String| {
+        r.mismatches.push(Mismatch {
+            seq,
+            intent: Some(id),
+            what: what.to_string(),
+            logged,
+            recomputed: want,
+        });
+    };
+    let prev = match prev {
+        Ok(p) => p,
+        Err(e) => {
+            if let Some((seq, _, open, _)) = resumed.first() {
+                push(r, *seq, open.spec.id, "the previous log can't be read", e.to_string(), String::new());
+            }
+            return;
+        }
+    };
+    for (seq, from, open, state) in resumed {
+        let id = open.spec.id;
+        if !prev.ok() {
+            push(r, *seq, id, "the previous log does not replay", format!("{} mismatch(es)", prev.mismatches.len()), String::new());
+        }
+        if Some(&from.head) != prev.head_sha256.as_ref() || from.seq != prev.last_seq {
+            push(
+                r,
+                *seq,
+                id,
+                "carried over from another log than the one given (head or last seq differ)",
+                json(&(&from.head, from.seq)),
+                json(&(&prev.head_sha256, prev.last_seq)),
+            );
+            continue;
+        }
+        let Some(was) = prev.open.iter().find(|o| o.spec.id == id) else {
+            push(r, *seq, id, "carried over, but the previous log does not leave it open", String::new(), String::new());
+            continue;
+        };
+        if from.was != was.state {
+            push(r, *seq, id, "carried over from another state than the previous log ends it in", json(&from.was), json(&was.state));
+        }
+        if *state != was.resumes_as() {
+            push(r, *seq, id, "resumed in another state than its op states allow", json(state), json(&was.resumes_as()));
+        }
+        let carried = (&open.spec, &open.basis, &open.policy, &open.approval, &open.ops);
+        let there = (&was.spec, &was.basis, &was.policy, &was.approval, &was.ops);
+        if carried != there {
+            push(r, *seq, id, "carried over differently from how the previous log leaves it", json(&carried), json(&there));
+        }
+        if was.state == State::Queued && open.expires_t != was.expires_t {
+            push(r, *seq, id, "queue deadline differs from the previous log's", json(&open.expires_t), json(&was.expires_t));
+        }
+    }
 }
 
 /// A human act (`what`) under a session opened earlier for that operator.
@@ -2266,7 +2814,30 @@ fn bad(
 
 /// Why a transition lacks the evidence it needs, if it does.
 fn unbacked(tr: &Tracked, t: Transition) -> Option<&'static str> {
+    // rules 5: out of the queue only by a re-check's verdict, or its deadline
+    if tr.state == State::Queued {
+        return match t {
+            Transition::Dispatch if tr.recheck != Some(Verdict::Dispatch) => {
+                Some("dispatched from the queue without a passing re-check")
+            }
+            Transition::Dispatch if tr.dispatch_logged.is_none() => {
+                Some("dispatched without its intent.dispatched order")
+            }
+            Transition::RequireApproval
+                if tr.recheck != Some(Verdict::Inbox) || tr.expires_t.is_none() =>
+            {
+                Some("sent back to the inbox without a re-check that says so and a deadline")
+            }
+            Transition::Expire if !tr.queue_expired => {
+                Some("expired from the queue without a queue.expired")
+            }
+            _ => None,
+        };
+    }
     match t {
+        Transition::Queue if tr.queued_logged.is_none() => {
+            Some("queued without an intent.queued")
+        }
         Transition::Check if tr.last_check_passed.is_none() => {
             Some("checked without a check.result")
         }
