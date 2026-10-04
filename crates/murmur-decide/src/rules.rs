@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::areas::Area;
 use crate::catalog::{AutopilotKind, Domain};
+use crate::engage::EngageRules;
 use crate::geo::haversine_m;
 use crate::ids::Uid;
 use crate::intent::{IntentSpec, Targets, Task, TaskKind};
@@ -51,6 +52,51 @@ pub enum RuleId {
     Feasibility,
     /// Cover: the service holds over the window.
     Coverage,
+    // ---- engage (crate::engage) ----
+    /// An operator declared the track hostile (an inferred suspect is not enough).
+    TargetDeclared,
+    /// Identity and existence confidence above the thresholds; after approval, not
+    /// reclassified.
+    TargetIdentity,
+    /// The track's last detection is recent enough.
+    TargetRecency,
+    /// The track's 1-sigma uncertainty is within a fraction of the effect radius.
+    TargetUncertainty,
+    /// The predicted effect point is inside an approved engagement zone.
+    EngagementZone,
+    /// The effect circle is clear of every no-strike area.
+    NoStrike,
+    /// None of our vehicles can be inside the keep-out at the effect time.
+    KeepOutFriendly,
+    /// No protected track (anything but the target and tracks an operator declared
+    /// hostile) inside the keep-out at the effect time.
+    KeepOutTracks,
+    /// The platform is armed (catalog).
+    PlatformArmed,
+    /// The platform can reach the effect point in the window, with the endurance to do it.
+    Reach,
+    /// After approval: the track is where the approval's snapshot predicts, within tolerance.
+    TrackDeviation,
+    /// After approval: the platform's link holds the approval's assumption.
+    PlatformLink,
+    /// After approval: the window is open and the platform is not late.
+    EngageWindow,
+    /// Release: the platform is at the effect point.
+    Arrival,
+    /// Release: the predicted effect time has come.
+    EffectTime,
+    /// Release: the track is estimated inside the effect radius.
+    Alignment,
+    /// After approval: the picture was checked recently enough (no stalled watch).
+    PictureGap,
+    /// The frozen plan still holds: the track is predicted within tolerance of the plan's
+    /// effect point at the plan's time.
+    Plan,
+    /// The signatures on one plan are given within `max_signing_s` of the first.
+    SigningTime,
+    /// After approval: the platform navigates on GNSS (a release on a dead-reckoned position
+    /// is not trusted).
+    PlatformNav,
 }
 
 impl RuleId {
@@ -65,6 +111,26 @@ impl RuleId {
             RuleId::SpaceQuery => "space_query",
             RuleId::Feasibility => "feasibility",
             RuleId::Coverage => "coverage",
+            RuleId::TargetDeclared => "target_declared",
+            RuleId::TargetIdentity => "target_identity",
+            RuleId::TargetRecency => "target_recency",
+            RuleId::TargetUncertainty => "target_uncertainty",
+            RuleId::EngagementZone => "engagement_zone",
+            RuleId::NoStrike => "no_strike",
+            RuleId::KeepOutFriendly => "keep_out_friendly",
+            RuleId::KeepOutTracks => "keep_out_tracks",
+            RuleId::PlatformArmed => "platform_armed",
+            RuleId::Reach => "reach",
+            RuleId::TrackDeviation => "track_deviation",
+            RuleId::PlatformLink => "platform_link",
+            RuleId::EngageWindow => "engage_window",
+            RuleId::Arrival => "arrival",
+            RuleId::EffectTime => "effect_time",
+            RuleId::Alignment => "alignment",
+            RuleId::PictureGap => "picture_gap",
+            RuleId::Plan => "plan",
+            RuleId::SigningTime => "signing_time",
+            RuleId::PlatformNav => "platform_nav",
         }
     }
 }
@@ -152,6 +218,9 @@ pub struct RulesConfig {
     /// Space rules (`[rules.space]`); defaults when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub space: Option<SpaceRules>,
+    /// Engagement rules (`[rules.engage]`, Phase E); defaults when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engage: Option<EngageRules>,
 }
 
 impl RulesConfig {
@@ -171,6 +240,11 @@ impl RulesConfig {
     pub fn space_rules(&self) -> SpaceRules {
         self.space.clone().unwrap_or_default()
     }
+
+    /// `[rules.engage]`, or its defaults.
+    pub fn engage_rules(&self) -> EngageRules {
+        self.engage.clone().unwrap_or_default()
+    }
 }
 
 impl Default for RulesConfig {
@@ -184,6 +258,7 @@ impl Default for RulesConfig {
             task_duration_s: 900,
             unknown_endurance: UnknownEndurance::Human,
             space: None,
+            engage: None,
         }
     }
 }
@@ -199,6 +274,8 @@ pub fn evaluate(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
             out.extend(domain(spec, world));
             out.extend(geofence(spec, world, cfg));
             out.extend(reserves(spec, world, cfg));
+            // engage: the engagement checks (crate::engage), after the vehicle rules
+            out.extend(crate::engage::evaluate(spec, world, cfg));
         }
         Targets::Space => {
             out.extend(space_query(spec, world, cfg));
@@ -333,7 +410,9 @@ pub fn capability(spec: &IntentSpec, world: &WorldSnapshot) -> Vec<CheckResult> 
 }
 
 /// Navigation is ready and the status is fresh. Hold and RTL are exempt: they are the
-/// safety commands, and the autopilot applies its own checks to them.
+/// safety commands, and the autopilot applies its own checks to them. On dead reckoning (no
+/// GNSS fix) a sub passes, a fixed-wing (plane, VTOL) is `Unverified` (a human judges it),
+/// anything else fails.
 pub fn readiness(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Vec<CheckResult> {
     let r = RuleId::Readiness;
     let kind = spec.kind();
@@ -347,11 +426,16 @@ pub fn readiness(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) ->
             Ok(false) => return res(Outcome::Fail, "navigation not ready (GPS/EKF)".into()),
             Ok(true) => {}
         }
-        // dead reckoning (no GNSS) is how a submerged AUV navigates; anyone else needs a fix
+        // dead reckoning (no GNSS) is how a submerged AUV navigates. A fixed-wing flies on
+        // on airspeed dead reckoning (ArduPlane has no EKF failsafe for it), so it stays
+        // taskable, out of a jammer for one, but a human judges a position that drifts.
+        // Anyone else needs a fix (their EKF gives up the position, as ArduPilot's does).
         let dead_reckoning =
             v.nav_source.as_ref().map(|f| f.value) == Some(NavSource::DeadReckoning);
-        let is_sub = v.autopilot.as_ref().map(|f| f.value) == Some(AutopilotKind::Sub);
-        if dead_reckoning && !is_sub {
+        let ap = v.autopilot.as_ref().map(|f| f.value);
+        let is_sub = ap == Some(AutopilotKind::Sub);
+        let fixed_wing = ap.is_some_and(AutopilotKind::is_fixed_wing);
+        if dead_reckoning && !is_sub && !fixed_wing {
             return res(
                 Outcome::Fail,
                 "navigation on dead reckoning only (no GNSS fix)".into(),
@@ -364,6 +448,12 @@ pub fn readiness(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) ->
                 Some(Err(e)) => return res(Outcome::Fail, e),
                 Some(Ok(_)) => {}
             }
+        }
+        if dead_reckoning && fixed_wing {
+            return res(
+                Outcome::Unverified,
+                "navigation on dead reckoning (no GNSS fix): position error grows with time".into(),
+            );
         }
         if dead_reckoning {
             return res(

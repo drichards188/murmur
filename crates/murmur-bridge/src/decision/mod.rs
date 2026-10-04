@@ -33,6 +33,13 @@
 //! world invalidated, report each dispatched intent's per-vehicle op states and finish it
 //! when every op has ended, then push the inbox to WebSocket clients if it changed.
 //!
+//! **Engagements** (Phase E, [`engage`]). `task = "engage"` nominates an abstract effect on
+//! a declared-hostile track with one armed platform. The engine checks it, holds it for two
+//! operators with engagement authority (`MURMUR_ENGAGE_OPERATORS`; never its proposer),
+//! stores the picture they approved, and every second the loop lets it hold that picture,
+//! release the effect or stop it with its recorded fallback; `POST
+//! /api/intents/{id}/abort` lets any operator stop it before the effect.
+//!
 //! **Voiding.** A waiting intent (pending or approved, not yet dispatched) is voided when a
 //! target vehicle goes silent for longer than its freshness limit, `rules.max_fact_age_s` or
 //! `rules.fact_age_intervals` expected report intervals of its link if larger (60 s for an
@@ -43,6 +50,7 @@
 pub mod agent;
 mod alerts;
 mod civil;
+pub mod engage;
 pub mod snapshot;
 pub mod space;
 mod terrain;
@@ -69,6 +77,7 @@ use crate::clock;
 use crate::tasks::{
     OpState, OrderError, TaskKind, TaskOrder, TaskParams, TaskRequest, Tasking, TaskingSnapshot,
 };
+use crate::tracks::Tracks;
 use crate::vehicle::{Uid, VehicleCell};
 use crate::world::World;
 
@@ -81,7 +90,8 @@ const PUSH_INTENTS: usize = 50;
 
 /// An order the engine released for an approved (or auto-approved) intent: the only thing
 /// [`crate::tasks::TaskManager::dispatch`] accepts. Made only in this module, from the
-/// `DispatchOrder` that `Engine::dispatch` returns.
+/// `DispatchOrder` that `Engine::dispatch` returns, or (engagements, [`engage`]) from the
+/// engine's `EngageOrder` and `FallbackOrder`.
 pub struct AuthorizedOrder {
     intent: IntentId,
     order: TaskOrder,
@@ -115,6 +125,9 @@ pub struct IntentRequest {
     /// Collect and cover: area, window, capability or service, ... (see [`space`]).
     #[serde(flatten)]
     pub space: space::SpaceParams,
+    /// Engage: track, effect radius, window, fallback (see [`engage`]).
+    #[serde(flatten)]
+    pub engage: engage::EngageParams,
     #[serde(default)]
     pub constraints: Constraints,
     #[serde(default)]
@@ -128,6 +141,7 @@ impl From<TaskRequest> for IntentRequest {
             uids: r.uids,
             params: r.params,
             space: space::SpaceParams::default(),
+            engage: engage::EngageParams::default(),
             constraints: Constraints::default(),
             rationale: None,
         }
@@ -162,7 +176,18 @@ fn engine_err(e: EngineError) -> DecisionError {
         | EngineError::ChecksFailedAtApproval(_)
         | EngineError::SpaceIntent(_)
         | EngineError::NotDispatchable { .. }
-        | EngineError::NotACollect(_) => 409,
+        | EngineError::NotACollect(_)
+        | EngineError::EngageIntent(_)
+        | EngineError::NotAnEngagement(_)
+        | EngineError::AlreadySigned { .. }
+        | EngineError::EngageLifecycle { .. }
+        | EngineError::StalePicture { .. }
+        | EngineError::PlanChanged { .. }
+        | EngineError::NoPicture { .. }
+        | EngineError::SupersedesEngagement { .. } => 409,
+        EngineError::EngagementNeedsAuthority(_) | EngineError::ProposerCannotApprove { .. } => {
+            403
+        }
         _ => 500,
     };
     DecisionError::new(status, e.to_string())
@@ -197,6 +222,8 @@ pub struct Settings {
     pub areas: PathBuf,
     pub audit: PathBuf,
     pub operators: Vec<OperatorId>,
+    /// Operators whose sessions carry engagement authority (`MURMUR_ENGAGE_OPERATORS`).
+    pub engage_operators: Vec<OperatorId>,
     pub tidewater: Option<String>,
 }
 
@@ -214,6 +241,13 @@ impl Settings {
             .filter(|s| !s.is_empty())
             .map(OperatorId::new)
             .collect();
+        let engage_operators: Vec<OperatorId> = var("MURMUR_ENGAGE_OPERATORS")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(OperatorId::new)
+            .collect();
         Settings {
             policy: var("MURMUR_POLICY")
                 .map_or_else(|| root.join("sim/policy.toml"), PathBuf::from),
@@ -221,6 +255,7 @@ impl Settings {
             areas: var("MURMUR_AREAS").map_or_else(|| root.join("sim/areas"), PathBuf::from),
             audit: root.join("logs/audit").join(format!("{run}.jsonl")),
             operators,
+            engage_operators,
             tidewater: var("MURMUR_TIDEWATER_URL"),
         }
     }
@@ -251,6 +286,8 @@ struct Core {
     taskings: BTreeMap<IntentId, Arc<Tasking>>,
     /// dispatched collects and covers (running, and the last finished ones)
     space_runs: BTreeMap<IntentId, space::SpaceRun>,
+    /// dispatched engagements: the platform's intercept, then any fallback
+    engagements: BTreeMap<IntentId, engage::EngageRun>,
 }
 
 pub struct Decision {
@@ -259,13 +296,19 @@ pub struct Decision {
     catalog: Catalog,
     areas: AreaSet,
     operators: Vec<OperatorId>,
+    engage_operators: Vec<OperatorId>,
     terrain: Terrain,
     rules: murmur_decide::RulesConfig,
+    /// The track store (tests inject one; the bridge uses the process-wide one).
+    tracks: Option<Arc<Tracks>>,
     audit_path: PathBuf,
     core: Mutex<Core>,
     updates: watch::Sender<Arc<String>>,
     /// Vehicle events the loop logged, for agents (`agent::RecentEvents`).
     recent: agent::RecentEvents,
+    /// The space segment the engine has, shared: collect and cover queries are answered
+    /// with it before the decision lock is taken ([`Decision::prepare_space`]).
+    space: std::sync::RwLock<Option<Arc<SpaceSegment>>>,
 }
 
 /// Everything [`Decision::from_parts`] needs (tests pass a memory sink and a manual clock).
@@ -278,6 +321,8 @@ pub struct Parts {
     pub clock: Arc<dyn Clock + Send + Sync>,
     pub terrain: Terrain,
     pub operators: Vec<OperatorId>,
+    pub engage_operators: Vec<OperatorId>,
+    pub tracks: Option<Arc<Tracks>>,
 }
 
 impl Decision {
@@ -306,6 +351,8 @@ impl Decision {
                 clock,
                 terrain: Terrain::new(s.tidewater.as_deref()),
                 operators: s.operators.clone(),
+                engage_operators: s.engage_operators.clone(),
+                tracks: None,
             },
         )
     }
@@ -326,8 +373,10 @@ impl Decision {
             catalog: p.catalog,
             areas: p.areas,
             operators: p.operators,
+            engage_operators: p.engage_operators,
             terrain: p.terrain,
             rules,
+            tracks: p.tracks,
             audit_path: p.audit_path,
             core: Mutex::new(Core {
                 engine,
@@ -335,9 +384,11 @@ impl Decision {
                 running: BTreeMap::new(),
                 taskings: BTreeMap::new(),
                 space_runs: BTreeMap::new(),
+                engagements: BTreeMap::new(),
             }),
             updates: watch::channel(Arc::new(String::new())).0,
             recent: agent::RecentEvents::default(),
+            space: std::sync::RwLock::new(None),
         });
         d.publish();
         Ok(d)
@@ -356,17 +407,58 @@ impl Decision {
     /// closed ("no space segment loaded").
     pub fn install_space(&self, space: Arc<murmur_space::Space>, map: ScenarioMap) {
         let seg = match SpaceSegment::new(space).and_then(|s| s.with_scenario_map(map)) {
-            Ok(s) => s,
+            Ok(s) => Arc::new(s),
             Err(e) => return eprintln!("decision: space segment: {e}"),
         };
-        if let Err(e) = self.lock().engine.set_space(Box::new(seg)) {
-            eprintln!("decision: space segment: {e}");
+        if let Err(e) = self.lock().engine.set_space(Box::new(seg.clone())) {
+            return eprintln!("decision: space segment: {e}");
         }
+        *self.space.write().unwrap_or_else(|e| e.into_inner()) = Some(seg);
         self.publish();
+    }
+
+    /// A collect's or cover's space question answered now, outside the decision lock (a
+    /// week of Starlink coverage takes over a second of SGP4): the engine uses the answer for
+    /// the check that follows if it is still fresh then ([`murmur_decide::PreparedSpace`]),
+    /// so agents' and operators' space queries never hold the lock the picture tick needs.
+    async fn prepare_space(&self, task: &Task) -> Option<murmur_decide::PreparedSpace> {
+        if !task.is_space() {
+            return None;
+        }
+        let seg = self.space.read().unwrap_or_else(|e| e.into_inner()).clone()?;
+        let task = task.clone();
+        let t = self.clock.now();
+        let rules = self.rules.clone();
+        tokio::task::spawn_blocking(move || {
+            murmur_decide::prepare_space(&seg, &task, t, &rules).ok()
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     fn lock(&self) -> MutexGuard<'_, Core> {
         self.core.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The track store: the injected one, else the process-wide one (`tracks::init`).
+    pub(crate) fn tracks(&self) -> Option<Arc<Tracks>> {
+        self.tracks.clone().or_else(crate::tracks::store)
+    }
+
+    /// The operators and who of them has engagement authority (for the console).
+    pub fn operators_json(&self) -> Value {
+        json!({ "operators": self.all_operators(), "engage": self.engage_operators })
+    }
+
+    fn all_operators(&self) -> Vec<OperatorId> {
+        let mut v = self.operators.clone();
+        for o in &self.engage_operators {
+            if !v.contains(o) {
+                v.push(o.clone());
+            }
+        }
+        v
     }
 
     fn fleet(&self) -> BTreeMap<Uid, Arc<VehicleCell>> {
@@ -388,12 +480,14 @@ impl Decision {
     ) -> Result<OperatorId, DecisionError> {
         match header.map(str::trim).filter(|s| !s.is_empty()) {
             Some(h) => self
-                .operators
-                .iter()
+                .all_operators()
+                .into_iter()
                 .find(|o| o.as_str() == h)
-                .cloned()
                 .ok_or_else(|| {
-                    DecisionError::new(403, format!("operator {h:?} is not in MURMUR_OPERATORS"))
+                    DecisionError::new(
+                        403,
+                        format!("operator {h:?} is not in MURMUR_OPERATORS or MURMUR_ENGAGE_OPERATORS"),
+                    )
                 }),
             None if legacy => self
                 .operators
@@ -408,15 +502,20 @@ impl Decision {
         }
     }
 
-    /// That operator's session, opened (and logged) on first use.
+    /// That operator's session, opened (and logged) on first use, with engagement
+    /// authority if the operator is in `MURMUR_ENGAGE_OPERATORS`.
     fn session<'a>(
         engine: &mut Engine,
         sessions: &'a mut BTreeMap<OperatorId, OperatorSession>,
         op: &OperatorId,
+        engage_operators: &[OperatorId],
     ) -> Result<&'a OperatorSession, DecisionError> {
         if !sessions.contains_key(op) {
+            let grants = murmur_decide::Grants {
+                engage: engage_operators.contains(op),
+            };
             let s = engine
-                .open_operator_session(op.clone())
+                .open_operator_session_with(op.clone(), grants)
                 .map_err(engine_err)?;
             sessions.insert(op.clone(), s);
         }
@@ -436,7 +535,10 @@ impl Decision {
         req: IntentRequest,
     ) -> Result<Outcome, DecisionError> {
         if matches!(req.task.as_str(), "collect" | "cover") {
-            return self.submit_space(by, &req);
+            return self.submit_space(by, &req).await;
+        }
+        if req.task == "engage" {
+            return self.submit_engage(by, &req).await;
         }
         let fleet = self.fleet();
         let order = TaskRequest {
@@ -457,7 +559,7 @@ impl Decision {
             let mut guard = self.lock();
             let core = &mut *guard;
             let world = self.snapshot();
-            let session = Self::session(&mut core.engine, &mut core.sessions, by)?;
+            let session = Self::session(&mut core.engine, &mut core.sessions, by, &self.engage_operators)?;
             let id = core
                 .engine
                 .submit(
@@ -474,21 +576,76 @@ impl Decision {
         out
     }
 
-    /// A human's collect or cover. The space query runs under the decision lock (SGP4 over
-    /// the cached elements: well under a second for a collect at the scenario area, a few
-    /// seconds for a day of Starlink coverage).
-    fn submit_space(&self, by: &OperatorId, req: &IntentRequest) -> Result<Outcome, DecisionError> {
+    /// A human's engagement nomination: never approved at submission (the engine's floor);
+    /// it waits in the inbox for operators with engagement authority.
+    async fn submit_engage(
+        &self,
+        by: &OperatorId,
+        req: &IntentRequest,
+    ) -> Result<Outcome, DecisionError> {
+        self.check_vehicles(&req.uids)?;
+        let proposal = engage::proposal(req, self.clock.now())?;
+        self.prefetch(&proposal.task, &proposal.uids).await;
+        let out = {
+            let mut guard = self.lock();
+            let core = &mut *guard;
+            let world = self.snapshot();
+            let session =
+                Self::session(&mut core.engine, &mut core.sessions, by, &self.engage_operators)?;
+            let id = core
+                .engine
+                .submit(
+                    session.authority(),
+                    proposal,
+                    &world,
+                    &self.terrain.oracle(),
+                )
+                .map_err(engine_err)?
+                .id();
+            self.after_decision(core, id)
+        };
+        self.publish();
+        out
+    }
+
+    /// Every named vehicle is in the fleet (404 otherwise).
+    fn check_vehicles(&self, uids: &[Uid]) -> Result<(), DecisionError> {
+        let fleet = self.fleet();
+        let missing: Vec<String> = uids
+            .iter()
+            .filter(|u| !fleet.contains_key(u))
+            .map(ToString::to_string)
+            .collect();
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(DecisionError::new(
+                404,
+                format!("unknown vehicles [{}]", missing.join(", ")),
+            ))
+        }
+    }
+
+    /// A human's collect or cover. The space query runs before the decision lock is taken
+    /// ([`Self::prepare_space`]; SGP4 over the cached elements: well under a second for a
+    /// collect at the scenario area, over a second for a week of Starlink coverage), and the
+    /// engine uses that answer if it is still fresh when the checks run.
+    async fn submit_space(&self, by: &OperatorId, req: &IntentRequest) -> Result<Outcome, DecisionError> {
         let proposal = space::proposal(
             &req.task,
             !req.uids.is_empty(),
             &req.space,
             req.rationale.as_deref(),
         )?;
+        let prepared = self.prepare_space(&proposal.task).await;
         let out = {
             let mut guard = self.lock();
             let core = &mut *guard;
             let world = self.snapshot();
-            let session = Self::session(&mut core.engine, &mut core.sessions, by)?;
+            let session = Self::session(&mut core.engine, &mut core.sessions, by, &self.engage_operators)?;
+            if let Some(p) = prepared {
+                core.engine.use_prepared_space(p);
+            }
             let id = core
                 .engine
                 .submit(
@@ -506,12 +663,53 @@ impl Decision {
     }
 
     /// Approve a pending intent (re-checked against the current world; voided if the
-    /// picture no longer holds), then dispatch it.
+    /// picture no longer holds), then dispatch it. Tests' shorthand for
+    /// [`Self::approve_seen`] without a preview (which an engagement needs).
+    #[cfg(test)]
     pub async fn approve(
         &self,
         by: &OperatorId,
         id: u64,
         note: Option<String>,
+    ) -> Result<Outcome, DecisionError> {
+        self.approve_with(by, id, note, None, false).await
+    }
+
+    /// `POST /api/intents/{id}/picture`: what an operator with engagement authority would
+    /// sign (the engine's picture token: the plan, the track's identity, valid
+    /// `token_ttl_s`, bound to their session). The console shows it and the signature quotes
+    /// its `id`.
+    pub fn issue_picture(&self, by: &OperatorId, id: u64) -> Result<Value, DecisionError> {
+        let id = IntentId(id);
+        let mut guard = self.lock();
+        let core = &mut *guard;
+        let world = self.snapshot();
+        let session = Self::session(&mut core.engine, &mut core.sessions, by, &self.engage_operators)?;
+        let Some(auth) = session.engagement_authority() else {
+            return Err(DecisionError::new(
+                403,
+                format!("{by} has no engagement authority (MURMUR_ENGAGE_OPERATORS): nothing to sign"),
+            ));
+        };
+        let token = core
+            .engine
+            .issue_picture(id, auth, &world)
+            .map_err(|e| self.with_intent(core, id, engine_err(e)))?;
+        Ok(serde_json::to_value(&token).unwrap_or(Value::Null))
+    }
+
+    /// [`Self::approve`] with what the signature needs: an engagement's quotes the picture
+    /// token its signer was shown (`token`, from [`Self::issue_picture`]); the engine refuses
+    /// it when the token expired, is another session's, or its plan or track facts no longer
+    /// hold. Any other intent whose dispatch would stop an engagement in play on its vehicles
+    /// needs `acknowledge` (the engine refuses it otherwise, and logs what was acknowledged).
+    pub async fn approve_with(
+        &self,
+        by: &OperatorId,
+        id: u64,
+        note: Option<String>,
+        token: Option<u64>,
+        acknowledge: bool,
     ) -> Result<Outcome, DecisionError> {
         let id = IntentId(id);
         let (task, uids) = {
@@ -522,20 +720,62 @@ impl Decision {
                 .ok_or_else(|| DecisionError::new(404, format!("unknown intent {id}")))?;
             (i.spec().task.clone(), i.spec().uids.clone())
         };
-        self.prefetch(&task, &uids).await;
+        if matches!(task, Task::Engage { .. }) {
+            // the plan this signature would be on: the frozen one, or the token's
+            let plan = {
+                let core = self.lock();
+                core.engine
+                    .intent(id)
+                    .and_then(|i| i.engagement())
+                    .and_then(|e| e.plan.as_ref())
+                    .map(|p| p.preview.effect_point)
+                    .or_else(|| {
+                        token
+                            .and_then(|t| core.engine.picture_token(t))
+                            .map(|t| t.plan.effect_point)
+                    })
+            };
+            self.prefetch_engage(&task, &uids, plan).await;
+        } else {
+            self.prefetch(&task, &uids).await;
+        }
+        let prepared = self.prepare_space(&task).await;
         let out = {
             let mut guard = self.lock();
             let core = &mut *guard;
             let world = self.snapshot();
-            let session = Self::session(&mut core.engine, &mut core.sessions, by)?;
-            match core.engine.approve(
-                id,
-                session.authority(),
-                note,
-                &world,
-                &self.terrain.oracle(),
-            ) {
-                Ok(_) => self.after_decision(core, id),
+            let session = Self::session(&mut core.engine, &mut core.sessions, by, &self.engage_operators)?;
+            if let Some(p) = prepared {
+                core.engine.use_prepared_space(p);
+            }
+            let r = if matches!(task, Task::Engage { .. }) {
+                match (session.engagement_authority(), token) {
+                    (Some(auth), Some(token)) => core
+                        .engine
+                        .approve_engagement(id, auth, note, token, &world, &self.terrain.oracle())
+                        .map(|_| ()),
+                    (Some(_), None) => {
+                        return Err(DecisionError::new(
+                            400,
+                            "an engagement signature quotes the picture you were shown: ask for it first (POST /api/intents/{id}/picture) and send its token",
+                        ));
+                    }
+                    (None, _) => core
+                        .engine
+                        .approve(id, session.authority(), note, &world, &self.terrain.oracle())
+                        .map(|_| ()),
+                }
+            } else if acknowledge {
+                core.engine
+                    .approve_acknowledging(id, session.authority(), note, &world, &self.terrain.oracle())
+                    .map(|_| ())
+            } else {
+                core.engine
+                    .approve(id, session.authority(), note, &world, &self.terrain.oracle())
+                    .map(|_| ())
+            };
+            match r {
+                Ok(()) => self.after_decision(core, id),
                 Err(e) => Err(self.with_intent(core, id, engine_err(e))),
             }
         };
@@ -553,7 +793,7 @@ impl Decision {
         let out = {
             let mut guard = self.lock();
             let core = &mut *guard;
-            let session = Self::session(&mut core.engine, &mut core.sessions, by)?;
+            let session = Self::session(&mut core.engine, &mut core.sessions, by, &self.engage_operators)?;
             match core.engine.reject(id, session.authority(), note) {
                 Ok(_) => Ok(self.outcome(core, id)),
                 Err(e) => Err(self.with_intent(core, id, engine_err(e))),
@@ -574,7 +814,7 @@ impl Decision {
         let out = {
             let mut guard = self.lock();
             let core = &mut *guard;
-            let session = Self::session(&mut core.engine, &mut core.sessions, by)?;
+            let session = Self::session(&mut core.engine, &mut core.sessions, by, &self.engage_operators)?;
             let note = note.unwrap_or_else(|| "cancelled".into());
             match core.engine.cancel(id, session.authority(), &note) {
                 Ok(_) => Ok(self.outcome(core, id)),
@@ -595,7 +835,7 @@ impl Decision {
     ) -> Result<(), DecisionError> {
         let mut guard = self.lock();
         let core = &mut *guard;
-        let session = Self::session(&mut core.engine, &mut core.sessions, by)?;
+        let session = Self::session(&mut core.engine, &mut core.sessions, by, &self.engage_operators)?;
         core.engine
             .record_operator_action(session.authority(), action, detail)
             .map_err(engine_err)
@@ -611,7 +851,7 @@ impl Decision {
     ) -> Result<(), DecisionError> {
         let mut guard = self.lock();
         let core = &mut *guard;
-        let session = Self::session(&mut core.engine, &mut core.sessions, by)?;
+        let session = Self::session(&mut core.engine, &mut core.sessions, by, &self.engage_operators)?;
         core.engine
             .record_operator_view(session.authority(), IntentId(id), view)
             .map_err(|e| match e {
@@ -665,6 +905,9 @@ impl Decision {
         if spec.task.is_space() {
             return self.dispatch_space(core, id);
         }
+        if matches!(spec.task, Task::Engage { .. }) {
+            return self.dispatch_engage(core, id);
+        }
         // the task layer must accept it before the engine marks it dispatched
         if let Err(e) = task_request(&spec.task, &spec.uids)
             .and_then(|r| TaskOrder::new(r, &fleet).map_err(|e| e.to_string()))
@@ -703,13 +946,22 @@ impl Decision {
                 reported: HashMap::new(),
             },
         );
-        // older orders still waiting for these vehicles are superseded
-        let took: BTreeSet<&DUid> = released.uids.iter().collect();
+        self.supersede(core, id, &released.uids);
+        Ok(())
+    }
+
+    /// Older orders still waiting for these vehicles are superseded (voided), and an
+    /// engagement in play on one of them (pending, approved or under way) is stopped with
+    /// that cause: the newest order stands.
+    fn supersede(&self, core: &mut Core, id: IntentId, uids: &[DUid]) {
+        let took: BTreeSet<&DUid> = uids.iter().collect();
         let stale: Vec<(IntentId, DUid)> = core
             .engine
             .intents()
             .filter(|i| {
-                i.id() != id && matches!(i.state(), State::PendingApproval | State::Approved)
+                i.id() != id
+                    && !matches!(i.spec().task, Task::Engage { .. })
+                    && matches!(i.state(), State::PendingApproval | State::Approved)
             })
             .filter_map(|i| {
                 let u = i.spec().uids.iter().find(|u| took.contains(u))?;
@@ -722,7 +974,7 @@ impl Decision {
                 eprintln!("decision: void {other}: {e}");
             }
         }
-        Ok(())
+        self.stop_superseded_engagements(core, id, uids);
     }
 
     /// A collect or cover: the engine releases its order (`intent.dispatched`), the space
@@ -735,7 +987,7 @@ impl Decision {
         let run = match core.engine.dispatch_order(id).map_err(engine_err)? {
             Order::Collect(o) => space::SpaceRun::collect(o),
             Order::Cover(o) => space::SpaceRun::cover(o, answer.as_ref()),
-            Order::Vehicles(_) => {
+            Order::Vehicles(_) | Order::Engage(_) => {
                 return Err(DecisionError::new(500, SPACE_NOT_VEHICLES));
             }
         };
@@ -815,7 +1067,13 @@ impl Decision {
     // ---- world --------------------------------------------------------------------------
 
     fn snapshot(&self) -> murmur_decide::WorldSnapshot {
-        snapshot::build(&self.world, &self.catalog, &self.areas, self.clock.now())
+        snapshot::build(
+            &self.world,
+            &self.catalog,
+            &self.areas,
+            self.clock.now(),
+            self.tracks().as_deref(),
+        )
     }
 
     /// Ask tidewater for the task's waypoints first, if some target must stay on water or
@@ -823,6 +1081,9 @@ impl Decision {
     async fn prefetch(&self, task: &Task, uids: &[DUid]) {
         if !self.terrain.configured() {
             return;
+        }
+        if matches!(task, Task::Engage { .. }) {
+            return self.prefetch_engage(task, uids, None).await;
         }
         let Some(path) = task.path() else { return };
         let fleet = self.fleet();
@@ -845,14 +1106,98 @@ impl Decision {
         }
     }
 
+    /// An engagement's effect point, for a boat or ground platform: `plan` (a frozen or
+    /// token plan's point), or the preview on the world now.
+    async fn prefetch_engage(&self, task: &Task, uids: &[DUid], plan: Option<LonLat>) {
+        if !self.terrain.configured() {
+            return;
+        }
+        let spec = murmur_decide::IntentSpec {
+            id: IntentId(0),
+            created_t: self.clock.now(),
+            source: murmur_decide::Source::Human {
+                id: OperatorId::new("prefetch"),
+            },
+            task: task.clone(),
+            uids: uids.to_vec(),
+            constraints: Constraints::default(),
+            rationale: None,
+        };
+        let world = self.snapshot().subset_for(&spec);
+        if !murmur_decide::engage::surface_needed(&spec, &world) {
+            return;
+        }
+        let point = plan.or_else(|| murmur_decide::engage::terrain_point(&spec, &world, &self.rules));
+        if let Some(p) = point {
+            self.terrain.prefetch_near(&[p]).await;
+        }
+    }
+
     // ---- the loop -----------------------------------------------------------------------
 
+    /// The loop: once a second, [`Self::tick`] (which holds every engagement's picture);
+    /// beside it, its own task fetches terrain for pending engagements, so a slow or
+    /// failing terrain service never delays the tick (a gap in holding the picture aborts an
+    /// engagement: `picture_gap`).
     pub async fn run(self: Arc<Self>) {
+        let prefetcher = self.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                prefetcher.prefetch_engagements().await;
+            }
+        });
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             interval.tick().await;
             self.tick();
+        }
+    }
+
+    /// Pending engagements' predicted effect points (they move with their tracks), for the
+    /// console's live checks and the signatures (the reach check asks a boat's or UGV's
+    /// effect point for land or water). Approved and dispatched engagements are held on
+    /// their approval snapshot, which needs no terrain. Skipped for a few seconds after
+    /// tidewater fails.
+    async fn prefetch_engagements(&self) {
+        if !self.terrain.configured() || self.terrain.backing_off() {
+            return;
+        }
+        // each pending engagement with its frozen plan's point, if it has one
+        let specs: Vec<(murmur_decide::IntentSpec, Option<LonLat>)> = self
+            .lock()
+            .engine
+            .intents()
+            .filter(|i| {
+                matches!(i.spec().task, Task::Engage { .. }) && i.state() == State::PendingApproval
+            })
+            .map(|i| {
+                let plan = i
+                    .engagement()
+                    .and_then(|e| e.plan.as_ref())
+                    .map(|p| p.preview.effect_point);
+                (i.spec().clone(), plan)
+            })
+            .collect();
+        if specs.is_empty() {
+            return;
+        }
+        let world = self.snapshot();
+        let points: Vec<LonLat> = specs
+            .iter()
+            .filter_map(|(s, plan)| {
+                let w = world.subset_for(s);
+                if !murmur_decide::engage::surface_needed(s, &w) {
+                    return None;
+                }
+                plan.or_else(|| murmur_decide::engage::terrain_point(s, &w, &self.rules))
+            })
+            .collect();
+        if !points.is_empty() {
+            self.terrain.prefetch_near(&points).await;
         }
     }
 
@@ -867,6 +1212,7 @@ impl Decision {
             self.void_lost(core);
             self.follow_ops(core);
             self.follow_space(core);
+            self.step_engagements(core);
         }
         self.publish();
     }
@@ -1016,6 +1362,9 @@ impl Decision {
     /// `GET /api/inbox`: pending approvals (soonest expiry first, with why each needs a
     /// human) and alerts (most severe first).
     pub fn inbox_json(&self) -> Value {
+        // the world only when an engagement waits (its live picture); a snapshot of a large
+        // fleet is not free
+        let world = self.engagements_in_view().then(|| self.snapshot());
         let pending: Vec<Value> = {
             let core = self.lock();
             core.engine
@@ -1024,6 +1373,11 @@ impl Decision {
                 .map(|i| {
                     let mut v = intent_json(i, None, self.tol());
                     v["why"] = json!(why_human(i));
+                    if let Some(w) = &world
+                        && let Some(e) = self.engage_view(&core, i, w)
+                    {
+                        v["engage"] = e;
+                    }
                     v
                 })
                 .collect()
@@ -1041,20 +1395,52 @@ impl Decision {
     }
 
     /// The WebSocket message (`type: "decisions"`): the inbox and the latest intents.
+    /// Whether any engagement is among the intents the console sees.
+    fn engagements_in_view(&self) -> bool {
+        let core = self.lock();
+        let all: Vec<&Intent> = core.engine.intents().collect();
+        all.into_iter()
+            .rev()
+            .take(PUSH_INTENTS)
+            .any(|i| matches!(i.spec().task, Task::Engage { .. }))
+            || core
+                .engine
+                .inbox()
+                .iter()
+                .any(|i| matches!(i.spec().task, Task::Engage { .. }))
+    }
+
     fn message(&self) -> String {
         let inbox = self.inbox_json();
+        let world = self.engagements_in_view().then(|| self.snapshot());
         let intents: Vec<Value> = {
             let core = self.lock();
             let all: Vec<&Intent> = core.engine.intents().collect();
             all.into_iter()
                 .rev()
                 .take(PUSH_INTENTS)
-                .map(|i| intent_json(i, core.taskings.get(&i.id()).map(|t| t.id), self.tol()))
+                .map(|i| {
+                    let mut v =
+                        intent_json(i, core.taskings.get(&i.id()).map(|t| t.id), self.tol());
+                    if i.state() != State::PendingApproval
+                        && let Some(w) = &world
+                        && let Some(e) = self.engage_view(&core, i, w)
+                    {
+                        v["engage"] = e;
+                    }
+                    v
+                })
                 .collect()
         };
         let space = self.space_runs_json();
-        json!({ "type": "decisions", "inbox": inbox, "intents": intents, "space": space })
-            .to_string()
+        json!({
+            "type": "decisions",
+            "inbox": inbox,
+            "intents": intents,
+            "space": space,
+            "operators": self.operators_json(),
+        })
+        .to_string()
     }
 
     /// Push the inbox to WebSocket clients if it changed.
@@ -1112,6 +1498,18 @@ fn why_human(i: &Intent) -> Vec<String> {
     let mut why = Vec::new();
     if let Some(p) = i.policy() {
         why.push(format!("policy {}: {}", p.rule, p.reason));
+        if matches!(i.spec().task, Task::Engage { .. }) {
+            let who = match &i.spec().source {
+                murmur_decide::Source::Human { id } => format!("not the proposer ({id})"),
+                murmur_decide::Source::Agent { id } => format!("proposed by agent {id}"),
+            };
+            why.push(format!(
+                "engagement: {} distinct approver(s) with engagement authority, {who}",
+                p.approvers
+            ));
+        } else if p.approvers > 1 {
+            why.push(format!("{} distinct approvers", p.approvers));
+        }
         if !p.facts.armed.is_empty() {
             let armed: Vec<&str> = p.facts.armed.iter().map(DUid::as_str).collect();
             why.push(format!("armed platform: vehicle {}", armed.join(", ")));
@@ -1184,6 +1582,9 @@ fn task_request(task: &Task, uids: &[DUid]) -> Result<TaskRequest, String> {
             "track"
         }
         Task::Collect { .. } | Task::Cover { .. } => return Err(SPACE_NOT_VEHICLES.into()),
+        Task::Engage { .. } => {
+            return Err("an engagement runs through its executor (decision::engage)".into());
+        }
     };
     Ok(TaskRequest {
         task: name.into(),

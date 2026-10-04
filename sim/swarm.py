@@ -48,6 +48,19 @@ VEHICLES = {
     "sub": ("ardusub", "vectored", 60.0),
 }
 STANDIN_SPACING_M = 500.0
+# The firmware a stand-in behavior imitates (the drifting buoy reports itself as ArduRover).
+STANDIN_FIRMWARE = {**{kind: v[0] for kind, v in VEHICLES.items()}, "drifter": "ardurover"}
+# The parameter that times the GCS (lost-link) failsafe, per ArduPilot 4.8 firmware. Plane's
+# GCS failsafe is its long failsafe (FS_LONG_TIMEOUT; 4.8 removed FS_SHORT_TIMEOUT, and
+# FS_SHORT_ACTN is the RC failsafe's); AntennaTracker has none. Set from the vehicle's link
+# profile, `lost_link_s` in sim/links.toml (see `lost_link_params`).
+LOST_LINK_PARAM = {
+    "arduplane": "FS_LONG_TIMEOUT",
+    "arducopter": "FS_GCS_TIMEOUT",
+    "ardurover": "FS_GCS_TIMEOUT",
+    "ardusub": "FS_GCS_TIMEOUT",
+    "blimp": "FS_GCS_TIMEOUT",
+}
 
 
 def offset(lat, lon, north_m, east_m):
@@ -106,6 +119,53 @@ def plan(fleet, platforms):
     return vehicles
 
 
+_links = None
+
+
+def load_links():
+    """The link profiles: MURMUR_LINKS (as scripts/up.sh hands the link emulator) or
+    sim/links.toml. Read once."""
+    global _links
+    if _links is None:
+        path = Path(os.environ.get("MURMUR_LINKS") or ROOT / "links.toml")
+        if not path.is_absolute():
+            path = REPO / path
+        _links = tomllib.loads(path.read_text()) if path.exists() else {}
+    return _links
+
+
+def link_profile(pid, spec, links):
+    """The profile the link emulator gives a platform (murmur-linkemu's Config::profile_for):
+    [platform_profile], else a SATCOM platform's space_class through [space_class_profile],
+    else its link class."""
+    if pid in links.get("platform_profile", {}):
+        return links["platform_profile"][pid]
+    if spec.get("link") == "satcom" and spec.get("space_class") in links.get("space_class_profile", {}):
+        return links["space_class_profile"][spec["space_class"]]
+    return spec.get("link")
+
+
+def profile_field(links, name, key):
+    """A field of a link profile, following `extends` as the emulator does."""
+    seen = set()
+    while name and name not in seen:
+        seen.add(name)
+        profile = links.get("class", {}).get(name, {})
+        if key in profile:
+            return profile[key]
+        name = profile.get("extends")
+    return None
+
+
+def lost_link_params(pid, spec, firmware, links=None):
+    """The vehicle's lost-link (GCS failsafe) timer from its link profile's `lost_link_s`,
+    under its firmware's parameter name: {} when the profile or the firmware has none."""
+    links = load_links() if links is None else links
+    seconds = profile_field(links, link_profile(pid, spec, links), "lost_link_s")
+    name = LOST_LINK_PARAM.get(firmware)
+    return {name: seconds} if seconds is not None and name else {}
+
+
 def parse_parm(text):
     """name -> value from an ArduPilot .parm file (comments and blank lines skipped)."""
     out = {}
@@ -118,16 +178,18 @@ def parse_parm(text):
 
 def sitl_command(v, spec, args, workdir):
     binary, model, _ = VEHICLES[spec["vehicle"]]
-    # One merged defaults file (common, then kind, then platform params; later layers win),
-    # not a comma list of files: ArduPilot keeps only the last file's "every name resolved"
-    # flag (AP_Param::read_param_defaults_file), so when the last file had no MAVn_* params
-    # the MAVLink channels, created later in boot, missed common.parm's stream rates and
-    # streamed their built-in defaults (ArduPlane: ~22 extra msg/s, murmur-yjq).
+    # One merged defaults file (common, then kind, then the lost-link timer for the link
+    # profile, then platform params; later layers win), not a comma list of files: ArduPilot
+    # keeps only the last file's "every name resolved" flag
+    # (AP_Param::read_param_defaults_file), so when the last file had no MAVn_* params the
+    # MAVLink channels, created later in boot, missed common.parm's stream rates and streamed
+    # their built-in defaults (ArduPlane: ~22 extra msg/s, murmur-yjq).
     layers = [ROOT / "params" / "common.parm", ROOT / "params" / f"{spec['vehicle']}.parm"]
     merged = {}
     for layer in layers:
         if layer.exists():
             merged.update(parse_parm(layer.read_text()))
+    merged.update({k: str(val) for k, val in lost_link_params(v.get("platform"), spec, binary).items()})
     merged.update({k: str(val) for k, val in (spec.get("params") or {}).items()})
     defaults_file = workdir / "defaults.parm"
     defaults_file.write_text("".join(f"{k} {val}\n" for k, val in merged.items()))
@@ -228,8 +290,12 @@ def main():
 
     if standins:
         cfg = RUN / "standins.json"
-        cfg.write_text(json.dumps({"bridge_host": args.bridge_host,
-                                   "vehicles": [{**v, "spec": platforms[v["platform"]]} for v in standins]}))
+        # params: what a SITL vehicle's defaults file would add for it (the lost-link timer)
+        cfg.write_text(json.dumps({"bridge_host": args.bridge_host, "vehicles": [
+            {**v, "spec": platforms[v["platform"]],
+             "params": lost_link_params(v["platform"], platforms[v["platform"]],
+                                        STANDIN_FIRMWARE.get(platforms[v["platform"]]["behavior"]))}
+            for v in standins]}))
         log = open(RUN / "standins.log", "w")
         procs.append(subprocess.Popen([engine, str(cfg)],
                                       stdout=log, stderr=subprocess.STDOUT, start_new_session=True))

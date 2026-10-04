@@ -32,6 +32,11 @@ fn every_transition_legal_and_illegal() {
         (S::Approved, T::Dispatch, S::Dispatched),
         (S::Dispatched, T::Complete, S::Done),
         (S::Dispatched, T::Fail, S::Failed),
+        // engage: the effect, an abort, the assessment
+        (S::Dispatched, T::Release, S::Effected),
+        (S::Dispatched, T::Abort, S::Aborted),
+        (S::Effected, T::Complete, S::Done),
+        (S::Effected, T::Fail, S::Failed),
     ];
     let mut checked = 0;
     for from in State::ALL {
@@ -48,7 +53,7 @@ fn every_transition_legal_and_illegal() {
             checked += 1;
         }
     }
-    assert_eq!(checked, 132);
+    assert_eq!(checked, 13 * 14);
     for s in State::ALL {
         if s.is_terminal() {
             assert!(

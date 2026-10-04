@@ -5,11 +5,13 @@ import {
   fmtDuration,
   getOperator,
   intentAction,
-  OPERATORS,
   useAlertMemory,
   useOperator,
+  useOperators,
   verdict,
 } from './decisions'
+import { EngageCard, EngagementsSection } from './EngageCard'
+import { isEngage } from './engage'
 import { distanceM } from './geo'
 import { reportView } from './operatorView'
 import type { LngLat, Vehicle } from './types'
@@ -178,9 +180,12 @@ interface CardProps {
   selected: boolean
   onFocus: () => void
   onDone: (text: string, tone: 'ok' | 'bad') => void
+  /** engagements in play (pending, approved, under way) on this intent's vehicles: its
+   *  dispatch stops them, and the approval must say so */
+  engaged?: Intent[]
 }
 
-function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone }: CardProps) {
+function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone, engaged = [] }: CardProps) {
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -208,7 +213,8 @@ function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone }: C
     view.current.decided = true
     reportView(i, 'decide', view.current.openedAt, action)
     try {
-      const r = await intentAction(i.id, action, note)
+      const extra = action === 'approve' && engaged.length ? { acknowledge_supersede: true } : undefined
+      const r = await intentAction(i.id, action, note, extra)
       const last = r.intent.history[r.intent.history.length - 1]
       if (action === 'reject') onDone(`i${i.id} rejected by ${getOperator()}`, 'ok')
       else if (r.dispatched) onDone(`i${i.id} approved by ${getOperator()}${r.intent.approval?.self_approved ? ' (self-approval)' : ''} and dispatched`, 'ok')
@@ -312,6 +318,11 @@ function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone }: C
           You ({operator}) proposed this. Approving it is a self-approval, and the decision log records that.
         </p>
       )}
+      {engaged.length > 0 && (
+        <p className="eg-alarm" role="alert">
+          <b>Approving this stops {engaged.map((e) => `engagement i${e.id}`).join(', ')}</b> on the same vehicle (the newest order stands; no fallback is commanded). Your approval records that you accept it.
+        </p>
+      )}
       <footer className="ix-actions" onClick={(e) => e.stopPropagation()}>
         <input
           className="ix-note"
@@ -326,7 +337,7 @@ function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone }: C
           Reject
         </button>
         <button className="ix-approve" disabled={busy || expired} onClick={() => act('approve')} title={`as ${operator}`}>
-          {selfApproval ? 'Approve (self)' : 'Approve'}
+          {engaged.length ? `Approve and stop i${engaged.map((e) => e.id).join(', i')}` : selfApproval ? 'Approve (self)' : 'Approve'}
         </button>
         {error && <p className="error ix-error">{error}</p>}
       </footer>
@@ -525,6 +536,7 @@ interface Notice {
 
 export function InboxPanel({ decisions, vehicles, now, tab, setTab, selection, onFocus, onClose, mem, hidden }: Props & { mem: ReturnType<typeof useAlertMemory>; hidden: Set<string> }) {
   const [operator, setOperator] = useOperator()
+  const ops = useOperators()
   const [notices, setNotices] = useState<Notice[]>([])
   const [showHidden, setShowHidden] = useState(false)
   const pending = decisions?.inbox.pending ?? []
@@ -564,8 +576,11 @@ export function InboxPanel({ decisions, vehicles, now, tab, setTab, selection, o
         <label>
           Acting as
           <select value={operator} onChange={(e) => setOperator(e.target.value)} aria-label="Operator">
-            {OPERATORS.map((o) => (
-              <option key={o}>{o}</option>
+            {(ops.operators.includes(operator) ? ops.operators : [operator, ...ops.operators]).map((o) => (
+              <option key={o} value={o}>
+                {o}
+                {ops.engage.includes(o) ? ' (engagement authority)' : ''}
+              </option>
             ))}
           </select>
         </label>
@@ -589,22 +604,45 @@ export function InboxPanel({ decisions, vehicles, now, tab, setTab, selection, o
           <DecisionsList intents={decisions?.intents ?? []} vehicles={vehicles} now={now} />
         ) : (
           <>
+            <EngagementsSection
+              intents={decisions?.intents ?? []}
+              vehicles={vehicles}
+              now={now}
+              selection={selection}
+              onFocus={(i) => onFocus({ kind: 'intent', id: i.id }, uidsOf(i), i)}
+              onDone={(text, tone) => setNotices((ns) => [...ns, { n: Date.now() + Math.random(), text, tone }])}
+            />
             <h3 className="ix-h">
               Approvals <span>{pending.length}</span>
               <small>soonest expiry first</small>
             </h3>
             {pending.length === 0 && <p className="empty">Nothing waiting for a human.</p>}
-            {pending.map((i) => (
+            {pending.map((i) =>
+              isEngage(i) ? (
+                <EngageCard
+                  key={i.id}
+                  intent={i}
+                  vehicles={vehicles}
+                  now={now}
+                  selected={selection?.kind === 'intent' && selection.id === i.id}
+                  onFocus={() => onFocus({ kind: 'intent', id: i.id }, uidsOf(i), i)}
+                  onDone={(text, tone) => setNotices((ns) => [...ns, { n: Date.now() + Math.random(), text, tone }])}
+                />
+              ) : (
               <ApprovalCard
                 key={i.id}
                 intent={i}
+                engaged={(decisions?.intents ?? []).filter(
+                  (e) => isEngage(e) && e.id !== i.id && ['pending_approval', 'approved', 'dispatched'].includes(e.state) && e.uids.some((u) => i.uids.includes(u)),
+                )}
                 vehicles={vehicles}
                 now={now}
                 selected={selection?.kind === 'intent' && selection.id === i.id}
                 onFocus={() => onFocus({ kind: 'intent', id: i.id }, uidsOf(i), i)}
                 onDone={(text, tone) => setNotices((ns) => [...ns, { n: Date.now() + Math.random(), text, tone }])}
               />
-            ))}
+              ),
+            )}
             <h3 className="ix-h">
               Alerts <span>{live.length}</span>
               <small>most severe first, then oldest</small>

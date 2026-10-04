@@ -1,0 +1,45 @@
+# Armed platforms only: an unarmed USV is named for the effect; rejected (platform_armed).
+title = "Nominate an unarmed platform"
+invariant = "platform_armed"
+attack = "pair the track with a platform that carries no effect"
+expect = "rejected"
+expect_rule = "platform_armed"
+end_s = 20
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "marlin-1"
+platform = "corsair"        # unarmed medium USV
+at = [-122.5050, 37.8150]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "marlin-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"

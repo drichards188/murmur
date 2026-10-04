@@ -76,6 +76,18 @@ fn main() -> ExitCode {
         "{} area set(s) logged; {} approval(s), {} self-approved; {} authorized at submission",
         report.area_sets, report.approvals, report.self_approvals, report.approvals_at_submission
     );
+    if report.engagements > 0 {
+        println!(
+            "{} engagement(s): {} concurrence(s) before final approvals, {} picture verdict(s) recomputed ({} void(s)), {} effect(s), {} abort(s), {} assessment(s)",
+            report.engagements,
+            report.concurrences,
+            report.pictures_recomputed,
+            report.picture_voids,
+            report.effects,
+            report.aborts,
+            report.assessments
+        );
+    }
     if report.space_queries > 0 {
         let how = match &segment {
             None => "not recomputed (pass --space to re-run them)".to_string(),

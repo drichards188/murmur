@@ -79,7 +79,13 @@ than the freshness limit the rules apply. A stale fact cannot support a decision
 as uncertain, say so in your rationale, and prefer a hold or a return to a new task. Use \
 preview_intent before propose_intent to see the checks and the policy tier without creating \
 an intent; use explain_intent to follow what you proposed. Everything you do is written to \
-the audit log under your agent id.";
+the audit log under your agent id. You may nominate an engagement (propose_intent with \
+task engage) on a track a human operator declared hostile, with one armed platform and a \
+rationale: the effect is an abstract event, and the nomination waits for two human \
+operators with engagement authority, never its proposer. You cannot approve, stop or \
+release an engagement: no such tool exists. get_nominations shows where each stands. While \
+an engagement is in play on a vehicle, anything you propose for that vehicle waits for a \
+human.";
 
 /// Where the agent list comes from (see `main.rs`).
 pub struct Settings {

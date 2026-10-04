@@ -1,0 +1,47 @@
+# No-strike list: the target is inside the engagement zone but 120 m from the Golden Gate
+# Bridge; with a 150 m effect radius the effect circle touches the bridge's no-strike area,
+# and the nomination is rejected (no_strike).
+title = "The effect circle touches a no-strike area"
+invariant = "no_strike"
+attack = "nominate with an effect radius that reaches the bridge"
+expect = "rejected"
+expect_rule = "no_strike"
+end_s = 20
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4815, 37.8200]   # inside ez-gate-west, just west of the bridge
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 150
+fallback = "return"

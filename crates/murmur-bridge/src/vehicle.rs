@@ -128,6 +128,10 @@ pub struct Vehicle {
     pub yaw: Option<f64>,
     pub roll: Option<f64>,
     pub pitch: Option<f64>,
+    /// Velocity over ground, [east, north] m/s, with the position it came with:
+    /// GLOBAL_POSITION_INT's vy and vx; HIGH_LATENCY2 has none, so there its heading and
+    /// ground speed.
+    pub vel_en: Option<[f64; 2]>,
     pub groundspeed: Option<f64>,
     pub airspeed: Option<f64>,
     pub battery_pct: Option<i8>,
@@ -250,6 +254,8 @@ impl Vehicle {
                 if m.hdg != u16::MAX {
                     self.heading = Some(f64::from(m.hdg) / 100.0);
                 }
+                // vx north, vy east, cm/s
+                self.vel_en = Some([f64::from(m.vy) / 100.0, f64::from(m.vx) / 100.0]);
                 for link in self.forward_to.values() {
                     link.send_raw(raw);
                 }
@@ -268,6 +274,10 @@ impl Vehicle {
                 }
                 self.heading = Some(f64::from(m.heading) * 2.0);
                 self.groundspeed = Some(f64::from(m.groundspeed) / 5.0);
+                // no velocity components in HIGH_LATENCY2: its heading and ground speed
+                let (h, gs) = (f64::from(m.heading) * 2.0, f64::from(m.groundspeed) / 5.0);
+                let r = h.to_radians();
+                self.vel_en = Some([gs * r.sin(), gs * r.cos()]);
                 self.airspeed = Some(f64::from(m.airspeed) / 5.0);
                 self.mission_seq = Some(m.wp_num);
                 self.battery_pct = (m.battery >= 0).then_some(m.battery);
@@ -408,12 +418,18 @@ impl Vehicle {
         }
     }
 
-    /// Ready to navigate: the autopilot's EKF trusts its absolute position (GPS), or, for a
-    /// sub, its dead-reckoned one. AUTO is refused until then.
+    /// Ready to navigate: the autopilot's EKF trusts its absolute position (GPS), or its
+    /// dead-reckoned one where the vehicle navigates on it: a sub (DVL) and a fixed-wing
+    /// (airspeed; ArduPlane flies on without GNSS, so a plane in a jammer can be tasked out
+    /// of it, and the readiness rule has a human judge the drifting position). A copter,
+    /// rover, boat or blimp without GNSS has no position its autopilot trusts. Tasks wait
+    /// until then.
     pub fn has_position(&self, now: f64) -> bool {
         match self.nav_source(now) {
             NavSource::Gnss => true,
-            NavSource::DeadReckoning => self.kind == Some(Kind::Sub),
+            NavSource::DeadReckoning => {
+                matches!(self.kind, Some(Kind::Sub | Kind::Plane | Kind::Vtol))
+            }
             NavSource::None => false,
         }
     }
@@ -739,12 +755,16 @@ mod tests {
     }
 
     #[test]
-    fn dead_reckoning_is_ready_for_subs_only() {
+    fn dead_reckoning_is_ready_for_subs_and_fixed_wing() {
         use apm::EkfStatusFlags as E;
         for (kind, ready) in [
             (Kind::Sub, true),
+            (Kind::Plane, true),
+            (Kind::Vtol, true),
             (Kind::Boat, false),
             (Kind::Copter, false),
+            (Kind::Ugv, false),
+            (Kind::Blimp, false),
         ] {
             let mut v = Vehicle {
                 kind: Some(kind),
@@ -792,6 +812,8 @@ mod tests {
         assert_eq!(v.mode.as_deref(), Some("AUTO"));
         assert_eq!(v.heading, Some(90.0));
         assert_eq!(v.groundspeed, Some(2.0));
+        let [e, n] = v.vel_en.expect("velocity");
+        assert!((e - 2.0).abs() < 1e-9 && n.abs() < 1e-9, "{e} {n}");
         assert_eq!(v.battery_pct, Some(71));
         assert_eq!(v.mission_seq, Some(2));
         assert_eq!(v.gps_fix, 0);

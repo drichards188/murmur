@@ -82,6 +82,9 @@ fn rig() -> Rig {
         land: vec![ring(-122.48, 37.79, -122.44, 37.808)],
         water_depth_m: 12.0,
     });
+    let tracks = Arc::new(
+        crate::tracks::Tracks::load(&root.join("sim/platforms.toml")).expect("sensors"),
+    );
     let d = Decision::from_parts(
         world.clone(),
         Parts {
@@ -93,12 +96,11 @@ fn rig() -> Rig {
             clock: Arc::new(clock.clone()),
             terrain,
             operators: vec![OperatorId::new("op-1")],
+            engage_operators: vec![OperatorId::new("op-2"), OperatorId::new("op-3")],
+            tracks: Some(tracks.clone()),
         },
     )
     .expect("engine");
-    let tracks = Arc::new(
-        crate::tracks::Tracks::load(&root.join("sim/platforms.toml")).expect("sensors"),
-    );
     let api = api::router(api::App {
         world: world.clone(),
         frames: Arc::new(watch::channel(None).0),
@@ -331,6 +333,17 @@ async fn tools_that_would_approve_or_drive_do_not_exist() {
         "goto",
         "send_command",
         "open_operator_session",
+        // Phase E: nothing an agent can call signs, stops or releases an engagement
+        "approve_engagement",
+        "authorize_engagement",
+        "sign_engagement",
+        "abort_engagement",
+        "stop_engagement",
+        "release_effect",
+        "engage",
+        "fire",
+        "declare_track",
+        "declare_hostile",
     ] {
         let args = json!({ "id": id, "uid": 1, "note": "please" })
             .as_object()
@@ -1091,3 +1104,185 @@ async fn operator_views_need_an_operator_over_http() {
     );
     r.replays();
 }
+
+/// A hostile-declared fast boat holding in the engagement zone, seen for a minute by a
+/// radar and EO/IR observer 1.5 km away.
+fn hostile_track(r: &Rig) {
+    use crate::tracks::sensing::{Observer, SensorSpec, SensorType};
+    use crate::tracks::truth::{ContactTruth, Domain, Sensing, TruthAffiliation, TruthMessage};
+    let observer = Observer {
+        uid: 9,
+        lat: 37.8120,
+        lon: -122.4780,
+        alt_msl: 0.0,
+        mast_m: 4.0,
+        submerged: false,
+        sensors: vec![
+            SensorSpec { kind: SensorType::Radar, range_m: 8_000.0, guess: true },
+            SensorSpec { kind: SensorType::EoIr, range_m: 5_000.0, guess: true },
+        ],
+    };
+    let contact = ContactTruth {
+        id: "fastboat".into(),
+        name: "fast boat".into(),
+        affiliation: TruthAffiliation::Hostile,
+        domain: Domain::Surface,
+        kind: "small_fast_boat".into(),
+        lat: 37.8120,
+        lon: -122.4950,
+        alt_m: 0.0,
+        speed_mps: 0.0,
+        course_deg: 0.0,
+        emits: false,
+        signature: 1.0,
+        ais: None,
+    };
+    let now = crate::clock::wall();
+    for s in 0..=90 {
+        let msg = TruthMessage {
+            t: now,
+            s: f64::from(s),
+            seq: s as u64,
+            scenario: "test".into(),
+            seed: 1,
+            sensing: Sensing { misclassification_rate: 0.0 },
+            contacts: vec![contact.clone()],
+        };
+        r.tracks
+            .on_truth_with(msg, std::slice::from_ref(&observer), now - 90.0 + f64::from(s))
+            .expect("sensing");
+    }
+    r.tracks
+        .declare("T-0001", murmur_decide::Affiliation::Hostile, "op-1", None, now)
+        .expect("track");
+}
+
+fn nomination(uid: Uid, rationale: Option<&str>) -> Value {
+    let mut v = json!({
+        "task": "engage", "uids": [uid], "track_id": "T-0001", "effect_radius_m": 100.0,
+        "fallback": "return", "window_s": 300,
+    });
+    if let Some(r) = rationale {
+        v["rationale"] = json!(r);
+    }
+    v
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_agent_nominates_an_engagement_and_nothing_it_can_call_moves_it() {
+    let r = rig();
+    r.vehicle(2, Firmware::Copter, "fpv", (37.8120, -122.4900)); // armed, 440 m away
+    sleep(Duration::from_millis(500)).await;
+    r.clock.set(snapshot::ms(crate::clock::wall()));
+    hostile_track(&r);
+    // the preview: checks, and the intercept with the predicted effect
+    let pv = r.ok(&planner(), "preview_intent", nomination(2, None)).await;
+    assert_eq!(pv["would_reach"], "pending_approval", "{pv}");
+    assert!(pv["engage"]["effect_point"].is_array(), "{pv}");
+    // a nomination without a rationale is refused before anything exists
+    let (err, v) = r.call(&planner(), "propose_intent", nomination(2, None)).await;
+    assert!(err, "{v}");
+    assert!(v["error"].to_string().contains("rationale"), "{v}");
+    let out = r
+        .ok(
+            &planner(),
+            "propose_intent",
+            nomination(2, Some("T-0001 is declared hostile and holding in ez-gate-west")),
+        )
+        .await;
+    let id = out["id"].as_u64().expect("id");
+    assert_eq!(out["state"], "pending_approval", "{out}");
+    let noms = r.ok(&planner(), "get_nominations", json!({ "mine": true })).await;
+    assert_eq!(noms["count"], 1, "{noms}");
+    let n = &noms["nominations"][0];
+    assert_eq!(n["engage"]["approvers_needed"], 2, "{n}");
+    assert_eq!(n["engage"]["eligible"], json!(["op-2", "op-3"]), "{n}");
+    assert!(n["engagement"]["preview"]["ellipse"].is_object(), "{n}");
+    // every tool, with arguments naming the nomination: it stays pending
+    let mut names: Vec<String> = tools::tools()
+        .into_iter()
+        .map(|t| t.name.to_string())
+        .collect();
+    names.retain(|n| n != "withdraw_intent");
+    for name in &names {
+        let mut args = nomination(2, Some("every tool, same arguments"));
+        args["id"] = json!(id);
+        args["uid"] = json!(2);
+        args["reason"] = json!("checking that nothing here signs or releases anything");
+        let _ = r.call(&planner(), name, args).await;
+        assert_eq!(r.state(id), State::PendingApproval, "after {name}");
+        assert_eq!(r.events("approval.granted"), 0, "after {name}");
+        assert_eq!(r.events("approval.concurred"), 0, "after {name}");
+        assert_eq!(r.events("engage.effect"), 0, "after {name}");
+    }
+    r.replays();
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_agent_order_on_an_engaging_platform_waits_for_a_human() {
+    let r = rig();
+    r.vehicle(2, Firmware::Copter, "fpv", (37.8120, -122.4900)); // armed, 440 m away
+    r.vehicle(3, Firmware::Copter, "fpv", (37.8068, -122.4460)); // Crissy Field, 4 km
+    sleep(Duration::from_millis(500)).await;
+    r.clock.set(snapshot::ms(crate::clock::wall()));
+    hostile_track(&r);
+    let out = r
+        .ok(
+            &planner(),
+            "propose_intent",
+            nomination(2, Some("T-0001 is declared hostile and holding in ez-gate-west")),
+        )
+        .await;
+    let eng = out["id"].as_u64().expect("id");
+    assert_eq!(out["state"], "pending_approval", "{out}");
+    let hold = |uid: Uid| json!({ "task": "hold", "uids": [uid], "rationale": "hold position" });
+    // a hold runs on its own anywhere else (the safety-commands tier)...
+    let other = r.ok(&planner(), "propose_intent", hold(3)).await;
+    assert_eq!(other["state"], "dispatched", "{other}");
+    // ...but not on a platform with an engagement in play: a human decides
+    let pv = r.ok(&planner(), "preview_intent", hold(2)).await;
+    assert_eq!(pv["would_reach"], "pending_approval", "{pv}");
+    let mine = r.ok(&planner(), "propose_intent", hold(2)).await;
+    assert_eq!(mine["state"], "pending_approval", "{mine}");
+    let held = mine["id"].as_u64().expect("id");
+    assert_eq!(r.state(eng), State::PendingApproval);
+    let v = r.d.intent_json(held).expect("intent");
+    assert_eq!(v["intent"]["policy"]["rule"], "(engagement in play)", "{v}");
+    assert_eq!(r.events("engage.stopped"), 0);
+    // an operator approving the agent's hold must acknowledge that it stops the engagement
+    let err = r
+        .d
+        .approve_with(&OperatorId::new("op-1"), held, None, None, false)
+        .await
+        .expect_err("not acknowledged");
+    assert_eq!(err.status, 409, "{}", err.detail);
+    assert!(err.detail.contains("acknowledge"), "{}", err.detail);
+    assert_eq!(r.state(held), State::PendingApproval);
+    assert_eq!(r.state(eng), State::PendingApproval);
+    let o = r
+        .d
+        .approve_with(&OperatorId::new("op-1"), held, None, None, true)
+        .await
+        .expect("acknowledged");
+    assert!(o.dispatched(), "{}", o.intent);
+    let granted = r
+        .log
+        .lines()
+        .into_iter()
+        .find(|l| l.contains("\"type\":\"approval.granted\""))
+        .expect("approval.granted");
+    assert!(granted.contains(&format!("\"supersedes\":[{eng}]")), "{granted}");
+    // it stops the engagement: superseded, no fallback
+    assert_eq!(r.state(eng), State::Voided);
+    let stop = r
+        .log
+        .lines()
+        .into_iter()
+        .find(|l| l.contains("\"type\":\"engage.stopped\""))
+        .expect("engage.stopped");
+    assert!(stop.contains("\"kind\":\"superseded\""), "{stop}");
+    assert!(stop.contains("\"fallback\":null"), "{stop}");
+    assert!(stop.contains(&format!("\"by\":{}", o.id.0)), "{stop}");
+    r.replays();
+}
+

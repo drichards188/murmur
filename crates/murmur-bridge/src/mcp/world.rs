@@ -249,7 +249,7 @@ pub fn areas(mcp: &Mcp) -> Value {
         "source": set.source,
         "as_of": set.loaded_t.0 as f64 / 1000.0,
         "age_s": age(now, set.loaded_t.0 as f64 / 1000.0),
-        "note": "approved: where the operator has approved operations (a route leaving it needs a human). no_go: no route may enter (the geofence check fails). Polygons are rings of [lon, lat].",
+        "note": "approved: where the operator has approved operations (a route leaving it needs a human). no_go: no route may enter (the geofence check fails). engagement_zone: an engagement's whole effect circle must lie inside one. no_strike: an engagement's effect circle must stay clear of every one. Polygons are rings of [lon, lat].",
         "areas": set.areas,
     })
 }
@@ -300,6 +300,32 @@ pub fn intents(mcp: &Mcp, agent: &AgentId, state: Option<&str>, mine: bool, limi
         "audit": all["audit"],
         "note": "Newest first. An intent's checks and policy decision were computed on the facts logged with it; its state is current.",
         "intents": intents,
+    })
+}
+
+/// `get_nominations`: the engagement nominations, newest first, with their state, checks,
+/// preview, signatures, watch verdict, effect, stop and assessment.
+pub fn nominations(mcp: &Mcp, agent: &AgentId, mine: bool, state: Option<&str>) -> Value {
+    let now = clock::wall();
+    let mut list: Vec<Value> = mcp
+        .decision
+        .nominations_json()
+        .into_iter()
+        .filter(|i| state.is_none_or(|s| i["state"].as_str() == Some(s)))
+        .filter(|i| {
+            !mine
+                || (i["source"]["kind"].as_str() == Some("agent")
+                    && i["source"]["id"].as_str() == Some(agent.as_str()))
+        })
+        .collect();
+    for i in &mut list {
+        intent_ages(i, now);
+    }
+    json!({
+        "t": now,
+        "count": list.len(),
+        "note": "Newest first. An engagement is an abstract effect (a point, a radius, a time). It needs the human signatures listed in engage.approvers_needed by operators with engagement authority, never its proposer; after approval the picture is held every second and any change voids it.",
+        "nominations": list,
     })
 }
 

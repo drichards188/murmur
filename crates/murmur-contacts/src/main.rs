@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use murmur_contacts::effect::{self, EffectApplied, EffectNotice};
 use murmur_contacts::motion::Mover;
 use murmur_contacts::scenario::{Motion, Scenario};
 use murmur_contacts::truth::TruthMessage;
@@ -147,6 +148,8 @@ async fn run() -> Result<(), String> {
     let mut last_wall = wall0;
     let mut seq: u64 = 0;
     let mut last_error: Option<String> = None;
+    // effects applied since the last message (Phase E), for the next one and the log
+    let mut applied: Vec<EffectApplied> = Vec::new();
     loop {
         tokio::select! {
             _ = every.tick() => {}
@@ -170,7 +173,7 @@ async fn run() -> Result<(), String> {
             }
         }
         seq += 1;
-        let msg = TruthMessage::build(
+        let mut msg = TruthMessage::build(
             t0 + s,
             s,
             seq,
@@ -179,13 +182,40 @@ async fn run() -> Result<(), String> {
             scenario.sensing,
             &movers,
         );
+        msg.effects = std::mem::take(&mut applied);
         if let Ok(line) = serde_json::to_string(&msg) {
             let _ = writeln!(log, "{line}");
             let _ = log.flush();
         }
         let r = client.post(&endpoint).json(&msg).send().await;
         let outcome = match r {
-            Ok(resp) if resp.status().is_success() => Ok(()),
+            Ok(resp) if resp.status().is_success() => {
+                // the simulation channel back: engagement effects to apply (Phase E)
+                if let Ok(answer) = resp.json::<serde_json::Value>().await
+                    && let Some(list) = answer.get("effects").and_then(|e| e.as_array())
+                {
+                    for e in list {
+                        match serde_json::from_value::<EffectNotice>(e.clone()) {
+                            Ok(e) => {
+                                let r = effect::apply(&e, &mut movers, t0 + s);
+                                println!(
+                                    "effect (intent {}): {} contact(s) inside {:.0} m, intended {} {}, collateral {} contact(s) and {} of ours",
+                                    r.intent,
+                                    r.inside.len(),
+                                    r.radius_m,
+                                    r.target_contact.as_deref().unwrap_or("unknown"),
+                                    if r.target_inside { "inside" } else { "not inside" },
+                                    r.collateral.contacts.len(),
+                                    r.collateral.ours.len()
+                                );
+                                applied.push(r);
+                            }
+                            Err(err) => println!("effect: unreadable ({err})"),
+                        }
+                    }
+                }
+                Ok(())
+            }
             Ok(resp) => Err(format!("bridge answered {}", resp.status())),
             Err(e) => Err(format!("bridge unreachable: {e}")),
         };

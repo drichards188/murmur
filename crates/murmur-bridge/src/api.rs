@@ -7,9 +7,16 @@
 //! `dispatched: false` and why, one the rules reject answers 422 with the reasons.
 //!
 //! Intents: `POST /api/intents` (the task request plus optional `constraints` and
-//! `rationale`), `GET /api/intents`, `GET /api/intents/{id}`, `POST
-//! /api/intents/{id}/approve|reject|cancel` (optional body `{"note": "..."}`), `GET
-//! /api/inbox`. These name the operator in the `X-Murmur-Operator` header, which must be one
+//! `rationale`; `task: "engage"` with `track`, `effect_radius_m`, `window_s`, `fallback`
+//! nominates an engagement, Phase E), `GET /api/intents`, `GET /api/intents/{id}`, `POST
+//! /api/intents/{id}/approve|reject|cancel|abort|picture` (optional body `{"note": "..."}`;
+//! `picture` asks for what an operator with engagement authority would sign, a picture
+//! token, and an engagement's approve quotes it as `"token": <id>`; an approval whose
+//! dispatch would stop an engagement in play needs `"acknowledge_supersede": true`; `abort`
+//! stops an approved or dispatched engagement before its effect, any operator), `GET
+//! /api/inbox`, `GET /api/operators` (who may sign an engagement), `POST /api/engage/options`
+//! (the nomination form's dry run: which armed platforms could take it, with checks and
+//! preview; nothing is created or logged). These name the operator in the `X-Murmur-Operator` header, which must be one
 //! of `MURMUR_OPERATORS`: a placeholder for real authentication. The WebSocket also sends
 //! `{"type": "decisions", "inbox": ..., "intents": [...]}` and `{"type": "tracks", ...}`
 //! (Phase C2, see `tracks`) on connect and whenever they change (existing clients ignore
@@ -59,6 +66,8 @@ pub fn router(app: App) -> Router {
         .route("/api/intents/{id}/{action}", post(intent_action))
         .route("/api/inbox", get(inbox))
         .route("/api/operator/view", post(operator_view))
+        .route("/api/operators", get(operators))
+        .route("/api/engage/options", post(engage_options))
         .route("/api/platforms", get(platforms))
         .route("/api/stats", get(stats))
         .route("/ws", get(ws))
@@ -231,11 +240,26 @@ async fn intent_action(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let note = if body.iter().all(u8::is_ascii_whitespace) {
-        None
+    let (note, token, acknowledge) = if body.iter().all(u8::is_ascii_whitespace) {
+        (None, None, false)
     } else {
         match serde_json::from_slice::<Value>(&body) {
-            Ok(v) => v["note"].as_str().map(str::to_string),
+            Ok(v) => {
+                let token = match v.get("token").filter(|s| !s.is_null()) {
+                    None => None,
+                    Some(t) => match t.as_u64() {
+                        Some(t) => Some(t),
+                        None => {
+                            return error(StatusCode::UNPROCESSABLE_ENTITY, "token: a picture token id".to_string());
+                        }
+                    },
+                };
+                (
+                    v["note"].as_str().map(str::to_string),
+                    token,
+                    v["acknowledge_supersede"].as_bool().unwrap_or(false),
+                )
+            }
             Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, format!("body: {e}")),
         }
     };
@@ -243,14 +267,21 @@ async fn intent_action(
         Ok(op) => op,
         Err(e) => return decision_error(e),
     };
+    if action == "picture" {
+        return match app.decision.issue_picture(&op, id) {
+            Ok(v) => Json(v).into_response(),
+            Err(e) => decision_error(e),
+        };
+    }
     let result = match action.as_str() {
-        "approve" => app.decision.approve(&op, id, note).await,
+        "approve" => app.decision.approve_with(&op, id, note, token, acknowledge).await,
         "reject" => app.decision.reject(&op, id, note),
         "cancel" => app.decision.cancel(&op, id, note),
+        "abort" => app.decision.abort(&op, id, note),
         _ => {
             return error(
                 StatusCode::NOT_FOUND,
-                format!("unknown action {action:?} (approve, reject, cancel)"),
+                format!("unknown action {action:?} (approve, reject, cancel, abort, picture)"),
             );
         }
     };
@@ -303,6 +334,28 @@ async fn operator_view(
     }
 }
 
+/// The nomination form's dry run: which armed platforms could take an engagement on a track
+/// now, each with its checks and preview (read-only; nothing is created or logged).
+async fn engage_options(
+    State(app): State<App>,
+    body: Result<Json<crate::decision::engage::OptionsRequest>, JsonRejection>,
+) -> Response {
+    let req = match body {
+        Ok(Json(req)) => req,
+        Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, e.body_text()),
+    };
+    match app.decision.engage_options(req).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => decision_error(e),
+    }
+}
+
+/// The operators the bridge accepts and those with engagement authority (placeholder
+/// authentication: `MURMUR_OPERATORS`, `MURMUR_ENGAGE_OPERATORS`).
+async fn operators(State(app): State<App>) -> Response {
+    Json(app.decision.operators_json()).into_response()
+}
+
 /// Collect and cover runs: the scenario clock map and each run's states (also in the
 /// WebSocket `decisions` message as `space`).
 async fn space_runs(State(app): State<App>) -> Response {
@@ -318,7 +371,8 @@ async fn platforms(State(app): State<App>) -> Response {
     }
 }
 
-/// Per-vehicle packet counters (for load tests; kept out of the UI stream).
+/// Per-vehicle packet counters (for load tests; kept out of the UI stream), and the GCS
+/// heartbeat's jitter (`crate::heartbeat`).
 async fn stats(State(app): State<App>) -> Response {
     let vehicles: Map<String, Value> = app
         .world
@@ -331,7 +385,10 @@ async fn stats(State(app): State<App>) -> Response {
             )
         })
         .collect();
-    Json(json!({ "t": clock::wall(), "vehicles": vehicles })).into_response()
+    // the heartbeat thread's jitter: worst send delay and longest gap per minute
+    let heartbeat = crate::heartbeat::stats().map_or(Value::Null, |s| s.json());
+    Json(json!({ "t": clock::wall(), "vehicles": vehicles, "gcs_heartbeat": heartbeat }))
+        .into_response()
 }
 
 async fn ws(State(app): State<App>, upgrade: WebSocketUpgrade) -> Response {

@@ -205,23 +205,127 @@ Exit: the 30%-loss write-up (murmur-t7d), with numbers.
 
 ## Phase E: engagement decision chain
 
-C2 decision study, not weapons: effects are abstract events (a point and a radius). No
-autonomous engagement.
+C2 decision study, not weapons: effects are abstract events (a point, a radius, a time). No
+autonomous engagement; no munition types, warheads, blast, lethality, terminal guidance or
+aim-point optimisation anywhere.
 
-1. **Nominate**: pair a track with an armed platform (human or agent).
-2. **Check** (fail closed): identity confidence and recency thresholds; inside an engagement
-   zone; effect radius clear of the no-strike list; no friendly node within keep-out (all
-   domains); civilian contacts in the area; reachable in time.
-3. **Preview**: run the platform's path forward (stand-in kinematics) against the track's
-   projected motion.
-4. **Authorize**: human with engagement authority only; optional two-person.
-5. **Hold the picture**: the approval stores a track snapshot; moved beyond tolerance,
-   reclassified or stale voids it automatically.
-6. **Execute with abort**: abort until the effect; link-loss fallback recorded in the
-   approval (abort / return / loiter), never silent continue.
-7. **Assess**: a sensor platform confirms; all of it in the audit log.
+Built (`crates/murmur-decide/src/engage.rs`, `scenario.rs`; bridge `decision/engage.rs`;
+contacts `effect.rs`; console `EngagePanel`, `EngageCard`, `engageLayers.ts`):
 
-Exit: every invariant has a scenario that tries to break it.
+1. **Nominate**: intent kind `engage` = (perception track id, one armed platform in `uids`,
+   `effect_radius_m`, optional window, link-loss `fallback`: `abort` = hold where it is,
+   `return` = RTL, `loiter` = orbit where it is). From a human (`POST /api/intents`, the
+   console's Engage action on a declared-hostile track or an armed platform) or an agent
+   (MCP `propose_intent` with `task: "engage"`, rationale required). A missing window is
+   written into the spec as `default_window_s` from creation.
+2. **Check**, fail closed, each pass / fail / unverified / not evaluated with a precise
+   detail (engage is consequential: unverified and not evaluated block): `target_declared`
+   (an operator's declaration; an inferred suspect is not enough), `target_identity`,
+   `target_recency`, `target_uncertainty` (1-sigma now within `max_sigma_fraction` of the
+   effect radius), `engagement_zone` (new area kind; the whole effect circle inside one),
+   `no_strike` (new area kind: the bridge, Fort Point, Kirby Cove, Baker Beach, Crissy
+   Field, ferry terminals; the whole circle clear), `keep_out_friendly` (every vehicle of
+   ours but the platform, those the fleet manifest names but never heard from included, so
+   they fail it; carried along its velocity to the effect time, else how far it could get
+   at cruise speed), `keep_out_tracks` (every track but the target and tracks an operator
+   declared hostile, with 2-sigma of its predicted uncertainty), `platform_armed`,
+   `reach` (catalog cruise speed, intercept inside the window and `max_transit_s`,
+   endurance or, with none in the catalog, battery above the reserve and a short transit,
+   the effect point on the surface a boat or UGV needs, from a sample within 50 m, logged
+   with where, and not evaluated on a shoreline). The generic rules run too (capability,
+   readiness, geofence on the transit and return legs). Thresholds in `[rules.engage]` of
+   `sim/policy.toml`, each bounded (`EngageRules::validate`).
+3. **Preview**: a straight-line intercept at catalog cruise speed after `dispatch_delay_s`
+   against the track carried along its estimated velocity; the predicted effect point and
+   time; the track's uncertainty at that time as an ellipse along its course (the
+   tracker's growth law along, half across). Stored on the intent, logged with every check
+   (replay recomputes it), drawn on the map.
+4. **Authorize**: tier `engagement` (human, `submitter_authorizes = false`,
+   `proposer_may_approve = false`, `approvers = 2`). The engine holds a floor whatever the
+   file says (never auto, never at submission, never the proposer, never fewer than two
+   approvers; replay holds the same floor). Only an `EngagementAuthority` signs one
+   (`Engine::approve_engagement`); it exists only in a session opened with engagement
+   authority (`Grants`, logged with the session; the bridge grants it to
+   `MURMUR_ENGAGE_OPERATORS`). A signer first asks for the picture (`issue_picture`, logged
+   `picture.issued`: a token bound to their session with the plan and the track's identity,
+   valid `token_ttl_s`) and the signature quotes it. The first signature freezes the plan
+   it was shown (effect point and time, radius, window, platform, fallback, the target's
+   identity); every later one signs that exact plan; the first N-1 are
+   `approval.concurred`, the Nth `approval.granted`, whose snapshot carries the plan. At
+   each later signature and every second while signatures wait the checks run on the plan
+   (track predicted within tolerance at the plan's point and time, zone, no-strike and
+   keep-outs there, the platform still able to make it, the same identity and declaration,
+   all signatures within `max_signing_s`); when it stops holding, every signature is dropped
+   with it (`approval.reset`) and a new plan must be signed. Compile-fail doctests: no
+   forged, cloned or deserialized engagement authority, a plain operator authority is not
+   one, and an `AgentPort` has no approve or abort method for engagements.
+5. **Hold the picture**: the final approval stores an `EngageSnapshot` (track facts, the
+   preview, the platform's link). `Engine::step_engagements` (the bridge's 1 Hz loop)
+   re-checks it every second (`engage.picture`): declared, reclassified, recency, deviation
+   from the snapshot's prediction, keep-outs at the effect time, the platform's link against
+   the approval's assumption, GNSS navigation (`platform_nav`), the window and lateness, and
+   first that the last check was at most `max_picture_gap_s` ago (`picture_gap`: a stalled loop aborts, never resumes; the
+   terrain fetch runs beside the loop). A failure voids it before dispatch and aborts it
+   after (`engage.stopped`, cause `picture`), with the reason. While an engagement is in
+   play (pending, approved, dispatched) on a vehicle, an agent's order for that vehicle
+   always goes to a human; an operator's own order runs and supersedes it (cause
+   `superseded`, by that intent, `fallback: null`), and approving an order that would stop
+   one needs an acknowledgement (logged `supersedes`).
+6. **Execute with abort**: the platform is sent to loiter at the predicted effect point
+   (an orbit through the task layer: no homing). Any operator may abort until the effect
+   (`POST /api/intents/{id}/abort`); every stop commands the recorded fallback. The effect
+   is released when the picture holds, the predicted time has come, the platform is within
+   `arrival_m` and the track is estimated inside the effect radius (`engage.effect`); the
+   bridge hands it to the contacts process on the simulation channel, which flags contacts
+   inside the radius (`on_effect = "out_of_play"` takes one out of the scenario,
+   `"persists"` keeps it) and writes what was inside and any collateral (other contacts, our
+   vehicles but the platform; ours with no position as unknown) to the evaluation truth log
+   only.
+7. **Assess**: our sensors (catalog `sensors`) covering the effect point after the effect
+   (`engage.observe` each second): `persists` (the track detected after the effect),
+   `ceased` (no detection while covered for `assess_dwell_s`), `unknown` (not covered long
+   enough within `assess_window_s`), with the evidence; the intent ends `done`.
+8. **Audit and replay**: every step above is an event with its inputs; `murmur-replay`
+   recomputes checks, previews, policy, snapshots, picture verdicts (the voids),
+   observations and assessments, and checks the two-person rule (distinct signers, never the
+   proposer, the count the decision asks for, every signature's picture and every reset)
+   and engagement authority from the logged sessions, and the engagements in play logged
+   with each decision. Tampering (an approval by the proposer or an agent, a suppressed
+   void, an edited snapshot or effect point, a deleted signature, `approvers` stripped from
+   the policy and decision, a hidden reset, an agent's order made to look automatic) is
+   caught even with a recomputed chain.
+
+State machine additions: `dispatched -release-> effected -complete-> done`,
+`dispatched -abort-> aborted` (terminal). `finish` and `dispatch` refuse engagements.
+
+**Adversarial scenarios** (`sim/scenarios/engage/`, format in its README; runner
+`murmur-scenarios`, library `murmur_decide::scenario`): 30 files, one or more per invariant
+(agent authorizes, proposer approves, double signature, neutral enters the keep-out,
+reclassified, undeclared, target moves, link cut, friendly sub near and closing, stale
+track, outside the zone, no-strike, inferred suspect, operator abort, persists, unarmed,
+deleted signature, window too short, a policy file without the engagement tier, the target
+moving between signatures and stale previews, an agent's order on the engaging platform, a
+10 s gap in holding the picture, approvers stripped from the log, the effect point sliding
+and the target reversing between signatures, a transient reclassification, a picture taken
+before a reclassification, an approval that would stop an engagement, GNSS lost en route).
+Each ends in reject, void or abort as designed and replays; the tampered logs (including a
+loosened logged policy) are caught. Seeded noise (independent around the truth each step)
+turns each into a batch (Phase G); seeds 1, 2, 3, 7, 9 and 42 all pass.
+
+Live demo: `sim/fleets/engage-demo.toml` (stand-in switchblade, magura, ugv_armed, corsair,
+x10) with `sim/scenarios/golden-gate-engage.toml` (the fast boat holding west of the bridge,
+a tour boat circling through the keep-out).
+
+Simplifications: straight-line intercept at cruise speed (no turn radius, no climb), keep-outs
+are 2D cylinders (conservative: a fast track's 2-sigma and a friendly without a fresh
+velocity grow without a cap), the effect circle is checked against no-strike areas but the
+platform's own path only against no-go areas, the assessment trusts our sensor model's
+coverage figures, the engagement authority is the same placeholder authentication as
+`MURMUR_OPERATORS`, the fallback is commanded after a stop but not preloaded as the
+vehicle's lost-link action, and another declared hostile inside the keep-out is exempt like
+the target (an open design question, DECISIONS.md).
+
+Exit met: every invariant has a scenario that tries to break it, and each ends as designed.
 
 ## Phase F: AI agents via MCP
 

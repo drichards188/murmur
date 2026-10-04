@@ -90,6 +90,8 @@ fn rig_with(policy: Policy) -> Rig {
             clock: Arc::new(clock.clone()),
             terrain,
             operators: vec![OperatorId::new("op-1"), OperatorId::new("op-2")],
+            engage_operators: Vec::new(),
+            tracks: None,
         },
     )
     .expect("engine");
@@ -171,6 +173,7 @@ fn orbit(uid: Uid) -> IntentRequest {
             ..TaskParams::default()
         },
         space: space::SpaceParams::default(),
+        engage: engage::EngageParams::default(),
         constraints: Constraints::default(),
         rationale: None,
     }
@@ -182,6 +185,7 @@ fn simple(task: &str, uid: Uid) -> IntentRequest {
         uids: vec![uid],
         params: TaskParams::default(),
         space: space::SpaceParams::default(),
+        engage: engage::EngageParams::default(),
         constraints: Constraints::default(),
         rationale: None,
     }
@@ -196,6 +200,7 @@ fn patrol(uid: Uid, route: Vec<[f64; 2]>) -> IntentRequest {
             ..TaskParams::default()
         },
         space: space::SpaceParams::default(),
+        engage: engage::EngageParams::default(),
         constraints: Constraints::default(),
         rationale: None,
     }
@@ -534,3 +539,6 @@ async fn operator_views_are_logged_under_the_session() {
 
 /// Collect and cover through the bridge (`tests/space_tasking.rs`).
 mod space_tasking;
+
+/// Engagements through the bridge (`tests/engagement.rs`).
+mod engagement;

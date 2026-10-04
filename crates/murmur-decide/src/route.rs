@@ -7,6 +7,9 @@
 //! | orbit, patrol | position to waypoint 1  | yes       | task end to home     |
 //! | rtl           | none                    | none      | position to home     |
 //! | hold, track   | none                    | none      | none                 |
+//! | engage        | position to effect point| none      | effect point to home |
+//!
+//! An engagement's effect point is predicted (`crate::engage::preview`), not in its spec.
 //!
 //! A looped task (orbit, patrol) ends where it closes, at waypoint 1. An RTL commanded
 //! mid-loop flies home from wherever the vehicle is; that sweep is not checked (README).
@@ -100,7 +103,8 @@ pub fn route_for(
     cfg: &RulesConfig,
 ) -> Result<Route, String> {
     let task = spec.task.path();
-    let moves = task.is_some() || matches!(spec.task, Task::Rtl {});
+    let engage = matches!(spec.task, Task::Engage { .. });
+    let moves = task.is_some() || engage || matches!(spec.task, Task::Rtl {});
     if !moves {
         return Ok(Route::default());
     }
@@ -110,6 +114,30 @@ pub fn route_for(
         .as_ref()
         .ok_or("cannot evaluate: no home position")?
         .value;
+    if engage {
+        // engage: to the predicted effect point (crate::engage::preview), then home
+        let p = crate::engage::preview(spec, world, cfg)
+            .map_err(|e| format!("cannot evaluate: no preview ({e})"))?;
+        return Ok(Route {
+            transit: Some(Segment {
+                kind: LegKind::Transit,
+                from: pos,
+                to: p.effect_point,
+                from_label: "position".into(),
+                to_label: "effect point".into(),
+                from_vehicle: true,
+            }),
+            task: None,
+            ret: Some(Segment {
+                kind: LegKind::Return,
+                from: p.effect_point,
+                to: home,
+                from_label: "effect point".into(),
+                to_label: "home".into(),
+                from_vehicle: false,
+            }),
+        });
+    }
     let home_leg = |from: LonLat, from_label: String, from_vehicle: bool| Segment {
         kind: LegKind::Return,
         from,

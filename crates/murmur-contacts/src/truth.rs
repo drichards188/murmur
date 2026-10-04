@@ -17,6 +17,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::effect::EffectApplied;
 use crate::motion::Mover;
 use crate::scenario::{Affiliation, Ais, Domain, Sensing};
 
@@ -36,6 +37,9 @@ pub struct ContactTruth {
     pub signature: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ais: Option<Ais>,
+    /// An engagement's abstract effect reached it (scenario unix s); it persists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect_t: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,6 +51,10 @@ pub struct TruthMessage {
     pub seed: u64,
     pub sensing: Sensing,
     pub contacts: Vec<ContactTruth>,
+    /// Effects applied since the last message (evaluation only: what was inside each
+    /// radius, the intended contact, collateral).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<EffectApplied>,
 }
 
 fn round(x: f64, digits: i32) -> f64 {
@@ -88,8 +96,10 @@ impl TruthMessage {
                     emits: m.contact.emits,
                     signature: m.contact.signature,
                     ais: m.contact.ais.clone(),
+                    effect_t: m.effect_t,
                 })
                 .collect(),
+            effects: Vec::new(),
         }
     }
 }

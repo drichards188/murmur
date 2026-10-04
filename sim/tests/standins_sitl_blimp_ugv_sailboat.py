@@ -210,8 +210,10 @@ def start_standins(units, base_port, workdir, env_extra=None):
     vehicles = []
     for i, (platform, home) in enumerate(units):
         spec = cat[platform]
+        # the same lost-link timer the SITL side gets from swarm.sitl_command
+        params = swarm.lost_link_params(platform, spec, swarm.STANDIN_FIRMWARE.get(spec["behavior"]))
         vehicles.append({"uid": i + 1, "sysid": 1, "callsign": f"{spec['callsign']} {i + 1}", "port": base_port + i,
-                         "home": home, "sim": "standin", "name": spec["name"], "spec": spec})
+                         "home": home, "sim": "standin", "name": spec["name"], "spec": spec, "params": params})
     cfg = workdir / "standins.json"
     cfg.write_text(json.dumps({"bridge_host": "127.0.0.1", "vehicles": vehicles}))
     env = {k: v for k, v in os.environ.items()

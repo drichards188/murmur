@@ -18,7 +18,8 @@
 # A `when` matches if every condition in it holds; an empty `when` matches everything.
 # Conditions:
 #   kind = [...]                  task kind is one of: orbit, patrol, hold, rtl, track,
-#                                 collect (satellite imagery/SAR), cover (SATCOM or GNSS)
+#                                 collect (satellite imagery/SAR), cover (SATCOM or GNSS),
+#                                 engage (Phase E: an abstract effect on a declared-hostile track)
 #   armed = true|false            some target / no target is on a platform with armed = true
 #                                 in sim/platforms.toml (unknown platform counts as armed)
 #   leaves_approved_area = bool   some vehicle's route leaves the "approved" areas in
@@ -30,6 +31,8 @@
 #                                 not be verified and a human must judge it ("reserves",
 #                                 for a platform with no endurance_h; "feasibility", for a
 #                                 collect whose product timing is unknown but has a deadline)
+# approvers = N (human tiers): N distinct operators must approve (two-person approval: 2).
+# proposer_may_approve = false (human tiers): the human who proposed it can't approve it.
 # collect and cover target no fleet vehicle: for them armed is never true and
 # leaves_approved_area is false, so route them by kind (below, before those tiers).
 # If nothing matches, the intent goes to a human (fail closed). An intent with any
@@ -52,6 +55,12 @@ submitter_authorizes = true                 # default for human tiers that don't
 # approval.requested logs the deadline with its basis; replay recomputes it.
 [approval.kind.collect]
 until = "tasking_lead"
+
+# An engagement nomination waits at most this long, and never past its own window (an
+# approval after the window closes would fail its reach check anyway).
+[approval.kind.engage]
+expire_s = 300
+until = "window"
 
 [rules]
 max_fact_age_s = 10                         # older telemetry can't support a decision
@@ -79,6 +88,40 @@ gnss_min_visible = 4                        # gnss cover: satellites in view at 
 link_step_s = 60                            # satcom coverage sample step
 gnss_step_s = 300                           # gnss visibility sample step
 
+[rules.engage]
+# Phase E: the engagement decision chain (crates/murmur-decide/src/engage.rs). The effect is
+# an abstract event (a point, a radius, a time); these thresholds are the fail-closed checks
+# on the nomination, the picture held after approval, the release and the assessment.
+min_identity_confidence = 0.6               # the track's identity confidence (0..1)
+min_track_confidence = 0.5                  # the track's existence confidence now (0..1)
+max_track_age_s = 5                         # last detection no older than this
+max_sigma_fraction = 0.5                    # track 1-sigma now <= this x effect radius
+max_effect_radius_m = 250                   # largest effect radius a nomination may ask for
+keep_out_m = 200                            # keep-out = effect radius + this: none of our vehicles and
+                                            # no protected track (anything but the target and tracks an
+                                            # operator declared hostile) predicted inside it at the effect time
+keep_out_sigma = 2                          # protected tracks count with this many sigma of uncertainty
+default_window_s = 600                      # a nomination without a window: open this long
+dispatch_delay_s = 20                       # the preview assumes the platform starts this long after it
+                                            # (the time the signatures have; a frozen plan then allows
+                                            # late_s more for a holding track, less for a moving one)
+max_transit_s = 900                         # longest intercept allowed
+unknown_endurance_max_transit_s = 600       # no endurance figure: transit at most this long, battery above
+                                            # the reserve now (a weaker check, stated in the detail)
+deviation_fraction = 1.0                    # after approval: the track within max(this x effect radius,
+deviation_min_m = 50                        # deviation_min_m) of where the approval's snapshot predicts it
+link_gap_s = 5                              # after approval: the platform heard within max(link_gap_s,
+link_gap_intervals = 3                      # link_gap_intervals x its report interval at approval); a
+                                            # report interval more than twice the approval's also voids
+arrival_m = 150                             # release: the platform within this of the effect point
+late_s = 60                                 # not released this long after the predicted time: abort
+assess_grace_s = 3                          # detections this soon after the effect don't count
+assess_dwell_s = 15                         # ceased: covered this long with no detection of the target
+assess_window_s = 120                       # unknown: not covered long enough within this long
+max_picture_gap_s = 5                       # the picture checked at least this often, or it fails
+token_ttl_s = 15                            # a picture token (what a signer is shown) is good this long
+max_signing_s = 120                         # every signature on one plan within this of the first
+
 [[tier]]
 name = "safety-commands"
 when = { kind = ["hold", "rtl"] }
@@ -103,6 +146,19 @@ name = "coverage-query"
 when = { kind = ["cover"] }
 tier = "auto"
 reason = "a coverage query commands nothing"
+
+# Phase E: an engagement always waits for humans with engagement authority
+# (MURMUR_ENGAGE_OPERATORS), never its proposer, here two of them. The engine holds a floor
+# whatever this file says: an engagement is never auto, never approved at submission, never
+# approved by its proposer, and needs at least two approvers.
+[[tier]]
+name = "engagement"
+when = { kind = ["engage"] }
+tier = "human"
+reason = "an engagement needs two operators with engagement authority, neither the proposer (DoD Directive 3000.09)"
+submitter_authorizes = false
+proposer_may_approve = false
+approvers = 2
 
 [[tier]]
 name = "armed-platform"

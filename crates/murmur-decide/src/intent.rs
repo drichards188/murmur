@@ -12,6 +12,7 @@ use crate::geo::{LonLat, TaskPath, circle_points};
 use crate::ids::{AgentId, IntentId, OperatorId, SessionId, Uid};
 use crate::policy::PolicyDecision;
 use crate::rules::CheckResult;
+use crate::engage::{EngageWindow, Engagement, Fallback};
 use crate::space::{
     ChosenCollect, CollectCapability, CoverService, SpaceAnswer, SpaceArea, Window,
 };
@@ -32,8 +33,9 @@ pub enum TaskKind {
     Collect,
     /// SATCOM coverage or GNSS assurance over an area for a window. No fleet vehicle.
     Cover,
-    // Phase E adds Engage. When it lands, `is_consequential` returns true for it, which makes
-    // "not evaluated" rule outcomes blocking.
+    /// Phase E: pair a declared-hostile track with one armed platform for an abstract effect
+    /// (a point, a radius, a time). Consequential: every rule must evaluate.
+    Engage,
 }
 
 impl TaskKind {
@@ -46,6 +48,7 @@ impl TaskKind {
             TaskKind::Track => "track",
             TaskKind::Collect => "collect",
             TaskKind::Cover => "cover",
+            TaskKind::Engage => "engage",
         }
     }
 
@@ -57,9 +60,10 @@ impl TaskKind {
         }
     }
 
-    /// Kinds for which every rule must actually evaluate (a "not evaluated" outcome blocks).
+    /// Kinds for which every rule must actually evaluate (a "not evaluated" or "unverified"
+    /// outcome blocks): engage.
     pub fn is_consequential(self) -> bool {
-        false
+        matches!(self, TaskKind::Engage)
     }
 }
 
@@ -120,6 +124,20 @@ pub enum Task {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         min_level: Option<f64>,
     },
+    /// Nominate an engagement (Phase E): the track `track` (a perception track id, which an
+    /// operator must have declared hostile), the one armed platform in `uids`, an effect
+    /// radius, an optional time window, and what the platform does if the engagement stops
+    /// before the effect (operator abort, a void, link loss). The effect is an abstract event
+    /// at a point and time the engine predicts; nothing here models a weapon.
+    Engage {
+        track: String,
+        effect_radius_m: f64,
+        /// When the effect may happen (engine time). Absent: from now until
+        /// `[rules.engage] default_window_s` after the intent was created.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        window: Option<EngageWindow>,
+        fallback: Fallback,
+    },
 }
 
 impl Task {
@@ -132,6 +150,7 @@ impl Task {
             Task::Track { .. } => TaskKind::Track,
             Task::Collect { .. } => TaskKind::Collect,
             Task::Cover { .. } => TaskKind::Cover,
+            Task::Engage { .. } => TaskKind::Engage,
         }
     }
 
@@ -179,11 +198,14 @@ impl Task {
                 points: route.clone(),
                 closed: true,
             }),
+            // engage: the point is predicted from the world (crate::engage::preview), not
+            // committed to by the spec
             Task::Hold {}
             | Task::Rtl {}
             | Task::Track { .. }
             | Task::Collect { .. }
-            | Task::Cover { .. } => None,
+            | Task::Cover { .. }
+            | Task::Engage { .. } => None,
         }
     }
 
@@ -259,6 +281,25 @@ impl Task {
                         return bad("gnss min_level is a whole number of satellites");
                     }
                     _ => {}
+                }
+            }
+            Task::Engage {
+                track,
+                effect_radius_m,
+                window,
+                ..
+            } => {
+                if track.trim().is_empty() {
+                    return bad("engage needs a track id");
+                }
+                if !(effect_radius_m.is_finite() && *effect_radius_m > 0.0) {
+                    return bad("effect_radius_m must be a positive number of metres");
+                }
+                if let Some(w) = window
+                    && let Some(from) = w.from
+                    && from >= w.until
+                {
+                    return bad("engage window must end after it starts");
                 }
             }
             _ => {}
@@ -375,6 +416,11 @@ impl Proposal {
         if seen.len() != self.uids.len() {
             return Err(ProposalError::DuplicateVehicle);
         }
+        if matches!(self.task, Task::Engage { .. }) && self.uids.len() != 1 {
+            return Err(ProposalError::BadParams(
+                "engage names exactly one armed platform".into(),
+            ));
+        }
         if let Task::Track { target } = &self.task
             && self.uids.contains(target)
         {
@@ -438,12 +484,18 @@ pub enum State {
     Expired,
     Voided,
     Dispatched,
+    /// Engage only: the abstract effect was released; the assessment follows.
+    Effected,
+    /// Engage only: stopped after dispatch and before the effect (an operator's abort, a
+    /// void when the picture changed, link loss, the window closing); the platform was sent
+    /// its recorded fallback.
+    Aborted,
     Done,
     Failed,
 }
 
 impl State {
-    pub const ALL: [State; 11] = [
+    pub const ALL: [State; 13] = [
         State::Proposed,
         State::Checked,
         State::AutoApproved,
@@ -453,6 +505,8 @@ impl State {
         State::Expired,
         State::Voided,
         State::Dispatched,
+        State::Effected,
+        State::Aborted,
         State::Done,
         State::Failed,
     ];
@@ -460,7 +514,12 @@ impl State {
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
-            State::Rejected | State::Expired | State::Voided | State::Done | State::Failed
+            State::Rejected
+                | State::Expired
+                | State::Voided
+                | State::Aborted
+                | State::Done
+                | State::Failed
         )
     }
 }
@@ -491,12 +550,16 @@ pub enum Transition {
     Void,
     /// Handed to the task layer.
     Dispatch,
+    /// Engage: the abstract effect is released (picture held, platform at the point).
+    Release,
+    /// Engage: stopped after dispatch, before the effect; the recorded fallback applies.
+    Abort,
     Complete,
     Fail,
 }
 
 impl Transition {
-    pub const ALL: [Transition; 12] = [
+    pub const ALL: [Transition; 14] = [
         Transition::Check,
         Transition::ChecksFailed,
         Transition::AutoApprove,
@@ -507,6 +570,8 @@ impl Transition {
         Transition::Expire,
         Transition::Void,
         Transition::Dispatch,
+        Transition::Release,
+        Transition::Abort,
         Transition::Complete,
         Transition::Fail,
     ];
@@ -529,6 +594,8 @@ pub struct IllegalTransition {
 /// pending_approval -approve-> approved | -reject-> rejected | -expire-> expired
 /// pending_approval | auto_approved | approved -void-> voided
 /// auto_approved | approved -dispatch-> dispatched -complete-> done | -fail-> failed
+/// dispatched -release-> effected -complete-> done | -fail-> failed       (engage)
+/// dispatched -abort-> aborted                                            (engage)
 /// ```
 ///
 /// Approved is reachable only through `Approve` and `AuthorizeAtSubmission`, which the
@@ -550,6 +617,10 @@ pub fn next_state(from: State, transition: Transition) -> Result<State, IllegalT
         (S::AutoApproved | S::Approved, T::Dispatch) => S::Dispatched,
         (S::Dispatched, T::Complete) => S::Done,
         (S::Dispatched, T::Fail) => S::Failed,
+        (S::Dispatched, T::Release) => S::Effected,
+        (S::Dispatched, T::Abort) => S::Aborted,
+        (S::Effected, T::Complete) => S::Done,
+        (S::Effected, T::Fail) => S::Failed,
         _ => return Err(IllegalTransition { from, transition }),
     };
     Ok(to)
@@ -592,6 +663,15 @@ pub struct Intent {
     /// exclusions for a collect; coverage for a cover). Also in the log as `space.query`.
     #[serde(skip_serializing_if = "Option::is_none")]
     space: Option<Box<SpaceAnswer>>,
+    /// Signatures recorded before the last one, when the tier needs more than one approver
+    /// (two-person approval): each a distinct operator, none the proposer where the tier
+    /// excludes the proposer. The last signature is `approval`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    concurrences: Vec<Approval>,
+    /// Engage: the preview, the picture held at approval, the last watch verdict, the
+    /// effect, a stop, and the assessment.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    engagement: Option<Box<Engagement>>,
 }
 
 impl Intent {
@@ -610,6 +690,8 @@ impl Intent {
                 reason: "created".into(),
             }],
             space: None,
+            concurrences: Vec::new(),
+            engagement: None,
         }
     }
 
@@ -640,6 +722,14 @@ impl Intent {
     /// Collect and cover: the space answer the last check read.
     pub fn space_answer(&self) -> Option<&SpaceAnswer> {
         self.space.as_deref()
+    }
+    /// Signatures before the last (see the field).
+    pub fn concurrences(&self) -> &[Approval] {
+        &self.concurrences
+    }
+    /// Engage: where the engagement stands.
+    pub fn engagement(&self) -> Option<&Engagement> {
+        self.engagement.as_deref()
     }
 
     pub(crate) fn apply(
@@ -672,5 +762,18 @@ impl Intent {
     }
     pub(crate) fn set_expires(&mut self, t: Time) {
         self.expires_t = Some(t);
+    }
+    pub(crate) fn push_concurrence(&mut self, a: Approval) {
+        self.concurrences.push(a);
+    }
+    /// Drop the signatures so far (an engagement whose picture changed); returns who signed.
+    pub(crate) fn clear_concurrences(&mut self) -> Vec<OperatorId> {
+        std::mem::take(&mut self.concurrences)
+            .into_iter()
+            .map(|a| a.by)
+            .collect()
+    }
+    pub(crate) fn engagement_mut(&mut self) -> &mut Engagement {
+        self.engagement.get_or_insert_with(Default::default)
     }
 }

@@ -21,6 +21,7 @@
 //! runs from `MURMUR_AT` at `MURMUR_RATE`, so a run with the same scenario, seed and clock
 //! produces the same truth.
 
+pub mod effect;
 pub mod motion;
 pub mod scenario;
 pub mod truth;

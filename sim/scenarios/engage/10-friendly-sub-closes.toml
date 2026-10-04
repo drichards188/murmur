@@ -1,0 +1,74 @@
+# Keep-out after approval: our AUV, 1.2 km away when the engagement was approved, is
+# retasked toward the target area; once it is predicted inside the keep-out at the effect
+# time, the engagement aborts.
+title = "A friendly submarine closes on the target after approval"
+invariant = "keep_out_friendly"
+attack = "one of our vehicles heads into the keep-out after approval"
+expect = "aborted"
+expect_rule = "keep_out_friendly"
+end_s = 120
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km
+at = [-122.4700, 37.8160]
+
+[[vehicle]]
+uid = "remus-1"
+platform = "remus"
+at = [-122.5080, 37.8120]   # 1.1 km west of the target
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"
+
+[[step]]
+at_s = 20
+action = "vehicle"
+uid = "remus-1"
+velocity = [11.0, 0.0]      # under way toward the target

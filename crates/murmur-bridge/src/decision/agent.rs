@@ -67,10 +67,14 @@ impl Decision {
             })?;
         let proposal = self.agent_proposal(&req)?;
         self.prefetch(&proposal.task, &proposal.uids).await;
+        let prepared = self.prepare_space(&proposal.task).await;
         let out = {
             let mut guard = self.lock();
             let core = &mut *guard;
             let world = self.snapshot();
+            if let Some(p) = prepared {
+                core.engine.use_prepared_space(p);
+            }
             let id = core
                 .engine
                 .agent_port(agent.clone())
@@ -93,8 +97,12 @@ impl Decision {
     ) -> Result<Value, DecisionError> {
         let proposal = self.agent_proposal(&req)?;
         self.prefetch(&proposal.task, &proposal.uids).await;
+        let prepared = self.prepare_space(&proposal.task).await;
         let preview = {
             let mut guard = self.lock();
+            if let Some(p) = prepared {
+                guard.engine.use_prepared_space(p);
+            }
             guard
                 .engine
                 .agent_port(agent.clone())
@@ -225,6 +233,11 @@ impl Decision {
     /// [`space::proposal`] (no vehicles), else a vehicle task, refused before any intent
     /// exists when the task layer couldn't take it (as [`Decision::submit`] does).
     fn agent_proposal(&self, req: &IntentRequest) -> Result<Proposal, DecisionError> {
+        if req.task == "engage" {
+            // a nomination: the engine routes it to operators with engagement authority
+            self.check_vehicles(&req.uids)?;
+            return engage::proposal(req, self.clock.now());
+        }
         if matches!(req.task.as_str(), "collect" | "cover") {
             return space::proposal(
                 &req.task,
@@ -383,7 +396,7 @@ fn explain(i: &Intent) -> String {
                 s.push_str(" The proposing agent may withdraw it until then.");
             }
         }
-        State::Rejected | State::Expired | State::Voided | State::Failed => {
+        State::Rejected | State::Expired | State::Voided | State::Failed | State::Aborted => {
             if let Some(h) = i.history().last() {
                 s.push_str(&format!(" Last change: {}.", h.reason));
             }
@@ -398,7 +411,11 @@ fn explain(i: &Intent) -> String {
                 );
             }
         }
-        State::AutoApproved | State::Approved | State::Dispatched | State::Done => {
+        State::AutoApproved
+        | State::Approved
+        | State::Dispatched
+        | State::Effected
+        | State::Done => {
             match i.approval() {
                 Some(a) if a.at_submission => s.push_str(&format!(
                     " Authorized at submission by {} (the submitter's own command).",

@@ -1,0 +1,78 @@
+# The policy floor: a policy file without the engagement tier would route an agent's
+# nomination to the catch-all tier, one approver. The engine holds every engagement to two
+# operators with engagement authority, neither the proposer, whatever the file says: op-2's
+# signature alone is 1 of 2, op-3's completes it. Afterwards the log is forged to say one
+# approver was enough (the decision's `approvers` stripped, op-2's signature dropped) with a
+# recomputed chain; replay recomputes the decision with the floor and must catch it.
+title = "A policy file without the engagement tier"
+invariant = "two_person"
+attack = "the policy file lacks the engagement tier; the log is forged to show one approver was enough"
+expect = "done"
+expect_assessment = "ceased"
+tamper = "strip_approvers"
+policy = "sim/scenarios/engage/policies/no-engagement-tier.toml"
+end_s = 200
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[agent]]
+id = "agent-planner"
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km: it also covers the point for the assessment
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+agent = "agent-planner"
+rationale = "T-0001 is declared hostile and holding inside the engagement zone"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 6
+action = "expect"
+state = "pending_approval"
+concurrences = 1
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"

@@ -47,7 +47,7 @@ impl AutopilotKind {
             | AutopilotKind::Blimp
             | AutopilotKind::Boat
             | AutopilotKind::Ugv
-            | AutopilotKind::Sub => &[Orbit, Patrol, Hold, Rtl],
+            | AutopilotKind::Sub => &[Orbit, Patrol, Hold, Rtl, Engage],
             AutopilotKind::Tracker => &[Track, Hold],
             AutopilotKind::Drifter => &[],
         }
@@ -109,6 +109,20 @@ pub struct PlatformFacts {
     /// The autopilot the catalog says this platform runs. The live kind comes from the
     /// vehicle's heartbeat ([`crate::VehicleFacts::autopilot`]).
     pub autopilot: Option<AutopilotKind>,
+    /// The platform's sensors (`sensors = [...]` in the catalog): which of our vehicles can
+    /// cover a point, for an engagement's assessment. Absent in logs written before it
+    /// existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sensors: Vec<SensorFact>,
+}
+
+/// One sensor from the catalog: its type (`radar`, `eo_ir`, `ais`, `sonar`, `esm`) and its
+/// nominal range (where a nominal contact is detected half the time).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SensorFact {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub range_m: f64,
 }
 
 #[derive(Deserialize)]
@@ -122,6 +136,15 @@ struct RawPlatform {
     cruise_mps: Option<f64>,
     turn_dps: Option<f64>,
     endurance_h: Option<f64>,
+    #[serde(default)]
+    sensors: Vec<RawSensor>,
+}
+
+#[derive(Deserialize)]
+struct RawSensor {
+    #[serde(rename = "type")]
+    kind: String,
+    range_m: f64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -158,6 +181,14 @@ impl Catalog {
                     min_turn_radius_m,
                     endurance_h: r.endurance_h,
                     autopilot: AutopilotKind::from_catalog(&r.sim, which),
+                    sensors: r
+                        .sensors
+                        .into_iter()
+                        .map(|s| SensorFact {
+                            kind: s.kind,
+                            range_m: s.range_m,
+                        })
+                        .collect(),
                 };
                 (id, facts)
             })

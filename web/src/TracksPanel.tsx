@@ -34,6 +34,8 @@ interface Props {
   /** fly the map to a track */
   onFocus: (t: Track) => void
   onClose: () => void
+  /** open the engagement nomination form for a declared-hostile track (Phase E) */
+  onEngage?: (trackId: string) => void
 }
 
 export function TracksButton({ tracks, open, now, onClick }: { tracks: TracksMessage | null; open: boolean; now: () => number; onClick: () => void }) {
@@ -95,7 +97,7 @@ function Row({ t, nowMs, staleAfterS, sel, onClick }: { t: Track; nowMs: number;
 
 const DECLARABLE: Affiliation[] = ['hostile', 'suspect', 'neutral', 'unknown']
 
-function Detail({ t, nowMs, vehicles, onFocus }: { t: Track; nowMs: number; vehicles: Vehicle[]; onFocus: () => void }) {
+function Detail({ t, nowMs, vehicles, onFocus, onEngage }: { t: Track; nowMs: number; vehicles: Vehicle[]; onFocus: () => void; onEngage?: () => void }) {
   const [busy, setBusy] = useState<Affiliation | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const age = trackAge(t, nowMs)
@@ -181,6 +183,11 @@ function Detail({ t, nowMs, vehicles, onFocus }: { t: Track; nowMs: number; vehi
         <button className="ghost mini" onClick={onFocus}>
           fly to
         </button>
+        {onEngage && t.affiliation === 'hostile' && t.declared && (
+          <button className="ghost mini eg-engage-btn" onClick={onEngage} title="Nominate an engagement on this declared-hostile track (two operators with engagement authority decide)">
+            engage...
+          </button>
+        )}
         <span className="lbl">declare</span>
         {DECLARABLE.map((a) => (
           <button key={a} className={`ghost mini ${a} ${t.declared?.affiliation === a ? 'on' : ''}`} disabled={busy != null} onClick={() => declare(a)} title={`Declare this track ${AFFILIATION_LABEL[a].toLowerCase()} (an operator action, logged)`}>
@@ -193,7 +200,7 @@ function Detail({ t, nowMs, vehicles, onFocus }: { t: Track; nowMs: number; vehi
   )
 }
 
-export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus, onClose }: Props) {
+export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus, onClose, onEngage }: Props) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
     window.addEventListener('keydown', onKey)
@@ -225,7 +232,7 @@ export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus
         {list.map((t) => (
           <div key={t.id}>
             <Row t={t} nowMs={nowMs} staleAfterS={staleAfterS} sel={selected === t.id} onClick={() => onSelect(selected === t.id ? null : t.id)} />
-            {selected === t.id && <Detail t={t} nowMs={nowMs} vehicles={vehicles} onFocus={() => onFocus(t)} />}
+            {selected === t.id && <Detail t={t} nowMs={nowMs} vehicles={vehicles} onFocus={() => onFocus(t)} onEngage={onEngage ? () => onEngage(t.id) : undefined} />}
           </div>
         ))}
       </div>

@@ -81,13 +81,14 @@ rules' freshness limit for that vehicle's link):
 |---|---|
 | `get_fleet`, `get_vehicle` | identity, platform limits and tasks, position, nav readiness and source, battery, home, link health, current task |
 | `get_platforms` | the catalog: limits, link class, `armed`, tasks per kind, fleet members |
-| `get_areas` | approved and no-go areas as `[lon, lat]` polygons |
+| `get_areas` | approved, no-go, engagement-zone and no-strike areas as `[lon, lat]` polygons |
 | `get_policy` | the risk-tier policy and rules configuration in force |
 | `get_intents` | intents of the run (filter by state, or `mine`) with checks, policy, approval, history |
 | `get_inbox` | pending approvals (why each needs a human, when it expires) and alerts |
 | `get_recent_events` | vehicle events the audit log recorded: mode changes, failsafes, status text |
 | `get_satellite_passes` | imaging access windows over an area (read-only) |
 | `get_satellite_tasking_options` | ranked collection options and exclusions (read-only) |
+| `get_nominations` | engagement nominations (Phase E): checks, preview, signatures needed and given, the picture held since approval, the effect, a stop, the assessment |
 
 Proposing:
 
@@ -97,6 +98,16 @@ Proposing:
 | `propose_intent` | task + uids + params + constraints + **required** rationale; auto tier dispatches, human tier waits in the inbox. Vehicle tasks (orbit, patrol, hold, rtl, track) and satellite requests: `collect` (area, window, capability, `chosen` from the options) and `cover` (area, window, service), which go through the same `decision::space` path as an operator's |
 | `explain_intent` | the checks, the tier, why a human, who decided and how, history, tasking or space run, a plain summary |
 | `withdraw_intent` | the agent's own intents only, while they wait |
+
+An engagement (Phase E) is nominated with `propose_intent`, `task = "engage"`: `track_id` (a
+track a human operator declared hostile), one armed platform in `uids`, `effect_radius_m`,
+`fallback` (`abort`, `return` or `loiter`), optional `window_s`, and the rationale. The effect
+is an abstract event (a point, a radius, a time). It always waits for two human operators
+with engagement authority; the agent can preview it and follow it (`get_nominations`,
+`explain_intent`) and withdraw it while it waits, never sign, stop or release it: no such
+tool exists, and the engine's agent port has no such method. While an engagement is in play
+on a vehicle (pending, approved or under way), any order the agent proposes for that vehicle
+waits for a human, whatever its tier (`(engagement in play)`).
 
 A collect flows as: preview (or `get_satellite_tasking_options`) for the options, propose with
 `chosen = {norad_id, collect_time}` and a rationale, wait in the inbox (every collect needs a

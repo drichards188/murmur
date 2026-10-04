@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -436,6 +436,9 @@ pub struct Link {
     seq: AtomicU8,
     pub stats: Arc<Mutex<LinkStats>>,
     pub vehicle: OnceLock<Arc<VehicleCell>>,
+    /// Seconds between GCS heartbeats on this link (the telemetry plan's `gcs_heartbeat_s`),
+    /// read by the heartbeat thread without taking the stats lock.
+    gcs_heartbeat_s: AtomicU64,
 }
 
 impl Link {
@@ -448,7 +451,16 @@ impl Link {
             seq: AtomicU8::new(0),
             stats: Arc::default(),
             vehicle: OnceLock::new(),
+            gcs_heartbeat_s: AtomicU64::new(1),
         }))
+    }
+
+    pub fn gcs_heartbeat_s(&self) -> u64 {
+        self.gcs_heartbeat_s.load(Ordering::Relaxed).max(1)
+    }
+
+    pub fn set_gcs_heartbeat_s(&self, s: u64) {
+        self.gcs_heartbeat_s.store(s.max(1), Ordering::Relaxed);
     }
 
     fn remote(&self) -> Option<SocketAddr> {

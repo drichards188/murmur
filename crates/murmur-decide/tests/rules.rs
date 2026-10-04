@@ -153,6 +153,52 @@ fn readiness_dead_reckoning_passes_for_subs_only() {
     assert_eq!(r.detail, "navigation ready");
 }
 
+/// A fixed-wing on dead reckoning (a plane in a GNSS jammer) stays taskable, out of the
+/// jammer for one, but a human judges it; vehicles whose EKF gives up the position fail;
+/// a sub passes; hold and rtl stay exempt.
+#[test]
+fn readiness_dead_reckoning_by_kind() {
+    use murmur_decide::policy::{Tier, decide};
+    use murmur_decide::world::NavSource;
+    let mut w = world();
+    w.vehicles.insert(uid("fvr-1"), vehicle("fvr90", CRISSY));
+    w.vehicles.insert(uid("lta-1"), vehicle("lta", CRISSY));
+    for v in w.vehicles.values_mut() {
+        v.nav_source = Some(Fact::new(NavSource::DeadReckoning, T0));
+    }
+    let detail = "navigation on dead reckoning (no GNSS fix): position error grows with time";
+    let (fail, sub) = ("dead reckoning only", "navigation ready (dead reckoning");
+    for (u, at, outcome, needle) in [
+        ("hawk-1", BAY, Outcome::Unverified, detail), // plane (RQ-4 stand-in)
+        ("blade-1", BAY, Outcome::Unverified, detail), // plane (Switchblade)
+        ("fvr-1", BAY, Outcome::Unverified, detail),  // VTOL
+        ("sky-1", CRISSY, Outcome::Fail, fail),       // copter
+        ("lta-1", CRISSY, Outcome::Fail, fail),       // blimp
+        ("mule-1", CRISSY, Outcome::Fail, fail),      // ugv
+        ("boat-1", BAY, Outcome::Fail, fail),         // boat
+        ("remus-1", BAY, Outcome::Pass, sub),         // sub
+    ] {
+        let r = one(RuleId::Readiness, orbit(at, 9000.0, &[u]), &w);
+        assert_outcome(&r, outcome, needle);
+        let r = one(RuleId::Readiness, rtl(&[u]), &w);
+        assert_outcome(&r, Outcome::Pass, "not required for rtl");
+    }
+    // unverified passes the rules gate for an orbit and routes it to a human: an agent's
+    // proposal waits in the inbox, the operator's own submission is its own approval
+    let s = spec(agent(), orbit(BAY, 9000.0, &["hawk-1"]));
+    let checks = rules::evaluate(&s, &w.for_intent(&s, &terrain()), &cfg());
+    assert!(rules::passed(&checks, s.kind()), "{checks:?}");
+    let d = decide(&s, &w.for_intent(&s, &terrain()), &policy());
+    assert_eq!(d.tier, Tier::Human);
+    assert!(!d.submitter_authorizes);
+    let why = d.facts.unverified.join("; ");
+    assert!(why.contains(detail), "{why}");
+    let s = spec(human(), orbit(BAY, 9000.0, &["hawk-1"]));
+    let d = decide(&s, &w.for_intent(&s, &terrain()), &policy());
+    assert_eq!(d.tier, Tier::Human);
+    assert!(d.submitter_authorizes);
+}
+
 #[test]
 fn readiness_cannot_evaluate_missing_or_stale() {
     let mut w = world();

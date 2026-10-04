@@ -20,7 +20,7 @@ fn catalog_marks_exactly_the_armed_platforms() {
         .filter(|p| p.armed)
         .map(|p| p.id.clone())
         .collect();
-    assert_eq!(armed, vec!["fpv", "switchblade", "ugv_armed"]);
+    assert_eq!(armed, vec!["fpv", "magura", "switchblade", "ugv_armed"]);
 }
 
 #[test]
@@ -290,8 +290,41 @@ fn policy_file_validation() {
     assert!(Policy::from_toml(bad_tier).is_err());
     let p = policy();
     assert_eq!(p.approval.expire_s, 120);
-    assert_eq!(p.tiers.len(), 7);
+    assert_eq!(p.tiers.len(), 8);
     assert_eq!(p.rules.space_rules(), SpaceRules::default());
+    // the engagement tier: two approvers with engagement authority, never the proposer
+    let eng = p.tiers.iter().find(|t| t.name == "engagement").unwrap();
+    assert_eq!(
+        (eng.approvers, eng.proposer_may_approve, eng.submitter_authorizes),
+        (Some(2), Some(false), Some(false))
+    );
+    p.rules.engage_rules().validate().unwrap();
+    let bad_engage = r#"
+        [rules.engage]
+        min_identity_confidence = 1.5
+        [[tier]]
+        name = "x"
+        tier = "human"
+        reason = "r"
+    "#;
+    assert!(Policy::from_toml(bad_engage).is_err());
+    let zero_approvers = r#"
+        [[tier]]
+        name = "x"
+        tier = "human"
+        reason = "r"
+        approvers = 0
+    "#;
+    assert!(Policy::from_toml(zero_approvers).is_err());
+    let window_on_orbit = r#"
+        [approval.kind.orbit]
+        until = "window"
+        [[tier]]
+        name = "x"
+        tier = "human"
+        reason = "r"
+    "#;
+    assert!(Policy::from_toml(window_on_orbit).is_err());
     let bad_space = r#"
         [rules.space]
         cover_min_fraction = 1.5

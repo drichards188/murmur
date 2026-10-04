@@ -165,6 +165,7 @@ fn config(spec: Spec, port: u16, alt: f64) -> VehicleConfig {
         port,
         home: [37.8, -122.6, alt, 90.0],
         spec,
+        params: Default::default(),
     }
 }
 

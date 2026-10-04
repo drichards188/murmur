@@ -45,7 +45,8 @@
 //! the other side: no `approved` state in a log without an `approval.granted` by an
 //! operator before the deadline, or an `approval.at_submission` by the intent's own human
 //! source in a tier that allows it (never on an agent's intent). A human approving their
-//! own proposal in the inbox is allowed (two-person approval is Phase E) and flagged
+//! own proposal in the inbox is allowed where the tier lets the proposer approve (never for an
+//! engagement, which also needs an [`EngagementAuthority`] and N distinct signers) and flagged
 //! `self_approved` on the approval.
 //!
 //! **Limits, stated plainly.** Rust privacy is a code-structure guarantee, not a security
@@ -173,6 +174,7 @@
 //!     platform: Some(PlatformFacts {
 //!         id: "x10".into(), domain: Domain::Air, armed: false, cruise_mps: Some(12.0),
 //!         min_turn_radius_m: None, endurance_h: Some(0.65), autopilot: Some(AutopilotKind::Copter),
+//!         sensors: Vec::new(),
 //!     }),
 //!     autopilot: Some(Fact::new(AutopilotKind::Copter, t)),
 //!     nav_ready: Some(Fact::new(true, t)),
@@ -181,6 +183,7 @@
 //!     battery_pct: Some(Fact::new(95.0, t)),
 //!     nav_source: None,
 //!     report_interval_ms: None,
+//!     velocity_mps: None,
 //! });
 //!
 //! // An agent proposes; policy sends it to the inbox.
@@ -209,6 +212,7 @@ pub mod areas;
 pub mod audit;
 pub mod authority;
 pub mod catalog;
+pub mod engage;
 pub mod engine;
 pub mod geo;
 pub mod hash;
@@ -217,6 +221,7 @@ pub mod intent;
 pub mod policy;
 pub mod replay;
 pub mod route;
+pub mod scenario;
 pub mod rules;
 pub mod space;
 pub mod terrain;
@@ -228,9 +233,18 @@ pub use audit::{
     AuditSink, Event, EventBody, JsonlFile, LoggedAreas, MemorySink, OperatorView, ViewShown,
     parse_log,
 };
-pub use authority::{HumanAuthority, OperatorSession};
-pub use catalog::{AutopilotKind, Catalog, Domain, PlatformFacts};
-pub use engine::{AgentPort, DispatchOrder, Engine, EngineError, Order, Preview, TaskOutcome};
+pub use authority::{EngagementAuthority, Grants, HumanAuthority, OperatorSession};
+pub use catalog::{AutopilotKind, Catalog, Domain, PlatformFacts, SensorFact};
+pub use engage::{
+    AssessResult, Assessment, EffectOrder, EffectRecord, EngageOrder, EngagePreview, EngageRules,
+    EngageSnapshot, EngageWindow, Engagement, EngagementEvent, Fallback, FallbackOrder,
+    FrozenPlan, ObserveStep, PictureToken, PictureVerdict, ResetRecord, SignedPicture, StopCause,
+    StopRecord, TrackIdentity,
+};
+pub use engine::{
+    AgentPort, DispatchOrder, Engine, EngineError, Order, PREPARED_SPACE_MAX_AGE_MS,
+    PreparedSpace, Preview, StepOutcome, TaskOutcome, prepare_space,
+};
 pub use geo::{LonLat, Polygon};
 pub use ids::{AgentId, IntentId, OperatorId, SessionId, Uid};
 pub use intent::{
@@ -245,7 +259,7 @@ pub use space::{
     SegmentId, SpaceAnswer, SpaceArea, SpaceOracle, SpaceOrder, SpaceQuery, SpaceRules,
     SpaceSegment, Window,
 };
-pub use terrain::{NoTerrain, PolygonTerrain, Surface, TerrainOracle};
+pub use terrain::{NearSample, NoTerrain, PolygonTerrain, Surface, TerrainOracle};
 pub use time::{Clock, ManualClock, SystemClock, Time};
 pub use world::{
     Affiliation, Fact, LoggedInputs, LoggedSpace, SpaceInputs, TerrainInputs, TrackFacts,

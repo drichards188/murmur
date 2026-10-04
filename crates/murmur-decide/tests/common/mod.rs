@@ -71,6 +71,7 @@ pub fn vehicle(platform: &str, at: LonLat) -> VehicleFacts {
         battery_pct: Some(Fact::new(95.0, T0)),
         nav_source: None,
         report_interval_ms: None,
+        velocity_mps: None,
     }
 }
 

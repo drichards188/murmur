@@ -82,13 +82,25 @@ pub fn vehicle_facts(
             .nav_source_fact(now_mono)
             .map(|(source, t)| Fact::new(source, ms(t))),
         report_interval_ms: Some(report_interval_ms),
+        // velocity over ground, observed with the position (an engagement's keep-out carries
+        // our vehicles along it)
+        velocity_mps: v.vel_en.and_then(|vel| fact(vel, v.seen.position)),
         platform,
     }
 }
 
 /// Every vehicle the bridge knows, at engine time `t`, and the track picture (Phase C2:
 /// contacts that are not ours, as our sensors see them; absent before `tracks::init`).
-pub fn build(world: &World, catalog: &Catalog, areas: &AreaSet, t: Time) -> WorldSnapshot {
+/// A vehicle the fleet manifest names that has never been heard from is in it too, with its
+/// platform and no facts: an engagement's friendly keep-out can't clear a vehicle it knows
+/// nothing about (fail closed).
+pub fn build(
+    world: &World,
+    catalog: &Catalog,
+    areas: &AreaSet,
+    t: Time,
+    tracks: Option<&crate::tracks::Tracks>,
+) -> WorldSnapshot {
     let now = clock::mono();
     let mut snap = WorldSnapshot::new(t);
     for cell in world.vehicles() {
@@ -96,8 +108,14 @@ pub fn build(world: &World, catalog: &Catalog, areas: &AreaSet, t: Time) -> Worl
         let facts = cell.read(|v| vehicle_facts(v, catalog, now, interval));
         snap.vehicles.insert(duid(cell.uid), facts);
     }
+    for (uid, ident) in &world.manifest().identities {
+        snap.vehicles.entry(duid(*uid)).or_insert_with(|| VehicleFacts {
+            platform: ident.str("platform").and_then(|p| catalog.get(p)).cloned(),
+            ..VehicleFacts::default()
+        });
+    }
     snap.areas = Some(areas.clone());
-    if let Some(tracks) = crate::tracks::store() {
+    if let Some(tracks) = tracks {
         snap.tracks = tracks.facts(t.0 as f64 / 1000.0);
     }
     snap
