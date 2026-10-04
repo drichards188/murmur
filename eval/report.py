@@ -39,6 +39,7 @@ from .engage import load_suite
 from .evidence import RULEBOOK_VERSION
 from .metrics import NOT_HUMAN, compute_run
 from .provenance import code_id, is_doc
+from .provenance import collect as current_code
 from .stats import dprime, summary, t_interval, wilson
 
 ARM_ORDER = ["rules-only", "rules-only-reject", "human-proxy", "agent+human-proxy", "agent+model", "study"]
@@ -774,6 +775,9 @@ def build(batch: Path) -> Path:
     proxy = next((r["info"].get("proxy") for r in runs if r["info"].get("proxy")), None)
     suite = load_suite(batch)
     prov_text, prov_warn = provenance_text(runs, meta)
+    # the code computing this page's numbers from the runs' raw logs (may be newer than the
+    # code the runs ran, which is what prov_text says)
+    metrics_code = code_id(current_code())
     planned = len(meta.get("jobs", [])) or (len(runs) + len(excluded))
 
     body: list[str] = []
@@ -785,7 +789,7 @@ def build(batch: Path) -> Path:
         body.append(
             f'<p class="muted">{planned} runs planned, {len(runs)} scored, {len(excluded)} excluded (listed under What went wrong); '
             f'{len(scenarios_all)} scenarios ({len(heldout)} held out), arms {esc(", ".join(arms))}, seeds {esc(meta.get("seeds"))}; '
-            f'started {esc(meta.get("started"))}, ended {esc(meta.get("ended"))}; {prov_text}; '
+            f'started {esc(meta.get("started"))}, ended {esc(meta.get("ended"))}; runs: {prov_text}; metrics computed by {esc(metrics_code)}; '
             f'{esc(meta.get("parallel"))} stacks in parallel on {esc((meta.get("machine") or {}).get("cpus"))} CPUs; {esc(meta.get("tidewater"))}; '
             f'fleet ready {num(min(ready), 1) if ready else "n/a"} to {num(max(ready), 1) if ready else "n/a"} s after the stand-ins started, before every origin.</p>'
         )
@@ -969,6 +973,7 @@ def build(batch: Path) -> Path:
         "started": meta.get("started"),
         "ended": meta.get("ended"),
         "code": prov_text,
+        "metrics_code": metrics_code,
         "provenance_warnings": prov_warn,
         "rulebook": RULEBOOK_VERSION,
         "proxy_params": proxy,
