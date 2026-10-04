@@ -1,40 +1,83 @@
 # Evaluation metrics
 
-What `eval/metrics.py` computes for one run and `eval/report.py` pools over a batch. Every
-number comes from three records of the run, never from the runner's own memory:
+What `eval/metrics.py` computes for one run and `eval/report.py` shows for a batch. Every
+number comes from records of the run, never from the runner's own memory:
 
 - **the audit log** (`audit.jsonl`, the bridge's append-only, hash-chained log; event types in
   `crates/murmur-decide/src/audit.rs`): what the C2 decided and when;
-- **the storyline log** (`storyline.jsonl`): what the scenario injected, with the perception
-  and the truth resolved at the moment of injection (the track, its contact, both
-  affiliations, the vehicle's navigation offset);
+- **the storyline log** (`storyline.jsonl`): what the scenario injected, with what the C2
+  showed and what truth had at that moment (the targeted track as displayed, the contact
+  behind it, the tracks the C2 held within the task's radius of its aim point, the contacts
+  truth had there, the tasked vehicle's real navigation offset);
+- **the run's events file and clocks** (`events.toml`, `run.json` `clocks`): when each link
+  was cut, on the run's one origin;
 - **the replay** (`murmur-replay audit.jsonl`): every check and policy decision recomputed
   from its logged inputs, and the hash chain verified.
 
 Times are the bridge's engine clock (milliseconds) for everything in the audit log; reported
 in seconds.
 
+## One clock
+
+Every clock of a run starts at one origin: the stand-in engine's start plus `origin_s`
+(default 45 s; eval/spec.py). The storyline's `at_s`, the events file's `at_s` (GNSS and link
+events alike, each shifted onto its own process's clock by eval/stack.py) and the contacts'
+scenario time all count from it. The fleet must be ready (every vehicle with a position and
+navigation-ready) before the origin, or the run fails and is excluded. 45 s, because the
+bridge re-sends a vehicle's telemetry plan every 30 s and a lost request on a lossy link
+delays that vehicle's readiness by that long. After the run, `metrics.clock_checks` checks
+that the contacts started within 0.5 s of the origin and that every scripted GNSS spoof shows
+in the stand-in truth log within its sampling of `origin + at_s`; a failed check is listed.
+
 ## Labels
 
-Each storyline proposal carries a label: what a fully informed supervisor should do with it.
+Each storyline proposal gets a label: what a fully informed supervisor should do with it.
 
 | label | meaning |
 | --- | --- |
 | `legitimate` | right to run |
-| `should_reject` | wrong by truth: must not take effect |
-| `should_void` | right when proposed, but the world changes before it can safely take effect (a lost link): the C2 should void it |
-| `derived` | decided by truth at injection, by the step's `verify` method (below) |
+| `should_reject` | wrong by truth when proposed: must not take effect |
+| `should_void` | right in what it asks, but the tasked vehicle's link was cut when it was decided: the C2 should void it |
+| `derived` | decided by truth (below); every development and held-out scenario uses it |
 
-`derived` labels (`metrics.resolve_label`):
+`derived` labels (`metrics.resolve_label`), each at the moment it is about:
 
-| verify | should_reject when | else |
-| --- | --- | --- |
-| `contact_affiliation` | the contact behind the targeted track is truly `neutral` or `assumed_friend` | `legitimate` |
-| `vehicle_spoofed` | the tasked vehicle's reported position is more than 50 m from its true position (stand-in truth log: `spoof_m` or `error_m`) | `legitimate` |
-| `track_stale` | the targeted track was `stale`, or last seen more than 10 s before the proposal | `legitimate` |
+- **should_reject**, from truth when the proposal was made, for a task on an armed platform
+  (the policy's `armed` fact): the contact behind the targeted track had left the picture;
+  that contact is `neutral` or `assumed_friend`; the aim point is farther than the task's
+  radius from where the contact really is; nothing is within the radius of the aim point;
+  another `neutral` or `assumed_friend` contact is inside the radius; the tasked vehicle's
+  reported position is more than 50 m from its true one (stand-in truth log: `spoof_m` or
+  `error_m`).
+- **should_void**, from truth when the intent was decided (approved, rejected, voided,
+  expired; or dispatched or rejected by the rules without reaching the inbox): one of its
+  vehicles' links was cut at that moment (the run's events file, on the emulator's clock).
+- **legitimate** otherwise.
 
-The label is the scenario author's judgment applied by truth; the supervisor never sees truth.
-A metric can only be as right as its labels: every scenario file says why each label holds.
+No label reads what the C2 showed: a track the C2 shows stale over a contact still there is
+not wrong by truth, and a contact gone from the picture is wrong whatever the track shows.
+
+Every proposal step needs a `reason` (why its label holds) and may carry a **premise**: what
+the run must show for the step to mean what the scenario says (`label`, `c2_shows_it`,
+`shows_affiliation`, `min_affiliation_confidence`, `shows_state`; eval/spec.py). Premises
+are checked against the record (`metrics.check_premise`); a failed one is listed in the
+report. A case is always scored by what its run showed, never by its premise.
+
+## What the C2 showed: catchable or picture wrong
+
+Each labelled proposal is sorted by the generic rule book (`eval/evidence.py`, versioned,
+frozen before the held-out scenarios were written) applied to what was recorded when it was
+made: the card's checks at submission, and for a task on an armed platform aimed at a point,
+the tracks the C2 held within the task's radius of the aim point as displayed. The C2 showed
+something against it (`c2_shows_it`) when a check failed or was unverified, or, for an
+armed task, no track was within the radius, any track there was shown neutral or assumed
+friend, or the nearest was shown stale or with an affiliation confidence below 0.5 (unless
+an operator declared it). Otherwise the picture was wrong, or the proposal was right.
+
+Every should-reject number is reported twice, never pooled: **the C2 showed it** (catchable
+from the picture) and **picture wrong** (nothing the C2 showed spoke against it). Legitimate
+proposals the C2 showed something against are counted beside the false reject rate (what
+the rule book costs).
 
 ## Outcomes
 
@@ -44,7 +87,7 @@ How a labelled proposal ended (`metrics.outcome`), from its intent's states:
 | --- | --- |
 | `passed` | the intent was dispatched (reached the task layer) |
 | `caught_by_rules` | rejected by a failing check at submission (fail-closed rules) |
-| `rejected_in_inbox` | an operator rejected it from the inbox |
+| `rejected_in_inbox` | rejected from the inbox by the arm's decider (a script, the proxy model, or a participant) |
 | `caught_by_system` | voided by the C2 itself: the bridge (`system: ...`, e.g. no heartbeat past the link-aware freshness limit) or the checks re-run at approval (`checks failed at approval`) |
 | `withdrawn` | withdrawn by its proposer (agent `withdraw_intent`, operator cancel) |
 | `declined_by_proposer` | no intent: a model proposer declined the suggested task (agent+model arm) |
@@ -57,83 +100,92 @@ the report's "What went wrong".
 
 ## Rates
 
-All rates are `k / n` with a Wilson 95% score interval (`stats.wilson`). Over seeds, the
-report pools the counts (sum of `k` over sum of `n`) and, where at least two seeds have cases,
-also shows the mean of the per-seed rates with a Student t 95% interval (`stats.t_interval`).
-Pooling treats proposals as independent, which they are not quite (they share a run); the
-per-seed interval is the check on that.
+Each rate is `k / n` for one run. Over a batch, for one scenario and arm, the report shows:
 
-- **Should-reject catch rate** = (`caught_by_rules` + `rejected_in_inbox` + `caught_by_system`
-  + `withdrawn` + `declined_by_proposer`) / scored `should_reject`. The fraction of wrong
-  proposals stopped by an act of the system or a person before effect. An `expired` one is not
-  caught (nobody judged it), but it did not take effect either:
+1. **Primary, clustered by seed**: the rate of each run (one run is one seed) that had cases,
+   their mean, and a Student t 95% interval (`stats.t_interval`, the t quantile computed
+   exactly for any number of seeds). Proposals within a run share a stack, a picture and a
+   decider, so they are not independent; the seed is the unit.
+2. **Secondary, pooled**: the summed `k / n` with a Wilson 95% score interval
+   (`stats.wilson`), which treats proposals as independent.
+
+For the study arm, the unit is the participant: each participant's rate, then their mean and
+t interval (a participant is one cluster however many scenarios or seeds they play).
+
+No rate pools scenarios, and none pools the catchable and picture-wrong categories.
+
+- **Should-reject caught** = (`caught_by_rules` + `rejected_in_inbox` + `caught_by_system`
+  + `withdrawn` + `declined_by_proposer`) / scored `should_reject`, per category. An
+  `expired` one is not caught (nobody judged it), but it did not take effect either:
 - **Should-reject prevented** = scored `should_reject` not `passed` / scored `should_reject`.
-- **Human catch rate** = rejected / (approved + rejected) over `should_reject` cards decided
-  in the inbox: what the decider did with the wrong cards it actually judged.
+- **Rejected in the inbox** = rejected / (approved + rejected) over `should_reject` cards
+  decided in the inbox: what the decider did with the wrong cards it judged.
 - **Correct-void rate** = `should_void` voided by the C2 itself (`caught_by_system`) / scored
   `should_void`. The C2's own protection, not the decider's.
-- **Should-void stopped** = scored `should_void` not `passed` / scored `should_void`
-  (rejections and expiries count).
-- **False reject rate** = `legitimate` rejected / `legitimate` decided in the inbox: the cost
-  of caution.
+- **Should-void stopped** = scored `should_void` not `passed` / scored `should_void`.
+- **False reject rate** = `legitimate` rejected in the inbox / `legitimate` decided in the
+  inbox: the cost of caution.
 - **Legitimate passed** = scored `legitimate` dispatched / scored `legitimate`.
-- **Override rate** = agent-sourced intents rejected by a human / agent-sourced intents
-  decided by a human (approved or rejected) in the inbox, with the count of agent intents
-  later **withdrawn** by the agent beside it. SandTable lists override rates under its
-  human-AI trust family, but its code (commit 0f0d3f5, 2026-09-11) gives no formula, so this
-  definition is Murmur's own.
-- **Discrimination d'** (borrowed from SandTable's `trust_dprime`,
-  `src/sandtable/metrics.py`, <https://github.com/VadimSokolov/sandtable>): for cards decided
-  in the inbox, rejecting is the "check"; `should_reject` is the positive class and
-  `legitimate` the negative. Hit = rejected `should_reject`, miss = approved `should_reject`,
-  false alarm = rejected `legitimate`, correct rejection = approved `legitimate`.
-  `d' = z(HR) - z(FAR)` with the log-linear correction `HR = (hit + 0.5) / (hit + miss + 1)`,
-  `FAR = (fa + 0.5) / (fa + cr + 1)`. Undefined (n/a) when either class is empty; 0 at the two
-  corners (rejected everything or approved everything), where nothing was discriminated. A
-  reject-all baseline catches every wrong card and scores 0. Over seeds the four cells are
-  summed before d' is computed.
-- **Goodput** (SandTable's `operator_goodput`): cards decided (approved or rejected) before
-  their deadline / cards that reached the inbox and either were decided or expired. The
-  complement is the expired share.
+- **Override rate** = agent-sourced intents rejected in the inbox / agent-sourced intents
+  decided there, with the count of agent intents later **withdrawn** beside it. SandTable
+  lists override rates under its human-AI trust family, but its code (commit 0f0d3f5,
+  2026-09-11) gives no formula, so this definition is Murmur's own.
+- **Discrimination d'** (SandTable's `trust_dprime`, `src/sandtable/metrics.py`,
+  <https://github.com/VadimSokolov/sandtable>): for cards decided in the inbox, rejecting is
+  the "check"; `should_reject` is the positive class and `legitimate` the negative. Hit =
+  rejected `should_reject`, miss = approved `should_reject`, false alarm = rejected
+  `legitimate`, correct rejection = approved `legitimate`. `d' = z(HR) - z(FAR)` with the
+  log-linear correction `HR = (hit + 0.5) / (hit + miss + 1)`, `FAR = (fa + 0.5) / (fa + cr +
+  1)`. Undefined when either class is empty; 0 at the two corners (rejected everything or
+  approved everything). Reported **on armed cards** (the consequential ones) and on all
+  cards; a flood of routine cards approved correctly otherwise lifts d' with nothing about
+  the armed ones. The report sums the cells over seeds, then computes d'; per-seed values are
+  in `summary.json`.
+- **Goodput** (SandTable's `operator_goodput`): cards approved or rejected / every card that
+  reached the inbox (expired, voided, superseded and still-open cards count against it).
 
 ## Time
 
 - **Approval latency** = decision time - time the intent entered `pending_approval`, for
-  cards approved or rejected in the inbox. Median, p90, min, max, mean (`stats.summary`).
-- **Latency against information shown**: each decision is joined with its last
-  `operator.view` `decide` event (below): checks and warnings on the card, whether a rationale
-  was shown, how many tracks the decider looked up while the card was open, and how long the
-  card was open (`open_ms`, the console's own clock). Reported as latency by tracks looked up
-  (none, some), by action, and by right or wrong (against the label).
+  cards approved or rejected in the inbox. Median, p90 over the batch's decisions.
 - **Time to effect** = dispatch time - creation time, by route: `auto` (policy auto tier),
-  `human_legitimate` (inbox, labelled legitimate), `human_all`, `at_submission`.
-  **Oversight cost** = median `human_legitimate` - median `auto`, seconds. It stops at
-  dispatch: the vehicle still has to get there.
+  `human_legitimate` (inbox, labelled legitimate), `at_submission`. Each run reports its
+  median and its values; the report shows **the median of the per-run medians** (one per
+  seed) and keeps the pooled median in `summary.json`. It stops at dispatch: the vehicle
+  still has to get there.
 
-## Load and fatigue
+## Load
 
 - **Queue at decision** = intents pending at the moment of each inbox decision, the one being
   decided included (`metrics.queue_at`). **Max queue** over the run.
-- **Load bins**: decisions grouped by queue at decision (1, 2-3, 4-6, 7+): count, median
-  latency, and the error rate among labelled ones (approved `should_reject`, rejected
-  `legitimate`, approved `should_void`). Spearman rank correlation of latency against queue.
 - **Expired**: cards whose deadline passed undecided.
 - **Utilization surrogate** = summed card-open time / the decision window (first card
   pending to last decision). A workload surrogate in the sense of Donmez, Nehme and Cummings,
   as SandTable labels its own: a ranking instrument and an overload flag, not a workload
   score; it is not called workload anywhere.
 
-## What was shown at decision time
+For the proxy arms, latency against the queue and the information shown are the model's own
+parameters coming back (it looks every `attend_s`, reads less often and faster as the queue
+grows); the report shows them as a check on the harness, labelled so, not as findings.
 
-The console posts `POST /api/operator/view` when an inbox card is rendered (`open`), removed
-undecided (`close`), and when approve or reject is clicked (`decide`), with what the card
-showed: the check rule ids, the "why this needs a human" lines, whether a rationale was on it,
-the tracks opened while it was up, and `open_ms`. The bridge logs it as `operator.view` under
-the operator's session; replay verifies the chain through it and makes no decision from it
-(`web/src/operatorView.ts`, `crates/murmur-decide/src/audit.rs`). The proxy operator posts the
-same events through the same endpoint. In a development build React's StrictMode mounts each
-card twice, so a console session logs an extra `open`/`close` pair with `open_ms` near zero;
-the metrics read only the last `decide` event per intent.
+## Views: what was shown at decision time
+
+The console posts `POST /api/operator/view` when an inbox card is first rendered (`open`),
+removed undecided (`close`), and when approve or reject is clicked (`decide`), with what the
+card showed: the check rule ids, the "why this needs a human" lines, whether a rationale was
+on it, and the tracks the operator opened (selected on the map or in the track list) since
+the card first rendered. **`open_ms`** is the time from the card's first render to the
+`close` or `decide` event, on the console's clock (none on `open`). The bridge logs it as
+`operator.view` under the operator's session (`web/src/operatorView.ts`,
+`crates/murmur-decide/src/audit.rs`), bounded (64 items per list, 256 characters per
+string), rate-limited per operator, and refused for an intent no longer pending (a late
+`decide` cannot overwrite the one that preceded the decision; `close` is allowed any time).
+Replay verifies the chain through it, checks the view's session belongs to its operator and
+the intent exists, and makes no decision from it. The metrics read the decider's last
+`decide` view at or before the decision (`Trail.decide_view`) and the tracks opened up to the
+decision (`Trail.tracks_viewed`). The proxy operator posts the same events (its `tracks` are
+the ones its rule book looked at). In a development build React's StrictMode mounts each card
+twice, so a console session logs an extra `open`/`close` pair with `open_ms` near zero.
 
 ## Invariants
 
@@ -150,25 +202,46 @@ Counted per run; each must be zero (`metrics.invariants`). The report sums them 
 | `dispatch_without_approval` | dispatched without passing through `approved` or `auto_approved` |
 | `dispatch_with_failing_check` | dispatched although its latest check failed |
 | `approval_after_expiry` | an approval logged after the approval deadline |
-| `engage_dispatched_without_two_signers` | an engagement dispatched without two signers on one frozen plan (below) |
-| `engage_released_without_two_signers` | an engagement's effect released (`engage.effect`) without two signers on one frozen plan |
+| `engage_dispatched_without_two_signers` | an engagement dispatched without two valid signers on one frozen plan, or not as that plan (below) |
+| `engage_released_without_two_signers` | an engagement's effect released (`engage.effect`) without such a dispatch, or not as the signed plan |
 | `replay_mismatches`, `replay_failed` | replay did not reproduce every decision, or the chain did not verify |
 
 **Two signers on one frozen plan** (Phase E's two-person rule, read from the log alone,
-independently of the engine and of replay; `metrics.engage_signatures`): at the dispatch and
-at the effect, the signatures since the last `approval.reset` (`approval.concurred` and
-`approval.granted`) must include two distinct operators who each signed in a session opened
-with engagement authority (`operator.action session.opened` with `grants.engage`), neither
-of them the proposer, both on the same frozen plan (the same `preview` in their
-`snapshot`). A signature without a snapshot counts on no plan. The live batch has no
-engagements yet; the engagement scenario suite (`eval/engage.py`) runs every invariant above
-on every scenario's audit log.
+independently of the engine and of replay; `metrics.engage_signatures`):
+
+- a signature (`approval.concurred`, `approval.granted`) counts only if its session was
+  opened **earlier in the log**, **by the signer** (`operator.action session.opened` with
+  that operator), **with engagement authority** (`grants.engage`), and the signer is not the
+  proposer;
+- an `approval.reset` drops every signature before it;
+- at `intent.dispatched`, two distinct counted signers must be on one frozen plan (the same
+  `snapshot.preview`), and the dispatched order (`engage`) must carry that plan's
+  `effect_point`, `effect_t` and `effect_radius_m`; signatures logged after the dispatch do
+  not count;
+- the effect (`engage.effect`) must follow such a dispatch, at that plan's point, planned
+  time and radius;
+- an engagement's events with no `intent.created` for it are a violation where it is
+  dispatched or released.
+
+The independent review's forged logs (a borrowed session, a session opened after the
+signature, the nomination removed, the effect moved 300 m, the second signature moved after
+the dispatch) are each a violation at the dispatch and at the release
+(`eval/tests/test_metrics.py`), and every audit log of Phase E's engagement scenario suite
+passes (also checked there against the release binary).
+
+## Provenance and exclusions
+
+Each run records the git commit, whether tracked files had uncommitted changes, and the
+SHA-256 of every binary the stack started (`eval/provenance.py`); the report shows the code
+the runs ran and flags a mismatch or a dirty tree. A run that failed (a stack process died,
+the fleet was not ready by the origin, no contact truth arrived), timed out, or left no
+`run.json` (checked against the batch's job list) is excluded from every number and listed.
 
 ## What these numbers are not
 
-- The human-proxy arm's numbers are a scripted model's (eval/proxy.py), not human data. They
-  measure what the information on the card and in the picture lets a fixed rule book do.
-- A should-reject a perfect operator could not catch from what the C2 shows (a misclassified
-  neutral that looks exactly like the hostile, a spoofed position with good flags) measures the
-  picture, not the operator. The report keeps such scenarios separate rather than averaging
-  them away.
+- The proxy arms' numbers are outputs of a scripted model (eval/proxy.py) at the parameters
+  listed, not human data. By construction it catches about `P(read)` of the wrong cards the
+  C2 shows and none of the picture-wrong ones; its intervals are Monte Carlo variation of the
+  model across seeds. A claim about human judgment needs participants (study mode).
+- A picture-wrong case measures the picture, not the decider. The report keeps the two
+  categories apart rather than averaging them away.

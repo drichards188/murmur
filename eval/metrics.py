@@ -103,7 +103,8 @@ class Trail:
 
     @property
     def human_decided(self) -> bool:
-        """A human approved or rejected it from the inbox."""
+        """Approved or rejected from the inbox (by the arm's decider: a script, the proxy
+        model or a participant; the name is the policy tier's, not a claim about who)."""
         return self.pending_t is not None and self.decided_state in ("approved", "rejected")
 
     @property
