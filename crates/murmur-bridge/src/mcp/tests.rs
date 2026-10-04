@@ -1021,3 +1021,73 @@ async fn the_endpoint_takes_the_agent_header_over_http() {
     assert_eq!(inbox["counts"]["pending"], 0);
     assert_eq!(IntentId(0).0, 0);
 }
+
+/// `POST /api/operator/view` over HTTP (Phase G): an operator's display event is logged under
+/// that operator; without the operator header, or with only an agent's, nothing is logged.
+/// An agent cannot write what "the operator saw".
+#[tokio::test(start_paused = true)]
+async fn operator_views_need_an_operator_over_http() {
+    let r = rig();
+    r.vehicle(3, Firmware::Copter, "switchblade", (LAT, LON));
+    sleep(Duration::from_millis(500)).await;
+    let id = r
+        .ok(&planner(), "propose_intent", orbit(3, "cover the approach"))
+        .await["id"]
+        .as_u64()
+        .expect("id");
+    assert_eq!(r.state(id), State::PendingApproval);
+    let post = |who: Option<(&'static str, &'static str)>, body: Value| {
+        let api = r.api.clone();
+        async move {
+            let mut req = Request::builder()
+                .method("POST")
+                .uri("/api/operator/view")
+                .header(header::CONTENT_TYPE, "application/json");
+            if let Some((h, v)) = who {
+                req = req.header(h, v);
+            }
+            api.oneshot(req.body(Body::from(body.to_string())).expect("request"))
+                .await
+                .expect("response")
+                .status()
+        }
+    };
+    let view = json!({
+        "intent_id": id, "event": "open",
+        "shown": { "checks": ["readiness:3"], "warnings": ["armed platform: vehicle 3"], "rationale": true },
+    });
+    assert_eq!(post(None, view.clone()).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        post(Some((AGENT_HEADER, "agent-planner")), view.clone()).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        post(Some(("X-Murmur-Operator", "op-9")), view.clone()).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(r.events("operator.view"), 0);
+    assert_eq!(
+        post(Some(("X-Murmur-Operator", "op-1")), view).await,
+        StatusCode::OK
+    );
+    let decide = json!({
+        "intent_id": id, "event": "decide", "action": "reject", "open_ms": 4200,
+        "shown": { "checks": [], "warnings": [], "rationale": true, "tracks": ["T-0001"] },
+    });
+    assert_eq!(
+        post(Some(("X-Murmur-Operator", "op-1")), decide).await,
+        StatusCode::OK
+    );
+    let bad = json!({ "intent_id": id, "event": "decide", "shown": {} });
+    assert_eq!(
+        post(Some(("X-Murmur-Operator", "op-1")), bad).await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(r.events("operator.view"), 2);
+    assert_eq!(
+        r.state(id),
+        State::PendingApproval,
+        "a view decides nothing"
+    );
+    r.replays();
+}

@@ -56,8 +56,8 @@ use std::time::Duration;
 
 use murmur_decide::{
     AreaSet, AuditSink, Catalog, Clock, Constraints, Engine, EngineError, Intent, IntentId,
-    JsonlFile, LonLat, OperatorId, OperatorSession, Order, Policy, Proposal, Rationale,
-    ScenarioMap, SpaceSegment, State, Task, TaskOutcome, Time, Uid as DUid, rules,
+    JsonlFile, LonLat, OperatorId, OperatorSession, OperatorView, Order, Policy, Proposal,
+    Rationale, ScenarioMap, SpaceSegment, State, Task, TaskOutcome, Time, Uid as DUid, rules,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -599,6 +599,25 @@ impl Decision {
         core.engine
             .record_operator_action(session.authority(), action, detail)
             .map_err(engine_err)
+    }
+
+    /// Log what an operator's console showed for a pending intent (`operator.view`, Phase
+    /// G): `POST /api/operator/view`. Unknown intent 404, malformed view 422.
+    pub fn record_view(
+        &self,
+        by: &OperatorId,
+        id: u64,
+        view: OperatorView,
+    ) -> Result<(), DecisionError> {
+        let mut guard = self.lock();
+        let core = &mut *guard;
+        let session = Self::session(&mut core.engine, &mut core.sessions, by)?;
+        core.engine
+            .record_operator_view(session.authority(), IntentId(id), view)
+            .map_err(|e| match e {
+                EngineError::Proposal(p) => DecisionError::new(422, p.to_string()),
+                e => engine_err(e),
+            })
     }
 
     fn with_intent(&self, core: &Core, id: IntentId, mut e: DecisionError) -> DecisionError {

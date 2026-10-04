@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::areas::AreaSet;
-use crate::audit::{AuditSink, CheckPhase, Event, EventBody, LoggedAreas};
+use crate::audit::{AuditSink, CheckPhase, Event, EventBody, LoggedAreas, OperatorView};
 use crate::authority::{HumanAuthority, OperatorSession};
 use crate::hash::{GENESIS, sha256_hex};
 use crate::ids::{AgentId, IntentId, OperatorId, SessionId, Uid};
@@ -397,6 +397,28 @@ impl Engine {
             session: by.session(),
             action: action.into(),
             detail: detail.into(),
+        })?;
+        Ok(())
+    }
+
+    /// Log what an operator's console showed for an intent (`operator.view`, Phase G):
+    /// the card opened, closed, or a decision button was clicked, with what was visible.
+    /// Decides nothing; replay ignores it. The intent must exist and the view be
+    /// well-formed ([`OperatorView::validate`]).
+    pub fn record_operator_view(
+        &mut self,
+        by: &HumanAuthority,
+        intent: IntentId,
+        view: OperatorView,
+    ) -> Result<(), EngineError> {
+        self.get(intent)?;
+        view.validate()
+            .map_err(|m| EngineError::Proposal(ProposalError::BadParams(m)))?;
+        self.emit(EventBody::OperatorView {
+            operator: by.operator().clone(),
+            session: by.session(),
+            intent,
+            view,
         })?;
         Ok(())
     }

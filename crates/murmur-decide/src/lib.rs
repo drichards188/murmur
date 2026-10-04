@@ -224,7 +224,10 @@ pub mod time;
 pub mod world;
 
 pub use areas::{Area, AreaKind, AreaSet};
-pub use audit::{AuditSink, Event, EventBody, JsonlFile, LoggedAreas, MemorySink, parse_log};
+pub use audit::{
+    AuditSink, Event, EventBody, JsonlFile, LoggedAreas, MemorySink, OperatorView, ViewShown,
+    parse_log,
+};
 pub use authority::{HumanAuthority, OperatorSession};
 pub use catalog::{AutopilotKind, Catalog, Domain, PlatformFacts};
 pub use engine::{AgentPort, DispatchOrder, Engine, EngineError, Order, Preview, TaskOutcome};

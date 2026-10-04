@@ -710,6 +710,7 @@ fn replay_inner(
             EventBody::OpState { .. }
             | EventBody::VehicleEvent { .. }
             | EventBody::OperatorAction { .. }
+            | EventBody::OperatorView { .. }
             | EventBody::AgentAction { .. } => {}
         }
     }

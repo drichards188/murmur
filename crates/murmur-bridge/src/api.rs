@@ -26,6 +26,8 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use murmur_decide::OperatorView;
+use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use tokio::sync::watch;
 
@@ -56,6 +58,7 @@ pub fn router(app: App) -> Router {
         .route("/api/intents/{id}", get(get_intent))
         .route("/api/intents/{id}/{action}", post(intent_action))
         .route("/api/inbox", get(inbox))
+        .route("/api/operator/view", post(operator_view))
         .route("/api/platforms", get(platforms))
         .route("/api/stats", get(stats))
         .route("/ws", get(ws))
@@ -265,6 +268,39 @@ async fn intent_action(
 
 async fn inbox(State(app): State<App>) -> Response {
     Json(app.decision.inbox_json()).into_response()
+}
+
+/// `POST /api/operator/view` (Phase G): the console says what it showed for a pending
+/// intent. `{"intent_id": n, "event": "open"|"close"|"decide", "action": "approve"|"reject"
+/// (decide only), "shown": {"checks": [rule ids], "warnings": [lines], "rationale": bool,
+/// "tracks": [track ids]}, "open_ms": n, "client_t": ms}`. Logged as `operator.view` under
+/// the operator's session; it decides nothing. The operator header is required (no default
+/// operator): a display event attributed to someone who did not send it would corrupt the
+/// measurement.
+#[derive(Deserialize)]
+struct ViewBody {
+    intent_id: u64,
+    #[serde(flatten)]
+    view: OperatorView,
+}
+
+async fn operator_view(
+    State(app): State<App>,
+    headers: HeaderMap,
+    body: Result<Json<ViewBody>, JsonRejection>,
+) -> Response {
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, e.body_text()),
+    };
+    let op = match app.decision.operator(operator_header(&headers), false) {
+        Ok(op) => op,
+        Err(e) => return decision_error(e),
+    };
+    match app.decision.record_view(&op, body.intent_id, body.view) {
+        Ok(()) => Json(json!({ "ok": true, "intent_id": body.intent_id })).into_response(),
+        Err(e) => decision_error(e),
+    }
 }
 
 /// Collect and cover runs: the scenario clock map and each run's states (also in the

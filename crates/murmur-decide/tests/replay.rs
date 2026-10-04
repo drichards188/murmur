@@ -64,6 +64,37 @@ fn scenario() -> String {
         v.battery_pct.as_mut().unwrap().t = w_later.t;
         v.position.as_mut().unwrap().t = w_later.t;
     }
+    // what the operator's console showed while deciding (Phase G, `operator.view`)
+    let shown = ViewShown {
+        checks: vec!["capability".into(), "readiness".into(), "geofence".into()],
+        warnings: vec!["armed platform: vehicle blade-1".into()],
+        rationale: true,
+        tracks: vec![],
+    };
+    e.record_operator_view(
+        a,
+        i2,
+        OperatorView {
+            event: "open".into(),
+            action: None,
+            shown: shown.clone(),
+            open_ms: None,
+            client_t: Some(1_700_000_000_000),
+        },
+    )
+    .unwrap();
+    e.record_operator_view(
+        a,
+        i2,
+        OperatorView {
+            event: "decide".into(),
+            action: Some("approve".into()),
+            shown,
+            open_ms: Some(28_000),
+            client_t: None,
+        },
+    )
+    .unwrap();
     e.approve(i2, a, Some("picture holds".into()), &w_later, &tr)
         .unwrap();
     e.dispatch(i2).unwrap();
@@ -230,6 +261,7 @@ fn replay_reproduces_every_decision() {
         "op.state",
         "vehicle.event",
         "operator.action",
+        "operator.view",
         "agent.action",
     ] {
         assert!(
@@ -245,6 +277,63 @@ fn replay_reproduces_every_decision() {
 #[test]
 fn runs_are_byte_identical() {
     assert_eq!(scenario(), scenario());
+}
+
+/// An `operator.view` event is additive: replay makes no decision from it, verifies the
+/// chain through it, and the engine refuses one for an unknown intent or a malformed view.
+#[test]
+fn operator_views_are_logged_and_ignored_by_replay() {
+    let clock = ManualClock::new(T0);
+    let (mut e, log) = waiting_engine(&clock);
+    let op = e.open_operator_session(OperatorId::new("op-1")).unwrap();
+    let a = op.authority();
+    let w = world();
+    let tr = terrain();
+    let id = e
+        .agent_port(AgentId::new("planner"))
+        .propose(
+            orbit(NEAR_CRISSY, 150.0, &["blade-1"]),
+            rationale("cover the LZ"),
+            &w,
+            &tr,
+        )
+        .unwrap()
+        .id();
+    let view = |event: &str, action: Option<&str>| OperatorView {
+        event: event.into(),
+        action: action.map(str::to_string),
+        shown: ViewShown::default(),
+        open_ms: None,
+        client_t: None,
+    };
+    assert!(matches!(
+        e.record_operator_view(a, IntentId(99), view("open", None)),
+        Err(EngineError::UnknownIntent(_))
+    ));
+    assert!(matches!(
+        e.record_operator_view(a, id, view("peek", None)),
+        Err(EngineError::Proposal(_))
+    ));
+    assert!(matches!(
+        e.record_operator_view(a, id, view("open", Some("approve"))),
+        Err(EngineError::Proposal(_))
+    ));
+    assert!(matches!(
+        e.record_operator_view(a, id, view("decide", None)),
+        Err(EngineError::Proposal(_))
+    ));
+    e.record_operator_view(a, id, view("open", None)).unwrap();
+    e.record_operator_view(a, id, view("decide", Some("reject")))
+        .unwrap();
+    e.reject(id, a, Some("neutral track".into())).unwrap();
+    let text = log.text();
+    assert_eq!(text.matches("\"type\":\"operator.view\"").count(), 2);
+    let r = replay_str(&text).unwrap();
+    assert!(r.ok(), "{:#?}", r.mismatches);
+    assert_eq!(e.intent(id).unwrap().state(), State::Rejected);
+    // editing a view event breaks the chain like any other event
+    let tampered = text.replacen("\"event\":\"open\"", "\"event\":\"close\"", 1);
+    assert!(!replay_str(&tampered).unwrap().ok());
 }
 
 #[test]
