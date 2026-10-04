@@ -680,3 +680,12 @@ def test_label_at_decision_follows_truth_then():
     assert M.label_at_decision(rec, t, [], [{"t": T0 / 1000 + 5, "contacts": []}], []) is None
     assert M.label_at_decision(rec, trail(), [], there, []) is None
     assert M.label_at_decision(propose("x", 1, label="legitimate"), t, [], there, []) is None
+
+
+def test_an_armed_task_the_rules_rejected_is_still_armed():
+    """No policy decision (the rules rejected it first): the platform's armed flag from the
+    storyline record decides, so a wrong armed orbit is not labelled legitimate."""
+    rec = propose("f", 1, target=neutral_target(), armed=True, **orbit())
+    unjudged = M.Trail(id=1, uids=["3"])
+    assert M.resolve_label(rec, unjudged)[0] == "should_reject"
+    assert M.c2_evidence({**rec, "context": at_aim(shown=[])}, unjudged)

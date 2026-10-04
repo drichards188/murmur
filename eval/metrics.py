@@ -247,6 +247,7 @@ class Label:
     intent_id: int | None = None
     declined: str | None = None
     explicit: bool = False
+    armed: bool = False
 
 
 def link_cuts(run_dir: Path, clocks: dict[str, Any] | None, storyline: list[dict]) -> list[tuple[str, float, float]]:
@@ -277,6 +278,14 @@ def link_cuts(run_dir: Path, clocks: dict[str, Any] | None, storyline: list[dict
     return cuts
 
 
+def is_armed(rec: dict[str, Any], t: Trail | None) -> bool:
+    """The task involves an armed platform: the policy's `armed` fact, or, when the intent
+    never reached the policy (the rules rejected it first, or the proposer declined), the
+    storyline's record of the tasked platform (`sim/platforms.toml` `armed`, the same
+    catalog the fact comes from)."""
+    return bool(t is not None and t.armed) or bool(rec.get("armed"))
+
+
 def decision_moment(t: Trail | None) -> float | None:
     """When the intent's fate was settled, wall seconds: it left the inbox (decided, voided,
     expired), or, never in the inbox, was dispatched or rejected by the rules."""
@@ -303,7 +312,7 @@ def resolve_label(rec: dict[str, Any], t: Trail | None = None, cuts: list[tuple[
     label = rec.get("label", "derived")
     if label != "derived":
         return label, "explicit"
-    armed = bool(t.armed) if t is not None else bool(rec.get("armed"))
+    armed = is_armed(rec, t)
     target = rec.get("target") or {}
     ctx = rec.get("context") or {}
     vt = rec.get("vehicle_truth") or {}
@@ -369,7 +378,7 @@ def label_at_decision(
     if moment is None:
         return None
     why: list[str] = []
-    if t.armed:
+    if is_armed(rec, t):
         sm = _sample_at(samples, moment)
         if sm is None:
             return None
@@ -418,7 +427,7 @@ def c2_evidence(rec: dict[str, Any], t: Trail | None) -> list[str]:
     showed within the task's radius of its aim point."""
     req = rec.get("request") or {}
     ctx = rec.get("context") or {}
-    armed = bool(t.armed) if t is not None else False
+    armed = is_armed(rec, t)
     checks = t.submit_checks if t is not None else []
     return evidence(armed, checks, req.get("center"), req.get("radius_m"), ctx.get("display_near", []))
 
@@ -449,6 +458,7 @@ def labels(storyline: list[dict], tr: dict[int, Trail] | None = None, cuts: list
                 intent_id=iid,
                 declined=rec.get("declined"),
                 explicit=rec.get("label", "derived") != "derived",
+                armed=bool(rec.get("armed")),
             )
         )
     return out
@@ -820,7 +830,7 @@ def compute(
     premise_failures = []
     for L in labs:
         t = tr.get(L.intent_id) if L.intent_id is not None else None
-        ev = c2_evidence({"request": L.request, "context": L.context}, t)
+        ev = c2_evidence({"request": L.request, "context": L.context, "armed": L.armed}, t)
         shows = bool(ev)
         bad = check_premise(L, shows)
         if bad:
