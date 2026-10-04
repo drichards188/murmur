@@ -311,3 +311,33 @@ async fn a_bridge_restart_with_an_order_under_way_follows_it_without_a_resend() 
     assert!(!blog.text().contains("\"type\":\"intent.dispatched\""));
     replays_after(&blog, &r.log);
 }
+
+#[test]
+fn the_pointer_names_the_log_to_resume_from() {
+    use crate::decision::queue::{Pointer, ResumeFrom, previous_log};
+    let dir = std::env::temp_dir().join(format!("murmur-resume-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let theirs = dir.join("a.jsonl");
+    std::fs::write(&theirs, "").expect("log");
+    let ours = dir.join("b.jsonl");
+    let ptr = dir.join(".resume-1.json");
+    let write = |log: &PathBuf, t: f64| {
+        let p = Pointer { log: log.clone(), open: Vec::new(), t };
+        std::fs::write(&ptr, serde_json::to_vec(&p).expect("json")).expect("pointer");
+    };
+    let window = ResumeFrom::Pointer { window_s: 900.0 };
+    // fresh: that log, whatever its (once a tick) list of open ids says: the log decides
+    write(&theirs, clock::wall());
+    assert_eq!(previous_log(&window, Some(&ptr), &ours), Some(theirs.clone()));
+    // stale, our own log, a log that is gone, or turned off: none
+    write(&theirs, clock::wall() - 1_000.0);
+    assert_eq!(previous_log(&window, Some(&ptr), &ours), None);
+    write(&ours, clock::wall());
+    assert_eq!(previous_log(&window, Some(&ptr), &ours), None);
+    write(&dir.join("gone.jsonl"), clock::wall());
+    assert_eq!(previous_log(&window, Some(&ptr), &ours), None);
+    assert_eq!(previous_log(&ResumeFrom::Off, Some(&ptr), &ours), None);
+    // or a log named outright
+    assert_eq!(previous_log(&ResumeFrom::Log(theirs.clone()), None, &ours), Some(theirs));
+    let _ = std::fs::remove_dir_all(&dir);
+}

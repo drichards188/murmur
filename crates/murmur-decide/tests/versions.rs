@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 8] = [
+const LOGS: [(&str, u32); 9] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -40,6 +40,9 @@ const LOGS: [(&str, u32); 8] = [
     // rules 5: the same scenario, its policy carrying the [queue] for unreachable vehicles
     // (policy schema 3)
     ("v5-engagement-scenario-01.jsonl", 5),
+    // rules 5, live: orders queued for an AUV under water and a copter whose link was cut
+    // (the run the next one resumed from; that one is checked against it below)
+    ("v5-queue-live-before-restart.jsonl", 5),
 ];
 
 /// The committed log of the current rules.
@@ -403,4 +406,54 @@ fn an_unknown_policy_key_still_fails_to_parse() {
     // the old names are known keys, not a loosened parser
     let line = run_started_with_ttl_key("ttl_whatever_s");
     assert!(serde_json::from_str::<audit::Event>(&line).is_err());
+}
+
+/// Rules 5, live (murmur-5p4): the queue across a bridge restart, from a clean build. The
+/// first run queued an orbit for an AUV under water (sent when it surfaced) and one for a
+/// copter whose link was cut; the bridge was stopped mid-queue (the AUV's orbit mid-upload)
+/// and the second run carried both over, re-checked them and sent them (the AUV's only
+/// started: it already held the mission), then queued and sent a boat's patrol through a
+/// Starlink outage. Each was anchored as it ran.
+const QUEUE_BEFORE: &str = "v5-queue-live-before-restart.jsonl";
+const QUEUE_AFTER: &str = "v5-queue-live-after-restart.jsonl";
+
+fn anchors_of(name: &str) -> String {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data/anchors")
+        .join(name.replace(".jsonl", ".anchors"));
+    std::fs::read_to_string(p).unwrap()
+}
+
+#[test]
+fn the_live_queue_logs_replay_across_the_restart() {
+    let before = fixture(QUEUE_BEFORE);
+    let after = fixture(QUEUE_AFTER);
+    for (name, log) in [(QUEUE_BEFORE, &before), (QUEUE_AFTER, &after)] {
+        let a = anchor::verify(log, &anchors_of(name));
+        assert!(a.ok(), "{name}: {:?}", a.problems);
+        assert!(a.shutdown, "{name}: a clean stop anchored the head");
+    }
+    let r = replay_str(&before).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert_eq!(r.rules_version, 5);
+    assert!(r.queued >= 2 && r.recheck_dispatched >= 1, "{r:?}");
+    assert_eq!(r.build.as_ref().map(|b| b.dirty), Some(Some(false)));
+    // the second run, checked against the first
+    let opts = |previous| ReplayOptions {
+        previous,
+        ..ReplayOptions::default()
+    };
+    let r = replay_str_with(&after, &opts(Some(&before))).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert_eq!(r.resumed, 2);
+    assert!(r.recheck_dispatched >= 2, "{r:?}");
+    // not without it, nor against an edited one
+    let r = replay_str(&after).unwrap();
+    assert!(whats(&r).iter().any(|w| w.contains("not verified")), "{:?}", whats(&r));
+    let mut ls = lines(&before);
+    let n = ls.len();
+    ls[n - 1] = ls[n - 1].replacen("\"t\":", "\"t\": ", 1);
+    let edited = ls.join("\n");
+    let r = replay_str_with(&after, &opts(Some(&edited))).unwrap();
+    assert!(!r.ok(), "an edited previous log is not the one carried from");
 }

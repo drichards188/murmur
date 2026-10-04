@@ -445,8 +445,9 @@ fn write_atomic(path: &Path, p: &Pointer) -> std::io::Result<()> {
 }
 
 /// At start: the previous run's log to carry open intents over from, if any (see
-/// [`ResumeFrom`]). The pointer must name a log other than ours, list open intents, and have
-/// been written within the window.
+/// [`ResumeFrom`]). The pointer must name a log other than ours and have been written within
+/// the window. Its list of open intents is not trusted to be current (it is rewritten once a
+/// tick, and a crash can come between an order and that write): the log says what is open.
 pub fn previous_log(from: &ResumeFrom, pointer: Option<&Path>, ours: &Path) -> Option<PathBuf> {
     match from {
         ResumeFrom::Off => None,
@@ -455,7 +456,7 @@ pub fn previous_log(from: &ResumeFrom, pointer: Option<&Path>, ours: &Path) -> O
             let text = std::fs::read(pointer?).ok()?;
             let p: Pointer = serde_json::from_slice(&text).ok()?;
             let fresh = clock::wall() - p.t <= *window_s;
-            (fresh && !p.open.is_empty() && p.log != ours && p.log.exists()).then_some(p.log)
+            (fresh && p.log != ours && p.log.exists()).then_some(p.log)
         }
     }
 }
