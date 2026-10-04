@@ -458,6 +458,17 @@ fn the_live_queue_logs_replay_across_the_restart() {
     // the orbit started in the first run is followed in the second, never sent again
     assert!(after.contains("\"type\":\"intent.resumed\""));
     assert!(after.contains("\"state\":\"dispatched\""));
+    // review T6, on the live log: the AUV's orbit was still waiting to be followed when the
+    // second run stopped (its follow op's last state `queued`); a third run would still
+    // follow it, as the AUV had started it in the first
+    let auv = r
+        .open
+        .iter()
+        .find(|o| o.spec.uids == vec![murmur_decide::Uid::new("1")])
+        .expect("the AUV's orbit is open");
+    assert_eq!(auv.ops.get(&murmur_decide::Uid::new("1")).map(String::as_str), Some("queued"));
+    assert_eq!(auv.committed(), vec![murmur_decide::Uid::new("1")]);
+    assert_eq!(auv.resumes_as(), State::Dispatched);
     // not without it, nor against an edited one
     let r = replay_str(&after).unwrap();
     assert!(whats(&r).iter().any(|w| w.contains("not verified")), "{:?}", whats(&r));
