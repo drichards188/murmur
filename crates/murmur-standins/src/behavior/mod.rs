@@ -19,7 +19,7 @@ use crate::kinematics::{Out, State};
 use crate::mission::Mission;
 use crate::params::Params;
 
-mod apmission;
+pub(crate) mod apmission;
 mod auto;
 mod blimp;
 mod boat;
@@ -248,8 +248,8 @@ pub trait Behavior: Send {
 /// The registry: `behavior` in platforms.toml -> implementation.
 pub fn create(name: &str) -> Option<Box<dyn Behavior>> {
     Some(match name {
-        "plane" => Box::new(plane::Plane),
-        "boat" => Box::new(boat::Boat),
+        "plane" => Box::new(plane::Plane::new()),
+        "boat" => Box::new(boat::Boat::new()),
         "drifter" => Box::new(drifter::Drifter),
         "sub" => Box::new(sub::Sub),
         "tracker" => Box::new(tracker::Tracker::default()),
