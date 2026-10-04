@@ -29,17 +29,27 @@ Configuration (environment):
 Needs the Anthropic Python SDK (`pip install anthropic`; deliberately not in
 requirements.txt, since nothing else uses it).
 
-The cost guard prices every response's usage at the model's list price (the table below;
-an unknown model is priced at the most expensive row) and stops the run's model use for
-good once the estimate passes the cap: later steps are recorded as declined with
-`cost guard`. The estimate is conservative (cache reads are priced as fresh input).
+    MURMUR_EVAL_LEDGER                  set by the batch: a JSON ledger every run of the
+                                        batch adds its spend to (under a file lock)
+    MURMUR_EVAL_BATCH_MAX_USD           hard cap for the whole batch (default 20.00)
+
+The cost guard, before every call, estimates its worst case (the request's input, counted
+at 3 characters a token, plus the full `max_tokens` of output, at the requested model's
+list price; an unknown model at the most expensive row) and refuses the call if that would
+take the run past its cap or the batch's ledger past the batch cap. After the call it
+prices what was billed: each entry of `usage.iterations` at the model that served it (a
+server-side fallback can bill another model), else the response's own `model`. Cache reads
+are priced as fresh input (conservative). Once tripped it stays tripped: later steps are
+recorded as declined with `cost guard`.
 """
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from . import REPO
@@ -81,50 +91,139 @@ class CostGuardExceeded(RuntimeError):
     pass
 
 
+def price_of(model: str | None) -> tuple[float, float]:
+    """List price (input, output) per million tokens; the most expensive row when unknown.
+    Dated model ids (`claude-x-1-20260101`) match their alias."""
+    if model in PRICES:
+        return PRICES[model]
+    for name, price in PRICES.items():
+        if model and model.startswith(name + "-"):
+            return price
+    return WORST_PRICE
+
+
+def _n(obj: Any, name: str) -> int:
+    v = obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+    return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
+
+
+def billed(usage: Any, model: str | None) -> list[tuple[str | None, int, int]]:
+    """(model, input tokens, output tokens) per billed iteration: `usage.iterations` when
+    the response has them (each at the model that served it), else one entry at `model`."""
+    its = usage.get("iterations") if isinstance(usage, dict) else getattr(usage, "iterations", None)
+    out = []
+    if isinstance(its, (list, tuple)) and its:
+        for it in its:
+            m = it.get("model") if isinstance(it, dict) else getattr(it, "model", None)
+            out.append((m or model, _n(it, "input_tokens") + _n(it, "cache_creation_input_tokens") + _n(it, "cache_read_input_tokens"), _n(it, "output_tokens")))
+        return out
+    return [(model, _n(usage, "input_tokens") + _n(usage, "cache_creation_input_tokens") + _n(usage, "cache_read_input_tokens"), _n(usage, "output_tokens"))]
+
+
+class Ledger:
+    """A batch's shared spend: a JSON file every run adds to, under an exclusive lock."""
+
+    def __init__(self, path: Path, max_usd: float):
+        self.path = Path(path)
+        self.max_usd = max_usd
+
+    def _update(self, add: float) -> float:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.path, "a+") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                f.seek(0)
+                text = f.read()
+                usd = float(json.loads(text).get("usd", 0.0)) if text.strip() else 0.0
+                if add:
+                    usd += add
+                    f.seek(0)
+                    f.truncate()
+                    f.write(json.dumps({"usd": round(usd, 6), "max_usd": self.max_usd}))
+                    f.flush()
+                return usd
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+
+    def spent(self) -> float:
+        return self._update(0.0)
+
+    def add(self, usd: float) -> float:
+        return self._update(usd)
+
+
 @dataclass
 class CostGuard:
-    """Prices usage at list price; refuses further calls past `max_usd`."""
+    """Refuses a call whose worst case would pass the run's or the batch's cap; prices what
+    each call billed."""
 
     model: str
     max_usd: float
+    ledger: Ledger | None = None
+    spent_usd: float = 0.0
     input_tokens: int = 0
     output_tokens: int = 0
     calls: int = 0
+    refused: int = 0
     tripped: bool = False
     log: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def price(self) -> tuple[float, float]:
-        return PRICES.get(self.model, WORST_PRICE)
+        return price_of(self.model)
 
     @property
     def usd(self) -> float:
+        return self.spent_usd
+
+    def estimate(self, request_chars: int, max_tokens: int) -> float:
+        """The worst case of one call: its input at 3 characters a token and its whole
+        output budget, at the requested model's price."""
         pin, pout = self.price
-        return (self.input_tokens * pin + self.output_tokens * pout) / 1e6
+        return ((request_chars / 3.0) * pin + max_tokens * pout) / 1e6
 
-    def check(self) -> None:
-        if self.tripped or self.usd >= self.max_usd:
+    def check(self, estimate_usd: float = 0.0) -> None:
+        why = None
+        if self.tripped:
+            why = "already tripped"
+        elif self.spent_usd + estimate_usd > self.max_usd:
+            why = f"this call could cost ${estimate_usd:.2f}; ${self.spent_usd:.2f} of the run's ${self.max_usd:.2f} spent"
+        elif self.ledger is not None:
+            batch = self.ledger.spent()
+            if batch + estimate_usd > self.ledger.max_usd:
+                why = f"this call could cost ${estimate_usd:.2f}; ${batch:.2f} of the batch's ${self.ledger.max_usd:.2f} spent"
+        if why:
             self.tripped = True
-            raise CostGuardExceeded(f"cost guard: ${self.usd:.2f} of ${self.max_usd:.2f} spent; no further model calls this run")
+            self.refused += 1
+            raise CostGuardExceeded(f"cost guard: {why}; no further model calls this run")
 
-    def add(self, usage: Any) -> None:
-        def n(name: str) -> int:
-            v = getattr(usage, name, None)
-            return int(v) if isinstance(v, (int, float)) else 0
-
+    def add(self, usage: Any, served_by: str | None = None) -> float:
+        cost = 0.0
+        models = []
+        for m, i, o in billed(usage, served_by or self.model):
+            pin, pout = price_of(m)
+            cost += (i * pin + o * pout) / 1e6
+            self.input_tokens += i
+            self.output_tokens += o
+            models.append(m)
         self.calls += 1
-        self.input_tokens += n("input_tokens") + n("cache_creation_input_tokens") + n("cache_read_input_tokens")
-        self.output_tokens += n("output_tokens")
-        self.log.append({"call": self.calls, "input": self.input_tokens, "output": self.output_tokens, "usd": round(self.usd, 4)})
+        self.spent_usd += cost
+        if self.ledger is not None:
+            self.ledger.add(cost)
+        self.log.append({"call": self.calls, "billed": models, "usd": round(cost, 4), "run_usd": round(self.spent_usd, 4)})
+        return cost
 
     def summary(self) -> dict[str, Any]:
         return {
             "model": self.model,
             "calls": self.calls,
+            "refused": self.refused,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
-            "usd_estimate": round(self.usd, 4),
+            "usd_estimate": round(self.spent_usd, 4),
             "max_usd": self.max_usd,
+            "batch_ledger": str(self.ledger.path) if self.ledger else None,
+            "batch_max_usd": self.ledger.max_usd if self.ledger else None,
             "tripped": self.tripped,
         }
 
@@ -164,7 +263,11 @@ class ModelProposer(Proposer):
         self.max_turns = int(os.environ.get("MURMUR_EVAL_MAX_TURNS", "8"))
         self.effort = os.environ.get("MURMUR_EVAL_EFFORT", "medium")
         self.fallbacks = os.environ.get("MURMUR_EVAL_FALLBACKS", "1") not in ("0", "false", "no")
-        self.guard = CostGuard(self.model, float(os.environ.get("MURMUR_EVAL_MAX_USD", "2.00")))
+        ledger = None
+        if os.environ.get("MURMUR_EVAL_LEDGER"):
+            ledger = Ledger(Path(os.environ["MURMUR_EVAL_LEDGER"]), float(os.environ.get("MURMUR_EVAL_BATCH_MAX_USD", "20.00")))
+        self.guard = CostGuard(self.model, float(os.environ.get("MURMUR_EVAL_MAX_USD", "2.00")), ledger)
+        self.max_tokens = 16000
         self._client = client
         self._session = None
         self._tools: list[dict[str, Any]] = []
@@ -194,10 +297,11 @@ class ModelProposer(Proposer):
             self._session = None
 
     async def _create(self, messages: list[dict[str, Any]]) -> Any:
-        self.guard.check()
+        chars = len(SYSTEM) + len(json.dumps(self._tools)) + len(json.dumps(messages, default=str))
+        self.guard.check(self.guard.estimate(chars, self.max_tokens))
         kwargs: dict[str, Any] = {
             "model": self.model,
-            "max_tokens": 16000,
+            "max_tokens": self.max_tokens,
             "system": SYSTEM,
             "tools": self._tools,
             "messages": messages,
@@ -207,7 +311,8 @@ class ModelProposer(Proposer):
             r = await self._client.beta.messages.create(betas=["server-side-fallback-2026-07-01"], fallbacks="default", **kwargs)
         else:
             r = await self._client.messages.create(**kwargs)
-        self.guard.add(r.usage)
+        served = getattr(r, "model", None)
+        self.guard.add(r.usage, served if isinstance(served, str) else None)
         return r
 
     async def _tool(self, name: str, args: dict[str, Any]) -> tuple[str, bool]:
