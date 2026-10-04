@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 7] = [
+const LOGS: [(&str, u32); 9] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -37,10 +37,16 @@ const LOGS: [(&str, u32); 7] = [
     // rules 4: the same scenario, its run.started naming the operator roster and its
     // engagement order the loiter radius
     ("v4-engagement-scenario-01.jsonl", 4),
+    // rules 5 (built from a clean fcbe3c1): the same scenario with the fallback preloaded as
+    // the platform's lost-link action (the order's preload, set and restore reports), and
+    // scenario 54, a lost friendly an operator accepted (engage.accepted, the catalog's climb
+    // rate in the world facts)
+    ("v5-engagement-scenario-01.jsonl", 5),
+    ("v5-lost-friendly-accepted-scenario-54.jsonl", 5),
 ];
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v4-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v5-engagement-scenario-01.jsonl";
 
 fn accepting(rules: RulesAccepted) -> ReplayOptions<'static> {
     ReplayOptions {
@@ -279,8 +285,32 @@ fn a_downgraded_claim_is_caught_by_what_the_log_carries() {
         "{:?}",
         whats(&r)
     );
+    // a rules 5 log claiming rules 4 still carries the preload and the fallback_preload check,
+    // and one with an accepted lost friendly carries the acceptance and the climb rates
+    for (name, markers) in [
+        (
+            CURRENT,
+            &["a lost-link preload report", "an engagement order's lost-link preload", "a fallback_preload check"][..],
+        ),
+        (
+            "v5-lost-friendly-accepted-scenario-54.jsonl",
+            &["an acceptance of a lost vehicle", "an accepted lost vehicle in decision inputs", "a platform's climb rate"][..],
+        ),
+    ] {
+        let mut ls = lines(&fixture(name));
+        assert!(ls[0].contains("\"rules_version\":5,"));
+        ls[0] = ls[0].replacen("\"rules_version\":5,", "\"rules_version\":4,", 1);
+        let r = with(&rechain(&ls), RulesAccepted::Exactly(4));
+        let w = whats(&r);
+        for marker in markers {
+            assert!(
+                w.iter().any(|m| m.contains(marker) && m.contains("only builds of rules 5")),
+                "{name} {marker}: {w:?}"
+            );
+        }
+    }
     // a rules 4 log claiming rules 3 still names its roster and its order's loiter radius
-    let mut ls = lines(&fixture(CURRENT));
+    let mut ls = lines(&fixture("v4-engagement-scenario-01.jsonl"));
     assert!(ls[0].contains("\"rules_version\":4,"));
     ls[0] = ls[0].replacen("\"rules_version\":4,", "\"rules_version\":3,", 1);
     let r = with(&rechain(&ls), RulesAccepted::Exactly(3));
@@ -292,7 +322,7 @@ fn a_downgraded_claim_is_caught_by_what_the_log_carries() {
         );
     }
     // and one that dropped its roster still claims rules 4, which always name one
-    let mut ls = lines(&fixture(CURRENT));
+    let mut ls = lines(&fixture("v4-engagement-scenario-01.jsonl"));
     let (b, p) = (ls[0].find(",\"roster\":{").unwrap(), ls[0].find(",\"policy\":").unwrap());
     ls[0] = format!("{}{}", &ls[0][..b], &ls[0][p..]);
     let r = with(&rechain(&ls), RulesAccepted::Exactly(4));
@@ -324,6 +354,19 @@ fn a_policy_schema_claim_must_fit_its_keys() {
         "{:?}",
         whats(&r)
     );
+    // a rules 5 policy (schema 3 keys) claiming schema 2
+    let mut ls = lines(&fixture(CURRENT));
+    ls[0] = ls[0].replacen("\"policy_schema\":3,", "\"policy_schema\":2,", 1);
+    let r = replay_str(&rechain(&ls)).unwrap();
+    let later: Vec<&str> = r
+        .mismatches
+        .iter()
+        .filter(|m| m.what.contains("a key of a later policy schema"))
+        .map(|m| m.logged.as_str())
+        .collect();
+    for key in ["track_velocity_sigma_mps", "track_accel_mps2", "vertical_rate_mps", "keep_out_vertical_m"] {
+        assert!(later.contains(&format!("rules.engage.{key} (schema 3)").as_str()), "{key}: {later:?}");
+    }
     // a schema newer than replay knows
     let mut ls = lines(&fixture(CURRENT));
     ls[0] = ls[0].replacen(
