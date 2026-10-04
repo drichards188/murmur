@@ -72,8 +72,9 @@ meaningful. Decision and command, not weapons.
 - A stack uses two UDP ranges now (vehicle base + N and bridge base + N): pick both clear of
   every other stack's ranges, including a large load test's (a 3,000-node test spans 3,000
   ports from its base). A bridge that finds a port taken drops it for good.
-- Keep fixed port bases (vehicle, bridge) below the ephemeral range (39160 here): stand-ins and
-  clients draw from 39160-43255, and a fixed base inside it collides at random.
+- Keep fixed port bases (vehicle, bridge) below the ephemeral range: stand-ins and clients draw
+  from it, and a fixed base inside it collides at random. It can change between boots: check
+  `sysctl net.ipv4.ip_local_port_range` (37795-41890 as of 2026-10-04; was 39160-43255).
 - Rules 5 queue: an order for a vehicle the link can't carry it to now waits in the Queue
   (console button; `GET /api/inbox` `queued`), it is not an error. A bridge restarted within 15
   min carries the last run's open intents over (`logs/audit/.resume-<port>.json`;

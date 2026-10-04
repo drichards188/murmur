@@ -247,6 +247,8 @@ pub(super) mod testkit {
                 endurance_h: None,
                 link: None,
             };
+            let mut mission = Mission::default();
+            mission.cfg.firmware = b.firmware();
             let mut params = Params::seed(b.firmware(), &spec, 1);
             params.extend(b.extra_params(&spec));
             let mut st = State {
@@ -271,7 +273,7 @@ pub(super) mod testkit {
                 spec,
                 params,
                 st,
-                mission: Mission::default(),
+                mission,
                 said: Vec::new(),
                 reached: Vec::new(),
                 rng: Gauss::new(1),
@@ -333,6 +335,8 @@ pub(super) mod testkit {
 
         pub fn run(&mut self, seconds: f64) {
             for _ in 0..(seconds * 10.0) as usize {
+                // the vehicle refreshes the walker's clock every tick (vehicle.rs)
+                self.mission.cfg.now += 0.1;
                 let mut out = Vec::new();
                 self.b.step(&mut Tick {
                     spec: &self.spec,

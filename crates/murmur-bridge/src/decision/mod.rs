@@ -62,7 +62,7 @@ mod failsafe;
 pub mod queue;
 pub mod snapshot;
 pub mod space;
-mod terrain;
+pub(crate) mod terrain;
 #[cfg(test)]
 mod tests;
 

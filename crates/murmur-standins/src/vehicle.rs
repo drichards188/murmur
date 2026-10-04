@@ -25,6 +25,9 @@ use crate::telemetry::Streams;
 use crate::{messages, telemetry, truth};
 
 pub const PHYSICS_HZ: u32 = 10;
+/// Home follows a disarmed plane or rover that has moved this far, at most this often.
+const HOME_FOLLOW_M: f64 = 2.0;
+const HOME_FOLLOW_S: f64 = 5.0;
 
 pub struct Vehicle {
     pub cfg: VehicleConfig,
@@ -60,6 +63,8 @@ pub struct Vehicle {
     /// next PARAM_VALUE of a PARAM_REQUEST_LIST stream
     pub(crate) param_stream: Option<usize>,
     truth_next: f64,
+    /// sim time home last followed the disarmed vehicle (`follow_home`)
+    home_followed: f64,
     rng: Gauss,
     out: Vec<Out>,
 }
@@ -144,6 +149,7 @@ impl Vehicle {
             mission_item_warned: false,
             param_stream: None,
             truth_next: 0.0,
+            home_followed: f64::NEG_INFINITY,
             rng,
             out: Vec::new(),
         })
@@ -194,6 +200,15 @@ impl Vehicle {
                 if self.firmware != Firmware::Plane {
                     // Rover / Sub reset to the default speed on entering AUTO
                     self.mission.speed = None;
+                }
+                if matches!(
+                    self.firmware,
+                    Firmware::Plane | Firmware::Rover | Firmware::Sub
+                ) {
+                    // the shared walker's firmwares: the first command starts now
+                    let mut out = Vec::new();
+                    self.mission.announce_current(&mut out);
+                    self.emit(&mut out);
                 }
             }
         }
@@ -290,12 +305,12 @@ impl Vehicle {
             }
         }
         self.yaw_rate = wrap180(self.st.heading - heading).to_radians() / dt;
-        out.append(&mut self.mission.out);
         self.emit(&mut out);
         if let Some(home) = self.mission.new_home.take() {
             self.st.home = home;
             self.streams.once.push(HOME_POSITION_DATA::ID);
         }
+        self.follow_home(now);
 
         let moved = (
             (self.st.lat - before.0) * M_PER_DEG,
@@ -317,6 +332,27 @@ impl Vehicle {
             truth::record(self);
         }
         self.tick += 1;
+    }
+
+    /// Disarmed on the ground or the water, ArduPlane and ArduRover keep home at the vehicle
+    /// (update_home), so it is where the vehicle arms: a boat that drifts before arming has
+    /// its home where it drifted to, with a HOME_POSITION each time home moves (seen in SITL
+    /// every few seconds; here at most every `HOME_FOLLOW_S`).
+    fn follow_home(&mut self, now: f64) {
+        if self.st.armed
+            || self.airborne()
+            || !matches!(self.firmware, Firmware::Plane | Firmware::Rover)
+            || now - self.home_followed < HOME_FOLLOW_S
+        {
+            return;
+        }
+        let (lat, lon, alt) = (self.st.lat, self.st.lon, self.st.alt);
+        let moved = crate::geo::distance_m(lat, lon, self.st.home.0, self.st.home.1);
+        if moved > HOME_FOLLOW_M {
+            self.home_followed = now;
+            self.st.home = (lat, lon, alt);
+            self.streams.once.push(HOME_POSITION_DATA::ID);
+        }
     }
 
     pub(crate) fn emit(&mut self, out: &mut Vec<Out>) {

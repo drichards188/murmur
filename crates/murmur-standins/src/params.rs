@@ -132,8 +132,8 @@ impl Params {
         // GCS_MAVLink (MAV_ prefix in this ArduPilot; SYSID_THISMAV / SYSID_MYGCS before 4.7)
         p.put("MAV_SYSID", I16, f32::from(sysid), false);
         p.put("MAV_GCS_SYSID", I16, 255.0, false);
-        // AP_Mission
-        p.put("MIS_TOTAL", I16, 0.0, true);
+        // AP_Mission: home is command 0, so an empty mission counts 1 (as SITL reports it)
+        p.put("MIS_TOTAL", I16, 1.0, true);
         p.put("MIS_RESTART", I8, 0.0, false);
         p.put("MIS_OPTIONS", I16, 0.0, false);
         // AP_BattMonitor: a voltage + current monitor. Capacity is notional (the stand-in
@@ -154,7 +154,8 @@ impl Params {
         match fw {
             Firmware::Plane => {
                 let loiter = spec.loiter_radius_m.unwrap_or(150.0).min(32_767.0) as f32;
-                p.put("WP_RADIUS", I16, 90.0, false);
+                // as the SITL plane reports it (ArduPlane's config.h says 90)
+                p.put("WP_RADIUS", I16, 50.0, false);
                 // stand-ins loiter at the catalog's radius (SITL planes: 150, plane.parm)
                 p.put("WP_LOITER_RAD", I16, loiter, false);
                 // 0 = loiter at WP_LOITER_RAD around home
@@ -167,6 +168,8 @@ impl Params {
                 p.put("AIRSPEED_MAX", I16, max.round(), false);
                 p.put("TRIM_THROTTLE", I8, 45.0, false);
                 p.put("TKOFF_ALT", I16, 60.0, false);
+                // AP_Landing: disarm this long after an auto-land (0 = stay armed)
+                p.put("LAND_DISARMDELAY", I8, 20.0, false);
                 p.put("THR_FAILSAFE", I8, 0.0, false);
                 // GCS heartbeat loss: RTL after FS_LONG_TIMEOUT (Murmur's choice, as
                 // sim/params/plane.parm; ArduPlane ships FS_GCS_ENABL 0). The timeout is
@@ -199,7 +202,9 @@ impl Params {
                 p.put("FS_GCS_TIMEOUT", F32, 5.0, false);
                 p.put("FS_ACTION", I8, 1.0, false);
                 p.put("FS_TIMEOUT", F32, 1.5, false);
-                p.put("FS_THR_ENABLE", I8, 0.0, false);
+                // ArduRover ships the radio (throttle) failsafe on; it decides what a GCS
+                // loss is announced as (failsafe.rs)
+                p.put("FS_THR_ENABLE", I8, 1.0, false);
                 p.put("FS_OPTIONS", I32, 0.0, false);
                 p.put("BATT_FS_LOW_ACT", I8, 1.0, false); // RTL
                 p.put("BATT_FS_CRT_ACT", I8, 2.0, false); // Hold
@@ -208,8 +213,10 @@ impl Params {
                 p.put("FS_EKF_THRESH", F32, 0.8, false);
             }
             Firmware::Sub => {
-                // ArduSub 4.8's waypoint controller (AC_WPNav) works in metres
-                p.put("WP_RADIUS_M", F32, 10.0, false);
+                // ArduSub 4.8's waypoint controller (AC_WPNav) works in metres; its radius
+                // default, and the catalog cruise as WP_SPD (the vertical speeds are the
+                // behavior's extra_params)
+                p.put("WP_RADIUS_M", F32, 2.0, false);
                 p.put("WP_SPD", F32, cruise, false);
                 // An AUV on an acoustic link is out of contact by design: surface after two
                 // minutes without the GCS (to regain RF). ArduSub's default (2 = disarm) is

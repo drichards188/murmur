@@ -15,7 +15,7 @@ pub fn target(t: &mut Tick) -> Option<Target> {
     let cruise = t.spec.cruise_mps;
     if st.mode == "AUTO" && !t.mission.items.is_empty() {
         let loiter = t.spec.loiter_radius_m.unwrap_or(200.0);
-        return Some(t.mission.auto_target(st, cruise, 0.0, loiter));
+        return Some(t.mission.auto_target(st, cruise, 0.0, loiter, t.out));
     }
     if st.mode == "RTL" {
         let (lat, lon, _) = st.home;

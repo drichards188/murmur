@@ -1,14 +1,14 @@
-//! ArduRover mode semantics shared by the ground vehicle and the sailboat: what each mode asks
-//! the vehicle to do (a goal), and what ArduRover adds on top of the shared mission walker
-//! (mission.rs): AP_Mission's "Mission: N WP" as each command starts and its DO_JUMP counts,
-//! "Reached waypoint #N" with MISSION_ITEM_REACHED, "Reached destination" in RTL, AR_WPNav's
-//! waypoint acceptance (inside WP_RADIUS, or past the line through the waypoint square to the
-//! leg), the mission reset on a disarm outside AUTO, and MIS_DONE_BEHAVE at the end.
+//! ArduRover mode semantics shared by the ground vehicle, the sailboat and the motorboat: what
+//! each mode asks the vehicle to do (a goal), and what ArduRover adds on top of the shared
+//! mission walker (mission.rs, which says AP_Mission's "Mission: N WP" as each command starts
+//! and counts its DO_JUMPs): "Reached waypoint #N" with MISSION_ITEM_REACHED, "Reached
+//! destination" in RTL, AR_WPNav's waypoint acceptance (inside WP_RADIUS, or past the line
+//! through the waypoint square to the leg), the mission reset on a disarm outside AUTO, and
+//! MIS_DONE_BEHAVE at the end.
 
 use mavlink::dialects::ardupilotmega::{MavCmd, MavSeverity};
 
 use super::Tick;
-use super::apmission::{self, Jumps};
 use crate::geo::{M_PER_DEG, bearing_deg, distance_m, wrap180};
 use crate::kinematics::{Out, Target, TargetKind};
 use crate::mission;
@@ -58,9 +58,6 @@ pub struct Nav {
     pub origin: (f64, f64),
     rtl_reached: bool,
     circle: Option<(f64, f64)>,
-    /// the mission item whose start AP_Mission has announced
-    announced: Option<u16>,
-    jumps: Jumps,
     wp_radius: f64,
 }
 
@@ -74,8 +71,6 @@ impl Nav {
             origin: (0.0, 0.0),
             rtl_reached: false,
             circle: None,
-            announced: None,
-            jumps: Jumps::default(),
             wp_radius: 2.0,
         }
     }
@@ -92,16 +87,16 @@ impl Nav {
             // ArduRover resets the mission on a disarm outside AUTO (AP_Arming_Rover::disarm)
             t.mission.set_current(0);
             t.mission.jumps.clear();
-            self.jumps.clear();
         }
         if t.st.mode != self.mode || t.st.armed != self.armed {
-            if t.st.mode != self.mode {
-                self.announced = None; // entering AUTO starts (or resumes) the mission
-            }
             self.mode = t.st.mode;
             self.armed = t.st.armed;
             self.origin = (lat, lon);
-            self.rtl_reached = false;
+            // "Reached destination" is for an RTL that had somewhere to go: entered already
+            // within WP_RADIUS of home, ArduRover (motorboat SITL) says nothing
+            let (hlat, hlon, _) = t.st.home;
+            self.rtl_reached = matches!(t.st.mode, "RTL" | "SMART_RTL")
+                && distance_m(lat, lon, hlat, hlon) <= self.wp_radius;
             self.circle = None;
         }
         if !t.st.armed {
@@ -183,25 +178,17 @@ impl Nav {
                 }
             }
             TargetKind::Waypoint if self.arrived(lat, lon, tgt.lat, tgt.lon) => {
-                // on the wire MISSION_ITEM_REACHED arrives before the text (seen in SITL)
-                t.out.push(Out::ItemReached(seq));
+                // MISSION_ITEM_REACHED, then the text (in that order on the wire, seen in
+                // SITL), then the DO commands that follow, all in one AP_Mission update
                 let is_wp = t
                     .mission
                     .items
                     .get(usize::from(seq))
                     .is_some_and(|it| it.command == MavCmd::MAV_CMD_NAV_WAYPOINT);
-                if is_wp {
-                    t.out.push(Out::Text(
-                        MavSeverity::MAV_SEVERITY_INFO,
-                        format!("Reached waypoint #{seq}"),
-                    ));
-                }
+                let text = is_wp.then(|| format!("Reached waypoint #{seq}"));
+                t.mission.nav_done(t.st, t.out, text);
                 self.origin = (tgt.lat, tgt.lon);
-                t.mission.seq = seq + 1;
                 self.walk(t);
-                if !t.mission.complete {
-                    t.out.push(Out::MissionCurrent(t.mission.seq));
-                }
                 Goal::Stop
             }
             TargetKind::Loiter if distance_m(lat, lon, tgt.lat, tgt.lon) <= self.wp_radius => {
@@ -217,37 +204,13 @@ impl Nav {
         }
     }
 
-    /// The shared walker to the current navigation command, plus what AP_Mission says on the
-    /// way: a DO_JUMP running again, and the start of each command. A finished mission keeps
-    /// its last item as the current one, as AP_Mission reports it.
+    /// The shared walker to the current navigation command (it announces each command as it
+    /// starts and each DO_JUMP as it runs). A finished mission keeps its last item as the
+    /// current one, as AP_Mission reports it.
     fn walk(&mut self, t: &mut Tick) -> Target {
-        let s0 = t.mission.seq;
-        if !t.mission.complete
-            && let Some(it) = t.mission.items.get(usize::from(s0))
-            && it.command == MavCmd::MAV_CMD_DO_JUMP
-            && t.mission
-                .jumps
-                .get(&s0)
-                .copied()
-                .unwrap_or(it.param2 as i32)
-                != 0
-        {
-            self.jumps.ran(s0, it.param2 as i32, t.out);
-        }
         let cruise = t.spec.cruise_mps;
         let loiter = self.loiter_radius(t);
-        let tgt = t.mission.auto_target(t.st, cruise, 0.0, loiter);
-        if t.mission.complete {
-            return tgt;
-        }
-        let seq = t.mission.seq;
-        if self.announced != Some(seq)
-            && let Some(it) = t.mission.items.get(usize::from(seq))
-        {
-            self.announced = Some(seq);
-            apmission::started(seq, it.command, t.out);
-        }
-        tgt
+        t.mission.auto_target(t.st, cruise, 0.0, loiter, t.out)
     }
 
     /// AR_WPNav: within WP_RADIUS, or past the waypoint (beyond the line through it square to

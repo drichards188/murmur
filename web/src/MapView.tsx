@@ -11,9 +11,11 @@ import { declutter } from './declutter'
 import type { SpaceOverlay } from './space'
 import { EMPTY_OVERLAY } from './space'
 import { linkStubs, spaceFeatures, spaceLinkLayers } from './spaceLayers'
-import type { LngLat, Tasking, Vehicle } from './types'
+import type { Cluster, Clusters, LngLat, Tasking, Vehicle } from './types'
 import { callsign } from './types'
 import { buildVehicleLayers, VEHICLE_PICK_LAYERS } from './vehicleLayers'
+import { buildClusterLayers, CLUSTER_PICK_LAYERS } from './clusterLayers'
+import { type Bounds, type MapViewport, visibleVehicles } from './viewport'
 
 export interface Draft {
   mode: 'orbit' | 'patrol' | null
@@ -43,8 +45,12 @@ interface Props {
   fit?: { points: LngLat[]; n: number; padRight: number } | null
   /** space overlays: area, passes in progress, highlighted scene, SATCOM link lines */
   space?: SpaceOverlay
-  /** the view after every move: centre and bounds (w, s, e, n) */
-  onView?: (center: LngLat, bounds: [number, number, number, number]) => void
+  /** the view while it moves (4 times a second) and when it stops: centre, bounds (w, s, e,
+   *  n) and zoom; what the bridge's level of detail follows (murmur-and) */
+  onView?: (center: LngLat, bounds: Bounds, zoom: number) => void
+  /** counts per tile from the bridge while the view holds more vehicles than it sends in
+   *  full: drawn as cluster markers instead of the lite vehicles' symbols (clusterLayers.ts) */
+  clusters?: Clusters | null
   /** Extension point for more deck.gl layers (tracks, contacts, ...): called with the current
    *  view whenever MapView rebuilds its layers, and again whenever this function changes, so
    *  pass a memoised callback whose identity changes when its data does. Its layers draw above
@@ -285,12 +291,14 @@ function setSpaceData(m: maplibregl.Map, space: SpaceOverlay, view: ViewMode) {
 /** width of the vehicle details card (.vdetails) plus its margin */
 const FOLLOW_PAD_LEFT = 350
 
-export function MapView({ vehicles, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers }: Props) {
+export function MapView({ vehicles, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null }: Props) {
   const [view, setView] = useState<ViewMode>(savedView)
   const viewRef = useRef(view)
   const overlay = useRef<MapboxOverlay | null>(null)
   const bridges = useRef<LiftedBridge[]>([])
-  const latest = useRef({ vehicles, selected, bare: new Set<number>() })
+  const latest = useRef({ vehicles, selected, bare: new Set<number>(), clusters })
+  // the camera's bounds and zoom, as last reported (what the drawn set is cut to)
+  const viewport = useRef<MapViewport | null>(null)
   const spaceRef = useRef(space)
   const previewRef = useRef(preview)
   const layersRef = useRef(layers)
@@ -329,11 +337,12 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
   /** everything deck.gl draws: the 3D scene (hidden in 2D), SATCOM links, extension layers
    *  (the `layers` prop), then the vehicles on top */
   const deckLayers = (is3d: boolean): LayersList => {
-    const { vehicles: vs, selected: sel, bare } = latest.current
+    const { vehicles: vs, selected: sel, bare, clusters: cl } = latest.current
     return [
       ...build3dLayers(vs, is3d, bridges.current),
       ...spaceLinkLayers(spaceRef.current.links, is3d),
       ...(layersRef.current?.(is3d ? '3d' : '2d') ?? []),
+      ...buildClusterLayers(cl),
       ...buildVehicleLayers({ vehicles: vs, selected: sel, bare, is3d }),
     ]
   }
@@ -414,10 +423,24 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
         return null // deck.gl not initialised yet
       }
     }
+    /** the cluster marker under a screen point */
+    const pickCluster = (p: maplibregl.Point) => {
+      const deck = overlay.current
+      if (!deck || !ready.current || !latest.current.clusters) return null
+      try {
+        const hit = deck.pickObject({ x: p.x, y: p.y, radius: 4, layerIds: CLUSTER_PICK_LAYERS })
+        return (hit?.object as Cluster | undefined) ?? null
+      } catch {
+        return null
+      }
+    }
     m.on('click', (e: maplibregl.MapMouseEvent) => {
       // vehicles are deck.gl objects: a click on one selects it instead of drafting
       const v = pickVehicle(e.point)
       if (v) return toggleRef.current(v.uid)
+      // a cluster marker: zoom in on it (two levels: its tile is then four markers or symbols)
+      const c = pickCluster(e.point)
+      if (c) return m.flyTo({ center: c.c, zoom: m.getZoom() + 2, duration: 700 })
       clickRef.current([e.lngLat.lng, e.lngLat.lat])
     })
     // Right click deselects: a vehicle under the pointer, else everything. A right drag rotates
@@ -591,11 +614,29 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
       if (!ready.current) return
       const c = m.getCenter()
       const b = m.getBounds()
-      viewCb.current?.([c.lng, c.lat], [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()])
+      const bounds: Bounds = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]
+      viewport.current = { bounds, zoom: m.getZoom() }
+      viewCb.current?.([c.lng, c.lat], bounds, m.getZoom())
     }
+    // while the camera moves, the view goes out 4 times a second (the bridge's tick), so
+    // the level of detail follows a pan; and once more when it stops
+    let viewTimer: number | undefined
+    const reportViewSoon = () => {
+      if (viewTimer) return
+      viewTimer = window.setTimeout(() => {
+        viewTimer = undefined
+        reportView()
+      }, 250)
+    }
+    m.on('move', reportViewSoon)
     m.on('moveend', refreshBridges)
-    m.on('moveend', reportView)
-    m.on('zoomend', () => setMoved((n) => n + 1))
+    m.on('moveend', () => {
+      window.clearTimeout(viewTimer)
+      viewTimer = undefined
+      reportView()
+      // the drawn set is cut to the view, and label declutter runs in screen space
+      setMoved((n) => n + 1)
+    })
     m.on('sourcedata', (e) => {
       if (e.isSourceLoaded && (e.sourceId === 'openmaptiles' || e.sourceId === 'dem')) refreshBridges()
     })
@@ -608,6 +649,7 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
       window.clearTimeout(bridgeTimer)
+      window.clearTimeout(viewTimer)
       if (map.current === m) map.current = null
       if (following.current) {
         following.current = null
@@ -627,18 +669,22 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
   }, [mapGen])
 
   // Vehicles: deck.gl layers rebuilt here only (a new state from the bridge, a selection, the
-  // view, or a zoom that changes the declutter), never per frame.
+  // view, a move that changes what is in it or the declutter), never per frame. Only the
+  // vehicles in (or near) the view are drawn, the set the bridge sends in full (viewport.ts);
+  // in cluster mode the lite ones are the markers' numbers, not symbols.
   useEffect(() => {
     const m = map.current
     if (!m) return
+    const clustered = !!clusters?.cells.length
+    const drawn = visibleVehicles(vehicles, viewport.current, clustered)
     // murmur-02g: where symbols bunch up (planes on a runway), only one keeps its labels;
     // the rest show the bare symbol and their callsign on hover
     const bare = declutter(
-      vehicles.flatMap((v) => (v.position ? [{ uid: v.uid, ...m.project(v.position) }] : [])),
+      drawn.flatMap((v) => (v.position ? [{ uid: v.uid, ...m.project(v.position) }] : [])),
       selected,
       m.getZoom(),
     )
-    latest.current = { vehicles, selected, bare }
+    latest.current = { vehicles: drawn, selected, bare, clusters: clustered ? clusters : null }
     const t1 = performance.now()
     pushLayers()
     if (import.meta.env.DEV) {
@@ -651,8 +697,8 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
 
     if (ready.current) {
       // the 2D trails layer is hidden in 3D: skip rebuilding it there
-      if (view === '2d') (m.getSource('trails') as maplibregl.GeoJSONSource).setData(trailFeatures(vehicles))
-      ;(m.getSource('beams') as maplibregl.GeoJSONSource).setData(beamFeatures(vehicles))
+      if (view === '2d') (m.getSource('trails') as maplibregl.GeoJSONSource).setData(trailFeatures(drawn))
+      ;(m.getSource('beams') as maplibregl.GeoJSONSource).setData(beamFeatures(drawn))
     }
 
     const pts = vehicles.flatMap((v) => (v.position ? [v.position] : []))
@@ -665,9 +711,9 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
         fitAt.current = c
       }
     }
-    // pushLayers reads refs; moved re-runs the declutter after a zoom, styleGen after a (re)load
+    // pushLayers reads refs; moved re-runs this after a move, styleGen after a (re)load
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vehicles, selected, view, moved, styleGen])
+  }, [vehicles, selected, view, moved, styleGen, clusters])
 
   useEffect(() => {
     spaceRef.current = space

@@ -1,8 +1,9 @@
 //! What ArduPilot's AP_Mission says while it runs a mission, for every behavior that imitates
 //! it: the command type names (AP_Mission::Mission_Command::type), "Mission: 2 WP" when a
-//! command starts and "Mission: 5 Jump 2/unlimited" when a DO_JUMP runs again (the first pass
-//! is silent). One place for the texts; the walkers (`auto::Auto` for copter and VTOL, the
-//! rover and blimp ones) only decide when to say them.
+//! command starts and "Mission: 5 Jump 1/3" each time a DO_JUMP runs (the first run included:
+//! AP_Mission::increment_jump_times_run, seen in SITL). One place for the texts; the walkers
+//! (`auto::Auto` for copter and VTOL, the shared one in mission.rs, the blimp's) only decide
+//! when to say them.
 
 use std::collections::HashMap;
 
@@ -76,11 +77,9 @@ impl Jumps {
     pub fn ran(&mut self, seq: u16, times: i32, out: &mut Vec<Out>) {
         let runs = self.runs(seq) + 1;
         self.runs.insert(seq, runs);
-        if runs > 1 {
-            out.push(Out::Text(
-                MavSeverity::MAV_SEVERITY_INFO,
-                jump_text(seq, runs, times),
-            ));
-        }
+        out.push(Out::Text(
+            MavSeverity::MAV_SEVERITY_INFO,
+            jump_text(seq, runs, times),
+        ));
     }
 }

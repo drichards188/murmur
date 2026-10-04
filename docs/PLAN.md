@@ -189,8 +189,36 @@ in the console (`sim/fleets/contacts-demo.toml` shows coverage gaps at the Gate)
   scenario ("30% loss on all LOS links from minute 5"). Supersedes the netem plan (murmur-p1f);
   `tc netem` only as a one-off cross-check.
 - Bridge behaviors: dead reckoning with a growing uncertainty area for silent vehicles
-  (murmur-4y9); fallback rules per action class; telemetry priority under low bandwidth
-  (murmur-f6q).
+  (murmur-4y9, built: `crates/murmur-bridge/src/estimate.rs`, console `estimate.ts`,
+  `estimateLayers.ts`); fallback rules per action class; telemetry priority under low
+  bandwidth (murmur-f6q).
+- **Dead reckoning for silent vehicles** (murmur-4y9). Past its link's stale threshold a
+  vehicle's snapshot carries an `estimate`: a motion model frozen at its last report, in
+  order of what is known best: its current task (an orbit: somewhere on the ring, the phase
+  advancing at the last speed; a patrol: along its route; a hold: near the hold point, a
+  fixed wing on its loiter circle; RTL: toward home, a fixed wing then circling home at its
+  RTL radius), else the mode, else the last velocity carried on, else stationary. The region
+  grows with the silence from the platform's top speed and kind (an aircraft's at tens of
+  metres a second, a boat's at a few), never beyond its reach or a cap per domain; an AUV on
+  its acoustic cadence is said to be silent by design. The lost-link failsafe is modelled as
+  a second, labelled branch: after the profile's `lost_link_s` the vehicle is probably on
+  the firmware's action (RTL, surface, land, disarm), drawn in violet; once the timer has
+  fired the branch leads (bold, the details card leads with it) and the task model stays
+  dimmed as "if it kept its task". Drifters ride the water: a sampler asks tidewater for the
+  current and wind under every surface vehicle every 5 s and integrates a silent one's
+  track (current plus 2 % windage), the region growing with the current's uncertainty;
+  without tidewater, the last reported velocity or a documented 1 m/s bound. A fixed wing
+  inside its RTL circle flies out to it before circling, and a joined ring carries the
+  phase on. The console evaluates the model every clock tick (region, leader from the last
+  known position, faded symbol, "EST on its orbit, silent 47 s"); the details card shows
+  last known against the estimate, the basis, the uncertainty and the other hypothesis.
+  Display only: the decision core keeps its own conservative friendly-uncertainty model and
+  never reads this; MCP `get_fleet` and `get_vehicle` expose it read-only, with `as_of` and
+  `age_s` and a note that it is a model, not a fact. `scripts/estimate_eval.py` measures the
+  estimate against the emulator's view of the truth (or the stand-ins' truth log for a
+  GNSS-denied vehicle); over three 300 s cuts at the Golden Gate the aircraft stayed inside
+  their rings 100 % of the time until their timers fired and the RTL branch held them after,
+  the boat's branch held it 100 % from the moment its 30 s timer fired.
 - **Safe command queue** (murmur-5p4, built; rules 5; `crates/murmur-decide/src/queue.rs`,
   bridge `decision/queue.rs`, `tasks/exec.rs`; `crates/murmur-decide/README.md` "The queue
   for unreachable vehicles"): an approved order for a vehicle the link can't carry it to now

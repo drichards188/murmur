@@ -168,3 +168,123 @@ without a forced GC swing by 2x run to run and include other same-site tabs in t
 On a real GPU, open the console with `?perf`: the overlay shows fps, p95 frame time, DOM size,
 heap, merge and render time per update, latency and long tasks; `window.murmurPerfStats()`
 returns the same numbers and `murmurPerfReset()` starts a new window.
+
+## Bridge feed by view: level of detail, trail sampling, clusters (murmur-and)
+
+The feed to the console was the whole fleet at full detail four times a second, whatever the
+console showed: 5 to 6 MB/s and an initial state of 4 to 9 MB at 3,000 nodes. The console
+now connects to `/ws?lod=1` and sends what it looks at (`{"type":"view","bounds":[w,s,e,n],
+"zoom":z,"pin":[uid,...]}`, four times a second while the camera moves, and whenever the
+pinned set changes); the bridge (`crates/murmur-bridge/src/push.rs`) answers per client:
+
+- **Full detail** for vehicles in the view grown by a quarter on each side, and for the pinned
+  ones (selected, followed, named by a pending intent or an alert), at 4 Hz as before, with
+  the trail sampled to the zoom: every point at zoom 12.5 and above, every 2nd at 12, 4th at
+  11, 8th at 10, 16th below (about a pixel of movement for 20 m/s). Points are chosen by their
+  index in the whole trail ever recorded, so the sampling is the same whether a trail goes out
+  whole (a vehicle newly in view, or a new step: `trail`) or by increments (`trail_add`).
+- **Lite** for the rest, once a second: identity (sent once, then only when it changes),
+  position to 4 decimals (11 m), altitude, mode, speed, nav state, and the link as lost or not
+  (the bridge's own rule, so a live link is not a change every second), loss in 10% bands and
+  the emulator's state; no last-packet time until the link is lost, no round trip (every
+  TIMESYNC sample lands somewhere else, which made nearly every lite snapshot a change every
+  second), no telemetry plan, no STATUSTEXT. The fleet list shows "live" and "–" where it
+  showed the exact age and RTT for a vehicle out of view; its card (full detail) has them.
+- Each full update is the part of the snapshot that changes with every report (position,
+  attitude, speeds, the link's packet time, loss and round trip, and any field added later),
+  the part that seldom does (mode, nav state, home, STATUSTEXT, the link's plan and emulator
+  state), or both, diffed apart: a moving vehicle costs about 250 bytes an update instead of
+  650, and the console merges the link's two halves.
+- **Clusters** when the view holds more than `MURMUR_LOD_MAX_FULL` (800) vehicles: none of
+  them is full (the pinned ones still are) and the delta carries counts per Web Mercator tile
+  (90 to 180 px wide at the client's zoom) by domain, lost links and track affiliation, with
+  each tile's centroid. The console draws one marker per tile (`web/src/clusterLayers.ts`);
+  a click zooms in two levels on it. The cells cover the view grown by half on each side (252
+  of the 488 tiles the 3,800 fleet spans at a city zoom), so the payload is bounded by the
+  screen, and a view change gets them at once.
+- Every update is a partial object the console merges over what it has (`useBridge.ts`), so
+  the 300 bytes of identity are no longer repeated in every update of every vehicle.
+
+A fleet of `MURMUR_LOD_MIN_FLEET` (100) vehicles or fewer gets the plain feed through either
+URL, so a small fleet behaves exactly as before (every vehicle full, every trail point, no
+clusters). `/ws` without the parameter is the old feed for any client that does not subscribe
+(`scripts/measure.py` without `--lod`; `/api/state` is unchanged). The per-client work is one
+pass over the frame with a bounds test and a string compare per vehicle; the frame itself
+(every snapshot serialized once per tick, now also as its lite form) is shared.
+
+Measured 2026-10-04 on the same 28-core WSL2 host, fleets from `scripts/scale_fleet.py`,
+stand-ins only, **no link emulator** (`MURMUR_LINKEMU=0`, as the R.5 run above: with the
+emulator on, most of a Bay-wide fleet is out of radio range of the one ground station, and the
+emulator's own sockets would exhaust the ephemeral ports before 3,000; a 1,000-node run with
+it on read 1.5 MB/s plain and 110 to 120 KB/s lod). `scripts/measure.py --seconds 30`, one
+client; `--lod` sends a view: fleet-wide is the whole Bay at zoom 9.3 (cluster mode), zoomed
+is San Francisco at zoom 12.6 (what the console opens at, 38 by 41 km on this screen), none
+is a client with no map yet (everything lite). Bridge CPU is percent of one core on a shared
+host, approximate.
+
+| | 1,000 plain | **1,000 lod** | 3,000 plain | **3,000 lod** | 3,800 plain | **3,800 lod** |
+|---|---|---|---|---|---|---|
+| WebSocket to one client, fleet-wide view (clusters) | 1.25 to 2.1 MB/s | **26 KB/s** | 4.8 to 6.4 MB/s | **111 to 207 KB/s** | 7.1 to 8.1 MB/s | **224 to 289 KB/s** |
+| ... zoomed to San Francisco (480 full at 1,000, clusters above) | 1.25 to 2.1 MB/s | **390 KB/s** | 4.8 to 6.4 MB/s | **161 to 200 KB/s** | 7.1 to 8.1 MB/s | **298 to 335 KB/s** |
+| ... no view yet (all lite) | | 28 KB/s | | 144 to 156 KB/s | | 231 KB/s |
+| Initial state | 1.3 to 1.7 MB | **528 KB** | 3.8 to 4.2 MB | **1.6 MB** | 4.7 to 10.5 MB | **2.0 MB** |
+| Bridge CPU | 7.4 to 8.7% | 8.1 to 9.2% | 26 to 28% | 22 to 28% | 32 to 35% | 28 to 36% |
+| Bridge RSS | 78 to 150 MB | 157 to 177 MB | 314 to 339 MB | 346 to 424 MB | 425 to 548 MB | 415 to 530 MB |
+| All nav-ready after start | 18 s | | 43 to 66 s | | 43 s | |
+
+The 3,000 figures are from two runs, before and after the fast/slow split below (which raised
+the full-detail cap from 300 to 800: at 300 the zoomed view at 3,000 was still clusters). Run
+to run, the lite stream swings with how many loss bands flip (3,000 stand-ins on the WSL
+loopback drop packets under load, the fleet rows read 10 to 40% loss).
+
+The initial state is now mostly identity (about 300 bytes a vehicle, once; the plain feed's
+grows with the trails, 10.5 MB at 3,800 after a few minutes). A full update is 250 bytes (the
+fast part); a lite update is about 250 bytes too, but goes out only for the vehicles whose
+lite snapshot changed in the last second (8% of the fleet at 1,000, where the air vehicles
+loiter and the rest sit still; more at 3,000 and above, where the host's loopback drops
+packets under load and loss bands flip). What the zoomed view costs is the full-detail set it
+holds: the San Francisco box (38 by 41 km, grown by a quarter) holds 480 of the 1,000 (the
+fleet's land and bay units sit around the city), so 390 KB/s; at 3,000 and 3,800 the same box
+holds more than the cap and is clustered, lite plus the cells (the console's own map is
+narrower than the box: at 3,000 it drew 330 symbols there, at 3,800 about 400). Bridge CPU is
+the frame and the MAVLink decoding, not the per-client diff.
+
+Console, `?perf` on the dev build in Playwright's headless Chromium (software WebGL, 1905 by
+2053 px viewport), before (master's console on the plain feed, served against the same
+bridge) and after, each at the fleet-wide view the console opens at (the fit to the fleet,
+zoom 8.3 to 8.9) and zoomed to San Francisco at 12.6, 30 s windows after 20 to 30 s of
+warm-up (the before fleet-wide window ran 118 s). "Render" as above: the main-thread work one
+update causes.
+
+| 1,000 nodes | before, fleet-wide | **after, fleet-wide** | before, zoomed | **after, zoomed** |
+|---|---|---|---|---|
+| Render per update, mean (p95) | 113 ms (248) | **15.7 ms (23)** | 126 ms (224) | **20.9 ms (37)** |
+| Merge one update (applyDelta) | 0.8 ms | 0.14 ms | 0.8 ms | 0.26 ms |
+| Latency per update, mean | 179 ms | 159 ms | 228 ms | 179 ms |
+| JS heap (no forced GC) | 298 MB | 142 MB | 154 MB | 103 MB |
+| DOM elements | 792 | 792 | 792 | 792 |
+
+| 3,000 nodes | before, fleet-wide | **after, fleet-wide** | before, zoomed | **after, zoomed** |
+|---|---|---|---|---|
+| Render per update, mean (p95) | 660 ms (949) | **24.7 ms (42)** | 689 ms (1,050) | **47.3 ms (94)** |
+| Merge one update (applyDelta) | 3.8 ms | 0.41 ms | 3.5 ms | 0.82 ms |
+| Latency per update, mean | 771 ms | 181 ms | 796 ms | 186 ms |
+| JS heap (no forced GC) | 477 MB | 149 MB | 749 MB | 193 MB |
+
+| 3,800 nodes | **after, fleet-wide** | **after, zoomed** |
+|---|---|---|
+| Render per update, mean (p95) | **28.1 ms (46)** | **57.5 ms (95)** |
+| Merge one update (applyDelta) | 0.73 ms | 1.0 ms |
+| Latency per update, mean | 136 ms | 185 ms |
+| JS heap (no forced GC) | 164 MB | 447 MB |
+
+The 3,000 "before" console (master, on the plain feed at 4.8 to 6.4 MB/s) takes 0.7 s of main
+thread per update and falls behind the bridge; the "after" console keeps up at every size
+measured. The zoomed figure after is the view's 330 (3,000) or 400 (3,800) symbols with
+labels and trails, the fleet-wide one the cluster markers.
+
+What remains per update on the console is React work over the whole vehicle array (the top
+bar's domain counts, the fleet list's layout, the task panel's map by uid), which still scales
+with the fleet; the map's share (layers, declutter, trails) is now bounded by what is in view.
+Screenshots: `.playwright-mcp/and/` (small fleet unchanged; 1,000 and 3,000 as clusters and
+zoomed in).
