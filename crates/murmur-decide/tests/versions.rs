@@ -678,10 +678,11 @@ fn the_rules_7_live_log_binds_every_signature_to_a_person() {
 
 #[test]
 fn a_rules_7_log_claiming_rules_6_still_carries_its_authentication() {
+    let (now, before) = (OPERATOR_AUTH_SINCE, OPERATOR_AUTH_SINCE - 1);
     let mut ls = lines(&fixture(AUTH_LIVE));
-    assert!(ls[0].contains("\"rules_version\":7,"));
-    ls[0] = ls[0].replacen("\"rules_version\":7,", "\"rules_version\":6,", 1);
-    let r = with(&rechain(&ls), RulesAccepted::Exactly(6));
+    assert!(ls[0].contains(&format!("\"rules_version\":{now},")));
+    ls[0] = ls[0].replacen(&format!("\"rules_version\":{now},"), &format!("\"rules_version\":{before},"), 1);
+    let r = with(&rechain(&ls), RulesAccepted::Exactly(before));
     let w = whats(&r);
     for marker in ["how an operator was authenticated", "a step-up", "a session's end"] {
         assert!(
