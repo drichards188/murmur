@@ -523,6 +523,30 @@ pub struct RunOptions {
     /// with engagement authority look and sign 5 and 8 s after it waits for them. What an
     /// engagement on a declared track would come to, by the clock.
     pub nominator: bool,
+    /// murmur-dup: a clock that steps back, as a wall clock does (this WSL host's, about
+    /// 0.65 s every 32 s): the engine's clock and every time the run stamps (facts, the
+    /// world's time, scripted times) read it, as the bridge's facts and engine both read the
+    /// wall clock before it kept a clock of its own. None: the clock never steps.
+    pub clock_step: Option<ClockStep>,
+}
+
+/// A clock that steps back by `back_ms` every `every_s` seconds of the run
+/// ([`RunOptions::clock_step`]). A step longer than the run's one-second tick makes the clock
+/// read earlier than it did the tick before.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClockStep {
+    pub every_s: u32,
+    pub back_ms: i64,
+}
+
+/// The run's clock `ms` milliseconds after [`T0`]: `T0` plus `ms`, less the steps taken by
+/// then (none before `T0`).
+fn stepped(ms: i64, step: Option<ClockStep>) -> Time {
+    let back = match step {
+        Some(c) if ms > 0 && c.every_s > 0 => c.back_ms * (ms / (i64::from(c.every_s) * 1000)),
+        _ => 0,
+    };
+    T0.plus_ms(ms - back)
 }
 
 /// Rules 9: the identification keys a batch sets over the file's policy.
@@ -1069,11 +1093,12 @@ pub fn run(
         proxy_rng: Rng(opts.seed.unwrap_or(1) ^ 0x3A27_0000_0000_0002),
         proxy: opts.proxy.clone().filter(|_| rule_id),
         nominator: opts.nominator && rule_id,
+        clock_step: opts.clock_step,
         ..Extra::default()
     };
 
     for s in 0..=end_s {
-        let now = T0.plus_ms(i64::from(s) * 1000);
+        let now = stepped(i64::from(s) * 1000, opts.clock_step);
         clock.set(now);
         // kinematics: the contacts move along their velocity; a detection estimates where
         // one is (with independent noise around the truth each time), unless silent
@@ -2188,7 +2213,7 @@ fn act(
             };
             let w = world(tracks, vehicles);
             let since = match since_s {
-                Some(x) => Some(T0.plus_ms((x * 1000.0).round() as i64)),
+                Some(x) => Some(stepped((x * 1000.0).round() as i64, extra.clock_step)),
                 None => w.vehicles.get(&Uid::new(uid)).and_then(|v| v.position.as_ref()).map(|p| p.t),
             };
             // only engagement authority accepts (the bridge answers 403 otherwise)
@@ -2509,6 +2534,8 @@ struct Extra {
     nominator: bool,
     nominate_next: BTreeMap<String, (u32, u32)>,
     sign_due: Vec<(u32, IntentId, String)>,
+    /// murmur-dup: the run's clock steps ([`RunOptions::clock_step`]).
+    clock_step: Option<ClockStep>,
 }
 
 impl Extra {
@@ -3011,7 +3038,7 @@ fn preloads(
         // action after the set (the last parameter the preload sets, one off)
         let due = intent
             .engagement()
-            .is_some_and(|e| crate::engage::preload_verify_due(e, T0.plus_ms(i64::from(s) * 1000), &engine.policy().rules));
+            .is_some_and(|e| crate::engage::preload_verify_due(e, stepped(i64::from(s) * 1000, extra.clock_step), &engine.policy().rules));
         if ps.set == Some(true) && state == State::Dispatched && !silent && due {
             let mut readback = ps.holds.clone();
             if mode == "changed"
