@@ -589,7 +589,14 @@ impl Decision {
     /// anchor the log's head and close it behind the anchor, let the anchor command finish,
     /// and exit with the lock still held.
     pub fn shutdown_and_exit(&self) -> ! {
-        let _core = self.lock();
+        let mut core = self.lock();
+        // rules 7: every login's session ends with the run, on the record
+        let logins = std::mem::take(&mut core.logins);
+        for (_, s) in logins {
+            if let Err(e) = core.engine.close_operator_session(s, "bridge stopped") {
+                eprintln!("decision: closing a session at shutdown: {e}");
+            }
+        }
         if let Some(a) = self.anchors.get() {
             match a.close() {
                 Ok(_) => a.flush_hook(),
@@ -836,8 +843,8 @@ impl Decision {
                 .ok_or_else(|| DecisionError::new(500, "no operator configured")),
             None => Err(DecisionError::new(
                 401,
-                "set the X-Murmur-Operator header to an operator id (MURMUR_OPERATORS; a \
-                 placeholder for real authentication)",
+                "set the X-Murmur-Operator header to an operator id (MURMUR_OPERATORS; a dev run: \
+                 the id is asserted, not authenticated)",
             )),
         }
     }
@@ -1052,7 +1059,10 @@ impl Decision {
         let Some(auth) = session.engagement_authority() else {
             return Err(DecisionError::new(
                 403,
-                format!("{by} has no engagement authority (MURMUR_ENGAGE_OPERATORS): nothing to sign"),
+                match self.auth {
+                    AuthMode::Credentials => format!("{by} has no engagement authority (their credential does not hold it): nothing to sign"),
+                    AuthMode::Dev => format!("{by} has no engagement authority (MURMUR_ENGAGE_OPERATORS): nothing to sign"),
+                },
             ));
         };
         let token = core

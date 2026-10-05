@@ -381,6 +381,10 @@ async fn two_people_sign_each_with_their_password_and_one_person_cannot_sign_twi
     assert_eq!(s, StatusCode::UNAUTHORIZED, "{v}");
     let (s, _) = h.sign(&op2, id, Some(PW3)).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED, "op-3's password does not sign through op-2's session");
+    // each refusal is on the record, under op-2's session, without the password
+    let log = h.log();
+    assert!(log.contains(&format!("\"operator\":\"op-2\",\"session\":2,\"action\":\"step_up.refused\",\"detail\":\"i{id}: no password given\"")), "{log}");
+    assert_eq!(log.matches(&format!("\"action\":\"step_up.refused\",\"detail\":\"i{id}: wrong password\"")).count(), 2);
     // with their own: the first signature
     let (s, v) = h.sign(&op2, id, Some(PW2)).await;
     assert_eq!(s, StatusCode::OK, "{v}");
@@ -436,6 +440,11 @@ async fn repeated_wrong_step_ups_end_the_session() {
     let (s, _) = h.sign(&op2, id, Some("guessing guessing guessing")).await;
     assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
     assert!(h.log().contains("step-up failed repeatedly"));
+    // the refusals came first, under the session, then its end
+    let log = h.log();
+    let refused = log.find("too many failed attempts").expect("the lock is on the record");
+    let ended = log.find("step-up failed repeatedly").expect("the session's end");
+    assert!(refused < ended);
     let (s, _) = h.sign(&op2, id, Some(PW2)).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED, "the session is gone");
     h.replays_authenticated();

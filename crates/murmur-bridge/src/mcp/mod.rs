@@ -15,11 +15,13 @@
 //!   seconds when it was observed) and `age_s`; vehicle facts also say whether they are
 //!   past the freshness limit the rules apply (`stale`). The server instructions and the
 //!   tool descriptions tell the model to treat stale facts as uncertain.
-//! - **Agent identity** is the `X-Murmur-Agent` header on each request (or, within an MCP
-//!   session, the `clientInfo.name` sent with `initialize`), checked against
-//!   `MURMUR_AGENTS` (comma-separated; default `agent-planner,agent-watch`). A placeholder
-//!   for real authentication, like the operator header: anyone who can reach the port can
-//!   claim a listed id. Each id gets its own `AgentPort`: its proposals carry it as their
+//! - **Agent identity** (rules 7) is the agent's own key, `Authorization: Bearer <key>` on
+//!   every request, from the credential file (`murmur-auth agent-add`; `crate::auth` checks it
+//!   before any MCP session exists). In a dev run (`MURMUR_AUTH=dev`) it is the
+//!   `X-Murmur-Agent` header (or, within an MCP session, the `clientInfo.name` sent with
+//!   `initialize`), checked against `MURMUR_AGENTS` (comma-separated; default
+//!   `agent-planner,agent-watch`): anyone who can reach the port can claim a listed id, and
+//!   the run is logged as dev. Each id gets its own `AgentPort`: its proposals carry it as their
 //!   `source`, the console's inbox shows it with the rationale, and the audit log records
 //!   `agent.action` events for `session.connected`, `intent.preview`, `intent.propose` and
 //!   `intent.withdraw`.
@@ -194,7 +196,7 @@ impl Mcp {
         let (id, via) = claimed.ok_or_else(|| {
             ErrorData::invalid_request(
                 "set the X-Murmur-Agent header (or initialize with clientInfo.name) to an \
-                 agent id listed in MURMUR_AGENTS; a placeholder for real authentication",
+                 agent id listed in MURMUR_AGENTS (a dev run: the id is asserted, not authenticated)",
                 None,
             )
         })?;
@@ -211,7 +213,7 @@ impl Mcp {
             .cloned()
             .ok_or_else(|| {
                 ErrorData::invalid_request(
-                    format!("agent {id:?} is not in MURMUR_AGENTS (a placeholder for real authentication)"),
+                    format!("agent {id:?} is not in MURMUR_AGENTS (a dev run: ids are asserted, not authenticated)"),
                     None,
                 )
             })

@@ -37,13 +37,14 @@ group. Dates are 2026.
 - **Engagement: two operators with engagement authority, never the proposer** (10-03,
   Phase E). An engagement (an abstract effect: a point, a radius, a time) waits for
   `approvers = 2` distinct signatures from sessions opened with engagement authority
-  (`MURMUR_ENGAGE_OPERATORS`), and its proposer, human or agent, never signs it. The engine
-  holds a floor whatever `sim/policy.toml` says: never auto, never approved at submission,
-  never the proposer, never fewer than two approvers (a tier asking for one, or a file with
-  no engagement tier at all, is raised to two; replay holds the same floor, so a log whose
-  policy or decision was edited to one is caught). This closes the gap left by "the
-  operator's own command is the human decision": that rule stands for every other kind; for
-  an engagement the submitter's own command is never the approval.
+  (`MURMUR_ENGAGE_OPERATORS`; from rules 7 the credential's engagement flag, each signer
+  re-entering their own password at signing), and its proposer, human or agent, never signs
+  it. The engine holds a floor whatever `sim/policy.toml` says: never auto, never approved
+  at submission, never the proposer, never fewer than two approvers (a tier asking for one,
+  or a file with no engagement tier at all, is raised to two; replay holds the same floor,
+  so a log whose policy or decision was edited to one is caught). This closes the gap left
+  by "the operator's own command is the human decision": that rule stands for every other
+  kind; for an engagement the submitter's own command is never the approval.
 - **One frozen plan for every signature** (10-03, second Phase E review; replaces comparing
   each signature's own picture). The first signature freezes the plan it was shown: the
   effect point and time, radius, window, platform, fallback, and the target as identified
@@ -650,7 +651,9 @@ group. Dates are 2026.
   `MURMUR_OPERATORS` was admitted anyway). The roster is fixed for the run. Rules 1 to 3
   logs carry no roster: accepting one with `--rules N` trusts its sessions. A roster
   rewritten together with the sessions is caught only by the anchors (it is in the first
-  line).
+  line). From rules 7 a credentials run's roster is the credential file when the bridge
+  starts (an operator added later can log in only after a restart; one removed or changed
+  can't act from then on), and it says how its operators are authenticated.
 - **The hash chain is tamper-evident, not tamper-proof** (10-03, restated by the second
   review). A forger who removes a self-consistent set of events (a transient reset, the
   signature it dropped and its picture token) and recomputes the chain leaves a log replay
@@ -663,10 +666,54 @@ group. Dates are 2026.
   file is only as strong as the separation between it and whoever can write the log:
   protection against that writer needs a separate trust domain the command posts to, which
   is not part of Murmur (`murmur-decide/README.md`).
-- **Still placeholders, stated** (10-03). Engagement authority comes from
-  `MURMUR_ENGAGE_OPERATORS` and the `X-Murmur-Operator` header, as operators do from
-  `MURMUR_OPERATORS`: a stand-in for real authentication (the lists are logged as the run's
-  roster from rules 4, which bounds who a log can name, not who sent a header). Until rules
+- **Operators are authenticated people; a consequential signature re-enters the credential**
+  (10-04, murmur-der.1; rules 7, `OPERATOR_AUTH_SINCE`). Before, one person could declare a
+  track, nominate it and supply both engagement signatures by switching the console's
+  "Acting as" (a header the bridge believed), and a headerless request acted as the first
+  operator, so no log could say a person decided anything. Now, by default, each operator
+  has a credential (argon2id hash, OWASP parameters pinned: 19 MiB, 2 passes; at least 15
+  characters, NIST SP 800-63B-4 for single-factor) in a file outside the repository
+  (`MURMUR_CREDENTIALS`, else `~/.config/murmur/credentials.json`, mode 0600, written
+  atomically; `crates/murmur-auth`, managed with the `murmur-auth` CLI, password on stdin),
+  and the file's operators and their engagement flag are the run's roster. Login opens one
+  engine session per login (`session.opened`, `auth: password`) behind an HttpOnly,
+  SameSite=Strict cookie whose token the bridge keeps only as a digest; logout, 30 minutes
+  without an action, 8 hours, and a removed or changed credential (each entry carries a
+  stamp renewed on every change; the bridge re-reads the file by content every 2 s) end it,
+  logged as `session.closed`, and replay refuses anything under an ended session. Every
+  engagement signature, and any human tier the policy marks `step_up = true` (policy schema
+  5), carries the signer's password again: the bridge checks it for the session's own
+  operator, then `Engine::step_up` logs it and mints a `StepUp` (private fields, no Clone or
+  Deserialize, compile-fail doctests) that the one signature consumes, at most 10 s old;
+  without it the engine refuses the signature in a credentials run, and such a tier is
+  never approved at submission. Why a step-up and not the session: a session can be stale
+  (left open) or shared (someone else at the keyboard); the signature should be made with
+  the credential at the moment it matters, as a hardware-token PIN is. Two people still
+  means two credentials: the engine refuses a second signature by the same operator however
+  they log in, and the proposer never signs. Five failed logins or step-ups lock an id (30
+  s, doubling to 15 minutes; failed step-ups also end that session); an unknown id costs the
+  same as a known one. A browser's state-changing request or WebSocket from another origin
+  is refused (Origin, else Sec-Fetch-Site): SameSite does not separate two ports of one
+  host. Agents present their own key (`Authorization: Bearer`, SHA-256 kept, compared in
+  constant time; `murmur-auth agent-add`) on every `/mcp` request, checked before an MCP
+  session exists; they still have no path to an approval. `run.started` records the mode
+  (`roster.auth`). Reads (`/api/state`, the WebSocket feed, tracks) stay open on the local
+  port: they are the picture, not authority.
+- **A dev mode stays, explicit and excluded from claims** (10-04, murmur-der.1).
+  `MURMUR_AUTH=dev` keeps the header identities (and the console's switcher, in the top bar
+  beside a "DEV: IDS NOT AUTHENTICATED" pill) for scripted tests, the e2e scripts and the
+  evaluation's proxy arms, whose deciders are scripts anyway. The bridge says so in a banner
+  at start, `run.started` logs `auth: dev` and every session `auth: asserted`, replay prints
+  "DEV ... exclude from any human-control claim" (`ReplayReport::authenticated` is false),
+  and the evaluation's metrics carry the mode: a study run counts only when its operators
+  signed in with their own credentials and its log replayed. Logs of earlier rules record
+  no mode and count as asserted. Engine-only runs (scenarios, tests) log `dev`.
+- **Still placeholders, stated** (10-03; revised 10-04 by rules 7). Who holds engagement
+  authority is now each person's credential, not a header (above); what is still not here:
+  a second factor (a password is single-factor; WebAuthn would be the next step), a blocklist
+  of common passwords, TLS (the bridge listens on 127.0.0.1; `MURMUR_COOKIE_SECURE=1` marks
+  the cookie Secure behind an HTTPS proxy), signed or remotely anchored logs (the hash chain
+  and anchors are tamper-evident only), and per-person identity on the reads. Until rules
   5 the fallback was only commanded by the bridge after a stop, so a platform that lost its
   link en route followed its own lost-link failsafe; from rules 6 it is preloaded as that
   failsafe (see above). A bridge restarted mid-engagement puts the platform's own failsafe
@@ -698,10 +745,11 @@ group. Dates are 2026.
   written tool table (one place to audit, one test that enumerates it). Satellite reads reuse
   the bridge's own `/api/space/*` handlers in process rather than a second copy of the space
   API.
-- **Agent identity is a header, like the operator's** (10-02). `X-Murmur-Agent` (or the MCP
-  `clientInfo.name` inside a session) against `MURMUR_AGENTS`: placeholder authentication,
-  stated as such, so that evaluation can attribute proposals now and real auth can replace
-  it later without changing the tools.
+- **Agent identity is a header, like the operator's** (10-02; replaced 10-04 by per-agent
+  keys, rules 7). `X-Murmur-Agent` (or the MCP `clientInfo.name` inside a session) against
+  `MURMUR_AGENTS`: placeholder authentication, stated as such, so that evaluation could
+  attribute proposals then and real auth could replace it without changing the tools, as it
+  did: a credentials run takes `Authorization: Bearer <key>` (above), a dev run the header.
 - **Preview is a logged dry run in the engine** (10-02). `AgentPort::preview` runs the rules
   and policy on the same world view a submission would read and creates nothing; it is
   logged as `agent.action intent.preview` (what the agent considered) but its inputs are

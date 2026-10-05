@@ -296,7 +296,7 @@ async fn intent_action(
         "approve" => {
             // a consequential signature re-enters the credential first (credentials run)
             let needed = app.decision.needs_step_up(id);
-            let step = match app.auth.step_up(&op, password, needed).await {
+            let step = match app.auth.step_up(&op, id, password, needed).await {
                 Ok(s) => s,
                 Err(r) => return *r,
             };

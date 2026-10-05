@@ -26,7 +26,8 @@
 //!   password again in the request (`"password"` in the approve body): checked like a login,
 //!   for the session's own operator only, counted against the same lock (a lock from failed
 //!   step-ups also ends the session), then logged as `operator.action step_up` and quoted by
-//!   the signature ([`StepUpChecked`], made only here).
+//!   the signature ([`StepUpChecked`], made only here); a refused one is logged too
+//!   (`operator.action step_up.refused`: no password, a wrong one, a lock; never the password).
 //! - Agents present `Authorization: Bearer <key>` on every `/mcp` request (`murmur-auth
 //!   agent-add`); the key's digest is compared in constant time. A removed or rotated key stops
 //!   at once.
@@ -380,12 +381,16 @@ impl Auth {
         }
     }
 
-    /// A consequential approval's step-up: the session's own operator re-entered their
-    /// password (`password`). `needed`: the intent's decision asks for one. Ok(None) when no
-    /// password came and none is needed (and always in a dev run, which has no credential).
+    /// A consequential approval's step-up on intent `id`: the session's own operator
+    /// re-entered their password (`password`). `needed`: the intent's decision asks for one.
+    /// Ok(None) when no password came and none is needed (and always in a dev run, which has
+    /// no credential). A refusal (no password where one is needed, a wrong one, a lock) is
+    /// logged under the signer's session as `operator.action step_up.refused` (never the
+    /// password), so the record shows a signature attempted without the credential.
     pub async fn step_up(
         &self,
         actor: &Actor,
+        id: u64,
         password: Option<String>,
         needed: bool,
     ) -> Result<Option<StepUpChecked>, Box<Response>> {
@@ -395,8 +400,14 @@ impl Auth {
         let Some(session) = actor.login() else {
             return Err(Box::new(refusal(StatusCode::UNAUTHORIZED, "sign in first")));
         };
+        let refused = |why: &str| {
+            if let Err(e) = self.decision.record_action(actor, "step_up.refused", &format!("i{id}: {why}")) {
+                eprintln!("auth: logging a refused step-up: {}", e.detail);
+            }
+        };
         let Some(password) = password.filter(|p| !p.is_empty()) else {
             if needed {
+                refused("no password given");
                 return Err(Box::new(
                     (
                         StatusCode::UNAUTHORIZED,
@@ -415,14 +426,18 @@ impl Auth {
                 session,
                 operator: actor.operator().clone(),
             })),
-            Err(Refused::Wrong) => Err(Box::new(
-                (
-                    StatusCode::UNAUTHORIZED,
-                    Json(json!({ "detail": "wrong password: not signed", "step_up": true })),
-                )
-                    .into_response(),
-            )),
+            Err(Refused::Wrong) => {
+                refused("wrong password");
+                Err(Box::new(
+                    (
+                        StatusCode::UNAUTHORIZED,
+                        Json(json!({ "detail": "wrong password: not signed", "step_up": true })),
+                    )
+                        .into_response(),
+                ))
+            }
             Err(Refused::Locked(d)) => {
+                refused("too many failed attempts: the session ends");
                 // repeated wrong passwords on a live session: it may not be its operator's
                 let gone = lock(&self.sessions).end_where(|l| l.session == session);
                 for l in &gone {

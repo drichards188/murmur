@@ -309,6 +309,17 @@ tracks the participant opened while it was up (`web/src/operatorView.ts`), and e
 lands in the audit log as for any run. In analysis the participant is the unit: rates are
 computed per participant and the interval is over participants (METRICS.md, "Rates").
 
+Who decided is authenticated (rules 7). A study stack gets its own credential file in the run
+directory, made with the `murmur-auth` CLI and removed with the stack: every operator a fresh
+random passphrase, every agent a fresh key. The runner prints the participant's passphrase
+(operator `op-study`) for the person running the session, never to the run directory; the
+participant signs in at the console with it. The scripted operators sign in the same way, and
+the agents connect with their keys. The audit log records `auth: credentials`, and the report
+counts a study run only when its log says so and replays (a study run without authenticated
+operators is listed as excluded). The proxy arms run with asserted ids (`MURMUR_AUTH=dev`):
+their deciders are scripts, the log records `auth: dev`, and the report says how many runs of
+each mode it holds.
+
 Running a session ethically:
 
 - **Consent first**, in writing, before the stack starts: what the study is for, that the
@@ -320,8 +331,8 @@ Running a session ethically:
 - **No personal data.** The participant id is an anonymous label the study assigns (`p07`),
   never a name, email or employee number, and the key linking labels to people (if one is
   needed for consent records) is kept apart from the results. The console's operator id is
-  whatever it is set to (default `op-1`); don't type a real name there either. No screen,
-  camera or audio recording happens here.
+  `op-study`, signed in with the passphrase the runner printed; don't create credentials
+  under a real name either. No screen, camera or audio recording happens here.
 - **Tell them what the arms are** after the session (debrief), including that the proposals
   were scripted and some were wrong on purpose.
 - **Don't mix** study runs into proxy batches: they are written to `eval/results/study/` and

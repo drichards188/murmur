@@ -16,10 +16,11 @@
 //! - **Effect.** The engine's [`murmur_decide::EffectOrder`] goes to the contacts process on
 //!   the simulation channel (`crate::tracks::Tracks::queue_effect`): a point, a radius, a
 //!   time. Nothing here models a weapon.
-//! - **Operators.** `MURMUR_ENGAGE_OPERATORS` lists the operators whose sessions are opened
-//!   with engagement authority (a placeholder for real authentication, like
-//!   `MURMUR_OPERATORS`, which must list them too); only they can sign an engagement, never
-//!   its proposer, and the engagement tier asks for two of them.
+//! - **Operators.** Sessions carry engagement authority for the operators whose credential
+//!   holds it (a credentials run, `crate::auth`; a dev run: `MURMUR_ENGAGE_OPERATORS`, which
+//!   `MURMUR_OPERATORS` must list too); only they can sign an engagement, never its proposer,
+//!   the engagement tier asks for two of them, and in a credentials run each signature
+//!   re-enters the signer's password (a step-up, rules 7).
 //! - **Lost-link preload** (rules 6). The order carries the fallback as the platform's own
 //!   lost-link action ([`murmur_decide::LostLinkPreload`]); at dispatch the bridge reads the
 //!   platform's own values, sets the preload and reads it back (`super::preload`), reports it

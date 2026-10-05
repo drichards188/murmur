@@ -516,12 +516,23 @@ a human tier can let it stand as the approval; an agent's proposal can't be one.
   tier whose recomputed decision lets the submitter authorize. An agent-sourced intent with
   an `approval.at_submission` is a mismatch.
 
+- Rules 7: the human behind each act is an authenticated person in a credentials run. A
+  session opens only on a login whose password the bridge checked
+  (`open_authenticated_session`), ends visibly (`session.closed`; nothing may follow under
+  it), and a consequential signature (every engagement signature) needs a `StepUp`, which
+  only `Engine::step_up` mints after the bridge checked the password again, for that session
+  and that signature only. A dev run records that its ids were asserted, and replay and the
+  evaluation keep it out of any claim about people.
+
 **Limits.** Rust privacy is a code-structure guarantee, not a security boundary. It keeps
 code that holds only an `AgentPort` (or only JSON) from authorizing, and it leaves one
 greppable minting point. It does not stop someone editing this crate, bridge code that holds
-`&mut Engine` opening an operator session on an agent's behalf (rule: only the authenticated
-operator endpoint calls `open_operator_session`), a compromised process, or a human who
-approves without looking. Authenticating operators is the bridge's job. Whether human
+`&mut Engine` opening an operator session on an agent's behalf (rule: only the bridge's
+login endpoint opens one in a credentials run, and only `crate::auth` checks passwords before
+a step-up), a compromised process, or a human who approves without looking. Authenticating
+operators is the bridge's job (rules 7: `crates/murmur-auth` and the bridge's `auth`
+module); this crate records how it was done and refuses a consequential signature without a
+step-up. Whether human
 approval stays meaningful at scale is what Murmur measures; this crate makes sure there is a
 human decision to measure.
 
@@ -775,20 +786,57 @@ Rules versions:
   effect released, the USV's own values restored; an acceptance by an operator without
   engagement authority refused with a 403, nothing logged).
 
+- **7** (murmur-der.1; every gate reads `OPERATOR_AUTH_SINCE`, so another change taking the
+  number first renumbers it in one line): operators are authenticated people, and a
+  consequential signature re-enters the signer's credential. `run.started`'s roster says how
+  operators prove who they are (`auth`: `credentials`, each person's password checked by the
+  bridge against an argon2id hash, the roster being the credential file; or `dev`, ids a
+  request asserts, never evidence about people; an engine given no mode logs `dev`, so
+  scenarios and tests do). Every `session.opened` says how it was opened (`auth`: `password`
+  or `asserted`, the run's own method only: a credentials run opens sessions only through
+  `Engine::open_authenticated_session`, one per login); a session's end is logged
+  (`operator.action session.closed`, detail: logout, expiry, a credential removed or
+  changed; `Engine::close_operator_session` consumes the session and drops its picture
+  tokens) and nothing may follow under it; every other operator action is under that
+  operator's own session. A decision the policy marks consequential (`policy.decision`'s
+  `step_up`: every engagement, whatever the file says, and any human tier with `step_up =
+  true`, policy schema 5) is never approved at submission, and in a credentials run each of
+  its signatures quotes a step-up: `operator.action step_up` (`auth: password`), logged by
+  `Engine::step_up` after the bridge checked the password again, consumed by one signature
+  (`step_up: {seq}` on `approval.concurred` and `approval.granted`) under the same session,
+  at most `STEP_UP_MAX_AGE_MS` (10 s) old; the engine refuses a signature without it
+  (`approval.refused`, `StepUpRequired`). `StepUp` has private fields and no `Clone` or
+  `Deserialize` (compile-fail doctests in `authority.rs`). Replay checks all of it and says
+  whether a log is evidence about people (`ReplayReport::authenticated`: a credentials run
+  that reproduced). Markers (a log claiming rules 6 or older can't carry them): an `auth`
+  mode or method, a `step_up` (a tier's key, a decision's, a signature's, the event), a
+  `session.closed`. Fixtures: `tests/data/audit/v7-engagement-scenario-01.jsonl` (the
+  scenario runner: `auth: dev`) and a live run with its anchors (`v7-auth-live.jsonl`,
+  `tests/data/anchors/v7-auth-live.anchors`: three operators logged in with their own
+  passwords; a wrong password, an unknown operator, a bare header, an agent's key on an
+  operator endpoint and a request from another origin refused with nothing logged; a
+  nomination by an operator without engagement authority; its signatures refused without a
+  password, with a wrong one, with another person's, from the proposer, and a second time
+  from the same person over a second login; two signatures each quoting its step-up; the
+  engagement under way; every session closed at logout).
+
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
 `seen_max_age_s`, an unreleased build's name for it, is still read; **3** adds `[queue]`
 (optional; absent: its defaults); **4** adds `track_velocity_sigma_mps`, `track_accel_mps2`
 (a table by domain), `vertical_rate_mps`, `keep_out_vertical_m` and `track_alt_max_age_s`
-(optional; rules 6).
+(optional; rules 6); **5** adds a tier's `step_up` (optional, human tiers only;
+`STEP_UP_SCHEMA_SINCE`, rules 7).
 
 ## Integration contract for the bridge
 
 The full contract is in the crate docs (`src/lib.rs`). In short:
 
 1. At start: `Policy::load("sim/policy.toml")`, `Catalog::load("sim/platforms.toml")`,
-   `AreaSet::load_dir("sim/areas")`, `Roster::new(MURMUR_OPERATORS, MURMUR_ENGAGE_OPERATORS)`
-   (refused, and the bridge does not start, when an engagement operator is not an operator),
+   `AreaSet::load_dir("sim/areas")`, the roster (a credentials run: the credential file's
+   operators and engagement flags, `Roster::new(..).with_auth(AuthMode::Credentials)`; a dev
+   run: `Roster::new(MURMUR_OPERATORS, MURMUR_ENGAGE_OPERATORS)`, refused, and the bridge
+   does not start, when an engagement operator is not an operator),
    `Engine::with_areas(policy, Some(areas), roster, SystemClock, JsonlFile at
    logs/audit/<run-id>.jsonl)` (`Engine::new` works too; the set is then logged at first
    use). Sessions open only for operators on the roster, with engagement authority only for
@@ -799,7 +847,12 @@ The full contract is in the crate docs (`src/lib.rs`). In short:
 3. Terrain: a `TerrainOracle` over tidewater's `POST /v1/sample` (lat-first points; null
    elevation is outside coverage; `water_depth_m > 0` is water), or `NoTerrain`.
 4. Operator endpoints: `submit` (also behind the legacy `POST /api/tasks`), `approve`,
-   `reject`, `cancel`, `inbox`. Agent (MCP) side: an `AgentPort` per agent, nothing else.
+   `reject`, `cancel`, `inbox`, each under the operator's session: a credentials run opens
+   one per login (`open_authenticated_session` with `AuthMethod::Password`, after checking
+   the password) and closes it at logout, expiry or a credential change
+   (`close_operator_session`); a consequential approval (`PolicyDecision::step_up`) checks
+   the password again, then `step_up` and `approve_stepped` or
+   `approve_engagement_stepped`. Agent (MCP) side: an `AgentPort` per agent, nothing else.
 5. Every second: `expire_due` (pending approvals and, rules 5, queued intents past their
    deadline). For approved intents: `dispatch_or_queue` with the world now gives
    `Routed::Dispatched(Order)` (a vehicle order: a `DispatchOrder` for the existing task
@@ -871,9 +924,9 @@ on the scenario clock.
 - Engagements: a straight-line intercept (no turn radius or climb), keep-outs 2D wherever
   an altitude is unknown (and a vertical cylinder, not a volume shaped by any effect model,
   where both are known), the platform's own path checked against no-go areas but not
-  no-strike areas, engagement authority on the same placeholder authentication as the
-  operator header. An engagement does not survive a bridge restart: the next run puts the
-  platform's own lost-link values back (carried over from the last run's log, onto the same
+  no-strike areas, signers authenticated by password only (no second factor; rules 7). An
+  engagement does not survive a bridge restart: the next run puts the platform's own
+  lost-link values back (carried over from the last run's log, onto the same
   vehicle only, see the lost-link preload above), but the engagement itself is not resumed.
 - Satellite tasking: no cloud model (optical options note it), no sensitive-area or
   cost/priority tiers yet (every collect needs a human), no competing demand or agility

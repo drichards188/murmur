@@ -305,8 +305,9 @@ contacts `effect.rs`; console `EngagePanel`, `EngageCard`, `engageLayers.ts`):
    file says (never auto, never at submission, never the proposer, never fewer than two
    approvers; replay holds the same floor). Only an `EngagementAuthority` signs one
    (`Engine::approve_engagement`); it exists only in a session opened with engagement
-   authority (`Grants`, logged with the session; the bridge grants it to
-   `MURMUR_ENGAGE_OPERATORS`). A signer first asks for the picture (`issue_picture`, logged
+   authority (`Grants`, logged with the session; the bridge grants it from the credential
+   file's engagement flag, or a dev run's `MURMUR_ENGAGE_OPERATORS`; from rules 7 every
+   signature also re-enters the signer's password, a step-up). A signer first asks for the picture (`issue_picture`, logged
    `picture.issued`: a token bound to their session with the plan and the track's identity,
    valid `token_ttl_s`) and the signature quotes it. The first signature freezes the plan
    it was shown (effect point and time, radius, window, platform, fallback, the target's
@@ -428,11 +429,23 @@ Rules 6 follow-ups (murmur-der.2, murmur-der.3; `crates/murmur-decide/README.md`
   accepts its unknown position for that engagement (logged with the vehicle's facts,
   replay-checked, shown to every signer, cleared by a reset, revocable, never an agent's).
 
+Rules 7, operators are authenticated people (murmur-der.1; `crates/murmur-auth`, bridge
+`auth.rs`, DECISIONS.md): per-person credentials outside the repository (argon2id; the
+`murmur-auth` CLI, password on stdin) are the run's roster; the console signs in (HttpOnly,
+SameSite=Strict session cookie; logout, idle and absolute expiry, a removed or changed
+credential end it, logged); every engagement signature, and any tier marked `step_up`,
+re-enters the signer's password at signing (`operator.action step_up`, quoted by the
+signature, replay-checked), so two signatures are two credentials and no stale or shared
+session supplies one; failed attempts lock an id; browsers on other origins change nothing;
+agents present their own key on `/mcp`. `MURMUR_AUTH=dev` keeps the header identities for
+scripted runs, logged as dev and excluded from any human-control claim. Live log with
+anchors: `crates/murmur-decide/tests/data/audit/v7-auth-live.jsonl`.
+
 Simplifications: straight-line intercept at cruise speed (no turn radius, no climb),
 keep-outs 2D wherever an altitude is unknown, the effect circle is checked against no-strike
 areas but the platform's own path only against no-go areas, the assessment trusts our sensor
-model's coverage figures, the engagement authority is the same placeholder authentication as
-`MURMUR_OPERATORS`, ground targets have no terrain-referenced altitude (2D), an engagement
+model's coverage figures, the signers authenticate with a password only (no second factor;
+rules 7, below), ground targets have no terrain-referenced altitude (2D), an engagement
 does not survive a bridge restart (only the platform's own failsafe values are put back),
 and another declared
 hostile inside the keep-out is exempt like the target (an open design question,
@@ -444,8 +457,9 @@ Exit met: every invariant has a scenario that tries to break it, and each ends a
 
 - **F.1 MCP server in the bridge** (`crates/murmur-bridge/src/mcp/`, done): served at `/mcp`
   on the bridge's HTTP port (streamable HTTP, official Rust SDK `rmcp`), one in-process
-  `AgentPort` per agent id (`MURMUR_AGENTS`, header `X-Murmur-Agent` or the MCP
-  `clientInfo.name`; placeholder auth like the operator header). Reads with staleness on
+  `AgentPort` per agent id (from rules 7 the agent's own key, `Authorization: Bearer`,
+  from the credential file; a dev run: `MURMUR_AGENTS`, header `X-Murmur-Agent` or the MCP
+  `clientInfo.name`). Reads with staleness on
   every fact (fleet, platforms, areas, policy, intents, inbox, recent vehicle events,
   satellite passes and tasking options, as tools and as `murmur://` resources); proposing
   with `preview_intent` (a dry run the engine logs as `agent.action intent.preview`; for a
@@ -461,7 +475,7 @@ Exit met: every invariant has a scenario that tries to break it, and each ends a
   result; `agents/README.md` says how a real model (Claude Code, other MCP clients)
   connects. No model is called from tests.
 - Next: tracks in the agent's world view once C2 lands (`get_fleet` carries only our own
-  nodes today); prompts and scenario runs for Phase G; real agent authentication. Read
+  nodes today); prompts and scenario runs for Phase G (agent keys: done, rules 7). Read
   AeroMind's and Pharos's agent layers (DECISIONS.md, open-source neighbors) before the
   prompts.
 
@@ -587,7 +601,8 @@ Next: a cross-check that can catch a spoofed position (our own vehicles seen by 
 sensors); track-age rules for vehicle tasks aimed at a track; an approval re-check that
 refuses a vehicle whose link went silent after the card was opened; the bridge confirming a
 vehicle's telemetry plan (a lost SET_MESSAGE_INTERVAL waits for the 30 s re-send); study
-sessions with participants (consent, anonymous ids: `eval/README.md`). Human-behavior claims
+sessions with participants (consent, anonymous ids, each signed in with a credential of
+their own: `eval/README.md`; a study run without one is excluded). Human-behavior claims
 need participants; the harness supports studies, it doesn't replace them.
 
 Exit: results published, including what went wrong.

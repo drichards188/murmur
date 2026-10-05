@@ -15,11 +15,19 @@ Source: `crates/murmur-bridge/src/mcp/` (the server), `crates/murmur-bridge/src/
 ## Connecting
 
 - Endpoint: `http://127.0.0.1:8765/mcp` (the bridge's HTTP port; `MURMUR_HTTP_PORT`).
-- Identity: the `X-Murmur-Agent` header on every request, or, within an MCP session, the
-  `clientInfo.name` sent with `initialize`. The id must be listed in `MURMUR_AGENTS`
-  (comma-separated; default `agent-planner,agent-watch`). This is placeholder authentication,
-  like the operator's `X-Murmur-Operator` header: anyone who can reach the port can claim a
-  listed id. Each id gets its own engine port; its proposals carry it as their source.
+- Identity (rules 7): the agent's own key, `Authorization: Bearer <key>` on every request.
+  Issue one with `target/release/murmur-auth agent-add agent-planner` (printed once on
+  stdout; the credential file keeps only its SHA-256, compared in constant time);
+  `agent-rotate` replaces it, `agent-remove` revokes it, both at once on a running bridge. A
+  request without a valid key is refused (401) before any MCP session exists; an
+  `X-Murmur-Agent` header naming another agent than the key's is refused too. The audit log
+  names the agent and the key's id (`mma_<id>_...`), never the key. Each agent gets its own
+  engine port; its proposals carry its id as their source. A key is not a login: on an
+  operator's endpoint it is a 401, and no tool reaches an approval either way.
+- Dev run (`MURMUR_AUTH=dev`, logged as such and excluded from any human-control claim): the
+  `X-Murmur-Agent` header, or within an MCP session the `clientInfo.name` sent with
+  `initialize`, names the agent, which must be listed in `MURMUR_AGENTS` (comma-separated;
+  default `agent-planner,agent-watch`). Anyone who can reach the port can claim a listed id.
 
 ### The scripted agent (no model)
 
@@ -31,13 +39,18 @@ inbox), then follows both with `explain_intent`:
 
 ```
 make up FLEET=standins-only            # or make goldengate
+export MURMUR_AGENT_KEY=$(target/release/murmur-auth agent-add agent-planner)   # once
 .venv/bin/python agents/scripted_agent.py --follow 120
-curl -X POST http://127.0.0.1:8765/api/intents/<id>/approve -H 'X-Murmur-Operator: op-1'
+# an operator approves in the console, or over the API with their own session:
+curl -c jar -X POST http://127.0.0.1:8765/api/auth/login -H 'Content-Type: application/json' \
+  -d "{\"operator\": \"op-1\", \"password\": \"$PASSWORD\"}"
+curl -b jar -X POST http://127.0.0.1:8765/api/intents/<id>/approve
 ```
 
 `--task auto|human|both`, `--uid N --task orbit|hold|rtl` to task a given vehicle,
-`--withdraw` to withdraw a proposal still pending at the end, `--url` and `--agent` for a
-second stack or a second agent id.
+`--withdraw` to withdraw a proposal still pending at the end, `--url`, `--agent` and `--key`
+for a second stack or a second agent. On a dev bridge (`MURMUR_AUTH=dev`) no key is needed,
+and the approve takes `-H 'X-Murmur-Operator: op-1'` instead of the session.
 
 ### The policy agent (no model; the evaluation's proposer)
 
@@ -57,17 +70,18 @@ The evaluation's real-model arm (`eval/model_agent.py`, opt-in and cost-capped; 
 
 ### A real model
 
-Any MCP client that speaks streamable HTTP and can set a header works:
+Any MCP client that speaks streamable HTTP and can set a header works (the key from
+`murmur-auth agent-add`, below as `$KEY`):
 
 - **Claude Code**: `claude mcp add --transport http murmur http://127.0.0.1:8765/mcp
-  --header "X-Murmur-Agent: agent-planner"`, then ask it to read the fleet and propose. The
+  --header "Authorization: Bearer $KEY"`, then ask it to read the fleet and propose. The
   server's instructions (sent at `initialize`) tell the model what it can and cannot do and
   how to treat stale facts.
 - **Other clients** (Claude Desktop, claude.ai connectors, the Claude API's MCP connector)
   need a reachable URL and cannot always set custom headers. Options: a local proxy such as
-  `mcp-remote` with `--header "X-Murmur-Agent: agent-planner"`, or a reverse proxy that adds
-  the header; or list the client's own `clientInfo.name` in `MURMUR_AGENTS` (every instance of
-  that client then acts as that agent, which is the placeholder-auth caveat above).
+  `mcp-remote` with `--header "Authorization: Bearer $KEY"`, or a reverse proxy that adds
+  the header. (On a dev bridge, listing the client's own `clientInfo.name` in
+  `MURMUR_AGENTS` also works: every instance of that client then acts as that agent.)
 
 Don't call an external model API from tests; the scripted agent is the test harness. Phase G
 (evaluation, `eval/`) runs agents against seeded scenarios with the same tools.
