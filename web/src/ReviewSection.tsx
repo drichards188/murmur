@@ -68,7 +68,7 @@ function DeclarationItem({ d, now, onDone, onTrack }: { d: ReviewDeclaration; no
       <p className="rv-basis">{d.basis}</p>
       <p className="muted rv-hint">It stands until an operator revokes it; revoking stops every engagement in play on {d.track} first.</p>
       <div className="rv-actions">
-        <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="note (optional, logged)" aria-label="Note for a revocation" disabled={busy} />
+        <input className="ix-note" value={note} maxLength={300} onChange={(e) => setNote(e.target.value)} placeholder="note (optional, logged)" aria-label="Note for a revocation" disabled={busy} />
         <button className="ghost mini" disabled={busy} onClick={confirm} title="Confirm the engine's declaration (logged under your session)">
           confirm
         </button>
@@ -136,10 +136,10 @@ function FlagItem({ f, now, onDone, onTrack }: { f: ReviewFlag; now: () => numbe
         ) : (
           'No track named.'
         )}
-        {f.raises_suspect ? ' Raised to suspect (weak evidence: never a declaration on its own).' : ' Nothing was declared.'}
+        {f.raises_suspect ? ' Raised to suspect (weak evidence: never a declaration on its own).' : ' The flag declares nothing.'}
       </p>
       <div className="rv-actions">
-        <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="note (optional, logged)" aria-label="Note for this resolution" disabled={busy} />
+        <input className="ix-note" value={note} maxLength={300} onChange={(e) => setNote(e.target.value)} placeholder="note (optional, logged)" aria-label="Note for this resolution" disabled={busy} />
         {f.actions.includes('confirm') && (
           <button className="ghost mini" disabled={busy} onClick={() => void run('confirmed', () => resolveFlag(f.flag, 'confirmed', note))} title="The concern stands (the track is not declared by this)">
             confirm

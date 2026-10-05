@@ -441,6 +441,8 @@ export default function App() {
             mem={alertMem}
             hidden={hiddenAlerts}
             onTrack={(id) => {
+              // the tracks drawer opens where the inbox is
+              setShowInbox(false)
               setSelectedTrack(id)
               setShowTracks(true)
               const t = tracks?.tracks.find((x) => x.id === id)
