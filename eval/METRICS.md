@@ -258,21 +258,25 @@ log; murmur-replay checks the same things from the engine's side.
 ## Identification: rule against manual (rules 9)
 
 `eval/ident.py` (`python -m eval.run ident`, and a step of every batch) generates
-identification situations per seed (seeded geometry from stated distributions: a hostile
-author, tracked with probability 0.8, who acts against our patrol USV at 10 s, a second time
-at 40 s with probability 0.2; none to three contacts 15 to 400 m from it: a fishing boat shown
-neutral at 0.3 to 0.9 or not classified, an AIS ferry, a friendly patrol boat, another
-hostile; each track's 1-sigma 8 to 25 m; one or two of our USVs observing, each its own fix
-with a radar's error at its range; an armed aircraft). The files name no policy: each arm is
-the shipped policy changed only by its flags (`manual`: rule off; `rule`; `rule-nominate`:
-`nominate_unconfirmed`; `rule-corroborated`: `corroboration = "second_observation"`;
-`rule-corroborated-nominate`). Every arm has the same scripted operator
-(`scenario::ReviewProxy`: a look every 20 s median, 6 s to read, reads 80% of items, slips 5%;
-its procedure is its own over what the console shows, not the engine's rule: the one track
-within two combined sigmas of the fix, its victim excluded, not shown neutral or friendly at
-0.5 or more, is the author, else it can't say) and a nominator (every track declared hostile
-nominated as soon as the policy lets it, retried every 10 s; two signers sign 5 and 8 s after
-it waits, and again while their signature does not stand).
+identification situations per seed and per untracked-author share (seeded geometry from
+stated distributions: a hostile author, not tracked with probability `untracked_share`, run at
+0.2 and 0.5 by default, who acts against our patrol USV at 10 s, a second time at 40 s with
+probability 0.2; none to three contacts 15 to 400 m from it: a fishing boat shown neutral at
+0.3 to 0.9 or not classified, an AIS ferry, a friendly patrol boat, another hostile; each
+holding or under way as `MOTION` states (the author holds with probability 0.4, else 2 to 8
+m/s; fishing boats 0.5, else 1 to 4 m/s; the ferry 6 to 10 m/s; the patrol boat 0.3, else 3
+to 8 m/s; another hostile as the author; courses uniform); each track's 1-sigma 8 to 25 m;
+one or two of our USVs observing, each its own fix with a radar's error at its range; an
+armed aircraft). The files name no policy: each arm is the shipped policy changed only by its
+flags (`manual`: rule off; `rule`; `rule-nominate`: `nominate_unconfirmed`;
+`rule-corroborated`: `corroboration = "second_observation"`; `rule-corroborated-nominate`).
+Every arm has the same scripted operator (`scenario::ReviewProxy`: a look every 20 s median,
+6 s to read, reads 80% of items, slips 5%; the one track within two combined sigmas of the
+fix, its victim excluded, not shown neutral or friendly at 0.5 or more, is the author, else it
+can't say; a rule declaration it skims is confirmed unread) and a nominator (every track
+declared hostile nominated as soon as the policy lets it, retried every 10 s; two signers
+sign 5 and 8 s after it waits, and again while their signature does not stand; they never
+refuse).
 
 | measure | definition |
 | --- | --- |
@@ -281,18 +285,28 @@ it waits, and again while their signature does not stand).
 | false hostile / wrong author | a hostile declaration of a contact that is not hostile / of another hostile |
 | C2 showed it / picture wrong | a wrong declaration is *C2 showed it* when, at the act, another track had 0.1 or more of the attribution or the declared track was shown neutral or assumed friend at 0.5 or more; else *picture wrong*. Never pooled |
 | revocations (of a right one) | the person's revocations of rule declarations, and of those, the ones of the author's |
-| looks | what a person had to look at: every act without the rule; every rule declaration and flag with it |
-| person acts | declarations, confirmations, revocations and flag resolutions by the person |
-| confirmations | the confirmations made (under the shipped policy, an engagement on a rule declaration waits for one) |
-| effects on the author / on a wrong target | effects released on the hostile author's track / on a contact that is not hostile |
+| items | what was put before the person: every act without the rule; every rule declaration and flag with it (the proxy's tally) |
+| decisions | one per item the person got to the end of, whatever it decided: declared, confirmed (read or skimmed), revoked, dismissed, or read and decided nothing. Counted alike in every arm |
+| consequential | of the decisions, declarations, confirmations and revocations |
+| confirmations (unread) | confirmations of rule declarations, and of those, the ones the proxy skimmed (a model assumption: a skimmed card is approved) |
+| agreement | in the manual arm, the person's declarations that named the track the rule would have declared (its best candidate at the shipped threshold, not shown neutral or friendly at 0.5), and the acts the rule would have declared on |
+| effects on the author / on a contact not hostile | effects released on the hostile author's track / on a contact that is not hostile, each such case listed with what the C2 showed |
 | act to declaration, act to effect | seconds from the first act to the author's first declaration, and to the first effect; medians |
 
 What these are not: model results from scripted proxies on generated situations, never human
-data. The situations come from stated distributions, not from the world; the proxy's
-procedure, parameters and slip rate are assumptions; the nominator and the signers are
-scripts; the tracks are the scenario runner's (truth plus seeded noise), not the bridge's
-tracker. Scenarios 72-77 illustrate the rule and run in the engagement suite; they are not
-part of this measurement.
+data. What they cannot say, stated: the proxy's procedure is close to the rule's own, so their
+agreement is built in (the agreement row measures it) and the manual arm says nothing about
+how accurately a person identifies; a case the rule gets wrong the proxy mostly gets wrong
+too. With confirmation required each rule declaration still costs a person one decision: the
+shipped policy moves the decision from declaring to confirming, it does not remove it. The
+rule's latency advantage, and what nomination before confirmation saves, are the proxy's look
+interval and reading time. The signers never refuse, so a declaration the C2 should not have
+made is carried to an effect: "no effect on a contact that was not hostile" holds or not
+with the untracked share (at 0.5 every arm released one, listed in the report). The
+situations come from stated distributions, not from the world; the proxy's procedure,
+parameters and slip rate are assumptions; the tracks are the scenario runner's (truth plus
+seeded noise), not the bridge's tracker. Scenarios 72-78 illustrate the rule and run in the
+engagement suite; they are not part of this measurement.
 
 ## Provenance and exclusions
 

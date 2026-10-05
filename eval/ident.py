@@ -1,13 +1,15 @@
 """Rules 9 in the evaluation: rule-based identification against manual declaration, on the
 same generated situations and seeds. MODEL RESULTS FROM SCRIPTED PROXIES, NEVER HUMAN DATA.
 
-**What runs.** For each seed, `generate` writes `n` identification situations with seeded
-random geometry (`sim/scenarios/engage` format): one hostile author, tracked or not, who
-commits an abstract hostile act against our patrol USV (sometimes a second one later); none to
-three other contacts near it (a fishing boat, shown neutral at some confidence or not
+**What runs.** For each seed and untracked-author share, `generate` writes `n` identification
+situations with seeded random geometry (`sim/scenarios/engage` format): one hostile author,
+tracked or not (`untracked_share` of them not, a stated dimension: 0.2 and 0.5 by default),
+who commits an abstract hostile act against our patrol USV (sometimes a second one later);
+none to three other contacts near it (a fishing boat, shown neutral at some confidence or not
 classified at all, an AIS ferry, a friendly patrol boat, another hostile), each tracked with
-its own uncertainty; one or two of our USVs observing (each its own fix of the act), and an
-armed aircraft. Truth (who is hostile, who did it) is in the file, never shown to a decider.
+its own uncertainty and moving as `MOTION` states (holding or under way at a drawn speed and
+course); one or two of our USVs observing (each its own fix of the act), and an armed aircraft.
+Truth (who is hostile, who did it) is in the file, never shown to a decider.
 `murmur-scenarios --json` plays every situation against the real decision engine once per
 arm, with seeded noise of each fix's sigma on where it places the author, a scripted operator
 reviewing the inbox (`scenario::ReviewProxy`: its own procedure over what the console shows,
@@ -32,15 +34,22 @@ attribution or the declared track was shown neutral or assumed friend at 0.5 or 
 is not hostile (the worst outcome). Workload: the items a person had to look at (every act in
 the manual arm; every rule declaration and flag in the rule arms), the person's acts
 (declarations, confirmations, revocations, flag resolutions), and the confirmations an
-engagement had to wait for.
+engagement had to wait for. Workload is counted alike in every arm from the proxy's own
+tally (`scenario::ProxyStats`): the items put before the person, their decisions (one per
+item it got to the end of: declared, confirmed, revoked, dismissed, or read and decided
+nothing), and of those the consequential ones (declared, confirmed, revoked).
 
-**Caveats.** The proxy is a model with stated parameters (eval/README.md); the nominator and
-the signers are scripts; the situations are generated from stated distributions, not sampled
-from the world; the tracks are the scenario runner's (truth plus seeded noise), not the
-bridge's tracker. Scenarios 72-77 illustrate the rule (the engagement suite runs them); they
-are not part of this measurement.
+**Caveats.** The proxy is a model with stated parameters (eval/README.md), and its procedure
+is close to the rule's own: the best fix, two combined sigmas, the victim excluded, a track
+shown neutral or friendly at 0.5 left alone. Their agreement is built in (`agreement`
+measures it): the manual arm says nothing about how accurately a person identifies, and a case
+the rule gets wrong the proxy mostly gets wrong too. The nominator and the signers are scripts
+(the signers sign whatever is nominated); the situations are generated from stated
+distributions, not sampled from the world; the tracks are the scenario runner's (truth plus
+seeded noise), not the bridge's tracker. Scenarios 72-78 illustrate the rule (the engagement
+suite runs them); they are not part of this measurement.
 
-    python -m eval.run ident --seeds 1 2 3 4 5 6 7 8 9 10 --situations 20
+    python -m eval.run ident --seeds 1 2 3 4 5 6 7 8 9 10 --situations 20 --untracked-share 0.2 0.5
 """
 
 from __future__ import annotations
@@ -61,6 +70,8 @@ from .metrics import load_jsonl
 BINARY = REPO / "target" / "release" / "murmur-scenarios"
 #: below this attribution a candidate is not worth naming (the engine's FLAG_FLOOR)
 FLAG_FLOOR = 0.1
+#: the shipped policy's attribution threshold (sim/policy.toml), for the agreement measure
+RULE_THRESHOLD = 0.9
 #: what every arm runs with: act noise, the review proxy, the nominator
 COMMON = ["--act-noise", "--proxy", "--nominator"]
 ARMS: dict[str, list[str]] = {
@@ -105,6 +116,28 @@ def _pt(p: tuple[float, float]) -> str:
     return f"[{p[0]:.6f}, {p[1]:.6f}]"
 
 
+#: how a contact moves (stated distributions): the chance it holds still, else a speed drawn
+#: uniformly from the range (m/s) on a course drawn uniformly
+MOTION: dict[str, tuple[float, tuple[float, float]]] = {
+    "author": (0.4, (2.0, 8.0)),
+    "fishing boat, classified": (0.5, (1.0, 4.0)),
+    "fishing boat, not classified": (0.5, (1.0, 4.0)),
+    "ferry with AIS": (0.0, (6.0, 10.0)),
+    "friendly patrol boat": (0.3, (3.0, 8.0)),
+    "another hostile": (0.4, (2.0, 8.0)),
+}
+#: the untracked-author shares a comparison runs by default
+UNTRACKED_SHARES = (0.2, 0.5)
+
+
+def _velocity(rng: random.Random, kind: str) -> tuple[float, float]:
+    hold, (lo, hi) = MOTION[kind]
+    if rng.random() < hold:
+        return (0.0, 0.0)
+    v, c = rng.uniform(lo, hi), rng.uniform(0, 2 * math.pi)
+    return (v * math.sin(c), v * math.cos(c))
+
+
 BYSTANDERS = [
     # (kind, weight, truth, shown affiliation, identity, affiliation confidence range or None)
     ("fishing boat, classified", 0.30, "neutral", "neutral", "fishing_vessel", (0.3, 0.9)),
@@ -115,8 +148,9 @@ BYSTANDERS = [
 ]
 
 
-def generate(seed: int, n: int, out: Path) -> list[dict[str, Any]]:
-    """`n` situations for `seed` into `out`, each with its truth (`meta`)."""
+def generate(seed: int, n: int, out: Path, untracked_share: float = 0.2) -> list[dict[str, Any]]:
+    """`n` situations for `seed` into `out`, each with its truth (`meta`); `untracked_share`
+    of the authors are no track we hold."""
     out.mkdir(parents=True, exist_ok=True)
     rng = random.Random(seed * 7919 + 17)
     metas = []
@@ -124,7 +158,7 @@ def generate(seed: int, n: int, out: Path) -> list[dict[str, Any]]:
         centre = (rng.uniform(*CENTRE_BOX[0]), rng.uniform(*CENTRE_BOX[1]))
         usv1 = _polar(rng, centre, rng.uniform(1_000, 2_200))
         usv2 = _polar(rng, centre, rng.uniform(1_200, 3_000)) if rng.random() < 0.6 else None
-        tracked = rng.random() < 0.8
+        tracked = rng.random() >= untracked_share
         tracks: list[dict[str, Any]] = []
         truth: dict[str, str] = {}
         n_id = 0
@@ -138,7 +172,7 @@ def generate(seed: int, n: int, out: Path) -> list[dict[str, Any]]:
         if tracked:
             author = new_id()
             shown, conf, ident = ("suspect", rng.uniform(0.4, 0.8), "small_fast_boat") if rng.random() < 0.5 else ("unknown", 0.0, None)
-            tracks.append({"id": author, "at": centre, "aff": shown, "conf": conf, "identity": ident, "sigma": rng.uniform(8, 25)})
+            tracks.append({"id": author, "at": centre, "aff": shown, "conf": conf, "identity": ident, "sigma": rng.uniform(8, 25), "vel": _velocity(rng, "author")})
             truth[author] = "hostile"
         k = rng.choices([0, 1, 2, 3], weights=[0.35, 0.35, 0.2, 0.1])[0]
         desc = []
@@ -154,6 +188,7 @@ def generate(seed: int, n: int, out: Path) -> list[dict[str, Any]]:
                     "conf": rng.uniform(*crange) if crange else 0.0,
                     "identity": ident,
                     "sigma": rng.uniform(8, 25),
+                    "vel": _velocity(rng, kind),
                 }
             )
             truth[tid] = tr
@@ -186,6 +221,7 @@ def generate(seed: int, n: int, out: Path) -> list[dict[str, Any]]:
                         "[[track]]",
                         f'id = "{t["id"]}"',
                         f"at = {_pt(t['at'])}",
+                        f"velocity = [{t['vel'][0]:.2f}, {t['vel'][1]:.2f}]",
                         f'affiliation = "{t["aff"]}"',
                         f"affiliation_confidence = {t['conf']:.2f}",
                         f'truth = "{truth[t["id"]]}"',
@@ -203,7 +239,18 @@ def generate(seed: int, n: int, out: Path) -> list[dict[str, Any]]:
         assert "\npolicy" not in text, "a generated situation never names a policy: every arm is the shipped one"
         name = f"sit-{seed:03d}-{i:03d}"
         (out / f"{name}.toml").write_text(text)
-        metas.append({"name": name, "author": author, "truth": truth, "acts": 2 if second else 1, "observers": len(observers), "bystanders": desc})
+        metas.append(
+            {
+                "name": name,
+                "author": author,
+                "truth": truth,
+                "acts": 2 if second else 1,
+                "observers": len(observers),
+                "bystanders": desc,
+                "untracked_share": untracked_share,
+                "shown": {t["id"]: {"aff": t["aff"], "conf": round(t["conf"], 2), "from_author_m": round(_dist(t["at"], centre))} for t in tracks},
+            }
+        )
     (out / "situations.json").write_text(json.dumps(metas, indent=1))
     return metas
 
@@ -312,6 +359,45 @@ def analyze(result: dict[str, Any], events: list[dict[str, Any]], meta: dict[str
     author_tracked = author != "untracked"
     right = [d for d in declarations if d["verdict"] == "correct"]
     effects = [g for g in engagements.values() if g["effect_after_act_s"] is not None]
+    # the proxy's agreement with the rule: what the rule would declare on each act (its best
+    # candidate at the threshold, not shown neutral or friendly at 0.5), against the track the
+    # person declared on it (person declarations name their act)
+    def rule_would(act: str) -> str | None:
+        a = acts.get(act) or {}
+        c = (a.get("candidates") or [None])[0]
+        if not c or c.get("confidence", 0) < RULE_THRESHOLD:
+            return None
+        est = a.get("tracks", {}).get(c.get("track")) or {}
+        aff = (est.get("affiliation") or {}).get("value") if isinstance(est.get("affiliation"), dict) else est.get("affiliation")
+        if aff in ("neutral", "assumed_friend") and (est.get("affiliation_confidence") or 0) >= 0.5:
+            return None
+        return c.get("track")
+
+    person_on_act = {}
+    for e in events:
+        if e.get("type") == "ident.declared":
+            d = e.get("declaration") or {}
+            by = d.get("by") or {}
+            note = by.get("note") or ""
+            if by.get("kind") == "operator" and note.startswith("proxy: act "):
+                person_on_act[note.removeprefix("proxy: act ")] = d.get("track")
+    agreement = {
+        "person_declarations": len(person_on_act),
+        "same_as_rule": sum(1 for a, tr in person_on_act.items() if rule_would(a) == tr),
+        "rule_would_declare": sum(1 for a in acts if rule_would(a)),
+    }
+    shown_tracks = meta.get("shown") or {}
+    wrong_effects = [
+        {
+            "situation": meta.get("name"),
+            "track": g["track"],
+            "truth": g["truth"],
+            "author": author,
+            "shown": shown_tracks.get(g["track"]),
+        }
+        for g in effects
+        if g["truth"] != "hostile"
+    ]
     return {
         "situation": meta.get("name"),
         "arm": arm,
@@ -334,6 +420,9 @@ def analyze(result: dict[str, Any], events: list[dict[str, Any]], meta: dict[str
         "effects_wrong_target": sum(1 for g in effects if g["truth"] != "hostile"),
         "effects_other_hostile": sum(1 for g in effects if g["truth"] == "hostile" and g["track"] != author),
         "first_effect_after_s": min((g["effect_after_act_s"] for g in effects), default=None),
+        "wrong_effects": wrong_effects,
+        "proxy": result.get("proxy") or {},
+        "agreement": agreement,
     }
 
 
@@ -357,6 +446,10 @@ def summarize(passes: list[dict[str, Any]]) -> dict[str, Any]:
                     "false_hostile": 0, "wrong_author": 0, "wrong_c2_showed_it": 0, "wrong_picture_wrong": 0,
                     "false_by_rule": 0, "false_by_person": 0, "revocations": 0, "revocations_wrong": 0,
                     "looks": 0, "person_acts": 0, "confirmations": 0, "flags": 0,
+                    "items": 0, "proxy_looks": 0, "reads": 0, "decisions": 0, "consequential": 0, "dismissed": 0,
+                    "decided_nothing": 0, "confirmed_unread": 0,
+                    "agree_person_declarations": 0, "agree_same_as_rule": 0, "rule_would_declare": 0,
+                    "wrong_effects": [],
                     "effects_right": 0, "effects_wrong_target": 0, "effects_other_hostile": 0,
                     "_t_decl": [], "_t_effect": [],
                 },
@@ -380,6 +473,21 @@ def summarize(passes: list[dict[str, Any]]) -> dict[str, Any]:
             # declaration and flag with it
             row["looks"] += r["acts"] if r["arm"] == "manual" else r["rule_declarations"] + r["flags"]
             row["person_acts"] += r["person_declarations"] + r["confirmations"] + len(r["revocations"]) + r["resolutions"]
+            # the proxy's own tally, counted alike in every arm (scenario::ProxyStats)
+            px = r.get("proxy") or {}
+            row["items"] += px.get("items", 0)
+            row["proxy_looks"] += px.get("looks", 0)
+            row["reads"] += px.get("reads", 0)
+            row["decisions"] += px.get("decisions", 0)
+            row["consequential"] += px.get("declared", 0) + px.get("confirmed", 0) + px.get("revoked", 0)
+            row["dismissed"] += px.get("dismissed", 0)
+            row["decided_nothing"] += px.get("nothing", 0)
+            row["confirmed_unread"] += px.get("confirmed_unread", 0)
+            ag = r.get("agreement") or {}
+            row["agree_person_declarations"] += ag.get("person_declarations", 0)
+            row["agree_same_as_rule"] += ag.get("same_as_rule", 0)
+            row["rule_would_declare"] += ag.get("rule_would_declare", 0)
+            row["wrong_effects"] += r.get("wrong_effects") or []
             row["confirmations"] += r["confirmations"]
             row["flags"] += r["flags"]
             row["effects_right"] += r["effects_right"]
@@ -403,24 +511,34 @@ def run_comparison(
     situations: int = 20,
     extra: list[str] | None = None,
     binary: Path | None = None,
+    untracked_shares: tuple[float, ...] | list[float] = UNTRACKED_SHARES,
 ) -> dict[str, Any]:
-    """Every arm over the same generated situations of each seed, into `out`, and
-    `comparison.json`."""
+    """Every arm over the same generated situations of each seed, for each untracked-author
+    share, into `out`, and `comparison.json` (`summary` and `passes`: the first share's;
+    `by_share`: every share's)."""
     out.mkdir(parents=True, exist_ok=True)
-    passes = []
-    for seed in seeds:
-        sdir = out / "situations" / f"seed-{seed}"
-        metas = generate(seed, situations, sdir)
-        for arm in arms:
-            passes.append(run_arm(arm, seed, sdir, metas, out / arm / f"seed-{seed}", binary=binary or BINARY, extra=extra))
+    by_share: dict[str, dict[str, Any]] = {}
+    for share in untracked_shares:
+        key = f"{share:g}"
+        base = out if len(untracked_shares) == 1 else out / f"untracked-{key}"
+        passes = []
+        for seed in seeds:
+            sdir = base / "situations" / f"seed-{seed}"
+            metas = generate(seed, situations, sdir, untracked_share=share)
+            for arm in arms:
+                passes.append(run_arm(arm, seed, sdir, metas, base / arm / f"seed-{seed}", binary=binary or BINARY, extra=extra))
+        by_share[key] = {"untracked_share": share, "passes": passes, "summary": summarize(passes)}
+    first = by_share[f"{untracked_shares[0]:g}"]
     comp = {
         "label": NOT_HUMAN,
         "seeds": seeds,
         "situations_per_seed": situations,
         "arms": list(arms),
         "proxy": "scenario::ReviewProxy defaults: a look every 20 s, 6 s to read, reads 80%, a 5% slip" if not extra else " ".join(extra),
-        "passes": passes,
-        "summary": summarize(passes),
+        "untracked_shares": list(untracked_shares),
+        "passes": first["passes"],
+        "summary": first["summary"],
+        "by_share": {k: {"untracked_share": v["untracked_share"], "summary": v["summary"]} for k, v in by_share.items()},
     }
     (out / "comparison.json").write_text(json.dumps(comp, indent=1, default=str))
     return comp
@@ -437,19 +555,24 @@ def load_comparison(batch: Path) -> dict[str, Any] | None:
 
 
 def table(comp: dict[str, Any]) -> str:
-    """The comparison as plain text, one line per arm."""
+    """The comparison as plain text, one block per untracked-author share, one line per arm."""
     lines = [comp["label"], ""]
-    lines.append(
-        f"{'arm':<27}{'sit':>5}{'declared':>9}{'missed':>7}{'false':>6}{'C2':>4}{'pict':>5}{'revoked':>8}{'looks':>6}{'acts':>6}{'conf':>5}"
-        f"{'eff ok':>7}{'eff WRONG':>10}{'t decl':>7}{'t eff':>7}"
-    )
-    for arm in comp["arms"]:
-        r = comp["summary"]["arms"].get(arm)
-        if not r:
-            continue
+    shares = comp.get("by_share") or {"": {"summary": comp["summary"], "untracked_share": None}}
+    for block in shares.values():
+        if block.get("untracked_share") is not None:
+            lines.append(f"untracked authors: {block['untracked_share']:g}")
         lines.append(
-            f"{arm:<27}{r['situations']:>5}{r['author_declared']:>9}{r['missed']:>7}{r['false_hostile']:>6}{r['wrong_c2_showed_it']:>4}"
-            f"{r['wrong_picture_wrong']:>5}{r['revocations']:>8}{r['looks']:>6}{r['person_acts']:>6}{r['confirmations']:>5}"
-            f"{r['effects_right']:>7}{r['effects_wrong_target']:>10}{str(r['act_to_declaration_median_s']):>7}{str(r['act_to_effect_median_s']):>7}"
+            f"{'arm':<27}{'sit':>5}{'declared':>9}{'missed':>7}{'false':>6}{'C2':>4}{'pict':>5}{'revoked':>8}{'items':>6}{'decide':>7}{'conseq':>7}{'conf':>5}"
+            f"{'eff ok':>7}{'eff WRONG':>10}{'t decl':>7}{'t eff':>7}"
         )
+        for arm in comp["arms"]:
+            r = block["summary"]["arms"].get(arm)
+            if not r:
+                continue
+            lines.append(
+                f"{arm:<27}{r['situations']:>5}{r['author_declared']:>9}{r['missed']:>7}{r['false_hostile']:>6}{r['wrong_c2_showed_it']:>4}"
+                f"{r['wrong_picture_wrong']:>5}{r['revocations']:>8}{r['items']:>6}{r['decisions']:>7}{r['consequential']:>7}{r['confirmations']:>5}"
+                f"{r['effects_right']:>7}{r['effects_wrong_target']:>10}{str(r['act_to_declaration_median_s']):>7}{str(r['act_to_effect_median_s']):>7}"
+            )
+        lines.append("")
     return "\n".join(lines)

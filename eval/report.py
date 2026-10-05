@@ -488,46 +488,81 @@ def engage_section(suite: dict[str, Any]) -> str:
 
 def ident_section(comp: dict[str, Any]) -> str:
     """Rules 9: rule-based identification against manual declaration, on the same generated
-    situations and seeds (eval/ident.py)."""
+    situations and seeds (eval/ident.py), one table per untracked-author share."""
     arms = comp.get("arms") or []
-    summ = comp["summary"]
     out = ["<h2>Identification: rule against manual (rules 9)</h2>"]
     out.append('<div class="note"><strong>Model results, not human data.</strong> ' + esc(comp.get("label")) + "</div>")
     out.append(
-        f"<p>{esc(comp.get('situations_per_seed'))} generated situations per seed on seeds {esc(comp.get('seeds'))} (seeded random "
-        "geometry: a hostile author, tracked or not, who acts against our USV; none to three contacts near it, a fishing boat shown "
-        "neutral or not classified, an AIS ferry, a friendly patrol boat or another hostile; one or two of our observers), every one "
-        "played by the decision engine under each arm with the shipped policy changed only by the arm's flags, noise on each fix, a "
-        "scripted operator reviewing the inbox by its own procedure over what the console shows (never the engine's rule) and a "
-        f"nominator that nominates every declared track as soon as it may. Proxy: {esc(comp.get('proxy'))}. A wrong declaration is "
-        "<em>C2 showed it</em> when another track had 0.1 of the attribution or the declared track was shown neutral or friendly at "
-        "0.5, else <em>picture wrong</em>. Looks: what a person had to look at (every act without the rule; every rule declaration "
-        "and flag with it). Person acts: declarations, confirmations, revocations and flag resolutions. Effects on a wrong target: "
-        "released on a contact that is not hostile.</p>"
+        f"<p>{esc(comp.get('situations_per_seed'))} generated situations per seed on seeds {esc(comp.get('seeds'))} for each share "
+        "of authors we hold no track of (seeded geometry: a hostile author who acts against our USV; none to three contacts near it, "
+        "each holding or under way as stated in eval/ident.py; one or two of our observers), every one played by the decision engine "
+        "under each arm with the shipped policy changed only by the arm's flags, noise on each fix, a scripted operator reviewing the "
+        f"inbox and a nominator that nominates every declared track as soon as it may. Proxy: {esc(comp.get('proxy'))}.</p>"
+    )
+    out.append(
+        "<p><strong>Read this first.</strong> The reviewing proxy's procedure is close to the rule's own (the best fix, two combined "
+        "sigmas, the victim excluded, a track shown neutral or friendly at 0.5 left alone), so their agreement is built in: the manual "
+        "arm says nothing about how accurately a person identifies, and a case the rule gets wrong the proxy mostly gets wrong too. "
+        "With confirmation required (the shipped policy), each rule declaration still costs a person one decision: the rule moves the "
+        "decision from declaring to confirming, it does not remove it. The rule's 0 s against the person's time to a declaration, and "
+        "the time nomination before confirmation saves, are the proxy's look interval and reading time, model parameters. The signers "
+        "are scripts that sign whatever is nominated, so an engagement the C2 should not have offered is released.</p>"
     )
     head = (
-        "<tr><th>arm</th><th>situations</th><th>author declared</th><th>tracked author missed</th><th>false hostile declarations</th>"
-        "<th>wrong: C2 showed it</th><th>wrong: picture wrong</th><th>revocations (of a right one)</th><th>looks</th><th>person acts</th>"
-        "<th>confirmations</th><th>effects on the author</th><th>effects on a wrong target</th><th>act to declaration, median s</th>"
+        "<tr><th>arm</th><th>situations</th><th>author declared</th><th>tracked author missed</th><th>false hostile</th>"
+        "<th>wrong: C2 showed it</th><th>wrong: picture wrong</th><th>revocations (of a right one)</th><th>items before a person</th>"
+        "<th>decisions</th><th>of them consequential</th><th>confirmations (unread)</th><th>dismissals</th>"
+        "<th>effects on the author</th><th>effects on a contact not hostile</th><th>act to declaration, median s</th>"
         "<th>act to effect, median s</th></tr>"
     )
-    trs = []
-    for a in arms:
-        r = summ["arms"].get(a)
-        if not r:
-            continue
-        bad = " bad" if r["effects_wrong_target"] else ""
-        trs.append(
-            f"<tr><td><strong>{esc(a)}</strong></td><td class='n'>{r['situations']}</td><td class='n'>{r['author_declared']}/{r['tracked_authors']}</td>"
-            f"<td class='n'>{r['missed']}</td><td class='n'>{r['false_hostile']}</td><td class='n'>{r['wrong_c2_showed_it']}</td>"
-            f"<td class='n'>{r['wrong_picture_wrong']}</td><td class='n'>{r['revocations']} ({r['revocations_wrong']})</td>"
-            f"<td class='n'>{r['looks']}</td><td class='n'>{r['person_acts']}</td><td class='n'>{r['confirmations']}</td>"
-            f"<td class='n'>{r['effects_right']}</td><td class='n{bad}'>{r['effects_wrong_target']}</td>"
-            f"<td class='n'>{esc(r['act_to_declaration_median_s'])}</td><td class='n'>{esc(r['act_to_effect_median_s'])}</td></tr>"
-        )
-    out.append(f'<div class="card"><table><thead>{head}</thead><tbody>{"".join(trs)}</tbody></table></div>')
-    if summ.get("errors"):
-        out.append("<p class='bad'>Errors: " + esc(summ["errors"]) + "</p>")
+    shares = comp.get("by_share") or {"": {"summary": comp["summary"], "untracked_share": None}}
+    for block in shares.values():
+        summ = block["summary"]
+        if block.get("untracked_share") is not None:
+            out.append(f"<h3>Authors we hold no track of: {block['untracked_share']:g}</h3>")
+        trs = []
+        for a in arms:
+            r = summ["arms"].get(a)
+            if not r:
+                continue
+            bad = " bad" if r["effects_wrong_target"] else ""
+            trs.append(
+                f"<tr><td><strong>{esc(a)}</strong></td><td class='n'>{r['situations']}</td><td class='n'>{r['author_declared']}/{r['tracked_authors']}</td>"
+                f"<td class='n'>{r['missed']}</td><td class='n'>{r['false_hostile']}</td><td class='n'>{r['wrong_c2_showed_it']}</td>"
+                f"<td class='n'>{r['wrong_picture_wrong']}</td><td class='n'>{r['revocations']} ({r['revocations_wrong']})</td>"
+                f"<td class='n'>{r.get('items', r['looks'])}</td><td class='n'>{r.get('decisions', '')}</td><td class='n'>{r.get('consequential', '')}</td>"
+                f"<td class='n'>{r['confirmations']} ({r.get('confirmed_unread', 0)})</td><td class='n'>{r.get('dismissed', 0)}</td>"
+                f"<td class='n'>{r['effects_right']}</td><td class='n{bad}'>{r['effects_wrong_target']}</td>"
+                f"<td class='n'>{esc(r['act_to_declaration_median_s'])}</td><td class='n'>{esc(r['act_to_effect_median_s'])}</td></tr>"
+            )
+        out.append(f'<div class="card"><table><thead>{head}</thead><tbody>{"".join(trs)}</tbody></table></div>')
+        m = summ["arms"].get("manual")
+        if m and m.get("agree_person_declarations"):
+            out.append(
+                f"<p>Built-in agreement: in the manual arm the proxy declared on {m['agree_person_declarations']} acts, "
+                f"{m['agree_same_as_rule']} of them the track the rule would have declared; the rule would have declared on "
+                f"{m['rule_would_declare']}.</p>"
+            )
+        wrong = [w for a in arms for w in (summ["arms"].get(a) or {}).get("wrong_effects", [])]
+        if wrong:
+            seen: dict[str, list[str]] = {}
+            for a in arms:
+                for w in (summ["arms"].get(a) or {}).get("wrong_effects", []):
+                    seen.setdefault(f"{w['situation']} {w['track']}", []).append(a)
+            items = []
+            for w in wrong:
+                key = f"{w['situation']} {w['track']}"
+                if key not in seen:
+                    continue
+                sh = w.get("shown") or {}
+                items.append(
+                    f"<li>{esc(w['situation'])}: an effect on {esc(w['track'])} ({esc(w['truth'])}, shown {esc(sh.get('aff'))} at "
+                    f"{esc(sh.get('conf'))}, {esc(sh.get('from_author_m'))} m from the act), the author {esc(w['author'])}; in "
+                    f"{esc(', '.join(seen.pop(key)))}</li>"
+                )
+            out.append("<p class='bad'>Effects on a contact that was not hostile:</p><ul>" + "".join(items) + "</ul>")
+        if summ.get("errors"):
+            out.append("<p class='bad'>Errors: " + esc(summ["errors"]) + "</p>")
     return "".join(out)
 
 

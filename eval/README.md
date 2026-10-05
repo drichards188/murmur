@@ -222,24 +222,28 @@ missing.
 ### Identification: rule against manual (rules 9)
 
 The engine may declare a track hostile by rule on an observed hostile act, and flags what it
-is unsure of (DECISIONS.md, 10-05). `eval/ident.py` measures what that changes against manual
-declaration on generated situations (seeded geometry: a hostile author, tracked or not; none
-to three contacts near it; one or two observers), the same ones in every arm, each arm the
-shipped policy changed only by its flags: `manual`, `rule`, `rule-nominate`,
-`rule-corroborated`, `rule-corroborated-nominate`. The same scripted operator reviews in every
-arm by its own procedure over what the console shows (never the engine's rule), and a
-nominator nominates every declared track as soon as the policy lets it. Every batch runs it
-(`--ident-seeds`, `--ident-situations`, `--no-ident`); alone:
+is unsure of (DECISIONS.md, 10-05). `eval/ident.py` compares that with manual declaration on
+generated situations (seeded geometry: a hostile author, tracked or not, the untracked share a
+stated dimension; none to three contacts near it, holding or under way; one or two
+observers), the same ones in every arm, each arm the shipped policy changed only by its flags:
+`manual`, `rule`, `rule-nominate`, `rule-corroborated`, `rule-corroborated-nominate`. The same
+scripted operator reviews in every arm and a nominator nominates every declared track as soon
+as the policy lets it. Every batch runs it (`--ident-seeds`, `--ident-situations`,
+`--no-ident`); alone:
 
 ```
-.venv/bin/python -m eval.run ident --seeds 1 2 3 4 5 6 7 8 9 10 --situations 20
-.venv/bin/python -m eval.run ident --threshold 0.95 --proxy-diligence 0.5
+.venv/bin/python -m eval.run ident --seeds 1 2 3 4 5 6 7 8 9 10 --situations 20 --untracked-share 0.2 0.5
+.venv/bin/python -m eval.run ident --threshold 0.95 --proxy-diligence 0.5 --untracked-share 0.2
 ```
 
-It writes `ident/comparison.json` (the situations with their truth, every run's labelled
-declarations, revocations and engagements) and a report section; METRICS.md defines each
-number. These are model results from scripted proxies on generated situations, dev runs with
-asserted ids, never human data; the live bridge's act sensing is exercised by
+It writes `ident/comparison.json` (per untracked share: the situations with their truth, every
+run's labelled declarations, revocations, engagements and the proxy's tally) and a report
+section; METRICS.md defines each number and what it cannot say. Read before quoting it: the
+proxy's procedure is close to the rule's, so their agreement is built in and the manual arm is
+no measure of human accuracy; with confirmation required the rule does not reduce a person's
+decisions; its latency numbers are the proxy's parameters; the scripted signers never refuse.
+These are model results from scripted proxies on generated situations, dev runs with asserted
+ids, never human data; the live bridge's act sensing is exercised by
 `sim/scenarios/golden-gate-ident.toml` (a live run, not a batch arm).
 
 ## Arms

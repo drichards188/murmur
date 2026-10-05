@@ -7,6 +7,7 @@ storyline resolution, the model adapter's cost guard (no API is called), the rep
 from __future__ import annotations
 
 import json
+import math
 import threading
 from pathlib import Path
 
@@ -591,6 +592,39 @@ def test_ident_generates_situations_with_their_truth(tmp_path: Path):
             assert m["truth"][m["author"]] == "hostile" and acts[0]["by_track"] == m["author"]
         for t in sc.get("track", []):
             assert t["truth"] == m["truth"][t["id"]]
+            assert len(t["velocity"]) == 2
+    # contacts move as MOTION states: some hold, some are under way
+    speeds = [
+        math.hypot(*t["velocity"])
+        for m in a
+        for t in tomllib.loads((tmp_path / "a" / f"{m['name']}.toml").read_text()).get("track", [])
+    ]
+    assert any(v == 0 for v in speeds) and any(v > 0 for v in speeds)
+    # the untracked-author share is a stated dimension
+    many = I.generate(5, 60, tmp_path / "d", untracked_share=0.5)
+    share = sum(m["author"] == "untracked" for m in many) / len(many)
+    assert 0.3 < share < 0.7, share
+    assert all(m["untracked_share"] == 0.5 for m in many)
+
+
+def test_ident_counts_a_persons_decisions_alike_in_every_arm():
+    """Workload from the proxy's own tally: one decision per item it got to the end of,
+    whatever it decided (an act it could not attribute with the rule off counts as a decision,
+    as a flag it dismissed does with the rule on); consequential ones are declarations,
+    confirmations and revocations, in every arm."""
+    from eval import ident as I
+
+    base = {"replay_ok": True, "author_tracked": True, "acts": 2, "declarations": [], "author_declared": False, "missed": True,
+            "first_right_after_s": None, "revocations": [], "confirmations": 0, "resolutions": 0, "person_declarations": 0,
+            "rule_declarations": 0, "flags": 0, "effects_right": 0, "effects_wrong_target": 0, "effects_other_hostile": 0,
+            "first_effect_after_s": None}
+    manual = {**base, "arm": "manual", "proxy": {"items": 2, "looks": 3, "reads": 2, "decisions": 2, "declared": 1, "confirmed": 0,
+                                                  "confirmed_unread": 0, "revoked": 0, "dismissed": 0, "nothing": 1}}
+    rule = {**base, "arm": "rule", "proxy": {"items": 2, "looks": 2, "reads": 1, "decisions": 2, "declared": 0, "confirmed": 1,
+                                              "confirmed_unread": 1, "revoked": 0, "dismissed": 1, "nothing": 0}}
+    s = I.summarize([{"arm": "manual", "seed": 1, "results": [manual]}, {"arm": "rule", "seed": 1, "results": [rule]}])["arms"]
+    assert (s["manual"]["items"], s["manual"]["decisions"], s["manual"]["consequential"], s["manual"]["decided_nothing"]) == (2, 2, 1, 1)
+    assert (s["rule"]["items"], s["rule"]["decisions"], s["rule"]["consequential"], s["rule"]["dismissed"], s["rule"]["confirmed_unread"]) == (2, 2, 1, 1, 1)
 
 
 def test_ident_labels_a_situation_from_its_log():
@@ -637,7 +671,7 @@ def test_ident_comparison_runs(tmp_path: Path):
 
     if not I.BINARY.exists():
         pytest.skip("no release build of murmur-scenarios")
-    comp = I.run_comparison(tmp_path, [1], arms=["manual", "rule"], situations=6)
+    comp = I.run_comparison(tmp_path, [1], arms=["manual", "rule"], situations=6, untracked_shares=[0.2])
     s = comp["summary"]
     assert not s["errors"], s["errors"]
     manual, rule = s["arms"]["manual"], s["arms"]["rule"]
@@ -645,6 +679,10 @@ def test_ident_comparison_runs(tmp_path: Path):
     assert manual["replay_ok"] == 6 and rule["replay_ok"] == 6
     assert rule["act_to_declaration_median_s"] in (None, 0.0)
     assert manual["act_to_declaration_median_s"] is None or manual["act_to_declaration_median_s"] > 0
+    # the proxy's tally reached the summary: every item put before it ends in one decision
+    for r in (manual, rule):
+        assert r["items"] > 0 and r["decisions"] <= r["items"]
+    assert list(comp["by_share"]) == ["0.2"]
     assert "Not human data" in I.table(comp)
     assert (tmp_path / "comparison.json").exists()
 
