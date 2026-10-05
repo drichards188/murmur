@@ -858,16 +858,19 @@ fn a_rules_8_log_claiming_rules_7_still_carries_its_authentication() {
     }
 }
 
-/// Rules 9, live, from a clean build of the merged head, anchored as it ran: a credentials run
-/// (stand-ins, the engagement demo fleet, `sim/scenarios/golden-gate-ident.toml`). Three
-/// scripted acts came in through the bridge's sensing model: the fast boat firing on the USV,
-/// observed 77 m from its track (attribution 0.85, flagged); the skiff alongside the crab boat
-/// firing on the sensor ship (0.53 against 0.47, flagged); the fast boat again, declared hostile
-/// by rule (0.99). op-1 (no engagement authority) confirmed the rule declaration under their
-/// session, op-2 dismissed the ambiguous flag and op-1 confirmed the other; op-1 nominated the
-/// switchblade on the boat, op-2 and op-3 looked and signed, each with their password again;
-/// op-3 then revoked the declaration, and the engagement stopped before anything else (cause
-/// revoked), its fallback commanded; everyone logged out.
+/// Rules 9, live, from a clean build of the review round's head (7508c90), anchored as it ran: a
+/// credentials run on its own ports (stand-ins, the engagement demo fleet,
+/// `sim/scenarios/golden-gate-ident.toml`, the honest tracker). Before the acts, a truth
+/// message with a fabricated contact and act was posted four ways without the stack's
+/// simulation token (none, a guess, an agent's key, an operator's session): each refused, 401,
+/// nothing logged. Three scripted acts came in through the sensing model: the fast boat firing
+/// on the USV, observed 97 m from its track (attribution 0.46, flagged); the skiff alongside the
+/// crab boat firing on the sensor ship (0.54 to the crab boat, 0.46 to the skiff: flagged); the fast
+/// boat again, declared hostile by rule (0.99). op-1 (no engagement authority) confirmed the
+/// rule declaration under their session, op-2 dismissed the ambiguous flag and op-1 confirmed
+/// the other; op-1 nominated the switchblade on the boat, op-2 and op-3 looked and signed, each
+/// with their password again; op-3 then revoked the declaration, and the engagement stopped
+/// before anything else (cause revoked), its fallback commanded; everyone logged out.
 const IDENT_LIVE: &str = "v9-identification-live.jsonl";
 
 #[test]
@@ -941,6 +944,18 @@ fn the_rules_9_live_log_declares_by_rule_and_operators_review_it_under_their_ses
         "{:?}",
         events[i + 1]
     );
+    // every act came in on the stack's own simulation channel (its token checked); the
+    // review's injection, tried four ways before the acts (no token, a guess, an agent's key,
+    // an operator's session), was refused before anything read it: nothing of it is here
+    let channels: Vec<Option<String>> = events
+        .iter()
+        .filter_map(|e| match &e.body {
+            EventBody::IdentAct { act, .. } => Some(act.channel.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(channels, vec![Some("sim:contacts".to_string()); 3]);
+    assert!(!log.contains("injected") && !log.contains("fishing-x"));
     // the signers' pictures showed how the target was declared
     let pictures: Vec<&str> = log.lines().filter(|l| l.contains("\"type\":\"picture.issued\"")).collect();
     assert_eq!(pictures.len(), 2);
