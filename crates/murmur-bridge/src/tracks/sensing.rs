@@ -215,6 +215,9 @@ pub struct Detection {
     /// the AIS broadcast as heard
     pub ais: Option<AisHeard>,
     pub domain: Domain,
+    /// When the fix was taken, by the clock of the truth it was drawn from (the message's
+    /// `t`); None: unknown (the tracker then dates it by its arrival).
+    pub measured_t: Option<f64>,
 }
 
 /// The AIS message as received: identity only, nothing about its truthfulness.
@@ -437,6 +440,7 @@ pub fn detect(
                         None
                     },
                     domain: c.domain,
+                    measured_t: None,
                 });
             }
         }

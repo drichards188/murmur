@@ -73,9 +73,11 @@ pub struct Settings {
     pub eval_truth: bool,
     pub drop_s: f64,
     /// The simulation channel's token (`MURMUR_SIM_TOKEN`, generated per stack by `up.sh` and
-    /// the evaluation's runner and handed to the contacts process): `POST /api/sim/contacts`
-    /// carries it (`X-Murmur-Sim-Token`) or is refused; none set, the channel is closed. Never
-    /// logged or served.
+    /// the evaluation's runner and given to this bridge and the contacts process only): `POST
+    /// /api/sim/contacts` carries it (`X-Murmur-Sim-Token`, checked before the body is read)
+    /// or is refused; none set, the channel is closed. Never logged or served. It stops an
+    /// HTTP client, not a process of the same user (which can read either process's
+    /// environment).
     pub sim_token: Option<String>,
 }
 
@@ -249,9 +251,15 @@ impl Tracks {
         };
         let seed = params.seed;
         let rate = params.misclassification_rate;
-        let detections = sensing::detect(params, observers, &msg.contacts, &|contact, sensor| {
+        let mut detections = sensing::detect(params, observers, &msg.contacts, &|contact, sensor| {
             misclassify_draw(seed, contact, sensor, rate)
         });
+        // each fix dated by the clock of the truth it was drawn from: the filter's intervals
+        // are the contact's own, whatever the bridge's wall clock does meanwhile (on this
+        // host it steps back about a second every half minute)
+        for d in &mut detections {
+            d.measured_t = Some(msg.t);
+        }
         let n_contacts = msg.contacts.len();
         let n_tracks = {
             let mut inner = lock(&self.inner);
@@ -831,21 +839,26 @@ async fn review(State(api): State<Api>) -> Response {
     Json(api.decision.review_json()).into_response()
 }
 
+/// The largest truth message the simulation channel reads, bytes (axum's default for a JSON
+/// body).
+const SIM_BODY_LIMIT: usize = 2 * 1024 * 1024;
+
 /// The simulation channel in. Truth: stored for the sensing model, never served back
 /// except by `sim_truth` with `MURMUR_EVAL_TRUTH=1`.
-async fn sim_contacts(
-    State(api): State<Api>,
-    headers: HeaderMap,
-    body: Result<Json<TruthMessage>, axum::extract::rejection::JsonRejection>,
-) -> Response {
+async fn sim_contacts(State(api): State<Api>, request: axum::extract::Request) -> Response {
     // only the stack's own contacts process: truth reaches the sensing model, and through it
-    // acts reach the identification rule
-    if let Err(why) = api.tracks.sim_token_ok(&headers) {
+    // acts reach the identification rule. The token is checked on the headers before the
+    // body is read at all.
+    if let Err(why) = api.tracks.sim_token_ok(request.headers()) {
         return error(StatusCode::UNAUTHORIZED, why);
     }
-    let Json(msg) = match body {
+    let bytes = match axum::body::to_bytes(request.into_body(), SIM_BODY_LIMIT).await {
         Ok(b) => b,
-        Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, e.body_text()),
+        Err(e) => return error(StatusCode::PAYLOAD_TOO_LARGE, format!("truth message: {e}")),
+    };
+    let msg: TruthMessage = match serde_json::from_slice(&bytes) {
+        Ok(m) => m,
+        Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, format!("truth message: {e}")),
     };
     match api.tracks.on_truth(msg, &api.world) {
         Ok((contacts, detections, tracks)) => Json(json!({

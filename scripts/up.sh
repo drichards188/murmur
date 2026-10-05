@@ -83,12 +83,13 @@ case "${MURMUR_AUTH:-dev}" in
 esac
 
 # the simulation channel's token (rules 9: truth, and the hostile acts in it, reach the
-# bridge's sensing model only from this stack's own contacts process): a fresh one per stack,
-# in the environment of the bridge and the contacts process only, never printed
-if [ -z "${MURMUR_SIM_TOKEN:-}" ]; then
-  MURMUR_SIM_TOKEN="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-fi
-export MURMUR_SIM_TOKEN
+# bridge's sensing model only from this stack's own contacts process): a fresh one per stack
+# (or the caller's), given to the bridge and the contacts process only and taken out of the
+# environment everything else inherits, never printed. It stops a client that can only reach
+# the bridge over HTTP; a process running as the same user can read it from either
+# process's /proc/<pid>/environ.
+sim_token="${MURMUR_SIM_TOKEN:-$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')}"
+unset MURMUR_SIM_TOKEN
 
 echo $$ > logs/up.pid
 pids=()
@@ -160,11 +161,11 @@ fi
 
 # exec in each subshell so the tracked pid is the real process and cleanup reaches it
 .venv/bin/python sim/swarm.py --base-port "$vehicle_base" "$@" > logs/sim.log 2>&1 & pids+=($!)
-env "${bridge_env[@]}" target/release/murmur-bridge > logs/bridge.log 2>&1 & pids+=($!)
+env "${bridge_env[@]}" MURMUR_SIM_TOKEN="$sim_token" target/release/murmur-bridge > logs/bridge.log 2>&1 & pids+=($!)
 (cd web && exec node_modules/.bin/vite --host 127.0.0.1 --port "$web_port" --strictPort) > logs/web.log 2>&1 & pids+=($!)
 if [ -n "${MURMUR_CONTACTS:-}" ]; then
   # contacts that are not ours: truth goes only to the bridge's simulation channel
-  target/release/murmur-contacts "$MURMUR_CONTACTS" > logs/contacts.log 2>&1 & pids+=($!)
+  MURMUR_SIM_TOKEN="$sim_token" target/release/murmur-contacts "$MURMUR_CONTACTS" > logs/contacts.log 2>&1 & pids+=($!)
   echo "contacts: $MURMUR_CONTACTS (logs/contacts.log, truth in logs/contacts-truth.jsonl)"
 fi
 

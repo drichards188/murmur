@@ -3,21 +3,42 @@
 //! position uncertainty grows with age at `sigma_growth_mps`, so a track that nobody has
 //! seen for a minute is visibly loose and an engagement check (Phase E) can refuse it.
 //!
-//! Estimation: a constant-velocity Kalman filter per horizontal axis (position and velocity,
-//! white-noise acceleration by domain, [`process_noise`]), every detection a position
+//! Estimation: an interacting multiple model filter (IMM, Blom and Bar-Shalom) of two
+//! constant-velocity Kalman filters per horizontal axis, one for a contact keeping its course
+//! and speed (little process noise) and one for a manoeuvring contact (much more), switching
+//! as a Markov chain ([`process_noise`], [`SOJOURN_S`]). Every detection is a position
 //! measurement with its sensor's 1-sigma and an AIS report's course and speed a velocity
-//! measurement, so the 1-sigma it reports is the filter's own and honest against the truth
-//! (a test checks it in the simulation: `tracks::tests::the_trackers_uncertainty_covers_
-//! the_truth`; until rules 9's review it was a scalar update with a velocity smoothed from
-//! fixes, too loose holding and too tight after a manoeuvre). Existence confidence climbs
-//! with hits and decays in silence; identity confidence grows with dwell per sensor type and
-//! combines across independent sensors. Several observers' fixes of one tick are folded one
-//! after another, as independent measurements (they are: each sensor's draw is its own). Association is by the simulation's contact id (see `mod.rs`); a dropped track
-//! that is seen again gets a new id, as a real tracker would start a new track.
+//! measurement; each fix weighs the two models by how well each predicted it, and the
+//! estimate is their mixture, whose covariance widens while they disagree (a turn, a sprint,
+//! a stop). The reported covariance is that widened by the recent fixes' consistency
+//! ([`REPORT_NIS`]): fixes farther off than predicted mean the filter has not yet taken in a
+//! manoeuvre. The 1-sigma is checked against the simulation's truth on seeds and motions it
+//! was not tuned on (`tracks::tests::calib`). Until rules 9's review the filter was a scalar
+//! update with a velocity smoothed from fixes (too loose holding, too tight after a
+//! manoeuvre); the first Kalman filter of that review had one model, honest on the motions it
+//! was tuned to and overconfident on a zigzag or a sprint and stop.
+//!
+//! Each fix is dated by the clock of the truth it was drawn from (`Detection::measured_t`),
+//! not by its arrival: on this host the bridge's wall clock steps back about a second every
+//! half minute, and a filter that trusts its velocity to 0.3 m/s cannot take a second lost.
+//!
+//! A minute ahead the filter's velocity is the current leg's, which a contact that zigzags,
+//! weaves or sprints and stops will not keep: the track also gives its average velocity over
+//! the last minute (`TrackFacts::mean_velocity_mps`), and remembers whether its velocity
+//! changed beyond its noise within the last [`MANOEUVRE_MEMORY_S`] and the fastest it went
+//! (`TrackFacts::manoeuvre`); a keep-out counts it along both velocities and, manoeuvring,
+//! anywhere it could reach (rules 9).
+//!
+//! Existence confidence climbs with hits and decays in silence; identity confidence grows
+//! with dwell per sensor type and combines across independent sensors. Several observers'
+//! fixes of one tick are folded one after another, as independent measurements (they are:
+//! each sensor's draw is its own). Association is by the simulation's contact id (see
+//! `mod.rs`); a dropped track that is seen again gets a new id, as a real tracker would start
+//! a new track.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
-use murmur_decide::{Affiliation, Fact, LonLat, Time, TrackFacts};
+use murmur_decide::{Affiliation, Fact, LonLat, Manoeuvre, Time, TrackFacts};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -40,29 +61,66 @@ const VEL_KNOWN_SIGMA_MPS: f64 = 3.0;
 /// An AIS report's course and speed over ground, 1-sigma per axis, m/s.
 const AIS_VEL_SIGMA_MPS: f64 = 0.3;
 
-/// The filter's white-noise acceleration by domain (its spectral density, m^2/s^3): what the
-/// contact may do between fixes that the constant-velocity model does not know. Set so the
-/// reported 1-sigma covers the truth about as often as a Gaussian says, holding, in transit,
-/// turning and circling, in the simulation's motion (see the module doc).
-pub fn process_noise(domain: Domain) -> f64 {
+/// The two models' white-noise acceleration by domain (spectral density, m^2/s^3): steady
+/// (what a contact keeping its course and speed still does that the constant-velocity model
+/// does not know) and manoeuvring (a turn, a sprint, a stop). Surface values tuned on the
+/// calibration test's tuning sets (`tracks::tests::calib`); air, ground and subsurface scaled
+/// from the single-model values by the same factors (a fifth, and forty times), not checked
+/// against truth.
+pub fn process_noise(domain: Domain) -> [f64; 2] {
     match domain {
-        Domain::Air => Q_AIR,
-        Domain::Surface => Q_SURFACE,
-        Domain::Subsurface => Q_SUBSURFACE,
-        Domain::Ground => Q_GROUND,
+        Domain::Air => [0.4, 80.0],
+        Domain::Surface => [0.01, 2.0],
+        Domain::Subsurface => [0.002, 0.4],
+        Domain::Ground => [0.06, 12.0],
     }
 }
 
-const Q_AIR: f64 = 2.0;
-const Q_SURFACE: f64 = 0.05;
-const Q_SUBSURFACE: f64 = 0.01;
-const Q_GROUND: f64 = 0.3;
+/// Mean time a contact stays in each model before switching (steady, manoeuvring), s: the
+/// Markov chain between them (a manoeuvre every two minutes or so, lasting half a minute).
+pub const SOJOURN_S: [f64; 2] = [120.0, 30.0];
 
-/// A fix this far from the prediction (its innovation's normalized square, chi-square with 2
-/// degrees of freedom, 99%) widens the prior by the innovation's own size before the update:
-/// the contact did something the constant-velocity model did not expect (a stop, a sharp
-/// turn), and the fix outranks the prediction.
+/// A fix this far from the manoeuvring model's prediction (its innovation's normalized
+/// square, chi-square with 2 degrees of freedom, 99%) widens that model's prior by the
+/// innovation's own size before the update: the contact did something neither model
+/// expected (a stop from speed within a second), and the fix outranks the prediction. The
+/// model's weight is judged on its prediction as it was; the steady model keeps its own (an
+/// outlier fix does not drag the estimate).
 const NIS_JUMP: f64 = 9.21;
+
+/// The reported covariance is the filter's widened by the recent fixes' consistency: their
+/// normalized distance from the mixture's prediction (expected 2), averaged with this weight
+/// per fix (about the last three fixes), over [`REPORT_NIS`] when above it. A run of fixes
+/// farther off than predicted says the filter is behind a manoeuvre it has not yet taken in,
+/// and its own covariance too small; the estimate itself is unchanged.
+const REPORT_ALPHA: f64 = 0.3;
+/// Tuned: at 2 (the expectation) a sprint and stop and a weave stayed overconfident.
+const REPORT_NIS: f64 = 1.5;
+
+/// The average velocity a keep-out also predicts along is over about this long, s (the
+/// displacement since the position sample nearest this long ago, at least
+/// [`MEAN_MIN_S`] ago).
+const MEAN_WINDOW_S: f64 = 60.0;
+const MEAN_MIN_S: f64 = 45.0;
+
+/// The manoeuvring model's probability above which the track counts as manoeuvring for the
+/// keep-out (as well as a velocity change beyond its noise).
+const MANOEUVRE_P: f64 = 0.8;
+
+/// The track remembers its velocity every this many seconds, for the manoeuvre evidence.
+const VEL_SAMPLE_S: f64 = 10.0;
+/// How long a manoeuvre is remembered, and over what the velocity is compared, s.
+pub const MANOEUVRE_MEMORY_S: f64 = 300.0;
+/// A change of velocity counts as a manoeuvre above this, m/s, and only when unlikely as
+/// noise: its square above [`MANOEUVRE_CHI2`] times the two estimates' variances.
+const MANOEUVRE_MIN_MPS: f64 = 2.0;
+/// Chi-square with 2 degrees of freedom, 99.9%.
+const MANOEUVRE_CHI2: f64 = 13.8;
+
+/// The filter predicts over the interval between two fixes' own times (`Detection::measured_t`)
+/// when it is between 0 and this, seconds; otherwise (no time, a clock that jumped) over the
+/// interval between their arrivals.
+const MAX_FIX_INTERVAL_S: f64 = 120.0;
 
 /// A new track's velocity is unknown within this, 1-sigma per axis (about half the domain's
 /// top speed).
@@ -93,6 +151,157 @@ impl AxisCov {
             vv: self.vv + q * dt,
         }
     }
+
+    fn scaled(self, k: f64) -> AxisCov {
+        AxisCov {
+            pp: self.pp * k,
+            pv: self.pv * k,
+            vv: self.vv * k,
+        }
+    }
+
+    /// Plus the outer product of a (position, velocity) difference: a mixture's spread.
+    fn spread(self, w: f64, dp: f64, dv: f64) -> AxisCov {
+        AxisCov {
+            pp: self.pp + w * dp * dp,
+            pv: self.pv + w * dp * dv,
+            vv: self.vv + w * dv * dv,
+        }
+    }
+}
+
+/// One of the filter's two models: position east and north of the track's estimate (m),
+/// velocity east and north (m/s), the covariance per axis, and the model's probability.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Model {
+    x: [f64; 4],
+    ce: AxisCov,
+    cn: AxisCov,
+    p: f64,
+}
+
+impl Model {
+    /// Carried `dt` seconds forward with white-noise acceleration `q`.
+    fn predicted(&self, dt: f64, q: f64) -> Model {
+        Model {
+            x: [self.x[0] + self.x[2] * dt, self.x[1] + self.x[3] * dt, self.x[2], self.x[3]],
+            ce: self.ce.predict(dt, q),
+            cn: self.cn.predict(dt, q),
+            p: self.p,
+        }
+    }
+
+    /// A position measurement `z` (east, north m) with variance `r` per axis: the update, and
+    /// the measurement's log-likelihood under this model's prediction as it was.
+    fn update_position(&mut self, z: [f64; 2], r: f64, jump: bool) -> f64 {
+        let (ie, inn) = (z[0] - self.x[0], z[1] - self.x[1]);
+        let (se, sn) = (self.ce.pp + r, self.cn.pp + r);
+        let nis = ie * ie / se + inn * inn / sn;
+        let loglik = -0.5 * nis - (2.0 * std::f64::consts::PI).ln() - 0.5 * (se * sn).ln();
+        if jump && nis > NIS_JUMP {
+            let k = nis / 2.0;
+            self.ce = self.ce.scaled(k);
+            self.cn = self.cn.scaled(k);
+        }
+        let (pe, ve) = kalman_position(&mut self.ce, ie, r);
+        let (pn, vn) = kalman_position(&mut self.cn, inn, r);
+        self.x = [self.x[0] + pe, self.x[1] + pn, self.x[2] + ve, self.x[3] + vn];
+        loglik
+    }
+
+    /// A velocity measurement (an AIS report's course and speed over ground): the update and
+    /// its log-likelihood.
+    fn update_velocity(&mut self, z: [f64; 2], r: f64) -> f64 {
+        let (ie, inn) = (z[0] - self.x[2], z[1] - self.x[3]);
+        let (se, sn) = (self.ce.vv + r, self.cn.vv + r);
+        let loglik = -0.5 * (ie * ie / se + inn * inn / sn)
+            - (2.0 * std::f64::consts::PI).ln()
+            - 0.5 * (se * sn).ln();
+        let (pe, ve) = kalman_velocity(&mut self.ce, ie, r);
+        let (pn, vn) = kalman_velocity(&mut self.cn, inn, r);
+        self.x = [self.x[0] + pe, self.x[1] + pn, self.x[2] + ve, self.x[3] + vn];
+        loglik
+    }
+}
+
+/// One axis's Kalman update with a position innovation `i` of variance `r`: the corrections
+/// to position and velocity; the covariance updated in place.
+fn kalman_position(c: &mut AxisCov, i: f64, r: f64) -> (f64, f64) {
+    let s = c.pp + r;
+    let (kp, kv) = (c.pp / s, c.pv / s);
+    *c = AxisCov {
+        pp: c.pp - c.pp * c.pp / s,
+        pv: c.pv - c.pp * c.pv / s,
+        vv: c.vv - c.pv * c.pv / s,
+    };
+    (kp * i, kv * i)
+}
+
+/// One axis's Kalman update with a velocity innovation `i` of variance `r`.
+fn kalman_velocity(c: &mut AxisCov, i: f64, r: f64) -> (f64, f64) {
+    let s = c.vv + r;
+    let (kp, kv) = (c.pv / s, c.vv / s);
+    *c = AxisCov {
+        pp: c.pp - c.pv * c.pv / s,
+        pv: c.pv - c.pv * c.vv / s,
+        vv: c.vv - c.vv * c.vv / s,
+    };
+    (kp * i, kv * i)
+}
+
+/// The models' mixture: mean state and covariance per axis (with the spread of their means).
+fn mixture(models: &[Model; 2]) -> ([f64; 4], AxisCov, AxisCov) {
+    let mut x = [0.0; 4];
+    for m in models {
+        for (xk, mk) in x.iter_mut().zip(m.x) {
+            *xk += m.p * mk;
+        }
+    }
+    let zero = AxisCov { pp: 0.0, pv: 0.0, vv: 0.0 };
+    let (mut ce, mut cn) = (zero, zero);
+    for m in models {
+        ce = AxisCov {
+            pp: ce.pp + m.p * m.ce.pp,
+            pv: ce.pv + m.p * m.ce.pv,
+            vv: ce.vv + m.p * m.ce.vv,
+        }
+        .spread(m.p, m.x[0] - x[0], m.x[2] - x[2]);
+        cn = AxisCov {
+            pp: cn.pp + m.p * m.cn.pp,
+            pv: cn.pv + m.p * m.cn.pv,
+            vv: cn.vv + m.p * m.cn.vv,
+        }
+        .spread(m.p, m.x[1] - x[1], m.x[3] - x[3]);
+    }
+    (x, ce, cn)
+}
+
+/// The IMM's interaction over `dt` seconds: each model's prior is the mixture of both,
+/// weighted by the chance the contact switched between them ([`SOJOURN_S`]); the models'
+/// probabilities become the predicted ones.
+fn interact(models: &[Model; 2], dt: f64) -> [Model; 2] {
+    let leave = [1.0 - (-dt / SOJOURN_S[0]).exp(), 1.0 - (-dt / SOJOURN_S[1]).exp()];
+    // trans[i][j]: from model i to model j
+    let trans = [[1.0 - leave[0], leave[0]], [leave[1], 1.0 - leave[1]]];
+    let mut out = *models;
+    for j in 0..2 {
+        let cbar: f64 = (0..2).map(|i| trans[i][j] * models[i].p).sum();
+        if cbar <= 0.0 {
+            continue;
+        }
+        let w = [trans[0][j] * models[0].p / cbar, trans[1][j] * models[1].p / cbar];
+        let mixed = mixture(&[
+            Model { p: w[0], ..models[0] },
+            Model { p: w[1], ..models[1] },
+        ]);
+        out[j] = Model {
+            x: mixed.0,
+            ce: mixed.1,
+            cn: mixed.2,
+            p: cbar,
+        };
+    }
+    out
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -181,12 +390,25 @@ pub struct Track {
     pub alt_t: Option<f64>,
     /// east, north m/s, once known (its 1-sigma below `VEL_KNOWN_SIGMA_MPS`)
     pub vel: Option<(f64, f64)>,
-    /// the filter's velocity estimate, known or not
-    vel_est: (f64, f64),
-    /// the filter's covariance at `last_seen_t` (per axis)
-    pub cov: AxisCov,
+    /// the filter's two models at `last_seen_t`, relative to `lat`, `lon` (their mixture)
+    models: [Model; 2],
+    /// the velocity every `VEL_SAMPLE_S` over `MANOEUVRE_MEMORY_S`, while known: (wall s,
+    /// east, north, its variance per axis)
+    vel_hist: VecDeque<(f64, f64, f64, f64)>,
+    /// the estimate's position every `VEL_SAMPLE_S`: (wall s, lat, lon), for the average
+    /// velocity over `MEAN_WINDOW_S`
+    pos_hist: VecDeque<(f64, f64, f64)>,
+    /// the last manoeuvre seen: when (wall s) and the largest change of velocity within
+    /// the memory, m/s
+    manoeuvre: Option<(f64, f64)>,
+    /// the fixes' normalized distance from the mixture's prediction, averaged (expected 2)
+    nis_avg: f64,
+    /// the last fix's own time (`Detection::measured_t`), when it had one
+    fix_t: Option<f64>,
+    /// the reported covariance's factor over the filter's (1 or more, `REPORT_NIS`)
+    inflate: f64,
 
-    /// 1 sigma at `last_seen_t` (per axis): `sqrt(cov.pp)`
+    /// 1 sigma at `last_seen_t` (per axis, the root mean of the two axes' variances)
     pub sigma_m: f64,
     pub confidence: f64,
     pub first_seen_t: f64,
@@ -264,12 +486,25 @@ impl Track {
             alt_m: d.alt_m,
             alt_t: None,
             vel: None,
-            vel_est: (0.0, 0.0),
-            cov: AxisCov {
-                pp: d.sigma_m * d.sigma_m,
-                pv: 0.0,
-                vv: initial_vel_sigma(d.domain).powi(2),
-            },
+            models: [0, 1].map(|j| {
+                let c = AxisCov {
+                    pp: d.sigma_m * d.sigma_m,
+                    pv: 0.0,
+                    vv: initial_vel_sigma(d.domain).powi(2),
+                };
+                Model {
+                    x: [0.0; 4],
+                    ce: c,
+                    cn: c,
+                    p: SOJOURN_S[j] / (SOJOURN_S[0] + SOJOURN_S[1]),
+                }
+            }),
+            vel_hist: VecDeque::new(),
+            pos_hist: VecDeque::new(),
+            manoeuvre: None,
+            nis_avg: 2.0,
+            inflate: 1.0,
+            fix_t: d.measured_t,
             sigma_m: d.sigma_m,
             confidence: 0.0,
             first_seen_t: now,
@@ -291,9 +526,12 @@ impl Track {
     /// The first detection: position as measured, velocity unknown (AIS gives one).
     fn first_fix(&mut self, d: &Detection, now: f64) {
         if let Some((e, n)) = d.velocity_mps {
-            self.vel_est = (e, n);
-            self.cov.vv = AIS_VEL_SIGMA_MPS * AIS_VEL_SIGMA_MPS;
-            self.vel = Some((e, n));
+            for m in &mut self.models {
+                m.x[2] = e;
+                m.x[3] = n;
+                m.ce.vv = AIS_VEL_SIGMA_MPS * AIS_VEL_SIGMA_MPS;
+                m.cn.vv = AIS_VEL_SIGMA_MPS * AIS_VEL_SIGMA_MPS;
+            }
         }
         self.after_update(d, now);
     }
@@ -313,9 +551,27 @@ impl Track {
             .map(|(e, n)| e.atan2(n).to_degrees().rem_euclid(360.0))
     }
 
-    /// 1-sigma horizontal uncertainty (per axis) at `now`: the filter's, carried forward.
+    /// 1-sigma horizontal uncertainty (per axis) at `now`: the filter's, each model carried
+    /// forward with its own process noise, and their mixture.
     pub fn sigma_at(&self, now: f64) -> f64 {
-        self.cov.predict(self.age_s(now), process_noise(self.domain)).pp.sqrt()
+        let dt = self.age_s(now);
+        let q = process_noise(self.domain);
+        let m = [self.models[0].predicted(dt, q[0]), self.models[1].predicted(dt, q[1])];
+        let (_, ce, cn) = mixture(&m);
+        (0.5 * (ce.pp + cn.pp) * self.inflate).sqrt()
+    }
+
+    /// The 1-sigma error of the velocity estimate per axis, m/s (the calibration test's).
+    #[cfg(test)]
+    pub fn vel_sigma_mps(&self) -> f64 {
+        let (_, ce, cn) = mixture(&self.models);
+        (0.5 * (ce.vv + cn.vv) * self.inflate).sqrt()
+    }
+
+    /// The manoeuvring model's probability now (0..1), for the calibration test.
+    #[cfg(test)]
+    pub fn manoeuvring_p(&self) -> f64 {
+        self.models[1].p
     }
 
     /// Where the track is believed to be at `now`: the last estimate carried forward on
@@ -324,16 +580,6 @@ impl Track {
         let Some((e, n)) = self.vel else {
             return (self.lat, self.lon);
         };
-        let dt = self.age_s(now);
-        (
-            self.lat + n * dt / 111_320.0,
-            self.lon + e * dt / (111_320.0 * self.lat.to_radians().cos()),
-        )
-    }
-
-    /// The filter's own prediction to `now` (its velocity estimate, known or not).
-    fn predicted_est(&self, now: f64) -> (f64, f64) {
-        let (e, n) = self.vel_est;
         let dt = self.age_s(now);
         (
             self.lat + n * dt / 111_320.0,
@@ -350,62 +596,62 @@ impl Track {
         self.age_s(now) > STALE_S
     }
 
-    /// Fold one detection in: the filter's prediction to `now`, its update with the fix
-    /// (and an AIS report's velocity), then everything the fix says besides position.
+    /// Fold one detection in: the models' interaction and prediction to `now`, each one's
+    /// update with the fix (and an AIS report's velocity), their probabilities by how well
+    /// each predicted it, then everything the fix says besides position.
     pub fn update(&mut self, d: &Detection, now: f64) {
         let q = process_noise(self.domain);
-        let dt = self.age_s(now);
-        let (plat, plon) = self.predicted_est(now);
-        let mut c = self.cov.predict(dt, q);
-        // the position measurement, per axis (east, north in metres)
-        let r = d.sigma_m * d.sigma_m;
-        let m_per_lon = 111_320.0 * plat.to_radians().cos();
-        let ie = (d.lon - plon) * m_per_lon;
-        let inn = (d.lat - plat) * 111_320.0;
-        let nis = (ie * ie + inn * inn) / (c.pp + r);
-        if nis > NIS_JUMP {
-            let k = nis / 2.0;
-            c = AxisCov {
-                pp: c.pp * k,
-                pv: c.pv * k,
-                vv: c.vv * k,
-            };
-        }
-        let s = c.pp + r;
-        let (kp, kv) = (c.pp / s, c.pv / s);
-        let (mut e, mut n) = (0.0, 0.0);
-        let (mut ve, mut vn) = self.vel_est;
-        e += kp * ie;
-        n += kp * inn;
-        ve += kv * ie;
-        vn += kv * inn;
-        c = AxisCov {
-            pp: c.pp - c.pp * c.pp / s,
-            pv: c.pv - c.pp * c.pv / s,
-            vv: c.vv - c.pv * c.pv / s,
+        // the interval between the fixes' own times, when both have one and it is sane; else
+        // between their arrivals
+        let dt = match (d.measured_t, self.fix_t) {
+            (Some(m), Some(f)) if (0.0..=MAX_FIX_INTERVAL_S).contains(&(m - f)) => m - f,
+            _ => self.age_s(now),
         };
-        // AIS: the contact's own course and speed over ground, a velocity measurement
-        if let Some((ae, an)) = d.velocity_mps {
-            let rv = AIS_VEL_SIGMA_MPS * AIS_VEL_SIGMA_MPS;
-            let s = c.vv + rv;
-            let (kp, kv) = (c.pv / s, c.vv / s);
-            let (ie, inn) = (ae - ve, an - vn);
-            e += kp * ie;
-            n += kp * inn;
-            ve += kv * ie;
-            vn += kv * inn;
-            c = AxisCov {
-                pp: c.pp - c.pv * c.pv / s,
-                pv: c.pv - c.pv * c.vv / s,
-                vv: c.vv - c.vv * c.vv / s,
-            };
+        if d.measured_t.is_some() {
+            self.fix_t = d.measured_t;
         }
-        self.lat = plat + n / 111_320.0;
-        self.lon = plon + e / m_per_lon;
-        self.vel_est = (ve, vn);
-        self.cov = c;
+        // the fix in metres east and north of the estimate (the models' origin)
+        let m_per_lon = 111_320.0 * self.lat.to_radians().cos();
+        let z = [(d.lon - self.lon) * m_per_lon, (d.lat - self.lat) * 111_320.0];
+        let mut models = if dt > 0.0 { interact(&self.models, dt) } else { self.models };
+        for (j, m) in models.iter_mut().enumerate() {
+            *m = m.predicted(dt, q[j]);
+        }
+        let r = d.sigma_m * d.sigma_m;
+        let prior_pp: f64 = models.iter().map(|m| m.p * 0.5 * (m.ce.pp + m.cn.pp)).sum();
+        // the fix against the mixture's prediction: the reported covariance's widening
+        let (x, ce, cn) = mixture(&models);
+        let nis = (z[0] - x[0]).powi(2) / (ce.pp + r) + (z[1] - x[1]).powi(2) / (cn.pp + r);
+        self.nis_avg = (1.0 - REPORT_ALPHA) * self.nis_avg + REPORT_ALPHA * nis;
+        self.inflate = (self.nis_avg / REPORT_NIS).max(1.0);
+        let mut loglik = [0.0; 2];
+        for (j, m) in models.iter_mut().enumerate() {
+            loglik[j] = m.update_position(z, r, j == 1);
+            // AIS: the contact's own course and speed over ground, a velocity measurement
+            if let Some((ae, an)) = d.velocity_mps {
+                loglik[j] += m.update_velocity([ae, an], AIS_VEL_SIGMA_MPS * AIS_VEL_SIGMA_MPS);
+            }
+        }
+        // each model's probability by how well it predicted the fix
+        let top = loglik[0].max(loglik[1]);
+        let w = [0, 1].map(|j| models[j].p * (loglik[j] - top).exp());
+        let total = w[0] + w[1];
+        if total > 0.0 && total.is_finite() {
+            for j in 0..2 {
+                models[j].p = (w[j] / total).clamp(1e-6, 1.0 - 1e-6);
+            }
+        }
+        // the mixture is the estimate; the models re-centred on it
+        let (x, _, _) = mixture(&models);
+        for m in &mut models {
+            m.x[0] -= x[0];
+            m.x[1] -= x[1];
+        }
+        self.lat += x[1] / 111_320.0;
+        self.lon += x[0] / m_per_lon;
+        self.models = models;
         if d.alt_m.is_some() {
-            let k = kp;
+            let k = prior_pp / (prior_pp + r);
             self.alt_m = match (self.alt_m, d.alt_m) {
                 (Some(a), Some(b)) => Some(a + k * (b - a)),
                 (_, b) => b,
@@ -415,10 +661,90 @@ impl Track {
         self.after_update(d, now);
     }
 
+    /// The models' mixture now: the 1-sigma, the velocity (known once its 1-sigma is below
+    /// `VEL_KNOWN_SIGMA_MPS`), and the manoeuvre evidence: a velocity that changed within
+    /// the memory by more than `MANOEUVRE_MIN_MPS` and more than its noise explains.
+    fn after_estimate(&mut self, now: f64) {
+        if self.pos_hist.back().is_none_or(|s| now - s.0 >= VEL_SAMPLE_S) {
+            self.pos_hist.push_back((now, self.lat, self.lon));
+        }
+        while self.pos_hist.front().is_some_and(|s| now - s.0 > MEAN_WINDOW_S + VEL_SAMPLE_S) {
+            self.pos_hist.pop_front();
+        }
+        let (x, ce, cn) = mixture(&self.models);
+        self.sigma_m = (0.5 * (ce.pp + cn.pp) * self.inflate).sqrt();
+        let vv = 0.5 * (ce.vv + cn.vv);
+        let known = vv.sqrt() < VEL_KNOWN_SIGMA_MPS;
+        self.vel = known.then_some((x[2], x[3]));
+        if !known {
+            return;
+        }
+        self.vel_hist.retain(|s| now - s.0 <= MANOEUVRE_MEMORY_S);
+        let change = self
+            .vel_hist
+            .iter()
+            .filter_map(|&(_, ve, vn, svv)| {
+                let dv = (x[2] - ve).hypot(x[3] - vn);
+                (dv > MANOEUVRE_MIN_MPS && dv * dv > MANOEUVRE_CHI2 * (vv + svv)).then_some(dv)
+            })
+            .fold(None, |a: Option<f64>, dv| Some(a.map_or(dv, |a| a.max(dv))));
+        // or the manoeuvring model all but certain: the largest change it made, whatever it is
+        let change = change.or_else(|| {
+            (self.models[1].p > MANOEUVRE_P).then(|| {
+                self.vel_hist
+                    .iter()
+                    .map(|&(_, ve, vn, _)| (x[2] - ve).hypot(x[3] - vn))
+                    .fold(0.0, f64::max)
+            })
+        });
+        if let Some(dv) = change {
+            let before = self
+                .manoeuvre
+                .filter(|(t, _)| now - t <= MANOEUVRE_MEMORY_S)
+                .map_or(0.0, |(_, c)| c);
+            self.manoeuvre = Some((now, dv.max(before)));
+        }
+        if self.vel_hist.back().is_none_or(|s| now - s.0 >= VEL_SAMPLE_S) {
+            self.vel_hist.push_back((now, x[2], x[3], vv));
+        }
+    }
+
+    /// The average velocity over about the last minute (east, north m/s): the displacement
+    /// since the position sample nearest `MEAN_WINDOW_S` before the estimate, if one is at
+    /// least `MEAN_MIN_S` old.
+    pub fn mean_velocity(&self) -> Option<(f64, f64)> {
+        let t = self.last_seen_t;
+        let &(t0, lat0, lon0) = self
+            .pos_hist
+            .iter()
+            .filter(|s| t - s.0 >= MEAN_MIN_S)
+            .min_by(|a, b| ((t - a.0) - MEAN_WINDOW_S).abs().total_cmp(&((t - b.0) - MEAN_WINDOW_S).abs()))?;
+        let dt = t - t0;
+        Some((
+            (self.lon - lon0) * 111_320.0 * self.lat.to_radians().cos() / dt,
+            (self.lat - lat0) * 111_320.0 / dt,
+        ))
+    }
+
+    /// The manoeuvre evidence at `t` (wall s): the last manoeuvre within the memory, the
+    /// largest change, and the fastest the contact went within the memory with two sigmas
+    /// of its velocity error.
+    pub fn manoeuvre_at(&self, t: f64) -> Option<(f64, f64, f64)> {
+        let (mt, change) = self.manoeuvre.filter(|(mt, _)| t - mt <= MANOEUVRE_MEMORY_S)?;
+        let (x, ce, cn) = mixture(&self.models);
+        let sv = (0.5 * (ce.vv + cn.vv)).sqrt();
+        let fastest = self
+            .vel_hist
+            .iter()
+            .filter(|s| t - s.0 <= MANOEUVRE_MEMORY_S)
+            .map(|s| s.1.hypot(s.2))
+            .fold(x[2].hypot(x[3]), f64::max);
+        Some((mt, change, fastest + 2.0 * sv))
+    }
+
     /// What a detection says besides position: velocity known, existence, sources, identity.
     fn after_update(&mut self, d: &Detection, now: f64) {
-        self.sigma_m = self.cov.pp.sqrt();
-        self.vel = (self.cov.vv.sqrt() < VEL_KNOWN_SIGMA_MPS).then_some(self.vel_est);
+        self.after_estimate(now);
         if d.alt_m.is_some() && self.alt_m.is_none() {
             self.alt_m = d.alt_m;
             self.alt_t = Some(now);
@@ -750,6 +1076,15 @@ impl Track {
             declared_by: None,
             declaration: None,
             review_flags: Vec::new(),
+            manoeuvre: self.manoeuvre_at(self.last_seen_t).map(|(t, change, speed)| Manoeuvre {
+                t: ms(t),
+                change_mps: (change * 100.0).round() / 100.0,
+                speed_mps: (speed * 100.0).round() / 100.0,
+            }),
+            mean_velocity_mps: self
+                .vel
+                .and(self.mean_velocity())
+                .map(|(e, n)| [(e * 100.0).round() / 100.0, (n * 100.0).round() / 100.0]),
         }
     }
 }
