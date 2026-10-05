@@ -42,8 +42,17 @@ make goldengate GG_FLEET=full-spectrum AT=2026-06-14T10:00Z   # with real tide/c
 
 ```bash
 make setup   # once: .venv, Rust release build, ArduPilot SITL in ~/ardupilot, npm install (~10 min)
-make up      # swarm + bridge + web; open http://127.0.0.1:5173
+target/release/murmur-auth add op-1 --engage   # once: an operator (password prompted, or on stdin)
+make up      # swarm + bridge + web; open http://127.0.0.1:5173 and sign in
 ```
+
+**Operators sign in.** Each operator has a credential of their own (argon2id hash) in
+`~/.config/murmur/credentials.json` (`MURMUR_CREDENTIALS` moves it; never in the repository),
+managed with `murmur-auth` (`add`, `passwd`, `engage`, `remove`, `list`; agents:
+`agent-add`, `agent-rotate`, `agent-remove`). An engagement needs two of them with engagement
+authority, each re-entering their password at the moment they sign. `MURMUR_AUTH=dev` runs
+with operator ids asserted by header instead, for scripted tests; the audit log records it,
+and such a run is never evidence about people (docs/DECISIONS.md).
 
 **Real conditions:** `make goldengate AT=2026-06-14T10:00Z` starts the swarm at the Golden
 Gate from the [tidewater](../tidewater) sibling repo's scenario. `scripts/up.sh` starts
