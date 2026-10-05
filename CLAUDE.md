@@ -119,6 +119,22 @@ meaningful. Decision and command, not weapons.
   or refused for an engaging platform supersedes the engagement (no fallback).
   `murmur-scenarios --rules 6` shows what rules 6 did. Live track ids follow detection order:
   a driver should find a track by its identity, not its id.
+- Rules 9 (`RULE_ID_SINCE`, policy schema 6): the engine declares hostile by rule on an
+  observed hostile act against ours clearly attributed to one track, and flags unsure cases
+  for review; effect release and accepting a lost friendly stay human. `[identification]` in
+  `sim/policy.toml` (`rule_declaration` on, `nominate_unconfirmed` off, `corroboration`);
+  acts are `[[act]]` in contacts scenarios; review at `GET /api/review`. Live demo:
+  `MURMUR_CONTACTS=sim/scenarios/golden-gate-ident.toml make goldengate GG_FLEET=engage-demo`.
+  Eval: `.venv/bin/python -m eval.run ident --seeds 1 2 3 4 5 6 7 8 9 10 --situations 20
+  --untracked-share 0.2 0.5` (model results: read METRICS.md's caveats before quoting).
+- `POST /api/sim/contacts` needs `X-Murmur-Sim-Token` equal to the bridge's
+  `MURMUR_SIM_TOKEN`; `up.sh` and eval give it to the bridge and contacts only. To inject
+  truth by hand, set it in both.
+- The tracker is a two-model IMM; changes must pass `tracks::tests::calib`. Its held-out seeds
+  (66-95) are not for tuning: write a new held-out set if you tune on them.
+- This host's wall clock (WSL) steps back about 1 s every ~32 s. The tracker dates fixes by the
+  truth message's clock (`Detection::measured_t`); anything else timing by arrival sees the
+  steps (murmur-dup).
 - The bridge's task-layer timeouts follow each link's measured round trip (`LinkTiming` in
   `crates/murmur-bridge/src/link.rs`; floors 1 s per ACK, 1.5 s per mission item, as before on
   fast links) and its telemetry plan follows the link class (`crates/murmur-bridge/src/

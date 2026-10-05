@@ -988,6 +988,8 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (RULE_ID_SINCE, "\"review_flags\":", "a track's review flags"),
     (RULE_ID_SINCE, "\"kind\":\"revoked\"", "an engagement stopped for a revoked declaration"),
     (RULE_ID_SINCE, "\"identification\":", "an [identification] policy"),
+    (RULE_ID_SINCE, "\"manoeuvre\":", "a track's manoeuvre (keep-out reach)"),
+    (RULE_ID_SINCE, "\"mean_velocity_mps\":", "a track's mean velocity (keep-out reach)"),
     (OPERATOR_AUTH_SINCE, "\"auth\":\"", "how an operator was authenticated"),
     (OPERATOR_AUTH_SINCE, "\"step_up\":", "a step-up (a credential re-entered to sign)"),
     (OPERATOR_AUTH_SINCE, "\"action\":\"session.closed\"", "a session's end"),

@@ -90,9 +90,11 @@ const NIS_JUMP: f64 = 9.21;
 
 /// The reported covariance is the filter's widened by the recent fixes' consistency: their
 /// normalized distance from the mixture's prediction (expected 2), averaged with this weight
-/// per fix (about the last three fixes), over [`REPORT_NIS`] when above it. A run of fixes
-/// farther off than predicted says the filter is behind a manoeuvre it has not yet taken in,
-/// and its own covariance too small; the estimate itself is unchanged.
+/// per fix (about the last three fixes), over [`REPORT_NIS`] when above it. [`REPORT_NIS`]
+/// is below the expectation, so a consistent filter is widened too (about 1.33 times its
+/// variance on average: steady tracks report loose, NEES about 1.1, by design); a run of
+/// fixes farther off than predicted, a filter behind a manoeuvre it has not yet taken in,
+/// widens it more. The estimate itself is unchanged.
 const REPORT_ALPHA: f64 = 0.3;
 /// Tuned: at 2 (the expectation) a sprint and stop and a weave stayed overconfident.
 const REPORT_NIS: f64 = 1.5;
