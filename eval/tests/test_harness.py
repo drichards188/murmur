@@ -709,6 +709,8 @@ def test_eval_policies_follow_the_shipped_policy():
         assert pol["approval"]["kind"] == sim["approval"]["kind"], name
         assert pol["approval"]["expire_s"] == sim["approval"]["expire_s"]
         assert pol["approval"]["submitter_authorizes"] is False
+        # rules 10: the step-up factor as shipped (a study run requires "passkey" itself)
+        assert pol["approval"].get("step_up_factor") == sim["approval"].get("step_up_factor"), name
         names = [t["name"] for t in pol["tier"]]
         assert [n for n in names if n not in extra] == [t["name"] for t in sim["tier"]], name
         shipped = {t["name"]: t for t in sim["tier"]}

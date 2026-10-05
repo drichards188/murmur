@@ -468,6 +468,36 @@ pub enum EventBody {
         /// Rules 8: the step-up this act quoted (a declaration the policy marks consequential).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         step_up: Option<StepUpRef>,
+        /// Rules 10, on `session.opened` and `step_up` with `auth: passkey`: the assertion,
+        /// what it was for, the nonce and issue time its challenge was derived from, the
+        /// credential and its counter (nothing secret). Replay recomputes the challenge and
+        /// verifies the signature against the run's logged public key.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        passkey: Option<Box<crate::passkey::PasskeyUse>>,
+    },
+
+    /// Rules 10, a credentials run: a passkey was registered for `key.operator` while the run
+    /// was up (its public key, never private material): through a signed-in session, which
+    /// re-entered the operator's credential first (`step_up`, under `session`), or through a
+    /// one-time invitation `murmur-auth passkey-invite` issued (`via: invitation`, no
+    /// session). Usable from here on.
+    #[serde(rename = "passkey.registered")]
+    PasskeyRegistered {
+        key: crate::passkey::PasskeyKey,
+        via: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<SessionId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step_up: Option<StepUpRef>,
+    },
+
+    /// Rules 10: a passkey was removed from the credential file (`murmur-auth
+    /// passkey-remove`) while the run was up; nothing may use it from here on.
+    #[serde(rename = "passkey.removed")]
+    PasskeyRemoved {
+        operator: OperatorId,
+        credential: String,
+        reason: String,
     },
 
     #[serde(rename = "agent.action")]

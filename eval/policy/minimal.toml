@@ -18,6 +18,7 @@
 expire_s = 120
 submitter_authorizes = true                 # default for human tiers that don't set it
 step_up_acts = []                           # minimal: no step-up besides engagement signatures
+step_up_factor = "password"                 # as shipped (rules 10; a study run requires "passkey")
 # step_up_acts = ["declare_hostile", "accept_unknown", "confirm_declaration"]   (rules 8, policy
 #   schema 5; confirm_declaration rules 9, schema 6): acts besides approvals that re-enter the
 #   operator's password in a credentials run (a step-up, logged and quoted by the act):

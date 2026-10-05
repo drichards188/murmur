@@ -351,6 +351,7 @@ fn nothing_acts_under_an_ended_session() {
                     grants: None,
                     auth: None,
                     step_up: None,
+                    passkey: None,
                 },
             },
         );

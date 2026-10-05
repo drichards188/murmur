@@ -311,7 +311,12 @@ fn a_declaration_claimed_for_an_operator_who_did_not_make_it_is_caught() {
 #[test]
 fn identification_in_a_log_claiming_older_rules_is_caught() {
     let text = scenario_log("72-hostile-act-declared-by-rule.toml");
-    let claim8 = text.replacen("\"rules_version\":9", "\"rules_version\":8", 1);
+    let claim8 = text.replacen(
+        &format!("\"rules_version\":{RULES_VERSION}"),
+        &format!("\"rules_version\":{}", RULE_ID_SINCE - 1),
+        1,
+    );
+    assert_ne!(claim8, text, "the claim was changed");
     let whats: Vec<String> = replay_str_with(
         &forge(&claim8, |_| {}),
         &ReplayOptions { rules: RulesAccepted::AtLeast(1), ..ReplayOptions::default() },

@@ -49,6 +49,13 @@
 //!   consumes: no stale or shared session supplies it. A dev run (identities asserted) says
 //!   so, and replay reports it ([`replay::ReplayReport::authenticated`]) so evaluation can
 //!   exclude it from any claim about people.
+//! - Rules 10 ([`PASSKEY_SINCE`]): a step-up (and a login) may be a passkey's, a WebAuthn
+//!   assertion with user verification ([`Engine::step_up_passkey`],
+//!   [`Engine::open_passkey_session`]). Its challenge is derived from the run, the session
+//!   and what it authorizes ([`passkey::challenge`]: an engagement signature's intent and the
+//!   picture token it quotes), the engine verifies it against the public key the run logged
+//!   before logging it, and the act that quotes it must be the act it was made for. The policy
+//!   may require it (`[approval] step_up_factor = "passkey"`); a study always does.
 //!
 //! `compile_fail` doctests on [`HumanAuthority`] (module `authority`) and [`AgentPort`]
 //! prove the forbidden programs don't compile. The replay also checks the property from
@@ -268,6 +275,7 @@ pub mod hash;
 pub mod ident;
 pub mod ids;
 pub mod intent;
+pub mod passkey;
 pub mod policy;
 pub mod queue;
 pub mod replay;
@@ -312,16 +320,23 @@ pub use intent::{
     Constraints, IllegalTransition, Intent, IntentSpec, Proposal, ProposalError, Rationale, Source,
     State, Targets, Task, TaskKind, Transition, next_state,
 };
-pub use policy::{DeadlineBasis, KindApproval, Policy, PolicyDecision, StepUpAct, Tier, Until};
+pub use passkey::{
+    AcceptedVehicle, Assertion, CHALLENGE_TTL_MS, PasskeyKey, PasskeyRoster, PasskeyUse, StepUpFor,
+    Study,
+};
+pub use policy::{
+    DeadlineBasis, KindApproval, LoginFactor, Policy, PolicyDecision, StepUpAct, StepUpFactor, Tier,
+    Until,
+};
 pub use queue::{
     Basis, CarriedApproval, KindQueue, OpenIntent, QueueConfig, QueueState, Reach, Recheck,
     RecheckRecord, RestoreOwed, ResumedFrom, Verdict,
 };
 pub use route::{LegKind, Route, Segment};
 pub use rules::{
-    CheckResult, OPERATOR_AUTH_SINCE, Outcome, POLICY_SCHEMA, QUEUE_FOLLOWUPS_SINCE,
-    RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE, RULES_VERSION, RuleId, RulesConfig, STEP_UP_SCHEMA_SINCE,
-    UnknownEndurance,
+    CheckResult, OPERATOR_AUTH_SINCE, Outcome, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, POLICY_SCHEMA,
+    QUEUE_FOLLOWUPS_SINCE, RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE, RULES_VERSION, RuleId, RulesConfig,
+    STEP_UP_SCHEMA_SINCE, UnknownEndurance,
 };
 pub use space::{
     ChosenCollect, CollectCapability, CollectOrder, CoverOrder, CoverService, ScenarioMap,
