@@ -372,7 +372,8 @@ impl Decision {
             text,
             &ReplayOptions {
                 rules: RulesAccepted::AtLeast(5),
-                // its own carried-over intents were checked when it started
+                // its own carried-over intents were checked when it started; the lost-link
+                // values it carried (rules 6) never were, and are trusted here too (murmur-cq3)
                 trust_resumed: true,
                 ..ReplayOptions::default()
             },

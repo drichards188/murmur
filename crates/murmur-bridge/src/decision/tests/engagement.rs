@@ -763,8 +763,20 @@ async fn values_still_owed_when_the_bridge_stopped_are_carried_over_and_put_back
     assert!(all[0].0 && !all[0].2, "carried: {all:?}");
     assert_eq!(all[0].1["FS_GCS_ENABLE"], 1.0, "{all:?}");
     assert!(!all[1].0 && all[1].2, "put back and confirmed: {all:?}");
-    let rep = replay::replay_str(&e2.r.log.text()).expect("parses");
+    // replayed against what the first run's log still owed (murmur-aca): exactly what it
+    // owed, on the vehicle and for the engagement it names, and that log replays
+    let first_text = std::fs::read_to_string(&log).expect("first log");
+    let opts = replay::ReplayOptions {
+        restores_from: Some(("run-1.jsonl", &first_text)),
+        ..replay::ReplayOptions::default()
+    };
+    let rep = replay::replay_str_with(&e2.r.log.text(), &opts).expect("parses");
     assert!(rep.ok() && rep.unrestored.is_empty(), "{:?} {:?}", rep.mismatches, rep.unrestored);
+    let checked: Vec<_> = rep.carried_restores.iter().map(|c| (c.log.as_str(), c.restores, c.checked)).collect();
+    assert_eq!(checked, [("run-1.jsonl", 1, true)]);
+    // without that log the carried values are not verified: a mismatch, unless trusted
+    let rep = replay::replay_str(&e2.r.log.text()).expect("parses");
+    assert!(rep.mismatches.iter().all(|m| m.what.contains("not verified")) && !rep.ok(), "{:?}", rep.mismatches);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -820,7 +832,13 @@ async fn a_restore_that_does_not_confirm_is_retried_logged_and_alerted() {
         .expect("a restore alert");
     assert_eq!(alert["id"], "restore:1");
     assert!(alert["detail"].as_str().unwrap_or_default().contains("FS_NO_SUCH 3"), "{alert}");
-    let rep = replay::replay_str(&e.r.log.text()).expect("parses");
+    // its carried values trusted (the earlier log here is a bare engine's, which names no
+    // log of its own)
+    let trusted = replay::ReplayOptions {
+        trust_resumed: true,
+        ..replay::ReplayOptions::default()
+    };
+    let rep = replay::replay_str_with(&e.r.log.text(), &trusted).expect("parses");
     assert!(rep.ok(), "{:?}", rep.mismatches);
     assert_eq!(rep.unrestored.len(), 1, "{:?}", rep.unrestored);
     let _ = std::fs::remove_dir_all(&dir);
