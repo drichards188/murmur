@@ -1,18 +1,20 @@
 import { useState } from 'react'
 import { stepsUpAct } from './auth'
-import { fmtDuration, StepUpNeeded } from './decisions'
+import { fmtDuration, StepUpNeeded, useOperator } from './decisions'
 import { type ObservedAct, type Review, type ReviewDeclaration, type ReviewFlag, FLAG_LABEL, confirmDeclaration, resolveFlag, revokeDeclaration } from './ident'
-import { declareTrack } from './tracks'
 
 /** The inbox's Review (rules 9): what the identification asks of a human, none of it
  *  blocking. A rule declaration is the engine's (an observed hostile act attributed to the
  *  track above the policy's threshold, nothing conflicting): it stands until an operator
  *  revokes it, and any operator confirms it. A flag is what the engine was unsure of (an
- *  attribution below threshold, conflicting evidence, no track, a victim not ours, a track
- *  keeping company with a declared hostile): it never declares anything; an operator confirms
- *  the concern, dismisses it, or declares the track. Every action is logged under the
- *  operator's session. The observed acts list shows what the sensors saw and what the engine
- *  made of each (with rule declaration off, an operator declares from these). */
+ *  attribution below threshold, conflicting evidence, no track, a victim not ours, one
+ *  observation where the policy wants two, a track keeping company with a declared hostile):
+ *  it never declares anything; an operator confirms the concern or dismisses it, and declares
+ *  a track, if they decide to, deliberately in the Tracks drawer (the flag's track buttons open
+ *  it there). Every action is logged under the operator's session. A declarer is told when
+ *  someone else revoked their declaration. The observed acts list shows what the sensors saw
+ *  and what the engine made of each (with rule declaration off, an operator declares from
+ *  these). */
 
 interface Props {
   review: Review | undefined
@@ -31,6 +33,8 @@ function age(now: () => number, t: number) {
 function DeclarationItem({ d, now, onDone, onTrack }: { d: ReviewDeclaration; now: () => number; onDone: Props['onDone']; onTrack?: Props['onTrack'] }) {
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState('')
+  // revoking takes a second, deliberate click (it stops every engagement in play on the track)
+  const [revoking, setRevoking] = useState(false)
   const stepUp = stepsUpAct('confirm_declaration')
   const [password, setPassword] = useState('')
   const [asking, setAsking] = useState(false)
@@ -40,6 +44,7 @@ function DeclarationItem({ d, now, onDone, onTrack }: { d: ReviewDeclaration; no
       await f()
       onDone(`${d.track}: ${what}`, 'ok')
       setAsking(false)
+      setRevoking(false)
     } catch (e) {
       if (e instanceof StepUpNeeded) setAsking(true)
       onDone(`${d.track}: ${what} refused: ${(e as Error).message}`, 'bad')
@@ -66,15 +71,28 @@ function DeclarationItem({ d, now, onDone, onTrack }: { d: ReviewDeclaration; no
         )}
       </header>
       <p className="rv-basis">{d.basis}</p>
-      <p className="muted rv-hint">It stands until an operator revokes it; revoking stops every engagement in play on {d.track} first.</p>
-      <div className="rv-actions">
-        <input className="ix-note" value={note} maxLength={300} onChange={(e) => setNote(e.target.value)} placeholder="note (optional, logged)" aria-label="Note for a revocation" disabled={busy} />
-        <button className="ghost mini" disabled={busy} onClick={confirm} title="Confirm the engine's declaration (logged under your session)">
-          confirm
+      <div className="rv-confirm">
+        <button className="rv-ok" disabled={busy} onClick={confirm} title="Confirm the engine's declaration (logged under your session)">
+          Confirm {d.track} hostile
         </button>
-        <button className="ghost mini bad" disabled={busy} onClick={() => void run('declaration revoked', () => revokeDeclaration(d.track, note))} title="Revoke it: engagements on the track stop first">
-          revoke
-        </button>
+      </div>
+      <div className="rv-revoke">
+        {!revoking ? (
+          <button className="ghost mini rv-danger" disabled={busy} onClick={() => setRevoking(true)} title="Revoke it: every engagement in play on the track stops first">
+            revoke...
+          </button>
+        ) : (
+          <>
+            <span className="rv-warn">Revoke {d.id}? Every engagement in play on {d.track} stops first.</span>
+            <input className="ix-note" value={note} maxLength={300} onChange={(e) => setNote(e.target.value)} placeholder="why (optional, logged)" aria-label="Note for the revocation" disabled={busy} />
+            <button className="ghost mini rv-danger" disabled={busy} onClick={() => void run('declaration revoked', () => revokeDeclaration(d.track, note))}>
+              revoke {d.track}
+            </button>
+            <button className="ghost mini" disabled={busy} onClick={() => setRevoking(false)}>
+              cancel
+            </button>
+          </>
+        )}
       </div>
       {asking && stepUp && (
         <label className="ix-stepup">
@@ -92,28 +110,16 @@ function DeclarationItem({ d, now, onDone, onTrack }: { d: ReviewDeclaration; no
 function FlagItem({ f, now, onDone, onTrack }: { f: ReviewFlag; now: () => number; onDone: Props['onDone']; onTrack?: Props['onTrack'] }) {
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState('')
-  const stepUp = stepsUpAct('declare_hostile')
-  const [password, setPassword] = useState('')
-  const [asking, setAsking] = useState<string | null>(null)
   const run = async (what: string, fn: () => Promise<unknown>) => {
     setBusy(true)
     try {
       await fn()
       onDone(`F-${f.flag}: ${what}`, 'ok')
-      setAsking(null)
     } catch (e) {
       onDone(`F-${f.flag}: ${what} refused: ${(e as Error).message}`, 'bad')
     } finally {
       setBusy(false)
-      setPassword('')
     }
-  }
-  const declare = (track: string) => {
-    if (stepUp && !password) {
-      setAsking(track)
-      return
-    }
-    void run(`${track} declared hostile`, () => declareTrack(track, 'hostile', note || undefined, stepUp ? password : undefined, f.flag))
   }
   return (
     <article className="ix-card rv-card rv-flag" aria-label={`Review flag ${f.id}`}>
@@ -126,7 +132,7 @@ function FlagItem({ f, now, onDone, onTrack }: { f: ReviewFlag; now: () => numbe
       <p className="muted rv-hint">
         {f.tracks.length ? (
           <>
-            Tracks:{' '}
+            Open to look, or to declare deliberately in the Tracks drawer:{' '}
             {f.tracks.map((t) => (
               <button key={t} className="ghost mini" onClick={() => onTrack?.(t)} disabled={!onTrack}>
                 {t}
@@ -136,7 +142,7 @@ function FlagItem({ f, now, onDone, onTrack }: { f: ReviewFlag; now: () => numbe
         ) : (
           'No track named.'
         )}
-        {f.raises_suspect ? ' Raised to suspect (weak evidence: never a declaration on its own).' : ' The flag declares nothing.'}
+        {f.raises_suspect ? ' Shown suspect (weak evidence: never a declaration on its own).' : ' The flag declares nothing.'}
       </p>
       <div className="rv-actions">
         <input className="ix-note" value={note} maxLength={300} onChange={(e) => setNote(e.target.value)} placeholder="note (optional, logged)" aria-label="Note for this resolution" disabled={busy} />
@@ -150,22 +156,7 @@ function FlagItem({ f, now, onDone, onTrack }: { f: ReviewFlag; now: () => numbe
             dismiss
           </button>
         )}
-        {f.actions.includes('declare') &&
-          f.tracks.slice(0, 2).map((t) => (
-            <button key={t} className="ghost mini hostile" disabled={busy} onClick={() => declare(t)} title={`Declare ${t} hostile yourself (answers this flag)`}>
-              declare {t} hostile
-            </button>
-          ))}
       </div>
-      {asking && stepUp && (
-        <label className="ix-stepup">
-          Consequential: your password to declare {asking} hostile
-          <input type="password" autoComplete="current-password" value={password} disabled={busy} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && password && declare(asking)} aria-label="Your password, to declare this track hostile" autoFocus />
-          <button className="ghost mini hostile" disabled={!password || busy} onClick={() => declare(asking)}>
-            declare hostile
-          </button>
-        </label>
-      )}
     </article>
   )
 }
@@ -179,8 +170,11 @@ function verdictText(a: ObservedAct) {
 
 export function ReviewSection({ review, acts, now, onDone, onTrack }: Props) {
   const [showActs, setShowActs] = useState(false)
+  const [operator] = useOperator()
   const decls = review?.declarations ?? []
   const flags = review?.flags ?? []
+  // a declarer's notice: their declaration revoked by someone else
+  const notices = (review?.revocations ?? []).filter((r) => r.notify && r.notify === operator).slice(0, 5)
   const n = decls.length + flags.length
   return (
     <>
@@ -188,6 +182,12 @@ export function ReviewSection({ review, acts, now, onDone, onTrack }: Props) {
         Review <span>{n}</span>
         <small>not blocking: the engine decided; confirm, dismiss or revoke</small>
       </h3>
+      {notices.map((r) => (
+        <p key={`${r.id}-${r.t}`} className="rv-notice" role="status">
+          Your declaration {r.id} of {r.track} was revoked by {r.revoked_by} {age(now, r.t)}
+          {r.note ? `: ${r.note}` : ''}
+        </p>
+      ))}
       {n === 0 && <p className="empty">Nothing for review.</p>}
       {decls.map((d) => (
         <DeclarationItem key={d.id} d={d} now={now} onDone={onDone} onTrack={onTrack} />
@@ -204,7 +204,7 @@ export function ReviewSection({ review, acts, now, onDone, onTrack }: Props) {
             <ul className="rv-acts">
               {acts?.map((a) => (
                 <li key={a.act.act}>
-                  <b>{a.act.act}</b> seen by {a.act.sensors.join(', ')} (1-sigma {Math.round(a.act.sigma_m)} m)
+                  <b>{a.act.act}</b> seen by {a.act.sensors.join(', ')} (1-sigma {Math.round(a.act.sigma_m)} m{a.act.fixes?.length ? `; ${a.act.fixes.length} more observer${a.act.fixes.length === 1 ? '' : 's'}` : ''})
                   {a.candidates.length ? `; candidates ${a.candidates.map((c) => `${c.track} ${c.confidence.toFixed(2)}`).join(', ')}` : '; no track near'}: {verdictText(a)}
                 </li>
               ))}

@@ -127,6 +127,8 @@ function Detail({ t, nowMs, vehicles, onFocus, onEngage }: { t: Track; nowMs: nu
   // default: the user chose minimal approval)
   const confirmStepUp = stepsUpAct('confirm_declaration')
   const [confirming, setConfirming] = useState(false)
+  // revoking takes a second, deliberate click (it stops every engagement in play on the track)
+  const [revoking, setRevoking] = useState(false)
   const [asking, setAsking] = useState(false)
   const [password, setPassword] = useState('')
   const [stepUpError, setStepUpError] = useState(false)
@@ -146,8 +148,10 @@ function Detail({ t, nowMs, vehicles, onFocus, onEngage }: { t: Track; nowMs: nu
     setStepUpError(false)
     const pw = a === 'hostile' && stepUp ? password : undefined
     setPassword('')
+    // a hostile declaration on a track with one flag in force answers that flag
+    const flag = a === 'hostile' && t.review?.length === 1 ? t.review[0].flag : undefined
     try {
-      await declareTrack(t.id, a, undefined, pw)
+      await declareTrack(t.id, a, undefined, pw, flag)
       setAsking(false)
     } catch (e) {
       setStepUpError(e instanceof StepUpNeeded)
@@ -245,20 +249,33 @@ function Detail({ t, nowMs, vehicles, onFocus, onEngage }: { t: Track; nowMs: nu
                 </>
               )}
               {t.declared.note ? `: ${t.declared.note}` : ''}
-              <span className="tk-decl-actions">
-                {unconfirmed && (
-                  <button className="ghost mini" disabled={busy != null} onClick={() => void confirm()} title="Confirm the engine's declaration (any operator; logged under your session)">
+              {unconfirmed && (
+                <span className="tk-decl-actions">
+                  <button className="rv-ok" disabled={busy != null} onClick={() => void confirm()} title="Confirm the engine's declaration (any operator; logged under your session)">
                     confirm
                   </button>
+                </span>
+              )}
+              <span className="tk-decl-actions tk-revoke">
+                {!revoking ? (
+                  <button className="ghost mini rv-danger" disabled={busy != null} onClick={() => setRevoking(true)} title="Revoke this declaration (any operator): every engagement in play on the track stops first, with its fallback">
+                    revoke...
+                  </button>
+                ) : (
+                  <>
+                    <span className="rv-warn">Revoke it? Every engagement in play on {t.id} stops first.</span>
+                    <button
+                      className="ghost mini rv-danger"
+                      disabled={busy != null}
+                      onClick={() => void act('revoke', () => revokeDeclaration(t.id)).then(() => setRevoking(false))}
+                    >
+                      revoke {t.id}
+                    </button>
+                    <button className="ghost mini" disabled={busy != null} onClick={() => setRevoking(false)}>
+                      cancel
+                    </button>
+                  </>
                 )}
-                <button
-                  className="ghost mini"
-                  disabled={busy != null}
-                  onClick={() => void act('revoke', () => revokeDeclaration(t.id))}
-                  title="Revoke this declaration (any operator): every engagement in play on the track stops first, with its fallback"
-                >
-                  revoke
-                </button>
               </span>
             </dd>
           </>

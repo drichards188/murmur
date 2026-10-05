@@ -20,6 +20,8 @@ export interface RuleEvidence {
   sensors: string[]
   attribution: number
   threshold: number
+  /** the second observation that agreed (corroboration) */
+  corroborated_by?: { act: string; observer?: string; attribution: number }
 }
 
 export type Declarer =
@@ -36,7 +38,7 @@ export interface Declaration {
   confirmed?: { by: string; session: number; t: number } | null
 }
 
-export type FlagKind = 'attribution' | 'conflict' | 'untracked' | 'victim' | 'proximity'
+export type FlagKind = 'attribution' | 'conflict' | 'untracked' | 'victim' | 'proximity' | 'uncorroborated'
 
 export const FLAG_LABEL: Record<FlagKind, string> = {
   attribution: 'attribution below threshold',
@@ -44,6 +46,7 @@ export const FLAG_LABEL: Record<FlagKind, string> = {
   untracked: 'author not tracked',
   victim: 'victim not ours',
   proximity: 'with a declared hostile',
+  uncorroborated: 'one observation, two wanted',
 }
 
 export interface FlagStatus {
@@ -80,11 +83,23 @@ export interface ReviewFlag {
   actions: ('confirm' | 'dismiss' | 'declare')[]
 }
 
+/** A declaration revoked, and whom to tell (its declarer, when someone else revoked it). */
+export interface ReviewRevocation {
+  id: string
+  track: string
+  declared_by: string
+  revoked_by: string
+  t: number
+  note: string | null
+  notify: string | null
+}
+
 export interface Review {
   declarations: ReviewDeclaration[]
   flags: ReviewFlag[]
   resolved: ReviewFlag[]
   confirmed: { id: string; track: string; basis: string }[]
+  revocations?: ReviewRevocation[]
   counts: { declarations: number; flags: number }
 }
 
@@ -97,7 +112,18 @@ export interface Candidate {
 
 /** An act our sensors observed, and what the engine made of it. */
 export interface ObservedAct {
-  act: { act: string; against: Against; observed_t: number; sensors: string[]; location: [number, number]; sigma_m: number }
+  act: {
+    act: string
+    against: Against
+    observed_t: number
+    sensors: string[]
+    location: [number, number]
+    sigma_m: number
+    /** further observers' fixes of it */
+    fixes?: { observer: string; sensors: string[]; location: [number, number]; sigma_m: number }[]
+    /** the channel it came in on (sim:contacts) */
+    channel?: string
+  }
   candidates: Candidate[]
   verdict: { verdict: 'declare'; track: string; attribution: number } | { verdict: 'flag'; kind: FlagKind; tracks: string[]; why: string } | { verdict: 'recorded'; why: string }
   declaration: string | null
@@ -122,7 +148,9 @@ export function declarationBasis(d: Declaration | null | undefined, declaredBy?:
   if (d.by.kind === 'operator') return `declared ${d.affiliation} by ${d.by.operator}${d.by.note ? ` (${d.by.note})` : ''}`
   const e = d.by.evidence
   const conf = d.confirmed ? `confirmed by ${d.confirmed.by}` : 'not confirmed by an operator'
-  return `declared ${d.affiliation} by rule ${d.by.rule} on act ${e.act} (against ${against(e.against)}, seen by ${e.sensors.join(', ')}, attribution ${e.attribution.toFixed(2)} >= ${e.threshold.toFixed(2)}), ${conf}`
+  const c = e.corroborated_by
+  const corr = c ? (c.observer ? `, corroborated by ${c.observer}'s fix at ${c.attribution.toFixed(2)}` : `, corroborated by act ${c.act} at ${c.attribution.toFixed(2)}`) : ''
+  return `declared ${d.affiliation} by rule ${d.by.rule} on act ${e.act} (against ${against(e.against)}, seen by ${e.sensors.join(', ')}, attribution ${e.attribution.toFixed(2)} >= ${e.threshold.toFixed(2)}${corr}), ${conf}`
 }
 
 async function post(path: string, body: Record<string, unknown>) {
