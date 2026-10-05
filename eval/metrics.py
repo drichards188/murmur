@@ -21,6 +21,7 @@ from typing import Any
 
 from . import REPO
 from .evidence import evidence, haversine_m
+from .stack import PARTICIPANT_OPERATOR
 from .stats import dprime, spearman, summary, wilson
 
 TRUTH_WRONG = ("neutral", "assumed_friend")
@@ -804,22 +805,37 @@ def max_queue(ev: list[tuple[float, int]]) -> int:
 # ---- replay and clocks -------------------------------------------------------------------------
 
 
-def run_replay(audit: Path) -> dict[str, Any]:
-    """`murmur-replay <log>`: recompute every decision and verify the hash chain."""
+def run_replay(audit: Path, anchors: Path | None = None) -> dict[str, Any]:
+    """`murmur-replay <log> [--anchors <file>]`: recompute every decision, verify the hash
+    chain, and check the log against its run-time anchors (`audit.anchors` beside it unless
+    given). `anchors`: `verified` (the log is the one the run wrote, as far as its anchors
+    say), `mismatch`, or `not checked` (no anchors file): a rewritten log replays too, so only
+    a verified one is evidence about people."""
     binary = REPO / "target" / "release" / "murmur-replay"
     if not audit.exists():
-        return {"ran": False, "reason": "no audit log"}
+        return {"ran": False, "reason": "no audit log", "anchors": "not checked"}
     if not binary.exists():
-        return {"ran": False, "reason": f"missing {binary}"}
+        return {"ran": False, "reason": f"missing {binary}", "anchors": "not checked"}
+    if anchors is None:
+        anchors = audit.with_suffix(".anchors")
+    args = [str(binary), str(audit)]
+    if anchors.exists():
+        args += ["--anchors", str(anchors)]
     try:
-        r = subprocess.run([str(binary), str(audit)], capture_output=True, text=True, timeout=120)
+        r = subprocess.run(args, capture_output=True, text=True, timeout=120)
     except (OSError, subprocess.TimeoutExpired) as e:
-        return {"ran": False, "reason": str(e)}
+        return {"ran": False, "reason": str(e), "anchors": "not checked"}
     text = (r.stdout + r.stderr).strip()
     mismatches = 0
     if r.returncode != 0:
         mismatches = max(1, sum(1 for line in text.splitlines() if "mismatch" in line.lower()))
-    return {"ran": True, "ok": r.returncode == 0, "exit": r.returncode, "mismatches": mismatches, "output": text[-2000:]}
+    if not anchors.exists():
+        anchored = "not checked"
+    elif "ANCHORS OK" in text:
+        anchored = "verified"
+    else:
+        anchored = "mismatch"
+    return {"ran": True, "ok": r.returncode == 0, "exit": r.returncode, "mismatches": mismatches, "anchors": anchored, "output": text[-2000:]}
 
 
 def clock_checks(run_dir: Path, clocks: dict[str, Any], spec: Any) -> list[dict[str, Any]]:
@@ -874,7 +890,10 @@ def compute(
     cuts: list[tuple[str, float, float]] | None = None,
     samples: list[dict] | None = None,
     nav: list[dict] | None = None,
+    deciders: set[str] | None = None,
 ) -> dict[str, Any]:
+    """`deciders`: only decisions by these operators are decision rows (a study: its
+    participant; the scripted operators' are never evidence about people)."""
     tr = trails(events)
     recs = {int(r["intent_id"]): r for r in storyline if r.get("kind") == "propose" and r.get("intent_id") is not None}
     labs = labels(storyline, tr, cuts)
@@ -948,7 +967,10 @@ def compute(
     withdrawn = sum(1 for t in agent if t.withdrawn)
 
     # decisions in the inbox: latency against what was shown and the queue
-    decided = sorted((t for t in tr.values() if t.human_decided), key=lambda t: t.decided_t or 0.0)
+    decided = sorted(
+        (t for t in tr.values() if t.human_decided and (deciders is None or t.decided_by in deciders)),
+        key=lambda t: t.decided_t or 0.0,
+    )
     shows_by_id = {r["L"].intent_id: r["c2_shows_it"] for r in rows if r["L"].intent_id is not None}
     decision_rows = []
     for t in decided:
@@ -1143,26 +1165,72 @@ def compute_run(run_dir: Path, rerun_replay: bool = False, info: dict[str, Any] 
     replay = None if rerun_replay else info.get("replay")
     if replay is None:
         replay = run_replay(run_dir / "audit.jsonl")
+    # a study's evidence is its participant's decisions only (the other operators are scripts)
+    participant = PARTICIPANT_OPERATOR if info.get("arm") == "study" else None
     cuts = link_cuts(run_dir, info.get("clocks"), story)
     samples = load_jsonl(run_dir / "truth.jsonl")
     nav = load_jsonl(run_dir / "standins-truth.jsonl")
-    m = compute(events, story, operators, replay, arm=info.get("arm"), cuts=cuts, samples=samples, nav=nav)
+    m = compute(
+        events, story, operators, replay, arm=info.get("arm"), cuts=cuts, samples=samples, nav=nav,
+        deciders={participant} if participant else None,
+    )
     m["run"] = {k: info.get(k) for k in ("run_id", "scenario", "arm", "seed", "status", "error", "ready", "ready_at_s", "warnings", "clocks", "clock_checks")}
-    m["auth"] = auth_of(events, replay)
+    m["auth"] = auth_of(events, replay, participant)
     return m
 
 
-def auth_of(events: list[dict], replay: dict | None) -> dict[str, Any]:
+# the acts of an operator's that are decisions (by `by`)
+HUMAN_ACTS = ("approval.granted", "approval.concurred", "approval.at_submission", "approval.rejected", "engage.accepted")
+
+
+def auth_of(events: list[dict], replay: dict | None, participant: str | None = None) -> dict[str, Any]:
     """How the run's operators proved who they were (rules 7: the roster's `auth` in
-    `run.started`). `credentials`: each signed in with their own password, and every
-    engagement signature re-entered it; `dev`: ids asserted by request headers (the proxy
-    batches, scripted runs); `none recorded`: a log of earlier rules, ids asserted too. Only a
-    credentials run whose log replayed is evidence about people
-    (`human_control_evidence`); the report counts no other study run."""
+    `run.started`, each session's `auth`). `credentials`: each signed in with a checked
+    credential, and every engagement signature re-entered it; `dev`: ids asserted by request
+    headers (the proxy batches, scripted runs); `none recorded`: a log of earlier rules, ids
+    asserted too. In a credentials run, `people` logged in with their own password and
+    `scripted` operators with a credential the harness holds (never a person's). Evidence
+    about people (`human_control_evidence`) needs all of: a credentials run, a log that
+    replayed, its anchors verified (a rewritten log replays too), and (a study,
+    `participant`) the participant signed in as a person; only the participant's acts count
+    (`participant_acts`), the scripted operators' never. `why_not` says what is missing."""
     first = events[0] if events else {}
     mode = (first.get("roster") or {}).get("auth") if first.get("type") == "run.started" else None
     replayed = bool(replay and replay.get("ran") and replay.get("ok"))
-    return {"mode": mode or "none recorded", "human_control_evidence": mode == "credentials" and replayed}
+    anchors = (replay or {}).get("anchors") or "not checked"
+    methods: dict[str, set[str]] = defaultdict(set)
+    for e in events:
+        if e.get("type") == "operator.action" and e.get("action") == "session.opened":
+            methods[str(e.get("operator"))].add(str(e.get("auth")))
+    people = sorted(op for op, m in methods.items() if m == {"password"})
+    scripted = sorted(op for op, m in methods.items() if "scripted" in m)
+    acts: dict[str, int] = defaultdict(int)
+    for e in events:
+        if e.get("type") in HUMAN_ACTS and e.get("by"):
+            acts[str(e["by"])] += 1
+    why_not = []
+    if mode != "credentials":
+        why_not.append(f"operators not authenticated (auth {mode or 'none recorded'})")
+    if not replayed:
+        why_not.append("the log did not replay")
+    if anchors != "verified":
+        why_not.append(f"anchors {anchors}")
+    if participant is not None and participant not in people:
+        why_not.append(f"{participant} did not sign in as a person (own password)")
+    out: dict[str, Any] = {
+        "mode": mode or "none recorded",
+        "anchors": anchors,
+        "people": people,
+        "scripted": scripted,
+        "acts_by_people": sum(acts[p] for p in people),
+        "acts_scripted": sum(acts[s] for s in scripted),
+        "human_control_evidence": not why_not,
+        "why_not": why_not,
+    }
+    if participant is not None:
+        out["participant"] = participant
+        out["participant_acts"] = acts[participant] if participant in people else 0
+    return out
 
 
 def main() -> None:

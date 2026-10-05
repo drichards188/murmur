@@ -314,7 +314,7 @@ class Run:
             self.info["ended"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
             self.save()
         # replay and metrics (also for failed runs: whatever log exists is scored)
-        self.info["replay"] = run_replay(self.out / "audit.jsonl")
+        self.info["replay"] = run_replay(self.out / "audit.jsonl", self.out / "audit.anchors")
         if self.info["replay"].get("ran") and not self.info["replay"].get("ok"):
             self.info["warnings"].append("replay reported mismatches")
         self.info["clock_checks"] = clock_checks(self.out, self.info.get("clocks") or {}, self.spec)
@@ -605,6 +605,12 @@ def do_study(args: argparse.Namespace) -> int:
         "Study session. Before starting: consent obtained, the participant knows the run is "
         "recorded (decisions and what the console showed, under an anonymous id, nothing else), "
         "and can stop at any time.",
+        flush=True,
+    )
+    print(
+        "Sign-in is by password, with the password again for consequential acts. Passkeys "
+        "(WebAuthn) are required before a study with real participants (docs/DECISIONS.md): "
+        "until then a study run is a pilot.",
         flush=True,
     )
     return do_run(args)

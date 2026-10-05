@@ -309,16 +309,24 @@ tracks the participant opened while it was up (`web/src/operatorView.ts`), and e
 lands in the audit log as for any run. In analysis the participant is the unit: rates are
 computed per participant and the interval is over participants (METRICS.md, "Rates").
 
-Who decided is authenticated (rules 7). A study stack gets its own credential file in the run
-directory, made with the `murmur-auth` CLI and removed with the stack: every operator a fresh
-random passphrase, every agent a fresh key. The runner prints the participant's passphrase
-(operator `op-study`) for the person running the session, never to the run directory; the
-participant signs in at the console with it. The scripted operators sign in the same way, and
-the agents connect with their keys. The audit log records `auth: credentials`, and the report
-counts a study run only when its log says so and replays (a study run without authenticated
-operators is listed as excluded). The proxy arms run with asserted ids (`MURMUR_AUTH=dev`):
-their deciders are scripts, the log records `auth: dev`, and the report says how many runs of
-each mode it holds.
+Who decided is authenticated (rules 7). A study stack always runs with credentials
+(`MURMUR_AUTH=credentials`) and gets its own credential file in the run directory, made with
+the `murmur-auth` CLI and removed with the stack: every operator a fresh random passphrase,
+every agent a fresh key. The runner prints the participant's passphrase (operator `op-study`)
+for the person running the session, never to the run directory; the participant signs in at
+the console with it (`auth: password` in the log). The scripted operators' credentials are
+marked scripted (`murmur-auth add --scripted`): the runner logs them in, and the log records
+`auth: scripted`, never a person's. The bridge writes the log's run-time anchors into the run
+directory (`audit.anchors`), and the replay checks the log against them. The report counts a
+study run only when all of these hold (`metrics.auth_of`, `human_control_evidence`): a
+credentials run, a log that replayed, its anchors verified, and the participant signed in
+with their own password; and then only the participant's own decisions (the scripted
+operators' acts are counted apart, `acts_scripted`, never as evidence). A study run that
+falls short is listed as excluded, with what was missing. Sign-in is by password with the
+password again for consequential acts; passkeys (WebAuthn) are required before a study with
+real participants (docs/DECISIONS.md), and until then a study run is a pilot. The proxy arms
+run with asserted ids (dev, the bridge's default): their deciders are scripts, the log records
+`auth: dev`, and the report says how many runs of each mode it holds.
 
 Running a session ethically:
 

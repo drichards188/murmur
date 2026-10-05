@@ -38,10 +38,12 @@ AUTO_OPERATOR = "op-auto"
 PARTICIPANT_OPERATOR = "op-study"
 
 # How a stack's operators prove who they are (rules 7). `dev`: the bridge believes the ids
-# requests name (MURMUR_AUTH=dev), logged as dev: the proxy batches, where every decider is a
-# script. `credentials`: a run-local credential file, each operator with a fresh random
-# passphrase (the participant's printed for them, the scripted ones logged in by the runner),
-# each agent with a fresh key; the only mode whose decisions count as people's (study mode).
+# requests name (MURMUR_AUTH=dev, the bridge's default), logged as dev: the proxy batches,
+# where every decider is a script. `credentials`: a run-local credential file, each operator
+# with a fresh random passphrase, each agent with a fresh key; the participant's is a person's
+# (printed for them), every other operator's is marked scripted (harness-held, logged in by the
+# runner: `auth: scripted`, never counted as a person's). The only mode whose decisions count
+# as people's (study mode), and then only the participant's.
 AUTH_MODES = ("dev", "credentials")
 
 
@@ -193,12 +195,15 @@ class Stack:
 
     def write_credentials(self) -> None:
         """Every operator with a fresh passphrase and every agent with a fresh key, through
-        the `murmur-auth` CLI as a script would (passwords on stdin); kept in memory only."""
+        the `murmur-auth` CLI as a script would (passwords on stdin); kept in memory only.
+        Every operator but the participant is marked scripted: the runner holds their
+        credential, so their sessions are no person's."""
         tool = str(_binary("murmur-auth"))
         f = str(self.credentials_file)
         for op in OPERATORS:
             pw = passphrase()
-            r = subprocess.run([tool, "--file", f, "add", op], input=pw + "\n", capture_output=True, text=True)
+            args = [tool, "--file", f, "add", op] + ([] if op == PARTICIPANT_OPERATOR else ["--scripted"])
+            r = subprocess.run(args, input=pw + "\n", capture_output=True, text=True)
             if r.returncode != 0:
                 raise StackError(f"murmur-auth add {op}: {r.stderr.strip()}")
             self.passwords[op] = pw
@@ -363,9 +368,12 @@ class Stack:
             "MURMUR_SENSE_SEED": str(self.seed),
             # the console's origin (study mode), the only one a browser may change things from
             "MURMUR_WEB_PORT": str(b.web),
+            # the run-time anchors go with the run: the replay checks the log against them
+            "MURMUR_ANCHOR_DIR": str(self.run_dir),
         }
         if self.auth == "credentials":
             self.write_credentials()
+            bridge_env["MURMUR_AUTH"] = "credentials"
             bridge_env["MURMUR_CREDENTIALS"] = str(self.credentials_file)
         else:
             # ids asserted by header, logged as dev: never evidence about people
@@ -526,10 +534,13 @@ class Stack:
             else:
                 exits[p.name] = p.popen.returncode
         self.write_pids()
-        # the audit log belongs with the run
+        # the audit log belongs with the run, and so do its anchors (written there)
         dst = self.run_dir / "audit.jsonl"
         if self.audit_src.exists():
             shutil.move(str(self.audit_src), str(dst))
+        anchors = self.run_dir / f"{self.run_id}.anchors"
+        if anchors.exists():
+            anchors.replace(self.run_dir / "audit.anchors")
         # the run's throwaway credentials go with it (hashes only, but no reason to keep them)
         self.credentials_file.unlink(missing_ok=True)
         self.passwords.clear()

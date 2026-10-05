@@ -626,17 +626,53 @@ def _run_started(auth: str | None) -> dict:
     return {"seq": 1, "t": 0, "type": "run.started", "rules_version": 7, "roster": roster}
 
 
+def _opened(op: str, auth: str, seq: int) -> dict:
+    return {"seq": seq, "t": seq, "type": "operator.action", "operator": op, "session": seq, "action": "session.opened", "detail": "", "auth": auth}
+
+
+def _signed(op: str, seq: int) -> dict:
+    return {"seq": seq, "t": seq, "type": "approval.rejected", "intent": 1, "by": op, "session": 1}
+
+
 def test_a_runs_auth_mode_and_whether_it_is_evidence_about_people():
     from eval.metrics import auth_of
 
-    ok = {"ran": True, "ok": True}
-    assert auth_of([_run_started("credentials")], ok) == {"mode": "credentials", "human_control_evidence": True}
+    ok = {"ran": True, "ok": True, "anchors": "verified"}
+    a = auth_of([_run_started("credentials")], ok)
+    assert (a["mode"], a["human_control_evidence"], a["why_not"]) == ("credentials", True, [])
     # a log that did not replay is no evidence, whatever it claims
-    assert auth_of([_run_started("credentials")], {"ran": True, "ok": False})["human_control_evidence"] is False
-    assert auth_of([_run_started("dev")], ok) == {"mode": "dev", "human_control_evidence": False}
+    assert auth_of([_run_started("credentials")], {**ok, "ok": False})["human_control_evidence"] is False
+    # review fix 5: nor one whose anchors were not checked, or did not hold
+    for anchors in ("not checked", "mismatch"):
+        a = auth_of([_run_started("credentials")], {**ok, "anchors": anchors})
+        assert a["human_control_evidence"] is False and a["why_not"] == [f"anchors {anchors}"], a
+    assert auth_of([_run_started("credentials")], {"ran": True, "ok": True})["anchors"] == "not checked"
+    a = auth_of([_run_started("dev")], ok)
+    assert (a["mode"], a["human_control_evidence"]) == ("dev", False)
     # earlier rules recorded no mode: ids asserted
-    assert auth_of([_run_started(None)], ok) == {"mode": "none recorded", "human_control_evidence": False}
+    a = auth_of([_run_started(None)], ok)
+    assert (a["mode"], a["human_control_evidence"]) == ("none recorded", False)
     assert auth_of([], ok)["human_control_evidence"] is False
+
+
+def test_only_the_participants_own_acts_are_evidence():
+    """Review fix 2: in a study the scripted operators hold harness credentials (`auth:
+    scripted`); their acts are never a person's, and the participant counts only signed in
+    with their own password."""
+    from eval.metrics import auth_of
+
+    ok = {"ran": True, "ok": True, "anchors": "verified"}
+    events = [_run_started("credentials"), _opened("op-1", "scripted", 2), _opened("op-study", "password", 3),
+              _signed("op-1", 4), _signed("op-1", 5), _signed("op-study", 6)]
+    a = auth_of(events, ok, "op-study")
+    assert a["human_control_evidence"] is True, a
+    assert (a["people"], a["scripted"]) == (["op-study"], ["op-1"])
+    assert (a["participant_acts"], a["acts_by_people"], a["acts_scripted"]) == (1, 1, 2)
+    # the participant's id on a scripted credential: not a person, nothing counts
+    events[2] = _opened("op-study", "scripted", 3)
+    a = auth_of(events, ok, "op-study")
+    assert a["human_control_evidence"] is False and a["participant_acts"] == 0
+    assert a["why_not"] == ["op-study did not sign in as a person (own password)"]
 
 
 def test_a_study_run_counts_only_with_authenticated_operators(tmp_path: Path):
@@ -655,12 +691,13 @@ def test_a_study_run_counts_only_with_authenticated_operators(tmp_path: Path):
         log.created(1, 0)
         log.checked(1, 0)
         log.pending(1, 0)
-        log.reject(1, 10)
-        events = [_run_started(auth)] + log.events
+        log.reject(1, 10, by="op-study")
+        signed_in = [_opened("op-1", "scripted", 2), _opened("op-study", "password", 3)] if auth == "credentials" else []
+        events = [_run_started(auth)] + signed_in + log.events
         (d / "audit.jsonl").write_text("\n".join(json.dumps(e) for e in events) + "\n")
         (d / "storyline.jsonl").write_text(json.dumps(rec) + "\n")
         info = {"scenario": "plausible-wrong", "arm": "study", "seed": seed, "status": "ok", "operators": ["op-1", "op-study"],
-                "replay": {"ran": True, "ok": True, "mismatches": 0}, "warnings": [], "auth": auth,
+                "replay": {"ran": True, "ok": True, "mismatches": 0, "anchors": "verified"}, "warnings": [], "auth": auth,
                 "provenance": {"short": "abc1234", "dirty": False, "binaries": {"murmur-bridge": "f" * 64}}}
         (d / "run.json").write_text(json.dumps(info))
     (tmp_path / "batch.json").write_text(json.dumps({"id": "study", "seeds": [1, 2], "jobs": []}))
@@ -722,6 +759,8 @@ def test_a_credentials_stack_writes_its_own_credentials_with_the_cli(tmp_path: P
     assert sorted(stored["agents"]) == sorted(K.AGENTS)
     assert set(s.passwords) == set(K.OPERATORS) and all(len(p) >= 15 for p in s.passwords.values())
     assert all(k.startswith("mma_") for k in s.agent_keys.values())
+    # review fix 2: every operator but the participant holds a harness credential (scripted)
+    assert [op for op, e in stored["operators"].items() if not e.get("scripted")] == [K.PARTICIPANT_OPERATOR]
     text = s.credentials_file.read_text()
     assert not any(p in text for p in s.passwords.values()) and not any(k in text for k in s.agent_keys.values())
     # a bad mode is refused

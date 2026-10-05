@@ -135,11 +135,12 @@ def collect(batch: Path) -> tuple[dict[str, Any], list[dict[str, Any]], list[dic
         auth = m.get("auth") or {}
         if info.get("arm") == "study" and not auth.get("human_control_evidence"):
             # a participant's decisions count only when they signed in with their own
-            # credential and the log replayed (rules 7)
+            # credential, the log replayed and its anchors held (rules 7)
+            why = "; ".join(auth.get("why_not") or [f"operators not authenticated (auth {auth.get('mode')})"])
             excluded.append(
                 {
                     "rel": rel,
-                    "why": f"a study run whose operators were not authenticated (auth {auth.get('mode')}): not evidence about people",
+                    "why": f"a study run that is not evidence about people: {why}",
                     "info": info,
                 }
             )
