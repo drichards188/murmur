@@ -20,16 +20,21 @@
 //! from it. (A test-only constructor exists under `#[cfg(test)]` for the task layer's own
 //! tests.)
 //!
-//! **Operators.** Requests name their operator in the `X-Murmur-Operator` header, checked
-//! against `MURMUR_OPERATORS` (comma-separated; default `op-1`). That is a placeholder for
-//! real authentication: anyone who can reach the port can claim any listed id. The legacy
-//! `POST /api/tasks` (the console, which sends no header) acts as the first listed operator.
-//! The engine logs the roster (`MURMUR_OPERATORS`, and `MURMUR_ENGAGE_OPERATORS`, who must be
-//! listed as operators too, or the bridge does not start) in `run.started`, and replay checks
-//! every session against it.
-//! Each operator gets one engine session, opened (and logged) on first use; nothing else
-//! calls `Engine::open_operator_session`. The agent path (Phase F's MCP server,
-//! `crate::mcp`) is [`agent`]: it gets an `AgentPort` per agent, never a session.
+//! **Operators** (rules 7; `crate::auth`). Every request acts for an [`Actor`]. In a
+//! credentials run (the default) that is an operator who logged in with their own password:
+//! each login opens one engine session ([`Decision::open_login`], `session.opened` with
+//! `auth: password`), its end (logout, expiry, a credential removed or changed) closes it
+//! ([`Decision::close_login`], `session.closed`), and a consequential signature (every
+//! engagement signature, any tier with `step_up`) re-checks the password first
+//! ([`crate::auth::StepUpChecked`], then `Engine::step_up`). The roster is the credential
+//! file's operators when the run starts. In a dev run (`MURMUR_AUTH=dev`, logged as such)
+//! requests name their operator in the `X-Murmur-Operator` header against
+//! `MURMUR_OPERATORS` and `MURMUR_ENGAGE_OPERATORS` (who must be operators too, or the bridge
+//! does not start), each operator gets one session opened on first use, and the legacy
+//! `POST /api/tasks` and track declarations without a header act as the first listed
+//! operator. Only `crate::auth` and this module open engine sessions. The agent path (Phase
+//! F's MCP server, `crate::mcp`) is [`agent`]: it gets an `AgentPort` per agent, never a
+//! session.
 //!
 //! **The loop** ([`Decision::run`], once a second): expire overdue approvals, write vehicle
 //! events (mode changes, failsafes, STATUSTEXT) to the audit log, void waiting intents the
@@ -73,10 +78,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use murmur_decide::{
-    AnchorConfig, Anchors, AreaSet, AuditSink, Catalog, Clock, Constraints, Engine, EngineError,
-    Intent, IntentId, JsonlFile, LonLat, OperatorId, OperatorSession, OperatorView, Order, Policy,
-    Proposal, Rationale, ScenarioMap, SpaceSegment, State, Task, TaskOutcome, Time, Uid as DUid,
-    rules,
+    AnchorConfig, Anchors, AreaSet, AuditSink, AuthMethod, AuthMode, Catalog, Clock, Constraints,
+    Engine, EngineError, Intent, IntentId, JsonlFile, LonLat, OperatorId, OperatorSession,
+    OperatorView, Order, Policy, Proposal, Rationale, ScenarioMap, SessionId, SpaceSegment, State,
+    Task, TaskOutcome, Time, Uid as DUid, rules,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -98,6 +103,50 @@ pub const DEFAULT_ORBIT_RADIUS_M: f64 = 200.0;
 const SPACE_NOT_VEHICLES: &str = "collect and cover request satellites: they run in the space executor, not the vehicle task layer";
 /// The WebSocket inbox message lists this many recent intents.
 const PUSH_INTENTS: usize = 50;
+
+/// Who a request acts for: an operator and, in a credentials run, the login session it came
+/// in on (`crate::auth` makes those, after checking the password; the session must still be
+/// open). An operator named by the request itself ([`Actor::asserted`]) acts only in a dev
+/// run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Actor {
+    operator: OperatorId,
+    login: Option<SessionId>,
+}
+
+impl Actor {
+    /// An operator the request names (dev mode, tests); refused in a credentials run.
+    pub fn asserted(operator: OperatorId) -> Actor {
+        Actor {
+            operator,
+            login: None,
+        }
+    }
+
+    /// An operator on their login session (`crate::auth` only, for a session
+    /// [`Decision::open_login`] opened).
+    pub(crate) fn logged_in(operator: OperatorId, session: SessionId) -> Actor {
+        Actor {
+            operator,
+            login: Some(session),
+        }
+    }
+
+    pub fn operator(&self) -> &OperatorId {
+        &self.operator
+    }
+
+    /// The login session (credentials run), if any.
+    pub fn login(&self) -> Option<SessionId> {
+        self.login
+    }
+}
+
+impl std::fmt::Display for Actor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.operator.fmt(f)
+    }
+}
 
 /// An order the engine released for an approved (or auto-approved) intent: the only thing
 /// [`crate::tasks::TaskManager::dispatch`] accepts. Made only in this module, from the
@@ -168,7 +217,7 @@ pub struct DecisionError {
 }
 
 impl DecisionError {
-    fn new(status: u16, detail: impl Into<String>) -> Self {
+    pub(crate) fn new(status: u16, detail: impl Into<String>) -> Self {
         DecisionError {
             status,
             detail: detail.into(),
@@ -198,9 +247,11 @@ fn engine_err(e: EngineError) -> DecisionError {
         | EngineError::NoPicture { .. }
         | EngineError::SupersedesEngagement { .. }
         | EngineError::NotAccepted { .. } => 409,
-        EngineError::EngagementNeedsAuthority(_) | EngineError::ProposerCannotApprove { .. } => {
-            403
-        }
+        EngineError::EngagementNeedsAuthority(_)
+        | EngineError::ProposerCannotApprove { .. }
+        | EngineError::NotOnRoster { .. } => 403,
+        // rules 7: the signer must (re-)enter their credential
+        EngineError::NotAuthenticated { .. } | EngineError::StepUpRequired { .. } => 401,
         _ => 500,
     };
     DecisionError::new(status, e.to_string())
@@ -234,9 +285,14 @@ pub struct Settings {
     pub catalog: PathBuf,
     pub areas: PathBuf,
     pub audit: PathBuf,
+    /// The run's operators: the credential file's (credentials run, set by `crate::auth`), or
+    /// `MURMUR_OPERATORS` (dev run).
     pub operators: Vec<OperatorId>,
-    /// Operators whose sessions carry engagement authority (`MURMUR_ENGAGE_OPERATORS`).
+    /// Those whose sessions carry engagement authority: the credential file's flag, or
+    /// `MURMUR_ENGAGE_OPERATORS` (dev run).
     pub engage_operators: Vec<OperatorId>,
+    /// How operators are authenticated (`MURMUR_AUTH`: credentials unless `dev`).
+    pub auth: AuthMode,
     pub tidewater: Option<String>,
     /// Run-time anchors of the audit log (`logs/anchors/<run-id>.anchors`, or
     /// `MURMUR_ANCHOR_DIR`; every `MURMUR_ANCHOR_EVERY` events, 100; `MURMUR_ANCHOR_CMD` gets
@@ -282,6 +338,8 @@ impl Settings {
             audit: root.join("logs/audit").join(format!("{run}.jsonl")),
             operators,
             engage_operators,
+            // `main` sets it, and in a credentials run the roster, from `crate::auth::Settings`
+            auth: AuthMode::Credentials,
             tidewater: var("MURMUR_TIDEWATER_URL"),
             last_run: Some(root.join("logs/audit").join(format!(
                 ".last-run-{}",
@@ -332,7 +390,10 @@ struct Running {
 
 struct Core {
     engine: Engine,
+    /// Dev run: one session per asserted operator, opened on first use.
     sessions: BTreeMap<OperatorId, OperatorSession>,
+    /// Credentials run: one session per login, by its engine session id.
+    logins: BTreeMap<SessionId, OperatorSession>,
     running: BTreeMap<IntentId, Running>,
     /// every tasking an intent produced
     taskings: BTreeMap<IntentId, Arc<Tasking>>,
@@ -368,6 +429,8 @@ pub struct Decision {
     areas: AreaSet,
     operators: Vec<OperatorId>,
     engage_operators: Vec<OperatorId>,
+    /// How operators are authenticated (logged in `run.started`).
+    auth: AuthMode,
     terrain: Terrain,
     rules: murmur_decide::RulesConfig,
     /// The track store (tests inject one; the bridge uses the process-wide one).
@@ -401,6 +464,7 @@ pub struct Parts {
     pub terrain: Terrain,
     pub operators: Vec<OperatorId>,
     pub engage_operators: Vec<OperatorId>,
+    pub auth: AuthMode,
     pub tracks: Option<Arc<Tracks>>,
 }
 
@@ -415,10 +479,13 @@ impl Decision {
         if let Some(dir) = s.audit.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
-        let file = JsonlFile::open(&s.audit).map_err(|e| format!("{}: {e}", s.audit.display()))?;
         if s.operators.is_empty() {
-            return Err("MURMUR_OPERATORS lists no operator".into());
+            return Err(match s.auth {
+                AuthMode::Dev => "MURMUR_OPERATORS lists no operator".into(),
+                AuthMode::Credentials => "the credential file holds no operator".into(),
+            });
         }
+        let file = JsonlFile::open(&s.audit).map_err(|e| format!("{}: {e}", s.audit.display()))?;
         // anchored from its first event on: an anchor file that can't be opened stops the
         // bridge like an audit log that can't
         let anchors = match &s.anchors {
@@ -444,6 +511,7 @@ impl Decision {
                 terrain: Terrain::new(s.tidewater.as_deref()),
                 operators: s.operators.clone(),
                 engage_operators: s.engage_operators.clone(),
+                auth: s.auth,
                 tracks: None,
             },
         )?;
@@ -543,9 +611,14 @@ impl Decision {
         // the operators this run admits, logged in run.started: every engagement operator
         // must be an operator too, or the bridge does not start
         let roster = murmur_decide::Roster::new(p.operators.clone(), p.engage_operators.clone())
-            .map_err(|e| {
-                format!("{e} (MURMUR_OPERATORS: {:?}, MURMUR_ENGAGE_OPERATORS: {:?})", p.operators, p.engage_operators)
-            })?;
+            .map_err(|e| match p.auth {
+                AuthMode::Dev => format!(
+                    "{e} (MURMUR_OPERATORS: {:?}, MURMUR_ENGAGE_OPERATORS: {:?})",
+                    p.operators, p.engage_operators
+                ),
+                AuthMode::Credentials => format!("{e} (the credential file's operators)"),
+            })?
+            .with_auth(p.auth);
         let engine = Engine::with_areas(
             p.policy,
             Some(p.areas.clone()),
@@ -561,6 +634,7 @@ impl Decision {
             areas: p.areas,
             operators: p.operators,
             engage_operators: p.engage_operators,
+            auth: p.auth,
             terrain: p.terrain,
             rules,
             tracks: p.tracks,
@@ -569,6 +643,7 @@ impl Decision {
             core: Mutex::new(Core {
                 engine,
                 sessions: BTreeMap::new(),
+                logins: BTreeMap::new(),
                 running: BTreeMap::new(),
                 taskings: BTreeMap::new(),
                 space_runs: BTreeMap::new(),
@@ -644,9 +719,68 @@ impl Decision {
         self.tracks.clone().or_else(crate::tracks::store)
     }
 
-    /// The operators and who of them has engagement authority (for the console).
+    /// The operators and who of them has engagement authority (for the console), and how
+    /// they are authenticated (`credentials` or `dev`).
     pub fn operators_json(&self) -> Value {
-        json!({ "operators": self.all_operators(), "engage": self.engage_operators })
+        json!({
+            "operators": self.all_operators(),
+            "engage": self.engage_operators,
+            "auth": self.auth.as_str(),
+        })
+    }
+
+    /// Whether `op` is on the run's roster, and with engagement authority.
+    pub fn roster_entry(&self, op: &OperatorId) -> Option<bool> {
+        self.operators
+            .contains(op)
+            .then(|| self.engage_operators.contains(op))
+    }
+
+    /// Credentials run: open the engine session for a login whose password `crate::auth`
+    /// just checked (`session.opened`, `auth: password`), with engagement authority if
+    /// `engage` (the credential holds it now) and the roster gave it at start.
+    pub fn open_login(&self, op: &OperatorId, engage: bool) -> Result<SessionId, DecisionError> {
+        if self.auth != AuthMode::Credentials {
+            return Err(DecisionError::new(409, "this run asserts operator ids (MURMUR_AUTH=dev): there is no login"));
+        }
+        let grants = murmur_decide::Grants {
+            engage: engage && self.engage_operators.contains(op),
+        };
+        let out = {
+            let mut core = self.lock();
+            let s = core
+                .engine
+                .open_authenticated_session(op.clone(), grants, AuthMethod::Password)
+                .map_err(engine_err)?;
+            let id = s.authority().session();
+            core.logins.insert(id, s);
+            id
+        };
+        Ok(out)
+    }
+
+    /// Credentials run: end a login's engine session (`session.closed`, with why: logout,
+    /// expiry, a credential removed or changed). Its authorities and picture tokens go with
+    /// it. Nothing happens for a session already ended.
+    pub fn close_login(&self, session: SessionId, reason: &str) {
+        let mut core = self.lock();
+        if let Some(s) = core.logins.remove(&session)
+            && let Err(e) = core.engine.close_operator_session(s, reason)
+        {
+            eprintln!("decision: closing session {}: {e}", session.0);
+        }
+    }
+
+    /// Credentials run: whether approving intent `id` re-enters the approver's credential
+    /// (its decision says `step_up`: every engagement, any tier marked so).
+    pub fn needs_step_up(&self, id: u64) -> bool {
+        self.auth == AuthMode::Credentials
+            && self
+                .lock()
+                .engine
+                .intent(IntentId(id))
+                .and_then(Intent::policy)
+                .is_some_and(|p| p.step_up)
     }
 
     fn all_operators(&self) -> Vec<OperatorId> {
@@ -669,13 +803,21 @@ impl Decision {
 
     // ---- operators ------------------------------------------------------------------------
 
-    /// The operator a request acts for. `header` is `X-Murmur-Operator`; `legacy` lets a
-    /// request without one (the console's `POST /api/tasks`) act as the first listed operator.
+    /// Dev run: the operator a request names. `header` is `X-Murmur-Operator`; `legacy` lets
+    /// a request without one (the console's `POST /api/tasks`, a track declaration) act as
+    /// the first listed operator. A credentials run never names its operator this way
+    /// (`crate::auth` resolves the login instead): 401.
     pub fn operator(
         &self,
         header: Option<&str>,
         legacy: bool,
     ) -> Result<OperatorId, DecisionError> {
+        if self.auth == AuthMode::Credentials {
+            return Err(DecisionError::new(
+                401,
+                "sign in: this bridge authenticates operators with their own password (MURMUR_AUTH=dev asserts ids by header instead)",
+            ));
+        }
         match header.map(str::trim).filter(|s| !s.is_empty()) {
             Some(h) => self
                 .all_operators()
@@ -700,14 +842,30 @@ impl Decision {
         }
     }
 
-    /// That operator's session, opened (and logged) on first use, with engagement
+    /// The session an actor acts in: their login's (credentials run; 401 once it has ended),
+    /// or (dev run) the asserted operator's, opened (and logged) on first use with engagement
     /// authority if the operator is in `MURMUR_ENGAGE_OPERATORS`.
     fn session<'a>(
         engine: &mut Engine,
         sessions: &'a mut BTreeMap<OperatorId, OperatorSession>,
-        op: &OperatorId,
+        logins: &'a BTreeMap<SessionId, OperatorSession>,
+        by: &Actor,
         engage_operators: &[OperatorId],
+        auth: AuthMode,
     ) -> Result<&'a OperatorSession, DecisionError> {
+        if let Some(id) = by.login {
+            return logins
+                .get(&id)
+                .filter(|s| s.operator() == &by.operator)
+                .ok_or_else(|| DecisionError::new(401, "your session has ended: sign in again"));
+        }
+        if auth == AuthMode::Credentials {
+            return Err(DecisionError::new(
+                401,
+                "sign in: this bridge authenticates operators with their own password",
+            ));
+        }
+        let op = &by.operator;
         if !sessions.contains_key(op) {
             let grants = murmur_decide::Grants {
                 engage: engage_operators.contains(op),
@@ -729,7 +887,7 @@ impl Decision {
     /// exists, as before. Auto-approved intents are dispatched at once.
     pub async fn submit(
         &self,
-        by: &OperatorId,
+        by: &Actor,
         req: IntentRequest,
     ) -> Result<Outcome, DecisionError> {
         if matches!(req.task.as_str(), "collect" | "cover") {
@@ -757,7 +915,7 @@ impl Decision {
             let mut guard = self.lock();
             let core = &mut *guard;
             let world = self.snapshot();
-            let session = Self::session(&mut core.engine, &mut core.sessions, by, &self.engage_operators)?;
+            let session = Self::session(&mut core.engine, &mut core.sessions, &core.logins, by, &self.engage_operators, self.auth)?;
             let id = core
                 .engine
                 .submit(
@@ -778,7 +936,7 @@ impl Decision {
     /// it waits in the inbox for operators with engagement authority.
     async fn submit_engage(
         &self,
-        by: &OperatorId,
+        by: &Actor,
         req: &IntentRequest,
     ) -> Result<Outcome, DecisionError> {
         self.check_vehicles(&req.uids)?;
@@ -789,7 +947,7 @@ impl Decision {
             let core = &mut *guard;
             let world = self.snapshot();
             let session =
-                Self::session(&mut core.engine, &mut core.sessions, by, &self.engage_operators)?;
+                Self::session(&mut core.engine, &mut core.sessions, &core.logins, by, &self.engage_operators, self.auth)?;
             // rules 6: the operator's acceptances of lost vehicles, as the check showed them
             // (only with engagement authority: 403 otherwise)
             let accept: Vec<(DUid, Option<Time>)> =
@@ -836,7 +994,7 @@ impl Decision {
     /// ([`Self::prepare_space`]; SGP4 over the cached elements: well under a second for a
     /// collect at the scenario area, over a second for a week of Starlink coverage), and the
     /// engine uses that answer if it is still fresh when the checks run.
-    async fn submit_space(&self, by: &OperatorId, req: &IntentRequest) -> Result<Outcome, DecisionError> {
+    async fn submit_space(&self, by: &Actor, req: &IntentRequest) -> Result<Outcome, DecisionError> {
         let proposal = space::proposal(
             &req.task,
             !req.uids.is_empty(),
@@ -848,7 +1006,7 @@ impl Decision {
             let mut guard = self.lock();
             let core = &mut *guard;
             let world = self.snapshot();
-            let session = Self::session(&mut core.engine, &mut core.sessions, by, &self.engage_operators)?;
+            let session = Self::session(&mut core.engine, &mut core.sessions, &core.logins, by, &self.engage_operators, self.auth)?;
             if let Some(p) = prepared {
                 core.engine.use_prepared_space(p);
             }
@@ -874,7 +1032,7 @@ impl Decision {
     #[cfg(test)]
     pub async fn approve(
         &self,
-        by: &OperatorId,
+        by: &Actor,
         id: u64,
         note: Option<String>,
     ) -> Result<Outcome, DecisionError> {
@@ -885,12 +1043,12 @@ impl Decision {
     /// sign (the engine's picture token: the plan, the track's identity, valid
     /// `token_ttl_s`, bound to their session). The console shows it and the signature quotes
     /// its `id`.
-    pub fn issue_picture(&self, by: &OperatorId, id: u64) -> Result<Value, DecisionError> {
+    pub fn issue_picture(&self, by: &Actor, id: u64) -> Result<Value, DecisionError> {
         let id = IntentId(id);
         let mut guard = self.lock();
         let core = &mut *guard;
         let world = self.snapshot();
-        let session = Self::session(&mut core.engine, &mut core.sessions, by, &self.engage_operators)?;
+        let session = Self::session(&mut core.engine, &mut core.sessions, &core.logins, by, &self.engage_operators, self.auth)?;
         let Some(auth) = session.engagement_authority() else {
             return Err(DecisionError::new(
                 403,
@@ -909,13 +1067,31 @@ impl Decision {
     /// it when the token expired, is another session's, or its plan or track facts no longer
     /// hold. Any other intent whose dispatch would stop an engagement in play on its vehicles
     /// needs `acknowledge` (the engine refuses it otherwise, and logs what was acknowledged).
+    #[cfg(test)]
     pub async fn approve_with(
         &self,
-        by: &OperatorId,
+        by: &Actor,
         id: u64,
         note: Option<String>,
         token: Option<u64>,
         acknowledge: bool,
+    ) -> Result<Outcome, DecisionError> {
+        self.approve_stepped(by, id, note, token, acknowledge, None).await
+    }
+
+    /// [`Self::approve_with`] after a step-up: `step` says `crate::auth` just checked the
+    /// approver's password again, for this login. The engine logs the step-up under the
+    /// session (`operator.action step_up`) and the signature quotes it; a consequential
+    /// signature (every engagement's, any tier with `step_up`) is refused without one in a
+    /// credentials run (401).
+    pub async fn approve_stepped(
+        &self,
+        by: &Actor,
+        id: u64,
+        note: Option<String>,
+        token: Option<u64>,
+        acknowledge: bool,
+        step: Option<crate::auth::StepUpChecked>,
     ) -> Result<Outcome, DecisionError> {
         let id = IntentId(id);
         let (task, uids) = {
@@ -950,34 +1126,54 @@ impl Decision {
             let mut guard = self.lock();
             let core = &mut *guard;
             let world = self.snapshot();
-            let session = Self::session(&mut core.engine, &mut core.sessions, by, &self.engage_operators)?;
+            let session = Self::session(&mut core.engine, &mut core.sessions, &core.logins, by, &self.engage_operators, self.auth)?;
             if let Some(p) = prepared {
                 core.engine.use_prepared_space(p);
             }
+            // rules 7: the password was just checked again for this login: log the step-up
+            // under its session, for this signature to quote
+            let step = match step {
+                Some(c) if c.session() == by.login() && c.operator() == by.operator() => {
+                    Some(core.engine.step_up(session).map_err(engine_err)?)
+                }
+                Some(_) => {
+                    return Err(DecisionError::new(401, "the credential re-entered is not this session's"));
+                }
+                None => None,
+            };
+            let oracle = self.terrain.oracle();
             let r = if matches!(task, Task::Engage { .. }) {
-                match (session.engagement_authority(), token) {
-                    (Some(auth), Some(token)) => core
+                match (session.engagement_authority(), token, step) {
+                    (Some(auth), Some(token), Some(s)) => core
                         .engine
-                        .approve_engagement(id, auth, note, token, &world, &self.terrain.oracle())
+                        .approve_engagement_stepped(id, auth, s, note, token, &world, &oracle)
                         .map(|_| ()),
-                    (Some(_), None) => {
+                    (Some(auth), Some(token), None) => core
+                        .engine
+                        .approve_engagement(id, auth, note, token, &world, &oracle)
+                        .map(|_| ()),
+                    (Some(_), None, _) => {
                         return Err(DecisionError::new(
                             400,
                             "an engagement signature quotes the picture you were shown: ask for it first (POST /api/intents/{id}/picture) and send its token",
                         ));
                     }
-                    (None, _) => core
+                    (None, _, _) => core
                         .engine
-                        .approve(id, session.authority(), note, &world, &self.terrain.oracle())
+                        .approve(id, session.authority(), note, &world, &oracle)
                         .map(|_| ()),
                 }
+            } else if let Some(s) = step {
+                core.engine
+                    .approve_stepped(id, session.authority(), s, note, acknowledge, &world, &oracle)
+                    .map(|_| ())
             } else if acknowledge {
                 core.engine
-                    .approve_acknowledging(id, session.authority(), note, &world, &self.terrain.oracle())
+                    .approve_acknowledging(id, session.authority(), note, &world, &oracle)
                     .map(|_| ())
             } else {
                 core.engine
-                    .approve(id, session.authority(), note, &world, &self.terrain.oracle())
+                    .approve(id, session.authority(), note, &world, &oracle)
                     .map(|_| ())
             };
             match r {
@@ -991,7 +1187,7 @@ impl Decision {
 
     pub fn reject(
         &self,
-        by: &OperatorId,
+        by: &Actor,
         id: u64,
         note: Option<String>,
     ) -> Result<Outcome, DecisionError> {
@@ -999,7 +1195,7 @@ impl Decision {
         let out = {
             let mut guard = self.lock();
             let core = &mut *guard;
-            let session = Self::session(&mut core.engine, &mut core.sessions, by, &self.engage_operators)?;
+            let session = Self::session(&mut core.engine, &mut core.sessions, &core.logins, by, &self.engage_operators, self.auth)?;
             match core.engine.reject(id, session.authority(), note) {
                 Ok(_) => Ok(self.outcome(core, id)),
                 Err(e) => Err(self.with_intent(core, id, engine_err(e))),
@@ -1012,7 +1208,7 @@ impl Decision {
     /// Withdraw an intent before dispatch.
     pub fn cancel(
         &self,
-        by: &OperatorId,
+        by: &Actor,
         id: u64,
         note: Option<String>,
     ) -> Result<Outcome, DecisionError> {
@@ -1020,7 +1216,7 @@ impl Decision {
         let out = {
             let mut guard = self.lock();
             let core = &mut *guard;
-            let session = Self::session(&mut core.engine, &mut core.sessions, by, &self.engage_operators)?;
+            let session = Self::session(&mut core.engine, &mut core.sessions, &core.logins, by, &self.engage_operators, self.auth)?;
             let note = note.unwrap_or_else(|| "cancelled".into());
             match core.engine.cancel(id, session.authority(), &note) {
                 Ok(_) => Ok(self.outcome(core, id)),
@@ -1035,13 +1231,13 @@ impl Decision {
     /// acknowledgement) as `operator.action`, under their session.
     pub fn record_action(
         &self,
-        by: &OperatorId,
+        by: &Actor,
         action: &str,
         detail: &str,
     ) -> Result<(), DecisionError> {
         let mut guard = self.lock();
         let core = &mut *guard;
-        let session = Self::session(&mut core.engine, &mut core.sessions, by, &self.engage_operators)?;
+        let session = Self::session(&mut core.engine, &mut core.sessions, &core.logins, by, &self.engage_operators, self.auth)?;
         core.engine
             .record_operator_action(session.authority(), action, detail)
             .map_err(engine_err)
@@ -1053,14 +1249,14 @@ impl Decision {
     /// [`VIEW_BURST`] views at once (refilled at [`VIEW_RATE_PER_S`] a second) 429.
     pub fn record_view(
         &self,
-        by: &OperatorId,
+        by: &Actor,
         id: u64,
         view: OperatorView,
     ) -> Result<(), DecisionError> {
         let mut guard = self.lock();
         let core = &mut *guard;
         let mono = clock::mono();
-        let budget = core.view_budget.entry(by.clone()).or_insert((VIEW_BURST, mono));
+        let budget = core.view_budget.entry(by.operator().clone()).or_insert((VIEW_BURST, mono));
         budget.0 = (budget.0 + (mono - budget.1).max(0.0) * VIEW_RATE_PER_S).min(VIEW_BURST);
         budget.1 = mono;
         if budget.0 < 1.0 {
@@ -1070,7 +1266,7 @@ impl Decision {
             ));
         }
         budget.0 -= 1.0;
-        let session = Self::session(&mut core.engine, &mut core.sessions, by, &self.engage_operators)?;
+        let session = Self::session(&mut core.engine, &mut core.sessions, &core.logins, by, &self.engage_operators, self.auth)?;
         core.engine
             .record_operator_view(session.authority(), IntentId(id), view)
             .map_err(|e| match e {

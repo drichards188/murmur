@@ -21,9 +21,9 @@ use crate::tracks::truth::{ContactTruth, Domain as TDomain, Sensing, TruthAffili
 /// In ez-gate-west, west of the bridge.
 const TARGET: (f64, f64) = (37.8120, -122.4950);
 
-struct Erig {
-    r: Rig,
-    tracks: Arc<Tracks>,
+pub(super) struct Erig {
+    pub(super) r: Rig,
+    pub(super) tracks: Arc<Tracks>,
 }
 
 fn engage_rig() -> Erig {
@@ -38,6 +38,15 @@ fn engage_rig_on(on: Option<(Arc<World>, Arc<Tracks>)>) -> Erig {
 
 /// The engagement rig whose audit log is said to be `audit_path` (the sink is in memory).
 fn engage_rig_with(on: Option<(Arc<World>, Arc<Tracks>)>, audit_path: PathBuf) -> Erig {
+    engage_rig_auth(on, audit_path, murmur_decide::AuthMode::Dev)
+}
+
+/// [`engage_rig_with`] authenticating its operators as `auth` says (rules 7).
+pub(super) fn engage_rig_auth(
+    on: Option<(Arc<World>, Arc<Tracks>)>,
+    audit_path: PathBuf,
+    auth: murmur_decide::AuthMode,
+) -> Erig {
     let root = root();
     let mut policy = Policy::load(&root.join("sim/policy.toml")).expect("policy");
     let mut e = policy.rules.engage_rules();
@@ -74,6 +83,7 @@ fn engage_rig_with(on: Option<(Arc<World>, Arc<Tracks>)>, audit_path: PathBuf) -
             terrain,
             operators: vec![OperatorId::new("op-1"), OperatorId::new("op-2"), OperatorId::new("op-3")],
             engage_operators: vec![OperatorId::new("op-2"), OperatorId::new("op-3")],
+            auth,
             tracks: Some(tracks.clone()),
         },
     )
@@ -89,12 +99,12 @@ fn engage_rig_with(on: Option<(Arc<World>, Arc<Tracks>)>, audit_path: PathBuf) -
     }
 }
 
-fn op(s: &str) -> OperatorId {
-    OperatorId::new(s)
+fn op(s: &str) -> Actor {
+    Actor::asserted(OperatorId::new(s))
 }
 
 impl Erig {
-    fn now_s(&self) -> f64 {
+    pub(super) fn now_s(&self) -> f64 {
         self.r.clock.now().0 as f64 / 1000.0
     }
 
@@ -104,7 +114,7 @@ impl Erig {
         self.sense_at(self.now_s(), with_target);
     }
 
-    fn sense_at(&self, now_s: f64, with_target: bool) {
+    pub(super) fn sense_at(&self, now_s: f64, with_target: bool) {
         let observer = Observer {
             uid: 9,
             lat: TARGET.0,
@@ -171,7 +181,7 @@ impl Erig {
             .expect("logged");
     }
 
-    fn nomination(&self, fallback: &str) -> IntentRequest {
+    pub(super) fn nomination(&self, fallback: &str) -> IntentRequest {
         IntentRequest {
             task: "engage".into(),
             uids: vec![1],
@@ -772,7 +782,7 @@ async fn a_restore_that_does_not_confirm_is_retried_logged_and_alerted() {
     let prev = MemorySink::new();
     let mut eng = murmur_decide::Engine::new(
         Policy::load(&root().join("sim/policy.toml")).expect("policy"),
-        murmur_decide::Roster::new(vec![op("op-1")], vec![]).expect("roster"),
+        murmur_decide::Roster::new(vec![OperatorId::new("op-1")], vec![]).expect("roster"),
         Box::new(clock),
         Box::new(prev.clone()),
     )
@@ -908,7 +918,7 @@ fn owing_log(vehicle: murmur_decide::VehicleIdentity) -> String {
     let prev = MemorySink::new();
     let mut eng = murmur_decide::Engine::new(
         Policy::load(&root().join("sim/policy.toml")).expect("policy"),
-        murmur_decide::Roster::new(vec![op("op-1")], vec![]).expect("roster"),
+        murmur_decide::Roster::new(vec![OperatorId::new("op-1")], vec![]).expect("roster"),
         Box::new(ManualClock::new(snapshot::ms(clock::wall()))),
         Box::new(prev.clone()),
     )

@@ -87,9 +87,13 @@ release an engagement: no such tool exists. get_nominations shows where each sta
 an engagement is in play on a vehicle, anything you propose for that vehicle waits for a \
 human.";
 
-/// Where the agent list comes from (see `main.rs`).
+/// Who may connect (see `main.rs`): a credentials run checks each agent's key (`keys`); a
+/// dev run believes the ids `MURMUR_AGENTS` lists.
 pub struct Settings {
+    /// Dev run: the ids an `X-Murmur-Agent` header (or `clientInfo.name`) may claim.
     pub agents: Vec<AgentId>,
+    /// Credentials run: the credential file's agent keys (`Authorization: Bearer <key>`).
+    pub keys: Option<Arc<crate::auth::Auth>>,
 }
 
 impl Settings {
@@ -105,6 +109,7 @@ impl Settings {
                 .filter(|s| !s.is_empty())
                 .map(AgentId::new)
                 .collect(),
+            keys: None,
         }
     }
 }
@@ -117,6 +122,8 @@ pub struct Mcp {
     /// passes and tasking options come from the same handlers the console uses).
     api: Router,
     agents: Vec<AgentId>,
+    /// Credentials run: agents' keys (the dev list `agents` is then unused).
+    keys: Option<Arc<crate::auth::Auth>>,
     /// Agents that have connected this run (`agent.action session.connected`, once each).
     seen: Mutex<BTreeSet<AgentId>>,
 }
@@ -133,17 +140,46 @@ impl Mcp {
             decision,
             api,
             agents: settings.agents,
+            keys: settings.keys,
             seen: Mutex::new(BTreeSet::new()),
         })
     }
 
-    /// The agent a request acts for: the `X-Murmur-Agent` header, else the session's
-    /// `clientInfo.name`, and it must be listed in `MURMUR_AGENTS`. Logged once per agent
-    /// and run as `agent.action session.connected`.
+    /// The agent a request acts for. Credentials run: the agent whose key the request's
+    /// `Authorization: Bearer` header carries (an `X-Murmur-Agent` header naming another is
+    /// refused). Dev run: the `X-Murmur-Agent` header, else the session's `clientInfo.name`,
+    /// listed in `MURMUR_AGENTS`. Logged once per agent and run as `agent.action
+    /// session.connected` (with the key's id, never the key).
     pub(crate) fn agent(&self, ctx: &RequestContext<RoleServer>) -> Result<AgentId, ErrorData> {
-        let header = ctx
-            .extensions
-            .get::<axum::http::request::Parts>()
+        let parts = ctx.extensions.get::<axum::http::request::Parts>();
+        if let Some(keys) = &self.keys {
+            let (agent, key_id) = parts
+                .and_then(|p| crate::auth::bearer(&p.headers))
+                .and_then(|k| keys.agent_for_key(k))
+                .ok_or_else(|| {
+                    ErrorData::invalid_request(
+                        "an agent connects with its own key: Authorization: Bearer <key> (murmur-auth agent-add)",
+                        None,
+                    )
+                })?;
+            let named = parts
+                .and_then(|p| p.headers.get(AGENT_HEADER))
+                .and_then(|v| v.to_str().ok())
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            if let Some(n) = named
+                && n != agent.as_str()
+            {
+                return Err(ErrorData::invalid_request(
+                    format!("the key is {agent}'s, the request names {n}"),
+                    None,
+                ));
+            }
+            let via = format!("API key {key_id}");
+            self.connected(&agent, &via, ctx.peer.peer_info().as_deref());
+            return Ok(agent);
+        }
+        let header = parts
             .and_then(|p| p.headers.get(AGENT_HEADER))
             .and_then(|v| v.to_str().ok())
             .map(str::trim)

@@ -1180,6 +1180,7 @@ dependencies = [
  "axum",
  "chrono",
  "mavlink",
+ "murmur-auth",
  "murmur-decide",
  "murmur-space",
  "quick-xml 0.42.0",

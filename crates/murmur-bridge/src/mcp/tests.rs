@@ -22,6 +22,7 @@ use tower::ServiceExt;
 
 use super::*;
 use crate::api;
+use crate::decision::Actor;
 use crate::decision::{Parts, Terrain, snapshot};
 use crate::tasks::tests::{Firmware, quick, spawn_fake};
 use crate::vehicle::{Identity, Uid};
@@ -97,6 +98,7 @@ fn rig() -> Rig {
             terrain,
             operators: vec![OperatorId::new("op-1"), OperatorId::new("op-2"), OperatorId::new("op-3")],
             engage_operators: vec![OperatorId::new("op-2"), OperatorId::new("op-3")],
+            auth: murmur_decide::AuthMode::Dev,
             tracks: Some(tracks.clone()),
         },
     )
@@ -107,10 +109,16 @@ fn rig() -> Rig {
         decision: d.clone(),
         tracks: tracks.clone(),
         lod: crate::push::LodSettings::default(),
+        auth: crate::auth::Auth::new(
+            crate::auth::Settings::dev(),
+            d.clone(),
+            murmur_auth::CredentialFile::default(),
+        ),
     });
     let mcp = Mcp::new(
         Settings {
             agents: vec![planner(), watch()],
+            keys: None,
         },
         world.clone(),
         d.clone(),
@@ -468,7 +476,7 @@ async fn a_human_tier_proposal_waits_for_an_operator_then_runs() {
     // a human approves over the operator API; the checks run again and it flies
     let approved = r
         .d
-        .approve(&OperatorId::new("op-1"), id, Some("cleared".into()))
+        .approve(&Actor::asserted(OperatorId::new("op-1")), id, Some("cleared".into()))
         .await
         .expect("approve");
     assert_eq!(approved.state, State::Dispatched);
@@ -836,7 +844,7 @@ async fn an_agent_proposes_a_collect_and_a_cover() {
     );
     let approved = r
         .d
-        .approve(&OperatorId::new("op-1"), id, None)
+        .approve(&Actor::asserted(OperatorId::new("op-1")), id, None)
         .await
         .expect("approve");
     assert_eq!(approved.state, State::Dispatched);
@@ -936,6 +944,7 @@ async fn the_endpoint_takes_the_agent_header_over_http() {
         service(
             Settings {
                 agents: vec![planner()],
+                keys: None,
             },
             r.world.clone(),
             r.d.clone(),
@@ -1255,7 +1264,7 @@ async fn an_agent_order_on_an_engaging_platform_waits_for_a_human() {
     // an operator approving the agent's hold must acknowledge that it stops the engagement
     let err = r
         .d
-        .approve_with(&OperatorId::new("op-1"), held, None, None, false)
+        .approve_with(&Actor::asserted(OperatorId::new("op-1")), held, None, None, false)
         .await
         .expect_err("not acknowledged");
     assert_eq!(err.status, 409, "{}", err.detail);
@@ -1264,7 +1273,7 @@ async fn an_agent_order_on_an_engaging_platform_waits_for_a_human() {
     assert_eq!(r.state(eng), State::PendingApproval);
     let o = r
         .d
-        .approve_with(&OperatorId::new("op-1"), held, None, None, true)
+        .approve_with(&Actor::asserted(OperatorId::new("op-1")), held, None, None, true)
         .await
         .expect("acknowledged");
     assert!(o.dispatched(), "{}", o.intent);

@@ -29,9 +29,9 @@
 //! reported themselves, for the evaluation truth log's collateral record. The contacts
 //! process marks the contacts inside the radius; nothing here models damage.
 //!
-//! Operators may declare a track's affiliation (`POST /api/tracks/{id}/declare`, operator
-//! header as for intents); the declaration is logged as an `operator.action` and overrides
-//! the estimate. Hostile is never derived by the model.
+//! Operators may declare a track's affiliation (`POST /api/tracks/{id}/declare`, the
+//! signed-in operator as for intents; a dev run's header); the declaration is logged as an
+//! `operator.action` and overrides the estimate. Hostile is never derived by the model.
 
 pub mod model;
 pub mod sensing;
@@ -498,6 +498,7 @@ struct Api {
     tracks: Arc<Tracks>,
     world: Arc<World>,
     decision: Arc<Decision>,
+    auth: Arc<crate::auth::Auth>,
 }
 
 fn error(status: StatusCode, detail: impl Into<String>) -> Response {
@@ -510,6 +511,7 @@ pub fn router<S: Clone + Send + Sync + 'static>(
     tracks: Arc<Tracks>,
     world: Arc<World>,
     decision: Arc<Decision>,
+    auth: Arc<crate::auth::Auth>,
 ) -> Router<S> {
     Router::new()
         .route("/api/tracks", get(list))
@@ -521,6 +523,7 @@ pub fn router<S: Clone + Send + Sync + 'static>(
             tracks,
             world,
             decision,
+            auth,
         })
 }
 
@@ -553,10 +556,7 @@ async fn declare(
         Ok(b) => b,
         Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, e.body_text()),
     };
-    let header = headers
-        .get(crate::api::OPERATOR_HEADER)
-        .and_then(|v| v.to_str().ok());
-    let op = match api.decision.operator(header, true) {
+    let op = match api.auth.actor(&headers, true) {
         Ok(op) => op,
         Err(e) => return error(StatusCode::from_u16(e.status).unwrap_or(StatusCode::FORBIDDEN), e.detail),
     };
@@ -564,7 +564,7 @@ async fn declare(
     let Some(track) = api.tracks.declare(
         &id,
         body.affiliation,
-        op.as_str(),
+        op.operator().as_str(),
         body.note.clone(),
         now,
     ) else {

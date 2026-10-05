@@ -193,7 +193,7 @@ async fn a_human_approved_order_queued_across_a_reboot_returns_to_the_inbox() {
     assert_eq!(w.count("MISSION_COUNT"), 0, "not sent: a human looks again");
     assert_eq!(r.d.inbox_json()["counts"]["pending"], 1);
     // another operator approves it again: re-checked, sent
-    let a = r.d.approve(&OperatorId::new("op-2"), out.id.0, None).await.expect("approve");
+    let a = r.d.approve(&Actor::asserted(OperatorId::new("op-2")), out.id.0, None).await.expect("approve");
     assert_eq!(a.state, State::Dispatched, "{}", r.reason(out.id));
     let report = r.replays();
     assert_eq!(report.recheck_inbox, 1);
@@ -219,6 +219,7 @@ fn restart(r: &Rig) -> (Arc<Decision>, MemorySink) {
             }),
             operators: vec![OperatorId::new("op-1"), OperatorId::new("op-2")],
             engage_operators: Vec::new(),
+            auth: murmur_decide::AuthMode::Dev,
             tracks: None,
         },
     )
@@ -445,7 +446,7 @@ async fn an_older_queued_order_never_voids_a_newer_pending_one() {
     go_silent(&cell, &w, 5.0);
     let a = r.d.submit(&op1(), orbit(72)).await.expect("submit");
     assert_eq!(a.state, State::PendingApproval, "{}", r.reason(a.id));
-    let a2 = r.d.approve(&OperatorId::new("op-2"), a.id.0, None).await.expect("approve");
+    let a2 = r.d.approve(&Actor::asserted(OperatorId::new("op-2")), a.id.0, None).await.expect("approve");
     assert_eq!(a2.state, State::Queued, "{}", r.reason(a.id));
     let mut req = orbit(72);
     req.params.center = Some([LON - 0.004, LAT]);
@@ -667,7 +668,7 @@ async fn an_order_that_may_have_started_and_does_not_run_goes_to_a_human() {
     assert_eq!(cell.read(|v| v.mode.clone()).as_deref(), Some("RTL"), "the failsafe's mode stands");
     r.replays();
     // a human approves it again: asked first, it is held, so only the start goes
-    let a = r.d.approve(&OperatorId::new("op-2"), out.id.0, None).await.expect("approve");
+    let a = r.d.approve(&Actor::asserted(OperatorId::new("op-2")), out.id.0, None).await.expect("approve");
     assert_eq!(a.state, State::Dispatched, "{}", r.reason(out.id));
     assert!(tick_until(&r, 60, |r| ops_of(r).iter().any(|(i, s, _)| *i == out.id.0 && matches!(s, OpState::Active | OpState::Done))).await, "{:?}", ops_of(&r));
     assert_eq!(w.count("MISSION_COUNT"), 1, "held: not uploaded again");
@@ -855,7 +856,7 @@ async fn an_order_approved_again_after_a_restart_asks_the_vehicle_first() {
     }
     assert_eq!(state(out.id), Some(State::PendingApproval));
     assert_eq!(cell.read(|v| v.mode.clone()).as_deref(), Some("AUTO"));
-    let a = b.approve(&OperatorId::new("op-2"), out.id.0, None).await.expect("approve");
+    let a = b.approve(&Actor::asserted(OperatorId::new("op-2")), out.id.0, None).await.expect("approve");
     assert_eq!(a.state, State::Dispatched);
     for _ in 0..20 {
         b.tick();

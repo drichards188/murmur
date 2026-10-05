@@ -60,6 +60,20 @@ elif [ ! -x target/release/murmur-bridge ] || [ ! -x target/release/murmur-stand
   exit 1
 fi
 
+# who may act (rules 7): operators log in with their own password from the credential file
+# (murmur-auth; MURMUR_CREDENTIALS, else ~/.config/murmur/credentials.json); MURMUR_AUTH=dev
+# asserts ids by header instead, logged as such (no human-control claim)
+export MURMUR_WEB_PORT="$web_port"  # the console's origin, which the bridge accepts requests from
+if [ "${MURMUR_AUTH:-credentials}" != dev ] && [ -x target/release/murmur-auth ]; then
+  creds="$(target/release/murmur-auth path)"
+  if [ ! -s "$creds" ]; then
+    echo "no operator credentials at $creds. Add one (password on stdin), e.g." >&2
+    echo "  target/release/murmur-auth add op-1 --engage" >&2
+    echo "or run with MURMUR_AUTH=dev for header ids (logged as dev, no human-control claim)." >&2
+    exit 1
+  fi
+fi
+
 echo $$ > logs/up.pid
 pids=()
 cleanup() {

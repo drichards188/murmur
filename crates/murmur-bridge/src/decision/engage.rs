@@ -1081,7 +1081,7 @@ impl Decision {
     /// engagement before its effect; after dispatch the recorded fallback is commanded.
     pub fn abort(
         &self,
-        by: &murmur_decide::OperatorId,
+        by: &super::Actor,
         id: u64,
         note: Option<String>,
     ) -> Result<super::Outcome, DecisionError> {
@@ -1089,7 +1089,7 @@ impl Decision {
         let out = {
             let mut guard = self.lock();
             let core = &mut *guard;
-            let session = Self::session(&mut core.engine, &mut core.sessions, by, &self.engage_operators)?;
+            let session = Self::session(&mut core.engine, &mut core.sessions, &core.logins, by, &self.engage_operators, self.auth)?;
             let note = note.unwrap_or_else(|| "operator abort".into());
             match core.engine.abort_engagement(id, session.authority(), &note) {
                 Ok(f) => {
@@ -1113,7 +1113,7 @@ impl Decision {
     /// automatic, never an agent's (agents have no route here).
     pub fn accept_unknown(
         &self,
-        by: &murmur_decide::OperatorId,
+        by: &super::Actor,
         id: u64,
         accept: &AcceptUnknown,
     ) -> Result<super::Outcome, DecisionError> {
@@ -1122,7 +1122,7 @@ impl Decision {
         let out = {
             let mut guard = self.lock();
             let core = &mut *guard;
-            let session = Self::session(&mut core.engine, &mut core.sessions, by, &self.engage_operators)?;
+            let session = Self::session(&mut core.engine, &mut core.sessions, &core.logins, by, &self.engage_operators, self.auth)?;
             let Some(auth) = session.engagement_authority() else {
                 return Err(DecisionError::new(
                     403,
@@ -1144,7 +1144,7 @@ impl Decision {
     /// which stops an engagement it now blocks.
     pub fn revoke_unknown(
         &self,
-        by: &murmur_decide::OperatorId,
+        by: &super::Actor,
         id: u64,
         uid: crate::vehicle::Uid,
     ) -> Result<super::Outcome, DecisionError> {
@@ -1152,7 +1152,7 @@ impl Decision {
         let out = {
             let mut guard = self.lock();
             let core = &mut *guard;
-            let session = Self::session(&mut core.engine, &mut core.sessions, by, &self.engage_operators)?;
+            let session = Self::session(&mut core.engine, &mut core.sessions, &core.logins, by, &self.engage_operators, self.auth)?;
             match core.engine.revoke_unknown_friendly(id, session.authority(), duid(uid)) {
                 Ok(_) => Ok(self.outcome(core, id)),
                 Err(e) => Err(self.with_intent(core, id, engine_err(e))),

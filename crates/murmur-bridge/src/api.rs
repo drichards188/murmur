@@ -18,8 +18,11 @@
 //! stops an approved or dispatched engagement before its effect, any operator), `GET
 //! /api/inbox`, `GET /api/operators` (who may sign an engagement), `POST /api/engage/options`
 //! (the nomination form's dry run: which armed platforms could take it, with checks and
-//! preview; nothing is created or logged). These name the operator in the `X-Murmur-Operator` header, which must be one
-//! of `MURMUR_OPERATORS`: a placeholder for real authentication. The WebSocket also sends
+//! preview; nothing is created or logged). Who acts is `crate::auth`'s answer: the operator
+//! signed in on this browser (the session cookie; `POST /api/auth/login`), or in a dev run
+//! (`MURMUR_AUTH=dev`) the `X-Murmur-Operator` header. An approval the decision marks
+//! consequential (every engagement signature) carries `"password"`, the signer's own,
+//! checked again before it is signed (rules 7, a step-up). The WebSocket also sends
 //! `{"type": "decisions", "inbox": ..., "intents": [...]}` and `{"type": "tracks", ...}`
 //! (Phase C2, see `tracks`) on connect and whenever they change (existing clients ignore
 //! message types they don't know).
@@ -48,8 +51,6 @@ use crate::tasks::TaskRequest;
 use crate::tracks::Tracks;
 use crate::world::World;
 
-pub const OPERATOR_HEADER: &str = "x-murmur-operator";
-
 #[derive(Clone)]
 pub struct App {
     pub world: Arc<World>,
@@ -59,6 +60,8 @@ pub struct App {
     pub tracks: Arc<Tracks>,
     /// the console feed's level-of-detail limits (`/ws?lod=1`, see `push`)
     pub lod: LodSettings,
+    /// Who is acting (rules 7): logins, step-ups and agent keys, or dev-mode headers.
+    pub auth: Arc<crate::auth::Auth>,
 }
 
 pub fn router(app: App) -> Router {
@@ -85,7 +88,9 @@ pub fn router(app: App) -> Router {
             app.tracks.clone(),
             app.world.clone(),
             app.decision.clone(),
+            app.auth.clone(),
         ))
+        .merge(crate::auth::router(app.auth.clone()))
         .with_state(app)
 }
 
@@ -102,10 +107,6 @@ fn decision_error(e: DecisionError) -> Response {
         body["intent"] = i;
     }
     (status, Json(body)).into_response()
-}
-
-fn operator_header(headers: &HeaderMap) -> Option<&str> {
-    headers.get(OPERATOR_HEADER).and_then(|v| v.to_str().ok())
 }
 
 fn raw_json(body: String) -> Response {
@@ -139,7 +140,7 @@ async fn tasks(
         Ok(Json(req)) => req,
         Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, e.body_text()),
     };
-    let op = match app.decision.operator(operator_header(&headers), true) {
+    let op = match app.auth.actor(&headers, true) {
         Ok(op) => op,
         Err(e) => return decision_error(e),
     };
@@ -215,7 +216,7 @@ async fn create_intent(
         Ok(Json(req)) => req,
         Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, e.body_text()),
     };
-    let op = match app.decision.operator(operator_header(&headers), false) {
+    let op = match app.auth.actor(&headers, false) {
         Ok(op) => op,
         Err(e) => return decision_error(e),
     };
@@ -252,8 +253,10 @@ async fn intent_action(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let (note, token, acknowledge) = if body.iter().all(u8::is_ascii_whitespace) {
-        (None, None, false)
+    // rules 7: an approval may carry the approver's password again (a step-up); it is
+    // checked and dropped here, never logged or echoed
+    let (note, token, acknowledge, password) = if body.iter().all(u8::is_ascii_whitespace) {
+        (None, None, false, None)
     } else {
         match serde_json::from_slice::<Value>(&body) {
             Ok(v) => {
@@ -270,12 +273,13 @@ async fn intent_action(
                     v["note"].as_str().map(str::to_string),
                     token,
                     v["acknowledge_supersede"].as_bool().unwrap_or(false),
+                    v["password"].as_str().map(str::to_string),
                 )
             }
-            Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, format!("body: {e}")),
+            Err(_) => return error(StatusCode::UNPROCESSABLE_ENTITY, "body: not JSON"),
         }
     };
-    let op = match app.decision.operator(operator_header(&headers), false) {
+    let op = match app.auth.actor(&headers, false) {
         Ok(op) => op,
         Err(e) => return decision_error(e),
     };
@@ -285,8 +289,19 @@ async fn intent_action(
             Err(e) => decision_error(e),
         };
     }
+    if password.is_some() && action != "approve" {
+        return error(StatusCode::UNPROCESSABLE_ENTITY, "a password goes with an approval (a step-up) only");
+    }
     let result = match action.as_str() {
-        "approve" => app.decision.approve_with(&op, id, note, token, acknowledge).await,
+        "approve" => {
+            // a consequential signature re-enters the credential first (credentials run)
+            let needed = app.decision.needs_step_up(id);
+            let step = match app.auth.step_up(&op, password, needed).await {
+                Ok(s) => s,
+                Err(r) => return *r,
+            };
+            app.decision.approve_stepped(&op, id, note, token, acknowledge, step).await
+        }
         "reject" => app.decision.reject(&op, id, note),
         "cancel" => app.decision.cancel(&op, id, note),
         "abort" => app.decision.abort(&op, id, note),
@@ -355,7 +370,7 @@ async fn operator_view(
         Ok(b) => b,
         Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, e.body_text()),
     };
-    let op = match app.decision.operator(operator_header(&headers), false) {
+    let op = match app.auth.actor(&headers, false) {
         Ok(op) => op,
         Err(e) => return decision_error(e),
     };
@@ -381,8 +396,9 @@ async fn engage_options(
     }
 }
 
-/// The operators the bridge accepts and those with engagement authority (placeholder
-/// authentication: `MURMUR_OPERATORS`, `MURMUR_ENGAGE_OPERATORS`).
+/// The operators the bridge accepts, those with engagement authority, and how they are
+/// authenticated (`credentials`: the credential file; `dev`: `MURMUR_OPERATORS`,
+/// `MURMUR_ENGAGE_OPERATORS`, asserted by header).
 async fn operators(State(app): State<App>) -> Response {
     Json(app.decision.operators_json()).into_response()
 }

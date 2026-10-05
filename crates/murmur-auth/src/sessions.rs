@@ -109,6 +109,27 @@ impl<T: Clone> SessionTable<T> {
         }
     }
 
+    /// [`SessionTable::lookup`] without restarting the idle timer (a status query is not
+    /// activity: a console asking who is signed in must not keep an unattended session
+    /// alive). An expired session is still removed.
+    pub fn peek(&mut self, token: &str, now: Instant) -> Lookup<T> {
+        let d = digest(token);
+        let expired = match self.entries.get(&d) {
+            Some(e) if ct_eq(&e.digest, &d) => self.expiry(e, now),
+            _ => return Lookup::Unknown,
+        };
+        match expired {
+            Some(why) => match self.entries.remove(&d) {
+                Some(e) => Lookup::Expired(e.value, why),
+                None => Lookup::Unknown,
+            },
+            None => match self.entries.get(&d) {
+                Some(e) => Lookup::Valid(e.value.clone()),
+                None => Lookup::Unknown,
+            },
+        }
+    }
+
     /// When the session a token names ends if nothing else happens (idle or absolute,
     /// whichever comes first), without touching it.
     pub fn ends_at(&self, token: &str) -> Option<Instant> {
@@ -218,5 +239,18 @@ mod tests {
         let swept = t.sweep(t0 + Duration::from_secs(61));
         assert_eq!(swept, vec![("op-2", Expiry::Idle)]);
         assert!(t.is_empty());
+    }
+
+    #[test]
+    fn peeking_is_not_activity() {
+        let mut t = table();
+        let t0 = Instant::now();
+        let a = t.create("op-1", t0).unwrap();
+        assert_eq!(t.peek(&a, t0 + Duration::from_secs(50)), Lookup::Valid("op-1"));
+        assert_eq!(
+            t.peek(&a, t0 + Duration::from_secs(61)),
+            Lookup::Expired("op-1", Expiry::Idle),
+            "a status query did not restart the idle timer"
+        );
     }
 }

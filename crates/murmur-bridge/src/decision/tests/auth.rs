@@ -1,0 +1,572 @@
+//! Rules 7 through the bridge's whole HTTP surface (the router `main` serves, `app_router`):
+//! operators log in with their own password, sessions are cookies that end at logout,
+//! expiry or a credential change, browsers from other origins are refused, a consequential
+//! signature re-enters the signer's password, two signatures need two people, the proposer
+//! never signs, an agent's key never authorizes, and a dev run says what it is. Every log
+//! replays, and none holds a secret.
+
+use axum::body::Body;
+use axum::http::{HeaderMap, Request, StatusCode, header};
+use murmur_auth::CredentialFile;
+use murmur_decide::AuthMode;
+use serde_json::Value;
+use tokio::sync::watch;
+use tower::ServiceExt;
+
+use super::engagement::{Erig, engage_rig_auth};
+use super::*;
+use crate::auth::{Auth, Settings as AuthSettings, default_origins};
+
+const PW1: &str = "op one has a long passphrase";
+const PW2: &str = "op two has a long passphrase";
+const PW3: &str = "op three has a long passphrase";
+/// In ez-gate-west, west of the bridge (as the engagement tests).
+const TARGET: (f64, f64) = (37.8120, -122.4950);
+const CONSOLE: &str = "http://127.0.0.1:5173";
+
+struct H {
+    e: Erig,
+    app: axum::Router,
+    auth: Arc<Auth>,
+    file: PathBuf,
+    key: String,
+}
+
+fn scratch() -> PathBuf {
+    let d = std::env::temp_dir().join(format!(
+        "murmur-bridge-auth-{}-{}",
+        std::process::id(),
+        murmur_auth::keys::stamp().expect("random")
+    ));
+    std::fs::create_dir_all(&d).expect("scratch dir");
+    d
+}
+
+/// A credentials run on the engagement rig: op-1 (no engagement authority), op-2 and op-3
+/// (engagement authority), and agent-planner's key, sessions ending after `idle`.
+fn harness(idle: Duration) -> H {
+    let file = scratch().join("credentials.json");
+    let mut c = CredentialFile::default();
+    c.add_operator("op-1", PW1, false).expect("op-1");
+    c.add_operator("op-2", PW2, true).expect("op-2");
+    c.add_operator("op-3", PW3, true).expect("op-3");
+    let key = c.add_agent("agent-planner").expect("agent");
+    c.save(&file).expect("saved");
+    let e = engage_rig_auth(None, PathBuf::from("memory"), AuthMode::Credentials);
+    let settings = AuthSettings {
+        mode: AuthMode::Credentials,
+        file: Some(file.clone()),
+        cookie: "murmur_session_test".into(),
+        secure_cookie: false,
+        idle,
+        max: Duration::from_secs(8 * 3600),
+        origins: default_origins(5173, 8765),
+    };
+    let auth = Auth::new(settings, e.r.d.clone(), c);
+    let app = app(&e, auth.clone());
+    H { e, app, auth, file, key }
+}
+
+fn app(e: &Erig, auth: Arc<Auth>) -> axum::Router {
+    let api = crate::api::router(crate::api::App {
+        world: e.r.world.clone(),
+        frames: Arc::new(watch::channel(None).0),
+        decision: e.r.d.clone(),
+        tracks: e.tracks.clone(),
+        lod: crate::push::LodSettings::default(),
+        auth: auth.clone(),
+    });
+    let agents = crate::mcp::Settings {
+        agents: Vec::new(),
+        keys: (auth.mode() == AuthMode::Credentials).then(|| auth.clone()),
+    };
+    crate::app_router(
+        api,
+        agents,
+        e.r.world.clone(),
+        e.r.d.clone(),
+        auth,
+        Arc::new(default_origins(5173, 8765)),
+    )
+}
+
+impl H {
+    async fn call(&self, method: &str, path: &str, body: Option<Value>, headers: &[(&str, &str)]) -> (StatusCode, HeaderMap, Value) {
+        let mut b = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ACCEPT, "application/json, text/event-stream")
+            .header(header::HOST, "127.0.0.1");
+        for (k, v) in headers {
+            b = b.header(*k, *v);
+        }
+        let req = b
+            .body(body.map_or_else(Body::empty, |v| Body::from(v.to_string())))
+            .expect("request");
+        let resp = self.app.clone().oneshot(req).await.expect("response");
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let sse = headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|ct| ct.starts_with("text/event-stream"));
+        let bytes = tokio::time::timeout(Duration::from_secs(10), axum::body::to_bytes(resp.into_body(), 4 << 20))
+            .await
+            .expect("the body ends")
+            .expect("body");
+        let text = String::from_utf8_lossy(&bytes);
+        let v = if sse {
+            text.lines()
+                .filter_map(|l| l.strip_prefix("data:"))
+                .map(str::trim)
+                .rfind(|l| !l.is_empty())
+                .and_then(|l| serde_json::from_str(l).ok())
+                .unwrap_or(Value::Null)
+        } else {
+            serde_json::from_str(&text).unwrap_or(Value::Null)
+        };
+        (status, headers, v)
+    }
+
+    /// Log in from the console; the cookie as a browser sends it back.
+    async fn login(&self, op: &str, pw: &str) -> String {
+        let (s, h, v) = self
+            .call("POST", "/api/auth/login", Some(json!({ "operator": op, "password": pw })), &[("origin", CONSOLE)])
+            .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        let set = h.get(header::SET_COOKIE).and_then(|c| c.to_str().ok()).expect("a cookie");
+        set.split(';').next().expect("name=value").to_string()
+    }
+
+    /// A console request by the operator whose cookie this is.
+    async fn post(&self, cookie: &str, path: &str, body: Value) -> (StatusCode, Value) {
+        let (s, _, v) = self
+            .call("POST", path, Some(body), &[("origin", CONSOLE), ("cookie", cookie)])
+            .await;
+        (s, v)
+    }
+
+    fn log(&self) -> String {
+        self.e.r.log.text()
+    }
+
+    /// Our armed platform on the target and the boat declared hostile by op-1 (through the
+    /// API), after a minute and a half of detections.
+    async fn picture(&self, op1: &str) {
+        self.e.r.vehicle(1, Firmware::Copter, "fpv", TARGET);
+        sleep(Duration::from_millis(500)).await;
+        self.e.r.clock.set(snapshot::ms(clock::wall()));
+        let now = self.e.now_s();
+        for s in 0..90 {
+            self.e.sense_at(now - 90.0 + f64::from(s), true);
+        }
+        self.e.sense_at(now, true);
+        let (s, v) = self
+            .post(op1, "/api/tracks/T-0001/declare", json!({ "affiliation": "hostile" }))
+            .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+    }
+
+    /// A nomination on the boat by whoever's cookie this is.
+    async fn nominate(&self, cookie: &str) -> u64 {
+        let body = json!({
+            "task": "engage", "uids": [1], "track": "T-0001",
+            "effect_radius_m": 100, "window_s": 300, "fallback": "return",
+        });
+        let (s, v) = self.post(cookie, "/api/intents", body).await;
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+        assert_eq!(v["intent"]["state"], "pending_approval", "{v}");
+        v["intent"]["id"].as_u64().expect("id")
+    }
+
+    /// Look, then sign with `password` (None: no step-up).
+    async fn sign(&self, cookie: &str, id: u64, password: Option<&str>) -> (StatusCode, Value) {
+        let (s, t) = self.post(cookie, &format!("/api/intents/{id}/picture"), json!({})).await;
+        if s != StatusCode::OK {
+            return (s, t);
+        }
+        let mut body = json!({ "token": t["id"] });
+        if let Some(p) = password {
+            body["password"] = json!(p);
+        }
+        self.post(cookie, &format!("/api/intents/{id}/approve"), body).await
+    }
+
+    fn replays_authenticated(&self) -> replay::ReplayReport {
+        let r = replay::replay_str(&self.log()).expect("parses");
+        assert!(r.ok(), "{:?}", r.mismatches);
+        assert_eq!(r.auth, Some(AuthMode::Credentials));
+        assert!(r.authenticated());
+        r
+    }
+
+    /// No password, cookie token or agent key anywhere in the audit log.
+    fn no_secret_logged(&self, cookies: &[&str]) {
+        let log = self.log();
+        for s in [PW1, PW2, PW3, self.key.as_str()] {
+            assert!(!log.contains(s), "a secret in the audit log");
+        }
+        for c in cookies {
+            let token = c.split_once('=').map_or(*c, |(_, t)| t);
+            assert!(!log.contains(token), "a session token in the audit log");
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_wrong_password_and_an_unknown_operator_get_the_same_answer() {
+    let h = harness(Duration::from_secs(1800));
+    let (s1, _, v1) = h
+        .call("POST", "/api/auth/login", Some(json!({ "operator": "op-1", "password": "not the password at all" })), &[])
+        .await;
+    let (s2, _, v2) = h
+        .call("POST", "/api/auth/login", Some(json!({ "operator": "nobody", "password": PW1 })), &[])
+        .await;
+    assert_eq!((s1, s2), (StatusCode::UNAUTHORIZED, StatusCode::UNAUTHORIZED));
+    assert_eq!(v1, v2, "no hint which ids exist");
+    assert!(!v1.to_string().contains("not the password"), "the password is never echoed");
+    // nothing opened, nothing logged but the run's start
+    assert!(!h.log().contains("session.opened"));
+    // a malformed body is refused without echoing it
+    let (s, _, v) = h
+        .call("POST", "/api/auth/login", Some(json!({ "operator": "op-1", "pw": PW1 })), &[])
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(!v.to_string().contains(PW1));
+}
+
+#[tokio::test]
+async fn failed_logins_lock_the_id() {
+    let h = harness(Duration::from_secs(1800));
+    let wrong = json!({ "operator": "op-1", "password": "wrong wrong wrong wrong" });
+    for _ in 0..4 {
+        let (s, _, _) = h.call("POST", "/api/auth/login", Some(wrong.clone()), &[]).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+    }
+    let (s, hd, _) = h.call("POST", "/api/auth/login", Some(wrong.clone()), &[]).await;
+    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
+    assert!(hd.get(header::RETRY_AFTER).is_some());
+    // locked: even the right password is refused, without being checked
+    let (s, _, _) = h
+        .call("POST", "/api/auth/login", Some(json!({ "operator": "op-1", "password": PW1 })), &[])
+        .await;
+    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
+    // another operator is not affected
+    h.login("op-2", PW2).await;
+}
+
+#[tokio::test]
+async fn a_session_is_a_strict_httponly_cookie_that_dies_at_logout() {
+    let h = harness(Duration::from_secs(1800));
+    let (s, hd, v) = h
+        .call("POST", "/api/auth/login", Some(json!({ "operator": "op-1", "password": PW1 })), &[("origin", CONSOLE)])
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["operator"], "op-1");
+    assert_eq!(v["engage"], false);
+    let set = hd.get(header::SET_COOKIE).and_then(|c| c.to_str().ok()).expect("cookie").to_string();
+    for attr in ["HttpOnly", "SameSite=Strict", "Path=/", "Max-Age=28800"] {
+        assert!(set.contains(attr), "{set}");
+    }
+    let cookie = set.split(';').next().expect("pair").to_string();
+    let (_, _, me) = h.call("GET", "/api/auth/session", None, &[("cookie", &cookie)]).await;
+    assert_eq!((me["signed_in"].clone(), me["operator"].clone()), (json!(true), json!("op-1")));
+    // the operator acts as themselves
+    let (s, v) = h
+        .post(&cookie, "/api/intents", json!({ "task": "hold", "uids": [1] }))
+        .await;
+    assert!(s == StatusCode::CREATED || s == StatusCode::NOT_FOUND, "{s} {v}");
+    // logout: the session ends in the log, and the cookie is dead (replayed: 401)
+    let (s, hd, _) = h.call("POST", "/api/auth/logout", None, &[("origin", CONSOLE), ("cookie", &cookie)]).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(hd.get(header::SET_COOKIE).and_then(|c| c.to_str().ok()).is_some_and(|c| c.contains("Max-Age=0")));
+    assert!(h.log().contains("\"action\":\"session.closed\",\"detail\":\"logout\""));
+    let (s, v) = h.post(&cookie, "/api/tracks/T-0001/declare", json!({ "affiliation": "hostile" })).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "{v}");
+    let (_, _, me) = h.call("GET", "/api/auth/session", None, &[("cookie", &cookie)]).await;
+    assert_eq!(me["signed_in"], false);
+    h.replays_authenticated();
+    h.no_secret_logged(&[&cookie]);
+}
+
+#[tokio::test]
+async fn an_idle_session_expires_and_says_so() {
+    let h = harness(Duration::from_millis(400));
+    let cookie = h.login("op-1", PW1).await;
+    // a status query is not activity
+    sleep(Duration::from_millis(250)).await;
+    let _ = h.call("GET", "/api/auth/session", None, &[("cookie", &cookie)]).await;
+    sleep(Duration::from_millis(250)).await;
+    let (s, _) = h.post(&cookie, "/api/intents", json!({ "task": "hold", "uids": [1] })).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert!(h.log().contains("\"action\":\"session.closed\",\"detail\":\"expired (idle)\""));
+    // and a sweep closes one nobody touches
+    let other = h.login("op-2", PW2).await;
+    sleep(Duration::from_millis(500)).await;
+    h.auth.sweep();
+    assert_eq!(h.log().matches("expired (idle)").count(), 2);
+    let (s, _) = h.post(&other, "/api/intents", json!({ "task": "hold", "uids": [1] })).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    h.replays_authenticated();
+}
+
+#[tokio::test]
+async fn a_browser_on_another_origin_changes_nothing() {
+    let h = harness(Duration::from_secs(1800));
+    let cookie = h.login("op-1", PW1).await;
+    let before = h.log().lines().count();
+    for headers in [
+        vec![("origin", "http://evil.example"), ("cookie", cookie.as_str())],
+        // another port on the same host: same site, other origin
+        vec![("origin", "http://127.0.0.1:9999"), ("cookie", cookie.as_str())],
+        vec![("sec-fetch-site", "cross-site"), ("cookie", cookie.as_str())],
+    ] {
+        let (s, _, v) = h
+            .call("POST", "/api/tracks/T-0001/declare", Some(json!({ "affiliation": "hostile" })), &headers)
+            .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+        // a login from another origin too (no login CSRF)
+        let (s, _, _) = h
+            .call("POST", "/api/auth/login", Some(json!({ "operator": "op-1", "password": PW1 })), &headers)
+            .await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
+    }
+    assert_eq!(h.log().lines().count(), before, "nothing was logged");
+    // reads stay open; the console's own origin goes through
+    let (s, _, _) = h.call("GET", "/api/inbox", None, &[("origin", "http://evil.example")]).await;
+    assert_eq!(s, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_header_does_not_name_the_operator_in_a_credentials_run() {
+    let h = harness(Duration::from_secs(1800));
+    // the dev-mode header alone: not signed in
+    let (s, _, v) = h
+        .call("POST", "/api/intents", Some(json!({ "task": "hold", "uids": [1] })), &[("x-murmur-operator", "op-2")])
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "{v}");
+    // the console's legacy path has no headerless default either
+    let (s, _, _) = h.call("POST", "/api/tasks", Some(json!({ "task": "hold", "uids": [1] })), &[]).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    // signed in as op-1, naming op-2: refused
+    let cookie = h.login("op-1", PW1).await;
+    let (s, _, _) = h
+        .call(
+            "POST",
+            "/api/intents",
+            Some(json!({ "task": "hold", "uids": [1] })),
+            &[("cookie", &cookie), ("x-murmur-operator", "op-2")],
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn two_people_sign_each_with_their_password_and_one_person_cannot_sign_twice() {
+    let h = harness(Duration::from_secs(1800));
+    let op1 = h.login("op-1", PW1).await;
+    let op2 = h.login("op-2", PW2).await;
+    h.picture(&op1).await;
+    let id = h.nominate(&op1).await;
+    // op-1 has no engagement authority: nothing to sign
+    let (s, _) = h.sign(&op1, id, Some(PW1)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // op-2 without re-entering the password: refused, and told why
+    let (s, v) = h.sign(&op2, id, None).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "{v}");
+    assert_eq!(v["step_up"], true);
+    // with a wrong one, or another person's: refused
+    let (s, v) = h.sign(&op2, id, Some("not op-2's password at all")).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "{v}");
+    let (s, _) = h.sign(&op2, id, Some(PW3)).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "op-3's password does not sign through op-2's session");
+    // with their own: the first signature
+    let (s, v) = h.sign(&op2, id, Some(PW2)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["intent"]["state"], "pending_approval");
+    // the same person again, however they come: refused
+    let (s, _) = h.sign(&op2, id, Some(PW2)).await;
+    assert_eq!(s, StatusCode::CONFLICT, "already signed");
+    let again = h.login("op-2", PW2).await;
+    let (s, _) = h.sign(&again, id, Some(PW2)).await;
+    assert_eq!(s, StatusCode::CONFLICT, "a second login is the same person");
+    // the second person: approved and dispatched
+    let op3 = h.login("op-3", PW3).await;
+    let (s, v) = h.sign(&op3, id, Some(PW3)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["intent"]["state"], "dispatched", "{v}");
+    let r = h.replays_authenticated();
+    assert_eq!((r.concurrences, r.approvals, r.stepped_signatures), (1, 1, 2));
+    // every session says it was opened on a password, every signature names its step-up
+    let log = h.log();
+    assert_eq!(log.matches("\"action\":\"session.opened\"").count(), log.matches("\"auth\":\"password\"").count() - r.step_ups);
+    assert_eq!(log.matches("\"step_up\":{\"seq\":").count(), 2);
+    h.no_secret_logged(&[&op1, &op2, &op3, &again]);
+}
+
+#[tokio::test]
+async fn the_proposer_cannot_sign_even_with_their_password() {
+    let h = harness(Duration::from_secs(1800));
+    let op1 = h.login("op-1", PW1).await;
+    let op2 = h.login("op-2", PW2).await;
+    h.picture(&op1).await;
+    let id = h.nominate(&op2).await;
+    let (s, v) = h.sign(&op2, id, Some(PW2)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    let (s, v) = h
+        .post(&op2, &format!("/api/intents/{id}/approve"), json!({ "token": 1, "password": PW2 }))
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert!(h.log().contains("the proposer may not approve it"));
+    h.replays_authenticated();
+}
+
+#[tokio::test]
+async fn repeated_wrong_step_ups_end_the_session() {
+    let h = harness(Duration::from_secs(1800));
+    let op1 = h.login("op-1", PW1).await;
+    let op2 = h.login("op-2", PW2).await;
+    h.picture(&op1).await;
+    let id = h.nominate(&op1).await;
+    for _ in 0..4 {
+        let (s, _) = h.sign(&op2, id, Some("guessing guessing guessing")).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+    }
+    let (s, _) = h.sign(&op2, id, Some("guessing guessing guessing")).await;
+    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
+    assert!(h.log().contains("step-up failed repeatedly"));
+    let (s, _) = h.sign(&op2, id, Some(PW2)).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "the session is gone");
+    h.replays_authenticated();
+}
+
+#[tokio::test]
+async fn an_agent_key_never_authorizes() {
+    let h = harness(Duration::from_secs(1800));
+    let op1 = h.login("op-1", PW1).await;
+    h.picture(&op1).await;
+    let id = h.nominate(&op1).await;
+    let bearer = format!("Bearer {}", h.key);
+    // the key on an operator's endpoints: not a login
+    for (path, body) in [
+        (format!("/api/intents/{id}/approve"), json!({ "token": 1 })),
+        (format!("/api/intents/{id}/picture"), json!({})),
+        ("/api/intents".to_string(), json!({ "task": "hold", "uids": [1] })),
+        ("/api/tracks/T-0001/declare".to_string(), json!({ "affiliation": "hostile" })),
+    ] {
+        let (s, _, v) = h.call("POST", &path, Some(body), &[("authorization", &bearer)]).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "{path}: {v}");
+    }
+    // /mcp: no key, or a bare id, is refused before any MCP session exists
+    let init = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "agent-planner", "version": "0" } },
+    });
+    let (s, _, _) = h.call("POST", "/mcp", Some(init.clone()), &[]).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, _, _) = h.call("POST", "/mcp", Some(init.clone()), &[("x-murmur-agent", "agent-planner")]).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let wrong = format!("Bearer {}x", &h.key[..h.key.len() - 1]);
+    let (s, _, _) = h.call("POST", "/mcp", Some(init.clone()), &[("authorization", &wrong)]).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    // with its key it connects, and is logged by the key's id, never the key
+    let (s, hd, v) = h.call("POST", "/mcp", Some(init), &[("authorization", &bearer)]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let session = hd.get("mcp-session-id").and_then(|v| v.to_str().ok()).expect("session").to_string();
+    let (s, _, _) = h
+        .call(
+            "POST",
+            "/mcp",
+            Some(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" })),
+            &[("authorization", &bearer), ("mcp-session-id", &session)],
+        )
+        .await;
+    assert_eq!(s, StatusCode::ACCEPTED);
+    let (s, _, v) = h
+        .call(
+            "POST",
+            "/mcp",
+            Some(json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": { "name": "get_inbox", "arguments": {} } })),
+            &[("authorization", &bearer), ("mcp-session-id", &session)],
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let key_id = murmur_auth::keys::agent_key_id(&h.key).expect("key id");
+    assert!(h.log().contains(&format!("via API key {key_id}")), "{}", h.log());
+    // and the nomination is still waiting: nothing an agent did moved it
+    assert_eq!(h.e.r.state(IntentId(id)), State::PendingApproval);
+    h.replays_authenticated();
+    h.no_secret_logged(&[&op1]);
+}
+
+#[tokio::test]
+async fn removing_or_changing_a_credential_ends_its_sessions() {
+    let h = harness(Duration::from_secs(1800));
+    let op1 = h.login("op-1", PW1).await;
+    let op2 = h.login("op-2", PW2).await;
+    let mut c = CredentialFile::load(&h.file).expect("file");
+    c.remove_operator("op-1").expect("removed");
+    c.set_password("op-2", "op two's brand new passphrase").expect("changed");
+    // a different size (or a later time) is what the bridge notices
+    c.save(&h.file).expect("saved");
+    h.auth.refresh();
+    let log = h.log();
+    assert!(log.contains("\"detail\":\"credential removed\""), "{log}");
+    assert!(log.contains("\"detail\":\"credential changed\""), "{log}");
+    for cookie in [&op1, &op2] {
+        let (s, _) = h.post(cookie, "/api/intents", json!({ "task": "hold", "uids": [1] })).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+    }
+    // the removed operator can't log in; the changed one only with the new password
+    let (s, _, _) = h
+        .call("POST", "/api/auth/login", Some(json!({ "operator": "op-1", "password": PW1 })), &[])
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, _, _) = h
+        .call("POST", "/api/auth/login", Some(json!({ "operator": "op-2", "password": PW2 })), &[])
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    h.login("op-2", "op two's brand new passphrase").await;
+    // an agent whose key was removed is refused at once
+    let mut c = CredentialFile::load(&h.file).expect("file");
+    c.remove_agent("agent-planner").expect("removed");
+    c.save(&h.file).expect("saved");
+    h.auth.refresh();
+    let (s, _, _) = h
+        .call("POST", "/mcp", Some(json!({ "jsonrpc": "2.0", "id": 1, "method": "ping" })), &[("authorization", &format!("Bearer {}", h.key))])
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    h.replays_authenticated();
+}
+
+#[tokio::test]
+async fn a_dev_run_says_so_in_run_started_and_has_no_login() {
+    let e = engage_rig_auth(None, PathBuf::from("memory"), AuthMode::Dev);
+    let auth = Auth::new(AuthSettings::dev(), e.r.d.clone(), CredentialFile::default());
+    let h = H {
+        app: app(&e, auth.clone()),
+        e,
+        auth,
+        file: PathBuf::new(),
+        key: "no key".into(),
+    };
+    let first = h.log().lines().next().expect("run.started").to_string();
+    assert!(first.contains("\"auth\":\"dev\""), "{first}");
+    let (s, _, v) = h
+        .call("POST", "/api/auth/login", Some(json!({ "operator": "op-1", "password": PW1 })), &[])
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    let (_, _, me) = h.call("GET", "/api/auth/session", None, &[]).await;
+    assert_eq!(me["auth"], "dev");
+    assert!(me["warning"].as_str().is_some_and(|w| w.contains("no human-control claim")));
+    // the header names the operator, as before
+    let (s, _, v) = h
+        .call("POST", "/api/tracks/T-0001/declare", Some(json!({ "affiliation": "hostile" })), &[("x-murmur-operator", "op-1")])
+        .await;
+    assert!(s == StatusCode::OK || s == StatusCode::NOT_FOUND, "{s} {v}");
+    let r = replay::replay_str(&h.log()).expect("parses");
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert_eq!(r.auth, Some(AuthMode::Dev));
+    assert!(!r.authenticated(), "a dev run is not evidence about people");
+}

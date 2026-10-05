@@ -91,6 +91,7 @@ fn rig_with(policy: Policy) -> Rig {
             terrain,
             operators: vec![OperatorId::new("op-1"), OperatorId::new("op-2")],
             engage_operators: Vec::new(),
+            auth: murmur_decide::AuthMode::Dev,
             tracks: None,
         },
     )
@@ -159,8 +160,8 @@ impl Rig {
     }
 }
 
-fn op1() -> OperatorId {
-    OperatorId::new("op-1")
+fn op1() -> Actor {
+    Actor::asserted(OperatorId::new("op-1"))
 }
 
 fn orbit(uid: Uid) -> IntentRequest {
@@ -223,6 +224,7 @@ fn the_bridge_does_not_start_with_an_engagement_operator_who_is_no_operator() {
         }),
         operators,
         engage_operators,
+        auth: murmur_decide::AuthMode::Dev,
         tracks: None,
     };
     let world = || {
@@ -236,13 +238,13 @@ fn the_bridge_does_not_start_with_an_engagement_operator_who_is_no_operator() {
         })
     };
     // MURMUR_ENGAGE_OPERATORS=op-2 with MURMUR_OPERATORS=op-1: refused
-    let err = Decision::from_parts(world(), parts(vec![op1()], vec![OperatorId::new("op-2")]))
+    let err = Decision::from_parts(world(), parts(vec![OperatorId::new("op-1")], vec![OperatorId::new("op-2")]))
         .err()
         .expect("refused");
     assert!(err.contains("op-2 is not on the operator roster"), "{err}");
     // listed as an operator too: it starts, and run.started names the roster
     let log = MemorySink::new();
-    let mut p = parts(vec![op1(), OperatorId::new("op-2")], vec![OperatorId::new("op-2")]);
+    let mut p = parts(vec![OperatorId::new("op-1"), OperatorId::new("op-2")], vec![OperatorId::new("op-2")]);
     p.sink = Box::new(log.clone());
     Decision::from_parts(world(), p).expect("starts");
     let first = log.lines().into_iter().next().expect("run.started");
@@ -286,7 +288,7 @@ async fn human_path_waits_then_runs_once_approved() {
 
     // a second operator approves: dispatched, flown, done
     let approved =
-        r.d.approve(&OperatorId::new("op-2"), out.id.0, Some("clear".into()))
+        r.d.approve(&Actor::asserted(OperatorId::new("op-2")), out.id.0, Some("clear".into()))
             .await
             .expect("approve");
     assert_eq!(approved.state, State::Dispatched);
@@ -605,3 +607,6 @@ mod engagement;
 
 /// The queue for unreachable vehicles through the bridge (`tests/queue.rs`, rules 5).
 mod queue;
+
+/// Rules 7 through the bridge's HTTP surface: logins, step-ups, agent keys (`tests/auth.rs`).
+mod auth;
