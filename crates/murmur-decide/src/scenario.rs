@@ -2667,6 +2667,21 @@ fn proxies(
             );
         }
     }
+    // a nomination still waiting whose signer's signature does not stand (refused, or dropped
+    // with a plan that stopped holding): that signer looks and signs again 10 s on
+    let signers_all: Vec<String> = sc.operators.iter().filter(|o| o.engage).map(|o| o.id.clone()).take(2).collect();
+    let waiting: Vec<(IntentId, Vec<String>)> = engine
+        .intents()
+        .filter(|i| matches!(i.spec().task, Task::Engage { .. }) && i.state() == State::PendingApproval)
+        .map(|i| (i.id(), i.engagement().map_or_else(Vec::new, |e| e.signed.iter().map(|sp| sp.by.to_string()).collect())))
+        .collect();
+    for (id, signed) in waiting {
+        for by in &signers_all {
+            if !signed.contains(by) && !extra.sign_due.iter().any(|d| d.1 == id && d.2 == *by) {
+                extra.sign_due.push((s + 10, id, by.clone()));
+            }
+        }
+    }
     // every track declared hostile, nominated as soon as it may be
     let Some(platform) = sc
         .vehicles
