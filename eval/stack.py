@@ -175,6 +175,10 @@ class Stack:
         self.standins_start: float | None = None
         self.origin: float | None = None
         self.contacts_spawned: float | None = None
+        # rules 9: the simulation channel's token, this stack's own (the bridge takes truth,
+        # and the hostile acts in it, only from this run's contacts process); never written
+        # to the run directory
+        self.sim_token = secrets.token_hex(24)
         self.notes: list[str] = []
         self.spec_events: list[dict[str, Any]] = []
         # what the port's restore pointer named before the bridge started and when it
@@ -413,6 +417,7 @@ class Stack:
             # are reused, and with them the bridge's resume pointer)
             "MURMUR_RESUME": "0",
             "MURMUR_EVAL_TRUTH": "1",
+            "MURMUR_SIM_TOKEN": self.sim_token,
             "MURMUR_SENSE_SEED": str(self.seed),
             # the console's origin (study mode), the only one a browser may change things from
             "MURMUR_WEB_PORT": str(b.web),
@@ -530,6 +535,7 @@ class Stack:
                 MURMUR_CONTACTS_TRUTH=str(self.run_dir / "contacts-truth.jsonl"),
                 MURMUR_CONTACTS_SEED=str(self.seed),
                 MURMUR_CONTACTS_HZ="1",
+                MURMUR_SIM_TOKEN=self.sim_token,
             ),
         )
         t0 = time.monotonic()

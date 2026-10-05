@@ -82,6 +82,14 @@ case "${MURMUR_AUTH:-dev}" in
   *) echo "MURMUR_AUTH=${MURMUR_AUTH}: dev (the default) or credentials" >&2; exit 1 ;;
 esac
 
+# the simulation channel's token (rules 9: truth, and the hostile acts in it, reach the
+# bridge's sensing model only from this stack's own contacts process): a fresh one per stack,
+# in the environment of the bridge and the contacts process only, never printed
+if [ -z "${MURMUR_SIM_TOKEN:-}" ]; then
+  MURMUR_SIM_TOKEN="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+fi
+export MURMUR_SIM_TOKEN
+
 echo $$ > logs/up.pid
 pids=()
 cleanup() {

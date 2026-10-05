@@ -53,9 +53,15 @@ fn boat() -> ContactTruth {
     }
 }
 
-/// One truth tick with `acts`, seen by a radar and EO/IR observer 1.5 km east (as the
-/// engagement tests' sensing).
-pub(super) fn truth_with(e: &Erig, now_s: f64, acts: Vec<ActTruth>) {
+/// The scenario seconds the tests' truth ticks carry, fixed whatever the wall clock: the
+/// sensing model seeds its draws by the tick (the scenario second), so the tracks and an
+/// act's fix are the same at any start time (the review found these tests failing at 9 of 300
+/// pinned start seconds when the tick followed the wall clock).
+const S0: f64 = 1000.0;
+
+/// One truth tick at scenario second `scen_s` with `acts`, seen by a radar and EO/IR observer
+/// 1.5 km east (as the engagement tests' sensing), at the bridge's time `now_s`.
+pub(super) fn truth_with(e: &Erig, now_s: f64, scen_s: f64, acts: Vec<ActTruth>) {
     let observer = Observer {
         uid: 9,
         lat: TARGET.0,
@@ -70,7 +76,7 @@ pub(super) fn truth_with(e: &Erig, now_s: f64, acts: Vec<ActTruth>) {
     };
     let msg = TruthMessage {
         t: now_s,
-        s: now_s,
+        s: scen_s,
         seq: 0,
         scenario: "test".into(),
         seed: 1,
@@ -107,16 +113,16 @@ pub(super) async fn picture(e: &Erig) {
     e.r.clock.set(snapshot::ms(clock::wall()));
     let now = e.now_s();
     for s in 0..90 {
-        truth_with(e, now - 90.0 + f64::from(s), Vec::new());
+        truth_with(e, now - 90.0 + f64::from(s), S0 + f64::from(s), Vec::new());
     }
-    truth_with(e, now, Vec::new());
+    truth_with(e, now, S0 + 90.0, Vec::new());
 }
 
 /// A second on: the act on the simulation channel, then the decision loop.
 pub(super) fn act_now(e: &Erig, against_contact: Option<&str>) {
     e.r.clock.advance_ms(1000);
     let now = e.now_s();
-    truth_with(e, now, vec![act("act-1", now, against_contact)]);
+    truth_with(e, now, S0 + 91.0, vec![act("act-1", now, against_contact)]);
     e.r.d.tick();
 }
 
@@ -204,9 +210,14 @@ async fn revoking_a_rule_declaration_stops_the_engagement_on_it_first() {
     assert_eq!(op1.task, crate::tasks::TaskKind::Rtl);
     assert!(track(&e)["declared"].is_null(), "{}", track(&e));
     assert!(e.tracks.take_effects().is_empty(), "no effect after a revocation");
+    // the rule's declaration revoked: nobody to tell (an operator's would be told)
+    let review = e.r.d.review_json();
+    assert_eq!(review["revocations"][0]["id"], "D-1", "{review}");
+    assert_eq!(review["revocations"][0]["revoked_by"], "op-1");
+    assert!(review["revocations"][0]["notify"].is_null());
     // the next ticks do not declare it again from the same act
     e.r.clock.advance_ms(1000);
-    truth_with(&e, e.now_s(), vec![act("act-1", e.now_s(), None)]);
+    truth_with(&e, e.now_s(), S0 + 92.0, vec![act("act-1", e.now_s(), None)]);
     e.r.d.tick();
     assert!(track(&e)["declared"].is_null());
     let rep = replay::replay_str(&e.r.log.text()).expect("parses");
@@ -247,11 +258,16 @@ async fn an_act_on_something_we_hold_no_track_of_is_flagged_and_an_operator_dism
         .declare(&op("op-1"), None, "T-0001", Affiliation::Hostile, Some("seen firing".into()), None)
         .expect("declared");
     assert_eq!(track(&e)["declared"]["by"], "op-1");
+    // another operator revokes it: its declarer gets the notice, with the note
+    e.r.d.revoke(&op("op-3"), "T-0001", Some("the cutter's warning shot".into())).expect("revoked");
+    let review = e.r.d.review_json();
+    assert_eq!(review["revocations"][0]["notify"], "op-1", "{review}");
+    assert_eq!(review["revocations"][0]["note"], "the cutter's warning shot");
     let rep = replay::replay_str(&e.r.log.text()).expect("parses");
     assert!(rep.ok(), "{:?}", rep.mismatches);
     assert_eq!(
-        (rep.acts, rep.flags, rep.flags_resolved, rep.rule_declarations, rep.operator_declarations),
-        (1, 1, 1, 0, 1)
+        (rep.acts, rep.flags, rep.flags_resolved, rep.rule_declarations, rep.operator_declarations, rep.revocations),
+        (1, 1, 1, 0, 1, 1)
     );
 }
 
@@ -275,4 +291,26 @@ async fn with_rule_declaration_off_an_act_is_recorded_and_an_operator_declares()
     let rep = replay::replay_str(&e.r.log.text()).expect("parses");
     assert!(rep.ok(), "{:?}", rep.mismatches);
     assert_eq!((rep.acts, rep.rule_declarations, rep.flags, rep.operator_declarations), (1, 0, 0, 1));
+}
+
+/// Review, fix 1: an act on the simulation channel against a "vehicle" not in our fleet is not
+/// against ours: flagged (victim), never declared.
+#[tokio::test(start_paused = true)]
+async fn an_act_against_a_vehicle_not_in_our_fleet_is_flagged_not_declared() {
+    let e = rig(false);
+    picture(&e).await;
+    e.r.clock.advance_ms(1000);
+    let now = e.now_s();
+    let mut a = act("act-1", now, None);
+    a.against_vehicle = Some(99);
+    truth_with(&e, now, S0 + 91.0, vec![a]);
+    e.r.d.tick();
+    assert!(track(&e)["declared"].is_null(), "{}", track(&e));
+    let review = e.r.d.review_json();
+    assert_eq!(review["flags"][0]["flag_kind"], "victim", "{review}");
+    let inbox = e.r.d.inbox_json();
+    assert_eq!(inbox["acts"][0]["act"]["channel"], "sim:contacts", "{inbox}");
+    let rep = replay::replay_str(&e.r.log.text()).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+    assert_eq!((rep.rule_declarations, rep.flags), (0, 1));
 }

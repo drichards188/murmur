@@ -23,6 +23,7 @@ fn settings() -> Settings {
         misclassification_rate: Some(0.0),
         eval_truth: false,
         drop_s: 180.0,
+        sim_token: Some("test-token".into()),
     }
 }
 
@@ -463,6 +464,7 @@ fn operator_declaration_overrides_the_estimate() {
         sensors: vec!["1:eo_ir".into()],
         attribution: 0.97,
         threshold: 0.9,
+        corroborated_by: None,
     };
     let mut ledger = murmur_decide::ident::Ledger::default();
     ledger.step(
@@ -630,4 +632,170 @@ fn cot_track_types_follow_the_estimated_affiliation() {
     );
     assert!(stale.contains("how=\"m-f\"") && stale.contains("predicted=\"1\""));
     assert!(!xml.contains("predicted="));
+}
+
+/// Review, fix 1: the simulation channel's token, compared as digests; no token configured,
+/// the channel is closed.
+#[test]
+fn the_simulation_channel_takes_only_its_stacks_token() {
+    use axum::http::HeaderMap;
+    let tracks = Tracks::new(catalog(), settings());
+    let with = |v: &str| {
+        let mut h = HeaderMap::new();
+        h.insert(crate::tracks::SIM_TOKEN_HEADER, v.parse().expect("header"));
+        h
+    };
+    assert!(tracks.sim_token_ok(&with("test-token")).is_ok());
+    assert!(tracks.sim_token_ok(&with("test-tokeN")).is_err());
+    assert!(tracks.sim_token_ok(&HeaderMap::new()).is_err());
+    let closed = Tracks::new(catalog(), Settings { sim_token: None, ..settings() });
+    assert!(closed.sim_token_ok(&with("test-token")).is_err());
+}
+
+// ---- the tracker's uncertainty against truth (review of rules 9: a track reported 8 m while
+// about 20 m off) ---------------------------------------------------------------------------
+
+/// One run of the tracker against a contact moving as `pos(s)` (east, north metres from BASE
+/// at scenario second s; speed east, north), seen by `observers`, for `n` seconds: the mean
+/// normalized error (NEES: squared horizontal error over the per-axis 1-sigma squared,
+/// expected 2 for an honest 2D Gaussian) and the share of seconds with the truth within two
+/// sigmas (expected 0.865), after a 30 s settling time.
+fn calibration(
+    kind: &str,
+    ais: bool,
+    observers: &[Observer],
+    n: u32,
+    seed: u64,
+    pos: impl Fn(f64) -> ((f64, f64), (f64, f64)),
+) -> (f64, f64, f64) {
+    let tracks = Tracks::new(catalog(), Settings { seed: Some(seed), ..settings() });
+    let mut nees = Vec::new();
+    let mut inside = 0usize;
+    let mut sig = Vec::new();
+    for s in 0..n {
+        let sf = f64::from(s);
+        let ((e, nn), (ve, vn)) = pos(sf);
+        let (lat, lon) = at(BASE.0, BASE.1, e, nn);
+        let mut c = contact("c", kind, Domain::Surface, lat, lon);
+        c.speed_mps = ve.hypot(vn);
+        c.course_deg = ve.atan2(vn).to_degrees().rem_euclid(360.0);
+        if ais {
+            c.ais = Some(crate::tracks::truth::Ais {
+                mmsi: "366000001".into(),
+                name: "MV TEST".into(),
+                ship_type: "passenger".into(),
+                spoofed: false,
+            });
+            c.emits = true;
+        }
+        tracks.on_truth_with(truth(sf, vec![c]), observers, T0 + sf).expect("ok");
+        if s < 30 {
+            continue;
+        }
+        let Some(t) = tracks.track("T-0001") else { continue };
+        if (t.last_seen_t - (T0 + sf)).abs() > 0.01 {
+            continue;
+        }
+        let de = (t.lon - lon) * 111_320.0 * lat.to_radians().cos();
+        let dn = (t.lat - lat) * 111_320.0;
+        let d2 = de * de + dn * dn;
+        nees.push(d2 / (t.sigma_m * t.sigma_m));
+        sig.push(t.sigma_m);
+        if d2.sqrt() <= 2.0 * t.sigma_m {
+            inside += 1;
+        }
+    }
+    let k = nees.len().max(1) as f64;
+    (nees.iter().sum::<f64>() / k, inside as f64 / k, sig.iter().sum::<f64>() / k)
+}
+
+#[test]
+fn the_trackers_uncertainty_covers_the_truth() {
+    let near = observer(1, BASE.0, BASE.1 - 0.027, 0.0, &[(SensorType::Radar, 8_000.0), (SensorType::EoIr, 5_000.0)]);
+    let far = observer(2, BASE.0 + 0.05, BASE.1, 0.0, &[(SensorType::Radar, 12_000.0)]);
+    let near2 = observer(4, BASE.0 + 0.025, BASE.1 + 0.002, 0.0, &[(SensorType::Radar, 20_000.0), (SensorType::EoIr, 8_000.0)]);
+    let blade = observer(5, BASE.0 - 0.01, BASE.1 + 0.03, 80.0, &[(SensorType::EoIr, 3_000.0)]);
+    let quad = observer(6, BASE.0 - 0.005, BASE.1 + 0.012, 60.0, &[(SensorType::EoIr, 1_500.0), (SensorType::Radar, 5_000.0)]);
+    let ais_rx = observer(3, BASE.0, BASE.1 + 0.03, 0.0, &[(SensorType::Ais, 30_000.0), (SensorType::Radar, 8_000.0)]);
+    let r = 400.0;
+    let w = 6.0 / r;
+    // (name, kind, ais, observers, motion)
+    #[allow(clippy::type_complexity)]
+    let cases: Vec<(&str, &str, bool, Vec<Observer>, Box<dyn Fn(f64) -> ((f64, f64), (f64, f64))>)> = vec![
+        ("holding", "small_fast_boat", false, vec![near.clone()], Box::new(|_| ((0.0, 0.0), (0.0, 0.0)))),
+        ("holding, two observers", "small_fast_boat", false, vec![near.clone(), far.clone()], Box::new(|_| ((0.0, 0.0), (0.0, 0.0)))),
+        // the live run's geometry: two ships 2.4 and 2.8 km off, each with radar and EO/IR
+        ("holding, four sensors (live)", "small_fast_boat", false, vec![near.clone(), near2.clone()], Box::new(|_| ((0.0, 0.0), (0.0, 0.0)))),
+        ("transit 12 m/s, four sensors", "small_fast_boat", false, vec![near.clone(), near2.clone()], Box::new(|s| ((-1500.0 + 12.0 * s, 0.0), (12.0, 0.0)))),
+        (
+            "stops after a transit, then holds 15 min, seven sensors",
+            "small_fast_boat",
+            false,
+            vec![near.clone(), near2.clone(), blade.clone(), quad.clone()],
+            Box::new(|s| if s < 120.0 { ((-1440.0 + 12.0 * s, 0.0), (12.0, 0.0)) } else { ((0.0, 0.0), (0.0, 0.0)) }),
+        ),
+        (
+            "stops after a transit, four sensors",
+            "small_fast_boat",
+            false,
+            vec![near.clone(), near2.clone()],
+            Box::new(|s| if s < 120.0 { ((-1440.0 + 12.0 * s, 0.0), (12.0, 0.0)) } else { ((0.0, 0.0), (0.0, 0.0)) }),
+        ),
+        ("transit 10 m/s", "fishing_vessel", false, vec![near.clone(), far.clone()], Box::new(|s| ((-1500.0 + 10.0 * s, 0.0), (10.0, 0.0)))),
+        (
+            "a 90 degree turn at 3 deg/s",
+            "fishing_vessel",
+            false,
+            vec![near.clone(), far.clone()],
+            Box::new(move |s| {
+                // east at 8 m/s for 150 s, a 30 s turn to north, then north
+                let v = 8.0;
+                let rt = v / (3f64.to_radians());
+                if s < 150.0 {
+                    ((-1200.0 + v * s, 0.0), (v, 0.0))
+                } else if s < 180.0 {
+                    let a = (s - 150.0) * 3f64.to_radians();
+                    ((-1200.0 + v * 150.0 + rt * a.sin(), rt * (1.0 - a.cos())), (v * a.cos(), v * a.sin()))
+                } else {
+                    ((-1200.0 + v * 150.0 + rt, rt + v * (s - 180.0)), (0.0, v))
+                }
+            }),
+        ),
+        (
+            "circling 400 m at 6 m/s",
+            "ferry",
+            false,
+            vec![near.clone()],
+            Box::new(move |s| {
+                let a = w * s;
+                ((r * a.sin(), r * a.cos()), (6.0 * a.cos(), -6.0 * a.sin()))
+            }),
+        ),
+        ("ferry with AIS, 10 m/s", "ferry", true, vec![ais_rx.clone()], Box::new(|s| ((-1500.0 + 10.0 * s, 300.0), (10.0, 0.0)))),
+        ("radar only, 6 km", "cargo_ship", false, vec![far.clone()], Box::new(|s| ((0.0, -500.0 + 4.0 * s), (0.0, 4.0)))),
+    ];
+    let mut report = Vec::new();
+    let mut bad = Vec::new();
+    let seeds = [1u64, 2, 3, 4, 5];
+    for (name, kind, ais, obs, motion) in &cases {
+        let (mut nees_sum, mut cover_sum) = (0.0, 0.0);
+        for seed in seeds {
+            let n = if name.contains("15 min") { 1020 } else { 300 };
+            let (nees, cover, sigma) = calibration(kind, *ais, obs, n, seed, motion);
+            report.push(format!("{name} seed {seed}: NEES {nees:.2}, within 2 sigma {:.0}%, mean sigma {sigma:.1} m", 100.0 * cover));
+            nees_sum += nees;
+            cover_sum += cover;
+        }
+        let (nees, cover) = (nees_sum / seeds.len() as f64, cover_sum / seeds.len() as f64);
+        // honest, over the seeds: the truth within two sigmas at least about as often as a 2D
+        // Gaussian says (86.5%; 83% allows for the runs' few independent samples), and the
+        // mean normalized error (expected 2) neither above 2.6 (errors larger than the sigma
+        // says, which would let a keep-out or an attribution trust it too much) nor below 1
+        // (a sigma more than 1.4 times the errors, which would block for nothing)
+        if !(cover >= 0.83 && (1.0..=2.6).contains(&nees)) {
+            bad.push(format!("{name}: NEES {nees:.2}, coverage {cover:.2} over {} seeds", seeds.len()));
+        }
+    }
+    eprintln!("{}", report.join("\n"));
+    assert!(bad.is_empty(), "uncertainty not honest:\n{}\n\nall:\n{}", bad.join("\n"), report.join("\n"));
 }

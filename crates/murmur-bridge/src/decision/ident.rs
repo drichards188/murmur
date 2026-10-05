@@ -260,11 +260,35 @@ pub(super) fn review_of(ledger: &murmur_decide::ident::Ledger) -> Value {
         .filter(|d| d.is_rule() && d.confirmed.is_some())
         .map(|d| json!({ "id": format!("D-{}", d.id), "track": d.track, "basis": d.describe() }))
         .collect();
+    // a declarer's notice: their declaration revoked by someone else (the latest first)
+    let mut revoked: Vec<Value> = ledger
+        .revocations()
+        .iter()
+        .map(|r| {
+            let declarer = match &r.declaration.by {
+                murmur_decide::Declarer::Operator { operator, .. } => Some(operator.clone()),
+                murmur_decide::Declarer::Rule { .. } => None,
+            };
+            json!({
+                "id": format!("D-{}", r.declaration.id),
+                "track": r.declaration.track,
+                "declared_by": r.declaration.label(),
+                "revoked_by": r.by,
+                "t": r.t.0 as f64 / 1000.0,
+                "note": r.note,
+                // the operator to tell: the declarer, when someone else revoked it
+                "notify": declarer.filter(|d| *d != r.by),
+            })
+        })
+        .collect();
+    revoked.reverse();
+    revoked.truncate(20);
     json!({
         "declarations": declarations,
         "flags": open,
         "resolved": resolved,
         "confirmed": confirmed,
+        "revocations": revoked,
         "counts": {
             "declarations": declarations.len(),
             "flags": open.len(),

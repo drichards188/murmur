@@ -8,6 +8,8 @@
 //!   MURMUR_CONTACTS_TRUTH    evaluation log path (default $MURMUR_ROOT/logs/contacts-truth.jsonl)
 //!   MURMUR_CONTACTS_HZ       ticks per wall second (default 1)
 //!   MURMUR_CONTACTS_SEED     overrides the scenario's seed
+//!   MURMUR_SIM_TOKEN         the stack's simulation-channel token (up.sh and the evaluation's
+//!                            runner generate one per stack): the bridge refuses truth without it
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -79,6 +81,11 @@ async fn run() -> Result<(), String> {
         )
     });
     let endpoint = format!("{}/api/sim/contacts", bridge.trim_end_matches('/'));
+    // the bridge takes truth (and so acts) only from its own stack's contacts process
+    let sim_token = env("MURMUR_SIM_TOKEN");
+    if sim_token.is_none() {
+        eprintln!("contacts: no MURMUR_SIM_TOKEN: the bridge will refuse the truth channel");
+    }
     let log_path = env("MURMUR_CONTACTS_TRUTH").map(PathBuf::from).unwrap_or_else(|| {
         root.clone()
             .unwrap_or_default()
@@ -205,7 +212,11 @@ async fn run() -> Result<(), String> {
             let _ = writeln!(log, "{line}");
             let _ = log.flush();
         }
-        let r = client.post(&endpoint).json(&msg).send().await;
+        let mut req = client.post(&endpoint).json(&msg);
+        if let Some(t) = &sim_token {
+            req = req.header("x-murmur-sim-token", t.as_str());
+        }
+        let r = req.send().await;
         let outcome = match r {
             Ok(resp) if resp.status().is_success() => {
                 // the simulation channel back: engagement effects to apply (Phase E)

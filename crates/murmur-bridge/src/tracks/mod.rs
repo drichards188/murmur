@@ -72,6 +72,11 @@ pub struct Settings {
     pub misclassification_rate: Option<f64>,
     pub eval_truth: bool,
     pub drop_s: f64,
+    /// The simulation channel's token (`MURMUR_SIM_TOKEN`, generated per stack by `up.sh` and
+    /// the evaluation's runner and handed to the contacts process): `POST /api/sim/contacts`
+    /// carries it (`X-Murmur-Sim-Token`) or is refused; none set, the channel is closed. Never
+    /// logged or served.
+    pub sim_token: Option<String>,
 }
 
 impl Settings {
@@ -89,9 +94,13 @@ impl Settings {
                 .and_then(|s| s.trim().parse().ok())
                 .unwrap_or(180.0f64)
                 .max(model::STALE_S),
+            sim_token: var("MURMUR_SIM_TOKEN").map(|t| t.trim().to_string()),
         }
     }
 }
+
+/// The header the contacts process sends its token in.
+pub const SIM_TOKEN_HEADER: &str = "x-murmur-sim-token";
 
 struct Inner {
     /// (wall seconds received, the message): truth, for the sensing model and the eval hook
@@ -156,6 +165,23 @@ impl Tracks {
 
     pub fn eval_truth_enabled(&self) -> bool {
         self.settings.eval_truth
+    }
+
+    /// Whether a request on the simulation channel carries this stack's token (compared as
+    /// digests, in constant time). Without a token configured the channel is closed.
+    pub fn sim_token_ok(&self, headers: &HeaderMap) -> Result<(), &'static str> {
+        let Some(want) = self.settings.sim_token.as_deref().filter(|t| !t.is_empty()) else {
+            return Err("the simulation channel is closed: no MURMUR_SIM_TOKEN was set for this bridge");
+        };
+        let given = headers
+            .get(SIM_TOKEN_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .ok_or("the simulation channel takes the stack's token (X-Murmur-Sim-Token)")?;
+        if murmur_auth::keys::ct_eq(&murmur_auth::keys::digest(given.trim()), &murmur_auth::keys::digest(want)) {
+            Ok(())
+        } else {
+            Err("wrong simulation token")
+        }
     }
 
     /// Our vehicles as sensor carriers: those with a position and a live link.
@@ -289,6 +315,18 @@ impl Tracks {
                 sensors: obs.sensors.clone(),
                 location: LonLat::new(obs.lon, obs.lat),
                 sigma_m: obs.sigma_m,
+                fixes: obs
+                    .fixes
+                    .iter()
+                    .map(|f| murmur_decide::ident::Fix {
+                        observer: f.observer.to_string(),
+                        sensors: f.sensors.clone(),
+                        location: LonLat::new(f.lon, f.lat),
+                        sigma_m: f.sigma_m,
+                    })
+                    .collect(),
+                // the channel it came in on (its token checked)
+                channel: Some("sim:contacts".into()),
             };
             inner.act_records.push(json!({
                 "act": a.id, "s": a.s, "by": a.by, "by_track": actor_track,
@@ -797,8 +835,14 @@ async fn review(State(api): State<Api>) -> Response {
 /// except by `sim_truth` with `MURMUR_EVAL_TRUTH=1`.
 async fn sim_contacts(
     State(api): State<Api>,
+    headers: HeaderMap,
     body: Result<Json<TruthMessage>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
+    // only the stack's own contacts process: truth reaches the sensing model, and through it
+    // acts reach the identification rule
+    if let Err(why) = api.tracks.sim_token_ok(&headers) {
+        return error(StatusCode::UNAUTHORIZED, why);
+    }
     let Json(msg) = match body {
         Ok(b) => b,
         Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, e.body_text()),

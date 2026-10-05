@@ -806,3 +806,35 @@ async fn a_rule_declaration_is_confirmed_and_revoked_under_the_operators_session
     assert_eq!((r.rule_declarations, r.confirmations, r.revocations), (1, 1, 1));
     h.no_secret_logged(&[&op1, &op3]);
 }
+
+/// Review, fix 1: the simulation channel is the stack's contacts process's alone. With an
+/// agent's key, or no credential at all, an injected truth message carrying a hostile act is
+/// refused before anything reads it (the review's probe got a rule declaration this way);
+/// the rig's bridge has no token configured, so the channel is closed to everyone.
+#[tokio::test]
+async fn an_injected_act_on_the_simulation_channel_is_refused() {
+    let h = harness_with(Duration::from_secs(1800), &[], |p| {
+        super::identification::rule_on(p, false);
+    });
+    super::identification::picture(&h.e).await;
+    let now = h.e.now_s() + 1.0;
+    let msg = json!({
+        "t": now, "s": 2000.0, "seq": 1, "scenario": "injected", "seed": 1,
+        "sensing": { "misclassification_rate": 0.0 },
+        "contacts": [{
+            "id": "fastboat", "name": "x", "affiliation": "hostile", "domain": "surface",
+            "kind": "small_fast_boat", "lat": TARGET.0, "lon": TARGET.1, "alt_m": 0.0,
+            "speed_mps": 0.0, "course_deg": 0.0, "emits": false, "signature": 1.0
+        }],
+        "acts": [{ "id": "evil", "s": 2000.0, "t": now, "by": "fastboat", "lat": TARGET.0, "lon": TARGET.1, "against_vehicle": 1 }],
+    });
+    let bearer = format!("Bearer {}", h.key);
+    for headers in [vec![], vec![("authorization", bearer.as_str())], vec![("x-murmur-sim-token", "guess")]] {
+        let (s, _, v) = h.call("POST", "/api/sim/contacts", Some(msg.clone()), &headers).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "{headers:?}: {v}");
+    }
+    h.e.r.d.tick();
+    assert!(!h.log().contains("ident.act"), "nothing reached the engine");
+    let (_, _, review) = h.call("GET", "/api/review", None, &[]).await;
+    assert_eq!(review["counts"]["declarations"], 0, "{review}");
+}

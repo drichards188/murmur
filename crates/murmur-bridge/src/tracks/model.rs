@@ -3,11 +3,16 @@
 //! position uncertainty grows with age at `sigma_growth_mps`, so a track that nobody has
 //! seen for a minute is visibly loose and an engagement check (Phase E) can refuse it.
 //!
-//! Estimation is deliberately simple: a scalar Kalman update on position (the track's
-//! own uncertainty against the measurement's), velocity smoothed from successive fixes,
-//! existence confidence that climbs with hits and decays in silence, and identity
-//! confidence that grows with dwell per sensor type and combines across independent
-//! sensors. Association is by the simulation's contact id (see `mod.rs`); a dropped track
+//! Estimation: a constant-velocity Kalman filter per horizontal axis (position and velocity,
+//! white-noise acceleration by domain, [`process_noise`]), every detection a position
+//! measurement with its sensor's 1-sigma and an AIS report's course and speed a velocity
+//! measurement, so the 1-sigma it reports is the filter's own and honest against the truth
+//! (a test checks it in the simulation: `tracks::tests::the_trackers_uncertainty_covers_
+//! the_truth`; until rules 9's review it was a scalar update with a velocity smoothed from
+//! fixes, too loose holding and too tight after a manoeuvre). Existence confidence climbs
+//! with hits and decays in silence; identity confidence grows with dwell per sensor type and
+//! combines across independent sensors. Several observers' fixes of one tick are folded one
+//! after another, as independent measurements (they are: each sensor's draw is its own). Association is by the simulation's contact id (see `mod.rs`); a dropped track
 //! that is seen again gets a new id, as a real tracker would start a new track.
 
 use std::collections::BTreeMap;
@@ -30,9 +35,65 @@ pub const STALE_S: f64 = 10.0;
 const AIS_CONF: f64 = 0.85;
 /// Dwell credited per detection is capped at this (a 1 Hz sensor gives 1 s a hit).
 const MAX_DWELL_PER_HIT_S: f64 = 2.0;
-/// Velocity is taken from fixes at least this far apart, so position noise of tens of
-/// metres doesn't read as metres per second.
-const VEL_BASELINE_S: f64 = 10.0;
+/// A velocity estimate is shown (and given to decisions) once its 1-sigma is below this.
+const VEL_KNOWN_SIGMA_MPS: f64 = 3.0;
+/// An AIS report's course and speed over ground, 1-sigma per axis, m/s.
+const AIS_VEL_SIGMA_MPS: f64 = 0.3;
+
+/// The filter's white-noise acceleration by domain (its spectral density, m^2/s^3): what the
+/// contact may do between fixes that the constant-velocity model does not know. Set so the
+/// reported 1-sigma covers the truth about as often as a Gaussian says, holding, in transit,
+/// turning and circling, in the simulation's motion (see the module doc).
+pub fn process_noise(domain: Domain) -> f64 {
+    match domain {
+        Domain::Air => Q_AIR,
+        Domain::Surface => Q_SURFACE,
+        Domain::Subsurface => Q_SUBSURFACE,
+        Domain::Ground => Q_GROUND,
+    }
+}
+
+const Q_AIR: f64 = 2.0;
+const Q_SURFACE: f64 = 0.05;
+const Q_SUBSURFACE: f64 = 0.01;
+const Q_GROUND: f64 = 0.3;
+
+/// A fix this far from the prediction (its innovation's normalized square, chi-square with 2
+/// degrees of freedom, 99%) widens the prior by the innovation's own size before the update:
+/// the contact did something the constant-velocity model did not expect (a stop, a sharp
+/// turn), and the fix outranks the prediction.
+const NIS_JUMP: f64 = 9.21;
+
+/// A new track's velocity is unknown within this, 1-sigma per axis (about half the domain's
+/// top speed).
+fn initial_vel_sigma(domain: Domain) -> f64 {
+    match domain {
+        Domain::Air => 60.0,
+        Domain::Surface => 10.0,
+        Domain::Subsurface => 5.0,
+        Domain::Ground => 15.0,
+    }
+}
+
+/// The filter's covariance for one horizontal axis (the same for both: they are updated
+/// alike): position variance, position-velocity covariance, velocity variance.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AxisCov {
+    pub pp: f64,
+    pub pv: f64,
+    pub vv: f64,
+}
+
+impl AxisCov {
+    /// Carried `dt` seconds forward with white-noise acceleration `q`.
+    pub fn predict(self, dt: f64, q: f64) -> AxisCov {
+        AxisCov {
+            pp: self.pp + 2.0 * dt * self.pv + dt * dt * self.vv + q * dt.powi(3) / 3.0,
+            pv: self.pv + dt * self.vv + q * dt * dt / 2.0,
+            vv: self.vv + q * dt,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Source {
@@ -118,9 +179,14 @@ pub struct Track {
     /// when a detection last carried an altitude (wall s): a sensor that ranges the contact
     /// in height measured it then (rules 6 count it for a 3D keep-out only while recent)
     pub alt_t: Option<f64>,
-    /// east, north m/s
+    /// east, north m/s, once known (its 1-sigma below `VEL_KNOWN_SIGMA_MPS`)
     pub vel: Option<(f64, f64)>,
-    /// 1 sigma at `last_seen_t`
+    /// the filter's velocity estimate, known or not
+    vel_est: (f64, f64),
+    /// the filter's covariance at `last_seen_t` (per axis)
+    pub cov: AxisCov,
+
+    /// 1 sigma at `last_seen_t` (per axis): `sqrt(cov.pp)`
     pub sigma_m: f64,
     pub confidence: f64,
     pub first_seen_t: f64,
@@ -135,8 +201,6 @@ pub struct Track {
     /// evidence), as the engine's ledger has them (display only).
     pub review: Vec<ReviewMark>,
     pub raised: Option<String>,
-    /// the last position used for velocity (lat, lon, t)
-    vel_anchor: (f64, f64, f64),
 }
 
 /// Speed the position uncertainty grows at while unobserved: at least walking pace, or a
@@ -200,6 +264,12 @@ impl Track {
             alt_m: d.alt_m,
             alt_t: None,
             vel: None,
+            vel_est: (0.0, 0.0),
+            cov: AxisCov {
+                pp: d.sigma_m * d.sigma_m,
+                pv: 0.0,
+                vv: initial_vel_sigma(d.domain).powi(2),
+            },
             sigma_m: d.sigma_m,
             confidence: 0.0,
             first_seen_t: now,
@@ -212,10 +282,20 @@ impl Track {
             declared: None,
             review: Vec::new(),
             raised: None,
-            vel_anchor: (d.lat, d.lon, now),
         };
-        t.update(d, now);
+        // the first fix is the estimate: its own update would count it twice
+        t.first_fix(d, now);
         t
+    }
+
+    /// The first detection: position as measured, velocity unknown (AIS gives one).
+    fn first_fix(&mut self, d: &Detection, now: f64) {
+        if let Some((e, n)) = d.velocity_mps {
+            self.vel_est = (e, n);
+            self.cov.vv = AIS_VEL_SIGMA_MPS * AIS_VEL_SIGMA_MPS;
+            self.vel = Some((e, n));
+        }
+        self.after_update(d, now);
     }
 
     /// Age in seconds at `now` (never negative).
@@ -233,9 +313,9 @@ impl Track {
             .map(|(e, n)| e.atan2(n).to_degrees().rem_euclid(360.0))
     }
 
-    /// 1-sigma horizontal uncertainty at `now`: grows with age.
+    /// 1-sigma horizontal uncertainty (per axis) at `now`: the filter's, carried forward.
     pub fn sigma_at(&self, now: f64) -> f64 {
-        self.sigma_m + sigma_growth_mps(self.speed_mps()) * self.age_s(now)
+        self.cov.predict(self.age_s(now), process_noise(self.domain)).pp.sqrt()
     }
 
     /// Where the track is believed to be at `now`: the last estimate carried forward on
@@ -244,6 +324,16 @@ impl Track {
         let Some((e, n)) = self.vel else {
             return (self.lat, self.lon);
         };
+        let dt = self.age_s(now);
+        (
+            self.lat + n * dt / 111_320.0,
+            self.lon + e * dt / (111_320.0 * self.lat.to_radians().cos()),
+        )
+    }
+
+    /// The filter's own prediction to `now` (its velocity estimate, known or not).
+    fn predicted_est(&self, now: f64) -> (f64, f64) {
+        let (e, n) = self.vel_est;
         let dt = self.age_s(now);
         (
             self.lat + n * dt / 111_320.0,
@@ -260,42 +350,78 @@ impl Track {
         self.age_s(now) > STALE_S
     }
 
-    /// Fold one detection in.
+    /// Fold one detection in: the filter's prediction to `now`, its update with the fix
+    /// (and an AIS report's velocity), then everything the fix says besides position.
     pub fn update(&mut self, d: &Detection, now: f64) {
-        // predict to now, then the scalar Kalman gain against the measurement
-        let (plat, plon) = self.predicted(now);
-        let sig_t = self.sigma_at(now);
-        let k = sig_t * sig_t / (sig_t * sig_t + d.sigma_m * d.sigma_m);
-        self.lat = plat + k * (d.lat - plat);
-        self.lon = plon + k * (d.lon - plon);
-        self.sigma_m = (1.0 / (1.0 / (sig_t * sig_t) + 1.0 / (d.sigma_m * d.sigma_m))).sqrt();
+        let q = process_noise(self.domain);
+        let dt = self.age_s(now);
+        let (plat, plon) = self.predicted_est(now);
+        let mut c = self.cov.predict(dt, q);
+        // the position measurement, per axis (east, north in metres)
+        let r = d.sigma_m * d.sigma_m;
+        let m_per_lon = 111_320.0 * plat.to_radians().cos();
+        let ie = (d.lon - plon) * m_per_lon;
+        let inn = (d.lat - plat) * 111_320.0;
+        let nis = (ie * ie + inn * inn) / (c.pp + r);
+        if nis > NIS_JUMP {
+            let k = nis / 2.0;
+            c = AxisCov {
+                pp: c.pp * k,
+                pv: c.pv * k,
+                vv: c.vv * k,
+            };
+        }
+        let s = c.pp + r;
+        let (kp, kv) = (c.pp / s, c.pv / s);
+        let (mut e, mut n) = (0.0, 0.0);
+        let (mut ve, mut vn) = self.vel_est;
+        e += kp * ie;
+        n += kp * inn;
+        ve += kv * ie;
+        vn += kv * inn;
+        c = AxisCov {
+            pp: c.pp - c.pp * c.pp / s,
+            pv: c.pv - c.pp * c.pv / s,
+            vv: c.vv - c.pv * c.pv / s,
+        };
+        // AIS: the contact's own course and speed over ground, a velocity measurement
+        if let Some((ae, an)) = d.velocity_mps {
+            let rv = AIS_VEL_SIGMA_MPS * AIS_VEL_SIGMA_MPS;
+            let s = c.vv + rv;
+            let (kp, kv) = (c.pv / s, c.vv / s);
+            let (ie, inn) = (ae - ve, an - vn);
+            e += kp * ie;
+            n += kp * inn;
+            ve += kv * ie;
+            vn += kv * inn;
+            c = AxisCov {
+                pp: c.pp - c.pv * c.pv / s,
+                pv: c.pv - c.pv * c.vv / s,
+                vv: c.vv - c.vv * c.vv / s,
+            };
+        }
+        self.lat = plat + n / 111_320.0;
+        self.lon = plon + e / m_per_lon;
+        self.vel_est = (ve, vn);
+        self.cov = c;
         if d.alt_m.is_some() {
+            let k = kp;
             self.alt_m = match (self.alt_m, d.alt_m) {
                 (Some(a), Some(b)) => Some(a + k * (b - a)),
                 (_, b) => b,
             };
             self.alt_t = Some(now);
         }
-        // velocity: what the contact reports over AIS (course and speed over ground) when
-        // we hear it, else from successive fixes a baseline apart
-        if let Some((e, n)) = d.velocity_mps {
-            self.vel = Some(match self.vel {
-                Some((ve, vn)) => (0.5 * ve + 0.5 * e, 0.5 * vn + 0.5 * n),
-                None => (e, n),
-            });
-            self.vel_anchor = (self.lat, self.lon, now);
-        } else {
-            let (alat, alon, at) = self.vel_anchor;
-            let dt = now - at;
-            if dt >= VEL_BASELINE_S {
-                let n = (self.lat - alat) * 111_320.0 / dt;
-                let e = (self.lon - alon) * 111_320.0 * self.lat.to_radians().cos() / dt;
-                self.vel = Some(match self.vel {
-                    Some((ve, vn)) => (0.8 * ve + 0.2 * e, 0.8 * vn + 0.2 * n),
-                    None => (e, n),
-                });
-                self.vel_anchor = (self.lat, self.lon, now);
-            }
+        self.after_update(d, now);
+    }
+
+    /// What a detection says besides position: velocity known, existence, sources, identity.
+    fn after_update(&mut self, d: &Detection, now: f64) {
+        self.sigma_m = self.cov.pp.sqrt();
+        self.vel = (self.cov.vv.sqrt() < VEL_KNOWN_SIGMA_MPS).then_some(self.vel_est);
+        if d.alt_m.is_some() && self.alt_m.is_none() {
+            self.alt_m = d.alt_m;
+            self.alt_t = Some(now);
         }
         // existence
         self.confidence = self.confidence_at(now);

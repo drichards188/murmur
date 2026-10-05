@@ -452,6 +452,18 @@ pub struct ActObservation {
     pub lat: f64,
     pub lon: f64,
     pub sigma_m: f64,
+    /// Every other observer's own fix (its best sensor), for corroboration.
+    pub fixes: Vec<ActFix>,
+}
+
+/// One further observer's fix of an act's author.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActFix {
+    pub observer: u64,
+    pub sensors: Vec<String>,
+    pub lat: f64,
+    pub lon: f64,
+    pub sigma_m: f64,
 }
 
 /// Rules 9: what our sensors make of an abstract hostile act by contact `actor` (no weapon is
@@ -465,6 +477,8 @@ pub fn observe_act(p: Params, observers: &[Observer], actor: &ContactTruth, act_
     let key = format!("{act_id}/{}", actor.id);
     let mut sensors = Vec::new();
     let mut best: Option<(f64, f64, f64, u64, u64)> = None;
+    // each observer's best sensor (its sigma and draw), and its sensors that saw it
+    let mut per_observer: std::collections::BTreeMap<u64, (f64, u64, Vec<String>)> = std::collections::BTreeMap::new();
     for o in observers {
         for (si, s) in o.sensors.iter().enumerate() {
             if !matches!(s.kind, SensorType::Radar | SensorType::EoIr | SensorType::Sonar) {
@@ -495,18 +509,47 @@ pub fn observe_act(p: Params, observers: &[Observer], actor: &ContactTruth, act_
             if best.is_none_or(|b| sigma < b.0) {
                 best = Some((sigma, r, horiz, o.uid, salt));
             }
+            let e = per_observer.entry(o.uid).or_insert((sigma, salt, Vec::new()));
+            if sigma < e.0 {
+                e.0 = sigma;
+                e.1 = salt;
+            }
+            e.2.push(format!("{}:{}", o.uid, s.kind.as_str()));
         }
     }
     let (sigma, _, _, uid, salt) = best?;
-    let (ne, nn) = (
-        normal(p.seed, p.tick, uid, &key, salt | 0x1_0000),
-        normal(p.seed, p.tick, uid, &key, salt | 0x2_0000),
-    );
+    let place = |sigma: f64, uid: u64, salt: u64| {
+        let (ne, nn) = (
+            normal(p.seed, p.tick, uid, &key, salt | 0x1_0000),
+            normal(p.seed, p.tick, uid, &key, salt | 0x2_0000),
+        );
+        (
+            actor.lat + sigma * nn / 111_320.0,
+            actor.lon + sigma * ne / (111_320.0 * actor.lat.to_radians().cos()),
+        )
+    };
+    let (lat, lon) = place(sigma, uid, salt);
+    // every other observer's own fix (its best sensor), each drawn on its own
+    let fixes: Vec<ActFix> = per_observer
+        .into_iter()
+        .filter(|(o, _)| *o != uid)
+        .map(|(o, (sig, salt, ss))| {
+            let (lat, lon) = place(sig, o, salt);
+            ActFix {
+                observer: o,
+                sensors: ss,
+                lat,
+                lon,
+                sigma_m: (sig * 10.0).round() / 10.0,
+            }
+        })
+        .collect();
     Some(ActObservation {
         sensors,
-        lat: actor.lat + sigma * nn / 111_320.0,
-        lon: actor.lon + sigma * ne / (111_320.0 * actor.lat.to_radians().cos()),
+        lat,
+        lon,
         sigma_m: (sigma * 10.0).round() / 10.0,
+        fixes,
     })
 }
 
