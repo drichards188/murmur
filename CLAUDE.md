@@ -89,6 +89,9 @@ meaningful. Decision and command, not weapons.
 - Keep fixed port bases (vehicle, bridge) below the ephemeral range: stand-ins and clients draw
   from it, and a fixed base inside it collides at random. It can change between boots: check
   `sysctl net.ipv4.ip_local_port_range` (37795-41890 as of 2026-10-04; was 39160-43255).
+- Eval stacks own UDP 35000-36999 and HTTP 10600-10699 (`eval/ports.py`, fixed): keep other
+  live stacks off them. Each eval run starts as a fresh station (`eval/stack.py` removes the
+  bridge's `.last-run-<port>` before and after; `run.json` `restore_carry`, murmur-kvb).
 - Rules 5 queue: an order for a vehicle the link can't carry it to now waits in the Queue
   (console button; `GET /api/inbox` `queued`), it is not an error; one whose link drops
   before the vehicle started it comes back there (`intent.requeued`). A human's approval is

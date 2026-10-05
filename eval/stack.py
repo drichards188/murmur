@@ -7,6 +7,11 @@ sysids are exactly what `make up` would give) but written into the run directory
 refused. Every process is started in its own session and stopped by PID (TERM, then KILL),
 and the PIDs are written to `pids.json` so a crashed runner's processes can be stopped with
 `python -m eval.run kill <run-dir>`.
+
+Every run starts as a fresh station: nothing of an earlier run on the same port block is
+carried into it, neither open intents (`MURMUR_RESUME=0`) nor lost-link values owed back
+(the bridge's restore pointer for the port is removed before the bridge starts and after it
+stops; `Stack.last_run_pointer`).
 """
 
 from __future__ import annotations
@@ -172,6 +177,9 @@ class Stack:
         self.contacts_spawned: float | None = None
         self.notes: list[str] = []
         self.spec_events: list[dict[str, Any]] = []
+        # what the port's restore pointer named before the bridge started and when it
+        # stopped, each removed (`last_run_pointer`); run.json keeps it
+        self.restore_carry: dict[str, Any] = {}
 
     # ---- files ---------------------------------------------------------------------------
 
@@ -186,6 +194,46 @@ class Stack:
     @property
     def standins_json(self) -> Path:
         return self.run_dir / "standins.json"
+
+    @property
+    def last_run_pointer(self) -> Path:
+        """The bridge's rules-6 restore pointer for this stack's HTTP port, beside the audit
+        logs (`Settings::last_run` in crates/murmur-bridge/src/decision/mod.rs:
+        `<MURMUR_ROOT>/logs/audit/.last-run-<MURMUR_HTTP_PORT>`, kept across clean stops). A
+        bridge names its audit log there at start, and the next bridge on the port carries
+        over the lost-link values that log still owed back, or, if it can't read the log,
+        raises a High `restore:carry` inbox alert for its whole run. Neither belongs in an
+        evaluation run: its vehicles are new stand-ins, owed nothing by an earlier run, and an
+        earlier run's log has been moved into that run's directory, so the pointer names a
+        missing file (murmur-kvb). So no pointer exists for the port when the bridge starts,
+        and the bridge's own is removed when it stops (`clear_last_run`)."""
+        return self.audit_src.parent / f".last-run-{self.block.http}"
+
+    def clear_last_run(self, when: str) -> None:
+        """Remove the port's restore pointer, recording what it named under `when`
+        (`before_start`: what an earlier run, or one whose runner died before its teardown,
+        left; `at_stop`: this run's own, naming the log just moved into the run directory).
+        A pointer that can't be removed before the start fails the run; at the stop it is
+        only recorded (the next run's start removes it or fails)."""
+        p = self.last_run_pointer
+        rec: dict[str, Any] = {"pointer": str(p), "found": p.exists() or p.is_symlink()}
+        if rec["found"]:
+            try:
+                named = p.read_text().strip()
+                rec.update(named=named, ours=named == str(self.audit_src), log_present=Path(named).is_file())
+            except (OSError, ValueError) as e:  # ValueError: not UTF-8 (tampered with)
+                rec["unreadable"] = str(e)
+            try:
+                p.unlink(missing_ok=True)
+                rec["removed"] = True
+            except OSError as e:
+                rec.update(removed=False, error=str(e))
+        self.restore_carry[when] = rec
+        if when == "before_start" and rec.get("removed") is False:
+            raise StackError(
+                f"{p} can't be removed ({rec['error']}): the bridge would read another run's "
+                "restore pointer (rules 6)"
+            )
 
     @property
     def credentials_file(self) -> Path:
@@ -386,6 +434,8 @@ class Stack:
             )
         if self.spec.sense_misclass is not None:
             bridge_env["MURMUR_SENSE_MISCLASS"] = str(self.spec.sense_misclass)
+        # nor lost-link values another run owed back (rules 6): no restore pointer for the port
+        self.clear_last_run("before_start")
         bridge = self._spawn("bridge", [str(_binary("murmur-bridge"))], self._env(**bridge_env))
         self._wait_http(f"http://127.0.0.1:{b.http}/api/stats", bridge, 60)
         if self.auth == "credentials":
@@ -534,13 +584,19 @@ class Stack:
             else:
                 exits[p.name] = p.popen.returncode
         self.write_pids()
-        # the audit log belongs with the run, and so do its anchors (written there)
+        # the audit log belongs with the run, and so do its anchors (written there) and the
+        # fleet identity the bridge writes beside it (`<log>.fleet.json`)
         dst = self.run_dir / "audit.jsonl"
         if self.audit_src.exists():
             shutil.move(str(self.audit_src), str(dst))
+        fleet_identity = self.audit_src.with_suffix(".fleet.json")
+        if fleet_identity.exists():
+            shutil.move(str(fleet_identity), str(dst.with_suffix(".fleet.json")))
         anchors = self.run_dir / f"{self.run_id}.anchors"
         if anchors.exists():
             anchors.replace(self.run_dir / "audit.anchors")
+        # the port's restore pointer names the log just moved: the next run must not read it
+        self.clear_last_run("at_stop")
         # the run's throwaway credentials go with it (hashes only, but no reason to keep them)
         self.credentials_file.unlink(missing_ok=True)
         self.passwords.clear()

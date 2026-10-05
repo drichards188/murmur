@@ -464,6 +464,27 @@ group. Dates are 2026.
   PID; batches run several at once. Stand-ins only (SITL is neither deterministic nor cheap),
   and the same release binaries as `make goldengate`, so the evaluation measures the shipped
   decision layer, not a model of it.
+- **Every run starts as a fresh station: no restore pointer between runs** (10-05,
+  murmur-kvb). Rules 6 has the bridge name its audit log in `logs/audit/.last-run-<http
+  port>` and, at its next start on that port, carry over the lost-link values that log still
+  owed back, or raise a High `restore:carry` inbox alert, held for the whole run, when it
+  can't read the log. The runner moves each run's log into its run directory, so from the
+  second run on a port block every run started with that alert (shown live: two runs of
+  stale-track on one block), and a run whose runner died before its teardown would have had
+  what it owed carried onto the next run's new stand-ins (nothing has been owed yet: only an
+  engagement's preload is owed back, and live engagement steps are placeholders). The runner
+  now removes the port's pointer before the bridge starts and after it stops, and records
+  what it found in `run.json` (`restore_carry`). Chosen over a pointer location per run or a
+  bridge setting that turns the carry off (each a bridge change, the second also a
+  `run.started` field): the bridge runs as shipped and sees what any station sees on its
+  first start on a port, and runs outside the harness are untouched. No published result was
+  affected: the runs behind `docs/eval/` and PLAN.md (54fa0fa, 5cebadf, 0c7da6b) predate the
+  pointer (52f928e); neither the scripted deciders (they read `pending`) nor the metrics (the
+  audit log, where the alert never appears) read alerts, and the same seed with and without
+  the alert gave the same decisions and counts (latencies within run-to-run jitter). Who
+  could have seen it: a real model
+  (`agent+model`, through `get_inbox`) and a study participant (the console's inbox); none
+  of their runs is published.
 - **Labels from truth, at the moment each is about; metrics from logs only** (10-03,
   revised 10-04). The storyline records what the C2 showed and what truth had when it
   injected a situation (the track as displayed, the contact behind it, what was within the
