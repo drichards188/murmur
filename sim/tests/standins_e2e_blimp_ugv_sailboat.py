@@ -101,6 +101,10 @@ def main():
         env.pop(k, None)
     if TW:
         env.update({"MURMUR_TIDEWATER_URL": "http://127.0.0.1:8876", "MURMUR_AT": "2026-06-14T10:00Z"})
+    # this run's manifest before the bridge starts (as scripts/up.sh): started beside
+    # swarm.py the bridge could read the previous run's sim/run/fleet.json
+    subprocess.run([PY, str(ROOT / "sim" / "swarm.py"), "--fleet", str(fleet), "--base-port", str(BASE_PORT),
+                    "--manifest-only"], env=env, check=True)
     procs = [
         subprocess.Popen([str(ROOT / "target" / "release" / "murmur-bridge")], cwd=ROOT, env=env, stdout=open(logs / "bridge.log", "w"), stderr=subprocess.STDOUT,
                          start_new_session=True),

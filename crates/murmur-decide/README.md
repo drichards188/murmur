@@ -773,7 +773,12 @@ Rules versions:
   time), its USV's own lost-link values logged ahead of the write (with its identity), the
   preload set, read again seven times before the release (the last 3 s before it), the
   effect released, the USV's own values restored; an acceptance by an operator without
-  engagement authority refused with a 403, nothing logged).
+  engagement authority refused with a 403, nothing logged); and
+  `v6-airship-nomination-scenario-66.jsonl` (master `981cdf3`), the small airship nominated
+  and refused by `fallback_preload`. Its detail still says "Blimp 4.8's only lost-link
+  action is Land", which misreads the firmware (Blimp 4.8's GCS failsafe can only disarm;
+  the documented Land is not implemented, murmur-3zj); a detail is compared by replay, so
+  the wording is kept and the next rules version corrects it.
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that

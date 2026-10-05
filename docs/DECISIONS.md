@@ -278,9 +278,10 @@ group. Dates are 2026.
 ## Fleet and simulation
 
 - **The CCA's C2 link is SATCOM, as the other large aircraft's** (10-04, murmur-3zj). The
-  stock fleets spawn it 21 km from Crissy Field at 11 km altitude, where the `los` class
-  (its range from Puma's 20 km figure, a GUESS) already loses about 40 % of packets and the
-  5 s lost-link timer fires within minutes. Moving the spawn in would only defer it: at
+  stock fleets spawn it 21.5 km from Crissy Field at 11 km altitude, 24.2 km of slant range
+  (the emulator's range is the slant range to the ground station), where the `los` class
+  (0 up to 15 km, 1 at 25 km, from Puma's 20 km figure, a GUESS) already loses about 84 %
+  of packets and the 5 s lost-link timer fires within minutes. Moving the spawn in would only defer it: at
   230 m/s the jet crosses the class's 25 km in under two minutes, so any sortie on a
   100 km theatre would RTL at the edge. A jet combat UAS tasked from a ground station tens
   of km away is on a BLOS link; the catalog maps it to WGS GEO (`space_class = "wgs"`,
@@ -288,7 +289,11 @@ group. Dates are 2026.
   GUESS) and the reduced telemetry tier. Stated as a GUESS in the catalog: CCA datalinks
   are not public, and the control path in a fight, an air-to-air tactical link to a crewed
   lead, has no node in the fleet to carry it. Links no longer hinge on where a fleet file
-  happens to put the aircraft.
+  happens to put the aircraft. Scripted link events select by class, so the populations of
+  `sim/link-events/golden-gate.toml` changed with it: the CCA leaves the `class = "los"`
+  events (the 30 % loss study, murmur-t7d, and the LOS jammer at the Gate) and falls under
+  the SATCOM jammer (half loss) instead; link-event runs before and after this change are
+  not comparable on the CCA.
 - **The Blimp stand-in's GCS failsafe is the firmware's: off, and a disarm when on**
   (10-04, murmur-3zj; supersedes the Blimp exception under "Lost-link timers follow the
   link"). ArduPilot Blimp 4.8's `failsafe_gcs_check` (Blimp/events.cpp) raises the

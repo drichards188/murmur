@@ -992,8 +992,10 @@ pub fn link_gap_limit_ms(v: Option<&crate::world::VehicleFacts>, ec: &EngageRule
 /// - ArduRover (boats, UGVs): `FS_GCS_ENABLE` 1 (not 2, which continues in AUTO) and
 ///   `FS_ACTION` 1 (RTL) for return, 2 (Hold) for abort, 6 (Loiter, else Hold) for loiter.
 /// - ArduSub: `FS_GCS_ENABLE` 3 (depth hold) for abort and loiter; it has no return.
-/// - Blimp (4.8's GCS failsafe can only disarm it; the parameter's documented Land is not
-///   implemented), AntennaTracker and a drifter: none.
+/// - Blimp, AntennaTracker and a drifter: none. (Blimp 4.8's GCS failsafe can only disarm
+///   it; the parameter's documented Land is not implemented. The logged refusal still says
+///   "only lost-link action is Land", as rules 6 wrote it: a check detail is compared by
+///   replay, so the wording waits for the next rules version.)
 ///
 /// The timer (`FS_LONG_TIMEOUT` on Plane, `FS_GCS_TIMEOUT` elsewhere) is at most the
 /// approval's link-gap limit (whole seconds, at least [`PRELOAD_TIMER_MIN_S`]), so the
@@ -1070,8 +1072,13 @@ pub fn preload_for(
             );
         }
         (AutopilotKind::Blimp, f) => {
+            // The text is a logged check detail that replay compares byte for byte, so it
+            // stays as rules 6 wrote it although it misreads the firmware: Blimp 4.8's GCS
+            // failsafe can only disarm (Blimp/events.cpp failsafe_gcs_check), and its
+            // documented Land (FS_GCS_ENABLE 5) is not implemented. The verdict is the same
+            // either way (no preload); the next rules version corrects the wording.
             return Err(format!(
-                "Blimp 4.8's GCS failsafe can only disarm it (its documented Land, FS_GCS_ENABLE 5, is not implemented): fallback {} can't be its own failsafe",
+                "Blimp 4.8's only lost-link action is Land (FS_GCS_ENABLE 5): fallback {} can't be its own failsafe",
                 f.as_str()
             ));
         }

@@ -1,0 +1,49 @@
+# Scenario 17 with the small airship: no lost-link action to preload (ArduPilot Blimp 4.8's GCS
+# failsafe can only disarm it), and no effect either; rejected (fallback_preload, platform_armed).
+# Its committed log (crates/murmur-decide/tests/data/audit/v6-airship-nomination-scenario-66.jsonl,
+# written by master's murmur-scenarios) pins the fallback_preload detail as rules 6 wrote it:
+# replay compares every check's detail, so the wording waits for the next rules version.
+title = "Nominate the airship"
+invariant = "fallback_preload"
+attack = "pair the track with a platform whose firmware has no lost-link action"
+expect = "rejected"
+expect_rule = "fallback_preload"
+end_s = 20
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "lta-1"
+platform = "lta"            # the small airship: unarmed, and Blimp 4.8 has no lost-link action
+at = [-122.5050, 37.8150]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "lta-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"

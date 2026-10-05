@@ -222,3 +222,4 @@ calls `Engine::step_engagements` (hold the picture, release, observe, assess).
 | 63-ground-target-stays-2d | keep_out_friendly | the review's probe 8: our quadcopter 400 m MSL over a ground target logged at 0 m | rejected (2D) |
 | 64-stale-radar-altitude-stays-2d | keep_out_tracks | the second review's probe: an aircraft 100 m from the point whose radar altitude is five minutes old while EO/IR keeps its position fresh | rejected (2D) |
 | 65-acceptor-signs-recorded | signed_picture | the operator who accepted a lost vehicle signs; the log hides that they did both | done (ceased), `self_accepted` on the signature; tamper caught |
+| 66-airship-cannot-preload | fallback_preload | 17 with the small airship, whose firmware has no lost-link action (Blimp 4.8 can only disarm) and which carries no effect | rejected; its committed log pins the rules 6 wording of the refusal |

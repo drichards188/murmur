@@ -198,7 +198,7 @@ pub struct Arrival {
 /// The lost-link failsafe hypothesis: from `fires_t` the vehicle is probably on `motion`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct FailsafeBranch {
-    /// rtl | surface | land | disarm
+    /// rtl | surface | disarm
     pub action: &'static str,
     /// the timer, s (`lost_link_s` of `profile`)
     pub after_s: f64,

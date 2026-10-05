@@ -213,13 +213,16 @@ def sitl_command(v, spec, args, workdir):
     return cmd
 
 
-def write_manifest(vehicles):
+def write_manifest(vehicles, replace):
     """sim/run/fleet.json, replaced in one step (the bridge re-reads it whenever its mtime
-    changes and must never see half of it) and left alone when it already says the same
-    (so the launch after `--manifest-only` doesn't make the bridge re-read it)."""
+    changes and must never see half of it). `replace`: write it even when it already says
+    the same, so its mtime says it is this run's (`--manifest-only`, which up.sh and the
+    e2e harnesses run before the bridge; the bridge logs the manifest's age and flags one
+    older than a minute as a previous run's); the full launch after it leaves an identical
+    file alone, so the bridge doesn't re-read it."""
     manifest = RUN / "fleet.json"
     text = json.dumps({"vehicles": vehicles}, indent=1)
-    if manifest.exists() and manifest.read_text() == text:
+    if not replace and manifest.exists() and manifest.read_text() == text:
         return
     tmp = manifest.with_name("fleet.json.tmp")
     tmp.write_text(text)
@@ -284,7 +287,7 @@ def main():
         return
 
     RUN.mkdir(exist_ok=True)
-    write_manifest(vehicles)
+    write_manifest(vehicles, replace=args.manifest_only)
     if args.manifest_only:
         return
 
