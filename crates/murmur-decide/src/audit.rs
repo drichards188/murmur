@@ -404,12 +404,18 @@ pub enum EventBody {
     },
 
     /// Per-vehicle task progress from the task layer (sent, acked, active, done, failed).
+    /// Rules 7: a vehicle task's `starting` is logged ahead of the start it records (`ahead`):
+    /// written before the mission mode, the hold or rtl mode, or new items to a vehicle
+    /// already flying a mission go out, so a bridge that stops right after still finds that
+    /// the order may have started.
     #[serde(rename = "op.state")]
     OpState {
         intent: IntentId,
         uid: Uid,
         state: String,
         detail: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        ahead: bool,
     },
 
     /// Mode change, failsafe, STATUSTEXT and the like.

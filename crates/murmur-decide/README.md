@@ -180,6 +180,46 @@ link to fail, nor sent twice, nor sent stale.
 - **Reboots**: `Engine::record_reboot` logs `vehicle.rebooted` (the time since boot before
   and after, the new boot instant and, when the time since boot did not go back, the one
   before: a jump of more than 30 s); the bridge ends a running op on a rebooted vehicle.
+- **Rules 7: a start is logged ahead of sending it** (murmur-dma). The bridge logged an op's
+  `starting` at its next tick, so a bridge that crashed within a second of a start left no
+  record that it may have gone out, and the next run delivered the order as never started
+  (a review probe restarted a mission over a failsafe RTL). Now the op logs it itself before
+  the mission mode, the hold or rtl mode, or new items to a vehicle already flying a mission
+  go out (`Engine::record_op_state_ahead`: `op.state` starting with `ahead: true`), under the
+  decision lock, and sends nothing if the write fails; the tick no longer logs a `starting`.
+  A carry-over then always finds it (`maybe_started`): only confirmed, never started again on
+  its own. The engine refuses, and replay flags, a vehicle task's `starting` not logged ahead,
+  an `ahead` on anything else, and, on an order's first delivery (`Intent::fresh_delivery`),
+  a vehicle taking it (`acked`, `active`, `done`) before its start was logged ahead: every way
+  to those goes through the start, so a forged log that drops the write-ahead is caught. A
+  redelivery (the order sent before) may be followed without a new start.
+- **Rules 7: a mission waits for its platform's own lost-link values** (murmur-85l). After an
+  engagement ended, its platform still carried the engagement's lost-link action (its
+  fallback on a timer of a few seconds) until the restore confirmed, which backed off while
+  the link was down, while the queue sent waiting orders on the first tick the link was back:
+  a second short gap then braked, landed or returned the vehicle instead of its own failsafe.
+  The engine keeps the platforms' own values owed back as the log has them (the ledger replay
+  keeps, `replay::Restores`), and `queue::reach` holds an order other than a hold or rtl for
+  a vehicle still owed values an engagement of this run preloaded (`restore_owed`, a
+  decision's fact logged with the inputs and recomputed by replay from its ledger; values only
+  carried over from an earlier run's log hold nothing, since the bridge puts those back only
+  onto the vehicle they were preloaded on, which the log can't tell). Its reach says why
+  (`heard, but its own lost-link failsafe (...) is not confirmed back since engagement ...`),
+  it goes the tick after the restore confirms, and its wait is bounded as any queued order's:
+  a human's approval back to the inbox after `human_expire_s` (the reason now says what held
+  it), else expired at its kind's wait. A hold or rtl, the safety commands, is never held: the
+  restore runs beside it. A mission for a platform whose engagement is still under way waits
+  the same way (queued, it supersedes the engagement, below; the restore runs; then it goes).
+  The bridge no longer tries a restore into a dead link and tries it at once when the vehicle
+  is heard again, whatever the backoff of attempts the outage cost; the inbox's restore alert
+  lists the missions waiting for it.
+- **Rules 7: a queued order supersedes an engagement** (murmur-636). An order queued for an
+  engagement's platform stops the engagement in the step that queues it, as its dispatch
+  would: cause `superseded` by that order, no fallback commanded (`Engine::supersede_engagement`
+  takes the intent queued last as it takes the one dispatched last; replay checks the same).
+  Before, the queue abandoned the engagement's unstarted intercept, the engagement read that
+  as its intercept failing, stopped as `system` and commanded its fallback, which flew when the
+  link returned while the operator's newer order still waited.
 
 **Replay.** `intent.queued` is recomputed (reach from its inputs, at least one vehicle
 unreachable, the deadline from the policy, approved before, a kind the policy queues);
@@ -307,7 +347,9 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
   (`engage.preload` restore by the engagement that preloaded last, or `platform.restore`
   when the engine refuses that or none of this run owns it) is retried with backoff (15 s,
   doubling to 300 s), every attempt logged, with an inbox alert (`restore_pending`) while it
-  stays unconfirmed for 30 s. Values still owed when the bridge stops are carried over:
+  stays unconfirmed for 30 s. From rules 7 no attempt goes into a dead link, the first comes
+  the moment the vehicle is heard again, and a mission for it waits in the queue until one
+  confirms (see the queue's rules 7 entries). Values still owed when the bridge stops are carried over:
   at its next start it derives them from its previous log (`replay::owed_restores`; the
   file `logs/audit/.last-run-<http port>` names that log; a reused run id carries from the
   part of the same file before this run's `run.started`), logs them as `platform.restore`
@@ -591,8 +633,8 @@ roster and the loiter radius from rules 4 (older logs don't carry them):
   its task first (`"return commanded (rtl): ..."`, `Fallback::task`).
 - `engage.stopped`: a failed picture is stopped for the picture, never under another cause;
   `superseded` names another intent whose vehicles include the platform, the one dispatched
-  last and still under way (the bridge supersedes in the same step as that dispatch), with
-  that intent's own source; a `system` stop that quotes a vehicle event (`the platform's
+  last and still under way (the bridge supersedes in the same step as that dispatch), or
+  from rules 7 the one queued last and still queued, with that intent's own source; a `system` stop that quotes a vehicle event (`the platform's
   failsafe took over (...)`, `the platform left its intercept (mode ...)`) or the intercept's
   report (`the platform's intercept <state>: <detail>`) follows that `vehicle.event` on the
   engagement's own platform, or that `op.state` of its intercept, since its last picture.
@@ -629,6 +671,12 @@ roster and the loiter radius from rules 4 (older logs don't carry them):
 - Track altitudes (rules 6): recomputed from the logged facts, so a decision that counted a
   track's altitude rests on its logged time (`alt_t`) and its sources' last hits
   (`source_t`) within `track_alt_max_age_s`.
+- Starts logged ahead (rules 7): a vehicle task's `op.state` starting carries `ahead`, nothing
+  else does, and on an order's first delivery a vehicle reports taking it only after its
+  start was logged ahead.
+- Lost-link values owed back (rules 7): every decision's `restore_owed` is the ledger's (the
+  values an engagement of the log preloaded and no confirmed restore put back), so a forged log
+  can't strip it to justify a mission's dispatch, and the reach recomputed from it holds.
 
 The engine refuses the op states, supersedes and sessions these checks reject
 (`EngineError::NotItsOrder`, `EngineError::NotOnRoster`, nothing logged), so an honest engine
@@ -664,7 +712,7 @@ checks that the log fits its claim: `run.started` is the first event and the onl
 can't start again, with other rules, inside a log), and nothing appears that only later
 builds write (`RULES_MARKERS` in `src/replay.rs`: a `checked_t`, a GPS fact, a
 `platform_free` check, a build, a circle, a fix from HIGH_LATENCY2, a roster, an order's
-loiter radius; `rules_version` and
+loiter radius, the rules 6 and 7 facts listed below; `rules_version` and
 `policy_schema` themselves come with rules 2). A log of rules 1 carries no build and was
 never anchored: accepting one says the verifier trusts where it came from. A log that
 carries nothing of a later version and claims an older one replays under the older rules
@@ -689,7 +737,10 @@ or check only the new builds write, add a line below, and commit a log of the ne
 to `tests/data/audit/` (a live one with its anchors in `tests/data/anchors/`) with an entry
 in `tests/versions.rs`, which replays a committed log of every version (each with its
 version accepted explicitly), checks the live log against its anchors, and checks the
-downgrade cases.
+downgrade cases. Gate on a named constant, never a literal (rules 7 is
+`QUEUE_FOLLOWUPS_SINCE`, and `RULES_VERSION` is defined from it): when two branches each
+take the next number, the one that merges second renumbers in one line (its fixtures, whose
+`run.started` names the number, are written again by the merged build).
 
 Rules versions:
 
@@ -774,6 +825,27 @@ Rules versions:
   preload set, read again seven times before the release (the last 3 s before it), the
   effect released, the USV's own values restored; an acceptance by an operator without
   engagement authority refused with a 403, nothing logged).
+- **7** (provisional number: `QUEUE_FOLLOWUPS_SINCE`), the queue's follow-ups to rules 5 and
+  6 (murmur-dma, murmur-85l, murmur-636; see "The queue for unreachable vehicles"): a vehicle
+  task's start logged ahead of sending it (`op.state` starting with `ahead`; the engine and
+  replay refuse a start logged afterwards, and, on an order's first delivery, a vehicle taking
+  it before its start was logged), so a carry-over after a crash never starts it again on its
+  own; an order other than a hold or rtl held in the queue for a vehicle still owed its own
+  lost-link values by an engagement of the run (`restore_owed`, a decision's fact the engine
+  fills from its ledger and replay recomputes from the log's; the reach says why, and a
+  human's approval that goes back to the inbox from the queue says what held it); an order
+  queued for an engagement's platform supersedes the engagement in the step that queues it,
+  as a dispatch does (cause `superseded`, no fallback; the intent queued last). Gated in
+  `queue::reach`, `Engine::record_op_state_ahead` and `op_state_mismatch`,
+  `Engine::supersede_engagement` and `supersede_mismatch`, the dequeue's waiting reach and
+  `expire_queued`'s reason; the bridge's write-ahead, its restores (none into a dead link, one
+  at once when the vehicle is heard again) and its supersede on queueing are gated on the same
+  constant. Markers (a log claiming rules 6 or older can't carry them): `restore_owed` in a
+  decision's inputs, `ahead` on an op state; and replay refuses an engagement superseded by a
+  queued order under older rules. Fixtures: `tests/data/audit/v7-engagement-scenario-01.jsonl`,
+  `v7-queued-order-supersedes-scenario-66.jsonl`,
+  `v7-mission-waits-for-restore-scenario-67.jsonl`, and a live run with its anchors
+  (`v7-queue-followups-live.jsonl`, `tests/data/anchors/v7-queue-followups-live.anchors`).
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that

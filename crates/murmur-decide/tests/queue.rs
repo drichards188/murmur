@@ -700,6 +700,7 @@ fn a_started_order_resumes_dispatched_and_is_never_sent_again() {
     let id = a.submit(orbit_sky(), &w);
     a.engine.dispatch_or_queue(id, &w).unwrap();
     a.engine.record_op_state(id, &uid("sky-1"), "sent", "uploading").unwrap();
+    a.engine.record_op_state_ahead(id, &uid("sky-1"), "starting mission: mission mode commanded").unwrap();
     a.engine.record_op_state(id, &uid("sky-1"), "acked", "accepted").unwrap();
     let ra = replay_str(&a.log.text()).unwrap();
     let open = ra.open.iter().find(|o| o.spec.id == id).unwrap();
@@ -864,6 +865,7 @@ fn a_dispatched_order_whose_link_was_lost_before_the_start_goes_back_to_the_queu
     let w = world_now(&fx);
     let id = fx.submit(orbit_sky(), &w);
     fx.engine.dispatch_or_queue(id, &w).unwrap();
+    fx.engine.record_op_state_ahead(id, &uid("sky-1"), "starting mission: mission mode commanded").unwrap();
     fx.engine.record_op_state(id, &uid("sky-1"), "acked", "accepted").unwrap();
     fx.engine
         .record_op_state(id, &uid("sky-1"), "requeued", "link lost")
@@ -1142,6 +1144,7 @@ fn a_vehicle_that_started_an_order_stays_started_across_a_second_restart() {
     let w = world_now(&a);
     let id = a.submit(orbit_sky(), &w);
     a.engine.dispatch_or_queue(id, &w).unwrap();
+    a.engine.record_op_state_ahead(id, &uid("sky-1"), "starting mission: mission mode commanded").unwrap();
     a.engine.record_op_state(id, &uid("sky-1"), "acked", "accepted").unwrap();
     let ra = replay_str(&a.log.text()).unwrap();
     let open = ra.open.iter().find(|o| o.spec.id == id).unwrap().clone();
@@ -1227,7 +1230,7 @@ fn an_order_that_may_have_started_is_only_confirmed_and_goes_to_a_human_when_not
     fx.engine.dispatch_or_queue(id, &w).unwrap();
     let sky = uid("sky-1");
     fx.engine.record_op_state(id, &sky, "sent", "uploading").unwrap();
-    fx.engine.record_op_state(id, &sky, "starting", "starting mission: mission mode commanded").unwrap();
+    fx.engine.record_op_state_ahead(id, &sky, "starting mission: mission mode commanded").unwrap();
     fx.engine
         .record_op_state(id, &sky, "unconfirmed", "link lost waiting for the MAV_CMD_DO_SET_MODE ACK, after its start went out")
         .unwrap();
@@ -1288,6 +1291,7 @@ fn an_agents_order_cant_replace_a_humans_order_no_vehicle_started_yet() {
     let a = agent(&mut fx);
     assert_eq!(fx.state(a), State::PendingApproval);
     assert_eq!(fx.engine.intent(a).unwrap().policy().unwrap().rule, "(human order waiting)");
+    fx.engine.record_op_state_ahead(id, &uid("blade-1"), "starting mission: mission mode commanded").unwrap();
     fx.engine.record_op_state(id, &uid("blade-1"), "acked", "accepted").unwrap();
     let b = agent(&mut fx);
     assert_ne!(fx.engine.intent(b).unwrap().policy().unwrap().rule, "(human order waiting)");

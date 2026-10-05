@@ -639,6 +639,68 @@ group. Dates are 2026.
   anchored as it is written, so a crashed log is covered to its last decision. A reboot is
   judged at the vehicle clock's own rate (a slow simulator is not a reboot). An agent may
   not replace a human's order that no vehicle has started yet.
+- **A start is logged before it goes out** (10-04, murmur-dma; rules 7, provisional
+  number). The queue's `starting` was logged at the next decision tick, so a bridge that
+  crashed within about a second of a start lost the record that it may have gone out, and a
+  review probe restarted a mission over a failsafe RTL after such a crash. The op now logs its
+  start itself, through the decision lock, before the mission mode, the hold or rtl mode, or
+  new items to a vehicle flying a mission go out, and sends nothing if that write fails; a
+  carry-over then always treats the order as may-have-started (confirmed only, never started
+  again on its own). The other fix the issue offered, treating "held, not running, in a
+  failsafe mode" as may-have-started on carry-over, was not taken: it guesses from the
+  vehicle's state what the log can record exactly. Replay accepts the write-ahead and binds
+  it: a vehicle task's start is logged ahead and nothing else is, and on an order's first
+  delivery a vehicle reports taking it only after its start was logged, so a forged log that
+  drops the write-ahead is caught. Residual: a carry-over from a rules 5 or 6 log keeps the
+  old window.
+- **A mission waits for its platform's own lost-link values; a hold or rtl never does**
+  (10-04, murmur-85l; rules 7). After an engagement ended its platform carried the
+  engagement's lost-link action (its fallback on a few seconds' timer) until the restore
+  confirmed, and the restore backed off through an outage (a probe: six failed attempts, back
+  220 s after the link was) while the queue sent waiting orders on the first tick the link
+  was back; a second short gap then braked, landed or returned the platform instead of its own
+  30 to 120 s failsafe. Decided: the restore first, then the order. The bridge tries no restore
+  into a dead link and tries one the moment the vehicle is heard again, whatever the backoff
+  said; the queue holds an order other than a hold or rtl for a vehicle still owed values an
+  engagement of the run preloaded, and sends it the tick after the restore confirms. Missions
+  only: a hold or rtl is the safety command (a short queue, exempt from position freshness),
+  holding it for a parameter exchange that may not finish could drop it, and the lost-link
+  action it might meet in the seconds the restore takes is itself a safety action (brake,
+  hold, loiter, return). The hold is bounded as any queued order's wait: a human's approval
+  goes back to the inbox after 120 s saying what held it, an automatic order expires at its
+  kind's wait, and the inbox's restore alert names the platform, its values, the attempts and
+  the missions waiting. Nothing sends a mission over the engagement's lost-link action; an
+  operator who wants the platform elsewhere meanwhile gives a hold or rtl. An operator's own
+  mission for a platform whose engagement is still under way waits the same way (queued, it
+  supersedes the engagement, below; the restore runs; then it goes, seconds later on a working
+  link); a hold or rtl still runs at once. The fact
+  (`restore_owed`) comes from the log's own ledger and replay recomputes it, so a forged log
+  can't strip it. Values carried over from an earlier run's log hold no order (stated
+  limitation): the bridge writes those back only onto the vehicle they were preloaded on,
+  which the log alone can't tell, and another vehicle under the uid would otherwise be held
+  for the whole run; they still go back at once when heard, alerted until they do.
+- **An order queued for an engagement's platform supersedes it, as a dispatched one does**
+  (10-04, murmur-636; rules 7). A newer order queued for the platform abandoned the
+  engagement's unstarted intercept, the engagement read that as an intercept failure, stopped
+  with cause `system` and commanded its fallback, which flew when the link returned while the
+  operator's order still waited; dispatched, the same order stopped it as `superseded` with
+  no fallback. Made consistent: the newest order stands, the stop says `superseded` (Phase G
+  counts stop causes), no fallback is commanded, in the step that queues the order (replay
+  takes the intent queued last as it takes the one dispatched last). No safety reason
+  against it was found: a stop never releases anything and the chain's guarantees are
+  untouched (two operators with engagement authority on one frozen plan, never an agent, a
+  platform that leaves its intercept stopped before any release); only an operator's own
+  order, or one a human approved acknowledging the engagement it stops, can be queued for its
+  platform (an agent's goes to a human); and a platform cut off meanwhile still takes its
+  preloaded fallback as its own lost-link action. What changes is the label and the bridge no
+  longer commanding a fallback over the operator's order. The platform keeps its last order
+  (or its failsafe's) until the queued one reaches it; if that one expires instead, nothing is
+  commanded.
+- **A rules change is gated on a named constant** (10-04). Rules 7 is gated on
+  `QUEUE_FOLLOWUPS_SINCE` (and `RULES_VERSION` is defined from it), never on a literal 7,
+  because another branch (operator authentication) may take the next number first: the branch
+  that merges second renumbers in one line and has its fixtures written again by the merged
+  build (their `run.started` names the number).
 - **The operator roster is logged and checked** (10-04, second review of the bindings; rules
   4). A log could credit a session, with engagement authority, to an operator the bridge was
   never configured with (`MURMUR_OPERATORS` and `MURMUR_ENGAGE_OPERATORS` were not logged).

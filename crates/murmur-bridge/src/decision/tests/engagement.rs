@@ -38,8 +38,14 @@ fn engage_rig_on(on: Option<(Arc<World>, Arc<Tracks>)>) -> Erig {
 
 /// The engagement rig whose audit log is said to be `audit_path` (the sink is in memory).
 fn engage_rig_with(on: Option<(Arc<World>, Arc<Tracks>)>, audit_path: PathBuf) -> Erig {
+    engage_rig_policy(on, audit_path, |_| {})
+}
+
+/// [`engage_rig_with`], its policy changed by `tweak` first.
+fn engage_rig_policy(on: Option<(Arc<World>, Arc<Tracks>)>, audit_path: PathBuf, tweak: impl FnOnce(&mut Policy)) -> Erig {
     let root = root();
     let mut policy = Policy::load(&root.join("sim/policy.toml")).expect("policy");
+    tweak(&mut policy);
     let mut e = policy.rules.engage_rules();
     e.dispatch_delay_s = 0.0;
     policy.rules.engage = Some(e);
@@ -1034,6 +1040,184 @@ async fn a_mode_change_received_before_the_release_picture_is_handled_before_the
         e2.r.d.step_engagements(&mut core);
     }
     assert_eq!(e2.r.state(id2), State::Effected, "{}", e2.r.reason(id2));
+    let rep = replay::replay_str(&e.r.log.text()).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+}
+
+// ---- rules 7 ----------------------------------------------------------------------------
+
+impl Erig {
+    /// [`Erig::approved`] on a watched fake (its link can be cut): nominated, signed,
+    /// dispatched, its lost-link preload confirmed and its intercept sent.
+    async fn approved_watched(&self, fallback: &str) -> (IntentId, Arc<VehicleCell>, crate::tasks::tests::Watch) {
+        let (cell, w) = self.r.watched(1, Firmware::Copter, "fpv", TARGET, quick());
+        sleep(Duration::from_millis(500)).await;
+        self.picture().await;
+        let id = self.r.d.submit(&op("op-1"), self.nomination(fallback)).await.expect("nominated").id;
+        self.sign("op-2", id).await.expect("signs");
+        let o = self.sign("op-3", id).await.expect("signs");
+        assert_eq!(o.state, State::Dispatched, "{}", o.intent);
+        self.preloaded(id).await;
+        (id, cell, w)
+    }
+
+    /// One second of the loop with the engine clock on the wall clock the vehicles' facts are
+    /// stamped with (long runs: advancing it a second per tick would age every fact).
+    async fn tick_on_wall(&self) {
+        self.r.clock.set(snapshot::ms(clock::wall()));
+        self.sense(true);
+        self.r.d.tick();
+        sleep(Duration::from_secs(1)).await;
+    }
+}
+
+/// The `engage.stopped` event of intent `id`.
+fn stopped(log: &MemorySink, id: IntentId) -> Value {
+    let line = log
+        .lines()
+        .into_iter()
+        .find(|l| l.contains("\"type\":\"engage.stopped\"") && l.contains(&format!("\"intent\":{}", id.0)))
+        .unwrap_or_else(|| panic!("{id} was not stopped"));
+    serde_json::from_str(&line).expect("json")
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_order_queued_for_an_engaging_platform_supersedes_it_without_its_fallback() {
+    // murmur-636 (rules 7): the platform's link is cut before its intercept started; an
+    // operator orders it to hold, and the hold can only be queued. It stands like a
+    // dispatched one: the engagement is stopped at once, superseded by the hold, and no
+    // fallback is commanded. (Before, the queue abandoned the intercept, the engagement read
+    // that as its intercept failing, stopped as a system failure and commanded its fallback,
+    // which flew when the link came back while the operator's hold still waited.)
+    let e = engage_rig();
+    let (id, cell, w) = e.approved_watched("return").await;
+    super::queue::go_silent(&cell, &w, 5.0);
+    let hold = e.r.d.submit(&op("op-1"), simple("hold", 1)).await.expect("hold");
+    assert_eq!(hold.state, State::Queued, "{}", hold.intent);
+    for _ in 0..3 {
+        e.tick_on_wall().await;
+    }
+    assert_eq!(e.r.state(id), State::Aborted, "{}", e.r.reason(id));
+    let stop = stopped(&e.r.log, id);
+    assert_eq!(stop["cause"]["kind"], "superseded", "{stop}");
+    assert_eq!(stop["cause"]["by"], hold.id.0, "{stop}");
+    assert!(stop["fallback"].is_null(), "{stop}");
+    let fallbacks = e
+        .r
+        .log
+        .lines()
+        .into_iter()
+        .filter(|l| l.contains("\"type\":\"op.state\"") && l.contains("\"state\":\"fallback"))
+        .count();
+    assert_eq!(fallbacks, 0, "no fallback commanded");
+    // the link returns: the hold goes out (a safety command waits for no restore), and the
+    // platform's own lost-link values go back
+    w.set_cut(false);
+    for _ in 0..10 {
+        e.tick_on_wall().await;
+    }
+    let went = e
+        .r
+        .d
+        .lock()
+        .engine
+        .intent(hold.id)
+        .is_some_and(|i| i.history().iter().any(|h| h.state == State::Dispatched));
+    assert!(went, "the hold went out: {}", e.r.reason(hold.id));
+    let ops = e.r.world.tasks.current_ops();
+    let op1 = ops.iter().find(|o| o.uid == 1).expect("an op on the platform");
+    assert_eq!((op1.intent_id, op1.task), (hold.id.0, crate::tasks::TaskKind::Hold), "the operator's hold, not a fallback");
+    assert!(preloads(&e.r.log).iter().any(|p| p.0 == "restore" && p.2), "{:?}", preloads(&e.r.log));
+    let rep = replay::replay_str(&e.r.log.text()).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_mission_for_an_engaging_platform_stops_it_and_goes_once_its_own_values_are_back() {
+    // rules 7: an operator's own orbit for the platform of an engagement under way (its link
+    // fine): it waits in the queue for the platform's own lost-link values, so it supersedes
+    // the engagement as it is queued (no fallback), the restore runs, and the orbit goes
+    let e = engage_rig_policy(None, PathBuf::from("memory"), |p| p.rules.task_duration_s = 60);
+    let (id, _cell, _w) = e.approved_watched("return").await;
+    let mut req = orbit(1);
+    req.params.center = Some([TARGET.1 + 0.004, TARGET.0]);
+    let o = e.r.d.submit(&op("op-1"), req).await.expect("orbit");
+    assert_eq!(o.state, State::Queued, "{}", o.intent);
+    assert!(o.intent["history"].to_string().contains("its own lost-link failsafe"), "{}", o.intent);
+    assert_eq!(e.r.state(id), State::Aborted, "{}", e.r.reason(id));
+    assert_eq!(stopped(&e.r.log, id)["cause"]["kind"], "superseded");
+    for _ in 0..20 {
+        e.tick_on_wall().await;
+        if e.r.state(o.id) == State::Dispatched {
+            break;
+        }
+    }
+    assert_eq!(e.r.state(o.id), State::Dispatched, "{}", e.r.reason(o.id));
+    let lines = e.r.log.lines();
+    let restored = lines
+        .iter()
+        .position(|l| l.contains("\"phase\":\"restore\"") && l.contains("\"confirmed\":true"))
+        .expect("its own values back");
+    let sent = lines
+        .iter()
+        .position(|l| l.contains("\"type\":\"intent.dispatched\"") && l.contains(&format!("\"intent\":{}", o.id.0)))
+        .expect("the orbit dispatched");
+    assert!(restored < sent, "its own lost-link values back before the orbit went out");
+    let rep = replay::replay_str(&e.r.log.text()).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+}
+
+#[tokio::test(start_paused = true)]
+async fn after_an_outage_the_platforms_own_values_go_back_before_a_queued_mission() {
+    // murmur-85l (rules 7): an operator aborts an engagement while its platform is out of
+    // contact; its own lost-link values are owed back and can't be put back. During the
+    // outage the operator orders the platform on an orbit (queued). When the link returns
+    // the restore goes at once (not after the backoff its failed attempts built up), and the
+    // orbit waits for it: the platform never flies the operator's mission with the ended
+    // engagement's lost-link action. (Before, the restore waited out minutes of backoff and
+    // the orbit went out on the first tick the link was back.)
+    // a short orbit (the fpv-class platform's 9 min of endurance would fail the reserves on
+    // the default 15 min of time on task)
+    let e = engage_rig_policy(None, PathBuf::from("memory"), |p| p.rules.task_duration_s = 60);
+    let (id, cell, w) = e.approved_watched("abort").await;
+    super::queue::go_silent(&cell, &w, 5.0);
+    e.r.d.abort(&op("op-1"), id.0, Some("hold fire".into())).expect("aborted");
+    // a few minutes out of contact: the restore can't go
+    for _ in 0..150 {
+        e.tick_on_wall().await;
+    }
+    let mut req = orbit(1);
+    req.params.center = Some([TARGET.1 + 0.004, TARGET.0]);
+    let o = e.r.d.submit(&op("op-1"), req).await.expect("orbit");
+    assert_eq!(o.state, State::Queued, "{}", o.intent);
+    for _ in 0..50 {
+        e.tick_on_wall().await;
+    }
+    assert!(preloads(&e.r.log).iter().all(|p| p.0 != "restore" || !p.2), "not back during the outage");
+    // the link is back
+    w.set_cut(false);
+    let back = e.r.log.lines().len();
+    let mut ticks = 0;
+    for _ in 0..60 {
+        e.tick_on_wall().await;
+        ticks += 1;
+        if e.r.state(o.id) == State::Dispatched {
+            break;
+        }
+    }
+    assert_eq!(e.r.state(o.id), State::Dispatched, "{}", e.r.reason(o.id));
+    let lines = e.r.log.lines();
+    let restored = lines
+        .iter()
+        .position(|l| l.contains("\"type\":\"engage.preload\"") && l.contains("\"phase\":\"restore\"") && l.contains("\"confirmed\":true"))
+        .expect("its own values back");
+    let sent = lines
+        .iter()
+        .position(|l| l.contains("\"type\":\"intent.dispatched\"") && l.contains(&format!("\"intent\":{}", o.id.0)))
+        .expect("the orbit dispatched");
+    assert!(restored >= back, "the restore went once the link was back");
+    assert!(restored < sent, "its own lost-link values back before the orbit went out");
+    assert!(ticks <= 10, "the restore went at once, not after the backoff: {ticks} s");
     let rep = replay::replay_str(&e.r.log.text()).expect("parses");
     assert!(rep.ok(), "{:?}", rep.mismatches);
 }

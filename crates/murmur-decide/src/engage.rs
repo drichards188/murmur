@@ -544,6 +544,18 @@ pub enum StopCause {
     },
 }
 
+impl StopCause {
+    /// Its kind: `operator`, `picture`, `system`, `superseded` (what the evaluation counts).
+    pub fn kind(&self) -> &'static str {
+        match self {
+            StopCause::Operator { .. } => "operator",
+            StopCause::Picture => "picture",
+            StopCause::System => "system",
+            StopCause::Superseded { .. } => "superseded",
+        }
+    }
+}
+
 /// What a signer is shown of the target: its identity, affiliation and who declared it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TrackIdentity {

@@ -150,7 +150,7 @@ fn the_rules_6_live_log_preloads_restores_and_reads_altitude() {
     let a = anchor::verify(&log, &anchors);
     assert!(a.ok(), "{:?}", a.problems);
     assert!(a.shutdown, "a clean stop anchored the head");
-    let r = replay_str(&log).unwrap();
+    let r = with(&log, RulesAccepted::Exactly(6));
     assert!(r.ok(), "{:?}", r.mismatches);
     assert_eq!((r.engagements, r.effects, r.assessments), (3, 1, 1));
     assert_eq!(r.build.as_ref().map(|b| b.dirty), Some(Some(false)));

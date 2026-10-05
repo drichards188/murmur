@@ -94,9 +94,9 @@ use crate::engage::{
     PictureToken, StopCause, TrackIdentity,
 };
 use crate::engine::{
-    PRELOAD_CHANGED, PRELOAD_FAILED, dispatched_event, engaged_vehicles, is_self_approval,
-    op_state_mismatch, op_state_owner, order_for, preload_mismatch, preload_verdict,
-    supersede_mismatch, waiting_vehicles,
+    PRELOAD_CHANGED, PRELOAD_FAILED, StartAhead, dispatched_event, engaged_vehicles,
+    is_self_approval, op_state_mismatch, op_state_owner, order_for, preload_mismatch,
+    preload_verdict, supersede_mismatch, waiting_vehicles,
 };
 use crate::ids::{OperatorId, SessionId, Uid};
 use crate::hash::{GENESIS, sha256_hex};
@@ -206,8 +206,8 @@ impl ReplayReport {
 /// hold the preload from then on), or carried over from an earlier run (`platform.restore`),
 /// until a restore confirms them. Who owes them (the engagements that preloaded since) and
 /// the vehicle they were preloaded on.
-#[derive(Default)]
-struct Restores {
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Restores {
     owed: BTreeMap<Uid, Owed>,
 }
 
@@ -219,10 +219,44 @@ struct Owed {
 }
 
 impl Restores {
+    /// Every platform's own values owed back, with the engagements that preloaded them.
+    pub(crate) fn owed(&self) -> Vec<(Uid, BTreeMap<String, f64>, Vec<IntentId>)> {
+        self.owed
+            .iter()
+            .map(|(u, o)| (u.clone(), o.values.clone(), o.by.clone()))
+            .collect()
+    }
+
+    /// Rules 7: what `spec`'s vehicles are owed back from engagements of this log (values
+    /// only carried over from an earlier log hold no order: see [`crate::queue::RestoreOwed`]).
+    /// Empty before rules 7 and for anything but a vehicle task the queue can hold.
+    pub(crate) fn owed_for(
+        &self,
+        spec: &IntentSpec,
+        rules: &crate::rules::RulesConfig,
+    ) -> BTreeMap<Uid, crate::queue::RestoreOwed> {
+        if rules.rules_version < crate::rules::QUEUE_FOLLOWUPS_SINCE || !queue::queueable(spec.kind()) {
+            return BTreeMap::new();
+        }
+        spec.uids
+            .iter()
+            .filter_map(|u| {
+                let o = self.owed.get(u).filter(|o| !o.by.is_empty())?;
+                Some((
+                    u.clone(),
+                    crate::queue::RestoreOwed {
+                        values: o.values.clone(),
+                        by: o.by.clone(),
+                    },
+                ))
+            })
+            .collect()
+    }
+
     /// A preload set on `uid` read `before` as the platform's own values: while earlier
     /// values are owed, those it shares with them must be them (a value read off a preloaded
     /// platform is not its own); the others are owed too from now on. Err: the values owed.
-    fn owe(
+    pub(crate) fn owe(
         &mut self,
         uid: &Uid,
         intent: IntentId,
@@ -248,7 +282,7 @@ impl Restores {
     }
 
     /// A confirmed restore on `uid` read `readback`: paid when it shows every value owed.
-    fn paid(&mut self, uid: &Uid, readback: &BTreeMap<String, f64>) {
+    pub(crate) fn paid(&mut self, uid: &Uid, readback: &BTreeMap<String, f64>) {
         if self
             .owed
             .get(uid)
@@ -260,7 +294,12 @@ impl Restores {
 
     /// The ledger after one logged event, as logged (no recomputation: replay checks it).
     fn step(&mut self, e: &Event) {
-        match &e.body {
+        self.step_body(&e.body);
+    }
+
+    /// [`Self::step`] on an event's body (the engine keeps the same ledger as it logs).
+    pub(crate) fn step_body(&mut self, body: &EventBody) {
+        match body {
             EventBody::EngagePreload {
                 intent,
                 uid,
@@ -540,6 +579,10 @@ struct Tracked {
     /// its current delivery only confirms.
     maybe_started: BTreeSet<Uid>,
     confirming: BTreeSet<Uid>,
+    /// Rules 7: its current delivery is its first, and the vehicles whose start in it was
+    /// logged ahead.
+    fresh: bool,
+    started_ahead: BTreeSet<Uid>,
 }
 
 impl Tracked {
@@ -602,6 +645,8 @@ impl Tracked {
             platforms: BTreeMap::new(),
             maybe_started: BTreeSet::new(),
             confirming: BTreeSet::new(),
+            fresh: false,
+            started_ahead: BTreeSet::new(),
             preload: None,
             preload_set: None,
             restore_confirmed: false,
@@ -772,6 +817,8 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (6, "\"max_mps\":", "a platform's top speed"),
     (6, "\"alt_t\":", "a track altitude's time"),
     (6, "\"source_t\":", "a track source's last hit"),
+    (rules::QUEUE_FOLLOWUPS_SINCE, "\"restore_owed\":", "a vehicle's lost-link values owed back (a decision's fact)"),
+    (rules::QUEUE_FOLLOWUPS_SINCE, "\"ahead\":", "a vehicle start logged ahead of sending it"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.
@@ -955,6 +1002,8 @@ fn replay_inner<S: AsRef<str>>(
     let mut roster: Option<Roster> = None;
     // the intent dispatched last, and per vehicle the one dispatched to it last
     let mut last_dispatch: Option<IntentId> = None;
+    // rules 7: the intent queued last (it may supersede an engagement on its vehicles)
+    let mut last_queued: Option<IntentId> = None;
     let mut newest_on: BTreeMap<Uid, IntentId> = BTreeMap::new();
     // intents carried over from a previous run, checked against it after the loop
     let mut resumed: Vec<ResumedEvent> = Vec::new();
@@ -1118,6 +1167,7 @@ fn replay_inner<S: AsRef<str>>(
                 check_engaged(&mut r, e, *intent, &inputs.engaged, &intents);
                 check_accepted(&mut r, e, *intent, &inputs.unknown_accepted, &intents);
                 check_waiting(&mut r, e, *intent, &inputs.waiting, &intents);
+                check_restore_owed(&mut r, e, *intent, &inputs.restore_owed, &intents, &restores, policy.as_ref());
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(
                         &mut r,
@@ -1215,6 +1265,7 @@ fn replay_inner<S: AsRef<str>>(
                 check_engaged(&mut r, e, *intent, &inputs.engaged, &intents);
                 check_accepted(&mut r, e, *intent, &inputs.unknown_accepted, &intents);
                 check_waiting(&mut r, e, *intent, &inputs.waiting, &intents);
+                check_restore_owed(&mut r, e, *intent, &inputs.restore_owed, &intents, &restores, policy.as_ref());
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(
                         &mut r,
@@ -1749,6 +1800,8 @@ fn replay_inner<S: AsRef<str>>(
                     Transition::Dispatch => {
                         tr.dispatch_logged = None;
                         tr.dispatched = true;
+                        tr.fresh = !tr.dispatched_before;
+                        tr.started_ahead.clear();
                         tr.dispatched_before = true;
                         tr.ops.clear();
                         tr.confirming = tr.maybe_started.clone();
@@ -1769,6 +1822,7 @@ fn replay_inner<S: AsRef<str>>(
                     Transition::Queue => {
                         tr.queued_logged = None;
                         r.queued += 1;
+                        last_queued = Some(*intent);
                     }
                     Transition::Expire if tr.state == State::Queued => {
                         tr.queue_expired = false;
@@ -1819,6 +1873,9 @@ fn replay_inner<S: AsRef<str>>(
                 inputs: reach_inputs,
                 reach,
             } => {
+                if let Some(inputs) = reach_inputs {
+                    check_restore_owed(&mut r, e, *intent, &inputs.restore_owed, &intents, &restores, policy.as_ref());
+                }
                 let Some(tr) = intents.get_mut(intent) else {
                     bad(
                         &mut r,
@@ -2178,11 +2235,20 @@ fn replay_inner<S: AsRef<str>>(
                 // the order that superseded it, as replay tracked it: its spec and whether it
                 // was dispatched
                 let superseder = match cause {
-                    StopCause::Superseded { by, .. } => intents
-                        .get(by)
-                        .map(|t| (t.spec.clone(), t.state, last_dispatch == Some(*by))),
+                    StopCause::Superseded { by, .. } => intents.get(by).map(|t| {
+                        // rules 7: the order queued last stands like the one dispatched last
+                        let last = if t.state == State::Queued {
+                            last_queued == Some(*by)
+                        } else {
+                            last_dispatch == Some(*by)
+                        };
+                        (t.spec.clone(), t.state, last)
+                    }),
                     _ => None,
                 };
+                let queued_ok = policy
+                    .as_ref()
+                    .is_some_and(|p| p.rules.rules_version >= rules::QUEUE_FOLLOWUPS_SINCE);
                 let Some(tr) = intents.get_mut(intent) else {
                     bad(&mut r, e, Some(*intent), "unknown intent", String::new(), String::new());
                     continue;
@@ -2238,6 +2304,7 @@ fn replay_inner<S: AsRef<str>>(
                                 spec,
                                 *by_state,
                                 *by_last,
+                                queued_ok,
                             ) {
                                 bad(
                                     &mut r,
@@ -2245,7 +2312,7 @@ fn replay_inner<S: AsRef<str>>(
                                     Some(*intent),
                                     why,
                                     by.to_string(),
-                                    json(&(&spec.uids, by_state, last_dispatch)),
+                                    json(&(&spec.uids, by_state, last_dispatch, last_queued)),
                                 );
                             }
                             if *source != spec.source {
@@ -2639,6 +2706,7 @@ fn replay_inner<S: AsRef<str>>(
                 reach,
                 expires_t,
             } => {
+                check_restore_owed(&mut r, e, *intent, &inputs.restore_owed, &intents, &restores, policy.as_ref());
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(&mut r, e, Some(*intent), "queued without run.started or intent.created", String::new(), String::new());
                     continue;
@@ -3026,7 +3094,11 @@ fn replay_inner<S: AsRef<str>>(
                 uid,
                 state,
                 detail,
+                ahead,
             } => {
+                let required = policy
+                    .as_ref()
+                    .is_some_and(|p| p.rules.rules_version >= rules::QUEUE_FOLLOWUPS_SINCE);
                 let Some(tr) = intents.get_mut(intent) else {
                     bad(
                         &mut r,
@@ -3041,6 +3113,12 @@ fn replay_inner<S: AsRef<str>>(
                 // a newer order took the vehicle since this intent's dispatch
                 let newest = newest_on.get(uid);
                 let replaced = newest.is_some_and(|n| n != intent);
+                let start = StartAhead {
+                    ahead: *ahead,
+                    required,
+                    fresh: tr.fresh,
+                    started: tr.started_ahead.contains(uid),
+                };
                 if let Some(why) = op_state_mismatch(
                     &tr.spec,
                     tr.state,
@@ -3050,6 +3128,7 @@ fn replay_inner<S: AsRef<str>>(
                     uid,
                     state,
                     detail,
+                    start,
                 ) {
                     let reports_under = op_state_owner(&tr.spec, uid).err();
                     bad(
@@ -3069,6 +3148,9 @@ fn replay_inner<S: AsRef<str>>(
                 }
                 if queue::maybe_started_op(state) {
                     tr.maybe_started.insert(uid.clone());
+                }
+                if *ahead {
+                    tr.started_ahead.insert(uid.clone());
                 }
                 tr.ops.insert(uid.clone(), state.clone());
             }
@@ -3817,6 +3899,32 @@ fn check_waiting(
             e,
             Some(id),
             "human-order-waiting facts differ",
+            json(logged),
+            json(&want),
+        );
+    }
+}
+
+/// Rules 7: a decision's logged `restore_owed` fact (the intent's vehicles still owed their
+/// own lost-link values by an engagement of this log) against the ledger replay keeps at
+/// that point (none before rules 7, none for anything but a vehicle task).
+fn check_restore_owed(
+    r: &mut ReplayReport,
+    e: &Event,
+    id: IntentId,
+    logged: &BTreeMap<Uid, queue::RestoreOwed>,
+    intents: &BTreeMap<IntentId, Tracked>,
+    restores: &Restores,
+    policy: Option<&Policy>,
+) {
+    let (Some(tr), Some(pol)) = (intents.get(&id), policy) else { return };
+    let want = restores.owed_for(&tr.spec, &pol.rules);
+    if *logged != want {
+        bad(
+            r,
+            e,
+            Some(id),
+            "lost-link values owed back differ from the log's ledger",
             json(logged),
             json(&want),
         );

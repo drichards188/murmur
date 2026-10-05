@@ -288,11 +288,12 @@ pub use intent::{
 pub use policy::{DeadlineBasis, KindApproval, Policy, PolicyDecision, Tier, Until};
 pub use queue::{
     Basis, CarriedApproval, KindQueue, OpenIntent, QueueConfig, QueueState, Reach, Recheck,
-    RecheckRecord, ResumedFrom, Verdict,
+    RecheckRecord, RestoreOwed, ResumedFrom, Verdict,
 };
 pub use route::{LegKind, Route, Segment};
 pub use rules::{
-    CheckResult, Outcome, POLICY_SCHEMA, RULES_VERSION, RuleId, RulesConfig, UnknownEndurance,
+    CheckResult, Outcome, POLICY_SCHEMA, QUEUE_FOLLOWUPS_SINCE, RULES_VERSION, RuleId, RulesConfig,
+    UnknownEndurance,
 };
 pub use space::{
     ChosenCollect, CollectCapability, CollectOrder, CoverOrder, CoverService, ScenarioMap,

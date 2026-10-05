@@ -738,6 +738,12 @@ pub struct Intent {
     /// one that does not run it sends it to a human.
     #[serde(skip)]
     confirming: BTreeSet<Uid>,
+    /// Rules 7: its current delivery is its first (nothing could hold or run it before), and
+    /// the vehicles whose start in it was logged ahead of sending it.
+    #[serde(skip)]
+    fresh_delivery: bool,
+    #[serde(skip)]
+    started_ahead: BTreeSet<Uid>,
     /// Each vehicle's last op state in this run (op.state), and its detail.
     #[serde(skip)]
     ops: BTreeMap<Uid, String>,
@@ -780,6 +786,8 @@ impl Intent {
             basis_carried: false,
             maybe_started: BTreeSet::new(),
             confirming: BTreeSet::new(),
+            fresh_delivery: false,
+            started_ahead: BTreeSet::new(),
             ops: BTreeMap::new(),
             op_details: BTreeMap::new(),
         }
@@ -861,6 +869,14 @@ impl Intent {
     pub fn confirming(&self) -> &BTreeSet<Uid> {
         &self.confirming
     }
+    /// Rules 7: its current delivery is its first.
+    pub fn fresh_delivery(&self) -> bool {
+        self.fresh_delivery
+    }
+    /// Rules 7: the vehicles whose start in the current delivery was logged ahead of it.
+    pub fn started_ahead(&self) -> &BTreeSet<Uid> {
+        &self.started_ahead
+    }
 
     pub(crate) fn apply(
         &mut self,
@@ -931,17 +947,23 @@ impl Intent {
     /// Dispatched (again): a vehicle may hold it from now on; its op states start over, and
     /// the vehicles that may have started it are only confirmed this time.
     pub(crate) fn mark_dispatched(&mut self) {
+        self.fresh_delivery = !self.dispatched_before;
         self.dispatched_before = true;
         self.ops.clear();
         self.op_details.clear();
+        self.started_ahead.clear();
         self.confirming = self.maybe_started.clone();
     }
     /// Back to a human: their next approval decides, starting it again included.
     pub(crate) fn clear_maybe_started(&mut self) {
         self.maybe_started.clear();
     }
-    /// An op state reported for `uid` (`committed`: the vehicle accepted and started it).
-    pub(crate) fn record_op(&mut self, uid: &Uid, state: &str, detail: &str, committed: bool) {
+    /// An op state reported for `uid` (`committed`: the vehicle accepted and started it;
+    /// `ahead`: a start logged ahead of sending it).
+    pub(crate) fn record_op(&mut self, uid: &Uid, state: &str, detail: &str, committed: bool, ahead: bool) {
+        if ahead {
+            self.started_ahead.insert(uid.clone());
+        }
         self.ops.insert(uid.clone(), state.to_string());
         self.op_details.insert(uid.clone(), detail.to_string());
         if committed {

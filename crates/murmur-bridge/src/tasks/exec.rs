@@ -130,6 +130,8 @@ pub struct OpCtx {
     /// a link lost before the vehicle started the order sends it back to the queue (the op
     /// ends `requeued`) instead of failing it
     pub requeue: bool,
+    /// rules 7: the start is logged ahead of sending it through this
+    pub ahead: Option<super::WriteAhead>,
 }
 
 /// Start the op. A panic inside it fails the op instead of leaving it hanging.
@@ -235,7 +237,7 @@ async fn run_inner(ctx: &OpCtx) -> Result {
 
 /// Nothing heard from the vehicle for its link's lost-link time (3 of its expected report
 /// intervals).
-fn link_silent(v: &VehicleCell) -> bool {
+pub(crate) fn link_silent(v: &VehicleCell) -> bool {
     let heard = v.read(|s| s.heard_mono);
     let stale = v.link_snapshot(clock::mono()).stale_after_s();
     heard.is_none_or(|t| clock::mono() - t > stale)
@@ -1125,6 +1127,9 @@ impl Task<'_> {
 
     /// The start goes out next: from here a lost link means the vehicle may run the order
     /// (the op `starting`). Nothing is sent when the op ended meanwhile (abandoned, replaced).
+    /// Rules 7: the start is logged ahead of sending it (`OpCtx::ahead`, which waits for the
+    /// write), so a bridge that stops right after still finds the order may have started;
+    /// if it can't be logged, nothing is sent.
     fn mark_starting(&self, detail: &str) -> Result {
         match self.op().state() {
             OpState::Starting | OpState::Acked | OpState::Active => {
@@ -1133,10 +1138,14 @@ impl Task<'_> {
             }
             s if s.is_terminal() => fail(format!("ended before its start went out ({s:?})")),
             _ => {
-                if self.op().set(OpState::Starting, detail) {
-                    Ok(())
-                } else {
-                    fail("ended before its start went out")
+                if !self.op().set(OpState::Starting, detail) {
+                    return fail("ended before its start went out");
+                }
+                match &self.ctx.ahead {
+                    Some(log) => log(self.op(), detail).or_else(|e| {
+                        fail(format!("its start could not be logged ahead of sending it ({e}): not sent"))
+                    }),
+                    None => Ok(()),
                 }
             }
         }

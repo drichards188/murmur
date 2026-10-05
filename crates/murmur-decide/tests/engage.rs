@@ -71,6 +71,7 @@ fn scenarios_are_deterministic_and_seedable() {
         seed: Some(7),
         track_noise_m: 3.0,
         velocity_noise_mps: 0.5,
+        ..RunOptions::default()
     };
     let c = scenario::run_file(&f, &root(), &noisy).unwrap();
     let d = scenario::run_file(&f, &root(), &noisy).unwrap();
@@ -569,6 +570,7 @@ fn an_agent_order_on_an_engaging_platform_goes_to_a_human() {
     assert!(granted.contains("\"supersedes\":[1]"), "{granted}");
     // with the engagement gone (and the operator's hold under way: rules 5 protects a human's
     // order no vehicle started yet), the agent's next hold runs on its own again
+    e.record_op_state_ahead(aid, &uid("blade-1"), "commanding BRAKE").unwrap();
     e.record_op_state(aid, &uid("blade-1"), "done", "holding").unwrap();
     let mut port = e.agent_port(AgentId::new("agent-planner"));
     let b = port

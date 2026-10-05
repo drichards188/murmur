@@ -210,8 +210,18 @@ pub enum UnknownEndurance {
 /// orders for unreachable vehicles in a queue and re-checks them before dispatch
 /// ([`crate::queue`]). Version 6 (the engagement part): the platform's lost-link action
 /// preloaded as the fallback and confirmed before a release, the keep-outs' prediction
-/// model, altitude and accepted unknown friendlies (`crate::engage`).
-pub const RULES_VERSION: u32 = 6;
+/// model, altitude and accepted unknown friendlies (`crate::engage`). Version 7 (provisional
+/// number, [`QUEUE_FOLLOWUPS_SINCE`]): the queue's follow-ups to rules 5 and 6.
+pub const RULES_VERSION: u32 = QUEUE_FOLLOWUPS_SINCE;
+
+/// The rules version from which the queue's follow-ups to rules 5 and 6 decide (murmur-85l,
+/// murmur-dma, murmur-636): a mission waits for its platform's own lost-link values to be
+/// confirmed back after an engagement preloaded them (`restore_owed`), a vehicle start is
+/// logged ahead of sending it (`op.state` starting, `ahead`), and an order queued for an
+/// engagement's platform supersedes the engagement as a dispatched one does. Every change of
+/// that version is gated on this constant, never on a literal, so the version can be
+/// renumbered in this one line if another change takes the number first (provisionally 7).
+pub const QUEUE_FOLLOWUPS_SINCE: u32 = 7;
 
 /// The version of the policy file's schema: bumped when a key is added, renamed or removed.
 /// A renamed or removed key stays an optional field of its own, so an old log both parses

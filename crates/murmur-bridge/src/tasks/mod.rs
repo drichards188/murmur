@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 
 pub use caps::{caps, platform_kind};
 pub use exec::Resume;
+pub(crate) use exec::link_silent;
 #[cfg(test)]
 pub use op::HistoryEntry;
 pub use op::{OpCell, OpSnapshot, OpState};
@@ -74,6 +75,11 @@ impl FromStr for TaskKind {
 
 /// [lon, lat]
 pub type LngLat = [f64; 2];
+
+/// Rules 7: logs a vehicle start ahead of sending it (the decision layer's `op.state`
+/// starting, `ahead`): called with the op and what is about to go out, before it goes. An
+/// `Err` (the log refused it, the order ended meanwhile) means nothing is sent.
+pub type WriteAhead = Arc<dyn Fn(&OpCell, &str) -> Result<(), String> + Send + Sync>;
 
 /// Task parameters as the operator gave them (echoed back in the tasking).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -135,6 +141,8 @@ pub struct TaskOrder {
     /// rules 5: a link lost before the vehicle started the order ends the op `requeued` (the
     /// decision layer puts the order back in the queue) instead of failing it
     pub requeue: bool,
+    /// rules 7: each vehicle's start is logged ahead of sending it through this (none: not)
+    pub ahead: Option<WriteAhead>,
 }
 
 impl TaskOrder {
@@ -183,6 +191,7 @@ impl TaskOrder {
             resume: HashMap::new(),
             patience: std::time::Duration::ZERO,
             requeue: false,
+            ahead: None,
         })
     }
 }
@@ -302,6 +311,7 @@ impl TaskManager {
                 resume: order.resume.get(&v.uid).copied().unwrap_or_default(),
                 patience: order.patience,
                 requeue: order.requeue,
+                ahead: order.ahead.clone(),
             };
             exec::spawn(ctx);
         }

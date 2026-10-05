@@ -380,6 +380,12 @@ pub struct WorldSnapshot {
     /// Absent when none.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unknown_accepted: BTreeMap<Uid, crate::engage::AcceptedUnknown>,
+    /// Engine-filled (rules 7, [`crate::rules::QUEUE_FOLLOWUPS_SINCE`]) for a vehicle task:
+    /// its vehicles whose own lost-link values an engagement of this run preloaded over and
+    /// no confirmed restore has put back yet. A mission waits for them ([`crate::queue::reach`]).
+    /// Absent when none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub restore_owed: BTreeMap<Uid, crate::queue::RestoreOwed>,
 }
 
 /// A decision's inputs as logged: the [`WorldSnapshot`] with the area set replaced by its
@@ -413,6 +419,10 @@ pub struct LoggedInputs {
     /// none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unknown_accepted: BTreeMap<Uid, crate::engage::AcceptedUnknown>,
+    /// The intent's vehicles still owed their own lost-link values (rules 7; absent when
+    /// none).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub restore_owed: BTreeMap<Uid, crate::queue::RestoreOwed>,
 }
 
 impl LoggedInputs {
@@ -437,6 +447,7 @@ impl LoggedInputs {
             waiting: world.waiting.clone(),
             plan: world.plan.clone(),
             unknown_accepted: world.unknown_accepted.clone(),
+            restore_owed: world.restore_owed.clone(),
         }
     }
 
@@ -479,6 +490,7 @@ impl LoggedInputs {
             waiting: self.waiting.clone(),
             plan: self.plan.clone(),
             unknown_accepted: self.unknown_accepted.clone(),
+            restore_owed: self.restore_owed.clone(),
         }
     }
 }
@@ -523,6 +535,7 @@ impl WorldSnapshot {
             waiting: BTreeMap::new(),
             plan: None,
             unknown_accepted: BTreeMap::new(),
+            restore_owed: BTreeMap::new(),
         }
     }
 

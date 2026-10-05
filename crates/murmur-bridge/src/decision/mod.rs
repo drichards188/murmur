@@ -388,6 +388,9 @@ pub struct Decision {
     pointer: std::sync::OnceLock<PathBuf>,
     /// The fleet identity file beside the audit log (set once by [`Decision::load`]).
     fleet_file: std::sync::OnceLock<PathBuf>,
+    /// Itself, for the task layer's write-ahead of a vehicle start (rules 7: the op logs it
+    /// through the decision lock before sending it).
+    me: std::sync::Weak<Decision>,
 }
 
 /// Everything [`Decision::from_parts`] needs (tests pass a memory sink and a manual clock).
@@ -554,7 +557,8 @@ impl Decision {
             p.sink,
         )
         .map_err(|e| e.to_string())?;
-        let d = Arc::new(Decision {
+        let d = Arc::new_cyclic(|me| Decision {
+            me: me.clone(),
             world,
             clock,
             catalog: p.catalog,
@@ -1544,6 +1548,7 @@ impl Decision {
     /// (rules 5), when every op ended `requeued` (the link lost before any vehicle started
     /// it), send it back to the queue.
     fn follow_ops(&self, core: &mut Core) {
+        let ahead = self.writes_ahead();
         let Core {
             engine, running, ..
         } = core;
@@ -1554,6 +1559,11 @@ impl Decision {
             for op in &snap.ops {
                 let key = (op.state, op.detail.starts_with("NOT MOVING"));
                 if run.reported.get(&op.id) == Some(&key) {
+                    continue;
+                }
+                // rules 7: a start is logged by the op itself, ahead of sending it
+                // (`write_ahead`), never after it here
+                if ahead && op.state == OpState::Starting {
                     continue;
                 }
                 let state = serde_json::to_value(op.state)
@@ -1628,6 +1638,51 @@ impl Decision {
                 Err(e) => eprintln!("decision: finish {id}: {e}"),
             }
         }
+    }
+
+    /// Rules 7: whether vehicle starts are logged ahead of sending them.
+    fn writes_ahead(&self) -> bool {
+        self.rules.rules_version >= rules::QUEUE_FOLLOWUPS_SINCE
+    }
+
+    /// Rules 7: the task layer's write-ahead of a vehicle start, for an order to the vehicles
+    /// (none under earlier rules): an op logs its start through it, and the start goes out
+    /// only once it is in the audit log.
+    pub(super) fn write_ahead_hook(&self) -> Option<crate::tasks::WriteAhead> {
+        if !self.writes_ahead() {
+            return None;
+        }
+        let me = self.me.clone();
+        Some(Arc::new(move |op: &crate::tasks::OpCell, detail: &str| {
+            match me.upgrade() {
+                Some(d) => d.write_ahead(op.intent_id, op.id, op.uid, detail),
+                None => Err("the decision layer is gone".into()),
+            }
+        }))
+    }
+
+    /// Rules 7: `op.state` starting for op `op` (intent `intent`, vehicle `uid`), logged ahead
+    /// of the start it records (`Engine::record_op_state_ahead`), under the decision lock: it
+    /// waits for any decision in progress, so it comes after the dispatch that sent the order.
+    /// `Err`: not logged (the order ended or a newer one took the vehicle meanwhile, or the
+    /// log refused it), and the op sends nothing.
+    fn write_ahead(&self, intent: u64, op: u64, uid: Uid, detail: &str) -> Result<(), String> {
+        let mut guard = self.lock();
+        let Core {
+            engine, running, ..
+        } = &mut *guard;
+        let id = IntentId(intent);
+        let Some(run) = running.get_mut(&id) else {
+            return Err(format!("{id} is no longer followed"));
+        };
+        if run.reported.get(&op).is_some_and(|(s, _)| *s == OpState::Starting) {
+            return Ok(());
+        }
+        engine
+            .record_op_state_ahead(id, &duid(uid), detail)
+            .map_err(|e| e.to_string())?;
+        run.reported.insert(op, (OpState::Starting, false));
+        Ok(())
     }
 
     // ---- reading ------------------------------------------------------------------------

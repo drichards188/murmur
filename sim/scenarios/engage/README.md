@@ -12,6 +12,7 @@ chain) and requires replay to catch it.
 cargo run -p murmur-decide --bin murmur-scenarios -- sim/scenarios/engage            # table
 cargo run -p murmur-decide --bin murmur-scenarios -- --json sim/scenarios/engage     # one JSON object per line
 cargo run -p murmur-decide --bin murmur-scenarios -- --seed 7 --noise 3 --log-dir logs/engage sim/scenarios/engage
+cargo run -p murmur-decide --bin murmur-scenarios -- --rules 6 sim/scenarios/engage   # what rules 6 did
 ```
 
 Exit status 0 when every scenario ended as designed (and replayed, and any tamper was
@@ -46,7 +47,14 @@ The effect is an abstract event: a point, a radius, a time. Nothing here models 
   (`preload`, below), as the bridge reports it; with it confirmed and its link cut for longer
   than the preloaded timer it follows the preloaded action on its own
   (`lost_link_action`); once the engagement ended and it can hear us, its own values go back
-  (a restore). Result fields: `lost_link_action`, `preload_reports`.
+  (a restore; from `restore_after_s` on, when the file sets one). Result fields:
+  `lost_link_action`, `preload_reports`.
+- Rules 5 and 7: an approved `task` goes as on the bridge: dispatched if the link reaches its
+  vehicles, else queued and offered again every second (re-checked, then dispatched, sent to
+  the inbox or voided; expired at its deadline). From rules 7 a queued one supersedes an
+  engagement on its vehicles as a dispatched one does, and a mission (an orbit) waits for its
+  platform's own lost-link values to be back. `RunOptions::rules_version` (`--rules N`) runs a
+  file under older rules (its log replayed with them) to show what they did.
 
 ## Format
 
@@ -68,7 +76,8 @@ tamper = "suppress_void"         # optional log attack replay must catch: propos
                                  # drop_reset, agent_order_auto, drop_ack, loosen_policy,
                                  # and rules 6: drop_preload, forge_preload,
                                  # drop_verify, drop_acceptance, acceptance_by_agent,
-                                 # acceptance_without_authority, hide_self_accepted
+                                 # acceptance_without_authority, hide_self_accepted,
+                                 # and rules 7: drop_restore_owed
                                  # (one with nothing to edit in a run's log reports "not
                                  # applicable")
 end_s = 120                      # seconds to run (default: the last step + 10)
@@ -81,6 +90,11 @@ preload = "confirm"              # rules 6: how the platform answers its lost-li
 expect_lost_link = "Loiter"      # optional: it followed its preloaded action on its own
 expect_preload = ["set confirmed", "restore confirmed"]   # optional, in order (also
                                  # "verify confirmed", "verify changed")
+expect_stop = "superseded"       # optional: how the last nomination was stopped (superseded,
+                                 # system, picture, operator); superseded also means no
+                                 # fallback was commanded
+restore_after_s = 60             # rules 6: the platform answers the restore of its own
+                                 # lost-link values only from this second on (default: at once)
 # policy, catalog, areas = "path"  # optional, relative to the repo (defaults: sim/...)
 
 [[operator]]                     # an operator session; engage = engagement authority
@@ -141,14 +155,14 @@ Actions (each `[[step]]` has `at_s` and `action`):
 | `look` | `by` | an operator with engagement authority asks for the picture (a picture token: the plan and the track now); their next `approve` quotes it |
 | `approve` | `by` | a signature: through `approve_engagement` if the session has engagement authority (quoting the token from their last `look`, or one asked for now), else `approve` (which the engine refuses for an engagement) |
 | `approve_task` | `by`, `acknowledge` | an operator approves the last `task`; `acknowledge` accepts that its dispatch stops an engagement in play |
-| `task` | `by` or `agent` (+ `rationale`), `task` (`hold`, `rtl`), `uids` | another order on our vehicles; dispatched at once if its tier lets it run, superseding any engagement on them (no fallback commanded) |
+| `task` | `by` or `agent` (+ `rationale`), `task` (`hold`, `rtl`, `orbit` with `center` [lon, lat] and `radius_m`), `uids` | another order on our vehicles; once approved, dispatched if the link reaches them, else queued (rules 5), superseding any engagement on them (no fallback commanded; when queued, from rules 7) |
 | `stall` | `seconds` | the loop that holds the picture stops for that long (no engagement step) |
 | `reject` | `by` | an operator rejects it |
 | `abort` | `by` | any operator stops it; the fallback is commanded |
 | `agent_approve` | `agent` | an agent "tries" to approve: there is no such method on its port, so it is recorded and the intent must not move |
 | `track` | `id` and any of `at`, `velocity`, `affiliation`, `declared_by`, `undeclare`, `identity`, `identity_confidence`, `sigma_m`, `domain`, `silent`, `velocity_error`, `alt_m` | a track changes (or appears); `velocity` is how the contact really moves, `velocity_error` how far the tracker's estimate is off it |
 | `vehicle` | `uid` and any of `at`, `velocity`, `silent`, `report_interval_ms`, `nav` (`gnss`, `dead_reckoning`), `gps_fix` (3: a 3D fix), `gps_glitch`, `circling`, `reported_circle`, `alt_m` | one of ours changes; `silent` cuts its link (both ways: it hears no GCS either) |
-| `expect` | `state`, `rule`, `concurrences`, `task_state` | check the last nomination now (`task_state`: the last `task` step's intent) |
+| `expect` | `state`, `rule`, `concurrences`, `task_state`, `task_reason` | check the last nomination now (`task_state`: the last `task` step's intent; `task_reason`: a substring of why it is in that state) |
 
 Approved engagements are dispatched at once (as the bridge does). Every second the runner
 calls `Engine::step_engagements` (hold the picture, release, observe, assess).
@@ -222,3 +236,6 @@ calls `Engine::step_engagements` (hold the picture, release, observe, assess).
 | 63-ground-target-stays-2d | keep_out_friendly | the review's probe 8: our quadcopter 400 m MSL over a ground target logged at 0 m | rejected (2D) |
 | 64-stale-radar-altitude-stays-2d | keep_out_tracks | the second review's probe: an aircraft 100 m from the point whose radar altitude is five minutes old while EO/IR keeps its position fresh | rejected (2D) |
 | 65-acceptor-signs-recorded | signed_picture | the operator who accepted a lost vehicle signs; the log hides that they did both | done (ceased), `self_accepted` on the signature; tamper caught |
+| 66-queued-order-supersedes-engagement | engagement_in_play | rules 7: an operator's hold queued for the USV whose link is cut mid-engagement | aborted, superseded by the hold, no fallback commanded; the USV holds on its preloaded lost-link action; when the link returns its own values go back and the hold goes out |
+| 67-mission-waits-for-restore | restore_owed | rules 7: an orbit ordered after an abort while the USV's own lost-link values are not back (its restore answered 25 s late); the fact stripped from the log | the orbit waits in the queue and goes the second the restore confirms; tamper caught |
+| 68-restore-never-confirmed | restore_owed | rules 7: the USV never confirms its own values back | the orbit waits, then goes back to a human after 120 s saying why; a hold goes out at once |
