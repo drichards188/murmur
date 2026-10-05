@@ -46,8 +46,8 @@ why:
 
 | file | what |
 | --- | --- |
-| `run.json` | spec summary, arm, seed, ports, readiness (per vehicle), the clocks against the origin and their checks, provenance (commit, dirty flag, binary hashes), warnings, the supervisor's parameters and every decision it made, replay result, status |
-| `audit.jsonl` | the bridge's audit log (moved out of `logs/audit/`) |
+| `run.json` | spec summary, arm, seed, ports, readiness (per vehicle), the clocks against the origin and their checks, provenance (commit, dirty flag, binary hashes), warnings, the supervisor's parameters and every decision it made, replay result, status, the restore pointer found and removed (`restore_carry`) |
+| `audit.jsonl` | the bridge's audit log (moved out of `logs/audit/`, with its fleet identity `audit.fleet.json` and anchors `audit.anchors`) |
 | `storyline.jsonl` | every step as injected: request, rationale, label, the perception and truth resolved at that moment |
 | `truth.jsonl` | contacts truth, tracks and the association, every 5 s (evaluation hook `/api/sim/truth`) |
 | `contacts-truth.jsonl`, `standins-truth.jsonl` | the contacts process's truth log; the stand-ins' navigation truth (spoofed or jammed vehicles) |
@@ -64,8 +64,14 @@ dropped by the kernel if the runner dies), so two batches, or a batch and a sing
 share one; and only if none of its UDP ranges reaches into the host's ephemeral port range
 (read at run time), `ss` shows none of its ports in use, and every port binds now (UDP and
 TCP). Fleet manifests, events, logs and the audit log live in the run directory, never in
-`sim/run/`. Each batch starts its own `tidewater serve` on a port leased the same way from
-10690-10699 and stops it at the end (`MURMUR_TIDEWATER_URL` points it at another serve
+`sim/run/`. Nothing of an earlier run on the same block reaches a run: its bridge starts
+with `MURMUR_RESUME=0` (no open intents carried over) and with no rules-6 restore pointer
+for its port (`logs/audit/.last-run-<http port>`, which would carry lost-link values the
+last log owed onto this run's new stand-ins, or, naming a log already moved into its run
+directory, raise a High `restore:carry` inbox alert for the whole run); the runner removes
+the pointer before the bridge starts and after it stops and records both in `run.json`
+(`restore_carry`). Each batch starts its own `tidewater serve` on a port leased the same
+way from 10690-10699 and stops it at the end (`MURMUR_TIDEWATER_URL` points it at another serve
 instead); it gives real currents, terrain line of sight and the domain rule; `--tidewater
 none` runs without. Every run is its own process with a time limit (scenario plus origin plus
 startup and collection); one that overruns is killed by PID and listed. SITL never runs:

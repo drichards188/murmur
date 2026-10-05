@@ -311,6 +311,7 @@ class Run:
                 except Exception as e:  # noqa: BLE001
                     self.info["warnings"].append(f"proposer stop: {e!r}")
             self.info["exits"] = stack.stop()
+            self.info["restore_carry"] = stack.restore_carry
             self.info["ended"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
             self.save()
         # replay and metrics (also for failed runs: whatever log exists is scored)
