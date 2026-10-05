@@ -499,10 +499,52 @@ pub struct RunOptions {
     /// `sigma_m` (with `seed`): the identification evaluation's batches. Off: the scripted
     /// offset only, so a scenario's designed outcome does not depend on the seed.
     pub act_noise: bool,
-    /// Rules 9: the policy's `[identification]` instead of the file's (the evaluation's
-    /// manual-versus-rule comparison on the same seeds).
-    pub identification: Option<crate::ident::IdentConfig>,
+    /// Rules 9: changes to the policy's `[identification]` (the evaluation's manual-versus-rule
+    /// comparison on the same seeds): each key given replaces the file's, the rest stay.
+    pub identification: IdentOverride,
+    /// Rules 9, the evaluation's manual arm: a scripted operator proxy (the file's first
+    /// operator) declares the author of each observed act hostile some seconds after the act
+    /// is recorded, as a person reading the inbox would. A model, not human data.
+    pub manual: Option<ManualProxy>,
 }
+
+/// Rules 9: the identification keys a batch sets over the file's policy.
+#[derive(Clone, Debug, Default)]
+pub struct IdentOverride {
+    pub rule_declaration: Option<bool>,
+    pub attribution_threshold: Option<f64>,
+    pub nominate_unconfirmed: Option<bool>,
+}
+
+impl IdentOverride {
+    pub fn is_empty(&self) -> bool {
+        self.rule_declaration.is_none() && self.attribution_threshold.is_none() && self.nominate_unconfirmed.is_none()
+    }
+}
+
+/// Rules 9: the evaluation's scripted manual declarer (`RunOptions::manual`). It reads each
+/// observed act after a delay (lognormal around `delay_s`, sigma 0.4, seeded) and declares,
+/// as the file's first operator, by `standard`. Logged as an operator's declaration (dev
+/// auth: asserted, never a person's), with the note `manual proxy: act A-n`.
+#[derive(Clone, Debug)]
+pub struct ManualProxy {
+    pub delay_s: f64,
+    pub standard: ManualStandard,
+}
+
+/// What the manual proxy declares on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ManualStandard {
+    /// The engine's own evidence standard (what the rule would declare, with rule declaration
+    /// on and the same threshold): the arms then differ in latency and in who acted.
+    Rule,
+    /// The most likely track of every observed act, whatever its attribution (an operator who
+    /// takes the best guess): a sensitivity case.
+    Best,
+}
+
+/// The note the manual proxy's declarations carry (the evaluation links them to the act).
+pub const MANUAL_NOTE: &str = "manual proxy: act ";
 
 fn act_sigma() -> f64 {
     20.0
@@ -731,9 +773,21 @@ pub fn run(
         }
     }
     // rules 9: the evaluation's identification setting, the same seeds either way
-    if let Some(i) = &opts.identification {
+    let o = &opts.identification;
+    if !o.is_empty() {
+        let mut i = policy.identification.clone().unwrap_or_default();
+        if let Some(on) = o.rule_declaration {
+            i.rule_declaration = on;
+        }
+        if o.attribution_threshold.is_some() {
+            i.attribution_threshold = o.attribution_threshold;
+        }
+        if o.nominate_unconfirmed.is_some() {
+            i.nominate_unconfirmed = o.nominate_unconfirmed;
+        }
         i.validate().map_err(setup)?;
-        policy.identification = Some(i.clone());
+        policy.identification = Some(i);
+        policy.sync();
     }
     let catalog =
         Catalog::load(&rel(&sc.catalog, "sim/platforms.toml")).map_err(|e| setup(e.to_string()))?;
@@ -840,8 +894,12 @@ pub fn run(
             .seed
             .filter(|_| opts.act_noise)
             .map(|s| Rng(s ^ 0xAC75_0000_0000_0001)),
+        manual_rng: opts.seed.map(|s| Rng(s ^ 0x3A27_0000_0000_0002)),
+        manual_proxy: opts.manual.clone().filter(|_| rule_id),
         ..Extra::default()
     };
+    let manual = extra.manual_proxy.clone();
+    let proxy = sc.operators.first().map(|o| o.id.clone());
 
     for s in 0..=end_s {
         let now = T0.plus_ms(i64::from(s) * 1000);
@@ -962,6 +1020,26 @@ pub fn run(
             &mut failures,
             s,
         );
+        // rules 9, the evaluation's manual arm: the proxy's declarations now due
+        if let (Some(_), Some(op)) = (&manual, &proxy) {
+            let due: Vec<(u32, String, String)> = extra.manual.iter().filter(|d| d.0 <= s).cloned().collect();
+            extra.manual.retain(|d| d.0 > s);
+            for (_, track, act) in due {
+                let w = snapshot(&vehicles, &tracks, &catalog, &areas, now);
+                if let Some(sess) = sessions.get(op) {
+                    // already declared hostile (by rule or by someone): nothing to add
+                    let _ = engine.declare_track(
+                        sess.authority(),
+                        None,
+                        &track,
+                        Affiliation::Hostile,
+                        Some(format!("{MANUAL_NOTE}{act}")),
+                        None,
+                        &w,
+                    );
+                }
+            }
+        }
         // the bridge's loop: expire, the weak-evidence rule (rules 9), then hold the picture /
         // release / observe
         let _ = engine.expire_due();
@@ -1279,7 +1357,12 @@ fn ident_records(
             EventBody::IdentDeclared { declaration: d } => {
                 let (kind, act, attribution) = match &d.by {
                     Declarer::Rule { evidence, .. } => ("rule_declaration", Some(evidence.act.clone()), Some(evidence.attribution)),
-                    Declarer::Operator { .. } => ("operator_declaration", None, None),
+                    // the evaluation's manual proxy names the act it read
+                    Declarer::Operator { note, .. } => (
+                        "operator_declaration",
+                        note.as_deref().and_then(|n| n.strip_prefix(MANUAL_NOTE)).map(str::to_string),
+                        None,
+                    ),
                 };
                 let (actor, act_s) = act
                     .as_ref()
@@ -1590,8 +1673,32 @@ fn act(
                 sigma_m: *sigma_m,
             };
             let w = world(tracks, vehicles);
-            if let Err(e) = engine.record_act(report, &w) {
-                failures.push(format!("t={s}: act {id}: {e}"));
+            match engine.record_act(report.clone(), &w) {
+                Ok(out) => {
+                    // the evaluation's manual arm: the proxy will read this act after its delay
+                    if let Some(m) = extra.manual_proxy.clone()
+                        && matches!(out.verdict, crate::ident::ActVerdict::Recorded { .. })
+                    {
+                        let pick = match m.standard {
+                            ManualStandard::Best => out.candidates.first().map(|c| c.track.clone()),
+                            ManualStandard::Rule => {
+                                let mut cfg = engine.policy().rules.identification.clone();
+                                cfg.rule_declaration = true;
+                                let seen = engine.identified(&w);
+                                match crate::ident::verdict(&report, &out.candidates, &seen.tracks, engine.identification(), &cfg) {
+                                    crate::ident::ActVerdict::Declare { track, .. } => Some(track),
+                                    _ => None,
+                                }
+                            }
+                        };
+                        if let Some(track) = pick {
+                            let k = extra.manual_rng.as_mut().map_or(1.0, |r| (0.4 * r.gauss()).exp());
+                            let delay = (m.delay_s * k).max(1.0).round() as u32;
+                            extra.manual.push((s + delay, track, id.clone()));
+                        }
+                    }
+                }
+                Err(e) => failures.push(format!("t={s}: act {id}: {e}")),
             }
         }
         Action::ConfirmDeclaration { by, track } => {
@@ -2159,6 +2266,10 @@ struct Extra {
     /// the seeded noise on their observed positions (a batch with act noise).
     acts: BTreeMap<String, (String, u32)>,
     act_noise: Option<Rng>,
+    /// Rules 9: the manual proxy's declarations due (second, track, act) and its delay draws.
+    manual: Vec<(u32, String, String)>,
+    manual_rng: Option<Rng>,
+    manual_proxy: Option<ManualProxy>,
 }
 
 /// Rules 6: a dispatched engagement's lost-link preload, as the runner's platform answers it.

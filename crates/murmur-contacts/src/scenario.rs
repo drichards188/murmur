@@ -454,6 +454,24 @@ mod tests {
         );
     }
 
+    /// Every contacts scenario that ships loads, its contacts and acts valid.
+    #[test]
+    fn the_shipped_scenarios_load() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sim/scenarios");
+        let mut n = 0;
+        for e in std::fs::read_dir(&dir).expect("sim/scenarios") {
+            let p = e.expect("entry").path();
+            if p.extension().is_some_and(|x| x == "toml") {
+                let s = Scenario::load(&p).expect("loads");
+                s.contacts().unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+                n += 1;
+            }
+        }
+        assert!(n >= 4, "{n} scenarios");
+        let ident = Scenario::load(&dir.join("golden-gate-ident.toml")).expect("loads");
+        assert_eq!(ident.acts.len(), 3);
+    }
+
     /// Rules 9: scripted acts name an author and exactly one victim among the scenario's
     /// contacts or our vehicles; anything else fails to load.
     #[test]

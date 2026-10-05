@@ -49,10 +49,12 @@
 [approval]
 expire_s = 120
 submitter_authorizes = true                 # default for human tiers that don't set it
-# step_up_acts = ["declare_hostile", "accept_unknown"]   (rules 8, policy schema 5): acts
-#   besides approvals that re-enter the operator's password in a credentials run (a step-up,
-#   logged and quoted by the act): declaring a track hostile; accepting a lost vehicle for an
-#   engagement's keep-out. Off by default (a user decision); each is one word here.
+# step_up_acts = ["declare_hostile", "accept_unknown", "confirm_declaration"]   (rules 8, policy
+#   schema 5; confirm_declaration rules 9, schema 6): acts besides approvals that re-enter the
+#   operator's password in a credentials run (a step-up, logged and quoted by the act):
+#   declaring a track hostile; accepting a lost vehicle for an engagement's keep-out;
+#   confirming the engine's rule declaration. Off by default (a user decision); each is one
+#   word here, and an unknown word fails to load.
 
 # Per task kind, [approval.kind.<kind>] replaces the fixed wait for intents of that kind:
 #   expire_s = <seconds>        a different fixed wait (also the fallback for `until`)

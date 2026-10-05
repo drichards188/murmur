@@ -10,10 +10,14 @@
 //! position estimates, `--vnoise` (m/s, 1-sigma, correlated over about 10 s) to their
 //! velocity estimates. `--rules N` decides under older decision rules (what they did with
 //! the same timeline; the designed ends are the current rules'). Rules 9: `--ident on|off`
-//! replaces the policy's `[identification]` (rule declaration on or off: the evaluation's
-//! rule-versus-manual comparison on the same seeds), with `--threshold X` and
-//! `--nominate-unconfirmed`; `--act-noise` adds seeded noise of each act's own sigma to where
-//! its author was observed. `--log-dir` writes each run's audit log as `<scenario>.jsonl`. `--root` is the
+//! sets the policy's `[identification] rule_declaration` (the evaluation's rule-versus-manual
+//! comparison on the same seeds), `--threshold X` its attribution threshold and
+//! `--nominate-unconfirmed` its nomination setting (the file's other keys stay);
+//! `--act-noise` adds seeded noise of each act's own sigma to where its author was observed;
+//! `--manual-delay S` (with `--ident off`) has a scripted operator proxy declare each observed
+//! act's author about S seconds after the act (lognormal, seeded), by the rule's own standard
+//! or, with `--manual-standard best`, the most likely track (a model, never human data).
+//! `--log-dir` writes each run's audit log as `<scenario>.jsonl`. `--root` is the
 //! repo (default: the current directory) for `sim/policy.toml`, `sim/platforms.toml` and
 //! `sim/areas`.
 //!
@@ -55,18 +59,34 @@ fn main() -> ExitCode {
                         return ExitCode::from(2);
                     }
                 };
-                opts.identification.get_or_insert_with(Default::default).rule_declaration = on;
+                opts.identification.rule_declaration = Some(on);
             }
-            "--threshold" => {
-                opts.identification.get_or_insert_with(Default::default).attribution_threshold =
-                    args.next().and_then(|s| s.parse().ok());
-            }
-            "--nominate-unconfirmed" => {
-                opts.identification.get_or_insert_with(Default::default).nominate_unconfirmed = Some(true);
-            }
+            "--threshold" => opts.identification.attribution_threshold = args.next().and_then(|s| s.parse().ok()),
+            "--nominate-unconfirmed" => opts.identification.nominate_unconfirmed = Some(true),
             "--act-noise" => opts.act_noise = true,
+            // the evaluation's manual arm (with --ident off): a scripted operator declares each
+            // observed act's author after a delay (median seconds), by the rule's standard or
+            // the best guess
+            "--manual-delay" => {
+                let delay_s = args.next().and_then(|s| s.parse().ok()).unwrap_or(30.0);
+                opts.manual.get_or_insert(murmur_decide::scenario::ManualProxy {
+                    delay_s,
+                    standard: murmur_decide::scenario::ManualStandard::Rule,
+                }).delay_s = delay_s;
+            }
+            "--manual-standard" => {
+                let standard = match args.next().as_deref() {
+                    Some("rule") => murmur_decide::scenario::ManualStandard::Rule,
+                    Some("best") => murmur_decide::scenario::ManualStandard::Best,
+                    _ => {
+                        eprintln!("murmur-scenarios: --manual-standard rule|best");
+                        return ExitCode::from(2);
+                    }
+                };
+                opts.manual.get_or_insert(murmur_decide::scenario::ManualProxy { delay_s: 30.0, standard }).standard = standard;
+            }
             _ if a.starts_with("--") => {
-                eprintln!("usage: murmur-scenarios [--json] [--seed N --noise M --vnoise V] [--rules N] [--ident on|off] [--threshold X] [--nominate-unconfirmed] [--act-noise] [--root DIR] [--log-dir DIR] <file-or-dir>...");
+                eprintln!("usage: murmur-scenarios [--json] [--seed N --noise M --vnoise V] [--rules N] [--ident on|off] [--threshold X] [--nominate-unconfirmed] [--act-noise] [--manual-delay S] [--manual-standard rule|best] [--root DIR] [--log-dir DIR] <file-or-dir>...");
                 return ExitCode::from(2);
             }
             _ => paths.push(PathBuf::from(a)),

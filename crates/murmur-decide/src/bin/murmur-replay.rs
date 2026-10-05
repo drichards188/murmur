@@ -255,6 +255,20 @@ fn main() -> ExitCode {
             report.assessments
         );
     }
+    // rules 9: every act's attribution and verdict, every rule declaration and flag recomputed
+    let ident = report.acts + report.rule_declarations + report.operator_declarations + report.flags;
+    if ident > 0 {
+        println!(
+            "identification: {} act(s) attributed again, {} rule declaration(s) and {} flag(s) recomputed, {} operator declaration(s), {} confirmation(s), {} revocation(s), {} flag(s) resolved",
+            report.acts,
+            report.rule_declarations,
+            report.flags,
+            report.operator_declarations,
+            report.confirmations,
+            report.revocations,
+            report.flags_resolved
+        );
+    }
     if report.queued + report.rechecks + report.resumed + report.reboots + report.requeued > 0 {
         println!(
             "queue: {} queued, {} sent back after a lost link, {} re-check(s) recomputed ({} dispatched, {} back to the inbox, {} voided), {} expired; {} carried over from a previous run; {} vehicle reboot(s)",

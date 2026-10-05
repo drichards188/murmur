@@ -1,0 +1,106 @@
+# Golden Gate traffic for rule-based identification (rules 9): scripted hostile acts, clear
+# and ambiguous. Run with the engagement demo fleet (stand-ins; uids in file order:
+# 1 switchblade, 2 magura, 3 ugv_armed, 4 corsair, 5 x10):
+#   MURMUR_CONTACTS=sim/scenarios/golden-gate-ident.toml make goldengate GG_FLEET=engage-demo
+#   (with MURMUR_OPERATORS=op-1,op-2,op-3 MURMUR_ENGAGE_OPERATORS=op-2,op-3 for two approvers)
+# and `[identification] rule_declaration = true` in the policy (sim/policy.toml has it).
+#
+# - act-clear: the fast boat, alone and holding west of the bridge, fires on our USV (magura,
+#   uid 2). The corsair's radar and EO/IR see it; the engine attributes it to the fast boat's
+#   track, usually above the threshold, and declares it hostile by rule (a review item: confirm or
+#   revoke).
+# - act-ambiguous: a skiff tied up 25 m from a stopped crab boat fires on the corsair (uid 4).
+#   Both are tracked; the act's observed position can't tell them apart, so the engine
+#   attributes it below the threshold and flags it for review, declaring nothing.
+#
+# An act is an abstract event: a time, an author and a victim. Nothing models a weapon or
+# damage. Truth only: the C2 learns of an act through its sensors (the bridge's sensing model
+# decides which of ours observe it and where they place its author). Identities fictional.
+title = "Golden Gate traffic, identification demo"
+seed = 13
+
+[sensing]
+misclassification_rate = 0.0     # deterministic identities for the demo
+
+# ---------------------------------------------------------------- the clear case
+[[contact]]
+id = "fastboat-gate"
+name = "Fast boat coming down from Lime Point to hold west of the bridge (no AIS)"
+affiliation = "hostile"
+domain = "surface"
+kind = "small_fast_boat"
+speed_mps = 12
+motion = "route"
+route = [[-122.4790, 37.8230], [-122.4950, 37.8120]]
+dwell_s = 3000
+
+[[act]]
+id = "act-clear"
+at_s = 240
+by = "fastboat-gate"
+against_vehicle = 2
+label = "fires on the patrol USV (magura)"
+
+# It fires again two minutes later. If the first was attributed below the threshold (the
+# sensors place an act's author with their own error, and the track has its own: in the first
+# live run, 2026-10-05, the clear act came in 78 m from the track at 29 m 1-sigma, attribution
+# 0.84, and was flagged), this one is a second chance; if the first declared the boat, the
+# engine only records it.
+[[act]]
+id = "act-clear-again"
+at_s = 360
+by = "fastboat-gate"
+against_vehicle = 2
+label = "fires on the patrol USV again"
+
+# ---------------------------------------------------------------- the ambiguous case
+[[contact]]
+id = "crab-boat"
+name = "Crab boat stopped mid-strait, pots out (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+motion = "station"
+at = [-122.4880, 37.8180]
+
+[[contact]]
+id = "skiff"
+name = "Skiff tied up alongside the crab boat (no AIS)"
+affiliation = "hostile"
+domain = "surface"
+kind = "small_fast_boat"
+motion = "station"
+at = [-122.48772, 37.8180]       # 25 m east of the crab boat
+
+[[act]]
+id = "act-ambiguous"
+at_s = 300
+by = "skiff"
+against_vehicle = 4
+label = "fires on the sensor ship (corsair) from alongside the crab boat"
+
+# ---------------------------------------------------------------- the rest of the picture
+[[contact]]
+id = "ferry-sausalito"
+name = "Sausalito ferry (Ferry Building to Sausalito)"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 10
+motion = "route"
+route = [[-122.3905, 37.7960], [-122.4120, 37.8130], [-122.4400, 37.8220], [-122.4620, 37.8390], [-122.4770, 37.8560]]
+reverse = true
+dwell_s = 600
+ais = { mmsi = "366999101", name = "MV GOLDEN BEAR", ship_type = "passenger" }
+
+[[contact]]
+id = "uscg-cutter"
+name = "Coast guard patrol boat on station in the central bay (AIS)"
+affiliation = "assumed_friend"
+domain = "surface"
+kind = "patrol_boat"
+speed_mps = 6
+motion = "loiter"
+center = [-122.4350, 37.8200]
+radius_m = 1200
+ais = { mmsi = "366999401", name = "CGC TERN", ship_type = "law_enforcement" }
