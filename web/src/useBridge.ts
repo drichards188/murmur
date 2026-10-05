@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { operatorFetch, operatorHeaders } from './auth'
 import { getOperator, setBridgeOperators, type Decisions, type Intent, type Authorization } from './decisions'
 import { perfPush, perfUpdateStart } from './perf'
 import type { TracksMessage } from './tracks'
@@ -174,9 +175,9 @@ export class TaskRefused extends Error {
 }
 
 export async function sendTask(req: TaskRequest): Promise<TaskAnswer & { status: number }> {
-  const res = await fetch('/api/tasks', {
+  const res = await operatorFetch('/api/tasks', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-murmur-operator': getOperator() },
+    headers: { 'content-type': 'application/json', ...operatorHeaders(getOperator()) },
     body: JSON.stringify(req),
   })
   const body = await res.json().catch(() => ({}))

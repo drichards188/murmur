@@ -1,3 +1,4 @@
+import { operatorFetch, operatorHeaders } from './auth'
 import { getOperator, type Check, type Intent } from './decisions'
 import type { LngLat } from './types'
 
@@ -176,9 +177,9 @@ export const RUNNING: Intent['state'][] = ['approved', 'dispatched', 'effected']
 // ---- the bridge ---------------------------------------------------------------------------
 
 async function post(url: string, body: unknown) {
-  const res = await fetch(url, {
+  const res = await operatorFetch(url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-murmur-operator': getOperator() },
+    headers: { 'content-type': 'application/json', ...operatorHeaders(getOperator()) },
     body: JSON.stringify(body),
   })
   const b = await res.json().catch(() => ({}))

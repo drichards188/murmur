@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { getAuth, operatorFetch, operatorHeaders, useAuth } from './auth'
 import type { Engagement, EngageView } from './engage'
 import type { TaskOption } from './space'
 import type { LngLat } from './types'
@@ -49,6 +50,9 @@ export interface PolicyDecision {
   approvers?: number
   /** the proposer may not approve it (always for an engagement) */
   proposer_excluded?: boolean
+  /** rules 7: each approval re-enters the approver's password (a step-up; always for an
+   *  engagement, and any tier the policy marks consequential) */
+  step_up?: boolean
 }
 
 export interface Approval {
@@ -60,6 +64,8 @@ export interface Approval {
   /** the approval was the submission itself (an operator's own task in a human tier) */
   at_submission?: boolean
   note: string | null
+  /** rules 7: the approver re-entered their password to sign */
+  step_up?: boolean
 }
 
 /** A human-tier task the operator authorized by sending it (POST /api/tasks, 200). */
@@ -263,9 +269,9 @@ export const hasProduct = (r: SpaceRun) => r.kind === 'collect' && r.events.some
 /** POST /api/intents as the console's operator. 201 with the intent; a refused or waiting
  *  intent is still a 201 (its state says so). Throws an Error with the bridge's reason. */
 export async function submitIntent(body: Record<string, unknown>): Promise<{ intent: Intent; dispatched: boolean; space: SpaceRun | null }> {
-  const res = await fetch('/api/intents', {
+  const res = await operatorFetch('/api/intents', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-murmur-operator': getOperator() },
+    headers: { 'content-type': 'application/json', ...operatorHeaders(getOperator()) },
     body: JSON.stringify(body),
   })
   const b = await res.json().catch(() => ({}))
@@ -282,11 +288,13 @@ export const ALERT_LABEL: Record<Alert['kind'], string> = {
   restore_pending: 'FAILSAFE NOT RESTORED',
 }
 
-// ---- operator (placeholder authentication) ------------------------------------------------
+// ---- operator ------------------------------------------------------------------------------
+// A credentials run: the operator signed in on this browser (./auth). A dev run
+// (MURMUR_AUTH=dev): the operator the "Acting as" switcher names, sent as a header.
 
 const OPERATORS_ENV = (import.meta.env.VITE_MURMUR_OPERATORS as string | undefined) ?? 'op-1'
-/** Must match the bridge's MURMUR_OPERATORS. The bridge does not publish its list (API gap),
- *  so the console takes it from VITE_MURMUR_OPERATORS at build or dev-server start. */
+/** Dev run: the ids the switcher offers until the bridge sends its own list (the decisions
+ *  message carries it), from VITE_MURMUR_OPERATORS at build or dev-server start. */
 export const OPERATORS = OPERATORS_ENV.split(',')
   .map((s) => s.trim())
   .filter(Boolean)
@@ -330,8 +338,11 @@ let operator = (() => {
 })()
 const operatorListeners = new Set<() => void>()
 
+/** Who this console acts for: the signed-in operator (credentials run), or the switcher's
+ *  pick (dev run). */
 export function getOperator() {
-  return operator
+  const a = getAuth()
+  return a.auth === 'credentials' ? (a.operator ?? '') : operator
 }
 
 export function setOperator(id: string) {
@@ -345,6 +356,7 @@ export function setOperator(id: string) {
 }
 
 export function useOperator(): [string, (id: string) => void] {
+  const auth = useAuth()
   const op = useSyncExternalStore(
     (cb) => {
       operatorListeners.add(cb)
@@ -352,7 +364,7 @@ export function useOperator(): [string, (id: string) => void] {
     },
     () => operator,
   )
-  return [op, setOperator]
+  return [auth.auth === 'credentials' ? (auth.operator ?? '') : op, setOperator]
 }
 
 // ---- actions ------------------------------------------------------------------------------
@@ -367,20 +379,35 @@ export interface ActionResult {
 export interface ApproveExtra {
   token?: number
   acknowledge_supersede?: boolean
+  /** rules 7: the approver's password again, for a consequential signature (a step-up) */
+  password?: string
 }
 
-/** approve | reject | cancel. Throws an Error with the bridge's reason. */
+/** The bridge refused a signature for want of the signer's password (a step-up): absent or
+ *  wrong. The card asks for it. */
+export class StepUpNeeded extends Error {}
+
+/** approve | reject | cancel. Throws an Error with the bridge's reason ([`StepUpNeeded`] when
+ *  the password is missing or wrong). */
 export async function intentAction(id: number, action: 'approve' | 'reject' | 'cancel', note: string, extra?: ApproveExtra): Promise<ActionResult> {
   const body: { note?: string } & ApproveExtra = { ...(extra ?? {}) }
   if (note.trim()) body.note = note.trim()
-  const res = await fetch(`/api/intents/${id}/${action}`, {
+  const res = await operatorFetch(`/api/intents/${id}/${action}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-murmur-operator': getOperator() },
+    headers: { 'content-type': 'application/json', ...operatorHeaders(getOperator()) },
     body: JSON.stringify(body),
   })
   const reply = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(reply.detail ?? `bridge returned ${res.status}`)
+  if (!res.ok) {
+    const msg = reply.detail ?? `bridge returned ${res.status}`
+    throw reply.step_up ? new StepUpNeeded(msg) : new Error(msg)
+  }
   return reply as ActionResult
+}
+
+/** This run signs consequential approvals with the password again (credentials run). */
+export function stepsUp(): boolean {
+  return getAuth().auth === 'credentials'
 }
 
 // ---- time ---------------------------------------------------------------------------------

@@ -1,0 +1,21 @@
+/* sign-in (credentials run) and the top bar's operator */
+.login { height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg); }
+.login-card { width: 340px; display: flex; flex-direction: column; gap: 12px; padding: 22px 24px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+.login-card header { display: flex; align-items: baseline; gap: 12px; }
+.login-card .sub { color: var(--muted); font-size: 13px; letter-spacing: 0.04em; }
+.login-card h1 { margin: 6px 0 0; font-size: 12px; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); }
+.login-card label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.login-card input { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 7px 8px; font: 13px var(--mono); }
+.login-card .ix-approve { align-self: flex-start; }
+.login-note { margin: 0; font-size: 12.5px; color: var(--warn); }
+.login-foot { margin: 0; font-size: 11.5px; }
+
+.op-badge { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.op-badge .op-name b { font: 600 13px var(--mono); color: var(--text); }
+.op-badge.dev label { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+.op-badge.dev select { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 3px; padding: 3px 6px; font: 12px var(--mono); }
+
+/* the step-up at signing: the signer's password, sent with the signature and dropped */
+.ix-stepup { flex: 1 1 100%; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.ix-stepup input { flex: 1; min-width: 120px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 7px 8px; font: 12.5px var(--mono); }
+.ix-stepup.bad input { border-color: var(--bad); }

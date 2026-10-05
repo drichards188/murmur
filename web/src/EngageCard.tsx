@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Check, Intent } from './decisions'
-import { fmtDuration, getOperator, intentAction, useOperator, useOperators } from './decisions'
+import { fmtDuration, getOperator, intentAction, StepUpNeeded, stepsUp, useOperator, useOperators } from './decisions'
 import { reportView } from './operatorView'
 import {
   abortEngagement,
@@ -188,6 +188,11 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // rules 7: every engagement signature re-enters the signer's password (credentials run),
+  // so a signature can't come from a stale or shared session
+  const stepUp = stepsUp()
+  const [password, setPassword] = useState('')
+  const [stepUpError, setStepUpError] = useState(false)
   const [operator] = useOperator()
   const ops = useOperators()
   const view = i.engage
@@ -216,7 +221,9 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
   const signHint = isProposer
     ? `You (${operator}) proposed this: the proposer may not approve it (two-person rule).`
     : !hasAuthority
-      ? `${operator} has no engagement authority (MURMUR_ENGAGE_OPERATORS). Act as one of: ${(view?.eligible ?? []).join(', ') || 'none listed'}.`
+      ? stepUp
+        ? `${operator} has no engagement authority. Operators who may sign: ${(view?.eligible ?? []).join(', ') || 'none listed'}; each signs at their own console with their own password.`
+        : `${operator} has no engagement authority (MURMUR_ENGAGE_OPERATORS). Act as one of: ${(view?.eligible ?? []).join(', ') || 'none listed'}.`
       : alreadySigned
         ? `You (${operator}) already signed; another operator with engagement authority must.`
         : !live
@@ -257,9 +264,13 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
     setError(null)
     viewed.current.decided = true
     reportView(i, 'decide', viewed.current.openedAt, action)
+    setStepUpError(false)
     try {
-      const extra = action === 'approve' && shown ? { token: shown.id } : undefined
+      const extra: { token?: number; password?: string } = {}
+      if (action === 'approve' && shown) extra.token = shown.id
+      if (action === 'approve' && stepUp) extra.password = password
       setShown(null)
+      setPassword('')
       const r = await intentAction(i.id, action, note, extra)
       const last = r.intent.history[r.intent.history.length - 1]
       if (action === 'reject') onDone(`i${i.id} engagement rejected by ${getOperator()}`, 'ok')
@@ -268,6 +279,7 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
       else onDone(`i${i.id} ${r.intent.state}: ${last?.reason ?? ''}`, r.intent.state === 'voided' ? 'bad' : 'ok')
       setBusy(false)
     } catch (e) {
+      setStepUpError(e instanceof StepUpNeeded)
       setError((e as Error).message)
       setBusy(false)
     }
@@ -385,8 +397,21 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
         <button className="ix-reject" disabled={busy || expired} onClick={() => act('reject')}>
           Reject
         </button>
+        {canSign && stepUp && (
+          <label className={`ix-stepup ${stepUpError ? 'bad' : ''}`}>
+            Your password, to sign
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              disabled={busy}
+              onChange={(e) => setPassword(e.target.value)}
+              aria-label="Your password, to sign this engagement"
+            />
+          </label>
+        )}
         {shown ? (
-          <button className="ix-approve eg-approve" disabled={busy || expired || !canApprove || shownLeft <= 0} onClick={() => act('approve')} title={signHint}>
+          <button className="ix-approve eg-approve" disabled={busy || expired || !canApprove || shownLeft <= 0 || (stepUp && !password)} onClick={() => act('approve')} title={signHint}>
             Sign this plan {signed.length + 1}/{needed}
           </button>
         ) : (

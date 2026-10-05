@@ -1,4 +1,5 @@
 import type { Intent } from './decisions'
+import { operatorFetch, operatorHeaders } from './auth'
 import { getOperator } from './decisions'
 
 /** Display instrumentation for the evaluation (Phase G): when an inbox card is rendered,
@@ -77,9 +78,9 @@ export function reportView(i: Intent, event: ViewEvent, openedAt: number, action
     client_t: Date.now(),
   }
   try {
-    fetch('/api/operator/view', {
+    operatorFetch('/api/operator/view', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-murmur-operator': getOperator() },
+      headers: { 'content-type': 'application/json', ...operatorHeaders(getOperator()) },
       body: JSON.stringify(body),
       keepalive: true,
     }).catch(() => {})

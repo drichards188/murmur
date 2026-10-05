@@ -1,4 +1,5 @@
 import ms from 'milsymbol'
+import { operatorFetch, operatorHeaders } from './auth'
 import { getOperator } from './decisions'
 import type { LngLat } from './types'
 
@@ -251,9 +252,9 @@ export function sortTracks(tracks: Track[]) {
 
 /** Declare a track's affiliation (an operator action, logged by the bridge). */
 export async function declareTrack(id: string, affiliation: Affiliation, note?: string): Promise<Track> {
-  const res = await fetch(`/api/tracks/${encodeURIComponent(id)}/declare`, {
+  const res = await operatorFetch(`/api/tracks/${encodeURIComponent(id)}/declare`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-murmur-operator': getOperator() },
+    headers: { 'content-type': 'application/json', ...operatorHeaders(getOperator()) },
     body: JSON.stringify({ affiliation, note: note || null }),
   })
   const body = await res.json().catch(() => ({}))

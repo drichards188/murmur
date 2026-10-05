@@ -5,9 +5,10 @@ import {
   fmtDuration,
   getOperator,
   intentAction,
+  StepUpNeeded,
+  stepsUp,
   useAlertMemory,
   useOperator,
-  useOperators,
   verdict,
 } from './decisions'
 import { EngageCard, EngagementsSection } from './EngageCard'
@@ -189,6 +190,10 @@ function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone, eng
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // rules 7: a tier the policy marks consequential takes the approver's password again
+  const stepUp = stepsUp() && i.policy?.step_up === true
+  const [password, setPassword] = useState('')
+  const [stepUpError, setStepUpError] = useState(false)
   const [operator] = useOperator()
   const selfApproval = i.source.kind === 'human' && i.source.id === operator
   const expired = i.expires_t != null && i.expires_t <= now()
@@ -212,14 +217,19 @@ function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone, eng
     setError(null)
     view.current.decided = true
     reportView(i, 'decide', view.current.openedAt, action)
+    setStepUpError(false)
     try {
-      const extra = action === 'approve' && engaged.length ? { acknowledge_supersede: true } : undefined
+      const extra: { acknowledge_supersede?: boolean; password?: string } = {}
+      if (action === 'approve' && engaged.length) extra.acknowledge_supersede = true
+      if (action === 'approve' && stepUp) extra.password = password
+      setPassword('')
       const r = await intentAction(i.id, action, note, extra)
       const last = r.intent.history[r.intent.history.length - 1]
       if (action === 'reject') onDone(`i${i.id} rejected by ${getOperator()}`, 'ok')
       else if (r.dispatched) onDone(`i${i.id} approved by ${getOperator()}${r.intent.approval?.self_approved ? ' (self-approval)' : ''} and dispatched`, 'ok')
       else onDone(`i${i.id} ${r.intent.state}: ${last?.reason ?? ''}`, r.intent.state === 'voided' ? 'bad' : 'ok')
     } catch (e) {
+      setStepUpError(e instanceof StepUpNeeded)
       setError((e as Error).message)
       setBusy(false)
     }
@@ -336,9 +346,23 @@ function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone, eng
         <button className="ix-reject" disabled={busy || expired} onClick={() => act('reject')}>
           Reject
         </button>
-        <button className="ix-approve" disabled={busy || expired} onClick={() => act('approve')} title={`as ${operator}`}>
+        <button className="ix-approve" disabled={busy || expired || (stepUp && !password)} onClick={() => act('approve')} title={`as ${operator}`}>
           {engaged.length ? `Approve and stop i${engaged.map((e) => e.id).join(', i')}` : selfApproval ? 'Approve (self)' : 'Approve'}
         </button>
+        {stepUp && (
+          <label className={`ix-stepup ${stepUpError ? 'bad' : ''}`}>
+            Consequential: your password to approve
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              disabled={busy}
+              onChange={(e) => setPassword(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && password && !busy && !expired && void act('approve')}
+              aria-label="Your password, to approve"
+            />
+          </label>
+        )}
         {error && <p className="error ix-error">{error}</p>}
       </footer>
     </article>
@@ -535,8 +559,6 @@ interface Notice {
 }
 
 export function InboxPanel({ decisions, vehicles, now, tab, setTab, selection, onFocus, onClose, mem, hidden }: Props & { mem: ReturnType<typeof useAlertMemory>; hidden: Set<string> }) {
-  const [operator, setOperator] = useOperator()
-  const ops = useOperators()
   const [notices, setNotices] = useState<Notice[]>([])
   const [showHidden, setShowHidden] = useState(false)
   const pending = decisions?.inbox.pending ?? []
@@ -572,23 +594,6 @@ export function InboxPanel({ decisions, vehicles, now, tab, setTab, selection, o
           Close
         </button>
       </header>
-      <div className="ix-op">
-        <label>
-          Acting as
-          <select value={operator} onChange={(e) => setOperator(e.target.value)} aria-label="Operator">
-            {(ops.operators.includes(operator) ? ops.operators : [operator, ...ops.operators]).map((o) => (
-              <option key={o} value={o}>
-                {o}
-                {ops.engage.includes(o) ? ' (engagement authority)' : ''}
-              </option>
-            ))}
-          </select>
-        </label>
-        <span className="muted" title="The bridge checks the X-Murmur-Operator header against MURMUR_OPERATORS. Anyone who can reach the bridge can claim any operator.">
-          placeholder auth: no password
-        </span>
-      </div>
-
       {notices.length > 0 && (
         <div className="ix-notices" role="status">
           {notices.map((n) => (

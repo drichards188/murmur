@@ -30,6 +30,8 @@ import { PerfOverlay } from './PerfOverlay'
 import { QueueButton, QueuePanel } from './QueuePanel'
 import { buildOrderLayers } from './orderLayers'
 import { noteFocusedIntent, noteTrackViewed } from './operatorView'
+import { refreshAuth, useAuth } from './auth'
+import { LoginScreen, OperatorBadge } from './Login'
 
 function useUtcClock() {
   const [now, setNow] = useState(() => new Date())
@@ -51,6 +53,11 @@ function PerfMark() {
 
 export default function App() {
   const { state, status, decisions, tracks, setView } = useBridge()
+  // who this console acts for (rules 7): asked once the bridge answers, and again on reconnect
+  const auth = useAuth()
+  useEffect(() => {
+    if (status === 'live') void refreshAuth()
+  }, [status])
   perfRenderBegin()
   const clock = useUtcClock()
   const [showTracks, setShowTracks] = useState(false)
@@ -297,6 +304,9 @@ export default function App() {
   useLayoutEffect(() => perfCommitted(), [state])
   useEffect(() => perfUpdateEnd(), [state])
 
+  // a credentials run: nothing but the sign-in until an operator has signed in
+  if (auth.auth === 'credentials' && !auth.signed_in) return <LoginScreen />
+
   return (
     <div className="app">
       <PerfMark />
@@ -325,6 +335,7 @@ export default function App() {
         <button className="ghost platforms-btn" onClick={() => setShowPlatforms((v) => !v)}>
           Platforms
         </button>
+        <OperatorBadge />
         <span className="clock">{clock}</span>
       </header>
       <ErrorBoundary name="Fleet list" className="slot fleet">

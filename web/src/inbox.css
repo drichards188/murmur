@@ -11,10 +11,6 @@
 .ix-top h2 { margin: 0; font-size: 12px; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); }
 .ix-top .seg { margin-left: 0; }
 .ix-top .close { margin-left: auto; }
-.ix-op { display: flex; align-items: center; gap: 12px; padding: 7px 14px; border-bottom: 1px solid var(--line); font-size: 12px; }
-.ix-op label { display: flex; align-items: center; gap: 8px; color: var(--muted); }
-.ix-op select { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 3px; padding: 3px 6px; font: 12px var(--mono); }
-.ix-op .muted { font-size: 11px; font-style: italic; }
 .ix-notices { padding: 6px 12px 0; display: flex; flex-direction: column; gap: 4px; }
 .ix-notices p { margin: 0; padding: 6px 10px; font-size: 12.5px; border-radius: 3px; cursor: pointer; border: 1px solid; }
 .ix-notices p.ok { color: #cdeedb; background: #14261c; border-color: #2c5a40; }
