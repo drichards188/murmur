@@ -1004,7 +1004,8 @@ pub fn link_gap_limit_ms(v: Option<&crate::world::VehicleFacts>, ec: &EngageRule
 /// - ArduRover (boats, UGVs): `FS_GCS_ENABLE` 1 (not 2, which continues in AUTO) and
 ///   `FS_ACTION` 1 (RTL) for return, 2 (Hold) for abort, 6 (Loiter, else Hold) for loiter.
 /// - ArduSub: `FS_GCS_ENABLE` 3 (depth hold) for abort and loiter; it has no return.
-/// - Blimp (its only action is Land), AntennaTracker and a drifter: none.
+/// - Blimp (its GCS failsafe only disarms, and ships off; the refusal said Land before rules
+///   7), AntennaTracker and a drifter: none.
 ///
 /// The timer (`FS_LONG_TIMEOUT` on Plane, `FS_GCS_TIMEOUT` elsewhere) is at most the
 /// approval's link-gap limit (whole seconds, at least [`PRELOAD_TIMER_MIN_S`]), so the
@@ -1215,6 +1216,8 @@ fn preload_check(uid: Option<&Uid>, fallback: Fallback, world: &WorldSnapshot, e
                 p.describe()
             ),
         ),
+        // rules 7 (murmur-a9h): Blimp 4.8 has no lost-link Land; its GCS failsafe disarms
+        Err(_) if ec.rules_version >= crate::rules::QUEUE_FOLLOWUPS_SINCE && platform_autopilot(v) == Some(AutopilotKind::Blimp) => check(r, uid, Outcome::Fail, format!("Blimp 4.8's only lost-link action is to disarm (its GCS failsafe, off as shipped): fallback {} can't be its own failsafe", fallback.as_str())),
         Err(why) => check(r, uid, Outcome::Fail, why),
     }
 }

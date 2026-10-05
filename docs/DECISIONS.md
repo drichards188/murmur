@@ -651,8 +651,9 @@ group. Dates are 2026.
   vehicle's state what the log can record exactly. Replay accepts the write-ahead and binds
   it: a vehicle task's start is logged ahead and nothing else is, and on an order's first
   delivery a vehicle reports taking it only after its start was logged, so a forged log that
-  drops the write-ahead is caught. Residual: a carry-over from a rules 5 or 6 log keeps the
-  old window.
+  drops the write-ahead is caught. The engine also refuses an op ending `requeued` after its
+  start went out on that delivery (it may be running: it ends `unconfirmed`), which replay
+  rejects in every log. Residual: a carry-over from a rules 5 or 6 log keeps the old window.
 - **A mission waits for its platform's own lost-link values; a hold or rtl never does**
   (10-04, murmur-85l; rules 7). After an engagement ended its platform carried the
   engagement's lost-link action (its fallback on a few seconds' timer) until the restore

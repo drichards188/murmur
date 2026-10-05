@@ -867,9 +867,11 @@ fn a_dispatched_order_whose_link_was_lost_before_the_start_goes_back_to_the_queu
     fx.engine.dispatch_or_queue(id, &w).unwrap();
     fx.engine.record_op_state_ahead(id, &uid("sky-1"), "starting mission: mission mode commanded").unwrap();
     fx.engine.record_op_state(id, &uid("sky-1"), "acked", "accepted").unwrap();
-    fx.engine
-        .record_op_state(id, &uid("sky-1"), "requeued", "link lost")
-        .unwrap();
+    // rules 7: its op can't even end requeued after its start went out (it ends unconfirmed)
+    assert!(matches!(
+        fx.engine.record_op_state(id, &uid("sky-1"), "requeued", "link lost"),
+        Err(EngineError::NotItsOrder { .. })
+    ));
     assert!(fx.engine.requeue(id).is_err());
     assert_eq!(fx.state(id), State::Dispatched);
 }
@@ -1315,8 +1317,20 @@ fn replay_catches_an_op_requeued_after_its_start_went_out() {
     fx.engine.record_op_state(id, &uid("sky-1"), "acked", "accepted").unwrap();
     fx.engine.record_op_state(id, &uid("sky-1"), "active", "flying it").unwrap();
     replays(&fx);
-    fx.engine.record_op_state(id, &uid("sky-1"), "requeued", "link lost").unwrap();
-    let r = replay_str(&fx.log.text()).unwrap();
+    // rules 7: the engine refuses it too; a log that has it anyway
+    assert!(matches!(
+        fx.engine.record_op_state(id, &uid("sky-1"), "requeued", "link lost"),
+        Err(EngineError::NotItsOrder { .. })
+    ));
+    let text = forge(&fx.log.text(), |ev| {
+        let mut e = ev.last().unwrap().clone();
+        if let EventBody::OpState { state, detail, .. } = &mut e.body {
+            *state = "requeued".into();
+            *detail = "link lost".into();
+        }
+        ev.push(e);
+    });
+    let r = replay_str(&text).unwrap();
     assert!(
         r.mismatches.iter().any(|m| m.what.starts_with("op requeued after its start went out")),
         "{:?}",

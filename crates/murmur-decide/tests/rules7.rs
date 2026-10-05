@@ -290,3 +290,38 @@ fn a_hold_or_rtl_is_never_held_for_a_restore() {
     // rules 6 never held one
     assert!(queue::all_reachable(&reach(orbit(NEAR_CRISSY, 150.0, &["sky-1"]), 6)));
 }
+
+// ---- murmur-a9h: the airship's refusal says what its firmware does -----------------------
+
+#[test]
+fn an_airships_fallback_refusal_says_its_failsafe_only_disarms() {
+    let mut w = world_at(T0);
+    let mut lta = vehicle("lta", NEAR_CRISSY);
+    lta.autopilot = Some(Fact::new(AutopilotKind::Blimp, T0));
+    w.vehicles.insert(uid("lta-1"), lta);
+    let p = Proposal::new(
+        Task::Engage {
+            track: "T-0001".into(),
+            effect_radius_m: 75.0,
+            window: None,
+            fallback: Fallback::Return,
+        },
+        vec![uid("lta-1")],
+    );
+    let s = spec(human(), p);
+    let detail = |version: u32| {
+        let mut r = policy().rules;
+        r.rules_version = version;
+        rules::evaluate(&s, &w, &r)
+            .into_iter()
+            .find(|c| c.rule == RuleId::FallbackPreload)
+            .map(|c| (c.outcome, c.detail))
+            .unwrap()
+    };
+    let (outcome, now) = detail(RULES_VERSION);
+    assert_eq!(outcome, Outcome::Fail);
+    assert!(now.contains("only lost-link action is to disarm"), "{now}");
+    // rules 6 logs keep the text they were decided with
+    let (_, before) = detail(6);
+    assert!(before.contains("only lost-link action is Land"), "{before}");
+}

@@ -2681,6 +2681,14 @@ impl Engine {
         ) {
             return Err(EngineError::NotItsOrder { id, why: why.into() });
         }
+        // rules 7: what replay rejects in every log, the engine refuses too: an op whose start
+        // went out on this delivery may be running, so it ends `unconfirmed`, never `requeued`
+        if start.required && state == queue::REQUEUED_OP && intent.start_went_out().contains(uid) {
+            return Err(EngineError::NotItsOrder {
+                id,
+                why: "op requeued after its start went out (it may be running: it ends unconfirmed)".into(),
+            });
+        }
         self.emit(EventBody::OpState {
             intent: id,
             uid: uid.clone(),

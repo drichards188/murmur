@@ -859,7 +859,11 @@ Rules versions:
   fills from its ledger and replay recomputes from the log's; the reach says why, and a
   human's approval that goes back to the inbox from the queue says what held it); an order
   queued for an engagement's platform supersedes the engagement in the step that queues it,
-  as a dispatch does (cause `superseded`, no fallback; the intent queued last). Gated in
+  as a dispatch does (cause `superseded`, no fallback; the intent queued last); the engine
+  refuses an op that ends `requeued` after its start went out on that delivery (replay
+  rejects that in every log; before rules 7 the engine still wrote it); and an airship's
+  `fallback_preload` refusal says its GCS failsafe only disarms (it said Land, which Blimp 4.8
+  doesn't have: murmur-a9h). Gated in
   `queue::reach`, `Engine::record_op_state_ahead` and `op_state_mismatch`,
   `Engine::supersede_engagement` and `supersede_mismatch`, the dequeue's waiting reach and
   `expire_queued`'s reason; the bridge's write-ahead, its restores (none into a dead link, one
