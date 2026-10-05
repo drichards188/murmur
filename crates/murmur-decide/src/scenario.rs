@@ -1978,8 +1978,11 @@ fn dispatch_approved(
                         supersede_engagements(engine, id, &uids, engaging, failures, s);
                     }
                 }
-                // rules 7: refused (no queue for its kind, the platform owed its values)
-                Ok(Routed::Voided { .. }) => {}
+                // rules 7: refused (no queue for its kind, the platform owed its values), but
+                // it stands over an engagement on its vehicles all the same (as on the bridge)
+                Ok(Routed::Voided { .. }) => {
+                    supersede_engagements(engine, id, &uids, engaging, failures, s);
+                }
                 Err(e) => failures.push(format!("t={s}: dispatch {id}: {e}")),
             }
             continue;

@@ -1068,7 +1068,16 @@ impl Erig {
     /// [`Erig::approved`] on a watched fake (its link can be cut): nominated, signed,
     /// dispatched, its lost-link preload confirmed and its intercept sent.
     async fn approved_watched(&self, fallback: &str) -> (IntentId, Arc<VehicleCell>, crate::tasks::tests::Watch) {
-        let (cell, w) = self.r.watched(1, Firmware::Copter, "fpv", TARGET, quick());
+        self.approved_watched_at(fallback, TARGET).await
+    }
+
+    /// [`Erig::approved_watched`] with the platform starting at `at` (lat, lon).
+    async fn approved_watched_at(
+        &self,
+        fallback: &str,
+        at: (f64, f64),
+    ) -> (IntentId, Arc<VehicleCell>, crate::tasks::tests::Watch) {
+        let (cell, w) = self.r.watched(1, Firmware::Copter, "fpv", at, quick());
         sleep(Duration::from_millis(500)).await;
         self.picture().await;
         let id = self.r.d.submit(&op("op-1"), self.nomination(fallback)).await.expect("nominated").id;
@@ -1186,6 +1195,55 @@ async fn a_mission_for_an_engaging_platform_stops_it_and_goes_once_its_own_value
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_mission_refused_for_its_platforms_own_values_still_supersedes_the_engagement() {
+    // re-check of c577d5d, item A (rules 7): under a policy that never queues an orbit, an
+    // operator's orbit for the platform of an engagement under way (its link fine) can't be
+    // sent over the engagement's lost-link action and can't wait: it is refused. The newest
+    // order stands all the same, as a dispatched or queued one does: the engagement is stopped
+    // in the refusal's step, superseded, no fallback, and the platform's own values go back;
+    // the orbit given again then goes. (Before, the orbit was voided and the engagement went
+    // on; its reason said the orbit waits for a restore that could not happen.)
+    let e = engage_rig_policy(None, PathBuf::from("memory"), |p| {
+        p.rules.task_duration_s = 60;
+        let mut q = p.queue();
+        q.kind.insert(murmur_decide::TaskKind::Orbit, murmur_decide::KindQueue { expire_s: Some(0) });
+        p.queue = Some(q);
+    });
+    let (id, _cell, _w) = e.approved_watched("return").await;
+    let mut req = orbit(1);
+    req.params.center = Some([TARGET.1 + 0.004, TARGET.0]);
+    let o = e.r.d.submit(&op("op-1"), req.clone()).await.expect("orbit");
+    assert_eq!(o.state, State::Voided, "{}", o.intent);
+    let why = e.r.reason(o.id);
+    assert!(why.contains(&format!("this order stops engagement {id} (superseded, no fallback)")), "{why}");
+    assert!(why.contains("a hold or rtl goes at once"), "{why}");
+    assert_eq!(e.r.state(id), State::Aborted, "{}", e.r.reason(id));
+    let stop = stopped(&e.r.log, id);
+    assert_eq!(stop["cause"]["kind"], "superseded", "{stop}");
+    assert_eq!(stop["cause"]["by"], o.id.0, "{stop}");
+    assert!(stop["fallback"].is_null(), "{stop}");
+    // the stop right after the refusal, nothing logged between
+    let lines = e.r.log.lines();
+    let void = lines
+        .iter()
+        .position(|l| l.contains("\"to\":\"voided\"") && l.contains(&format!("\"intent\":{}", o.id.0)))
+        .expect("the refusal");
+    assert!(lines[void + 1].contains("\"type\":\"engage.stopped\""), "{}", lines[void + 1]);
+    // its own values go back; the orbit given again goes at once
+    for _ in 0..20 {
+        e.tick_on_wall().await;
+        if preloads(&e.r.log).iter().any(|p| p.0 == "restore" && p.2) {
+            break;
+        }
+    }
+    assert!(preloads(&e.r.log).iter().any(|p| p.0 == "restore" && p.2), "{:?}", preloads(&e.r.log));
+    let again = e.r.d.submit(&op("op-1"), req).await.expect("orbit");
+    assert_eq!(again.state, State::Dispatched, "{}", again.intent);
+    let rep = replay::replay_str(&e.r.log.text()).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+}
+
+#[tokio::test(start_paused = true)]
 async fn after_an_outage_the_platforms_own_values_go_back_before_a_queued_mission() {
     // murmur-85l (rules 7): an operator aborts an engagement while its platform is out of
     // contact; its own lost-link values are owed back and can't be put back. During the
@@ -1246,12 +1304,17 @@ async fn a_platform_left_on_a_superseded_intercept_says_so_in_its_restore_alert(
     // supersedes the engagement; the platform's own lost-link values can't go back, so the
     // orbit waits, and the platform keeps loitering at the effect point on the stopped
     // engagement's intercept. Nothing can be released; the restore alert says where it is
+    // The platform starts 500 m off the target, so no release can be ready before the orbit
+    // supersedes the engagement (re-check of c577d5d, item B: on the target, at some start
+    // seconds the effect was released during its ticks on station; bd murmur-ek3)
     let e = engage_rig_policy(None, PathBuf::from("memory"), |p| p.rules.task_duration_s = 60);
-    let (id, cell, w) = e.approved_watched("return").await;
-    // on station over the effect point
-    for _ in 0..5 {
+    let (id, cell, w) = e.approved_watched_at("return", (TARGET.0, TARGET.1 + 0.0057)).await;
+    // on its way to the effect point, the intercept under way
+    for _ in 0..3 {
         e.tick_on_wall().await;
     }
+    assert_eq!(e.r.state(id), State::Dispatched, "{}", e.r.reason(id));
+    assert!(e.tracks.take_effects().is_empty(), "nothing released before the orbit");
     super::queue::go_silent(&cell, &w, 5.0);
     let mut req = orbit(1);
     req.params.center = Some([TARGET.1 + 0.004, TARGET.0]);

@@ -216,9 +216,15 @@ link to fail, nor sent twice, nor sent stale.
   platform whose engagement is still under way waits the same way (queued, it supersedes the
   engagement, below; the restore runs; then it goes). The hold is not the queue's to waive:
   for a kind the policy never queues (`[queue.kind.<kind>] expire_s = 0`) the mission has
-  nowhere to wait, so it is voided, saying why (`Routed::Voided`), and given again once the
-  restore confirmed; every dispatch path refuses one (`dispatch_inner`), and replay flags any
-  mission dispatched to a vehicle its ledger shows still owed, whatever the kind's queue.
+  nowhere to wait, so it is voided, saying why (`Routed::Voided`, reason `system: not sent:
+  ...`), and given again once the restore confirmed; every dispatch path refuses one
+  (`dispatch_inner`), and replay flags any mission dispatched to a vehicle its ledger shows
+  still owed, whatever the kind's queue. Refused, it still stands over an engagement on its
+  vehicles, as a dispatched or queued order does: the refusal opens a step in which the
+  bridge stops the engagement, `superseded` by it, no fallback (the reason says so: `this
+  order stops engagement ... and the restore of its own values starts now`), and the restore
+  runs; refused once the engagement had ended, the reason says the restore is pending. Either
+  way it says a hold or rtl goes at once.
   The bridge no longer tries a restore into a dead link and tries it at once when the vehicle
   is heard again, whatever the backoff of attempts the outage cost; the inbox's restore alert
   lists the missions waiting for it.
@@ -309,7 +315,8 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
   `Engine::stop_engagement_system(id, reason)` (the bridge: task failed) and
   `Engine::supersede_engagement(id, by)` (another order dispatched to its platform: cause
   `superseded`, `fallback: null`; refused unless `by` was dispatched to vehicles that
-  include the platform). A picture more than `max_picture_gap_s` after the last
+  include the platform, or from rules 7 queued for them, or refused for their own lost-link
+  values, in that order's step). A picture more than `max_picture_gap_s` after the last
   fails `picture_gap`. `step_engagements` returns a `StepOutcome`: the events to act on,
   and each engagement whose step failed, on its own.
   `dispatch` and `finish` refuse engagements; `dispatch_order` returns `Order::Engage`.
@@ -673,7 +680,9 @@ roster and the loiter radius from rules 4 (older logs don't carry them):
 - `engage.stopped`: a failed picture is stopped for the picture, never under another cause;
   `superseded` names another intent whose vehicles include the platform, the one dispatched
   last and still under way (the bridge supersedes in the same step as that dispatch), or
-  from rules 7 the one queued last and still queued, with that intent's own source; a `system` stop that quotes a vehicle event (`the platform's
+  from rules 7 the one queued last and still queued, or a mission just refused for its
+  platform's own lost-link values (its kind never queued), each only in that order's step,
+  with that intent's own source; a `system` stop that quotes a vehicle event (`the platform's
   failsafe took over (...)`, `the platform left its intercept (mode ...)`) or the intercept's
   report (`the platform's intercept <state>: <detail>`) follows that `vehicle.event` on the
   engagement's own platform, or that `op.state` of its intercept, since its last picture.
@@ -881,7 +890,8 @@ Rules versions:
   queued for an engagement's platform supersedes the engagement in the step that queues it,
   as a dispatch does (cause `superseded`, no fallback; from rules 7 a supersede, queued or
   dispatched, only in the step of that order, nothing logged between); a mission for a kind
-  the policy never queues is voided while its platform is owed its values (never sent);
+  the policy never queues is voided while its platform is owed its values (never sent), and
+  that refusal still supersedes an engagement in play on its vehicles, in its step;
   every delivery logs its start, or its follow of an order already running, ahead; the engine
   refuses an op that ends `requeued` after its start went out on that delivery (replay
   rejects that in every log; before rules 7 the engine still wrote it); and an airship's
@@ -894,7 +904,8 @@ Rules versions:
   decision's inputs, `ahead` on an op state; and replay refuses an engagement superseded by a
   queued order under older rules. Fixtures: `tests/data/audit/v7-engagement-scenario-01.jsonl`,
   `v7-queued-order-supersedes-scenario-67.jsonl`,
-  `v7-mission-waits-for-restore-scenario-68.jsonl`, and a live run with its anchors
+  `v7-mission-waits-for-restore-scenario-68.jsonl`,
+  `v7-refused-mission-supersedes-scenario-71.jsonl`, and a live run with its anchors
   (`v7-queue-followups-live.jsonl`, `tests/data/anchors/v7-queue-followups-live.anchors`,
   stand-ins, clean build 6e73f5c: an operator's orbit for the engaging USV queued for its own
   lost-link values, superseding the engagement with no fallback, sent the second after the

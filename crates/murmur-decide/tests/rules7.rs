@@ -305,9 +305,13 @@ fn with_no_queue_for_its_kind_a_mission_is_refused_not_sent_over_the_lost_link_a
     let voided = now
         .log
         .lines()
-        .find(|l| l.contains("\"to\":\"voided\"") && l.contains("its own lost-link failsafe"))
+        .find(|l| l.contains("\"to\":\"voided\"") && l.contains("own lost-link failsafe"))
         .unwrap_or_else(|| panic!("the orbit refused, saying why:\n{}", now.log));
+    // the engagement had ended (aborted at t=30): the restore is pending, nothing stopped
     assert!(voided.contains("the policy queues no orbit order"), "{voided}");
+    assert!(voided.contains("is not confirmed back since engagement i1 preloaded it"), "{voided}");
+    assert!(voided.contains("a hold or rtl goes at once"), "{voided}");
+    assert!(!voided.contains("this order stops engagement"), "{voided}");
     // rules 6 sent it at once; that log, claimed as rules 7, is a mission dispatched to a
     // vehicle still owed its values
     let before = run("70-mission-refused-without-queue.toml", Some(6));
@@ -319,6 +323,66 @@ fn with_no_queue_for_its_kind_a_mission_is_refused_not_sent_over_the_lost_link_a
     });
     let w = whats(&claimed, RulesAccepted::default());
     assert!(w.iter().any(|m| m == "a mission dispatched to a vehicle still owed its own lost-link values (rules 7)"), "{w:?}");
+}
+
+#[test]
+fn a_mission_refused_for_its_platforms_own_values_still_supersedes_the_engagement() {
+    // re-check of c577d5d, item A: under a policy that never queues an orbit, the orbit for a
+    // platform whose engagement was under way was voided and the engagement went on (the
+    // probe: still dispatched at t=200), while a dispatched (rules 6) or queued (rules 7)
+    // orbit stopped it. The newest order stands either way: the refusal stops it, superseded,
+    // in the same step
+    let now = run("71-refused-mission-supersedes-engagement.toml", None);
+    assert!(now.ok, "{:?}", now.failures);
+    assert_eq!(now.tamper_detected, Some(true), "{:?}", now.tamper_mismatches);
+    let lines: Vec<&str> = now.log.lines().collect();
+    let refused: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.contains("\"to\":\"voided\"") && l.contains("system: not sent: "))
+        .map(|(k, _)| k)
+        .collect();
+    assert_eq!(refused.len(), 2, "refused at t=20 and again at t=30:\n{}", now.log);
+    // the first, the engagement under way: it stops it, and says so; the stop is next
+    let first = lines[refused[0]];
+    assert!(first.contains("carries engagement i1's lost-link action"), "{first}");
+    assert!(first.contains("this order stops engagement i1 (superseded, no fallback)"), "{first}");
+    assert!(first.contains("the restore of its own values starts now (as soon as the platform is heard)"), "{first}");
+    assert!(first.contains("a hold or rtl goes at once"), "{first}");
+    let stop = lines[refused[0] + 1];
+    assert!(stop.contains("\"type\":\"engage.stopped\"") && stop.contains("\"kind\":\"superseded\""), "{stop}");
+    assert!(stop.contains("\"fallback\":null"), "{stop}");
+    // the second, the engagement already stopped: the restore is pending
+    let second = lines[refused[1]];
+    assert!(second.contains("is not confirmed back since engagement i1 preloaded it"), "{second}");
+    assert!(second.contains("a hold or rtl goes at once"), "{second}");
+    assert!(!second.contains("this order stops engagement"), "{second}");
+    // under rules 6 the same orbit went out at once (and superseded the engagement)
+    let before = run("71-refused-mission-supersedes-engagement.toml", Some(6));
+    assert!(before.failures.iter().any(|f| f.contains("t=21: expected the task voided, got dispatched")), "{:?}", before.failures);
+    // a stop by a refused order only in the step that refused it
+    let w = whats(&stop_moved_later(&now.log, 3), RulesAccepted::default());
+    assert!(w.iter().any(|m| m == "superseded by a voided order outside the step that refused it"), "{w:?}");
+    // and only by a refusal: a void that is not one opens no step
+    let forged = forge(&now.log, |ev| {
+        let void = ev
+            .iter()
+            .position(|e| matches!(&e.body, EventBody::IntentState { reason, .. } if reason.starts_with("system: not sent: ")))
+            .unwrap();
+        if let EventBody::IntentState { reason, .. } = &mut ev[void].body {
+            *reason = "system: withdrawn".into();
+        }
+    });
+    let w = whats(&forged, RulesAccepted::default());
+    assert!(w.iter().any(|m| m == "superseded by a voided order outside the step that refused it"), "{w:?}");
+    // a log claiming rules 6 can't carry an engagement superseded by a refused order
+    let claimed = forge(&now.log, |ev| {
+        if let EventBody::RunStarted { rules_version, .. } = &mut ev[0].body {
+            *rules_version = Some(6);
+        }
+    });
+    let w = whats(&claimed, RulesAccepted::Exactly(6));
+    assert!(w.iter().any(|m| m == "superseded by an order that was not dispatched"), "{w:?}");
 }
 
 // ---- murmur-85l: a mission waits for its platform's own lost-link values ----------------

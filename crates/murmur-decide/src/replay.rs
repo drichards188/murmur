@@ -101,7 +101,7 @@ use crate::engage::{
     PictureToken, StopCause, TrackIdentity,
 };
 use crate::engine::{
-    PRELOAD_CHANGED, PRELOAD_FAILED, StartAhead, dispatched_event, engaged_vehicles,
+    PRELOAD_CHANGED, PRELOAD_FAILED, REFUSED, StartAhead, dispatched_event, engaged_vehicles,
     is_self_approval, op_state_mismatch, op_state_owner, order_for, preload_mismatch,
     preload_verdict, supersede_mismatch, waiting_vehicles,
 };
@@ -1786,7 +1786,7 @@ fn replay_inner<S: AsRef<str>>(
                 transition,
                 from,
                 to,
-                ..
+                reason,
             } => {
                 let Some(tr) = intents.get_mut(intent) else {
                     bad(
@@ -1914,6 +1914,21 @@ fn replay_inner<S: AsRef<str>>(
                     Transition::Abort => {
                         tr.stopped = false;
                         r.aborts += 1;
+                    }
+                    // rules 7: a mission refused for its platform's own lost-link values (its
+                    // kind never queued) opens a step in which it supersedes the engagements
+                    // on its vehicles; no other void does
+                    Transition::Void
+                        if policy.as_ref().is_some_and(|p| {
+                            p.rules.rules_version >= rules::QUEUE_FOLLOWUPS_SINCE
+                                && !p.queue().queues(tr.spec.kind())
+                                && !restores.owed_for(&tr.spec, &p.rules).is_empty()
+                        }) && matches!(tr.state, State::Approved | State::AutoApproved)
+                            && !matches!(tr.spec.kind(), TaskKind::Hold | TaskKind::Rtl)
+                            && reason.starts_with(&format!("system: {REFUSED}")) =>
+                    {
+                        tr.stopped = false;
+                        step = Some((*intent, e.seq));
                     }
                     Transition::Void => tr.stopped = false,
                     Transition::Queue => {

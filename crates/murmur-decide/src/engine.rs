@@ -1510,10 +1510,10 @@ impl Engine {
             Source::Human { id } => format!("human {id}"),
             Source::Agent { id } => format!("agent {id}"),
         };
-        let how = if queued {
-            " (queued until its vehicles can be reached)"
-        } else {
-            ""
+        let how = match other.state() {
+            State::Queued => " (queued until its vehicles can be reached)",
+            State::Voided => " (not sent: its platform's own lost-link values go back first)",
+            _ => "",
         };
         let reason = format!("superseded by {by}{how} from {who}: that order stands; no fallback commanded");
         self.stop_engagement(id, StopCause::Superseded { by, source }, reason, false)?;
@@ -1840,6 +1840,37 @@ impl Engine {
         Some(format!("vehicle {uid}: {}", o.waiting_detail()))
     }
 
+    /// Rules 7: why a mission of a kind the policy never queues is refused (voided) instead of
+    /// sent, if it is: a vehicle still owed its own lost-link values. Says whether an
+    /// engagement in play there is stopped by this order (the bridge supersedes it in the same
+    /// step; its restore then goes) or the restore is pending, and that a hold or rtl goes.
+    fn refusal(&self, spec: &IntentSpec) -> Option<String> {
+        if matches!(spec.kind(), TaskKind::Hold | TaskKind::Rtl) {
+            return None;
+        }
+        let owed = self.restore_owed_for(spec);
+        let (uid, o) = owed.iter().next()?;
+        let values: Vec<String> = o.values.iter().map(|(n, v)| format!("{n} {v}")).collect();
+        let by: Vec<String> = o.by.iter().map(ToString::to_string).collect();
+        let engaged: BTreeSet<IntentId> = self.engaged_for(spec).into_values().collect();
+        let engaged: Vec<String> = engaged.iter().map(ToString::to_string).collect();
+        let kind = spec.kind().as_str();
+        Some(if engaged.is_empty() {
+            format!(
+                "{REFUSED}vehicle {uid}'s own lost-link failsafe ({}) is not confirmed back since engagement {} preloaded it, and the policy queues no {kind} order to wait for the restore: give it again once the restore confirms (a hold or rtl goes at once)",
+                values.join(", "),
+                by.join(", ")
+            )
+        } else {
+            format!(
+                "{REFUSED}vehicle {uid} carries engagement {}'s lost-link action (its own failsafe {} owed back); this order stops engagement {} (superseded, no fallback) and the restore of its own values starts now (as soon as the platform is heard), but the policy queues no {kind} order to wait for it: give it again once the restore confirms (a hold or rtl goes at once)",
+                by.join(", "),
+                values.join(", "),
+                engaged.join(", ")
+            )
+        })
+    }
+
     /// What [`queue::reach`] reads for `spec`: its part of `world`, and (rules 7) its
     /// vehicles' lost-link values still owed back.
     fn reach_inputs(&self, spec: &IntentSpec, world: &WorldSnapshot) -> WorldSnapshot {
@@ -2148,13 +2179,12 @@ impl Engine {
         let cfg = self.policy.queue();
         if !self.reach_needed(&spec) {
             // rules 7: no queue for this kind, but still never a mission over an engagement's
-            // lost-link action: refused, saying why
-            if let Some(why) = self.restore_hold(&spec) {
-                let reason = format!(
-                    "not sent: {why}; the policy queues no {} order to wait for the restore, so give it again once the platform's own values are back",
-                    spec.kind().as_str()
-                );
+            // lost-link action: refused, saying why. The newest order stands all the same: an
+            // engagement in play on its vehicles is stopped in this step (superseded, as a
+            // dispatch or a queueing would), so the platform's own values can go back
+            if let Some(reason) = self.refusal(&spec) {
                 self.void(id, &reason)?;
+                self.step = Some((id, self.seq));
                 return Ok(Routed::Voided { reason });
             }
             return Ok(Routed::Dispatched(self.dispatch_order(id)?));
@@ -3321,6 +3351,15 @@ pub(crate) fn supersede_mismatch(
         }
         return None;
     }
+    // rules 7: a mission refused for its platform's own lost-link values (no queue for its
+    // kind) stands over an engagement too, in the step that refused it (`by_last` is that
+    // step, which only such a refusal opens)
+    if queued_ok && by_state == State::Voided {
+        if !by_last {
+            return Some("superseded by a voided order outside the step that refused it");
+        }
+        return None;
+    }
     if !matches!(
         by_state,
         State::Dispatched | State::Effected | State::Aborted | State::Done | State::Failed
@@ -3400,6 +3439,11 @@ pub struct PlatformRestoreReport {
     /// `carried`: the vehicle they were preloaded on.
     pub vehicle: Option<engage::VehicleIdentity>,
 }
+
+/// Rules 7: how the reason of a mission refused for its platform's own lost-link values
+/// begins (after `system: `): the refusal opens a step in which it supersedes the engagements
+/// in play on its vehicles, as a dispatch or a queueing does.
+pub(crate) const REFUSED: &str = "not sent: ";
 
 /// Rules 6: how a stop for a preload that did not confirm begins (after `system: `); replay
 /// requires such a stop to follow an unconfirmed `engage.preload` set.

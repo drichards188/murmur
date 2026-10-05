@@ -740,7 +740,13 @@ group. Dates are 2026.
   (or its failsafe's) until the queued one reaches it, possibly still loitering on the
   intercept path at the effect point with no engagement (nothing can be released); if the
   restore never confirms, the restore alert says so, and a hold or rtl takes it off; if the
-  queued order expires instead, nothing is commanded.
+  queued order expires instead, nothing is commanded. The same holds for a mission refused
+  rather than queued (re-check of c577d5d): under a policy that never queues its kind it is
+  voided while the platform is owed its own values, and it still stops an engagement in play
+  there, `superseded` in the refusal's step, so the restore can run (before, it was voided
+  and the engagement went on, while the same order dispatched or queued stopped it). Its
+  reason says so, or that the restore is pending if the engagement had already ended, and
+  that a hold or rtl goes at once.
 - **A rules change is gated on a named constant** (10-04). Rules 7 is gated on
   `QUEUE_FOLLOWUPS_SINCE` (and `RULES_VERSION` is defined from it), never on a literal 7,
   because another branch (operator authentication) may take the next number first: the branch

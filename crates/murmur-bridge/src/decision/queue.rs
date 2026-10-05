@@ -171,8 +171,18 @@ impl Decision {
                 Ok(())
             }
             // rules 7: refused, saying why (a mission of a kind never queued, its platform
-            // still owed its own lost-link values): nothing sent, nothing superseded
-            Routed::Voided { .. } => Ok(()),
+            // still owed its own lost-link values): nothing sent, but the newest order stands
+            // over an engagement all the same, as a dispatch or a queueing would (stopped in
+            // this step, superseded, no fallback), so the platform's own values can go back
+            Routed::Voided { .. } => {
+                let uids = core
+                    .engine
+                    .intent(id)
+                    .map(|i| i.spec().uids.clone())
+                    .unwrap_or_default();
+                self.stop_superseded_engagements(core, id, &uids);
+                Ok(())
+            }
         }
     }
 
