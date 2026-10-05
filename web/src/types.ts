@@ -111,7 +111,8 @@ export interface Arrival {
 }
 
 export interface FailsafeBranch {
-  action: 'rtl' | 'surface' | 'land' | 'disarm'
+  /** the bridge's `estimate.rs` failsafe_action: nothing lands (the airship's GCS failsafe is off) */
+  action: 'rtl' | 'surface' | 'disarm'
   after_s: number
   fires_t: number
   profile: string

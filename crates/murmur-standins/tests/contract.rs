@@ -900,6 +900,68 @@ async fn copter_gcs_failsafe_takes_its_fs_gcs_enable_action() {
     assert_eq!(lose_the_gcs(&mut v, "LOITER"), ["LOITER"]);
 }
 
+/// ArduPilot Blimp 4.8's GCS failsafe (Blimp/events.cpp failsafe_gcs_check) only disarms,
+/// and ships off: the stand-in does the same, not the RTL or landing the firmware doesn't
+/// have (murmur-3zj).
+#[tokio::test]
+async fn blimp_gcs_failsafe_is_off_and_only_disarms_when_on() {
+    /// `steps` physics steps with the texts they put on the wire (as the boat mission test
+    /// steps: tokio's readiness observed before each send, a breath for loopback delivery)
+    /// and the modes the vehicle went through.
+    async fn run(v: &mut Vehicle, sink: &std::net::UdpSocket, steps: usize) -> (Vec<&'static str>, Vec<String>) {
+        let mut modes = vec![v.st.mode];
+        let mut texts = events(sink);
+        for _ in 0..steps {
+            v.link.sock.writable().await.expect("writable");
+            v.step();
+            std::thread::sleep(Duration::from_micros(200));
+            texts.extend(events(sink));
+            if modes.last() != Some(&v.st.mode) {
+                modes.push(v.st.mode);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(20));
+        texts.extend(events(sink));
+        (modes, texts)
+    }
+    async fn blimp(enable: Option<f32>) -> (Vehicle, std::net::UdpSocket) {
+        let (mut v, sink) = offline(spec("blimp"), 30.0).await;
+        let sink = sink.into_std().expect("std socket");
+        sink.set_nonblocking(true).expect("nonblocking");
+        if let Some(e) = enable {
+            v.params.set("FS_GCS_ENABLE", e).expect("set");
+        }
+        v.st.armed = true;
+        v.set_mode("LOITER");
+        v.gcs_heartbeat(); // heard once, then silent: 10 s is the 5 s timer twice
+        (v, sink)
+    }
+    // off, as the SITL Blimp runs: silence changes nothing
+    let (mut v, sink) = blimp(None).await;
+    assert_eq!(v.params.get("FS_GCS_ENABLE"), Some(0.0));
+    let (modes, texts) = run(&mut v, &sink, 100).await;
+    assert_eq!(modes, ["LOITER"]);
+    assert!(v.st.armed && !v.fs.gcs, "still armed, no failsafe");
+    assert!(
+        texts.iter().all(|t| !t.contains("Failsafe") && !t.contains("Disarming")),
+        "{texts:?}"
+    );
+    // on (the documented 5, Land, included): the flag, a disarm, no mode change, no text
+    // but the disarm's own
+    let (mut v, sink) = blimp(Some(5.0)).await;
+    let (modes, texts) = run(&mut v, &sink, 100).await;
+    assert_eq!(modes, ["LOITER"], "no RTL, no LAND");
+    assert!(v.fs.gcs && !v.st.armed, "the failsafe flag is up and the motors are disarmed");
+    assert!(v.failsafe_active(), "system status critical");
+    assert!(texts.iter().any(|t| t == "Disarming motors"), "{texts:?}");
+    assert!(texts.iter().all(|t| !t.contains("Failsafe")), "{texts:?}");
+    // the GCS heard again: cleared silently
+    v.gcs_heartbeat();
+    let (_, texts) = run(&mut v, &sink, 5).await;
+    assert!(!v.fs.gcs);
+    assert!(texts.is_empty(), "{texts:?}");
+}
+
 #[tokio::test]
 async fn rover_gcs_failsafe_takes_its_fs_action() {
     // an engagement's preload for loiter: FS_ACTION 6, Loiter (else Hold)

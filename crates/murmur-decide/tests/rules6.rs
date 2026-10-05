@@ -120,7 +120,8 @@ fn each_firmware_carries_the_fallbacks_it_has_a_lost_link_action_for() {
     // ArduSub: depth hold for abort and loiter, no return
     assert_eq!(names(&p(Fallback::Abort, Some(AutopilotKind::Sub)).unwrap()), [("FS_GCS_ENABLE".into(), 3.0)]);
     assert!(p(Fallback::Return, Some(AutopilotKind::Sub)).is_err());
-    // none at all: Blimp (Land only), a tracker, a drifter, an unknown autopilot
+    // none at all: Blimp (4.8's GCS failsafe can only disarm it), a tracker, a drifter, an
+    // unknown autopilot
     for ap in [Some(AutopilotKind::Blimp), Some(AutopilotKind::Tracker), Some(AutopilotKind::Drifter), None] {
         assert!(p(Fallback::Return, ap).is_err(), "{ap:?}");
     }

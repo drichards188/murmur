@@ -84,7 +84,11 @@ so a new behavior inherits it:
   announced as "Radio Failsafe" (its 50 Hz radio check wins the race to announce a failsafe
   the 10 Hz GCS check raised, as the motorboat SITL shows; "GCS Failsafe Cleared" when the
   GCS is back); ArduSub's "MYGCS: heartbeat lost" then the action (disarm for a tethered
-  ROV). The GCS-loss
+  ROV); Blimp's, which in 4.8 can only disarm (Blimp/events.cpp `failsafe_gcs_check`: the
+  failsafe flag, then `arming.disarm`, armed or not, no text but the disarm's own; the
+  parameter's documented "5: Land" has nothing behind it), so it ships off and Murmur runs
+  the SITL Blimp and the stand-in with it off, the stand-in disarming as the firmware does
+  when it is set (no RTL or landing, which it had invented before murmur-3zj). The GCS-loss
   (lost-link) timer follows the link: `lost_link_s` per profile in `sim/links.toml` (5 s LOS,
   2 minutes GEO SATCOM, sources and guesses marked there), which `sim/swarm.py` writes into
   stand-ins and SITL vehicles alike as FS_LONG_TIMEOUT (Plane) or FS_GCS_TIMEOUT. An engine
@@ -194,7 +198,7 @@ Differences the comparisons report as notes, by design (the scripts list them un
 |---|---|---|---|---|
 | RQ-4 Global Hawk-class | Stand-in (plane) | STANAG 4586 VSM, SATCOM link profile, MISB 0601 metadata | JSBSim flight model of a HALE airframe + 4586 interface + SATCOM latency and bandwidth | Real ground segment is the manufacturer's own; no official RQ-4 JSBSim model |
 | MQ-9B SkyGuardian-class | Stand-in (plane) | STANAG 4586 VSM, SATCOM, MISB 0601 | JSBSim MALE airframe + 4586 (matches GA-ASI's 4586-based GCS) | Proprietary flight software |
-| CCA (YFQ-42A/44A-class) | Stand-in (plane) | Generic intent API (no open standard) | A-GRA/UCI interface + JSBSim jet model | A-GRA/UCI not public: unattainable openly |
+| CCA (YFQ-42A/44A-class) | Stand-in (plane), WGS SATCOM link profile (a GUESS: its datalinks are not public; the air-to-air link to a crewed lead is not modelled) | Generic intent API (no open standard) | A-GRA/UCI interface + JSBSim jet model | A-GRA/UCI not public: unattainable openly |
 | FVR-90-class VTOL | SITL quadplane | VTOL behavior: vertical takeoff, transition, cruise | ArduPilot QuadPlane SITL tuned to the airframe (mass, speeds) + 4586 if Army/NATO | Real GCS proprietary |
 | Puma 3 AE-class | SITL plane | Plane behavior (exists), MISB 0601 from the gimbal | ArduPilot SITL tuned; AV's DDL link profile | AV ground station and datalink proprietary |
 | Switchblade 600-class | SITL plane | Plane behavior; engagement abstract (Phase E) | ArduPilot SITL tuned to loiter and dash speeds | AV fire-control system proprietary |

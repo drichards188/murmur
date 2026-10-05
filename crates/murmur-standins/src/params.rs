@@ -245,7 +245,13 @@ impl Params {
                 p.put("FS_EKF_THRESH", F32, 0.8, false);
             }
             Firmware::Blimp => {
-                p.put("FS_GCS_ENABLE", I8, 1.0, false);
+                // Off, as Blimp ships it and as Murmur runs the SITL Blimp: 4.8's GCS
+                // failsafe can only disarm (Blimp/events.cpp failsafe_gcs_check calls
+                // arming.disarm; the parameter's documented "5: Land" has no
+                // failsafe_gcs_on_event behind it), and a disarmed airship drifts with the
+                // wind (failsafe.rs, murmur-3zj). The timer is the firmware's default;
+                // swarm.py writes the link profile's, as for every vehicle.
+                p.put("FS_GCS_ENABLE", I8, 0.0, false);
                 p.put("FS_GCS_TIMEOUT", F32, 5.0, false); // Blimp/Parameters.cpp (G2)
                 p.put("BATT_FS_LOW_ACT", I8, 1.0, false); // Land
                 p.put("BATT_FS_CRT_ACT", I8, 1.0, false);

@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 16] = [
+const LOGS: [(&str, u32); 17] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -53,6 +53,9 @@ const LOGS: [(&str, u32); 16] = [
     ("v6-engagement-scenario-01.jsonl", 6),
     ("v6-lost-friendly-accepted-scenario-54.jsonl", 6),
     ("v6-engagement-live.jsonl", 6),
+    // rules 6, master 981cdf3: scenario 66, the small airship nominated; its
+    // fallback_preload refusal as rules 6 worded it (see the test below)
+    ("v6-airship-nomination-scenario-66.jsonl", 6),
     // rules 7 (the queue's follow-ups; a provisional number, so the table names the constant):
     // the same scenario; scenario 66, an operator's hold queued for the engaging USV whose link
     // is cut supersedes the engagement (no fallback); scenario 67, an orbit ordered after an
@@ -66,6 +69,9 @@ const LOGS: [(&str, u32); 16] = [
     ("v7-mission-waits-for-restore-scenario-67.jsonl", QUEUE_FOLLOWUPS_SINCE),
     ("v7-queue-followups-live.jsonl", QUEUE_FOLLOWUPS_SINCE),
 ];
+
+/// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
+const V6_AIRSHIP: &str = "v6-airship-nomination-scenario-66.jsonl";
 
 /// The committed log of the current rules.
 const CURRENT: &str = "v7-engagement-scenario-01.jsonl";
@@ -136,6 +142,28 @@ fn logs_of_every_rules_version_replay_when_their_rules_are_accepted() {
     let r = replay_str(&fixture(name)).unwrap();
     assert!(r.ok(), "{:?}", r.mismatches);
     assert!(r.build.is_some(), "a current log names its build");
+}
+
+/// A check's detail is compared by replay, so its wording is part of the rules version: the
+/// airship's `fallback_preload` refusal still reads as rules 6 wrote it ("only lost-link
+/// action is Land"), although Blimp 4.8's GCS failsafe can only disarm (murmur-3zj). A
+/// build that rewords it without bumping `RULES_VERSION` fails here on a master-written
+/// log.
+#[test]
+fn a_rules_6_airship_nomination_written_by_master_still_replays() {
+    let text = fixture(V6_AIRSHIP);
+    // rules 6 accepted explicitly: the wording it pins is rules 6's
+    let r = with(&text, RulesAccepted::Exactly(6));
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert_eq!(r.rules_version, 6);
+    assert!(r.checks_recomputed > 0);
+    let wording = "Blimp 4.8's only lost-link action is Land (FS_GCS_ENABLE 5): fallback return can't be its own failsafe";
+    assert!(text.contains(wording), "the rules 6 wording of the refusal");
+    let events = parse_log(&text).unwrap();
+    assert!(
+        events.iter().any(|e| matches!(&e.body, EventBody::IntentState { to: State::Rejected, reason, .. } if reason.contains("fallback_preload"))),
+        "rejected for fallback_preload"
+    );
 }
 
 #[test]

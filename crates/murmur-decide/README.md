@@ -848,7 +848,12 @@ Rules versions:
   time), its USV's own lost-link values logged ahead of the write (with its identity), the
   preload set, read again seven times before the release (the last 3 s before it), the
   effect released, the USV's own values restored; an acceptance by an operator without
-  engagement authority refused with a 403, nothing logged).
+  engagement authority refused with a 403, nothing logged); and
+  `v6-airship-nomination-scenario-66.jsonl` (master `981cdf3`), the small airship nominated
+  and refused by `fallback_preload`. Its detail still says "Blimp 4.8's only lost-link
+  action is Land", which misreads the firmware (Blimp 4.8's GCS failsafe can only disarm;
+  the documented Land is not implemented, murmur-3zj); a detail is compared by replay, so
+  the wording is kept and rules 7 corrects it (murmur-a9h).
 - **7** (provisional number: `QUEUE_FOLLOWUPS_SINCE`), the queue's follow-ups to rules 5 and
   6 (murmur-dma, murmur-85l, murmur-636; see "The queue for unreachable vehicles"): a vehicle
   task's start logged ahead of sending it (`op.state` starting with `ahead`; the engine and

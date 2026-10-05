@@ -61,6 +61,10 @@ def main():
            "MURMUR_HTTP_PORT": str(args.http_port), "MURMUR_ROOT": str(ROOT), "PYTHONUNBUFFERED": "1"}
     for k in ("MURMUR_SCENARIO", "MURMUR_AT", "MURMUR_TIDEWATER_URL"):
         env.pop(k, None)
+    # this run's manifest before the bridge starts (as scripts/up.sh): started beside
+    # swarm.py the bridge could read the previous run's sim/run/fleet.json
+    subprocess.run([args.python, str(ROOT / "sim" / "swarm.py"), "--fleet", "tracker-standin",
+                    "--base-port", str(args.base_port), "--manifest-only"], env=env, check=True)
     procs = [
         subprocess.Popen([str(ROOT / "target" / "release" / "murmur-bridge")], cwd=ROOT, env=env,
                          stdout=open(logs / "e2e-tracker-bridge.log", "w"), stderr=subprocess.STDOUT,
@@ -110,7 +114,20 @@ def drive(base):
         print(f"bridge refused the task: {e.code} {e.read()}")
         return False
     if t.get("id") is None and t.get("intent_id") is not None:
-        t = api(base, f"/api/intents/{t['intent_id']}/approve", {"note": "e2e"})["tasking"]
+        if t.get("state") == "pending_approval":
+            t = api(base, f"/api/intents/{t['intent_id']}/approve", {"note": "e2e"})["tasking"]
+        else:
+            # rules 5: approved but queued until the link can carry it; its tasking then
+            # appears on the intent (approving it again is a 409)
+            iid = t["intent_id"]
+            deadline = time.monotonic() + 120
+            while time.monotonic() < deadline and not t.get("tasking"):
+                time.sleep(1)
+                t = api(base, f"/api/intents/{iid}")
+            if not t.get("tasking"):
+                print(f"intent {iid} not dispatched within 120 s")
+                return False
+            t = t["tasking"]
     tid = t["id"]
 
     deadline = time.monotonic() + 120

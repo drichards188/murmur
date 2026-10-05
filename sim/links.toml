@@ -53,7 +53,9 @@
 #                 failsafe). A vehicle's timer comes from the profile it starts on (a gated
 #                 profile's is not used). What the failsafe does is the firmware's
 #                 (sim/params/*.parm, crates/murmur-standins/src/params.rs): RTL for planes,
-#                 copters and rovers, surface for an AUV, disarm for a tethered ROV. While
+#                 copters and rovers, surface for an AUV, disarm for a tethered ROV; the
+#                 airship's is off on both backends (ArduPilot Blimp 4.8's only disarms), so
+#                 its timer is written but never fires. While
 #                 an engagement is under way (decision rules 6) the bridge sets the
 #                 failsafe's action to the engagement's fallback and shortens the timer to
 #                 the approval's link-gap limit (5 s on a streaming link), then puts both back
@@ -126,9 +128,11 @@ alt_step_m = 10
 sample_spacing_m = 50      # the DEM is about 15 m
 max_points = 500
 
-# ---- LOS radio (small UAS datalinks: Puma, Switchblade, FVR-90, CCA control link)
+# ---- LOS radio (small UAS datalinks: Puma, Switchblade, FVR-90, the small airship)
 # Latency 5-30 ms is typical of digital datalinks (vendor sheets for Microhard, Silvus,
 # Doodle Labs). Range: AeroVironment quotes ~20 km LOS for Puma 3 AE. The rest is GUESS.
+# Not the CCA's: a jet at 230 m/s crosses range_max in two minutes, so it is on SATCOM below
+# (sim/platforms.toml, murmur-3zj).
 [class.los]
 loss = 0.005               # GUESS
 burst_len = 3              # GUESS
@@ -168,7 +172,7 @@ terrain = "ramp"           # as for los; a mesh can also route around a shallow 
 terrain_ramp_m = 20
 lost_link_s = 10           # GUESS (table above)
 
-# ---- SATCOM, GEO (default for the satcom class: Global Hawk, Reaper). Follows WGS-class
+# ---- SATCOM, GEO (default for the satcom class: Global Hawk, Reaper, the CCA). Follows WGS-class
 # military GEO satellites (space_class "wgs"): up while one is above the 5 deg mask, latency
 # from the slant range (about 250-275 ms one way from the Golden Gate, bent pipe, no network
 # allowance known). latency_ms = 300 is the static fallback: ground -> GEO -> vehicle is about
@@ -273,8 +277,8 @@ queue_bytes = 65536
 lost_link_s = 5            # ArduSub's default (table above)
 
 # SATCOM class -> profile. The class itself comes from each platform's `space_class` in
-# sim/platforms.toml (buoy iridium; magura, corsair, seahunter, saildrone starlink; rq4, mq9b
-# wgs), so this file and the bridge's space views cannot disagree about it. Each profile must
+# sim/platforms.toml (buoy iridium; magura, corsair, seahunter, saildrone starlink; rq4, mq9b,
+# cca wgs), so this file and the bridge's space views cannot disagree about it. Each profile must
 # follow the class it is listed under (checked at load).
 [space_class_profile]
 starlink = "satcom_leo"
