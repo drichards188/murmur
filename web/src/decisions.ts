@@ -3,6 +3,7 @@ import { getAuth, operatorFetch, operatorHeaders, useAuth } from './auth'
 import type { Engagement, EngageView } from './engage'
 import type { TaskOption } from './space'
 import type { LngLat } from './types'
+import type { ObservedAct, Review } from './ident'
 
 /** The decision layer as the bridge serves it: GET /api/inbox, GET /api/intents and the
  *  WebSocket `{"type":"decisions"}` message. Intent times are wall-clock milliseconds on the
@@ -180,7 +181,12 @@ export interface Inbox {
   alerts: Alert[]
   /** rules 5: approved orders held for vehicles the link can't carry them to now */
   queued?: Intent[]
-  counts: { pending: number; alerts: number; queued?: number }
+  /** rules 9: what the identification asks of a human, none of it blocking: rule
+   *  declarations to confirm or revoke, flags to confirm or dismiss */
+  review?: Review
+  /** rules 9: the latest acts our sensors observed and what the engine made of each */
+  acts?: ObservedAct[]
+  counts: { pending: number; alerts: number; queued?: number; review?: number }
 }
 
 export interface Decisions {

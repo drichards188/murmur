@@ -23,7 +23,7 @@ export interface AuthState {
   /** why the console asks to sign in again (the session ended on the bridge) */
   ended?: string
   /** credentials run: acts besides signatures that re-enter the password (the policy's
-   *  `[approval] step_up_acts`: `declare_hostile`, `accept_unknown`) */
+   *  `[approval] step_up_acts`: `declare_hostile`, `accept_unknown`, `confirm_declaration`) */
   step_up_acts?: string[]
 }
 
@@ -74,7 +74,7 @@ function fromBody(b: SessionBody): AuthState {
 }
 
 /** A credentials run asks for the password again for `act` (the policy lists it). */
-export function stepsUpAct(act: 'declare_hostile' | 'accept_unknown'): boolean {
+export function stepsUpAct(act: 'declare_hostile' | 'accept_unknown' | 'confirm_declaration'): boolean {
   return state.auth === 'credentials' && (state.step_up_acts ?? []).includes(act)
 }
 

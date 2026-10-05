@@ -18,6 +18,7 @@ import {
 } from './engage'
 import './engage.css'
 import { distanceM } from './geo'
+import { declarationBasis, unconfirmedRule } from './ident'
 import type { Vehicle } from './types'
 import { callsign } from './types'
 
@@ -336,7 +337,14 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
           {view?.track_now ? (
             <span>
               {view.track_now.affiliation}
-              {view.track_now.declared_by ? ` (declared by ${view.track_now.declared_by})` : ' (not declared)'}, {view.track_now.identity ?? 'unclassified'}{' '}
+              {view.track_now.declaration ? (
+                <span className={unconfirmedRule(view.track_now.declaration) ? 'eg-alarm' : ''}> ({declarationBasis(view.track_now.declaration)})</span>
+              ) : view.track_now.declared_by ? (
+                ` (declared by ${view.track_now.declared_by})`
+              ) : (
+                ' (not declared)'
+              )}
+              , {view.track_now.identity ?? 'unclassified'}{' '}
               {Math.round(100 * view.track_now.identity_confidence)}%, last seen {view.track_now.age_s.toFixed(1)} s ago, 1-sigma {Math.round(view.track_now.pos_sigma_m)} m
             </span>
           ) : (
@@ -375,7 +383,7 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
         <Acceptances intent={i} vehicles={vehicles} now={now} onDone={onDone} signing />
         {plan && (
           <p className="eg-plan">
-            Plan frozen by {plan.by}&apos;s signature {fmtRel(plan.t - now())}: effect at {ll(plan.effect_point)} {fmtRel(plan.effect_t - now())}, radius {Math.round(plan.effect_radius_m)} m, on {plan.track.id} ({plan.track.identity ?? 'unclassified'}, declared by {plan.track.declared_by ?? 'nobody'}). Every signature is on this exact plan; if it stops holding, the signatures are dropped.
+            Plan frozen by {plan.by}&apos;s signature {fmtRel(plan.t - now())}: effect at {ll(plan.effect_point)} {fmtRel(plan.effect_t - now())}, radius {Math.round(plan.effect_radius_m)} m, on {plan.track.id} ({plan.track.identity ?? 'unclassified'}, {declarationBasis(plan.track.declaration, plan.track.declared_by)}). Every signature is on this exact plan; if it stops holding, the signatures are dropped.
           </p>
         )}
         {(view?.signatures ?? []).map((s) => (
@@ -421,7 +429,7 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
         )}
         {shown && (
           <div className="eg-shown" role="status">
-            <b>You would sign</b>: effect at {ll(shown.plan.effect_point)} {fmtRel(shown.plan.effect_t - now())}, radius {Math.round(shown.plan.effect_radius_m)} m, {platform}, fallback {FALLBACK_LABEL[p.fallback]}; {shown.track.id} {shown.track.identity ?? 'unclassified'}, {shown.track.affiliation} declared by {shown.track.declared_by ?? 'nobody'}.{' '}
+            <b>You would sign</b>: effect at {ll(shown.plan.effect_point)} {fmtRel(shown.plan.effect_t - now())}, radius {Math.round(shown.plan.effect_radius_m)} m, {platform}, fallback {FALLBACK_LABEL[p.fallback]}; {shown.track.id} {shown.track.identity ?? 'unclassified'}, {shown.track.affiliation} {declarationBasis(shown.track.declaration, shown.track.declared_by)}.{' '}
             {shown.frozen ? `The plan ${plan?.by ?? ''} froze.` : 'Your signature freezes this plan.'}{' '}
             {Object.entries(shown.unknown_accepted ?? {}).map(([uid, a]) => (
               <span key={uid} className="eg-alarm">

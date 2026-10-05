@@ -440,6 +440,12 @@ export default function App() {
             onClose={() => setShowInbox(false)}
             mem={alertMem}
             hidden={hiddenAlerts}
+            onTrack={(id) => {
+              setSelectedTrack(id)
+              setShowTracks(true)
+              const t = tracks?.tracks.find((x) => x.id === id)
+              if (t) focusTrack(t)
+            }}
           />
           </ErrorBoundary>
         )}

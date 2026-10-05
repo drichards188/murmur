@@ -20,11 +20,15 @@ import type { Vehicle } from './types'
 import { callsign } from './types'
 import { stepsUpAct } from './auth'
 import { StepUpNeeded } from './decisions'
+import { FLAG_LABEL, confirmDeclaration, resolveFlag, revokeDeclaration } from './ident'
 
 /** The tracks drawer (Phase C2): every contact our sensors hold, ranked hostile, suspect,
  *  unknown first; click a row for what the estimate rests on (sources, confidence, age,
  *  identity and its conflicts) and to declare an affiliation. Everything shown is
- *  perception: the bridge never tells the console what a contact really is. */
+ *  perception: the bridge never tells the console what a contact really is. Rules 9: a
+ *  declaration may be the engine's (its hostile-act rule, on an observed act); the drawer
+ *  says so, with its evidence, and any operator confirms or revokes it here or in the
+ *  inbox's Review. */
 
 interface Props {
   tracks: TracksMessage | null
@@ -73,7 +77,21 @@ function Row({ t, nowMs, staleAfterS, sel, onClick }: { t: Track; nowMs: number;
         <span className="tk-name">
           {t.id}
           <span className={`tk-aff ${t.affiliation}`}>{AFFILIATION_LABEL[t.affiliation]}</span>
-          {t.declared && <span className="vrow-standin" title={`Declared ${t.declared.affiliation} by ${t.declared.by}`}>DECLARED</span>}
+          {t.declared &&
+            (t.declared.rule && !t.declared.confirmed_by ? (
+              <span className="vrow-standin tk-rule" title={t.declared.basis ?? `Declared ${t.declared.affiliation} by rule`}>
+                BY RULE
+              </span>
+            ) : (
+              <span className="vrow-standin" title={t.declared.basis ?? `Declared ${t.declared.affiliation} by ${t.declared.by}`}>
+                DECLARED
+              </span>
+            ))}
+          {(t.review?.length ?? 0) > 0 && (
+            <span className="vrow-standin tk-review" title={t.review?.map((f) => `F-${f.flag}: ${f.evidence}`).join('\n')}>
+              REVIEW
+            </span>
+          )}
         </span>
         <span className="tk-kind">
           <b>{kindLabel(t.identity.kind)}</b>
@@ -105,6 +123,10 @@ function Detail({ t, nowMs, vehicles, onFocus, onEngage }: { t: Track; nowMs: nu
   // rules 8: when the policy lists declare_hostile, a hostile declaration takes the
   // operator's password again (a step-up); asked for here, sent once, never kept
   const stepUp = stepsUpAct('declare_hostile')
+  // rules 9: confirming a rule declaration steps up only where the policy lists it (off by
+  // default: the user chose minimal approval)
+  const confirmStepUp = stepsUpAct('confirm_declaration')
+  const [confirming, setConfirming] = useState(false)
   const [asking, setAsking] = useState(false)
   const [password, setPassword] = useState('')
   const [stepUpError, setStepUpError] = useState(false)
@@ -135,6 +157,30 @@ function Detail({ t, nowMs, vehicles, onFocus, onEngage }: { t: Track; nowMs: nu
       setBusy(null)
     }
   }
+  const act = async (name: string, f: () => Promise<unknown>) => {
+    setBusy('unknown')
+    setErr(null)
+    try {
+      await f()
+      return true
+    } catch (e) {
+      if (e instanceof StepUpNeeded) setConfirming(true)
+      setErr(`${name}: ${(e as Error).message}`)
+      return false
+    } finally {
+      setBusy(null)
+    }
+  }
+  const confirm = async () => {
+    if (confirmStepUp && !password) {
+      setConfirming(true)
+      return
+    }
+    const pw = confirmStepUp ? password : undefined
+    setPassword('')
+    if (await act('confirm', () => confirmDeclaration(t.id, pw))) setConfirming(false)
+  }
+  const unconfirmed = t.declared?.rule && !t.declared.confirmed_by
   return (
     <div className="tk-detail">
       <dl>
@@ -191,8 +237,55 @@ function Detail({ t, nowMs, vehicles, onFocus, onEngage }: { t: Track; nowMs: nu
           <>
             <dt>Declared</dt>
             <dd>
-              {AFFILIATION_LABEL[t.declared.affiliation]} by {t.declared.by}
+              {t.declared.basis ? (
+                <span className={unconfirmed ? 'warn' : ''}>{t.declared.basis}</span>
+              ) : (
+                <>
+                  {AFFILIATION_LABEL[t.declared.affiliation]} by {t.declared.by}
+                </>
+              )}
               {t.declared.note ? `: ${t.declared.note}` : ''}
+              <span className="tk-decl-actions">
+                {unconfirmed && (
+                  <button className="ghost mini" disabled={busy != null} onClick={() => void confirm()} title="Confirm the engine's declaration (any operator; logged under your session)">
+                    confirm
+                  </button>
+                )}
+                <button
+                  className="ghost mini"
+                  disabled={busy != null}
+                  onClick={() => void act('revoke', () => revokeDeclaration(t.id))}
+                  title="Revoke this declaration (any operator): every engagement in play on the track stops first, with its fallback"
+                >
+                  revoke
+                </button>
+              </span>
+            </dd>
+          </>
+        )}
+        {(t.review?.length ?? 0) > 0 && (
+          <>
+            <dt>Review</dt>
+            <dd>
+              {t.review?.map((f) => (
+                <div key={f.flag} className="tk-flag">
+                  <b>
+                    F-{f.flag} {FLAG_LABEL[f.kind] ?? f.kind}
+                    {f.status === 'confirmed' ? ' (confirmed)' : ''}
+                  </b>
+                  : {f.evidence}
+                  <span className="tk-decl-actions">
+                    {f.status === 'open' && (
+                      <button className="ghost mini" disabled={busy != null} onClick={() => void act('confirm flag', () => resolveFlag(f.flag, 'confirmed'))} title="The concern stands (logged under your session); the track is not declared by this">
+                        confirm
+                      </button>
+                    )}
+                    <button className="ghost mini" disabled={busy != null} onClick={() => void act('dismiss flag', () => resolveFlag(f.flag, 'dismissed'))} title="Dismiss the concern (logged under your session)">
+                      dismiss
+                    </button>
+                  </span>
+                </div>
+              ))}
             </dd>
           </>
         )}
@@ -231,6 +324,24 @@ function Detail({ t, nowMs, vehicles, onFocus, onEngage }: { t: Track; nowMs: nu
           </button>
         </label>
       )}
+      {confirming && confirmStepUp && (
+        <label className="ix-stepup">
+          Consequential: your password to confirm the engine&apos;s declaration of {t.id}
+          <input
+            type="password"
+            autoComplete="current-password"
+            value={password}
+            disabled={busy != null}
+            onChange={(e) => setPassword(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && password && busy == null && void confirm()}
+            aria-label="Your password, to confirm this declaration"
+            autoFocus
+          />
+          <button className="ghost mini" disabled={!password || busy != null} onClick={() => void confirm()}>
+            confirm
+          </button>
+        </label>
+      )}
       {err && <p className="tk-err">{err}</p>}
     </div>
   )
@@ -263,7 +374,7 @@ export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus
             No tracks. Contacts appear here as our platforms' sensors detect them (radar, EO/IR, AIS, sonar, ESM per <code>sim/platforms.toml</code>); start a scenario with <code>MURMUR_CONTACTS=sim/scenarios/golden-gate.toml</code>.
           </p>
         ) : (
-          <p className="tk-note">Symbols fade and their uncertainty ring grows with time since the last detection. Hostile is never inferred: it takes a declaration.</p>
+          <p className="tk-note">Symbols fade and their uncertainty ring grows with time since the last detection. Hostile takes a declaration: an operator&apos;s, or the engine&apos;s rule on a hostile act our sensors observed (marked BY RULE until an operator confirms it). Proximity alone never declares.</p>
         )}
         {list.map((t) => (
           <div key={t.id}>

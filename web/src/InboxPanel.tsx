@@ -12,6 +12,7 @@ import {
   verdict,
 } from './decisions'
 import { EngageCard, EngagementsSection } from './EngageCard'
+import { ReviewSection } from './ReviewSection'
 import { isEngage } from './engage'
 import { distanceM } from './geo'
 import { reportView } from './operatorView'
@@ -34,6 +35,8 @@ interface Props {
   /** fly to and highlight: the vehicles (bridge uids) and the intent whose preview to frame */
   onFocus: (sel: InboxSelection, uids: number[], intent: Intent | null) => void
   onClose: () => void
+  /** rules 9: open a track in the tracks drawer (from a review item) */
+  onTrack?: (id: string) => void
 }
 
 // ---- top bar button -------------------------------------------------------------------------
@@ -43,13 +46,15 @@ export function InboxButton({ decisions, open, onClick, hiddenAlerts }: { decisi
   const alerts = (decisions?.inbox.alerts ?? []).filter((a) => !hiddenAlerts.has(a.id))
   const high = alerts.filter((a) => a.severity === 'high').length
   const medium = alerts.length - high
-  const parts = [`${pending} pending approval${pending === 1 ? '' : 's'}`, `${high} high alert${high === 1 ? '' : 's'}`, `${medium} medium alert${medium === 1 ? '' : 's'}`]
+  const review = decisions?.inbox.counts.review ?? 0
+  const parts = [`${pending} pending approval${pending === 1 ? '' : 's'}`, `${high} high alert${high === 1 ? '' : 's'}`, `${medium} medium alert${medium === 1 ? '' : 's'}`, `${review} for review (not blocking)`]
   return (
     <button className={`ghost platforms-btn ix-btn ${open ? 'on' : ''}`} onClick={onClick} title={parts.join(', ')} aria-label={`Inbox: ${parts.join(', ')}`}>
       Inbox
       {pending > 0 && <span className="ix-badge pend">{pending}</span>}
       {high > 0 && <span className="ix-badge high">{high}</span>}
       {medium > 0 && <span className="ix-badge med">{medium}</span>}
+      {review > 0 && <span className="ix-badge rev">{review}</span>}
     </button>
   )
 }
@@ -558,7 +563,7 @@ interface Notice {
   tone: 'ok' | 'bad'
 }
 
-export function InboxPanel({ decisions, vehicles, now, tab, setTab, selection, onFocus, onClose, mem, hidden }: Props & { mem: ReturnType<typeof useAlertMemory>; hidden: Set<string> }) {
+export function InboxPanel({ decisions, vehicles, now, tab, setTab, selection, onFocus, onClose, onTrack, mem, hidden }: Props & { mem: ReturnType<typeof useAlertMemory>; hidden: Set<string> }) {
   const [notices, setNotices] = useState<Notice[]>([])
   const [showHidden, setShowHidden] = useState(false)
   const pending = decisions?.inbox.pending ?? []
@@ -615,6 +620,13 @@ export function InboxPanel({ decisions, vehicles, now, tab, setTab, selection, o
               now={now}
               selection={selection}
               onFocus={(i) => onFocus({ kind: 'intent', id: i.id }, uidsOf(i), i)}
+              onDone={(text, tone) => setNotices((ns) => [...ns, { n: Date.now() + Math.random(), text, tone }])}
+            />
+            <ReviewSection
+              review={decisions?.inbox.review}
+              acts={decisions?.inbox.acts}
+              now={now}
+              onTrack={onTrack}
               onDone={(text, tone) => setNotices((ns) => [...ns, { n: Date.now() + Math.random(), text, tone }])}
             />
             <h3 className="ix-h">

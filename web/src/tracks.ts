@@ -1,6 +1,7 @@
 import ms from 'milsymbol'
 import { operatorFetch, operatorHeaders } from './auth'
 import { getOperator, StepUpNeeded } from './decisions'
+import type { FlagKind, RuleEvidence } from './ident'
 import type { LngLat } from './types'
 
 /** Tracks (Phase C2): contacts that are not ours, as the bridge's sensors see them. The
@@ -47,8 +48,28 @@ export interface Track {
   last_seen_t: number
   hits: number
   state: 'active' | 'stale'
-  declared: { affiliation: Affiliation; by: string; t: number; note: string | null } | null
+  /** the declaration in force (rules 9: the engine's ledger, an operator's or the
+   *  hostile-act rule's, with its basis), mirrored for display */
+  declared: TrackDeclared | null
+  /** rules 9: the review flags in force on the track (never blocking) */
+  review?: { flag: number; kind: FlagKind; status: string; t: number; evidence: string }[]
   sidc: string
+}
+
+export interface TrackDeclared {
+  affiliation: Affiliation
+  /** an operator, or `rule:hostile_act` */
+  by: string
+  t: number
+  note: string | null
+  id?: number
+  /** declared by the engine's hostile-act rule */
+  rule?: boolean
+  evidence?: RuleEvidence
+  /** the operator who confirmed a rule declaration (absent: not confirmed) */
+  confirmed_by?: string
+  /** the basis in a sentence */
+  basis?: string
 }
 
 export interface TracksMessage {
@@ -250,14 +271,17 @@ export function sortTracks(tracks: Track[]) {
   return [...tracks].sort((a, b) => AFFILIATION_RANK[a.affiliation] - AFFILIATION_RANK[b.affiliation] || b.last_seen_t - a.last_seen_t || a.id.localeCompare(b.id))
 }
 
-/** Declare a track's affiliation (an operator action, logged by the bridge). `password`: the
- *  operator's again, when the policy marks a hostile declaration consequential (a step-up);
- *  sent in this one request only. Throws [`StepUpNeeded`] when it is missing or wrong. */
-export async function declareTrack(id: string, affiliation: Affiliation, note?: string, password?: string): Promise<Track> {
+/** Declare a track's affiliation (an operator action, logged by the bridge's engine under
+ *  the operator's session). `password`: the operator's again, when the policy marks a hostile
+ *  declaration consequential (a step-up); sent in this one request only. `flag`: the review
+ *  flag this declaration answers. Throws [`StepUpNeeded`] when the password is missing or
+ *  wrong. A declaration in force with another affiliation is revoked first (the engagements
+ *  in play on the track stop). */
+export async function declareTrack(id: string, affiliation: Affiliation, note?: string, password?: string, flag?: number): Promise<Track> {
   const res = await operatorFetch(`/api/tracks/${encodeURIComponent(id)}/declare`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...operatorHeaders(getOperator()) },
-    body: JSON.stringify({ affiliation, note: note || null, ...(password ? { password } : {}) }),
+    body: JSON.stringify({ affiliation, note: note || null, ...(password ? { password } : {}), ...(flag != null ? { flag } : {}) }),
   })
   const body = await res.json().catch(() => ({}))
   if (!res.ok) {

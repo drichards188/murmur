@@ -1,5 +1,6 @@
 import { operatorFetch, operatorHeaders } from './auth'
 import { getOperator, type Check, type Intent } from './decisions'
+import type { Declaration } from './ident'
 import type { LngLat } from './types'
 
 /** Engagements (Phase E): an abstract effect (a point, a radius, a time) on a track an
@@ -77,7 +78,7 @@ export interface Engagement {
   snapshot?: EngageSnapshot
   watch?: PictureVerdict
   effect?: { t: number; point: LngLat; radius_m: number; planned_t: number }
-  stop?: { t: number; cause: { kind: 'operator' | 'picture' | 'system' | 'superseded'; by?: string | number }; reason: string; fallback?: Fallback | null }
+  stop?: { t: number; cause: { kind: 'operator' | 'picture' | 'system' | 'superseded' | 'revoked'; by?: string | number; track?: string; declaration?: number }; reason: string; fallback?: Fallback | null }
   plan?: { t: number; by: string; preview: EngagePreview; track: TrackIdentity }
   observe?: { covered_by: string[]; track_present: boolean; seen_after_effect_t?: number }
   covered_s: number
@@ -113,6 +114,11 @@ export interface EngageView {
     age_s: number
     affiliation: string
     declared_by: string | null
+    /** rules 9: the declaration in force (an operator's or the hostile-act rule's) and its
+     *  basis in a sentence */
+    declaration?: Declaration | null
+    basis?: string | null
+    review_flags?: number[]
     identity: string | null
     identity_confidence: number
   } | null
@@ -131,6 +137,8 @@ export interface TrackIdentity {
   identity?: string
   affiliation: string
   declared_by?: string
+  /** rules 9: how the track was declared (an operator, or the rule and its evidence) */
+  declaration?: Declaration
 }
 
 /** What the engine shows a signer (`POST /api/intents/{id}/picture`): the plan they would
