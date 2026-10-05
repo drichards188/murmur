@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { stepsUpAct } from './auth'
 import { fmtDuration, StepUpNeeded, useOperator } from './decisions'
-import { type ObservedAct, type Review, type ReviewDeclaration, type ReviewFlag, FLAG_LABEL, confirmDeclaration, resolveFlag, revokeDeclaration } from './ident'
+import { type Against, type ObservedAct, type Review, type ReviewDeclaration, type ReviewFlag, FLAG_LABEL, confirmDeclaration, resolveFlag, revokeDeclaration } from './ident'
 
 /** The inbox's Review (rules 9): what the identification asks of a human, none of it
  *  blocking. A rule declaration is the engine's (an observed hostile act attributed to the
@@ -30,11 +30,23 @@ function age(now: () => number, t: number) {
   return `${fmtDuration(Math.max(0, now() / 1000 - t))} ago`
 }
 
+function againstText(a: Against) {
+  if (a.kind === 'vehicle') return `our vehicle ${a.uid}`
+  if (a.kind === 'track') return `track ${a.track}`
+  return 'something we hold no track of'
+}
+
+/** A rule declaration: the engine's, standing until revoked. Confirming it is the permissive
+ *  act, so it is never the easy one: the card opens its evidence first (the act, whom it was
+ *  against, which sensors saw it, the attribution against the threshold), and confirm sits
+ *  there, as plain as revoke. Revoking (the brake: it stops every engagement in play on the
+ *  track first) takes no more than confirming: open it, then revoke, with an optional note. */
 function DeclarationItem({ d, now, onDone, onTrack }: { d: ReviewDeclaration; now: () => number; onDone: Props['onDone']; onTrack?: Props['onTrack'] }) {
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState('')
-  // revoking takes a second, deliberate click (it stops every engagement in play on the track)
-  const [revoking, setRevoking] = useState(false)
+  // each takes a second, deliberate click: confirm after the evidence, revoke after its warning
+  const [open, setOpen] = useState<'none' | 'evidence' | 'revoke'>('none')
+  const revoking = open === 'revoke'
   const stepUp = stepsUpAct('confirm_declaration')
   const [password, setPassword] = useState('')
   const [asking, setAsking] = useState(false)
@@ -44,7 +56,7 @@ function DeclarationItem({ d, now, onDone, onTrack }: { d: ReviewDeclaration; no
       await f()
       onDone(`${d.track}: ${what}`, 'ok')
       setAsking(false)
-      setRevoking(false)
+      setOpen('none')
     } catch (e) {
       if (e instanceof StepUpNeeded) setAsking(true)
       onDone(`${d.track}: ${what} refused: ${(e as Error).message}`, 'bad')
@@ -53,6 +65,7 @@ function DeclarationItem({ d, now, onDone, onTrack }: { d: ReviewDeclaration; no
       setPassword('')
     }
   }
+  const ev = d.declaration.by.kind === 'rule' ? d.declaration.by.evidence : undefined
   const confirm = () => {
     if (stepUp && !password) {
       setAsking(true)
@@ -70,30 +83,60 @@ function DeclarationItem({ d, now, onDone, onTrack }: { d: ReviewDeclaration; no
           </button>
         )}
       </header>
-      <p className="rv-basis">{d.basis}</p>
-      <div className="rv-confirm">
-        <button className="rv-ok" disabled={busy} onClick={confirm} title="Confirm the engine's declaration (logged under your session)">
-          Confirm {d.track} hostile
-        </button>
-      </div>
-      <div className="rv-revoke">
-        {!revoking ? (
-          <button className="ghost mini rv-danger" disabled={busy} onClick={() => setRevoking(true)} title="Revoke it: every engagement in play on the track stops first">
+      <p className="rv-basis">Declared hostile by rule on act {ev?.act ?? 'unknown'}; it stands until revoked.</p>
+      {open === 'none' && (
+        <div className="rv-actions">
+          <button className="ghost mini" disabled={busy} onClick={() => setOpen('evidence')} title="Read the evidence, then confirm if it holds">
+            evidence, then confirm...
+          </button>
+          <button className="ghost mini rv-danger" disabled={busy} onClick={() => setOpen('revoke')} title="Revoke it: every engagement in play on the track stops first">
             revoke...
           </button>
-        ) : (
-          <>
-            <span className="rv-warn">Revoke {d.id}? Every engagement in play on {d.track} stops first.</span>
-            <input className="ix-note" value={note} maxLength={300} onChange={(e) => setNote(e.target.value)} placeholder="why (optional, logged)" aria-label="Note for the revocation" disabled={busy} />
-            <button className="ghost mini rv-danger" disabled={busy} onClick={() => void run('declaration revoked', () => revokeDeclaration(d.track, note))}>
-              revoke {d.track}
+        </div>
+      )}
+      {open === 'evidence' && (
+        <div className="rv-evidence">
+          {ev ? (
+            <dl>
+              <dt>Act</dt>
+              <dd>
+                {ev.act} against {againstText(ev.against)}, {age(now, ev.observed_t / 1000)}
+              </dd>
+              <dt>Seen by</dt>
+              <dd>{ev.sensors.join(', ') || 'none named'}</dd>
+              <dt>Attribution</dt>
+              <dd>
+                {ev.attribution.toFixed(2)} to {d.track} (threshold {ev.threshold.toFixed(2)})
+                {ev.corroborated_by ? `, corroborated by ${ev.corroborated_by.observer ? `${ev.corroborated_by.observer}'s fix` : `act ${ev.corroborated_by.act}`} at ${ev.corroborated_by.attribution.toFixed(2)}` : ''}
+              </dd>
+            </dl>
+          ) : null}
+          <p className="rv-basis">{d.basis}</p>
+          <div className="rv-actions">
+            <button className="ghost mini" disabled={busy} onClick={confirm} title="Confirm the engine's declaration (logged under your session)">
+              confirm {d.track} hostile
             </button>
-            <button className="ghost mini" disabled={busy} onClick={() => setRevoking(false)}>
-              cancel
+            <button className="ghost mini rv-danger" disabled={busy} onClick={() => setOpen('revoke')}>
+              revoke...
             </button>
-          </>
-        )}
-      </div>
+            <button className="ghost mini" disabled={busy} onClick={() => setOpen('none')}>
+              close
+            </button>
+          </div>
+        </div>
+      )}
+      {revoking && (
+        <div className="rv-revoke">
+          <span className="rv-warn">Revoke {d.id}? Every engagement in play on {d.track} stops first.</span>
+          <input className="ix-note" value={note} maxLength={300} onChange={(e) => setNote(e.target.value)} placeholder="why (optional, logged)" aria-label="Note for the revocation" disabled={busy} />
+          <button className="ghost mini rv-danger" disabled={busy} onClick={() => void run('declaration revoked', () => revokeDeclaration(d.track, note))}>
+            revoke {d.track}
+          </button>
+          <button className="ghost mini" disabled={busy} onClick={() => setOpen('none')}>
+            cancel
+          </button>
+        </div>
+      )}
       {asking && stepUp && (
         <label className="ix-stepup">
           Consequential: your password to confirm

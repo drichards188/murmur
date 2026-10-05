@@ -59,3 +59,4 @@
 .tk-decl-actions { display: inline-flex; gap: 4px; margin-left: 6px; vertical-align: middle; }
 .tk-flag { margin: 2px 0 4px; }
 .tk-revoke { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 0; padding-top: 6px; border-top: 1px dashed var(--line); }
+.tk-plain { color: inherit; }

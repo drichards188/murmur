@@ -127,8 +127,10 @@ function Detail({ t, nowMs, vehicles, onFocus, onEngage }: { t: Track; nowMs: nu
   // default: the user chose minimal approval)
   const confirmStepUp = stepsUpAct('confirm_declaration')
   const [confirming, setConfirming] = useState(false)
-  // revoking takes a second, deliberate click (it stops every engagement in play on the track)
+  // revoking takes a second, deliberate click (it stops every engagement in play on the track);
+  // so does confirming (the permissive act is never the easier one)
   const [revoking, setRevoking] = useState(false)
+  const [confirmOpen, setConfirmOpen] = useState(false)
   const [asking, setAsking] = useState(false)
   const [password, setPassword] = useState('')
   const [stepUpError, setStepUpError] = useState(false)
@@ -249,11 +251,23 @@ function Detail({ t, nowMs, vehicles, onFocus, onEngage }: { t: Track; nowMs: nu
                 </>
               )}
               {t.declared.note ? `: ${t.declared.note}` : ''}
-              {unconfirmed && (
+              {unconfirmed && !revoking && (
                 <span className="tk-decl-actions">
-                  <button className="rv-ok" disabled={busy != null} onClick={() => void confirm()} title="Confirm the engine's declaration (any operator; logged under your session)">
-                    confirm
-                  </button>
+                  {!confirmOpen ? (
+                    <button className="ghost mini" disabled={busy != null} onClick={() => setConfirmOpen(true)} title="Confirm the engine's declaration on its basis above (any operator; logged under your session)">
+                      confirm...
+                    </button>
+                  ) : (
+                    <>
+                      <span className="rv-warn tk-plain">Confirm {t.id} hostile on the basis above?</span>
+                      <button className="ghost mini" disabled={busy != null} onClick={() => void confirm().then(() => setConfirmOpen(false))}>
+                        confirm {t.id}
+                      </button>
+                      <button className="ghost mini" disabled={busy != null} onClick={() => setConfirmOpen(false)}>
+                        cancel
+                      </button>
+                    </>
+                  )}
                 </span>
               )}
               <span className="tk-decl-actions tk-revoke">
