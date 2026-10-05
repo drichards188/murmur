@@ -1117,6 +1117,7 @@ impl Decision {
         by: &super::Actor,
         id: u64,
         accept: &AcceptUnknown,
+        step: Option<crate::auth::StepUpChecked>,
     ) -> Result<super::Outcome, DecisionError> {
         let id = IntentId(id);
         let world = self.snapshot();
@@ -1131,7 +1132,13 @@ impl Decision {
                 ));
             };
             let (uid, since) = accept.engine();
-            match core.engine.accept_unknown_friendly(id, auth, uid, since, &world) {
+            // rules 7: the step-up, when the policy lists accept_unknown
+            let step = Self::mint_step(&mut core.engine, session, by, step)?;
+            let accepted = match step {
+                Some(s) => core.engine.accept_unknown_friendly_stepped(id, auth, s, uid, since, &world),
+                None => core.engine.accept_unknown_friendly(id, auth, uid, since, &world),
+            };
+            match accepted {
                 Ok(_) => Ok(self.outcome(core, id)),
                 Err(e) => Err(self.with_intent(core, id, engine_err(e))),
             }

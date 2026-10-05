@@ -45,14 +45,23 @@ fn scratch() -> PathBuf {
 /// A credentials run on the engagement rig: op-1 (no engagement authority), op-2 and op-3
 /// (engagement authority), and agent-planner's key, sessions ending after `idle`.
 fn harness(idle: Duration) -> H {
+    harness_with(idle, &[], |_| {})
+}
+
+/// [`harness`] with the credentials of `scripted` marked harness-held and the policy changed
+/// by `edit`.
+fn harness_with(idle: Duration, scripted: &[&str], edit: impl FnOnce(&mut Policy)) -> H {
     let file = scratch().join("credentials.json");
     let mut c = CredentialFile::default();
     c.add_operator("op-1", PW1, false).expect("op-1");
     c.add_operator("op-2", PW2, true).expect("op-2");
     c.add_operator("op-3", PW3, true).expect("op-3");
+    for op in scripted {
+        c.set_scripted(op, true).expect("scripted");
+    }
     let key = c.add_agent("agent-planner").expect("agent");
     c.save(&file).expect("saved");
-    let e = engage_rig_auth(None, PathBuf::from("memory"), AuthMode::Credentials);
+    let e = super::engagement::engage_rig_policy(None, PathBuf::from("memory"), AuthMode::Credentials, edit);
     let settings = AuthSettings {
         mode: AuthMode::Credentials,
         file: Some(file.clone()),
@@ -578,4 +587,158 @@ async fn a_dev_run_says_so_in_run_started_and_has_no_login() {
     assert!(r.ok(), "{:?}", r.mismatches);
     assert_eq!(r.auth, Some(AuthMode::Dev));
     assert!(!r.authenticated(), "a dev run is not evidence about people");
+}
+
+// ---- the security review of 91dd342 ----------------------------------------------------------
+
+/// Review fix 1: someone else's failed logins lock op-3's next login, never op-3's live
+/// session: op-3's step-up still signs, and the record says whose logins failed.
+#[tokio::test]
+async fn failed_logins_by_someone_else_do_not_end_a_signers_session() {
+    let h = harness(Duration::from_secs(1800));
+    let op1 = h.login("op-1", PW1).await;
+    let op2 = h.login("op-2", PW2).await;
+    let op3 = h.login("op-3", PW3).await;
+    h.picture(&op1).await;
+    let id = h.nominate(&op1).await;
+    let (s, v) = h.sign(&op2, id, Some(PW2)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // any local process can try op-3's password
+    for _ in 0..5 {
+        let _ = h
+            .call("POST", "/api/auth/login", Some(json!({ "operator": "op-3", "password": "a guess at op-3's password" })), &[])
+            .await;
+    }
+    let (s, _, _) = h.call("POST", "/api/auth/login", Some(json!({ "operator": "op-3", "password": PW3 })), &[]).await;
+    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS, "op-3's next login is locked (the DoS that remains)");
+    // but op-3, signed in, signs with their password: the lock is on logins, not on op-3's session
+    let (s, v) = h.sign(&op3, id, Some(PW3)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["intent"]["state"], "dispatched", "{v}");
+    let log = h.log();
+    assert!(!log.contains("step-up failed repeatedly"), "op-3's session was not ended");
+    assert!(!log.contains("step_up.refused"), "nothing is blamed on op-3's session");
+    // the failed logins are on the record: whose id, why, and the lock
+    assert_eq!(log.matches("\"type\":\"auth.refused\",\"operator\":\"op-3\",\"reason\":\"wrong password\"").count(), 5, "{log}");
+    assert!(log.contains("\"locked_s\":30"), "{log}");
+    h.replays_authenticated();
+}
+
+/// Review fix 4: the console's view reports are instrumentation, not activity: an idle
+/// session still ends while a card is shown.
+#[tokio::test]
+async fn view_reports_do_not_keep_a_session_alive() {
+    let h = harness(Duration::from_millis(400));
+    let cookie = h.login("op-1", PW1).await;
+    let view = json!({ "intent_id": 999, "event": "close", "shown": { "checks": [], "warnings": [], "rationale": false, "tracks": [] }, "client_t": 0 });
+    for _ in 0..4 {
+        sleep(Duration::from_millis(150)).await;
+        let _ = h.post(&cookie, "/api/operator/view", view.clone()).await;
+    }
+    let (s, v) = h.post(&cookie, "/api/intents", json!({ "task": "hold", "uids": [1] })).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "{v}");
+    assert!(h.log().contains("\"detail\":\"expired (idle)\""));
+}
+
+/// Review fix 6: concurrent wrong logins can't outrun the lock: at most the limit's worth of
+/// passwords is checked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_wrong_logins_check_no_more_passwords_than_the_limit() {
+    let h = Arc::new(harness(Duration::from_secs(1800)));
+    let mut tasks = Vec::new();
+    for _ in 0..40 {
+        let h = h.clone();
+        tasks.push(tokio::spawn(async move {
+            h.call("POST", "/api/auth/login", Some(json!({ "operator": "op-1", "password": "wrong wrong wrong wrong" })), &[])
+                .await
+                .0
+        }));
+    }
+    let mut wrong = 0;
+    for t in tasks {
+        if t.await.expect("task") == StatusCode::UNAUTHORIZED {
+            wrong += 1;
+        }
+    }
+    assert!(wrong <= 5, "{wrong} passwords checked before the lock");
+}
+
+/// Review fix 8: a request carrying two session cookies (one shadowing the other, from a page
+/// on another port of the host) is refused, whichever comes first.
+#[tokio::test]
+async fn a_request_with_two_session_cookies_is_refused() {
+    let h = harness(Duration::from_secs(1800));
+    let good = h.login("op-1", PW1).await;
+    for cookie in [format!("{good}; murmur_session_test=bogus"), format!("murmur_session_test=bogus; {good}")] {
+        let (s, v) = h.post(&cookie, "/api/intents", json!({ "task": "hold", "uids": [1] })).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "{cookie}: {v}");
+    }
+}
+
+/// Review fix 2: a harness-held credential logs in as `auth: scripted`: authenticated, and
+/// signing works the same, but replay names it apart from the people.
+#[tokio::test]
+async fn a_scripted_credential_logs_in_as_scripted_and_is_no_person() {
+    let h = harness_with(Duration::from_secs(1800), &["op-2"], |_| {});
+    let op1 = h.login("op-1", PW1).await;
+    let (s, _, v) = h
+        .call("POST", "/api/auth/login", Some(json!({ "operator": "op-2", "password": PW2 })), &[("origin", CONSOLE)])
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["scripted"], true);
+    let op3 = h.login("op-3", PW3).await;
+    h.picture(&op1).await;
+    let id = h.nominate(&op1).await;
+    let op2 = h.login("op-2", PW2).await;
+    let (s, v) = h.sign(&op2, id, Some(PW2)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = h.sign(&op3, id, Some(PW3)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let log = h.log();
+    assert!(log.contains("\"operator\":\"op-2\",\"session\":"), "{log}");
+    assert!(log.contains("\"auth\":\"scripted\""), "{log}");
+    let r = h.replays_authenticated();
+    let ids = |v: &[&str]| v.iter().map(|o| OperatorId::new(*o)).collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(r.people, ids(&["op-1", "op-3"]));
+    assert_eq!(r.scripted, ids(&["op-2"]));
+}
+
+/// User decision (step-up scope): with `[approval] step_up_acts = ["declare_hostile"]`, a
+/// hostile declaration through the API needs the password again, and nothing changes
+/// without it; another affiliation does not. The console learns the list from the session.
+#[tokio::test]
+async fn a_listed_act_steps_up_through_the_api() {
+    let h = harness_with(Duration::from_secs(1800), &[], |p| {
+        p.approval.step_up_acts = Some(vec![murmur_decide::StepUpAct::DeclareHostile]);
+    });
+    let op1 = h.login("op-1", PW1).await;
+    let (_, _, me) = h.call("GET", "/api/auth/session", None, &[("cookie", &op1)]).await;
+    assert_eq!(me["step_up_acts"], json!(["declare_hostile"]), "{me}");
+    h.e.r.vehicle(1, Firmware::Copter, "fpv", TARGET);
+    sleep(Duration::from_millis(500)).await;
+    h.e.r.clock.set(snapshot::ms(clock::wall()));
+    let now = h.e.now_s();
+    for s in 0..30 {
+        h.e.sense_at(now - 30.0 + f64::from(s), true);
+    }
+    let declared = |h: &H| h.e.tracks.facts(h.e.now_s()).get("T-0001").and_then(|t| t.declared_by.clone());
+    let (s, v) = h.post(&op1, "/api/tracks/T-0001/declare", json!({ "affiliation": "hostile" })).await;
+    assert_eq!((s, v["step_up"].clone()), (StatusCode::UNAUTHORIZED, json!(true)), "{v}");
+    let (s, v) = h
+        .post(&op1, "/api/tracks/T-0001/declare", json!({ "affiliation": "hostile", "password": "not op one's password" }))
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "{v}");
+    assert_eq!(declared(&h), None, "refused: nothing changed");
+    let (s, v) = h.post(&op1, "/api/tracks/T-0001/declare", json!({ "affiliation": "neutral" })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = h
+        .post(&op1, "/api/tracks/T-0001/declare", json!({ "affiliation": "hostile", "password": PW1 }))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(declared(&h).as_deref(), Some("op-1"));
+    let log = h.log();
+    assert!(log.contains("\"action\":\"step_up.refused\",\"detail\":\"declare T-0001 hostile: no password given\""), "{log}");
+    let r = h.replays_authenticated();
+    assert_eq!(r.stepped_acts, 1);
+    h.no_secret_logged(&[&op1]);
 }

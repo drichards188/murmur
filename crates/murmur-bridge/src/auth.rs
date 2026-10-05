@@ -1,18 +1,26 @@
-//! Who is acting (rules 7, murmur-der.1): operators log in with their own password, agents
-//! present their own key, and nothing else is believed.
+//! Who is acting (rules 7, murmur-der.1): in a credentials run operators log in with their own
+//! password, agents present their own key, and nothing else is believed; a dev run (the
+//! default for `make up`) asserts ids, says so loudly, and is never evidence about people.
 //!
-//! **Credentials run** (the default; `MURMUR_AUTH` unset or `credentials`). The credential
-//! file (`crates/murmur-auth`: `MURMUR_CREDENTIALS`, else `~/.config/murmur/credentials.json`)
-//! names the run's operators and who of them holds engagement authority; the roster logged in
-//! `run.started` is that file when the bridge starts.
+//! **Credentials run** (`MURMUR_AUTH=credentials`; the evaluation's study mode always). The
+//! credential file (`crates/murmur-auth`: `MURMUR_CREDENTIALS`, else
+//! `~/.config/murmur/credentials.json`) names the run's operators and who of them holds
+//! engagement authority; the roster logged in `run.started` is that file when the bridge
+//! starts.
 //!
 //! - `POST /api/auth/login {"operator", "password"}` checks the password (argon2id, constant
 //!   time; an unknown id costs the same), opens an engine session for this login
-//!   (`session.opened`, `auth: password`) and sets an HttpOnly, SameSite=Strict cookie
-//!   (`murmur_session_<http port>`, Path=/, Max-Age the session's lifetime; `Secure` with
-//!   `MURMUR_COOKIE_SECURE=1`). The cookie holds a random 256-bit token; the bridge keeps only
-//!   its SHA-256. Five failures for an id lock it (30 s, doubling to 15 min, 429 with
-//!   Retry-After); a locked id is refused without checking the password.
+//!   (`session.opened`, `auth: password`, or `auth: scripted` for a credential marked
+//!   harness-held: authenticated, never a person's) and sets an HttpOnly, SameSite=Strict
+//!   cookie (`murmur_session_<http port>`, Path=/, Max-Age the session's lifetime; `Secure`
+//!   with `MURMUR_COOKIE_SECURE=1`). The cookie holds a random 256-bit token; the bridge keeps
+//!   only its SHA-256. Five failures for an id lock it (30 s, doubling to 15 min, 429 with
+//!   Retry-After); a locked id is refused without checking the password, and an attempt is
+//!   reserved before its password is checked, so concurrent attempts can't outrun the lock.
+//!   Each failed password for an operator on the roster is logged (`auth.refused`: the id,
+//!   why, the lock it set; never the password); attempts refused while locked, and ids not
+//!   on the roster, go to stdout only (no one can flood the audit log). A lock stops the next
+//!   login only: it ends no session (a stranger's wrong passwords can't sign anyone out).
 //! - `POST /api/auth/logout` ends the session (`session.closed`) and clears the cookie.
 //!   `GET /api/auth/session` says who is signed in (without counting as activity).
 //! - A session ends after `MURMUR_SESSION_IDLE_S` (1800) without an action, or
@@ -20,24 +28,30 @@
 //!   removed or changed (a new password, authority granted or revoked): the file is re-read
 //!   when it changes, checked every 2 s. Each end is logged (`session.closed` with why); a
 //!   replayed or expired cookie is a 401.
-//! - Every operator request acts for the login its cookie names; an `X-Murmur-Operator` header
-//!   naming someone else is a 403, an agent's key is not a login (401).
-//! - A consequential approval (every engagement signature; a tier with `step_up`) needs the
-//!   password again in the request (`"password"` in the approve body): checked like a login,
-//!   for the session's own operator only, counted against the same lock (a lock from failed
-//!   step-ups also ends the session), then logged as `operator.action step_up` and quoted by
-//!   the signature ([`StepUpChecked`], made only here); a refused one is logged too
-//!   (`operator.action step_up.refused`: no password, a wrong one, a lock; never the password).
+//! - Every operator request acts for the login its cookie names (more than one cookie of that
+//!   name, as a page on another port of the host could plant, is a 401: never guess which);
+//!   an `X-Murmur-Operator` header naming someone else is a 403, an agent's key is not a
+//!   login (401). The console's display reports (`/api/operator/view`) only peek at the
+//!   session: they don't keep it from going idle.
+//! - A consequential act needs the password again in the request (`"password"` in its body):
+//!   every engagement signature and an approval its tier marks `step_up`; and, when the
+//!   policy's `[approval] step_up_acts` lists them, a hostile declaration and an acceptance of
+//!   a lost vehicle. Checked for the session's own operator only, against a limit of the
+//!   session's own (five wrong in a row lock it and end the session: only failures made under
+//!   a session can end it), then logged as `operator.action step_up` and quoted by the act
+//!   ([`StepUpChecked`], made only here); a refused one is logged too (`operator.action
+//!   step_up.refused`: no password, a wrong one, a lock; never the password).
 //! - Agents present `Authorization: Bearer <key>` on every `/mcp` request (`murmur-auth
 //!   agent-add`); the key's digest is compared in constant time. A removed or rotated key stops
 //!   at once.
 //!
-//! **Dev run** (`MURMUR_AUTH=dev`): the old placeholder, explicit and loud. Operators are
+//! **Dev run** (the default: `MURMUR_AUTH` unset or `dev`): explicit and loud. Operators are
 //! whoever `X-Murmur-Operator` names (`MURMUR_OPERATORS`, `MURMUR_ENGAGE_OPERATORS`; the
 //! legacy `POST /api/tasks` and track declarations without a header act as the first),
 //! agents whoever `X-Murmur-Agent` or `clientInfo.name` names (`MURMUR_AGENTS`). The bridge
 //! says so at start, `run.started` records `auth: dev`, and replay and the evaluation exclude
-//! such a run from any claim about people. For scripted tests and the evaluation's proxy.
+//! such a run from any claim about people. For development, scripted tests and the
+//! evaluation's proxy batches; it needs no credential file.
 //!
 //! **Both**: a state-changing request (any method but GET, HEAD, OPTIONS) or a WebSocket
 //! upgrade from a browser must come from an allowed origin ([`check_origin`]): an `Origin`
@@ -95,13 +109,7 @@ pub struct Settings {
 impl Settings {
     pub fn from_env(http_port: u16) -> Result<Settings, String> {
         let var = |k: &str| std::env::var(k).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-        let mode = match var("MURMUR_AUTH").as_deref() {
-            None | Some("credentials") => AuthMode::Credentials,
-            Some("dev") => AuthMode::Dev,
-            Some(other) => {
-                return Err(format!("MURMUR_AUTH={other:?}: credentials (the default) or dev"));
-            }
-        };
+        let mode = mode_from(var("MURMUR_AUTH").as_deref())?;
         let secs = |k: &str, d: u64| -> Result<Duration, String> {
             match var(k) {
                 None => Ok(Duration::from_secs(d)),
@@ -144,6 +152,16 @@ impl Settings {
             max: Duration::from_secs(8 * 3600),
             origins: default_origins(5173, 8765),
         }
+    }
+}
+
+/// `MURMUR_AUTH`: unset or `dev`, a dev run (ids asserted, no credential file); `credentials`,
+/// a credentials run.
+pub fn mode_from(v: Option<&str>) -> Result<AuthMode, String> {
+    match v {
+        None | Some("dev") => Ok(AuthMode::Dev),
+        Some("credentials") => Ok(AuthMode::Credentials),
+        Some(other) => Err(format!("MURMUR_AUTH={other:?}: dev (the default) or credentials")),
     }
 }
 
@@ -208,7 +226,11 @@ struct Store {
 
 /// Why a password check refused.
 enum Refused {
+    /// The password was checked and is wrong.
     Wrong,
+    /// The password was checked, is wrong, and this failure locked the key.
+    WrongLocked(Duration),
+    /// Not checked: the key is locked, or as many attempts as the limit are being checked.
     Locked(Duration),
 }
 
@@ -217,8 +239,29 @@ pub struct Auth {
     decision: Arc<Decision>,
     store: RwLock<Store>,
     sessions: Mutex<SessionTable<Login>>,
-    limiter: Mutex<Limiter>,
-    verify: tokio::sync::Semaphore,
+    /// Failed logins, per operator id claimed.
+    limiter: Arc<Mutex<Limiter>>,
+    /// Failed step-ups, per login session: apart from the login limit, so failures made
+    /// elsewhere (a stranger guessing at the login form) never end a live session.
+    step_limiter: Arc<Mutex<Limiter>>,
+    verify: Arc<tokio::sync::Semaphore>,
+}
+
+/// An attempt reserved on a limiter ([`Limiter::begin`]) whose password check has not
+/// started: given back if the request goes away first (a client that hangs up must not
+/// leave the id busy).
+struct Reserved {
+    limiter: Arc<Mutex<Limiter>>,
+    key: String,
+    held: bool,
+}
+
+impl Drop for Reserved {
+    fn drop(&mut self) {
+        if self.held {
+            lock(&self.limiter).release(&self.key);
+        }
+    }
 }
 
 /// The clock sessions and locks run on (tokio's, so tests can pause and advance it).
@@ -267,8 +310,9 @@ impl Auth {
             decision,
             store: RwLock::new(Store { file, seen }),
             sessions: Mutex::new(sessions),
-            limiter: Mutex::new(Limiter::default()),
-            verify: tokio::sync::Semaphore::new(VERIFY_AT_ONCE),
+            limiter: Arc::new(Mutex::new(Limiter::default())),
+            step_limiter: Arc::new(Mutex::new(Limiter::default())),
+            verify: Arc::new(tokio::sync::Semaphore::new(VERIFY_AT_ONCE)),
         })
     }
 
@@ -282,25 +326,52 @@ impl Auth {
 
     // ---- requests -------------------------------------------------------------------------
 
-    /// The session token a request's cookie carries.
-    fn token<'a>(&self, headers: &'a HeaderMap) -> Option<&'a str> {
+    /// Every value the request's cookies give the session cookie's name.
+    fn tokens<'a>(&self, headers: &'a HeaderMap) -> Vec<&'a str> {
         headers
             .get_all(header::COOKIE)
             .iter()
             .filter_map(|v| v.to_str().ok())
             .flat_map(|v| v.split(';'))
             .filter_map(|kv| kv.trim().split_once('='))
-            .find(|(k, _)| *k == self.settings.cookie)
+            .filter(|(k, _)| *k == self.settings.cookie)
             .map(|(_, v)| v.trim())
+            .collect()
+    }
+
+    /// The session token a request's cookie carries: only when there is exactly one (a
+    /// second cookie of the name, as another origin on this host can plant with another
+    /// path, would make the request act for whoever planted it).
+    fn token<'a>(&self, headers: &'a HeaderMap) -> Option<&'a str> {
+        match self.tokens(headers).as_slice() {
+            [one] => Some(one),
+            _ => None,
+        }
     }
 
     /// Who an operator request acts for. Credentials run: the login the cookie names (an
     /// action, so its idle timer restarts); a dev run: the `X-Murmur-Operator` header (or,
     /// `legacy`, the first operator).
     pub fn actor(&self, headers: &HeaderMap, legacy: bool) -> Result<Actor, DecisionError> {
+        self.actor_as(headers, legacy, true)
+    }
+
+    /// [`Auth::actor`] for a report that is not an operator's action (the console's display
+    /// events): the login is looked up without restarting its idle timer.
+    pub fn actor_peek(&self, headers: &HeaderMap) -> Result<Actor, DecisionError> {
+        self.actor_as(headers, false, false)
+    }
+
+    fn actor_as(&self, headers: &HeaderMap, legacy: bool, activity: bool) -> Result<Actor, DecisionError> {
         let named = headers.get(OPERATOR_HEADER).and_then(|v| v.to_str().ok()).map(str::trim).filter(|s| !s.is_empty());
         if !self.credentials() {
             return self.decision.operator(named, legacy).map(Actor::asserted);
+        }
+        if self.tokens(headers).len() > 1 {
+            return Err(DecisionError::new(
+                401,
+                "more than one session cookie came with this request (one may have been planted by another page on this host): sign out and sign in again",
+            ));
         }
         let Some(token) = self.token(headers) else {
             let why = if headers.contains_key(header::AUTHORIZATION) {
@@ -312,7 +383,7 @@ impl Auth {
             };
             return Err(DecisionError::new(401, why));
         };
-        let login = self.resolve(token, true)?;
+        let login = self.resolve(token, activity)?;
         if let Some(n) = named
             && n != login.operator.as_str()
         {
@@ -345,12 +416,28 @@ impl Auth {
         println!("auth: {} signed out (session {}: {why})", l.operator, l.session.0);
     }
 
-    /// Check `password` for operator `id`: limited, at most [`VERIFY_AT_ONCE`] at a time, off
-    /// the async runtime. Ok with the credential's stamp and engagement authority.
-    async fn check(&self, id: &str, password: String) -> Result<(String, bool), Refused> {
-        if let Err(d) = lock(&self.limiter).check(id, now()) {
+    /// Check `password` for operator `id`, counted against `limiter` under `key` (the id for a
+    /// login, the session for a step-up): the attempt is reserved before the check (refused
+    /// unchecked while locked, or while as many as the limit are being checked), at most
+    /// [`VERIFY_AT_ONCE`] run at a time, off the async runtime. Once a check starts, its
+    /// verdict is counted whether or not the request is still there to hear it. Ok with the
+    /// credential.
+    async fn check(
+        &self,
+        limiter: &Arc<Mutex<Limiter>>,
+        key: &str,
+        id: &str,
+        password: String,
+    ) -> Result<murmur_auth::OperatorEntry, Refused> {
+        let t = now();
+        if let Err(d) = lock(limiter).begin(key, t) {
             return Err(Refused::Locked(d));
         }
+        let mut reserved = Reserved {
+            limiter: limiter.clone(),
+            key: key.to_string(),
+            held: true,
+        };
         let entry = self
             .store
             .read()
@@ -359,38 +446,47 @@ impl Auth {
             .operators
             .get(id)
             .cloned();
-        let ok = {
-            let _permit = self.verify.acquire().await;
-            let e = entry.clone();
-            tokio::task::spawn_blocking(move || match e {
+        let Ok(permit) = self.verify.clone().acquire_owned().await else {
+            return Err(Refused::Locked(Duration::from_secs(1)));
+        };
+        // from here the check's own task records its verdict
+        reserved.held = false;
+        let (l, k, e) = (limiter.clone(), key.to_string(), entry.clone());
+        let verdict = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let ok = match &e {
                 Some(e) => murmur_auth::password::verify(&e.password, &password),
                 None => murmur_auth::password::verify_dummy(&password),
-            })
-            .await
-            .unwrap_or(false)
-        };
-        match (ok, entry) {
-            (true, Some(e)) => {
-                lock(&self.limiter).success(id);
-                Ok((e.stamp, e.engage))
+            };
+            let mut l = lock(&l);
+            if ok && e.is_some() {
+                l.success(&k);
+                Ok(())
+            } else {
+                Err(l.failure(&k, t))
             }
-            _ => match lock(&self.limiter).failure(id, now()) {
-                Some(d) => Err(Refused::Locked(d)),
-                None => Err(Refused::Wrong),
-            },
+        })
+        .await
+        .unwrap_or_else(|_| Err(lock(limiter).failure(key, t)));
+        match (verdict, entry) {
+            (Ok(()), Some(e)) => Ok(e),
+            (Err(Some(d)), _) => Err(Refused::WrongLocked(d)),
+            _ => Err(Refused::Wrong),
         }
     }
 
-    /// A consequential approval's step-up on intent `id`: the session's own operator
-    /// re-entered their password (`password`). `needed`: the intent's decision asks for one.
-    /// Ok(None) when no password came and none is needed (and always in a dev run, which has
-    /// no credential). A refusal (no password where one is needed, a wrong one, a lock) is
-    /// logged under the signer's session as `operator.action step_up.refused` (never the
-    /// password), so the record shows a signature attempted without the credential.
+    /// A consequential act's step-up (`what`: `i<id>` for a signature, or the act): the
+    /// session's own operator re-entered their password (`password`). `needed`: the decision
+    /// or the policy asks for one. Ok(None) when no password came and none is needed (and
+    /// always in a dev run, which has no credential). Counted against the session's own limit
+    /// (five wrong lock it and end the session; failures elsewhere never do). A refusal (no
+    /// password where one is needed, a wrong one, a lock) is logged under the session as
+    /// `operator.action step_up.refused` (never the password), so the record shows the act
+    /// attempted without the credential.
     pub async fn step_up(
         &self,
         actor: &Actor,
-        id: u64,
+        what: &str,
         password: Option<String>,
         needed: bool,
     ) -> Result<Option<StepUpChecked>, Box<Response>> {
@@ -401,7 +497,7 @@ impl Auth {
             return Err(Box::new(refusal(StatusCode::UNAUTHORIZED, "sign in first")));
         };
         let refused = |why: &str| {
-            if let Err(e) = self.decision.record_action(actor, "step_up.refused", &format!("i{id}: {why}")) {
+            if let Err(e) = self.decision.record_action(actor, "step_up.refused", &format!("{what}: {why}")) {
                 eprintln!("auth: logging a refused step-up: {}", e.detail);
             }
         };
@@ -412,7 +508,7 @@ impl Auth {
                     (
                         StatusCode::UNAUTHORIZED,
                         Json(json!({
-                            "detail": "re-enter your password to sign this: a consequential signature is made with your credential, not only your session",
+                            "detail": "re-enter your password for this: a consequential act is made with your credential, not only your session",
                             "step_up": true,
                         })),
                     )
@@ -421,7 +517,8 @@ impl Auth {
             }
             return Ok(None);
         };
-        match self.check(actor.operator().as_str(), password).await {
+        let key = format!("session {}", session.0);
+        match self.check(&self.step_limiter, &key, actor.operator().as_str(), password).await {
             Ok(_) => Ok(Some(StepUpChecked {
                 session,
                 operator: actor.operator().clone(),
@@ -431,18 +528,22 @@ impl Auth {
                 Err(Box::new(
                     (
                         StatusCode::UNAUTHORIZED,
-                        Json(json!({ "detail": "wrong password: not signed", "step_up": true })),
+                        Json(json!({ "detail": "wrong password: not done", "step_up": true })),
                     )
                         .into_response(),
                 ))
             }
-            Err(Refused::Locked(d)) => {
+            Err(Refused::WrongLocked(d)) => {
                 refused("too many failed attempts: the session ends");
-                // repeated wrong passwords on a live session: it may not be its operator's
+                // repeated wrong passwords on this live session: it may not be its operator's
                 let gone = lock(&self.sessions).end_where(|l| l.session == session);
                 for l in &gone {
                     self.end(l, "step-up failed repeatedly");
                 }
+                Err(Box::new(locked(d)))
+            }
+            Err(Refused::Locked(d)) => {
+                refused("too many attempts at once");
                 Err(Box::new(locked(d)))
             }
         }
@@ -565,18 +666,32 @@ async fn login(State(auth): State<Arc<Auth>>, headers: HeaderMap, body: Bytes) -
         return wrong();
     }
     auth.refresh();
-    let (stamp, engage) = match auth.check(&id, password).await {
-        Ok(v) => v,
+    let op = OperatorId::new(&id);
+    // a failed password for an operator the run lists goes to the audit log (who, why, the
+    // lock; never the password); other ids, and attempts refused unchecked, to stdout only
+    let listed = auth.decision.roster_entry(&op).is_some();
+    let entry = match auth.check(&auth.limiter, &id, &id, password).await {
+        Ok(e) => e,
         Err(Refused::Wrong) => {
             println!("auth: failed login for {id}");
+            if listed {
+                auth.decision.record_login_refused(&op, "wrong password", None);
+            }
             return wrong();
         }
+        Err(Refused::WrongLocked(d)) => {
+            println!("auth: failed login for {id}: locked for {} s", d.as_secs());
+            if listed {
+                auth.decision.record_login_refused(&op, "wrong password", Some(d.as_secs()));
+            }
+            return locked(d);
+        }
         Err(Refused::Locked(d)) => {
-            println!("auth: login for {id} refused: locked for {} s", d.as_secs());
+            println!("auth: login for {id} refused unchecked: locked or busy for {} s", d.as_secs().max(1));
             return locked(d);
         }
     };
-    let op = OperatorId::new(&id);
+    let (stamp, engage, scripted) = (entry.stamp, entry.engage, entry.scripted);
     if auth.decision.roster_entry(&op).is_none() {
         return refusal(
             StatusCode::FORBIDDEN,
@@ -584,13 +699,14 @@ async fn login(State(auth): State<Arc<Auth>>, headers: HeaderMap, body: Bytes) -
         );
     }
     // a login from a browser that still holds a session ends that one
-    if let Some(old) = auth.token(&headers).map(str::to_string) {
-        let prev = lock(&auth.sessions).remove(&old);
+    let old: Vec<String> = auth.tokens(&headers).into_iter().map(str::to_string).collect();
+    for t in old {
+        let prev = lock(&auth.sessions).remove(&t);
         if let Some(l) = prev {
             auth.end(&l, "signed in again");
         }
     }
-    let session = match auth.decision.open_login(&op, engage) {
+    let session = match auth.decision.open_login(&op, engage, scripted) {
         Ok(s) => s,
         Err(e) => return decision_refusal(e),
     };
@@ -610,14 +726,20 @@ async fn login(State(auth): State<Arc<Auth>>, headers: HeaderMap, body: Bytes) -
             return refusal(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
         }
     };
-    println!("auth: {op} signed in (session {})", session.0);
+    println!(
+        "auth: {op} signed in (session {}{})",
+        session.0,
+        if scripted { ", scripted: a harness-held credential" } else { "" }
+    );
     let mut r = Json(json!({
         "auth": "credentials",
         "signed_in": true,
         "operator": op,
         "engage": engage,
+        "scripted": scripted,
         "idle_s": auth.settings.idle.as_secs(),
         "max_s": auth.settings.max.as_secs(),
+        "step_up_acts": auth.decision.operators_json()["step_up_acts"],
     }))
     .into_response();
     r.headers_mut().insert(header::SET_COOKIE, auth.cookie(&token, auth.settings.max));
@@ -625,7 +747,8 @@ async fn login(State(auth): State<Arc<Auth>>, headers: HeaderMap, body: Bytes) -
 }
 
 async fn logout(State(auth): State<Arc<Auth>>, headers: HeaderMap) -> Response {
-    if let Some(token) = auth.token(&headers).map(str::to_string) {
+    let tokens: Vec<String> = auth.tokens(&headers).into_iter().map(str::to_string).collect();
+    for token in tokens {
         let gone = lock(&auth.sessions).remove(&token);
         if let Some(l) = gone {
             auth.end(&l, "logout");
@@ -647,6 +770,7 @@ async fn session(State(auth): State<Arc<Auth>>, headers: HeaderMap) -> Response 
             "operators": ops["operators"],
             "engage": ops["engage"],
             "warning": "dev run: operator ids are asserted by the X-Murmur-Operator header, not authenticated; no human-control claim",
+            "step_up_acts": ops["step_up_acts"],
         }))
         .into_response();
     }
@@ -662,6 +786,7 @@ async fn session(State(auth): State<Arc<Auth>>, headers: HeaderMap) -> Response 
             "operator": l.operator,
             "engage": l.engage,
             "ends_in_s": left.as_secs(),
+            "step_up_acts": auth.decision.operators_json()["step_up_acts"],
         }))
         .into_response(),
         None => Json(json!({ "auth": "credentials", "signed_in": false })).into_response(),
@@ -745,6 +870,32 @@ mod tests {
         assert!(cross_origin(&headers(&[("sec-fetch-site", "same-origin")]), &ok).is_none());
         // not a browser: no Origin, no Sec-Fetch-Site (curl, the harness, the contacts process)
         assert!(cross_origin(&HeaderMap::new(), &ok).is_none());
+    }
+
+    /// A request that goes away before its password check starts gives its reservation back:
+    /// hanging up can't leave an id busy.
+    #[test]
+    fn a_reservation_is_given_back_when_its_request_goes_away() {
+        let l = Arc::new(Mutex::new(Limiter::default()));
+        let t = Instant::now();
+        let held: Vec<Reserved> = (0..5)
+            .map(|_| {
+                lock(&l).begin("op-3", t).expect("room");
+                Reserved { limiter: l.clone(), key: "op-3".into(), held: true }
+            })
+            .collect();
+        assert!(lock(&l).begin("op-3", t).is_err(), "five in flight");
+        drop(held);
+        assert!(lock(&l).begin("op-3", t).is_ok(), "given back");
+    }
+
+    /// User decision: a run is dev unless it asks for credentials.
+    #[test]
+    fn a_run_is_dev_unless_it_asks_for_credentials() {
+        assert_eq!(mode_from(None), Ok(AuthMode::Dev));
+        assert_eq!(mode_from(Some("dev")), Ok(AuthMode::Dev));
+        assert_eq!(mode_from(Some("credentials")), Ok(AuthMode::Credentials));
+        assert!(mode_from(Some("password")).is_err());
     }
 
     #[test]

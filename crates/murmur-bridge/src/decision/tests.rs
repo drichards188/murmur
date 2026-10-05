@@ -62,6 +62,11 @@ fn waiting_rig() -> Rig {
 }
 
 fn rig_with(policy: Policy) -> Rig {
+    rig_auth(policy, murmur_decide::AuthMode::Dev)
+}
+
+/// [`rig_with`] authenticating operators as `auth` says (rules 7).
+fn rig_auth(policy: Policy, auth: murmur_decide::AuthMode) -> Rig {
     let root = root();
     let world = World::new(Config {
         base_port: 0,
@@ -91,7 +96,7 @@ fn rig_with(policy: Policy) -> Rig {
             terrain,
             operators: vec![OperatorId::new("op-1"), OperatorId::new("op-2")],
             engage_operators: Vec::new(),
-            auth: murmur_decide::AuthMode::Dev,
+            auth,
             tracks: None,
         },
     )

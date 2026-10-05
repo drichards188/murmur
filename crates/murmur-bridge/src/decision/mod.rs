@@ -78,7 +78,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use murmur_decide::{
-    AnchorConfig, Anchors, AreaSet, AuditSink, AuthMethod, AuthMode, Catalog, Clock, Constraints,
+    AnchorConfig, Anchors, AreaSet, AuditSink, AuthMethod, AuthMode, Catalog, Clock, Constraints, StepUpAct,
     Engine, EngineError, Intent, IntentId, JsonlFile, LonLat, OperatorId, OperatorSession,
     OperatorView, Order, Policy, Proposal, Rationale, ScenarioMap, SessionId, SpaceSegment, State,
     Task, TaskOutcome, Time, Uid as DUid, rules,
@@ -339,7 +339,8 @@ impl Settings {
             operators,
             engage_operators,
             // `main` sets it, and in a credentials run the roster, from `crate::auth::Settings`
-            auth: AuthMode::Credentials,
+            // (a dev run unless MURMUR_AUTH=credentials)
+            auth: AuthMode::Dev,
             tidewater: var("MURMUR_TIDEWATER_URL"),
             last_run: Some(root.join("logs/audit").join(format!(
                 ".last-run-{}",
@@ -726,14 +727,34 @@ impl Decision {
         self.tracks.clone().or_else(crate::tracks::store)
     }
 
-    /// The operators and who of them has engagement authority (for the console), and how
-    /// they are authenticated (`credentials` or `dev`).
+    /// The operators and who of them has engagement authority (for the console), how they
+    /// are authenticated (`credentials` or `dev`), and the acts besides signatures that
+    /// re-enter the credential in this run (`[approval] step_up_acts`; none in a dev run).
     pub fn operators_json(&self) -> Value {
+        let acts: Vec<StepUpAct> = [StepUpAct::DeclareHostile, StepUpAct::AcceptUnknown]
+            .into_iter()
+            .filter(|a| self.steps_up(*a))
+            .collect();
         json!({
             "operators": self.all_operators(),
             "engage": self.engage_operators,
             "auth": self.auth.as_str(),
+            "step_up_acts": acts,
         })
+    }
+
+    /// Credentials run: whether `act` re-enters the operator's credential (the policy's
+    /// `[approval] step_up_acts`).
+    pub fn steps_up(&self, act: StepUpAct) -> bool {
+        self.auth == AuthMode::Credentials && self.lock().engine.policy().steps_up(act)
+    }
+
+    /// Credentials run: a refused login for `op` (on the roster), logged as `auth.refused`
+    /// with why and the lock it set. Nothing secret; a failure to log is reported, not fatal.
+    pub fn record_login_refused(&self, op: &OperatorId, reason: &str, locked_s: Option<u64>) {
+        if let Err(e) = self.lock().engine.record_login_refused(op, reason, locked_s) {
+            eprintln!("decision: logging a refused login for {op}: {e}");
+        }
     }
 
     /// Whether `op` is on the run's roster, and with engagement authority.
@@ -744,9 +765,10 @@ impl Decision {
     }
 
     /// Credentials run: open the engine session for a login whose password `crate::auth`
-    /// just checked (`session.opened`, `auth: password`), with engagement authority if
-    /// `engage` (the credential holds it now) and the roster gave it at start.
-    pub fn open_login(&self, op: &OperatorId, engage: bool) -> Result<SessionId, DecisionError> {
+    /// just checked (`session.opened`, `auth: password`; `auth: scripted` when the credential
+    /// is harness-held), with engagement authority if `engage` (the credential holds it now)
+    /// and the roster gave it at start.
+    pub fn open_login(&self, op: &OperatorId, engage: bool, scripted: bool) -> Result<SessionId, DecisionError> {
         if self.auth != AuthMode::Credentials {
             return Err(DecisionError::new(409, "this run asserts operator ids (MURMUR_AUTH=dev): there is no login"));
         }
@@ -757,7 +779,11 @@ impl Decision {
             let mut core = self.lock();
             let s = core
                 .engine
-                .open_authenticated_session(op.clone(), grants, AuthMethod::Password)
+                .open_authenticated_session(
+                    op.clone(),
+                    grants,
+                    if scripted { AuthMethod::Scripted } else { AuthMethod::Password },
+                )
                 .map_err(engine_err)?;
             let id = s.authority().session();
             core.logins.insert(id, s);
@@ -788,6 +814,43 @@ impl Decision {
                 .intent(IntentId(id))
                 .and_then(Intent::policy)
                 .is_some_and(|p| p.step_up)
+    }
+
+    /// Rules 7: the step-up `crate::auth` checked for `by`'s login, logged under `session`
+    /// (`operator.action step_up`) for the act about to quote it. None when none was checked.
+    fn mint_step(
+        engine: &mut Engine,
+        session: &OperatorSession,
+        by: &Actor,
+        step: Option<crate::auth::StepUpChecked>,
+    ) -> Result<Option<murmur_decide::StepUp>, DecisionError> {
+        match step {
+            Some(c) if c.session() == by.login() && c.operator() == by.operator() => {
+                Ok(Some(engine.step_up(session).map_err(engine_err)?))
+            }
+            Some(_) => Err(DecisionError::new(401, "the credential re-entered is not this session's")),
+            None => Ok(None),
+        }
+    }
+
+    /// An operator declares a track's affiliation (the tracks module has applied it):
+    /// `operator.action track.declare`, quoting the step-up when the policy marks a hostile
+    /// declaration consequential.
+    pub fn record_declaration(
+        &self,
+        by: &Actor,
+        step: Option<crate::auth::StepUpChecked>,
+        track: &str,
+        affiliation: &str,
+        note: Option<&str>,
+    ) -> Result<(), DecisionError> {
+        let mut guard = self.lock();
+        let core = &mut *guard;
+        let session = Self::session(&mut core.engine, &mut core.sessions, &core.logins, by, &self.engage_operators, self.auth)?;
+        let step = Self::mint_step(&mut core.engine, session, by, step)?;
+        core.engine
+            .record_declaration(session, step, track, affiliation, note)
+            .map_err(engine_err)
     }
 
     fn all_operators(&self) -> Vec<OperatorId> {
@@ -897,11 +960,22 @@ impl Decision {
         by: &Actor,
         req: IntentRequest,
     ) -> Result<Outcome, DecisionError> {
+        self.submit_stepped(by, req, None).await
+    }
+
+    /// [`Decision::submit`] with the step-up `crate::auth` checked for it: a nomination that
+    /// accepts lost vehicles quotes it when the policy lists `accept_unknown`.
+    pub async fn submit_stepped(
+        &self,
+        by: &Actor,
+        req: IntentRequest,
+        step: Option<crate::auth::StepUpChecked>,
+    ) -> Result<Outcome, DecisionError> {
         if matches!(req.task.as_str(), "collect" | "cover") {
             return self.submit_space(by, &req).await;
         }
         if req.task == "engage" {
-            return self.submit_engage(by, &req).await;
+            return self.submit_engage(by, &req, step).await;
         }
         let fleet = self.fleet();
         let order = TaskRequest {
@@ -945,6 +1019,7 @@ impl Decision {
         &self,
         by: &Actor,
         req: &IntentRequest,
+        step: Option<crate::auth::StepUpChecked>,
     ) -> Result<Outcome, DecisionError> {
         self.check_vehicles(&req.uids)?;
         let proposal = engage::proposal(req, self.clock.now())?;
@@ -969,8 +1044,19 @@ impl Decision {
                         format!("{by} has no engagement authority: only an operator with it accepts a lost vehicle"),
                     ));
                 };
-                core.engine
-                    .submit_accepting(auth, proposal, &accept, &world, &self.terrain.oracle())
+                match Self::mint_step(&mut core.engine, session, by, step)? {
+                    Some(s) => core.engine.submit_accepting_stepped(
+                        auth,
+                        s,
+                        proposal,
+                        &accept,
+                        &world,
+                        &self.terrain.oracle(),
+                    ),
+                    None => core
+                        .engine
+                        .submit_accepting(auth, proposal, &accept, &world, &self.terrain.oracle()),
+                }
             };
             let id = submitted.map_err(engine_err)?.id();
             self.after_decision(core, id)
@@ -1142,15 +1228,7 @@ impl Decision {
             }
             // rules 7: the password was just checked again for this login: log the step-up
             // under its session, for this signature to quote
-            let step = match step {
-                Some(c) if c.session() == by.login() && c.operator() == by.operator() => {
-                    Some(core.engine.step_up(session).map_err(engine_err)?)
-                }
-                Some(_) => {
-                    return Err(DecisionError::new(401, "the credential re-entered is not this session's"));
-                }
-                None => None,
-            };
+            let step = Self::mint_step(&mut core.engine, session, by, step)?;
             let oracle = self.terrain.oracle();
             let r = if matches!(task, Task::Engage { .. }) {
                 match (session.engagement_authority(), token, step) {

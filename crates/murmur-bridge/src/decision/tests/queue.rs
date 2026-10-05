@@ -201,6 +201,11 @@ async fn a_human_approved_order_queued_across_a_reboot_returns_to_the_inbox() {
 
 /// A second bridge on the same world, its own engine and log (a restart).
 fn restart(r: &Rig) -> (Arc<Decision>, MemorySink) {
+    restart_as(r, murmur_decide::AuthMode::Dev)
+}
+
+/// [`restart`], the new bridge authenticating operators as `auth` says.
+fn restart_as(r: &Rig, auth: murmur_decide::AuthMode) -> (Arc<Decision>, MemorySink) {
     let root = root();
     let log = MemorySink::new();
     let d = Decision::from_parts(
@@ -219,7 +224,7 @@ fn restart(r: &Rig) -> (Arc<Decision>, MemorySink) {
             }),
             operators: vec![OperatorId::new("op-1"), OperatorId::new("op-2")],
             engage_operators: Vec::new(),
-            auth: murmur_decide::AuthMode::Dev,
+            auth,
             tracks: None,
         },
     )
@@ -277,6 +282,36 @@ async fn a_bridge_restart_mid_queue_resumes_and_sends_once() {
     assert_eq!(state(out.id), Some(State::Done));
     assert_eq!(w.count("MISSION_COUNT"), 1);
     replays_after(&blog, &r.log);
+}
+
+/// Review fix 3: a crashed dev run's open orders (asserted ids, no step-up) are not carried
+/// into a credentials run, whose log would then hold them under authenticated people's name;
+/// nor the other way. Nothing is carried and the new log says nothing was.
+#[tokio::test(start_paused = true)]
+async fn open_orders_are_not_carried_across_authentication_modes() {
+    use murmur_decide::AuthMode;
+    for (from, to) in [(AuthMode::Dev, AuthMode::Credentials), (AuthMode::Credentials, AuthMode::Dev)] {
+        let r = rig_auth(Policy::load(&root().join("sim/policy.toml")).expect("policy"), from);
+        let (cell, w) = r.watched(47, Firmware::Copter, "x10", (LAT, LON), quick());
+        sleep(Duration::from_secs(1)).await;
+        go_silent(&cell, &w, 5.0);
+        let by = match from {
+            AuthMode::Dev => op1(),
+            AuthMode::Credentials => {
+                let op = OperatorId::new("op-1");
+                let sid = r.d.open_login(&op, false, false).expect("login");
+                Actor::logged_in(op, sid)
+            }
+        };
+        let out = r.d.submit(&by, orbit(47)).await.expect("submit");
+        assert_eq!(out.state, State::Queued);
+        r.replays();
+        let (b, blog) = restart_as(&r, to);
+        let carried = b.carry_over("a.jsonl", &r.log.text(), &CarryCheck::default());
+        assert!(carried.is_err(), "{from:?} -> {to:?}: {carried:?}");
+        assert!(b.lock().engine.intent(out.id).is_none());
+        assert!(!blog.text().contains("\"type\":\"intent.resumed\""));
+    }
 }
 
 #[tokio::test(start_paused = true)]

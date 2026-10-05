@@ -396,6 +396,11 @@ impl Tracks {
             .collect()
     }
 
+    /// Whether there is a track `id`.
+    pub fn has(&self, id: &str) -> bool {
+        lock(&self.inner).tracks.contains_key(id)
+    }
+
     /// An operator's declaration. Returns the track's JSON.
     pub fn declare(
         &self,
@@ -544,6 +549,10 @@ struct DeclareBody {
     affiliation: Affiliation,
     #[serde(default)]
     note: Option<String>,
+    /// Rules 7: the operator's password again, when the policy marks a hostile declaration
+    /// consequential (`[approval] step_up_acts`); checked and dropped, never logged.
+    #[serde(default)]
+    password: Option<String>,
 }
 
 async fn declare(
@@ -560,6 +569,25 @@ async fn declare(
         Ok(op) => op,
         Err(e) => return error(StatusCode::from_u16(e.status).unwrap_or(StatusCode::FORBIDDEN), e.detail),
     };
+    // rules 7: a hostile declaration re-enters the credential when the policy lists it,
+    // checked before anything changes
+    let hostile = body.affiliation == Affiliation::Hostile;
+    let needed = hostile && api.decision.steps_up(murmur_decide::StepUpAct::DeclareHostile);
+    if body.password.is_some() && !hostile {
+        return error(StatusCode::UNPROCESSABLE_ENTITY, "a password goes with a hostile declaration (a step-up) only");
+    }
+    let step = match api.auth.step_up(&op, &format!("declare {id} hostile"), body.password, needed).await {
+        Ok(s) => s,
+        Err(r) => return *r,
+    };
+    if !api.tracks.has(&id) {
+        return error(StatusCode::NOT_FOUND, format!("unknown track {id}"));
+    }
+    // logged first: a declaration the log refuses (no step-up where one is needed) changes
+    // nothing
+    if let Err(e) = api.decision.record_declaration(&op, step, &id, body.affiliation.as_str(), body.note.as_deref()) {
+        return error(StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR), e.detail);
+    }
     let now = clock::wall();
     let Some(track) = api.tracks.declare(
         &id,
@@ -570,14 +598,6 @@ async fn declare(
     ) else {
         return error(StatusCode::NOT_FOUND, format!("unknown track {id}"));
     };
-    let detail = format!(
-        "track {id} declared {}{}",
-        body.affiliation.as_str(),
-        body.note.as_deref().map(|n| format!(": {n}")).unwrap_or_default()
-    );
-    if let Err(e) = api.decision.record_action(&op, "track.declare", &detail) {
-        return error(StatusCode::INTERNAL_SERVER_ERROR, e.detail);
-    }
     Json(track).into_response()
 }
 

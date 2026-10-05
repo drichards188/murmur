@@ -47,8 +47,19 @@ pub(super) fn engage_rig_auth(
     audit_path: PathBuf,
     auth: murmur_decide::AuthMode,
 ) -> Erig {
+    engage_rig_policy(on, audit_path, auth, |_| {})
+}
+
+/// [`engage_rig_auth`] with the sim policy changed by `edit` first.
+pub(super) fn engage_rig_policy(
+    on: Option<(Arc<World>, Arc<Tracks>)>,
+    audit_path: PathBuf,
+    auth: murmur_decide::AuthMode,
+    edit: impl FnOnce(&mut Policy),
+) -> Erig {
     let root = root();
     let mut policy = Policy::load(&root.join("sim/policy.toml")).expect("policy");
+    edit(&mut policy);
     let mut e = policy.rules.engage_rules();
     e.dispatch_delay_s = 0.0;
     policy.rules.engage = Some(e);
@@ -847,7 +858,7 @@ async fn only_engagement_authority_accepts_a_lost_vehicle() {
     let err = e
         .r
         .d
-        .accept_unknown(&op("op-1"), id.0, &engage::AcceptUnknown { uid: 2, since: None })
+        .accept_unknown(&op("op-1"), id.0, &engage::AcceptUnknown { uid: 2, since: None }, None)
         .expect_err("refused");
     assert_eq!(err.status, 403, "{}", err.detail);
     assert_eq!(e.r.events("engage.accepted"), 0);

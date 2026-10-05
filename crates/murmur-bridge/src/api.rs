@@ -210,17 +210,45 @@ async fn tasks(
 async fn create_intent(
     State(app): State<App>,
     headers: HeaderMap,
-    body: Result<Json<IntentRequest>, JsonRejection>,
+    body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
-    let req = match body {
-        Ok(Json(req)) => req,
+    // rules 7: a nomination accepting lost vehicles may carry the password again (a step-up,
+    // when the policy lists accept_unknown); it is taken out here, checked and dropped,
+    // never logged or echoed
+    let mut v = match body {
+        Ok(Json(v)) => v,
         Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, e.body_text()),
+    };
+    let password = v
+        .as_object_mut()
+        .and_then(|o| o.remove("password"))
+        .and_then(|p| p.as_str().map(str::to_string));
+    let req: IntentRequest = match serde_json::from_value(v) {
+        Ok(r) => r,
+        Err(e) => {
+            return error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("Failed to deserialize the JSON body into the target type: {e}"),
+            );
+        }
     };
     let op = match app.auth.actor(&headers, false) {
         Ok(op) => op,
         Err(e) => return decision_error(e),
     };
-    match app.decision.submit(&op, req).await {
+    let accepting = !req.engage.accept_unknown.is_empty();
+    if password.is_some() && !accepting {
+        return error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "a password goes with a nomination that accepts lost vehicles (a step-up) only",
+        );
+    }
+    let needed = accepting && app.decision.steps_up(murmur_decide::StepUpAct::AcceptUnknown);
+    let step = match app.auth.step_up(&op, "accept_unknown", password, needed).await {
+        Ok(s) => s,
+        Err(r) => return *r,
+    };
+    match app.decision.submit_stepped(&op, req, step).await {
         Ok(o) => (
             StatusCode::CREATED,
             Json(json!({
@@ -289,14 +317,17 @@ async fn intent_action(
             Err(e) => decision_error(e),
         };
     }
-    if password.is_some() && action != "approve" {
-        return error(StatusCode::UNPROCESSABLE_ENTITY, "a password goes with an approval (a step-up) only");
+    if password.is_some() && !matches!(action.as_str(), "approve" | "accept_unknown") {
+        return error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "a password goes with an approval or an acceptance of a lost vehicle (a step-up) only",
+        );
     }
     let result = match action.as_str() {
         "approve" => {
             // a consequential signature re-enters the credential first (credentials run)
             let needed = app.decision.needs_step_up(id);
-            let step = match app.auth.step_up(&op, id, password, needed).await {
+            let step = match app.auth.step_up(&op, &format!("i{id}"), password, needed).await {
                 Ok(s) => s,
                 Err(r) => return *r,
             };
@@ -307,7 +338,15 @@ async fn intent_action(
         "abort" => app.decision.abort(&op, id, note),
         // rules 6: {"uid": n, "since": engine ms or null}, as the keep-out check names it
         "accept_unknown" => match serde_json::from_slice::<crate::decision::engage::AcceptUnknown>(&body) {
-            Ok(a) => app.decision.accept_unknown(&op, id, &a),
+            Ok(a) => {
+                // rules 7: re-enters the credential when the policy lists accept_unknown
+                let needed = app.decision.steps_up(murmur_decide::StepUpAct::AcceptUnknown);
+                let step = match app.auth.step_up(&op, &format!("i{id} accept_unknown"), password, needed).await {
+                    Ok(s) => s,
+                    Err(r) => return *r,
+                };
+                app.decision.accept_unknown(&op, id, &a, step)
+            }
             Err(e) => {
                 return error(
                     StatusCode::UNPROCESSABLE_ENTITY,
@@ -370,7 +409,8 @@ async fn operator_view(
         Ok(b) => b,
         Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, e.body_text()),
     };
-    let op = match app.auth.actor(&headers, false) {
+    // a display report is not an operator's action: it does not keep the session alive
+    let op = match app.auth.actor_peek(&headers) {
         Ok(op) => op,
         Err(e) => return decision_error(e),
     };

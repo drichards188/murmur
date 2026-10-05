@@ -9,14 +9,15 @@
 //! MURMUR_RUN_ID (audit log logs/audit/<run-id>.jsonl; default the UTC start time and pid),
 //! MURMUR_TIDEWATER_URL (tidewater serve, for the domain rule; unset: "not
 //! evaluated"), MURMUR_AT and MURMUR_RATE (scenario time for tidewater, as `make goldengate`).
-//! Who acts (rules 7, `auth`): MURMUR_AUTH (`credentials`, the default: operators log in with
-//! their own password and agents present their own key, from the credential file
-//! MURMUR_CREDENTIALS, else ~/.config/murmur/credentials.json, managed with `murmur-auth`; the
-//! file's operators are the run's roster. `dev`: ids asserted by header, said loudly at start
-//! and logged as such: MURMUR_OPERATORS (ids accepted in X-Murmur-Operator, comma-separated;
-//! default op-1), MURMUR_ENGAGE_OPERATORS (those with engagement authority; one not in
-//! MURMUR_OPERATORS stops the bridge), MURMUR_AGENTS (X-Murmur-Agent or the MCP
-//! clientInfo.name; default agent-planner,agent-watch)); MURMUR_SESSION_IDLE_S (1800),
+//! Who acts (rules 7, `auth`): MURMUR_AUTH (`dev`, the default: ids asserted by header, said
+//! loudly at start and logged as such, never evidence about people, no credential file needed:
+//! MURMUR_OPERATORS (ids accepted in X-Murmur-Operator, comma-separated; default op-1),
+//! MURMUR_ENGAGE_OPERATORS (those with engagement authority; one not in MURMUR_OPERATORS stops
+//! the bridge), MURMUR_AGENTS (X-Murmur-Agent or the MCP clientInfo.name; default
+//! agent-planner,agent-watch). `credentials`: operators log in with their own password and
+//! agents present their own key, from the credential file MURMUR_CREDENTIALS, else
+//! ~/.config/murmur/credentials.json, managed with `murmur-auth`; the file's operators are the
+//! run's roster); MURMUR_SESSION_IDLE_S (1800),
 //! MURMUR_SESSION_MAX_S (28800), MURMUR_COOKIE_SECURE=1, MURMUR_WEB_PORT (5173) and
 //! MURMUR_ALLOWED_ORIGINS (who may send state-changing requests from a browser).
 //! Link emulator: MURMUR_LINKEMU_URL (murmur-linkemu's stats endpoint, polled for
@@ -80,10 +81,11 @@ fn who_acts(
     if a.mode == murmur_decide::AuthMode::Dev {
         let banner = "\
 ==========================================================================================
- MURMUR_AUTH=dev: operator and agent ids are ASSERTED by request headers, not authenticated.
- Anyone who can reach this port can act as any listed operator, sign as two of them, or
- claim any listed agent. The audit log records auth \"dev\": this run is not evidence about
- people and is excluded from any human-control claim. For scripted tests and the proxy.
+ DEV RUN (MURMUR_AUTH unset or dev): operator and agent ids are ASSERTED by request headers,
+ not authenticated. Anyone who can reach this port can act as any listed operator, sign as
+ two of them, or claim any listed agent. The audit log records auth \"dev\": this run is not
+ evidence about people and is excluded from any human-control claim. MURMUR_AUTH=credentials
+ makes operators log in with their own password (murmur-auth; see agents/README.md).
 ==========================================================================================";
         println!("{banner}");
         eprintln!("{banner}");
@@ -92,8 +94,8 @@ fn who_acts(
     let path = a.file.clone().ok_or("no credential file path")?;
     let how = format!(
         "add an operator with `printf '%s\\n' \"$PASSWORD\" | target/release/murmur-auth add op-1 --engage` \
-         (file {}; MURMUR_CREDENTIALS moves it), or run with MURMUR_AUTH=dev for header ids \
-         (logged as dev, no human-control claim)",
+         (file {}; MURMUR_CREDENTIALS moves it), or leave MURMUR_AUTH unset for a dev run with \
+         header ids (logged as dev, no human-control claim)",
         path.display()
     );
     let file = match murmur_auth::CredentialFile::load(&path) {
