@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 12] = [
+const LOGS: [(&str, u32); 16] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -53,10 +53,25 @@ const LOGS: [(&str, u32); 12] = [
     ("v6-engagement-scenario-01.jsonl", 6),
     ("v6-lost-friendly-accepted-scenario-54.jsonl", 6),
     ("v6-engagement-live.jsonl", 6),
+    // rules 7 (the queue's follow-ups; a provisional number, so the table names the constant):
+    // the same scenario; scenario 66, an operator's hold queued for the engaging USV whose link
+    // is cut supersedes the engagement (no fallback); scenario 67, an orbit ordered after an
+    // abort waits for the USV's own lost-link values to be confirmed back; and a live run,
+    // anchored as it ran (an orbit for the engaging USV queued for its own values, superseding
+    // the engagement, sent once they were back, its start logged ahead; a second engagement
+    // aborted while the USV's link was cut, its values back the second the link returned; a
+    // third the same, with an orbit queued in the outage that went only after the restore)
+    ("v7-engagement-scenario-01.jsonl", QUEUE_FOLLOWUPS_SINCE),
+    ("v7-queued-order-supersedes-scenario-66.jsonl", QUEUE_FOLLOWUPS_SINCE),
+    ("v7-mission-waits-for-restore-scenario-67.jsonl", QUEUE_FOLLOWUPS_SINCE),
+    ("v7-queue-followups-live.jsonl", QUEUE_FOLLOWUPS_SINCE),
 ];
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v6-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v7-engagement-scenario-01.jsonl";
+
+/// The committed scenario log of rules 6 (the lost-link preload).
+const V6_SCENARIO: &str = "v6-engagement-scenario-01.jsonl";
 
 /// The committed scenario log of rules 5 (the queue).
 const V5_SCENARIO: &str = "v5-engagement-scenario-01.jsonl";
@@ -196,6 +211,52 @@ fn the_rules_6_live_log_preloads_restores_and_reads_altitude() {
     assert!(log.contains("clear by altitude: 5 at 9000 m"));
     assert!(log.contains("\"alt_t\":") && log.contains("\"source_t\":{"));
     assert!(log.contains("\"identity\":\"light_aircraft\""));
+}
+
+/// The position of the first line of `lines` from `from` on that has every needle.
+fn at(lines: &[String], from: usize, needles: &[&str]) -> usize {
+    lines[from..]
+        .iter()
+        .position(|l| needles.iter().all(|n| l.contains(n)))
+        .map(|i| i + from)
+        .unwrap_or_else(|| panic!("no line from {from} with {needles:?}"))
+}
+
+#[test]
+fn the_rules_7_live_log_holds_missions_for_the_restore_and_logs_starts_ahead() {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data/anchors/v7-queue-followups-live.anchors");
+    let anchors = std::fs::read_to_string(p).unwrap();
+    let log = fixture("v7-queue-followups-live.jsonl");
+    let a = anchor::verify(&log, &anchors);
+    assert!(a.ok(), "{:?}", a.problems);
+    assert!(a.shutdown, "a clean stop anchored the head");
+    let r = replay_str(&log).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert_eq!(r.rules_version, QUEUE_FOLLOWUPS_SINCE);
+    assert_eq!(r.build.as_ref().map(|b| b.dirty), Some(Some(false)));
+    assert!(r.unrestored.is_empty(), "{:?}", r.unrestored);
+    assert_eq!((r.engagements, r.effects, r.aborts), (3, 0, 3));
+    let ls = lines(&log);
+    // the first engagement under way: an operator's orbit for its USV waits for the USV's own
+    // lost-link values, and, queued, supersedes the engagement (no fallback commanded)
+    let queued = at(&ls, 0, &["\"type\":\"intent.queued\"", "its own lost-link failsafe", "\"restore_owed\":{\"2\""]);
+    let stop = at(&ls, queued, &["\"type\":\"engage.stopped\"", "\"kind\":\"superseded\"", "queued until its vehicles can be reached"]);
+    assert!(ls[stop].contains("\"fallback\":null"), "{}", ls[stop]);
+    // its own values back, then the orbit, its start logged ahead of sending it
+    let restored = at(&ls, stop, &["\"type\":\"engage.preload\"", "\"phase\":\"restore\"", "\"confirmed\":true"]);
+    let sent = at(&ls, stop, &["\"type\":\"intent.dispatched\"", "\"kind\":\"orbit\""]);
+    assert!(restored < sent, "restored at {restored}, the orbit sent at {sent}");
+    let ahead = at(&ls, sent, &["\"type\":\"op.state\"", "\"state\":\"starting\"", "\"ahead\":true"]);
+    assert!(ahead > sent);
+    // the second engagement, aborted by an operator while its USV was cut off: a restore tried
+    // as the link went fails, the next goes when it is back; the third the same, with an orbit
+    // queued in the outage: once the USV is heard again its own values go back first
+    let abort = at(&ls, ahead, &["\"type\":\"engage.stopped\"", "\"kind\":\"operator\""]);
+    let silent = at(&ls, abort, &["\"type\":\"intent.queued\"", "silent for"]);
+    let back = at(&ls, silent, &["\"type\":\"engage.preload\"", "\"phase\":\"restore\"", "\"confirmed\":true"]);
+    let second = at(&ls, silent, &["\"type\":\"intent.dispatched\"", "\"kind\":\"orbit\""]);
+    assert!(back < second, "restored at {back}, the second orbit sent at {second}");
 }
 
 #[test]
@@ -359,7 +420,7 @@ fn a_downgraded_claim_is_caught_by_what_the_log_carries() {
     // and one with an accepted lost friendly carries the acceptance and the climb rates
     for (name, markers) in [
         (
-            CURRENT,
+            V6_SCENARIO,
             &["a lost-link preload report", "an engagement order's lost-link preload", "a fallback_preload check"][..],
         ),
         (
@@ -380,6 +441,30 @@ fn a_downgraded_claim_is_caught_by_what_the_log_carries() {
             );
         }
     }
+    // a rules 7 log claiming rules 6 still carries its lost-link values owed back in a
+    // decision's facts and its starts logged ahead
+    let v7 = QUEUE_FOLLOWUPS_SINCE;
+    for (name, markers) in [
+        ("v7-mission-waits-for-restore-scenario-67.jsonl", &["a vehicle's lost-link values owed back"][..]),
+        ("v7-queue-followups-live.jsonl", &["a vehicle's lost-link values owed back", "a vehicle start logged ahead of sending it"][..]),
+    ] {
+        let mut ls = lines(&fixture(name));
+        assert!(ls[0].contains(&format!("\"rules_version\":{v7},")));
+        ls[0] = ls[0].replacen(&format!("\"rules_version\":{v7},"), "\"rules_version\":6,", 1);
+        let r = with(&rechain(&ls), RulesAccepted::Exactly(6));
+        let w = whats(&r);
+        for marker in markers {
+            assert!(
+                w.iter().any(|m| m.contains(marker) && m.contains(&format!("only builds of rules {v7}"))),
+                "{name} {marker}: {w:?}"
+            );
+        }
+    }
+    // and scenario 66's engagement, superseded by a queued order, no rules 6 build could stop so
+    let mut ls = lines(&fixture("v7-queued-order-supersedes-scenario-66.jsonl"));
+    ls[0] = ls[0].replacen(&format!("\"rules_version\":{v7},"), "\"rules_version\":6,", 1);
+    let r = with(&rechain(&ls), RulesAccepted::Exactly(6));
+    assert!(whats(&r).contains(&"superseded by an order that was not dispatched"), "{:?}", whats(&r));
     // a rules 4 log claiming rules 3 still names its roster and its order's loiter radius
     let mut ls = lines(&fixture("v4-engagement-scenario-01.jsonl"));
     assert!(ls[0].contains("\"rules_version\":4,"));

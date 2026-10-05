@@ -845,7 +845,12 @@ Rules versions:
   queued order under older rules. Fixtures: `tests/data/audit/v7-engagement-scenario-01.jsonl`,
   `v7-queued-order-supersedes-scenario-66.jsonl`,
   `v7-mission-waits-for-restore-scenario-67.jsonl`, and a live run with its anchors
-  (`v7-queue-followups-live.jsonl`, `tests/data/anchors/v7-queue-followups-live.anchors`).
+  (`v7-queue-followups-live.jsonl`, `tests/data/anchors/v7-queue-followups-live.anchors`,
+  stand-ins, clean build 3b2127b: an operator's orbit for the engaging USV queued for its own
+  lost-link values, superseding the engagement with no fallback, sent the second after the
+  restore confirmed, its start logged ahead; a second engagement aborted while the USV's link
+  was cut, its values back the second the link returned; a third the same, with an orbit
+  queued in the outage that went out only after the restore).
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
