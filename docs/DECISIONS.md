@@ -431,7 +431,8 @@ group. Dates are 2026.
   affected: the runs behind `docs/eval/` and PLAN.md (54fa0fa, 5cebadf, 0c7da6b) predate the
   pointer (52f928e); neither the scripted deciders (they read `pending`) nor the metrics (the
   audit log, where the alert never appears) read alerts, and the same seed with and without
-  the alert gave the same decisions and metrics. Who could have seen it: a real model
+  the alert gave the same decisions and counts (latencies within run-to-run jitter). Who
+  could have seen it: a real model
   (`agent+model`, through `get_inbox`) and a study participant (the console's inbox); none
   of their runs is published.
 - **Labels from truth, at the moment each is about; metrics from logs only** (10-03,

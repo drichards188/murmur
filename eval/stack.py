@@ -221,7 +221,7 @@ class Stack:
             try:
                 named = p.read_text().strip()
                 rec.update(named=named, ours=named == str(self.audit_src), log_present=Path(named).is_file())
-            except OSError as e:
+            except (OSError, ValueError) as e:  # ValueError: not UTF-8 (tampered with)
                 rec["unreadable"] = str(e)
             try:
                 p.unlink(missing_ok=True)
