@@ -20,7 +20,16 @@ meaningful. Decision and command, not weapons.
   Gate with tidewater conditions; `make up FLEET=<name>` for other fleets; `make down` stops.
   Console http://127.0.0.1:5173, bridge http://127.0.0.1:8765 (`/api/state`, `/api/tasks`,
   `/api/platforms`, `/api/stats`; MCP server for agents at `/mcp`, header `X-Murmur-Agent`,
-  ids in `MURMUR_AGENTS`; `agents/README.md`). Vehicles ready in ~30-60 s.
+  ids in `MURMUR_AGENTS`, or `Authorization: Bearer <key>` in a credentials run;
+  `agents/README.md`). Vehicles ready in ~30-60 s.
+- A run is **dev** by default: header ids, the console's "Acting as" switcher, a red DEV pill,
+  logged `auth: dev`, never evidence about people, no credential file needed.
+  `MURMUR_AUTH=credentials`: operators sign in with their own password (create once with
+  `target/release/murmur-auth add op-1 --engage`, password on stdin; file
+  `~/.config/murmur/credentials.json` or `MURMUR_CREDENTIALS`), agents use keys
+  (`murmur-auth agent-add`), and every engagement signature re-enters the password. Study mode
+  always uses credentials and marks its scripted operators. Replay a credentials log with
+  `--anchors`, or it is not evidence.
 - Live path is Rust: `crates/murmur-bridge`, `crates/murmur-standins`. `scripts/up.sh` builds
   their release binaries (`make build` does too) and, with a scenario, starts `tidewater serve`
   (reused if one answers) and `tidewater drive`, and stops them with the stack. It writes
@@ -40,7 +49,8 @@ meaningful. Decision and command, not weapons.
   :5173; tidewater serve :8770; SITL SERIAL1 TCP 5762+10*instance (tidewater driver). A second
   stack beside the default one: set `MURMUR_BASE_PORT`, `MURMUR_BRIDGE_BASE_PORT`,
   `MURMUR_LINKEMU_PORT`, `MURMUR_HTTP_PORT`, `MURMUR_WEB_PORT`, `MURMUR_TIDEWATER_PORT`,
-  `MURMUR_SITL_INSTANCE_BASE` (header of `scripts/up.sh`).
+  `MURMUR_SITL_INSTANCE_BASE` (header of `scripts/up.sh`). `MURMUR_WEB_PORT` also tells the
+  bridge which console origin to accept; the session cookie is named per HTTP port.
 
 ## Gotchas (each cost real time)
 
@@ -67,9 +77,10 @@ meaningful. Decision and command, not weapons.
 - `murmur-replay` accepts only the current decision-rules version by default: replay older logs with
   `--rules N` / `--min-rules N` (versions and changelog in `crates/murmur-decide/README.md`). The bridge
   writes run-time anchors to `logs/anchors/<run>.anchors`; verify with `murmur-replay <log> --anchors <file>`.
-  Engagements: `MURMUR_ENGAGE_OPERATORS` (two distinct signers; each must also be in `MURMUR_OPERATORS`,
-  or the bridge refuses to start; both lists are logged as the run's roster), scenarios `murmur-scenarios`
-  (`sim/scenarios/engage/`).
+  Engagements need two distinct signers with engagement authority: in a dev run
+  `MURMUR_ENGAGE_OPERATORS` (each also in `MURMUR_OPERATORS`, or the bridge refuses to start; both
+  lists are logged as the run's roster); in a credentials run the credential file's engagement flag
+  (`murmur-auth engage <id> on`). Scenarios: `murmur-scenarios` (`sim/scenarios/engage/`).
 - Stand-ins each take one ephemeral UDP port (`net.ipv4.ip_local_port_range`, ~4,000 here,
   shared with everything else on the host): that, not CPU, caps a stand-in fleet near 4,000.
 - A stack uses two UDP ranges now (vehicle base + N and bridge base + N): pick both clear of
