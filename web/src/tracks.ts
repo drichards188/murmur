@@ -1,6 +1,6 @@
 import ms from 'milsymbol'
 import { operatorFetch, operatorHeaders } from './auth'
-import { getOperator } from './decisions'
+import { getOperator, StepUpNeeded } from './decisions'
 import type { LngLat } from './types'
 
 /** Tracks (Phase C2): contacts that are not ours, as the bridge's sensors see them. The
@@ -250,14 +250,19 @@ export function sortTracks(tracks: Track[]) {
   return [...tracks].sort((a, b) => AFFILIATION_RANK[a.affiliation] - AFFILIATION_RANK[b.affiliation] || b.last_seen_t - a.last_seen_t || a.id.localeCompare(b.id))
 }
 
-/** Declare a track's affiliation (an operator action, logged by the bridge). */
-export async function declareTrack(id: string, affiliation: Affiliation, note?: string): Promise<Track> {
+/** Declare a track's affiliation (an operator action, logged by the bridge). `password`: the
+ *  operator's again, when the policy marks a hostile declaration consequential (a step-up);
+ *  sent in this one request only. Throws [`StepUpNeeded`] when it is missing or wrong. */
+export async function declareTrack(id: string, affiliation: Affiliation, note?: string, password?: string): Promise<Track> {
   const res = await operatorFetch(`/api/tracks/${encodeURIComponent(id)}/declare`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...operatorHeaders(getOperator()) },
-    body: JSON.stringify({ affiliation, note: note || null }),
+    body: JSON.stringify({ affiliation, note: note || null, ...(password ? { password } : {}) }),
   })
   const body = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(body.detail ?? `bridge returned ${res.status}`)
+  if (!res.ok) {
+    const msg = body.detail ?? `bridge returned ${res.status}`
+    throw body.step_up ? new StepUpNeeded(msg) : new Error(msg)
+  }
   return body as Track
 }

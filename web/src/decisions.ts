@@ -289,8 +289,8 @@ export const ALERT_LABEL: Record<Alert['kind'], string> = {
 }
 
 // ---- operator ------------------------------------------------------------------------------
-// A credentials run: the operator signed in on this browser (./auth). A dev run
-// (MURMUR_AUTH=dev): the operator the "Acting as" switcher names, sent as a header.
+// A credentials run: the operator signed in on this browser (./auth). A dev run (the
+// default; MURMUR_AUTH unset): the operator the "Acting as" switcher names, sent as a header.
 
 const OPERATORS_ENV = (import.meta.env.VITE_MURMUR_OPERATORS as string | undefined) ?? 'op-1'
 /** Dev run: the ids the switcher offers until the bridge sends its own list (the decisions

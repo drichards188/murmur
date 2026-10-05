@@ -18,6 +18,8 @@ import {
 } from './tracks'
 import type { Vehicle } from './types'
 import { callsign } from './types'
+import { stepsUpAct } from './auth'
+import { StepUpNeeded } from './decisions'
 
 /** The tracks drawer (Phase C2): every contact our sensors hold, ranked hostile, suspect,
  *  unknown first; click a row for what the estimate rests on (sources, confidence, age,
@@ -100,6 +102,12 @@ const DECLARABLE: Affiliation[] = ['hostile', 'suspect', 'neutral', 'unknown']
 function Detail({ t, nowMs, vehicles, onFocus, onEngage }: { t: Track; nowMs: number; vehicles: Vehicle[]; onFocus: () => void; onEngage?: () => void }) {
   const [busy, setBusy] = useState<Affiliation | null>(null)
   const [err, setErr] = useState<string | null>(null)
+  // rules 7: when the policy lists declare_hostile, a hostile declaration takes the
+  // operator's password again (a step-up); asked for here, sent once, never kept
+  const stepUp = stepsUpAct('declare_hostile')
+  const [asking, setAsking] = useState(false)
+  const [password, setPassword] = useState('')
+  const [stepUpError, setStepUpError] = useState(false)
   const age = trackAge(t, nowMs)
   const sigma = trackSigma(t, nowMs)
   const who = (uid: number) => {
@@ -107,11 +115,21 @@ function Detail({ t, nowMs, vehicles, onFocus, onEngage }: { t: Track; nowMs: nu
     return v ? callsign(v) : `uid ${uid}`
   }
   const declare = async (a: Affiliation) => {
+    if (a === 'hostile' && stepUp && !password) {
+      setAsking(true)
+      return
+    }
     setBusy(a)
     setErr(null)
+    setStepUpError(false)
+    const pw = a === 'hostile' && stepUp ? password : undefined
+    setPassword('')
     try {
-      await declareTrack(t.id, a)
+      await declareTrack(t.id, a, undefined, pw)
+      setAsking(false)
     } catch (e) {
+      setStepUpError(e instanceof StepUpNeeded)
+      if (e instanceof StepUpNeeded) setAsking(true)
       setErr((e as Error).message)
     } finally {
       setBusy(null)
@@ -195,6 +213,24 @@ function Detail({ t, nowMs, vehicles, onFocus, onEngage }: { t: Track; nowMs: nu
           </button>
         ))}
       </div>
+      {asking && (
+        <label className={`ix-stepup ${stepUpError ? 'bad' : ''}`}>
+          Consequential: your password to declare {t.id} hostile
+          <input
+            type="password"
+            autoComplete="current-password"
+            value={password}
+            disabled={busy != null}
+            onChange={(e) => setPassword(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && password && busy == null && void declare('hostile')}
+            aria-label="Your password, to declare this track hostile"
+            autoFocus
+          />
+          <button className="ghost mini hostile" disabled={!password || busy != null} onClick={() => void declare('hostile')}>
+            declare hostile
+          </button>
+        </label>
+      )}
       {err && <p className="tk-err">{err}</p>}
     </div>
   )

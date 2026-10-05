@@ -71,7 +71,7 @@ export function OperatorBadge() {
 
   if (auth.auth === 'dev') {
     return (
-      <span className="op-badge dev" title="A dev run (MURMUR_AUTH=dev): the bridge believes whatever operator id a request names. The run is recorded as dev and is not evidence about people.">
+      <span className="op-badge dev" title="A dev run (the default; MURMUR_AUTH=credentials signs operators in): the bridge believes whatever operator id a request names. The run is recorded as dev and is not evidence about people.">
         <span className="pill down">DEV: IDS NOT AUTHENTICATED</span>
         <label>
           Acting as

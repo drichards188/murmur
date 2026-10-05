@@ -1,10 +1,11 @@
 import { useSyncExternalStore } from 'react'
 
-/** Who this console acts for (rules 7). In a credentials run (the bridge's default) the
- *  operator signs in with their own password; the bridge keeps the session in an HttpOnly
- *  cookie this code never sees, and every request from this page carries it. A consequential
- *  signature (every engagement signature) sends the password again (a step-up). In a dev run
- *  (`MURMUR_AUTH=dev`) there is no login: the console names its operator in a header, the
+/** Who this console acts for (rules 7). In a credentials run (`MURMUR_AUTH=credentials`;
+ *  every study) the operator signs in with their own password; the bridge keeps the session
+ *  in an HttpOnly cookie this code never sees, and every request from this page carries it. A
+ *  consequential act sends the password again (a step-up): every engagement signature, and
+ *  whatever the policy's `step_up_acts` lists (a hostile declaration, ...). In a dev run (the
+ *  default for `make up`) there is no login: the console names its operator in a header, the
  *  "Acting as" switcher picks it, and the bridge records the run as dev (no human-control
  *  claim). The password is never stored here: it goes into the one request and is dropped. */
 export interface AuthState {
@@ -21,6 +22,9 @@ export interface AuthState {
   engage_list?: string[]
   /** why the console asks to sign in again (the session ended on the bridge) */
   ended?: string
+  /** credentials run: acts besides signatures that re-enter the password (the policy's
+   *  `[approval] step_up_acts`: `declare_hostile`, `accept_unknown`) */
+  step_up_acts?: string[]
 }
 
 let state: AuthState = { auth: 'unknown', signed_in: false }
@@ -52,6 +56,7 @@ interface SessionBody {
   engage?: boolean | string[]
   ends_in_s?: number
   operators?: string[]
+  step_up_acts?: string[]
 }
 
 function fromBody(b: SessionBody): AuthState {
@@ -64,7 +69,13 @@ function fromBody(b: SessionBody): AuthState {
     ends_in_s: b.ends_in_s,
     operators: dev ? b.operators : undefined,
     engage_list: dev && Array.isArray(b.engage) ? b.engage : undefined,
+    step_up_acts: dev ? undefined : b.step_up_acts ?? [],
   }
+}
+
+/** A credentials run asks for the password again for `act` (the policy lists it). */
+export function stepsUpAct(act: 'declare_hostile' | 'accept_unknown'): boolean {
+  return state.auth === 'credentials' && (state.step_up_acts ?? []).includes(act)
 }
 
 /** Ask the bridge who is signed in on this browser (not counted as activity). */
