@@ -708,6 +708,27 @@ def test_the_client_signs_operators_in_and_sends_their_cookie():
     assert "passphrase" not in json.dumps(seen[1:])
 
 
+def test_a_credentials_stack_writes_its_own_credentials_with_the_cli(tmp_path: Path):
+    from eval import stack as K
+
+    if not (REPO / "target" / "release" / "murmur-auth").exists():
+        pytest.skip("murmur-auth not built (make build)")
+    spec = load_spec(REPO / "eval" / "scenarios" / "plausible-wrong.toml")
+    block = P.PortBlock(index=0)  # no port is opened: only the credential file is written
+    s = K.Stack(spec, 1, block, tmp_path, "test-run", auth="credentials")
+    s.write_credentials()
+    stored = json.loads(s.credentials_file.read_text())
+    assert sorted(stored["operators"]) == sorted(K.OPERATORS)
+    assert sorted(stored["agents"]) == sorted(K.AGENTS)
+    assert set(s.passwords) == set(K.OPERATORS) and all(len(p) >= 15 for p in s.passwords.values())
+    assert all(k.startswith("mma_") for k in s.agent_keys.values())
+    text = s.credentials_file.read_text()
+    assert not any(p in text for p in s.passwords.values()) and not any(k in text for k in s.agent_keys.values())
+    # a bad mode is refused
+    with pytest.raises(K.StackError):
+        K.Stack(spec, 1, block, tmp_path, "x", auth="header")
+
+
 def test_run_passphrases_meet_the_password_policy():
     from eval.stack import passphrase
 
