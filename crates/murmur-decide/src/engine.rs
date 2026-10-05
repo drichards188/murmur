@@ -99,12 +99,12 @@ pub enum EngineError {
     /// nothing was logged.
     #[error("vehicle {uid}: {why}")]
     NotAccepted { uid: Uid, why: String },
-    /// Rules 7: a session or step-up the run's authentication does not allow (an asserted
+    /// Rules 8: a session or step-up the run's authentication does not allow (an asserted
     /// session in a credentials run, a step-up in a dev run, a step-up for another session
     /// or too old): nothing was logged.
     #[error("operator {operator}: {why}")]
     NotAuthenticated { operator: OperatorId, why: String },
-    /// Rules 7, a credentials run: the decision marks this approval consequential, and the
+    /// Rules 8, a credentials run: the decision marks this approval consequential, and the
     /// signer did not re-enter their credential for it (logged as `approval.refused`).
     #[error("intent {id}: {by} must re-enter their credential to sign this (step-up)")]
     StepUpRequired { id: IntentId, by: OperatorId },
@@ -251,6 +251,10 @@ pub enum Routed {
     Dispatched(Order),
     /// Some vehicle can't be reached now: held (`intent.queued`) until `expires_t`.
     Queued { expires_t: Time, reach: Vec<Reach> },
+    /// Rules 7: a mission of a kind the policy never queues, for a vehicle still owed its own
+    /// lost-link values after an engagement: it has nowhere to wait, so it is voided (with
+    /// `reason`) rather than sent over the engagement's lost-link action.
+    Voided { reason: String },
 }
 
 /// What [`Engine::dequeue`] did with a queued intent.
@@ -292,10 +296,10 @@ pub struct Engine {
     next_token: u64,
     /// Who may open an operator session, and with engagement authority (`run.started`).
     roster: Roster,
-    /// Rules 7: how this run's operators are authenticated (the roster's logged `auth`);
-    /// None before rules 7.
+    /// Rules 8: how this run's operators are authenticated (the roster's logged `auth`);
+    /// None before rules 8.
     auth: Option<AuthMode>,
-    /// Rules 7: sessions ended (`session.closed`): nothing more is logged under them.
+    /// Rules 8: sessions ended (`session.closed`): nothing more is logged under them.
     closed: BTreeSet<SessionId>,
     /// The intent dispatched last: the only one that may supersede an engagement.
     last_dispatched: Option<IntentId>,
@@ -303,6 +307,16 @@ pub struct Engine {
     newest_on: BTreeMap<Uid, IntentId>,
     /// Rules 5: when each vehicle was last logged rebooting (`vehicle.rebooted`).
     rebooted: BTreeMap<Uid, Time>,
+    /// Rules 6: the platforms' own lost-link values owed back, as the log has them (the
+    /// ledger replay keeps): rules 7 holds a mission for a vehicle still owed them.
+    restores: crate::replay::Restores,
+    /// Rules 7: the intent queued last: like the one dispatched last, it may supersede an
+    /// engagement on its vehicles (the bridge does it in the same step as the queueing).
+    last_queued: Option<IntentId>,
+    /// Rules 7: the order whose dispatch or queueing is the step in progress, and the seq of
+    /// that step's last event (its transition, or the last engagement it stopped): it
+    /// supersedes engagements only right there, nothing else logged in between.
+    step: Option<(IntentId, u64)>,
 }
 
 impl std::fmt::Debug for Engine {
@@ -339,7 +353,7 @@ impl Engine {
         sink: Box<dyn AuditSink + Send>,
     ) -> Result<Self, EngineError> {
         roster.validate().map_err(EngineError::Roster)?;
-        // rules 7: the roster says how its operators are authenticated (dev when the caller
+        // rules 8: the roster says how its operators are authenticated (dev when the caller
         // said nothing: names asserted, never evidence about people); older rules never
         // logged it
         let mut roster = roster;
@@ -374,6 +388,9 @@ impl Engine {
             last_dispatched: None,
             newest_on: BTreeMap::new(),
             rebooted: BTreeMap::new(),
+            restores: crate::replay::Restores::default(),
+            last_queued: None,
+            step: None,
         };
         let policy = e.policy.clone();
         e.emit(EventBody::RunStarted {
@@ -460,7 +477,7 @@ impl Engine {
     /// engagement). The grants are logged with the session (`grants` on
     /// `operator.action session.opened`), so replay knows who could approve what.
     ///
-    /// Rules 7: the session is logged as opened on an asserted name (`auth: asserted`), so
+    /// Rules 8: the session is logged as opened on an asserted name (`auth: asserted`), so
     /// only a dev run (the roster's `auth`) opens one this way; a credentials run refuses
     /// it ([`EngineError::NotAuthenticated`]) and opens sessions with
     /// [`Engine::open_authenticated_session`] after the bridge checked the password.
@@ -472,7 +489,7 @@ impl Engine {
         self.open_session(operator, grants, AuthMethod::Asserted)
     }
 
-    /// Rules 7: open a session for an operator whose identity the bridge established by
+    /// Rules 8: open a session for an operator whose identity the bridge established by
     /// `method` (a credentials run: `Password`, a person's credential checked at login, or
     /// `Scripted`, a harness-held one checked the same way but never a person's; a dev run:
     /// `Asserted`). Logged as `operator.action session.opened` with
@@ -538,15 +555,15 @@ impl Engine {
         Ok(OperatorSession::mint(operator, session, grants, self.auth.map(|_| method)))
     }
 
-    /// How this run authenticates its operators (rules 7; None before).
+    /// How this run authenticates its operators (rules 8; None before).
     pub fn auth_mode(&self) -> Option<AuthMode> {
         self.auth
     }
 
-    /// Rules 7: end an operator session (logout, expiry, a credential removed or changed:
+    /// Rules 8: end an operator session (logout, expiry, a credential removed or changed:
     /// `reason`), logged as `operator.action session.closed`. Consumes the session and the
     /// authorities it holds; picture tokens issued to it are dropped. Nothing may be logged
-    /// under it afterwards (replay checks). Before rules 7 sessions are not closed: the
+    /// under it afterwards (replay checks). Before rules 8 sessions are not closed: the
     /// session is dropped and nothing is logged.
     pub fn close_operator_session(
         &mut self,
@@ -571,7 +588,7 @@ impl Engine {
         Ok(())
     }
 
-    /// Rules 7, a credentials run: the operator of `session` re-entered their credential just
+    /// Rules 8, a credentials run: the operator of `session` re-entered their credential just
     /// now, and the bridge checked it (its step-up endpoint is the only caller, right before
     /// the signature it is for). Logged as `operator.action step_up` (`auth: password`) under
     /// the session; the [`StepUp`] returned is what a consequential signature quotes
@@ -620,7 +637,7 @@ impl Engine {
         }
     }
 
-    /// Rules 7: the step-up an act other than an approval quotes (`[approval]
+    /// Rules 8: the step-up an act other than an approval quotes (`[approval]
     /// step_up_acts`): required for `act` in a credentials run when the policy lists it,
     /// checked when given. Refused, nothing logged.
     fn act_step_up(
@@ -644,7 +661,7 @@ impl Engine {
         }
     }
 
-    /// Rules 7, a credentials run: a login for `operator` (on the roster) was refused; logged
+    /// Rules 8, a credentials run: a login for `operator` (on the roster) was refused; logged
     /// as `auth.refused` with why and, when it locked the id, for how long. Never the
     /// password. Refused for an operator not on the roster (nothing logged: made-up ids would
     /// flood the log) and outside a credentials run.
@@ -675,7 +692,7 @@ impl Engine {
     }
 
     /// An operator declares a track's affiliation (logged as `operator.action track.declare`,
-    /// detail `track <id> declared <affiliation>[: <note>]`). Rules 7: declaring one hostile
+    /// detail `track <id> declared <affiliation>[: <note>]`). Rules 8: declaring one hostile
     /// quotes a step-up when `[approval] step_up_acts` lists `declare_hostile` (a credentials
     /// run); the event records it.
     pub fn record_declaration(
@@ -780,7 +797,7 @@ impl Engine {
         self.submit_accepting_inner(by, None, proposal, accept, world, terrain)
     }
 
-    /// Rules 7: [`Engine::submit_accepting`] quoting a step-up, which every acceptance of
+    /// Rules 8: [`Engine::submit_accepting`] quoting a step-up, which every acceptance of
     /// the nomination records; required in a credentials run when `[approval]
     /// step_up_acts` lists `accept_unknown`.
     pub fn submit_accepting_stepped(
@@ -815,7 +832,7 @@ impl Engine {
         for (uid, since) in accept {
             self.acceptable(uid, *since, world)?;
         }
-        // rules 7: accepting a lost vehicle may be marked consequential
+        // rules 8: accepting a lost vehicle may be marked consequential
         let step_up = if accept.is_empty() {
             None
         } else {
@@ -855,7 +872,7 @@ impl Engine {
         self.accept_unknown_inner(id, by, None, uid, since, world)
     }
 
-    /// Rules 7: [`Engine::accept_unknown_friendly`] quoting a step-up (recorded on
+    /// Rules 8: [`Engine::accept_unknown_friendly`] quoting a step-up (recorded on
     /// `engage.accepted`); required in a credentials run when `[approval] step_up_acts` lists
     /// `accept_unknown`.
     pub fn accept_unknown_friendly_stepped(
@@ -1011,7 +1028,7 @@ impl Engine {
             report.error.as_deref(),
         );
         let confirmed = verdict.is_ok();
-        let t = self.emit(EventBody::EngagePreload {
+        let body = EventBody::EngagePreload {
             intent: id,
             uid: report.uid.clone(),
             phase: report.phase,
@@ -1020,7 +1037,10 @@ impl Engine {
             error: report.error.clone(),
             confirmed,
             vehicle: report.vehicle.clone().map(Box::new),
-        })?;
+        };
+        let t = self.emit(body.clone())?;
+        // the platform's own values owed back, as replay keeps them
+        self.restores.step_body(&body);
         let record = engage::PreloadRecord {
             t,
             phase: report.phase,
@@ -1075,7 +1095,7 @@ impl Engine {
                 Some(_) => false,
                 None => engage::restored(&report.values, &report.readback).is_ok(),
             };
-        self.emit(EventBody::PlatformRestore {
+        let body = EventBody::PlatformRestore {
             uid: report.uid,
             values: report.values,
             carried: report.carried,
@@ -1084,7 +1104,9 @@ impl Engine {
             error: report.error,
             confirmed,
             vehicle: report.vehicle.map(Box::new),
-        })?;
+        };
+        self.emit(body.clone())?;
+        self.restores.step_body(&body);
         Ok(confirmed)
     }
 
@@ -1144,7 +1166,7 @@ impl Engine {
         self.approve_inner(id, by, note, true, None, world, terrain)
     }
 
-    /// Rules 7: [`Engine::approve`] (with `acknowledge` as in
+    /// Rules 8: [`Engine::approve`] (with `acknowledge` as in
     /// [`Engine::approve_acknowledging`]) quoting a step-up, the approver's credential
     /// re-entered just now ([`Engine::step_up`]). A decision marked `step_up` needs one in a
     /// credentials run; the signature records it (`step_up: {seq}`).
@@ -1280,7 +1302,7 @@ impl Engine {
         self.sign_engagement(id, by.operator(), by.session(), note, token, None, world, terrain)
     }
 
-    /// Rules 7: [`Engine::approve_engagement`] quoting a step-up, the signer's credential
+    /// Rules 8: [`Engine::approve_engagement`] quoting a step-up, the signer's credential
     /// re-entered just now ([`Engine::step_up`]): what every engagement signature needs in a
     /// credentials run. The signature records it (`step_up: {seq}`).
     #[allow(clippy::too_many_arguments)]
@@ -1357,7 +1379,7 @@ impl Engine {
             self.refuse(by, session, id, "already signed: another operator must")?;
             return Err(EngineError::AlreadySigned { id, by: by.clone() });
         }
-        // rules 7: a consequential approval quotes the approver's step-up
+        // rules 8: a consequential approval quotes the approver's step-up
         let step_up = self.check_step_up(id, by, session, step)?;
         let (inputs, _, results, ok) =
             self.run_checks_plan(&spec, CheckPhase::Approve, world, terrain, None)?;
@@ -1499,7 +1521,7 @@ impl Engine {
             self.refuse(by, session, id, "already signed: another operator must")?;
             return Err(EngineError::AlreadySigned { id, by: by.clone() });
         }
-        // rules 7: every engagement signature quotes the signer's step-up (credentials run)
+        // rules 8: every engagement signature quotes the signer's step-up (credentials run)
         let step_up = self.check_step_up(id, by, session, step)?;
         // the picture this signer was shown
         let track_id = engage::params(&spec).map(|p| p.0.to_string()).unwrap_or_default();
@@ -1777,7 +1799,7 @@ impl Engine {
     }
 
     /// Log something an operator did that isn't an intent decision (acknowledge, snooze).
-    /// Rules 7: the session's own events (`session.opened`, `session.closed`, `step_up`) are
+    /// Rules 8: the session's own events (`session.opened`, `session.closed`, `step_up`) are
     /// the engine's to log, refused here; a hostile declaration the policy marks
     /// consequential goes through [`Engine::record_declaration`] with its step-up.
     pub fn record_operator_action(
@@ -1874,8 +1896,19 @@ impl Engine {
     /// same.
     pub fn supersede_engagement(&mut self, id: IntentId, by: IntentId) -> Result<(), EngineError> {
         let platform = self.get(id)?.spec().uids.first().cloned();
-        let last = self.last_dispatched == Some(by);
         let other = self.get(by)?;
+        let queued = other.state() == State::Queued;
+        let rules7 = self.policy.rules.rules_version >= rules::QUEUE_FOLLOWUPS_SINCE;
+        // the order dispatched last (rules 7: or queued last) stands; from rules 7 only in the
+        // step that dispatched or queued it, nothing else logged in between
+        let last = if rules7 {
+            self.step == Some((by, self.seq))
+        } else if queued {
+            self.last_queued == Some(by)
+        } else {
+            self.last_dispatched == Some(by)
+        };
+        let queued_ok = rules7;
         if let Some(why) = supersede_mismatch(
             id,
             by,
@@ -1883,6 +1916,7 @@ impl Engine {
             other.spec(),
             other.state(),
             last,
+            queued_ok,
         ) {
             return Err(EngineError::NotItsOrder { id, why: why.into() });
         }
@@ -1891,8 +1925,17 @@ impl Engine {
             Source::Human { id } => format!("human {id}"),
             Source::Agent { id } => format!("agent {id}"),
         };
-        let reason = format!("superseded by {by} from {who}: that order stands; no fallback commanded");
+        let how = match other.state() {
+            State::Queued => " (queued until its vehicles can be reached)",
+            State::Voided => " (not sent: its platform's own lost-link values go back first)",
+            _ => "",
+        };
+        let reason = format!("superseded by {by}{how} from {who}: that order stands; no fallback commanded");
         self.stop_engagement(id, StopCause::Superseded { by, source }, reason, false)?;
+        if rules7 {
+            // the step goes on: another engagement on its vehicles may be stopped next
+            self.step = Some((by, self.seq));
+        }
         Ok(())
     }
 
@@ -2194,6 +2237,82 @@ impl Engine {
         )
     }
 
+    /// Rules 7: `spec`'s vehicles still owed their own lost-link values by an engagement of
+    /// this run (a fact the engine logs with each decision, `restore_owed`; replay recomputes
+    /// it from the log's ledger). Empty before rules 7 and for anything but a vehicle task.
+    fn restore_owed_for(&self, spec: &IntentSpec) -> BTreeMap<Uid, queue::RestoreOwed> {
+        self.restores.owed_for(spec, &self.policy.rules)
+    }
+
+    /// Rules 7: why `spec` (a vehicle task other than a hold or rtl) can't go now: a vehicle
+    /// still owed its own lost-link values by an engagement of this run. None otherwise.
+    fn restore_hold(&self, spec: &IntentSpec) -> Option<String> {
+        if matches!(spec.kind(), TaskKind::Hold | TaskKind::Rtl) {
+            return None;
+        }
+        let owed = self.restore_owed_for(spec);
+        let (uid, o) = owed.iter().next()?;
+        Some(format!("vehicle {uid}: {}", o.waiting_detail()))
+    }
+
+    /// Rules 7: why a mission of a kind the policy never queues is refused (voided) instead of
+    /// sent, if it is: a vehicle still owed its own lost-link values. Says whether an
+    /// engagement in play there is stopped by this order (the bridge supersedes it in the same
+    /// step; its restore then goes) or the restore is pending, and that a hold or rtl goes.
+    fn refusal(&self, spec: &IntentSpec) -> Option<String> {
+        if matches!(spec.kind(), TaskKind::Hold | TaskKind::Rtl) {
+            return None;
+        }
+        let owed = self.restore_owed_for(spec);
+        let (uid, o) = owed.iter().next()?;
+        let values: Vec<String> = o.values.iter().map(|(n, v)| format!("{n} {v}")).collect();
+        let by: Vec<String> = o.by.iter().map(ToString::to_string).collect();
+        let engaged: BTreeSet<IntentId> = self.engaged_for(spec).into_values().collect();
+        let engaged: Vec<String> = engaged.iter().map(ToString::to_string).collect();
+        let kind = spec.kind().as_str();
+        Some(if engaged.is_empty() {
+            format!(
+                "{REFUSED}vehicle {uid}'s own lost-link failsafe ({}) is not confirmed back since engagement {} preloaded it, and the policy queues no {kind} order to wait for the restore: give it again once the restore confirms (a hold or rtl goes at once)",
+                values.join(", "),
+                by.join(", ")
+            )
+        } else {
+            format!(
+                "{REFUSED}vehicle {uid} carries engagement {}'s lost-link action (its own failsafe {} owed back); this order stops engagement {} (superseded, no fallback) and the restore of its own values starts now (as soon as the platform is heard), but the policy queues no {kind} order to wait for it: give it again once the restore confirms (a hold or rtl goes at once)",
+                by.join(", "),
+                values.join(", "),
+                engaged.join(", ")
+            )
+        })
+    }
+
+    /// What [`queue::reach`] reads for `spec`: its part of `world`, and (rules 7) its
+    /// vehicles' lost-link values still owed back.
+    fn reach_inputs(&self, spec: &IntentSpec, world: &WorldSnapshot) -> WorldSnapshot {
+        let mut inputs = world.subset_for(spec);
+        inputs.restore_owed = self.restore_owed_for(spec);
+        inputs
+    }
+
+    /// For the console (not a decision, not logged): whether each of a queued intent's
+    /// vehicles can be reached for it on `world`, and why not, as its dequeue would judge it.
+    pub fn reach_now(&self, id: IntentId, world: &WorldSnapshot) -> Option<Vec<Reach>> {
+        let spec = self.intents.get(&id)?.spec();
+        Some(queue::reach(
+            spec,
+            &self.reach_inputs(spec, world),
+            &self.policy.queue(),
+            &self.policy.rules,
+        ))
+    }
+
+    /// Rules 6: the platforms' own lost-link values owed back as this run's log has them
+    /// (from a preload's write-ahead, or carried over), and the engagements that preloaded
+    /// them (none: carried over from an earlier run).
+    pub fn owed_restores(&self) -> Vec<(Uid, BTreeMap<String, f64>, Vec<IntentId>)> {
+        self.restores.owed()
+    }
+
     /// Rules 5: a newer order still standing for one of the intent's vehicles, and which
     /// vehicle (see [`Engine::dequeue`]): an older order is neither sent nor followed over it.
     pub fn newer_order(&self, id: IntentId) -> Option<(IntentId, Uid)> {
@@ -2334,7 +2453,7 @@ impl Engine {
                 .map_err(|err| EngineError::Illegal { id, err })?;
             self.refuse_queued(id)?;
             let cfg = self.policy.queue();
-            let inputs = world.subset_for(&spec);
+            let inputs = self.reach_inputs(&spec, world);
             let reach = queue::reach(&spec, &inputs, &cfg, &self.policy.rules);
             if !queue::all_reachable(&reach) {
                 return Err(EngineError::NotDispatchable {
@@ -2402,6 +2521,15 @@ impl Engine {
         let intent = self.get(id)?;
         next_state(intent.state(), Transition::Dispatch)
             .map_err(|err| EngineError::Illegal { id, err })?;
+        // rules 7: whatever the path (and whether the kind is queued or not), never a mission
+        // to a vehicle still owed its own lost-link values (replay checks every dispatch)
+        if let Some(why) = self.restore_hold(intent.spec()) {
+            return Err(EngineError::NotDispatchable {
+                id,
+                why: format!("{why}: a mission is not sent over an engagement's lost-link action"),
+            });
+        }
+        let intent = self.get(id)?;
         let order = order_for(
             intent.spec(),
             intent.space_answer(),
@@ -2434,6 +2562,7 @@ impl Engine {
         self.transition(id, Transition::Dispatch, reason.into())?;
         self.get_mut(id)?.mark_dispatched();
         self.last_dispatched = Some(id);
+        self.step = Some((id, self.seq));
         for u in uids {
             self.newest_on.insert(u, id);
         }
@@ -2464,9 +2593,18 @@ impl Engine {
         let spec = intent.spec().clone();
         let cfg = self.policy.queue();
         if !self.reach_needed(&spec) {
+            // rules 7: no queue for this kind, but still never a mission over an engagement's
+            // lost-link action: refused, saying why. The newest order stands all the same: an
+            // engagement in play on its vehicles is stopped in this step (superseded, as a
+            // dispatch or a queueing would), so the platform's own values can go back
+            if let Some(reason) = self.refusal(&spec) {
+                self.void(id, &reason)?;
+                self.step = Some((id, self.seq));
+                return Ok(Routed::Voided { reason });
+            }
             return Ok(Routed::Dispatched(self.dispatch_order(id)?));
         }
-        let inputs = world.subset_for(&spec);
+        let inputs = self.reach_inputs(&spec, world);
         let reach = queue::reach(&spec, &inputs, &cfg, &self.policy.rules);
         let logged = self.log_inputs(&inputs)?;
         if queue::all_reachable(&reach) {
@@ -2507,6 +2645,8 @@ impl Engine {
                 expires_t.ms_since(now) / 1000
             ),
         )?;
+        self.last_queued = Some(id);
+        self.step = Some((id, self.seq));
         Ok(Routed::Queued { expires_t, reach })
     }
 
@@ -2550,7 +2690,7 @@ impl Engine {
             return Ok(Dequeued::Voided);
         }
         let cfg = self.policy.queue();
-        let reach = queue::reach(&spec, &world.subset_for(&spec), &cfg, &self.policy.rules);
+        let reach = queue::reach(&spec, &self.reach_inputs(&spec, world), &cfg, &self.policy.rules);
         if !queue::all_reachable(&reach) {
             return Ok(Dequeued::Waiting(reach));
         }
@@ -2668,8 +2808,15 @@ impl Engine {
         next_state(intent.state(), tr).map_err(|err| EngineError::Illegal { id, err })?;
         let waited = expires_t.ms_since(since) / 1000;
         let reason = if inbox {
+            // rules 7: and why it was queued (the reach `intent.queued` logged; what holds it
+            // now is the queue's live view, not logged while it waits)
+            let held = if self.policy.rules.rules_version >= rules::QUEUE_FOLLOWUPS_SINCE && !why.is_empty() {
+                format!(" (queued because its vehicles could not be reached: {why})")
+            } else {
+                String::new()
+            };
             format!(
-                "a human's approval waits in the queue at most {} s: back to the inbox for a new decision",
+                "a human's approval waits in the queue at most {} s: back to the inbox for a new decision{held}",
                 self.policy.queue().human_expire_s()
             )
         } else if why.is_empty() {
@@ -2840,7 +2987,7 @@ impl Engine {
         if !queue::queueable(open.spec.kind()) {
             return Err(refuse("only vehicle tasks are carried over"));
         }
-        // rules 7: only between runs that authenticated their operators alike (an approval on
+        // rules 8: only between runs that authenticated their operators alike (an approval on
         // asserted ids never stands in a credentials run, nor the reverse)
         let mut from = from;
         if self.auth.is_some() {
@@ -2986,6 +3133,34 @@ impl Engine {
         state: &str,
         detail: &str,
     ) -> Result<(), EngineError> {
+        self.op_state(id, uid, state, detail, false)
+    }
+
+    /// Rules 7 ([`rules::QUEUE_FOLLOWUPS_SINCE`]): a vehicle task's start, logged ahead of
+    /// sending it (`op.state` starting, `ahead`): the bridge calls this before the mission
+    /// mode, the hold or rtl mode, or new items to a vehicle already flying a mission go out,
+    /// and sends nothing if it fails. A bridge that stops right after still finds in its log
+    /// that the order may have started, so a carry-over never starts it again on its own.
+    /// Refused, nothing logged, under rules before 7, for anything but a vehicle task, and
+    /// where [`Engine::record_op_state`] refuses.
+    pub fn record_op_state_ahead(&mut self, id: IntentId, uid: &Uid, detail: &str) -> Result<(), EngineError> {
+        if self.policy.rules.rules_version < rules::QUEUE_FOLLOWUPS_SINCE {
+            return Err(EngineError::NotItsOrder {
+                id,
+                why: "these decision rules log no start ahead of sending it".into(),
+            });
+        }
+        self.op_state(id, uid, queue::STARTING_OP, detail, true)
+    }
+
+    fn op_state(
+        &mut self,
+        id: IntentId,
+        uid: &Uid,
+        state: &str,
+        detail: &str,
+        ahead: bool,
+    ) -> Result<(), EngineError> {
         let intent = self.get(id)?;
         let dispatched = intent.history().iter().any(|h| h.state == State::Dispatched);
         let fallback = intent
@@ -2993,6 +3168,11 @@ impl Engine {
             .and_then(|e| e.stop.as_ref())
             .map(|s| s.fallback);
         let replaced = self.newest_on.get(uid).is_some_and(|n| *n != id);
+        let start = StartAhead {
+            ahead,
+            required: self.policy.rules.rules_version >= rules::QUEUE_FOLLOWUPS_SINCE,
+            started: intent.started_ahead().contains(uid),
+        };
         if let Some(why) = op_state_mismatch(
             intent.spec(),
             intent.state(),
@@ -3002,17 +3182,27 @@ impl Engine {
             uid,
             state,
             detail,
+            start,
         ) {
             return Err(EngineError::NotItsOrder { id, why: why.into() });
+        }
+        // rules 7: what replay rejects in every log, the engine refuses too: an op whose start
+        // went out on this delivery may be running, so it ends `unconfirmed`, never `requeued`
+        if start.required && state == queue::REQUEUED_OP && intent.start_went_out().contains(uid) {
+            return Err(EngineError::NotItsOrder {
+                id,
+                why: "op requeued after its start went out (it may be running: it ends unconfirmed)".into(),
+            });
         }
         self.emit(EventBody::OpState {
             intent: id,
             uid: uid.clone(),
             state: state.into(),
             detail: detail.into(),
+            ahead,
         })?;
         self.get_mut(id)?
-            .record_op(uid, state, detail, queue::committed_op(state));
+            .record_op(uid, state, detail, queue::committed_op(state), ahead);
         Ok(())
     }
 
@@ -3188,6 +3378,7 @@ impl Engine {
         }
         inputs.engaged = self.engaged_for(spec);
         inputs.waiting = self.waiting_for(spec);
+        inputs.restore_owed = self.restore_owed_for(spec);
         if spec.kind() == TaskKind::Engage {
             inputs.unknown_accepted = self.accepted_for(spec.id);
         }
@@ -3317,7 +3508,7 @@ impl Engine {
         };
         self.emit(EventBody::IntentCreated {
             intent: spec.clone(),
-            // rules 7: a human's intent is made in a live session of theirs
+            // rules 8: a human's intent is made in a live session of theirs
             session: if self.auth.is_some() { submitter.map(HumanAuthority::session) } else { None },
         })?;
         self.next_intent += 1;
@@ -3573,7 +3764,9 @@ pub(crate) fn dispatched_event(spec: &IntentSpec, order: &Order) -> EventBody {
 /// intent, to vehicles that include the engagement's platform, dispatched and still under way
 /// (`by_state`), and the intent dispatched last (`by_last`): the bridge stops an engagement
 /// in the same step as the dispatch that takes its platform, so no other dispatch comes
-/// between (and the engagement's own dispatch, if any, came before it).
+/// between (and the engagement's own dispatch, if any, came before it). From rules 7
+/// (`queued_ok`) an order queued for the platform supersedes it the same way, in the step
+/// that queues it: still queued, and the intent queued last (`by_last` then says so).
 pub(crate) fn supersede_mismatch(
     id: IntentId,
     by: IntentId,
@@ -3581,12 +3774,28 @@ pub(crate) fn supersede_mismatch(
     by_spec: &IntentSpec,
     by_state: State,
     by_last: bool,
+    queued_ok: bool,
 ) -> Option<&'static str> {
     if by == id {
         return Some("an engagement can't supersede itself");
     }
     if !platform.is_some_and(|p| by_spec.uids.contains(p)) {
         return Some("superseded by an order that does not take the engagement's platform");
+    }
+    if queued_ok && by_state == State::Queued {
+        if !by_last {
+            return Some("superseded by a queued order outside the step that queued it");
+        }
+        return None;
+    }
+    // rules 7: a mission refused for its platform's own lost-link values (no queue for its
+    // kind) stands over an engagement too, in the step that refused it (`by_last` is that
+    // step, which only such a refusal opens)
+    if queued_ok && by_state == State::Voided {
+        if !by_last {
+            return Some("superseded by a voided order outside the step that refused it");
+        }
+        return None;
     }
     if !matches!(
         by_state,
@@ -3598,7 +3807,11 @@ pub(crate) fn supersede_mismatch(
         return Some("superseded by an order no longer under way");
     }
     if !by_last {
-        return Some("superseded by an order other than the one dispatched last");
+        return Some(if queued_ok {
+            "superseded by an order outside the step that dispatched it"
+        } else {
+            "superseded by an order other than the one dispatched last"
+        });
     }
     None
 }
@@ -3627,7 +3840,7 @@ struct Acceptor<'a> {
     by: &'a OperatorId,
     session: SessionId,
     list: &'a [(Uid, Option<Time>)],
-    /// Rules 7: the step-up the acceptances quote (`[approval] step_up_acts`).
+    /// Rules 8: the step-up the acceptances quote (`[approval] step_up_acts`).
     step_up: Option<StepUpRef>,
 }
 
@@ -3665,6 +3878,11 @@ pub struct PlatformRestoreReport {
     /// `carried`: the vehicle they were preloaded on.
     pub vehicle: Option<engage::VehicleIdentity>,
 }
+
+/// Rules 7: how the reason of a mission refused for its platform's own lost-link values
+/// begins (after `system: `): the refusal opens a step in which it supersedes the engagements
+/// in play on its vehicles, as a dispatch or a queueing does.
+pub(crate) const REFUSED: &str = "not sent: ";
 
 /// Rules 6: how a stop for a preload that did not confirm begins (after `system: `); replay
 /// requires such a stop to follow an unconfirmed `engage.preload` set.
@@ -3762,6 +3980,18 @@ pub(crate) fn preload_verdict(
 /// older one's op can only be reported in one of these (it was replaced, or had ended).
 const TERMINAL_OPS: [&str; 3] = ["done", "failed", "superseded"];
 
+/// Rules 7: what an op state report says about a vehicle start logged ahead of sending it,
+/// and what its intent's delivery needs ([`op_state_mismatch`]).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct StartAhead {
+    /// The report is a start logged ahead of sending it.
+    pub ahead: bool,
+    /// The log's rules write every vehicle start ahead (rules 7 on).
+    pub required: bool,
+    /// This vehicle's start (or follow) on the current delivery was logged ahead.
+    pub started: bool,
+}
+
 /// Why an op state can't be this intent's, if it can't: never dispatched; not one of its
 /// vehicles (or its order's resource); a vehicle or space task that already ended; on a
 /// vehicle a newer order took (`replaced`), anything but how its op ended; `superseded` with
@@ -3769,8 +3999,12 @@ const TERMINAL_OPS: [&str; 3] = ["done", "failed", "superseded"];
 /// replaces); an engagement's `fallback` report without a stop that released a fallback, or
 /// naming another fallback or task than that stop's (`"<fallback> commanded (<task>): ..."`,
 /// `"<fallback> could not be commanded ..."`). `fallback` is the engagement's stop, if any:
-/// `Some(None)` when it stopped without commanding one. The engine refuses these; replay
-/// flags them.
+/// `Some(None)` when it stopped without commanding one. Rules 7 (`start`): a vehicle task's
+/// `starting` is logged ahead of the start (and only it is), and on every delivery a vehicle
+/// reports taking the order (`acked`, `active`, `done`) only after its start was logged
+/// ahead: every way to it goes through the start, or through a follow of an order the vehicle
+/// already runs, which the bridge logs ahead the same way (from then on the vehicle runs it).
+/// The engine refuses these; replay flags them.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn op_state_mismatch(
     spec: &IntentSpec,
@@ -3781,12 +4015,25 @@ pub(crate) fn op_state_mismatch(
     uid: &Uid,
     op: &str,
     detail: &str,
+    start: StartAhead,
 ) -> Option<&'static str> {
     if !dispatched {
         return Some("op state for an intent that was never dispatched");
     }
     if op_state_owner(spec, uid).is_err() {
         return Some("op state for a vehicle or resource the intent was not dispatched to");
+    }
+    let vehicle_task = queue::queueable(spec.kind());
+    if start.ahead && (!vehicle_task || op != queue::STARTING_OP) {
+        return Some("op state logged ahead that is not a vehicle task's start");
+    }
+    if start.required && vehicle_task {
+        if op == queue::STARTING_OP && !start.ahead {
+            return Some("a vehicle start not logged ahead of sending it (from rules 7 every start is)");
+        }
+        if queue::committed_op(op) && !start.started {
+            return Some("a vehicle took an order whose start was not logged ahead of it on this delivery (rules 7)");
+        }
     }
     let engagement = spec.kind() == TaskKind::Engage;
     if !engagement && state != State::Dispatched {
@@ -4027,6 +4274,7 @@ impl AgentPort<'_> {
         }
         inputs.engaged = self.engine.engaged_for(&spec);
         inputs.waiting = self.engine.waiting_for(&spec);
+        inputs.restore_owed = self.engine.restore_owed_for(&spec);
         let checks = rules::evaluate(&spec, &inputs, &self.engine.policy.rules);
         let passed = rules::passed(&checks, spec.kind());
         let policy = passed.then(|| policy::decide(&spec, &inputs, &self.engine.policy));

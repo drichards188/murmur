@@ -1184,7 +1184,7 @@ HUMAN_ACTS = ("approval.granted", "approval.concurred", "approval.at_submission"
 
 
 def auth_of(events: list[dict], replay: dict | None, participant: str | None = None) -> dict[str, Any]:
-    """How the run's operators proved who they were (rules 7: the roster's `auth` in
+    """How the run's operators proved who they were (rules 8: the roster's `auth` in
     `run.started`, each session's `auth`). `credentials`: each signed in with a checked
     credential, and every engagement signature re-entered it; `dev`: ids asserted by request
     headers (the proxy batches, scripted runs); `none recorded`: a log of earlier rules, ids

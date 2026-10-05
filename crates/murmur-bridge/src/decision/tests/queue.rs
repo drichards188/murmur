@@ -14,7 +14,7 @@ use murmur_decide::replay::{ReplayOptions, replay_str_with};
 impl Rig {
     /// A fake whose link can be cut, whose received commands are counted, and which can be
     /// rebooted.
-    fn watched(&self, uid: Uid, fw: Firmware, platform: &str, at: (f64, f64), q: Quirks) -> (Arc<VehicleCell>, Watch) {
+    pub(super) fn watched(&self, uid: Uid, fw: Firmware, platform: &str, at: (f64, f64), q: Quirks) -> (Arc<VehicleCell>, Watch) {
         let (q, w) = q.watched();
         let cell = spawn_fake(uid, fw, at.0, at.1, q);
         let mut m = serde_json::Map::new();
@@ -28,7 +28,7 @@ impl Rig {
 
 /// Cut a vehicle's link, and make its last heartbeat `s` seconds old (the engine's clock is
 /// manual, the facts' times are the wall clock's: this is the silence the engine sees).
-fn go_silent(cell: &VehicleCell, w: &Watch, s: f64) {
+pub(super) fn go_silent(cell: &VehicleCell, w: &Watch, s: f64) {
     w.set_cut(true);
     cell.write(|v| v.seen.heartbeat = Some(clock::wall() - s));
 }
@@ -900,10 +900,13 @@ async fn an_order_approved_again_after_a_restart_asks_the_vehicle_first() {
     assert_eq!(w.count("MISSION_COUNT"), 1, "not uploaded again");
     assert_eq!(w.count("MAV_CMD_DO_SET_MISSION_CURRENT"), 1, "not started again");
     let b_text = blog.text();
-    assert!(
-        !b_text.contains("\"state\":\"sent\"") && !b_text.contains("\"state\":\"starting\""),
-        "followed: nothing sent in the second run"
-    );
+    assert!(!b_text.contains("\"state\":\"sent\""), "followed: nothing sent in the second run");
+    // rules 7: the follow is logged ahead like a start (from then on the copter runs it), and
+    // says it was followed
+    assert!(b_text.contains("followed, not sent again"), "the follow logged ahead");
+    for l in b_text.lines().filter(|l| l.contains("\"state\":\"starting\"")) {
+        assert!(l.contains("followed, not sent again") && l.contains("\"ahead\":true"), "{l}");
+    }
     replays_after(&blog, &r.log);
 }
 
@@ -938,4 +941,68 @@ async fn the_pointer_lists_the_open_orders() {
     assert_eq!(p.open, vec![a.id.0], "{p:?}");
     go_silent(&cell, &w, 5.0);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- rules 7 ----------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn a_start_logged_ahead_is_not_lost_to_a_crash_right_after_it() {
+    // murmur-dma (rules 7): the copter switched to AUTO (its start went out), the link died
+    // before the ACK, and the bridge crashed before its next tick. The start was logged ahead
+    // of sending it, so the next run finds that the orbit may have started: when the link is
+    // back and the copter (its failsafe took it home meanwhile) does not run it, a human
+    // decides; it is never started again on its own. (Logged at the tick, as before rules 7,
+    // the crashed log held no start, and the next run restarted the mission over the RTL.)
+    let r = rig();
+    let q = Quirks {
+        cut_after_auto: true,
+        bail_after: Some((5.0, "RTL", "Failsafe: GCS")),
+        ..quick()
+    };
+    let (cell, w) = r.watched(87, Firmware::Copter, "x10", (LAT, LON), q);
+    sleep(Duration::from_secs(1)).await;
+    let out = r.d.submit(&op1(), orbit(87)).await.expect("submit");
+    assert_eq!(out.state, State::Dispatched, "{}", r.reason(out.id));
+    for _ in 0..2000 {
+        if w.cut.load(Ordering::SeqCst) {
+            break;
+        }
+        sleep(Duration::from_millis(5)).await;
+    }
+    // the crash: no tick since the dispatch, the log as it stands
+    let crashed = r.log.text();
+    let start = crashed
+        .lines()
+        .find(|l| l.contains("\"type\":\"op.state\"") && l.contains("\"state\":\"starting\""))
+        .unwrap_or_else(|| panic!("the start was not logged before it went out:\n{crashed}"));
+    assert!(start.contains("\"ahead\":true"), "{start}");
+    // the first bridge's op gives up on the dead link before the link comes back
+    sleep(Duration::from_secs(40)).await;
+    let (b, blog) = restart(&r);
+    let carried = b.carry_over("a.jsonl", &crashed, &CarryCheck::default()).expect("carried");
+    assert_eq!(carried, vec![out.id]);
+    let state = |id: IntentId| b.lock().engine.intent(id).map(Intent::state);
+    assert_eq!(state(out.id), Some(State::Queued));
+    w.set_cut(false);
+    sleep(Duration::from_secs(2)).await;
+    for _ in 0..30 {
+        b.tick();
+        if state(out.id) == Some(State::PendingApproval) {
+            break;
+        }
+        sleep(Duration::from_secs(1)).await;
+    }
+    assert_eq!(state(out.id), Some(State::PendingApproval), "a human decides: {:?}", ops_of(&r));
+    assert_eq!(cell.read(|v| v.mode.clone()).as_deref(), Some("RTL"), "the failsafe's mode stands");
+    assert_eq!(w.count("MAV_CMD_DO_SET_MISSION_CURRENT"), 1, "never started again on its own");
+    assert_eq!(w.count("MAV_CMD_DO_SET_MODE"), 1);
+    let rb = replay_str_with(
+        &blog.text(),
+        &ReplayOptions {
+            previous: Some(&crashed),
+            ..ReplayOptions::default()
+        },
+    )
+    .expect("parses");
+    assert!(rb.ok(), "{:?}", rb.mismatches);
 }

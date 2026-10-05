@@ -135,7 +135,7 @@ def collect(batch: Path) -> tuple[dict[str, Any], list[dict[str, Any]], list[dic
         auth = m.get("auth") or {}
         if info.get("arm") == "study" and not auth.get("human_control_evidence"):
             # a participant's decisions count only when they signed in with their own
-            # credential, the log replayed and its anchors held (rules 7)
+            # credential, the log replayed and its anchors held (rules 8)
             why = "; ".join(auth.get("why_not") or [f"operators not authenticated (auth {auth.get('mode')})"])
             excluded.append(
                 {
@@ -945,7 +945,7 @@ def build(batch: Path) -> Path:
             '<p class="muted">Operator identities: '
             + esc(", ".join(f"{n} run(s) {mode}" for mode, n in sorted(auth_modes.items())))
             + ". A dev run names its operators by request header (MURMUR_AUTH=dev): its deciders are scripts, and it is not "
-            "evidence about people. A study run counts only if its operators signed in with their own credentials (rules 7) "
+            "evidence about people. A study run counts only if its operators signed in with their own credentials (rules 8) "
             "and its log replayed.</p>"
         )
     body.append(

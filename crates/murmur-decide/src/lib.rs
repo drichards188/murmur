@@ -39,7 +39,7 @@
 //!   method and its engine reference is private.
 //! - The source of an intent (human or agent) is set by the path it came in on, never by
 //!   the request body ([`Proposal`] has no source field).
-//! - Rules 7 ([`OPERATOR_AUTH_SINCE`]): the run says how operators prove who they are
+//! - Rules 8 ([`OPERATOR_AUTH_SINCE`]): the run says how operators prove who they are
 //!   ([`AuthMode`] on the [`Roster`]). In a credentials run a session opens only through
 //!   [`Engine::open_authenticated_session`] (the bridge's login, after it checked the
 //!   password), every session's end is logged ([`Engine::close_operator_session`], which
@@ -310,12 +310,12 @@ pub use intent::{
 pub use policy::{DeadlineBasis, KindApproval, Policy, PolicyDecision, StepUpAct, Tier, Until};
 pub use queue::{
     Basis, CarriedApproval, KindQueue, OpenIntent, QueueConfig, QueueState, Reach, Recheck,
-    RecheckRecord, ResumedFrom, Verdict,
+    RecheckRecord, RestoreOwed, ResumedFrom, Verdict,
 };
 pub use route::{LegKind, Route, Segment};
 pub use rules::{
-    CheckResult, OPERATOR_AUTH_SINCE, Outcome, POLICY_SCHEMA, RULES_VERSION, RuleId, RulesConfig,
-    STEP_UP_SCHEMA_SINCE, UnknownEndurance,
+    CheckResult, OPERATOR_AUTH_SINCE, Outcome, POLICY_SCHEMA, QUEUE_FOLLOWUPS_SINCE, RULES_VERSION,
+    RuleId, RulesConfig, STEP_UP_SCHEMA_SINCE, UnknownEndurance,
 };
 pub use space::{
     ChosenCollect, CollectCapability, CollectOrder, CoverOrder, CoverService, ScenarioMap,

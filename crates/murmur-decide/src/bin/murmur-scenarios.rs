@@ -1,4 +1,4 @@
-//! `murmur-scenarios [--json] [--seed N --noise M --vnoise V] [--root DIR] [--log-dir DIR] <file-or-dir>...`
+//! `murmur-scenarios [--json] [--seed N --noise M --vnoise V] [--rules N] [--root DIR] [--log-dir DIR] <file-or-dir>...`
 //!
 //! Run engagement scenarios (`sim/scenarios/engage/*.toml`, format in
 //! `crate::scenario` and `sim/scenarios/engage/README.md`) against the decision engine:
@@ -8,7 +8,8 @@
 //! `--json` prints one JSON object per scenario (one per line) for a harness; otherwise a
 //! table. `--seed`/`--noise` add seeded Gaussian noise (metres, 1-sigma) to the track
 //! position estimates, `--vnoise` (m/s, 1-sigma, correlated over about 10 s) to their
-//! velocity estimates. `--log-dir` writes each run's audit log as `<scenario>.jsonl`. `--root` is the
+//! velocity estimates. `--rules N` decides under older decision rules (what they did with
+//! the same timeline; the designed ends are the current rules'). `--log-dir` writes each run's audit log as `<scenario>.jsonl`. `--root` is the
 //! repo (default: the current directory) for `sim/policy.toml`, `sim/platforms.toml` and
 //! `sim/areas`.
 //!
@@ -37,8 +38,10 @@ fn main() -> ExitCode {
             "--vnoise" => {
                 opts.velocity_noise_mps = args.next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
             }
+            // decide under older decision rules (what they did with the same timeline)
+            "--rules" => opts.rules_version = args.next().and_then(|s| s.parse().ok()),
             _ if a.starts_with("--") => {
-                eprintln!("usage: murmur-scenarios [--json] [--seed N --noise M --vnoise V] [--root DIR] [--log-dir DIR] <file-or-dir>...");
+                eprintln!("usage: murmur-scenarios [--json] [--seed N --noise M --vnoise V] [--rules N] [--root DIR] [--log-dir DIR] <file-or-dir>...");
                 return ExitCode::from(2);
             }
             _ => paths.push(PathBuf::from(a)),

@@ -238,6 +238,5 @@ export const BASIS_LABEL: Record<Estimate['basis'], string> = {
 export const FAILSAFE_LABEL: Record<FailsafeBranch['action'], string> = {
   rtl: 'RTL',
   surface: 'SURFACING',
-  land: 'LANDING',
   disarm: 'DISARMED',
 }

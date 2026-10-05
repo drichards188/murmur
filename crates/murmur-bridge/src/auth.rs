@@ -1,4 +1,4 @@
-//! Who is acting (rules 7, murmur-der.1): in a credentials run operators log in with their own
+//! Who is acting (rules 8, murmur-der.1): in a credentials run operators log in with their own
 //! password, agents present their own key, and nothing else is believed; a dev run (the
 //! default for `make up`) asserts ids, says so loudly, and is never evidence about people.
 //!

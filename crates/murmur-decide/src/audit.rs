@@ -136,13 +136,13 @@ pub enum EventBody {
     #[serde(rename = "intent.created")]
     IntentCreated {
         intent: IntentSpec,
-        /// Rules 7: a human's intent is made in a live session of theirs (absent for an
-        /// agent's, and before rules 7); replay checks it is open and the proposer's.
+        /// Rules 8: a human's intent is made in a live session of theirs (absent for an
+        /// agent's, and before rules 8); replay checks it is open and the proposer's.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session: Option<SessionId>,
     },
 
-    /// Rules 7, a credentials run: a login for an operator on the roster was refused (a wrong
+    /// Rules 8, a credentials run: a login for an operator on the roster was refused (a wrong
     /// password; `locked_s`: the id is now locked that long). Never the password. A refused
     /// step-up is `operator.action step_up.refused` under its session instead.
     #[serde(rename = "auth.refused")]
@@ -223,7 +223,7 @@ pub enum EventBody {
         /// recorded like `self_approved`; replay recomputes it).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         self_accepted: bool,
-        /// Rules 7: the step-up this signature quoted (the signer's credential re-entered at
+        /// Rules 8: the step-up this signature quoted (the signer's credential re-entered at
         /// signing: the `operator.action step_up` event under the same session). Required in
         /// a credentials run when the decision says `step_up`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -257,7 +257,7 @@ pub enum EventBody {
         /// Engage, rules 6: as on `approval.granted`.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         self_accepted: bool,
-        /// Rules 7: as on `approval.granted`.
+        /// Rules 8: as on `approval.granted`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         step_up: Option<StepUpRef>,
     },
@@ -429,12 +429,18 @@ pub enum EventBody {
     },
 
     /// Per-vehicle task progress from the task layer (sent, acked, active, done, failed).
+    /// Rules 7: a vehicle task's `starting` is logged ahead of the start it records (`ahead`):
+    /// written before the mission mode, the hold or rtl mode, or new items to a vehicle
+    /// already flying a mission go out, so a bridge that stops right after still finds that
+    /// the order may have started.
     #[serde(rename = "op.state")]
     OpState {
         intent: IntentId,
         uid: Uid,
         state: String,
         detail: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        ahead: bool,
     },
 
     /// Mode change, failsafe, STATUSTEXT and the like.
@@ -454,12 +460,12 @@ pub enum EventBody {
         /// `session.opened`: what the session may authorize beyond tasking (absent: nothing).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         grants: Option<Grants>,
-        /// Rules 7, on `session.opened` and `step_up`: how the operator proved who they are
+        /// Rules 8, on `session.opened` and `step_up`: how the operator proved who they are
         /// (`password`: checked by the bridge; `asserted`: a name the request gave, dev mode).
         /// `session.closed` (detail: why) ends the session; nothing may follow under it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         auth: Option<AuthMethod>,
-        /// Rules 7: the step-up this act quoted (a declaration the policy marks consequential).
+        /// Rules 8: the step-up this act quoted (a declaration the policy marks consequential).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         step_up: Option<StepUpRef>,
     },
@@ -526,7 +532,7 @@ pub enum EventBody {
         /// checks it was lost since exactly `since`, by the link-aware freshness rule).
         world_t: Time,
         vehicle: Box<crate::world::VehicleFacts>,
-        /// Rules 7: the step-up the acceptance quoted (`[approval] step_up_acts` lists
+        /// Rules 8: the step-up the acceptance quoted (`[approval] step_up_acts` lists
         /// `accept_unknown`); every acceptance of one nomination may quote the same one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         step_up: Option<StepUpRef>,

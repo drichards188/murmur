@@ -673,7 +673,7 @@ pub struct Approval {
     /// tier lets the submitter authorize (`approval.at_submission`). Always self-approved.
     pub at_submission: bool,
     pub note: Option<String>,
-    /// Rules 7: the approver re-entered their credential to sign (a step-up).
+    /// Rules 8: the approver re-entered their credential to sign (a step-up).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub step_up: bool,
 }
@@ -741,6 +741,15 @@ pub struct Intent {
     /// one that does not run it sends it to a human.
     #[serde(skip)]
     confirming: BTreeSet<Uid>,
+    /// Rules 7: the vehicles whose start (or follow) on the current delivery was logged ahead
+    /// of it.
+    #[serde(skip)]
+    started_ahead: BTreeSet<Uid>,
+    /// The vehicles whose op on the current delivery reported its start going out
+    /// (`starting`, `unconfirmed`, or started; after a restart, those that had started it):
+    /// rules 7 refuses such an op ending `requeued` (it may be running).
+    #[serde(skip)]
+    start_went_out: BTreeSet<Uid>,
     /// Each vehicle's last op state in this run (op.state), and its detail.
     #[serde(skip)]
     ops: BTreeMap<Uid, String>,
@@ -783,6 +792,8 @@ impl Intent {
             basis_carried: false,
             maybe_started: BTreeSet::new(),
             confirming: BTreeSet::new(),
+            started_ahead: BTreeSet::new(),
+            start_went_out: BTreeSet::new(),
             ops: BTreeMap::new(),
             op_details: BTreeMap::new(),
         }
@@ -864,6 +875,14 @@ impl Intent {
     pub fn confirming(&self) -> &BTreeSet<Uid> {
         &self.confirming
     }
+    /// Rules 7: the vehicles whose start in the current delivery was logged ahead of it.
+    pub fn started_ahead(&self) -> &BTreeSet<Uid> {
+        &self.started_ahead
+    }
+    /// The vehicles whose op on the current delivery reported its start going out.
+    pub fn start_went_out(&self) -> &BTreeSet<Uid> {
+        &self.start_went_out
+    }
 
     pub(crate) fn apply(
         &mut self,
@@ -930,6 +949,8 @@ impl Intent {
         self.dispatched_before = dispatched_before;
         self.basis_carried = basis_carried;
         self.maybe_started = maybe_started;
+        // followed after a restart: the vehicles that had started it
+        self.start_went_out = self.committed.clone();
     }
     /// Dispatched (again): a vehicle may hold it from now on; its op states start over, and
     /// the vehicles that may have started it are only confirmed this time.
@@ -937,14 +958,20 @@ impl Intent {
         self.dispatched_before = true;
         self.ops.clear();
         self.op_details.clear();
+        self.started_ahead.clear();
+        self.start_went_out.clear();
         self.confirming = self.maybe_started.clone();
     }
     /// Back to a human: their next approval decides, starting it again included.
     pub(crate) fn clear_maybe_started(&mut self) {
         self.maybe_started.clear();
     }
-    /// An op state reported for `uid` (`committed`: the vehicle accepted and started it).
-    pub(crate) fn record_op(&mut self, uid: &Uid, state: &str, detail: &str, committed: bool) {
+    /// An op state reported for `uid` (`committed`: the vehicle accepted and started it;
+    /// `ahead`: a start logged ahead of sending it).
+    pub(crate) fn record_op(&mut self, uid: &Uid, state: &str, detail: &str, committed: bool, ahead: bool) {
+        if ahead {
+            self.started_ahead.insert(uid.clone());
+        }
         self.ops.insert(uid.clone(), state.to_string());
         self.op_details.insert(uid.clone(), detail.to_string());
         if committed {
@@ -952,6 +979,9 @@ impl Intent {
         }
         if crate::queue::maybe_started_op(state) {
             self.maybe_started.insert(uid.clone());
+        }
+        if crate::queue::maybe_started_op(state) || committed {
+            self.start_went_out.insert(uid.clone());
         }
     }
     /// Back to the inbox from the queue: a new decision is needed, so the old approval and

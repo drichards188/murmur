@@ -130,6 +130,10 @@ def run(sim, args):
     for b in (bridge, ROOT / "target" / "release" / "murmur-standins"):
         if not b.exists():
             sys.exit(f"missing {b}; cargo build --release -p murmur-standins -p murmur-bridge")
+    # this run's manifest before the bridge starts (as scripts/up.sh): started beside
+    # swarm.py the bridge could read the previous run's sim/run/fleet.json
+    subprocess.run([PY, str(ROOT / "sim" / "swarm.py"), "--fleet", str(fleet), "--base-port", str(base_port),
+                    "--manifest-only"], env=env, check=True)
     procs = [
         subprocess.Popen([str(bridge)], cwd=ROOT, env=env, stdout=open(logs / "bridge.log", "w"),
                          stderr=subprocess.STDOUT, start_new_session=True),

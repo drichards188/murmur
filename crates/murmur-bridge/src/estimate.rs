@@ -39,8 +39,9 @@
 //! The lost-link branch: each vehicle's GCS failsafe timer follows its link profile
 //! (`lost_link_s` in `sim/links.toml`, written into its parameters by `sim/swarm.py`), and
 //! what it does is the firmware's (`crates/murmur-standins/src/params.rs`, `sim/params/`):
-//! RTL for planes, copters, boats and UGVs, surface for an AUV, land for the airship, disarm
-//! for a tethered ROV. If the vehicle lost us too (the usual case: a cut link is cut both
+//! RTL for planes, copters, boats and UGVs, surface for an AUV, disarm for a tethered ROV;
+//! none for the airship, whose GCS failsafe is off on both backends (ArduPilot Blimp 4.8's
+//! can only disarm it). If the vehicle lost us too (the usual case: a cut link is cut both
 //! ways), after that long it is probably on that branch: a second model from the moment the
 //! timer fires, starting with the uncertainty the first model had reached by then.
 //!
@@ -197,7 +198,7 @@ pub struct Arrival {
 /// The lost-link failsafe hypothesis: from `fires_t` the vehicle is probably on `motion`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct FailsafeBranch {
-    /// rtl | surface | land | disarm
+    /// rtl | surface | disarm
     pub action: &'static str,
     /// the timer, s (`lost_link_s` of `profile`)
     pub after_s: f64,
@@ -1361,9 +1362,9 @@ impl Inputs<'_> {
             Kind::Boat | Kind::Ugv => {
                 (!matches!(self.mode, Some("RTL" | "HOLD"))).then_some("rtl")
             }
-            Kind::Blimp => Some("land"),
             Kind::Sub => Some(if self.link_class == Some("acoustic") { "surface" } else { "disarm" }),
-            Kind::Tracker | Kind::Unknown => None,
+            // the airship's GCS failsafe is off (Blimp 4.8's would only disarm it)
+            Kind::Blimp | Kind::Tracker | Kind::Unknown => None,
         }
     }
 }
@@ -1465,7 +1466,6 @@ pub fn estimate(inp: &Inputs) -> Estimate {
                 ),
                 "surfacing (FS_GCS_ENABLE 4), then drifting on its surface radio",
             ),
-            "land" => (inp.point(p, s0, 0.3), "landing where it is"),
             _ => (inp.point(p, s0, 0.0), "disarming where it is"),
         };
         Some(FailsafeBranch {

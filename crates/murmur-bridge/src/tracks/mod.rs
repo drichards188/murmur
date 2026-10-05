@@ -549,7 +549,7 @@ struct DeclareBody {
     affiliation: Affiliation,
     #[serde(default)]
     note: Option<String>,
-    /// Rules 7: the operator's password again, when the policy marks a hostile declaration
+    /// Rules 8: the operator's password again, when the policy marks a hostile declaration
     /// consequential (`[approval] step_up_acts`); checked and dropped, never logged.
     #[serde(default)]
     password: Option<String>,
@@ -569,7 +569,7 @@ async fn declare(
         Ok(op) => op,
         Err(e) => return error(StatusCode::from_u16(e.status).unwrap_or(StatusCode::FORBIDDEN), e.detail),
     };
-    // rules 7: a hostile declaration re-enters the credential when the policy lists it,
+    // rules 8: a hostile declaration re-enters the credential when the policy lists it,
     // checked before anything changes
     let hostile = body.affiliation == Affiliation::Hostile;
     let needed = hostile && api.decision.steps_up(murmur_decide::StepUpAct::DeclareHostile);

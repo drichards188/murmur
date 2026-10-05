@@ -1,0 +1,121 @@
+# Rules 7 (murmur-636 with murmur-85l), with no queue: the newest order stands even when it is
+# refused. Under a policy that never queues an orbit (policies/orbit-never-queued.toml), an
+# operator orders an orbit for the USV while its engagement is still under way, the link up.
+# The engagement preloaded the platform's lost-link action, so the orbit can't be sent over it
+# (70): it is voided, and in the same step the engagement is stopped as superseded, no
+# fallback commanded, as a dispatched (22) or queued (67) order stops it. The reason says the
+# order stopped the engagement and that the restore of its own values starts now; given again
+# before they are confirmed back, the orbit is refused again, saying the restore is pending;
+# given once they are, it goes at once. Until this fix the orbit was voided and the engagement
+# went on (the review's probe: still dispatched at t=200). The log is then forged to drop the
+# owed values from every decision; replay must catch it.
+title = "A mission refused for its platform's own values still supersedes the engagement"
+invariant = "engagement_in_play"
+attack = "order a mission, of a kind the policy never queues, for a platform whose engagement is under way"
+expect = "aborted"
+expect_stop = "superseded"
+expect_preload = ["set confirmed", "restore confirmed"]
+restore_after_s = 40
+policy = "sim/scenarios/engage/policies/orbit-never-queued.toml"
+tamper = "drop_restore_owed"
+end_s = 60
+
+[[operator]]
+id = "op-1"                 # nominates and orders the orbit; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "viper-1"
+platform = "magura"         # armed USV (ArduRover), LEO SATCOM: a 30 s lost-link timer
+at = [-122.4700, 37.8160]
+lost_link_s = 30
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "viper-1"
+track = "T-0001"
+radius_m = 75
+fallback = "loiter"
+window_s = 600
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"
+
+[[step]]
+at_s = 20                   # an orbit east of where it is, on the water; the engagement under way
+action = "task"
+by = "op-1"
+task = "orbit"
+uids = ["viper-1"]
+center = [-122.4600, 37.8160]
+radius_m = 150
+
+[[step]]
+at_s = 21
+action = "expect"
+state = "aborted"
+task_state = "voided"
+task_reason = "this order stops engagement"
+
+[[step]]
+at_s = 30                   # again, before the platform's own values are confirmed back (at 40)
+action = "task"
+by = "op-1"
+task = "orbit"
+uids = ["viper-1"]
+center = [-122.4600, 37.8160]
+radius_m = 150
+
+[[step]]
+at_s = 31
+action = "expect"
+task_state = "voided"
+task_reason = "is not confirmed back since engagement"
+
+[[step]]
+at_s = 42                   # its own values back at 40: the same orbit goes at once
+action = "task"
+by = "op-1"
+task = "orbit"
+uids = ["viper-1"]
+center = [-122.4600, 37.8160]
+radius_m = 150
+
+[[step]]
+at_s = 43
+action = "expect"
+task_state = "dispatched"

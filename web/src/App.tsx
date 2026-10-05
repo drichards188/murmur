@@ -53,7 +53,7 @@ function PerfMark() {
 
 export default function App() {
   const { state, status, decisions, tracks, setView } = useBridge()
-  // who this console acts for (rules 7): asked once the bridge answers, and again on reconnect
+  // who this console acts for (rules 8): asked once the bridge answers, and again on reconnect
   const auth = useAuth()
   useEffect(() => {
     void refreshAuth()

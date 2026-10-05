@@ -102,7 +102,7 @@ const DECLARABLE: Affiliation[] = ['hostile', 'suspect', 'neutral', 'unknown']
 function Detail({ t, nowMs, vehicles, onFocus, onEngage }: { t: Track; nowMs: number; vehicles: Vehicle[]; onFocus: () => void; onEngage?: () => void }) {
   const [busy, setBusy] = useState<Affiliation | null>(null)
   const [err, setErr] = useState<string | null>(null)
-  // rules 7: when the policy lists declare_hostile, a hostile declaration takes the
+  // rules 8: when the policy lists declare_hostile, a hostile declaration takes the
   // operator's password again (a step-up); asked for here, sent once, never kept
   const stepUp = stepsUpAct('declare_hostile')
   const [asking, setAsking] = useState(false)

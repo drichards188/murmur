@@ -28,6 +28,9 @@ fn scenario() -> String {
         .unwrap()
         .id();
     e.dispatch(i1, &w).unwrap();
+    // rules 7: the start logged ahead of sending it, as the bridge does
+    e.record_op_state_ahead(i1, &uid("sky-1"), "starting mission: mission mode commanded")
+        .unwrap();
     e.record_op_state(i1, &uid("sky-1"), "active", "on station")
         .unwrap();
     e.finish(i1, TaskOutcome::Done).unwrap();
@@ -495,8 +498,9 @@ fn late_approval_and_gaps_are_detected() {
 fn chain_detects_edit_delete_and_reorder_of_any_event() {
     let original = lines(&scenario());
     // an op state's detail carries no decision: only the chain can notice an edit to it
-    // (its intent and vehicle are bound to the dispatch: tests/bindings.rs)
-    let i = find(&original, "op.state", |_| true);
+    // (its intent and vehicle are bound to the dispatch: tests/bindings.rs; the start logged
+    // ahead of it, rules 7, is bound too: tests/queue.rs)
+    let i = find(&original, "op.state", |v| v["state"] == "active");
 
     let mut v = original.clone();
     v[i]["detail"] = Value::from("never got there");

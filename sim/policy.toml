@@ -33,7 +33,7 @@
 #                                 collect whose product timing is unknown but has a deadline)
 # approvers = N (human tiers): N distinct operators must approve (two-person approval: 2).
 # proposer_may_approve = false (human tiers): the human who proposed it can't approve it.
-# step_up = true (human tiers; rules 7, policy schema 5): a consequential authorization. In a
+# step_up = true (human tiers; rules 8, policy schema 5): a consequential authorization. In a
 #   run with per-person credentials every approval re-enters the approver's password at that
 #   moment (a step-up, logged), and the submitter's own request is never the approval (it
 #   waits in the inbox). Every engagement signature steps up whatever this file says; no
@@ -49,7 +49,7 @@
 [approval]
 expire_s = 120
 submitter_authorizes = true                 # default for human tiers that don't set it
-# step_up_acts = ["declare_hostile", "accept_unknown"]   (rules 7, policy schema 5): acts
+# step_up_acts = ["declare_hostile", "accept_unknown"]   (rules 8, policy schema 5): acts
 #   besides approvals that re-enter the operator's password in a credentials run (a step-up,
 #   logged and quoted by the act): declaring a track hostile; accepting a lost vehicle for an
 #   engagement's keep-out. Off by default (a user decision); each is one word here.

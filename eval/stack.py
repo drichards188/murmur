@@ -37,7 +37,7 @@ AUTO_OPERATOR = "op-auto"
 # the study's participant (eval/proxy.py `Participant`): signs in at the console themselves
 PARTICIPANT_OPERATOR = "op-study"
 
-# How a stack's operators prove who they are (rules 7). `dev`: the bridge believes the ids
+# How a stack's operators prove who they are (rules 8). `dev`: the bridge believes the ids
 # requests name (MURMUR_AUTH=dev, the bridge's default), logged as dev: the proxy batches,
 # where every decider is a script. `credentials`: a run-local credential file, each operator
 # with a fresh random passphrase, each agent with a fresh key; the participant's is a person's

@@ -31,7 +31,7 @@ use crate::audit::{EventBody, MemorySink, parse_log};
 use crate::authority::{Grants, OperatorSession, Roster};
 use crate::catalog::{Catalog, Domain};
 use crate::engage::{self, EngageWindow, EngagementEvent, Fallback, offset};
-use crate::engine::{Engine, Order};
+use crate::engine::{Engine, Order, Routed};
 use crate::geo::{LonLat, haversine_m};
 use crate::hash::{GENESIS, sha256_hex};
 use crate::ids::{AgentId, IntentId, OperatorId, Uid};
@@ -81,12 +81,16 @@ pub struct Scenario {
     /// confirmed`, `set unconfirmed`, `restore confirmed`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expect_preload: Vec<String>,
+    /// How the last nomination was stopped: `superseded` (another order stands, no fallback
+    /// commanded), `system`, `picture` or `operator`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect_stop: Option<String>,
     /// After the run, attack the log and require replay to catch it:
     /// `proposer_approval`, `agent_approval`, `suppress_void`, `edit_snapshot`,
     /// `drop_signature`, `edit_effect`, `strip_approvers`, `drop_reset`, `agent_order_auto`,
     /// `drop_ack`, `loosen_policy`, and for rules 6 `drop_preload`, `forge_preload`,
     /// `drop_verify`, `drop_acceptance`, `acceptance_by_agent`, `acceptance_without_authority`,
-    /// `hide_self_accepted`.
+    /// `hide_self_accepted`, and for rules 7 `drop_restore_owed`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tamper: Option<String>,
     /// Seconds to run (default: the last step plus 10).
@@ -106,6 +110,10 @@ pub struct Scenario {
     /// the release window opens (`engage.preload` verify).
     #[serde(default = "confirm")]
     pub preload: String,
+    /// Rules 6: the platform answers the restore of its own lost-link values only from this
+    /// scenario second on (default: as soon as the engagement ended and it can hear us).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore_after_s: Option<u32>,
     /// Paths relative to the repo root (defaults: sim/policy.toml, sim/platforms.toml,
     /// sim/areas).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -307,9 +315,11 @@ pub enum Action {
         #[serde(default)]
         acknowledge: bool,
     },
-    /// Another order on some of our vehicles (hold or rtl) from an operator (`by`) or an
-    /// agent (`agent`, with a rationale). Dispatched at once if its tier lets it run (as on
-    /// the bridge), superseding any engagement on those vehicles.
+    /// Another order on some of our vehicles (hold, rtl, or an orbit around `center` of
+    /// `radius_m`) from an operator (`by`) or an agent (`agent`, with a rationale). Once
+    /// approved it goes as on the bridge: dispatched if the link reaches its vehicles, else
+    /// queued (rules 5) and re-checked each second until it can go; either way it stands
+    /// over any engagement on those vehicles (from rules 7 already when it is queued).
     Task {
         #[serde(default)]
         by: Option<String>,
@@ -319,6 +329,10 @@ pub enum Action {
         rationale: Option<String>,
         task: String,
         uids: Vec<String>,
+        #[serde(default)]
+        center: Option<[f64; 2]>,
+        #[serde(default)]
+        radius_m: Option<f64>,
     },
     /// The loop stalls: no engagement step for `seconds` (a bridge that stopped holding the
     /// picture).
@@ -404,6 +418,9 @@ pub enum Action {
         /// The state of the last `task` step's intent.
         #[serde(default)]
         task_state: Option<String>,
+        /// A substring of the reason the last `task` step's intent is in its state.
+        #[serde(default)]
+        task_reason: Option<String>,
     },
 }
 
@@ -418,6 +435,9 @@ pub struct RunOptions {
     /// 1-sigma error of every track's velocity estimate, m/s, correlated over about 10 s
     /// (as a tracker's smoothed velocity wobbles: a first-order Gauss-Markov process).
     pub velocity_noise_mps: f64,
+    /// Decide under these decision rules instead of the current ones (none: the current):
+    /// to show what an older version did with the same timeline.
+    pub rules_version: Option<u32>,
 }
 
 /// What a run produced.
@@ -596,7 +616,10 @@ pub fn run(
 ) -> Result<ScenarioResult, ScenarioError> {
     let setup = |e: String| ScenarioError::Setup(file.to_string(), e);
     let rel = |p: &Option<String>, d: &str| root.join(p.as_deref().unwrap_or(d));
-    let policy = Policy::load(&rel(&sc.policy, "sim/policy.toml")).map_err(|e| setup(e.to_string()))?;
+    let mut policy = Policy::load(&rel(&sc.policy, "sim/policy.toml")).map_err(|e| setup(e.to_string()))?;
+    if let Some(v) = opts.rules_version {
+        policy.rules.rules_version = v;
+    }
     let catalog =
         Catalog::load(&rel(&sc.catalog, "sim/platforms.toml")).map_err(|e| setup(e.to_string()))?;
     let areas = AreaSet::load_dir(&rel(&sc.areas, "sim/areas"), T0).map_err(|e| setup(e.to_string()))?;
@@ -790,6 +813,7 @@ pub fn run(
         // off from the GCS long enough follows its preloaded action on its own
         preloads(
             &sc.preload,
+            sc.restore_after_s.unwrap_or(0),
             &mut engine,
             &mut vehicles,
             &mut extra,
@@ -846,6 +870,7 @@ pub fn run(
         // anything approved goes out at once, as on the bridge
         let world = snapshot(&vehicles, &tracks, &catalog, &areas, now);
         dispatch_approved(&mut engine, &world, &mut vehicles, &mut engaging, &mut failures, s);
+        follow_queue(&mut engine, &world, &terrain, &mut vehicles, &mut engaging, &mut failures, s);
         for (id, (uid, _)) in &engaging {
             extra.preloads.entry(*id).or_insert_with(|| PreloadSim {
                 uid: uid.clone(),
@@ -920,6 +945,20 @@ pub fn run(
             extra.lost_link_action
         ));
     }
+    if let Some(want) = &sc.expect_stop {
+        let stop = intent.and_then(|i| i.engagement()).and_then(|e| e.stop.as_ref());
+        let got = stop.map(|st| st.cause.kind());
+        if got != Some(want.as_str()) {
+            failures.push(format!(
+                "expected the engagement stopped as {want}, it was {} ({})",
+                got.unwrap_or("not stopped"),
+                stop.map(|st| st.reason.as_str()).unwrap_or("")
+            ));
+        }
+        if want == "superseded" && stop.is_some_and(|st| st.fallback.is_some()) {
+            failures.push("superseded, yet a fallback was commanded".into());
+        }
+    }
     let mut reports = extra.preload_reports.iter();
     for want in &sc.expect_preload {
         if !reports.any(|r| r.contains(want.as_str())) {
@@ -938,7 +977,12 @@ pub fn run(
     if sc.expect_reset && resets == 0 {
         failures.push("expected the signatures to be dropped (approval.reset), they never were".into());
     }
-    let report = replay::replay_str(&text).map_err(|e| setup(e.to_string()))?;
+    // replayed with the rules it was decided under (the current ones unless asked otherwise)
+    let replay_opts = replay::ReplayOptions {
+        rules: opts.rules_version.map_or_else(replay::RulesAccepted::default, replay::RulesAccepted::Exactly),
+        ..replay::ReplayOptions::default()
+    };
+    let report = replay::replay_str_with(&text, &replay_opts).map_err(|e| setup(e.to_string()))?;
     let replay_mismatches: Vec<String> = report
         .mismatches
         .iter()
@@ -960,7 +1004,7 @@ pub fn run(
                 (None, Vec::new())
             }
             Ok(Tampered::Forged(forged)) => {
-                let r = replay::replay_str(&forged).map_err(|e| setup(e.to_string()))?;
+                let r = replay::replay_str_with(&forged, &replay_opts).map_err(|e| setup(e.to_string()))?;
                 let ms: Vec<String> = r
                     .mismatches
                     .iter()
@@ -1276,11 +1320,19 @@ fn act(
             rationale,
             task,
             uids,
+            center,
+            radius_m,
         } => {
-            let t = match task.as_str() {
-                "hold" => Task::Hold {},
-                "rtl" => Task::Rtl {},
-                other => return failures.push(format!("t={s}: task {other}: hold or rtl")),
+            let t = match (task.as_str(), center) {
+                ("hold", _) => Task::Hold {},
+                ("rtl", _) => Task::Rtl {},
+                ("orbit", Some(c)) => Task::Orbit {
+                    center: LonLat::new(c[0], c[1]),
+                    radius_m: radius_m.unwrap_or(200.0),
+                },
+                (other, _) => {
+                    return failures.push(format!("t={s}: task {other}: hold, rtl, or orbit with a center"));
+                }
             };
             let proposal = Proposal::new(t, uids.iter().map(Uid::new).collect());
             let w = world(tracks, vehicles);
@@ -1547,7 +1599,18 @@ fn act(
             rule,
             concurrences,
             task_state,
+            task_reason,
         } => {
+            if let Some(want) = task_reason {
+                let got = extra
+                    .last_task
+                    .and_then(|id| engine.intent(id))
+                    .and_then(|i| i.history().last().map(|h| h.reason.clone()))
+                    .unwrap_or_default();
+                if !got.contains(want.as_str()) {
+                    failures.push(format!("t={s}: expected the task's reason to say {want:?}, it says {got:?}"));
+                }
+            }
             if let Some(want) = task_state {
                 let got = extra.last_task.and_then(|id| engine.intent(id)).map(|i| state_str(i.state()));
                 if got.as_deref() != Some(want.as_str()) {
@@ -1648,6 +1711,7 @@ fn own_value(name: &str) -> f64 {
 #[allow(clippy::too_many_arguments)]
 fn preloads(
     mode: &str,
+    restore_after_s: u32,
     engine: &mut Engine,
     vehicles: &mut BTreeMap<String, VehicleSim>,
     extra: &mut Extra,
@@ -1839,12 +1903,14 @@ fn preloads(
                 s - since
             ));
         }
-        // its own values back once the engagement has ended (when it can hear us)
+        // its own values back once the engagement has ended (when it can hear us, and from
+        // `restore_after_s` on)
         if ps.set.is_some()
             && !ps.restored
             && !ps.before.is_empty()
             && state != State::Dispatched
             && !silent
+            && s >= restore_after_s
         {
             let report = PreloadReport {
                 uid: Uid::new(&ps.uid),
@@ -1898,43 +1964,24 @@ fn dispatch_approved(
         .collect();
     for (id, is_engage, uids) in ready {
         if !is_engage {
-            // another order on these vehicles: as on the bridge, it stands and supersedes
-            // any engagement on them (no fallback commanded)
-            match engine.dispatch(id, world) {
-                Ok(o) => {
-                    let hit: Vec<IntentId> = engine
-                        .intents()
-                        .filter(|i| {
-                            i.id() != id
-                                && matches!(i.spec().task, Task::Engage { .. })
-                                && matches!(
-                                    i.state(),
-                                    State::PendingApproval | State::Approved | State::Dispatched
-                                )
-                                && i.spec().uids.iter().any(|u| uids.contains(u))
-                        })
-                        .map(|i| i.id())
-                        .collect();
-                    for e in hit {
-                        if let Err(err) = engine.supersede_engagement(e, id) {
-                            failures.push(format!("t={s}: supersede {e}: {err}"));
-                        }
-                        engaging.remove(&e);
+            // another order on these vehicles: as on the bridge, dispatched if the link
+            // reaches them, else queued; either way it stands and supersedes any engagement
+            // on them (no fallback commanded; a queued one from rules 7)
+            match engine.dispatch_or_queue(id, world) {
+                Ok(Routed::Dispatched(Order::Vehicles(o))) => {
+                    supersede_engagements(engine, id, &uids, engaging, failures, s);
+                    fly(vehicles, &o);
+                }
+                Ok(Routed::Dispatched(_)) => failures.push(format!("t={s}: {id} dispatched as something else")),
+                Ok(Routed::Queued { .. }) => {
+                    if engine.policy().rules.rules_version >= crate::rules::QUEUE_FOLLOWUPS_SINCE {
+                        supersede_engagements(engine, id, &uids, engaging, failures, s);
                     }
-                    for u in &o.uids {
-                        if let Some(v) = vehicles.get_mut(u.as_str()) {
-                            match o.task {
-                                Task::Rtl {} => {
-                                    v.goal = Some(v.home);
-                                    v.orbit = false;
-                                }
-                                _ => {
-                                    v.goal = None;
-                                    v.vel = [0.0, 0.0];
-                                }
-                            }
-                        }
-                    }
+                }
+                // rules 7: refused (no queue for its kind, the platform owed its values), but
+                // it stands over an engagement on its vehicles all the same (as on the bridge)
+                Ok(Routed::Voided { .. }) => {
+                    supersede_engagements(engine, id, &uids, engaging, failures, s);
                 }
                 Err(e) => failures.push(format!("t={s}: dispatch {id}: {e}")),
             }
@@ -1946,23 +1993,7 @@ fn dispatch_approved(
                     v.goal = Some(o.effect_point);
                     v.orbit = true;
                 }
-                // as on the bridge: older orders still waiting for this vehicle are void
-                let stale: Vec<IntentId> = engine
-                    .intents()
-                    .filter(|i| {
-                        i.id() != id
-                            && !matches!(i.spec().task, Task::Engage { .. })
-                            && matches!(i.state(), State::PendingApproval | State::Approved)
-                            && i.spec().uids.contains(&o.uid)
-                    })
-                    .map(|i| i.id())
-                    .collect();
-                for other in stale {
-                    if let Err(e) = engine.void(other, &format!("superseded: {id} was dispatched to vehicle {}", o.uid)) {
-                        failures.push(format!("t={s}: void {other}: {e}"));
-                    }
-                }
-                // and, as the bridge does, any other engagement in play on it (none can be:
+                // as the bridge does, any other engagement in play on it first, in the dispatch's step (none can be:
                 // one engagement per platform, the platform_free check)
                 let others: Vec<IntentId> = engine
                     .intents()
@@ -1981,10 +2012,116 @@ fn dispatch_approved(
                     }
                     engaging.remove(&other);
                 }
+                // then, as on the bridge, older orders still waiting for this vehicle are void
+                let stale: Vec<IntentId> = engine
+                    .intents()
+                    .filter(|i| {
+                        i.id() != id
+                            && !matches!(i.spec().task, Task::Engage { .. })
+                            && matches!(i.state(), State::PendingApproval | State::Approved)
+                            && i.spec().uids.contains(&o.uid)
+                    })
+                    .map(|i| i.id())
+                    .collect();
+                for other in stale {
+                    if let Err(e) = engine.void(other, &format!("superseded: {id} was dispatched to vehicle {}", o.uid)) {
+                        failures.push(format!("t={s}: void {other}: {e}"));
+                    }
+                }
                 engaging.insert(id, (o.uid.to_string(), o.effect_point));
             }
             Ok(_) => failures.push(format!("t={s}: {id} dispatched as something else")),
             Err(e) => failures.push(format!("t={s}: dispatch {id}: {e}")),
+        }
+    }
+}
+
+/// An order taking `uids` (dispatched, or from rules 7 queued) stops every engagement in play
+/// on them, superseded by it, with no fallback commanded: the newest order stands.
+fn supersede_engagements(
+    engine: &mut Engine,
+    id: IntentId,
+    uids: &[Uid],
+    engaging: &mut BTreeMap<IntentId, (String, LonLat)>,
+    failures: &mut Vec<String>,
+    s: u32,
+) {
+    let hit: Vec<IntentId> = engine
+        .intents()
+        .filter(|i| {
+            i.id() != id
+                && matches!(i.spec().task, Task::Engage { .. })
+                && matches!(
+                    i.state(),
+                    State::PendingApproval | State::Approved | State::Dispatched
+                )
+                && i.spec().uids.iter().any(|u| uids.contains(u))
+        })
+        .map(|i| i.id())
+        .collect();
+    for e in hit {
+        if let Err(err) = engine.supersede_engagement(e, id) {
+            failures.push(format!("t={s}: supersede {e}: {err}"));
+        }
+        engaging.remove(&e);
+    }
+}
+
+/// The runner's vehicles fly an order: home for an rtl, around the center for an orbit, held
+/// where they are for a hold.
+fn fly(vehicles: &mut BTreeMap<String, VehicleSim>, o: &crate::engine::DispatchOrder) {
+    for u in &o.uids {
+        if let Some(v) = vehicles.get_mut(u.as_str()) {
+            match &o.task {
+                Task::Rtl {} => {
+                    v.goal = Some(v.home);
+                    v.orbit = false;
+                }
+                Task::Orbit { center, .. } => {
+                    v.goal = Some(*center);
+                    v.orbit = true;
+                }
+                _ => {
+                    v.goal = None;
+                    v.vel = [0.0, 0.0];
+                }
+            }
+        }
+    }
+}
+
+/// Rules 5, the bridge's queue: every queued order is offered again on the world now (still
+/// unreachable: nothing happens; else re-checked and dispatched, sent back to the inbox, or
+/// voided).
+fn follow_queue(
+    engine: &mut Engine,
+    world: &WorldSnapshot,
+    terrain: &PolygonTerrain,
+    vehicles: &mut BTreeMap<String, VehicleSim>,
+    engaging: &mut BTreeMap<IntentId, (String, LonLat)>,
+    failures: &mut Vec<String>,
+    s: u32,
+) {
+    let queued: Vec<IntentId> = engine
+        .intents()
+        .filter(|i| i.state() == State::Queued)
+        .map(|i| i.id())
+        .collect();
+    for id in queued {
+        if engine.intent(id).map(|i| i.state()) != Some(State::Queued) {
+            continue;
+        }
+        match engine.dequeue(id, world, terrain) {
+            Ok(crate::engine::Dequeued::Dispatched(Order::Vehicles(o))) => {
+                let uids = o.uids.clone();
+                supersede_engagements(engine, id, &uids, engaging, failures, s);
+                fly(vehicles, &o);
+            }
+            Ok(crate::engine::Dequeued::Dispatched(_)) => {
+                failures.push(format!("t={s}: queued {id} dispatched as something else"));
+            }
+            Ok(_) => {}
+            Err(e) => failures.push(format!("t={s}: dequeue {id}: {e}")),
         }
     }
 }
@@ -2103,6 +2240,29 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             }
             if !done {
                 return Err("no decision on the agent's order".into());
+            }
+        }
+        "drop_restore_owed" => {
+            // rules 7: a mission's decisions made to look as if its platform's own lost-link
+            // values had been back (the fact stripped from every input that logged it)
+            let mut done = false;
+            for e in &mut events {
+                let inputs = match &mut e.body {
+                    EventBody::CheckResult { inputs, .. }
+                    | EventBody::PolicyDecision { inputs, .. }
+                    | EventBody::IntentQueued { inputs, .. } => Some(inputs),
+                    EventBody::IntentDispatched { inputs, .. } => inputs.as_mut(),
+                    _ => None,
+                };
+                if let Some(inputs) = inputs
+                    && !inputs.restore_owed.is_empty()
+                {
+                    inputs.restore_owed.clear();
+                    done = true;
+                }
+            }
+            if !done {
+                return Err("no lost-link values owed in any decision's inputs".into());
             }
         }
         "drop_ack" => {

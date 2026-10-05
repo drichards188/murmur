@@ -37,7 +37,7 @@ use crate::catalog::AutopilotKind;
 use crate::ids::{IntentId, OperatorId, SessionId, Uid};
 use crate::intent::{IntentSpec, State, TaskKind};
 use crate::policy::{PolicyDecision, Tier};
-use crate::rules::{CheckResult, Outcome, RulesConfig};
+use crate::rules::{CheckResult, Outcome, QUEUE_FOLLOWUPS_SINCE, RulesConfig};
 use crate::time::Time;
 use crate::world::WorldSnapshot;
 
@@ -299,6 +299,15 @@ pub fn reach(
                     }
                 }
             }
+            // rules 7: an engagement preloaded its own lost-link action as its fallback and
+            // it is not confirmed back yet; a mission waits for the restore (a hold or rtl, the
+            // safety commands, goes: the restore runs beside it)
+            if rules.rules_version >= QUEUE_FOLLOWUPS_SINCE
+                && !matches!(spec.kind(), TaskKind::Hold | TaskKind::Rtl)
+                && let Some(owed) = world.restore_owed.get(uid)
+            {
+                return out(false, owed.waiting_detail());
+            }
             if needs_mission(spec.kind(), v.autopilot.as_ref().map(|f| f.value))
                 && every > MISSION_LINK_MAX_INTERVAL_MS
             {
@@ -319,6 +328,36 @@ pub fn reach(
             )
         })
         .collect()
+}
+
+/// Rules 7 (murmur-85l): a vehicle's own lost-link values an engagement of this run preloaded
+/// over (the `engage.preload` write-ahead logged them) and no confirmed restore has put back
+/// yet. While they are owed the vehicle carries an engagement's lost-link action (its fallback
+/// on a timer of a few seconds), so a mission is not sent to it: [`reach`] holds the order in
+/// the queue until a restore confirms (a hold or rtl is never held). A decision's fact the
+/// engine fills from its ledger (`restore_owed`) and replay recomputes from the log's.
+/// Values carried over from an earlier run's log (`platform.restore` carried) do not hold
+/// orders: the bridge puts them back only onto the vehicle they were preloaded on, which the
+/// log alone can't tell.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RestoreOwed {
+    /// The vehicle's own values, by parameter name.
+    pub values: BTreeMap<String, f64>,
+    /// The engagements that preloaded them.
+    pub by: Vec<IntentId>,
+}
+
+impl RestoreOwed {
+    /// Why an order other than a hold or rtl waits for it.
+    pub fn waiting_detail(&self) -> String {
+        let values: Vec<String> = self.values.iter().map(|(n, v)| format!("{n} {v}")).collect();
+        let by: Vec<String> = self.by.iter().map(ToString::to_string).collect();
+        format!(
+            "heard, but its own lost-link failsafe ({}) is not confirmed back since engagement {} preloaded it: a mission waits for the restore (a hold or rtl goes)",
+            values.join(", "),
+            by.join(", ")
+        )
+    }
 }
 
 pub fn all_reachable(r: &[Reach]) -> bool {
@@ -550,7 +589,7 @@ pub struct ResumedFrom {
     pub head: String,
     pub seq: u64,
     pub was: State,
-    /// Rules 7: how that run authenticated its operators (its roster's `auth`; none for a
+    /// Rules 8: how that run authenticated its operators (its roster's `auth`; none for a
     /// log of earlier rules, whose ids were asserted). Intents are carried only between runs
     /// authenticated alike: an approval made on asserted ids never stands in a credentials
     /// run, nor the reverse; replay checks it against the previous log.

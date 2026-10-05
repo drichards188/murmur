@@ -306,7 +306,7 @@ contacts `effect.rs`; console `EngagePanel`, `EngageCard`, `engageLayers.ts`):
    approvers; replay holds the same floor). Only an `EngagementAuthority` signs one
    (`Engine::approve_engagement`); it exists only in a session opened with engagement
    authority (`Grants`, logged with the session; the bridge grants it from the credential
-   file's engagement flag, or a dev run's `MURMUR_ENGAGE_OPERATORS`; from rules 7 every
+   file's engagement flag, or a dev run's `MURMUR_ENGAGE_OPERATORS`; from rules 8 every
    signature also re-enters the signer's password, a step-up). A signer first asks for the picture (`issue_picture`, logged
    `picture.issued`: a token bound to their session with the plan and the track's identity,
    valid `token_ttl_s`) and the signature quotes it. The first signature freezes the plan
@@ -385,7 +385,10 @@ and the target reversing between signatures, a transient reclassification, a pic
 before a reclassification, an approval that would stop an engagement, GNSS lost en route, a
 wobbling velocity estimate, a second engagement on a platform, a GPS glitch en route, a
 first signer's stale picture, a target getting under way while a signature waits, a friendly
-closing to just outside the keep-out; from rules 6, 40 to 65: a fallback the firmware can't
+closing to just outside the keep-out; from rules 7, 67 to 71: an order queued for an
+engaging platform, a mission ordered while an ended engagement's lost-link action is still
+preloaded, a restore that never confirms, the same mission of a kind the policy never queues,
+and that refused mission for a platform whose engagement is under way (it still stops it); from rules 6, 40 to 65: a fallback the firmware can't
 preload, a preload not answered, read back wrong, never reported, cut from the log or
 changed before the release, a distant and a near fast ferry, a track without a velocity
 estimate, friendlies and an aircraft track above the effect with their altitudes known or
@@ -429,7 +432,23 @@ Rules 6 follow-ups (murmur-der.2, murmur-der.3; `crates/murmur-decide/README.md`
   accepts its unknown position for that engagement (logged with the vehicle's facts,
   replay-checked, shown to every signer, cleared by a reset, revocable, never an agent's).
 
-Rules 7, operators are authenticated people (murmur-der.1; `crates/murmur-auth`, bridge
+Rules 7 follow-ups (murmur-85l, murmur-dma, murmur-636; provisional number,
+`QUEUE_FOLLOWUPS_SINCE`; `crates/murmur-decide/README.md`):
+
+- **Restore first, then the mission.** A platform still owed its own lost-link values by an
+  ended engagement gets them back the moment it is heard again (no restore into a dead link,
+  no backoff carried over from an outage), and an order other than a hold or rtl waits in the
+  queue until the restore confirms (`restore_owed`, a decision's fact replay recomputes),
+  bounded like any queued order (a human's approval back to the inbox after 120 s, saying
+  why it was queued); a hold or rtl is never held.
+- **A start is logged before it goes out.** A vehicle start is written to the audit log
+  ahead of sending it, so a bridge that crashes right after still finds that the order may
+  have started and never starts it again on its own; replay binds it.
+- **A queued order supersedes an engagement** like a dispatched one: cause `superseded`, no
+  fallback, in the step that queues it; so does a mission refused for its platform's own
+  lost-link values when the policy never queues its kind.
+
+Rules 8, operators are authenticated people (murmur-der.1; `crates/murmur-auth`, bridge
 `auth.rs`, DECISIONS.md): per-person credentials outside the repository (argon2id; the
 `murmur-auth` CLI, password on stdin) are the run's roster; the console signs in (HttpOnly,
 SameSite=Strict session cookie; logout, idle and absolute expiry, a removed or changed
@@ -449,13 +468,13 @@ live session; display reports don't keep a session alive; a request with two ses
 is refused; `[approval] step_up_acts` can add a hostile declaration and an acceptance of a
 lost vehicle to the acts that step up (off by default). Passkeys come before a study with
 real participants. Live log with anchors:
-`crates/murmur-decide/tests/data/audit/v7-auth-live.jsonl`.
+`crates/murmur-decide/tests/data/audit/v8-auth-live.jsonl`.
 
 Simplifications: straight-line intercept at cruise speed (no turn radius, no climb),
 keep-outs 2D wherever an altitude is unknown, the effect circle is checked against no-strike
 areas but the platform's own path only against no-go areas, the assessment trusts our sensor
 model's coverage figures, the signers authenticate with a password only (no second factor;
-rules 7, below), ground targets have no terrain-referenced altitude (2D), an engagement
+rules 8, below), ground targets have no terrain-referenced altitude (2D), an engagement
 does not survive a bridge restart (only the platform's own failsafe values are put back),
 and another declared
 hostile inside the keep-out is exempt like the target (an open design question,
@@ -467,7 +486,7 @@ Exit met: every invariant has a scenario that tries to break it, and each ends a
 
 - **F.1 MCP server in the bridge** (`crates/murmur-bridge/src/mcp/`, done): served at `/mcp`
   on the bridge's HTTP port (streamable HTTP, official Rust SDK `rmcp`), one in-process
-  `AgentPort` per agent id (from rules 7 the agent's own key, `Authorization: Bearer`,
+  `AgentPort` per agent id (from rules 8 the agent's own key, `Authorization: Bearer`,
   from the credential file; a dev run: `MURMUR_AGENTS`, header `X-Murmur-Agent` or the MCP
   `clientInfo.name`). Reads with staleness on
   every fact (fleet, platforms, areas, policy, intents, inbox, recent vehicle events,
@@ -485,7 +504,7 @@ Exit met: every invariant has a scenario that tries to break it, and each ends a
   result; `agents/README.md` says how a real model (Claude Code, other MCP clients)
   connects. No model is called from tests.
 - Next: tracks in the agent's world view once C2 lands (`get_fleet` carries only our own
-  nodes today); prompts and scenario runs for Phase G (agent keys: done, rules 7). Read
+  nodes today); prompts and scenario runs for Phase G (agent keys: done, rules 8). Read
   AeroMind's and Pharos's agent layers (DECISIONS.md, open-source neighbors) before the
   prompts.
 

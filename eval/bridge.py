@@ -1,6 +1,6 @@
 """A small client for the bridge's HTTP API (urllib only, no dependencies).
 
-Operators act two ways (rules 7). On a bridge that authenticates (a credentials run, study
+Operators act two ways (rules 8). On a bridge that authenticates (a credentials run, study
 mode) each scripted operator logs in with its own password ([`Bridge.login`]) and its requests
 carry its session cookie. On a dev bridge (`MURMUR_AUTH=dev`, the proxy batches) a request
 names its operator in `X-Murmur-Operator`, which the bridge believes and records as dev.

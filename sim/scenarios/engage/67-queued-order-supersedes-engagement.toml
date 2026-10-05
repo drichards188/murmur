@@ -1,0 +1,102 @@
+# Rules 7 (murmur-636): an operator's order queued for an engaging platform stands like one
+# dispatched to it. The USV's link is cut mid-engagement; before the picture times out, an
+# operator orders it to hold. The hold can't reach it (queued), and it supersedes the
+# engagement at once: stopped, cause superseded by the hold, no fallback commanded. Until
+# rules 7 the queue abandoned the engagement's intercept instead, the engagement read that as
+# its intercept failing and stopped as a system failure, and its fallback was commanded over
+# the operator's queued hold. Cut off, the USV follows its preloaded lost-link action on its
+# own (the engagement's fallback, loiter); when its link returns its own values go back and
+# the hold (a safety command: never held for the restore) goes out.
+title = "An order queued for an engaging platform supersedes the engagement"
+invariant = "engagement_in_play"
+attack = "an operator's hold queued for an engaging platform whose link is cut"
+expect = "aborted"
+expect_stop = "superseded"
+expect_lost_link = "Loiter or Hold"
+expect_preload = ["set confirmed", "restore confirmed"]
+end_s = 90
+
+[[operator]]
+id = "op-1"                 # nominates and orders the hold; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "viper-1"
+platform = "magura"         # armed USV (ArduRover), LEO SATCOM: a 30 s lost-link timer
+at = [-122.4700, 37.8160]
+lost_link_s = 30
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "viper-1"
+track = "T-0001"
+radius_m = 75
+fallback = "loiter"
+window_s = 600
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"
+
+[[step]]
+at_s = 40
+action = "vehicle"
+uid = "viper-1"
+silent = true
+
+[[step]]
+at_s = 44                   # silent 4 s: the queue can't reach it, the picture still holds
+action = "task"
+by = "op-1"
+task = "hold"
+uids = ["viper-1"]
+
+[[step]]
+at_s = 45
+action = "expect"
+state = "aborted"
+task_state = "queued"
+
+[[step]]
+at_s = 70                   # the link returns: its own values back, the hold goes out
+action = "vehicle"
+uid = "viper-1"
+silent = false
+
+[[step]]
+at_s = 72
+action = "expect"
+task_state = "dispatched"

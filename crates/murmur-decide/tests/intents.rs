@@ -147,6 +147,9 @@ fn auto_path_to_done() {
     let order = f.engine.dispatch(id, &world()).unwrap();
     assert_eq!(order.task.kind(), TaskKind::Orbit);
     f.engine
+        .record_op_state_ahead(id, &uid("sky-1"), "starting mission: mission mode commanded")
+        .unwrap();
+    f.engine
         .record_op_state(id, &uid("sky-1"), "active", "on station")
         .unwrap();
     f.engine.finish(id, TaskOutcome::Done).unwrap();

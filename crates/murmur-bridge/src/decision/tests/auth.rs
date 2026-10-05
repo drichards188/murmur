@@ -1,4 +1,4 @@
-//! Rules 7 through the bridge's whole HTTP surface (the router `main` serves, `app_router`):
+//! Rules 8 through the bridge's whole HTTP surface (the router `main` serves, `app_router`):
 //! operators log in with their own password, sessions are cookies that end at logout,
 //! expiry or a credential change, browsers from other origins are refused, a consequential
 //! signature re-enters the signer's password, two signatures need two people, the proposer
@@ -61,7 +61,7 @@ fn harness_with(idle: Duration, scripted: &[&str], edit: impl FnOnce(&mut Policy
     }
     let key = c.add_agent("agent-planner").expect("agent");
     c.save(&file).expect("saved");
-    let e = super::engagement::engage_rig_policy(None, PathBuf::from("memory"), AuthMode::Credentials, edit);
+    let e = super::engagement::engage_rig_auth_policy(None, PathBuf::from("memory"), AuthMode::Credentials, edit);
     let settings = AuthSettings {
         mode: AuthMode::Credentials,
         file: Some(file.clone()),

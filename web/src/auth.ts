@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react'
 
-/** Who this console acts for (rules 7). In a credentials run (`MURMUR_AUTH=credentials`;
+/** Who this console acts for (rules 8). In a credentials run (`MURMUR_AUTH=credentials`;
  *  every study) the operator signs in with their own password; the bridge keeps the session
  *  in an HttpOnly cookie this code never sees, and every request from this page carries it. A
  *  consequential act sends the password again (a step-up): every engagement signature, and

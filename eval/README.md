@@ -309,7 +309,7 @@ tracks the participant opened while it was up (`web/src/operatorView.ts`), and e
 lands in the audit log as for any run. In analysis the participant is the unit: rates are
 computed per participant and the interval is over participants (METRICS.md, "Rates").
 
-Who decided is authenticated (rules 7). A study stack always runs with credentials
+Who decided is authenticated (rules 8). A study stack always runs with credentials
 (`MURMUR_AUTH=credentials`) and gets its own credential file in the run directory, made with
 the `murmur-auth` CLI and removed with the stack: every operator a fresh random passphrase,
 every agent a fresh key. The runner prints the participant's passphrase (operator `op-study`)

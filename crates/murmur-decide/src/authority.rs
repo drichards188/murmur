@@ -58,7 +58,7 @@
 //! }
 //! ```
 //!
-//! A step-up (the signer's credential re-entered at the moment of signing, rules 7) is a
+//! A step-up (the signer's credential re-entered at the moment of signing, rules 8) is a
 //! [`StepUp`]: only [`crate::Engine::step_up`] makes one, after logging it under the session
 //! it is for, and a signature consumes it. It can't be forged, copied or read from JSON
 //! either, so a signature can't quote a step-up it did not just make:
@@ -145,7 +145,7 @@ pub struct Grants {
     pub engage: bool,
 }
 
-/// How a run established who its operators are (rules 7,
+/// How a run established who its operators are (rules 8,
 /// [`crate::rules::OPERATOR_AUTH_SINCE`]; logged on the roster in `run.started`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -192,7 +192,7 @@ pub fn effective_mode(mode: Option<AuthMode>) -> AuthMode {
     mode.unwrap_or(AuthMode::Dev)
 }
 
-/// How one operator session was opened (rules 7; logged as `auth` on `session.opened`, and
+/// How one operator session was opened (rules 8; logged as `auth` on `session.opened`, and
 /// on a step-up).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -207,7 +207,7 @@ pub enum AuthMethod {
     Asserted,
 }
 
-/// Proof that the signer re-entered their credential just now (rules 7, a credentials run):
+/// Proof that the signer re-entered their credential just now (rules 8, a credentials run):
 /// made only by [`crate::Engine::step_up`], which logs it (`operator.action step_up`) under
 /// the session it is for, and consumed by the one signature that quotes it. Not `Clone`, not
 /// `Default`, not `Deserialize`, no public fields. The engine refuses it for another session
@@ -261,7 +261,7 @@ pub struct StepUpRef {
     pub seq: u64,
 }
 
-/// Who may act as an operator in a run, who of them with engagement authority, and (rules 7)
+/// Who may act as an operator in a run, who of them with engagement authority, and (rules 8)
 /// how they prove it: with `auth = credentials` the bridge's credential file at the run's
 /// start (each person's password checked at login), with `auth = dev` the bridge's
 /// `MURMUR_OPERATORS` and `MURMUR_ENGAGE_OPERATORS`, names a request asserts. Fixed when the
@@ -276,8 +276,8 @@ pub struct Roster {
     pub operators: Vec<OperatorId>,
     /// Those of them whose sessions carry engagement authority.
     pub engage: Vec<OperatorId>,
-    /// Rules 7: how operators are authenticated. Absent in older logs (asserted names). An
-    /// engine of rules 7 or later always logs it, `dev` when none was given.
+    /// Rules 8: how operators are authenticated. Absent in older logs (asserted names). An
+    /// engine of rules 8 or later always logs it, `dev` when none was given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<AuthMode>,
 }
@@ -285,7 +285,7 @@ pub struct Roster {
 impl Roster {
     /// A roster, checked: at least one operator, no empty or repeated id, and every
     /// engagement operator listed as an operator too. Its auth mode is unset (the engine
-    /// logs `dev` for it under rules 7); [`Roster::with_auth`] sets one.
+    /// logs `dev` for it under rules 8); [`Roster::with_auth`] sets one.
     pub fn new(operators: Vec<OperatorId>, engage: Vec<OperatorId>) -> Result<Roster, String> {
         let r = Roster {
             operators,
@@ -351,7 +351,7 @@ impl Roster {
 pub struct OperatorSession {
     authority: HumanAuthority,
     engagement: Option<EngagementAuthority>,
-    /// Rules 7: how it was opened (None before).
+    /// Rules 8: how it was opened (None before).
     method: Option<AuthMethod>,
 }
 
@@ -367,7 +367,7 @@ impl OperatorSession {
         }
     }
 
-    /// Rules 7: how the session was opened (a person's password, a machine-held credential,
+    /// Rules 8: how the session was opened (a person's password, a machine-held credential,
     /// an asserted id); None under earlier rules.
     pub fn method(&self) -> Option<AuthMethod> {
         self.method

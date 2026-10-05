@@ -50,7 +50,7 @@ export interface PolicyDecision {
   approvers?: number
   /** the proposer may not approve it (always for an engagement) */
   proposer_excluded?: boolean
-  /** rules 7: each approval re-enters the approver's password (a step-up; always for an
+  /** rules 8: each approval re-enters the approver's password (a step-up; always for an
    *  engagement, and any tier the policy marks consequential) */
   step_up?: boolean
 }
@@ -64,7 +64,7 @@ export interface Approval {
   /** the approval was the submission itself (an operator's own task in a human tier) */
   at_submission?: boolean
   note: string | null
-  /** rules 7: the approver re-entered their password to sign */
+  /** rules 8: the approver re-entered their password to sign */
   step_up?: boolean
 }
 
@@ -379,7 +379,7 @@ export interface ActionResult {
 export interface ApproveExtra {
   token?: number
   acknowledge_supersede?: boolean
-  /** rules 7: the approver's password again, for a consequential signature (a step-up) */
+  /** rules 8: the approver's password again, for a consequential signature (a step-up) */
   password?: string
 }
 

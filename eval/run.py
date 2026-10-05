@@ -195,7 +195,7 @@ class Run:
 
     async def execute(self) -> dict[str, Any]:
         self.out.mkdir(parents=True, exist_ok=True)
-        # who the operators are (rules 7): a study's participant signs in with their own
+        # who the operators are (rules 8): a study's participant signs in with their own
         # credential, so the run can count as people's decisions; the proxy arms are scripts
         # and run with asserted ids (dev), which the log records and the report excludes from
         # any human-control claim

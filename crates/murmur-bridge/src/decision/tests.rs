@@ -65,7 +65,7 @@ fn rig_with(policy: Policy) -> Rig {
     rig_auth(policy, murmur_decide::AuthMode::Dev)
 }
 
-/// [`rig_with`] authenticating operators as `auth` says (rules 7).
+/// [`rig_with`] authenticating operators as `auth` says (rules 8).
 fn rig_auth(policy: Policy, auth: murmur_decide::AuthMode) -> Rig {
     let root = root();
     let world = World::new(Config {
@@ -613,5 +613,5 @@ mod engagement;
 /// The queue for unreachable vehicles through the bridge (`tests/queue.rs`, rules 5).
 mod queue;
 
-/// Rules 7 through the bridge's HTTP surface: logins, step-ups, agent keys (`tests/auth.rs`).
+/// Rules 8 through the bridge's HTTP surface: logins, step-ups, agent keys (`tests/auth.rs`).
 mod auth;

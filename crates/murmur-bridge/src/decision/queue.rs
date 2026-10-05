@@ -36,6 +36,12 @@
 //! - **Reboots.** A vehicle whose time since boot went back is logged (`vehicle.rebooted`);
 //!   its running op ends (`tasks::exec`), and its boot instant is a fact the dequeue
 //!   re-check compares with the approval.
+//! - **Rules 7** (`QUEUE_FOLLOWUPS_SINCE`). Each op logs its start before sending it
+//!   ([`Decision::write_ahead_hook`]: `op.state` starting, `ahead`), so a crash right after a
+//!   start still leaves the order may-have-started; a mission waits in the queue while its
+//!   platform is owed its own lost-link values after an engagement (the engine's reach, shown
+//!   in the queue's `reach_now`); and a queued order supersedes an engagement on its vehicles
+//!   as a dispatched one does (no fallback).
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -164,6 +170,19 @@ impl Decision {
                 self.supersede_queued(core, id, &uids);
                 Ok(())
             }
+            // rules 7: refused, saying why (a mission of a kind never queued, its platform
+            // still owed its own lost-link values): nothing sent, but the newest order stands
+            // over an engagement all the same, as a dispatch or a queueing would (stopped in
+            // this step, superseded, no fallback), so the platform's own values can go back
+            Routed::Voided { .. } => {
+                let uids = core
+                    .engine
+                    .intent(id)
+                    .map(|i| i.spec().uids.clone())
+                    .unwrap_or_default();
+                self.stop_superseded_engagements(core, id, &uids);
+                Ok(())
+            }
         }
     }
 
@@ -197,6 +216,8 @@ impl Decision {
         order.patience = self.patience(released.task.kind());
         order.requeue = self.requeues(released.task.kind());
         order.resume = resume.clone();
+        // rules 7: each vehicle's start in the audit log before it goes out
+        order.ahead = self.write_ahead_hook();
         let tasking = self.world.tasks.dispatch(AuthorizedOrder {
             intent: released.intent,
             order,
@@ -215,7 +236,13 @@ impl Decision {
     /// A newer order queued for these vehicles: older queued ones on them are voided, and an
     /// older order's op there that its vehicle has not started (waiting for a fix or a link,
     /// mid-exchange) is stopped (the newest order stands, as at a dispatch). Never a newer one.
+    /// Rules 7 (murmur-636): an engagement in play on them is stopped too, superseded by this
+    /// order with no fallback commanded, as its dispatch would: before, the abandoned
+    /// intercept stopped it as a system failure and its fallback flew over this order.
     fn supersede_queued(&self, core: &mut Core, id: IntentId, uids: &[murmur_decide::Uid]) {
+        if self.rules.rules_version >= murmur_decide::QUEUE_FOLLOWUPS_SINCE {
+            self.stop_superseded_engagements(core, id, uids);
+        }
         let stale: Vec<(IntentId, murmur_decide::Uid)> = core
             .engine
             .intents()
@@ -290,7 +317,12 @@ impl Decision {
         queued
             .into_iter()
             .map(|i| {
-                let reach: Vec<Reach> = dq::reach(i.spec(), &world, &self.queue_cfg, &self.rules);
+                // as its dequeue would judge it (rules 7: a platform still owed its own
+                // lost-link values holds a mission)
+                let reach: Vec<Reach> = core
+                    .engine
+                    .reach_now(i.id(), &world)
+                    .unwrap_or_else(|| dq::reach(i.spec(), &world, &self.queue_cfg, &self.rules));
                 let mut v = super::intent_json(i, None, self.tol());
                 v["reach_now"] = json!(reach);
                 v
@@ -354,7 +386,8 @@ impl Decision {
             text,
             &ReplayOptions {
                 rules: RulesAccepted::AtLeast(5),
-                // its own carried-over intents were checked when it started
+                // its own carried-over intents were checked when it started; the lost-link
+                // values it carried (rules 6) never were, and are trusted here too (murmur-cq3)
                 trust_resumed: true,
                 ..ReplayOptions::default()
             },
@@ -367,7 +400,7 @@ impl Decision {
                 report.mismatches.first().map_or("", |m| m.what.as_str())
             ));
         }
-        // rules 7: only between runs that authenticate operators alike (an approval made on
+        // rules 8: only between runs that authenticate operators alike (an approval made on
         // asserted ids never stands in a credentials run, nor a person's in a dev run; a log
         // of earlier rules asserted its ids)
         let was = murmur_decide::authority::effective_mode(report.auth);

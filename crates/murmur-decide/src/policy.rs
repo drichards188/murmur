@@ -32,7 +32,7 @@
 //! ([`ENGAGE_MIN_APPROVERS`]); a file may ask for more, never fewer. An agent's order on a
 //! vehicle with an engagement in play is never auto (`(engagement in play)`).
 //!
-//! **Step-up** (rules 7, [`crate::rules::OPERATOR_AUTH_SINCE`]). A human tier may set
+//! **Step-up** (rules 8, [`crate::rules::OPERATOR_AUTH_SINCE`]). A human tier may set
 //! `step_up = true`: the authorization is consequential, so in a credentials run every
 //! approval of it re-enters the approver's credential at that moment
 //! ([`PolicyDecision::step_up`]; the engine refuses a signature without a [`crate::StepUp`]),
@@ -109,7 +109,7 @@ pub struct TierRule {
     /// true; an engagement is always false).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposer_may_approve: Option<bool>,
-    /// Human tiers, rules 7 (policy schema 5): a consequential authorization. Each approval
+    /// Human tiers, rules 8 (policy schema 5): a consequential authorization. Each approval
     /// needs a step-up, the approver's credential re-entered at the moment of approving, in
     /// a credentials run; the submitter's own request never stands as the approval
     /// (`submitter_authorizes` is false whatever this tier says). An engagement always has
@@ -133,7 +133,7 @@ pub struct ApprovalConfig {
     /// existed, which is how those runs behaved.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub kind: BTreeMap<TaskKind, KindApproval>,
-    /// Rules 7 (policy schema 5): acts besides approvals that re-enter the operator's
+    /// Rules 8 (policy schema 5): acts besides approvals that re-enter the operator's
     /// credential in a credentials run (a step-up): `declare_hostile` (an operator declares a
     /// track hostile), `accept_unknown` (an operator accepts a lost vehicle for an
     /// engagement). Absent: none (approvals step up per tier, `step_up`, and every engagement
@@ -142,7 +142,7 @@ pub struct ApprovalConfig {
     pub step_up_acts: Option<Vec<StepUpAct>>,
 }
 
-/// An act other than an approval that a policy may mark consequential (rules 7,
+/// An act other than an approval that a policy may mark consequential (rules 8,
 /// `[approval] step_up_acts`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -395,8 +395,8 @@ impl Policy {
         self.queue.clone().unwrap_or_default()
     }
 
-    /// Rules 7: whether `act` re-enters the operator's credential (`[approval] step_up_acts`;
-    /// nothing before rules 7).
+    /// Rules 8: whether `act` re-enters the operator's credential (`[approval] step_up_acts`;
+    /// nothing before rules 8).
     pub fn steps_up(&self, act: StepUpAct) -> bool {
         self.rules.rules_version >= OPERATOR_AUTH_SINCE
             && self.approval.step_up_acts.as_ref().is_some_and(|a| a.contains(&act))
@@ -447,9 +447,9 @@ pub struct PolicyDecision {
     /// The proposer may not approve. Always true for an engagement.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub proposer_excluded: bool,
-    /// Rules 7: every approval re-enters the approver's credential (a step-up), in a
+    /// Rules 8: every approval re-enters the approver's credential (a step-up), in a
     /// credentials run, and the submission is never the approval. Always true for an
-    /// engagement; a human tier's `step_up` otherwise. Absent (false) before rules 7.
+    /// engagement; a human tier's `step_up` otherwise. Absent (false) before rules 8.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub step_up: bool,
 }
@@ -609,7 +609,7 @@ pub fn decide(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> Poli
     d.submitter_authorizes = false;
     d.proposer_excluded = true;
     d.approvers = d.approvers.max(ENGAGE_MIN_APPROVERS);
-    // rules 7: every signature on an engagement re-enters the signer's credential
+    // rules 8: every signature on an engagement re-enters the signer's credential
     d.step_up = policy.rules.rules_version >= OPERATOR_AUTH_SINCE;
     d
 }
@@ -677,7 +677,7 @@ fn decide_by_file(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> 
                 };
             }
             let human = rule.tier == Tier::Human;
-            // rules 7: a consequential tier's approval re-enters the credential, and is never
+            // rules 8: a consequential tier's approval re-enters the credential, and is never
             // the submission itself
             let step_up = human
                 && rule.step_up == Some(true)

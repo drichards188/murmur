@@ -13,8 +13,10 @@ link stats and link emulation stay honest) and a callsign ("PUMA 1"). The launch
 sim/run/fleet.json, the manifest the bridge uses to show each vehicle's identity. Behind the
 link emulator (scripts/up.sh, the default) the vehicles send to the emulator on base_port + i
 and the bridge reads the emulator's rewritten copy (sim/run/bridge-fleet.json, bridge-side
-ports); `--manifest-only` writes the manifest and exits, so the emulator can bind the
-vehicle ports before any vehicle starts.
+ports); `--manifest-only` writes the manifest and exits. up.sh runs it first in both modes,
+so the emulator binds the vehicle ports before any vehicle starts and the bridge, which
+checks a previous run's carried-over orders against this run's fleet, reads this run's
+manifest and not the last one's.
 """
 
 import argparse
@@ -211,6 +213,22 @@ def sitl_command(v, spec, args, workdir):
     return cmd
 
 
+def write_manifest(vehicles, replace):
+    """sim/run/fleet.json, replaced in one step (the bridge re-reads it whenever its mtime
+    changes and must never see half of it). `replace`: write it even when it already says
+    the same, so its mtime says it is this run's (`--manifest-only`, which up.sh and the
+    e2e harnesses run before the bridge; the bridge logs the manifest's age and flags one
+    older than a minute as a previous run's); the full launch after it leaves an identical
+    file alone, so the bridge doesn't re-read it."""
+    manifest = RUN / "fleet.json"
+    text = json.dumps({"vehicles": vehicles}, indent=1)
+    if not replace and manifest.exists() and manifest.read_text() == text:
+        return
+    tmp = manifest.with_name("fleet.json.tmp")
+    tmp.write_text(text)
+    os.replace(tmp, manifest)
+
+
 def standins_engine():
     """The Rust stand-in engine's binary: MURMUR_STANDINS_BIN, else target/release, built (or
     rebuilt when stale) with cargo if cargo is installed; a no-op when it is fresh."""
@@ -269,7 +287,7 @@ def main():
         return
 
     RUN.mkdir(exist_ok=True)
-    (RUN / "fleet.json").write_text(json.dumps({"vehicles": vehicles}, indent=1))
+    write_manifest(vehicles, replace=args.manifest_only)
     if args.manifest_only:
         return
 

@@ -190,7 +190,7 @@ function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone, eng
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // rules 7: a tier the policy marks consequential takes the approver's password again
+  // rules 8: a tier the policy marks consequential takes the approver's password again
   const stepUp = stepsUp() && i.policy?.step_up === true
   const [password, setPassword] = useState('')
   const [stepUpError, setStepUpError] = useState(false)

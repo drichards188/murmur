@@ -616,14 +616,14 @@ def test_provenance_counts_untracked_code(monkeypatch):
     assert p["changed"] == ["docs/PLAN.md", "eval/new_module.py"] and p["dirty"] is True
 
 
-# ---- who the operators were (rules 7) ---------------------------------------------------------
+# ---- who the operators were (rules 8) ---------------------------------------------------------
 
 
 def _run_started(auth: str | None) -> dict:
     roster: dict = {"operators": ["op-1", "op-study"], "engage": []}
     if auth:
         roster["auth"] = auth
-    return {"seq": 1, "t": 0, "type": "run.started", "rules_version": 7, "roster": roster}
+    return {"seq": 1, "t": 0, "type": "run.started", "rules_version": 8, "roster": roster}
 
 
 def _opened(op: str, auth: str, seq: int) -> dict:

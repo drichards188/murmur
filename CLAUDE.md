@@ -23,7 +23,10 @@ meaningful. Decision and command, not weapons.
   ids in `MURMUR_AGENTS`; `agents/README.md`). Vehicles ready in ~30-60 s.
 - Live path is Rust: `crates/murmur-bridge`, `crates/murmur-standins`. `scripts/up.sh` builds
   their release binaries (`make build` does too) and, with a scenario, starts `tidewater serve`
-  (reused if one answers) and `tidewater drive`, and stops them with the stack.
+  (reused if one answers) and `tidewater drive`, and stops them with the stack. It writes
+  this run's `sim/run/fleet.json` (`swarm.py --manifest-only`) before the emulator and the
+  bridge start, in both link modes; the bridge logs which manifest it read and its age
+  (flagged past a minute, a previous run's).
 - `make check` (typecheck, lint, py_compile, `cargo clippy` and `cargo test` for the workspace;
   toolchain in `~/.cargo/bin`). Tidewater: `cd ~/tidewater && .venv/bin/pytest`.
 - `scripts/measure.py` measures bridge and stand-in load; `scripts/scale_fleet.py N` writes an
@@ -93,6 +96,15 @@ meaningful. Decision and command, not weapons.
   the values that log still owed (`platform.restore`) onto the same vehicle only. Unlike
   `.resume-<port>.json` it survives a clean stop and is rewritten at every start, so the two
   can name different logs. An engagement itself never carries over or queues.
+- Rules 7 (`QUEUE_FOLLOWUPS_SINCE` in `crates/murmur-decide/src/rules.rs`; feature gates use
+  named constants, never literal versions, so a renumber is one line): a vehicle start, or a
+  follow of an order it already runs, is logged before it goes out (`op.state` with
+  `ahead`). A mission for a platform still owed its own lost-link values waits in the Queue
+  (or is refused, saying why, for a kind the policy never queues); a hold or rtl goes at
+  once, and the restore goes the moment the platform is heard. An order queued, dispatched
+  or refused for an engaging platform supersedes the engagement (no fallback).
+  `murmur-scenarios --rules 6` shows what rules 6 did. Live track ids follow detection order:
+  a driver should find a track by its identity, not its id.
 - The bridge's task-layer timeouts follow each link's measured round trip (`LinkTiming` in
   `crates/murmur-bridge/src/link.rs`; floors 1 s per ACK, 1.5 s per mission item, as before on
   fast links) and its telemetry plan follows the link class (`crates/murmur-bridge/src/

@@ -20,7 +20,7 @@
 //!   holds it (a credentials run, `crate::auth`; a dev run: `MURMUR_ENGAGE_OPERATORS`, which
 //!   `MURMUR_OPERATORS` must list too); only they can sign an engagement, never its proposer,
 //!   the engagement tier asks for two of them, and in a credentials run each signature
-//!   re-enters the signer's password (a step-up, rules 7).
+//!   re-enters the signer's password (a step-up, rules 8).
 //! - **Lost-link preload** (rules 6). The order carries the fallback as the platform's own
 //!   lost-link action ([`murmur_decide::LostLinkPreload`]); at dispatch the bridge reads the
 //!   platform's own values, sets the preload and reads it back (`super::preload`), reports it
@@ -33,7 +33,10 @@
 //!   does not read them off the preloaded vehicle), and they go back only when no engagement
 //!   holds it, retried with backoff, every attempt logged, an inbox alert while they stay
 //!   owed past [`RESTORE_ALERT_S`]. Values still owed when the bridge stops are carried over
-//!   from its log at the next start (`platform.restore`, [`Decision::carry_restores`]).
+//!   from its log at the next start (`platform.restore`, [`Decision::carry_restores`]). From
+//!   rules 7 no restore goes into a dead link and one goes the moment the platform is heard
+//!   again (the backoff an outage built up does not hold it), since a mission for the
+//!   platform waits in the queue until it confirms; the alert lists those missions.
 //! - **Lost friendlies** (rules 6). A nomination may carry `accept_unknown`: our vehicles
 //!   whose position the nominating operator accepts as unknown since a named report
 //!   (`POST /api/intents/{id}/accept_unknown` does it while the nomination waits with no
@@ -162,6 +165,11 @@ pub(super) struct Owed {
     next_try: f64,
     attempts: u32,
     last_error: Option<String>,
+    /// rules 7: the vehicle was silent since the last attempt (or that attempt failed while it
+    /// was): the restore goes the moment it is heard again, whatever the backoff says; and
+    /// whether it is silent now (no attempt is sent into a dead link)
+    waiting_link: bool,
+    silent: bool,
 }
 
 impl Owed {
@@ -174,6 +182,8 @@ impl Owed {
             next_try: 0.0,
             attempts: 0,
             last_error: None,
+            waiting_link: false,
+            silent: false,
         }
     }
 }
@@ -368,6 +378,9 @@ impl Decision {
         // platform's lane, once any job there has finished); the intercept goes out once its
         // read-back confirms
         if o.preload.is_some() {
+            // the older orders on the platform first, in the step of this dispatch (rules 7:
+            // nothing logged between)
+            self.supersede(core, id, &[spec.uids[0].clone()]);
             let mut run = EngageRun::new(None);
             run.platform = Some(uid);
             if fleet.contains_key(&uid) {
@@ -390,7 +403,6 @@ impl Decision {
                     self.command_fallback(core, f);
                 }
             }
-            self.supersede(core, id, &[spec.uids[0].clone()]);
             self.step_params(core);
             return Ok(());
         }
@@ -588,6 +600,12 @@ impl Decision {
                         let wait = (RESTORE_RETRY_S * 2f64.powi(owed.attempts.saturating_sub(1).min(8) as i32))
                             .min(RESTORE_RETRY_MAX_S);
                         owed.next_try = now_mono + wait;
+                        // rules 7: it failed because the link went: again as soon as it is back
+                        if self.rules.rules_version >= murmur_decide::QUEUE_FOLLOWUPS_SINCE
+                            && fleet.get(&uid).is_some_and(|c| crate::tasks::link_silent(c))
+                        {
+                            owed.waiting_link = true;
+                        }
                     }
                 }
             }
@@ -691,6 +709,18 @@ impl Decision {
                 (Some(c), None, Some(was)) => was.matches(&identity_of(c)).err(),
                 _ => None,
             };
+            // rules 7 (murmur-85l): never into a dead link, and at once when the vehicle is
+            // heard again after silence (a mission for it waits in the queue for this restore:
+            // the backoff of attempts lost to the outage must not hold it for minutes)
+            let rules7 = self.rules.rules_version >= murmur_decide::QUEUE_FOLLOWUPS_SINCE;
+            let silent = rules7 && cell.as_ref().is_some_and(|c| crate::tasks::link_silent(c));
+            owed.silent = silent;
+            if silent {
+                owed.waiting_link = true;
+            } else if owed.waiting_link && cell.is_some() {
+                owed.waiting_link = false;
+                owed.next_try = now_mono;
+            }
             match cell {
                 // gone from the fleet: still owed, and the inbox says so
                 None => owed.last_error = Some("the vehicle is not in the fleet".into()),
@@ -700,6 +730,7 @@ impl Decision {
                         mismatch.unwrap_or_default()
                     ));
                 }
+                Some(_) if silent => {}
                 Some(cell) if now_mono >= owed.next_try => {
                     lane.job = Some((Purpose::Restore, super::preload::start_restore(cell, owed.values.clone())));
                 }
@@ -822,11 +853,47 @@ impl Decision {
                 let since = now_wall - (now_mono - due);
                 (now_mono - due > RESTORE_ALERT_S).then(|| {
                     let values: Vec<String> = owed.values.iter().map(|(n, v)| format!("{n} {v}")).collect();
-                    let last = owed
+                    let mut last = owed
                         .last_error
                         .as_deref()
                         .map(|e| format!("; last attempt: {e}"))
                         .unwrap_or_default();
+                    if owed.silent {
+                        last.push_str("; its link is silent: put back as soon as it is heard again");
+                    }
+                    // rules 7: still flying the intercept of an engagement a queued order
+                    // superseded (its newest order waits for this restore): on the intercept
+                    // path, loitering at the effect point, though nothing can be released
+                    if let Some(op) = self.world.tasks.current_ops().into_iter().find(|o| o.uid == *uid)
+                        && op.task == crate::tasks::TaskKind::Orbit
+                        && !matches!(op.state, OpState::Failed | OpState::Superseded | OpState::Requeued | OpState::Unconfirmed)
+                        && let Some(e) = core.engine.intent(IntentId(op.intent_id))
+                        && matches!(e.spec().task, Task::Engage { .. })
+                        && e.state().is_terminal()
+                    {
+                        last.push_str(&format!(
+                            "; it is still on stopped engagement {}'s intercept path (loitering at its effect point; nothing can be released): a hold or rtl takes it off",
+                            e.id()
+                        ));
+                    }
+                    // rules 7: the missions waiting in the queue for it
+                    let held: Vec<String> = core
+                        .engine
+                        .intents()
+                        .filter(|i| {
+                            i.state() == State::Queued
+                                && !matches!(i.spec().task, Task::Hold {} | Task::Rtl {})
+                                && i.spec().uids.contains(&duid(*uid))
+                                && self.rules.rules_version >= murmur_decide::QUEUE_FOLLOWUPS_SINCE
+                        })
+                        .map(|i| format!("{} ({})", i.id(), i.spec().kind().as_str()))
+                        .collect();
+                    if !held.is_empty() {
+                        last.push_str(&format!(
+                            "; held in the queue until it is back (or their deadline): {}",
+                            held.join(", ")
+                        ));
+                    }
                     super::alerts::Alert {
                         id: format!("restore:{uid}"),
                         kind: "restore_pending",
@@ -834,7 +901,7 @@ impl Decision {
                         uid: *uid,
                         callsign: fleet.get(uid).and_then(|c| super::alerts::callsign(c)),
                         detail: format!(
-                            "its own lost-link failsafe ({}) is not confirmed back: {} attempt(s){last}",
+                            "its own lost-link failsafe ({}) is not confirmed back: it still carries an ended engagement's lost-link action; {} attempt(s){last}",
                             values.join(", "),
                             owed.attempts
                         ),
@@ -1132,7 +1199,7 @@ impl Decision {
                 ));
             };
             let (uid, since) = accept.engine();
-            // rules 7: the step-up, when the policy lists accept_unknown
+            // rules 8: the step-up, when the policy lists accept_unknown
             let step = Self::mint_step(&mut core.engine, session, by, step)?;
             let accepted = match step {
                 Some(s) => core.engine.accept_unknown_friendly_stepped(id, auth, s, uid, since, &world),

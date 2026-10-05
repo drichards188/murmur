@@ -188,7 +188,7 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // rules 7: every engagement signature re-enters the signer's password (credentials run),
+  // rules 8: every engagement signature re-enters the signer's password (credentials run),
   // so a signature can't come from a stale or shared session
   const stepUp = stepsUp()
   const [password, setPassword] = useState('')

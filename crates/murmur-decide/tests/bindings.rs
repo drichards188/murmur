@@ -284,6 +284,8 @@ fn approved_armed_orbit() -> (String, IntentId) {
     clock.advance_ms(1_000);
     e.approve(id, op.authority(), None, &w, &tr).unwrap();
     e.dispatch(id, &w).unwrap();
+    e.record_op_state_ahead(id, &uid("blade-1"), "starting mission: mission mode commanded")
+        .unwrap();
     e.record_op_state(id, &uid("blade-1"), "active", "on station")
         .unwrap();
     e.finish(id, TaskOutcome::Done).unwrap();
@@ -646,7 +648,14 @@ fn the_engine_refuses_op_states_replay_would_reject() {
     e.dispatch(id, &w).unwrap();
     let after_dispatch = log.lines().len();
     assert!(refused(e.record_op_state(id, &uid("hawk-1"), "sent", "")));
+    // rules 7: a vehicle start is logged ahead of sending it, never after; and on the order's
+    // first delivery the vehicle can't have taken it before that
+    assert!(refused(e.record_op_state(id, &uid("sky-1"), "starting", "mission mode commanded")));
+    assert!(refused(e.record_op_state(id, &uid("sky-1"), "done", "on station")));
+    assert!(refused(e.record_op_state_ahead(id, &uid("hawk-1"), "mission mode commanded")));
     assert_eq!(log.lines().len(), after_dispatch, "nothing logged");
+    e.record_op_state_ahead(id, &uid("sky-1"), "starting mission: mission mode commanded")
+        .unwrap();
     e.record_op_state(id, &uid("sky-1"), "done", "on station")
         .unwrap();
     e.finish(id, TaskOutcome::Done).unwrap();

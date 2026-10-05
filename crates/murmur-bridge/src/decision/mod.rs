@@ -20,7 +20,7 @@
 //! from it. (A test-only constructor exists under `#[cfg(test)]` for the task layer's own
 //! tests.)
 //!
-//! **Operators** (rules 7; `crate::auth`). Every request acts for an [`Actor`]. In a
+//! **Operators** (rules 8; `crate::auth`). Every request acts for an [`Actor`]. In a
 //! credentials run (the default) that is an operator who logged in with their own password:
 //! each login opens one engine session ([`Decision::open_login`], `session.opened` with
 //! `auth: password`), its end (logout, expiry, a credential removed or changed) closes it
@@ -250,7 +250,7 @@ fn engine_err(e: EngineError) -> DecisionError {
         EngineError::EngagementNeedsAuthority(_)
         | EngineError::ProposerCannotApprove { .. }
         | EngineError::NotOnRoster { .. } => 403,
-        // rules 7: the signer must (re-)enter their credential
+        // rules 8: the signer must (re-)enter their credential
         EngineError::NotAuthenticated { .. } | EngineError::StepUpRequired { .. } => 401,
         _ => 500,
     };
@@ -452,6 +452,9 @@ pub struct Decision {
     pointer: std::sync::OnceLock<PathBuf>,
     /// The fleet identity file beside the audit log (set once by [`Decision::load`]).
     fleet_file: std::sync::OnceLock<PathBuf>,
+    /// Itself, for the task layer's write-ahead of a vehicle start (rules 7: the op logs it
+    /// through the decision lock before sending it).
+    me: std::sync::Weak<Decision>,
 }
 
 /// Everything [`Decision::from_parts`] needs (tests pass a memory sink and a manual clock).
@@ -591,7 +594,7 @@ impl Decision {
     /// and exit with the lock still held.
     pub fn shutdown_and_exit(&self) -> ! {
         let mut core = self.lock();
-        // rules 7: every login's session ends with the run, on the record
+        // rules 8: every login's session ends with the run, on the record
         let logins = std::mem::take(&mut core.logins);
         for (_, s) in logins {
             if let Err(e) = core.engine.close_operator_session(s, "bridge stopped") {
@@ -635,7 +638,8 @@ impl Decision {
             p.sink,
         )
         .map_err(|e| e.to_string())?;
-        let d = Arc::new(Decision {
+        let d = Arc::new_cyclic(|me| Decision {
+            me: me.clone(),
             world,
             clock,
             catalog: p.catalog,
@@ -816,7 +820,7 @@ impl Decision {
                 .is_some_and(|p| p.step_up)
     }
 
-    /// Rules 7: the step-up `crate::auth` checked for `by`'s login, logged under `session`
+    /// Rules 8: the step-up `crate::auth` checked for `by`'s login, logged under `session`
     /// (`operator.action step_up`) for the act about to quote it. None when none was checked.
     fn mint_step(
         engine: &mut Engine,
@@ -1226,7 +1230,7 @@ impl Decision {
             if let Some(p) = prepared {
                 core.engine.use_prepared_space(p);
             }
-            // rules 7: the password was just checked again for this login: log the step-up
+            // rules 8: the password was just checked again for this login: log the step-up
             // under its session, for this signature to quote
             let step = Self::mint_step(&mut core.engine, session, by, step)?;
             let oracle = self.terrain.oracle();
@@ -1429,6 +1433,12 @@ impl Decision {
     /// that cause: the newest order stands. A newer order is never voided by an older one's
     /// dispatch (rules 5: an older queued order that comes out of the queue after it).
     fn supersede(&self, core: &mut Core, id: IntentId, uids: &[DUid]) {
+        // rules 7: the engagements first, right after the dispatch (the engine and replay take
+        // a superseding order only in the step that dispatched it, nothing logged between)
+        let rules7 = self.rules.rules_version >= rules::QUEUE_FOLLOWUPS_SINCE;
+        if rules7 {
+            self.stop_superseded_engagements(core, id, uids);
+        }
         let took: BTreeSet<&DUid> = uids.iter().collect();
         let stale: Vec<(IntentId, DUid)> = core
             .engine
@@ -1452,7 +1462,9 @@ impl Decision {
                 eprintln!("decision: void {other}: {e}");
             }
         }
-        self.stop_superseded_engagements(core, id, uids);
+        if !rules7 {
+            self.stop_superseded_engagements(core, id, uids);
+        }
     }
 
     /// A collect or cover: the engine releases its order (`intent.dispatched`), the space
@@ -1828,6 +1840,7 @@ impl Decision {
     /// (rules 5), when every op ended `requeued` (the link lost before any vehicle started
     /// it), send it back to the queue.
     fn follow_ops(&self, core: &mut Core) {
+        let ahead = self.writes_ahead();
         let Core {
             engine, running, ..
         } = core;
@@ -1838,6 +1851,11 @@ impl Decision {
             for op in &snap.ops {
                 let key = (op.state, op.detail.starts_with("NOT MOVING"));
                 if run.reported.get(&op.id) == Some(&key) {
+                    continue;
+                }
+                // rules 7: a start is logged by the op itself, ahead of sending it
+                // (`write_ahead`), never after it here
+                if ahead && op.state == OpState::Starting {
                     continue;
                 }
                 let state = serde_json::to_value(op.state)
@@ -1912,6 +1930,51 @@ impl Decision {
                 Err(e) => eprintln!("decision: finish {id}: {e}"),
             }
         }
+    }
+
+    /// Rules 7: whether vehicle starts are logged ahead of sending them.
+    fn writes_ahead(&self) -> bool {
+        self.rules.rules_version >= rules::QUEUE_FOLLOWUPS_SINCE
+    }
+
+    /// Rules 7: the task layer's write-ahead of a vehicle start, for an order to the vehicles
+    /// (none under earlier rules): an op logs its start through it, and the start goes out
+    /// only once it is in the audit log.
+    pub(super) fn write_ahead_hook(&self) -> Option<crate::tasks::WriteAhead> {
+        if !self.writes_ahead() {
+            return None;
+        }
+        let me = self.me.clone();
+        Some(Arc::new(move |op: &crate::tasks::OpCell, detail: &str| {
+            match me.upgrade() {
+                Some(d) => d.write_ahead(op.intent_id, op.id, op.uid, detail),
+                None => Err("the decision layer is gone".into()),
+            }
+        }))
+    }
+
+    /// Rules 7: `op.state` starting for op `op` (intent `intent`, vehicle `uid`), logged ahead
+    /// of the start it records (`Engine::record_op_state_ahead`), under the decision lock: it
+    /// waits for any decision in progress, so it comes after the dispatch that sent the order.
+    /// `Err`: not logged (the order ended or a newer one took the vehicle meanwhile, or the
+    /// log refused it), and the op sends nothing.
+    fn write_ahead(&self, intent: u64, op: u64, uid: Uid, detail: &str) -> Result<(), String> {
+        let mut guard = self.lock();
+        let Core {
+            engine, running, ..
+        } = &mut *guard;
+        let id = IntentId(intent);
+        let Some(run) = running.get_mut(&id) else {
+            return Err(format!("{id} is no longer followed"));
+        };
+        if run.reported.get(&op).is_some_and(|(s, _)| *s == OpState::Starting) {
+            return Ok(());
+        }
+        engine
+            .record_op_state_ahead(id, &duid(uid), detail)
+            .map_err(|e| e.to_string())?;
+        run.reported.insert(op, (OpState::Starting, false));
+        Ok(())
     }
 
     // ---- reading ------------------------------------------------------------------------

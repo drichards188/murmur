@@ -1728,3 +1728,59 @@ async fn an_arm_acked_but_never_seen_armed_on_a_lost_link_goes_back_to_the_queue
     assert!(s.detail.contains("armed heartbeat"), "{}", s.detail);
     assert_eq!(w.count("MAV_CMD_DO_SET_MODE"), 0, "the start never went out");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_start_waiting_for_its_write_ahead_does_not_stall_other_vehicles() {
+    // review of 1a3cadb, finding 2: a start's write-ahead waits for the decision lock. With
+    // that lock held for seconds and as many starts waiting as the runtime has workers, an
+    // idle vehicle's receive loop must keep running (its heard time fresh past a 1 Hz link's
+    // 3 s lost-link threshold, or it would be judged lost)
+    let a = spawn_fake(91, Firmware::Rover, LAT, LON, quick());
+    let b = spawn_fake(92, Firmware::Rover, LAT, LON + 0.001, quick());
+    let idle = spawn_fake(93, Firmware::Rover, LAT, LON + 0.002, quick());
+    sleep(Duration::from_millis(800)).await;
+    // the decision lock, held 4 s by another thread
+    let gate = Arc::new(Mutex::new(()));
+    let (held_tx, held_rx) = std::sync::mpsc::channel();
+    let g = gate.clone();
+    let holder = std::thread::spawn(move || {
+        let _held = g.lock();
+        let _ = held_tx.send(());
+        std::thread::sleep(Duration::from_secs(4));
+    });
+    let _ = held_rx.recv();
+    let hook: WriteAhead = {
+        let g = gate.clone();
+        Arc::new(move |_op: &OpCell, _detail: &str| {
+            let _logged = g.lock().map_err(|e| e.to_string())?;
+            Ok(())
+        })
+    };
+    let tm = TaskManager::default();
+    let fl = fleet(&[&a, &b, &idle]);
+    for uid in [91, 92] {
+        let mut order = TaskOrder::new(request("hold", &[uid], TaskParams::default()), &fl)
+            .unwrap_or_else(|e| panic!("{e}"));
+        order.ahead = Some(hook.clone());
+        tm.dispatch_unchecked(order);
+    }
+    // the idle vehicle's receive loop, watched from a plain thread (the runtime's workers are
+    // what may stall)
+    let watched = idle.clone();
+    let watcher = std::thread::spawn(move || {
+        let mut worst = 0.0f64;
+        let until = std::time::Instant::now() + Duration::from_millis(3800);
+        while std::time::Instant::now() < until {
+            if let Some(h) = watched.read(|v| v.heard_mono) {
+                worst = worst.max(clock::mono() - h);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        worst
+    });
+    let worst = tokio::task::spawn_blocking(move || watcher.join().unwrap_or(f64::MAX))
+        .await
+        .unwrap_or(f64::MAX);
+    let _ = holder.join();
+    assert!(worst < 1.5, "the idle vehicle went unheard for {worst:.1} s while the starts waited");
+}

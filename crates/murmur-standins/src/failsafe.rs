@@ -18,6 +18,12 @@
 //!   as ArduCopter does; FS_OPTIONS bit 1 continues a mission in AUTO, bit 4 a pilot mode.
 //! - Sub (FS_GCS_ENABLE action, FS_GCS_TIMEOUT; failsafe.cpp failsafe_gcs_check): warns
 //!   "MYGCS: heartbeat lost" every 30 s; acts once, if armed (disarm, depth hold, surface).
+//! - Blimp (FS_GCS_ENABLE, FS_GCS_TIMEOUT; Blimp/events.cpp failsafe_gcs_check): armed or
+//!   not, the failsafe flag goes up (system status CRITICAL) and arming.disarm is called
+//!   ("Disarming motors" if it was armed), nothing else and no failsafe text: 4.8 has no
+//!   failsafe_gcs_on_event, so the parameter's documented Land is not what it does. The GCS
+//!   heard again clears the flag silently. Ships off, and stays off here (params.rs).
+//! - AntennaTracker: none (no FS_GCS_* parameters).
 //!
 //! Battery (AP_BattMonitor::check_failsafes): "Battery 1 is low|critical <V>V used <mAh> mAh",
 //! then the firmware's handle_battery_failsafe for BATT_FS_LOW_ACT / BATT_FS_CRT_ACT.
@@ -397,19 +403,20 @@ impl Vehicle {
                     self.text(WARN, "GCS Failsafe Cleared");
                 }
             }
-            Firmware::Blimp | Firmware::Tracker => {
+            Firmware::Blimp => {
                 let enable = p(self, "FS_GCS_ENABLE", 0.0) as i64;
                 let lost = enable != 0 && self.gcs_lost(now, p(self, "FS_GCS_TIMEOUT", 5.0));
-                if lost && !self.fs.gcs && self.st.armed {
+                if lost && !self.fs.gcs {
+                    // armed or not (a disarm on the ground is a no-op); whatever the value:
+                    // the only action 4.8 has is the disarm (module doc)
                     self.fs.gcs = true;
                     GCS_FAILSAFES.fetch_add(1, Ordering::Relaxed);
-                    self.text(WARN, "GCS Failsafe");
-                    self.fall_through(&["RTL", "LAND"]);
+                    self.disarm();
                 } else if !lost && self.fs.gcs {
-                    self.fs.gcs = false;
-                    self.text(WARN, "GCS Failsafe Cleared");
+                    self.fs.gcs = false; // set_failsafe_gcs(false): no text
                 }
             }
+            Firmware::Tracker => {}
         }
     }
 

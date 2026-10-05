@@ -1,4 +1,4 @@
-//! Rules 7 (murmur-der.1): every human act is bound to an authenticated person. The run says
+//! Rules 8 (murmur-der.1): every human act is bound to an authenticated person. The run says
 //! how its operators prove who they are (`credentials` or `dev`); a credentials run opens
 //! sessions only on a checked login, records every session's end, and takes an engagement
 //! signature (or any approval its policy marks consequential) only with a step-up, the
@@ -308,7 +308,7 @@ fn replay_catches_a_relabelled_run_or_session() {
         }
     });
     assert!(whats(&forged).iter().any(|m| m.contains("session opened by another method")));
-    // the mode dropped: a rules 7 log always says how its operators were authenticated
+    // the mode dropped: a rules 8 log always says how its operators were authenticated
     let forged = forge(&text, |events| {
         if let EventBody::RunStarted { roster: Some(r), .. } = &mut events[0].body {
             r.auth = None;
@@ -470,7 +470,7 @@ fn step_up_is_a_human_tiers_key_of_policy_schema_5() {
 }
 
 #[test]
-fn a_rules_7_log_claiming_older_rules_carries_its_markers() {
+fn a_rules_8_log_claiming_older_rules_carries_its_markers() {
     let (text, _) = signed_engagement();
     let older = OPERATOR_AUTH_SINCE - 1;
     let forged = forge(&text, |events| {
@@ -496,7 +496,7 @@ fn a_rules_7_log_claiming_older_rules_carries_its_markers() {
 }
 
 #[test]
-fn closing_a_session_logs_nothing_before_rules_7() {
+fn closing_a_session_logs_nothing_before_rules_8() {
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();
     let mut p = policy();

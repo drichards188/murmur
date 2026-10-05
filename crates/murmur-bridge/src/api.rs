@@ -22,7 +22,7 @@
 //! signed in on this browser (the session cookie; `POST /api/auth/login`), or in a dev run
 //! (`MURMUR_AUTH=dev`) the `X-Murmur-Operator` header. An approval the decision marks
 //! consequential (every engagement signature) carries `"password"`, the signer's own,
-//! checked again before it is signed (rules 7, a step-up). The WebSocket also sends
+//! checked again before it is signed (rules 8, a step-up). The WebSocket also sends
 //! `{"type": "decisions", "inbox": ..., "intents": [...]}` and `{"type": "tracks", ...}`
 //! (Phase C2, see `tracks`) on connect and whenever they change (existing clients ignore
 //! message types they don't know).
@@ -60,7 +60,7 @@ pub struct App {
     pub tracks: Arc<Tracks>,
     /// the console feed's level-of-detail limits (`/ws?lod=1`, see `push`)
     pub lod: LodSettings,
-    /// Who is acting (rules 7): logins, step-ups and agent keys, or dev-mode headers.
+    /// Who is acting (rules 8): logins, step-ups and agent keys, or dev-mode headers.
     pub auth: Arc<crate::auth::Auth>,
 }
 
@@ -212,7 +212,7 @@ async fn create_intent(
     headers: HeaderMap,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
-    // rules 7: a nomination accepting lost vehicles may carry the password again (a step-up,
+    // rules 8: a nomination accepting lost vehicles may carry the password again (a step-up,
     // when the policy lists accept_unknown); it is taken out here, checked and dropped,
     // never logged or echoed
     let mut v = match body {
@@ -281,7 +281,7 @@ async fn intent_action(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    // rules 7: an approval may carry the approver's password again (a step-up); it is
+    // rules 8: an approval may carry the approver's password again (a step-up); it is
     // checked and dropped here, never logged or echoed
     let (note, token, acknowledge, password) = if body.iter().all(u8::is_ascii_whitespace) {
         (None, None, false, None)
@@ -339,7 +339,7 @@ async fn intent_action(
         // rules 6: {"uid": n, "since": engine ms or null}, as the keep-out check names it
         "accept_unknown" => match serde_json::from_slice::<crate::decision::engage::AcceptUnknown>(&body) {
             Ok(a) => {
-                // rules 7: re-enters the credential when the policy lists accept_unknown
+                // rules 8: re-enters the credential when the policy lists accept_unknown
                 let needed = app.decision.steps_up(murmur_decide::StepUpAct::AcceptUnknown);
                 let step = match app.auth.step_up(&op, &format!("i{id} accept_unknown"), password, needed).await {
                     Ok(s) => s,

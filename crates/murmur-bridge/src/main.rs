@@ -9,7 +9,7 @@
 //! MURMUR_RUN_ID (audit log logs/audit/<run-id>.jsonl; default the UTC start time and pid),
 //! MURMUR_TIDEWATER_URL (tidewater serve, for the domain rule; unset: "not
 //! evaluated"), MURMUR_AT and MURMUR_RATE (scenario time for tidewater, as `make goldengate`).
-//! Who acts (rules 7, `auth`): MURMUR_AUTH (`dev`, the default: ids asserted by header, said
+//! Who acts (rules 8, `auth`): MURMUR_AUTH (`dev`, the default: ids asserted by header, said
 //! loudly at start and logged as such, never evidence about people, no credential file needed:
 //! MURMUR_OPERATORS (ids accepted in X-Murmur-Operator, comma-separated; default op-1),
 //! MURMUR_ENGAGE_OPERATORS (those with engagement authority; one not in MURMUR_OPERATORS stops
@@ -52,6 +52,28 @@ use tokio::sync::watch;
 
 use crate::decision::{Decision, Settings};
 use crate::world::{Config, World};
+
+/// A fleet manifest older than this at start is probably a previous run's: said in the log.
+const MANIFEST_FRESH_S: f64 = 60.0;
+
+/// Which fleet manifest this bridge read and how old it was: every vehicle's identity and
+/// the carry-over check's fleet come from it, so a stale one must show in the log.
+fn report_manifest(world: &World) {
+    let path = world.cfg.manifest.display();
+    let vehicles = world.manifest().identities.len();
+    match std::fs::metadata(&world.cfg.manifest).and_then(|m| m.modified()) {
+        Ok(written) => {
+            let age = written.elapsed().map_or(0.0, |d| d.as_secs_f64());
+            let stale = if age > MANIFEST_FRESH_S {
+                " (older than a minute: a previous run's?)"
+            } else {
+                ""
+            };
+            println!("fleet manifest {path}: {vehicles} vehicles, written {age:.1} s ago{stale}");
+        }
+        Err(e) => println!("fleet manifest {path}: {e}; vehicles get synthetic ids until it appears"),
+    }
+}
 
 /// SIGTERM or SIGINT.
 async fn shutdown_signal() {
@@ -141,6 +163,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let auth_settings = auth::Settings::from_env(http_port).map_err(|e| format!("auth: {e}"))?;
     let credentials = who_acts(&auth_settings, &mut settings).map_err(|e| format!("auth: {e}"))?;
     let world = World::new(cfg);
+    // this run's fleet manifest, before the decision layer checks a previous run's open
+    // orders against it (scripts/up.sh writes it before starting the bridge, in both link
+    // modes); logged with its age, so a previous run's shows
+    world.load_manifest();
+    report_manifest(&world);
     // no decision layer, no bridge: nothing may reach a vehicle without it
     let decision =
         Decision::load(world.clone(), &settings).map_err(|e| format!("decision layer: {e}"))?;
@@ -165,7 +192,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if tracks.eval_truth_enabled() {
         println!("MURMUR_EVAL_TRUTH=1: GET /api/sim/truth serves simulation truth (evaluation only)");
     }
-    world.load_manifest();
     world.ensure_ports().await;
     // the GCS heartbeat on its own thread, apart from everything on the runtime
     let beats = heartbeat::spawn(world.clone())?;

@@ -37,7 +37,7 @@ group. Dates are 2026.
 - **Engagement: two operators with engagement authority, never the proposer** (10-03,
   Phase E). An engagement (an abstract effect: a point, a radius, a time) waits for
   `approvers = 2` distinct signatures from sessions opened with engagement authority
-  (`MURMUR_ENGAGE_OPERATORS`; from rules 7 the credential's engagement flag, each signer
+  (`MURMUR_ENGAGE_OPERATORS`; from rules 8 the credential's engagement flag, each signer
   re-entering their own password at signing), and its proposer, human or agent, never signs
   it. The engine holds a floor whatever `sim/policy.toml` says: never auto, never approved
   at submission, never the proposer, never fewer than two approvers (a tier asking for one,
@@ -278,6 +278,37 @@ group. Dates are 2026.
 
 ## Fleet and simulation
 
+- **The CCA's C2 link is SATCOM, as the other large aircraft's** (10-04, murmur-3zj). The
+  stock fleets spawn it 21.5 km from Crissy Field at 11 km altitude, 24.2 km of slant range
+  (the emulator's range is the slant range to the ground station), where the `los` class
+  (0 up to 15 km, 1 at 25 km, from Puma's 20 km figure, a GUESS) already loses about 84 %
+  of packets and the 5 s lost-link timer fires within minutes. Moving the spawn in would only defer it: at
+  230 m/s the jet crosses the class's 25 km in under two minutes, so any sortie on a
+  100 km theatre would RTL at the edge. A jet combat UAS tasked from a ground station tens
+  of km away is on a BLOS link; the catalog maps it to WGS GEO (`space_class = "wgs"`,
+  alternative ku-geo) like the RQ-4 and MQ-9B, with the GEO lost-link timer (120 s, a
+  GUESS) and the reduced telemetry tier. Stated as a GUESS in the catalog: CCA datalinks
+  are not public, and the control path in a fight, an air-to-air tactical link to a crewed
+  lead, has no node in the fleet to carry it. Links no longer hinge on where a fleet file
+  happens to put the aircraft. Scripted link events select by class, so the populations of
+  `sim/link-events/golden-gate.toml` changed with it: the CCA leaves the `class = "los"`
+  events (the 30 % loss study, murmur-t7d, and the LOS jammer at the Gate) and falls under
+  the SATCOM jammer (half loss) instead; link-event runs before and after this change are
+  not comparable on the CCA.
+- **The Blimp stand-in's GCS failsafe is the firmware's: off, and a disarm when on**
+  (10-04, murmur-3zj; supersedes the Blimp exception under "Lost-link timers follow the
+  link"). ArduPilot Blimp 4.8's `failsafe_gcs_check` (Blimp/events.cpp) raises the
+  failsafe flag and calls `arming.disarm`, armed or not, whatever `FS_GCS_ENABLE` says (the
+  parameter documents "5: Land"; no `failsafe_gcs_on_event` exists to do it), and ships it
+  off. The SITL Blimp has run it off for that reason while the stand-in announced "GCS
+  Failsafe" and went to RTL or LAND, a safer airship than the firmware has. The gap is
+  closed on the stand-in's side, since that is the honest model and a divergence would have
+  to be re-documented at every firmware change: it ships `FS_GCS_ENABLE 0` too and, when
+  the parameter is set, raises the flag (system status CRITICAL) and disarms ("Disarming
+  motors"; the envelope then drifts with the wind), with no failsafe text, no mode change,
+  and a silent clear. The bridge's estimate draws no lost-link branch for an airship, and
+  the engagement preload refuses one for the same reason. Regression:
+  `blimp_gcs_failsafe_is_off_and_only_disarms_when_on` (stand-in contract tests).
 - **Engagement effects are abstract, on the truth side only** (10-03, Phase E). The bridge
   hands the effect (point, radius, time) back to the contacts process on the labelled
   simulation channel (in the answer to its next `POST /api/sim/contacts`). Contacts inside
@@ -640,6 +671,88 @@ group. Dates are 2026.
   anchored as it is written, so a crashed log is covered to its last decision. A reboot is
   judged at the vehicle clock's own rate (a slow simulator is not a reboot). An agent may
   not replace a human's order that no vehicle has started yet.
+- **A start is logged before it goes out** (10-04, murmur-dma; rules 7, provisional
+  number). The queue's `starting` was logged at the next decision tick, so a bridge that
+  crashed within about a second of a start lost the record that it may have gone out, and a
+  review probe restarted a mission over a failsafe RTL after such a crash. The op now logs its
+  start itself, through the decision lock, before the mission mode, the hold or rtl mode, or
+  new items to a vehicle flying a mission go out, and sends nothing if that write fails; a
+  carry-over then always treats the order as may-have-started (confirmed only, never started
+  again on its own). The other fix the issue offered, treating "held, not running, in a
+  failsafe mode" as may-have-started on carry-over, was not taken: it guesses from the
+  vehicle's state what the log can record exactly. Replay accepts the write-ahead and binds
+  it: a vehicle task's start is logged ahead and nothing else is, and on an order's first
+  delivery a vehicle reports taking it only after its start was logged, so a forged log that
+  drops the write-ahead is caught, on every delivery (review of 1a3cadb: a redelivery after a
+  requeue was not held to it), and a follow of an order the vehicle already runs is logged
+  ahead the same way (from then on it runs it). The write waits for the decision lock off the
+  runtime's worker (`block_in_place`), so it stalls no other vehicle's receive loop. The engine
+  also refuses an op ending `requeued` after its
+  start went out on that delivery (it may be running: it ends `unconfirmed`), which replay
+  rejects in every log. Residual: a carry-over from a rules 5 or 6 log keeps the old window.
+- **A mission waits for its platform's own lost-link values; a hold or rtl never does**
+  (10-04, murmur-85l; rules 7). After an engagement ended its platform carried the
+  engagement's lost-link action (its fallback on a few seconds' timer) until the restore
+  confirmed, and the restore backed off through an outage (a probe: six failed attempts, back
+  220 s after the link was) while the queue sent waiting orders on the first tick the link
+  was back; a second short gap then braked, landed or returned the platform instead of its own
+  30 to 120 s failsafe. Decided: the restore first, then the order. The bridge tries no restore
+  into a dead link and tries one the moment the vehicle is heard again, whatever the backoff
+  said; the queue holds an order other than a hold or rtl for a vehicle still owed values an
+  engagement of the run preloaded, and sends it the tick after the restore confirms. Missions
+  only: a hold or rtl is the safety command (a short queue, exempt from position freshness),
+  holding it for a parameter exchange that may not finish could drop it, and the lost-link
+  action it might meet in the seconds the restore takes is itself a safety action (brake,
+  hold, loiter, return). The hold is bounded as any queued order's wait: a human's approval
+  goes back to the inbox after 120 s saying why it was queued, an automatic order expires at its
+  kind's wait, and the inbox's restore alert names the platform, its values, the attempts and
+  the missions waiting. Nothing sends a mission over the engagement's lost-link action; an
+  operator who wants the platform elsewhere meanwhile gives a hold or rtl. The hold is not the
+  queue's to waive (review of 1a3cadb): a mission of a kind the policy never queues has nowhere
+  to wait, so it is voided saying why and given again once the restore confirmed, rather than
+  sent at once; every dispatch path refuses it, and replay flags a mission dispatched to a
+  vehicle its ledger shows still owed, whatever the kind's queue. An operator's own
+  mission for a platform whose engagement is still under way waits the same way (queued, it
+  supersedes the engagement, below; the restore runs; then it goes, seconds later on a working
+  link); a hold or rtl still runs at once. The fact
+  (`restore_owed`) comes from the log's own ledger and replay recomputes it, so a forged log
+  can't strip it. Values carried over from an earlier run's log hold no order (stated
+  limitation): the bridge writes those back only onto the vehicle they were preloaded on,
+  which the log alone can't tell, and another vehicle under the uid would otherwise be held
+  for the whole run; they still go back at once when heard, alerted until they do.
+- **An order queued for an engagement's platform supersedes it, as a dispatched one does**
+  (10-04, murmur-636; rules 7). A newer order queued for the platform abandoned the
+  engagement's unstarted intercept, the engagement read that as an intercept failure, stopped
+  with cause `system` and commanded its fallback, which flew when the link returned while the
+  operator's order still waited; dispatched, the same order stopped it as `superseded` with
+  no fallback. Made consistent: the newest order stands, the stop says `superseded` (Phase G
+  counts stop causes), no fallback is commanded, in the step that queues the order: replay
+  takes the intent queued last as it takes the one dispatched last, and from rules 7, for
+  both, only right after that order's transition with nothing else logged between (review of
+  1a3cadb: a stop moved seconds later passed, so a picture or system stop could have been
+  relabelled `superseded`); the bridge stops the engagements first in that step. No safety reason
+  against it was found: a stop never releases anything and the chain's guarantees are
+  untouched (two operators with engagement authority on one frozen plan, never an agent, a
+  platform that leaves its intercept stopped before any release); only an operator's own
+  order, or one a human approved acknowledging the engagement it stops, can be queued for its
+  platform (an agent's goes to a human); and a platform cut off meanwhile still takes its
+  preloaded fallback as its own lost-link action. What changes is the label and the bridge no
+  longer commanding a fallback over the operator's order. The platform keeps its last order
+  (or its failsafe's) until the queued one reaches it, possibly still loitering on the
+  intercept path at the effect point with no engagement (nothing can be released); if the
+  restore never confirms, the restore alert says so, and a hold or rtl takes it off; if the
+  queued order expires instead, nothing is commanded. The same holds for a mission refused
+  rather than queued (re-check of c577d5d): under a policy that never queues its kind it is
+  voided while the platform is owed its own values, and it still stops an engagement in play
+  there, `superseded` in the refusal's step, so the restore can run (before, it was voided
+  and the engagement went on, while the same order dispatched or queued stopped it). Its
+  reason says so, or that the restore is pending if the engagement had already ended, and
+  that a hold or rtl goes at once.
+- **A rules change is gated on a named constant** (10-04). Rules 7 is gated on
+  `QUEUE_FOLLOWUPS_SINCE` (and `RULES_VERSION` is defined from it), never on a literal 7,
+  because another branch (operator authentication) may take the next number first: the branch
+  that merges second renumbers in one line and has its fixtures written again by the merged
+  build (their `run.started` names the number).
 - **The operator roster is logged and checked** (10-04, second review of the bindings; rules
   4). A log could credit a session, with engagement authority, to an operator the bridge was
   never configured with (`MURMUR_OPERATORS` and `MURMUR_ENGAGE_OPERATORS` were not logged).
@@ -651,7 +764,7 @@ group. Dates are 2026.
   `MURMUR_OPERATORS` was admitted anyway). The roster is fixed for the run. Rules 1 to 3
   logs carry no roster: accepting one with `--rules N` trusts its sessions. A roster
   rewritten together with the sessions is caught only by the anchors (it is in the first
-  line). From rules 7 a credentials run's roster is the credential file when the bridge
+  line). From rules 8 a credentials run's roster is the credential file when the bridge
   starts (an operator added later can log in only after a restart; one removed or changed
   can't act from then on), and it says how its operators are authenticated.
 - **The hash chain is tamper-evident, not tamper-proof** (10-03, restated by the second
@@ -667,7 +780,7 @@ group. Dates are 2026.
   protection against that writer needs a separate trust domain the command posts to, which
   is not part of Murmur (`murmur-decide/README.md`).
 - **Operators are authenticated people; a consequential signature re-enters the credential**
-  (10-04, murmur-der.1; rules 7, `OPERATOR_AUTH_SINCE`). Before, one person could declare a
+  (10-04, murmur-der.1; rules 8, `OPERATOR_AUTH_SINCE`). Before, one person could declare a
   track, nominate it and supply both engagement signatures by switching the console's
   "Acting as" (a header the bridge believed), and a headerless request acted as the first
   operator, so no log could say a person decided anything. Now, in a credentials run
@@ -712,13 +825,13 @@ group. Dates are 2026.
   does not keep an idle session alive. Reads (`/api/state`, the WebSocket feed, tracks) stay
   open on the local port: they are the picture, not authority.
 - **The lockout leaves a denial of service on the next login, stated** (10-05, review of
-  rules 7). Anyone who can reach the port can type five wrong passwords for an operator's id
+  rules 8). Anyone who can reach the port can type five wrong passwords for an operator's id
   and lock that id's next login for 30 s (doubling, up to 15 minutes). We accept it: the
   alternative (no lock, or a lock per source address on a single-host testbed where every
   client is 127.0.0.1) gives an online guesser unlimited tries. What the lock no longer does
   is reach a live session: step-ups have their own per-session limit, so a signed-in signer
   keeps signing. The failed logins are in the audit log, so a run where it happened says so.
-- **Harness-held credentials are scripted, not people** (10-05, review of rules 7). The
+- **Harness-held credentials are scripted, not people** (10-05, review of rules 8). The
   evaluation's runner logs its scripted operators in with credentials it generated; those
   sessions authenticate a script, not a person. A credential can be marked `scripted`
   (`murmur-auth add <id> --scripted`, or `scripted <id> on`): its logins are `auth:
@@ -728,12 +841,12 @@ group. Dates are 2026.
   with their own password; the scripted operators' acts never count.
 - **Approvals carry over only between runs that authenticate alike** (10-05, review of rules
   7). A crash-resumed run carries open intents with their approvals. An approval made on
-  asserted ids (a dev run, or any log before rules 7) is no person's in a credentials run, and
+  asserted ids (a dev run, or any log before rules 8) is no person's in a credentials run, and
   a person's has no place in a dev run's counts. So the bridge, `Engine::resume` and replay
   refuse a carry-over whose previous run authenticated otherwise (its `ResumedFrom.auth`
-  against this run's mode; a log before rules 7 counts as dev), in both directions; nothing
+  against this run's mode; a log before rules 8 counts as dev), in both directions; nothing
   is carried, and the operators decide again.
-- **Evidence about people needs the log's anchors too** (10-05, review of rules 7). A
+- **Evidence about people needs the log's anchors too** (10-05, review of rules 8). A
   rewritten log replays as well as the original. The evaluation keeps each run's anchors
   with its log (`audit.anchors`), replays with `--anchors`, and counts a study run only when
   they hold (`anchors: verified`); `murmur-replay` without `--anchors` says on a credentials
@@ -771,7 +884,7 @@ group. Dates are 2026.
   acceptances share one step-up). Off by default, as built; replay requires the step-up on
   each listed act in a credentials run, and the console asks for the password where it
   applies.
-- **Still placeholders, stated** (10-03; revised 10-04 by rules 7). Who holds engagement
+- **Still placeholders, stated** (10-03; revised 10-04 by rules 8). Who holds engagement
   authority is now each person's credential, not a header (above); what is still not here:
   a second factor (a password is single-factor; passkeys are planned, above), a blocklist
   of common passwords, TLS (the bridge listens on 127.0.0.1; `MURMUR_COOKIE_SECURE=1` marks
@@ -809,7 +922,7 @@ group. Dates are 2026.
   the bridge's own `/api/space/*` handlers in process rather than a second copy of the space
   API.
 - **Agent identity is a header, like the operator's** (10-02; replaced 10-04 by per-agent
-  keys, rules 7). `X-Murmur-Agent` (or the MCP `clientInfo.name` inside a session) against
+  keys, rules 8). `X-Murmur-Agent` (or the MCP `clientInfo.name` inside a session) against
   `MURMUR_AGENTS`: placeholder authentication, stated as such, so that evaluation could
   attribute proposals then and real auth could replace it without changing the tools, as it
   did: a credentials run takes `Authorization: Bearer <key>` (above), a dev run the header.

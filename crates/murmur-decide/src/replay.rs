@@ -57,7 +57,14 @@
 //! - sessions: from rules 4 every session is for an operator on the roster `run.started`
 //!   names, with engagement authority only for its engagement operators; rejections and
 //!   at-submission approvals are under the decider's own session.
-//! - authentication (rules 7, [`crate::rules::OPERATOR_AUTH_SINCE`]): `run.started` says how
+//! - carry-overs from an earlier run: each `intent.resumed` against the log it names
+//!   ([`ReplayOptions::previous`]), each carried `platform.restore` against what the log it
+//!   names still owed, that log replaying itself ([`ReplayOptions::restores_from`]; the two
+//!   can be different logs; either not given is a mismatch unless trusted,
+//!   [`ReplayOptions::trust_resumed`], and [`ReplayReport::carried_restores`] says which were
+//!   checked); and an op whose start went out (`starting`, or the vehicle started it, a
+//!   followed vehicle after a restart included) never ends `requeued` on that delivery.
+//! - authentication (rules 8, [`crate::rules::OPERATOR_AUTH_SINCE`]): `run.started` says how
 //!   operators were authenticated (the roster's `auth`, [`ReplayReport::auth`]); every
 //!   session was opened that way (`password` or a harness-held `scripted` credential in a
 //!   credentials run, `asserted` in a dev run; [`ReplayReport::people`] and
@@ -110,9 +117,9 @@ use crate::engage::{
     PictureToken, StopCause, TrackIdentity,
 };
 use crate::engine::{
-    PRELOAD_CHANGED, PRELOAD_FAILED, dispatched_event, engaged_vehicles, is_self_approval,
-    op_state_mismatch, op_state_owner, order_for, preload_mismatch, preload_verdict,
-    supersede_mismatch, waiting_vehicles,
+    PRELOAD_CHANGED, PRELOAD_FAILED, REFUSED, StartAhead, dispatched_event, engaged_vehicles,
+    is_self_approval, op_state_mismatch, op_state_owner, order_for, preload_mismatch,
+    preload_verdict, supersede_mismatch, waiting_vehicles,
 };
 use crate::ids::{OperatorId, SessionId, Uid};
 use crate::hash::{GENESIS, sha256_hex};
@@ -195,6 +202,10 @@ pub struct ReplayReport {
     pub reboots: usize,
     /// Rules 5: dispatched intents sent back to the queue (their link lost before the start).
     pub requeued: usize,
+    /// Rules 6: the carried `platform.restore` events, by the earlier log they name: how
+    /// many, and whether they were checked against what that log still owed (it was given,
+    /// [`ReplayOptions::restores_from`]) or not (it was absent).
+    pub carried_restores: Vec<CarriedRestores>,
     /// The intents the log leaves open (a vehicle task queued, approved but not dispatched,
     /// or dispatched with ops still running): what a restarted bridge carries over.
     #[serde(skip)]
@@ -203,22 +214,22 @@ pub struct ReplayReport {
     pub next_intent: u64,
     /// The last event's seq.
     pub last_seq: u64,
-    /// Rules 7: how the run authenticated its operators (the roster's `auth`): `credentials`
+    /// Rules 8: how the run authenticated its operators (the roster's `auth`): `credentials`
     /// (each person's password checked by the bridge) or `dev` (names asserted). None before
-    /// rules 7: names asserted, as `dev`.
+    /// rules 8: names asserted, as `dev`.
     pub auth: Option<AuthMode>,
-    /// Rules 7: step-ups logged (a credential re-entered to sign), signatures that quoted
+    /// Rules 8: step-ups logged (a credential re-entered to sign), signatures that quoted
     /// one, and sessions ended (`session.closed`).
     pub step_ups: usize,
     pub stepped_signatures: usize,
     pub sessions_closed: usize,
-    /// Rules 7: acts other than signatures that quoted a step-up (a hostile declaration, a
+    /// Rules 8: acts other than signatures that quoted a step-up (a hostile declaration, a
     /// nomination's acceptances of lost vehicles, when `[approval] step_up_acts` lists them).
     pub stepped_acts: usize,
-    /// Rules 7, a credentials run: logins refused for operators the roster lists
+    /// Rules 8, a credentials run: logins refused for operators the roster lists
     /// (`auth.refused`: a wrong password or a locked id; nothing secret is logged).
     pub logins_refused: usize,
-    /// Rules 7, a credentials run: the operators who logged in with their own password (a
+    /// Rules 8, a credentials run: the operators who logged in with their own password (a
     /// person's), and those whose credential is harness-held (`auth: scripted`: a runner
     /// logs them in; authenticated, but never a person's judgment). Only the first are
     /// evidence about people.
@@ -233,7 +244,7 @@ impl ReplayReport {
     }
 
     /// Whether the log's human decisions are bound to authenticated operators: a credentials
-    /// run (rules 7 or later) that reproduced. A dev run, and every log of earlier rules,
+    /// run (rules 8 or later) that reproduced. A dev run, and every log of earlier rules,
     /// names operators that requests asserted: never evidence about people, and excluded from
     /// any claim about meaningful human control. Two things this does not say: whether an
     /// operator is a person ([`Self::people`]; a scripted operator's credential is
@@ -249,13 +260,27 @@ impl ReplayReport {
     }
 }
 
+/// Rules 6: a log's carried `platform.restore` events that name one earlier log.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct CarriedRestores {
+    /// The earlier log they name (`from`, its file name; empty when they name none).
+    pub log: String,
+    /// How many carried restores name it.
+    pub restores: usize,
+    /// Checked against what that log still owed ([`owed_restores`]); false: that log was
+    /// not given, so they were not (a mismatch unless [`ReplayOptions::trust_resumed`]).
+    pub checked: bool,
+    /// The head of that log as given (compare it with that log's anchors).
+    pub head: Option<String>,
+}
+
 /// Rules 6: the platforms' own lost-link values owed back to them: from a preload's
 /// write-ahead (`engage.preload` intent, logged before anything is written: the platform may
 /// hold the preload from then on), or carried over from an earlier run (`platform.restore`),
 /// until a restore confirms them. Who owes them (the engagements that preloaded since) and
 /// the vehicle they were preloaded on.
-#[derive(Default)]
-struct Restores {
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Restores {
     owed: BTreeMap<Uid, Owed>,
 }
 
@@ -267,10 +292,44 @@ struct Owed {
 }
 
 impl Restores {
+    /// Every platform's own values owed back, with the engagements that preloaded them.
+    pub(crate) fn owed(&self) -> Vec<(Uid, BTreeMap<String, f64>, Vec<IntentId>)> {
+        self.owed
+            .iter()
+            .map(|(u, o)| (u.clone(), o.values.clone(), o.by.clone()))
+            .collect()
+    }
+
+    /// Rules 7: what `spec`'s vehicles are owed back from engagements of this log (values
+    /// only carried over from an earlier log hold no order: see [`crate::queue::RestoreOwed`]).
+    /// Empty before rules 7 and for anything but a vehicle task the queue can hold.
+    pub(crate) fn owed_for(
+        &self,
+        spec: &IntentSpec,
+        rules: &crate::rules::RulesConfig,
+    ) -> BTreeMap<Uid, crate::queue::RestoreOwed> {
+        if rules.rules_version < crate::rules::QUEUE_FOLLOWUPS_SINCE || !queue::queueable(spec.kind()) {
+            return BTreeMap::new();
+        }
+        spec.uids
+            .iter()
+            .filter_map(|u| {
+                let o = self.owed.get(u).filter(|o| !o.by.is_empty())?;
+                Some((
+                    u.clone(),
+                    crate::queue::RestoreOwed {
+                        values: o.values.clone(),
+                        by: o.by.clone(),
+                    },
+                ))
+            })
+            .collect()
+    }
+
     /// A preload set on `uid` read `before` as the platform's own values: while earlier
     /// values are owed, those it shares with them must be them (a value read off a preloaded
     /// platform is not its own); the others are owed too from now on. Err: the values owed.
-    fn owe(
+    pub(crate) fn owe(
         &mut self,
         uid: &Uid,
         intent: IntentId,
@@ -296,7 +355,7 @@ impl Restores {
     }
 
     /// A confirmed restore on `uid` read `readback`: paid when it shows every value owed.
-    fn paid(&mut self, uid: &Uid, readback: &BTreeMap<String, f64>) {
+    pub(crate) fn paid(&mut self, uid: &Uid, readback: &BTreeMap<String, f64>) {
         if self
             .owed
             .get(uid)
@@ -308,7 +367,12 @@ impl Restores {
 
     /// The ledger after one logged event, as logged (no recomputation: replay checks it).
     fn step(&mut self, e: &Event) {
-        match &e.body {
+        self.step_body(&e.body);
+    }
+
+    /// [`Self::step`] on an event's body (the engine keeps the same ledger as it logs).
+    pub(crate) fn step_body(&mut self, body: &EventBody) {
+        match body {
             EventBody::EngagePreload {
                 intent,
                 uid,
@@ -397,6 +461,60 @@ pub fn owed_restores(text: &str) -> Vec<OwedRestore> {
             vehicle: o.vehicle,
         })
         .collect()
+}
+
+/// Rules 6: the earlier log a carried `platform.restore` names: its `from` less the
+/// parenthesis the bridge adds at the end (`<file> (preloaded by i3)`, `<file> (carried
+/// over into it)`; a file name may itself hold " ("); the whole `from` when it has neither;
+/// empty when it names none.
+pub fn carried_restore_log(from: Option<&str>) -> &str {
+    let from = from.unwrap_or_default();
+    if let Some(file) = from.strip_suffix(" (carried over into it)") {
+        return file;
+    }
+    match from.rsplit_once(" (preloaded by ") {
+        Some((file, by)) if by.ends_with(')') => file,
+        _ => from,
+    }
+}
+
+/// Whether `name` is a bare file name, as the bridge names an earlier log (in
+/// `intent.resumed` and a carried `platform.restore`): not empty, not `.` or `..`, no path
+/// separator. A name that is a path is never followed out of the log's directory.
+pub fn is_log_file_name(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\'])
+}
+
+/// Rules 6: the earlier logs a log's carried `platform.restore` events name (normally one:
+/// the log `.last-run-<port>` named when the bridge started), in order of first mention.
+/// Lines that do not parse are skipped.
+pub fn carried_restore_logs(text: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for line in text.lines().filter(|l| l.contains("\"type\":\"platform.restore\"")) {
+        if let Ok(Event {
+            body: EventBody::PlatformRestore { carried: true, from, .. },
+            ..
+        }) = serde_json::from_str::<Event>(line)
+        {
+            let name = carried_restore_log(from.as_deref());
+            if !names.iter().any(|n| n == name) {
+                names.push(name.to_string());
+            }
+        }
+    }
+    names
+}
+
+/// Rules 6: the `from` the bridge logs on values it carries over from `file` (its
+/// `carry_from`): the engagements that preloaded them there, or that that log had carried
+/// them over itself.
+fn carried_from(file: &str, by: &[IntentId]) -> String {
+    if by.is_empty() {
+        format!("{file} (carried over into it)")
+    } else {
+        let by: Vec<String> = by.iter().map(ToString::to_string).collect();
+        format!("{file} (preloaded by {})", by.join(", "))
+    }
 }
 
 /// Rules 6: an engagement (other than `except`) under way on vehicle `uid`: it holds the
@@ -493,7 +611,7 @@ struct Tracked {
     /// The recomputed decision's signature count and proposer exclusion.
     approvers: u32,
     proposer_excluded: bool,
-    /// Rules 7: the recomputed decision asks every signature for a step-up.
+    /// Rules 8: the recomputed decision asks every signature for a step-up.
     step_up: bool,
     /// Who signed so far (concurred, then granted).
     signers: Vec<OperatorId>,
@@ -590,6 +708,13 @@ struct Tracked {
     /// its current delivery only confirms.
     maybe_started: BTreeSet<Uid>,
     confirming: BTreeSet<Uid>,
+    /// Rules 7: the vehicles whose start (or follow) on the current delivery was logged ahead.
+    started_ahead: BTreeSet<Uid>,
+    /// The vehicles whose op on this delivery (since its dispatch in this log, or its resume:
+    /// the vehicles that had started it, followed) reported its start going out (`starting`,
+    /// `unconfirmed`, or started): its op never ends `requeued` after that (the bridge ends
+    /// it `unconfirmed`: it may be running; a followed one fails).
+    start_went_out: BTreeSet<Uid>,
 }
 
 impl Tracked {
@@ -653,6 +778,8 @@ impl Tracked {
             platforms: BTreeMap::new(),
             maybe_started: BTreeSet::new(),
             confirming: BTreeSet::new(),
+            started_ahead: BTreeSet::new(),
+            start_went_out: BTreeSet::new(),
             preload: None,
             preload_set: None,
             restore_confirmed: false,
@@ -711,10 +838,22 @@ pub struct ReplayOptions<'a> {
     /// was there, and the log must be the one named (its head and last seq). One generation:
     /// that log's own resumed intents are trusted (replay it with its own predecessor).
     pub previous: Option<&'a str>,
-    /// Accept `intent.resumed` events without the previous log (trusting where they came
-    /// from, as accepting an older rules version trusts its log). Without this or
-    /// `previous`, a resumed intent is a mismatch.
+    /// Accept what this log carried over from earlier runs without their logs: its
+    /// `intent.resumed` events (without `previous`) and, rules 6, its carried
+    /// `platform.restore` values (without `restores_from`), trusting where they came from, as
+    /// accepting an older rules version trusts its log. Without this, a carry-over whose
+    /// earlier log is not given is a mismatch. A carried restore that names no log by its
+    /// file name is a mismatch either way.
     pub trust_resumed: bool,
+    /// Rules 6: the earlier log this run's carried `platform.restore` events name, as (its
+    /// file name as they name it, its text). It is the log `.last-run-<port>` named when the
+    /// bridge started, which need not be `previous` (`.resume-<port>.json`, deleted by a
+    /// clean stop, or `MURMUR_RESUME=<log>`, may name another log or none). Each carried
+    /// restore must be exactly what that log still owed ([`owed_restores`]), everything it
+    /// owed carried, and that log must replay itself (its own carry-overs trusted: one
+    /// generation). Carried values from a log not given are a mismatch unless
+    /// [`Self::trust_resumed`] ([`ReplayReport::carried_restores`] says which were checked).
+    pub restores_from: Option<(&'a str, &'a str)>,
 }
 
 /// Replay a JSONL log. The chain is checked over the lines exactly as they are in the
@@ -824,6 +963,8 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (6, "\"max_mps\":", "a platform's top speed"),
     (6, "\"alt_t\":", "a track altitude's time"),
     (6, "\"source_t\":", "a track source's last hit"),
+    (rules::QUEUE_FOLLOWUPS_SINCE, "\"restore_owed\":", "a vehicle's lost-link values owed back (a decision's fact)"),
+    (rules::QUEUE_FOLLOWUPS_SINCE, "\"ahead\":", "a vehicle start logged ahead of sending it"),
     (OPERATOR_AUTH_SINCE, "\"auth\":\"", "how an operator was authenticated"),
     (OPERATOR_AUTH_SINCE, "\"step_up\":", "a step-up (a credential re-entered to sign)"),
     (OPERATOR_AUTH_SINCE, "\"action\":\"session.closed\"", "a session's end"),
@@ -914,7 +1055,7 @@ fn check_claims<S: AsRef<str>>(r: &mut ReplayReport, events: &[Event], lines: &[
         ),
         None => {}
     }
-    // how operators were authenticated: written from rules 7 (OPERATOR_AUTH_SINCE), always
+    // how operators were authenticated: written from rules 8 (OPERATOR_AUTH_SINCE), always
     r.auth = roster.as_ref().and_then(|ro| ro.auth);
     if version >= OPERATOR_AUTH_SINCE && r.auth.is_none() {
         bad(
@@ -1038,11 +1179,11 @@ fn replay_inner<S: AsRef<str>>(
     let mut pinned: Option<i64> = None;
     // operator sessions as opened: who, with what grants
     let mut sessions: BTreeMap<SessionId, (OperatorId, Grants)> = BTreeMap::new();
-    // rules 7: sessions ended (nothing may follow under one), and step-ups by their event's
+    // rules 8: sessions ended (nothing may follow under one), and step-ups by their event's
     // seq
     let mut closed: BTreeSet<SessionId> = BTreeSet::new();
     let mut step_ups: BTreeMap<u64, StepUpSeen> = BTreeMap::new();
-    // rules 7: how each session was opened (password, scripted, asserted)
+    // rules 8: how each session was opened (password, scripted, asserted)
     let mut methods: BTreeMap<SessionId, AuthMethod> = BTreeMap::new();
     // rules 6: the platforms' own lost-link values owed back
     let mut restores = Restores::default();
@@ -1052,6 +1193,10 @@ fn replay_inner<S: AsRef<str>>(
     let mut roster: Option<Roster> = None;
     // the intent dispatched last, and per vehicle the one dispatched to it last
     let mut last_dispatch: Option<IntentId> = None;
+    // rules 7: the intent queued last (it may supersede an engagement on its vehicles), and
+    // the step in progress: the order dispatched or queued in it and the seq of its last event
+    let mut last_queued: Option<IntentId> = None;
+    let mut step: Option<(IntentId, u64)> = None;
     let mut newest_on: BTreeMap<Uid, IntentId> = BTreeMap::new();
     // intents carried over from a previous run, checked against it after the loop
     let mut resumed: Vec<ResumedEvent> = Vec::new();
@@ -1098,7 +1243,7 @@ fn replay_inner<S: AsRef<str>>(
         }
         let before_t = prev.map_or(Time(i64::MIN), |p| p.t);
         prev = Some(e);
-        // rules 7: an ended session acts no more (a stale or shared session can't sign, decide
+        // rules 8: an ended session acts no more (a stale or shared session can't sign, decide
         // or be shown a picture after its logout, expiry or credential change)
         if let Some(s) = acting_session(&e.body)
             && closed.contains(&s)
@@ -1206,7 +1351,7 @@ fn replay_inner<S: AsRef<str>>(
                     );
                     continue;
                 }
-                // rules 7: a human's intent is made in a live session of theirs (an ended one
+                // rules 8: a human's intent is made in a live session of theirs (an ended one
                 // is caught above), an agent's in none
                 let bound = policy.as_ref().is_some_and(|p| p.rules.rules_version >= OPERATOR_AUTH_SINCE);
                 match (&intent.source, session) {
@@ -1214,7 +1359,7 @@ fn replay_inner<S: AsRef<str>>(
                         &mut r,
                         e,
                         Some(intent.id),
-                        "an intent's session: only builds of rules 7 or later write it",
+                        "an intent's session: only builds of rules 8 or later write it",
                         json(session),
                         String::new(),
                     ),
@@ -1255,6 +1400,7 @@ fn replay_inner<S: AsRef<str>>(
                 check_engaged(&mut r, e, *intent, &inputs.engaged, &intents);
                 check_accepted(&mut r, e, *intent, &inputs.unknown_accepted, &intents);
                 check_waiting(&mut r, e, *intent, &inputs.waiting, &intents);
+                check_restore_owed(&mut r, e, *intent, &inputs.restore_owed, &intents, &restores, policy.as_ref());
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(
                         &mut r,
@@ -1352,6 +1498,7 @@ fn replay_inner<S: AsRef<str>>(
                 check_engaged(&mut r, e, *intent, &inputs.engaged, &intents);
                 check_accepted(&mut r, e, *intent, &inputs.unknown_accepted, &intents);
                 check_waiting(&mut r, e, *intent, &inputs.waiting, &intents);
+                check_restore_owed(&mut r, e, *intent, &inputs.restore_owed, &intents, &restores, policy.as_ref());
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(
                         &mut r,
@@ -1780,7 +1927,7 @@ fn replay_inner<S: AsRef<str>>(
                 transition,
                 from,
                 to,
-                ..
+                reason,
             } => {
                 let Some(tr) = intents.get_mut(intent) else {
                     bad(
@@ -1890,10 +2037,13 @@ fn replay_inner<S: AsRef<str>>(
                     Transition::Dispatch => {
                         tr.dispatch_logged = None;
                         tr.dispatched = true;
+                        tr.started_ahead.clear();
                         tr.dispatched_before = true;
                         tr.ops.clear();
+                        tr.start_went_out.clear();
                         tr.confirming = tr.maybe_started.clone();
                         last_dispatch = Some(*intent);
+                        step = Some((*intent, e.seq));
                         for u in &tr.spec.uids {
                             newest_on.insert(u.clone(), *intent);
                         }
@@ -1906,10 +2056,27 @@ fn replay_inner<S: AsRef<str>>(
                         tr.stopped = false;
                         r.aborts += 1;
                     }
+                    // rules 7: a mission refused for its platform's own lost-link values (its
+                    // kind never queued) opens a step in which it supersedes the engagements
+                    // on its vehicles; no other void does
+                    Transition::Void
+                        if policy.as_ref().is_some_and(|p| {
+                            p.rules.rules_version >= rules::QUEUE_FOLLOWUPS_SINCE
+                                && !p.queue().queues(tr.spec.kind())
+                                && !restores.owed_for(&tr.spec, &p.rules).is_empty()
+                        }) && matches!(tr.state, State::Approved | State::AutoApproved)
+                            && !matches!(tr.spec.kind(), TaskKind::Hold | TaskKind::Rtl)
+                            && reason.starts_with(&format!("system: {REFUSED}")) =>
+                    {
+                        tr.stopped = false;
+                        step = Some((*intent, e.seq));
+                    }
                     Transition::Void => tr.stopped = false,
                     Transition::Queue => {
                         tr.queued_logged = None;
                         r.queued += 1;
+                        last_queued = Some(*intent);
+                        step = Some((*intent, e.seq));
                     }
                     Transition::Expire if tr.state == State::Queued => {
                         tr.queue_expired = false;
@@ -1960,6 +2127,24 @@ fn replay_inner<S: AsRef<str>>(
                 inputs: reach_inputs,
                 reach,
             } => {
+                if let Some(inputs) = reach_inputs {
+                    check_restore_owed(&mut r, e, *intent, &inputs.restore_owed, &intents, &restores, policy.as_ref());
+                }
+                // rules 7: never a mission to a vehicle still owed its own lost-link values,
+                // whether its kind is queued or not (a queued one's reach says so too)
+                if let (Some(pol), Some(tr)) = (&policy, intents.get(intent))
+                    && !matches!(tr.spec.kind(), TaskKind::Hold | TaskKind::Rtl)
+                    && !restores.owed_for(&tr.spec, &pol.rules).is_empty()
+                {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "a mission dispatched to a vehicle still owed its own lost-link values (rules 7)",
+                        json(&restores.owed_for(&tr.spec, &pol.rules)),
+                        "no values owed back, or a hold or rtl".into(),
+                    );
+                }
                 let Some(tr) = intents.get_mut(intent) else {
                     bad(
                         &mut r,
@@ -2071,7 +2256,7 @@ fn replay_inner<S: AsRef<str>>(
                 );
             }
             EventBody::AuthRefused { operator, .. } => {
-                // rules 7: a login refused, in a credentials run, for an operator it lists
+                // rules 8: a login refused, in a credentials run, for an operator it lists
                 // (an unknown id goes to the bridge's own log: the audit log names no one
                 // the run does not know)
                 if r.auth != Some(AuthMode::Credentials) {
@@ -2109,7 +2294,7 @@ fn replay_inner<S: AsRef<str>>(
                             json(&roster),
                         );
                     }
-                    // rules 7: opened the way the run authenticates (a checked credential in a
+                    // rules 8: opened the way the run authenticates (a checked credential in a
                     // credentials run: a person's password, or a harness-held scripted one; an
                     // asserted name in a dev run)
                     if authenticated {
@@ -2146,7 +2331,7 @@ fn replay_inner<S: AsRef<str>>(
                         );
                     }
                 } else if authenticated {
-                    // rules 7: every other operator action is under that operator's own session
+                    // rules 8: every other operator action is under that operator's own session
                     match sessions.get(session) {
                         Some((op, _)) if op == operator => {}
                         other => bad(
@@ -2431,12 +2616,28 @@ fn replay_inner<S: AsRef<str>>(
             } => {
                 // the order that superseded it, as replay tracked it: its spec and whether it
                 // was dispatched
+                let queued_ok = policy
+                    .as_ref()
+                    .is_some_and(|p| p.rules.rules_version >= rules::QUEUE_FOLLOWUPS_SINCE);
                 let superseder = match cause {
-                    StopCause::Superseded { by, .. } => intents
-                        .get(by)
-                        .map(|t| (t.spec.clone(), t.state, last_dispatch == Some(*by))),
+                    StopCause::Superseded { by, .. } => intents.get(by).map(|t| {
+                        // the order dispatched last (rules 7: or queued last) stands; from
+                        // rules 7 only in the step that dispatched or queued it
+                        let last = if queued_ok {
+                            step == Some((*by, e.seq.saturating_sub(1)))
+                        } else if t.state == State::Queued {
+                            last_queued == Some(*by)
+                        } else {
+                            last_dispatch == Some(*by)
+                        };
+                        (t.spec.clone(), t.state, last)
+                    }),
                     _ => None,
                 };
+                // the step goes on past this stop and its transition (the next event)
+                if queued_ok && let StopCause::Superseded { by, .. } = cause {
+                    step = Some((*by, e.seq + 1));
+                }
                 let Some(tr) = intents.get_mut(intent) else {
                     bad(&mut r, e, Some(*intent), "unknown intent", String::new(), String::new());
                     continue;
@@ -2492,6 +2693,7 @@ fn replay_inner<S: AsRef<str>>(
                                 spec,
                                 *by_state,
                                 *by_last,
+                                queued_ok,
                             ) {
                                 bad(
                                     &mut r,
@@ -2499,7 +2701,7 @@ fn replay_inner<S: AsRef<str>>(
                                     Some(*intent),
                                     why,
                                     by.to_string(),
-                                    json(&(&spec.uids, by_state, last_dispatch)),
+                                    json(&(&spec.uids, by_state, last_dispatch, last_queued)),
                                 );
                             }
                             if *source != spec.source {
@@ -2684,7 +2886,7 @@ fn replay_inner<S: AsRef<str>>(
                 vehicle,
                 step_up,
             } => {
-                // rules 7: the operator's credential re-entered for it, when the policy lists
+                // rules 8: the operator's credential re-entered for it, when the policy lists
                 // the act (a nomination's acceptances share one step-up)
                 let needed = policy.as_ref().is_some_and(|p| p.steps_up(policy::StepUpAct::AcceptUnknown));
                 check_step_up(
@@ -2908,6 +3110,7 @@ fn replay_inner<S: AsRef<str>>(
                 reach,
                 expires_t,
             } => {
+                check_restore_owed(&mut r, e, *intent, &inputs.restore_owed, &intents, &restores, policy.as_ref());
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(&mut r, e, Some(*intent), "queued without run.started or intent.created", String::new(), String::new());
                     continue;
@@ -3202,8 +3405,8 @@ fn replay_inner<S: AsRef<str>>(
                     bad(&mut r, e, Some(spec.id), "intent created twice", String::new(), String::new());
                     continue;
                 }
-                // rules 7: carried only between runs that authenticate alike (an asserted
-                // approval is no person's in a credentials run; a log before rules 7 asserted)
+                // rules 8: carried only between runs that authenticate alike (an asserted
+                // approval is no person's in a credentials run; a log before rules 8 asserted)
                 if r.rules_version >= OPERATOR_AUTH_SINCE && effective_mode(from.auth) != effective_mode(r.auth) {
                     let here = json(&effective_mode(r.auth));
                     bad(
@@ -3219,7 +3422,7 @@ fn replay_inner<S: AsRef<str>>(
                         &mut r,
                         e,
                         Some(spec.id),
-                        "a carried-over run's auth: only builds of rules 7 or later write it",
+                        "a carried-over run's auth: only builds of rules 8 or later write it",
                         json(&from.auth),
                         String::new(),
                     );
@@ -3264,6 +3467,9 @@ fn replay_inner<S: AsRef<str>>(
                 tr.dispatched_before = *dispatched_before;
                 tr.platforms = platforms.clone();
                 tr.maybe_started = maybe_started.iter().cloned().collect();
+                // a vehicle that had started it is followed (the bridge's Adopt op), never
+                // requeued; only one whose start may have gone out is confirmed and may be
+                tr.start_went_out = tr.committed.clone();
                 if let (Some(pol), Some(by_kind)) = (&policy, *expires_t) {
                     let cfg = pol.queue();
                     // not queued there: its kind's wait from the approval
@@ -3317,7 +3523,11 @@ fn replay_inner<S: AsRef<str>>(
                 uid,
                 state,
                 detail,
+                ahead,
             } => {
+                let required = policy
+                    .as_ref()
+                    .is_some_and(|p| p.rules.rules_version >= rules::QUEUE_FOLLOWUPS_SINCE);
                 let Some(tr) = intents.get_mut(intent) else {
                     bad(
                         &mut r,
@@ -3332,6 +3542,11 @@ fn replay_inner<S: AsRef<str>>(
                 // a newer order took the vehicle since this intent's dispatch
                 let newest = newest_on.get(uid);
                 let replaced = newest.is_some_and(|n| n != intent);
+                let start = StartAhead {
+                    ahead: *ahead,
+                    required,
+                    started: tr.started_ahead.contains(uid),
+                };
                 if let Some(why) = op_state_mismatch(
                     &tr.spec,
                     tr.state,
@@ -3341,6 +3556,7 @@ fn replay_inner<S: AsRef<str>>(
                     uid,
                     state,
                     detail,
+                    start,
                 ) {
                     let reports_under = op_state_owner(&tr.spec, uid).err();
                     bad(
@@ -3355,11 +3571,30 @@ fn replay_inner<S: AsRef<str>>(
                 if let Some(s) = state.strip_prefix("intercept ") {
                     tr.intercept_reports.push((s.to_string(), detail.clone()));
                 }
+                // a start that may have gone out is never requeued: the bridge ends that op
+                // `unconfirmed` (a delivery's op only; a later one, which only confirms it,
+                // may lose its link before it asks the vehicle)
+                if state == queue::REQUEUED_OP && tr.start_went_out.contains(uid) {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "op requeued after its start went out (it may be running: the bridge ends such an op unconfirmed)",
+                        json(&(uid, state, detail)),
+                        format!("{}, once its start went out", queue::UNCONFIRMED_OP),
+                    );
+                }
+                if queue::maybe_started_op(state) || queue::committed_op(state) {
+                    tr.start_went_out.insert(uid.clone());
+                }
                 if queue::committed_op(state) {
                     tr.committed.insert(uid.clone());
                 }
                 if queue::maybe_started_op(state) {
                     tr.maybe_started.insert(uid.clone());
+                }
+                if *ahead {
+                    tr.started_ahead.insert(uid.clone());
                 }
                 tr.ops.insert(uid.clone(), state.clone());
             }
@@ -3467,6 +3702,7 @@ fn replay_inner<S: AsRef<str>>(
     if !resumed.is_empty() {
         check_resumed(&mut r, &resumed, opts);
     }
+    check_carried_restores(&mut r, events, opts);
     r.unrestored = restores.report();
     r
 }
@@ -3545,7 +3781,7 @@ fn check_resumed(r: &mut ReplayReport, resumed: &[ResumedEvent], opts: &ReplayOp
         if from.was != was.state {
             push(r, *seq, id, "carried over from another state than the previous log ends it in", json(&from.was), json(&was.state));
         }
-        // rules 7: the previous run's authentication, as it logged it
+        // rules 8: the previous run's authentication, as it logged it
         if r.rules_version >= OPERATOR_AUTH_SINCE && from.auth != prev.auth {
             push(r, *seq, id, "carried over claiming another authentication than the previous log's", json(&from.auth), json(&prev.auth));
         }
@@ -3575,6 +3811,193 @@ fn check_resumed(r: &mut ReplayReport, resumed: &[ResumedEvent], opts: &ReplayOp
         }
         if was.state == State::Queued && open.expires_t != was.expires_t {
             push(r, *seq, id, "queue deadline differs from the previous log's", json(&open.expires_t), json(&was.expires_t));
+        }
+    }
+}
+
+/// A carried `platform.restore`: the event, its platform, values, `from` and vehicle.
+type Carried<'e> = (
+    &'e Event,
+    &'e Uid,
+    &'e BTreeMap<String, f64>,
+    Option<&'e str>,
+    Option<&'e engage::VehicleIdentity>,
+);
+
+/// Rules 6: every carried `platform.restore` against the earlier log it names
+/// ([`ReplayOptions::restores_from`]; one generation, like `intent.resumed`). The bridge
+/// derived them from it at start ([`owed_restores`]), so that log must replay (its own
+/// carry-overs trusted) and they must be exactly what it still owed: each platform's
+/// values, the vehicle they were preloaded on and the engagements named, none carried twice,
+/// every platform it owed carried. A carried restore names that log by its file name (no
+/// head hash, unlike `intent.resumed`: the head replay reports is to be compared with that
+/// log's anchors), and one start carries from the one log its `.last-run-<port>` pointer
+/// names. Without that log they are a mismatch unless trusted
+/// ([`ReplayOptions::trust_resumed`]); one that names no log by its file name is a mismatch
+/// either way.
+fn check_carried_restores(r: &mut ReplayReport, events: &[Event], opts: &ReplayOptions<'_>) {
+    let carried: Vec<Carried<'_>> = events
+        .iter()
+        .filter_map(|e| match &e.body {
+            EventBody::PlatformRestore {
+                uid,
+                values,
+                carried: true,
+                from,
+                vehicle,
+                ..
+            } => Some((e, uid, values, from.as_deref(), vehicle.as_deref())),
+            _ => None,
+        })
+        .collect();
+    let mut names: Vec<&str> = Vec::new();
+    for c in &carried {
+        let name = carried_restore_log(c.3);
+        if !is_log_file_name(name) {
+            bad(
+                r,
+                c.0,
+                None,
+                "carried restore names no earlier log by its file name (the bridge names the log it carried it from)",
+                json(&c.3),
+                "<file> (preloaded by ...) or <file> (carried over into it)".into(),
+            );
+            continue;
+        }
+        if names.contains(&name) {
+            continue;
+        }
+        if let Some(first) = names.first() {
+            bad(
+                r,
+                c.0,
+                None,
+                "carried restores name more than one earlier log (a start carries from the one its .last-run pointer names)",
+                name.to_string(),
+                (*first).to_string(),
+            );
+        }
+        names.push(name);
+    }
+    for name in names {
+        let these: Vec<&Carried<'_>> = carried.iter().filter(|c| carried_restore_log(c.3) == name).collect();
+        let Some((_, text)) = opts.restores_from.filter(|(n, _)| *n == name) else {
+            r.carried_restores.push(CarriedRestores {
+                log: name.to_string(),
+                restores: these.len(),
+                checked: false,
+                head: None,
+            });
+            if !opts.trust_resumed {
+                for c in &these {
+                    bad(
+                        r,
+                        c.0,
+                        None,
+                        &format!(
+                            "lost-link values carried over from {name} not verified: replay with that log (murmur-replay --prev), or trust it (--trust-resumed)"
+                        ),
+                        c.1.to_string(),
+                        String::new(),
+                    );
+                }
+            }
+            continue;
+        };
+        // the log it names replays, its own carry-overs trusted (one generation)
+        let first = these[0].0;
+        let prev = replay_str_with(
+            text,
+            &ReplayOptions {
+                rules: RulesAccepted::AtLeast(1),
+                trust_resumed: true,
+                ..ReplayOptions::default()
+            },
+        );
+        let head = match prev {
+            Err(err) => {
+                bad(r, first, None, "the log the carried values name can't be read", format!("{name}: {err}"), String::new());
+                None
+            }
+            Ok(p) => {
+                if let Some(m) = p.mismatches.first() {
+                    bad(
+                        r,
+                        first,
+                        None,
+                        "the log the carried values name does not replay",
+                        format!("{name}: {} mismatch(es), first at seq {}: {}", p.mismatches.len(), m.seq, m.what),
+                        String::new(),
+                    );
+                }
+                p.head_sha256
+            }
+        };
+        r.carried_restores.push(CarriedRestores {
+            log: name.to_string(),
+            restores: these.len(),
+            checked: true,
+            head,
+        });
+        let owed = owed_restores(text);
+        let mut seen: BTreeSet<&Uid> = BTreeSet::new();
+        for &&(e, uid, values, from, vehicle) in &these {
+            if !seen.insert(uid) {
+                bad(r, e, None, "carried over twice from the log it names", uid.to_string(), "once".into());
+                continue;
+            }
+            let Some(o) = owed.iter().find(|o| &o.uid == uid) else {
+                bad(
+                    r,
+                    e,
+                    None,
+                    "carried restore of values the log it names did not owe",
+                    format!("{uid}: {}", json(values)),
+                    "nothing owed".into(),
+                );
+                continue;
+            };
+            if values != &o.values {
+                bad(
+                    r,
+                    e,
+                    None,
+                    "carried values differ from what the log it names still owed",
+                    json(values),
+                    json(&o.values),
+                );
+            }
+            if vehicle != o.vehicle.as_ref() {
+                bad(
+                    r,
+                    e,
+                    None,
+                    "carried restore names another vehicle than the one the log it names preloaded",
+                    json(&vehicle),
+                    json(&o.vehicle),
+                );
+            }
+            let want = carried_from(name, &o.by);
+            if from != Some(want.as_str()) {
+                bad(
+                    r,
+                    e,
+                    None,
+                    "carried restore names other engagements than the ones the log it names owed them for",
+                    json(&from),
+                    want,
+                );
+            }
+        }
+        for o in owed.iter().filter(|o| !seen.contains(&o.uid)) {
+            bad(
+                r,
+                first,
+                None,
+                "the log it names still owed a platform's values this run did not carry over",
+                format!("{}: not carried", o.uid),
+                json(&o.values),
+            );
         }
     }
 }
@@ -3609,7 +4032,7 @@ fn acting_session(body: &EventBody) -> Option<SessionId> {
     }
 }
 
-/// Rules 7: a step-up as logged: the session and operator it was entered in, when, and what
+/// Rules 8: a step-up as logged: the session and operator it was entered in, when, and what
 /// used it so far.
 struct StepUpSeen {
     session: SessionId,
@@ -3638,7 +4061,7 @@ impl StepUse {
     }
 }
 
-/// Rules 7: an act's step-up (`act`: a signature, a declaration, an acceptance). One it
+/// Rules 8: an act's step-up (`act`: a signature, a declaration, an acceptance). One it
 /// quotes is a step-up logged under the actor's own session, at most
 /// [`STEP_UP_MAX_AGE_MS`] before it, used by nothing else, except that one nomination's
 /// acceptances share theirs (the same intent, logged one after the other); one the act
@@ -4235,6 +4658,32 @@ fn check_waiting(
             e,
             Some(id),
             "human-order-waiting facts differ",
+            json(logged),
+            json(&want),
+        );
+    }
+}
+
+/// Rules 7: a decision's logged `restore_owed` fact (the intent's vehicles still owed their
+/// own lost-link values by an engagement of this log) against the ledger replay keeps at
+/// that point (none before rules 7, none for anything but a vehicle task).
+fn check_restore_owed(
+    r: &mut ReplayReport,
+    e: &Event,
+    id: IntentId,
+    logged: &BTreeMap<Uid, queue::RestoreOwed>,
+    intents: &BTreeMap<IntentId, Tracked>,
+    restores: &Restores,
+    policy: Option<&Policy>,
+) {
+    let (Some(tr), Some(pol)) = (intents.get(&id), policy) else { return };
+    let want = restores.owed_for(&tr.spec, &pol.rules);
+    if *logged != want {
+        bad(
+            r,
+            e,
+            Some(id),
+            "lost-link values owed back differ from the log's ledger",
             json(logged),
             json(&want),
         );

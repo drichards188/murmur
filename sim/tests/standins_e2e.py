@@ -41,16 +41,33 @@ def api(base, path, body=None):
 
 
 def task(base, body):
-    """POST a task; approve it if the decision layer holds it. Returns the tasking id, or None
-    when the bridge refused it before dispatch (printed)."""
+    """POST a task; approve it if the decision layer holds it for an operator, wait for it
+    if the queue holds it (rules 5: an approved order goes when the link can carry it, and
+    its tasking then appears on the intent; approving it again is a 409). Returns the
+    tasking id, or None when the bridge refused it before dispatch (printed)."""
     try:
         t = api(base, "/api/tasks", body)
     except urllib.error.HTTPError as e:
         print(f"bridge refused {body['task']}: {e.code} {json.loads(e.read()).get('detail')}")
         return None
     if t.get("id") is None and t.get("intent_id") is not None:
-        t = api(base, f"/api/intents/{t['intent_id']}/approve", {"note": "e2e"})["tasking"]
+        if t.get("state") == "pending_approval":
+            t = api(base, f"/api/intents/{t['intent_id']}/approve", {"note": "e2e"})["tasking"]
+        else:
+            t = dispatched(base, t["intent_id"])
     return t["id"]
+
+
+def dispatched(base, intent_id, wait_s=120.0):
+    """The tasking of an approved intent once the queue has dispatched it."""
+    deadline = time.monotonic() + wait_s
+    i = {}
+    while time.monotonic() < deadline:
+        i = api(base, f"/api/intents/{intent_id}")
+        if i.get("tasking"):
+            return i["tasking"]
+        time.sleep(1)
+    sys.exit(f"intent {intent_id} not dispatched within {wait_s:.0f} s ({i.get('intent', {}).get('state')})")
 
 
 def offset(lon, lat, north_m, east_m):
@@ -74,6 +91,10 @@ def main():
            "MURMUR_AUTH": "dev"}
     for k in ("MURMUR_SCENARIO", "MURMUR_AT", "MURMUR_TIDEWATER_URL"):
         env.pop(k, None)
+    # this run's manifest before the bridge starts (as scripts/up.sh): started beside
+    # swarm.py the bridge could read the previous run's sim/run/fleet.json
+    subprocess.run([args.python, str(ROOT / "sim" / "swarm.py"), "--fleet", "standins-only",
+                    "--base-port", str(args.base_port), "--manifest-only"], env=env, check=True)
     bridge = subprocess.Popen([str(ROOT / "target" / "release" / "murmur-bridge")], cwd=ROOT,
                               env={**env, "MURMUR_ROOT": str(ROOT)},
                               stdout=open(logs / "e2e-bridge.log", "w"),

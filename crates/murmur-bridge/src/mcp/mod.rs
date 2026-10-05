@@ -15,7 +15,7 @@
 //!   seconds when it was observed) and `age_s`; vehicle facts also say whether they are
 //!   past the freshness limit the rules apply (`stale`). The server instructions and the
 //!   tool descriptions tell the model to treat stale facts as uncertain.
-//! - **Agent identity** (rules 7) is the agent's own key, `Authorization: Bearer <key>` on
+//! - **Agent identity** (rules 8) is the agent's own key, `Authorization: Bearer <key>` on
 //!   every request, from the credential file (`murmur-auth agent-add`; `crate::auth` checks it
 //!   before any MCP session exists). In a dev run (`MURMUR_AUTH=dev`) it is the
 //!   `X-Murmur-Agent` header (or, within an MCP session, the `clientInfo.name` sent with

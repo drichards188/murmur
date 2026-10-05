@@ -15,7 +15,7 @@ Source: `crates/murmur-bridge/src/mcp/` (the server), `crates/murmur-bridge/src/
 ## Connecting
 
 - Endpoint: `http://127.0.0.1:8765/mcp` (the bridge's HTTP port; `MURMUR_HTTP_PORT`).
-- Identity (rules 7), in a credentials run (`MURMUR_AUTH=credentials`): the agent's own key,
+- Identity (rules 8), in a credentials run (`MURMUR_AUTH=credentials`): the agent's own key,
   `Authorization: Bearer <key>` on every request.
   Issue one with `target/release/murmur-auth agent-add agent-planner` (printed once on
   stdout; the credential file keeps only its SHA-256, compared in constant time);

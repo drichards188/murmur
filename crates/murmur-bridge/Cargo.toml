@@ -8,7 +8,7 @@ axum = { version = "0.8.9", features = ["ws"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 murmur-space = { path = "../murmur-space" }
 murmur-decide = { path = "../murmur-decide" }
-# Operator and agent credentials (rules 7): password hashes, sessions, keys.
+# Operator and agent credentials (rules 8): password hashes, sessions, keys.
 murmur-auth = { path = "../murmur-auth" }
 mavlink = { version = "0.18", default-features = false, features = ["std", "dialect-ardupilotmega", "mav2-message-extensions"] }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
