@@ -320,6 +320,24 @@ async fn an_idle_session_expires_and_says_so() {
     h.replays_authenticated();
 }
 
+/// murmur-dup: sessions and locks run on the monotonic clock, so a wall clock stepping past
+/// the 8 hours a session may last, or back, ends no session.
+#[tokio::test]
+async fn a_wall_clock_that_steps_ends_no_session() {
+    let h = harness(Duration::from_secs(1800));
+    let cookie = h.login("op-1", PW1).await;
+    clock::test_clock::step_utc(9.0 * 3600.0);
+    h.auth.sweep();
+    let (s, v) = h.post(&cookie, "/api/intents", json!({ "task": "hold", "uids": [1] })).await;
+    assert!(s == StatusCode::CREATED || s == StatusCode::NOT_FOUND, "{s} {v}");
+    clock::test_clock::step_utc(-9.0 * 3600.0 - 3600.0);
+    h.auth.sweep();
+    let (s, v) = h.post(&cookie, "/api/intents", json!({ "task": "hold", "uids": [1] })).await;
+    assert!(s == StatusCode::CREATED || s == StatusCode::NOT_FOUND, "{s} {v}");
+    assert!(!h.log().contains("session.closed"));
+    h.replays_authenticated();
+}
+
 #[tokio::test]
 async fn a_browser_on_another_origin_changes_nothing() {
     let h = harness(Duration::from_secs(1800));

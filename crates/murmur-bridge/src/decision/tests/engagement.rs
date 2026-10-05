@@ -4,12 +4,13 @@
 //! channel; an operator's abort and a changed picture stop it with the recorded fallback.
 //! Every log replays.
 //!
-//! Time: the engine's clock is advanced a second per tick while vehicle facts are stamped
-//! by the wall clock, so these runs stay within a few engine seconds (the platform starts
-//! on the target unless a test says otherwise, the dispatch delay is zero); the full
-//! timeline is the decision layer's scenarios (`sim/scenarios/engage`). Sensing noise is
-//! drawn per wall-clock second, so a test whose platform starts on the target may find the
-//! release ready on its first tick at some start seconds (bd murmur-ek3).
+//! Time: the engine's clock is advanced a second per tick, and the vehicles' facts are
+//! stamped on it (the rig runs the bridge's clock on it, from `T0_S`). These runs stay within
+//! a few engine seconds (the platform starts on the target unless a test says otherwise, the
+//! dispatch delay is zero); the full timeline is the decision layer's scenarios
+//! (`sim/scenarios/engage`). Sensing noise is drawn per scenario second, from `T0_S` on, so
+//! every run draws the same (bd murmur-ek3: the facts were stamped by the wall clock and the
+//! draws followed its second before).
 
 use murmur_decide::Affiliation;
 
@@ -19,7 +20,7 @@ use crate::tracks::sensing::{Observer, SensorSpec, SensorType};
 use crate::tracks::truth::{ContactTruth, Domain as TDomain, Sensing, TruthAffiliation, TruthMessage};
 
 /// In ez-gate-west, west of the bridge.
-const TARGET: (f64, f64) = (37.8120, -122.4950);
+pub(super) const TARGET: (f64, f64) = (37.8120, -122.4950);
 
 pub(super) struct Erig {
     pub(super) r: Rig,
@@ -62,6 +63,17 @@ pub(super) fn engage_rig_auth_policy(
     auth: murmur_decide::AuthMode,
     tweak: impl FnOnce(&mut Policy),
 ) -> Erig {
+    engage_rig_clocked(on, audit_path, auth, tweak, EngineClock::Manual)
+}
+
+/// [`engage_rig_auth_policy`] with the engine on `engine_clock`.
+pub(super) fn engage_rig_clocked(
+    on: Option<(Arc<World>, Arc<Tracks>)>,
+    audit_path: PathBuf,
+    auth: murmur_decide::AuthMode,
+    tweak: impl FnOnce(&mut Policy),
+    engine_clock: EngineClock,
+) -> Erig {
     let root = root();
     let mut policy = Policy::load(&root.join("sim/policy.toml")).expect("policy");
     tweak(&mut policy);
@@ -80,7 +92,19 @@ pub(super) fn engage_rig_auth_policy(
         });
         (world, tracks)
     });
-    let clock = ManualClock::new(snapshot::ms(clock::wall()));
+    // the bridge's clock: the test's manual one, or (the engine on the bridge's own) pinned
+    // to the same start and moving with the paused runtime's time
+    let clock = ManualClock::new(snapshot::ms(T0_S));
+    let engine: Arc<dyn Clock + Send + Sync> = match engine_clock {
+        EngineClock::Manual => {
+            clock::test_clock::follow(&clock);
+            Arc::new(clock.clone())
+        }
+        EngineClock::Bridge => {
+            clock::test_clock::pin(T0_S);
+            Arc::new(clock::BridgeClock)
+        }
+    };
     let log = MemorySink::new();
     let terrain = Terrain::fixed(PolygonTerrain {
         coverage: ring(-122.6, 37.7, -122.3, 37.9),
@@ -95,7 +119,7 @@ pub(super) fn engage_rig_auth_policy(
             areas: AreaSet::load_dir(&root.join("sim/areas"), clock.now()).expect("areas"),
             sink: Box::new(log.clone()),
             audit_path,
-            clock: Arc::new(clock.clone()),
+            clock: engine,
             terrain,
             operators: vec![OperatorId::new("op-1"), OperatorId::new("op-2"), OperatorId::new("op-3")],
             engage_operators: vec![OperatorId::new("op-2"), OperatorId::new("op-3")],
@@ -126,7 +150,7 @@ impl Erig {
 
     /// One truth tick: the hostile boat holding at TARGET, seen by a radar and EO/IR
     /// observer 1.5 km east (not one of our fleet vehicles: an explicit observer).
-    fn sense(&self, with_target: bool) {
+    pub(super) fn sense(&self, with_target: bool) {
         self.sense_at(self.now_s(), with_target);
     }
 
@@ -181,8 +205,9 @@ impl Erig {
 
     /// A minute of detections before anyone acts (identity confidence builds with dwell),
     /// then the declaration.
-    async fn picture(&self) {
-        // the last 90 s, ending now (the vehicles' facts are stamped with the wall clock)
+    pub(super) async fn picture(&self) {
+        // the last 90 s, ending now (the vehicles' facts are stamped on the bridge's clock;
+        // this is that clock already unless the engine runs on the bridge's own)
         self.r.clock.set(snapshot::ms(clock::wall()));
         let now = self.now_s();
         for s in 0..90 {
@@ -233,7 +258,7 @@ impl Erig {
     }
 
     /// [`Erig::approved`] with the platform starting at `at` (lat, lon).
-    async fn approved_at(&self, fallback: &str, at: (f64, f64)) -> IntentId {
+    pub(super) async fn approved_at(&self, fallback: &str, at: (f64, f64)) -> IntentId {
         self.r.vehicle(1, Firmware::Copter, "fpv", at);
         sleep(Duration::from_millis(500)).await;
         self.picture().await;
@@ -499,7 +524,7 @@ async fn a_platform_leaving_its_intercept_stops_the_engagement() {
     let e = engage_rig();
     // en route to the effect point, 500 m out: no release can be ready before it leaves (on
     // the point, a picture whose sensed track reads as moving, 0.3 m/s or more, may release
-    // at once: the rig's noise draws follow the wall clock)
+    // at once, depending on the noise draws)
     let id = e.approved_at("return", (TARGET.0, TARGET.1 + 0.0057)).await;
     let cell = e.r.world.vehicles().into_iter().find(|c| c.uid == 1).expect("platform");
     let mode = |text: &str| {
@@ -1109,10 +1134,10 @@ impl Erig {
         (id, cell, w)
     }
 
-    /// One second of the loop with the engine clock on the wall clock the vehicles' facts are
-    /// stamped with (long runs: advancing it a second per tick would age every fact).
+    /// One second of the loop with the engine's clock left where it is (long runs: from
+    /// before the facts were stamped on the engine's clock, when advancing it a second per
+    /// tick aged every fact).
     async fn tick_on_wall(&self) {
-        self.r.clock.set(snapshot::ms(clock::wall()));
         self.sense(true);
         self.r.d.tick();
         sleep(Duration::from_secs(1)).await;

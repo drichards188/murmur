@@ -61,8 +61,14 @@ const FETCH_HINT: &str = "fetch the element sets once with `cargo run -p murmur-
 pub struct ScenarioClock {
     pub at: Option<DateTime<Utc>>,
     pub rate: f64,
-    /// Wall clock (ms) when the clock started.
+    /// The bridge's clock (ms) when the clock started: the engine's clock, which the map
+    /// starts from (`crate::clock::wall`, never stepping).
     started_ms: i64,
+}
+
+/// The bridge's clock in ms (the engine's: [`crate::clock::BridgeClock`]).
+fn bridge_ms() -> i64 {
+    (crate::clock::wall() * 1000.0).round() as i64
 }
 
 impl ScenarioClock {
@@ -74,11 +80,11 @@ impl ScenarioClock {
             } else {
                 1.0
             },
-            started_ms: Utc::now().timestamp_millis(),
+            started_ms: bridge_ms(),
         }
     }
 
-    /// Scenario time as a map from the wall clock (identity without `MURMUR_AT`).
+    /// Scenario time as a map from the bridge's clock (identity without `MURMUR_AT`).
     pub fn map(&self) -> ScenarioMap {
         match self.at {
             Some(at) => ScenarioMap {
@@ -107,13 +113,16 @@ impl ScenarioClock {
         ScenarioClock::new(at, rate)
     }
 
+    /// Scenario time now, on the bridge's clock (as the engine reads it: the space API and
+    /// the decisions agree on when a pass is).
     pub fn now(&self) -> DateTime<Utc> {
+        let now = bridge_ms();
         match self.at {
             Some(at) => {
-                let s = self.map().scenario(DTime(Utc::now().timestamp_millis()));
+                let s = self.map().scenario(DTime(now));
                 DateTime::from_timestamp_millis(s.0).unwrap_or(at)
             }
-            None => Utc::now(),
+            None => DateTime::from_timestamp_millis(now).unwrap_or_else(Utc::now),
         }
     }
 

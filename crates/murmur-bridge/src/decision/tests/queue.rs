@@ -365,29 +365,37 @@ fn the_pointer_names_the_log_to_resume_from() {
     let write = |log: &PathBuf, t: f64| write_by(log, t, 0);
     let window = ResumeFrom::Pointer { window_s: 900.0 };
     // fresh: that log, whatever its (once a tick) list of open ids says: the log decides
-    write(&theirs, clock::wall());
+    write(&theirs, clock::utc());
     assert_eq!(previous_log(&window, Some(&ptr), &ours), Some(theirs.clone()));
     // stale, our own log, a log that is gone, or turned off: none
-    write(&theirs, clock::wall() - 1_000.0);
+    write(&theirs, clock::utc() - 1_000.0);
     assert_eq!(previous_log(&window, Some(&ptr), &ours), None);
-    write(&ours, clock::wall());
+    write(&ours, clock::utc());
     assert_eq!(previous_log(&window, Some(&ptr), &ours), None);
-    write(&dir.join("gone.jsonl"), clock::wall());
+    write(&dir.join("gone.jsonl"), clock::utc());
     assert_eq!(previous_log(&window, Some(&ptr), &ours), None);
     assert_eq!(previous_log(&ResumeFrom::Off, Some(&ptr), &ours), None);
     // or a log named outright
     assert_eq!(previous_log(&ResumeFrom::Log(theirs.clone()), None, &ours), Some(theirs.clone()));
     // written by a bridge that still runs (pid 1 is always alive): not taken over
-    write_by(&theirs, clock::wall(), 1);
+    write_by(&theirs, clock::utc(), 1);
     assert_eq!(previous_log(&window, Some(&ptr), &ours), None);
     // a clean shutdown deletes the pointer to its own log (only a crash leaves one behind);
     // one naming another log is left alone
-    write(&theirs, clock::wall());
+    write(&theirs, clock::utc());
     crate::decision::queue::drop_pointer(&ptr, &ours);
     assert!(ptr.exists());
     crate::decision::queue::drop_pointer(&ptr, &theirs);
     assert!(!ptr.exists());
     assert_eq!(previous_log(&window, Some(&ptr), &ours), None);
+    // murmur-dup: the pointer's time is the wall clock's, read against the wall clock: a
+    // bridge clock that ran ahead of it (the monotonic rate on a host whose clocks disagree,
+    // 75 s an hour here) neither keeps a stale pointer fresh nor ages a fresh one
+    clock::test_clock::pin(clock::utc() + 3_600.0);
+    write(&theirs, clock::utc() - 1_000.0);
+    assert_eq!(previous_log(&window, Some(&ptr), &ours), None);
+    write(&theirs, clock::utc() - 60.0);
+    assert_eq!(previous_log(&window, Some(&ptr), &ours), Some(theirs.clone()));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

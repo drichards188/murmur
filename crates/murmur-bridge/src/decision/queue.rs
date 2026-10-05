@@ -81,7 +81,7 @@ pub enum ResumeFrom {
 pub struct Pointer {
     pub log: PathBuf,
     pub open: Vec<u64>,
-    /// Wall clock, s.
+    /// The wall clock when it was written (`clock::utc`), s: another run reads it.
     pub t: f64,
     /// The bridge process that writes it (0: unknown).
     #[serde(default)]
@@ -631,21 +631,23 @@ impl Decision {
             .map(|i| i.id().0)
             .collect();
         // rewritten when the set changes, and now and then so its time says the run is alive
+        // (the next run reads that time against its own wall clock: `utc`, not this run's
+        // clock, which keeps the monotonic rate)
         let stale = core
             .pointer_written
             .as_ref()
-            .is_none_or(|(ids, t)| *ids != open || clock::wall() - t > 60.0);
+            .is_none_or(|(ids, at)| *ids != open || clock::mono() - at > 60.0);
         if !stale {
             return;
         }
         let p = Pointer {
             log: self.audit_path.clone(),
             open: open.clone(),
-            t: clock::wall(),
+            t: clock::utc(),
             pid: std::process::id(),
         };
         match write_atomic(path, &p) {
-            Ok(()) => core.pointer_written = Some((open, p.t)),
+            Ok(()) => core.pointer_written = Some((open, clock::mono())),
             Err(e) => eprintln!("decision: {}: {e}", path.display()),
         }
     }
@@ -844,7 +846,7 @@ pub fn previous_log(from: &ResumeFrom, pointer: Option<&Path>, ours: &Path) -> O
         ResumeFrom::Pointer { window_s } => {
             let text = std::fs::read(pointer?).ok()?;
             let p: Pointer = serde_json::from_slice(&text).ok()?;
-            let fresh = clock::wall() - p.t <= *window_s;
+            let fresh = clock::utc() - p.t <= *window_s;
             let writer_alive = p.pid != 0
                 && p.pid != std::process::id()
                 && Path::new("/proc").join(p.pid.to_string()).exists();

@@ -672,6 +672,20 @@ mod tests {
         assert_eq!(s.snapshot(13.1).rtt_ms, Some(25));
     }
 
+    /// murmur-dup: a ping is named by the clock's time (ts1) but timed by the monotonic
+    /// clock, so a wall clock stepping back between two pings changes neither round trip.
+    #[test]
+    fn a_round_trip_is_timed_by_the_monotonic_clock() {
+        let mut s = LinkStats::default();
+        s.ping(1_781_431_200_000_000_000, 5.0);
+        // the next ping's name from a clock stepped back 0.94 s
+        s.ping(1_781_431_200_060_000_000, 6.0);
+        s.pong(1_781_431_200_060_000_000, 6.03);
+        assert_eq!(s.snapshot(6.03).rtt_ms, Some(30));
+        s.pong(1_781_431_200_000_000_000, 6.05);
+        assert_eq!(s.snapshot(6.05).rtt_ms, Some(1050));
+    }
+
     #[test]
     fn rtt_is_smoothed_rfc6298() {
         let mut s = LinkStats::default();

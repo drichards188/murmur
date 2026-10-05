@@ -314,7 +314,7 @@ impl Settings {
     pub fn from_env(root: &Path, catalog: &Path) -> Settings {
         let var = |k: &str| std::env::var(k).ok().filter(|s| !s.trim().is_empty());
         let run = var("MURMUR_RUN_ID").unwrap_or_else(|| {
-            let id = civil::compact_utc(clock::wall() as i64);
+            let id = civil::compact_utc(clock::utc() as i64);
             format!("{id}-{}", std::process::id())
         });
         let operators: Vec<OperatorId> = var("MURMUR_OPERATORS")
@@ -412,7 +412,7 @@ struct Core {
     view_budget: BTreeMap<OperatorId, (f64, f64)>,
     /// resumed intents a vehicle had started, waiting for their vehicles to connect
     follow: BTreeMap<IntentId, queue::PendingFollow>,
-    /// the open intents last written to the pointer file, and when
+    /// the open intents last written to the pointer file, and when (monotonic s)
     pointer_written: Option<(Vec<u64>, f64)>,
     /// the fleet identity last written beside the log, and when it was last looked at
     fleet_written: Option<queue::FleetIdentity>,
@@ -481,7 +481,10 @@ impl Decision {
     pub fn load(world: Arc<World>, s: &Settings) -> Result<Arc<Decision>, String> {
         let policy = Policy::load(&s.policy).map_err(|e| e.to_string())?;
         let catalog = Catalog::load(&s.catalog).map_err(|e| e.to_string())?;
-        let clock: Arc<dyn Clock + Send + Sync> = Arc::new(murmur_decide::SystemClock);
+        // the bridge's clock, never the wall clock itself: the facts are stamped on it, and a
+        // wall clock that steps must not move the log's times or the ages decided on
+        // (murmur-dup)
+        let clock: Arc<dyn Clock + Send + Sync> = Arc::new(clock::BridgeClock);
         let areas = AreaSet::load_dir(&s.areas, clock.now()).map_err(|e| e.to_string())?;
         if let Some(dir) = s.audit.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;

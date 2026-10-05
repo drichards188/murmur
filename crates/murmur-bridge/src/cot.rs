@@ -638,6 +638,10 @@ pub fn build_track_event(cfg: &CotConfig, t: &TrackSample, now: f64, period: f64
 #[derive(Default)]
 pub struct Emitter {
     last: HashMap<Uid, Last>,
+    /// The wall clock less the bridge's (`clock::utc` - `clock::wall`): when an event is due
+    /// is decided on the bridge's clock, which never steps, and its `time`, `start` and
+    /// `stale` are written on the wall clock, which the TAK client compares them with.
+    pub utc_offset: f64,
 }
 
 struct Last {
@@ -684,7 +688,7 @@ impl Emitter {
                 }
             };
             if due {
-                out.push(build_event(cfg, s, now, period.max(s.interval_s())));
+                out.push(build_event(cfg, s, now + self.utc_offset, period.max(s.interval_s())));
                 self.last.insert(
                     s.uid,
                     Last {
@@ -723,7 +727,7 @@ impl Emitter {
                 }
             };
             if due {
-                out.push(build_track_event(cfg, t, now, period));
+                out.push(build_track_event(cfg, t, now + self.utc_offset, period));
                 self.last.insert(
                     t.no,
                     Last {
@@ -831,7 +835,7 @@ async fn tcp_task(target: String, mut rx: mpsc::Receiver<String>, inbound: Optio
                             Ok(0) | Err(_) => break,
                             Ok(n) => if let Some(inb) = &inbound {
                                 acc.push_str(&String::from_utf8_lossy(&buf[..n]));
-                                inb.feed_stream(&mut acc, clock::wall());
+                                inb.feed_stream(&mut acc, clock::utc());
                             },
                         },
                     }
@@ -890,6 +894,8 @@ async fn export_loop(world: Arc<World>, cfg: CotConfig, sinks: Vec<Sink>) {
     loop {
         tick.tick().await;
         let now = clock::wall();
+        emitter.utc_offset = clock::utc() - now;
+        track_emitter.utc_offset = emitter.utc_offset;
         let mut events = emitter.step(&cfg, &collect(&world), now);
         if let Some(tracks) = crate::tracks::store() {
             events.extend(track_emitter.step_tracks(&cfg, &tracks.cot_samples(now), now));
@@ -963,7 +969,7 @@ async fn listen_udp(listen: String, inbound: Arc<Inbound>) {
     let mut buf = vec![0u8; MAX_EVENT_BYTES];
     loop {
         if let Ok(n) = sock.recv(&mut buf).await {
-            inbound.ingest(&String::from_utf8_lossy(&buf[..n]), clock::wall());
+            inbound.ingest(&String::from_utf8_lossy(&buf[..n]), clock::utc());
         }
     }
 }
@@ -1155,7 +1161,8 @@ pub fn router<S: Clone + Send + Sync + 'static>() -> Router<S> {
     Router::new().route(
         "/api/cot/inbound",
         get(|| async {
-            let markers = inbound().snapshot(clock::wall());
+            // a TAK client's stale time is a date on its wall clock
+            let markers = inbound().snapshot(clock::utc());
             Json(json!({ "count": markers.len(), "markers": markers }))
         }),
     )
@@ -1370,6 +1377,27 @@ mod tests {
             1,
             "steady period"
         );
+    }
+
+    /// murmur-dup: when an event is due is decided on the bridge's clock (the report's
+    /// arrival and the last send are on it), and the event is dated on the wall clock, which
+    /// the TAK client reads it with, however far the two have drifted.
+    #[test]
+    fn decided_on_the_bridge_clock_dated_on_the_wall_clock() {
+        let cfg = CotConfig::default();
+        let mut em = Emitter {
+            utc_offset: -75.0, // the bridge's clock an hour ahead of a skewed host's wall
+            ..Emitter::default()
+        };
+        let mut s = sample();
+        s.last_rx = Some(1000.0);
+        let xml = em.step(&cfg, &[s.clone()], 1000.0);
+        assert_eq!(xml.len(), 1, "fresh by the bridge's clock");
+        let ev = attrs_of(&xml[0], "event");
+        let t = DateTime::parse_from_rfc3339(&ev["time"]).expect("time");
+        assert_eq!(t.timestamp_millis(), 925_000, "dated on the wall clock");
+        s.last_rx = Some(1000.6);
+        assert!(em.step(&cfg, &[s.clone()], 1000.75).is_empty(), "too soon on the bridge's clock");
     }
 
     #[test]

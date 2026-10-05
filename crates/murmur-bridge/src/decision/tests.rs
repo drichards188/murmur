@@ -1,6 +1,13 @@
 //! The whole path against a fake world: fake autopilots (the task layer's test doubles) in
 //! a real `World`, the real policy, catalog and areas from `sim/`, a fixed land/water map,
 //! a manual engine clock and an in-memory audit log that must replay.
+//!
+//! Time: every rig starts at [`T0_S`] and runs the bridge's clock on its engine's
+//! (`clock::test_clock`, per thread): the manual clock the test moves, or the bridge's own
+//! clock moving with the paused runtime's time. What a test stamps (the vehicles' facts, the
+//! sensing model's draws) is then the same whatever second it starts in and however loaded
+//! the host is (bd murmur-ek3); before, facts were stamped by the wall clock while the
+//! engine's clock was the test's.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -44,6 +51,18 @@ struct Rig {
     log: MemorySink,
 }
 
+/// Where every rig's clock starts: 2026-06-14T10:00:00Z.
+pub(super) const T0_S: f64 = 1_781_431_200.0;
+
+/// The clock a rig's engine reads: the manual one the test moves (`Rig::clock`), or the
+/// bridge's own as `Decision::load` gives it ([`clock::BridgeClock`]: the wall clock at the
+/// first read plus monotonic time since).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum EngineClock {
+    Manual,
+    Bridge,
+}
+
 /// The sim policy as shipped (a human's own request in a human tier is approved at
 /// submission).
 fn rig() -> Rig {
@@ -67,6 +86,11 @@ fn rig_with(policy: Policy) -> Rig {
 
 /// [`rig_with`] authenticating operators as `auth` says (rules 8).
 fn rig_auth(policy: Policy, auth: murmur_decide::AuthMode) -> Rig {
+    rig_clocked(policy, auth, EngineClock::Manual)
+}
+
+/// [`rig_auth`] with the engine on `engine_clock`.
+fn rig_clocked(policy: Policy, auth: murmur_decide::AuthMode, engine_clock: EngineClock) -> Rig {
     let root = root();
     let world = World::new(Config {
         base_port: 0,
@@ -76,7 +100,19 @@ fn rig_auth(policy: Policy, auth: murmur_decide::AuthMode) -> Rig {
         platforms: root.join("sim/platforms.toml"),
         root: root.clone(),
     });
-    let clock = ManualClock::new(snapshot::ms(clock::wall()));
+    // the bridge's clock: the test's manual one, or (the engine on the bridge's own) pinned
+    // to the same start and moving with the paused runtime's time
+    let clock = ManualClock::new(snapshot::ms(T0_S));
+    let engine: Arc<dyn Clock + Send + Sync> = match engine_clock {
+        EngineClock::Manual => {
+            clock::test_clock::follow(&clock);
+            Arc::new(clock.clone())
+        }
+        EngineClock::Bridge => {
+            clock::test_clock::pin(T0_S);
+            Arc::new(clock::BridgeClock)
+        }
+    };
     let log = MemorySink::new();
     let terrain = Terrain::fixed(PolygonTerrain {
         coverage: ring(-122.6, 37.7, -122.3, 37.9),
@@ -92,7 +128,7 @@ fn rig_auth(policy: Policy, auth: murmur_decide::AuthMode) -> Rig {
             areas: AreaSet::load_dir(&root.join("sim/areas"), clock.now()).expect("areas"),
             sink: Box::new(log.clone()),
             audit_path: PathBuf::from("memory"),
-            clock: Arc::new(clock.clone()),
+            clock: engine,
             terrain,
             operators: vec![OperatorId::new("op-1"), OperatorId::new("op-2")],
             engage_operators: Vec::new(),
@@ -619,3 +655,6 @@ mod auth;
 /// Rules 9 through the bridge: observed acts, rule declarations, review, revocation
 /// (`tests/identification.rs`).
 mod identification;
+
+/// A wall clock that steps, through the bridge (`tests/clock_steps.rs`, murmur-dup).
+mod clock_steps;
