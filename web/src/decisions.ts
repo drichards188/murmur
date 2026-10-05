@@ -387,6 +387,8 @@ export interface ApproveExtra {
   acknowledge_supersede?: boolean
   /** rules 8: the approver's password again, for a consequential signature (a step-up) */
   password?: string
+  /** rules 10: or their passkey's assertion, made for this signature */
+  passkey?: Record<string, unknown>
 }
 
 /** The bridge refused a signature for want of the signer's password (a step-up): absent or

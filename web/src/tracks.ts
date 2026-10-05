@@ -276,12 +276,19 @@ export function sortTracks(tracks: Track[]) {
  *  declaration consequential (a step-up); sent in this one request only. `flag`: the review
  *  flag this declaration answers. Throws [`StepUpNeeded`] when the password is missing or
  *  wrong. A declaration in force with another affiliation is revoked first (the engagements
- *  in play on the track stop). */
-export async function declareTrack(id: string, affiliation: Affiliation, note?: string, password?: string, flag?: number): Promise<Track> {
+ *  in play on the track stop). `passkey` (rules 10): instead of the password, a passkey's
+ *  assertion made for declaring this track hostile. */
+export async function declareTrack(id: string, affiliation: Affiliation, note?: string, password?: string, flag?: number, passkey?: Record<string, unknown>): Promise<Track> {
   const res = await operatorFetch(`/api/tracks/${encodeURIComponent(id)}/declare`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...operatorHeaders(getOperator()) },
-    body: JSON.stringify({ affiliation, note: note || null, ...(password ? { password } : {}), ...(flag != null ? { flag } : {}) }),
+    body: JSON.stringify({
+      affiliation,
+      note: note || null,
+      ...(password ? { password } : {}),
+      ...(passkey ? { passkey } : {}),
+      ...(flag != null ? { flag } : {}),
+    }),
   })
   const body = await res.json().catch(() => ({}))
   if (!res.ok) {

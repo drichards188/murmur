@@ -168,9 +168,10 @@ async function post(path: string, body: Record<string, unknown>) {
 }
 
 /** Confirm the rule declaration in force on a track (any operator; logged under their
- *  session). `password`: when the policy lists `confirm_declaration` as a step-up. */
-export function confirmDeclaration(track: string, password?: string) {
-  return post(`/api/tracks/${encodeURIComponent(track)}/confirm`, password ? { password } : {})
+ *  session). `password`, or (rules 10) a passkey's assertion made for this confirmation: when
+ *  the policy lists `confirm_declaration` as a step-up. */
+export function confirmDeclaration(track: string, proof: { password?: string; passkey?: Record<string, unknown> } = {}) {
+  return post(`/api/tracks/${encodeURIComponent(track)}/confirm`, proof)
 }
 
 /** Revoke the declaration in force on a track (any operator): the engagements in play on it

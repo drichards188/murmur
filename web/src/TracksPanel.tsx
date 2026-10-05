@@ -20,6 +20,8 @@ import type { Vehicle } from './types'
 import { callsign } from './types'
 import { stepsUpAct } from './auth'
 import { StepUpNeeded } from './decisions'
+import { StepUpField } from './StepUp'
+import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
 import { FLAG_LABEL, confirmDeclaration, resolveFlag, revokeDeclaration } from './ident'
 
 /** The tracks drawer (Phase C2): every contact our sensors hold, ranked hostile, suspect,
@@ -132,7 +134,8 @@ function Detail({ t, nowMs, vehicles, onFocus, onEngage }: { t: Track; nowMs: nu
   const [revoking, setRevoking] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [asking, setAsking] = useState(false)
-  const [password, setPassword] = useState('')
+  // rules 10: the password again, or the passkey (where the run asks for one)
+  const [step, setStep] = useStepUp()
   const [stepUpError, setStepUpError] = useState(false)
   const age = trackAge(t, nowMs)
   const sigma = trackSigma(t, nowMs)
@@ -141,19 +144,19 @@ function Detail({ t, nowMs, vehicles, onFocus, onEngage }: { t: Track; nowMs: nu
     return v ? callsign(v) : `uid ${uid}`
   }
   const declare = async (a: Affiliation) => {
-    if (a === 'hostile' && stepUp && !password) {
+    if (a === 'hostile' && stepUp && !stepUpReady(step)) {
       setAsking(true)
       return
     }
     setBusy(a)
     setErr(null)
     setStepUpError(false)
-    const pw = a === 'hostile' && stepUp ? password : undefined
-    setPassword('')
     // a hostile declaration on a track with one flag in force answers that flag
     const flag = a === 'hostile' && t.review?.length === 1 ? t.review[0].flag : undefined
     try {
-      await declareTrack(t.id, a, undefined, pw, flag)
+      const proof = a === 'hostile' && stepUp ? await stepUpProof(step, { act: 'declare_hostile', track: t.id }) : {}
+      setStep({ password: '' })
+      await declareTrack(t.id, a, undefined, proof.password, flag, proof.passkey)
       setAsking(false)
     } catch (e) {
       setStepUpError(e instanceof StepUpNeeded)
@@ -178,13 +181,16 @@ function Detail({ t, nowMs, vehicles, onFocus, onEngage }: { t: Track; nowMs: nu
     }
   }
   const confirm = async () => {
-    if (confirmStepUp && !password) {
+    if (confirmStepUp && !stepUpReady(step)) {
       setConfirming(true)
       return
     }
-    const pw = confirmStepUp ? password : undefined
-    setPassword('')
-    if (await act('confirm', () => confirmDeclaration(t.id, pw))) setConfirming(false)
+    const ok = await act('confirm', async () => {
+      const proof = confirmStepUp ? await stepUpProof(step, { act: 'confirm_declaration', track: t.id }) : {}
+      setStep({ password: '' })
+      return confirmDeclaration(t.id, proof)
+    })
+    if (ok) setConfirming(false)
   }
   const unconfirmed = t.declared?.rule && !t.declared.confirmed_by
   return (
@@ -338,40 +344,37 @@ function Detail({ t, nowMs, vehicles, onFocus, onEngage }: { t: Track; nowMs: nu
         ))}
       </div>
       {asking && (
-        <label className={`ix-stepup ${stepUpError ? 'bad' : ''}`}>
-          Consequential: your password to declare {t.id} hostile
-          <input
-            type="password"
-            autoComplete="current-password"
-            value={password}
-            disabled={busy != null}
-            onChange={(e) => setPassword(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && password && busy == null && void declare('hostile')}
-            aria-label="Your password, to declare this track hostile"
-            autoFocus
+        <div className="tk-stepup">
+          <StepUpField
+            passwordLabel={`Consequential: your password to declare ${t.id} hostile`}
+            purpose={`to declare ${t.id} hostile`}
+            ariaLabel="Your password, to declare this track hostile"
+            value={step}
+            onChange={setStep}
+            busy={busy != null}
+            bad={stepUpError}
+            onEnter={() => void declare('hostile')}
           />
-          <button className="ghost mini hostile" disabled={!password || busy != null} onClick={() => void declare('hostile')}>
+          <button className="ghost mini hostile" disabled={!stepUpReady(step) || busy != null} onClick={() => void declare('hostile')}>
             declare hostile
           </button>
-        </label>
+        </div>
       )}
       {confirming && confirmStepUp && (
-        <label className="ix-stepup">
-          Consequential: your password to confirm the engine&apos;s declaration of {t.id}
-          <input
-            type="password"
-            autoComplete="current-password"
-            value={password}
-            disabled={busy != null}
-            onChange={(e) => setPassword(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && password && busy == null && void confirm()}
-            aria-label="Your password, to confirm this declaration"
-            autoFocus
+        <div className="tk-stepup">
+          <StepUpField
+            passwordLabel={`Consequential: your password to confirm the engine's declaration of ${t.id}`}
+            purpose={`to confirm the engine's declaration of ${t.id}`}
+            ariaLabel="Your password, to confirm this declaration"
+            value={step}
+            onChange={setStep}
+            busy={busy != null}
+            onEnter={() => void confirm()}
           />
-          <button className="ghost mini" disabled={!password || busy != null} onClick={() => void confirm()}>
+          <button className="ghost mini" disabled={!stepUpReady(step) || busy != null} onClick={() => void confirm()}>
             confirm
           </button>
-        </label>
+        </div>
       )}
       {err && <p className="tk-err">{err}</p>}
     </div>
