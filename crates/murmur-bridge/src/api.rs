@@ -223,6 +223,9 @@ async fn create_intent(
         .as_object_mut()
         .and_then(|o| o.remove("password"))
         .and_then(|p| p.as_str().map(str::to_string));
+    // rules 10: or a passkey's assertion (made for these acceptances)
+    let passkey = v.as_object_mut().and_then(|o| o.remove("passkey"));
+    let proof = crate::auth::Proof { password, passkey };
     let req: IntentRequest = match serde_json::from_value(v) {
         Ok(r) => r,
         Err(e) => {
@@ -237,14 +240,14 @@ async fn create_intent(
         Err(e) => return decision_error(e),
     };
     let accepting = !req.engage.accept_unknown.is_empty();
-    if password.is_some() && !accepting {
+    if proof.is_some() && !accepting {
         return error(
             StatusCode::UNPROCESSABLE_ENTITY,
-            "a password goes with a nomination that accepts lost vehicles (a step-up) only",
+            "a password or passkey goes with a nomination that accepts lost vehicles (a step-up) only",
         );
     }
     let needed = accepting && app.decision.steps_up(murmur_decide::StepUpAct::AcceptUnknown);
-    let step = match app.auth.step_up(&op, "accept_unknown", password, needed).await {
+    let step = match app.auth.step_up(&op, "accept_unknown", proof, needed).await {
         Ok(s) => s,
         Err(r) => return *r,
     };
@@ -282,9 +285,10 @@ async fn intent_action(
     body: Bytes,
 ) -> Response {
     // rules 8: an approval may carry the approver's password again (a step-up); it is
-    // checked and dropped here, never logged or echoed
-    let (note, token, acknowledge, password) = if body.iter().all(u8::is_ascii_whitespace) {
-        (None, None, false, None)
+    // checked and dropped here, never logged or echoed; rules 10: or a passkey's assertion
+    // made for this act (`passkey`), which is logged
+    let (note, token, acknowledge, password, passkey) = if body.iter().all(u8::is_ascii_whitespace) {
+        (None, None, false, None, None)
     } else {
         match serde_json::from_slice::<Value>(&body) {
             Ok(v) => {
@@ -302,11 +306,13 @@ async fn intent_action(
                     token,
                     v["acknowledge_supersede"].as_bool().unwrap_or(false),
                     v["password"].as_str().map(str::to_string),
+                    v.get("passkey").filter(|p| !p.is_null()).cloned(),
                 )
             }
             Err(_) => return error(StatusCode::UNPROCESSABLE_ENTITY, "body: not JSON"),
         }
     };
+    let proof = crate::auth::Proof { password, passkey };
     let op = match app.auth.actor(&headers, false) {
         Ok(op) => op,
         Err(e) => return decision_error(e),
@@ -317,17 +323,17 @@ async fn intent_action(
             Err(e) => decision_error(e),
         };
     }
-    if password.is_some() && !matches!(action.as_str(), "approve" | "accept_unknown") {
+    if proof.is_some() && !matches!(action.as_str(), "approve" | "accept_unknown") {
         return error(
             StatusCode::UNPROCESSABLE_ENTITY,
-            "a password goes with an approval or an acceptance of a lost vehicle (a step-up) only",
+            "a password or passkey goes with an approval or an acceptance of a lost vehicle (a step-up) only",
         );
     }
     let result = match action.as_str() {
         "approve" => {
             // a consequential signature re-enters the credential first (credentials run)
             let needed = app.decision.needs_step_up(id);
-            let step = match app.auth.step_up(&op, &format!("i{id}"), password, needed).await {
+            let step = match app.auth.step_up(&op, &format!("i{id}"), proof, needed).await {
                 Ok(s) => s,
                 Err(r) => return *r,
             };
@@ -341,7 +347,7 @@ async fn intent_action(
             Ok(a) => {
                 // rules 8: re-enters the credential when the policy lists accept_unknown
                 let needed = app.decision.steps_up(murmur_decide::StepUpAct::AcceptUnknown);
-                let step = match app.auth.step_up(&op, &format!("i{id} accept_unknown"), password, needed).await {
+                let step = match app.auth.step_up(&op, &format!("i{id} accept_unknown"), proof, needed).await {
                     Ok(s) => s,
                     Err(r) => return *r,
                 };

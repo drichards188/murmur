@@ -62,6 +62,18 @@ pub(super) fn engage_rig_auth_policy(
     auth: murmur_decide::AuthMode,
     tweak: impl FnOnce(&mut Policy),
 ) -> Erig {
+    engage_rig_passkeys(on, audit_path, auth, tweak, None, None)
+}
+
+/// [`engage_rig_auth_policy`] with (rules 10) the run's relying party and passkeys, and a study.
+pub(super) fn engage_rig_passkeys(
+    on: Option<(Arc<World>, Arc<Tracks>)>,
+    audit_path: PathBuf,
+    auth: murmur_decide::AuthMode,
+    tweak: impl FnOnce(&mut Policy),
+    passkeys: Option<murmur_decide::PasskeyRoster>,
+    study: Option<murmur_decide::Study>,
+) -> Erig {
     let root = root();
     let mut policy = Policy::load(&root.join("sim/policy.toml")).expect("policy");
     tweak(&mut policy);
@@ -101,6 +113,8 @@ pub(super) fn engage_rig_auth_policy(
             engage_operators: vec![OperatorId::new("op-2"), OperatorId::new("op-3")],
             auth,
             tracks: Some(tracks.clone()),
+            passkeys,
+            study,
         },
     )
     .expect("engine");

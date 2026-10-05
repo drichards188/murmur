@@ -98,6 +98,8 @@ fn rig_auth(policy: Policy, auth: murmur_decide::AuthMode) -> Rig {
             engage_operators: Vec::new(),
             auth,
             tracks: None,
+            passkeys: None,
+            study: None,
         },
     )
     .expect("engine");
@@ -231,6 +233,8 @@ fn the_bridge_does_not_start_with_an_engagement_operator_who_is_no_operator() {
         engage_operators,
         auth: murmur_decide::AuthMode::Dev,
         tracks: None,
+        passkeys: None,
+        study: None,
     };
     let world = || {
         World::new(Config {
@@ -615,6 +619,10 @@ mod queue;
 
 /// Rules 8 through the bridge's HTTP surface: logins, step-ups, agent keys (`tests/auth.rs`).
 mod auth;
+
+/// Rules 10 through the bridge's HTTP surface: passkeys registered, used to sign in and to
+/// step up, bound to the act, refused when replayed, moved or cloned (`tests/passkeys.rs`).
+mod passkeys;
 
 /// Rules 9 through the bridge: observed acts, rule declarations, review, revocation
 /// (`tests/identification.rs`).

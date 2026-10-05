@@ -100,6 +100,8 @@ fn rig() -> Rig {
             engage_operators: vec![OperatorId::new("op-2"), OperatorId::new("op-3")],
             auth: murmur_decide::AuthMode::Dev,
             tracks: Some(tracks.clone()),
+            passkeys: None,
+            study: None,
         },
     )
     .expect("engine");

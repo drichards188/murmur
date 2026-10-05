@@ -22,17 +22,17 @@ const PW2: &str = "op two has a long passphrase";
 const PW3: &str = "op three has a long passphrase";
 /// In ez-gate-west, west of the bridge (as the engagement tests).
 const TARGET: (f64, f64) = (37.8120, -122.4950);
-const CONSOLE: &str = "http://127.0.0.1:5173";
+pub(super) const CONSOLE: &str = "http://127.0.0.1:5173";
 
-struct H {
-    e: Erig,
-    app: axum::Router,
-    auth: Arc<Auth>,
-    file: PathBuf,
-    key: String,
+pub(super) struct H {
+    pub(super) e: Erig,
+    pub(super) app: axum::Router,
+    pub(super) auth: Arc<Auth>,
+    pub(super) file: PathBuf,
+    pub(super) key: String,
 }
 
-fn scratch() -> PathBuf {
+pub(super) fn scratch() -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "murmur-bridge-auth-{}-{}",
         std::process::id(),
@@ -70,13 +70,16 @@ fn harness_with(idle: Duration, scripted: &[&str], edit: impl FnOnce(&mut Policy
         idle,
         max: Duration::from_secs(8 * 3600),
         origins: default_origins(5173, 8765),
+        passkey_rp: "localhost".into(),
+        passkey_origins: crate::auth::passkey_origins("localhost", &default_origins(5173, 8765)),
+        study: None,
     };
     let auth = Auth::new(settings, e.r.d.clone(), c);
     let app = app(&e, auth.clone());
     H { e, app, auth, file, key }
 }
 
-fn app(e: &Erig, auth: Arc<Auth>) -> axum::Router {
+pub(super) fn app(e: &Erig, auth: Arc<Auth>) -> axum::Router {
     let api = crate::api::router(crate::api::App {
         world: e.r.world.clone(),
         frames: Arc::new(watch::channel(None).0),
@@ -100,7 +103,7 @@ fn app(e: &Erig, auth: Arc<Auth>) -> axum::Router {
 }
 
 impl H {
-    async fn call(&self, method: &str, path: &str, body: Option<Value>, headers: &[(&str, &str)]) -> (StatusCode, HeaderMap, Value) {
+    pub(super) async fn call(&self, method: &str, path: &str, body: Option<Value>, headers: &[(&str, &str)]) -> (StatusCode, HeaderMap, Value) {
         let mut b = Request::builder()
             .method(method)
             .uri(path)
@@ -139,7 +142,7 @@ impl H {
     }
 
     /// Log in from the console; the cookie as a browser sends it back.
-    async fn login(&self, op: &str, pw: &str) -> String {
+    pub(super) async fn login(&self, op: &str, pw: &str) -> String {
         let (s, h, v) = self
             .call("POST", "/api/auth/login", Some(json!({ "operator": op, "password": pw })), &[("origin", CONSOLE)])
             .await;
@@ -149,20 +152,20 @@ impl H {
     }
 
     /// A console request by the operator whose cookie this is.
-    async fn post(&self, cookie: &str, path: &str, body: Value) -> (StatusCode, Value) {
+    pub(super) async fn post(&self, cookie: &str, path: &str, body: Value) -> (StatusCode, Value) {
         let (s, _, v) = self
             .call("POST", path, Some(body), &[("origin", CONSOLE), ("cookie", cookie)])
             .await;
         (s, v)
     }
 
-    fn log(&self) -> String {
+    pub(super) fn log(&self) -> String {
         self.e.r.log.text()
     }
 
     /// Our armed platform on the target and the boat declared hostile by op-1 (through the
     /// API), after a minute and a half of detections.
-    async fn picture(&self, op1: &str) {
+    pub(super) async fn picture(&self, op1: &str) {
         self.e.r.vehicle(1, Firmware::Copter, "fpv", TARGET);
         sleep(Duration::from_millis(500)).await;
         self.e.r.clock.set(snapshot::ms(clock::wall()));
@@ -178,7 +181,7 @@ impl H {
     }
 
     /// A nomination on the boat by whoever's cookie this is.
-    async fn nominate(&self, cookie: &str) -> u64 {
+    pub(super) async fn nominate(&self, cookie: &str) -> u64 {
         let body = json!({
             "task": "engage", "uids": [1], "track": "T-0001",
             "effect_radius_m": 100, "window_s": 300, "fallback": "return",
@@ -190,7 +193,7 @@ impl H {
     }
 
     /// Look, then sign with `password` (None: no step-up).
-    async fn sign(&self, cookie: &str, id: u64, password: Option<&str>) -> (StatusCode, Value) {
+    pub(super) async fn sign(&self, cookie: &str, id: u64, password: Option<&str>) -> (StatusCode, Value) {
         let (s, t) = self.post(cookie, &format!("/api/intents/{id}/picture"), json!({})).await;
         if s != StatusCode::OK {
             return (s, t);
@@ -202,7 +205,7 @@ impl H {
         self.post(cookie, &format!("/api/intents/{id}/approve"), body).await
     }
 
-    fn replays_authenticated(&self) -> replay::ReplayReport {
+    pub(super) fn replays_authenticated(&self) -> replay::ReplayReport {
         let r = replay::replay_str(&self.log()).expect("parses");
         assert!(r.ok(), "{:?}", r.mismatches);
         assert_eq!(r.auth, Some(AuthMode::Credentials));
@@ -211,7 +214,7 @@ impl H {
     }
 
     /// No password, cookie token or agent key anywhere in the audit log.
-    fn no_secret_logged(&self, cookies: &[&str]) {
+    pub(super) fn no_secret_logged(&self, cookies: &[&str]) {
         let log = self.log();
         for s in [PW1, PW2, PW3, self.key.as_str()] {
             assert!(!log.contains(s), "a secret in the audit log");

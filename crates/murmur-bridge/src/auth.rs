@@ -44,6 +44,24 @@
 //! - Agents present `Authorization: Bearer <key>` on every `/mcp` request (`murmur-auth
 //!   agent-add`); the key's digest is compared in constant time. A removed or rotated key stops
 //!   at once.
+//! - **Passkeys** (rules 10; WebAuthn through `murmur_auth::passkeys`, the relying party
+//!   `MURMUR_PASSKEY_RP_ID`, `localhost`, and the console's origins on it: an IP address can't
+//!   be a relying party, so the console at 127.0.0.1 sends people to localhost for these). An
+//!   operator registers one while signed in (`/api/auth/passkeys/register/options`, then
+//!   `/register` with the password re-entered: a session left open adds no credential), or by a
+//!   one-time invitation (`murmur-auth passkey-invite`: `/api/auth/passkeys/enroll/options`,
+//!   `/enroll`); logged as `passkey.registered`, kept in the credential file (public key,
+//!   counter). A login by passkey: `/api/auth/login/passkey` gives the options (alike for an id
+//!   without one), `/api/auth/login {"operator", "passkey"}` takes the assertion (`session.opened`,
+//!   `auth: passkey`). A step-up by passkey: `/api/auth/step_up {"act", ...}` gives the options
+//!   for that act, its challenge derived by the engine from the run, the session and the act
+//!   (an engagement signature: the intent and the picture token); the act's request carries
+//!   `"passkey"`. Each assertion answers its challenge once, within two minutes, from one of the
+//!   operator's passkeys, its counter counting up (kept in the file before the act goes ahead);
+//!   the engine verifies it again and logs it, and refuses it for another act. Where the policy
+//!   asks people for a passkey (`step_up_factor`, a study always) a password is refused unchecked.
+//!   A passkey removed from the file (`murmur-auth passkey-remove`) is logged as
+//!   `passkey.removed`, and the operator's sessions end.
 //!
 //! **Dev run** (the default: `MURMUR_AUTH` unset or `dev`): explicit and loud. Operators are
 //! whoever `X-Murmur-Operator` names (`MURMUR_OPERATORS`, `MURMUR_ENGAGE_OPERATORS`; the
@@ -64,6 +82,7 @@
 //! Nothing secret is logged anywhere: no password, token or key reaches the audit log, stdout
 //! or an error message (the audit log names operators, sessions, methods and key ids).
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::{Duration, Instant};
@@ -78,7 +97,7 @@ use axum::{Json, Router};
 use murmur_auth::{CredentialFile, Limiter, Lookup, SessionTable};
 use murmur_decide::{AgentId, AuthMode, OperatorId, SessionId};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::decision::{Actor, Decision, DecisionError};
 
@@ -104,6 +123,33 @@ pub struct Settings {
     pub max: Duration,
     /// Origins a browser's state-changing request may come from.
     pub origins: Vec<String>,
+    /// Rules 10: the WebAuthn relying party id (`MURMUR_PASSKEY_RP_ID`, `localhost`: a domain,
+    /// never an IP address) and the origins on it a passkey may be used from (the allowed
+    /// origins whose host is the relying party id or under it).
+    pub passkey_rp: String,
+    pub passkey_origins: Vec<String>,
+    /// Rules 10: a study run (`MURMUR_STUDY=<participant>`; `MURMUR_STUDY_PASSWORD_STEP_UP=<why>`
+    /// is the explicit override that lets the participant step up with a password).
+    pub study: Option<murmur_decide::Study>,
+}
+
+/// The origins of `origins` on host `rp` (or a subdomain of it): where a passkey for `rp` may
+/// be used. An origin on 127.0.0.1 is never one (WebAuthn takes no IP address as a relying
+/// party).
+pub fn passkey_origins(rp: &str, origins: &[String]) -> Vec<String> {
+    origins
+        .iter()
+        .filter(|o| {
+            let host = o
+                .split_once("://")
+                .map_or(o.as_str(), |(_, rest)| rest)
+                .split(['/', ':'])
+                .next()
+                .unwrap_or("");
+            host == rp || host.ends_with(&format!(".{rp}"))
+        })
+        .cloned()
+        .collect()
 }
 
 impl Settings {
@@ -122,11 +168,31 @@ impl Settings {
             }
         };
         let web = var("MURMUR_WEB_PORT").and_then(|p| p.parse::<u16>().ok()).unwrap_or(5173);
-        let origins = match var("MURMUR_ALLOWED_ORIGINS") {
+        let origins: Vec<String> = match var("MURMUR_ALLOWED_ORIGINS") {
             Some(list) => list.split(',').map(|s| s.trim().trim_end_matches('/').to_string()).filter(|s| !s.is_empty()).collect(),
             None => default_origins(web, http_port),
         };
+        let passkey_rp = var("MURMUR_PASSKEY_RP_ID").unwrap_or_else(|| "localhost".into());
+        if passkey_rp.parse::<std::net::IpAddr>().is_ok() {
+            return Err(format!("MURMUR_PASSKEY_RP_ID={passkey_rp}: a domain (WebAuthn takes no IP address as a relying party)"));
+        }
+        let study = match var("MURMUR_STUDY") {
+            None => None,
+            Some(p) => {
+                if mode != AuthMode::Credentials {
+                    return Err("MURMUR_STUDY: a study run authenticates with credentials (MURMUR_AUTH=credentials)".into());
+                }
+                murmur_auth::validate_id(&p).map_err(|e| format!("MURMUR_STUDY: {e}"))?;
+                Some(murmur_decide::Study {
+                    participant: OperatorId::new(p),
+                    password_step_up: var("MURMUR_STUDY_PASSWORD_STEP_UP"),
+                })
+            }
+        };
         Ok(Settings {
+            passkey_origins: passkey_origins(&passkey_rp, &origins),
+            passkey_rp,
+            study,
             mode,
             file: match mode {
                 AuthMode::Credentials => Some(murmur_auth::default_path().ok_or("no credential file: set MURMUR_CREDENTIALS or HOME")?),
@@ -151,6 +217,9 @@ impl Settings {
             idle: Duration::from_secs(1800),
             max: Duration::from_secs(8 * 3600),
             origins: default_origins(5173, 8765),
+            passkey_rp: "localhost".into(),
+            passkey_origins: passkey_origins("localhost", &default_origins(5173, 8765)),
+            study: None,
         }
     }
 }
@@ -196,6 +265,15 @@ pub fn roster_from(file: &CredentialFile) -> (Vec<OperatorId>, Vec<OperatorId>) 
 pub struct StepUpChecked {
     session: SessionId,
     operator: OperatorId,
+    factor: StepFactor,
+}
+
+/// How a step-up was made (rules 10): the password re-entered, or a passkey's assertion this
+/// module checked (with what the log records of it).
+#[derive(Debug)]
+pub enum StepFactor {
+    Password,
+    Passkey(Box<murmur_decide::PasskeyUse>),
 }
 
 impl StepUpChecked {
@@ -205,6 +283,25 @@ impl StepUpChecked {
 
     pub fn operator(&self) -> &OperatorId {
         &self.operator
+    }
+
+    /// The factor, taken (the engine logs a passkey's assertion with the step-up).
+    pub fn into_factor(self) -> StepFactor {
+        self.factor
+    }
+}
+
+/// What a request brings for a step-up: the password again, a passkey's assertion (the
+/// browser's `PublicKeyCredential` JSON), or neither.
+#[derive(Debug, Default)]
+pub struct Proof {
+    pub password: Option<String>,
+    pub passkey: Option<Value>,
+}
+
+impl Proof {
+    pub fn is_some(&self) -> bool {
+        self.password.as_deref().is_some_and(|p| !p.is_empty()) || self.passkey.is_some()
     }
 }
 
@@ -217,6 +314,30 @@ struct Login {
     stamp: String,
     engage: bool,
 }
+
+/// Rules 10: a passkey challenge issued and not yet answered (by its challenge, base64url):
+/// who it was for, in which session (none: a login), what the engine derived it from, and the
+/// ceremony's state. Answered once; gone after [`murmur_decide::CHALLENGE_TTL_MS`].
+struct PendingUse {
+    operator: OperatorId,
+    session: Option<SessionId>,
+    issued: murmur_decide::passkey::Issued,
+    pending: murmur_auth::passkeys::Pending,
+    until: Instant,
+}
+
+/// Rules 10: a passkey registration in progress: through a session (the password is
+/// re-entered with its finish) or an invitation (its code's digest).
+struct PendingReg {
+    operator: OperatorId,
+    reg: murmur_auth::passkeys::Registration,
+    until: Instant,
+}
+
+/// How long a registration may take (finding the authenticator, a PIN, a touch).
+const REGISTRATION_TTL: Duration = Duration::from_secs(300);
+/// At most this many passkey ceremonies wait at once (a flood can't grow memory).
+const PENDING_CAP: usize = 256;
 
 /// The credential file as last read, and the digest that tells it changed.
 struct Store {
@@ -245,6 +366,15 @@ pub struct Auth {
     /// elsewhere (a stranger guessing at the login form) never end a live session.
     step_limiter: Arc<Mutex<Limiter>>,
     verify: Arc<tokio::sync::Semaphore>,
+    /// Rules 10: the WebAuthn relying party (a credentials run with a console origin on the
+    /// relying party's host), its ceremonies in progress, and the secret decoy options for an
+    /// id without a passkey derive from.
+    rp: Option<murmur_auth::RelyingParty>,
+    pending: Mutex<HashMap<String, PendingUse>>,
+    registering: Mutex<HashMap<String, PendingReg>>,
+    decoy: [u8; 32],
+    /// One passkey check-and-store at a time (a counter is compared and written as one step).
+    passkey_io: tokio::sync::Mutex<()>,
 }
 
 /// An attempt reserved on a limiter ([`Limiter::begin`]) whose password check has not
@@ -267,6 +397,13 @@ impl Drop for Reserved {
 /// The clock sessions and locks run on (tokio's, so tests can pause and advance it).
 fn now() -> Instant {
     tokio::time::Instant::now().into_std()
+}
+
+/// Unix seconds (a passkey's last use, an invitation's expiry).
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -305,6 +442,22 @@ impl Auth {
     pub fn new(settings: Settings, decision: Arc<Decision>, file: CredentialFile) -> Arc<Auth> {
         let seen = settings.file.as_ref().and_then(stat);
         let sessions = SessionTable::new(settings.idle, settings.max);
+        // rules 10: passkeys when the run logged a relying party (a credentials run of rules
+        // 10 with a console origin on the relying party's host)
+        let rp = decision
+            .passkey_roster()
+            .and_then(|p| match murmur_auth::RelyingParty::new(&p.rp_id, &p.origins) {
+                Ok(rp) => Some(rp),
+                Err(e) => {
+                    eprintln!("auth: passkeys off: {e}");
+                    None
+                }
+            });
+        // (without the OS's random source no session token can be issued either)
+        let mut decoy = [0u8; 32];
+        if let Err(e) = murmur_auth::keys::fill(&mut decoy) {
+            eprintln!("auth: {e}");
+        }
         Arc::new(Auth {
             settings,
             decision,
@@ -313,6 +466,11 @@ impl Auth {
             limiter: Arc::new(Mutex::new(Limiter::default())),
             step_limiter: Arc::new(Mutex::new(Limiter::default())),
             verify: Arc::new(tokio::sync::Semaphore::new(VERIFY_AT_ONCE)),
+            rp,
+            pending: Mutex::new(HashMap::new()),
+            registering: Mutex::new(HashMap::new()),
+            decoy,
+            passkey_io: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -487,7 +645,7 @@ impl Auth {
         &self,
         actor: &Actor,
         what: &str,
-        password: Option<String>,
+        proof: Proof,
         needed: bool,
     ) -> Result<Option<StepUpChecked>, Box<Response>> {
         if !self.credentials() {
@@ -501,27 +659,45 @@ impl Auth {
                 eprintln!("auth: logging a refused step-up: {}", e.detail);
             }
         };
-        let Some(password) = password.filter(|p| !p.is_empty()) else {
+        // rules 10: what this person's step-up must be (the policy's step_up_factor)
+        let factor = self.decision.step_up_factor_for(actor);
+        let ask = |detail: &str| {
+            Box::new(
+                (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({ "detail": detail, "step_up": true, "factor": factor.as_str() })),
+                )
+                    .into_response(),
+            )
+        };
+        if let Some(assertion) = proof.passkey {
+            return self.passkey_step_up(actor, session, what, &assertion).await.map(Some);
+        }
+        let Some(password) = proof.password.filter(|p| !p.is_empty()) else {
             if needed {
                 refused("no password given");
-                return Err(Box::new(
-                    (
-                        StatusCode::UNAUTHORIZED,
-                        Json(json!({
-                            "detail": "re-enter your password for this: a consequential act is made with your credential, not only your session",
-                            "step_up": true,
-                        })),
-                    )
-                        .into_response(),
-                ));
+                return Err(ask(match factor {
+                    murmur_decide::StepUpFactor::Passkey => {
+                        "use your passkey for this: a consequential act is made with your passkey, not only your session"
+                    }
+                    murmur_decide::StepUpFactor::Password => {
+                        "re-enter your password for this: a consequential act is made with your credential, not only your session"
+                    }
+                }));
             }
             return Ok(None);
         };
+        if factor == murmur_decide::StepUpFactor::Passkey {
+            // the password is not checked (nor counted): this run asks this person for a passkey
+            refused("a password where the policy asks for a passkey");
+            return Err(ask("this run asks for your passkey here, not your password ([approval] step_up_factor = \"passkey\")"));
+        }
         let key = format!("session {}", session.0);
         match self.check(&self.step_limiter, &key, actor.operator().as_str(), password).await {
             Ok(_) => Ok(Some(StepUpChecked {
                 session,
                 operator: actor.operator().clone(),
+                factor: StepFactor::Password,
             })),
             Err(Refused::Wrong) => {
                 refused("wrong password");
@@ -547,6 +723,213 @@ impl Auth {
                 Err(Box::new(locked(d)))
             }
         }
+    }
+
+    // ---- passkeys (rules 10) ------------------------------------------------------------------
+
+    /// `op`'s passkeys this run can use: in the credential file and known to the engine (on the
+    /// run's roster, or registered while it is up), never a scripted credential's.
+    fn usable_passkeys(&self, op: &OperatorId) -> Vec<murmur_auth::PasskeyEntry> {
+        let known: std::collections::BTreeSet<String> = self
+            .decision
+            .passkey_roster()
+            .map(|p| p.keys.into_iter().filter(|k| &k.operator == op).map(|k| k.id).collect())
+            .unwrap_or_default();
+        let store = self.store.read().unwrap_or_else(|e| e.into_inner());
+        store
+            .file
+            .operators
+            .get(op.as_str())
+            .filter(|e| !e.scripted)
+            .map(|e| e.passkeys.iter().filter(|p| known.contains(&p.id)).cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Drop ceremonies past their time.
+    fn sweep_pending(&self) {
+        let now = now();
+        lock(&self.pending).retain(|_, p| p.until > now);
+        lock(&self.registering).retain(|_, p| p.until > now);
+    }
+
+    /// A fresh random nonce (16 bytes, base64url).
+    fn nonce() -> Result<String, DecisionError> {
+        let mut b = [0u8; 16];
+        murmur_auth::keys::fill(&mut b).map_err(|e| DecisionError::new(500, e.to_string()))?;
+        Ok(murmur_decide::passkey::b64(&b))
+    }
+
+    /// The options for `navigator.credentials.get`: a challenge the engine derives for
+    /// `purpose` by `op` (in `session`; none for a login), over `op`'s passkeys, kept until it
+    /// is answered or [`murmur_decide::CHALLENGE_TTL_MS`] passes. For a login by an id with no
+    /// usable passkey (or no such operator), options shaped alike that no authenticator answers.
+    fn issue(&self, op: &OperatorId, session: Option<SessionId>, purpose: murmur_decide::StepUpFor) -> Result<Value, DecisionError> {
+        let Some(rp) = &self.rp else {
+            return Err(DecisionError::new(409, "this run takes no passkey (a credentials run with a console on localhost does)"));
+        };
+        self.sweep_pending();
+        let entries = self.usable_passkeys(op);
+        let login = session.is_none();
+        let listed = self.decision.roster_entry(op).is_some();
+        if entries.is_empty() || !listed {
+            if login {
+                let mut c = [0u8; 32];
+                murmur_auth::keys::fill(&mut c).map_err(|e| DecisionError::new(500, e.to_string()))?;
+                return Ok(rp.decoy_options(op.as_str(), &self.decoy, c));
+            }
+            return Err(DecisionError::new(
+                409,
+                "you have no passkey this run can use: register one from your operator menu (one registered elsewhere since this run started is usable after a restart)",
+            ));
+        }
+        if lock(&self.pending).len() >= PENDING_CAP {
+            return Err(DecisionError::new(429, "too many passkey requests waiting: try again in a minute"));
+        }
+        let issued = self.decision.passkey_challenge(op, session, purpose, Self::nonce()?)?;
+        let (options, pending) = rp
+            .start_assertion(&entries, issued.challenge)
+            .map_err(|e| DecisionError::new(500, e.to_string()))?;
+        let ttl = Duration::from_millis(u64::try_from(murmur_decide::CHALLENGE_TTL_MS).unwrap_or(120_000));
+        lock(&self.pending).insert(
+            murmur_decide::passkey::b64(&issued.challenge),
+            PendingUse {
+                operator: op.clone(),
+                session,
+                issued,
+                pending,
+                until: now() + ttl,
+            },
+        );
+        Ok(options)
+    }
+
+    /// The challenge an assertion's client data carries (base64url), if it reads as one.
+    fn challenge_of(assertion: &Value) -> Option<String> {
+        let cdj = assertion.get("response")?.get("clientDataJSON")?.as_str()?;
+        let bytes = murmur_decide::passkey::unb64(cdj).ok()?;
+        let v: Value = serde_json::from_slice(&bytes).ok()?;
+        Some(v.get("challenge")?.as_str()?.trim_end_matches('=').to_string())
+    }
+
+    /// The ceremony `assertion` answers, taken (it is answered once): it must have been issued
+    /// to `op` in `session`.
+    fn take_pending(&self, assertion: &Value, op: &OperatorId, session: Option<SessionId>) -> Result<PendingUse, String> {
+        self.sweep_pending();
+        let c = Self::challenge_of(assertion).ok_or("not a passkey assertion")?;
+        let p = lock(&self.pending)
+            .remove(&c)
+            .ok_or("no such challenge is waiting (answered already, expired, or another run's): ask again")?;
+        if &p.operator != op || p.session != session {
+            return Err("the challenge was issued to another operator or session".into());
+        }
+        Ok(p)
+    }
+
+    /// Check an assertion against its ceremony and the operator's passkeys as they are now, and
+    /// keep its counter in the credential file before anything goes ahead: what the audit log
+    /// records of it. Err: (whether the counter showed a clone, why).
+    async fn check_passkey(&self, p: PendingUse, assertion: &Value) -> Result<murmur_decide::PasskeyUse, (bool, String)> {
+        let _io = self.passkey_io.lock().await;
+        let Some(rp) = &self.rp else {
+            return Err((false, "this run takes no passkey".into()));
+        };
+        let entries = self.usable_passkeys(&p.operator);
+        let (checked, mut updated) = match rp.finish_assertion(&p.pending, &entries, assertion) {
+            Ok(r) => r,
+            Err(murmur_auth::passkeys::Refused::Counter) => {
+                return Err((true, murmur_auth::passkeys::Refused::Counter.to_string()));
+            }
+            Err(e) => return Err((false, e.to_string())),
+        };
+        updated.last_used_unix = Some(now_unix());
+        let op = p.operator.as_str().to_string();
+        self.modify_file(move |f| f.update_passkey(&op, &updated))
+            .await
+            .map_err(|e| (false, format!("could not keep the passkey's counter: {e}")))?;
+        Ok(murmur_decide::PasskeyUse {
+            credential: checked.credential,
+            counter: checked.counter,
+            purpose: p.issued.purpose,
+            nonce: p.issued.nonce,
+            issued_t: p.issued.issued_t,
+            assertion: murmur_decide::Assertion {
+                authenticator_data: checked.authenticator_data,
+                client_data_json: checked.client_data_json,
+                signature: checked.signature,
+            },
+        })
+    }
+
+    /// A step-up by passkey: the assertion answers a challenge issued for this session (the
+    /// engine compares what it was made for with the act); counted against the session's own
+    /// limit, a refusal logged under the session as a wrong password is.
+    async fn passkey_step_up(&self, actor: &Actor, session: SessionId, what: &str, assertion: &Value) -> Result<StepUpChecked, Box<Response>> {
+        let refused = |why: &str| {
+            if let Err(e) = self.decision.record_action(actor, "step_up.refused", &format!("{what}: passkey refused: {why}")) {
+                eprintln!("auth: logging a refused step-up: {}", e.detail);
+            }
+        };
+        let deny = |detail: String| {
+            Box::new(
+                (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({ "detail": detail, "step_up": true, "factor": "passkey" })),
+                )
+                    .into_response(),
+            )
+        };
+        let key = format!("session {}", session.0);
+        let t = now();
+        if let Err(d) = lock(&self.step_limiter).begin(&key, t) {
+            refused("too many attempts at once");
+            return Err(Box::new(locked(d)));
+        }
+        let outcome = match self.take_pending(assertion, actor.operator(), Some(session)) {
+            Ok(p) => self.check_passkey(p, assertion).await.map_err(|(_, why)| why),
+            Err(why) => Err(why),
+        };
+        match outcome {
+            Ok(proof) => {
+                lock(&self.step_limiter).success(&key);
+                Ok(StepUpChecked {
+                    session,
+                    operator: actor.operator().clone(),
+                    factor: StepFactor::Passkey(Box::new(proof)),
+                })
+            }
+            Err(why) => {
+                let lock_now = lock(&self.step_limiter).failure(&key, t);
+                refused(&why);
+                if let Some(d) = lock_now {
+                    let gone = lock(&self.sessions).end_where(|l| l.session == session);
+                    for l in &gone {
+                        self.end(l, "step-up failed repeatedly");
+                    }
+                    return Err(Box::new(locked(d)));
+                }
+                Err(deny(format!("passkey refused: {why}")))
+            }
+        }
+    }
+
+    /// Change the credential file (under its lock, off the runtime) and read it again.
+    async fn modify_file<T: Send + 'static>(
+        &self,
+        change: impl FnOnce(&mut CredentialFile) -> Result<T, murmur_auth::AuthError> + Send + 'static,
+    ) -> Result<T, String> {
+        let path = self.settings.file.clone().ok_or("no credential file")?;
+        let out = tokio::task::spawn_blocking(move || -> Result<T, murmur_auth::AuthError> {
+            let _lock = murmur_auth::FileLock::acquire(&path)?;
+            let mut f = CredentialFile::load(&path)?;
+            let out = change(&mut f)?;
+            f.save(&path)?;
+            Ok(out)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+        self.refresh();
+        Ok(out)
     }
 
     /// The agent an `Authorization: Bearer` key belongs to, and the key's id.
@@ -579,6 +962,23 @@ impl Auth {
                 CredentialFile::default()
             }
         };
+        // rules 10: passkeys gone from the file (`murmur-auth passkey-remove`, an operator
+        // removed): nothing may use them from here on, on the record
+        {
+            let old = self.store.read().unwrap_or_else(|e| e.into_inner());
+            for (id, e) in &old.file.operators {
+                for p in &e.passkeys {
+                    let kept = file.operators.get(id).is_some_and(|n| n.passkeys.iter().any(|q| q.id == p.id));
+                    if !kept {
+                        self.decision.record_passkey_removed(
+                            &OperatorId::new(id),
+                            &p.id,
+                            "removed from the credential file",
+                        );
+                    }
+                }
+            }
+        }
         let ended = lock(&self.sessions).end_where(|l| {
             file.operators
                 .get(l.operator.as_str())
@@ -634,19 +1034,35 @@ impl Auth {
 
 // ---- endpoints ----------------------------------------------------------------------------
 
-/// `/api/auth/login`, `/api/auth/logout`, `/api/auth/session`.
+/// `/api/auth/login`, `/api/auth/logout`, `/api/auth/session`; rules 10, the passkey
+/// ceremonies: `/api/auth/login/passkey` (a login's options), `/api/auth/step_up` (a step-up's
+/// options for an act), `/api/auth/passkeys` (the signed-in operator's), and registration
+/// (`/api/auth/passkeys/register/options`, `/register`; by invitation `/enroll/options`,
+/// `/enroll`).
 pub fn router<S: Clone + Send + Sync + 'static>(auth: Arc<Auth>) -> Router<S> {
     Router::new()
         .route("/api/auth/login", post(login))
+        .route("/api/auth/login/passkey", post(login_passkey_options))
         .route("/api/auth/logout", post(logout))
         .route("/api/auth/session", get(session))
+        .route("/api/auth/step_up", post(step_up_options))
+        .route("/api/auth/passkeys", get(my_passkeys))
+        .route("/api/auth/passkeys/register/options", post(register_options))
+        .route("/api/auth/passkeys/register", post(register_finish))
+        .route("/api/auth/passkeys/enroll/options", post(enroll_options))
+        .route("/api/auth/passkeys/enroll", post(enroll_finish))
         .with_state(auth)
 }
 
 #[derive(Deserialize)]
 struct LoginBody {
     operator: String,
-    password: String,
+    #[serde(default)]
+    password: Option<String>,
+    /// Rules 10: a passkey's assertion (`PublicKeyCredential` JSON) on the options
+    /// `/api/auth/login/passkey` gave.
+    #[serde(default)]
+    passkey: Option<Value>,
 }
 
 async fn login(State(auth): State<Arc<Auth>>, headers: HeaderMap, body: Bytes) -> Response {
@@ -657,8 +1073,12 @@ async fn login(State(auth): State<Arc<Auth>>, headers: HeaderMap, body: Bytes) -
         );
     }
     // the body holds a password: never echo it back in an error
-    let Ok(LoginBody { operator, password }) = serde_json::from_slice::<LoginBody>(&body) else {
-        return refusal(StatusCode::UNPROCESSABLE_ENTITY, "login wants {\"operator\": id, \"password\": ...}");
+    let parsed = serde_json::from_slice::<LoginBody>(&body).ok();
+    let Some(LoginBody { operator, password, passkey }) = parsed.filter(|b| b.password.is_some() != b.passkey.is_some()) else {
+        return refusal(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "login wants {\"operator\": id, \"password\": ...} or {\"operator\": id, \"passkey\": <assertion>}",
+        );
     };
     let id = operator.trim().to_string();
     let wrong = || refusal(StatusCode::UNAUTHORIZED, "unknown operator or wrong password");
@@ -670,6 +1090,10 @@ async fn login(State(auth): State<Arc<Auth>>, headers: HeaderMap, body: Bytes) -
     // a failed password for an operator the run lists goes to the audit log (who, why, the
     // lock; never the password); other ids, and attempts refused unchecked, to stdout only
     let listed = auth.decision.roster_entry(&op).is_some();
+    if let Some(assertion) = passkey {
+        return login_by_passkey(&auth, &headers, op, listed, &assertion).await;
+    }
+    let password = password.unwrap_or_default();
     let entry = match auth.check(&auth.limiter, &id, &id, password).await {
         Ok(e) => e,
         Err(Refused::Wrong) => {
@@ -691,6 +1115,61 @@ async fn login(State(auth): State<Arc<Auth>>, headers: HeaderMap, body: Bytes) -
             return locked(d);
         }
     };
+    let scripted = entry.scripted;
+    signed_in(&auth, &headers, op.clone(), entry, |engage| auth.decision.open_login(&op, engage, scripted))
+}
+
+/// Rules 10: a login by passkey: the assertion answers the challenge
+/// `/api/auth/login/passkey` issued for this operator; counted against the operator's login
+/// limit as a password is, a refusal for an operator on the roster logged as `auth.refused`.
+async fn login_by_passkey(auth: &Arc<Auth>, headers: &HeaderMap, op: OperatorId, listed: bool, assertion: &Value) -> Response {
+    let id = op.as_str().to_string();
+    let t = now();
+    if let Err(d) = lock(&auth.limiter).begin(&id, t) {
+        println!("auth: passkey login for {id} refused unchecked: locked or busy for {} s", d.as_secs().max(1));
+        return locked(d);
+    }
+    let entry = auth.store.read().unwrap_or_else(|e| e.into_inner()).file.operators.get(&id).cloned();
+    let outcome = match (&entry, auth.take_pending(assertion, &op, None)) {
+        (Some(e), Ok(_)) if e.scripted => Err((false, "a scripted credential holds no passkey".to_string())),
+        (Some(_), Ok(p)) => auth.check_passkey(p, assertion).await,
+        (None, _) => Err((false, "unknown operator".to_string())),
+        (_, Err(why)) => Err((false, why)),
+    };
+    let proof = match outcome {
+        Ok(proof) => {
+            lock(&auth.limiter).success(&id);
+            proof
+        }
+        Err((clone, why)) => {
+            let lock_now = lock(&auth.limiter).failure(&id, t);
+            println!("auth: failed passkey login for {id}: {why}");
+            if listed {
+                let reason = if clone { "passkey refused: its counter did not count up (cloned?)" } else { "passkey refused" };
+                auth.decision.record_login_refused(&op, reason, lock_now.map(|d| d.as_secs()));
+            }
+            if let Some(d) = lock_now {
+                return locked(d);
+            }
+            return refusal(StatusCode::UNAUTHORIZED, &format!("passkey refused: {why}"));
+        }
+    };
+    let Some(entry) = entry else {
+        return refusal(StatusCode::UNAUTHORIZED, "unknown operator or wrong password");
+    };
+    signed_in(auth, headers, op.clone(), entry, move |engage| auth.decision.open_passkey_login(&op, engage, proof))
+}
+
+/// The end of a checked login (password or passkey): the operator is on the run's roster, a
+/// session the browser still holds ends, the engine session opens (`open`, given whether the
+/// credential holds engagement authority now), and the cookie is set.
+fn signed_in(
+    auth: &Arc<Auth>,
+    headers: &HeaderMap,
+    op: OperatorId,
+    entry: murmur_auth::OperatorEntry,
+    open: impl FnOnce(bool) -> Result<SessionId, DecisionError>,
+) -> Response {
     let (stamp, engage, scripted) = (entry.stamp, entry.engage, entry.scripted);
     if auth.decision.roster_entry(&op).is_none() {
         return refusal(
@@ -699,14 +1178,14 @@ async fn login(State(auth): State<Arc<Auth>>, headers: HeaderMap, body: Bytes) -
         );
     }
     // a login from a browser that still holds a session ends that one
-    let old: Vec<String> = auth.tokens(&headers).into_iter().map(str::to_string).collect();
+    let old: Vec<String> = auth.tokens(headers).into_iter().map(str::to_string).collect();
     for t in old {
         let prev = lock(&auth.sessions).remove(&t);
         if let Some(l) = prev {
             auth.end(&l, "signed in again");
         }
     }
-    let session = match auth.decision.open_login(&op, engage, scripted) {
+    let session = match open(engage) {
         Ok(s) => s,
         Err(e) => return decision_refusal(e),
     };
@@ -731,7 +1210,7 @@ async fn login(State(auth): State<Arc<Auth>>, headers: HeaderMap, body: Bytes) -
         session.0,
         if scripted { ", scripted: a harness-held credential" } else { "" }
     );
-    let mut r = Json(json!({
+    let mut body = json!({
         "auth": "credentials",
         "signed_in": true,
         "operator": op,
@@ -740,10 +1219,417 @@ async fn login(State(auth): State<Arc<Auth>>, headers: HeaderMap, body: Bytes) -
         "idle_s": auth.settings.idle.as_secs(),
         "max_s": auth.settings.max.as_secs(),
         "step_up_acts": auth.decision.operators_json()["step_up_acts"],
-    }))
-    .into_response();
+    });
+    auth.passkey_json(&op, &mut body);
+    let mut r = Json(body).into_response();
     r.headers_mut().insert(header::SET_COOKIE, auth.cookie(&token, auth.settings.max));
     r
+}
+
+impl Auth {
+    /// What the console needs to know of passkeys in this run, added to a session answer:
+    /// whether they are on (the relying party and its origins), how many `op` has, what a
+    /// step-up and a login must be.
+    fn passkey_json(&self, op: &OperatorId, body: &mut Value) {
+        let (step, login) = self.decision.factors();
+        body["step_up_factor"] = json!(step.as_str());
+        body["login_factor"] = json!(login.as_str());
+        if let Some(rp) = &self.rp {
+            body["passkey"] = json!({
+                "rp_id": rp.rp_id,
+                "origins": rp.origins,
+                "registered": self.usable_passkeys(op).len(),
+            });
+        }
+        if let Some(s) = self.decision.study() {
+            body["study"] = json!({ "participant": s.participant, "password_step_up": s.password_step_up.is_some() });
+        }
+    }
+}
+
+/// Rules 10: `POST /api/auth/login/passkey {"operator"}`: the options for
+/// `navigator.credentials.get` to sign in by passkey (a challenge for a login, over the
+/// operator's passkeys). An id without one, or no such operator, gets options alike that no
+/// authenticator answers.
+async fn login_passkey_options(State(auth): State<Arc<Auth>>, body: Bytes) -> Response {
+    if !auth.credentials() {
+        return refusal(StatusCode::CONFLICT, "this is a dev run (MURMUR_AUTH=dev): there is no login");
+    }
+    #[derive(Deserialize)]
+    struct B {
+        operator: String,
+    }
+    let Ok(B { operator }) = serde_json::from_slice::<B>(&body) else {
+        return refusal(StatusCode::UNPROCESSABLE_ENTITY, "wants {\"operator\": id}");
+    };
+    let id = operator.trim();
+    if murmur_auth::validate_id(id).is_err() {
+        return refusal(StatusCode::UNPROCESSABLE_ENTITY, "not an operator id");
+    }
+    auth.refresh();
+    let (_, login) = auth.decision.factors();
+    if login == murmur_decide::LoginFactor::Password {
+        return refusal(StatusCode::CONFLICT, "this run's policy signs people in by password only ([approval] login_factor)");
+    }
+    match auth.issue(&OperatorId::new(id), None, murmur_decide::StepUpFor::Login) {
+        Ok(o) => Json(o).into_response(),
+        Err(e) => decision_refusal(e),
+    }
+}
+
+/// Rules 10: `POST /api/auth/step_up {"act": ...}`: the options for `navigator.credentials.get`
+/// to step up by passkey for one act, its challenge derived from it: `{"act": "sign",
+/// "intent": n, "token": t}` (an engagement's signature quotes its picture token), `{"act":
+/// "declare_hostile", "track": id}`, `{"act": "confirm_declaration", "track": id}`, `{"act":
+/// "accept_unknown", "intent": n or null, "accept_unknown": [{"uid", "since"}]}`. The act's
+/// request then carries the assertion as `"passkey"`.
+async fn step_up_options(State(auth): State<Arc<Auth>>, headers: HeaderMap, body: Bytes) -> Response {
+    #[derive(Deserialize)]
+    struct B {
+        act: String,
+        #[serde(default)]
+        intent: Option<u64>,
+        #[serde(default)]
+        token: Option<u64>,
+        #[serde(default)]
+        track: Option<String>,
+        #[serde(default)]
+        accept_unknown: Vec<crate::decision::engage::AcceptUnknown>,
+    }
+    let actor = match auth.actor(&headers, false) {
+        Ok(a) => a,
+        Err(e) => return decision_refusal(e),
+    };
+    let Some(session) = actor.login() else {
+        return refusal(StatusCode::CONFLICT, "a dev run has no step-up");
+    };
+    let b: B = match serde_json::from_slice(&body) {
+        Ok(b) => b,
+        Err(e) => return refusal(StatusCode::UNPROCESSABLE_ENTITY, &format!("step-up options: {e}")),
+    };
+    let track = || b.track.clone().ok_or_else(|| DecisionError::new(422, "this act names its track"));
+    let purpose = match b.act.as_str() {
+        "sign" => match b.intent {
+            Some(i) => auth.decision.sign_purpose(i, b.token),
+            None => Err(DecisionError::new(422, "a signature names its intent")),
+        },
+        "declare_hostile" => track().map(|track| murmur_decide::StepUpFor::DeclareHostile { track }),
+        "confirm_declaration" => track().and_then(|t| auth.decision.confirm_purpose(&t)),
+        "accept_unknown" if !b.accept_unknown.is_empty() => Ok(auth.decision.accept_purpose(b.intent, &b.accept_unknown)),
+        other => Err(DecisionError::new(
+            422,
+            format!("act {other:?}: sign, declare_hostile, confirm_declaration or accept_unknown (with its vehicles)"),
+        )),
+    };
+    match purpose.and_then(|p| auth.issue(actor.operator(), Some(session), p)) {
+        Ok(o) => Json(o).into_response(),
+        Err(e) => decision_refusal(e),
+    }
+}
+
+/// Rules 10: `GET /api/auth/passkeys`: the signed-in operator's passkeys (labels, ids' starts,
+/// when registered and last used; nothing else).
+async fn my_passkeys(State(auth): State<Arc<Auth>>, headers: HeaderMap) -> Response {
+    let actor = match auth.actor_peek(&headers) {
+        Ok(a) => a,
+        Err(e) => return decision_refusal(e),
+    };
+    let usable = auth.usable_passkeys(actor.operator());
+    let list: Vec<Value> = usable
+        .iter()
+        .map(|p| {
+            json!({
+                "label": p.label,
+                "id": p.id.chars().take(12).collect::<String>(),
+                "created_unix": p.created_unix,
+                "last_used_unix": p.last_used_unix,
+            })
+        })
+        .collect();
+    let mut body = json!({ "operator": actor.operator(), "passkeys": list });
+    auth.passkey_json(actor.operator(), &mut body);
+    Json(body).into_response()
+}
+
+/// Rules 10: `POST /api/auth/passkeys/register/options`: the signed-in operator starts
+/// registering a passkey (`navigator.credentials.create`'s options). Its finish carries the
+/// password again.
+async fn register_options(State(auth): State<Arc<Auth>>, headers: HeaderMap) -> Response {
+    let actor = match auth.actor(&headers, false) {
+        Ok(a) => a,
+        Err(e) => return decision_refusal(e),
+    };
+    let Some(session) = actor.login() else {
+        return refusal(StatusCode::CONFLICT, "a dev run registers no passkey");
+    };
+    auth.start_registration(actor.operator(), format!("s{}", session.0))
+}
+
+/// Rules 10: `POST /api/auth/passkeys/register {"credential", "label", "password"}`: the
+/// registration's finish, the operator's password re-entered (a session left open does not
+/// add a credential to someone's account). Logged as `passkey.registered` quoting the step-up;
+/// kept in the credential file (public key and counter).
+async fn register_finish(State(auth): State<Arc<Auth>>, headers: HeaderMap, body: Bytes) -> Response {
+    #[derive(Deserialize)]
+    struct B {
+        credential: Value,
+        #[serde(default)]
+        label: String,
+        #[serde(default)]
+        password: Option<String>,
+    }
+    let actor = match auth.actor(&headers, false) {
+        Ok(a) => a,
+        Err(e) => return decision_refusal(e),
+    };
+    let Some(session) = actor.login() else {
+        return refusal(StatusCode::CONFLICT, "a dev run registers no passkey");
+    };
+    // the body holds a password: never echo it back
+    let Ok(b) = serde_json::from_slice::<B>(&body) else {
+        return refusal(StatusCode::UNPROCESSABLE_ENTITY, "wants {\"credential\": <registration>, \"label\": ..., \"password\": ...}");
+    };
+    let Some(reg) = lock(&auth.registering).remove(&format!("s{}", session.0)) else {
+        return refusal(StatusCode::CONFLICT, "no registration is waiting for this session (expired?): start again");
+    };
+    if &reg.operator != actor.operator() {
+        return refusal(StatusCode::FORBIDDEN, "another operator's registration");
+    }
+    // the password, for this session's own operator, counted against the session's limit
+    // (a registration's step-up is a password whatever the step-up factor: the passkey being
+    // registered can't vouch for itself)
+    let step = match auth.password_step_up(&actor, "register a passkey", b.password).await {
+        Ok(s) => s,
+        Err(r) => return *r,
+    };
+    auth.finish_registration(&actor.operator().clone(), reg, &b.credential, &b.label, Some((&actor, step))).await
+}
+
+/// Rules 10: `POST /api/auth/passkeys/enroll/options {"operator", "code"}`: registration by a
+/// one-time invitation (`murmur-auth passkey-invite`), no session needed.
+async fn enroll_options(State(auth): State<Arc<Auth>>, body: Bytes) -> Response {
+    #[derive(Deserialize)]
+    struct B {
+        operator: String,
+        code: String,
+    }
+    let Ok(b) = serde_json::from_slice::<B>(&body) else {
+        return refusal(StatusCode::UNPROCESSABLE_ENTITY, "wants {\"operator\": id, \"code\": ...}");
+    };
+    let op = OperatorId::new(b.operator.trim());
+    if let Err(r) = auth.invitation(&op, &b.code) {
+        return *r;
+    }
+    auth.start_registration(&op, format!("i{op}"))
+}
+
+/// Rules 10: `POST /api/auth/passkeys/enroll {"operator", "code", "credential", "label"}`: the
+/// invitation's registration finished; the invitation is used up. Logged as
+/// `passkey.registered` (`via: invitation`).
+async fn enroll_finish(State(auth): State<Arc<Auth>>, body: Bytes) -> Response {
+    #[derive(Deserialize)]
+    struct B {
+        operator: String,
+        code: String,
+        credential: Value,
+        #[serde(default)]
+        label: String,
+    }
+    let Ok(b) = serde_json::from_slice::<B>(&body) else {
+        return refusal(StatusCode::UNPROCESSABLE_ENTITY, "wants {\"operator\", \"code\", \"credential\", \"label\"}");
+    };
+    let op = OperatorId::new(b.operator.trim());
+    if let Err(r) = auth.invitation(&op, &b.code) {
+        return *r;
+    }
+    let Some(reg) = lock(&auth.registering).remove(&format!("i{op}")) else {
+        return refusal(StatusCode::CONFLICT, "no registration is waiting for this invitation (expired?): open the link again");
+    };
+    auth.finish_registration(&op, reg, &b.credential, &b.label, None).await
+}
+
+impl Auth {
+    /// A password step-up for `actor`'s session (whatever the step-up factor: a registration's).
+    async fn password_step_up(&self, actor: &Actor, what: &str, password: Option<String>) -> Result<StepUpChecked, Box<Response>> {
+        let Some(session) = actor.login() else {
+            return Err(Box::new(refusal(StatusCode::UNAUTHORIZED, "sign in first")));
+        };
+        let refused = |why: &str| {
+            if let Err(e) = self.decision.record_action(actor, "step_up.refused", &format!("{what}: {why}")) {
+                eprintln!("auth: logging a refused step-up: {}", e.detail);
+            }
+        };
+        let Some(password) = password.filter(|p| !p.is_empty()) else {
+            refused("no password given");
+            return Err(Box::new(
+                (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({ "detail": "re-enter your password to register a passkey", "step_up": true, "factor": "password" })),
+                )
+                    .into_response(),
+            ));
+        };
+        let key = format!("session {}", session.0);
+        match self.check(&self.step_limiter, &key, actor.operator().as_str(), password).await {
+            Ok(_) => Ok(StepUpChecked {
+                session,
+                operator: actor.operator().clone(),
+                factor: StepFactor::Password,
+            }),
+            Err(Refused::Wrong) => {
+                refused("wrong password");
+                Err(Box::new(
+                    (StatusCode::UNAUTHORIZED, Json(json!({ "detail": "wrong password: not registered", "step_up": true }))).into_response(),
+                ))
+            }
+            Err(Refused::WrongLocked(d)) => {
+                refused("too many failed attempts: the session ends");
+                let gone = lock(&self.sessions).end_where(|l| l.session == session);
+                for l in &gone {
+                    self.end(l, "step-up failed repeatedly");
+                }
+                Err(Box::new(locked(d)))
+            }
+            Err(Refused::Locked(d)) => {
+                refused("too many attempts at once");
+                Err(Box::new(locked(d)))
+            }
+        }
+    }
+
+    /// Whether `code` is `op`'s open invitation (an operator on the roster, a person's
+    /// credential); refused otherwise (the same answer for every reason). Failures count
+    /// against the id's login limit.
+    fn invitation(&self, op: &OperatorId, code: &str) -> Result<(), Box<Response>> {
+        if self.rp.is_none() {
+            return Err(Box::new(refusal(StatusCode::CONFLICT, "this run takes no passkey (a credentials run with a console on localhost does)")));
+        }
+        let t = now();
+        let key = op.as_str().to_string();
+        if let Err(d) = lock(&self.limiter).begin(&key, t) {
+            return Err(Box::new(locked(d)));
+        }
+        self.refresh();
+        let ok = {
+            let store = self.store.read().unwrap_or_else(|e| e.into_inner());
+            store.file.invite_valid(op.as_str(), code.trim(), now_unix())
+                && store.file.operators.get(op.as_str()).is_some_and(|e| !e.scripted)
+        } && self.decision.roster_entry(op).is_some();
+        if ok {
+            lock(&self.limiter).success(&key);
+            Ok(())
+        } else {
+            let lock_now = lock(&self.limiter).failure(&key, t);
+            println!("auth: a passkey invitation for {op} refused");
+            match lock_now {
+                Some(d) => Err(Box::new(locked(d))),
+                None => Err(Box::new(refusal(
+                    StatusCode::UNAUTHORIZED,
+                    "this invitation is not open (used, expired, or for someone else): ask for a new one",
+                ))),
+            }
+        }
+    }
+
+    /// Start a registration for `op` (kept under `slot`: a session's, or an invitation's).
+    fn start_registration(&self, op: &OperatorId, slot: String) -> Response {
+        let Some(rp) = &self.rp else {
+            return refusal(StatusCode::CONFLICT, "this run takes no passkey (a credentials run with a console on localhost does)");
+        };
+        self.sweep_pending();
+        if lock(&self.registering).len() >= PENDING_CAP {
+            return refusal(StatusCode::TOO_MANY_REQUESTS, "too many registrations waiting: try again in a minute");
+        }
+        let existing = {
+            let store = self.store.read().unwrap_or_else(|e| e.into_inner());
+            match store.file.operators.get(op.as_str()) {
+                Some(e) if e.scripted => {
+                    return refusal(StatusCode::FORBIDDEN, "a scripted credential (a harness's) holds no passkey");
+                }
+                Some(e) => e.passkeys.clone(),
+                None => return refusal(StatusCode::FORBIDDEN, "not an operator in the credential file"),
+            }
+        };
+        match rp.start_registration(op.as_str(), &existing) {
+            Ok((options, reg)) => {
+                lock(&self.registering).insert(
+                    slot,
+                    PendingReg {
+                        operator: op.clone(),
+                        reg,
+                        until: now() + REGISTRATION_TTL,
+                    },
+                );
+                Json(options).into_response()
+            }
+            Err(e) => refusal(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+        }
+    }
+
+    /// Finish a registration: verify it (webauthn-rs: user verification, ES256), keep it in the
+    /// credential file, and log it (`passkey.registered`: through `by`'s session quoting their
+    /// password step-up, or by invitation, which this uses up). The engine refusing it takes it
+    /// out of the file again.
+    async fn finish_registration(
+        &self,
+        op: &OperatorId,
+        reg: PendingReg,
+        credential: &Value,
+        label: &str,
+        by: Option<(&Actor, StepUpChecked)>,
+    ) -> Response {
+        let Some(rp) = &self.rp else {
+            return refusal(StatusCode::CONFLICT, "this run takes no passkey");
+        };
+        let _io = self.passkey_io.lock().await;
+        let entry = match rp.finish_registration(&reg.reg, credential, label, now_unix()) {
+            Ok(e) => e,
+            Err(e) => return refusal(StatusCode::UNPROCESSABLE_ENTITY, &e.to_string()),
+        };
+        let key = murmur_decide::PasskeyKey {
+            operator: op.clone(),
+            id: entry.id.clone(),
+            public_key: entry.public_key.clone(),
+            counter: entry.counter,
+        };
+        let invited = by.is_none();
+        let (id, kept) = (op.as_str().to_string(), entry.clone());
+        if let Err(e) = self
+            .modify_file(move |f| {
+                f.add_passkey(&id, kept)?;
+                if invited {
+                    f.take_invite(&id)?;
+                }
+                Ok(())
+            })
+            .await
+        {
+            return refusal(StatusCode::CONFLICT, &format!("not registered: {e}"));
+        }
+        if let Err(e) = self.decision.record_passkey_registered(key, by) {
+            // the log refused it: nor does the file keep it
+            let (id, cred) = (op.as_str().to_string(), entry.id.clone());
+            let undone = self
+                .modify_file(move |f| {
+                    if let Some(o) = f.operators.get_mut(&id) {
+                        o.passkeys.retain(|p| p.id != cred);
+                    }
+                    Ok(())
+                })
+                .await;
+            if let Err(u) = undone {
+                eprintln!("auth: undoing a refused passkey registration of {op}: {u}");
+            }
+            return decision_refusal(e);
+        }
+        println!("auth: {op} registered a passkey ({}){}", entry.label, if invited { " by invitation" } else { "" });
+        let mut body = json!({
+            "registered": { "label": entry.label, "id": entry.id.chars().take(12).collect::<String>() },
+            "operator": op,
+        });
+        self.passkey_json(op, &mut body);
+        Json(body).into_response()
+    }
 }
 
 async fn logout(State(auth): State<Arc<Auth>>, headers: HeaderMap) -> Response {
@@ -780,16 +1666,28 @@ async fn session(State(auth): State<Arc<Auth>>, headers: HeaderMap) -> Response 
         Some((l, ends.saturating_duration_since(now())))
     });
     match out {
-        Some((l, left)) => Json(json!({
-            "auth": "credentials",
-            "signed_in": true,
-            "operator": l.operator,
-            "engage": l.engage,
-            "ends_in_s": left.as_secs(),
-            "step_up_acts": auth.decision.operators_json()["step_up_acts"],
-        }))
-        .into_response(),
-        None => Json(json!({ "auth": "credentials", "signed_in": false })).into_response(),
+        Some((l, left)) => {
+            let mut body = json!({
+                "auth": "credentials",
+                "signed_in": true,
+                "operator": l.operator,
+                "engage": l.engage,
+                "ends_in_s": left.as_secs(),
+                "step_up_acts": auth.decision.operators_json()["step_up_acts"],
+            });
+            auth.passkey_json(&l.operator, &mut body);
+            Json(body).into_response()
+        }
+        None => {
+            // signed out: whether a passkey sign-in is possible here, and on which host
+            let mut body = json!({ "auth": "credentials", "signed_in": false });
+            let (_, login) = auth.decision.factors();
+            body["login_factor"] = json!(login.as_str());
+            if let Some(rp) = &auth.rp {
+                body["passkey"] = json!({ "rp_id": rp.rp_id, "origins": rp.origins });
+            }
+            Json(body).into_response()
+        }
     }
 }
 

@@ -28,7 +28,11 @@ fn cli(file: &Path, args: &[&str], stdin: &str) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    c.stdin.take().unwrap().write_all(stdin.as_bytes()).unwrap();
+    // a command refused before it reads its password exits first: its stdin is closed then
+    // (a broken pipe here is that, not a failure)
+    if let Err(e) = c.stdin.take().unwrap().write_all(stdin.as_bytes()) {
+        assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe, "{e}");
+    }
     c.wait_with_output().unwrap()
 }
 

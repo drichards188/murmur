@@ -163,14 +163,18 @@ impl RelyingParty {
             .finish_passkey_registration(&rsp, &reg.state)
             .map_err(|e| invalid(format!("passkey registration refused: {e}")))?;
         let public_key = es256_key(&pk)?;
+        let webauthn = serde_json::to_value(&pk).map_err(invalid)?;
+        // the signature counter the authenticator reported at registration (webauthn-rs keeps
+        // it in its record): the first use must count up from it
+        let counter = webauthn["cred"]["counter"].as_u64().and_then(|c| u32::try_from(c).ok()).unwrap_or(0);
         Ok(PasskeyEntry {
             id: b64(pk.cred_id().as_ref()),
             label: label.trim().chars().take(64).collect(),
             public_key,
-            counter: 0,
+            counter,
             created_unix: now_unix,
             last_used_unix: None,
-            webauthn: serde_json::to_value(&pk).map_err(invalid)?,
+            webauthn,
         })
     }
 
