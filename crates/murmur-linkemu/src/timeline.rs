@@ -1,7 +1,9 @@
 //! Scenario time. The stand-ins map wall time to scenario time as `MURMUR_AT` (an ISO start)
 //! plus elapsed seconds times `MURMUR_RATE`; the emulator uses the same convention, with
 //! "elapsed" counted from the emulator's own start (so start it with the `MURMUR_AT` you want
-//! the scenario clock to read at that moment).
+//! the scenario clock to read at that moment). Without `MURMUR_AT` the scenario clock is the
+//! wall clock at the start plus elapsed seconds (as the stand-ins' is): it never steps when
+//! the wall clock does (murmur-dup: this host's steps back about 0.65 s every 32 s).
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -11,6 +13,9 @@ pub struct Timeline {
     pub at_unix: Option<f64>,
     /// Scenario seconds per wall second.
     pub rate: f64,
+    /// The wall clock (unix seconds) when the timeline was made: the scenario clock's start
+    /// without `MURMUR_AT`.
+    pub wall0: f64,
 }
 
 impl Default for Timeline {
@@ -18,8 +23,15 @@ impl Default for Timeline {
         Timeline {
             at_unix: None,
             rate: 1.0,
+            wall0: wall_unix(),
         }
     }
+}
+
+fn wall_unix() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_secs_f64())
 }
 
 impl Timeline {
@@ -38,7 +50,11 @@ impl Timeline {
         if !(rate.is_finite() && rate > 0.0) {
             return Err(format!("rate must be positive, got {rate}"));
         }
-        Ok(Timeline { at_unix, rate })
+        Ok(Timeline {
+            at_unix,
+            rate,
+            wall0: wall_unix(),
+        })
     }
 
     /// `MURMUR_AT` and `MURMUR_RATE` from the environment.
@@ -50,13 +66,12 @@ impl Timeline {
     }
 
     /// Scenario unix time `elapsed_s` wall seconds after the emulator started. Without a
-    /// scenario clock this is the wall clock.
+    /// scenario clock this is the wall clock at the start plus `elapsed_s` (it was the wall
+    /// clock now, which steps).
     pub fn scenario_unix(&self, elapsed_s: f64) -> f64 {
         match self.at_unix {
             Some(at) => at + elapsed_s * self.rate,
-            None => SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0.0, |d| d.as_secs_f64()),
+            None => self.wall0 + elapsed_s,
         }
     }
 
@@ -156,5 +171,16 @@ mod tests {
         assert_eq!(e, Ok(30.0));
         assert!(Timeline::default().elapsed_for(1.0).is_err());
         assert!(Timeline::new(None, Some("0")).is_err());
+    }
+
+    /// murmur-dup: without `MURMUR_AT` the scenario clock (satellite geometry, scenario-time
+    /// events) runs on elapsed seconds from the start, not on the wall clock, which steps.
+    #[test]
+    fn without_a_scenario_clock_time_runs_on_elapsed_seconds() {
+        let t = Timeline::default();
+        let a = t.scenario_unix(10.0);
+        let b = t.scenario_unix(42.5);
+        assert_eq!(b - a, 32.5);
+        assert!((a - (t.wall0 + 10.0)).abs() < 1e-6);
     }
 }
