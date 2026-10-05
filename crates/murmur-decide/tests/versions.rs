@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 17] = [
+const LOGS: [(&str, u32); 18] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -59,7 +59,9 @@ const LOGS: [(&str, u32); 17] = [
     // rules 7 (the queue's follow-ups; a provisional number, so the table names the constant):
     // the same scenario; scenario 67, an operator's hold queued for the engaging USV whose link
     // is cut supersedes the engagement (no fallback); scenario 68, an orbit ordered after an
-    // abort waits for the USV's own lost-link values to be confirmed back; and a live run,
+    // abort waits for the USV's own lost-link values to be confirmed back; scenario 71, an
+    // orbit refused for them under a policy that never queues an orbit still supersedes the
+    // engagement under way, in the refusal's step (no fallback); and a live run,
     // anchored as it ran (an orbit for the engaging USV queued for its own values, superseding
     // the engagement, sent once they were back, its start logged ahead; a second engagement
     // aborted while the USV's link was cut, its values back the second the link returned; a
@@ -67,6 +69,7 @@ const LOGS: [(&str, u32); 17] = [
     ("v7-engagement-scenario-01.jsonl", QUEUE_FOLLOWUPS_SINCE),
     ("v7-queued-order-supersedes-scenario-67.jsonl", QUEUE_FOLLOWUPS_SINCE),
     ("v7-mission-waits-for-restore-scenario-68.jsonl", QUEUE_FOLLOWUPS_SINCE),
+    ("v7-refused-mission-supersedes-scenario-71.jsonl", QUEUE_FOLLOWUPS_SINCE),
     ("v7-queue-followups-live.jsonl", QUEUE_FOLLOWUPS_SINCE),
 ];
 
@@ -264,7 +267,9 @@ fn the_rules_7_live_log_holds_missions_for_the_restore_and_logs_starts_ahead() {
     assert_eq!(r.rules_version, QUEUE_FOLLOWUPS_SINCE);
     assert_eq!(r.build.as_ref().map(|b| b.dirty), Some(Some(false)));
     assert!(r.unrestored.is_empty(), "{:?}", r.unrestored);
-    assert_eq!((r.engagements, r.effects, r.aborts), (3, 0, 3));
+    // thirteen nominations rejected first (a ferry, then a light aircraft, predicted inside
+    // the keep-out), then the three engagements
+    assert_eq!((r.engagements, r.effects, r.aborts), (16, 0, 3));
     let ls = lines(&log);
     // the first engagement under way: an operator's orbit for its USV waits for the USV's own
     // lost-link values, and, queued, supersedes the engagement (no fallback commanded)
@@ -488,11 +493,14 @@ fn a_downgraded_claim_is_caught_by_what_the_log_carries() {
             );
         }
     }
-    // and scenario 67's engagement, superseded by a queued order, no rules 6 build could stop so
-    let mut ls = lines(&fixture("v7-queued-order-supersedes-scenario-67.jsonl"));
-    ls[0] = ls[0].replacen(&format!("\"rules_version\":{v7},"), "\"rules_version\":6,", 1);
-    let r = with(&rechain(&ls), RulesAccepted::Exactly(6));
-    assert!(whats(&r).contains(&"superseded by an order that was not dispatched"), "{:?}", whats(&r));
+    // and scenario 67's engagement, superseded by a queued order, and 71's, by a refused one,
+    // no rules 6 build could stop so
+    for name in ["v7-queued-order-supersedes-scenario-67.jsonl", "v7-refused-mission-supersedes-scenario-71.jsonl"] {
+        let mut ls = lines(&fixture(name));
+        ls[0] = ls[0].replacen(&format!("\"rules_version\":{v7},"), "\"rules_version\":6,", 1);
+        let r = with(&rechain(&ls), RulesAccepted::Exactly(6));
+        assert!(whats(&r).contains(&"superseded by an order that was not dispatched"), "{name}: {:?}", whats(&r));
+    }
     // a rules 4 log claiming rules 3 still names its roster and its order's loiter radius
     let mut ls = lines(&fixture("v4-engagement-scenario-01.jsonl"));
     assert!(ls[0].contains("\"rules_version\":4,"));
