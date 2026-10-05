@@ -899,7 +899,12 @@ The full contract is in the crate docs (`src/lib.rs`). In short:
    previous log still owed (`replay::owed_restores`, `record_platform_restore` carried). A
    nomination that accepts lost vehicles goes through `submit_accepting`; one already
    waiting through `accept_unknown_friendly`: both an operator's request with engagement
-   authority only; `revoke_unknown_friendly` any operator's.
+   authority only; `revoke_unknown_friendly` any operator's. Rules 7: report a vehicle
+   task's start with `record_op_state_ahead` before it goes out (and send nothing if that
+   fails), never as a `starting` op state afterwards; stop an engagement in play on the
+   vehicles of an order the engine queued with `supersede_engagement` in the same step; show a
+   queued order's reach with `reach_now` (it holds a mission for a vehicle still owed its own
+   lost-link values); try a restore when the vehicle is heard again, not into a dead link.
 6. Any `Err` from the engine means nothing changed; never dispatch on an error.
 7. The inbox shows `checks` (look for `unverified`), `policy.facts.unverified` and
    `policy.facts.area_detail` as the reason a human is needed, and `approval.self_approved`.
