@@ -1165,6 +1165,7 @@ dependencies = [
  "argon2",
  "base64 0.22.1",
  "getrandom 0.3.4",
+ "libc",
  "rpassword",
  "serde",
  "serde_json",

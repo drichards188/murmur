@@ -54,9 +54,18 @@ fn add_list_change_and_remove_without_a_terminal() {
     assert!(f.verify_operator("op-2", "another long passphrase").is_some(), "the CR is stripped");
     assert!(!f.operators["op-1"].engage && f.operators["op-2"].engage);
 
-    let list = cli(&file, &["list"], "");
-    let text = String::from_utf8_lossy(&list.stdout);
+    // a harness-held credential: marked, and listed so
+    let out = cli(&file, &["add", "op-planner", "--scripted", "--engage"], &format!("{PW}\n"));
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not a person"));
+    let f = CredentialFile::load(&file).unwrap();
+    assert!(f.operators["op-planner"].scripted && f.operators["op-planner"].engage && !f.operators["op-1"].scripted);
+    assert!(cli(&file, &["scripted", "op-planner", "off"], "").status.success());
+    assert!(!CredentialFile::load(&file).unwrap().operators["op-planner"].scripted);
+    assert!(cli(&file, &["scripted", "op-planner", "on"], "").status.success());
+    let text = String::from_utf8_lossy(&cli(&file, &["list"], "").stdout).to_string();
     assert!(text.contains("op-1") && text.contains("engagement authority"), "{text}");
+    assert!(text.contains("engagement, scripted"), "{text}");
     assert!(!text.contains("argon2"), "no hash in a listing: {text}");
 
     let stamp = f.operators["op-1"].stamp.clone();

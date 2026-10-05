@@ -34,6 +34,11 @@ pub struct OperatorEntry {
     /// Engagement authority: may sign an engagement (and accept a lost vehicle for one).
     #[serde(default)]
     pub engage: bool,
+    /// A harness-held credential (an evaluation's scripted operator, logged in by its
+    /// runner): its sessions are authenticated but are no person's (`auth: scripted` in the
+    /// audit log), and never count as evidence about people.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub scripted: bool,
     pub stamp: String,
     /// When the entry last changed (Unix seconds).
     pub updated_unix: u64,
@@ -134,21 +139,26 @@ impl CredentialFile {
         }
     }
 
-    /// Write atomically: a temporary file beside it (mode 0600), then a rename.
+    /// Write atomically: a new temporary file beside it (an unpredictable name, created
+    /// exclusively with mode 0600 and never through a symlink), then a rename.
     pub fn save(&self, path: &Path) -> Result<(), AuthError> {
         let io = |e| AuthError::Io(path.display().to_string(), e);
         if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
             create_private_dir(dir).map_err(io)?;
         }
         let text = serde_json::to_string_pretty(self).map_err(|e| AuthError::Format(e.to_string()))?;
-        let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
-        {
-            let mut f = private_file(&tmp).map_err(io)?;
-            f.write_all(text.as_bytes()).map_err(io)?;
-            f.write_all(b"\n").map_err(io)?;
-            f.sync_all().map_err(io)?;
+        let tmp = path.with_extension(format!("tmp-{}", keys::stamp()?));
+        let written = (|| -> std::io::Result<()> {
+            let mut f = private_file(&tmp)?;
+            f.write_all(text.as_bytes())?;
+            f.write_all(b"\n")?;
+            f.sync_all()?;
+            fs::rename(&tmp, path)
+        })();
+        if written.is_err() {
+            let _ = fs::remove_file(&tmp);
         }
-        fs::rename(&tmp, path).map_err(io)
+        written.map_err(io)
     }
 
     /// Whether others than the owner can read the file (a warning, not an error: some
@@ -182,10 +192,23 @@ impl CredentialFile {
             OperatorEntry {
                 password: password::hash(password)?,
                 engage,
+                scripted: false,
                 stamp: keys::stamp()?,
                 updated_unix: now_unix(),
             },
         );
+        Ok(())
+    }
+
+    /// Mark an operator's credential harness-held (`scripted`) or a person's; a change
+    /// renews the stamp (their sessions end).
+    pub fn set_scripted(&mut self, id: &str, scripted: bool) -> Result<(), AuthError> {
+        let e = self.operator_mut(id)?;
+        if e.scripted != scripted {
+            e.scripted = scripted;
+            e.stamp = keys::stamp()?;
+            e.updated_unix = now_unix();
+        }
         Ok(())
     }
 
@@ -308,13 +331,15 @@ fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     }
 }
 
+/// A new file only the owner can read: created exclusively (an existing file or symlink of
+/// that name is an error, never opened or followed), mode 0600.
 fn private_file(path: &Path) -> std::io::Result<fs::File> {
     let mut o = OpenOptions::new();
-    o.write(true).create(true).truncate(true);
+    o.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
-        o.mode(0o600);
+        o.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     }
     o.open(path)
 }
@@ -438,6 +463,56 @@ mod tests {
         assert!(f.add_operator("agent-planner", PW, false).is_err(), "an id is one or the other");
         f.remove_agent("agent-planner").unwrap();
         assert!(f.agent_for_key(&k2).is_none());
+    }
+
+    /// Review fix 8: the temporary file is new (never an existing file or a symlink planted
+    /// at a guessable name) and its name is not predictable.
+    #[cfg(unix)]
+    #[test]
+    fn the_temporary_file_is_created_new_and_never_through_a_symlink() {
+        let dir = scratch("tmp");
+        let path = dir.join("credentials.json");
+        let target = dir.join("elsewhere");
+        fs::write(&target, "untouched").unwrap();
+        let link = dir.join("planted");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(private_file(&link).is_err(), "a symlink is not followed");
+        assert!(private_file(&target).is_err(), "an existing file is not opened");
+        assert_eq!(fs::read_to_string(&target).unwrap(), "untouched");
+        // the old name (the process id) is no longer what save writes to
+        let old = path.with_extension(format!("tmp-{}", std::process::id()));
+        std::os::unix::fs::symlink(&target, &old).unwrap();
+        let mut f = CredentialFile::default();
+        f.add_operator("op-1", PW, false).unwrap();
+        f.save(&path).unwrap();
+        f.save(&path).unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "untouched");
+        assert_eq!(CredentialFile::load(&path).unwrap(), f);
+        let left: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.contains("tmp-") && !n.ends_with(&std::process::id().to_string()))
+            .collect();
+        assert!(left.is_empty(), "no temporary file left behind: {left:?}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_scripted_credential_is_marked_and_its_change_renews_the_stamp() {
+        let mut f = CredentialFile::default();
+        f.add_operator("op-planner", PW, false).unwrap();
+        assert!(!f.operators["op-planner"].scripted);
+        let s0 = f.operators["op-planner"].stamp.clone();
+        f.set_scripted("op-planner", true).unwrap();
+        assert!(f.operators["op-planner"].scripted);
+        assert_ne!(f.operators["op-planner"].stamp, s0);
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(json.contains("\"scripted\":true"), "{json}");
+        // a person's entry says nothing (files written before the flag read the same)
+        f.add_operator("op-study", PW, false).unwrap();
+        let v: serde_json::Value = serde_json::to_value(&f).unwrap();
+        assert!(v["operators"]["op-study"].get("scripted").is_none());
     }
 
     #[test]

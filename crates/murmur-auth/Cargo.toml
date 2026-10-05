@@ -17,5 +17,9 @@ sha2 = "0.10"
 subtle = "2.6"
 thiserror = "2"
 
+[target.'cfg(unix)'.dependencies]
+# O_NOFOLLOW for the credential file's temporary file.
+libc = "0.2"
+
 [lints]
 workspace = true

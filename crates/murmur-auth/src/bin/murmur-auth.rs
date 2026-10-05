@@ -2,9 +2,10 @@
 //!
 //! ```text
 //! murmur-auth [--file PATH] list
-//! murmur-auth [--file PATH] add <operator> [--engage]     password from stdin
+//! murmur-auth [--file PATH] add <operator> [--engage] [--scripted]   password from stdin
 //! murmur-auth [--file PATH] passwd <operator>             password from stdin
 //! murmur-auth [--file PATH] engage <operator> on|off      engagement authority
+//! murmur-auth [--file PATH] scripted <operator> on|off    harness-held credential (not a person)
 //! murmur-auth [--file PATH] remove <operator>
 //! murmur-auth [--file PATH] agent-add <agent>             prints the new API key, once
 //! murmur-auth [--file PATH] agent-rotate <agent>          prints a new key; the old one stops working
@@ -17,7 +18,9 @@
 //! prompts twice without echo; otherwise it reads one line (for scripts and tests:
 //! `printf '%s\n' "$PW" | murmur-auth add op-1 --engage`). A running bridge notices a change
 //! within seconds: a removed operator's or agent's sessions end, and so do an operator's
-//! after a new password or a change of authority. Exit 0 on success, 1 on a refused change,
+//! after a new password or a change of authority. `--scripted` marks a credential a harness
+//! holds (an evaluation's scripted operators, logged in by its runner): its logins are
+//! recorded `auth: scripted`, authenticated but never a person's. Exit 0 on success, 1 on a refused change,
 //! 2 on usage.
 
 use std::io::{BufRead as _, IsTerminal as _};
@@ -26,7 +29,7 @@ use std::process::ExitCode;
 
 use murmur_auth::{AuthError, CredentialFile, FileLock, default_path};
 
-const USAGE: &str = "usage: murmur-auth [--file PATH] list | add <operator> [--engage] | passwd <operator> | engage <operator> on|off | remove <operator> | agent-add <agent> | agent-rotate <agent> | agent-remove <agent> | path\n(passwords from stdin; see the module docs)";
+const USAGE: &str = "usage: murmur-auth [--file PATH] list | add <operator> [--engage] [--scripted] | passwd <operator> | engage <operator> on|off | scripted <operator> on|off | remove <operator> | agent-add <agent> | agent-rotate <agent> | agent-remove <agent> | path\n(passwords from stdin; see the module docs)";
 
 fn read_password(id: &str) -> Result<String, AuthError> {
     let io = |e| AuthError::Io("stdin".into(), e);
@@ -97,7 +100,12 @@ fn run(args: &[String]) -> Result<(), (u8, String)> {
         }
         println!("operators ({}):", f.operators.len());
         for (id, e) in &f.operators {
-            let auth = if e.engage { "engagement authority" } else { "operator" };
+            let auth = match (e.engage, e.scripted) {
+                (true, false) => "engagement authority",
+                (false, false) => "operator",
+                (true, true) => "engagement, scripted",
+                (false, true) => "operator, scripted",
+            };
             println!("  {id:<24} {auth:<22} changed {}", utc(e.updated_unix));
         }
         println!("agents ({}):", f.agents.len());
@@ -112,18 +120,26 @@ fn run(args: &[String]) -> Result<(), (u8, String)> {
     let what = match cmd.as_str() {
         "add" => {
             let id = one("an operator id")?;
-            let engage = match rest.get(1).map(String::as_str) {
-                None => false,
-                Some("--engage") => true,
-                Some(o) => return Err(usage(&format!("unknown option {o}"))),
-            };
+            let (mut engage, mut scripted) = (false, false);
+            for o in rest.iter().skip(1) {
+                match o.as_str() {
+                    "--engage" => engage = true,
+                    "--scripted" => scripted = true,
+                    o => return Err(usage(&format!("unknown option {o}"))),
+                }
+            }
             murmur_auth::validate_id(&id).map_err(|e| (1, e))?;
             if f.operators.contains_key(&id) {
                 return Err((1, format!("operator {id} exists (passwd changes the password)")));
             }
             let pw = read_password(&id).map_err(refused)?;
             f.add_operator(&id, &pw, engage).map_err(refused)?;
-            format!("operator {id} added{}", if engage { " with engagement authority" } else { "" })
+            f.set_scripted(&id, scripted).map_err(refused)?;
+            format!(
+                "operator {id} added{}{}",
+                if engage { " with engagement authority" } else { "" },
+                if scripted { " (scripted: a harness-held credential, not a person)" } else { "" }
+            )
         }
         "passwd" => {
             let id = one("an operator id")?;
@@ -145,6 +161,19 @@ fn run(args: &[String]) -> Result<(), (u8, String)> {
             format!(
                 "{id}: engagement authority {}; their sessions end",
                 if on { "granted" } else { "revoked" }
+            )
+        }
+        "scripted" => {
+            let id = one("an operator id")?;
+            let on = match rest.get(1).map(String::as_str) {
+                Some("on") => true,
+                Some("off") => false,
+                _ => return Err(usage("scripted <operator> on|off")),
+            };
+            f.set_scripted(&id, on).map_err(refused)?;
+            format!(
+                "{id}: {}; their sessions end",
+                if on { "scripted (a harness-held credential, not a person)" } else { "a person's credential" }
             )
         }
         "remove" => {
