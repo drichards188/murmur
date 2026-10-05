@@ -31,6 +31,13 @@
 //! sign it (`crate::Engine::approve_engagement`). The floor is two approvers
 //! ([`ENGAGE_MIN_APPROVERS`]); a file may ask for more, never fewer. An agent's order on a
 //! vehicle with an engagement in play is never auto (`(engagement in play)`).
+//!
+//! **Step-up** (rules 7, [`crate::rules::OPERATOR_AUTH_SINCE`]). A human tier may set
+//! `step_up = true`: the authorization is consequential, so in a credentials run every
+//! approval of it re-enters the approver's credential at that moment
+//! ([`PolicyDecision::step_up`]; the engine refuses a signature without a [`crate::StepUp`]),
+//! and the submitter's own request is never the approval (it waits in the inbox). An
+//! engagement always has it, whatever the file says.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -43,7 +50,7 @@ use crate::areas::Area;
 use crate::ids::Uid;
 use crate::intent::{IntentSpec, Source, Task, TaskKind};
 use crate::route::{Segment, route_for};
-use crate::rules::{self, Outcome, RuleId, RulesConfig};
+use crate::rules::{self, OPERATOR_AUTH_SINCE, Outcome, RuleId, RulesConfig};
 use crate::world::WorldSnapshot;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,6 +109,13 @@ pub struct TierRule {
     /// true; an engagement is always false).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposer_may_approve: Option<bool>,
+    /// Human tiers, rules 7 (policy schema 5): a consequential authorization. Each approval
+    /// needs a step-up, the approver's credential re-entered at the moment of approving, in
+    /// a credentials run; the submitter's own request never stands as the approval
+    /// (`submitter_authorizes` is false whatever this tier says). An engagement always has
+    /// it, whatever this file says. Default false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_up: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -341,6 +355,12 @@ impl Policy {
                     t.name
                 )));
             }
+            if t.step_up == Some(true) && t.tier != Tier::Human {
+                return Err(PolicyError::Invalid(format!(
+                    "tier {}: step_up applies to human tiers (an auto tier has no approval to step up)",
+                    t.name
+                )));
+            }
         }
         Ok(())
     }
@@ -401,6 +421,11 @@ pub struct PolicyDecision {
     /// The proposer may not approve. Always true for an engagement.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub proposer_excluded: bool,
+    /// Rules 7: every approval re-enters the approver's credential (a step-up), in a
+    /// credentials run, and the submission is never the approval. Always true for an
+    /// engagement; a human tier's `step_up` otherwise. Absent (false) before rules 7.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub step_up: bool,
 }
 
 fn one() -> u32 {
@@ -558,6 +583,8 @@ pub fn decide(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> Poli
     d.submitter_authorizes = false;
     d.proposer_excluded = true;
     d.approvers = d.approvers.max(ENGAGE_MIN_APPROVERS);
+    // rules 7: every signature on an engagement re-enters the signer's credential
+    d.step_up = policy.rules.rules_version >= OPERATOR_AUTH_SINCE;
     d
 }
 
@@ -620,9 +647,15 @@ fn decide_by_file(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> 
                     submitter_authorizes: human_source && policy.submitter_authorizes(None),
                     approvers: 1,
                     proposer_excluded: false,
+                    step_up: false,
                 };
             }
             let human = rule.tier == Tier::Human;
+            // rules 7: a consequential tier's approval re-enters the credential, and is never
+            // the submission itself
+            let step_up = human
+                && rule.step_up == Some(true)
+                && policy.rules.rules_version >= OPERATOR_AUTH_SINCE;
             return PolicyDecision {
                 tier: rule.tier,
                 rule: rule.name.clone(),
@@ -630,9 +663,11 @@ fn decide_by_file(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> 
                 facts,
                 submitter_authorizes: human
                     && human_source
+                    && !step_up
                     && policy.submitter_authorizes(Some(rule)),
                 approvers: if human { rule.approvers.unwrap_or(1).max(1) } else { 1 },
                 proposer_excluded: human && rule.proposer_may_approve == Some(false),
+                step_up,
             };
         }
     }
@@ -644,5 +679,6 @@ fn decide_by_file(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> 
         submitter_authorizes: human_source && policy.submitter_authorizes(None),
         approvers: 1,
         proposer_excluded: false,
+        step_up: false,
     }
 }

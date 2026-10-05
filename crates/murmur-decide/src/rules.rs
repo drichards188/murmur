@@ -210,14 +210,30 @@ pub enum UnknownEndurance {
 /// orders for unreachable vehicles in a queue and re-checks them before dispatch
 /// ([`crate::queue`]). Version 6 (the engagement part): the platform's lost-link action
 /// preloaded as the fallback and confirmed before a release, the keep-outs' prediction
-/// model, altitude and accepted unknown friendlies (`crate::engage`).
-pub const RULES_VERSION: u32 = 6;
+/// model, altitude and accepted unknown friendlies (`crate::engage`). Version 7 binds every
+/// human act to an authenticated person ([`OPERATOR_AUTH_SINCE`]).
+pub const RULES_VERSION: u32 = 7;
+
+/// The rules version from which operators are authenticated people, not asserted names
+/// (murmur-der.1): `run.started` records how identities were established (the roster's
+/// `auth`: `credentials`, per-person passwords checked by the bridge, or `dev`, identities
+/// asserted by a header and never evidence about people); every session says how it was
+/// opened (`auth`: `password` or `asserted`) and when it ended (`session.closed`); a
+/// signature the policy marks consequential (`step_up`: every engagement, and any human tier
+/// with `step_up = true`) quotes a step-up, the signer's credential re-entered at that moment
+/// (`operator.action step_up`), in a credentials run; such a tier is never approved at
+/// submission. Every gate of that change reads this constant, never a literal, so it can be
+/// renumbered in one line when another change takes the number first.
+pub const OPERATOR_AUTH_SINCE: u32 = 7;
 
 /// The version of the policy file's schema: bumped when a key is added, renamed or removed.
 /// A renamed or removed key stays an optional field of its own, so an old log both parses
 /// and re-serializes byte for byte; `run.started` records it (absent: 1), and replay checks
 /// that the logged policy uses no key of a later schema ([`crate::EngageRules::schema_keys`]).
-pub const POLICY_SCHEMA: u32 = 4;
+pub const POLICY_SCHEMA: u32 = 5;
+
+/// The policy schema that added a tier's `step_up` key (with [`OPERATOR_AUTH_SINCE`]).
+pub const STEP_UP_SCHEMA_SINCE: u32 = 5;
 
 fn current_rules_version() -> u32 {
     RULES_VERSION

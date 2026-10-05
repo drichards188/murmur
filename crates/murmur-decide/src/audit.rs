@@ -38,7 +38,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 
 use crate::areas::AreaSet;
-use crate::authority::{Grants, Roster};
+use crate::authority::{AuthMethod, Grants, Roster, StepUpRef};
 use crate::engage::{
     AssessResult, EngageOrder, EngagePreview, EngageSnapshot, Fallback, ObserveStep, PictureToken,
     PreloadPhase, StopCause,
@@ -206,6 +206,11 @@ pub enum EventBody {
         /// recorded like `self_approved`; replay recomputes it).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         self_accepted: bool,
+        /// Rules 7: the step-up this signature quoted (the signer's credential re-entered at
+        /// signing: the `operator.action step_up` event under the same session). Required in
+        /// a credentials run when the decision says `step_up`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step_up: Option<StepUpRef>,
     },
 
     /// A signature that is not yet enough: signature `n` of the `of` distinct approvers the
@@ -235,6 +240,9 @@ pub enum EventBody {
         /// Engage, rules 6: as on `approval.granted`.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         self_accepted: bool,
+        /// Rules 7: as on `approval.granted`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step_up: Option<StepUpRef>,
     },
 
     /// Engage: the engine showed a signer the picture (`token`: the plan, the track's
@@ -429,6 +437,11 @@ pub enum EventBody {
         /// `session.opened`: what the session may authorize beyond tasking (absent: nothing).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         grants: Option<Grants>,
+        /// Rules 7, on `session.opened` and `step_up`: how the operator proved who they are
+        /// (`password`: checked by the bridge; `asserted`: a name the request gave, dev mode).
+        /// `session.closed` (detail: why) ends the session; nothing may follow under it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auth: Option<AuthMethod>,
     },
 
     #[serde(rename = "agent.action")]

@@ -184,6 +184,20 @@ fn main() -> ExitCode {
         };
         println!("written by build {}{dirty}", b.commit);
     }
+    // rules 7: whose decisions these are, as far as the log can say
+    match report.auth {
+        Some(murmur_decide::AuthMode::Credentials) => println!(
+            "auth: credentials (operators logged in with their own password; {} step-up(s), {} signature(s) quoting one, {} session(s) ended)",
+            report.step_ups, report.stepped_signatures, report.sessions_closed
+        ),
+        Some(murmur_decide::AuthMode::Dev) => println!(
+            "auth: DEV (operator ids asserted by request headers, not authenticated): not evidence about people; exclude from any human-control claim"
+        ),
+        None => println!(
+            "auth: none recorded (rules before {}: operator ids asserted by request headers): not evidence about people",
+            murmur_decide::OPERATOR_AUTH_SINCE
+        ),
+    }
     println!(
         "{} area set(s) logged; {} approval(s), {} self-approved; {} authorized at submission",
         report.area_sets, report.approvals, report.self_approvals, report.approvals_at_submission

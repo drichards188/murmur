@@ -57,10 +57,35 @@
 //!     let _ = engine.approve_engagement(IntentId(1), a, None, 1, world, &NoTerrain);
 //! }
 //! ```
+//!
+//! A step-up (the signer's credential re-entered at the moment of signing, rules 7) is a
+//! [`StepUp`]: only [`crate::Engine::step_up`] makes one, after logging it under the session
+//! it is for, and a signature consumes it. It can't be forged, copied or read from JSON
+//! either, so a signature can't quote a step-up it did not just make:
+//!
+//! ```compile_fail,E0451
+//! // Forging a step-up by struct literal: the fields are private.
+//! use murmur_decide::{OperatorId, SessionId, StepUp, Time};
+//! let forged = StepUp { operator: OperatorId::new("mallory"), session: SessionId(1), seq: 7, t: Time(0) };
+//! ```
+//!
+//! ```compile_fail,E0277
+//! // A step-up from JSON (a request body, an MCP call): no Deserialize impl.
+//! let forged: murmur_decide::StepUp =
+//!     serde_json::from_str(r#"{"operator":"mallory","session":1,"seq":7,"t":0}"#).unwrap();
+//! ```
+//!
+//! ```compile_fail,E0599
+//! // Using one step-up for two signatures: not Clone.
+//! fn twice(s: murmur_decide::StepUp) -> (murmur_decide::StepUp, murmur_decide::StepUp) {
+//!     (s.clone(), s)
+//! }
+//! ```
 
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{OperatorId, SessionId};
+use crate::time::Time;
 
 /// Proof, at the type level, that a human operator is acting. Not `Clone`, not `Default`,
 /// not `Deserialize`; constructible only inside this crate.
@@ -109,8 +134,9 @@ impl EngagementAuthority {
 }
 
 /// What an operator session may do beyond tasking, fixed when the session opens and logged
-/// with it (`operator.action session.opened`). The bridge grants it from its operator
-/// configuration (`MURMUR_ENGAGE_OPERATORS`, a placeholder for real authentication).
+/// with it (`operator.action session.opened`). The bridge grants it from the run's roster:
+/// in a credentials run, the operator's credential holds engagement authority (and did when
+/// the run started); in dev mode, `MURMUR_ENGAGE_OPERATORS` names them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Grants {
@@ -119,12 +145,111 @@ pub struct Grants {
     pub engage: bool,
 }
 
-/// Who may act as an operator in a run, and who of them with engagement authority: the
-/// bridge's `MURMUR_OPERATORS` and `MURMUR_ENGAGE_OPERATORS` (a placeholder for real
-/// authentication), fixed when the run starts and logged in `run.started` (rules 4). The
-/// engine opens sessions only for operators on it, with engagement authority only for those
-/// on its engagement list, and replay checks every logged session against it, so a log can't
-/// gain an operator or a grant the run never had.
+/// How a run established who its operators are (rules 7,
+/// [`crate::rules::OPERATOR_AUTH_SINCE`]; logged on the roster in `run.started`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthMode {
+    /// Per-person credentials: the bridge checked each operator's password at login (and
+    /// again at every step-up) against the credential file, and opens sessions only then.
+    /// The only mode whose decisions can stand as evidence about authenticated people.
+    Credentials,
+    /// Identities asserted by whoever sent the request (the bridge's `X-Murmur-Operator`
+    /// header under `MURMUR_AUTH=dev`, a scripted scenario, a test). Useful for scripted runs
+    /// and the evaluation's proxy; never evidence that a person decided anything.
+    Dev,
+}
+
+impl AuthMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AuthMode::Credentials => "credentials",
+            AuthMode::Dev => "dev",
+        }
+    }
+
+    /// The session-opening method this mode allows.
+    pub fn method(self) -> AuthMethod {
+        match self {
+            AuthMode::Credentials => AuthMethod::Password,
+            AuthMode::Dev => AuthMethod::Asserted,
+        }
+    }
+}
+
+/// How one operator session was opened (rules 7; logged as `auth` on `session.opened`, and
+/// on a step-up).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthMethod {
+    /// The operator's password, checked by the bridge against its argon2id hash.
+    Password,
+    /// The operator's id as the request named it, unchecked (dev mode, scenarios, tests).
+    Asserted,
+}
+
+/// Proof that the signer re-entered their credential just now (rules 7, a credentials run):
+/// made only by [`crate::Engine::step_up`], which logs it (`operator.action step_up`) under
+/// the session it is for, and consumed by the one signature that quotes it. Not `Clone`, not
+/// `Default`, not `Deserialize`, no public fields. The engine refuses it for another session
+/// or once it is older than [`STEP_UP_MAX_AGE_MS`]; the signature records the step-up's
+/// event (`step_up: {seq}`), which replay checks.
+#[derive(Debug)]
+pub struct StepUp {
+    operator: OperatorId,
+    session: SessionId,
+    seq: u64,
+    t: Time,
+}
+
+/// The oldest a step-up may be when the signature quoting it is checked. The bridge checks
+/// the credential and signs in one request, so this only bounds a slow re-check.
+pub const STEP_UP_MAX_AGE_MS: i64 = 10_000;
+
+impl StepUp {
+    pub(crate) fn mint(operator: OperatorId, session: SessionId, seq: u64, t: Time) -> StepUp {
+        StepUp {
+            operator,
+            session,
+            seq,
+            t,
+        }
+    }
+
+    pub fn operator(&self) -> &OperatorId {
+        &self.operator
+    }
+
+    pub fn session(&self) -> SessionId {
+        self.session
+    }
+
+    /// The `operator.action step_up` event it was logged as.
+    pub fn seq(&self) -> u64 {
+        self.seq
+    }
+
+    pub fn t(&self) -> Time {
+        self.t
+    }
+}
+
+/// A signature's reference to the step-up it quoted (`step_up` on `approval.concurred` and
+/// `approval.granted`): the `operator.action step_up` event's `seq`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StepUpRef {
+    pub seq: u64,
+}
+
+/// Who may act as an operator in a run, who of them with engagement authority, and (rules 7)
+/// how they prove it: with `auth = credentials` the bridge's credential file at the run's
+/// start (each person's password checked at login), with `auth = dev` the bridge's
+/// `MURMUR_OPERATORS` and `MURMUR_ENGAGE_OPERATORS`, names a request asserts. Fixed when the
+/// run starts and logged in `run.started` (rules 4). The engine opens sessions only for
+/// operators on it, with engagement authority only for those on its engagement list, and
+/// replay checks every logged session against it, so a log can't gain an operator or a grant
+/// the run never had.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Roster {
@@ -132,15 +257,31 @@ pub struct Roster {
     pub operators: Vec<OperatorId>,
     /// Those of them whose sessions carry engagement authority.
     pub engage: Vec<OperatorId>,
+    /// Rules 7: how operators are authenticated. Absent in older logs (asserted names). An
+    /// engine of rules 7 or later always logs it, `dev` when none was given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<AuthMode>,
 }
 
 impl Roster {
     /// A roster, checked: at least one operator, no empty or repeated id, and every
-    /// engagement operator listed as an operator too.
+    /// engagement operator listed as an operator too. Its auth mode is unset (the engine
+    /// logs `dev` for it under rules 7); [`Roster::with_auth`] sets one.
     pub fn new(operators: Vec<OperatorId>, engage: Vec<OperatorId>) -> Result<Roster, String> {
-        let r = Roster { operators, engage };
+        let r = Roster {
+            operators,
+            engage,
+            auth: None,
+        };
         r.validate()?;
         Ok(r)
+    }
+
+    /// The same roster, authenticated as `mode` says.
+    #[must_use]
+    pub fn with_auth(mut self, mode: AuthMode) -> Roster {
+        self.auth = Some(mode);
+        self
     }
 
     /// Why this roster could not have been configured, if it couldn't.
@@ -181,9 +322,12 @@ impl Roster {
     }
 }
 
-/// An authenticated operator's session. The bridge opens one per operator login (its
-/// operator HTTP endpoint is the only caller of `Engine::open_operator_session`) and keeps
-/// it on the operator side; it is never handed to agent code.
+/// An authenticated operator's session. The bridge opens one per operator login (its login
+/// endpoint is the only caller of `Engine::open_authenticated_session` in a credentials
+/// run; in dev mode the operator endpoints open one per asserted id) and keeps it on the
+/// operator side; it is never handed to agent code. Ending it
+/// ([`crate::Engine::close_operator_session`]) consumes it, and with it the authorities it
+/// holds.
 #[derive(Debug)]
 pub struct OperatorSession {
     authority: HumanAuthority,

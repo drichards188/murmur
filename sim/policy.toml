@@ -33,6 +33,11 @@
 #                                 collect whose product timing is unknown but has a deadline)
 # approvers = N (human tiers): N distinct operators must approve (two-person approval: 2).
 # proposer_may_approve = false (human tiers): the human who proposed it can't approve it.
+# step_up = true (human tiers; rules 7, policy schema 5): a consequential authorization. In a
+#   run with per-person credentials every approval re-enters the approver's password at that
+#   moment (a step-up, logged), and the submitter's own request is never the approval (it
+#   waits in the inbox). Every engagement signature steps up whatever this file says; no
+#   other tier does by default (a user decision: e.g. the armed-platform tier).
 # collect and cover target no fleet vehicle: for them armed is never true and
 # leaves_approved_area is false, so route them by kind (below, before those tiers).
 # If nothing matches, the intent goes to a human (fail closed). An intent with any

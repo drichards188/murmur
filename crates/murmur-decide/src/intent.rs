@@ -673,6 +673,9 @@ pub struct Approval {
     /// tier lets the submitter authorize (`approval.at_submission`). Always self-approved.
     pub at_submission: bool,
     pub note: Option<String>,
+    /// Rules 7: the approver re-entered their credential to sign (a step-up).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub step_up: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]

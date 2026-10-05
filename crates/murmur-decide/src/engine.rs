@@ -5,7 +5,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::areas::AreaSet;
 use crate::audit::{AuditSink, CheckPhase, Event, EventBody, LoggedAreas, OperatorView};
-use crate::authority::{EngagementAuthority, Grants, HumanAuthority, OperatorSession, Roster};
+use crate::authority::{
+    AuthMethod, AuthMode, EngagementAuthority, Grants, HumanAuthority, OperatorSession, Roster,
+    STEP_UP_MAX_AGE_MS, StepUp, StepUpRef,
+};
 use crate::engage::{
     self, EffectOrder, EffectRecord, EngageOrder, EngageWindow, EngagementEvent, FallbackOrder,
     FrozenPlan, PictureToken, PictureVerdict, StopCause, StopRecord, TrackIdentity,
@@ -21,7 +24,7 @@ use crate::queue::{
     self as queue, Basis, CarriedApproval, OpenIntent, QueueState, Reach, RecheckRecord,
     ResumedFrom, Verdict,
 };
-use crate::rules::{self, CheckResult, Outcome};
+use crate::rules::{self, CheckResult, OPERATOR_AUTH_SINCE, Outcome};
 use serde::Serialize;
 use crate::space::{
     ChosenCollect, CollectOrder, CoverOrder, ScenarioMap, SegmentId, SpaceOracle, SpaceOrder,
@@ -96,6 +99,15 @@ pub enum EngineError {
     /// nothing was logged.
     #[error("vehicle {uid}: {why}")]
     NotAccepted { uid: Uid, why: String },
+    /// Rules 7: a session or step-up the run's authentication does not allow (an asserted
+    /// session in a credentials run, a step-up in a dev run, a step-up for another session
+    /// or too old): nothing was logged.
+    #[error("operator {operator}: {why}")]
+    NotAuthenticated { operator: OperatorId, why: String },
+    /// Rules 7, a credentials run: the decision marks this approval consequential, and the
+    /// signer did not re-enter their credential for it (logged as `approval.refused`).
+    #[error("intent {id}: {by} must re-enter their credential to sign this (step-up)")]
+    StepUpRequired { id: IntentId, by: OperatorId },
 }
 
 /// A space answer computed outside the engine's lock (the bridge runs the SGP4 work first,
@@ -280,6 +292,11 @@ pub struct Engine {
     next_token: u64,
     /// Who may open an operator session, and with engagement authority (`run.started`).
     roster: Roster,
+    /// Rules 7: how this run's operators are authenticated (the roster's logged `auth`);
+    /// None before rules 7.
+    auth: Option<AuthMode>,
+    /// Rules 7: sessions ended (`session.closed`): nothing more is logged under them.
+    closed: BTreeSet<SessionId>,
     /// The intent dispatched last: the only one that may supersede an engagement.
     last_dispatched: Option<IntentId>,
     /// Per vehicle, the intent dispatched to it last: an older one's order there was replaced.
@@ -322,6 +339,12 @@ impl Engine {
         sink: Box<dyn AuditSink + Send>,
     ) -> Result<Self, EngineError> {
         roster.validate().map_err(EngineError::Roster)?;
+        // rules 7: the roster says how its operators are authenticated (dev when the caller
+        // said nothing: names asserted, never evidence about people); older rules never
+        // logged it
+        let mut roster = roster;
+        roster.auth = (policy.rules.rules_version >= OPERATOR_AUTH_SINCE)
+            .then(|| roster.auth.unwrap_or(AuthMode::Dev));
         let areas = match areas {
             Some(a) => Some(LoggedAreas {
                 sha256: a.content_hash()?,
@@ -345,7 +368,9 @@ impl Engine {
             prepared_space: None,
             tokens: BTreeMap::new(),
             next_token: 1,
+            auth: roster.auth,
             roster: roster.clone(),
+            closed: BTreeSet::new(),
             last_dispatched: None,
             newest_on: BTreeMap::new(),
             rebooted: BTreeMap::new(),
@@ -434,15 +459,64 @@ impl Engine {
     /// session carries an [`EngagementAuthority`] (the only thing that approves an
     /// engagement). The grants are logged with the session (`grants` on
     /// `operator.action session.opened`), so replay knows who could approve what.
+    ///
+    /// Rules 7: the session is logged as opened on an asserted name (`auth: asserted`), so
+    /// only a dev run (the roster's `auth`) opens one this way; a credentials run refuses
+    /// it ([`EngineError::NotAuthenticated`]) and opens sessions with
+    /// [`Engine::open_authenticated_session`] after the bridge checked the password.
     pub fn open_operator_session_with(
         &mut self,
         operator: OperatorId,
         grants: Grants,
     ) -> Result<OperatorSession, EngineError> {
+        self.open_session(operator, grants, AuthMethod::Asserted)
+    }
+
+    /// Rules 7: open a session for an operator whose identity the bridge established by
+    /// `method` (a credentials run: `Password`, checked against the operator's credential at
+    /// login; a dev run: `Asserted`). Logged as `operator.action session.opened` with
+    /// `auth`. The only way into a session in a credentials run; refused when the method is
+    /// not the run's ([`EngineError::NotAuthenticated`], nothing logged).
+    pub fn open_authenticated_session(
+        &mut self,
+        operator: OperatorId,
+        grants: Grants,
+        method: AuthMethod,
+    ) -> Result<OperatorSession, EngineError> {
+        if self.auth.is_none() {
+            return Err(EngineError::NotAuthenticated {
+                operator,
+                why: "these decision rules record no authentication: open the session with open_operator_session_with".into(),
+            });
+        }
+        self.open_session(operator, grants, method)
+    }
+
+    fn open_session(
+        &mut self,
+        operator: OperatorId,
+        grants: Grants,
+        method: AuthMethod,
+    ) -> Result<OperatorSession, EngineError> {
         if let Some(why) = self.roster.refuses(&operator, grants) {
             return Err(EngineError::NotOnRoster {
                 operator,
                 why: why.into(),
+            });
+        }
+        if let Some(mode) = self.auth
+            && mode.method() != method
+        {
+            return Err(EngineError::NotAuthenticated {
+                operator,
+                why: format!(
+                    "a {} run opens sessions only on {} identities",
+                    mode.as_str(),
+                    match mode.method() {
+                        AuthMethod::Password => "password-checked",
+                        AuthMethod::Asserted => "asserted",
+                    }
+                ),
             });
         }
         let session = SessionId(self.next_session);
@@ -456,9 +530,110 @@ impl Engine {
                 String::new()
             },
             grants: (grants != Grants::default()).then_some(grants),
+            auth: self.auth.map(|_| method),
         })?;
         self.next_session += 1;
         Ok(OperatorSession::mint(operator, session, grants))
+    }
+
+    /// How this run authenticates its operators (rules 7; None before).
+    pub fn auth_mode(&self) -> Option<AuthMode> {
+        self.auth
+    }
+
+    /// Rules 7: end an operator session (logout, expiry, a credential removed or changed:
+    /// `reason`), logged as `operator.action session.closed`. Consumes the session and the
+    /// authorities it holds; picture tokens issued to it are dropped. Nothing may be logged
+    /// under it afterwards (replay checks). Before rules 7 sessions are not closed: the
+    /// session is dropped and nothing is logged.
+    pub fn close_operator_session(
+        &mut self,
+        session: OperatorSession,
+        reason: &str,
+    ) -> Result<(), EngineError> {
+        let id = session.authority().session();
+        if self.auth.is_none() || self.closed.contains(&id) {
+            return Ok(());
+        }
+        self.emit(EventBody::OperatorAction {
+            operator: session.operator().clone(),
+            session: id,
+            action: "session.closed".into(),
+            detail: reason.to_string(),
+            grants: None,
+            auth: None,
+        })?;
+        self.closed.insert(id);
+        self.tokens.retain(|_, t| t.session != id);
+        Ok(())
+    }
+
+    /// Rules 7, a credentials run: the operator of `session` re-entered their credential just
+    /// now, and the bridge checked it (its step-up endpoint is the only caller, right before
+    /// the signature it is for). Logged as `operator.action step_up` (`auth: password`) under
+    /// the session; the [`StepUp`] returned is what a consequential signature quotes
+    /// ([`Engine::approve_stepped`], [`Engine::approve_engagement_stepped`]), once, within
+    /// [`STEP_UP_MAX_AGE_MS`]. Refused (nothing logged) in a run that does not authenticate
+    /// with credentials: a step-up there would prove nothing.
+    pub fn step_up(&mut self, session: &OperatorSession) -> Result<StepUp, EngineError> {
+        let operator = session.operator().clone();
+        let id = session.authority().session();
+        if self.auth != Some(AuthMode::Credentials) {
+            return Err(EngineError::NotAuthenticated {
+                operator,
+                why: "a step-up re-enters a credential: only a credentials run has one".into(),
+            });
+        }
+        if self.closed.contains(&id) {
+            return Err(EngineError::NotAuthenticated {
+                operator,
+                why: format!("session {} has ended", id.0),
+            });
+        }
+        let t = self.emit(EventBody::OperatorAction {
+            operator: operator.clone(),
+            session: id,
+            action: "step_up".into(),
+            detail: "credential re-entered to sign".into(),
+            grants: None,
+            auth: Some(AuthMethod::Password),
+        })?;
+        Ok(StepUp::mint(operator, id, self.seq, t))
+    }
+
+    /// Whether a signature on `id` by `by` in `session` may go ahead as far as step-up goes,
+    /// and the reference it records. Refused (logged as `approval.refused`) when the decision
+    /// asks for a step-up in a credentials run and none was given; a step-up for another
+    /// session, or too old, is refused too.
+    fn check_step_up(
+        &mut self,
+        id: IntentId,
+        by: &OperatorId,
+        session: SessionId,
+        step: Option<StepUp>,
+    ) -> Result<Option<StepUpRef>, EngineError> {
+        let needed = self.auth == Some(AuthMode::Credentials)
+            && self.get(id)?.policy().is_some_and(|p| p.step_up);
+        let Some(s) = step else {
+            if needed {
+                self.refuse(by, session, id, "step-up required: the signer must re-enter their credential to sign this")?;
+                return Err(EngineError::StepUpRequired { id, by: by.clone() });
+            }
+            return Ok(None);
+        };
+        let now = self.now();
+        let why = if s.session() != session || s.operator() != by {
+            Some(format!("the step-up was made in session {} by {}, not this signer's", s.session().0, s.operator()))
+        } else if now.ms_since(s.t()) > STEP_UP_MAX_AGE_MS {
+            Some(format!("the step-up is {} ms old (at most {STEP_UP_MAX_AGE_MS})", now.ms_since(s.t())))
+        } else {
+            None
+        };
+        if let Some(why) = why {
+            self.refuse(by, session, id, &why)?;
+            return Err(EngineError::NotAuthenticated { operator: by.clone(), why });
+        }
+        Ok(Some(StepUpRef { seq: s.seq() }))
     }
 
     /// A human's intent (also what `POST /api/tasks` becomes). If its checks pass and policy
@@ -787,7 +962,7 @@ impl Engine {
         world: &WorldSnapshot,
         terrain: &dyn TerrainOracle,
     ) -> Result<&Intent, EngineError> {
-        self.approve_inner(id, by, note, false, world, terrain)
+        self.approve_inner(id, by, note, false, None, world, terrain)
     }
 
     /// [`Engine::approve`], acknowledging that its dispatch stops the engagements in play on
@@ -800,15 +975,35 @@ impl Engine {
         world: &WorldSnapshot,
         terrain: &dyn TerrainOracle,
     ) -> Result<&Intent, EngineError> {
-        self.approve_inner(id, by, note, true, world, terrain)
+        self.approve_inner(id, by, note, true, None, world, terrain)
     }
 
+    /// Rules 7: [`Engine::approve`] (with `acknowledge` as in
+    /// [`Engine::approve_acknowledging`]) quoting a step-up, the approver's credential
+    /// re-entered just now ([`Engine::step_up`]). A decision marked `step_up` needs one in a
+    /// credentials run; the signature records it (`step_up: {seq}`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn approve_stepped(
+        &mut self,
+        id: IntentId,
+        by: &HumanAuthority,
+        step: StepUp,
+        note: Option<String>,
+        acknowledge: bool,
+        world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
+    ) -> Result<&Intent, EngineError> {
+        self.approve_inner(id, by, note, acknowledge, Some(step), world, terrain)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn approve_inner(
         &mut self,
         id: IntentId,
         by: &HumanAuthority,
         note: Option<String>,
         acknowledge: bool,
+        step: Option<StepUp>,
         world: &WorldSnapshot,
         terrain: &dyn TerrainOracle,
     ) -> Result<&Intent, EngineError> {
@@ -821,7 +1016,7 @@ impl Engine {
             )?;
             return Err(EngineError::EngagementNeedsAuthority(id));
         }
-        self.sign(id, by.operator(), by.session(), note, acknowledge, world, terrain)
+        self.sign(id, by.operator(), by.session(), note, acknowledge, step, world, terrain)
     }
 
     /// Show a signer the picture they would sign ([`PictureToken`], logged as
@@ -916,7 +1111,27 @@ impl Engine {
         if self.get(id)?.spec().kind() != TaskKind::Engage {
             return Err(EngineError::NotAnEngagement(id));
         }
-        self.sign_engagement(id, by.operator(), by.session(), note, token, world, terrain)
+        self.sign_engagement(id, by.operator(), by.session(), note, token, None, world, terrain)
+    }
+
+    /// Rules 7: [`Engine::approve_engagement`] quoting a step-up, the signer's credential
+    /// re-entered just now ([`Engine::step_up`]): what every engagement signature needs in a
+    /// credentials run. The signature records it (`step_up: {seq}`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn approve_engagement_stepped(
+        &mut self,
+        id: IntentId,
+        by: &EngagementAuthority,
+        step: StepUp,
+        note: Option<String>,
+        token: u64,
+        world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
+    ) -> Result<&Intent, EngineError> {
+        if self.get(id)?.spec().kind() != TaskKind::Engage {
+            return Err(EngineError::NotAnEngagement(id));
+        }
+        self.sign_engagement(id, by.operator(), by.session(), note, token, Some(step), world, terrain)
     }
 
     /// Log a refused approval attempt (nothing else changes).
@@ -933,6 +1148,7 @@ impl Engine {
             action: "approval.refused".into(),
             detail: format!("{id}: {why}"),
             grants: None,
+            auth: None,
         })?;
         Ok(())
     }
@@ -947,6 +1163,7 @@ impl Engine {
         session: SessionId,
         note: Option<String>,
         acknowledge: bool,
+        step: Option<StepUp>,
         world: &WorldSnapshot,
         terrain: &dyn TerrainOracle,
     ) -> Result<&Intent, EngineError> {
@@ -973,6 +1190,8 @@ impl Engine {
             self.refuse(by, session, id, "already signed: another operator must")?;
             return Err(EngineError::AlreadySigned { id, by: by.clone() });
         }
+        // rules 7: a consequential approval quotes the approver's step-up
+        let step_up = self.check_step_up(id, by, session, step)?;
         let (inputs, _, results, ok) =
             self.run_checks_plan(&spec, CheckPhase::Approve, world, terrain, None)?;
         if !ok {
@@ -1016,6 +1235,7 @@ impl Engine {
                 supersedes,
                 checked_t: None,
                 self_accepted: false,
+                step_up,
             })?;
             self.get_mut(id)?.push_concurrence(Approval {
                 by: by.clone(),
@@ -1025,6 +1245,7 @@ impl Engine {
                 self_accepted: false,
                 at_submission: false,
                 note,
+                step_up: step_up.is_some(),
             });
             return self.get(id);
         }
@@ -1039,6 +1260,7 @@ impl Engine {
             supersedes,
             checked_t: None,
             self_accepted: false,
+            step_up,
         })?;
         self.get_mut(id)?.set_approval(Approval {
             by: by.clone(),
@@ -1048,6 +1270,7 @@ impl Engine {
             self_accepted: false,
             at_submission: false,
             note,
+            step_up: step_up.is_some(),
         });
         let signers = if of > 1 {
             format!(" (signature {n} of {of})")
@@ -1081,6 +1304,7 @@ impl Engine {
         session: SessionId,
         note: Option<String>,
         token: u64,
+        step: Option<StepUp>,
         world: &WorldSnapshot,
         terrain: &dyn TerrainOracle,
     ) -> Result<&Intent, EngineError> {
@@ -1108,6 +1332,8 @@ impl Engine {
             self.refuse(by, session, id, "already signed: another operator must")?;
             return Err(EngineError::AlreadySigned { id, by: by.clone() });
         }
+        // rules 7: every engagement signature quotes the signer's step-up (credentials run)
+        let step_up = self.check_step_up(id, by, session, step)?;
         // the picture this signer was shown
         let track_id = engage::params(&spec).map(|p| p.0.to_string()).unwrap_or_default();
         let shown = match self.tokens.get(&token) {
@@ -1197,6 +1423,7 @@ impl Engine {
                 supersedes: Vec::new(),
                 checked_t: Some(now),
                 self_accepted,
+                step_up,
             })?;
             let intent = self.get_mut(id)?;
             intent.push_concurrence(Approval {
@@ -1207,6 +1434,7 @@ impl Engine {
                 self_accepted,
                 at_submission: false,
                 note,
+                step_up: step_up.is_some(),
             });
             let e = intent.engagement_mut();
             e.signed.push(engage::SignedPicture {
@@ -1237,6 +1465,7 @@ impl Engine {
             supersedes: Vec::new(),
             checked_t: Some(now),
             self_accepted,
+            step_up,
         })?;
         let intent = self.get_mut(id)?;
         intent.set_approval(Approval {
@@ -1247,6 +1476,7 @@ impl Engine {
             self_accepted,
             at_submission: false,
             note,
+            step_up: step_up.is_some(),
         });
         let e = intent.engagement_mut();
         e.signed.push(engage::SignedPicture {
@@ -1340,6 +1570,7 @@ impl Engine {
             action: "intent.amend".into(),
             detail: amend_detail(id, new_id, &chosen),
             grants: None,
+            auth: None,
         })?;
         let source = Source::Human {
             id: by.operator().clone(),
@@ -1366,6 +1597,7 @@ impl Engine {
             action: "intent.cancel".into(),
             detail: format!("{id}: {note}"),
             grants: None,
+            auth: None,
         })?;
         self.transition(
             id,
@@ -1388,6 +1620,7 @@ impl Engine {
             action: action.into(),
             detail: detail.into(),
             grants: None,
+            auth: None,
         })?;
         Ok(())
     }
@@ -2965,6 +3198,7 @@ impl Engine {
                     self_accepted: false,
                     at_submission: true,
                     note: None,
+                    step_up: false,
                 });
                 let t = self.transition_at(
                     id,
@@ -3412,6 +3646,7 @@ fn carried_approval(a: &CarriedApproval) -> Approval {
         self_accepted: false,
         at_submission: a.at_submission,
         note: None,
+        step_up: false,
     }
 }
 

@@ -57,6 +57,16 @@
 //! - sessions: from rules 4 every session is for an operator on the roster `run.started`
 //!   names, with engagement authority only for its engagement operators; rejections and
 //!   at-submission approvals are under the decider's own session.
+//! - authentication (rules 7, [`crate::rules::OPERATOR_AUTH_SINCE`]): `run.started` says how
+//!   operators were authenticated (the roster's `auth`, [`ReplayReport::auth`]); every
+//!   session was opened that way (`password` in a credentials run, `asserted` in a dev run);
+//!   every other operator action is under the operator's own session; nothing acts under a
+//!   session after its `session.closed`; a step-up is only in a credentials run, by
+//!   password; a signature quoting one quotes a step-up under its own session, unused, at
+//!   most [`crate::STEP_UP_MAX_AGE_MS`] old, and in a credentials run every signature whose
+//!   recomputed decision says `step_up` (every engagement signature) quotes one.
+//!   [`ReplayReport::authenticated`] is what evaluation reads before counting a log's human
+//!   decisions as people's.
 //!
 //! **Space recomputation.** [`replay_str_with_space`] also re-runs every logged space query
 //! on the segment given. If that segment is the one the query ran on (same
@@ -88,7 +98,7 @@ use serde::Serialize;
 
 use crate::areas::AreaSet;
 use crate::audit::{CheckPhase, Event, EventBody, LogError, parse_log};
-use crate::authority::{Grants, Roster};
+use crate::authority::{AuthMethod, AuthMode, Grants, Roster, STEP_UP_MAX_AGE_MS, StepUpRef};
 use crate::engage::{
     self, EffectRecord, EngageOrder, EngageSnapshot, Fallback, FrozenPlan, ObserveStep,
     PictureToken, StopCause, TrackIdentity,
@@ -104,7 +114,7 @@ use crate::ids::IntentId;
 use crate::intent::{IntentSpec, Source, State, Task, TaskKind, Transition, next_state};
 use crate::policy::{self, Policy, PolicyDecision, Tier};
 use crate::queue::{self as queue, Basis, CarriedApproval, OpenIntent, Verdict};
-use crate::rules::{self, CheckResult};
+use crate::rules::{self, CheckResult, OPERATOR_AUTH_SINCE, STEP_UP_SCHEMA_SINCE};
 use crate::space::{ScenarioMap, SpaceAnswer, SpaceOracle, SpaceOrder};
 use crate::time::Time;
 use crate::world::{LoggedInputs, LoggedSpace, WorldSnapshot};
@@ -187,12 +197,29 @@ pub struct ReplayReport {
     pub next_intent: u64,
     /// The last event's seq.
     pub last_seq: u64,
+    /// Rules 7: how the run authenticated its operators (the roster's `auth`): `credentials`
+    /// (each person's password checked by the bridge) or `dev` (names asserted). None before
+    /// rules 7: names asserted, as `dev`.
+    pub auth: Option<AuthMode>,
+    /// Rules 7: step-ups logged (a credential re-entered to sign), signatures that quoted
+    /// one, and sessions ended (`session.closed`).
+    pub step_ups: usize,
+    pub stepped_signatures: usize,
+    pub sessions_closed: usize,
 }
 
 impl ReplayReport {
     /// Every decision reproduced from the logged inputs (including logged space answers).
     pub fn ok(&self) -> bool {
         self.mismatches.is_empty()
+    }
+
+    /// Whether the log's human decisions are bound to authenticated people: a credentials
+    /// run (rules 7 or later) that reproduced. A dev run, and every log of earlier rules,
+    /// names operators that requests asserted: never evidence about people, and excluded from
+    /// any claim about meaningful human control.
+    pub fn authenticated(&self) -> bool {
+        self.ok() && self.auth == Some(AuthMode::Credentials)
     }
 
     /// Every logged space query was re-run on the same segment and reproduced.
@@ -445,6 +472,8 @@ struct Tracked {
     /// The recomputed decision's signature count and proposer exclusion.
     approvers: u32,
     proposer_excluded: bool,
+    /// Rules 7: the recomputed decision asks every signature for a step-up.
+    step_up: bool,
     /// Who signed so far (concurred, then granted).
     signers: Vec<OperatorId>,
     /// The inputs of the last check (an engagement's snapshot is recomputed from them).
@@ -559,6 +588,7 @@ impl Tracked {
             answer: None,
             approvers: 1,
             proposer_excluded: false,
+            step_up: false,
             signers: Vec::new(),
             last_inputs: None,
             snapshot: None,
@@ -627,6 +657,7 @@ impl Tracked {
         self.submitter_authorizes = d.submitter_authorizes;
         self.approvers = d.approvers.max(1);
         self.proposer_excluded = d.proposer_excluded;
+        self.step_up = d.step_up;
         self.rule = Some(d.rule.clone());
         self.decision = Some(d.clone());
     }
@@ -772,6 +803,9 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (6, "\"max_mps\":", "a platform's top speed"),
     (6, "\"alt_t\":", "a track altitude's time"),
     (6, "\"source_t\":", "a track source's last hit"),
+    (OPERATOR_AUTH_SINCE, "\"auth\":\"", "how an operator was authenticated"),
+    (OPERATOR_AUTH_SINCE, "\"step_up\":", "a step-up (a credential re-entered to sign)"),
+    (OPERATOR_AUTH_SINCE, "\"action\":\"session.closed\"", "a session's end"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.
@@ -857,6 +891,18 @@ fn check_claims<S: AsRef<str>>(r: &mut ReplayReport, events: &[Event], lines: &[
         ),
         None => {}
     }
+    // how operators were authenticated: written from rules 7 (OPERATOR_AUTH_SINCE), always
+    r.auth = roster.as_ref().and_then(|ro| ro.auth);
+    if version >= OPERATOR_AUTH_SINCE && r.auth.is_none() {
+        bad(
+            r,
+            first,
+            None,
+            "a log of these rules says how its operators were authenticated (the roster's auth)",
+            "none".into(),
+            "credentials or dev".into(),
+        );
+    }
     for &(since, needle, what) in RULES_MARKERS {
         if since <= version {
             continue;
@@ -895,6 +941,18 @@ fn check_claims<S: AsRef<str>>(r: &mut ReplayReport, events: &[Event], lines: &[
             None,
             "logged policy uses a key of a later policy schema than it claims",
             "queue (schema 3)".into(),
+            format!("schema {schema}"),
+        );
+    }
+    if let Some(t) = policy.tiers.iter().find(|t| t.step_up.is_some())
+        && schema < STEP_UP_SCHEMA_SINCE
+    {
+        bad(
+            r,
+            first,
+            None,
+            "logged policy uses a key of a later policy schema than it claims",
+            format!("tier.{}.step_up (schema {STEP_UP_SCHEMA_SINCE})", t.name),
             format!("schema {schema}"),
         );
     }
@@ -947,6 +1005,10 @@ fn replay_inner<S: AsRef<str>>(
     let mut pinned: Option<i64> = None;
     // operator sessions as opened: who, with what grants
     let mut sessions: BTreeMap<SessionId, (OperatorId, Grants)> = BTreeMap::new();
+    // rules 7: sessions ended (nothing may follow under one), and step-ups by their event's
+    // seq: (session, operator, when, used by a signature yet)
+    let mut closed: BTreeSet<SessionId> = BTreeSet::new();
+    let mut step_ups: BTreeMap<u64, (SessionId, OperatorId, Time, bool)> = BTreeMap::new();
     // rules 6: the platforms' own lost-link values owed back
     let mut restores = Restores::default();
     // picture tokens issued and not used yet
@@ -1001,6 +1063,13 @@ fn replay_inner<S: AsRef<str>>(
         }
         let before_t = prev.map_or(Time(i64::MIN), |p| p.t);
         prev = Some(e);
+        // rules 7: an ended session acts no more (a stale or shared session can't sign, decide
+        // or be shown a picture after its logout, expiry or credential change)
+        if let Some(s) = acting_session(&e.body)
+            && closed.contains(&s)
+        {
+            bad(&mut r, e, None, "an act under a session that had ended (session.closed)", s.0.to_string(), String::new());
+        }
 
         match &e.body {
             EventBody::RunStarted {
@@ -1317,6 +1386,7 @@ fn replay_inner<S: AsRef<str>>(
                 supersedes,
                 checked_t,
                 self_accepted,
+                step_up,
                 ..
             } => {
                 let Some(tr) = intents.get_mut(intent) else {
@@ -1331,6 +1401,7 @@ fn replay_inner<S: AsRef<str>>(
                     continue;
                 };
                 check_signature(&mut r, e, *intent, tr, by, *session, &sessions);
+                check_step_up(&mut r, e, *intent, tr.step_up, by, *session, *step_up, &mut step_ups);
                 check_self_accepted(&mut r, e, *intent, tr, by, *self_accepted);
                 let want = (u32::try_from(tr.signers.len()).unwrap_or(u32::MAX) + 1, tr.approvers);
                 if (*n, *of) != want || *n >= *of {
@@ -1428,6 +1499,7 @@ fn replay_inner<S: AsRef<str>>(
                 supersedes,
                 checked_t,
                 self_accepted,
+                step_up,
                 ..
             } => {
                 let Some(tr) = intents.get_mut(intent) else {
@@ -1479,6 +1551,7 @@ fn replay_inner<S: AsRef<str>>(
                     r.self_approvals += 1;
                 }
                 check_signature(&mut r, e, *intent, tr, by, *session, &sessions);
+                check_step_up(&mut r, e, *intent, tr.step_up, by, *session, *step_up, &mut step_ups);
                 check_signed(&mut r, e, *intent, tr, by, *session, snapshot, token, supersedes, *checked_t, &mut issued, policy.as_ref());
                 if tr.spec.kind() == TaskKind::Engage {
                     tr.last_picture_t = snapshot.as_ref().map(|s| s.t);
@@ -1934,8 +2007,13 @@ fn replay_inner<S: AsRef<str>>(
                 session,
                 action,
                 grants,
+                auth,
                 ..
             } => {
+                let authenticated = policy
+                    .as_ref()
+                    .is_some_and(|p| p.rules.rules_version >= OPERATOR_AUTH_SINCE);
+                let run_auth = r.auth;
                 if action == "session.opened" {
                     let grants = grants.unwrap_or_default();
                     // only operators the run was configured with, engagement authority only
@@ -1950,6 +2028,18 @@ fn replay_inner<S: AsRef<str>>(
                             json(&roster),
                         );
                     }
+                    // rules 7: opened the way the run authenticates (a password-checked login
+                    // in a credentials run, an asserted name in a dev run)
+                    if authenticated && auth.as_ref() != run_auth.map(AuthMode::method).as_ref() {
+                        bad(
+                            &mut r,
+                            e,
+                            None,
+                            "session opened by another method than the run authenticates with",
+                            json(auth),
+                            json(&run_auth.map(AuthMode::method)),
+                        );
+                    }
                     if sessions
                         .insert(*session, (operator.clone(), grants))
                         .is_some()
@@ -1962,6 +2052,41 @@ fn replay_inner<S: AsRef<str>>(
                             session.0.to_string(),
                             String::new(),
                         );
+                    }
+                } else if authenticated {
+                    // rules 7: every other operator action is under that operator's own session
+                    match sessions.get(session) {
+                        Some((op, _)) if op == operator => {}
+                        other => bad(
+                            &mut r,
+                            e,
+                            None,
+                            "operator action under a session that is not the operator's",
+                            operator.to_string(),
+                            json(&other.map(|o| &o.0)),
+                        ),
+                    }
+                    match action.as_str() {
+                        "session.closed" => {
+                            closed.insert(*session);
+                            r.sessions_closed += 1;
+                        }
+                        "step_up" => {
+                            // a credential re-entered: only a credentials run has one
+                            if run_auth != Some(AuthMode::Credentials) || *auth != Some(AuthMethod::Password) {
+                                bad(
+                                    &mut r,
+                                    e,
+                                    None,
+                                    "a step-up outside a credentials run, or not by password",
+                                    json(&(run_auth, auth)),
+                                    json(&(AuthMode::Credentials, AuthMethod::Password)),
+                                );
+                            }
+                            step_ups.insert(e.seq, (*session, operator.clone(), e.t, false));
+                            r.step_ups += 1;
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -3290,6 +3415,69 @@ fn check_self_accepted(r: &mut ReplayReport, e: &Event, id: IntentId, tr: &Track
     let want = tr.accepted.values().any(|a| &a.by == by);
     if logged != want {
         bad(r, e, Some(id), "self_accepted flag differs", logged.to_string(), want.to_string());
+    }
+}
+
+/// The operator session an event acts under, if it is an operator's act.
+fn acting_session(body: &EventBody) -> Option<SessionId> {
+    match body {
+        EventBody::OperatorAction { session, .. }
+        | EventBody::ApprovalGranted { session, .. }
+        | EventBody::ApprovalConcurred { session, .. }
+        | EventBody::ApprovalAtSubmission { session, .. }
+        | EventBody::ApprovalRejected { session, .. }
+        | EventBody::EngageAccepted { session, .. }
+        | EventBody::EngageAcceptanceRevoked { session, .. }
+        | EventBody::OperatorView { session, .. } => Some(*session),
+        EventBody::PictureIssued { token, .. } => Some(token.session),
+        EventBody::EngageStopped {
+            cause: StopCause::Operator { session, .. },
+            ..
+        } => Some(*session),
+        _ => None,
+    }
+}
+
+/// Rules 7: a signature's step-up. One it quotes is a step-up logged under the signer's own
+/// session, used by no other signature, at most [`STEP_UP_MAX_AGE_MS`] before it; one the
+/// decision asks for (`step_up`) in a credentials run must be there.
+#[allow(clippy::too_many_arguments)]
+fn check_step_up(
+    r: &mut ReplayReport,
+    e: &Event,
+    id: IntentId,
+    needed: bool,
+    by: &OperatorId,
+    session: SessionId,
+    quoted: Option<StepUpRef>,
+    step_ups: &mut BTreeMap<u64, (SessionId, OperatorId, Time, bool)>,
+) {
+    match quoted {
+        Some(s) => match step_ups.get_mut(&s.seq) {
+            Some((ss, op, t, used))
+                if *ss == session && op == by && !*used && e.t.ms_since(*t) <= STEP_UP_MAX_AGE_MS =>
+            {
+                *used = true;
+                r.stepped_signatures += 1;
+            }
+            other => bad(
+                r,
+                e,
+                Some(id),
+                "a signature quoting a step-up that is not the signer's own, fresh and unused",
+                json(&(s.seq, by, session.0)),
+                json(&other.map(|(ss, op, t, used)| (ss.0, op.clone(), t.0, *used))),
+            ),
+        },
+        None if needed && r.auth == Some(AuthMode::Credentials) => bad(
+            r,
+            e,
+            Some(id),
+            "a consequential signature without a step-up (its decision asks for the signer's credential at signing)",
+            by.to_string(),
+            "step_up".into(),
+        ),
+        None => {}
     }
 }
 

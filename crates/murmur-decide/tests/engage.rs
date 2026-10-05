@@ -205,6 +205,7 @@ fn the_policy_floor_holds_whatever_the_file_says() {
                 submitter_authorizes: Some(true),
                 approvers,
                 proposer_may_approve: Some(true),
+                step_up: if tier == Tier::Human { Some(false) } else { None },
             },
         );
         floor_holds(p);
@@ -227,6 +228,7 @@ fn floor_holds(p: Policy) {
     assert!(!d.submitter_authorizes);
     assert!(d.proposer_excluded);
     assert_eq!(d.approvers, 2, "the two-person floor");
+    assert!(d.step_up, "rules 7: every engagement signature steps up, whatever the file says");
     // and the proposer, with engagement authority, can neither be shown the picture to sign
     // nor sign it
     let id = i.id();

@@ -39,6 +39,16 @@
 //!   method and its engine reference is private.
 //! - The source of an intent (human or agent) is set by the path it came in on, never by
 //!   the request body ([`Proposal`] has no source field).
+//! - Rules 7 ([`OPERATOR_AUTH_SINCE`]): the run says how operators prove who they are
+//!   ([`AuthMode`] on the [`Roster`]). In a credentials run a session opens only through
+//!   [`Engine::open_authenticated_session`] (the bridge's login, after it checked the
+//!   password), every session's end is logged ([`Engine::close_operator_session`], which
+//!   consumes it), and a signature the policy marks consequential (every engagement
+//!   signature; any tier with `step_up`) needs a [`StepUp`], which only [`Engine::step_up`]
+//!   mints (logged, after the bridge checked the credential again) and one signature
+//!   consumes: no stale or shared session supplies it. A dev run (identities asserted) says
+//!   so, and replay reports it ([`replay::ReplayReport::authenticated`]) so evaluation can
+//!   exclude it from any claim about people.
 //!
 //! `compile_fail` doctests on [`HumanAuthority`] (module `authority`) and [`AgentPort`]
 //! prove the forbidden programs don't compile. The replay also checks the property from
@@ -55,7 +65,9 @@
 //! someone editing this crate; bridge code that holds `&mut Engine` calling
 //! `open_operator_session` on an agent's behalf (review rule: the bridge's authenticated
 //! operator endpoint is its only caller); a compromised process; or a human who approves
-//! without looking. Operator authentication itself is the bridge's job. Whether approvals
+//! without looking. Operator authentication itself is the bridge's job (passwords and
+//! sessions, `crates/murmur-auth` and the bridge's `auth` module); this crate records how it
+//! was done and refuses what needs a step-up without one. Whether approvals
 //! stay meaningful at scale is what Murmur measures (Phase G); this crate makes sure there
 //! is a human decision to measure.
 //!
@@ -66,8 +78,10 @@
 //!
 //! 1. **Start of run.** Load [`Policy::load`]`("sim/policy.toml")`, [`Catalog::load`]`(
 //!    "sim/platforms.toml")`, [`AreaSet::load_dir`]`("sim/areas")`, and the operator
-//!    [`Roster`] (`MURMUR_OPERATORS`, and `MURMUR_ENGAGE_OPERATORS`, who must be operators
-//!    too: [`Roster::new`] refuses otherwise, and the bridge does not start). Create the
+//!    [`Roster`] (a credentials run: the credential file's operators and who of them holds
+//!    engagement authority, [`Roster::with_auth`]`(AuthMode::Credentials)`; a dev run:
+//!    `MURMUR_OPERATORS`, and `MURMUR_ENGAGE_OPERATORS`, who must be operators too:
+//!    [`Roster::new`] refuses otherwise, and the bridge does not start). Create the
 //!    engine with [`Engine::with_areas`] (policy, the area set, the roster, [`SystemClock`],
 //!    a [`JsonlFile`] at `logs/audit/<run-id>.jsonl`), so `run.started` carries the area set
 //!    and its hash and the roster. Pass the same set in every snapshot; a different one is
@@ -84,8 +98,13 @@
 //!    `water_depth_m > 0` is water), or pass [`NoTerrain`] when tidewater isn't running.
 //!    The oracle is called synchronously; from async code, prefetch the points
 //!    (`proposal.task.path()`) and answer from a cache.
-//! 4. **Operators.** On an authenticated operator request, use (or open once, with
-//!    [`Engine::open_operator_session`]) that operator's [`OperatorSession`]. `POST
+//! 4. **Operators.** A credentials run opens one [`OperatorSession`] per login
+//!    ([`Engine::open_authenticated_session`] with [`AuthMethod::Password`], after checking
+//!    the password) and closes it at logout, expiry or a credential change
+//!    ([`Engine::close_operator_session`]); a consequential approval re-checks the
+//!    credential, then [`Engine::step_up`] and [`Engine::approve_stepped`] or
+//!    [`Engine::approve_engagement_stepped`]. A dev run uses (or opens once, with
+//!    [`Engine::open_operator_session`]) the asserted operator's session. `POST
 //!    /api/intents` and the legacy `POST /api/tasks` call [`Engine::submit`] (in a tier
 //!    with `submitter_authorizes`, the intent comes back `approved`: dispatch it);
 //!    `.../approve` and `.../reject` call [`Engine::approve`] / [`Engine::reject`];
@@ -265,7 +284,10 @@ pub use audit::{
     AuditSink, BuildInfo, Event, EventBody, JsonlFile, LoggedAreas, MemorySink, OperatorView,
     ViewShown, parse_log,
 };
-pub use authority::{EngagementAuthority, Grants, HumanAuthority, OperatorSession, Roster};
+pub use authority::{
+    AuthMethod, AuthMode, EngagementAuthority, Grants, HumanAuthority, OperatorSession, Roster,
+    STEP_UP_MAX_AGE_MS, StepUp, StepUpRef,
+};
 pub use catalog::{AutopilotKind, Catalog, Domain, PlatformFacts, SensorFact};
 pub use engage::{
     AssessResult, Assessment, EffectOrder, EffectRecord, EngageOrder, EngagePreview, EngageRules,
@@ -292,7 +314,8 @@ pub use queue::{
 };
 pub use route::{LegKind, Route, Segment};
 pub use rules::{
-    CheckResult, Outcome, POLICY_SCHEMA, RULES_VERSION, RuleId, RulesConfig, UnknownEndurance,
+    CheckResult, OPERATOR_AUTH_SINCE, Outcome, POLICY_SCHEMA, RULES_VERSION, RuleId, RulesConfig,
+    STEP_UP_SCHEMA_SINCE, UnknownEndurance,
 };
 pub use space::{
     ChosenCollect, CollectCapability, CollectOrder, CoverOrder, CoverService, ScenarioMap,

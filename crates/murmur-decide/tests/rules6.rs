@@ -486,7 +486,7 @@ fn replay_binds_the_order_to_the_approved_fallbacks_preload() {
     let claimed: Vec<String> = lines
         .iter()
         .enumerate()
-        .map(|(i, l)| if i == 0 { l.replacen("\"rules_version\":6,", "\"rules_version\":5,", 1) } else { l.clone() })
+        .map(|(i, l)| if i == 0 { l.replacen(&format!("\"rules_version\":{RULES_VERSION},"), "\"rules_version\":5,", 1) } else { l.clone() })
         .collect();
     let r = replay::replay_str_with(
         &rechain(&claimed),

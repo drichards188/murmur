@@ -247,7 +247,7 @@ fn the_bridge_does_not_start_with_an_engagement_operator_who_is_no_operator() {
     Decision::from_parts(world(), p).expect("starts");
     let first = log.lines().into_iter().next().expect("run.started");
     assert!(
-        first.contains("\"roster\":{\"operators\":[\"op-1\",\"op-2\"],\"engage\":[\"op-2\"]}"),
+        first.contains("\"roster\":{\"operators\":[\"op-1\",\"op-2\"],\"engage\":[\"op-2\"],\"auth\":\"dev\"}"),
         "{first}"
     );
 }
