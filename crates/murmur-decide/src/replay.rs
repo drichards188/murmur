@@ -127,7 +127,7 @@ use crate::ids::IntentId;
 use crate::intent::{IntentSpec, Source, State, Task, TaskKind, Transition, next_state};
 use crate::policy::{self, Policy, PolicyDecision, Tier};
 use crate::queue::{self as queue, Basis, CarriedApproval, OpenIntent, Verdict};
-use crate::rules::{self, CheckResult, OPERATOR_AUTH_SINCE, STEP_UP_SCHEMA_SINCE};
+use crate::rules::{self, CheckResult, OPERATOR_AUTH_SINCE, RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE, STEP_UP_SCHEMA_SINCE};
 use crate::space::{ScenarioMap, SpaceAnswer, SpaceOracle, SpaceOrder};
 use crate::time::Time;
 use crate::world::{LoggedInputs, LoggedSpace, WorldSnapshot};
@@ -210,6 +210,15 @@ pub struct ReplayReport {
     /// or dispatched with ops still running): what a restarted bridge carries over.
     #[serde(skip)]
     pub open: Vec<OpenIntent>,
+    /// Rules 9: hostile acts recomputed, declarations by rule and by operators, confirmations,
+    /// revocations, flags raised and resolved.
+    pub acts: usize,
+    pub rule_declarations: usize,
+    pub operator_declarations: usize,
+    pub confirmations: usize,
+    pub revocations: usize,
+    pub flags: usize,
+    pub flags_resolved: usize,
     /// One past the highest intent id the log holds (a restarted bridge numbers on from it).
     pub next_intent: u64,
     /// The last event's seq.
@@ -965,6 +974,16 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (6, "\"source_t\":", "a track source's last hit"),
     (rules::QUEUE_FOLLOWUPS_SINCE, "\"restore_owed\":", "a vehicle's lost-link values owed back (a decision's fact)"),
     (rules::QUEUE_FOLLOWUPS_SINCE, "\"ahead\":", "a vehicle start logged ahead of sending it"),
+    (RULE_ID_SINCE, "\"type\":\"ident.act\"", "an observed hostile act"),
+    (RULE_ID_SINCE, "\"type\":\"ident.declared\"", "a declaration in the identification ledger"),
+    (RULE_ID_SINCE, "\"type\":\"ident.confirmed\"", "a confirmed rule declaration"),
+    (RULE_ID_SINCE, "\"type\":\"ident.revoked\"", "a revoked declaration"),
+    (RULE_ID_SINCE, "\"type\":\"ident.flagged\"", "a review flag"),
+    (RULE_ID_SINCE, "\"type\":\"ident.flag_resolved\"", "a resolved review flag"),
+    (RULE_ID_SINCE, "\"declaration\":", "a declaration's basis (a track's facts, a picture token)"),
+    (RULE_ID_SINCE, "\"review_flags\":", "a track's review flags"),
+    (RULE_ID_SINCE, "\"kind\":\"revoked\"", "an engagement stopped for a revoked declaration"),
+    (RULE_ID_SINCE, "\"identification\":", "an [identification] policy"),
     (OPERATOR_AUTH_SINCE, "\"auth\":\"", "how an operator was authenticated"),
     (OPERATOR_AUTH_SINCE, "\"step_up\":", "a step-up (a credential re-entered to sign)"),
     (OPERATOR_AUTH_SINCE, "\"action\":\"session.closed\"", "a session's end"),
@@ -1130,6 +1149,33 @@ fn check_claims<S: AsRef<str>>(r: &mut ReplayReport, events: &[Event], lines: &[
             format!("schema {schema}"),
         );
     }
+    // rules 9: `[identification]`, and the step-up act it adds, are schema 6
+    if policy.identification.is_some() && schema < RULE_ID_SCHEMA_SINCE {
+        bad(
+            r,
+            first,
+            None,
+            "logged policy uses a key of a later policy schema than it claims",
+            format!("identification (schema {RULE_ID_SCHEMA_SINCE})"),
+            format!("schema {schema}"),
+        );
+    }
+    if policy
+        .approval
+        .step_up_acts
+        .as_ref()
+        .is_some_and(|a| a.contains(&policy::StepUpAct::ConfirmDeclaration))
+        && schema < RULE_ID_SCHEMA_SINCE
+    {
+        bad(
+            r,
+            first,
+            None,
+            "logged policy uses a key of a later policy schema than it claims",
+            format!("approval.step_up_acts confirm_declaration (schema {RULE_ID_SCHEMA_SINCE})"),
+            format!("schema {schema}"),
+        );
+    }
     if let Some(e) = &policy.rules.engage {
         for (since, key) in e.schema_keys() {
             if since > schema {
@@ -1202,6 +1248,12 @@ fn replay_inner<S: AsRef<str>>(
     let mut resumed: Vec<ResumedEvent> = Vec::new();
     // when each vehicle was last logged rebooting
     let mut rebooted: BTreeMap<Uid, Time> = BTreeMap::new();
+    // rules 9: the identification ledger as the log builds it, what an act's verdict makes
+    // next, and the engagements a revocation stops next (with whether the current one's stop
+    // was logged and waits for its transition)
+    let mut ident = crate::ident::Ledger::default();
+    let mut ident_due: Option<(u64, IdentDue)> = None;
+    let mut revoke_due: Option<RevokeDue> = None;
 
     for (i, e) in events.iter().enumerate() {
         let want_prev = if i == 0 {
@@ -1250,6 +1302,44 @@ fn replay_inner<S: AsRef<str>>(
         {
             bad(&mut r, e, None, "an act under a session that had ended (session.closed)", s.0.to_string(), String::new());
         }
+        // rules 9: an act's verdict is carried out by the very next event, and a revocation's
+        // engagements are stopped next, before anything else
+        if let Some((seq, due)) = ident_due.take() {
+            let carried = match (&due, &e.body) {
+                (IdentDue::Declare { .. }, EventBody::IdentDeclared { declaration })
+                    if declaration.is_rule() =>
+                {
+                    true
+                }
+                (IdentDue::Flag { .. }, EventBody::IdentFlagged { inputs: None, .. }) => true,
+                _ => false,
+            };
+            if carried {
+                ident_due = Some((seq, due));
+            } else {
+                bad(
+                    &mut r,
+                    e,
+                    None,
+                    "a hostile act's verdict not carried out at once (its rule declaration or flag must follow it)",
+                    event_type(&e.body),
+                    format!("{} (act at seq {seq})", due.what()),
+                );
+            }
+        }
+        let mut revoke_stop = false;
+        if let Some(due) = revoke_due.as_mut() {
+            match due.step(&e.body) {
+                Ok(stop) => revoke_stop = stop,
+                Err(why) => {
+                    bad(&mut r, e, None, &why, event_type(&e.body), json(&due.remaining));
+                    revoke_due = None;
+                }
+            }
+        }
+        if revoke_due.as_ref().is_some_and(|d| d.remaining.is_empty() && d.stopping.is_none()) {
+            revoke_due = None;
+        }
 
         match &e.body {
             EventBody::RunStarted {
@@ -1295,6 +1385,8 @@ fn replay_inner<S: AsRef<str>>(
                 // recompute with the rules the log was produced under
                 let mut p = p.clone();
                 p.rules.rules_version = version;
+                // rules 9: what the rules read from `[identification]`
+                p.sync();
                 policy = Some(p);
                 areas = None;
                 if let Some(a) = a {
@@ -1399,6 +1491,7 @@ fn replay_inner<S: AsRef<str>>(
             } => {
                 check_engaged(&mut r, e, *intent, &inputs.engaged, &intents);
                 check_accepted(&mut r, e, *intent, &inputs.unknown_accepted, &intents);
+                check_ident_inputs(&mut r, e, Some(*intent), &inputs.tracks, &ident, policy.as_ref());
                 check_waiting(&mut r, e, *intent, &inputs.waiting, &intents);
                 check_restore_owed(&mut r, e, *intent, &inputs.restore_owed, &intents, &restores, policy.as_ref());
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
@@ -1497,6 +1590,7 @@ fn replay_inner<S: AsRef<str>>(
             } => {
                 check_engaged(&mut r, e, *intent, &inputs.engaged, &intents);
                 check_accepted(&mut r, e, *intent, &inputs.unknown_accepted, &intents);
+                check_ident_inputs(&mut r, e, Some(*intent), &inputs.tracks, &ident, policy.as_ref());
                 check_waiting(&mut r, e, *intent, &inputs.waiting, &intents);
                 check_restore_owed(&mut r, e, *intent, &inputs.restore_owed, &intents, &restores, policy.as_ref());
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
@@ -1634,6 +1728,7 @@ fn replay_inner<S: AsRef<str>>(
                 r.concurrences += 1;
             }
             EventBody::PictureIssued { token, inputs } => {
+                check_ident_inputs(&mut r, e, Some(token.intent), &inputs.tracks, &ident, policy.as_ref());
                 check_issued(&mut r, e, token, inputs, &intents, &sessions, &areas, &answers, policy.as_ref());
                 if issued.insert(token.id, (**token).clone()).is_some() {
                     bad(&mut r, e, Some(token.intent), "picture token issued twice", token.id.to_string(), String::new());
@@ -1647,6 +1742,7 @@ fn replay_inner<S: AsRef<str>>(
             } => {
                 if let Some(i) = inputs {
                     check_accepted(&mut r, e, *intent, &i.unknown_accepted, &intents);
+                    check_ident_inputs(&mut r, e, Some(*intent), &i.tracks, &ident, policy.as_ref());
                 }
                 let Some(tr) = intents.get_mut(intent) else {
                     bad(&mut r, e, Some(*intent), "unknown intent", String::new(), String::new());
@@ -2129,6 +2225,7 @@ fn replay_inner<S: AsRef<str>>(
             } => {
                 if let Some(inputs) = reach_inputs {
                     check_restore_owed(&mut r, e, *intent, &inputs.restore_owed, &intents, &restores, policy.as_ref());
+                    check_ident_inputs(&mut r, e, Some(*intent), &inputs.tracks, &ident, policy.as_ref());
                 }
                 // rules 7: never a mission to a vehicle still owed its own lost-link values,
                 // whether its kind is queued or not (a queued one's reach says so too)
@@ -2373,6 +2470,18 @@ fn replay_inner<S: AsRef<str>>(
                             );
                             r.step_ups += 1;
                         }
+                        // rules 9: a declaration is the identification ledger's (ident.declared),
+                        // never an action record a decision would not read
+                        "track.declare" if policy.as_ref().is_some_and(|p| p.rules.rule_id()) => {
+                            bad(
+                                &mut r,
+                                e,
+                                None,
+                                "a declaration logged as an operator action under rules that declare through the identification ledger",
+                                detail.clone(),
+                                "ident.declared".into(),
+                            );
+                        }
                         "track.declare" => {
                             // a hostile declaration steps up when the policy lists it
                             let hostile = crate::engine::declared_affiliation(detail) == Some("hostile");
@@ -2412,6 +2521,7 @@ fn replay_inner<S: AsRef<str>>(
                 ready,
             } => {
                 check_accepted(&mut r, e, *intent, &inputs.unknown_accepted, &intents);
+                check_ident_inputs(&mut r, e, Some(*intent), &inputs.tracks, &ident, policy.as_ref());
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(
                         &mut r,
@@ -2661,6 +2771,15 @@ fn replay_inner<S: AsRef<str>>(
                         json(cause),
                         "picture".into(),
                     ),
+                    // rules 9: only in the step of the revocation it names (checked above)
+                    StopCause::Revoked { .. } if !revoke_stop => bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "stopped for a revoked declaration outside that revocation's step",
+                        json(cause),
+                        "right after ident.revoked".into(),
+                    ),
                     StopCause::Operator { by, session } => match sessions.get(session) {
                         Some((op, _)) if op == by => {}
                         other => bad(
@@ -2807,6 +2926,7 @@ fn replay_inner<S: AsRef<str>>(
                 covered_s,
             } => {
                 check_accepted(&mut r, e, *intent, &inputs.unknown_accepted, &intents);
+                check_ident_inputs(&mut r, e, Some(*intent), &inputs.tracks, &ident, policy.as_ref());
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(&mut r, e, Some(*intent), "unknown intent", String::new(), String::new());
                     continue;
@@ -3111,6 +3231,7 @@ fn replay_inner<S: AsRef<str>>(
                 expires_t,
             } => {
                 check_restore_owed(&mut r, e, *intent, &inputs.restore_owed, &intents, &restores, policy.as_ref());
+                check_ident_inputs(&mut r, e, Some(*intent), &inputs.tracks, &ident, policy.as_ref());
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(&mut r, e, Some(*intent), "queued without run.started or intent.created", String::new(), String::new());
                     continue;
@@ -3608,6 +3729,279 @@ fn replay_inner<S: AsRef<str>>(
                     tr.platform_events.push((kind.clone(), text.clone()));
                 }
             }
+            EventBody::IdentAct {
+                act,
+                inputs,
+                candidates,
+                verdict,
+            } => {
+                let Some(pol) = policy.as_ref().filter(|p| p.rules.rule_id()) else {
+                    // the marker check flags it under older rules
+                    continue;
+                };
+                let cfg = pol.identification();
+                r.acts += 1;
+                if ident.seen_act(&act.act) {
+                    bad(&mut r, e, None, "a hostile act reported twice", act.act.clone(), String::new());
+                }
+                if !(act.sigma_m.is_finite() && act.sigma_m > 0.0) || act.sensors.is_empty() {
+                    bad(
+                        &mut r,
+                        e,
+                        None,
+                        "a hostile act without the sensors that saw it or a position error",
+                        json(&(&act.sensors, act.sigma_m)),
+                        String::new(),
+                    );
+                }
+                if let Err(why) = ident.check_facts(&inputs.tracks) {
+                    bad(&mut r, e, None, "an act's track picture differs from the identification the log holds", why, String::new());
+                }
+                let again = crate::ident::attribute(act, &inputs.tracks, inputs.t, &cfg);
+                if &again != candidates {
+                    bad(&mut r, e, None, "an act's attribution differs", json(candidates), json(&again));
+                }
+                let v = crate::ident::verdict(act, &again, &inputs.tracks, &ident, &cfg);
+                if &v != verdict {
+                    bad(&mut r, e, None, "an act's verdict differs", json(verdict), json(&v));
+                }
+                match v {
+                    crate::ident::ActVerdict::Declare { track, attribution } => {
+                        ident_due = Some((
+                            e.seq,
+                            IdentDue::Declare {
+                                act: act.clone(),
+                                track,
+                                attribution,
+                            },
+                        ));
+                    }
+                    crate::ident::ActVerdict::Flag { kind, tracks, why } => {
+                        ident_due = Some((
+                            e.seq,
+                            IdentDue::Flag {
+                                act: act.clone(),
+                                kind,
+                                tracks,
+                                why,
+                            },
+                        ));
+                    }
+                    crate::ident::ActVerdict::Recorded { .. } => {}
+                }
+                ident.step(e.t, &e.body);
+            }
+            EventBody::IdentDeclared { declaration } => {
+                let Some(pol) = policy.as_ref().filter(|p| p.rules.rule_id()) else {
+                    continue;
+                };
+                let d = &**declaration;
+                match &d.by {
+                    crate::ident::Declarer::Rule { .. } => {
+                        // only right after the act whose recomputed verdict makes it, exactly as
+                        // the rule makes it
+                        let want = match ident_due.take() {
+                            Some((_, IdentDue::Declare { act, track, attribution })) => Some(
+                                crate::ident::rule_declaration(
+                                    ident.next_declaration(),
+                                    e.t,
+                                    &act,
+                                    &track,
+                                    attribution,
+                                    &pol.identification(),
+                                ),
+                            ),
+                            _ => None,
+                        };
+                        if want.as_ref() != Some(d) {
+                            bad(
+                                &mut r,
+                                e,
+                                None,
+                                "a rule declaration its act does not make (no act, an attribution below the threshold, another track or evidence)",
+                                json(d),
+                                json(&want),
+                            );
+                        }
+                        r.rule_declarations += 1;
+                    }
+                    crate::ident::Declarer::Operator {
+                        operator,
+                        session,
+                        flag,
+                        step_up,
+                        ..
+                    } => {
+                        check_operator(&mut r, e, operator, *session, &sessions, "a declaration");
+                        if d.id != ident.next_declaration() || d.t != e.t || d.confirmed.is_some() {
+                            bad(
+                                &mut r,
+                                e,
+                                None,
+                                "an operator's declaration out of sequence (its number, time or a confirmation it can't have)",
+                                json(&(d.id, d.t, &d.confirmed)),
+                                json(&(ident.next_declaration(), e.t)),
+                            );
+                        }
+                        if let Some(f) = flag {
+                            let ok = ident.flag(*f).is_some_and(|(fl, s)| {
+                                s.in_force() && (fl.tracks.is_empty() || fl.tracks.contains(&d.track))
+                            });
+                            if !ok {
+                                bad(&mut r, e, None, "a declaration answering a flag not in force on its track", format!("F-{f}"), d.track.clone());
+                            }
+                        }
+                        let needed = d.affiliation == crate::world::Affiliation::Hostile
+                            && pol.steps_up(policy::StepUpAct::DeclareHostile);
+                        check_step_up(&mut r, e, None, needed, operator, *session, *step_up, &mut step_ups, StepUse::Declaration);
+                        r.operator_declarations += 1;
+                    }
+                }
+                if let Some(cur) = ident.declaration(&d.track) {
+                    bad(
+                        &mut r,
+                        e,
+                        None,
+                        "a declaration over one in force (it must be revoked first)",
+                        d.track.clone(),
+                        cur.describe(),
+                    );
+                }
+                ident.step(e.t, &e.body);
+            }
+            EventBody::IdentConfirmed {
+                track,
+                declaration,
+                by,
+                session,
+                step_up,
+            } => {
+                let Some(pol) = policy.as_ref().filter(|p| p.rules.rule_id()) else {
+                    continue;
+                };
+                check_operator(&mut r, e, by, *session, &sessions, "a confirmation");
+                match ident.declaration(track) {
+                    Some(d) if d.id == *declaration && d.unconfirmed_rule() => {}
+                    other => bad(
+                        &mut r,
+                        e,
+                        None,
+                        "a confirmation of no rule declaration awaiting one",
+                        format!("{track} D-{declaration}"),
+                        json(&other),
+                    ),
+                }
+                let needed = pol.steps_up(policy::StepUpAct::ConfirmDeclaration);
+                check_step_up(&mut r, e, None, needed, by, *session, *step_up, &mut step_ups, StepUse::Declaration);
+                r.confirmations += 1;
+                ident.step(e.t, &e.body);
+            }
+            EventBody::IdentRevoked {
+                track,
+                declaration,
+                by,
+                session,
+                engagements,
+                ..
+            } => {
+                if !policy.as_ref().is_some_and(|p| p.rules.rule_id()) {
+                    continue;
+                }
+                check_operator(&mut r, e, by, *session, &sessions, "a revocation");
+                if ident.declaration(track).map(|d| d.id) != Some(*declaration) {
+                    bad(
+                        &mut r,
+                        e,
+                        None,
+                        "a revocation of a declaration not in force",
+                        format!("{track} D-{declaration}"),
+                        json(&ident.declaration(track)),
+                    );
+                }
+                let want = crate::ident::engagements_on(
+                    intents.iter().map(|(id, t)| (*id, &t.spec, t.state)),
+                    track,
+                );
+                if *engagements != want {
+                    bad(&mut r, e, None, "a revocation names other engagements than those in play on its track", json(engagements), json(&want));
+                }
+                if !want.is_empty() {
+                    revoke_due = Some(RevokeDue {
+                        track: track.clone(),
+                        declaration: *declaration,
+                        by: by.clone(),
+                        session: *session,
+                        remaining: want,
+                        stopping: None,
+                    });
+                }
+                r.revocations += 1;
+                ident.step(e.t, &e.body);
+            }
+            EventBody::IdentFlagged { flag, inputs } => {
+                let Some(pol) = policy.as_ref().filter(|p| p.rules.rule_id()) else {
+                    continue;
+                };
+                let cfg = pol.identification();
+                match inputs {
+                    // a flag an act's verdict raises, as that verdict makes it
+                    None => {
+                        let want = match ident_due.take() {
+                            Some((_, IdentDue::Flag { act, kind, tracks, why })) => Some(
+                                crate::ident::act_flag(ident.next_flag(), e.t, &act, kind, &tracks, &why),
+                            ),
+                            _ => None,
+                        };
+                        if want.as_ref() != Some(flag) {
+                            bad(&mut r, e, None, "a flag its act does not raise", json(flag), json(&want));
+                        }
+                    }
+                    // the weak-evidence rule, recomputed on the two tracks' logged facts
+                    Some(i) => {
+                        if let Err(why) = ident.check_facts(&i.tracks) {
+                            bad(&mut r, e, None, "a flag's track picture differs from the identification the log holds", why, String::new());
+                        }
+                        let found = crate::ident::escort(&i.tracks, &ident, i.t, &cfg);
+                        let ok = flag.kind == crate::ident::FlagKind::Proximity
+                            && flag.act.is_none()
+                            && flag.id == ident.next_flag()
+                            && flag.t == e.t
+                            && flag.tracks.len() == 1
+                            && found.iter().any(|f| {
+                                Some(&f.track) == flag.tracks.first()
+                                    && Some(&f.hostile) == flag.related.as_ref()
+                                    && f.evidence == flag.evidence
+                                    && Some(f.estimate) == flag.raised_from
+                            });
+                        if !ok {
+                            bad(&mut r, e, None, "a proximity flag its two tracks' facts do not raise", json(flag), json(&found));
+                        }
+                    }
+                }
+                r.flags += 1;
+                ident.step(e.t, &e.body);
+            }
+            EventBody::IdentFlagResolved {
+                flag,
+                resolution,
+                by,
+                session,
+                ..
+            } => {
+                if !policy.as_ref().is_some_and(|p| p.rules.rule_id()) {
+                    continue;
+                }
+                check_operator(&mut r, e, by, *session, &sessions, "a flag's resolution");
+                let ok = ident.flag(*flag).is_some_and(|(_, s)| match resolution {
+                    crate::ident::FlagResolution::Confirmed => matches!(s, crate::ident::FlagStatus::Open),
+                    crate::ident::FlagResolution::Dismissed => s.in_force(),
+                });
+                if !ok {
+                    bad(&mut r, e, None, "a flag resolved that is not open (or, dismissed, not in force)", format!("F-{flag}"), json(&ident.flag(*flag).map(|f| &f.1)));
+                }
+                r.flags_resolved += 1;
+                ident.step(e.t, &e.body);
+            }
             EventBody::AgentAction { .. } => {}
             // a display event decides nothing; it must be under the operator's own session
             // and about an intent the log holds
@@ -3666,6 +4060,27 @@ fn replay_inner<S: AsRef<str>>(
                 recomputed: "engage.stopped".into(),
             });
         }
+    }
+    // rules 9: an act's verdict or a revocation's stops the log ends before
+    if let Some((seq, due)) = &ident_due {
+        r.mismatches.push(Mismatch {
+            seq: *seq,
+            intent: None,
+            what: "a hostile act's verdict never carried out (the log ends first)".into(),
+            logged: String::new(),
+            recomputed: due.what(),
+        });
+    }
+    if let Some(due) = &revoke_due
+        && (!due.remaining.is_empty() || due.stopping.is_some())
+    {
+        r.mismatches.push(Mismatch {
+            seq: last_seq,
+            intent: due.remaining.first().copied().or(due.stopping),
+            what: "a revoked declaration's engagements never stopped (the log ends first)".into(),
+            logged: String::new(),
+            recomputed: json(&due.remaining),
+        });
     }
     r.intents = intents.len();
     r.last_seq = last_seq;
@@ -4025,9 +4440,17 @@ fn acting_session(body: &EventBody) -> Option<SessionId> {
         EventBody::IntentCreated { session: Some(s), .. } => Some(*s),
         EventBody::PictureIssued { token, .. } => Some(token.session),
         EventBody::EngageStopped {
-            cause: StopCause::Operator { session, .. },
+            cause: StopCause::Operator { session, .. } | StopCause::Revoked { session, .. },
             ..
         } => Some(*session),
+        // rules 9: identification acts by operators (a rule declaration has no session)
+        EventBody::IdentConfirmed { session, .. }
+        | EventBody::IdentRevoked { session, .. }
+        | EventBody::IdentFlagResolved { session, .. } => Some(*session),
+        EventBody::IdentDeclared { declaration } => match &declaration.by {
+            crate::ident::Declarer::Operator { session, .. } => Some(*session),
+            crate::ident::Declarer::Rule { .. } => None,
+        },
         _ => None,
     }
 }
@@ -4131,6 +4554,147 @@ fn check_step_up(
                 json(&other.map(|seen| (seen.session.0, seen.operator.clone(), seen.t.0, seen.used))),
             );
         }
+    }
+}
+
+/// Rules 9: what an act's verdict makes next (its rule declaration, or its flag).
+enum IdentDue {
+    Declare {
+        act: crate::ident::ActReport,
+        track: String,
+        attribution: f64,
+    },
+    Flag {
+        act: crate::ident::ActReport,
+        kind: crate::ident::FlagKind,
+        tracks: Vec<String>,
+        why: String,
+    },
+}
+
+impl IdentDue {
+    fn what(&self) -> String {
+        match self {
+            IdentDue::Declare { track, .. } => format!("ident.declared of {track} by rule"),
+            IdentDue::Flag { kind, .. } => format!("ident.flagged ({})", kind.as_str()),
+        }
+    }
+}
+
+/// Rules 9: a revocation's engagements, stopped next in order (cause `revoked`), each stop
+/// followed by its transition, before anything else is logged.
+struct RevokeDue {
+    track: String,
+    declaration: u64,
+    by: OperatorId,
+    session: SessionId,
+    remaining: Vec<IntentId>,
+    /// Stopped, waiting for its transition.
+    stopping: Option<IntentId>,
+}
+
+impl RevokeDue {
+    /// The next event: `Ok(true)` when it is the next stop, `Ok(false)` when it is the stop's
+    /// transition (or nothing is due), `Err` when it is anything else.
+    fn step(&mut self, body: &EventBody) -> Result<bool, String> {
+        if let Some(id) = self.stopping {
+            return match body {
+                EventBody::IntentState { intent, .. } if *intent == id => {
+                    self.stopping = None;
+                    Ok(false)
+                }
+                _ => Err(format!(
+                    "a revoked declaration's engagement {id} was stopped but its transition did not follow at once"
+                )),
+            };
+        }
+        let Some(&next) = self.remaining.first() else {
+            return Ok(false);
+        };
+        match body {
+            EventBody::EngageStopped {
+                intent,
+                cause:
+                    StopCause::Revoked {
+                        by,
+                        session,
+                        track,
+                        declaration,
+                    },
+                ..
+            } if *intent == next
+                && *by == self.by
+                && *session == self.session
+                && *track == self.track
+                && *declaration == self.declaration =>
+            {
+                self.remaining.remove(0);
+                self.stopping = Some(next);
+                Ok(true)
+            }
+            _ => Err(format!(
+                "a revoked declaration's engagements are not stopped first (next due: {next}, cause revoked, right after the revocation of {} D-{})",
+                self.track, self.declaration
+            )),
+        }
+    }
+}
+
+/// An event's `type`.
+fn event_type(body: &EventBody) -> String {
+    serde_json::to_value(body)
+        .ok()
+        .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(str::to_string))
+        .unwrap_or_default()
+}
+
+/// A human act (`what`) under a session opened for that operator (an act that is no
+/// intent's).
+fn check_operator(
+    r: &mut ReplayReport,
+    e: &Event,
+    by: &OperatorId,
+    session: SessionId,
+    sessions: &BTreeMap<SessionId, (OperatorId, Grants)>,
+    what: &str,
+) {
+    match sessions.get(&session) {
+        Some((op, _)) if op == by => {}
+        other => bad(
+            r,
+            e,
+            None,
+            &format!("{what} under a session that is not the operator's"),
+            by.to_string(),
+            json(&other.map(|o| &o.0)),
+        ),
+    }
+}
+
+/// Rules 9: a decision's logged track picture against the identification ledger at that
+/// point (every declaration with its basis, every flag in force, the affiliations they set):
+/// a declaration a decision read that nobody made, or one claimed for an operator who did not
+/// make it, or a rule declaration shown confirmed when it was not, is caught here.
+fn check_ident_inputs(
+    r: &mut ReplayReport,
+    e: &Event,
+    id: Option<IntentId>,
+    tracks: &BTreeMap<String, crate::world::TrackFacts>,
+    ident: &crate::ident::Ledger,
+    policy: Option<&Policy>,
+) {
+    if !policy.is_some_and(|p| p.rules.rule_id()) {
+        return;
+    }
+    if let Err(why) = ident.check_facts(tracks) {
+        bad(
+            r,
+            e,
+            id,
+            "a decision's track picture differs from the declarations and flags the log holds",
+            why,
+            String::new(),
+        );
     }
 }
 

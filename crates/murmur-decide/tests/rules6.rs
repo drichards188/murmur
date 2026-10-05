@@ -42,6 +42,8 @@ fn track(t: Time, at: LonLat, vel: Option<[f64; 2]>, aff: Affiliation, domain: D
         domain,
         last_seen_t: t,
         declared_by: (aff == Affiliation::Hostile).then(|| "op-1".to_string()),
+        declaration: None,
+        review_flags: Vec::new(),
     }
 }
 
@@ -214,6 +216,7 @@ fn the_order_carries_the_preload_and_the_engine_binds_its_reports() {
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();
     let mut e = Engine::with_areas(policy(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    declare_shown(&mut e, &world(clock.now()));
     let (id, order) = dispatched(&mut e, &clock);
     let p = order.preload.clone().unwrap();
     assert_eq!((p.firmware.as_str(), p.action.as_str(), p.fallback), ("ArduPlane", "RTL", Fallback::Return));
@@ -251,6 +254,7 @@ fn a_preload_that_does_not_confirm_stops_the_engagement_with_its_fallback() {
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();
     let mut e = Engine::with_areas(policy(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    declare_shown(&mut e, &world(clock.now()));
     let (id, _) = dispatched(&mut e, &clock);
     // the timer read back longer than the approval allows
     let long = [("FS_GCS_ENABL", 1.0), ("FS_LONG_ACTN", 1.0), ("FS_LONG_TIMEOUT", 120.0)];
@@ -269,6 +273,7 @@ fn a_preload_changed_before_the_release_stops_the_engagement() {
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();
     let mut e = Engine::with_areas(policy(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    declare_shown(&mut e, &world(clock.now()));
     let (id, _) = dispatched(&mut e, &clock);
     let refused = |e: &mut Engine, r: PreloadReport| matches!(e.record_preload(id, r), Err(EngineError::NotItsOrder { .. }));
     assert!(refused(&mut e, report("blade-1", PreloadPhase::Verify, &[], SET)), "a re-read before any set");
@@ -298,6 +303,7 @@ fn values_owed_back_are_reported_carried_and_never_taken_off_a_preloaded_platfor
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();
     let mut e = Engine::with_areas(policy(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    declare_shown(&mut e, &world(clock.now()));
     let (id, _) = dispatched(&mut e, &clock);
     set(&mut e, id, OWN, SET).unwrap();
     let op = e.open_operator_session(OperatorId::new("op-1")).unwrap();
@@ -325,6 +331,7 @@ fn values_owed_back_are_reported_carried_and_never_taken_off_a_preloaded_platfor
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();
     let mut e = Engine::with_areas(policy(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    declare_shown(&mut e, &world(clock.now()));
     let carried = PlatformRestoreReport {
         uid: Uid::new("blade-1"),
         values: own.clone(),
@@ -346,6 +353,7 @@ fn a_crash_between_the_write_and_its_report_still_leaves_the_values_owed() {
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();
     let mut e = Engine::with_areas(policy(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    declare_shown(&mut e, &world(clock.now()));
     let (id, _) = dispatched(&mut e, &clock);
     // the write-ahead is logged, then the bridge stops before the set's report
     let mut intent = report("blade-1", PreloadPhase::Intent, OWN, &[]);
@@ -402,6 +410,7 @@ fn no_restore_while_another_engagement_holds_the_platform() {
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();
     let mut e = Engine::with_areas(policy(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    declare_shown(&mut e, &world(clock.now()));
     let (a, _) = dispatched(&mut e, &clock);
     set(&mut e, a, OWN, SET).unwrap();
     let op = e.open_operator_session(OperatorId::new("op-1")).unwrap();
@@ -469,6 +478,7 @@ fn owing_run() -> String {
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();
     let mut e = Engine::with_areas(policy(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    declare_shown(&mut e, &world(clock.now()));
     let (id, _) = dispatched(&mut e, &clock);
     set(&mut e, id, OWN, SET).unwrap();
     let op = e.open_operator_session(OperatorId::new("op-1")).unwrap();
@@ -481,6 +491,7 @@ fn carrying_run(file: &str, text: &str) -> String {
     let clock = ManualClock::new(T0.plus_ms(600_000));
     let log = MemorySink::new();
     let mut e = Engine::with_areas(policy(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    declare_shown(&mut e, &world(clock.now()));
     carry_from(&mut e, file, text);
     clock.advance_ms(2_000);
     let own: BTreeMap<String, f64> = OWN.iter().map(|(n, v)| ((*n).to_string(), *v)).collect();
@@ -997,6 +1008,7 @@ fn only_an_operator_accepts_a_lost_friendly_and_only_the_loss_it_names() {
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();
     let mut e = Engine::with_areas(policy(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    declare_shown(&mut e, &world(clock.now()));
     let op1 = e.open_operator_session_with(OperatorId::new("op-1"), Grants { engage: true }).unwrap();
     let a1 = op1.engagement_authority().unwrap();
     // our quadcopter went silent 2 km east of the target a minute ago
@@ -1098,6 +1110,7 @@ fn every_signer_sees_the_acceptances_and_a_token_from_before_one_is_refused() {
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();
     let mut e = Engine::with_areas(policy(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    declare_shown(&mut e, &world(clock.now()));
     let op1 = e.open_operator_session(OperatorId::new("op-1")).unwrap();
     let op2 = e.open_operator_session_with(OperatorId::new("op-2"), Grants { engage: true }).unwrap();
     let op3 = e.open_operator_session_with(OperatorId::new("op-3"), Grants { engage: true }).unwrap();
@@ -1159,6 +1172,7 @@ fn replay_checks_the_vehicle_was_lost_since_the_acceptance_says() {
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();
     let mut e = Engine::with_areas(policy(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    declare_shown(&mut e, &world(clock.now()));
     let op1 = e.open_operator_session_with(OperatorId::new("op-1"), Grants { engage: true }).unwrap();
     clock.advance_ms(60_000);
     let w = lost_drone_world(clock.now());
@@ -1219,6 +1233,7 @@ fn the_policy_can_make_accepting_a_lost_vehicle_step_up() {
     p.approval.step_up_acts = Some(vec![StepUpAct::AcceptUnknown]);
     let mut e = Engine::with_areas(p, Some(areas()), roster().with_auth(AuthMode::Credentials), Box::new(clock.clone()), Box::new(log.clone()))
         .unwrap();
+    declare_shown(&mut e, &world(clock.now()));
     let op1 = e
         .open_authenticated_session(OperatorId::new("op-1"), Grants { engage: true }, AuthMethod::Password)
         .unwrap();

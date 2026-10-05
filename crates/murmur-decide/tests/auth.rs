@@ -52,6 +52,8 @@ fn engage_world(t: Time) -> WorldSnapshot {
             domain: Domain::Surface,
             last_seen_t: t,
             declared_by: Some("op-1".into()),
+            declaration: None,
+            review_flags: Vec::new(),
         },
     );
     w
@@ -101,6 +103,7 @@ fn signed_engagement() -> (String, Vec<String>) {
     let op2 = login(&mut e, "op-2", true);
     let op3 = login(&mut e, "op-3", true);
     let w = engage_world(T0);
+    declare_shown(&mut e, &w);
     let id = e.submit(op1.authority(), nomination(), &w, &terrain()).unwrap().id();
     assert!(e.intent(id).unwrap().policy().unwrap().step_up, "an engagement always steps up");
     let mut refused = Vec::new();
@@ -178,6 +181,7 @@ fn a_dev_run_says_so_and_is_no_evidence_about_people() {
     let op1 = e.open_operator_session(OperatorId::new("op-1")).unwrap();
     let op2 = e.open_operator_session_with(OperatorId::new("op-2"), Grants { engage: true }).unwrap();
     let w = engage_world(clock.now());
+    declare_shown(&mut e, &w);
     let id = e.submit(op1.authority(), nomination(), &w, &terrain()).unwrap().id();
     let a2 = op2.engagement_authority().unwrap();
     let t = e.issue_picture(id, a2, &w).unwrap().id;
@@ -373,6 +377,7 @@ fn a_closed_session_drops_its_picture_tokens() {
     let op1 = login(&mut e, "op-1", false);
     let op2 = login(&mut e, "op-2", true);
     let w = engage_world(T0);
+    declare_shown(&mut e, &w);
     let id = e.submit(op1.authority(), nomination(), &w, &terrain()).unwrap().id();
     let t = e.issue_picture(id, op2.engagement_authority().unwrap(), &w).unwrap().id;
     assert!(e.picture_token(t).is_some());
@@ -560,6 +565,7 @@ fn scripted_operators_are_authenticated_but_never_people() {
     assert_eq!(op2.method(), Some(AuthMethod::Scripted));
     let op3 = login(&mut e, "op-3", true);
     let w = engage_world(T0);
+    declare_shown(&mut e, &w);
     let id = e.submit(op1.authority(), nomination(), &w, &terrain()).unwrap().id();
     for op in [&op2, &op3] {
         let a = op.engagement_authority().unwrap();
@@ -645,25 +651,36 @@ fn stepping(acts: &[StepUpAct]) -> Policy {
 #[test]
 fn the_policy_can_make_a_hostile_declaration_step_up() {
     let clock = ManualClock::new(T0);
+    // rules 9: a declaration is the identification ledger's; the step-up rides on it
+    let mut w = engage_world(T0);
+    let mut other = w.tracks["T-0001"].clone();
+    other.declared_by = None;
+    other.position.value = LonLat::new(-122.5100, 37.8200);
+    w.tracks.insert("T-0002".into(), other);
     // off by default: a declaration is logged as it always was
     let log = MemorySink::new();
     let mut e = engine(policy(), three().with_auth(AuthMode::Credentials), &clock, &log);
     let op1 = login(&mut e, "op-1", false);
-    e.record_declaration(&op1, None, "T-0001", "hostile", None).unwrap();
+    e.declare_track(op1.authority(), None, "T-0001", Affiliation::Hostile, None, None, &w).unwrap();
     let r = replay::replay_str(&log.text()).unwrap();
     assert!(r.ok() && r.stepped_acts == 0, "{:?}", r.mismatches);
-    // listed: hostile needs the credential re-entered, by either path in; another
-    // affiliation does not
+    // under rules 9 the rules 8 path is closed: a declaration that a decision would not read
+    let err = e.record_declaration(&op1, None, "T-0002", "hostile", None).unwrap_err();
+    assert!(matches!(err, EngineError::Identification(_)), "{err}");
+    let err = e.record_operator_action(op1.authority(), "track.declare", "track T-0002 declared hostile").unwrap_err();
+    assert!(matches!(err, EngineError::Identification(_)), "{err}");
+    // listed: hostile needs the credential re-entered; another affiliation does not
     let log = MemorySink::new();
     let mut e = engine(stepping(&[StepUpAct::DeclareHostile]), three().with_auth(AuthMode::Credentials), &clock, &log);
     let op1 = login(&mut e, "op-1", false);
-    let err = e.record_declaration(&op1, None, "T-0001", "hostile", None).unwrap_err();
+    let err = e
+        .declare_track(op1.authority(), None, "T-0001", Affiliation::Hostile, None, None, &w)
+        .unwrap_err();
     assert!(matches!(err, EngineError::NotAuthenticated { .. }), "{err}");
-    let err = e.record_operator_action(op1.authority(), "track.declare", "track T-0001 declared hostile").unwrap_err();
-    assert!(matches!(err, EngineError::NotAuthenticated { .. }), "{err}");
-    e.record_declaration(&op1, None, "T-0002", "neutral", None).unwrap();
+    e.declare_track(op1.authority(), None, "T-0002", Affiliation::Neutral, None, None, &w).unwrap();
     let s = e.step_up(&op1).unwrap();
-    e.record_declaration(&op1, Some(s), "T-0001", "hostile", Some("fired on the cutter")).unwrap();
+    e.declare_track(op1.authority(), Some(s), "T-0001", Affiliation::Hostile, Some("fired on the cutter".into()), None, &w)
+        .unwrap();
     let text = log.text();
     let r = replay::replay_str(&text).unwrap();
     assert!(r.ok(), "{:?}", r.mismatches);
@@ -671,12 +688,36 @@ fn the_policy_can_make_a_hostile_declaration_step_up() {
     // the step-up dropped from the declaration: caught
     let forged = forge(&text, |events| {
         for ev in events.iter_mut() {
-            if let EventBody::OperatorAction { step_up, .. } = &mut ev.body {
+            if let EventBody::IdentDeclared { declaration } = &mut ev.body
+                && let Declarer::Operator { step_up, .. } = &mut declaration.by
+            {
                 *step_up = None;
             }
         }
     });
     assert!(whats(&forged).iter().any(|m| m.contains("a hostile declaration without a step-up")), "{:?}", whats(&forged));
+    // rules 8 (the version that added the list): `track.declare` steps up by either path in
+    let log = MemorySink::new();
+    let mut p8 = stepping(&[StepUpAct::DeclareHostile]);
+    p8.rules.rules_version = OPERATOR_AUTH_SINCE;
+    let mut e8 = engine(p8, three().with_auth(AuthMode::Credentials), &clock, &log);
+    let op1 = login(&mut e8, "op-1", false);
+    let err = e8.record_declaration(&op1, None, "T-0001", "hostile", None).unwrap_err();
+    assert!(matches!(err, EngineError::NotAuthenticated { .. }), "{err}");
+    let err = e8.record_operator_action(op1.authority(), "track.declare", "track T-0001 declared hostile").unwrap_err();
+    assert!(matches!(err, EngineError::NotAuthenticated { .. }), "{err}");
+    e8.record_declaration(&op1, None, "T-0002", "neutral", None).unwrap();
+    let s = e8.step_up(&op1).unwrap();
+    e8.record_declaration(&op1, Some(s), "T-0001", "hostile", Some("fired on the cutter")).unwrap();
+    let r8 = replay::replay_str_with(
+        &log.text(),
+        &ReplayOptions {
+            rules: RulesAccepted::Exactly(OPERATOR_AUTH_SINCE),
+            ..ReplayOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(r8.ok() && r8.stepped_acts == 1, "{:?}", r8.mismatches);
     // the key is policy schema 5
     let forged = forge(&text, |events| {
         if let EventBody::RunStarted { policy_schema, .. } = &mut events[0].body {
@@ -688,7 +729,7 @@ fn the_policy_can_make_a_hostile_declaration_step_up() {
     // a dev run has no credential to re-enter: the list asks nothing there
     let mut d = engine(stepping(&[StepUpAct::DeclareHostile]), three(), &clock, &MemorySink::new());
     let op1 = d.open_operator_session(OperatorId::new("op-1")).unwrap();
-    d.record_declaration(&op1, None, "T-0001", "hostile", None).unwrap();
+    d.declare_track(op1.authority(), None, "T-0001", Affiliation::Hostile, None, None, &w).unwrap();
     // the session's own events are the engine's to log
     assert!(d.record_operator_action(op1.authority(), "session.closed", "forged").is_err());
 }

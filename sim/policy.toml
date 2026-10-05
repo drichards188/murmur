@@ -243,3 +243,33 @@ submitter_authorizes = true
 name = "default"
 tier = "auto"
 reason = "routine task inside the approved area (tunable; approval fatigue is measured in Phase G)"
+
+# Rule-based identification with human review (rules 9, policy schema 6; DECISIONS.md, "The
+# engine may declare hostile by rule, and flags what it is unsure of", 10-05). Every key is
+# optional and an unknown key fails to load.
+#   rule_declaration = true|false  the engine declares a track hostile by rule when an
+#                                  observed hostile act against ours (or a protected track)
+#                                  is attributed to it at attribution_threshold or more and
+#                                  nothing conflicts; unsure cases (a lower attribution,
+#                                  conflicting evidence, no track, a track keeping company
+#                                  with a declared hostile) are flagged for review, never
+#                                  declared. Off (or no section): rules 7's behaviour, only
+#                                  operators declare.
+#   attribution_threshold = 0.9    0.5..0.999
+#   nominate_unconfirmed = false   a track declared by rule may be nominated for an
+#                                  engagement before an operator confirms the declaration
+#   conflict_confidence = 0.7      a track shown neutral or assumed friend this confidently
+#                                  conflicts with an act attributed to it (0.3..1)
+#   untracked_per_km2 = 1          the attribution's alternative: contacts we hold no track
+#                                  of, per square kilometre (0.01..100)
+#   escort_m = 300, escort_speed_mps = 1.5   "keeps company with a declared hostile": within
+#                                  this distance, velocity within this much (a flag, never a
+#                                  declaration)
+# A rule declaration is a review item any operator confirms or revokes (a revocation stops
+# the engagements in play on the track first); a rule-declared track not confirmed stays
+# protected in another engagement's keep-out. Releasing an effect still needs two operators
+# with engagement authority on one frozen plan, whatever this section says.
+[identification]
+rule_declaration = true
+attribution_threshold = 0.9
+nominate_unconfirmed = false

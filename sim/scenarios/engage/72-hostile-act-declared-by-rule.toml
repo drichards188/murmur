@@ -1,0 +1,88 @@
+# Rules 9: a clear hostile act. The fast boat (truth: hostile) commits an abstract hostile act
+# against our patrol USV; BLADE 1's EO/IR (2.2 km) and the USV's radar observe it and place its
+# author 26 m (1-sigma) from where it is. No other track is near, so the engine attributes the
+# act to T-0001 well above the policy's 0.9 and declares it hostile by rule (declared_by
+# rule:hostile_act, with the act, the sensors, the time and the attribution as evidence). The
+# declaration is a review item: op-2 confirms it, then op-1 nominates, two others with
+# engagement authority sign (the picture token and the frozen plan carry how it was declared),
+# the effect is released and assessed. Afterwards the act is cut from the log, leaving a rule
+# declaration with no act behind it; replay must catch it.
+title = "A clear hostile act declares its author hostile by rule"
+invariant = "rule_declaration"
+attack = "a rule declaration with its act cut from the log"
+expect = "done"
+expect_assessment = "ceased"
+expect_ident = [
+    "act A-1 against our vehicle usv-1 by T-0001: best T-0001",
+    "declared T-0001 hostile by rule:hostile_act (attribution",
+    "confirmed T-0001 by op-2",
+]
+tamper = "drop_act"
+end_s = 200
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km: observes the act, covers the point after
+at = [-122.4700, 37.8160]
+
+[[vehicle]]
+uid = "usv-1"
+platform = "seahunter"      # unarmed patrol USV, radar: the act's victim, 1.2 km away
+at = [-122.4820, 37.8090]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+truth = "hostile"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["usv-1:radar", "blade-1:eo_ir"]
+
+[[step]]
+at_s = 3
+action = "act"
+by_track = "T-0001"
+against_vehicle = "usv-1"
+sensors = ["blade-1:eo_ir", "usv-1:radar"]
+sigma_m = 26
+
+[[step]]
+at_s = 6
+action = "confirm_declaration"
+by = "op-2"
+track = "T-0001"
+
+[[step]]
+at_s = 8
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 12
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 15
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 16
+action = "expect"
+state = "dispatched"

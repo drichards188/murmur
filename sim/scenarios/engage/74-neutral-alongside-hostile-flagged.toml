@@ -1,0 +1,104 @@
+# Rules 9: a neutral moving alongside a hostile. op-1 declares the fast boat hostile; a ferry
+# (AIS, shown neutral at 0.80; truth: neutral) runs 150 m from it at the same speed and
+# course. Keeping company with a declared hostile is weak evidence (it is how neutrals and
+# civilians get misclassified): the engine raises the ferry to suspect and flags it for review,
+# naming the evidence, and never declares it on that. Then the fast boat commits an act against
+# our patrol USV whose author the USV's EO/IR places on the ferry (a misattribution): the act is
+# attributed to the ferry above the threshold, but the ferry's own evidence says neutral at 0.80
+# (the estimate the raise replaced), which conflicts: flagged, not declared. An agent nominates
+# the ferry (now shown suspect): rejected, target_declared. op-2 dismisses the proximity flag.
+# Afterwards the log is forged so op-1's declaration of the fast boat reads as op-3's (in op-1's
+# session, the decisions' pictures made to agree); replay must catch the operator who didn't
+# make it.
+title = "A neutral alongside a hostile is raised to suspect and flagged, never declared"
+invariant = "rule_declaration"
+attack = "proximity and a misattributed act on a neutral ferry; a declaration credited to another operator"
+expect = "rejected"
+expect_rule = "target_declared"
+expect_ident = [
+    "declared T-0001 hostile by op-1",
+    "flagged F-1 proximity [T-0003] with T-0001",
+    "act A-1 against our vehicle usv-1 by T-0001: best T-0003",
+    "flagged F-2 conflict [T-0003]",
+    "resolved F-1 dismissed by op-2",
+]
+expect_no_ident = ["declared T-0003"]
+tamper = "declaration_by_another_operator"
+end_s = 40
+
+[[operator]]
+id = "op-1"                 # declares; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[agent]]
+id = "agent-planner"
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"
+at = [-122.4700, 37.8160]
+
+[[vehicle]]
+uid = "usv-1"
+platform = "seahunter"      # unarmed patrol USV, EO/IR: the act's victim and witness
+at = [-122.4820, 37.8090]
+
+[[track]]
+id = "T-0001"
+at = [-122.4980, 37.8115]   # inside ez-gate-west, running east at 3 m/s
+velocity = [3.0, 0.0]
+affiliation = "suspect"
+truth = "hostile"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["usv-1:radar", "blade-1:eo_ir"]
+
+[[track]]
+id = "T-0003"
+at = [-122.4980, 37.81285]  # 150 m north of it, same course and speed
+velocity = [3.0, 0.1]
+affiliation = "neutral"
+truth = "neutral"
+identity = "ferry"
+identity_confidence = 0.9
+sources = ["usv-1:ais", "usv-1:radar"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 6
+action = "act"
+by_track = "T-0001"
+against_vehicle = "usv-1"
+sensors = ["usv-1:eo_ir"]
+sigma_m = 30
+offset = [6.0, 150.0]       # its author placed on the ferry
+
+[[step]]
+at_s = 9
+action = "nominate"
+agent = "agent-planner"
+rationale = "T-0003 is suspect and runs with the declared hostile T-0001"
+platform = "blade-1"
+track = "T-0003"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 12
+action = "resolve_flag"
+by = "op-2"
+track = "T-0003"
+flag = 1
+resolution = "dismissed"

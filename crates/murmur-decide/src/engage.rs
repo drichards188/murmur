@@ -133,6 +133,11 @@ pub struct EngageRules {
     /// policy key).
     #[serde(skip, default = "rules_version_now")]
     pub rules_version: u32,
+    /// Rules 9: `[identification] nominate_unconfirmed` (copied by
+    /// [`RulesConfig::engage_rules`]; not a key of this section): a target declared by rule may
+    /// pass `target_declared` before an operator confirms it.
+    #[serde(skip)]
+    pub nominate_unconfirmed: bool,
     /// The track's identity confidence must be at least this (0..1).
     pub min_identity_confidence: f64,
     /// The track's existence confidence now must be at least this (0..1).
@@ -315,6 +320,13 @@ impl EngageRules {
         self.rules_version >= 6
     }
 
+    /// The decisions of rules 9 on (rule-based identification, [`crate::ident`]): the
+    /// declaration's basis in `target_declared`, a rule-declared and unconfirmed track
+    /// protected in another engagement's keep-out.
+    pub fn v9(&self) -> bool {
+        self.rules_version >= crate::rules::RULE_ID_SINCE
+    }
+
     /// The optional keys this section sets, each with the policy schema that introduced it
     /// (or, for an old name, the first schema whose builds read it): a log claiming an
     /// older schema can't carry them (replay checks).
@@ -355,6 +367,7 @@ impl Default for EngageRules {
     fn default() -> Self {
         EngageRules {
             rules_version: crate::rules::RULES_VERSION,
+            nominate_unconfirmed: false,
             min_identity_confidence: 0.6,
             min_track_confidence: 0.5,
             max_track_age_s: 5.0,
@@ -542,16 +555,27 @@ pub enum StopCause {
         by: IntentId,
         source: crate::intent::Source,
     },
+    /// Rules 9: an operator revoked the target's declaration (`declaration`, on `track`): the
+    /// engagement is stopped in the revocation's step, before anything else, with the fallback
+    /// the stop rules give (none before dispatch).
+    Revoked {
+        by: OperatorId,
+        session: SessionId,
+        track: String,
+        declaration: u64,
+    },
 }
 
 impl StopCause {
-    /// Its kind: `operator`, `picture`, `system`, `superseded` (what the evaluation counts).
+    /// Its kind: `operator`, `picture`, `system`, `superseded`, `revoked` (what the
+    /// evaluation counts).
     pub fn kind(&self) -> &'static str {
         match self {
             StopCause::Operator { .. } => "operator",
             StopCause::Picture => "picture",
             StopCause::System => "system",
             StopCause::Superseded { .. } => "superseded",
+            StopCause::Revoked { .. } => "revoked",
         }
     }
 }
@@ -565,6 +589,12 @@ pub struct TrackIdentity {
     pub affiliation: Affiliation,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub declared_by: Option<String>,
+    /// Rules 9: how it was declared (operator or rule, the rule's evidence, confirmed by
+    /// whom): the basis travels with the picture token and the frozen plan, so a signer sees
+    /// "declared by rule hostile_act on act A-1" or "declared by op-1", and a change of it
+    /// (a confirmation, a revocation) is a change of what was signed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declaration: Option<Box<crate::ident::Declaration>>,
 }
 
 impl TrackIdentity {
@@ -574,12 +604,22 @@ impl TrackIdentity {
             identity: t.identity.clone(),
             affiliation: t.affiliation.value,
             declared_by: t.declared_by.clone(),
+            declaration: t.declaration.clone(),
         }
     }
 
     fn describe(&self) -> String {
+        let basis = match &self.declaration {
+            Some(d) if d.is_rule() => format!(
+                " (D-{}, {})",
+                d.id,
+                if d.confirmed.is_some() { "confirmed" } else { "not confirmed" }
+            ),
+            Some(d) => format!(" (D-{})", d.id),
+            None => String::new(),
+        };
         format!(
-            "{} {} by {}",
+            "{} {} by {}{basis}",
             self.identity.as_deref().unwrap_or("unclassified"),
             self.affiliation.as_str(),
             self.declared_by.as_deref().unwrap_or("nobody")
@@ -1643,8 +1683,16 @@ fn check(rule: RuleId, uid: Option<&Uid>, outcome: Outcome, detail: impl Into<St
 }
 
 fn describe_track(id: &str, t: &TrackFacts) -> String {
+    // rules 9: a rule declaration not confirmed by an operator is protected, and says so
+    let basis = match &t.declaration {
+        Some(d) if d.unconfirmed_rule() => format!(
+            " by rule, D-{} not confirmed by an operator: protected",
+            d.id
+        ),
+        _ => String::new(),
+    };
     format!(
-        "{id} ({}, {})",
+        "{id} ({}{basis}, {})",
         t.affiliation.value.as_str(),
         t.identity.as_deref().unwrap_or("unclassified")
     )
@@ -1770,15 +1818,44 @@ fn target_checks(
         .collect();
     };
     vec![
-        declared_check(id, t),
+        declared_check(id, t, ec),
         identity_check(id, t, ec),
         recency_check(id, t, world, ec),
         uncertainty_check(id, t, ec, radius),
     ]
 }
 
-fn declared_check(id: &str, t: &TrackFacts) -> CheckResult {
+fn declared_check(id: &str, t: &TrackFacts, ec: &EngageRules) -> CheckResult {
     let r = RuleId::TargetDeclared;
+    // rules 9: the declaration's basis (operator or rule, and the rule's evidence) in the
+    // detail every signer reads; a rule declaration not confirmed by an operator passes only
+    // where the policy lets one be nominated before a confirmation
+    if ec.v9()
+        && let Some(d) = &t.declaration
+    {
+        let basis = d.describe();
+        return match t.affiliation.value {
+            Affiliation::Hostile if d.unconfirmed_rule() && !ec.nominate_unconfirmed => check(
+                r,
+                None,
+                Outcome::Fail,
+                format!("{id} {basis}: the policy needs an operator's confirmation before a nomination"),
+            ),
+            Affiliation::Hostile if d.unconfirmed_rule() => check(
+                r,
+                None,
+                Outcome::Pass,
+                format!("{id} {basis} (the policy lets a rule declaration be nominated before a confirmation)"),
+            ),
+            Affiliation::Hostile => check(r, None, Outcome::Pass, format!("{id} {basis}")),
+            a => check(
+                r,
+                None,
+                Outcome::Fail,
+                format!("{id} is {basis}, not hostile ({})", a.as_str()),
+            ),
+        };
+    }
     match (&t.declared_by, t.affiliation.value) {
         (Some(by), Affiliation::Hostile) => check(
             r,
@@ -1795,6 +1872,22 @@ fn declared_check(id: &str, t: &TrackFacts) -> CheckResult {
                 a.as_str()
             ),
         ),
+        (None, a) if ec.v9() => {
+            let raised = if t.review_flags.is_empty() {
+                String::new()
+            } else {
+                format!(" (under review: flag {})", flags_list(&t.review_flags))
+            };
+            check(
+                r,
+                None,
+                Outcome::Fail,
+                format!(
+                    "{id} is {} by estimate{raised}; hostile must be declared, by an operator or by rule on an observed hostile act",
+                    a.as_str()
+                ),
+            )
+        }
         (None, a) => check(
             r,
             None,
@@ -1805,6 +1898,11 @@ fn declared_check(id: &str, t: &TrackFacts) -> CheckResult {
             ),
         ),
     }
+}
+
+/// Review flag numbers as `F-1, F-3`.
+fn flags_list(flags: &[u64]) -> String {
+    flags.iter().map(|f| format!("F-{f}")).collect::<Vec<_>>().join(", ")
 }
 
 fn identity_check(id: &str, t: &TrackFacts, ec: &EngageRules) -> CheckResult {
@@ -2434,10 +2532,14 @@ pub fn keep_out_tracks(
     let mut by_alt: Vec<String> = Vec::new();
     for (id, t) in &world.tracks {
         // exempt: the target, and other tracks an operator declared hostile (an affiliation
-        // without a declaration is protected)
-        if id == target
-            || (t.affiliation.value == Affiliation::Hostile && t.declared_by.is_some())
-        {
+        // without a declaration is protected); rules 9: a track declared by rule and not
+        // confirmed by an operator stays protected unless it is the target (conservative)
+        let declared_hostile = if ec.v9() {
+            crate::ident::exempt_in_keep_out(t)
+        } else {
+            t.affiliation.value == Affiliation::Hostile && t.declared_by.is_some()
+        };
+        if id == target || declared_hostile {
             continue;
         }
         count += 1;
@@ -3173,7 +3275,7 @@ pub fn picture(
             ));
         }
         Some(t) => {
-            picture_checks.push(declared_check(id, t));
+            picture_checks.push(declared_check(id, t, &ec));
             picture_checks.push(reclass_check(id, &snap.track, t, &ec));
             picture_checks.push(recency_check(id, t, world, &ec));
             picture_checks.push(deviation_check(id, snap, t, world, &ec));

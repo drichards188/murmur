@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 20] = [
+const LOGS: [(&str, u32); 26] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -77,13 +77,28 @@ const LOGS: [(&str, u32); 20] = [
     // of them at the console)
     ("v8-engagement-scenario-01.jsonl", OPERATOR_AUTH_SINCE),
     ("v8-auth-live.jsonl", OPERATOR_AUTH_SINCE),
+    // rules 9 (rule-based identification; the table names the constant): the same scenario,
+    // its declaration through the identification ledger (`ident.declared` by op-1, filled
+    // into every picture); scenario 72, a clear hostile act declared by rule and confirmed;
+    // 73, an act between two tracks close together, flagged; 74, a neutral alongside a
+    // hostile, raised to suspect and flagged, then a misattributed act on it flagged for its
+    // conflicting evidence; 75, a false rule declaration nominated before a confirmation and
+    // revoked en route (the engagement stopped, cause revoked); 76, an unconfirmed rule
+    // declaration protected in another engagement's keep-out until confirmed; and a live run,
+    // anchored as it ran (see the test below)
+    ("v9-engagement-scenario-01.jsonl", RULE_ID_SINCE),
+    ("v9-hostile-act-declared-scenario-72.jsonl", RULE_ID_SINCE),
+    ("v9-ambiguous-attribution-flagged-scenario-73.jsonl", RULE_ID_SINCE),
+    ("v9-neutral-alongside-flagged-scenario-74.jsonl", RULE_ID_SINCE),
+    ("v9-revoked-mid-engagement-scenario-75.jsonl", RULE_ID_SINCE),
+    ("v9-bystander-protected-scenario-76.jsonl", RULE_ID_SINCE),
 ];
 
 /// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
 const V6_AIRSHIP: &str = "v6-airship-nomination-scenario-66.jsonl";
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v8-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v9-engagement-scenario-01.jsonl";
 
 /// The committed scenario log of rules 6 (the lost-link preload).
 const V6_SCENARIO: &str = "v6-engagement-scenario-01.jsonl";
@@ -751,9 +766,10 @@ fn the_rules_8_live_log_binds_every_signature_to_a_person() {
     let a = anchor::verify(&log, &anchors_of(AUTH_LIVE));
     assert!(a.ok(), "{:?}", a.problems);
     assert!(a.shutdown, "a clean stop anchored the head");
-    let r = replay_str(&log).unwrap();
+    // a log of rules 8 now, replayed with its own rules
+    let r = with(&log, RulesAccepted::Exactly(OPERATOR_AUTH_SINCE));
     assert!(r.ok(), "{:?}", r.mismatches);
-    assert_eq!(r.rules_version, RULES_VERSION);
+    assert_eq!(r.rules_version, OPERATOR_AUTH_SINCE);
     assert_eq!(r.build.as_ref().map(|b| b.dirty), Some(Some(false)));
     assert_eq!(r.auth, Some(AuthMode::Credentials));
     assert!(r.authenticated(), "a credentials run that reproduced");

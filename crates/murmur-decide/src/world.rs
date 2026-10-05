@@ -138,7 +138,8 @@ pub enum Affiliation {
     /// Not cooperative or inconsistent: a civilian identity that doesn't fit, a dark fast
     /// boat, an unidentified UAS or submarine (2525 "suspect", red dashed).
     Suspect,
-    /// Declared hostile by an operator (2525 "hostile", red). Never derived automatically.
+    /// Declared hostile (2525 "hostile", red): by an operator, or (rules 9) by the engine's
+    /// hostile-act rule over logged facts. Never derived from identity evidence alone.
     Hostile,
     /// Civilian or cooperative (2525 "neutral", green).
     Neutral,
@@ -214,9 +215,19 @@ pub struct TrackFacts {
     pub domain: crate::catalog::Domain,
     /// When the track was last updated by a detection.
     pub last_seen_t: Time,
-    /// An operator declared the affiliation (`by`), overriding the estimate.
+    /// Who declared the affiliation, overriding the estimate: an operator, or (rules 9) the
+    /// engine's hostile-act rule (`rule:hostile_act`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub declared_by: Option<String>,
+    /// Rules 9: the declaration in force, as the engine's identification ledger holds it: who
+    /// or what declared it, on what evidence, confirmed by whom ([`crate::ident::Declaration`]).
+    /// Engine-filled before every decision ([`crate::ident::Ledger::fill`]); absent when none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declaration: Option<Box<crate::ident::Declaration>>,
+    /// Rules 9: the review flags in force on it (open or confirmed), by number; a proximity
+    /// flag raises it to suspect. Engine-filled; absent when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub review_flags: Vec<u64>,
 }
 
 /// Where a vehicle's horizontal position comes from.

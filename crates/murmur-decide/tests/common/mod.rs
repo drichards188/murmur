@@ -194,3 +194,34 @@ pub fn forge(text: &str, edit: impl FnOnce(&mut Vec<Event>)) -> String {
     }
     out
 }
+
+/// Rules 9: a declaration is the engine's identification ledger, not a field of the picture
+/// the bridge hands it (the engine fills every decision's tracks from the ledger). These
+/// tests' hand-built pictures say who declared what (`declared_by`): declare each such track
+/// through the engine, by its operator, in a session of their own (a password one in a
+/// credentials run). Nothing before rules 9.
+pub fn declare_shown(e: &mut Engine, world: &WorldSnapshot) {
+    if !e.policy().rules.rule_id() {
+        return;
+    }
+    for (id, t) in &world.tracks {
+        let Some(by) = t.declared_by.clone() else { continue };
+        if e.identification()
+            .declaration(id)
+            .is_some_and(|d| d.affiliation == t.affiliation.value)
+        {
+            continue;
+        }
+        let s = match e.auth_mode() {
+            Some(AuthMode::Credentials) => e
+                .open_authenticated_session(OperatorId::new(&by), Grants::default(), AuthMethod::Password)
+                .unwrap(),
+            _ => e.open_operator_session(OperatorId::new(&by)).unwrap(),
+        };
+        if e.identification().declaration(id).is_some() {
+            e.revoke_declaration(s.authority(), id, None).unwrap();
+        }
+        e.declare_track(s.authority(), None, id, t.affiliation.value, None, None, world)
+            .unwrap();
+    }
+}

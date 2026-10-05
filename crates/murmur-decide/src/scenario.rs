@@ -82,9 +82,18 @@ pub struct Scenario {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expect_preload: Vec<String>,
     /// How the last nomination was stopped: `superseded` (another order stands, no fallback
-    /// commanded), `system`, `picture` or `operator`.
+    /// commanded), `system`, `picture`, `operator` or (rules 9) `revoked`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expect_stop: Option<String>,
+    /// Rules 9: identification reports that must have been logged, in order (substrings of
+    /// the runner's `ident_reports`: `declared T-0001 by rule:hostile_act`, `flagged F-1
+    /// attribution`, `revoked T-0001 by op-2`, ...).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expect_ident: Vec<String>,
+    /// Rules 9: substrings no identification report may contain (`declared T-0003`: never
+    /// declared, whatever happened).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expect_no_ident: Vec<String>,
     /// After the run, attack the log and require replay to catch it:
     /// `proposer_approval`, `agent_approval`, `suppress_void`, `edit_snapshot`,
     /// `drop_signature`, `edit_effect`, `strip_approvers`, `drop_reset`, `agent_order_auto`,
@@ -234,6 +243,10 @@ pub struct TrackDef {
     /// fresh (0: measured with every detection).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub alt_age_s: f64,
+    /// Rules 9, for the evaluation's labels only (never shown to the engine): what the contact
+    /// behind the track really is (default: hostile if `affiliation` is, else the estimate).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truth: Option<Affiliation>,
 }
 
 fn sigma() -> f64 {
@@ -407,6 +420,50 @@ pub enum Action {
         #[serde(default)]
         alt_m: Option<f64>,
     },
+    /// Rules 9: an abstract hostile act (no weapon of any kind: a time, a victim and where its
+    /// author appeared to be). The contact behind track `by_track` (or an untracked contact at
+    /// `at`) acts against our vehicle `against_vehicle` or the contact behind track
+    /// `against_track`; our sensors `sensors` (`"<uid>:<sensor>"`) observe it and place its
+    /// author with 1-sigma `sigma_m` (default 20 m), displaced by `offset` (east, north
+    /// metres; default none) and, in a batch with act noise, by seeded Gaussian noise of that
+    /// sigma. The engine attributes it and its rule declares, flags or records it.
+    Act {
+        #[serde(default)]
+        by_track: Option<String>,
+        #[serde(default)]
+        at: Option<[f64; 2]>,
+        #[serde(default)]
+        against_vehicle: Option<String>,
+        #[serde(default)]
+        against_track: Option<String>,
+        sensors: Vec<String>,
+        #[serde(default = "act_sigma")]
+        sigma_m: f64,
+        #[serde(default)]
+        offset: Option<[f64; 2]>,
+    },
+    /// Rules 9: an operator confirms the rule declaration in force on a track.
+    ConfirmDeclaration { by: String, track: String },
+    /// Rules 9: an operator revokes the declaration in force on a track (it stops the
+    /// engagements in play on it, first).
+    RevokeDeclaration {
+        by: String,
+        track: String,
+        #[serde(default)]
+        note: Option<String>,
+    },
+    /// Rules 9: an operator confirms or dismisses a review flag on a track: `flag` (its
+    /// number), or the newest in force on it.
+    ResolveFlag {
+        by: String,
+        track: String,
+        #[serde(default)]
+        flag: Option<u64>,
+        resolution: crate::ident::FlagResolution,
+    },
+    /// Rules 9: an agent "tries" to declare a track hostile: there is no such method on its
+    /// port, so it is recorded and nothing may change.
+    AgentDeclare { agent: String, track: String },
     /// Check the last nomination now.
     Expect {
         #[serde(default)]
@@ -438,6 +495,49 @@ pub struct RunOptions {
     /// Decide under these decision rules instead of the current ones (none: the current):
     /// to show what an older version did with the same timeline.
     pub rules_version: Option<u32>,
+    /// Rules 9: each act's observed position also carries seeded Gaussian noise of its
+    /// `sigma_m` (with `seed`): the identification evaluation's batches. Off: the scripted
+    /// offset only, so a scenario's designed outcome does not depend on the seed.
+    pub act_noise: bool,
+    /// Rules 9: the policy's `[identification]` instead of the file's (the evaluation's
+    /// manual-versus-rule comparison on the same seeds).
+    pub identification: Option<crate::ident::IdentConfig>,
+}
+
+fn act_sigma() -> f64 {
+    20.0
+}
+
+/// Rules 9: one identification event of a run with the truth behind it (the evaluation's
+/// labels: was the track really hostile, was the act really its act). `t_s`: scenario seconds.
+#[derive(Clone, Debug, Serialize)]
+pub struct IdentRecord {
+    /// `act`, `rule_declaration`, `operator_declaration`, `confirmed`, `revoked`, `flag`,
+    /// `flag_resolved`.
+    pub kind: String,
+    pub t_s: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub track: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub act: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
+    /// Flag kind, verdict, or resolution.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attribution: Option<f64>,
+    /// Truth: the track's contact is hostile.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truth_hostile: Option<bool>,
+    /// Truth: the act was this track's contact's (for declarations and flags from an act).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truth_actor: Option<bool>,
+    /// The act's true author (a track id, or `untracked`), and when it acted (scenario s).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub act_t_s: Option<f64>,
 }
 
 /// What a run produced.
@@ -479,6 +579,10 @@ pub struct ScenarioResult {
     pub tamper_mismatches: Vec<String>,
     /// How many times the signatures were dropped (`approval.reset`).
     pub resets: usize,
+    /// Rules 9: the identification events, in order (`t=<s> declared T-0001 by
+    /// rule:hostile_act ...`), and the same with the truth behind each (evaluation labels).
+    pub ident_reports: Vec<String>,
+    pub ident: Vec<IdentRecord>,
     /// The audit log, for the harness to keep.
     #[serde(skip)]
     pub log: String,
@@ -564,6 +668,8 @@ struct TrackSim {
     no_velocity: bool,
     /// rules 6: its altitude is no longer measured (the ranging sensors lost it)
     alt_frozen: bool,
+    /// rules 9, labels only: what its contact really is
+    truth_aff: Affiliation,
 }
 
 fn is_zero(x: &f64) -> bool {
@@ -619,6 +725,15 @@ pub fn run(
     let mut policy = Policy::load(&rel(&sc.policy, "sim/policy.toml")).map_err(|e| setup(e.to_string()))?;
     if let Some(v) = opts.rules_version {
         policy.rules.rules_version = v;
+        // older rules have no [identification]: no build of theirs logged one
+        if v < crate::rules::RULE_ID_SINCE {
+            policy.identification = None;
+        }
+    }
+    // rules 9: the evaluation's identification setting, the same seeds either way
+    if let Some(i) = &opts.identification {
+        i.validate().map_err(setup)?;
+        policy.identification = Some(i.clone());
     }
     let catalog =
         Catalog::load(&rel(&sc.catalog, "sim/platforms.toml")).map_err(|e| setup(e.to_string()))?;
@@ -690,6 +805,24 @@ pub fn run(
         }
         tracks.insert(t.id.clone(), sim);
     }
+    // rules 9: a track the file lists as declared is declared through the engine's ledger,
+    // by that operator, before the timeline starts (the engine fills it into every picture)
+    let rule_id = engine.policy().rules.rule_id();
+    if rule_id {
+        for t in sc.tracks.iter().filter(|t| t.declared_by.is_some()) {
+            let by = t.declared_by.clone().unwrap_or_default();
+            let Some(sess) = sessions.get(&by) else {
+                return Err(setup(format!("track {}: declared by {by}, not an operator of the file", t.id)));
+            };
+            if let Some(sim) = tracks.get_mut(&t.id) {
+                sim.facts.declared_by = None;
+            }
+            let w = snapshot(&vehicles, &tracks, &catalog, &areas, T0);
+            engine
+                .declare_track(sess.authority(), None, &t.id, t.affiliation, None, None, &w)
+                .map_err(|e| setup(e.to_string()))?;
+        }
+    }
 
     let end_s = sc
         .end_s
@@ -701,7 +834,14 @@ pub fn run(
     let mut target_out: Option<String> = None;
     let mut fallback_seen: Option<String> = None;
     let mut engaging: BTreeMap<IntentId, (String, LonLat)> = BTreeMap::new();
-    let mut extra = Extra::default();
+    let mut extra = Extra {
+        // an act's own noise stream, so adding acts leaves the track noise of a seed unchanged
+        act_noise: opts
+            .seed
+            .filter(|_| opts.act_noise)
+            .map(|s| Rng(s ^ 0xAC75_0000_0000_0001)),
+        ..Extra::default()
+    };
 
     for s in 0..=end_s {
         let now = T0.plus_ms(i64::from(s) * 1000);
@@ -822,9 +962,13 @@ pub fn run(
             &mut failures,
             s,
         );
-        // the bridge's loop: expire, then hold the picture / release / observe
+        // the bridge's loop: expire, the weak-evidence rule (rules 9), then hold the picture /
+        // release / observe
         let _ = engine.expire_due();
         let world = snapshot(&vehicles, &tracks, &catalog, &areas, now);
+        if rule_id && let Err(e) = engine.step_identification(&world) {
+            failures.push(format!("t={s}: step_identification: {e}"));
+        }
         let outcome = if s < extra.stall_until {
             crate::engine::StepOutcome::default()
         } else {
@@ -903,6 +1047,14 @@ pub fn run(
                 failed_rules.push(r.rule.as_str().into());
             }
         }
+        // rules 9: stopped for a revoked declaration, before any picture could fail on it
+        if i.engagement()
+            .and_then(|e| e.stop.as_ref())
+            .is_some_and(|st| matches!(st.cause, engage::StopCause::Revoked { .. }))
+            && !failed_rules.iter().any(|r| r == "target_declared")
+        {
+            failed_rules.push("target_declared".into());
+        }
     }
     let assessment = intent
         .and_then(|i| i.engagement())
@@ -970,6 +1122,23 @@ pub fn run(
         }
     }
     let text = log.text();
+    // rules 9: what the identification ledger logged, with the truth behind it
+    let (ident_reports, ident) = ident_records(&text, &tracks, &extra.acts);
+    let mut reports_iter = ident_reports.iter();
+    for want in &sc.expect_ident {
+        if !reports_iter.any(|r| r.contains(want.as_str())) {
+            failures.push(format!(
+                "expected identification reports {:?} in order, got {:?}",
+                sc.expect_ident, ident_reports
+            ));
+            break;
+        }
+    }
+    for never in &sc.expect_no_ident {
+        if let Some(r) = ident_reports.iter().find(|r| r.contains(never.as_str())) {
+            failures.push(format!("an identification report must never say {never:?}: {r}"));
+        }
+    }
     let resets = text
         .lines()
         .filter(|l| l.contains("\"type\":\"approval.reset\""))
@@ -1041,8 +1210,180 @@ pub fn run(
         tamper_not_applicable,
         tamper_mismatches,
         resets,
+        ident_reports,
+        ident,
         log: text,
     })
+}
+
+/// Rules 9: the identification events of a log as report lines (`t=<s> declared T-0001 by
+/// rule:hostile_act ...`), and as records with the truth behind each: whether the track's
+/// contact is really hostile, and whether the act was really its contact's (`acts`: each
+/// act's true author and second, as the timeline scripted it).
+fn ident_records(
+    text: &str,
+    tracks: &BTreeMap<String, TrackSim>,
+    acts: &BTreeMap<String, (String, u32)>,
+) -> (Vec<String>, Vec<IdentRecord>) {
+    use crate::ident::{ActVerdict, Declarer};
+    let Ok(events) = parse_log(text) else {
+        return (Vec::new(), Vec::new());
+    };
+    let secs = |t: Time| t.ms_since(T0) as f64 / 1000.0;
+    let hostile = |track: &str| tracks.get(track).map(|t| t.truth_aff == Affiliation::Hostile);
+    let mut reports = Vec::new();
+    let mut out = Vec::new();
+    let base = |kind: &str, t: Time| IdentRecord {
+        kind: kind.into(),
+        t_s: secs(t),
+        track: None,
+        act: None,
+        by: None,
+        detail: None,
+        attribution: None,
+        truth_hostile: None,
+        truth_actor: None,
+        actor: None,
+        act_t_s: None,
+    };
+    // the flag each act raised, for its tracks' labels
+    for e in &events {
+        let s = secs(e.t);
+        match &e.body {
+            EventBody::IdentAct {
+                act, candidates, verdict, ..
+            } => {
+                let (actor, act_s) = acts.get(&act.act).cloned().unwrap_or_default();
+                let best = candidates.first().map_or_else(
+                    || "no track".to_string(),
+                    |c| format!("{} at {:.2}", c.track, c.confidence),
+                );
+                let v = match verdict {
+                    ActVerdict::Declare { track, .. } => format!("declare {track}"),
+                    ActVerdict::Flag { kind, .. } => format!("flag {}", kind.as_str()),
+                    ActVerdict::Recorded { why } => format!("recorded ({why})"),
+                };
+                reports.push(format!("t={s:.0} act {} against {} by {actor}: best {best}; {v}", act.act, act.against.describe()));
+                out.push(IdentRecord {
+                    track: candidates.first().map(|c| c.track.clone()),
+                    act: Some(act.act.clone()),
+                    detail: Some(v),
+                    attribution: candidates.first().map(|c| c.confidence),
+                    truth_hostile: (actor != "untracked").then(|| hostile(&actor)).flatten(),
+                    truth_actor: candidates.first().map(|c| c.track == actor),
+                    actor: Some(actor),
+                    act_t_s: Some(f64::from(act_s)),
+                    ..base("act", e.t)
+                });
+            }
+            EventBody::IdentDeclared { declaration: d } => {
+                let (kind, act, attribution) = match &d.by {
+                    Declarer::Rule { evidence, .. } => ("rule_declaration", Some(evidence.act.clone()), Some(evidence.attribution)),
+                    Declarer::Operator { .. } => ("operator_declaration", None, None),
+                };
+                let (actor, act_s) = act
+                    .as_ref()
+                    .and_then(|a| acts.get(a).cloned())
+                    .map_or((None, None), |(a, s)| (Some(a), Some(f64::from(s))));
+                reports.push(format!(
+                    "t={s:.0} declared {} {} by {}{}",
+                    d.track,
+                    d.affiliation.as_str(),
+                    d.label(),
+                    attribution.map(|a| format!(" (attribution {a:.2})")).unwrap_or_default()
+                ));
+                out.push(IdentRecord {
+                    track: Some(d.track.clone()),
+                    act,
+                    by: Some(d.label()),
+                    detail: Some(d.affiliation.as_str().into()),
+                    attribution,
+                    truth_hostile: hostile(&d.track),
+                    truth_actor: actor.as_ref().map(|a| *a == d.track),
+                    actor,
+                    act_t_s: act_s,
+                    ..base(kind, e.t)
+                });
+            }
+            EventBody::IdentConfirmed { track, by, .. } => {
+                reports.push(format!("t={s:.0} confirmed {track} by {by}"));
+                out.push(IdentRecord {
+                    track: Some(track.clone()),
+                    by: Some(by.to_string()),
+                    truth_hostile: hostile(track),
+                    ..base("confirmed", e.t)
+                });
+            }
+            EventBody::IdentRevoked {
+                track, by, engagements, ..
+            } => {
+                let stopped: Vec<String> = engagements.iter().map(ToString::to_string).collect();
+                reports.push(format!("t={s:.0} revoked {track} by {by} (stopping [{}])", stopped.join(", ")));
+                out.push(IdentRecord {
+                    track: Some(track.clone()),
+                    by: Some(by.to_string()),
+                    detail: Some(format!("stopped {}", stopped.len())),
+                    truth_hostile: hostile(track),
+                    ..base("revoked", e.t)
+                });
+            }
+            EventBody::IdentFlagged { flag, .. } => {
+                let (actor, act_s) = flag
+                    .act
+                    .as_ref()
+                    .and_then(|a| acts.get(a).cloned())
+                    .map_or((None, None), |(a, s)| (Some(a), Some(f64::from(s))));
+                let related = flag.related.as_ref().map(|r| format!(" with {r}")).unwrap_or_default();
+                reports.push(format!(
+                    "t={s:.0} flagged F-{} {} [{}]{related}",
+                    flag.id,
+                    flag.kind.as_str(),
+                    flag.tracks.join(", ")
+                ));
+                // one record per track it names (none: one without)
+                let named: Vec<Option<String>> = if flag.tracks.is_empty() {
+                    vec![None]
+                } else {
+                    flag.tracks.iter().cloned().map(Some).collect()
+                };
+                for t in named {
+                    out.push(IdentRecord {
+                        truth_hostile: t.as_deref().and_then(hostile),
+                        truth_actor: actor.as_ref().zip(t.as_ref()).map(|(a, t)| a == t),
+                        track: t,
+                        act: flag.act.clone(),
+                        detail: Some(format!("F-{} {}", flag.id, flag.kind.as_str())),
+                        actor: actor.clone(),
+                        act_t_s: act_s,
+                        ..base("flag", e.t)
+                    });
+                }
+            }
+            EventBody::IdentFlagResolved {
+                flag, resolution, by, ..
+            } => {
+                let r = match resolution {
+                    crate::ident::FlagResolution::Confirmed => "confirmed",
+                    crate::ident::FlagResolution::Dismissed => "dismissed",
+                };
+                reports.push(format!("t={s:.0} resolved F-{flag} {r} by {by}"));
+                out.push(IdentRecord {
+                    by: Some(by.to_string()),
+                    detail: Some(format!("F-{flag} {r}")),
+                    ..base("flag_resolved", e.t)
+                });
+            }
+            EventBody::EngageStopped {
+                intent,
+                cause: engage::StopCause::Revoked { track, .. },
+                ..
+            } => {
+                reports.push(format!("t={s:.0} stopped {intent} for the revoked declaration of {track}"));
+            }
+            _ => {}
+        }
+    }
+    (reports, out)
 }
 
 /// A source that ranges a contact in height (or puts it at sea level): radar, AIS.
@@ -1080,10 +1421,13 @@ fn track_sim(t: &TrackDef) -> TrackSim {
             domain: t.domain,
             last_seen_t: seen,
             declared_by: t.declared_by.clone(),
+            declaration: None,
+            review_flags: Vec::new(),
         },
         silent: t.silent,
         no_velocity: t.no_velocity_estimate,
         alt_frozen: t.alt_age_s > 0.0,
+        truth_aff: t.truth.unwrap_or(t.affiliation),
     }
 }
 
@@ -1181,9 +1525,19 @@ fn act(
             let Some(sess) = session(by) else {
                 return failures.push(format!("t={s}: unknown operator {by}"));
             };
-            let Some(t) = tracks.get_mut(track) else {
+            if !tracks.contains_key(track) {
                 return failures.push(format!("t={s}: unknown track {track}"));
-            };
+            }
+            // rules 9: through the engine's identification ledger, which fills every picture
+            if engine.policy().rules.rule_id() {
+                let w = world(tracks, vehicles);
+                match engine.declare_track(sess.authority(), None, track, *affiliation, None, None, &w) {
+                    Ok(out) => follow_stops(vehicles, engaging, fallback_seen, &out.fallbacks),
+                    Err(e) => refusals.push(e.to_string()),
+                }
+                return;
+            }
+            let Some(t) = tracks.get_mut(track) else { return };
             t.facts.affiliation = Fact::new(*affiliation, now);
             t.facts.declared_by = Some(by.clone());
             let _ = engine.record_operator_action(
@@ -1191,6 +1545,103 @@ fn act(
                 "track.declare",
                 &format!("track {track} declared {}", affiliation.as_str()),
             );
+        }
+        Action::Act {
+            by_track,
+            at,
+            against_vehicle,
+            against_track,
+            sensors,
+            sigma_m,
+            offset: shift,
+        } => {
+            let n = extra.acts.len() + 1;
+            let id = format!("A-{n}");
+            let (author, actor) = match (by_track, at) {
+                (Some(t), _) => match tracks.get(t) {
+                    Some(sim) => (sim.truth, t.clone()),
+                    None => return failures.push(format!("t={s}: act {id}: unknown track {t}")),
+                },
+                (None, Some(p)) => (LonLat::new(p[0], p[1]), "untracked".to_string()),
+                (None, None) => return failures.push(format!("t={s}: act {id}: by_track or at")),
+            };
+            extra.acts.insert(id.clone(), (actor, s));
+            if !engine.policy().rules.rule_id() {
+                return refusals.push(format!("act {id}: these decision rules observe no hostile acts (rules 9)"));
+            }
+            let mut location = author;
+            if let Some([e, n]) = shift {
+                location = offset(location, *e, *n);
+            }
+            if let Some(rng) = extra.act_noise.as_mut() {
+                location = offset(location, rng.gauss() * sigma_m, rng.gauss() * sigma_m);
+            }
+            let against = match (against_vehicle, against_track) {
+                (Some(u), _) => crate::ident::Against::Vehicle { uid: Uid::new(u) },
+                (None, Some(t)) => crate::ident::Against::Track { track: t.clone() },
+                (None, None) => crate::ident::Against::Unknown,
+            };
+            let report = crate::ident::ActReport {
+                act: id.clone(),
+                against,
+                observed_t: now,
+                sensors: sensors.clone(),
+                location,
+                sigma_m: *sigma_m,
+            };
+            let w = world(tracks, vehicles);
+            if let Err(e) = engine.record_act(report, &w) {
+                failures.push(format!("t={s}: act {id}: {e}"));
+            }
+        }
+        Action::ConfirmDeclaration { by, track } => {
+            let Some(sess) = session(by) else {
+                return failures.push(format!("t={s}: unknown operator {by}"));
+            };
+            if let Err(e) = engine.confirm_declaration(sess.authority(), None, track) {
+                refusals.push(e.to_string());
+            }
+        }
+        Action::RevokeDeclaration { by, track, note } => {
+            let Some(sess) = session(by) else {
+                return failures.push(format!("t={s}: unknown operator {by}"));
+            };
+            match engine.revoke_declaration(sess.authority(), track, note.clone()) {
+                Ok(out) => follow_stops(vehicles, engaging, fallback_seen, &out.fallbacks),
+                Err(e) => refusals.push(e.to_string()),
+            }
+        }
+        Action::ResolveFlag {
+            by,
+            track,
+            flag,
+            resolution,
+        } => {
+            let Some(sess) = session(by) else {
+                return failures.push(format!("t={s}: unknown operator {by}"));
+            };
+            let flag = flag.or_else(|| engine.identification().flags_on(track).into_iter().max());
+            let Some(flag) = flag else {
+                return refusals.push(format!("no review flag in force on {track}"));
+            };
+            if let Err(e) = engine.resolve_flag(sess.authority(), flag, *resolution, None) {
+                refusals.push(e.to_string());
+            }
+        }
+        Action::AgentDeclare { agent, track } => {
+            // AgentPort has propose, preview, withdraw, record and read: nothing declares,
+            // confirms or revokes. The attempt is recorded; the ledger must not move.
+            let before = engine.identification().declaration(track).cloned();
+            let _ = engine.agent_port(AgentId::new(agent)).record_action(
+                "track.declare.attempt",
+                &format!("track {track}: no agent path to declaring a track exists"),
+            );
+            refusals.push(format!(
+                "agent {agent}: no declare method on AgentPort (declaring {track} hostile cannot be expressed)"
+            ));
+            if engine.identification().declaration(track).cloned() != before {
+                failures.push(format!("t={s}: the identification moved on an agent's attempt to declare"));
+            }
         }
         Action::Nominate {
             by,
@@ -1489,6 +1940,7 @@ fn act(
                     alt_m: *alt_m,
                     no_velocity_estimate: false,
                     alt_age_s: 0.0,
+                    truth: None,
                 })
             });
             if let Some(a) = alt_m {
@@ -1516,7 +1968,11 @@ fn act(
             if let Some(a) = affiliation {
                 t.facts.affiliation = Fact::new(*a, now);
             }
-            if let Some(b) = declared_by {
+            // rules 9: declarations are the engine's ledger (below), not the picture's own
+            let rule_id = engine.policy().rules.rule_id();
+            if let Some(b) = declared_by
+                && !rule_id
+            {
                 t.facts.declared_by = Some(b.clone());
             }
             if *undeclare {
@@ -1537,6 +1993,32 @@ fn act(
             }
             if let Some(si) = silent {
                 t.silent = *si;
+            }
+            if rule_id {
+                // a declaration given here is made by that operator; a withdrawn one is
+                // revoked by the first operator of the file (scenario 06: the track falls
+                // back to its estimate)
+                let first = sessions.keys().next().cloned();
+                let w = world(tracks, vehicles);
+                if let Some(b) = declared_by {
+                    let aff = affiliation.unwrap_or(Affiliation::Hostile);
+                    match session(b) {
+                        Some(sess) => match engine.declare_track(sess.authority(), None, id, aff, None, None, &w) {
+                            Ok(out) => follow_stops(vehicles, engaging, fallback_seen, &out.fallbacks),
+                            Err(e) => refusals.push(e.to_string()),
+                        },
+                        None => failures.push(format!("t={s}: unknown operator {b}")),
+                    }
+                }
+                if *undeclare {
+                    match first.as_deref().and_then(session) {
+                        Some(sess) => match engine.revoke_declaration(sess.authority(), id, Some("the declaration is withdrawn".into())) {
+                            Ok(out) => follow_stops(vehicles, engaging, fallback_seen, &out.fallbacks),
+                            Err(e) => refusals.push(e.to_string()),
+                        },
+                        None => failures.push(format!("t={s}: undeclare: no operator")),
+                    }
+                }
             }
         }
         Action::Vehicle {
@@ -1673,6 +2155,10 @@ struct Extra {
     preloads: BTreeMap<IntentId, PreloadSim>,
     lost_link_action: Option<String>,
     preload_reports: Vec<String>,
+    /// Rules 9: the acts scripted so far (their number, true author, scenario second), and
+    /// the seeded noise on their observed positions (a batch with act noise).
+    acts: BTreeMap<String, (String, u32)>,
+    act_noise: Option<Rng>,
 }
 
 /// Rules 6: a dispatched engagement's lost-link preload, as the runner's platform answers it.
@@ -1931,6 +2417,22 @@ fn preloads(
     }
 }
 
+/// Rules 9: the engagements a revocation stopped: their platforms fly the fallbacks.
+fn follow_stops(
+    vehicles: &mut BTreeMap<String, VehicleSim>,
+    engaging: &mut BTreeMap<IntentId, (String, LonLat)>,
+    fallback_seen: &mut Option<String>,
+    fallbacks: &[engage::FallbackOrder],
+) {
+    for f in fallbacks {
+        *fallback_seen = Some(f.fallback.as_str().into());
+        if let Some(v) = vehicles.get_mut(f.uid.as_str()) {
+            follow(v, f.fallback);
+        }
+        engaging.remove(&f.intent);
+    }
+}
+
 /// The runner's platform flies a fallback: hold where it is, home, or orbit where it is.
 fn follow(v: &mut VehicleSim, f: Fallback) {
     match f {
@@ -2127,6 +2629,25 @@ fn follow_queue(
 }
 
 // ---- log attacks ------------------------------------------------------------------------
+
+/// Rules 9: every track picture an event logs (a decision's inputs, an act's or a flag's).
+fn picture_tracks(body: &mut EventBody) -> Vec<&mut BTreeMap<String, TrackFacts>> {
+    match body {
+        EventBody::CheckResult { inputs, .. }
+        | EventBody::PolicyDecision { inputs, .. }
+        | EventBody::PictureIssued { inputs, .. }
+        | EventBody::EngagePicture { inputs, .. }
+        | EventBody::EngageObserve { inputs, .. }
+        | EventBody::IntentQueued { inputs, .. } => vec![&mut inputs.tracks],
+        EventBody::ApprovalReset { inputs: Some(i), .. } | EventBody::IntentDispatched { inputs: Some(i), .. } => {
+            vec![&mut i.tracks]
+        }
+        EventBody::IdentAct { inputs, .. } | EventBody::IdentFlagged { inputs: Some(inputs), .. } => {
+            vec![&mut inputs.tracks]
+        }
+        _ => Vec::new(),
+    }
+}
 
 /// A log attack's result.
 #[derive(Clone, Debug, PartialEq)]
@@ -2499,6 +3020,143 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             }
             if !done {
                 return Err("no engage.accepted to forge".into());
+            }
+        }
+        "drop_act" => {
+            // rules 9: a rule declaration left without the act behind it
+            let at = events
+                .iter()
+                .position(|e| matches!(&e.body, EventBody::IdentAct { .. }))
+                .ok_or("no ident.act to drop")?;
+            events.remove(at);
+        }
+        "declare_flagged_act" => {
+            // rules 9: an act attributed below the threshold (flagged) made to look declared:
+            // its verdict and its flag replaced by a rule declaration of its best candidate
+            let at = events
+                .iter()
+                .position(|e| {
+                    matches!(&e.body, EventBody::IdentAct { verdict: crate::ident::ActVerdict::Flag { .. }, .. })
+                })
+                .ok_or("no flagged act to forge")?;
+            let declared = events[..at]
+                .iter()
+                .filter(|e| matches!(e.body, EventBody::IdentDeclared { .. }))
+                .count() as u64;
+            let (report, best) = match &mut events[at].body {
+                EventBody::IdentAct {
+                    act,
+                    candidates,
+                    verdict,
+                    ..
+                } => {
+                    let best = candidates.first().cloned().ok_or("the act has no candidate")?;
+                    *verdict = crate::ident::ActVerdict::Declare {
+                        track: best.track.clone(),
+                        attribution: best.confidence,
+                    };
+                    (act.clone(), best)
+                }
+                _ => return Err("not an act".into()),
+            };
+            let next = events.get(at + 1).ok_or("nothing after the act")?;
+            let t = next.t;
+            let cfg = crate::ident::IdentConfig {
+                rule_declaration: true,
+                ..crate::ident::IdentConfig::default()
+            };
+            let d = crate::ident::rule_declaration(declared + 1, t, &report, &best.track, best.confidence, &cfg);
+            events[at + 1].body = EventBody::IdentDeclared {
+                declaration: Box::new(d),
+            };
+        }
+        "declaration_by_another_operator" => {
+            // rules 9: an operator's declaration credited to another operator (in the first
+            // one's session), the decisions' pictures made to agree
+            let (track, from, to) = events
+                .iter()
+                .find_map(|e| match &e.body {
+                    EventBody::IdentDeclared { declaration } => match &declaration.by {
+                        crate::ident::Declarer::Operator { operator, .. } => {
+                            Some((declaration.track.clone(), operator.clone()))
+                        }
+                        crate::ident::Declarer::Rule { .. } => None,
+                    },
+                    _ => None,
+                })
+                .and_then(|(t, op)| {
+                    let other = events.iter().find_map(|e| match &e.body {
+                        EventBody::OperatorAction { operator, action, .. }
+                            if action == "session.opened" && *operator != op =>
+                        {
+                            Some(operator.clone())
+                        }
+                        _ => None,
+                    })?;
+                    Some((t, op, other))
+                })
+                .ok_or("no operator's declaration and another operator to credit it to")?;
+            let swap = |d: &mut crate::ident::Declaration| {
+                if let crate::ident::Declarer::Operator { operator, .. } = &mut d.by
+                    && *operator == from
+                {
+                    *operator = to.clone();
+                }
+            };
+            for e in &mut events {
+                if let EventBody::IdentDeclared { declaration } = &mut e.body
+                    && declaration.track == track
+                {
+                    swap(declaration);
+                }
+                for tracks in picture_tracks(&mut e.body) {
+                    if let Some(t) = tracks.get_mut(&track)
+                        && t.declared_by.as_deref() == Some(from.as_str())
+                    {
+                        t.declared_by = Some(to.to_string());
+                        if let Some(d) = t.declaration.as_mut() {
+                            swap(d);
+                        }
+                    }
+                }
+            }
+        }
+        "drop_revocation_stop" => {
+            // rules 9: the engagement a revocation stopped made to go on (its stop and the
+            // transition after it cut)
+            let at = events
+                .iter()
+                .position(|e| {
+                    matches!(&e.body, EventBody::EngageStopped { cause: engage::StopCause::Revoked { .. }, .. })
+                })
+                .ok_or("no engagement stopped for a revocation")?;
+            events.remove(at);
+            if matches!(events.get(at).map(|e| &e.body), Some(EventBody::IntentState { .. })) {
+                events.remove(at);
+            }
+        }
+        "confirm_in_inputs" => {
+            // rules 9: a rule declaration nobody confirmed shown confirmed in the decisions'
+            // pictures (so it is exempt in another engagement's keep-out)
+            let mut done = false;
+            for e in &mut events {
+                for tracks in picture_tracks(&mut e.body) {
+                    for t in tracks.values_mut() {
+                        if let Some(d) = t.declaration.as_mut()
+                            && d.unconfirmed_rule()
+                        {
+                            d.confirmed = Some(crate::ident::Confirmation {
+                                by: OperatorId::new("op-2"),
+                                session: crate::ids::SessionId(2),
+                                t: d.t,
+                            });
+                            done = true;
+                        }
+                    }
+                }
+            }
+            if !done {
+                return Err("no unconfirmed rule declaration in any picture".into());
             }
         }
         other => return Err(format!("unknown tamper {other:?}")),

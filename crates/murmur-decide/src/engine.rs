@@ -108,6 +108,32 @@ pub enum EngineError {
     /// signer did not re-enter their credential for it (logged as `approval.refused`).
     #[error("intent {id}: {by} must re-enter their credential to sign this (step-up)")]
     StepUpRequired { id: IntentId, by: OperatorId },
+    /// Rules 9: an identification the engine can't take (no such track, no declaration in
+    /// force to confirm or revoke, a flag not in force, an act reported twice, rules before 9):
+    /// nothing was logged.
+    #[error("identification: {0}")]
+    Identification(String),
+}
+
+/// Rules 9: what [`Engine::record_act`] did with an observed act: the verdict, and the rule
+/// declaration or flag it made.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ActOutcome {
+    pub verdict: crate::ident::ActVerdict,
+    pub candidates: Vec<crate::ident::Candidate>,
+    pub declaration: Option<crate::ident::Declaration>,
+    pub flag: Option<crate::ident::Flag>,
+}
+
+/// Rules 9: what an operator's identification action did: the declaration it made or
+/// changed, and the engagements a revocation stopped (the fallbacks the bridge commands,
+/// the ones voided before dispatch).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct IdentOutcome {
+    pub declaration: Option<crate::ident::Declaration>,
+    pub revoked: Option<u64>,
+    pub fallbacks: Vec<FallbackOrder>,
+    pub voided: Vec<IntentId>,
 }
 
 /// A space answer computed outside the engine's lock (the bridge runs the SGP4 work first,
@@ -317,6 +343,9 @@ pub struct Engine {
     /// that step's last event (its transition, or the last engagement it stopped): it
     /// supersedes engagements only right there, nothing else logged in between.
     step: Option<(IntentId, u64)>,
+    /// Rules 9: the identification ledger as the log has it (declarations in force, flags,
+    /// acts seen): every decision's track picture is filled from it.
+    ident: crate::ident::Ledger,
 }
 
 impl std::fmt::Debug for Engine {
@@ -359,6 +388,13 @@ impl Engine {
         let mut roster = roster;
         roster.auth = (policy.rules.rules_version >= OPERATOR_AUTH_SINCE)
             .then(|| roster.auth.unwrap_or(AuthMode::Dev));
+        // what the rules read from other sections (rules 9: `[identification]`, which older
+        // rules don't have: no build of theirs logged one)
+        let mut policy = policy;
+        if !policy.rules.rule_id() {
+            policy.identification = None;
+        }
+        policy.sync();
         let areas = match areas {
             Some(a) => Some(LoggedAreas {
                 sha256: a.content_hash()?,
@@ -391,6 +427,7 @@ impl Engine {
             restores: crate::replay::Restores::default(),
             last_queued: None,
             step: None,
+            ident: crate::ident::Ledger::default(),
         };
         let policy = e.policy.clone();
         e.emit(EventBody::RunStarted {
@@ -694,7 +731,8 @@ impl Engine {
     /// An operator declares a track's affiliation (logged as `operator.action track.declare`,
     /// detail `track <id> declared <affiliation>[: <note>]`). Rules 8: declaring one hostile
     /// quotes a step-up when `[approval] step_up_acts` lists `declare_hostile` (a credentials
-    /// run); the event records it.
+    /// run); the event records it. Rules 9: refused (a declaration goes through the
+    /// identification ledger, [`Engine::declare_track`]).
     pub fn record_declaration(
         &mut self,
         by: &OperatorSession,
@@ -703,6 +741,11 @@ impl Engine {
         affiliation: &str,
         note: Option<&str>,
     ) -> Result<(), EngineError> {
+        if self.policy.rules.rule_id() {
+            return Err(EngineError::Identification(
+                "under these rules a declaration goes through the identification ledger (declare_track)".into(),
+            ));
+        }
         let a = by.authority();
         let step_up = if affiliation == "hostile" {
             self.act_step_up(policy::StepUpAct::DeclareHostile, a.operator(), a.session(), step)?
@@ -1234,7 +1277,8 @@ impl Engine {
         }
         let frozen = intent.engagement().and_then(|e| e.plan.clone());
         let track_id = engage::params(&spec).map(|p| p.0.to_string()).unwrap_or_default();
-        let inputs = world.subset_for(&spec);
+        let mut inputs = world.subset_for(&spec);
+        self.identify(&mut inputs);
         let plan = match &frozen {
             Some(p) => p.preview.clone(),
             None => engage::preview(&spec, &inputs, &self.policy.rules)
@@ -1497,6 +1541,10 @@ impl Engine {
         world: &WorldSnapshot,
         terrain: &dyn TerrainOracle,
     ) -> Result<&Intent, EngineError> {
+        // rules 9: the track as decisions read it, its declaration filled from the ledger (the
+        // token's track identity is compared with it)
+        let filled = self.identified(world);
+        let world: &WorldSnapshot = &filled;
         let intent = self.get(id)?;
         next_state(intent.state(), Transition::Approve)
             .map_err(|err| EngineError::Illegal { id, err })?;
@@ -1814,6 +1862,11 @@ impl Engine {
                 why: format!("{action} is logged by the session itself"),
             });
         }
+        if action == "track.declare" && self.policy.rules.rule_id() {
+            return Err(EngineError::Identification(
+                "under these rules a declaration goes through the identification ledger (declare_track)".into(),
+            ));
+        }
         if action == "track.declare" && declared_affiliation(detail) == Some("hostile") {
             self.act_step_up(policy::StepUpAct::DeclareHostile, by.operator(), by.session(), None)?;
         }
@@ -1952,8 +2005,10 @@ impl Engine {
         }
         let state = intent.state();
         let superseded = matches!(cause, StopCause::Superseded { .. });
+        // rules 9: a revoked declaration stops a nomination still waiting for signatures too
+        let revoked = matches!(cause, StopCause::Revoked { .. });
         let (transition, fallback) = match state {
-            State::PendingApproval if superseded => (Transition::Void, None),
+            State::PendingApproval if superseded || revoked => (Transition::Void, None),
             State::Approved => (Transition::Void, None),
             State::Dispatched => (
                 Transition::Abort,
@@ -2056,6 +2111,7 @@ impl Engine {
                 return Ok(None);
             };
             let mut inputs = world.for_intent_plan(&spec, terrain, &self.policy.rules, Some(&plan));
+            self.identify(&mut inputs);
             inputs.unknown_accepted = eng.accepted.clone();
             let results = engage::evaluate(&spec, &inputs, &self.policy.rules);
             if results.iter().any(|c| c.outcome != Outcome::Pass) {
@@ -2066,6 +2122,7 @@ impl Engine {
             return Ok(None);
         }
         let mut inputs = world.subset_for(&spec);
+        self.identify(&mut inputs);
         inputs.unknown_accepted = eng.accepted.clone();
         let Some(snap) = eng.snapshot.clone() else {
             return Ok(None);
@@ -2290,6 +2347,7 @@ impl Engine {
     /// vehicles' lost-link values still owed back.
     fn reach_inputs(&self, spec: &IntentSpec, world: &WorldSnapshot) -> WorldSnapshot {
         let mut inputs = world.subset_for(spec);
+        self.identify(&mut inputs);
         inputs.restore_owed = self.restore_owed_for(spec);
         inputs
     }
@@ -2353,6 +2411,7 @@ impl Engine {
         // with a frozen plan: the checks on it, and it is what a signer signs
         let plan = intent.engagement().and_then(|e| e.plan.as_ref());
         let mut inputs = world.for_intent_plan(spec, terrain, &self.policy.rules, plan);
+        self.identify(&mut inputs);
         inputs.unknown_accepted = self.accepted_for(id);
         let checks = rules::evaluate(spec, &inputs, &self.policy.rules);
         let pv = match plan {
@@ -2360,6 +2419,391 @@ impl Engine {
             None => engage::preview(spec, &inputs, &self.policy.rules).ok(),
         };
         Some((checks, pv))
+    }
+
+    // ---- identification (rules 9) ----------------------------------------------------
+
+    /// Rules 9: fill the picture's identification from the ledger (declarations with their
+    /// basis, flags in force, suspects raised), as every decision reads and logs it. Before
+    /// rules 9 the picture is the bridge's own.
+    fn identify(&self, w: &mut WorldSnapshot) {
+        if self.policy.rules.rule_id() {
+            self.ident.fill(&mut w.tracks);
+        }
+    }
+
+    /// The world as decisions read it (rules 9: its identification filled from the ledger),
+    /// for readers outside the engine (the console, agents) and the engine's own checks.
+    pub fn identified<'w>(&self, world: &'w WorldSnapshot) -> std::borrow::Cow<'w, WorldSnapshot> {
+        if !self.policy.rules.rule_id() {
+            return std::borrow::Cow::Borrowed(world);
+        }
+        let mut w = world.clone();
+        self.ident.fill(&mut w.tracks);
+        std::borrow::Cow::Owned(w)
+    }
+
+    /// Rules 9: the identification ledger (declarations in force, flags, acts seen).
+    pub fn identification(&self) -> &crate::ident::Ledger {
+        &self.ident
+    }
+
+    fn rule_id_only(&self, what: &str) -> Result<(), EngineError> {
+        if self.policy.rules.rule_id() {
+            Ok(())
+        } else {
+            Err(EngineError::Identification(format!(
+                "these decision rules (version {}) keep no identification ledger: {what} needs rules {}",
+                self.policy.rules.rules_version,
+                rules::RULE_ID_SINCE
+            )))
+        }
+    }
+
+    /// Log an identification event at the engine's time and step the ledger with it.
+    fn emit_ident(&mut self, body: EventBody) -> Result<Time, EngineError> {
+        let t = self.emit(body.clone())?;
+        self.ident.step(t, &body);
+        Ok(t)
+    }
+
+    /// Rules 9: the bridge's sensing model observed an abstract hostile act (`report`). The
+    /// engine attributes it to the tracks in `world` (their identification filled from the
+    /// ledger), logs the report, that picture, the attribution and the hostile-act rule's
+    /// verdict (`ident.act`), and carries the verdict out at once: a rule declaration
+    /// (`ident.declared`, the act's evidence with it) when the best track reaches the
+    /// policy's attribution threshold and nothing conflicts, else a review flag
+    /// (`ident.flagged`), or nothing more (the rule is off, the track is already declared
+    /// hostile). Refused, nothing logged, for an act reported twice or before rules 9.
+    pub fn record_act(
+        &mut self,
+        report: crate::ident::ActReport,
+        world: &WorldSnapshot,
+    ) -> Result<ActOutcome, EngineError> {
+        self.rule_id_only("an observed hostile act")?;
+        if self.ident.seen_act(&report.act) {
+            return Err(EngineError::Identification(format!(
+                "act {} was reported already",
+                report.act
+            )));
+        }
+        if !(report.sigma_m.is_finite() && report.sigma_m > 0.0) || report.sensors.is_empty() {
+            return Err(EngineError::Identification(format!(
+                "act {}: an observation needs the sensors that saw it and a position error above zero",
+                report.act
+            )));
+        }
+        let cfg = self.policy.identification();
+        let mut tracks = world.tracks.clone();
+        self.ident.fill(&mut tracks);
+        let candidates = crate::ident::attribute(&report, &tracks, world.t, &cfg);
+        let verdict = crate::ident::verdict(&report, &candidates, &tracks, &self.ident, &cfg);
+        self.emit_ident(EventBody::IdentAct {
+            act: report.clone(),
+            inputs: crate::ident::IdentInputs {
+                t: world.t,
+                tracks,
+            },
+            candidates: candidates.clone(),
+            verdict: verdict.clone(),
+        })?;
+        let mut out = ActOutcome {
+            verdict: verdict.clone(),
+            candidates,
+            declaration: None,
+            flag: None,
+        };
+        match verdict {
+            crate::ident::ActVerdict::Declare { track, attribution } => {
+                let t = self.now();
+                let d = crate::ident::rule_declaration(
+                    self.ident.next_declaration(),
+                    t,
+                    &report,
+                    &track,
+                    attribution,
+                    &cfg,
+                );
+                self.emit_ident(EventBody::IdentDeclared {
+                    declaration: Box::new(d.clone()),
+                })?;
+                out.declaration = Some(d);
+            }
+            crate::ident::ActVerdict::Flag { kind, tracks, why } => {
+                let t = self.now();
+                let f = crate::ident::act_flag(self.ident.next_flag(), t, &report, kind, &tracks, &why);
+                self.emit_ident(EventBody::IdentFlagged {
+                    flag: f.clone(),
+                    inputs: None,
+                })?;
+                out.flag = Some(f);
+            }
+            crate::ident::ActVerdict::Recorded { .. } => {}
+        }
+        Ok(out)
+    }
+
+    /// Rules 9: an operator declares a track's affiliation (any operator may, as before rules
+    /// 9; logged as `ident.declared` under their session). A hostile declaration quotes a
+    /// step-up when `[approval] step_up_acts` lists `declare_hostile` (a credentials run, as
+    /// rules 8's `track.declare`). `flag` names the review flag it answers (in force, naming
+    /// this track or none). Over a declaration in force: the same affiliation again is refused
+    /// (a rule declaration not confirmed yet is confirmed instead,
+    /// [`Engine::confirm_declaration`]); another affiliation first revokes the one in force
+    /// (`ident.revoked`, stopping the engagements in play on the track, as
+    /// [`Engine::revoke_declaration`]) and then declares. Refused, nothing logged, for a track
+    /// not in `world`'s picture.
+    #[allow(clippy::too_many_arguments)]
+    pub fn declare_track(
+        &mut self,
+        by: &HumanAuthority,
+        step: Option<StepUp>,
+        track: &str,
+        affiliation: crate::world::Affiliation,
+        note: Option<String>,
+        flag: Option<u64>,
+        world: &WorldSnapshot,
+    ) -> Result<IdentOutcome, EngineError> {
+        self.rule_id_only("a declaration through the engine")?;
+        if !world.tracks.contains_key(track) {
+            return Err(EngineError::Identification(format!("track {track} is not in the picture")));
+        }
+        // rules 8: declaring a track hostile may be marked consequential (a step-up)
+        let step_up = if affiliation == crate::world::Affiliation::Hostile {
+            self.act_step_up(policy::StepUpAct::DeclareHostile, by.operator(), by.session(), step)?
+        } else {
+            match step {
+                Some(s) => Some(
+                    self.valid_step(by.operator(), by.session(), &s)
+                        .map_err(|why| EngineError::NotAuthenticated { operator: by.operator().clone(), why })?,
+                ),
+                None => None,
+            }
+        };
+        if let Some(f) = flag {
+            match self.ident.flag(f) {
+                Some((fl, status)) if status.in_force() && (fl.tracks.is_empty() || fl.tracks.iter().any(|t| t == track)) => {}
+                Some(_) => {
+                    return Err(EngineError::Identification(format!(
+                        "flag F-{f} is not in force on track {track}"
+                    )));
+                }
+                None => return Err(EngineError::Identification(format!("no flag F-{f}"))),
+            }
+        }
+        let mut out = IdentOutcome::default();
+        if let Some(d) = self.ident.declaration(track).cloned() {
+            if d.affiliation == affiliation {
+                let hint = if d.unconfirmed_rule() { ": confirm it instead" } else { "" };
+                return Err(EngineError::Identification(format!(
+                    "{track} is already {}{hint}",
+                    d.describe()
+                )));
+            }
+            out = self.revoke_inner(
+                by,
+                track,
+                Some(format!("replaced by {}'s declaration {}", by.operator(), affiliation.as_str())),
+            )?;
+        }
+        let t = self.now();
+        let d = crate::ident::Declaration {
+            id: self.ident.next_declaration(),
+            track: track.to_string(),
+            affiliation,
+            t,
+            by: crate::ident::Declarer::Operator {
+                operator: by.operator().clone(),
+                session: by.session(),
+                note,
+                flag,
+                step_up,
+            },
+            confirmed: None,
+        };
+        self.emit_ident(EventBody::IdentDeclared {
+            declaration: Box::new(d.clone()),
+        })?;
+        out.declaration = Some(d);
+        Ok(out)
+    }
+
+    /// Rules 9: any operator confirms a rule declaration in force and not confirmed yet
+    /// (`ident.confirmed`, recorded under their session; a step-up when `[approval]
+    /// step_up_acts` lists `confirm_declaration`, off by default). A confirmed rule
+    /// declaration is exempt in another engagement's keep-out, and may be nominated whatever
+    /// `nominate_unconfirmed` says.
+    pub fn confirm_declaration(
+        &mut self,
+        by: &HumanAuthority,
+        step: Option<StepUp>,
+        track: &str,
+    ) -> Result<IdentOutcome, EngineError> {
+        self.rule_id_only("a confirmation")?;
+        let Some(d) = self.ident.declaration(track).cloned() else {
+            return Err(EngineError::Identification(format!("no declaration in force on track {track}")));
+        };
+        if !d.unconfirmed_rule() {
+            return Err(EngineError::Identification(format!(
+                "{track} is {}: only a rule declaration not yet confirmed is confirmed",
+                d.describe()
+            )));
+        }
+        let step_up = self.act_step_up(policy::StepUpAct::ConfirmDeclaration, by.operator(), by.session(), step)?;
+        self.emit_ident(EventBody::IdentConfirmed {
+            track: track.to_string(),
+            declaration: d.id,
+            by: by.operator().clone(),
+            session: by.session(),
+            step_up,
+        })?;
+        Ok(IdentOutcome {
+            declaration: self.ident.declaration(track).cloned(),
+            ..IdentOutcome::default()
+        })
+    }
+
+    /// Rules 9: any operator revokes the declaration in force on `track` (an operator's or a
+    /// rule's; it only restricts, like an abort). Logged as `ident.revoked` with the
+    /// engagements in play on the track, which are stopped next, before anything else (cause
+    /// `revoked`): voided before dispatch, aborted with their fallback after it (returned for
+    /// the bridge to command). The track goes back to its estimate; a later act attributed to
+    /// it is flagged, not declared (an operator's judgment outranks the rule).
+    pub fn revoke_declaration(
+        &mut self,
+        by: &HumanAuthority,
+        track: &str,
+        note: Option<String>,
+    ) -> Result<IdentOutcome, EngineError> {
+        self.rule_id_only("a revocation")?;
+        self.revoke_inner(by, track, note)
+    }
+
+    fn revoke_inner(
+        &mut self,
+        by: &HumanAuthority,
+        track: &str,
+        note: Option<String>,
+    ) -> Result<IdentOutcome, EngineError> {
+        let Some(d) = self.ident.declaration(track).cloned() else {
+            return Err(EngineError::Identification(format!("no declaration in force on track {track}")));
+        };
+        let engagements = crate::ident::engagements_on(
+            self.intents.values().map(|i| (i.id(), i.spec(), i.state())),
+            track,
+        );
+        self.emit_ident(EventBody::IdentRevoked {
+            track: track.to_string(),
+            declaration: d.id,
+            by: by.operator().clone(),
+            session: by.session(),
+            note: note.clone(),
+            engagements: engagements.clone(),
+        })?;
+        let mut out = IdentOutcome {
+            revoked: Some(d.id),
+            ..IdentOutcome::default()
+        };
+        let why = note.map(|n| format!(": {n}")).unwrap_or_default();
+        for id in engagements {
+            let cause = StopCause::Revoked {
+                by: by.operator().clone(),
+                session: by.session(),
+                track: track.to_string(),
+                declaration: d.id,
+            };
+            let reason = format!(
+                "target_declared: the declaration of {track} was revoked by {}{why} (it was {})",
+                by.operator(),
+                d.describe()
+            );
+            match self.stop_engagement(id, cause, reason, true)? {
+                Some(f) => out.fallbacks.push(f),
+                None => out.voided.push(id),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Rules 9: any operator resolves a review flag: confirms one that is open (a proximity
+    /// flag then keeps its track suspect), or dismisses one that is open or confirmed (it no
+    /// longer raises its track). Logged as `ident.flag_resolved`. An operator's declaration
+    /// that names the flag resolves it too ([`Engine::declare_track`]).
+    pub fn resolve_flag(
+        &mut self,
+        by: &HumanAuthority,
+        flag: u64,
+        resolution: crate::ident::FlagResolution,
+        note: Option<String>,
+    ) -> Result<(), EngineError> {
+        self.rule_id_only("a review flag")?;
+        let Some((_, status)) = self.ident.flag(flag) else {
+            return Err(EngineError::Identification(format!("no flag F-{flag}")));
+        };
+        let ok = match resolution {
+            crate::ident::FlagResolution::Confirmed => matches!(status, crate::ident::FlagStatus::Open),
+            crate::ident::FlagResolution::Dismissed => status.in_force(),
+        };
+        if !ok {
+            return Err(EngineError::Identification(format!(
+                "flag F-{flag} is {}: it can't be {}",
+                status.name(),
+                match resolution {
+                    crate::ident::FlagResolution::Confirmed => "confirmed",
+                    crate::ident::FlagResolution::Dismissed => "dismissed",
+                }
+            )));
+        }
+        self.emit_ident(EventBody::IdentFlagResolved {
+            flag,
+            resolution,
+            by: by.operator().clone(),
+            session: by.session(),
+            note,
+        })?;
+        Ok(())
+    }
+
+    /// Rules 9, once a second (the bridge's loop): the weak-evidence rule. Every undeclared
+    /// track keeping company with a declared hostile ([`crate::ident::escort`]) is flagged
+    /// (`ident.flagged`, kind proximity, with the two tracks' facts) and so raised to suspect,
+    /// each pair once. Never a declaration. Returns the new flags' numbers. Nothing before
+    /// rules 9 or with rule declaration off.
+    pub fn step_identification(&mut self, world: &WorldSnapshot) -> Result<Vec<u64>, EngineError> {
+        let cfg = self.policy.identification();
+        if !self.policy.rules.rule_id() || !cfg.rule_declaration {
+            return Ok(Vec::new());
+        }
+        let mut new = Vec::new();
+        // one at a time: each flag changes the picture the next one reads (a raised suspect)
+        loop {
+            let mut tracks = world.tracks.clone();
+            self.ident.fill(&mut tracks);
+            let Some(found) = crate::ident::escort(&tracks, &self.ident, world.t, &cfg).into_iter().next() else {
+                break;
+            };
+            let (track, hostile) = (found.track.clone(), found.hostile.clone());
+            let t = self.now();
+            let flag = crate::ident::Flag {
+                id: self.ident.next_flag(),
+                t,
+                kind: crate::ident::FlagKind::Proximity,
+                tracks: vec![track.clone()],
+                act: None,
+                related: Some(hostile.clone()),
+                raised_from: Some(found.estimate),
+                evidence: found.evidence,
+            };
+            self.emit_ident(EventBody::IdentFlagged {
+                flag: flag.clone(),
+                inputs: Some(crate::ident::IdentInputs {
+                    t: world.t,
+                    tracks: crate::ident::escort_inputs(&tracks, &track, &hostile),
+                }),
+            })?;
+            new.push(flag.id);
+        }
+        Ok(new)
     }
 
     // ---- agent side -----------------------------------------------------------------
@@ -3373,6 +3817,7 @@ impl Engine {
         plan: Option<&FrozenPlan>,
     ) -> Result<(WorldSnapshot, LoggedInputs, Vec<CheckResult>, bool), EngineError> {
         let mut inputs = world.for_intent_plan(spec, terrain, &self.policy.rules, plan);
+        self.identify(&mut inputs);
         if spec.task.is_space() {
             inputs.space = self.ask_space(&spec.task, inputs.t)?;
         }
@@ -4188,6 +4633,53 @@ pub struct Preview {
 /// }
 /// ```
 ///
+/// Rules 9: identification is an operator's or the engine's rule's, never an agent's. An
+/// agent's port can't declare a track, confirm or revoke a declaration, resolve a review flag,
+/// or report an act for the rule to judge:
+///
+/// ```compile_fail,E0599
+/// use murmur_decide::{AgentPort, Affiliation, WorldSnapshot};
+/// fn agent_code(port: &mut AgentPort<'_>, world: &WorldSnapshot) {
+///     port.declare_track(None, "T-0001", Affiliation::Hostile, None, None, world);
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use murmur_decide::AgentPort;
+/// fn agent_code(port: &mut AgentPort<'_>) {
+///     port.confirm_declaration(None, "T-0001");
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use murmur_decide::AgentPort;
+/// fn agent_code(port: &mut AgentPort<'_>) {
+///     port.revoke_declaration("T-0001", None);
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use murmur_decide::{AgentPort, FlagResolution};
+/// fn agent_code(port: &mut AgentPort<'_>) {
+///     port.resolve_flag(1, FlagResolution::Dismissed, None);
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use murmur_decide::{ActReport, AgentPort, WorldSnapshot};
+/// fn agent_code(port: &mut AgentPort<'_>, report: ActReport, world: &WorldSnapshot) {
+///     port.record_act(report, world);
+/// }
+/// ```
+///
+/// ```compile_fail,E0308
+/// use murmur_decide::{AgentId, Affiliation, Engine, WorldSnapshot};
+/// fn agent_code(engine: &mut Engine, me: &AgentId, world: &WorldSnapshot) {
+///     // an agent identity is not the operator who declares
+///     let _ = engine.declare_track(me, None, "T-0001", Affiliation::Hostile, None, None, world);
+/// }
+/// ```
+///
 /// ```compile_fail,E0616
 /// use murmur_decide::{AgentPort, OperatorId};
 /// fn agent_code(port: &mut AgentPort<'_>) {
@@ -4269,6 +4761,7 @@ impl AgentPort<'_> {
             rationale: proposal.rationale,
         };
         let mut inputs = world.for_intent_with(&spec, terrain, &self.engine.policy.rules);
+        self.engine.identify(&mut inputs);
         if spec.task.is_space() {
             inputs.space = self.engine.ask_space(&spec.task, inputs.t)?;
         }

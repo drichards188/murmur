@@ -617,6 +617,78 @@ pub enum EventBody {
         covered_s: f64,
     },
 
+    /// Rules 9: an abstract hostile act our sensors observed (the bridge's report: whom it was
+    /// against, when, which of our sensors saw it, where its author appeared to be), the track
+    /// picture it was attributed on (`inputs`, its identification as the ledger filled it), the
+    /// attribution, and the hostile-act rule's verdict: a rule declaration (`ident.declared`)
+    /// or a flag (`ident.flagged`) follows at once, else it is only recorded. Replay recomputes
+    /// the attribution and the verdict.
+    #[serde(rename = "ident.act")]
+    IdentAct {
+        act: crate::ident::ActReport,
+        inputs: crate::ident::IdentInputs,
+        candidates: Vec<crate::ident::Candidate>,
+        verdict: crate::ident::ActVerdict,
+    },
+
+    /// Rules 9: a track's affiliation declared, by an operator (under their session) or by
+    /// the hostile-act rule (right after the act whose verdict it carries out, with its
+    /// evidence). In force until revoked; a declaration in force is never replaced in place.
+    #[serde(rename = "ident.declared")]
+    IdentDeclared {
+        declaration: Box<crate::ident::Declaration>,
+    },
+
+    /// Rules 9: an operator confirmed a rule declaration (any operator may; recorded).
+    #[serde(rename = "ident.confirmed")]
+    IdentConfirmed {
+        track: String,
+        declaration: u64,
+        by: OperatorId,
+        session: SessionId,
+        /// The step-up it quoted (`[approval] step_up_acts` lists `confirm_declaration`, a
+        /// credentials run; off by default).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step_up: Option<crate::authority::StepUpRef>,
+    },
+
+    /// Rules 9: an operator revoked the declaration in force on a track (any operator may: it
+    /// only restricts). Every engagement in play on the track (`engagements`) is stopped next,
+    /// cause `revoked`, before anything else is logged.
+    #[serde(rename = "ident.revoked")]
+    IdentRevoked {
+        track: String,
+        declaration: u64,
+        by: OperatorId,
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        engagements: Vec<IntentId>,
+    },
+
+    /// Rules 9: a review flag, what the engine is unsure of (an act attributed below the
+    /// threshold, conflicting evidence, no track, a victim we can't call ours or protected:
+    /// right after its `ident.act`; or a track keeping company with a declared hostile, with
+    /// the two tracks' facts in `inputs`). Never a declaration.
+    #[serde(rename = "ident.flagged")]
+    IdentFlagged {
+        flag: crate::ident::Flag,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inputs: Option<crate::ident::IdentInputs>,
+    },
+
+    /// Rules 9: an operator confirmed or dismissed a review flag.
+    #[serde(rename = "ident.flag_resolved")]
+    IdentFlagResolved {
+        flag: u64,
+        resolution: crate::ident::FlagResolution,
+        by: OperatorId,
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
+
     /// What an operator's console showed for a pending intent (Phase G): when the card was
     /// rendered (`open`), removed (`close`) and when approve or reject was clicked
     /// (`decide`), with what was visible at the time. Additive: replay verifies the chain

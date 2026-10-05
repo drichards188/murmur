@@ -1,0 +1,94 @@
+# Rules 9: an ambiguous attribution. The fast boat (truth: hostile) and a fishing boat (truth:
+# neutral, still unclassified) lie 15 m apart; the fast boat commits a hostile act against our
+# patrol USV, seen only by the USV's radar at 1.2 km, which places its author with a loose
+# 60 m (1-sigma). Either track could have done it: the engine attributes it about evenly,
+# below the policy's 0.9, and flags it for review (naming both), declaring neither. An agent
+# tries to declare the fast boat (its port has no such method); an operator's nomination on it
+# is rejected (target_declared: hostile must be declared). op-2 confirms the flag (agrees it
+# was an act, without saying whose). Afterwards the log is forged so the act looks declared:
+# its verdict and its flag replaced by a rule declaration of the best candidate; replay
+# recomputes the attribution below the threshold and catches it.
+title = "An act attributed between two tracks close together is flagged, not declared"
+invariant = "rule_declaration"
+attack = "an act whose author can't be told from a neighbour; the flag forged into a rule declaration"
+expect = "rejected"
+expect_rule = "target_declared"
+expect_refusals = ["no declare method on AgentPort"]
+expect_ident = [
+    "act A-1 against our vehicle usv-1 by T-0001",
+    "flagged F-1 attribution [T-0001, T-0002]",
+    "resolved F-1 confirmed by op-2",
+]
+expect_no_ident = ["declared T-0001", "declared T-0002"]
+tamper = "declare_flagged_act"
+end_s = 40
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[agent]]
+id = "agent-planner"
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"
+at = [-122.4700, 37.8160]
+
+[[vehicle]]
+uid = "usv-1"
+platform = "seahunter"      # unarmed patrol USV, radar: the act's victim and its only witness
+at = [-122.4820, 37.8090]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+truth = "hostile"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["usv-1:radar"]
+
+[[track]]
+id = "T-0002"
+at = [-122.49483, 37.81210] # 15 m east of it
+affiliation = "unknown"
+truth = "neutral"
+identity_confidence = 0.2
+sources = ["usv-1:radar"]
+
+[[step]]
+at_s = 3
+action = "act"
+by_track = "T-0001"
+against_vehicle = "usv-1"
+sensors = ["usv-1:radar"]
+sigma_m = 60
+
+[[step]]
+at_s = 5
+action = "agent_declare"
+agent = "agent-planner"
+track = "T-0001"
+
+[[step]]
+at_s = 8
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 10
+action = "resolve_flag"
+by = "op-2"
+track = "T-0001"
+resolution = "confirmed"

@@ -265,6 +265,7 @@ pub mod engage;
 pub mod engine;
 pub mod geo;
 pub mod hash;
+pub mod ident;
 pub mod ids;
 pub mod intent;
 pub mod policy;
@@ -297,11 +298,15 @@ pub use engage::{
     StopRecord, TrackIdentity, VehicleIdentity,
 };
 pub use engine::{
-    AgentPort, Dequeued, DispatchOrder, Engine, EngineError, Order, PREPARED_SPACE_MAX_AGE_MS,
-    PlatformRestoreReport, PreloadReport, PreparedSpace, Preview, Routed, StepOutcome,
-    TaskOutcome, prepare_space,
+    ActOutcome, AgentPort, Dequeued, DispatchOrder, Engine, EngineError, IdentOutcome, Order,
+    PREPARED_SPACE_MAX_AGE_MS, PlatformRestoreReport, PreloadReport, PreparedSpace, Preview,
+    Routed, StepOutcome, TaskOutcome, prepare_space,
 };
 pub use geo::{LonLat, Polygon};
+pub use ident::{
+    ActReport, ActVerdict, Against, Candidate, Confirmation, Declaration, Declarer, Flag,
+    FlagKind, FlagResolution, FlagStatus, IdentConfig, IdentInputs, RuleEvidence,
+};
 pub use ids::{AgentId, IntentId, OperatorId, SessionId, Uid};
 pub use intent::{
     Constraints, IllegalTransition, Intent, IntentSpec, Proposal, ProposalError, Rationale, Source,
@@ -314,8 +319,9 @@ pub use queue::{
 };
 pub use route::{LegKind, Route, Segment};
 pub use rules::{
-    CheckResult, OPERATOR_AUTH_SINCE, Outcome, POLICY_SCHEMA, QUEUE_FOLLOWUPS_SINCE, RULES_VERSION,
-    RuleId, RulesConfig, STEP_UP_SCHEMA_SINCE, UnknownEndurance,
+    CheckResult, OPERATOR_AUTH_SINCE, Outcome, POLICY_SCHEMA, QUEUE_FOLLOWUPS_SINCE,
+    RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE, RULES_VERSION, RuleId, RulesConfig, STEP_UP_SCHEMA_SINCE,
+    UnknownEndurance,
 };
 pub use space::{
     ChosenCollect, CollectCapability, CollectOrder, CoverOrder, CoverService, ScenarioMap,

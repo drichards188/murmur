@@ -1,0 +1,93 @@
+# Rules 9: a rule declaration revoked mid-engagement. A contact we hold no track of commits a
+# hostile act against our patrol USV 12 m from a fishing boat (T-0001, unclassified, truth:
+# neutral); the act is attributed to the fishing boat, the only track there, above the
+# threshold: the rule declares it hostile (a false declaration). The policy lets a rule
+# declaration be nominated before a confirmation (`nominate_unconfirmed`, scenario policy),
+# so op-1 nominates it and two operators with engagement authority sign: their tokens say
+# "declared by rule hostile_act on act A-1 ..., not confirmed". En route op-3 looks at the
+# evidence and revokes the declaration: the engagement is stopped at once, before anything
+# else (cause revoked), and the platform flies its fallback (return). Afterwards the stop is
+# cut from the log, as if the engagement went on; replay must catch it.
+title = "A rule declaration revoked mid-engagement stops the engagement"
+invariant = "rule_declaration"
+attack = "a false rule declaration nominated before a confirmation, revoked en route; the stop cut from the log"
+expect = "aborted"
+expect_rule = "target_declared"
+expect_stop = "revoked"
+expect_ident = [
+    "act A-1 against our vehicle usv-1 by untracked: best T-0001",
+    "declared T-0001 hostile by rule:hostile_act",
+    "revoked T-0001 by op-3 (stopping [i1])",
+    "stopped i1 for the revoked declaration of T-0001",
+]
+tamper = "drop_revocation_stop"
+policy = "sim/scenarios/engage/policies/nominate-unconfirmed.toml"
+end_s = 80
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"
+at = [-122.4700, 37.8160]
+
+[[vehicle]]
+uid = "usv-1"
+platform = "seahunter"
+at = [-122.4820, 37.8090]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # inside ez-gate-west, holding
+affiliation = "unknown"
+truth = "neutral"
+identity = "small_craft"
+identity_confidence = 0.7
+sources = ["usv-1:radar", "blade-1:eo_ir"]
+
+[[step]]
+at_s = 3
+action = "act"
+at = [-122.49486, 37.81200] # an untracked contact, 12 m from the fishing boat
+against_vehicle = "usv-1"
+sensors = ["blade-1:eo_ir", "usv-1:radar"]
+sigma_m = 26
+
+[[step]]
+at_s = 6
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 10
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 13
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 14
+action = "expect"
+state = "dispatched"
+
+[[step]]
+at_s = 30
+action = "revoke_declaration"
+by = "op-3"
+track = "T-0001"
+note = "the act's author was west of the fishing boat; nobody saw it act"

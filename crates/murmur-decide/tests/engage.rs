@@ -152,6 +152,8 @@ fn target(t: Time, at: LonLat, vel: [f64; 2], declared: bool) -> TrackFacts {
         domain: Domain::Surface,
         last_seen_t: t,
         declared_by: declared.then(|| "op-1".to_string()),
+        declaration: None,
+        review_flags: Vec::new(),
     }
 }
 
@@ -164,14 +166,17 @@ fn sign(e: &mut Engine, id: IntentId, op: &OperatorSession, w: &WorldSnapshot) -
 }
 
 fn engine_at(clock: &ManualClock, log: &MemorySink) -> Engine {
-    Engine::with_areas(
+    let mut e = Engine::with_areas(
         policy(),
         Some(areas()),
         roster(),
         Box::new(clock.clone()),
         Box::new(log.clone()),
     )
-    .unwrap()
+    .unwrap();
+    // rules 9: the target op-1 declared, as the engine's ledger records it
+    declare_shown(&mut e, &engage_world(clock.now()));
+    e
 }
 
 fn nomination() -> Proposal {
@@ -217,6 +222,7 @@ fn floor_holds(p: Policy) {
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();
     let mut e = Engine::new(p, roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    declare_shown(&mut e, &engage_world(T0));
     let op = e
         .open_operator_session_with(OperatorId::new("op-1"), Grants { engage: true })
         .unwrap();
@@ -663,6 +669,7 @@ fn checks_cover_the_whole_effect_circle_and_protect_undeclared_tracks() {
     // declared by an operator: exempt (a design question, DECISIONS.md)
     other.declared_by = Some("op-1".into());
     w.tracks.insert("T-0002".into(), other);
+    declare_shown(&mut e, &w);
     let i = e.submit(op.authority(), nomination(), &w, &terrain()).unwrap();
     assert_eq!(rule(i, "keep_out_tracks"), Some(Outcome::Pass), "{:?}", i.checks());
 }
@@ -678,6 +685,7 @@ fn an_unclassified_target_classified_after_approval_voids() {
     let mut e = Engine::with_areas(p, Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone()))
         .unwrap();
     let snap_world = engage_world(T0);
+    declare_shown(&mut e, &snap_world);
     let (op2, op3, id) = two_signers(&mut e, &snap_world);
     sign(&mut e, id, &op2, &snap_world).unwrap();
     sign(&mut e, id, &op3, &snap_world).unwrap();

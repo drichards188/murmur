@@ -9,7 +9,11 @@
 //! table. `--seed`/`--noise` add seeded Gaussian noise (metres, 1-sigma) to the track
 //! position estimates, `--vnoise` (m/s, 1-sigma, correlated over about 10 s) to their
 //! velocity estimates. `--rules N` decides under older decision rules (what they did with
-//! the same timeline; the designed ends are the current rules'). `--log-dir` writes each run's audit log as `<scenario>.jsonl`. `--root` is the
+//! the same timeline; the designed ends are the current rules'). Rules 9: `--ident on|off`
+//! replaces the policy's `[identification]` (rule declaration on or off: the evaluation's
+//! rule-versus-manual comparison on the same seeds), with `--threshold X` and
+//! `--nominate-unconfirmed`; `--act-noise` adds seeded noise of each act's own sigma to where
+//! its author was observed. `--log-dir` writes each run's audit log as `<scenario>.jsonl`. `--root` is the
 //! repo (default: the current directory) for `sim/policy.toml`, `sim/platforms.toml` and
 //! `sim/areas`.
 //!
@@ -40,8 +44,29 @@ fn main() -> ExitCode {
             }
             // decide under older decision rules (what they did with the same timeline)
             "--rules" => opts.rules_version = args.next().and_then(|s| s.parse().ok()),
+            // rules 9: the policy's [identification] instead of the file's (manual: off; rule:
+            // on), its threshold and nomination setting, and seeded noise on acts' positions
+            "--ident" => {
+                let on = match args.next().as_deref() {
+                    Some("on" | "rule") => true,
+                    Some("off" | "manual") => false,
+                    _ => {
+                        eprintln!("murmur-scenarios: --ident on|off");
+                        return ExitCode::from(2);
+                    }
+                };
+                opts.identification.get_or_insert_with(Default::default).rule_declaration = on;
+            }
+            "--threshold" => {
+                opts.identification.get_or_insert_with(Default::default).attribution_threshold =
+                    args.next().and_then(|s| s.parse().ok());
+            }
+            "--nominate-unconfirmed" => {
+                opts.identification.get_or_insert_with(Default::default).nominate_unconfirmed = Some(true);
+            }
+            "--act-noise" => opts.act_noise = true,
             _ if a.starts_with("--") => {
-                eprintln!("usage: murmur-scenarios [--json] [--seed N --noise M --vnoise V] [--rules N] [--root DIR] [--log-dir DIR] <file-or-dir>...");
+                eprintln!("usage: murmur-scenarios [--json] [--seed N --noise M --vnoise V] [--rules N] [--ident on|off] [--threshold X] [--nominate-unconfirmed] [--act-noise] [--root DIR] [--log-dir DIR] <file-or-dir>...");
                 return ExitCode::from(2);
             }
             _ => paths.push(PathBuf::from(a)),

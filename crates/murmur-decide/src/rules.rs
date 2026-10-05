@@ -212,8 +212,20 @@ pub enum UnknownEndurance {
 /// preloaded as the fallback and confirmed before a release, the keep-outs' prediction
 /// model, altitude and accepted unknown friendlies (`crate::engage`). Version 7
 /// ([`QUEUE_FOLLOWUPS_SINCE`]): the queue's follow-ups to rules 5 and 6. Version 8 binds
-/// every human act to an authenticated person ([`OPERATOR_AUTH_SINCE`]).
-pub const RULES_VERSION: u32 = OPERATOR_AUTH_SINCE;
+/// every human act to an authenticated person ([`OPERATOR_AUTH_SINCE`]). Version 9
+/// ([`RULE_ID_SINCE`]): rule-based identification with human review ([`crate::ident`]).
+pub const RULES_VERSION: u32 = RULE_ID_SINCE;
+
+/// The rules version from which identification is the engine's ledger and may be made by
+/// rule ([`crate::ident`]): operators' declarations, confirmations and revocations go through
+/// the engine (`ident.*` events), the hostile-act rule declares a track hostile when an
+/// observed act against ours is attributed to it above the policy's threshold and nothing
+/// conflicts, unsure cases are flagged for review, every decision's track picture carries the
+/// ledger's declarations with their basis, a rule-declared and unconfirmed track stays
+/// protected in another engagement's keep-out, and a revocation stops the engagements on its
+/// track. Every change of that version is gated on this constant, never on a literal, so it
+/// renumbers in this one line.
+pub const RULE_ID_SINCE: u32 = 9;
 
 /// The rules version from which the queue's follow-ups to rules 5 and 6 decide (murmur-85l,
 /// murmur-dma, murmur-636): a mission waits for its platform's own lost-link values to be
@@ -241,11 +253,15 @@ pub const OPERATOR_AUTH_SINCE: u32 = 8;
 /// A renamed or removed key stays an optional field of its own, so an old log both parses
 /// and re-serializes byte for byte; `run.started` records it (absent: 1), and replay checks
 /// that the logged policy uses no key of a later schema ([`crate::EngageRules::schema_keys`]).
-pub const POLICY_SCHEMA: u32 = 5;
+pub const POLICY_SCHEMA: u32 = RULE_ID_SCHEMA_SINCE;
 
 /// The policy schema that added a tier's `step_up` key and `[approval] step_up_acts` (with
 /// [`OPERATOR_AUTH_SINCE`]).
 pub const STEP_UP_SCHEMA_SINCE: u32 = 5;
+
+/// The policy schema that adds `[identification]` (with [`RULE_ID_SINCE`]): named so that a
+/// branch merging beside another schema bump renumbers it in one line.
+pub const RULE_ID_SCHEMA_SINCE: u32 = 6;
 
 fn current_rules_version() -> u32 {
     RULES_VERSION
@@ -283,6 +299,12 @@ pub struct RulesConfig {
     /// Engagement rules (`[rules.engage]`, Phase E); defaults when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub engage: Option<EngageRules>,
+    /// Rules 9: the policy's `[identification]` (a top-level section), copied here so the
+    /// engagement checks read it (whether a rule-declared target may be nominated before a
+    /// confirmation). Not a key of `[rules]` and not logged here: [`crate::Policy::sync`] sets
+    /// it from the policy (the engine and replay call it).
+    #[serde(skip)]
+    pub identification: crate::ident::IdentConfig,
 }
 
 impl RulesConfig {
@@ -303,10 +325,16 @@ impl RulesConfig {
         self.space.clone().unwrap_or_default()
     }
 
+    /// Rules 9: identification is the engine's ledger (and may be made by rule).
+    pub fn rule_id(&self) -> bool {
+        self.rules_version >= RULE_ID_SINCE
+    }
+
     /// `[rules.engage]`, or its defaults.
     pub fn engage_rules(&self) -> EngageRules {
         let mut e = self.engage.clone().unwrap_or_default();
         e.rules_version = self.rules_version;
+        e.nominate_unconfirmed = self.identification.nominate_unconfirmed();
         e
     }
 }
@@ -324,6 +352,7 @@ impl Default for RulesConfig {
             unknown_endurance: UnknownEndurance::Human,
             space: None,
             engage: None,
+            identification: crate::ident::IdentConfig::default(),
         }
     }
 }

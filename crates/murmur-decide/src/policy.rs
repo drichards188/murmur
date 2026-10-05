@@ -151,6 +151,10 @@ pub enum StepUpAct {
     DeclareHostile,
     /// Accepting a lost vehicle's unknown position for an engagement's keep-out.
     AcceptUnknown,
+    /// Rules 9 (policy schema 6): confirming a track the hostile-act rule declared (it makes
+    /// the declaration exempt in keep-outs and nominable whatever `nominate_unconfirmed`
+    /// says). Listed only by choice: off by default.
+    ConfirmDeclaration,
 }
 
 impl Default for ApprovalConfig {
@@ -267,6 +271,12 @@ pub struct Policy {
     /// ([`crate::QueueConfig::default`]); absent from logs written before it existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue: Option<crate::queue::QueueConfig>,
+    /// `[identification]` (rules 9, policy schema 5): rule declaration on or off, the
+    /// attribution threshold, whether a rule-declared track may be nominated before a
+    /// confirmation (see [`crate::ident::IdentConfig`]). Absent: off, rules 7's behaviour;
+    /// absent from logs written before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identification: Option<crate::ident::IdentConfig>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -286,7 +296,20 @@ impl Policy {
         // so the logged copy says so (an unset value in a log means false).
         p.approval.submitter_authorizes.get_or_insert(true);
         p.validate()?;
+        p.sync();
         Ok(p)
+    }
+
+    /// Copy what the rules read from other sections into [`RulesConfig`] (rules 9: the
+    /// `[identification]` settings the engagement checks read). The engine and replay call
+    /// it on the policy they decide with.
+    pub fn sync(&mut self) {
+        self.rules.identification = self.identification.clone().unwrap_or_default();
+    }
+
+    /// `[identification]`, or its defaults (rule declaration off).
+    pub fn identification(&self) -> crate::ident::IdentConfig {
+        self.identification.clone().unwrap_or_default()
     }
 
     /// Every bound a policy file must meet (what [`Policy::from_toml`] checks after parsing).
@@ -366,6 +389,9 @@ impl Policy {
         }
         if let Some(q) = &p.queue {
             q.validate().map_err(PolicyError::Invalid)?;
+        }
+        if let Some(i) = &p.identification {
+            i.validate().map_err(PolicyError::Invalid)?;
         }
         for t in &p.tiers {
             if t.approvers == Some(0) {

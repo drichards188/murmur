@@ -554,6 +554,9 @@ impl Track {
             domain: self.domain.decide(),
             last_seen_t: ms(self.last_seen_t),
             declared_by: self.declared.as_ref().map(|d| d.by.clone()),
+            // rules 9: the engine fills both from its identification ledger
+            declaration: None,
+            review_flags: Vec::new(),
         }
     }
 }
