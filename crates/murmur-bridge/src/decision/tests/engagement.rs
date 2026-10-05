@@ -759,6 +759,17 @@ async fn values_still_owed_when_the_bridge_stopped_are_carried_over_and_put_back
     assert!(!all[1].0 && all[1].2, "put back and confirmed: {all:?}");
     let rep = replay::replay_str(&e2.r.log.text()).expect("parses");
     assert!(rep.ok() && rep.unrestored.is_empty(), "{:?} {:?}", rep.mismatches, rep.unrestored);
+    // and checked against what the first run's log still owed (murmur-aca): exactly what it
+    // owed, on the vehicle and for the engagement it names
+    let first_text = std::fs::read_to_string(&log).expect("first log");
+    let opts = replay::ReplayOptions {
+        restores_from: Some(("run-1.jsonl", &first_text)),
+        ..replay::ReplayOptions::default()
+    };
+    let rep = replay::replay_str_with(&e2.r.log.text(), &opts).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+    let checked: Vec<_> = rep.carried_restores.iter().map(|c| (c.log.as_str(), c.restores, c.checked)).collect();
+    assert_eq!(checked, [("run-1.jsonl", 1, true)]);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -1265,6 +1265,84 @@ fn an_order_that_may_have_started_is_only_confirmed_and_goes_to_a_human_when_not
     assert!(whats.iter().any(|w| w.contains("requeue deadline differs")), "{whats:?}");
 }
 
+/// An orbit dispatched to sky-1, its start out (op `starting`), then its link lost: the op
+/// ends `unconfirmed` and the order goes back to the queue.
+fn requeued_after_its_start_went_out() -> (Fx, IntentId) {
+    let mut fx = fx();
+    let w = world_now(&fx);
+    let id = fx.submit(orbit_sky(), &w);
+    fx.engine.dispatch_or_queue(id, &w).unwrap();
+    let sky = uid("sky-1");
+    fx.engine.record_op_state(id, &sky, "sent", "uploading").unwrap();
+    fx.engine.record_op_state(id, &sky, "starting", "starting mission: mission mode commanded").unwrap();
+    fx.engine
+        .record_op_state(id, &sky, "unconfirmed", "link lost waiting for the MAV_CMD_DO_SET_MODE ACK, after its start went out")
+        .unwrap();
+    fx.engine.requeue(id).unwrap();
+    (fx, id)
+}
+
+#[test]
+fn replay_catches_an_op_requeued_after_its_start_went_out() {
+    // murmur-rcf: a start that may have gone out is never requeued (the bridge ends that op
+    // `unconfirmed`); a log whose op went `starting` then `requeued` passed replay, every
+    // other event still consistent with it
+    let (fx, _) = requeued_after_its_start_went_out();
+    replays(&fx);
+    let whats = forged(&fx, |ev| {
+        for e in ev.iter_mut() {
+            if let EventBody::OpState { state, .. } = &mut e.body
+                && state == "unconfirmed"
+            {
+                *state = "requeued".into();
+            }
+        }
+    });
+    assert_eq!(
+        whats,
+        ["op requeued after its start went out (it may be running: the bridge ends such an op unconfirmed)"],
+        "the only thing wrong with it"
+    );
+    // nor after the vehicle started it
+    let mut fx = fx_on(policy());
+    let w = world_now(&fx);
+    let id = fx.submit(orbit_sky(), &w);
+    fx.engine.dispatch_or_queue(id, &w).unwrap();
+    fx.engine.record_op_state(id, &uid("sky-1"), "acked", "accepted").unwrap();
+    fx.engine.record_op_state(id, &uid("sky-1"), "active", "flying it").unwrap();
+    replays(&fx);
+    fx.engine.record_op_state(id, &uid("sky-1"), "requeued", "link lost").unwrap();
+    let r = replay_str(&fx.log.text()).unwrap();
+    assert!(
+        r.mismatches.iter().any(|m| m.what.starts_with("op requeued after its start went out")),
+        "{:?}",
+        r.mismatches
+    );
+}
+
+#[test]
+fn a_confirming_delivery_whose_link_drops_before_it_asks_is_requeued() {
+    // the genuine log murmur-rcf must not reject: the start went out on the first delivery
+    // (`starting`, `unconfirmed`); the next delivery only confirms it, and its link drops
+    // before it asked the vehicle (the bridge's `Resume::Confirm` op, still queued or sent,
+    // ends `requeued`): back to the queue, the vehicle still one that may have started it
+    let (mut fx, id) = requeued_after_its_start_went_out();
+    let sky = uid("sky-1");
+    fx.advance(20);
+    let w = world_now(&fx);
+    assert!(matches!(fx.engine.dequeue(id, &w, &terrain()).unwrap(), Dequeued::Dispatched(_)));
+    assert!(fx.engine.intent(id).unwrap().confirming().contains(&sky), "only confirmed");
+    fx.engine.record_op_state(id, &sky, "sent", "asking what it holds").unwrap();
+    fx.engine
+        .record_op_state(id, &sky, "requeued", "link lost waiting for MISSION_COUNT: back to the queue, re-checked before it is sent again")
+        .unwrap();
+    fx.engine.requeue(id).unwrap();
+    assert_eq!(fx.state(id), State::Queued);
+    assert!(fx.engine.intent(id).unwrap().maybe_started().contains(&sky));
+    let r = replays(&fx);
+    assert_eq!(r.requeued, 2);
+}
+
 #[test]
 fn an_agents_order_cant_replace_a_humans_order_no_vehicle_started_yet() {
     // review 2, finding 7: a human's order dispatched, its vehicle not started yet (link

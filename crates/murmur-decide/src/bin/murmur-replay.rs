@@ -14,6 +14,14 @@
 //! - Rules 5: a log whose `intent.resumed` events carry intents over from the previous run
 //!   is checked against that log: `--prev <file>`, or by default the file the events name in
 //!   the same directory. `--trust-resumed` accepts them without it (trusting their origin).
+//! - Rules 6: a log whose carried `platform.restore` events put back lost-link values an
+//!   earlier run still owed is checked against the log they name (what it still owed), found
+//!   the same way. That log can be another one than the intents' (`.last-run-<port>` and
+//!   `.resume-<port>.json` can name different logs), so `--prev` may be given once for each:
+//!   each is matched to the events by its file name (a single `--prev` that matches neither is
+//!   taken for the intents, as before). The output says which log each check used, and what
+//!   was not checked because its log was absent (`UNCHECKED:`; carried values without their
+//!   log are not a mismatch).
 //!
 //! Exit status: 0 all decisions reproduced (and, with `--space`, every space query too; with
 //! `--anchors`, the anchors hold), 1 decision or anchor mismatches found, 2 unreadable log or
@@ -25,16 +33,18 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use murmur_decide::SpaceSegment;
-use murmur_decide::replay::{Mismatch, ReplayOptions, RulesAccepted, replay_str_with};
+use murmur_decide::replay::{
+    Mismatch, ReplayOptions, ReplayReport, RulesAccepted, carried_restore_logs, replay_str_with,
+};
 
-const USAGE: &str = "usage: murmur-replay <audit-log.jsonl> [--rules N | --min-rules N] [--anchors <file>] [--space <constellations.toml> <cache-dir>] [--prev <previous-log.jsonl> | --trust-resumed]";
+const USAGE: &str = "usage: murmur-replay <audit-log.jsonl> [--rules N | --min-rules N] [--anchors <file>] [--space <constellations.toml> <cache-dir>] [--prev <previous-log.jsonl>]... [--trust-resumed]";
 
 struct Args {
     path: String,
     rules: RulesAccepted,
     anchors: Option<String>,
     space: Option<(String, String)>,
-    prev: Option<String>,
+    prev: Vec<String>,
     trust_resumed: bool,
 }
 
@@ -49,7 +59,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut rules = None;
     let mut anchors = None;
     let mut space = None;
-    let mut prev = None;
+    let mut prev = Vec::new();
     let mut trust_resumed = false;
     let mut it = args.iter().skip(1);
     while let Some(a) = it.next() {
@@ -66,7 +76,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
                 });
             }
             "--anchors" => anchors = Some(it.next().ok_or("--anchors needs a file")?.clone()),
-            "--prev" => prev = Some(it.next().ok_or("--prev needs a file")?.clone()),
+            "--prev" => prev.push(it.next().ok_or("--prev needs a file")?.clone()),
             "--trust-resumed" => trust_resumed = true,
             "--space" => {
                 let catalog = it.next().ok_or("--space needs a catalog and a cache dir")?;
@@ -129,22 +139,26 @@ fn main() -> ExitCode {
     let oracle = segment
         .as_ref()
         .map(|s| s as &dyn murmur_decide::SpaceOracle);
-    // rules 5: the previous run's log, for the intents this one carried over
-    let prev_text = match previous_log(path, &text, args.prev.as_deref()) {
+    // the earlier logs this one carries from: rules 5 intents, rules 6 lost-link values
+    let earlier = match Earlier::find(path, &text, &args.prev) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("murmur-replay: {e}");
             return ExitCode::from(2);
         }
     };
-    if let Some((p, _)) = &prev_text {
-        println!("previous run's log (for carried-over intents): {p}");
+    for p in &earlier.unused {
+        println!("--prev {p}: not a log this one's carried-over intents or lost-link values name; not used");
     }
     let opts = ReplayOptions {
         rules: args.rules,
         space: oracle,
-        previous: prev_text.as_ref().map(|(_, t)| t.as_str()),
+        previous: earlier.intents.as_ref().map(|(_, t)| t.as_str()),
         trust_resumed: args.trust_resumed,
+        restores_from: earlier
+            .restores
+            .as_ref()
+            .map(|(name, _, t)| (name.as_str(), t.as_str())),
     };
     let report = match replay_str_with(&text, &opts) {
         Ok(r) => r,
@@ -224,6 +238,7 @@ fn main() -> ExitCode {
             report.space_queries
         );
     }
+    earlier.print(&report, args.trust_resumed);
     if let Some(head) = &report.head_sha256 {
         println!("head {head} (compare with an external anchor to detect a rewrite or truncation)");
     }
@@ -274,37 +289,124 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// The previous run's log: `--prev`, else (when the log carries intents over) the file its
-/// first `intent.resumed` names, beside it. None when there is nothing carried over.
-fn previous_log(
-    path: &str,
-    text: &str,
-    given: Option<&str>,
-) -> Result<Option<(String, String)>, String> {
-    let named = text.lines().find_map(|l| {
-        if !l.contains("\"type\":\"intent.resumed\"") {
-            return None;
-        }
-        let v: serde_json::Value = serde_json::from_str(l).ok()?;
-        v.get("from")?.get("log")?.as_str().map(str::to_string)
-    });
-    let file = match (given, named) {
-        (Some(g), _) => g.to_string(),
-        (None, Some(n)) => {
-            let beside = Path::new(path)
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join(&n);
-            if !beside.exists() {
-                return Ok(None);
+/// The earlier logs this one carries from, each read from `--prev` or found beside it.
+struct Earlier {
+    /// Rules 5: the log the first `intent.resumed` names, and the one used (path, text).
+    intents_named: Option<String>,
+    intents: Option<(String, String)>,
+    /// Rules 6: the log the carried `platform.restore` events name (the first, if they name
+    /// several: a mismatch) as used: its name, path, text.
+    restores: Option<(String, String, String)>,
+    /// `--prev` files neither is.
+    unused: Vec<String>,
+}
+
+impl Earlier {
+    fn find(path: &str, text: &str, given: &[String]) -> Result<Earlier, String> {
+        let intents_named = text.lines().find_map(|l| {
+            if !l.contains("\"type\":\"intent.resumed\"") {
+                return None;
             }
-            beside.display().to_string()
+            let v: serde_json::Value = serde_json::from_str(l).ok()?;
+            v.get("from")?.get("log")?.as_str().map(str::to_string)
+        });
+        let restores_named = carried_restore_logs(text).into_iter().next();
+        let named = |n: &str| given.iter().find(|g| file_name(g).as_deref() == Some(n)).cloned();
+        let intents_file = intents_named.as_deref().and_then(|n| {
+            named(n)
+                .or_else(|| {
+                    // as before: a single --prev is the intents' log, whatever its name (the
+                    // head and last seq the events name bind it), unless it is the restores'
+                    let only = (given.len() == 1).then(|| given[0].clone())?;
+                    (file_name(&only) != restores_named).then_some(only)
+                })
+                .or_else(|| beside(path, n))
+        });
+        let restores_file = restores_named
+            .as_deref()
+            .and_then(|n| named(n).or_else(|| beside(path, n)));
+        let read = |f: &String| std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"));
+        let intents = match &intents_file {
+            Some(f) => Some((f.clone(), read(f)?)),
+            None => None,
+        };
+        let restores = match (&restores_named, &restores_file) {
+            (Some(n), Some(f)) => Some((n.clone(), f.clone(), read(f)?)),
+            _ => None,
+        };
+        let unused = given
+            .iter()
+            .filter(|g| Some(*g) != intents_file.as_ref() && Some(*g) != restores_file.as_ref())
+            .cloned()
+            .collect();
+        Ok(Earlier {
+            intents_named,
+            intents,
+            restores,
+            unused,
+        })
+    }
+
+    /// Which earlier log each check used, and what was not checked for want of one.
+    fn print(&self, report: &ReplayReport, trusted: bool) {
+        if report.resumed > 0 {
+            let from = self.intents_named.as_deref().unwrap_or("?");
+            match &self.intents {
+                Some((p, _)) => println!(
+                    "carried-over intents: {} from {from}, checked against {p}",
+                    report.resumed
+                ),
+                None if trusted => println!(
+                    "UNCHECKED: {} intent(s) carried over from {from}: trusted (--trust-resumed); that log was not given (--prev) or found beside this one",
+                    report.resumed
+                ),
+                None => println!(
+                    "carried-over intents: {} from {from}, NOT checked: that log was not given (--prev) or found beside this one",
+                    report.resumed
+                ),
+            }
         }
-        (None, None) => return Ok(None),
+        for c in &report.carried_restores {
+            let from = if c.log.is_empty() { "no log named" } else { c.log.as_str() };
+            match &self.restores {
+                Some((name, p, t)) if c.checked && *name == c.log => {
+                    let same = match &self.intents {
+                        Some((_, u)) if u == t => ", the carried-over intents' log too",
+                        _ => "",
+                    };
+                    println!(
+                        "carried lost-link values: {} platform(s) from {from}, checked against what {p} still owed{same}",
+                        c.restores
+                    );
+                }
+                _ => println!(
+                    "UNCHECKED: {} platform(s)' carried lost-link values from {from}: that log was not given (--prev) or found beside this one",
+                    c.restores
+                ),
+            }
+        }
+    }
+}
+
+/// A path's file name, as a log's carried events name a log.
+fn file_name(p: &str) -> Option<String> {
+    Path::new(p)
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+}
+
+/// The file `name` beside the log at `path`, if it exists and is another file than the log.
+fn beside(path: &str, name: &str) -> Option<String> {
+    if name.is_empty() {
+        return None;
+    }
+    let dir = Path::new(path).parent().unwrap_or_else(|| Path::new("."));
+    let file = dir.join(name);
+    let same = match (file.canonicalize(), Path::new(path).canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
     };
-    std::fs::read_to_string(&file)
-        .map(|t| Some((file.clone(), t)))
-        .map_err(|e| format!("{file}: {e}"))
+    (file.exists() && !same).then(|| file.display().to_string())
 }
 
 fn print_all(ms: &[Mismatch]) {

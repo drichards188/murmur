@@ -190,13 +190,18 @@ with a new `approval.requested`, void), and a dispatch from the queue needs a re
 says so, logged right after it and before the deadline; a queue expiry needs its deadline
 and its kind (expired or back to the inbox). Under rules 5 a dispatch straight from an
 approval of a kind the queue holds needs its reach (recomputed: every vehicle reachable). An
-`intent.requeued` needs every vehicle's last op state `requeued`, none ever started, and its
-deadline from the policy. Each decision's `waiting` fact is recomputed from the queued
-intents. `intent.resumed` is checked against the previous log (`ReplayOptions::previous`,
-`murmur-replay --prev`, by default the file it names beside the log): that log is the one
-named (head, last seq), replays, and leaves the intent open exactly as carried; without it a
-resumed intent is a mismatch unless trusted (`--trust-resumed`). One generation: replay each
-log with its own predecessor.
+`intent.requeued` needs every vehicle's last op state `requeued` or `unconfirmed`, none ever
+started, and its deadline from the policy; an op that reported its start going out
+(`starting`, `unconfirmed`, or the vehicle started it) never ends `requeued` on that
+delivery: the bridge ends it `unconfirmed`, it may be running (murmur-rcf; a later delivery,
+which only confirms it, may lose its link before it asks the vehicle and end `requeued`).
+Each decision's `waiting` fact is recomputed from the queued intents. `intent.resumed` is
+checked against the previous log (`ReplayOptions::previous`, `murmur-replay --prev`, by
+default the file it names beside the log): that log is the one named (head, last seq),
+replays, and leaves the intent open exactly as carried; without it a resumed intent is a
+mismatch unless trusted (`--trust-resumed`). One generation: replay each log with its own
+predecessor (the lost-link values a run carries can come from another log: see the
+lost-link preload below).
 
 ## Engagements (Phase E)
 
@@ -316,7 +321,18 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
   nothing is written and the inbox says why). A pointer to a log that can't be read is an
   inbox alert too, not a silent first start. Replay reports every platform whose values were
   still owed when the log ended (`ReplayReport::unrestored`, printed `UNRESTORED:` by
-  `murmur-replay`); it is not a decision mismatch.
+  `murmur-replay`); it is not a decision mismatch. Carried values are checked against the
+  log they name (murmur-aca; `ReplayOptions::restores_from`, `murmur-replay --prev` or the
+  file of that name beside the log): exactly what that log still owed (`owed_restores`: each
+  platform's values, the vehicle they were preloaded on, the engagements named), none twice,
+  every platform it owed carried, all from one log. That log is the one `.last-run-<port>`
+  named, which can be another than the one the carried intents name (`.resume-<port>.json`
+  is deleted by a clean stop, `MURMUR_RESUME=<log>` names any): `murmur-replay` takes one
+  `--prev` for each and matches them by file name. Without it the carried values are
+  reported unchecked (`ReplayReport::carried_restores`, printed `UNCHECKED:`), not a
+  mismatch. A carried restore names its log by file only (no head hash, unlike
+  `intent.resumed`), so that log's own anchors are what bind its content, and a log that
+  carried nothing names no log to check against.
 - **Keep-out model** (rules 6, murmur-der.3; parameters in `[rules.engage]`, each bounded,
   schema 4):
   - *Tracks* are predicted along their velocity with a 1-sigma of `sqrt(pos_sigma^2 +
@@ -531,7 +547,7 @@ human decision to measure.
 cargo run -p murmur-decide --bin murmur-replay -- logs/audit/<run-id>.jsonl \
     [--rules N | --min-rules N] [--anchors logs/anchors/<run-id>.anchors] \
     [--space sim/space/constellations.toml sim/space/cache] \
-    [--prev logs/audit/<previous-run>.jsonl | --trust-resumed]
+    [--prev logs/audit/<previous-run>.jsonl]... [--trust-resumed]
 ```
 
 A log is recomputed with the rules it records, but by default only the current rules are
