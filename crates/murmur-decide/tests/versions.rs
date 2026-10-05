@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 26] = [
+const LOGS: [(&str, u32); 27] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -92,6 +92,7 @@ const LOGS: [(&str, u32); 26] = [
     ("v9-neutral-alongside-flagged-scenario-74.jsonl", RULE_ID_SINCE),
     ("v9-revoked-mid-engagement-scenario-75.jsonl", RULE_ID_SINCE),
     ("v9-bystander-protected-scenario-76.jsonl", RULE_ID_SINCE),
+    ("v9-identification-live.jsonl", RULE_ID_SINCE),
 ];
 
 /// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
@@ -852,4 +853,93 @@ fn a_rules_8_log_claiming_rules_7_still_carries_its_authentication() {
             "{marker}: {w:?}"
         );
     }
+}
+
+/// Rules 9, live, from a clean build of the merged head, anchored as it ran: a credentials run
+/// (stand-ins, the engagement demo fleet, `sim/scenarios/golden-gate-ident.toml`). Three
+/// scripted acts came in through the bridge's sensing model: the fast boat firing on the USV,
+/// observed 77 m from its track (attribution 0.85, flagged); the skiff alongside the crab boat
+/// firing on the sensor ship (0.53 against 0.47, flagged); the fast boat again, declared hostile
+/// by rule (0.99). op-1 (no engagement authority) confirmed the rule declaration under their
+/// session, op-2 dismissed the ambiguous flag and op-1 confirmed the other; op-1 nominated the
+/// switchblade on the boat, op-2 and op-3 looked and signed, each with their password again;
+/// op-3 then revoked the declaration, and the engagement stopped before anything else (cause
+/// revoked), its fallback commanded; everyone logged out.
+const IDENT_LIVE: &str = "v9-identification-live.jsonl";
+
+#[test]
+fn the_rules_9_live_log_declares_by_rule_and_operators_review_it_under_their_sessions() {
+    let log = fixture(IDENT_LIVE);
+    let a = anchor::verify(&log, &anchors_of(IDENT_LIVE));
+    assert!(a.ok(), "{:?}", a.problems);
+    assert!(a.shutdown, "a clean stop anchored the head");
+    let r = with(&log, RulesAccepted::Exactly(RULE_ID_SINCE));
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert_eq!(r.rules_version, RULE_ID_SINCE);
+    assert_eq!(r.build.as_ref().map(|b| b.dirty), Some(Some(false)));
+    assert_eq!(r.auth, Some(AuthMode::Credentials));
+    assert!(r.authenticated(), "a credentials run that reproduced");
+    assert_eq!(
+        (r.acts, r.rule_declarations, r.operator_declarations, r.flags, r.confirmations, r.revocations, r.flags_resolved),
+        (3, 1, 0, 2, 1, 1, 2)
+    );
+    assert_eq!((r.engagements, r.concurrences, r.approvals, r.aborts, r.effects), (1, 1, 1, 1, 0));
+    assert_eq!((r.step_ups, r.stepped_signatures), (2, 2), "the signatures stepped up, the confirmation did not");
+    let events = parse_log(&log).unwrap();
+    // the rule's declaration is the engine's: no session, no step-up, its evidence named
+    let declared: Vec<&ident::Declaration> = events
+        .iter()
+        .filter_map(|e| match &e.body {
+            EventBody::IdentDeclared { declaration } => Some(&**declaration),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(declared.len(), 1);
+    assert!(
+        matches!(&declared[0].by, ident::Declarer::Rule { rule, evidence } if rule == "hostile_act" && evidence.act == "A-3" && evidence.attribution >= evidence.threshold),
+        "{:?}",
+        declared[0]
+    );
+    // every human act under its operator's own session
+    let sessions: std::collections::BTreeMap<u64, String> = events
+        .iter()
+        .filter_map(|e| match &e.body {
+            EventBody::OperatorAction { operator, session, action, .. } if action == "session.opened" => {
+                Some((session.0, operator.to_string()))
+            }
+            _ => None,
+        })
+        .collect();
+    let mut acts = Vec::new();
+    for e in &events {
+        match &e.body {
+            EventBody::IdentConfirmed { by, session, step_up, .. } => {
+                assert!(step_up.is_none());
+                acts.push(("confirmed", by.to_string(), session.0));
+            }
+            EventBody::IdentFlagResolved { by, session, .. } => acts.push(("resolved", by.to_string(), session.0)),
+            EventBody::IdentRevoked { by, session, engagements, .. } => {
+                assert_eq!(engagements.len(), 1, "the engagement in play on it");
+                acts.push(("revoked", by.to_string(), session.0));
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(acts.len(), 4);
+    for (what, by, session) in &acts {
+        assert_eq!(sessions.get(session), Some(by), "{what} by {by} under session {session}");
+    }
+    assert!(acts.iter().any(|a| a.0 == "confirmed" && a.1 == "op-1"));
+    assert!(acts.iter().any(|a| a.0 == "revoked" && a.1 == "op-3"));
+    // the revocation stopped the engagement next, cause revoked
+    let i = events.iter().position(|e| matches!(e.body, EventBody::IdentRevoked { .. })).unwrap();
+    assert!(
+        matches!(&events[i + 1].body, EventBody::EngageStopped { cause: engage::StopCause::Revoked { .. }, .. }),
+        "{:?}",
+        events[i + 1]
+    );
+    // the signers' pictures showed how the target was declared
+    let pictures: Vec<&str> = log.lines().filter(|l| l.contains("\"type\":\"picture.issued\"")).collect();
+    assert_eq!(pictures.len(), 2);
+    assert!(pictures.iter().all(|l| l.contains("\"rule\":\"hostile_act\"")), "{pictures:?}");
 }
