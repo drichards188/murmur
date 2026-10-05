@@ -155,13 +155,17 @@ result is read with them in mind (2026-10-05):
   AIS (a broadcast) and ESM (a bearing) never observe one. One seeded draw per act and
   sensor, so a run replays; real acts are often seen by nobody, or only heard.
 - **Where it puts the author**: the observer with the smallest position error places the
-  author with that sensor's error, drawn as for a detection. No fusion of several
-  observers' fixes, no bearing-only fix, no false act (a sensor never reports an act that
-  did not happen), and the victim is known exactly when it is ours.
+  author with that sensor's error, drawn as for a detection; every other observer gives its
+  own fix (for corroboration). The fixes are not fused, there is no bearing-only fix and no
+  false act (a sensor never reports an act that did not happen), and the victim is known
+  exactly when it is ours (one of our fleet).
 - **The picture it is attributed in** is the bridge's tracks, associated by the
-  simulation's contact id (10-02); a track's reported uncertainty is the tracker's own, which
-  in the first live run (2026-10-05) was optimistic (8 m reported, about 20 m off the
-  truth), so the attribution can be overconfident or, as there, too low for a clear act.
+  simulation's contact id (10-02). Each track's 1-sigma is its Kalman filter's (10-05),
+  checked against the simulation's truth by a test (coverage of the truth within two sigmas,
+  mean normalized error); in the first live run a track reported 8 m while 20 m off, a
+  2.5-sigma moment the old filter's numbers do not single out (it was mostly too loose).
+- **Only the stack's own contacts process** posts truth (and so acts): the simulation channel
+  takes the stack's token.
 - **The scenario runner's acts** (`sim/scenarios/engage`, the evaluation) skip the sensing
   model: the file names the observing sensors and the sigma, and the observed position is the
   author's plus a scripted offset plus, in evaluation batches, seeded noise of that sigma.

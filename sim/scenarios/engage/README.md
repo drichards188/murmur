@@ -61,8 +61,11 @@ The effect is an abstract event: a point, a radius, a time. Nothing here models 
   rule or flags; every second the runner also calls `Engine::step_identification` (the
   proximity flag) before stepping engagements. `RunOptions::identification` changes the
   policy's `[identification]` keys it names (`--ident on|off`, `--threshold X`,
-  `--nominate-unconfirmed`); `RunOptions::manual` (`--manual-delay S`, `--manual-standard
-  rule|best`) is the evaluation's scripted manual declarer. Result fields: `ident_reports`
+  `--nominate-unconfirmed`, `--corroboration none|second_observation`);
+  `RunOptions::proxy` (`--proxy`) is the evaluation's scripted reviewer, with its own
+  procedure over what the console shows (`scenario::console_pick`), and
+  `RunOptions::nominator` (`--nominator`) nominates every declared track and has two signers
+  sign it. Result fields: `ident_reports`
   (one line per identification event), `ident` (each with the truth behind it: the track's
   `truth`, the act's real author), as `eval/ident.py` reads them.
 
@@ -141,6 +144,7 @@ declared_by = "op-1"             # optional: an operator's declaration (rules 9:
                                  # the engine's identification ledger before the timeline)
 truth = "hostile"                # rules 9, optional: what its contact really is (labels only;
                                  # nothing the engine sees)
+affiliation_confidence = 0.8     # how confidently the tracker holds its affiliation (default 0.8)
 identity = "small_fast_boat"
 identity_confidence = 0.9        # default 0.9
 confidence = 0.9                 # existence, default 0.9
@@ -167,7 +171,7 @@ Actions (each `[[step]]` has `at_s` and `action`):
 | action | fields | what it does |
 |---|---|---|
 | `declare` | `track`, `affiliation`, `by` | an operator's declaration (logged `operator.action track.declare`; from rules 9 `ident.declared` through the engine's ledger) |
-| `act` | `by_track` or `at` [lon, lat] (an author we hold no track of), `against_vehicle` or `against_track` (neither: unknown), `sensors`, `sigma_m` (default 20), `offset` [east, north] m | rules 9: a hostile act our sensors observed; the engine attributes it and declares its author by rule or flags it |
+| `act` | `by_track` or `at` [lon, lat] (an author we hold no track of), `against_vehicle` or `against_track` (neither: unknown), `sensors` (each further observer's uid prefix gives a fix of its own), `sigma_m` (default 20), `offset` [east, north] m | rules 9: a hostile act our sensors observed; the engine attributes it and declares its author by rule or flags it |
 | `confirm_declaration` | `by`, `track` | rules 9: an operator confirms the rule declaration in force |
 | `revoke_declaration` | `by`, `track`, `note` | rules 9: an operator revokes the declaration in force; the engagements on the track stop first |
 | `resolve_flag` | `by`, `track`, `flag` (optional: its number; default the newest on the track), `resolution` (`confirmed`, `dismissed`) | rules 9: an operator resolves a review flag |
@@ -270,4 +274,5 @@ calls `Engine::step_engagements` (hold the picture, release, observe, assess).
 | 74-neutral-alongside-hostile-flagged | rule_declaration | rules 9: a ferry 150 m alongside a declared hostile, an act landing on the ferry; an agent nominates the ferry; the operator's declaration credited to another operator in the log | the ferry flagged (proximity, raised to suspect; the act: conflict), never declared; rejected; tamper caught |
 | 75-rule-declaration-revoked-mid-engagement | rule_declaration | rules 9: an untracked author beside a fishing boat (a false rule declaration), nominated before a confirmation, revoked en route; the stop cut from the log | aborted (revoked), fallback return; tamper caught |
 | 76-rule-declared-bystander-protected | keep_out_tracks | rules 9: a rule-declared, unconfirmed hostile 250 m from another engagement's target; the confirmation planted in an earlier picture in the log | rejected (keep_out_tracks) until confirmed, then done; tamper caught |
+| 77-revoked-bystander-stops-engagement | keep_out_tracks | rules 9 (review): a confirmed rule declaration exempts a bystander from an engagement's keep-out; op-3 revokes it mid-engagement; the stop cut from the log | aborted in the revocation's step, cause revoked (keep_out_tracks), fallback; tamper caught |
 | 71-refused-mission-supersedes-engagement | engagement_in_play | rules 7: 70's policy, the orbit ordered while the engagement is still under way, link up; the fact stripped from the log | the orbit is voided and in the same step the engagement is aborted, superseded by it, no fallback, its reason saying so; given again before the restore it is refused saying the restore is pending; after it, it goes at once; tamper caught |

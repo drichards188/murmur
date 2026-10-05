@@ -223,21 +223,24 @@ missing.
 
 The engine may declare a track hostile by rule on an observed hostile act, and flags what it
 is unsure of (DECISIONS.md, 10-05). `eval/ident.py` measures what that changes against manual
-declaration, on the same scenarios and seeds: every scenario with a scripted act
-(`sim/scenarios/engage/`, five today) under `rule`, `rule-nominate` (the minimal profile),
-`manual` (a scripted operator proxy declaring by the rule's own standard about 16 s after the
-act) and `manual-best` (the proxy declaring the most likely track), with seeded noise on where
-each act's author was observed. Every batch runs it (`--ident-seeds`, `--no-ident`); alone:
+declaration on generated situations (seeded geometry: a hostile author, tracked or not; none
+to three contacts near it; one or two observers), the same ones in every arm, each arm the
+shipped policy changed only by its flags: `manual`, `rule`, `rule-nominate`,
+`rule-corroborated`, `rule-corroborated-nominate`. The same scripted operator reviews in every
+arm by its own procedure over what the console shows (never the engine's rule), and a
+nominator nominates every declared track as soon as the policy lets it. Every batch runs it
+(`--ident-seeds`, `--ident-situations`, `--no-ident`); alone:
 
 ```
-.venv/bin/python -m eval.run ident --seeds 1 2 3 4 5 6 7 8 9 10
-.venv/bin/python -m eval.run ident --threshold 0.95 --manual-delay 30
+.venv/bin/python -m eval.run ident --seeds 1 2 3 4 5 6 7 8 9 10 --situations 20
+.venv/bin/python -m eval.run ident --threshold 0.95 --proxy-diligence 0.5
 ```
 
-It writes `ident/comparison.json` (every run's labelled declarations, acts and flags) and a
-report section; METRICS.md defines each number. These are model results from scripted proxies
-on scripted scenarios, dev runs with asserted ids, never human data; the live bridge's act
-sensing is exercised by `sim/scenarios/golden-gate-ident.toml` (a live run, not a batch arm).
+It writes `ident/comparison.json` (the situations with their truth, every run's labelled
+declarations, revocations and engagements) and a report section; METRICS.md defines each
+number. These are model results from scripted proxies on generated situations, dev runs with
+asserted ids, never human data; the live bridge's act sensing is exercised by
+`sim/scenarios/golden-gate-ident.toml` (a live run, not a batch arm).
 
 ## Arms
 

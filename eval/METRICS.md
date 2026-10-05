@@ -257,37 +257,42 @@ log; murmur-replay checks the same things from the engine's side.
 
 ## Identification: rule against manual (rules 9)
 
-`eval/ident.py` (`python -m eval.run ident`, and a step of every batch) plays the scenarios
-with a scripted hostile act (`sim/scenarios/engage/`, `action = "act"`) under four arms on
-the same seeds, with seeded noise of each act's own sigma on where its author was observed:
-`rule` (the shipped policy), `rule-nominate` (`eval/policy/minimal.toml`'s
-`nominate_unconfirmed`), `manual` (rule declaration off; a scripted operator proxy declares
-by the rule's own evidence standard after a lognormal delay, median 16 s, sigma 0.4: half the
-proxy operator's 20 s look interval plus its 6 s read) and `manual-best` (the proxy declares
-the most likely track of every act). Each run's `ident` records come with the scenario file's
-truth (`truth` on each track; an act's real author, a track or `untracked`).
+`eval/ident.py` (`python -m eval.run ident`, and a step of every batch) generates
+identification situations per seed (seeded geometry from stated distributions: a hostile
+author, tracked with probability 0.8, who acts against our patrol USV at 10 s, a second time
+at 40 s with probability 0.2; none to three contacts 15 to 400 m from it: a fishing boat shown
+neutral at 0.3 to 0.9 or not classified, an AIS ferry, a friendly patrol boat, another
+hostile; each track's 1-sigma 8 to 25 m; one or two of our USVs observing, each its own fix
+with a radar's error at its range; an armed aircraft). The files name no policy: each arm is
+the shipped policy changed only by its flags (`manual`: rule off; `rule`; `rule-nominate`:
+`nominate_unconfirmed`; `rule-corroborated`: `corroboration = "second_observation"`;
+`rule-corroborated-nominate`). Every arm has the same scripted operator
+(`scenario::ReviewProxy`: a look every 20 s median, 6 s to read, reads 80% of items, slips 5%;
+its procedure is its own over what the console shows, not the engine's rule: the one track
+within two combined sigmas of the fix, its victim excluded, not shown neutral or friendly at
+0.5 or more, is the author, else it can't say) and a nominator (every track declared hostile
+nominated as soon as the policy lets it, retried every 10 s; two signers sign 5 and 8 s after
+it waits, and again while their signature does not stand).
 
 | measure | definition |
 | --- | --- |
-| correct declaration | a hostile declaration (the rule's, or the manual proxy's from an act) of the act's real author, whose contact is hostile |
-| false hostile declaration | one of a track whose contact is not hostile |
-| wrong-author declaration | one of a hostile that did not commit the act |
-| missed hostile act | an observed act by a tracked hostile whose track nobody (rule, proxy or a scripted operator) declared hostile by the end of the run |
-| C2 showed it / picture wrong | a wrong declaration is *C2 showed it* when, at the act, another track had 0.1 or more of the attribution, the declared track's estimate was neutral or assumed friend, or a review flag was on it; else *picture wrong*. Never pooled |
-| flag prevented a wrong one / held back a right one | a flag from an act whose best candidate was not its hostile author prevented a wrong declaration; one whose best candidate was held back a right one (a look a person had to give that the rule could have saved). Proximity flags (no act) are counted apart |
-| review items | the rule arms' non-blocking asks of a person: every rule declaration (confirm or revoke) and every flag |
-| declared by a person | the manual arms' declarations (the proxy's): every identification there is a person's act |
-| act to declaration | seconds from the act to the declaration it led to (the rule's at once; the proxy's after its delay); median over acts |
-| engagements by basis | every nomination grouped by how its target was declared when nominated (operator, rule confirmed, rule unconfirmed, none) and how it ended, effects released counted |
+| author declared | the hostile author's track declared hostile, by the rule or the person |
+| missed | a tracked hostile author nobody declared |
+| false hostile / wrong author | a hostile declaration of a contact that is not hostile / of another hostile |
+| C2 showed it / picture wrong | a wrong declaration is *C2 showed it* when, at the act, another track had 0.1 or more of the attribution or the declared track was shown neutral or assumed friend at 0.5 or more; else *picture wrong*. Never pooled |
+| revocations (of a right one) | the person's revocations of rule declarations, and of those, the ones of the author's |
+| looks | what a person had to look at: every act without the rule; every rule declaration and flag with it |
+| person acts | declarations, confirmations, revocations and flag resolutions by the person |
+| confirmations | the confirmations made (under the shipped policy, an engagement on a rule declaration waits for one) |
+| effects on the author / on a wrong target | effects released on the hostile author's track / on a contact that is not hostile |
+| act to declaration, act to effect | seconds from the first act to the author's first declaration, and to the first effect; medians |
 
-What these are not: model results from scripted proxies on scripted scenarios, never human
-data. The manual proxy is a latency model with a fixed evidence standard (with `rule`'s
-standard it declares exactly what the rule would have, later), the scenario timelines are
-scripted (nominations, confirmations, revocations and flag resolutions at fixed seconds in
-every arm, so engagement outcomes across arms mostly measure whether a declaration existed
-at the nomination's second), the tracks are the scenario runner's (truth plus seeded noise,
-not the bridge's tracker), and the counts come from five scenarios built around the cases
-the rule must handle, not from a sample of situations.
+What these are not: model results from scripted proxies on generated situations, never human
+data. The situations come from stated distributions, not from the world; the proxy's
+procedure, parameters and slip rate are assumptions; the nominator and the signers are
+scripts; the tracks are the scenario runner's (truth plus seeded noise), not the bridge's
+tracker. Scenarios 72-77 illustrate the rule and run in the engagement suite; they are not
+part of this measurement.
 
 ## Provenance and exclusions
 

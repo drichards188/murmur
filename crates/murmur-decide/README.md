@@ -1007,7 +1007,16 @@ Rules versions:
   declaration or a rule's, a rule's only once confirmed unless `nominate_unconfirmed`; a
   rule declaration nobody confirmed stays protected in other engagements' keep-outs; the
   picture token and frozen plan carry the declaration (`TrackIdentity.declaration`), so a
-  confirmation mid-signing resets the plan. Rule declaration off (the default when the
+  confirmation mid-signing resets the plan. After the review: decisions read an undeclared
+  track's own affiliation (a proximity flag shows it suspect to readers only); a victim is
+  one of our fleet (the act's inputs log it: `vehicles`) or a tracked contact not declared
+  hostile, and never a candidate for its own author; `corroboration = "second_observation"`
+  wants another observer's fix (`ActReport.fixes`) or an earlier act attributed to the same
+  track at the threshold (flag kind `uncorroborated` until then; `RuleEvidence.corroborated_by`
+  names it); an act names its channel (`sim:contacts`, `scenario`); a declaration's or flag's
+  time and its event's are one clock read; a revocation also stops an engagement under way
+  whose last picture held the track exempt from its keep-out (`ident::revocation_bystanders`,
+  recomputed by replay from the last logged pictures). Rule declaration off (the default when the
   section is absent), the engine decides exactly as rules 8 did. `Engine::record_declaration`
   and the `track.declare` operator action are refused under rules 9. Replay recomputes every
   attribution, verdict, declaration and flag from the logged inputs, binds every logged
@@ -1021,7 +1030,8 @@ Rules versions:
   ledger), the five rules 9 scenarios (`v9-hostile-act-declared-scenario-72.jsonl`,
   `v9-ambiguous-attribution-flagged-scenario-73.jsonl`,
   `v9-neutral-alongside-flagged-scenario-74.jsonl`,
-  `v9-revoked-mid-engagement-scenario-75.jsonl`, `v9-bystander-protected-scenario-76.jsonl`),
+  `v9-revoked-mid-engagement-scenario-75.jsonl`, `v9-bystander-protected-scenario-76.jsonl`,
+  `v9-revoked-bystander-scenario-77.jsonl`),
   and a live run with its anchors (`v9-identification-live.jsonl`,
   `tests/data/anchors/v9-identification-live.anchors`; see `tests/versions.rs`).
 
@@ -1034,7 +1044,8 @@ Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_s
 `[approval] step_up_acts` (optional: `declare_hostile`, `accept_unknown`;
 `STEP_UP_SCHEMA_SINCE`, rules 8); **6** adds `[identification]` (every key optional, unknown
 keys refused: `rule_declaration`, `attribution_threshold`, `nominate_unconfirmed`,
-`conflict_confidence`, `untracked_per_km2`, `escort_m`, `escort_speed_mps`, each bounded)
+`conflict_confidence`, `untracked_per_km2`, `escort_m`, `escort_speed_mps`, each bounded,
+`corroboration`)
 and `confirm_declaration` in `step_up_acts` (`RULE_ID_SCHEMA_SINCE`, rules 9).
 
 ## Integration contract for the bridge

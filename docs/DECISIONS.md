@@ -59,9 +59,11 @@ group. Dates are 2026.
   is a non-blocking review item: any operator confirms it or revokes it, under their own
   session. What the engine is unsure of it flags and never declares: an attribution below the
   threshold (two tracks close together, a loose fix), conflicting evidence, an author we hold
-  no track of, a victim that is not ours, and the weak evidence of keeping company with a
-  declared hostile (which may raise a track to suspect, never further). Any operator may still
-  declare any track. Why it is acceptable now: the declaration is a deterministic rule over
+  no track of, a victim that is not ours, one observation where the policy wants two, and the
+  weak evidence of keeping company with a declared hostile (shown suspect to readers, never
+  further, and never hiding the track's own evidence from a decision). Any operator may still
+  declare any track; any operator may revoke any declaration (user decision, 10-05), and its
+  declarer is told when someone else did, with the optional note. Why it is acceptable now: the declaration is a deterministic rule over
   logged facts that replay recomputes (an agent's judgment would not be), it is shown as the
   rule's everywhere it travels (the picture token, the frozen plan, the engagement card, MCP
   reads), and the floor below does not move. **What stays human, in code and by type**:
@@ -410,10 +412,38 @@ group. Dates are 2026.
   detection probability as a detection (radar, EO/IR and sonar; not AIS, a broadcast, nor
   ESM, a bearing), one seeded draw per act and sensor so a run replays, and the observer with
   the smallest position error places the act's author with that error drawn as for a
-  detection. Simplifications, stated: one observation per act (no fusion of several
-  observers' fixes), the victim known exactly when it is ours, an act against a contact
-  named by the track the association gives it (the contact-id association of 10-02), and an
-  act nobody observed simply absent from the C2's picture (the evaluation view lists it).
+  detection; every other observer gives its own fix (its best sensor, its own draw), for
+  corroboration. Simplifications, stated: the fixes are not fused (the best one is the act's
+  location; fusing several observers' fixes is later work), the victim known exactly when it
+  is ours, an act against a contact named by the track the association gives it (the
+  contact-id association of 10-02), and an act nobody observed simply absent from the C2's
+  picture (the evaluation view lists it).
+- **The simulation channel takes the stack's own token** (10-05, review of rules 9). Truth
+  reaches the sensing model, and through it acts reach the identification rule, so `POST
+  /api/sim/contacts` is no longer open: it carries `X-Murmur-Sim-Token`, compared as digests
+  in constant time with the bridge's `MURMUR_SIM_TOKEN`, or is refused before anything reads
+  it; with none set the channel is closed. `up.sh` and the evaluation's stacks generate a
+  fresh token per stack and give it to the bridge and the contacts process only (never
+  printed or written to a run directory). The review had injected a fishing boat and an act
+  with only an agent's key and got a rule declaration. Each act logs the channel it came in
+  on (`sim:contacts`).
+- **The tracker's uncertainty is the Kalman filter's own, checked against truth** (10-05,
+  user decision after the review of rules 9: a live track reported 8 m while about 20 m off).
+  Each track is a constant-velocity Kalman filter per horizontal axis: white-noise
+  acceleration by domain (spectral density, m^2/s^3: surface 0.05, air 2, subsurface 0.01,
+  ground 0.3), each detection a position measurement with its sensor's 1-sigma, an AIS
+  report's course and speed a velocity measurement (0.3 m/s), and a fix outside the
+  prediction's 99% (normalized innovation above 9.21) widening the prior by its own size (a
+  stop or a sharp turn the model did not expect). A test runs it against the simulation's
+  truth in eleven motions over five seeds (holding with one to four sensors, transits, a stop
+  after a transit and 15 minutes holding, a 90 degree turn, circling, an AIS ferry, a lone
+  radar at 6 km) and requires the truth within two sigmas at least 83% of the time and the
+  mean normalized error within 1.0..2.6 (expected 2): every case passes, mean NEES 1.3 to 2.2.
+  The old scalar filter measured mostly too loose (NEES 1.2 to 1.6: a sigma about 1.2 times
+  the errors), slightly too tight circling (coverage 84%) and on a lone far radar (one seed
+  77%); the live 8 m at 20 m was one moment, a 2.5-sigma error, which an honest filter shows
+  about 4% of the time. Keep-outs and attribution read this 1-sigma. Fusing several
+  observers' fixes of one act, and a gating tracker, are later work.
 - **Sensing runs in the bridge, association is by contact id** (10-02). One seeded model
   in the bridge (which already loads the catalog and knows our vehicles) rather than in the
   contacts process; detections are associated to tracks by the simulation's contact id
@@ -447,16 +477,23 @@ group. Dates are 2026.
 
 ## Evaluation (Phase G)
 
-- **Rule against manual identification is a model comparison on scripted scenarios** (10-05,
-  rules 9). `python -m eval.run ident` plays every scenario with a scripted act under the
-  shipped rule, the minimal profile, and a manual arm (rule declaration off; a scripted
-  operator proxy declares by the rule's own evidence standard after a seeded delay of about
-  16 s, the proxy operator's half look interval plus its read time), plus a best-guess manual
-  arm as a sensitivity case, on the same seeds with seeded noise on each act's observed
-  position. It labels every declaration, act and flag from the scenario's truth and keeps "the
-  C2 showed it" apart from "picture wrong". Its numbers are model results from scripted
-  proxies (dev runs, asserted ids), never human data; a claim about people needs study runs,
-  which count only the participant's own acts with verified anchors.
+- **Rule against manual identification is measured on generated situations, with a reviewer
+  of its own** (10-05, rules 9; rebuilt after the review found the first comparison circular:
+  its manual arm reused the engine's verdict, its nominate arm could not differ, and a
+  scenario's own policy leaked into an arm labelled shipped). `python -m eval.run ident`
+  generates situations per seed from stated distributions (a hostile author, tracked or not;
+  none to three contacts near it, neutral, unclassified, friendly or hostile; one or two
+  observers) that name no policy, and plays each under five arms, the shipped policy changed
+  only by flags: manual (rule off), rule, rule with nomination before confirmation, and both
+  with corroboration by a second observation. The same scripted operator reviews in every
+  arm (`scenario::ReviewProxy`: a look every 20 s, 6 s to read, reads 80%, slips 5%; its
+  procedure is its own over what the console shows: the one track within two combined sigmas
+  of the fix, not shown neutral or friendly, is the author; else it can't say), and a
+  nominator nominates every declared track as soon as the policy lets it, so the
+  confirmation requirement shows in the timing. Workload counts what a person had to look at
+  and do in each arm. Its numbers are model results from scripted proxies on generated
+  situations (dev runs, asserted ids), never human data; scenarios 72-77 illustrate the rule
+  and are not part of it.
 
 - **One isolated stand-in stack per run, Python runner** (10-03). `eval/run.py` starts the
   link emulator, bridge, stand-ins and contacts on a port block of their own (UDP 35000-36999,
@@ -965,10 +1002,36 @@ group. Dates are 2026.
   a replay on another machine computes the same verdict. Why this and not nearest-track: a
   nearest-track rule declares the nearer of two boats 15 m apart on a 60 m fix, which is a
   coin toss, and declares a lone boat 2 km from the fix.
-- **Proximity is weak evidence** (10-05, rules 9). A track in the same domain within 300 m
-  of a declared hostile, velocity within 1.5 m/s of its, both velocities known, is flagged
-  once per pair and shown suspect; never declared. Same domain because an airliner over a
-  boat is not its escort (scenarios 61 and 64 flagged one before the rule required it).
+- **Proximity is weak evidence, and never masks evidence** (10-05, rules 9; corrected after
+  the review). A track in the same domain within 300 m of a declared hostile, velocity
+  within 1.5 m/s of its, both velocities known, is flagged once per pair and shown suspect to
+  readers (the console, agents); never declared. Same domain because an airliner over a boat
+  is not its escort (scenarios 61 and 64 flagged one before the rule required it). The first
+  build also put the raise into the decision picture and weighed a later act against the
+  estimate frozen when the first proximity flag was raised; the review showed a ferry, flagged
+  then dismissed, later reading neutral at 0.95, declared hostile at 0.997. Now decisions
+  read the track's own evidence as the tracker has it now and its flags; a dismissed flag
+  leaves nothing behind.
+- **Who can be a victim, and who can't be its author** (10-05, review of rules 9). A victim
+  is one of our vehicles (in our fleet: the world's vehicles, logged with the act; a uid that
+  is not one is flagged, victim) or a track we protect: any tracked contact not declared
+  hostile, a suspect included (an act against an undeclared contact is an act against
+  someone we protect). The victim is never a candidate for its own author (before, an
+  untracked author 20 m from a tracked fishing boat it attacked declared the boat at 0.995).
+- **What "nothing conflicts" means, stated** (10-05, review of rules 9). Missing identity
+  data does not conflict: an unclassified track is declarable when the act is attributed to
+  it, because the act is the evidence. A track shown neutral or assumed friend at
+  `conflict_confidence` or more conflicts; shipped 0.5 (first 0.7): the tracker gives a
+  fishing boat without AIS 0.8 of its classification, so 0.7 protected one only at 0.875
+  classified, and at 0.5 it is protected from 0.625. An operator's revocation makes later
+  acts attributed to the track conflict flags until an operator declares it again: a
+  person's judgment outranks the rule until a person changes it.
+- **Corroboration is a policy switch, measured both ways** (10-05, user decision).
+  `[identification] corroboration = "none"` (shipped) declares on one observation;
+  `"second_observation"` waits for a second independent one, another observer's fix of the
+  same act or a second act, attributed to the same track at the threshold, and flags the act
+  (uncorroborated) until then. The declaration names what corroborated it; replay recomputes
+  it from the act's fixes and the ledger's earlier acts. The evaluation runs both.
 - **A rule declaration nobody confirmed stays protected in another engagement's keep-out**
   (10-05, rules 9). A track declared hostile by an operator, or by the rule and confirmed by
   one, is exempt from the keep-out of engagements on other targets, as before; one the rule
@@ -977,11 +1040,15 @@ group. Dates are 2026.
   boat, scenario 75) must not also lower the protection of everything near it. Whether a rule
   declaration may be nominated before a confirmation is a policy switch
   (`nominate_unconfirmed`, off shipped, on in the evaluation's minimal profile).
-- **A revocation stops the engagements on the track first** (10-05, rules 9). Any operator
-  may revoke any declaration (an operator's or the rule's): it only restricts. Before
-  anything else in that step every engagement in play on the track stops (cause `revoked`,
-  naming the operator, the track and the declaration): one waiting for signatures is voided,
-  one under way aborted with its fallback per the existing stop rules. A confirmation while
+- **A revocation stops what it changes, first** (10-05, rules 9; bystanders added after the
+  review). Any operator may revoke any declaration (an operator's or the rule's): it only
+  restricts. Before anything else in that step every engagement in play on the track stops
+  (cause `revoked`, naming the operator, the track and the declaration): one waiting for
+  signatures is voided, one under way aborted with its fallback per the existing stop rules;
+  so does every engagement under way whose last picture held the track exempt from its
+  keep-out and would fail it without the declaration (a bystander: before, it was aborted in
+  the same tick but logged as a picture failure; scenario 77). The declarer, when someone
+  else revoked their declaration, gets an inbox notice with the note. A confirmation while
   an engagement is being signed changes the target's identity in its plan, so the signatures
   are dropped and taken again (conservative, as any picture change).
 - **Confirming a rule declaration does not step up by default** (10-05, user's minimal
