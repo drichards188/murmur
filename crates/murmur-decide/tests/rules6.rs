@@ -44,6 +44,8 @@ fn track(t: Time, at: LonLat, vel: Option<[f64; 2]>, aff: Affiliation, domain: D
         declared_by: (aff == Affiliation::Hostile).then(|| "op-1".to_string()),
         declaration: None,
         review_flags: Vec::new(),
+        manoeuvre: None,
+        mean_velocity_mps: None,
     }
 }
 

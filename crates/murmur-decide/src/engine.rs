@@ -1731,6 +1731,11 @@ impl Engine {
         e.snapshot = Some(snapshot);
         e.loiter_radius_m = loiter;
         e.preload = preload;
+        // rules 9: the picture it holds until its first watch (a revocation before then still
+        // finds it, as a bystander or on its target)
+        if self.policy.rules.rule_id() {
+            self.last_pictures.insert(id, inputs.clone());
+        }
         let reason = format!("approved by {by} (signature {n} of {of}) on the plan frozen by the first signature");
         self.transition(id, Transition::Approve, reason)?;
         self.get(id)

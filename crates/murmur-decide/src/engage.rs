@@ -2430,6 +2430,79 @@ pub fn track_prediction_sigma(t: &TrackFacts, span_s: f64, ec: &EngageRules) -> 
     (t.pos_sigma_m.powi(2) + v * v + q * span.powi(3) / 3.0).sqrt()
 }
 
+/// One region a protected track may be in at the effect time, as a keep-out counts it: a
+/// centre, how far from it (`keep_out_sigma` of its uncertainty included), and how.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrackReach {
+    pub center: LonLat,
+    pub radius_m: f64,
+    pub how: String,
+}
+
+/// Rules 6 and 9: where a protected track may be at `effect_t`, from its estimate over the
+/// span since it. Rules 6: along its velocity with `keep_out_sigma` of
+/// [`track_prediction_sigma`], or, without a velocity estimate, anywhere it reaches at its
+/// domain's top speed. Rules 9: also along its average velocity of the last minute
+/// ([`TrackFacts::mean_velocity_mps`]), with the same uncertainty, and a track the tracker
+/// saw manoeuvre within its memory ([`TrackFacts::manoeuvre`]) anywhere it reaches at the
+/// fastest it went, whichever way it turns: a minute ahead, a contact that zigzags, weaves or
+/// sprints and stops is not where its velocity of the moment says (the tracker of rules 9
+/// follows a manoeuvre within seconds, so its velocity is the current leg's). The keep-out
+/// holds only if every region clears it.
+pub fn track_reach(t: &TrackFacts, effect_t: Time, ec: &EngageRules) -> Vec<TrackReach> {
+    let span = secs(effect_t.ms_since(t.position.t)).max(0.0);
+    let k = ec.keep_out_sigma;
+    let Some(_) = t.velocity_mps else {
+        let top = top_speed_mps(t.domain);
+        let radius_m = k * t.pos_sigma_m + top * span;
+        return vec![TrackReach {
+            center: t.position.value,
+            radius_m,
+            how: format!(
+                "no velocity estimate: anywhere it reaches at {top:.0} m/s in {span:.0} s, {radius_m:.0} m with its {k:.0}-sigma"
+            ),
+        }];
+    };
+    let sigma = track_prediction_sigma(t, span, ec);
+    let mut out = vec![TrackReach {
+        center: track_at(t, effect_t),
+        radius_m: k * sigma,
+        how: format!(
+            "{k:.0}-sigma {:.0} m over {span:.0} s: tracker {:.0} m, velocity {:.0} m, manoeuvre {:.0} m",
+            k * sigma,
+            t.pos_sigma_m,
+            ec.track_velocity_sigma() * span,
+            ec.track_accel(t.domain) * (span.powi(3) / 3.0).sqrt()
+        ),
+    }];
+    if let Some([e, n]) = t.mean_velocity_mps.filter(|_| ec.v9()) {
+        let dt = secs(effect_t.ms_since(t.position.t));
+        out.push(TrackReach {
+            center: offset(t.position.value, e * dt, n * dt),
+            radius_m: k * sigma,
+            how: format!(
+                "along its average velocity of the last minute ({:.1} m/s), {k:.0}-sigma {:.0} m over {span:.0} s",
+                e.hypot(n),
+                k * sigma
+            ),
+        });
+    }
+    if let Some(m) = t.manoeuvre.filter(|_| ec.v9()) {
+        let radius_m = k * t.pos_sigma_m + m.speed_mps * span;
+        out.push(TrackReach {
+            center: t.position.value,
+            radius_m,
+            how: format!(
+                "manoeuvring (its velocity changed by {:.1} m/s, last {:.0} s before its estimate): anywhere it reaches at {:.1} m/s in {span:.0} s, {radius_m:.0} m with its {k:.0}-sigma",
+                m.change_mps,
+                secs(t.position.t.ms_since(m.t)).max(0.0),
+                m.speed_mps
+            ),
+        });
+    }
+    out
+}
+
 /// Rules 6: the effect's altitude for a 3D keep-out: the target's estimate (MSL) with its
 /// uncertainty at the effect time (`keep_out_sigma` of its altitude error, and how far it may
 /// climb or descend by then), and how far above and below it the keep-out reaches (the
@@ -2566,39 +2639,18 @@ pub fn keep_out_tracks(
             }
             continue;
         }
-        // rules 6: from its estimate, over the span since it
-        let span = secs(effect_t.ms_since(t.position.t)).max(0.0);
-        let (p, reach, how) = match t.velocity_mps {
-            Some(_) => {
-                let sigma = track_prediction_sigma(t, span, ec);
-                (
-                    track_at(t, effect_t),
-                    ec.keep_out_sigma * sigma,
-                    format!(
-                        "{:.0}-sigma {:.0} m over {span:.0} s: tracker {:.0} m, velocity {:.0} m, manoeuvre {:.0} m",
-                        ec.keep_out_sigma,
-                        ec.keep_out_sigma * sigma,
-                        t.pos_sigma_m,
-                        ec.track_velocity_sigma() * span,
-                        ec.track_accel(t.domain) * (span.powi(3) / 3.0).sqrt()
-                    ),
-                )
-            }
-            None => {
-                let top = top_speed_mps(t.domain);
-                (
-                    t.position.value,
-                    ec.keep_out_sigma * t.pos_sigma_m + top * span,
-                    format!(
-                        "no velocity estimate: anywhere it reaches at {top:.0} m/s in {span:.0} s, {:.0} m with its {:.0}-sigma",
-                        ec.keep_out_sigma * t.pos_sigma_m + top * span,
-                        ec.keep_out_sigma
-                    ),
-                )
-            }
+        // rules 6: from its estimate, over the span since it (rules 9: a manoeuvring track
+        // also anywhere it reaches at the fastest it went); the region nearest the point
+        let Some((edge, d, how)) = track_reach(t, effect_t, ec)
+            .into_iter()
+            .map(|r| {
+                let d = haversine_m(r.center, point);
+                (d - r.radius_m, d, r.how)
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+        else {
+            continue;
         };
-        let d = haversine_m(p, point);
-        let edge = d - reach;
         if edge < keep_out_m {
             // in 3D where both altitudes are known (recent and ranged: track_altitude), the
             // margin growing from the altitude's own time

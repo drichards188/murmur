@@ -250,6 +250,10 @@ pub struct TrackDef {
     /// behind the track really is (default: hostile if `affiliation` is, else the estimate).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub truth: Option<Affiliation>,
+    /// Rules 9: the tracker saw it manoeuvre (its velocity changed by more than its noise)
+    /// at the start, and the fastest it went since, m/s ([`TrackFacts::manoeuvre`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manoeuvre_speed_mps: Option<f64>,
 }
 
 fn sigma() -> f64 {
@@ -718,6 +722,30 @@ pub struct IdentRecord {
     pub act_t_s: Option<f64>,
 }
 
+/// Rules 9, the evaluation: the review proxy's work in one run. Every item put before it ends
+/// in exactly one decision once read (or skimmed, for a rule declaration: confirmed unread), so
+/// `decisions` counts alike whether the item was an act (manual), a rule declaration or a flag.
+#[derive(Clone, Copy, Debug, Default, Serialize, PartialEq)]
+pub struct ProxyStats {
+    /// Items put before it (an act, a rule declaration, a flag).
+    pub items: u32,
+    /// Looks, a skimmed item looked at again counted each time.
+    pub looks: u32,
+    /// Items it read.
+    pub reads: u32,
+    /// Decisions, one per item it got to the end of (`declared + confirmed + revoked +
+    /// dismissed + nothing`).
+    pub decisions: u32,
+    pub declared: u32,
+    pub confirmed: u32,
+    /// Of `confirmed`, skimmed unread (as a card skimmed is approved).
+    pub confirmed_unread: u32,
+    pub revoked: u32,
+    pub dismissed: u32,
+    /// Read, and decided nothing (an act it could not attribute, with the rule off).
+    pub nothing: u32,
+}
+
 /// What a run produced.
 #[derive(Clone, Debug, Serialize)]
 pub struct ScenarioResult {
@@ -761,6 +789,10 @@ pub struct ScenarioResult {
     /// rule:hostile_act ...`), and the same with the truth behind each (evaluation labels).
     pub ident_reports: Vec<String>,
     pub ident: Vec<IdentRecord>,
+    /// Rules 9, the evaluation: what the review proxy did, counted alike in every arm (none
+    /// without the proxy).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<ProxyStats>,
     /// The audit log, for the harness to keep.
     #[serde(skip)]
     pub log: String,
@@ -1190,6 +1222,7 @@ pub fn run(
                     if let Some(p) = extra.proxy.clone() {
                         for f in new {
                             let due = extra.first_look(&p, s);
+                            extra.proxy_stats.items += 1;
                             extra.proxy_items.push(ProxyItem {
                                 due_s: due,
                                 looks: 1,
@@ -1452,6 +1485,7 @@ pub fn run(
         resets,
         ident_reports,
         ident,
+        proxy: extra.proxy.is_some().then_some(extra.proxy_stats),
         log: text,
     })
 }
@@ -1668,6 +1702,12 @@ fn track_sim(t: &TrackDef) -> TrackSim {
             declared_by: t.declared_by.clone(),
             declaration: None,
             review_flags: Vec::new(),
+            manoeuvre: t.manoeuvre_speed_mps.map(|v| crate::world::Manoeuvre {
+                t: seen,
+                change_mps: v,
+                speed_mps: v,
+            }),
+            mean_velocity_mps: None,
         },
         silent: t.silent,
         no_velocity: t.no_velocity_estimate,
@@ -1882,6 +1922,7 @@ fn act(
                         };
                         if let Some(kind) = kind {
                             let due = extra.first_look(&p, s);
+                            extra.proxy_stats.items += 1;
                             extra.proxy_items.push(ProxyItem { due_s: due, looks: 1, kind });
                         }
                     }
@@ -2237,6 +2278,7 @@ fn act(
                     no_velocity_estimate: false,
                     alt_age_s: 0.0,
                     truth: None,
+                    manoeuvre_speed_mps: None,
                 })
             });
             if let Some(a) = alt_m {
@@ -2460,6 +2502,7 @@ struct Extra {
     proxy: Option<ReviewProxy>,
     proxy_rng: Rng,
     proxy_items: Vec<ProxyItem>,
+    proxy_stats: ProxyStats,
     act_pictures: BTreeMap<String, (crate::ident::ActReport, BTreeMap<String, TrackFacts>)>,
     /// Rules 9, the evaluation: the nominator, when each declared track is next nominated,
     /// and the signatures due (second, intent, operator).
@@ -2516,6 +2559,7 @@ fn proxies(
             .partition(|i| i.due_s <= s);
         extra.proxy_items = later;
         for mut item in due {
+            extra.proxy_stats.looks += 1;
             let reads = extra.proxy_rng.next() < p.diligence;
             let slip = extra.proxy_rng.next() < p.misread;
             let u = extra.proxy_rng.next();
@@ -2559,8 +2603,10 @@ fn proxies(
                         }
                         continue;
                     }
-                    if let Some(Pick::Author(track)) = pick
-                        && let Err(e) = engine.declare_track(
+                    extra.proxy_stats.reads += 1;
+                    extra.proxy_stats.decisions += 1;
+                    let declared = match pick {
+                        Some(Pick::Author(track)) => match engine.declare_track(
                             sess.authority(),
                             None,
                             &track,
@@ -2568,9 +2614,19 @@ fn proxies(
                             Some(format!("{PROXY_NOTE}{a}")),
                             None,
                             &w,
-                        )
-                    {
-                        refusals.push(format!("proxy: {e}"));
+                        ) {
+                            Ok(_) => true,
+                            Err(e) => {
+                                refusals.push(format!("proxy: {e}"));
+                                false
+                            }
+                        },
+                        _ => false,
+                    };
+                    if declared {
+                        extra.proxy_stats.declared += 1;
+                    } else {
+                        extra.proxy_stats.nothing += 1;
                     }
                 }
                 ProxyKind::Declaration(track, id) => {
@@ -2585,6 +2641,14 @@ fn proxies(
                     let agrees = matches!(&pick, Some(Pick::Author(t)) if *t == track);
                     // skimmed: confirmed, as a card skimmed is approved; a slip says the other
                     let confirm = if !reads { true } else if slip { !agrees } else { agrees };
+                    extra.proxy_stats.reads += u32::from(reads);
+                    extra.proxy_stats.decisions += 1;
+                    if confirm {
+                        extra.proxy_stats.confirmed += 1;
+                        extra.proxy_stats.confirmed_unread += u32::from(!reads);
+                    } else {
+                        extra.proxy_stats.revoked += 1;
+                    }
                     let action = if confirm {
                         Action::ConfirmDeclaration {
                             by: op.clone(),
@@ -2622,6 +2686,8 @@ fn proxies(
                         }
                         continue;
                     }
+                    extra.proxy_stats.reads += 1;
+                    extra.proxy_stats.decisions += 1;
                     let declared = match (&pick, &act) {
                         (Some(Pick::Author(track)), Some(a)) => engine
                             .declare_track(
@@ -2636,15 +2702,18 @@ fn proxies(
                             .is_ok(),
                         _ => false,
                     };
-                    if !declared
-                        && let Err(e) = engine.resolve_flag(
+                    if declared {
+                        extra.proxy_stats.declared += 1;
+                    } else {
+                        extra.proxy_stats.dismissed += 1;
+                        if let Err(e) = engine.resolve_flag(
                             sess.authority(),
                             f,
                             crate::ident::FlagResolution::Dismissed,
                             Some("proxy: can't say who did it".into()),
-                        )
-                    {
-                        refusals.push(format!("proxy: {e}"));
+                        ) {
+                            refusals.push(format!("proxy: {e}"));
+                        }
                     }
                 }
             }

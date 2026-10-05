@@ -228,6 +228,31 @@ pub struct TrackFacts {
     /// flag raises it to suspect. Engine-filled; absent when none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub review_flags: Vec<u64>,
+    /// Rules 9: the tracker saw the contact manoeuvre within its memory (its velocity changed
+    /// by more than its noise explains), so a prediction along its velocity a minute ahead is
+    /// not to be trusted alone: a keep-out also counts it anywhere it reaches at the fastest
+    /// it went ([`crate::engage::track_reach`]). Absent: no manoeuvre seen (or a log written
+    /// before it existed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manoeuvre: Option<Manoeuvre>,
+    /// Rules 9: the track's average velocity over about the last minute (its displacement
+    /// over it), east and north m/s: a contact that zigzags or weaves about a course keeps
+    /// that average better than the leg it is on, so a keep-out also counts it along this
+    /// ([`crate::engage::track_reach`]). Absent: too young a track (or an older log).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mean_velocity_mps: Option<[f64; 2]>,
+}
+
+/// Rules 9: a manoeuvre the tracker saw (see [`TrackFacts::manoeuvre`]).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Manoeuvre {
+    /// When it last saw the velocity change beyond its noise.
+    pub t: Time,
+    /// By how much it changed, m/s (the largest change within the memory).
+    pub change_mps: f64,
+    /// The fastest the contact went within the memory, with two sigmas of its velocity
+    /// error, m/s: how far it may get per second, whichever way it turns.
+    pub speed_mps: f64,
 }
 
 /// Where a vehicle's horizontal position comes from.

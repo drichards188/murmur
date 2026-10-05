@@ -331,6 +331,6 @@ pub use space::{
 pub use terrain::{NearSample, NoTerrain, PolygonTerrain, Surface, TerrainOracle};
 pub use time::{Clock, ManualClock, SystemClock, Time};
 pub use world::{
-    Affiliation, Circle, CircleSource, Fact, GpsFixFrom, LoggedInputs, LoggedSpace, SpaceInputs, TerrainInputs, TrackFacts,
+    Affiliation, Circle, CircleSource, Fact, GpsFixFrom, LoggedInputs, Manoeuvre, LoggedSpace, SpaceInputs, TerrainInputs, TrackFacts,
     VehicleFacts, WorldSnapshot,
 };

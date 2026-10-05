@@ -113,9 +113,14 @@ pub struct IdentConfig {
     pub escort_speed_mps: Option<f64>,
     /// What a rule declaration needs besides one observation attributed at the threshold:
     /// `none` (default) or `second_observation` (another observer's fix of the same act, or a
-    /// second act, attributed to the same track at the threshold).
+    /// second act attributed to the same track at the threshold that passed every check but
+    /// corroboration itself, within `corroboration_window_s`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub corroboration: Option<Corroboration>,
+    /// A second act corroborates only if it was observed at most this long before, seconds,
+    /// 10..3600. Default 600.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub corroboration_window_s: Option<f64>,
 }
 
 /// `[identification] corroboration`.
@@ -156,6 +161,10 @@ impl IdentConfig {
         self.corroboration.unwrap_or_default()
     }
 
+    pub fn corroboration_window_s(&self) -> f64 {
+        self.corroboration_window_s.unwrap_or(600.0)
+    }
+
     pub fn untracked_per_km2(&self) -> f64 {
         self.untracked_per_km2.unwrap_or(1.0)
     }
@@ -183,6 +192,7 @@ impl IdentConfig {
         within(self.untracked_per_km2(), 0.01, 100.0, "untracked_per_km2")?;
         within(self.escort_m(), 50.0, 2000.0, "escort_m")?;
         within(self.escort_speed_mps(), 0.1, 10.0, "escort_speed_mps")?;
+        within(self.corroboration_window_s(), 10.0, 3600.0, "corroboration_window_s")?;
         Ok(())
     }
 }
@@ -761,12 +771,13 @@ pub fn verdict(
                         attribution: c.confidence,
                     })
             });
-            let Some(c) = by_fix.or_else(|| ledger.corroborating_act(&best.track, threshold, &report.act)) else {
+            let window = cfg.corroboration_window_s();
+            let Some(c) = by_fix.or_else(|| ledger.corroborating_act(&best.track, threshold, &report.act, report.observed_t, window)) else {
                 return ActVerdict::Flag {
                     kind: FlagKind::Uncorroborated,
                     tracks: vec![best.track.clone()],
                     why: format!(
-                        "attributed to {} at {:.2} on one observation; the policy wants a second (another observer's fix of it, or another act) at {threshold:.2}",
+                        "attributed to {} at {:.2} on one observation; the policy wants a second (another observer's fix of it, or another act within {window:.0} s) at {threshold:.2}",
                         best.track, best.confidence
                     ),
                 };
@@ -939,11 +950,17 @@ pub struct Ledger {
     revocations: Vec<Revocation>,
 }
 
-/// An act the ledger has seen: its best candidate and that attribution (none: no track).
+/// An act the ledger has seen: its best candidate and that attribution (none: no track), and
+/// whether it may corroborate a later one: its verdict passed every check but corroboration
+/// (a rule declaration, or a flag only for want of a second observation), so a victim not ours
+/// or conflicting evidence never counts.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SeenAct {
     pub t: Time,
+    /// When our sensors observed it (its report's time).
+    pub observed: Time,
     pub best: Option<(String, f64)>,
+    pub eligible: bool,
 }
 
 /// A declaration an operator revoked, with who, when and why (the declarer's notice).
@@ -978,13 +995,29 @@ impl Ledger {
         self.acts.contains_key(act)
     }
 
-    /// An earlier act whose best candidate was `track` at `threshold` or more (not `except`):
-    /// a second act corroborating a rule declaration.
-    pub fn corroborating_act(&self, track: &str, threshold: f64, except: &str) -> Option<Corroborating> {
+    /// An earlier act whose best candidate was `track` at `threshold` or more (not `except`),
+    /// eligible itself ([`SeenAct::eligible`]) and observed at most `window_s` before `now`
+    /// (the corroborated act's observation): a second act corroborating a rule declaration
+    /// (the latest such).
+    pub fn corroborating_act(
+        &self,
+        track: &str,
+        threshold: f64,
+        except: &str,
+        now: Time,
+        window_s: f64,
+    ) -> Option<Corroborating> {
+        let window_ms = (window_s * 1000.0).round() as i64;
         self.acts
             .iter()
-            .filter(|(id, a)| id.as_str() != except && a.best.as_ref().is_some_and(|(t, c)| t == track && *c >= threshold))
-            .min_by_key(|(_, a)| a.t)
+            .filter(|(id, a)| {
+                id.as_str() != except
+                    && a.eligible
+                    && a.observed <= now
+                    && now.ms_since(a.observed) <= window_ms
+                    && a.best.as_ref().is_some_and(|(t, c)| t == track && *c >= threshold)
+            })
+            .max_by_key(|(_, a)| a.observed)
             .map(|(id, a)| Corroborating {
                 act: id.clone(),
                 observer: None,
@@ -1036,12 +1069,27 @@ impl Ledger {
     /// events themselves).
     pub fn step(&mut self, t: Time, body: &EventBody) {
         match body {
-            EventBody::IdentAct { act, candidates, .. } => {
+            EventBody::IdentAct {
+                act,
+                candidates,
+                verdict,
+                ..
+            } => {
+                let eligible = matches!(
+                    verdict,
+                    ActVerdict::Declare { .. }
+                        | ActVerdict::Flag {
+                            kind: FlagKind::Uncorroborated,
+                            ..
+                        }
+                );
                 self.acts.insert(
                     act.act.clone(),
                     SeenAct {
                         t,
+                        observed: act.observed_t,
                         best: candidates.first().map(|c| (c.track.clone(), c.confidence)),
+                        eligible,
                     },
                 );
             }

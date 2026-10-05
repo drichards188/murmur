@@ -1871,6 +1871,10 @@ fn replay_inner<S: AsRef<str>>(
                 if tr.spec.kind() == TaskKind::Engage {
                     tr.last_picture_t = snapshot.as_ref().map(|s| s.t);
                     tr.snapshot = snapshot.clone();
+                    // rules 9: the re-check's world is its picture until its first watch
+                    if policy.as_ref().is_some_and(|p| p.rules.rule_id()) {
+                        tr.last_picture_world = tr.last_inputs.as_deref().cloned();
+                    }
                     // where the platform loiters over the point, from the re-check's world
                     tr.loiter_radius_m = match (&policy, tr.spec.uids.first(), tr.last_inputs.as_deref()) {
                         (Some(pol), Some(u), Some(w)) => Some(engage::loiter_radius(u, w, &pol.rules)),

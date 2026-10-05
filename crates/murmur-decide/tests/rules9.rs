@@ -55,6 +55,8 @@ fn track(at: LonLat, aff: Affiliation, sigma: f64) -> TrackFacts {
         declared_by: None,
         declaration: None,
         review_flags: Vec::new(),
+        manoeuvre: None,
+        mean_velocity_mps: None,
     }
 }
 
@@ -701,6 +703,96 @@ fn corroboration_waits_for_a_second_observation() {
     assert!(o.declaration.unwrap().describe().contains("corroborated by act A-1"));
 }
 
+/// An engine with corroboration on, its world holding `tracks`, our usv-1 on the water.
+fn corroborating_engine(window_s: Option<f64>, tracks: BTreeMap<String, TrackFacts>) -> (Engine, WorldSnapshot, ManualClock, MemorySink) {
+    let cfg = IdentConfig {
+        corroboration: Some(Corroboration::SecondObservation),
+        corroboration_window_s: window_s,
+        ..rule_on()
+    };
+    let mut p = policy();
+    p.identification = Some(cfg);
+    p.sync();
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let e = Engine::new(p, roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    let mut w = world();
+    w.vehicles.insert(Uid::new("usv-1"), vehicle("seahunter", ON_WATER));
+    w.tracks = tracks;
+    (e, w, clock, log)
+}
+
+/// Review of 10-05 (fix 3): an earlier act corroborates only if it would itself have counted:
+/// one flagged because its victim was not ours, or because the track's evidence conflicted,
+/// never does; and only within `corroboration_window_s`. Replay recomputes every verdict.
+#[test]
+fn corroboration_counts_only_eligible_earlier_acts_within_the_window() {
+    let suspect = || -> BTreeMap<String, TrackFacts> { [("T-1".to_string(), track(AT, Affiliation::Suspect, 15.0))].into() };
+    // a victim not ours: flagged, and no corroboration for the next act
+    let (mut e, w, clock, log) = corroborating_engine(None, suspect());
+    let mut first = report(AT, 20.0, Against::Vehicle { uid: Uid::new("usv-9") });
+    first.act = "A-1".into();
+    let o = e.record_act(first, &w).unwrap();
+    assert!(matches!(o.verdict, ActVerdict::Flag { kind: FlagKind::Victim, .. }), "{:?}", o.verdict);
+    clock.advance_ms(20_000);
+    let mut second = report(AT, 20.0, ours());
+    second.act = "A-2".into();
+    let o = e.record_act(second, &w).unwrap();
+    assert!(
+        matches!(o.verdict, ActVerdict::Flag { kind: FlagKind::Uncorroborated, .. }),
+        "an act flagged for its victim corroborated: {:?}",
+        o.verdict
+    );
+    assert!(replay_str(&log.text()).unwrap().ok());
+
+    // conflicting evidence then: flagged, and no corroboration once the evidence changes
+    let mut neutral = suspect();
+    neutral.get_mut("T-1").unwrap().affiliation = Fact::new(Affiliation::Neutral, T0);
+    let (mut e, mut w, clock, log) = corroborating_engine(None, neutral);
+    let o = e.record_act(report(AT, 20.0, ours()), &w).unwrap();
+    assert!(matches!(o.verdict, ActVerdict::Flag { kind: FlagKind::Conflict, .. }), "{:?}", o.verdict);
+    clock.advance_ms(20_000);
+    w.tracks = suspect();
+    let mut second = report(AT, 20.0, ours());
+    second.act = "A-2".into();
+    let o = e.record_act(second, &w).unwrap();
+    assert!(
+        matches!(o.verdict, ActVerdict::Flag { kind: FlagKind::Uncorroborated, .. }),
+        "an act flagged for conflicting evidence corroborated: {:?}",
+        o.verdict
+    );
+    assert!(replay_str(&log.text()).unwrap().ok());
+
+    // an eligible act: within the window it corroborates, past it it does not
+    for (gap_ms, declares) in [(500_000, true), (700_000, false)] {
+        let (mut e, mut w, clock, log) = corroborating_engine(Some(600.0), suspect());
+        let o = e.record_act(report(AT, 20.0, ours()), &w).unwrap();
+        assert!(matches!(o.verdict, ActVerdict::Flag { kind: FlagKind::Uncorroborated, .. }));
+        clock.advance_ms(gap_ms);
+        // the tracker kept it fresh meanwhile
+        let then = T0.plus_ms(gap_ms);
+        let t1 = w.tracks.get_mut("T-1").unwrap();
+        t1.position.t = then;
+        t1.last_seen_t = then;
+        w.t = then;
+        let mut second = report(AT, 20.0, ours());
+        second.act = "A-2".into();
+        second.observed_t = T0.plus_ms(gap_ms);
+        let o = e.record_act(second, &w).unwrap();
+        assert_eq!(
+            matches!(&o.verdict, ActVerdict::Declare { corroborated_by: Some(c), .. } if c.act == "A-1"),
+            declares,
+            "{gap_ms} ms apart: {:?}",
+            o.verdict
+        );
+        let rep = replay_str(&log.text()).unwrap();
+        assert!(rep.ok(), "{:?}", rep.mismatches);
+    }
+    // the window is bounded
+    let bad = IdentConfig { corroboration_window_s: Some(5.0), ..rule_on() };
+    assert!(bad.validate().is_err());
+}
+
 /// Revocation notices (user decision): the ledger keeps who revoked whose declaration, so the
 /// declarer hears of it.
 #[test]
@@ -748,4 +840,60 @@ fn every_shipped_policy_loads() {
     let text = std::fs::read_to_string(root().join("sim/policy.toml")).unwrap();
     let bad = text.replace("[identification]\n", "[identification]\nauto_declare = true\n");
     assert!(Policy::from_toml(&bad).is_err());
+}
+
+// ---- the keep-out of a manoeuvring track (review of 10-05: the tracker) -----------------------
+
+/// A protected track the tracker saw manoeuvre counts in a keep-out anywhere it can reach at
+/// the fastest it went, and every track along its average velocity of the last minute too;
+/// rules 8 count only its velocity of the moment. Through the keep-out check itself.
+#[test]
+fn a_manoeuvring_track_is_kept_out_wherever_it_could_reach() {
+    use murmur_decide::engage::{keep_out_tracks, track_reach};
+    use murmur_decide::geo::haversine_m;
+    let effect_t = T0.plus_ms(60_000);
+    let ec = EngageRules::default();
+    let ec8 = EngageRules {
+        rules_version: 8,
+        ..EngageRules::default()
+    };
+    let mut t = track(AT, Affiliation::Neutral, 15.0);
+    // a fishing boat on an eastward leg of its zigzag, 8 m/s now
+    t.velocity_mps = Some([8.0, 0.0]);
+    let inside = |t: &TrackFacts, ec: &EngageRules, p: LonLat| {
+        track_reach(t, effect_t, ec)
+            .iter()
+            .any(|r| haversine_m(r.center, p) <= r.radius_m)
+    };
+    let check = |t: &TrackFacts, ec: &EngageRules, p: LonLat| {
+        let mut w = world();
+        w.tracks = [("T-7".to_string(), t.clone())].into();
+        keep_out_tracks(p, effect_t, 50.0, "T-0001", &w, ec, None)
+    };
+    // had it turned back, it would be 300 m west in a minute: its velocity alone says 480 m east
+    let west = east(AT, -300.0);
+    assert!(!inside(&t, &ec, west));
+    assert_eq!(check(&t, &ec, west).outcome, Outcome::Pass);
+    // the tracker saw it manoeuvre: anywhere it reaches at 8.5 m/s in a minute
+    t.manoeuvre = Some(Manoeuvre {
+        t: T0,
+        change_mps: 11.3,
+        speed_mps: 8.5,
+    });
+    assert!(inside(&t, &ec, west));
+    let c = check(&t, &ec, west);
+    assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
+    assert!(c.detail.contains("manoeuvring"), "{}", c.detail);
+    // rules 8: its velocity of the moment only
+    assert!(!inside(&t, &ec8, west));
+    assert_eq!(check(&t, &ec8, west).outcome, Outcome::Pass);
+    // its average velocity of the last minute: north-east, as the zigzag goes
+    t.manoeuvre = None;
+    t.mean_velocity_mps = Some([4.0, 4.0]);
+    let ne = LonLat::new(east(AT, 240.0).lon, AT.lat + 240.0 / 111_320.0);
+    assert!(inside(&t, &ec, ne));
+    let c = check(&t, &ec, ne);
+    assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
+    assert!(c.detail.contains("average velocity"), "{}", c.detail);
+    assert!(!inside(&t, &ec8, ne));
 }

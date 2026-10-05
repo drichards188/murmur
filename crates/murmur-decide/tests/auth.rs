@@ -54,6 +54,8 @@ fn engage_world(t: Time) -> WorldSnapshot {
             declared_by: Some("op-1".into()),
             declaration: None,
             review_flags: Vec::new(),
+            manoeuvre: None,
+            mean_velocity_mps: None,
         },
     );
     w

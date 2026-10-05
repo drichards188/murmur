@@ -154,6 +154,8 @@ fn target(t: Time, at: LonLat, vel: [f64; 2], declared: bool) -> TrackFacts {
         declared_by: declared.then(|| "op-1".to_string()),
         declaration: None,
         review_flags: Vec::new(),
+        manoeuvre: None,
+        mean_velocity_mps: None,
     }
 }
 

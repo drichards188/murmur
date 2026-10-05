@@ -260,13 +260,19 @@ reason = "routine task inside the approved area (tunable; approval fatigue is me
 #   attribution_threshold = 0.9    0.5..0.999
 #   nominate_unconfirmed = false   a track declared by rule may be nominated for an
 #                                  engagement before an operator confirms the declaration
-#   conflict_confidence = 0.7      a track shown neutral or assumed friend this confidently
+#   conflict_confidence = 0.5      a track shown neutral or assumed friend this confidently
 #                                  conflicts with an act attributed to it (0.3..1)
 #   untracked_per_km2 = 1          the attribution's alternative: contacts we hold no track
 #                                  of, per square kilometre (0.01..100)
 #   escort_m = 300, escort_speed_mps = 1.5   "keeps company with a declared hostile": within
 #                                  this distance, velocity within this much (a flag, never a
 #                                  declaration)
+#   corroboration = "none"         or "second_observation": a rule declaration also needs
+#                                  another observer's fix of the act, or a second act
+#                                  attributed to the track that passed every check but this
+#                                  one (never one flagged for a victim not ours or for
+#                                  conflicting evidence)
+#   corroboration_window_s = 600   that second act at most this long before (10..3600)
 # A rule declaration is a review item any operator confirms or revokes (a revocation stops
 # the engagements in play on the track first); a rule-declared track not confirmed stays
 # protected in another engagement's keep-out. Releasing an effect still needs two operators
