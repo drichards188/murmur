@@ -932,36 +932,48 @@ Rules versions:
   bridge against an argon2id hash, the roster being the credential file; or `dev`, ids a
   request asserts, never evidence about people; an engine given no mode logs `dev`, so
   scenarios and tests do). Every `session.opened` says how it was opened (`auth`: `password`
-  or `asserted`, the run's own method only: a credentials run opens sessions only through
-  `Engine::open_authenticated_session`, one per login); a session's end is logged
-  (`operator.action session.closed`, detail: logout, expiry, a credential removed or
-  changed; `Engine::close_operator_session` consumes the session and drops its picture
-  tokens) and nothing may follow under it; every other operator action is under that
-  operator's own session. A decision the policy marks consequential (`policy.decision`'s
-  `step_up`: every engagement, whatever the file says, and any human tier with `step_up =
-  true`, policy schema 5) is never approved at submission, and in a credentials run each of
-  its signatures quotes a step-up: `operator.action step_up` (`auth: password`), logged by
+  or `scripted` in a credentials run, a person's credential or one a harness holds, never a
+  person's; `asserted` in a dev run: the run's own methods only, a credentials run opening
+  sessions only through `Engine::open_authenticated_session`, one per login); a session's end
+  is logged (`operator.action session.closed`, detail: logout, expiry, a credential removed
+  or changed; `Engine::close_operator_session` consumes the session and drops its picture
+  tokens) and nothing may follow under it; a human's `intent.created` names the live session
+  it was made in (an agent's none); every other operator action is under that operator's own
+  session. A decision the policy marks consequential (`policy.decision`'s `step_up`: every
+  engagement, whatever the file says, and any human tier with `step_up = true`, policy
+  schema 5) is never approved at submission, and in a credentials run each of its signatures
+  quotes a step-up: `operator.action step_up` (`auth` the session's method), logged by
   `Engine::step_up` after the bridge checked the password again, consumed by one signature
   (`step_up: {seq}` on `approval.concurred` and `approval.granted`) under the same session,
   at most `STEP_UP_MAX_AGE_MS` (10 s) old; the engine refuses a signature without it
-  (`approval.refused`, `StepUpRequired`). `StepUp` has private fields and no `Clone` or
-  `Deserialize` (compile-fail doctests in `authority.rs`). Replay checks all of it and says
-  whether a log is evidence about people (`ReplayReport::authenticated`: a credentials run
-  that reproduced). Markers (a log claiming rules 6 or older can't carry them): an `auth`
-  mode or method, a `step_up` (a tier's key, a decision's, a signature's, the event), a
-  `session.closed`. Fixtures: `tests/data/audit/v7-engagement-scenario-01.jsonl` (the
-  scenario runner: `auth: dev`) and a live run with its anchors (`v7-auth-live.jsonl`,
-  `tests/data/anchors/v7-auth-live.anchors`, from a clean build: three operators logged in
-  with their own passwords, one of them at the console; a wrong password, an unknown
-  operator, a bare header, an agent's key on an operator endpoint and a request from another
-  origin refused with nothing logged; a declaration and a nomination by an operator without
-  engagement authority, who could not sign it; a signature refused without a password, with
-  a wrong one and with another person's (each `step_up.refused` under the signer's session),
-  then made with their own; the same person again over a second login, stepping up, refused
-  by the engine (already signed); the second signature from the console, stepped up; the
-  effect released and assessed; an agent on its own key; every session closed at logout).
-  The bridge also logs a refused step-up (`operator.action step_up.refused`, never the
-  password) and closes every login at a clean stop (`bridge stopped`).
+  (`approval.refused`, `StepUpRequired`). `[approval] step_up_acts` (policy schema 5, off by
+  default) adds a hostile declaration (`Engine::record_declaration`) and an acceptance of a
+  lost vehicle (a nomination's acceptances share one step-up). A refused login for an
+  operator on the roster is logged (`auth.refused`: who, why, the lock it set; never a
+  secret), only in a credentials run. An intent is carried over only from a run that
+  authenticated alike (`ResumedFrom.auth`; a log of earlier rules counts as dev).
+  `StepUp` has private fields and no `Clone` or `Deserialize` (compile-fail doctests in
+  `authority.rs`). Replay checks all of it and says whether a log is evidence about people
+  (`ReplayReport::authenticated`: a credentials run that reproduced; `people` apart from
+  `scripted` operators; a claim also needs the log's anchors, which `murmur-replay` says
+  when they were not checked). Markers (a log claiming rules 7 or older can't carry them):
+  an `auth` mode or method, a `step_up` (a tier's key, a decision's, a signature's, an act's,
+  the event), a `session.closed`, an `auth.refused`, `step_up_acts`. Fixtures:
+  `tests/data/audit/v8-engagement-scenario-01.jsonl` (the scenario runner: `auth: dev`) and
+  a live run with its anchors (`v8-auth-live.jsonl`, `tests/data/anchors/v8-auth-live.anchors`,
+  from a clean build of the merged head: op-3 signed in at the console first; a wrong
+  password for op-2 logged as `auth.refused`, an unknown operator (nothing logged), a bare
+  header, an agent's key on an operator endpoint, a request from another origin and one
+  carrying two session cookies refused; op-1 and op-2 logged in over the API; a stranger's
+  five wrong passwords for op-3, each logged, the fifth locking op-3's next login; an agent
+  on its own key; a declaration and a nomination by an operator without engagement
+  authority, who could not sign it; a signature refused without a password, with a wrong one
+  and with another person's (each `step_up.refused` under the signer's session), then made
+  with their own; the same person again over a second login, stepping up, refused by the
+  engine (already signed); the second signature from the console, stepped up, on the session
+  the lock never touched; the effect released and assessed; every session closed at
+  logout). The bridge also logs a refused step-up (`operator.action step_up.refused`, never
+  the password) and closes every login at a clean stop (`bridge stopped`).
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that

@@ -731,15 +731,18 @@ fn the_live_queue_logs_replay_across_the_restart() {
     assert!(!r.ok(), "an edited previous log is not the one carried from");
 }
 
-/// Rules 8, live (murmur-der.1), from a clean build, anchored as it ran: three operators logged
-/// in with their own passwords (op-3 at the console in a browser, op-1 and op-2 over the HTTP
-/// API); a wrong password, an unknown operator, a bare header, an agent's key on an operator
-/// endpoint and a request from another origin refused with nothing logged; op-1, without
+/// Rules 8, live (murmur-der.1, after the security review), from a clean build of the merged
+/// head, anchored as it ran: op-3 signed in at the console in a browser first; a wrong password
+/// for op-2 (`auth.refused`), an unknown operator (nothing logged), a bare header, an agent's
+/// key on an operator endpoint, a request from another origin and one carrying two session
+/// cookies refused; op-1 and op-2 logged in over the HTTP API; a stranger's five wrong
+/// passwords for op-3 (each `auth.refused`, the fifth locking op-3's next login for 30 s; op-3's
+/// own password then refused unchecked, on stdout only); an agent on its own key; op-1, without
 /// engagement authority, declared and nominated; op-2's signature refused without a password,
 /// with a wrong one and with op-3's (each logged `step_up.refused`), then made with their own;
 /// op-2 again over a second login, stepping up, refused by the engine (already signed); op-3's
-/// signature from the console, stepped up; the effect released and assessed; an agent on its
-/// own key; every session closed at logout.
+/// signature from the console, stepped up, on the session the lock never touched; the effect
+/// released and assessed; every session closed at logout.
 const AUTH_LIVE: &str = "v8-auth-live.jsonl";
 
 #[test]
@@ -755,6 +758,16 @@ fn the_rules_8_live_log_binds_every_signature_to_a_person() {
     assert_eq!(r.auth, Some(AuthMode::Credentials));
     assert!(r.authenticated(), "a credentials run that reproduced");
     assert_eq!((r.step_ups, r.stepped_signatures, r.sessions_closed), (3, 2, 4));
+    let ids = |v: &[&str]| v.iter().map(|o| OperatorId::new(*o)).collect::<std::collections::BTreeSet<_>>();
+    assert_eq!((r.people.clone(), r.scripted.clone()), (ids(&["op-1", "op-2", "op-3"]), ids(&[])));
+    // the failed logins on the record (op-2's typo, the stranger's five for op-3, the last
+    // locking it), never a password
+    assert_eq!(r.logins_refused, 6);
+    assert_eq!(log.matches("\"type\":\"auth.refused\",\"operator\":\"op-3\",\"reason\":\"wrong password\"").count(), 5);
+    assert!(log.contains("\"type\":\"auth.refused\",\"operator\":\"op-3\",\"reason\":\"wrong password\",\"locked_s\":30"));
+    assert!(!log.contains("mallory") && !log.contains("passphrase"));
+    // the lock ended no session: op-3 signed on the session opened before it
+    assert!(!log.contains("step-up failed repeatedly"));
     assert_eq!((r.engagements, r.concurrences, r.approvals, r.effects, r.assessments), (1, 1, 1, 1, 1));
     let events = parse_log(&log).unwrap();
     // every session opened on a checked password, every one closed at logout
@@ -787,6 +800,16 @@ fn the_rules_8_live_log_binds_every_signature_to_a_person() {
         .collect();
     assert_eq!(sigs.len(), 2);
     assert_eq!((sigs[0].0.as_str(), sigs[1].0.as_str()), ("op-2", "op-3"));
+    assert_eq!(sigs[1].1, 1, "op-3's console session, opened before the lock");
+    // the nomination was made in op-1's live session; the agent's intent in none
+    let created: Vec<(bool, Option<u64>)> = events
+        .iter()
+        .filter_map(|e| match &e.body {
+            EventBody::IntentCreated { intent, session } => Some((intent.source.is_agent(), session.map(|s| s.0))),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(created, vec![(true, None), (false, Some(2))]);
     for (by, session, seq) in &sigs {
         let seq = seq.expect("every engagement signature steps up");
         let step = events.iter().find(|e| e.seq == seq).expect("the step-up");
@@ -807,7 +830,7 @@ fn a_rules_8_log_claiming_rules_7_still_carries_its_authentication() {
     ls[0] = ls[0].replacen(&format!("\"rules_version\":{now},"), &format!("\"rules_version\":{before},"), 1);
     let r = with(&rechain(&ls), RulesAccepted::Exactly(before));
     let w = whats(&r);
-    for marker in ["how an operator was authenticated", "a step-up", "a session's end"] {
+    for marker in ["how an operator was authenticated", "a step-up", "a session's end", "a refused login"] {
         assert!(
             w.iter().any(|m| m.contains(marker) && m.contains(&format!("only builds of rules {OPERATOR_AUTH_SINCE}"))),
             "{marker}: {w:?}"
