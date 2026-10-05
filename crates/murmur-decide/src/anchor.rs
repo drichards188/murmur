@@ -23,18 +23,19 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 use crate::audit::AuditSink;
 use crate::hash::sha256_hex;
 use crate::replay::Mismatch;
+use crate::time::{Clock, SystemClock};
 
 /// One anchor: a line of the anchor file.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Anchor {
-    /// When it was taken: wall clock, ms since the Unix epoch.
+    /// When it was taken: ms since the Unix epoch, on the writer's clock (the bridge's: the
+    /// audit log's), never earlier than the anchor before it.
     pub t: i64,
     /// The audit log it anchors, as its writer named it.
     pub log: String,
@@ -71,6 +72,9 @@ enum HookJob {
 }
 
 struct State {
+    clock: Box<dyn Clock + Send>,
+    /// The last anchor's time: the next is never earlier (the verifier holds the file to it).
+    last_t: i64,
     file: File,
     path: PathBuf,
     log: String,
@@ -90,14 +94,22 @@ struct State {
 pub struct Anchors(Arc<Mutex<State>>);
 
 impl Anchors {
-    /// Open (append to) the anchor file for the log at `log`.
+    /// Open (append to) the anchor file for the log at `log`, its anchors timed by the wall
+    /// clock.
     pub fn open(cfg: &AnchorConfig, log: &Path) -> std::io::Result<Anchors> {
+        Anchors::open_with(cfg, log, Box::new(SystemClock))
+    }
+
+    /// [`Anchors::open`], its anchors timed by `clock` (the bridge's: the one its log is on).
+    pub fn open_with(cfg: &AnchorConfig, log: &Path, clock: Box<dyn Clock + Send>) -> std::io::Result<Anchors> {
         if let Some(dir) = cfg.path.parent() {
             std::fs::create_dir_all(dir)?;
         }
         let file = OpenOptions::new().create(true).append(true).open(&cfg.path)?;
         let hook = cfg.cmd.clone().filter(|c| !c.trim().is_empty()).map(spawn_hook);
         Ok(Anchors(Arc::new(Mutex::new(State {
+            clock,
+            last_t: i64::MIN,
             file,
             path: cfg.path.clone(),
             log: log.display().to_string(),
@@ -194,10 +206,11 @@ impl Anchors {
 
 impl State {
     fn write(&mut self, why: &str) -> std::io::Result<Anchor> {
+        // never earlier than the anchor before (a wall clock steps back: this host's about
+        // 0.65 s every 32 s), or a genuine file fails its order check
+        let t = self.clock.now().0.max(self.last_t);
         let a = Anchor {
-            t: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX)),
+            t,
             log: self.log.clone(),
             first: self.first.clone().unwrap_or_default(),
             seq: self.seq,
@@ -213,6 +226,7 @@ impl State {
         self.file.flush()?;
         self.file.sync_data()?;
         self.since = 0;
+        self.last_t = t;
         if let Some(h) = &self.hook {
             let _ = h.send(HookJob::Run(json));
         }

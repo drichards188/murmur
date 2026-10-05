@@ -500,7 +500,8 @@ impl Decision {
         // bridge like an audit log that can't
         let anchors = match &s.anchors {
             Some(cfg) => Some(
-                Anchors::open(cfg, &s.audit)
+                // timed on the log's own clock
+                Anchors::open_with(cfg, &s.audit, Box::new(clock::BridgeClock))
                     .map_err(|e| format!("anchors {}: {e}", cfg.path.display()))?,
             ),
             None => None,

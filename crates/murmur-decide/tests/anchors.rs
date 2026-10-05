@@ -269,3 +269,49 @@ fn a_crashed_log_is_anchored_up_to_its_last_decision() {
     let r3 = verify(&rechain(&ls[..ls.len() - 1]), &text);
     assert!(whats(&r3).iter().any(|w| w.contains("log truncated")), "{:?}", whats(&r3));
 }
+
+/// murmur-dup: an anchor is timed by its writer's clock, and the verifier holds the file to
+/// times that never go back. A clock that steps back between two anchors (this host's wall
+/// clock steps back about 0.65 s every 32 s; anchors come every few events and at every
+/// decision) must not make a genuine log fail its anchors.
+#[test]
+fn a_clock_stepping_back_leaves_the_anchors_in_order() {
+    let dir = scratch("step");
+    let cfg = AnchorConfig {
+        path: dir.join("run.anchors"),
+        every: 2,
+        cmd: None,
+    };
+    let wall = ManualClock::new(T0);
+    let anchors = Anchors::open_with(&cfg, Path::new("memory"), Box::new(wall.clone())).unwrap();
+    let log = MemorySink::new();
+    let clock = ManualClock::new(T0);
+    let mut e = Engine::with_areas(
+        policy(),
+        Some(areas()),
+        Roster::new((0..6).map(|n| OperatorId::new(format!("op-{n}"))).collect(), Vec::new())
+            .unwrap(),
+        Box::new(clock.clone()),
+        Box::new(anchors.sink(log.clone())),
+    )
+    .unwrap();
+    for n in 0..6 {
+        clock.advance_ms(300);
+        wall.advance_ms(300);
+        if n == 3 {
+            wall.advance_ms(-940);
+        }
+        e.open_operator_session(OperatorId::new(format!("op-{n}")))
+            .unwrap();
+    }
+    anchors.close().unwrap();
+    let text = std::fs::read_to_string(&cfg.path).unwrap();
+    let r = verify(&log.text(), &text);
+    assert!(r.ok(), "{:?}", r.problems);
+    let ts: Vec<i64> = lines(&text)
+        .iter()
+        .map(|l| serde_json::from_str::<Anchor>(l).unwrap().t)
+        .collect();
+    assert!(ts.windows(2).all(|w| w[0] <= w[1]), "{ts:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
