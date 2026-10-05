@@ -564,93 +564,87 @@ def test_engagement_suite_runs_clean(tmp_path: Path):
 # ---- identification: rule against manual (rules 9) ---------------------------------------------
 
 
-def _ident_result(recs: list[dict]) -> dict:
-    return {"file": "sim/scenarios/engage/99-x.toml", "ok": True, "replay_ok": True, "ident": recs}
+def _ev(t, typ, **kw):
+    return {"t": t, "type": typ, **kw}
 
 
-def test_ident_labels_declarations_acts_and_flags():
-    """Truth labels: a declaration of the act's hostile author is correct; one of a neutral is a
-    false hostile declaration, sorted by what the C2 showed (another candidate at 0.1 or more:
-    shown; a clean picture pointing at the wrong track: picture wrong); an act by a tracked
-    hostile nobody declared is missed; a flag whose best candidate was the hostile author held
-    back a right declaration, one whose best candidate was not prevented a wrong one."""
+def test_ident_generates_situations_with_their_truth(tmp_path: Path):
+    """The generator writes seeded situations (the same for a seed, others for another), each
+    naming no policy (every arm is the shipped policy changed only by its flags), with the
+    truth of every track and who acted."""
+    import tomllib
+
     from eval import ident as I
 
-    def rec(kind, t, **kw):
-        return {"kind": kind, "t_s": t, **kw}
+    a = I.generate(3, 8, tmp_path / "a")
+    b = I.generate(3, 8, tmp_path / "b")
+    c = I.generate(4, 8, tmp_path / "c")
+    assert [m["truth"] for m in a] == [m["truth"] for m in b]
+    assert (tmp_path / "a" / "sit-003-000.toml").read_text() == (tmp_path / "b" / "sit-003-000.toml").read_text()
+    assert (tmp_path / "a" / "sit-003-000.toml").read_text() != (tmp_path / "c" / "sit-004-000.toml").read_text()
+    for m in a:
+        sc = tomllib.loads((tmp_path / "a" / f"{m['name']}.toml").read_text())
+        assert "policy" not in sc
+        acts = [st for st in sc["step"] if st["action"] == "act"]
+        assert len(acts) == m["acts"]
+        if m["author"] != "untracked":
+            assert m["truth"][m["author"]] == "hostile" and acts[0]["by_track"] == m["author"]
+        for t in sc.get("track", []):
+            assert t["truth"] == m["truth"][t["id"]]
 
-    recs = [
-        # A-1 by T-1 (hostile), declared by rule at once
-        rec("act", 3, act="A-1", track="T-1", actor="T-1", truth_hostile=True, truth_actor=True, attribution=0.97, act_t_s=3),
-        rec("rule_declaration", 3, act="A-1", track="T-1", detail="hostile", truth_hostile=True, truth_actor=True, actor="T-1", act_t_s=3),
-        # A-2 by an untracked author, put on the neutral T-2: a false declaration, clean picture
-        rec("act", 10, act="A-2", track="T-2", actor="untracked", truth_actor=False, attribution=0.95, act_t_s=10),
-        rec("rule_declaration", 10, act="A-2", track="T-2", detail="hostile", truth_hostile=False, truth_actor=False, actor="untracked", act_t_s=10),
-        # A-3 by T-3 (hostile) beside T-4: flagged with T-3 first, never declared: missed
-        rec("act", 20, act="A-3", track="T-3", actor="T-3", truth_hostile=True, truth_actor=True, attribution=0.55, act_t_s=20),
-        rec("flag", 20, act="A-3", track="T-3", detail="F-1 attribution", truth_hostile=True, truth_actor=True),
-        rec("flag", 20, act="A-3", track="T-4", detail="F-1 attribution", truth_hostile=False, truth_actor=False),
-        rec("flag_resolved", 25, detail="F-1 dismissed", by="op-2"),
-        # A-4 by T-3, but the noise put it on T-4 (best): flagged, which prevented a wrong one
-        rec("act", 30, act="A-4", track="T-4", actor="T-3", truth_hostile=True, truth_actor=False, attribution=0.6, act_t_s=30),
-        rec("flag", 30, act="A-4", track="T-4", detail="F-2 attribution", truth_hostile=False, truth_actor=False),
-    ]
+
+def test_ident_labels_a_situation_from_its_log():
+    """A situation's log, labelled: the author declared by rule at the act is correct; a
+    neutral declared by the person is a false hostile declaration, shown by the C2 (another
+    track shared the attribution); an effect released on the neutral is an effect on a wrong
+    target; a revocation of the author's declaration is a wrong one."""
+    from eval import ident as I
+
+    t0 = 1_000_000
+    meta = {"name": "s", "author": "T-0001", "truth": {"T-0001": "hostile", "T-0002": "neutral"}}
     events = [
-        {"type": "ident.act", "act": {"act": "A-2"}, "candidates": [{"track": "T-2", "confidence": 0.95}, {"track": "T-5", "confidence": 0.03}], "inputs": {"tracks": {"T-2": {"affiliation": {"value": "unknown"}}}}},
+        _ev(t0, "run.started"),
+        _ev(t0 + 10_000, "ident.act", act={"act": "A-1"}, candidates=[{"track": "T-0001", "confidence": 0.95}, {"track": "T-0002", "confidence": 0.04}], inputs={"tracks": {}}, verdict={"verdict": "declare"}),
+        _ev(t0 + 10_000, "ident.declared", declaration={"track": "T-0001", "affiliation": "hostile", "by": {"kind": "rule", "evidence": {"act": "A-1"}}}),
+        _ev(t0 + 20_000, "ident.act", act={"act": "A-2"}, candidates=[{"track": "T-0002", "confidence": 0.6}, {"track": "T-0001", "confidence": 0.3}], inputs={"tracks": {}}, verdict={"verdict": "flag"}),
+        _ev(t0 + 20_000, "ident.flagged", flag={"id": 1}),
+        _ev(t0 + 30_000, "ident.declared", declaration={"track": "T-0002", "affiliation": "hostile", "by": {"kind": "operator", "note": "proxy: act A-2"}}),
+        _ev(t0 + 31_000, "intent.created", intent={"id": 1, "kind": "engage", "params": {"track": "T-0002"}}),
+        _ev(t0 + 90_000, "engage.effect", intent=1),
+        _ev(t0 + 95_000, "ident.revoked", track="T-0001"),
     ]
-    r = I.analyze(_ident_result(recs), events, "rule", 1)
-    by_track = {d["track"]: d for d in r["declarations"]}
-    assert by_track["T-1"]["verdict"] == "correct" and by_track["T-1"]["delay_s"] == 0
-    assert by_track["T-2"]["verdict"] == "false_hostile" and by_track["T-2"]["c2_showed_it"] is False
-    acts = {a["act"]: a for a in r["acts"]}
-    assert not acts["A-1"]["missed"] and acts["A-1"]["time_to_declaration_s"] == 0
-    assert not acts["A-2"]["hostile_author"] and not acts["A-2"]["missed"]
-    assert acts["A-3"]["missed"] and acts["A-4"]["missed"]
-    assert [f["effect"] for f in r["flags"]] == ["held back a right one", "prevented a wrong one"]
-    assert r["flag_resolutions"] == ["dismissed"]
+    r = I.analyze({"replay_ok": True}, events, meta, "rule", 1)
+    by = {d["track"]: d for d in r["declarations"]}
+    assert by["T-0001"]["verdict"] == "correct" and by["T-0001"]["by"] == "rule" and by["T-0001"]["after_act_s"] == 0
+    assert by["T-0002"]["verdict"] == "false_hostile" and by["T-0002"]["by"] == "person" and by["T-0002"]["c2_showed_it"] is True
+    assert r["author_declared"] and not r["missed"]
+    assert (r["effects_wrong_target"], r["effects_right"]) == (1, 0)
+    assert r["revocations"] == [{"track": "T-0001", "right": False}]
     s = I.summarize([{"arm": "rule", "seed": 1, "results": [r]}])["arms"]["rule"]
-    assert (s["correct"], s["false_hostile"], s["wrong_picture_wrong"], s["missed_hostile_acts"], s["hostile_acts"]) == (1, 1, 1, 2, 3)
-    assert (s["flags"], s["flags_prevented_wrong"], s["flags_held_back_right"], s["flags_unresolved"]) == (2, 1, 1, 1)
-    assert s["review_items"] == 4 and s["person_declared"] == 0
-    # another candidate sharing the attribution: the C2 showed it
-    events[0]["candidates"][1]["confidence"] = 0.2
-    r = I.analyze(_ident_result(recs), events, "rule", 1)
-    assert {d["track"]: d for d in r["declarations"]}["T-2"]["c2_showed_it"] is True
-
-
-def test_ident_manual_proxy_declarations_are_a_persons():
-    from eval import ident as I
-
-    recs = [
-        {"kind": "act", "t_s": 3, "act": "A-1", "track": "T-1", "actor": "T-1", "truth_hostile": True, "truth_actor": True, "act_t_s": 3},
-        {"kind": "operator_declaration", "t_s": 19, "act": "A-1", "track": "T-1", "detail": "hostile", "truth_hostile": True, "truth_actor": True, "by": "op-1"},
-        # a scripted declaration the timeline makes (no act): not the proxy's
-        {"kind": "operator_declaration", "t_s": 1, "track": "T-9", "detail": "hostile", "truth_hostile": True, "by": "op-1"},
-    ]
-    r = I.analyze(_ident_result(recs), [], "manual", 2)
-    s = I.summarize([{"arm": "manual", "seed": 2, "results": [r]}])["arms"]["manual"]
-    assert s["person_declared"] == 1 and s["review_items"] == 0 and s["correct"] == 1
-    assert s["declarations"] == {"manual proxy": 1, "scripted": 1}
-    assert s["time_to_declaration_median_s"] == 16.0
+    assert (s["false_hostile"], s["false_by_person"], s["wrong_c2_showed_it"], s["revocations_wrong"]) == (1, 1, 1, 1)
+    assert s["looks"] == 1 + 1  # a rule declaration and a flag
+    assert s["person_acts"] == 1 + 1  # the person's declaration and revocation
+    # the manual arm looks at every act
+    r = I.analyze({"replay_ok": True}, events, meta, "manual", 1)
+    assert I.summarize([{"arm": "manual", "seed": 1, "results": [r]}])["arms"]["manual"]["looks"] == 2
 
 
 def test_ident_comparison_runs(tmp_path: Path):
     """The real comparison through the real murmur-scenarios binary (skipped without a release
-    build): every arm replays every identification scenario; the rule arms declare at once and
-    flag what is unsure, the manual arm declares later and never flags."""
+    build): every arm replays every generated situation; the rule declares at the act, the
+    manual arm later, and the arms differ only by their flags."""
     from eval import ident as I
 
     if not I.BINARY.exists():
         pytest.skip("no release build of murmur-scenarios")
-    assert len(I.ident_files()) >= 5
-    comp = I.run_comparison(tmp_path, [1], arms=["rule", "manual"])
+    comp = I.run_comparison(tmp_path, [1], arms=["manual", "rule"], situations=6)
     s = comp["summary"]
     assert not s["errors"], s["errors"]
-    rule, manual = s["arms"]["rule"], s["arms"]["manual"]
-    assert rule["replay_ok"] == rule["runs"] and manual["replay_ok"] == manual["runs"]
-    assert rule["flags"] > 0 and manual["flags"] == 0
-    assert rule["time_to_declaration_median_s"] == 0.0
-    assert manual["time_to_declaration_median_s"] is None or manual["time_to_declaration_median_s"] > 0
+    manual, rule = s["arms"]["manual"], s["arms"]["rule"]
+    assert manual["situations"] == rule["situations"] == 6
+    assert manual["replay_ok"] == 6 and rule["replay_ok"] == 6
+    assert rule["act_to_declaration_median_s"] in (None, 0.0)
+    assert manual["act_to_declaration_median_s"] is None or manual["act_to_declaration_median_s"] > 0
     assert "Not human data" in I.table(comp)
     assert (tmp_path / "comparison.json").exists()
 

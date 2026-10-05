@@ -5,7 +5,7 @@
     python -m eval.run batch --scenarios plausible-wrong stale-track --arms rules-only human-proxy \
         --seeds 1 2 3 --parallel 3
     python -m eval.run engage --seeds 1 2 3 --noise 0 3 10
-    python -m eval.run ident --seeds 1 2 3 4 5 6 7 8 9 10
+    python -m eval.run ident --seeds 1 2 3 4 5 6 7 8 9 10 --situations 20
     python -m eval.run report eval/results/<batch>
     python -m eval.run study eval/scenarios/plausible-wrong.toml --participant p01
     python -m eval.run measure
@@ -39,7 +39,7 @@ from .agent import make_proposer
 from .arms import ARMS, Arm, arm as get_arm
 from .bridge import Bridge
 from .engage import EngageAdapter, run_suite
-from .ident import MANUAL_DELAY_S
+from .ident import DEFAULT_ARMS as IDENT_ARMS
 from .ident import run_comparison as run_ident
 from .ident import table as ident_table
 from .metrics import clock_checks, compute_run, run_replay
@@ -480,8 +480,8 @@ def do_batch(args: argparse.Namespace) -> int:
     if not args.no_ident:
         # rules 9: rule-based identification against manual declaration on the same seeds
         # (deterministic scenario runs, seconds; model results, never human data)
-        comp = run_ident(out / "ident", list(args.ident_seeds))
-        batch["ident"] = {"seeds": list(args.ident_seeds), "arms": comp["arms"], "manual_delay_s": comp["manual_delay_s"]}
+        comp = run_ident(out / "ident", list(args.ident_seeds), situations=args.ident_situations)
+        batch["ident"] = {"seeds": list(args.ident_seeds), "arms": comp["arms"], "situations_per_seed": args.ident_situations}
         print(ident_table(comp), flush=True)
     (out / "batch.json").write_text(json.dumps(batch, indent=1))
     print(f"batch {out.name}: {len(jobs)} runs, {parallel} in parallel; {note}", flush=True)
@@ -597,13 +597,20 @@ def do_ident(args: argparse.Namespace) -> int:
     out = Path(args.out) if args.out else RESULTS / f"ident-{now_id()}"
     out.mkdir(parents=True, exist_ok=True)
     started = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-    comp = run_ident(out / "ident", list(args.seeds), list(args.arms), delay=args.manual_delay, threshold=args.threshold)
+    extra: list[str] = []
+    if args.threshold is not None:
+        extra += ["--threshold", f"{args.threshold:g}"]
+    if args.proxy_diligence is not None:
+        extra += ["--proxy-diligence", f"{args.proxy_diligence:g}"]
+    if args.proxy_misread is not None:
+        extra += ["--proxy-misread", f"{args.proxy_misread:g}"]
+    comp = run_ident(out / "ident", list(args.seeds), list(args.arms), situations=args.situations, extra=extra or None)
     meta = {
         "id": out.name,
         "started": started,
         "ended": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
         "seeds": [],
-        "ident": {"seeds": list(args.seeds), "arms": comp["arms"], "manual_delay_s": comp["manual_delay_s"], "threshold": args.threshold},
+        "ident": {"seeds": list(args.seeds), "arms": comp["arms"], "situations_per_seed": args.situations, "threshold": args.threshold},
         "runs": [],
     }
     (out / "batch.json").write_text(json.dumps(meta, indent=1))
@@ -687,6 +694,7 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--no-engage", action="store_true", help="skip the engagement scenario suite")
     b.add_argument("--keep-logs", action="store_true", help="keep every engagement scenario's audit log (default: only those that went wrong)")
     b.add_argument("--ident-seeds", nargs="+", type=int, default=list(range(1, 11)), help="identification comparison seeds (default 1-10)")
+    b.add_argument("--ident-situations", type=int, default=20, help="generated identification situations per seed (default 20)")
     b.add_argument("--no-ident", action="store_true", help="skip the identification comparison (rules 9)")
 
     e = sub.add_parser("engage", help="the engagement scenario suite (sim/scenarios/engage) over seeds and noise, and its report")
@@ -695,11 +703,13 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--out")
     e.add_argument("--keep-logs", action="store_true", help="keep every audit log (default: only those that went wrong)")
 
-    i = sub.add_parser("ident", help="rules 9: rule-based identification against manual declaration on the same seeds (model results)")
+    i = sub.add_parser("ident", help="rules 9: rule-based identification against manual declaration on the same generated situations (model results)")
     i.add_argument("--seeds", nargs="+", type=int, default=list(range(1, 11)))
-    i.add_argument("--arms", nargs="+", default=["rule", "rule-nominate", "manual", "manual-best"], choices=["rule", "rule-nominate", "manual", "manual-best"])
-    i.add_argument("--manual-delay", type=float, default=MANUAL_DELAY_S, help=f"the manual proxy's median delay after an act, s (default {MANUAL_DELAY_S:g})")
+    i.add_argument("--situations", type=int, default=20, help="generated situations per seed (default 20)")
+    i.add_argument("--arms", nargs="+", default=list(IDENT_ARMS), choices=list(IDENT_ARMS))
     i.add_argument("--threshold", type=float, help="attribution threshold for every arm (default: the policy's)")
+    i.add_argument("--proxy-diligence", type=float, help="the review proxy's chance of reading an item (default 0.8)")
+    i.add_argument("--proxy-misread", type=float, help="the review proxy's slip rate (default 0.05)")
     i.add_argument("--out")
 
     s = sub.add_parser("study", help="a real participant on the console; the runner records")

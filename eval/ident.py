@@ -1,52 +1,53 @@
 """Rules 9 in the evaluation: rule-based identification against manual declaration, on the
-same scenarios and seeds. MODEL RESULTS FROM SCRIPTED PROXIES, NEVER HUMAN DATA.
+same generated situations and seeds. MODEL RESULTS FROM SCRIPTED PROXIES, NEVER HUMAN DATA.
 
-**What runs.** The identification scenarios of `sim/scenarios/engage/` (every file with an
-`act` step: a scripted hostile act, which the engine attributes to the tracks in the picture
-and then declares by rule or flags for review) are played by `murmur-scenarios --json`
-against the real decision engine, once per arm and seed, with seeded noise on where each act's
-author was observed (`--act-noise`, the act's own sigma) so the attribution varies across
-seeds as it would across sensor draws. Arms:
+**What runs.** For each seed, `generate` writes `n` identification situations with seeded
+random geometry (`sim/scenarios/engage` format): one hostile author, tracked or not, who
+commits an abstract hostile act against our patrol USV (sometimes a second one later); none to
+three other contacts near it (a fishing boat, shown neutral at some confidence or not
+classified at all, an AIS ferry, a friendly patrol boat, another hostile), each tracked with
+its own uncertainty; one or two of our USVs observing (each its own fix of the act), and an
+armed aircraft. Truth (who is hostile, who did it) is in the file, never shown to a decider.
+`murmur-scenarios --json` plays every situation against the real decision engine once per
+arm, with seeded noise of each fix's sigma on where it places the author, a scripted operator
+reviewing the inbox (`scenario::ReviewProxy`: its own procedure over what the console shows,
+never the engine's rule) and a nominator that nominates every track declared hostile as soon
+as it may and has two signers sign it (`--nominator`). Arms, each the shipped policy
+(`sim/policy.toml`; the generated files name no policy) changed only by its flags:
 
-| arm | identification | who declares |
+| arm | identification | review |
 | --- | --- | --- |
-| `rule` | `rule_declaration = true` (the shipped policy) | the engine's rule, when the evidence is clear; flags otherwise |
-| `rule-nominate` | as `rule`, plus `nominate_unconfirmed = true` (`eval/policy/minimal.toml`) | as `rule`; a rule declaration may be nominated before anyone confirms it |
-| `manual` | `rule_declaration = false` (rules 7 behaviour) | a scripted operator proxy, by the rule's own evidence standard, `--manual-delay` seconds (median) after the act |
-| `manual-best` | `rule_declaration = false` | the proxy declares the most likely track of every observed act (a best guess): a sensitivity case |
+| `manual` | `rule_declaration = false` | the proxy reads each observed act and declares the author it picks |
+| `rule` | the shipped policy: rule on, `nominate_unconfirmed = false`, `corroboration = "none"` | the proxy confirms or revokes each rule declaration (no nomination before its confirmation) and answers flags |
+| `rule-nominate` | as `rule`, `nominate_unconfirmed = true` (eval/policy/minimal.toml's) | the same, but a rule declaration is nominated at once |
+| `rule-corroborated` | as `rule`, `corroboration = "second_observation"` | the same |
+| `rule-corroborated-nominate` | both | the same |
 
-The manual proxy's delay defaults to 16 s, lognormal sigma 0.4: half the proxy operator's
-look interval plus its time to read a card (`eval/proxy.py` defaults, 20 s and 6 s). It is a
-model of latency, not of judgment: with the rule's standard it declares exactly what the rule
-would have, later; `manual-best` shows what a looser human standard would cost.
+**Labels.** A declaration is *correct* when it names the act's author and the author is
+hostile; *false hostile* when the track's contact is not hostile; *wrong author* when it names
+another hostile. A *missed* author is a tracked hostile author nobody declared. A wrong
+declaration is *C2 showed it* when, at the act, another track had 0.1 or more of the
+attribution or the declared track was shown neutral or assumed friend at 0.5 or more; else
+*picture wrong*. An *effect on a wrong target* is an effect released on a track whose contact
+is not hostile (the worst outcome). Workload: the items a person had to look at (every act in
+the manual arm; every rule declaration and flag in the rule arms), the person's acts
+(declarations, confirmations, revocations, flag resolutions), and the confirmations an
+engagement had to wait for.
 
-**Labels (truth, never shown to a decider).** Each run's `ident` records carry the truth the
-scenario file states: whether a declared track's contact is hostile (`truth`), and which track
-committed each act (or that its author was untracked). A declaration is *correct* when it names
-the act's real author and that author is hostile; a *false hostile declaration* names a track
-whose contact is not hostile; a *wrong-author declaration* names a hostile that did not commit
-the act. A *missed hostile act* is an observed act by a tracked hostile whose track nobody
-declared hostile by the end of the run. Every wrong declaration is sorted by what the C2 showed
-when it was made: *the C2 showed it* (another track shared the attribution at 0.1 or more, the
-declared track's own estimate was neutral or friendly, or a review flag was on it) or *picture
-wrong* (the picture pointed cleanly at the wrong track: the author untracked, or the noise put
-the act on a neighbour). The two are never pooled. Every flag is sorted the same way by what a
-declaration of its best candidate would have been: a flag that *prevented* a wrong declaration,
-or one that *held back* a right one (a person's look the rule could have saved).
+**Caveats.** The proxy is a model with stated parameters (eval/README.md); the nominator and
+the signers are scripts; the situations are generated from stated distributions, not sampled
+from the world; the tracks are the scenario runner's (truth plus seeded noise), not the
+bridge's tracker. Scenarios 72-77 illustrate the rule (the engagement suite runs them); they
+are not part of this measurement.
 
-**Caveats.** The scenario timelines are scripted: nominations, confirmations, revocations and
-flag resolutions happen at fixed seconds whatever the arm, so engagement outcomes across arms
-mostly measure whether a declaration existed at the nomination's second (latency), and the
-"human resolutions" are the scenario's scripted operator acts. The tracks are the scenario
-runner's (truth plus seeded noise), not the bridge's tracker; the live bridge's act sensing is
-exercised by the live runs (eval README), not here.
-
-    python -m eval.run ident --seeds 1 2 3 4 5 6 7 8 9 10
+    python -m eval.run ident --seeds 1 2 3 4 5 6 7 8 9 10 --situations 20
 """
 
 from __future__ import annotations
 
 import json
+import math
+import random
 import statistics
 import subprocess
 import time
@@ -57,59 +58,173 @@ from typing import Any
 from . import REPO
 from .metrics import load_jsonl
 
-SCENARIOS = REPO / "sim" / "scenarios" / "engage"
 BINARY = REPO / "target" / "release" / "murmur-scenarios"
 #: below this attribution a candidate is not worth naming (the engine's FLAG_FLOOR)
 FLAG_FLOOR = 0.1
-#: the manual proxy's median delay, s: half the proxy's look interval plus its read time
-MANUAL_DELAY_S = 16.0
-
+#: what every arm runs with: act noise, the review proxy, the nominator
+COMMON = ["--act-noise", "--proxy", "--nominator"]
 ARMS: dict[str, list[str]] = {
-    "rule": ["--ident", "on"],
-    "rule-nominate": ["--ident", "on", "--nominate-unconfirmed"],
-    "manual": ["--ident", "off", "--manual-delay", "{delay}"],
-    "manual-best": ["--ident", "off", "--manual-delay", "{delay}", "--manual-standard", "best"],
+    "manual": ["--ident", "off"],
+    "rule": [],
+    "rule-nominate": ["--nominate-unconfirmed"],
+    "rule-corroborated": ["--corroboration", "second_observation"],
+    "rule-corroborated-nominate": ["--corroboration", "second_observation", "--nominate-unconfirmed"],
 }
-DEFAULT_ARMS = ("rule", "rule-nominate", "manual", "manual-best")
+DEFAULT_ARMS = tuple(ARMS)
 NOT_HUMAN = (
-    "Model results from scripted proxies on scripted scenarios: the manual arm's declarer is a "
-    "latency model with a fixed evidence standard, the scenario timelines are scripted, and the "
-    "labels are the scenario files' truth. Not human data and not evidence about people."
+    "Model results from scripted proxies on generated situations: the reviewing operator is a "
+    "model with stated parameters (its own procedure over what the console shows), the "
+    "nominator and signers are scripts, the situations come from stated distributions, and "
+    "the labels are the generated truth. Not human data and not evidence about people."
 )
 
+# ---- the generator ---------------------------------------------------------------------------
 
-def ident_files(scenarios: Path = SCENARIOS) -> list[Path]:
-    """The scenario files with a scripted hostile act."""
-    return sorted(p for p in scenarios.glob("*.toml") if 'action = "act"' in p.read_text())
-
-
-def arm_args(arm: str, delay: float, threshold: float | None) -> list[str]:
-    args = [a.replace("{delay}", f"{delay:g}") for a in ARMS[arm]]
-    if threshold is not None:
-        args += ["--threshold", f"{threshold:g}"]
-    return args
+#: where situations are placed: inside ez-gate-west, clear of the no-strike areas
+CENTRE_BOX = ((-122.520, -122.497), (37.806, 37.819))
+BLADE_AT = (-122.4700, 37.8160)
 
 
-def run_arm(
-    arm: str,
-    seed: int,
-    out: Path,
-    files: list[Path],
-    delay: float = MANUAL_DELAY_S,
-    threshold: float | None = None,
-    binary: Path = BINARY,
-) -> dict[str, Any]:
-    """One arm, one seed: every identification scenario, act noise on, logs kept under `out`."""
+def _offset(p: tuple[float, float], east: float, north: float) -> tuple[float, float]:
+    lon, lat = p
+    return (lon + east / (111_320.0 * math.cos(math.radians(lat))), lat + north / 111_320.0)
+
+
+def _polar(rng: random.Random, p: tuple[float, float], r: float) -> tuple[float, float]:
+    a = rng.uniform(0, 2 * math.pi)
+    return _offset(p, r * math.sin(a), r * math.cos(a))
+
+
+def _dist(a: tuple[float, float], b: tuple[float, float]) -> float:
+    de = (a[0] - b[0]) * 111_320.0 * math.cos(math.radians((a[1] + b[1]) / 2))
+    dn = (a[1] - b[1]) * 111_320.0
+    return math.hypot(de, dn)
+
+
+def _pt(p: tuple[float, float]) -> str:
+    return f"[{p[0]:.6f}, {p[1]:.6f}]"
+
+
+BYSTANDERS = [
+    # (kind, weight, truth, shown affiliation, identity, affiliation confidence range or None)
+    ("fishing boat, classified", 0.30, "neutral", "neutral", "fishing_vessel", (0.3, 0.9)),
+    ("fishing boat, not classified", 0.20, "neutral", "unknown", None, None),
+    ("ferry with AIS", 0.15, "neutral", "neutral", "ferry", (0.75, 0.9)),
+    ("friendly patrol boat", 0.10, "assumed_friend", "assumed_friend", "patrol_boat", (0.8, 0.9)),
+    ("another hostile", 0.25, "hostile", "suspect", "small_fast_boat", (0.4, 0.8)),
+]
+
+
+def generate(seed: int, n: int, out: Path) -> list[dict[str, Any]]:
+    """`n` situations for `seed` into `out`, each with its truth (`meta`)."""
+    out.mkdir(parents=True, exist_ok=True)
+    rng = random.Random(seed * 7919 + 17)
+    metas = []
+    for i in range(n):
+        centre = (rng.uniform(*CENTRE_BOX[0]), rng.uniform(*CENTRE_BOX[1]))
+        usv1 = _polar(rng, centre, rng.uniform(1_000, 2_200))
+        usv2 = _polar(rng, centre, rng.uniform(1_200, 3_000)) if rng.random() < 0.6 else None
+        tracked = rng.random() < 0.8
+        tracks: list[dict[str, Any]] = []
+        truth: dict[str, str] = {}
+        n_id = 0
+
+        def new_id() -> str:
+            nonlocal n_id
+            n_id += 1
+            return f"T-{n_id:04d}"
+
+        author = "untracked"
+        if tracked:
+            author = new_id()
+            shown, conf, ident = ("suspect", rng.uniform(0.4, 0.8), "small_fast_boat") if rng.random() < 0.5 else ("unknown", 0.0, None)
+            tracks.append({"id": author, "at": centre, "aff": shown, "conf": conf, "identity": ident, "sigma": rng.uniform(8, 25)})
+            truth[author] = "hostile"
+        k = rng.choices([0, 1, 2, 3], weights=[0.35, 0.35, 0.2, 0.1])[0]
+        desc = []
+        for _ in range(k):
+            kind, _, tr, shown, ident, crange = rng.choices(BYSTANDERS, weights=[b[1] for b in BYSTANDERS])[0]
+            tid = new_id()
+            at = _polar(rng, centre, rng.uniform(15, 400))
+            tracks.append(
+                {
+                    "id": tid,
+                    "at": at,
+                    "aff": shown,
+                    "conf": rng.uniform(*crange) if crange else 0.0,
+                    "identity": ident,
+                    "sigma": rng.uniform(8, 25),
+                }
+            )
+            truth[tid] = tr
+            desc.append(f"{kind} {_dist(at, centre):.0f} m off")
+        # the act's fixes: each observing USV's radar, at its range
+        observers = ["usv-1"] + (["usv-2"] if usv2 else [])
+        ranges = [_dist(usv1, centre)] + ([_dist(usv2, centre)] if usv2 else [])
+        sigma = 30.0 + 0.01 * min(ranges)
+        second = rng.random() < 0.2
+        lines = [
+            f'title = "generated identification situation {seed}-{i}"',
+            'invariant = "rule_declaration"',
+            f'attack = "{"tracked" if tracked else "untracked"} author; {", ".join(desc) or "nobody near"}"',
+            'expect = "done"',
+            "end_s = 220",
+            "",
+            '[[operator]]\nid = "op-1"',
+            '[[operator]]\nid = "op-2"\nengage = true',
+            '[[operator]]\nid = "op-3"\nengage = true',
+            "",
+            f'[[vehicle]]\nuid = "blade-1"\nplatform = "switchblade"\nat = {_pt(BLADE_AT)}',
+            f'[[vehicle]]\nuid = "usv-1"\nplatform = "seahunter"\nat = {_pt(usv1)}',
+        ]
+        if usv2:
+            lines.append(f'[[vehicle]]\nuid = "usv-2"\nplatform = "seahunter"\nat = {_pt(usv2)}')
+        for t in tracks:
+            lines.append(
+                "\n".join(
+                    [
+                        "[[track]]",
+                        f'id = "{t["id"]}"',
+                        f"at = {_pt(t['at'])}",
+                        f'affiliation = "{t["aff"]}"',
+                        f"affiliation_confidence = {t['conf']:.2f}",
+                        f'truth = "{truth[t["id"]]}"',
+                        *( [f'identity = "{t["identity"]}"', "identity_confidence = 0.8"] if t["identity"] else ["identity_confidence = 0.2"] ),
+                        f"sigma_m = {t['sigma']:.1f}",
+                        'sources = ["usv-1:radar"]',
+                    ]
+                )
+            )
+        sensors = ", ".join(f'"{o}:radar"' for o in observers)
+        by = f'by_track = "{author}"' if tracked else f"at = {_pt(centre)}"
+        for at_s in [10] + ([40] if second else []):
+            lines.append(f'[[step]]\nat_s = {at_s}\naction = "act"\n{by}\nagainst_vehicle = "usv-1"\nsensors = [{sensors}]\nsigma_m = {sigma:.1f}')
+        text = "\n\n".join(lines) + "\n"
+        assert "\npolicy" not in text, "a generated situation never names a policy: every arm is the shipped one"
+        name = f"sit-{seed:03d}-{i:03d}"
+        (out / f"{name}.toml").write_text(text)
+        metas.append({"name": name, "author": author, "truth": truth, "acts": 2 if second else 1, "observers": len(observers), "bystanders": desc})
+    (out / "situations.json").write_text(json.dumps(metas, indent=1))
+    return metas
+
+
+# ---- one arm, one seed -----------------------------------------------------------------------
+
+
+def run_arm(arm: str, seed: int, situations: Path, metas: list[dict[str, Any]], out: Path, binary: Path = BINARY, extra: list[str] | None = None) -> dict[str, Any]:
+    """Every situation of a seed under one arm; each analysed with its truth."""
     out.mkdir(parents=True, exist_ok=True)
     if not binary.exists():
         return {"arm": arm, "seed": seed, "error": f"missing {binary}: run `make build`", "results": []}
-    cmd = [str(binary), "--json", "--seed", str(seed), "--act-noise", *arm_args(arm, delay, threshold)]
+    files = [situations / f"{m['name']}.toml" for m in metas]
+    cmd = [str(binary), "--json", "--seed", str(seed), *COMMON, *ARMS[arm], *(extra or [])]
     cmd += ["--root", str(REPO), "--log-dir", str(out / "logs"), *map(str, files)]
     t0 = time.monotonic()
-    p = subprocess.run(cmd, cwd=str(REPO), capture_output=True, text=True, timeout=600)
+    p = subprocess.run(cmd, cwd=str(REPO), capture_output=True, text=True, timeout=1800)
     (out / "results.jsonl").write_text(p.stdout)
     if p.returncode == 2:
         return {"arm": arm, "seed": seed, "error": p.stderr.strip()[-1000:] or "load error", "results": []}
+    by_name = {m["name"]: m for m in metas}
     results = []
     for line in p.stdout.splitlines():
         try:
@@ -118,149 +233,107 @@ def run_arm(
             continue
         stem = Path(r.get("file", "")).stem
         events = load_jsonl(out / "logs" / f"{stem}.jsonl")
-        results.append(analyze(r, events, arm, seed))
+        results.append(analyze(r, events, by_name.get(stem, {}), arm, seed))
     return {"arm": arm, "seed": seed, "wall_s": round(time.monotonic() - t0, 2), "results": results, "stderr": p.stderr.strip()[-500:]}
 
 
-# ---- one run ---------------------------------------------------------------------------------
+def _secs(t: int, t0: int) -> float:
+    return round((t - t0) / 1000.0, 1)
 
 
-def _acts_in_log(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Each act's candidates and the picture it was attributed in, from the audit log."""
-    out = {}
+def analyze(result: dict[str, Any], events: list[dict[str, Any]], meta: dict[str, Any], arm: str, seed: int) -> dict[str, Any]:
+    """One situation under one arm, labelled with its truth."""
+    truth: dict[str, str] = meta.get("truth", {})
+    author = meta.get("author", "untracked")
+    t0 = events[0]["t"] if events else 0
+    acts: dict[str, dict[str, Any]] = {}
+    first_act_t = None
     for e in events:
         if e.get("type") == "ident.act":
-            act = e.get("act") or {}
-            out[act.get("act")] = {"candidates": e.get("candidates") or [], "tracks": (e.get("inputs") or {}).get("tracks") or {}}
-    return out
+            a = e.get("act") or {}
+            acts[a.get("act")] = {"t": e["t"], "candidates": e.get("candidates") or [], "tracks": (e.get("inputs") or {}).get("tracks") or {}, "verdict": e.get("verdict") or {}}
+            first_act_t = first_act_t if first_act_t is not None else e["t"]
 
+    def shown(act: str | None, track: str) -> bool:
+        a = acts.get(act or "") or (next(iter(acts.values())) if acts else {})
+        others = [c for c in a.get("candidates", []) if c.get("track") != track and c.get("confidence", 0) >= FLAG_FLOOR]
+        est = (a.get("tracks", {}).get(track) or {})
+        aff = (est.get("affiliation") or {}).get("value") if isinstance(est.get("affiliation"), dict) else est.get("affiliation")
+        return bool(others) or (aff in ("neutral", "assumed_friend") and (est.get("affiliation_confidence") or 0) >= 0.5)
 
-def _engagements(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Every engagement nominated: its target, how the target was declared when it was
-    nominated (operator, rule confirmed, rule unconfirmed, none), and how it ended."""
-    decl: dict[str, dict[str, Any]] = {}
-    out: dict[int, dict[str, Any]] = {}
+    declarations = []
+    revocations = []
+    confirmations = resolutions = person_declarations = flags = rule_declarations = 0
     for e in events:
         t = e.get("type")
         if t == "ident.declared":
             d = e.get("declaration") or {}
+            if d.get("affiliation") != "hostile":
+                continue
             by = d.get("by") or {}
-            decl[d.get("track")] = {"basis": "rule" if by.get("kind") == "rule" else "operator", "confirmed": False}
-        elif t == "ident.confirmed":
-            if e.get("track") in decl:
-                decl[e["track"]]["confirmed"] = True
+            rule = by.get("kind") == "rule"
+            act = (by.get("evidence") or {}).get("act") if rule else (by.get("note") or "").removeprefix("proxy: act ") or None
+            track = d.get("track")
+            tr = truth.get(track)
+            verdict = "correct" if track == author and tr == "hostile" else ("wrong_author" if tr == "hostile" else "false_hostile")
+            declarations.append(
+                {
+                    "track": track,
+                    "by": "rule" if rule else "person",
+                    "t_s": _secs(e["t"], t0),
+                    "after_act_s": None if first_act_t is None else _secs(e["t"], first_act_t),
+                    "verdict": verdict,
+                    "c2_showed_it": None if verdict == "correct" else shown(act, track),
+                }
+            )
+            rule_declarations += int(rule)
+            person_declarations += int(not rule)
         elif t == "ident.revoked":
-            decl.pop(e.get("track"), None)
-        elif t == "intent.created":
+            track = e.get("track")
+            revocations.append({"track": track, "right": truth.get(track) != "hostile" or track != author})
+        elif t == "ident.confirmed":
+            confirmations += 1
+        elif t == "ident.flag_resolved":
+            resolutions += 1
+        elif t == "ident.flagged":
+            flags += 1
+    engagements: dict[int, dict[str, Any]] = {}
+    for e in events:
+        t = e.get("type")
+        if t == "intent.created":
             i = e.get("intent") or {}
             if i.get("kind") == "engage":
                 track = (i.get("params") or {}).get("track")
-                d = decl.get(track)
-                basis = "none" if d is None else d["basis"] if d["basis"] == "operator" else ("rule (confirmed)" if d["confirmed"] else "rule (unconfirmed)")
-                out[i.get("id")] = {"intent": i.get("id"), "track": track, "basis": basis, "final": "proposed", "effect": False}
-        elif t == "intent.state" and e.get("intent") in out:
-            out[e["intent"]]["final"] = e.get("to")
-        elif t == "engage.effect" and e.get("intent") in out:
-            out[e["intent"]]["effect"] = True
-    return list(out.values())
-
-
-def analyze(result: dict[str, Any], events: list[dict[str, Any]], arm: str, seed: int) -> dict[str, Any]:
-    """One scenario run: its identification events labelled with truth, and the counts."""
-    recs = result.get("ident") or []
-    log_acts = _acts_in_log(events)
-    acts = [r for r in recs if r["kind"] == "act"]
-    act_by_id = {r.get("act"): r for r in acts}
-    # a flag is logged once per track it names, its best candidate first
-    flagged_tracks = {r.get("track") for r in recs if r["kind"] == "flag" and r.get("track")}
-    flags: list[dict[str, Any]] = []
-    for r in recs:
-        if r["kind"] == "flag" and all(f["detail"] != r["detail"] for f in flags):
-            flags.append(r)
-    declarations = []
-    for r in recs:
-        if r["kind"] not in ("rule_declaration", "operator_declaration") or r.get("detail") != "hostile":
-            continue
-        act = r.get("act")
-        if r["kind"] == "operator_declaration" and not act:
-            # a scripted operator declaration the timeline makes, not from an act
-            declarations.append({**r, "source": "scripted", "verdict": "scripted"})
-            continue
-        source = "rule" if r["kind"] == "rule_declaration" else "manual proxy"
-        a = act_by_id.get(act) or {}
-        if r.get("truth_actor") and r.get("truth_hostile"):
-            verdict = "correct"
-        elif r.get("truth_hostile") is False:
-            verdict = "false_hostile"
-        else:
-            verdict = "wrong_author"
-        shown = None
-        if verdict != "correct":
-            la = log_acts.get(act) or {}
-            others = [c for c in la.get("candidates", []) if c.get("track") != r.get("track") and c.get("confidence", 0) >= FLAG_FLOOR]
-            est = ((la.get("tracks") or {}).get(r.get("track")) or {}).get("affiliation") or {}
-            est = est.get("value") if isinstance(est, dict) else est
-            shown = bool(others) or est in ("neutral", "assumed_friend") or r.get("track") in flagged_tracks
-        declarations.append(
-            {
-                **r,
-                "source": source,
-                "verdict": verdict,
-                "c2_showed_it": shown,
-                "delay_s": None if a.get("act_t_s") is None else round(r["t_s"] - a["act_t_s"], 1),
-            }
-        )
-    # each act by a tracked hostile: was its author declared, and how soon
-    per_act = []
-    for a in acts:
-        actor = a.get("actor")
-        hostile_author = actor not in (None, "", "untracked") and a.get("truth_hostile") is not False
-        right = [d for d in declarations if d.get("track") == actor and d["verdict"] in ("correct", "scripted") and d["t_s"] >= a["t_s"] - 0.5]
-        earlier = [d for d in declarations if d.get("track") == actor and d["t_s"] < a["t_s"] - 0.5]
-        # the declaration this act led to (the rule's, or the manual proxy's reading it)
-        from_act = [d for d in right if d.get("act") == a.get("act")]
-        first = min(from_act, key=lambda d: d["t_s"]) if from_act else None
-        per_act.append(
-            {
-                "act": a.get("act"),
-                "actor": actor,
-                "hostile_author": hostile_author,
-                "attribution_best": a.get("attribution"),
-                "best_is_author": a.get("truth_actor"),
-                "verdict": a.get("detail"),
-                "declared_by": None if first is None else first["source"],
-                "time_to_declaration_s": None if first is None else round(first["t_s"] - a["t_s"], 1),
-                "already_declared": bool(earlier),
-                # nobody (the rule, the proxy, or a scripted operator) declared its author
-                "missed": hostile_author and not right and not earlier,
-            }
-        )
-    # each flag: would declaring its best candidate have been right?
-    flag_rows = []
-    for f in flags:
-        a = act_by_id.get(f.get("act")) or {}
-        if f.get("act"):
-            would_be_right = bool(a.get("truth_actor")) and a.get("truth_hostile") is not False and a.get("actor") not in (None, "untracked")
-            kind = "held back a right one" if would_be_right else "prevented a wrong one"
-        else:
-            kind = "proximity (no act)"
-        flag_rows.append({**f, "effect": kind})
-    resolved = [r for r in recs if r["kind"] == "flag_resolved"]
+                engagements[i.get("id")] = {"track": track, "truth": truth.get(track), "final": "proposed", "effect_after_act_s": None}
+        elif t == "intent.state" and e.get("intent") in engagements:
+            engagements[e["intent"]]["final"] = e.get("to")
+        elif t == "engage.effect" and e.get("intent") in engagements and first_act_t is not None:
+            engagements[e["intent"]]["effect_after_act_s"] = _secs(e["t"], first_act_t)
+    author_tracked = author != "untracked"
+    right = [d for d in declarations if d["verdict"] == "correct"]
+    effects = [g for g in engagements.values() if g["effect_after_act_s"] is not None]
     return {
-        "scenario": Path(result.get("file", "")).stem,
+        "situation": meta.get("name"),
         "arm": arm,
         "seed": seed,
-        "ok": result.get("ok"),
         "replay_ok": result.get("replay_ok"),
-        "tamper_detected": result.get("tamper_detected"),
-        "acts": per_act,
+        "author_tracked": author_tracked,
+        "acts": len(acts),
         "declarations": declarations,
-        "flags": flag_rows,
-        "flag_resolutions": [(r.get("detail") or "? ?").split()[-1] for r in resolved],
-        "confirmations": sum(1 for r in recs if r["kind"] == "confirmed"),
-        "revocations": sum(1 for r in recs if r["kind"] == "revoked"),
-        "engagements": _engagements(events),
-        "events": len(events),
+        "author_declared": bool(right),
+        "missed": author_tracked and not right,
+        "first_right_after_s": min((d["after_act_s"] for d in right if d["after_act_s"] is not None), default=None),
+        "revocations": revocations,
+        "confirmations": confirmations,
+        "resolutions": resolutions,
+        "person_declarations": person_declarations,
+        "rule_declarations": rule_declarations,
+        "flags": flags,
+        "engagements": list(engagements.values()),
+        "effects_right": sum(1 for g in effects if g["truth"] == "hostile" and g["track"] == author),
+        "effects_wrong_target": sum(1 for g in effects if g["truth"] != "hostile"),
+        "effects_other_hostile": sum(1 for g in effects if g["truth"] == "hostile" and g["track"] != author),
+        "first_effect_after_s": min((g["effect_after_act_s"] for g in effects), default=None),
     }
 
 
@@ -272,112 +345,80 @@ def _median(xs: list[float]) -> float | None:
 
 
 def summarize(passes: list[dict[str, Any]]) -> dict[str, Any]:
-    """Per arm, over scenarios and seeds: the counts the comparison reads, and per scenario."""
-    by_arm: dict[str, dict[str, Any]] = {}
-    by_cell: dict[tuple[str, str], dict[str, Any]] = {}
-
-    def blank() -> dict[str, Any]:
-        return {
-            "runs": 0,
-            "replay_ok": 0,
-            "acts": 0,
-            "hostile_acts": 0,
-            "missed_hostile_acts": 0,
-            "declarations": defaultdict(int),
-            "correct": 0,
-            "false_hostile": 0,
-            "wrong_author": 0,
-            "wrong_c2_showed_it": 0,
-            "wrong_picture_wrong": 0,
-            "flags": 0,
-            "flags_prevented_wrong": 0,
-            "flags_held_back_right": 0,
-            "flags_proximity": 0,
-            "flag_resolutions": defaultdict(int),
-            "flags_unresolved": 0,
-            "confirmations": 0,
-            "revocations": 0,
-            "time_to_declaration_s": [],
-            "review_items": 0,
-            "person_declared": 0,
-            "engagements": defaultdict(lambda: defaultdict(int)),
-        }
-
+    """Per arm, over situations and seeds."""
+    rows: dict[str, dict[str, Any]] = {}
     for ps in passes:
         for r in ps["results"]:
-            for row in (by_arm.setdefault(r["arm"], blank()), by_cell.setdefault((r["scenario"], r["arm"]), blank())):
-                row["runs"] += 1
-                row["replay_ok"] += int(bool(r.get("replay_ok")))
-                for a in r["acts"]:
-                    row["acts"] += 1
-                    row["hostile_acts"] += int(a["hostile_author"])
-                    row["missed_hostile_acts"] += int(a["missed"])
-                    if a["time_to_declaration_s"] is not None:
-                        row["time_to_declaration_s"].append(a["time_to_declaration_s"])
-                for d in r["declarations"]:
-                    row["declarations"][d["source"]] += 1
-                    if d["source"] == "scripted":
-                        continue
-                    row[d["verdict"]] += 1
-                    if d["verdict"] != "correct":
-                        row["wrong_c2_showed_it" if d.get("c2_showed_it") else "wrong_picture_wrong"] += 1
-                    if d["source"] == "manual proxy":
-                        row["person_declared"] += 1
-                    else:
-                        row["review_items"] += 1
-                for f in r["flags"]:
-                    row["flags"] += 1
-                    key = {"prevented a wrong one": "flags_prevented_wrong", "held back a right one": "flags_held_back_right"}.get(f["effect"], "flags_proximity")
-                    row[key] += 1
-                for res in r["flag_resolutions"]:
-                    row["flag_resolutions"][res or "?"] += 1
-                row["flags_unresolved"] += max(0, len(r["flags"]) - len(r["flag_resolutions"]))
-                row["confirmations"] += r["confirmations"]
-                row["revocations"] += r["revocations"]
-                # what asks a person for a look: every rule declaration (a non-blocking review
-                # item) and every flag; the manual arms' declarations are a person's by definition
-                row["review_items"] += len(r["flags"])
-                for e in r["engagements"]:
-                    row["engagements"][e["basis"]]["nominated"] += 1
-                    row["engagements"][e["basis"]][e["final"] or "?"] += 1
-                    row["engagements"][e["basis"]]["effect"] += int(e["effect"])
-
-    def finish(row: dict[str, Any]) -> dict[str, Any]:
-        times = row.pop("time_to_declaration_s")
-        row["time_to_declaration_median_s"] = _median(times)
-        row["time_to_declaration_n"] = len(times)
-        row["declarations"] = dict(row["declarations"])
-        row["flag_resolutions"] = dict(row["flag_resolutions"])
-        row["engagements"] = {k: dict(v) for k, v in row["engagements"].items()}
-        return row
-
-    return {
-        "arms": {a: finish(v) for a, v in by_arm.items()},
-        "cells": [{"scenario": s, "arm": a, **finish(v)} for (s, a), v in sorted(by_cell.items())],
-        "errors": [{"arm": p["arm"], "seed": p["seed"], "error": p["error"]} for p in passes if p.get("error")],
-    }
+            row = rows.setdefault(
+                r["arm"],
+                {
+                    "situations": 0, "replay_ok": 0, "tracked_authors": 0, "untracked_authors": 0,
+                    "author_declared": 0, "missed": 0, "declared_by_rule": 0, "declared_by_person": 0,
+                    "false_hostile": 0, "wrong_author": 0, "wrong_c2_showed_it": 0, "wrong_picture_wrong": 0,
+                    "false_by_rule": 0, "false_by_person": 0, "revocations": 0, "revocations_wrong": 0,
+                    "looks": 0, "person_acts": 0, "confirmations": 0, "flags": 0,
+                    "effects_right": 0, "effects_wrong_target": 0, "effects_other_hostile": 0,
+                    "_t_decl": [], "_t_effect": [],
+                },
+            )
+            row["situations"] += 1
+            row["replay_ok"] += int(bool(r.get("replay_ok")))
+            row["tracked_authors"] += int(r["author_tracked"])
+            row["untracked_authors"] += int(not r["author_tracked"])
+            row["author_declared"] += int(r["author_declared"])
+            row["missed"] += int(r["missed"])
+            for d in r["declarations"]:
+                if d["verdict"] == "correct":
+                    row["declared_by_rule" if d["by"] == "rule" else "declared_by_person"] += 1
+                    continue
+                row[d["verdict"]] += 1
+                row["false_by_rule" if d["by"] == "rule" else "false_by_person"] += 1
+                row["wrong_c2_showed_it" if d["c2_showed_it"] else "wrong_picture_wrong"] += 1
+            row["revocations"] += len(r["revocations"])
+            row["revocations_wrong"] += sum(1 for v in r["revocations"] if not v["right"])
+            # what a person had to look at: every act without the rule; every rule
+            # declaration and flag with it
+            row["looks"] += r["acts"] if r["arm"] == "manual" else r["rule_declarations"] + r["flags"]
+            row["person_acts"] += r["person_declarations"] + r["confirmations"] + len(r["revocations"]) + r["resolutions"]
+            row["confirmations"] += r["confirmations"]
+            row["flags"] += r["flags"]
+            row["effects_right"] += r["effects_right"]
+            row["effects_wrong_target"] += r["effects_wrong_target"]
+            row["effects_other_hostile"] += r["effects_other_hostile"]
+            if r["first_right_after_s"] is not None:
+                row["_t_decl"].append(r["first_right_after_s"])
+            if r["first_effect_after_s"] is not None:
+                row["_t_effect"].append(r["first_effect_after_s"])
+    for row in rows.values():
+        td, te = row.pop("_t_decl"), row.pop("_t_effect")
+        row["act_to_declaration_median_s"] = _median(td)
+        row["act_to_effect_median_s"] = _median(te)
+    return {"arms": rows, "errors": [{"arm": p["arm"], "seed": p["seed"], "error": p["error"]} for p in passes if p.get("error")]}
 
 
 def run_comparison(
     out: Path,
     seeds: list[int],
     arms: tuple[str, ...] | list[str] = DEFAULT_ARMS,
-    delay: float = MANUAL_DELAY_S,
-    threshold: float | None = None,
-    scenarios: Path = SCENARIOS,
+    situations: int = 20,
+    extra: list[str] | None = None,
+    binary: Path | None = None,
 ) -> dict[str, Any]:
-    """Every arm over `seeds` into `out/<arm>/seed-<s>/`, and `comparison.json`."""
+    """Every arm over the same generated situations of each seed, into `out`, and
+    `comparison.json`."""
     out.mkdir(parents=True, exist_ok=True)
-    files = ident_files(scenarios)
-    passes = [run_arm(arm, seed, out / arm / f"seed-{seed}", files, delay, threshold) for arm in arms for seed in seeds]
+    passes = []
+    for seed in seeds:
+        sdir = out / "situations" / f"seed-{seed}"
+        metas = generate(seed, situations, sdir)
+        for arm in arms:
+            passes.append(run_arm(arm, seed, sdir, metas, out / arm / f"seed-{seed}", binary=binary or BINARY, extra=extra))
     comp = {
         "label": NOT_HUMAN,
-        "scenarios": [str(f.relative_to(REPO)) for f in files],
         "seeds": seeds,
+        "situations_per_seed": situations,
         "arms": list(arms),
-        "manual_delay_s": delay,
-        "threshold": threshold,
-        "act_noise": True,
+        "proxy": "scenario::ReviewProxy defaults: a look every 20 s, 6 s to read, reads 80%, a 5% slip" if not extra else " ".join(extra),
         "passes": passes,
         "summary": summarize(passes),
     }
@@ -398,20 +439,17 @@ def load_comparison(batch: Path) -> dict[str, Any] | None:
 def table(comp: dict[str, Any]) -> str:
     """The comparison as plain text, one line per arm."""
     lines = [comp["label"], ""]
-    head = f"{'arm':<14}{'runs':>5}{'acts':>6}{'missed':>8}{'correct':>9}{'false':>7}{'wrong-auth':>11}{'C2 showed':>10}{'pict.wrong':>11}{'flags':>7}{'prevent':>9}{'held back':>10}{'review':>8}{'by person':>10}{'t decl (s)':>11}"
-    lines.append(head)
+    lines.append(
+        f"{'arm':<27}{'sit':>5}{'declared':>9}{'missed':>7}{'false':>6}{'C2':>4}{'pict':>5}{'revoked':>8}{'looks':>6}{'acts':>6}{'conf':>5}"
+        f"{'eff ok':>7}{'eff WRONG':>10}{'t decl':>7}{'t eff':>7}"
+    )
     for arm in comp["arms"]:
         r = comp["summary"]["arms"].get(arm)
         if not r:
             continue
         lines.append(
-            f"{arm:<14}{r['runs']:>5}{r['acts']:>6}{r['missed_hostile_acts']:>8}{r['correct']:>9}{r['false_hostile']:>7}{r['wrong_author']:>11}"
-            f"{r['wrong_c2_showed_it']:>10}{r['wrong_picture_wrong']:>11}{r['flags']:>7}{r['flags_prevented_wrong']:>9}{r['flags_held_back_right']:>10}"
-            f"{r['review_items']:>8}{r['person_declared']:>10}{str(r['time_to_declaration_median_s']):>11}"
+            f"{arm:<27}{r['situations']:>5}{r['author_declared']:>9}{r['missed']:>7}{r['false_hostile']:>6}{r['wrong_c2_showed_it']:>4}"
+            f"{r['wrong_picture_wrong']:>5}{r['revocations']:>8}{r['looks']:>6}{r['person_acts']:>6}{r['confirmations']:>5}"
+            f"{r['effects_right']:>7}{r['effects_wrong_target']:>10}{str(r['act_to_declaration_median_s']):>7}{str(r['act_to_effect_median_s']):>7}"
         )
-    lines.append("")
-    for arm in comp["arms"]:
-        r = comp["summary"]["arms"].get(arm) or {}
-        eng = ", ".join(f"{basis}: {v.get('nominated', 0)} nominated, {v.get('effect', 0)} released" for basis, v in sorted((r.get("engagements") or {}).items()))
-        lines.append(f"engagements, {arm}: {eng or 'none'}")
     return "\n".join(lines)

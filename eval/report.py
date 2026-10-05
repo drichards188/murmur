@@ -487,64 +487,45 @@ def engage_section(suite: dict[str, Any]) -> str:
 
 
 def ident_section(comp: dict[str, Any]) -> str:
-    """Rules 9: rule-based identification against manual declaration, on the same seeds."""
+    """Rules 9: rule-based identification against manual declaration, on the same generated
+    situations and seeds (eval/ident.py)."""
     arms = comp.get("arms") or []
     summ = comp["summary"]
     out = ["<h2>Identification: rule against manual (rules 9)</h2>"]
     out.append('<div class="note"><strong>Model results, not human data.</strong> ' + esc(comp.get("label")) + "</div>")
     out.append(
-        f"<p>Every scenario with a scripted hostile act ({esc(len(comp.get('scenarios') or []))} in <code>sim/scenarios/engage/</code>) "
-        f"played by the decision engine for each arm on seeds {esc(comp.get('seeds'))}, with seeded noise on where each act's author "
-        f"was observed. <strong>rule</strong>: the engine declares hostile by rule when the evidence is clear and flags what it is "
-        f"unsure of (the shipped policy); <strong>rule-nominate</strong>: the same, a rule declaration nominable before anyone "
-        f"confirms it (eval/policy/minimal.toml); <strong>manual</strong>: rule declaration off, a scripted operator proxy declares "
-        f"by the rule's own standard about {esc(comp.get('manual_delay_s'))} s after the act (a latency model); "
-        f"<strong>manual-best</strong>: the proxy declares the most likely track of every act (a looser standard). Labels are the "
-        f"scenario files' truth. A wrong declaration is <em>C2 showed it</em> when another track shared the attribution at 0.1 or "
-        f"more, the declared track's estimate was neutral or friendly, or a flag was on it; else <em>picture wrong</em>. A flag "
-        f"<em>prevented</em> a wrong declaration when its best candidate was not the hostile author, else it <em>held back</em> a "
-        f"right one. Nominations happen at the scenario's scripted seconds in every arm, so engagement outcomes across arms mostly "
-        f"measure whether a declaration existed by then.</p>"
+        f"<p>{esc(comp.get('situations_per_seed'))} generated situations per seed on seeds {esc(comp.get('seeds'))} (seeded random "
+        "geometry: a hostile author, tracked or not, who acts against our USV; none to three contacts near it, a fishing boat shown "
+        "neutral or not classified, an AIS ferry, a friendly patrol boat or another hostile; one or two of our observers), every one "
+        "played by the decision engine under each arm with the shipped policy changed only by the arm's flags, noise on each fix, a "
+        "scripted operator reviewing the inbox by its own procedure over what the console shows (never the engine's rule) and a "
+        f"nominator that nominates every declared track as soon as it may. Proxy: {esc(comp.get('proxy'))}. A wrong declaration is "
+        "<em>C2 showed it</em> when another track had 0.1 of the attribution or the declared track was shown neutral or friendly at "
+        "0.5, else <em>picture wrong</em>. Looks: what a person had to look at (every act without the rule; every rule declaration "
+        "and flag with it). Person acts: declarations, confirmations, revocations and flag resolutions. Effects on a wrong target: "
+        "released on a contact that is not hostile.</p>"
     )
     head = (
-        "<tr><th>arm</th><th>runs</th><th>acts</th><th>hostile acts missed</th><th>correct declarations</th>"
-        "<th>false hostile</th><th>wrong author</th><th>wrong: C2 showed it</th><th>wrong: picture wrong</th>"
-        "<th>flags</th><th>flags that prevented a wrong one</th><th>flags that held back a right one</th>"
-        "<th>review items</th><th>declared by a person</th><th>act to declaration, median s</th></tr>"
+        "<tr><th>arm</th><th>situations</th><th>author declared</th><th>tracked author missed</th><th>false hostile declarations</th>"
+        "<th>wrong: C2 showed it</th><th>wrong: picture wrong</th><th>revocations (of a right one)</th><th>looks</th><th>person acts</th>"
+        "<th>confirmations</th><th>effects on the author</th><th>effects on a wrong target</th><th>act to declaration, median s</th>"
+        "<th>act to effect, median s</th></tr>"
     )
     trs = []
     for a in arms:
         r = summ["arms"].get(a)
         if not r:
             continue
-        bad = " bad" if r["false_hostile"] or r["wrong_author"] else ""
+        bad = " bad" if r["effects_wrong_target"] else ""
         trs.append(
-            f"<tr><td><strong>{esc(a)}</strong></td><td class='n'>{r['runs']}</td><td class='n'>{r['acts']}</td>"
-            f"<td class='n'>{r['missed_hostile_acts']}/{r['hostile_acts']}</td><td class='n'>{r['correct']}</td>"
-            f"<td class='n{bad}'>{r['false_hostile']}</td><td class='n{bad}'>{r['wrong_author']}</td>"
-            f"<td class='n'>{r['wrong_c2_showed_it']}</td><td class='n'>{r['wrong_picture_wrong']}</td><td class='n'>{r['flags']}</td>"
-            f"<td class='n'>{r['flags_prevented_wrong']}</td><td class='n'>{r['flags_held_back_right']}</td>"
-            f"<td class='n'>{r['review_items']}</td><td class='n'>{r['person_declared']}</td>"
-            f"<td class='n'>{esc(r['time_to_declaration_median_s'])} <span class='muted'>(n={r['time_to_declaration_n']})</span></td></tr>"
+            f"<tr><td><strong>{esc(a)}</strong></td><td class='n'>{r['situations']}</td><td class='n'>{r['author_declared']}/{r['tracked_authors']}</td>"
+            f"<td class='n'>{r['missed']}</td><td class='n'>{r['false_hostile']}</td><td class='n'>{r['wrong_c2_showed_it']}</td>"
+            f"<td class='n'>{r['wrong_picture_wrong']}</td><td class='n'>{r['revocations']} ({r['revocations_wrong']})</td>"
+            f"<td class='n'>{r['looks']}</td><td class='n'>{r['person_acts']}</td><td class='n'>{r['confirmations']}</td>"
+            f"<td class='n'>{r['effects_right']}</td><td class='n{bad}'>{r['effects_wrong_target']}</td>"
+            f"<td class='n'>{esc(r['act_to_declaration_median_s'])}</td><td class='n'>{esc(r['act_to_effect_median_s'])}</td></tr>"
         )
     out.append(f'<div class="card"><table><thead>{head}</thead><tbody>{"".join(trs)}</tbody></table></div>')
-    erows = []
-    for a in arms:
-        for basis, v in sorted(((summ["arms"].get(a) or {}).get("engagements") or {}).items()):
-            ends = ", ".join(f"{k} {n}" for k, n in sorted(v.items()) if k not in ("nominated", "effect"))
-            erows.append(f"<tr><td>{esc(a)}</td><td>{esc(basis)}</td><td class='n'>{v.get('nominated', 0)}</td><td class='n'>{v.get('effect', 0)}</td><td>{esc(ends)}</td></tr>")
-    if erows:
-        out.append("<h3>Engagements by how the target was declared when nominated</h3>")
-        out.append(f'<div class="card"><table><thead><tr><th>arm</th><th>target declared by</th><th>nominated</th><th>effects released</th><th>final states</th></tr></thead><tbody>{"".join(erows)}</tbody></table></div>')
-    crows = []
-    for c in summ["cells"]:
-        crows.append(
-            f"<tr><td><code>{esc(c['scenario'])}</code></td><td>{esc(c['arm'])}</td><td class='n'>{c['missed_hostile_acts']}/{c['hostile_acts']}</td>"
-            f"<td class='n'>{c['correct']}</td><td class='n'>{c['false_hostile']}</td><td class='n'>{c['wrong_author']}</td><td class='n'>{c['flags']}</td>"
-            f"<td class='n'>{esc(c['time_to_declaration_median_s'])}</td></tr>"
-        )
-    out.append("<h3>Per scenario</h3>")
-    out.append(f'<div class="card"><table><thead><tr><th>scenario</th><th>arm</th><th>missed</th><th>correct</th><th>false hostile</th><th>wrong author</th><th>flags</th><th>act to declaration, median s</th></tr></thead><tbody>{"".join(crows)}</tbody></table></div>')
     if summ.get("errors"):
         out.append("<p class='bad'>Errors: " + esc(summ["errors"]) + "</p>")
     return "".join(out)

@@ -213,6 +213,9 @@ pub struct TrackDef {
     #[serde(default = "sigma")]
     pub sigma_m: f64,
     pub affiliation: Affiliation,
+    /// How confidently the tracker holds that affiliation (default 0.8).
+    #[serde(default = "aff_conf")]
+    pub affiliation_confidence: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub declared_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -251,6 +254,10 @@ pub struct TrackDef {
 
 fn sigma() -> f64 {
     15.0
+}
+
+fn aff_conf() -> f64 {
+    0.8
 }
 
 fn conf() -> f64 {
@@ -1647,7 +1654,7 @@ fn track_sim(t: &TrackDef) -> TrackSim {
             sigma_growth_mps: Some((0.3 * speed).max(1.0)),
             confidence: t.confidence,
             affiliation: Fact::new(t.affiliation, seen),
-            affiliation_confidence: 0.8,
+            affiliation_confidence: t.affiliation_confidence,
             identity: t.identity.clone(),
             identity_confidence: t.identity_confidence,
             sources: t.sources.clone(),
@@ -2217,6 +2224,7 @@ fn act(
                     velocity: velocity.unwrap_or([0.0, 0.0]),
                     sigma_m: sigma_m.unwrap_or(15.0),
                     affiliation: affiliation.unwrap_or(Affiliation::Unknown),
+                    affiliation_confidence: 0.8,
                     declared_by: None,
                     identity: identity.clone(),
                     identity_confidence: identity_confidence.unwrap_or(0.9),
