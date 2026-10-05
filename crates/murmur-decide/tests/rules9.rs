@@ -9,15 +9,17 @@
 
 mod common;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use common::*;
 use murmur_decide::audit::EventBody;
 use murmur_decide::catalog::Domain;
-use murmur_decide::ident::{self, ActVerdict, Against, FlagKind, IdentConfig, Ledger};
+use murmur_decide::ident::{self, ActVerdict, Against, Corroboration, FlagKind, FlagResolution, IdentConfig, Ledger};
 use murmur_decide::replay::{ReplayOptions, RulesAccepted, replay_str, replay_str_with};
-use murmur_decide::scenario::{self, IdentOverride, ManualProxy, ManualStandard, RunOptions};
+use murmur_decide::scenario::{self, IdentOverride, Pick, ReviewProxy, RunOptions};
 use murmur_decide::*;
 
 fn root() -> PathBuf {
@@ -64,7 +66,14 @@ fn report(at: LonLat, sigma: f64, against: Against) -> ident::ActReport {
         sensors: vec!["usv-1:radar".into()],
         location: at,
         sigma_m: sigma,
+        fixes: Vec::new(),
+        channel: None,
     }
+}
+
+/// Our fleet as the tests' acts name it.
+fn fleet() -> BTreeSet<Uid> {
+    [Uid::new("usv-1")].into()
 }
 
 fn ours() -> Against {
@@ -78,7 +87,7 @@ fn east(p: LonLat, m: f64) -> LonLat {
 
 fn decide(tracks: &BTreeMap<String, TrackFacts>, r: &ident::ActReport, cfg: &IdentConfig) -> ActVerdict {
     let c = ident::attribute(r, tracks, T0, cfg);
-    ident::verdict(r, &c, tracks, &Ledger::default(), cfg)
+    ident::verdict(r, &c, tracks, &fleet(), &Ledger::default(), T0, cfg)
 }
 
 // ---- the rule ---------------------------------------------------------------------------------
@@ -87,7 +96,7 @@ fn decide(tracks: &BTreeMap<String, TrackFacts>, r: &ident::ActReport, cfg: &Ide
 fn a_clear_act_on_the_only_track_there_is_declared() {
     let tracks: BTreeMap<_, _> = [("T-1".to_string(), track(AT, Affiliation::Suspect, 15.0))].into();
     let v = decide(&tracks, &report(AT, 20.0, ours()), &rule_on());
-    assert!(matches!(&v, ActVerdict::Declare { track, attribution } if track == "T-1" && *attribution >= 0.9), "{v:?}");
+    assert!(matches!(&v, ActVerdict::Declare { track, attribution, .. } if track == "T-1" && *attribution >= 0.9), "{v:?}");
     // off: recorded, whatever the evidence (rules 8's behaviour: an operator declares)
     let v = decide(&tracks, &report(AT, 20.0, ours()), &IdentConfig::default());
     assert!(matches!(v, ActVerdict::Recorded { .. }), "{v:?}");
@@ -104,7 +113,7 @@ fn two_tracks_close_together_share_the_attribution_and_the_act_is_flagged() {
     let c = ident::attribute(&r, &tracks, T0, &rule_on());
     assert_eq!(c.len(), 2);
     assert!((c[0].confidence - c[1].confidence).abs() < 0.1, "{c:?}");
-    let v = ident::verdict(&r, &c, &tracks, &Ledger::default(), &rule_on());
+    let v = ident::verdict(&r, &c, &tracks, &fleet(), &Ledger::default(), T0, &rule_on());
     assert!(matches!(&v, ActVerdict::Flag { kind: FlagKind::Attribution, tracks, .. } if tracks.len() == 2), "{v:?}");
 }
 
@@ -129,6 +138,13 @@ fn a_track_shown_neutral_with_confidence_conflicts_and_is_flagged_not_declared()
     let tracks: BTreeMap<_, _> = [("T-1".to_string(), ferry)].into();
     let v = decide(&tracks, &report(AT, 20.0, ours()), &rule_on());
     assert!(matches!(v, ActVerdict::Flag { kind: FlagKind::Conflict, .. }), "{v:?}");
+    // a fishing boat without AIS shown neutral at 0.56 (classified at 0.7): conflicts at the
+    // default 0.5 (it did not at the first default, 0.7)
+    let mut boat = track(AT, Affiliation::Neutral, 15.0);
+    boat.affiliation_confidence = 0.56;
+    let tracks: BTreeMap<_, _> = [("T-1".to_string(), boat)].into();
+    let v = decide(&tracks, &report(AT, 20.0, ours()), &rule_on());
+    assert!(matches!(v, ActVerdict::Flag { kind: FlagKind::Conflict, .. }), "{v:?}");
     // a weakly held neutral estimate does not conflict
     let mut weak = track(AT, Affiliation::Neutral, 15.0);
     weak.affiliation_confidence = 0.4;
@@ -150,6 +166,7 @@ fn the_threshold_and_every_key_are_bounded_and_unknown_keys_fail() {
         "escort_speed_mps = 0",
         "rule_declaration = true\nthreshold = 0.9",
         "declare = true",
+        "corroboration = \"twice\"",
     ] {
         assert!(bad(t).is_err(), "{t}");
     }
@@ -190,9 +207,11 @@ fn keeping_company_with_a_declared_hostile_flags_and_raises_but_never_declares()
     assert_eq!(f.kind, FlagKind::Proximity);
     assert_eq!(f.tracks, vec!["T-2".to_string()]);
     assert!(led.declaration("T-2").is_none(), "proximity never declares");
-    // the engine's picture raises it to suspect; the next step flags nothing new
+    // decisions read its own evidence (the flag shows it suspect to readers only, and names it
+    // in its review flags); the next step flags nothing new
     let seen = e.identified(&w);
-    assert_eq!(seen.tracks["T-2"].affiliation.value, Affiliation::Suspect);
+    assert_eq!(seen.tracks["T-2"].affiliation.value, Affiliation::Unknown);
+    assert_eq!(seen.tracks["T-2"].review_flags, vec![1]);
     assert!(seen.tracks["T-2"].declared_by.is_none());
     assert!(e.step_identification(&w).unwrap().is_empty());
     let rep = replay_str(&log.text()).unwrap();
@@ -329,31 +348,378 @@ fn a_revocation_voids_an_engagement_still_waiting_for_signatures() {
     assert!(r.replay_ok, "{:?}", r.replay_mismatches);
 }
 
-// ---- the manual proxy (the evaluation's) --------------------------------------------------------
+// ---- the review proxy (the evaluation's) -------------------------------------------------
 
+/// The evaluation's proxy works from what the console shows, by its own procedure: one track
+/// at the fix and not shown neutral is the author; a second track there, or only a neutral,
+/// and it can't say. Never the engine's rule.
 #[test]
-fn the_manual_proxy_declares_as_an_operator_after_its_delay() {
+fn the_proxys_procedure_reads_the_console_not_the_rule() {
+    let one: BTreeMap<_, _> = [("T-1".to_string(), track(AT, Affiliation::Unknown, 15.0))].into();
+    let r = report(east(AT, 30.0), 20.0, ours());
+    assert_eq!(scenario::console_pick(&r, &one), Pick::Author("T-1".into()));
+    // 30 m from it at 20 m and 15 m: within two combined sigmas (50 m); the rule's attribution
+    // against an untracked contact per km2 is 0.99 too, but at 80 m the proxy can't say while
+    // the rule would still weigh it
+    let far = report(east(AT, 80.0), 20.0, ours());
+    assert_eq!(scenario::console_pick(&far, &one), Pick::CantSay("no track at the fix"));
+    let two: BTreeMap<_, _> = [
+        ("T-1".to_string(), track(AT, Affiliation::Unknown, 15.0)),
+        ("T-2".to_string(), track(east(AT, 40.0), Affiliation::Unknown, 15.0)),
+    ]
+    .into();
+    assert_eq!(scenario::console_pick(&r, &two), Pick::CantSay("several tracks at the fix"));
+    let mut ferry = track(AT, Affiliation::Neutral, 15.0);
+    ferry.affiliation_confidence = 0.8;
+    let neutral: BTreeMap<_, _> = [("T-1".to_string(), ferry)].into();
+    assert_eq!(scenario::console_pick(&r, &neutral), Pick::CantSay("only a neutral or friend at the fix"));
+    // the victim is never its author
+    let on_victim = report(AT, 20.0, Against::Track { track: "T-1".into() });
+    assert_eq!(scenario::console_pick(&on_victim, &one), Pick::CantSay("no track at the fix"));
+}
+
+/// With rule declaration off the proxy declares from the acts itself, under its own
+/// session, naming the act; with it on it confirms or revokes the rule's declarations and
+/// answers flags. Every log replays.
+#[test]
+fn the_review_proxy_declares_confirms_and_answers_flags() {
     let f = root().join("sim/scenarios/engage/72-hostile-act-declared-by-rule.toml");
-    let opts = RunOptions {
+    let manual = RunOptions {
         seed: Some(3),
         identification: IdentOverride { rule_declaration: Some(false), ..IdentOverride::default() },
-        manual: Some(ManualProxy { delay_s: 10.0, standard: ManualStandard::Rule }),
+        proxy: Some(ReviewProxy { diligence: 1.0, misread: 0.0, ..ReviewProxy::default() }),
         ..RunOptions::default()
     };
-    let r = scenario::run_file(&f, &root(), &opts).unwrap();
+    let r = scenario::run_file(&f, &root(), &manual).unwrap();
     assert!(r.replay_ok, "{:?}", r.replay_mismatches);
     let decl: Vec<_> = r.ident.iter().filter(|x| x.kind.ends_with("declaration")).collect();
     assert_eq!(decl.len(), 1, "{:?}", r.ident);
     assert_eq!(decl[0].kind, "operator_declaration");
     assert_eq!(decl[0].act.as_deref(), Some("A-1"));
     assert!(decl[0].t_s > 3.0, "after the act");
-    // the ambiguous one: by the rule's standard the proxy declares nothing, the best guess does
+    // the ambiguous one: the proxy can't say either (two boats at the fix): nothing declared
     let f = root().join("sim/scenarios/engage/73-ambiguous-attribution-flagged.toml");
-    let r = scenario::run_file(&f, &root(), &opts).unwrap();
+    let r = scenario::run_file(&f, &root(), &manual).unwrap();
     assert!(r.ident.iter().all(|x| !x.kind.ends_with("declaration")), "{:?}", r.ident);
-    let best = RunOptions { manual: Some(ManualProxy { delay_s: 10.0, standard: ManualStandard::Best }), ..opts };
-    let r = scenario::run_file(&f, &root(), &best).unwrap();
-    assert!(r.ident.iter().any(|x| x.kind == "operator_declaration"), "{:?}", r.ident);
+    // rule on: the false declaration of 75 (an untracked author beside a fishing boat), which
+    // the proxy, reading, can't pin on the boat... only if the boat is alone at the fix: it is,
+    // so it confirms (the picture is wrong, not the reading)
+    let f = root().join("sim/scenarios/engage/75-rule-declaration-revoked-mid-engagement.toml");
+    let rule = RunOptions {
+        seed: Some(3),
+        proxy: Some(ReviewProxy { diligence: 1.0, misread: 0.0, ..ReviewProxy::default() }),
+        ..RunOptions::default()
+    };
+    let r = scenario::run_file(&f, &root(), &rule).unwrap();
+    assert!(r.replay_ok, "{:?}", r.replay_mismatches);
+    assert!(r.ident.iter().any(|x| x.kind == "confirmed" && x.by.as_deref() == Some("op-1")), "{:?}", r.ident);
+}
+
+/// The nominator nominates a declared track as soon as it may: with the shipped policy a rule
+/// declaration is refused until confirmed (and retried), with `nominate_unconfirmed` at once.
+#[test]
+fn the_nominator_waits_for_a_confirmation_only_when_the_policy_does() {
+    let f = root().join("sim/scenarios/engage/72-hostile-act-declared-by-rule.toml");
+    let mut sc = scenario::load(&f).unwrap();
+    sc.tamper = None;
+    // the file's own nomination and signatures out: the nominator's only
+    sc.steps.retain(|st| {
+        !matches!(
+            st.action,
+            scenario::Action::Nominate { .. } | scenario::Action::Approve { .. } | scenario::Action::ConfirmDeclaration { .. } | scenario::Action::Expect { .. }
+        )
+    });
+    sc.end_s = Some(200);
+    let run = |nominate: bool, proxy: bool| {
+        let o = RunOptions {
+            identification: IdentOverride { nominate_unconfirmed: Some(nominate), ..IdentOverride::default() },
+            proxy: proxy.then(|| ReviewProxy { diligence: 1.0, misread: 0.0, ..ReviewProxy::default() }),
+            nominator: true,
+            ..RunOptions::default()
+        };
+        scenario::run(&sc, "72-nominator", &root(), &o).unwrap()
+    };
+    // shipped, nobody to confirm: never nominated past the confirmation
+    let r = run(false, false);
+    assert!(r.replay_ok, "{:?}", r.replay_mismatches);
+    assert_ne!(r.final_state.as_deref(), Some("done"), "{:?}", r.final_reason);
+    assert!(r.final_reason.as_deref().unwrap_or("").contains("confirmation"), "{:?}", r.final_reason);
+    // shipped, the proxy confirms: released after the confirmation
+    let r = run(false, true);
+    assert!(r.replay_ok, "{:?}", r.replay_mismatches);
+    assert_eq!(r.final_state.as_deref(), Some("done"), "{:?} {:?}", r.final_reason, r.refusals);
+    // nominate_unconfirmed: released without anyone confirming
+    let r = run(true, false);
+    assert!(r.replay_ok, "{:?}", r.replay_mismatches);
+    assert_eq!(r.final_state.as_deref(), Some("done"), "{:?} {:?}", r.final_reason, r.refusals);
+}
+
+// ---- the review of rules 9 ------------------------------------------------------------------
+
+/// A clock that returns `base` until its `at`-th read, `base + 1 ms` from then on: the wall
+/// clock crossing a millisecond boundary at one particular read (the review's probe).
+#[derive(Clone)]
+struct StepClock {
+    calls: Arc<AtomicI64>,
+    at: i64,
+    base: i64,
+}
+
+impl Clock for StepClock {
+    fn now(&self) -> Time {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        Time(self.base + i64::from(n >= self.at))
+    }
+}
+
+fn rule_policy() -> Policy {
+    let mut p = policy();
+    p.identification = Some(rule_on());
+    p.sync();
+    p
+}
+
+fn rv_track(at: LonLat, aff: Affiliation, conf: f64) -> TrackFacts {
+    let mut t = track(at, aff, 10.0);
+    t.affiliation_confidence = conf;
+    t.identity = Some("fishing_vessel".into());
+    t
+}
+
+fn rv_report(id: &str, at: LonLat, sigma: f64) -> ident::ActReport {
+    let mut r = report(at, sigma, Against::Vehicle { uid: Uid::new("usv-1") });
+    r.act = id.into();
+    r
+}
+
+/// One identification sequence: an operator declares T-1 hostile; an act on T-2 (alone
+/// there) is declared by rule; an act between T-3 and T-4 is flagged; the weak-evidence rule
+/// flags T-5 beside T-1. Returns the log and the clock reads.
+fn sequence(clock: StepClock) -> (String, i64) {
+    let log = MemorySink::new();
+    let calls = clock.calls.clone();
+    let mut e = Engine::new(rule_policy(), roster(), Box::new(clock), Box::new(log.clone())).unwrap();
+    let mut w = world();
+    w.vehicles.insert(Uid::new("usv-1"), vehicle("seahunter", ON_WATER));
+    let far = east(AT, 3_000.0);
+    let mid = east(AT, 6_000.0);
+    w.tracks = [
+        ("T-1".to_string(), rv_track(AT, Affiliation::Suspect, 0.8)),
+        ("T-2".to_string(), rv_track(far, Affiliation::Unknown, 0.3)),
+        ("T-3".to_string(), rv_track(mid, Affiliation::Unknown, 0.3)),
+        ("T-4".to_string(), rv_track(east(mid, 15.0), Affiliation::Unknown, 0.3)),
+        ("T-5".to_string(), rv_track(east(AT, 100.0), Affiliation::Unknown, 0.3)),
+    ]
+    .into();
+    let s = e.open_operator_session(OperatorId::new("op-1")).unwrap();
+    e.declare_track(s.authority(), None, "T-1", Affiliation::Hostile, None, None, &w).unwrap();
+    let o = e.record_act(rv_report("A-1", far, 20.0), &w).unwrap();
+    assert!(matches!(o.verdict, ActVerdict::Declare { .. }), "{:?}", o.verdict);
+    let o = e.record_act(rv_report("A-2", east(mid, 7.5), 60.0), &w).unwrap();
+    assert!(matches!(o.verdict, ActVerdict::Flag { .. }), "{:?}", o.verdict);
+    let f = e.step_identification(&w).unwrap();
+    assert!(!f.is_empty());
+    (log.text(), calls.load(Ordering::SeqCst))
+}
+
+/// Review, fix 4: a declaration's or flag's own time and its event's time are one clock read,
+/// so a millisecond boundary between two reads never makes a genuine log fail replay (before:
+/// 4 of 12 positions did).
+#[test]
+fn a_millisecond_boundary_between_clock_reads_never_breaks_replay() {
+    let base = T0.0;
+    let (text, reads) = sequence(StepClock { calls: Arc::new(AtomicI64::new(0)), at: i64::MAX, base });
+    assert!(replay_str(&text).unwrap().ok(), "no tick: replays");
+    let mut bad = Vec::new();
+    for k in 0..reads {
+        let (text, _) = sequence(StepClock { calls: Arc::new(AtomicI64::new(0)), at: k, base });
+        let r = replay_str(&text).unwrap();
+        if !r.ok() {
+            bad.push((k, r.mismatches.iter().map(|m| m.what.clone()).collect::<Vec<_>>()));
+        }
+    }
+    assert!(reads >= 6, "{reads} reads");
+    assert!(bad.is_empty(), "{} of {reads} tick positions produce a genuine log replay rejects: {bad:?}", bad.len());
+}
+
+/// Review, fix 2: a dismissed proximity flag leaves no residue. T-2 (unclassified) keeps
+/// company with the declared T-1 and is flagged; an operator dismisses it; later T-2 reads
+/// neutral at 0.95 (AIS heard). An act whose fix sits on T-2 conflicts, as it would with no
+/// flag history (before: declared at 0.997).
+#[test]
+fn a_dismissed_proximity_flag_does_not_switch_off_the_conflict_check() {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = Engine::new(rule_policy(), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    let mut w = world();
+    w.vehicles.insert(Uid::new("usv-1"), vehicle("seahunter", ON_WATER));
+    let mut t2 = rv_track(east(AT, 250.0), Affiliation::Unknown, 0.0);
+    t2.identity = None;
+    t2.identity_confidence = 0.0;
+    w.tracks = [("T-1".to_string(), rv_track(AT, Affiliation::Suspect, 0.8)), ("T-2".to_string(), t2)].into();
+    let s = e.open_operator_session(OperatorId::new("op-1")).unwrap();
+    e.declare_track(s.authority(), None, "T-1", Affiliation::Hostile, None, None, &w).unwrap();
+    let f = e.step_identification(&w).unwrap();
+    assert_eq!(f.len(), 1, "a proximity flag on T-2");
+    e.resolve_flag(s.authority(), f[0], FlagResolution::Dismissed, Some("a ferry, not an escort".into()))
+        .unwrap();
+    clock.advance_ms(30_000);
+    w.t = Time(T0.0 + 30_000);
+    let t = w.tracks.get_mut("T-2").unwrap();
+    t.affiliation = Fact::new(Affiliation::Neutral, w.t);
+    t.affiliation_confidence = 0.95;
+    t.identity = Some("ferry".into());
+    t.position = Fact::new(east(AT, 250.0), w.t);
+    w.tracks.get_mut("T-1").unwrap().position = Fact::new(AT, w.t);
+    let mut r = rv_report("A-1", east(AT, 250.0), 20.0);
+    r.observed_t = w.t;
+    let o = e.record_act(r, &w).unwrap();
+    assert!(replay_str(&log.text()).unwrap().ok());
+    assert!(matches!(o.verdict, ActVerdict::Flag { kind: FlagKind::Conflict, .. }), "{:?}", o.verdict);
+}
+
+/// Review, fix 2: an open proximity flag never hides later neutral evidence from the check
+/// (before: the decision picture showed T-2 suspect and declared it).
+#[test]
+fn an_open_proximity_flag_never_hides_neutral_evidence() {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = Engine::new(rule_policy(), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    let mut w = world();
+    w.vehicles.insert(Uid::new("usv-1"), vehicle("seahunter", ON_WATER));
+    let mut t2 = rv_track(east(AT, 250.0), Affiliation::Unknown, 0.0);
+    t2.identity = None;
+    w.tracks = [("T-1".to_string(), rv_track(AT, Affiliation::Suspect, 0.8)), ("T-2".to_string(), t2)].into();
+    let s = e.open_operator_session(OperatorId::new("op-1")).unwrap();
+    e.declare_track(s.authority(), None, "T-1", Affiliation::Hostile, None, None, &w).unwrap();
+    assert_eq!(e.step_identification(&w).unwrap().len(), 1);
+    clock.advance_ms(30_000);
+    w.t = Time(T0.0 + 30_000);
+    let t = w.tracks.get_mut("T-2").unwrap();
+    t.affiliation = Fact::new(Affiliation::Neutral, w.t);
+    t.affiliation_confidence = 0.95;
+    let mut r = rv_report("A-1", east(AT, 250.0), 20.0);
+    r.observed_t = w.t;
+    let o = e.record_act(r, &w).unwrap();
+    let seen = e.identified(&w);
+    assert_eq!(seen.tracks["T-2"].affiliation.value, Affiliation::Neutral, "decisions read its own evidence");
+    assert!(matches!(o.verdict, ActVerdict::Flag { kind: FlagKind::Conflict, .. }), "{:?}", o.verdict);
+    assert!(replay_str(&log.text()).unwrap().ok());
+}
+
+/// Review, fix 1: a victim "vehicle" that is not one of our fleet is not ours (before: any
+/// uid counted).
+#[test]
+fn an_act_against_a_vehicle_not_in_our_fleet_is_flagged() {
+    let tracks: BTreeMap<_, _> = [("T-1".to_string(), track(AT, Affiliation::Unknown, 15.0))].into();
+    let r = report(AT, 20.0, Against::Vehicle { uid: Uid::new("no-such-vehicle") });
+    let v = decide(&tracks, &r, &rule_on());
+    assert!(matches!(v, ActVerdict::Flag { kind: FlagKind::Victim, .. }), "{v:?}");
+    // through the engine: the fleet is the world's vehicles, logged with the act
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = Engine::new(rule_policy(), roster(), Box::new(clock), Box::new(log.clone())).unwrap();
+    let mut w = world();
+    w.tracks = tracks;
+    let o = e.record_act(r, &w).unwrap();
+    assert!(matches!(o.verdict, ActVerdict::Flag { kind: FlagKind::Victim, .. }), "{:?}", o.verdict);
+    let rep = replay_str(&log.text()).unwrap();
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+}
+
+/// Review, fix 3: the victim is never its own attacker. An untracked author 20 m from a
+/// tracked fishing boat attacks that boat (before: the boat was declared at 0.995).
+#[test]
+fn the_victim_of_an_act_is_never_declared_its_author() {
+    let tracks: BTreeMap<_, _> = [("T-9".to_string(), rv_track(AT, Affiliation::Unknown, 0.3))].into();
+    let r = report(east(AT, 20.0), 20.0, Against::Track { track: "T-9".into() });
+    let c = ident::attribute(&r, &tracks, T0, &rule_on());
+    assert!(c.is_empty(), "{c:?}");
+    let v = decide(&tracks, &r, &rule_on());
+    assert!(matches!(v, ActVerdict::Flag { kind: FlagKind::Untracked, .. }), "{v:?}");
+}
+
+/// Decided (review, design point 8): an act against an undeclared suspect is an act against
+/// a contact we protect, so its author may be declared; an unclassified author is declarable
+/// (the act is the evidence).
+#[test]
+fn an_act_against_a_suspect_declares_its_author() {
+    let mut victim = rv_track(east(AT, 2_000.0), Affiliation::Suspect, 0.9);
+    victim.identity = None;
+    let mut author = rv_track(AT, Affiliation::Unknown, 0.0);
+    author.identity = None;
+    author.identity_confidence = 0.0;
+    let tracks: BTreeMap<_, _> = [("T-1".to_string(), author), ("T-9".to_string(), victim)].into();
+    let r = report(AT, 20.0, Against::Track { track: "T-9".into() });
+    let v = decide(&tracks, &r, &rule_on());
+    assert!(matches!(&v, ActVerdict::Declare { track, .. } if track == "T-1"), "{v:?}");
+}
+
+/// Corroboration (user decision): with `second_observation` one fix flags, a second
+/// observer's agreeing fix declares, and so does a second act; replay recomputes both.
+#[test]
+fn corroboration_waits_for_a_second_observation() {
+    let cfg = IdentConfig { corroboration: Some(Corroboration::SecondObservation), ..rule_on() };
+    let tracks: BTreeMap<_, _> = [("T-1".to_string(), track(AT, Affiliation::Suspect, 15.0))].into();
+    let one = report(AT, 20.0, ours());
+    assert!(matches!(decide(&tracks, &one, &cfg), ActVerdict::Flag { kind: FlagKind::Uncorroborated, .. }));
+    let mut two = one.clone();
+    two.fixes.push(ident::Fix {
+        observer: "blade-1".into(),
+        sensors: vec!["blade-1:eo_ir".into()],
+        location: east(AT, 5.0),
+        sigma_m: 25.0,
+    });
+    let v = decide(&tracks, &two, &cfg);
+    assert!(
+        matches!(&v, ActVerdict::Declare { corroborated_by: Some(c), .. } if c.observer.as_deref() == Some("blade-1")),
+        "{v:?}"
+    );
+    // a second act, through the engine, replayed
+    let mut p = policy();
+    p.identification = Some(cfg);
+    p.sync();
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = Engine::new(p, roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    let mut w = world();
+    w.vehicles.insert(Uid::new("usv-1"), vehicle("seahunter", ON_WATER));
+    w.tracks = tracks;
+    let o = e.record_act(one.clone(), &w).unwrap();
+    assert!(matches!(o.verdict, ActVerdict::Flag { kind: FlagKind::Uncorroborated, .. }), "{:?}", o.verdict);
+    clock.advance_ms(20_000);
+    let mut again = one;
+    again.act = "A-2".into();
+    let o = e.record_act(again, &w).unwrap();
+    assert!(
+        matches!(&o.verdict, ActVerdict::Declare { corroborated_by: Some(c), .. } if c.act == "A-1"),
+        "{:?}",
+        o.verdict
+    );
+    let rep = replay_str(&log.text()).unwrap();
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+    assert!(o.declaration.unwrap().describe().contains("corroborated by act A-1"));
+}
+
+/// Revocation notices (user decision): the ledger keeps who revoked whose declaration, so the
+/// declarer hears of it.
+#[test]
+fn a_revocation_is_kept_for_the_declarers_notice() {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = Engine::new(rule_policy(), roster(), Box::new(clock), Box::new(log.clone())).unwrap();
+    let mut w = world();
+    w.tracks = [("T-1".to_string(), track(AT, Affiliation::Suspect, 15.0))].into();
+    let a = e.open_operator_session(OperatorId::new("op-1")).unwrap();
+    let b = e.open_operator_session(OperatorId::new("op-2")).unwrap();
+    e.declare_track(a.authority(), None, "T-1", Affiliation::Hostile, None, None, &w).unwrap();
+    e.revoke_declaration(b.authority(), "T-1", Some("a ferry".into())).unwrap();
+    let rv = e.identification().revocations();
+    assert_eq!(rv.len(), 1);
+    assert_eq!(rv[0].by.as_str(), "op-2");
+    assert_eq!(rv[0].note.as_deref(), Some("a ferry"));
+    assert_eq!(rv[0].declaration.label(), "op-1");
+    assert!(replay_str(&log.text()).unwrap().ok());
 }
 
 // ---- policies -------------------------------------------------------------------------------------

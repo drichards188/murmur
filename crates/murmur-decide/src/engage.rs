@@ -3298,15 +3298,7 @@ pub fn picture(
         cfg,
         alt,
     ));
-    picture_checks.push(keep_out_tracks(
-        p.effect_point,
-        effect_at,
-        p.keep_out_m,
-        id,
-        world,
-        &ec,
-        alt,
-    ));
+    picture_checks.push(picture_keep_out_tracks(snap, world, cfg));
     picture_checks.push(link_check(uid, snap, world));
     picture_checks.push(nav_check(uid, world, cfg));
     picture_checks.push(window_check(snap, world, &ec, dispatched));
@@ -3323,6 +3315,22 @@ pub fn picture(
         out.extend(release);
     }
     (out, holds, ready)
+}
+
+/// The keep-out of tracks an engagement in play is held to ([`picture`]'s, on `world`): rules
+/// 9 also reads it to find the engagements a revoked declaration changes.
+pub fn picture_keep_out_tracks(snap: &EngageSnapshot, world: &WorldSnapshot, cfg: &RulesConfig) -> CheckResult {
+    let ec = cfg.engage_rules();
+    let p = &snap.preview;
+    let track = world.tracks.get(&snap.track_id);
+    // the plan's time, or now once it has come
+    let effect_at = if ec.v2() {
+        p.effect_t.max(world.t)
+    } else {
+        p.effect_t
+    };
+    let alt = effect_alt(track, world.t, effect_at, p.effect_radius_m, &ec);
+    keep_out_tracks(p.effect_point, effect_at, p.keep_out_m, &snap.track_id, world, &ec, alt)
 }
 
 fn reclass_check(id: &str, then: &TrackFacts, now: &TrackFacts, ec: &EngageRules) -> CheckResult {

@@ -18,8 +18,14 @@
 //!   neutral or friendly with high confidence), else flag it for review.
 //! - **Weak evidence is flagged, never declared.** A track that keeps company with a declared
 //!   hostile (within `escort_m`, its velocity within `escort_speed_mps` of the hostile's) is
-//!   raised to suspect and flagged ([`escort`]): that is how neutrals and civilians get
-//!   misclassified, so it never declares anything on its own.
+//!   flagged ([`escort`]) and shown suspect to readers (the console, agents): that is how
+//!   neutrals and civilians get misclassified, so it never declares anything on its own, and
+//!   it never hides the track's own identity evidence from a decision (the rule's conflict
+//!   check reads the estimate as the tracker has it now).
+//! - **Corroboration** (`[identification] corroboration`): `none` declares on one
+//!   observation; `second_observation` waits for a second independent one (another
+//!   observer's fix of the same act, or a second act attributed to the same track at the
+//!   threshold), flagging the act until then.
 //! - **Review.** A rule declaration is a non-blocking review item: any operator may confirm it
 //!   (`ident.confirmed`) or revoke it (`ident.revoked`, which stops every engagement in play
 //!   on the track first, in the same step). A flag may be confirmed or dismissed
@@ -88,7 +94,9 @@ pub struct IdentConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nominate_unconfirmed: Option<bool>,
     /// A track shown neutral or assumed friend at least this confidently conflicts with an
-    /// act attributed to it (flagged, not declared), 0.3..1. Default 0.7.
+    /// act attributed to it (flagged, not declared), 0.3..1. Default 0.5: any neutral or
+    /// friend estimate held better than even (a fishing boat without AIS classified at 0.625
+    /// or more, the tracker's affiliation confidence being 0.8 of its classification).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conflict_confidence: Option<f64>,
     /// How likely the actor is a contact we hold no track of, as a density of untracked
@@ -103,6 +111,32 @@ pub struct IdentConfig {
     /// 0.1..10. Default 1.5.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub escort_speed_mps: Option<f64>,
+    /// What a rule declaration needs besides one observation attributed at the threshold:
+    /// `none` (default) or `second_observation` (another observer's fix of the same act, or a
+    /// second act, attributed to the same track at the threshold).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub corroboration: Option<Corroboration>,
+}
+
+/// `[identification] corroboration`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Corroboration {
+    /// One observation attributed at the threshold declares.
+    #[default]
+    None,
+    /// A second independent observation must agree: another observer's fix of the same act,
+    /// or a second act, attributed to the same track at the threshold.
+    SecondObservation,
+}
+
+impl Corroboration {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Corroboration::None => "none",
+            Corroboration::SecondObservation => "second_observation",
+        }
+    }
 }
 
 impl IdentConfig {
@@ -115,7 +149,11 @@ impl IdentConfig {
     }
 
     pub fn conflict_confidence(&self) -> f64 {
-        self.conflict_confidence.unwrap_or(0.7)
+        self.conflict_confidence.unwrap_or(0.5)
+    }
+
+    pub fn corroboration(&self) -> Corroboration {
+        self.corroboration.unwrap_or_default()
     }
 
     pub fn untracked_per_km2(&self) -> f64 {
@@ -185,9 +223,43 @@ pub struct ActReport {
     pub observed_t: Time,
     /// Our sensors that observed it, as `"<uid>:<sensor>"`.
     pub sensors: Vec<String>,
-    /// Where the act's author appeared to be, and that position's 1-sigma error, metres.
+    /// Where the act's author appeared to be, and that position's 1-sigma error, metres (the
+    /// best observer's fix).
     pub location: LonLat,
     pub sigma_m: f64,
+    /// Further fixes of the same act by other observers, each one observer's best sensor
+    /// (corroboration; fusing them is later work).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fixes: Vec<Fix>,
+    /// The channel it came in on: the bridge's simulation channel (`sim:contacts`, its token
+    /// checked) or the scenario runner (`scenario`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+}
+
+/// One observer's fix of an act's author.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Fix {
+    /// The observing vehicle (its uid).
+    pub observer: String,
+    /// Its sensors that saw the act, as `"<uid>:<sensor>"`.
+    pub sensors: Vec<String>,
+    pub location: LonLat,
+    pub sigma_m: f64,
+}
+
+/// What corroborated a rule declaration (`[identification] corroboration =
+/// "second_observation"`): another observer's fix of the same act, or an earlier act.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Corroborating {
+    /// The act it rests on (the same act for a fix).
+    pub act: String,
+    /// The observer whose fix agreed (a fix of the same act); none for an earlier act.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observer: Option<String>,
+    pub attribution: f64,
 }
 
 /// One track the act may be attributed to: how far its prediction was from the observed
@@ -213,8 +285,11 @@ pub enum FlagKind {
     Untracked,
     /// Its victim can't be said to be ours or protected (no track of it).
     Victim,
-    /// Keeps company with a declared hostile: weak evidence; raises the track to suspect.
+    /// Keeps company with a declared hostile: weak evidence; the track is shown suspect.
     Proximity,
+    /// Attributed at the threshold on one observation, and the policy wants a second
+    /// (`corroboration = "second_observation"`).
+    Uncorroborated,
 }
 
 impl FlagKind {
@@ -225,10 +300,12 @@ impl FlagKind {
             FlagKind::Untracked => "untracked",
             FlagKind::Victim => "victim",
             FlagKind::Proximity => "proximity",
+            FlagKind::Uncorroborated => "uncorroborated",
         }
     }
 
-    /// A flag of this kind raises its track to suspect while it is in force.
+    /// A flag of this kind shows its track suspect while it is in force (display: the console
+    /// and agents' reads; decisions read the track's own evidence and its flags).
     pub fn raises_suspect(self) -> bool {
         self == FlagKind::Proximity
     }
@@ -239,7 +316,12 @@ impl FlagKind {
 #[serde(tag = "verdict", rename_all = "snake_case")]
 pub enum ActVerdict {
     /// Declared hostile by rule (`ident.declared` follows at once).
-    Declare { track: String, attribution: f64 },
+    Declare {
+        track: String,
+        attribution: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        corroborated_by: Option<Corroborating>,
+    },
     /// Flagged for review (`ident.flagged` follows at once).
     Flag {
         kind: FlagKind,
@@ -266,10 +348,6 @@ pub struct Flag {
     /// Proximity: the declared hostile it keeps company with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub related: Option<String>,
-    /// Proximity: the track's own estimate when the flag raised it to suspect (an act
-    /// attributed to it later is weighed against this, not against the raise).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub raised_from: Option<Estimate>,
     pub evidence: String,
 }
 
@@ -339,6 +417,9 @@ pub struct RuleEvidence {
     pub sensors: Vec<String>,
     pub attribution: f64,
     pub threshold: f64,
+    /// The second observation that agreed (`corroboration = "second_observation"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corroborated_by: Option<Corroborating>,
 }
 
 /// Who or what declared a track.
@@ -417,8 +498,15 @@ impl Declaration {
                     Some(c) => format!("confirmed by {}", c.by),
                     None => "not confirmed by an operator".into(),
                 };
+                let corroborated = match &evidence.corroborated_by {
+                    Some(c) => match &c.observer {
+                        Some(o) => format!(", corroborated by {o}'s fix at {:.2}", c.attribution),
+                        None => format!(", corroborated by act {} at {:.2}", c.act, c.attribution),
+                    },
+                    None => String::new(),
+                };
                 format!(
-                    "declared {aff} by rule {rule} (D-{}) on act {} against {}, observed by {} at t={}, attribution {:.2} >= {:.2}; {confirmed}",
+                    "declared {aff} by rule {rule} (D-{}) on act {} against {}, observed by {} at t={}, attribution {:.2} >= {:.2}{corroborated}; {confirmed}",
                     self.id,
                     evidence.act,
                     evidence.against.describe(),
@@ -459,20 +547,39 @@ fn round1(x: f64) -> f64 {
 /// contacts we hold no track of (`untracked_per_km2`). The attribution of a track is its
 /// likelihood over the sum of all of them and the untracked one: several tracks close
 /// together share it. The most likely [`MAX_CANDIDATES`] within five combined sigmas are
-/// returned, most likely first.
+/// returned, most likely first. The act's victim, when it is a track, is never its author.
 pub fn attribute(
     report: &ActReport,
     tracks: &BTreeMap<String, TrackFacts>,
     now: Time,
     cfg: &IdentConfig,
 ) -> Vec<Candidate> {
+    attribute_fix(report, report.location, report.sigma_m, tracks, now, cfg)
+}
+
+/// [`attribute`] for one fix of the act (its location and 1-sigma).
+pub fn attribute_fix(
+    report: &ActReport,
+    location: LonLat,
+    sigma_m: f64,
+    tracks: &BTreeMap<String, TrackFacts>,
+    now: Time,
+    cfg: &IdentConfig,
+) -> Vec<Candidate> {
     let untracked = cfg.untracked_per_km2() * 1e-6;
+    let victim = match &report.against {
+        Against::Track { track } => Some(track.as_str()),
+        _ => None,
+    };
     let mut likely: Vec<(String, f64, f64, f64)> = Vec::new();
     for (id, t) in tracks {
+        if victim == Some(id.as_str()) {
+            continue;
+        }
         let p = crate::engage::track_at(t, report.observed_t);
         let sigma_t = crate::engage::track_sigma_at(t, now, report.observed_t);
-        let s2 = report.sigma_m * report.sigma_m + sigma_t * sigma_t;
-        let d = haversine_m(p, report.location);
+        let s2 = sigma_m * sigma_m + sigma_t * sigma_t;
+        let d = haversine_m(p, location);
         if s2.is_nan() || s2 <= 0.0 || d > 5.0 * s2.sqrt() {
             continue;
         }
@@ -495,12 +602,17 @@ pub fn attribute(
 }
 
 /// What the rule makes of an attributed act, on the picture as the ledger fills it
-/// (`tracks`) and the ledger itself.
+/// (`tracks`: declarations from the ledger, every other identity field the tracker's own,
+/// never masked by a flag), our fleet (`fleet`: the vehicles a victim may be) and the ledger
+/// itself (`now`: the picture's time, for a second act's corroboration).
+#[allow(clippy::too_many_arguments)]
 pub fn verdict(
     report: &ActReport,
     candidates: &[Candidate],
     tracks: &BTreeMap<String, TrackFacts>,
+    fleet: &BTreeSet<Uid>,
     ledger: &Ledger,
+    now: Time,
     cfg: &IdentConfig,
 ) -> ActVerdict {
     if !cfg.rule_declaration {
@@ -508,8 +620,17 @@ pub fn verdict(
             why: "rule declaration is off: an operator declares".into(),
         };
     }
-    // the victim: ours, or a track we protect (any but a declared hostile)
+    // the victim: one of our vehicles, or a track we protect (any but a declared hostile;
+    // a suspect too: an act against an undeclared contact is an act against someone we
+    // protect)
     match &report.against {
+        Against::Vehicle { uid } if !fleet.contains(uid) => {
+            return ActVerdict::Flag {
+                kind: FlagKind::Victim,
+                tracks: named(candidates),
+                why: format!("its victim, vehicle {uid}, is not one of our fleet: it can't be said to be ours"),
+            };
+        }
         Against::Vehicle { .. } => {}
         Against::Track { track } => match tracks.get(track) {
             Some(v) if v.affiliation.value == Affiliation::Hostile && v.declared_by.is_some() => {
@@ -604,13 +725,13 @@ pub fn verdict(
             ),
         };
     }
-    // its own identity evidence (under a suspect raise, the estimate the raise replaced: a
-    // neutral that keeps company with a hostile is still a neutral by its own evidence)
+    // its own identity evidence, as the tracker has it now (a flag never masks it; missing
+    // evidence, an unclassified track, does not conflict: the act is the evidence)
     let conflict = cfg.conflict_confidence();
-    let own = ledger.raised_from(&best.track).unwrap_or(Estimate {
+    let own = Estimate {
         affiliation: t.affiliation.value,
         confidence: t.affiliation_confidence,
-    });
+    };
     if matches!(own.affiliation, Affiliation::Neutral | Affiliation::AssumedFriend)
         && own.confidence >= conflict
     {
@@ -626,9 +747,37 @@ pub fn verdict(
             ),
         };
     }
+    // corroboration: a second independent observation attributed to the same track
+    let corroborated_by = match cfg.corroboration() {
+        Corroboration::None => None,
+        Corroboration::SecondObservation => {
+            let by_fix = report.fixes.iter().find_map(|f| {
+                let c = attribute_fix(report, f.location, f.sigma_m, tracks, now, cfg);
+                c.first()
+                    .filter(|c| c.track == best.track && c.confidence >= threshold)
+                    .map(|c| Corroborating {
+                        act: report.act.clone(),
+                        observer: Some(f.observer.clone()),
+                        attribution: c.confidence,
+                    })
+            });
+            let Some(c) = by_fix.or_else(|| ledger.corroborating_act(&best.track, threshold, &report.act)) else {
+                return ActVerdict::Flag {
+                    kind: FlagKind::Uncorroborated,
+                    tracks: vec![best.track.clone()],
+                    why: format!(
+                        "attributed to {} at {:.2} on one observation; the policy wants a second (another observer's fix of it, or another act) at {threshold:.2}",
+                        best.track, best.confidence
+                    ),
+                };
+            };
+            Some(c)
+        }
+    };
     ActVerdict::Declare {
         track: best.track.clone(),
         attribution: best.confidence,
+        corroborated_by,
     }
 }
 
@@ -648,6 +797,7 @@ pub fn rule_declaration(
     report: &ActReport,
     track: &str,
     attribution: f64,
+    corroborated_by: Option<Corroborating>,
     cfg: &IdentConfig,
 ) -> Declaration {
     Declaration {
@@ -664,6 +814,7 @@ pub fn rule_declaration(
                 sensors: report.sensors.clone(),
                 attribution,
                 threshold: cfg.threshold(),
+                corroborated_by,
             },
         },
         confirmed: None,
@@ -679,7 +830,6 @@ pub fn act_flag(id: u64, t: Time, report: &ActReport, kind: FlagKind, tracks: &[
         tracks: tracks.to_vec(),
         act: Some(report.act.clone()),
         related: None,
-        raised_from: None,
         evidence: format!(
             "act {} against {}, observed by {} at t={}: {why}; not declared",
             report.act,
@@ -693,7 +843,7 @@ pub fn act_flag(id: u64, t: Time, report: &ActReport, kind: FlagKind, tracks: &[
 /// The weak-evidence rule: undeclared tracks keeping company with a declared hostile (in the
 /// same domain, within `escort_m` of it now, both velocity estimates known and within
 /// `escort_speed_mps` of each other), each pair once, in id order. Never a declaration: a
-/// flag, which raises the track to suspect.
+/// flag, which shows the track suspect to readers.
 pub fn escort(
     tracks: &BTreeMap<String, TrackFacts>,
     ledger: &Ledger,
@@ -724,16 +874,16 @@ pub fn escort(
             let d = haversine_m(crate::engage::track_at(x, now), crate::engage::track_at(h, now));
             let rel = (xv[0] - hv[0]).hypot(xv[1] - hv[1]);
             if d <= cfg.escort_m() && rel <= cfg.escort_speed_mps() {
-                // its own estimate (if a raise already made it suspect, the one it replaced)
-                let estimate = ledger.raised_from(xid).unwrap_or(Estimate {
+                // its own estimate, as the tracker has it
+                let estimate = Estimate {
                     affiliation: x.affiliation.value,
                     confidence: x.affiliation_confidence,
-                });
+                };
                 out.push(Escort {
                     track: xid.clone(),
                     hostile: hid.clone(),
                     evidence: format!(
-                        "{xid} ({} at {:.2}) keeps company with declared hostile {hid}: {d:.0} m from it (within {:.0} m), its velocity within {rel:.1} m/s of it (within {:.1}): weak evidence (how neutrals get misclassified), raised to suspect, never declared on this",
+                        "{xid} ({} at {:.2}) keeps company with declared hostile {hid}: {d:.0} m from it (within {:.0} m), its velocity within {rel:.1} m/s of it (within {:.1}): weak evidence (how neutrals get misclassified), shown suspect, never declared on this",
                         estimate.affiliation.as_str(),
                         estimate.confidence,
                         cfg.escort_m(),
@@ -767,6 +917,9 @@ pub struct IdentInputs {
     pub t: Time,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tracks: BTreeMap<String, TrackFacts>,
+    /// An act against a vehicle: our fleet then (the vehicles a victim may be).
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub vehicles: BTreeSet<Uid>,
 }
 
 // ---- the ledger ------------------------------------------------------------------------------
@@ -778,11 +931,29 @@ pub struct IdentInputs {
 pub struct Ledger {
     declarations: BTreeMap<String, Declaration>,
     flags: BTreeMap<u64, (Flag, FlagStatus)>,
-    acts: BTreeSet<String>,
+    acts: BTreeMap<String, SeenAct>,
     last_declaration: u64,
     last_flag: u64,
     revoked_by_operator: BTreeSet<String>,
     pairs: BTreeSet<(String, String)>,
+    revocations: Vec<Revocation>,
+}
+
+/// An act the ledger has seen: its best candidate and that attribution (none: no track).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SeenAct {
+    pub t: Time,
+    pub best: Option<(String, f64)>,
+}
+
+/// A declaration an operator revoked, with who, when and why (the declarer's notice).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Revocation {
+    pub declaration: Declaration,
+    pub by: OperatorId,
+    pub t: Time,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 impl Ledger {
@@ -804,7 +975,26 @@ impl Ledger {
     }
 
     pub fn seen_act(&self, act: &str) -> bool {
-        self.acts.contains(act)
+        self.acts.contains_key(act)
+    }
+
+    /// An earlier act whose best candidate was `track` at `threshold` or more (not `except`):
+    /// a second act corroborating a rule declaration.
+    pub fn corroborating_act(&self, track: &str, threshold: f64, except: &str) -> Option<Corroborating> {
+        self.acts
+            .iter()
+            .filter(|(id, a)| id.as_str() != except && a.best.as_ref().is_some_and(|(t, c)| t == track && *c >= threshold))
+            .min_by_key(|(_, a)| a.t)
+            .map(|(id, a)| Corroborating {
+                act: id.clone(),
+                observer: None,
+                attribution: a.best.as_ref().map_or(0.0, |b| b.1),
+            })
+    }
+
+    /// The declarations operators revoked, oldest first (for the declarer's notice).
+    pub fn revocations(&self) -> &[Revocation] {
+        &self.revocations
     }
 
     pub fn next_declaration(&self) -> u64 {
@@ -832,17 +1022,8 @@ impl Ledger {
             .collect()
     }
 
-    /// The estimate the earliest proximity flag on `track` replaced (in force or not: the
-    /// track's own evidence before any raise), if one raised it.
-    pub fn raised_from(&self, track: &str) -> Option<Estimate> {
-        self.flags
-            .values()
-            .filter(|(f, _)| f.kind.raises_suspect() && f.tracks.iter().any(|t| t == track))
-            .min_by_key(|(f, _)| f.id)
-            .and_then(|(f, _)| f.raised_from)
-    }
-
-    /// Since when a flag in force raises `track` to suspect (the earliest), if one does.
+    /// Since when a flag in force shows `track` suspect (the earliest), if one does (display
+    /// only: decisions read the track's own evidence).
     pub fn suspect_since(&self, track: &str) -> Option<Time> {
         self.flags
             .values()
@@ -855,8 +1036,14 @@ impl Ledger {
     /// events themselves).
     pub fn step(&mut self, t: Time, body: &EventBody) {
         match body {
-            EventBody::IdentAct { act, .. } => {
-                self.acts.insert(act.act.clone());
+            EventBody::IdentAct { act, candidates, .. } => {
+                self.acts.insert(
+                    act.act.clone(),
+                    SeenAct {
+                        t,
+                        best: candidates.first().map(|c| (c.track.clone(), c.confidence)),
+                    },
+                );
             }
             EventBody::IdentDeclared { declaration, .. } => {
                 self.last_declaration = self.last_declaration.max(declaration.id);
@@ -888,9 +1075,15 @@ impl Ledger {
                     });
                 }
             }
-            EventBody::IdentRevoked { track, .. } => {
-                if self.declarations.remove(track).is_some() {
+            EventBody::IdentRevoked { track, by, note, .. } => {
+                if let Some(d) = self.declarations.remove(track) {
                     self.revoked_by_operator.insert(track.clone());
+                    self.revocations.push(Revocation {
+                        declaration: d,
+                        by: by.clone(),
+                        t,
+                        note: note.clone(),
+                    });
                 }
             }
             EventBody::IdentFlagged { flag, .. } => {
@@ -918,9 +1111,9 @@ impl Ledger {
 
     /// Fill the picture's identification from the ledger (what every decision reads, rules
     /// 9): a declared track's `declared_by`, `declaration`, its affiliation as declared (at the
-    /// declaration's time, confidence 1); a track a proximity flag in force raises, suspect
-    /// (since the flag); every track's flags in force. What the bridge sent for these fields
-    /// is replaced: the ledger is the record.
+    /// declaration's time, confidence 1); every track's flags in force. An undeclared track
+    /// keeps the tracker's own affiliation (a proximity flag never masks it). What the bridge
+    /// sent for the declaration fields is replaced: the ledger is the record.
     pub fn fill(&self, tracks: &mut BTreeMap<String, TrackFacts>) {
         for (id, t) in tracks.iter_mut() {
             let (declared_by, declaration, affiliation, confidence) = self.expected(id, t);
@@ -946,20 +1139,14 @@ impl Ledger {
                 Fact::new(d.affiliation, d.t),
                 1.0,
             ),
-            None => {
-                let affiliation = match self.suspect_since(id) {
-                    Some(since) => Fact::new(Affiliation::Suspect, since),
-                    None => t.affiliation.clone(),
-                };
-                (None, None, affiliation, t.affiliation_confidence)
-            }
+            None => (None, None, t.affiliation.clone(), t.affiliation_confidence),
         }
     }
 
     /// Whether a logged picture's identification is the ledger's (rules 9): every track's
     /// `declared_by`, `declaration`, flags in force, and its affiliation where the ledger sets
-    /// it (declared: as declared, confidence 1; raised: suspect since the flag). `Err` names
-    /// the first track that differs and how.
+    /// it (declared: as declared, confidence 1). `Err` names the first track that differs and
+    /// how.
     pub fn check_facts(&self, tracks: &BTreeMap<String, TrackFacts>) -> Result<(), String> {
         for (id, t) in tracks {
             let (declared_by, declaration, affiliation, confidence) = self.expected(id, t);
@@ -992,6 +1179,43 @@ impl Ledger {
         }
         Ok(())
     }
+}
+
+/// Rules 9: the engagements in play whose last picture held `track` exempt from its keep-out
+/// of tracks and would fail it without the declaration (`before`: the ledger before the
+/// revocation, `after`: after it), each with its approval snapshot and that picture's world
+/// as logged. What a revocation of a bystander's declaration stops, besides the engagements
+/// on the track itself.
+pub fn revocation_bystanders<'a>(
+    in_play: impl Iterator<
+        Item = (
+            IntentId,
+            &'a str,
+            &'a crate::engage::EngageSnapshot,
+            &'a crate::world::WorldSnapshot,
+        ),
+    >,
+    track: &str,
+    before: &Ledger,
+    after: &Ledger,
+    cfg: &crate::rules::RulesConfig,
+) -> Vec<IntentId> {
+    let mut out: Vec<IntentId> = in_play
+        .filter(|(_, target, _, _)| *target != track)
+        .filter(|(_, _, snap, w)| {
+            let mut pre = (*w).clone();
+            before.fill(&mut pre.tracks);
+            let mut post = (*w).clone();
+            after.fill(&mut post.tracks);
+            let pass = |w: &crate::world::WorldSnapshot| {
+                crate::engage::picture_keep_out_tracks(snap, w, cfg).outcome == crate::rules::Outcome::Pass
+            };
+            pass(&pre) && !pass(&post)
+        })
+        .map(|(id, _, _, _)| id)
+        .collect();
+    out.sort();
+    out
 }
 
 /// The engagements in play (pending, approved, dispatched) on `track`, by id: what a

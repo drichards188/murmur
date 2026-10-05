@@ -346,6 +346,9 @@ pub struct Engine {
     /// Rules 9: the identification ledger as the log has it (declarations in force, flags,
     /// acts seen): every decision's track picture is filled from it.
     ident: crate::ident::Ledger,
+    /// Rules 9: each engagement in play's last picture (its world as logged), for what a
+    /// revoked declaration changes.
+    last_pictures: BTreeMap<IntentId, WorldSnapshot>,
 }
 
 impl std::fmt::Debug for Engine {
@@ -428,6 +431,7 @@ impl Engine {
             last_queued: None,
             step: None,
             ident: crate::ident::Ledger::default(),
+            last_pictures: BTreeMap::new(),
         };
         let policy = e.policy.clone();
         e.emit(EventBody::RunStarted {
@@ -2203,6 +2207,9 @@ impl Engine {
                 ready,
             },
         )?;
+        if self.policy.rules.rule_id() {
+            self.last_pictures.insert(id, inputs.clone());
+        }
         let why = summarize_failures(&results);
         self.get_mut(id)?.engagement_mut().watch = Some(PictureVerdict {
             t,
@@ -2462,7 +2469,14 @@ impl Engine {
 
     /// Log an identification event at the engine's time and step the ledger with it.
     fn emit_ident(&mut self, body: EventBody) -> Result<Time, EngineError> {
-        let t = self.emit(body.clone())?;
+        let t = self.now();
+        self.emit_ident_at(t, body)
+    }
+
+    /// [`Self::emit_ident`] at `t`, a time already read for the event's own fields (a
+    /// declaration's or flag's `t`), so the two never differ by a clock tick between reads.
+    fn emit_ident_at(&mut self, t: Time, body: EventBody) -> Result<Time, EngineError> {
+        let t = self.emit_at(t, body.clone())?;
         self.ident.step(t, &body);
         Ok(t)
     }
@@ -2496,13 +2510,20 @@ impl Engine {
         let cfg = self.policy.identification();
         let mut tracks = world.tracks.clone();
         self.ident.fill(&mut tracks);
+        // our fleet, for an act against one of our vehicles
+        let vehicles: std::collections::BTreeSet<Uid> = match &report.against {
+            crate::ident::Against::Vehicle { .. } => world.vehicles.keys().cloned().collect(),
+            _ => std::collections::BTreeSet::new(),
+        };
         let candidates = crate::ident::attribute(&report, &tracks, world.t, &cfg);
-        let verdict = crate::ident::verdict(&report, &candidates, &tracks, &self.ident, &cfg);
+        let verdict =
+            crate::ident::verdict(&report, &candidates, &tracks, &vehicles, &self.ident, world.t, &cfg);
         self.emit_ident(EventBody::IdentAct {
             act: report.clone(),
             inputs: crate::ident::IdentInputs {
                 t: world.t,
                 tracks,
+                vehicles,
             },
             candidates: candidates.clone(),
             verdict: verdict.clone(),
@@ -2514,7 +2535,11 @@ impl Engine {
             flag: None,
         };
         match verdict {
-            crate::ident::ActVerdict::Declare { track, attribution } => {
+            crate::ident::ActVerdict::Declare {
+                track,
+                attribution,
+                corroborated_by,
+            } => {
                 let t = self.now();
                 let d = crate::ident::rule_declaration(
                     self.ident.next_declaration(),
@@ -2522,20 +2547,27 @@ impl Engine {
                     &report,
                     &track,
                     attribution,
+                    corroborated_by,
                     &cfg,
                 );
-                self.emit_ident(EventBody::IdentDeclared {
-                    declaration: Box::new(d.clone()),
-                })?;
+                self.emit_ident_at(
+                    t,
+                    EventBody::IdentDeclared {
+                        declaration: Box::new(d.clone()),
+                    },
+                )?;
                 out.declaration = Some(d);
             }
             crate::ident::ActVerdict::Flag { kind, tracks, why } => {
                 let t = self.now();
                 let f = crate::ident::act_flag(self.ident.next_flag(), t, &report, kind, &tracks, &why);
-                self.emit_ident(EventBody::IdentFlagged {
-                    flag: f.clone(),
-                    inputs: None,
-                })?;
+                self.emit_ident_at(
+                    t,
+                    EventBody::IdentFlagged {
+                        flag: f.clone(),
+                        inputs: None,
+                    },
+                )?;
                 out.flag = Some(f);
             }
             crate::ident::ActVerdict::Recorded { .. } => {}
@@ -2621,9 +2653,12 @@ impl Engine {
             },
             confirmed: None,
         };
-        self.emit_ident(EventBody::IdentDeclared {
-            declaration: Box::new(d.clone()),
-        })?;
+        self.emit_ident_at(
+            t,
+            EventBody::IdentDeclared {
+                declaration: Box::new(d.clone()),
+            },
+        )?;
         out.declaration = Some(d);
         Ok(out)
     }
@@ -2664,11 +2699,14 @@ impl Engine {
     }
 
     /// Rules 9: any operator revokes the declaration in force on `track` (an operator's or a
-    /// rule's; it only restricts, like an abort). Logged as `ident.revoked` with the
-    /// engagements in play on the track, which are stopped next, before anything else (cause
-    /// `revoked`): voided before dispatch, aborted with their fallback after it (returned for
-    /// the bridge to command). The track goes back to its estimate; a later act attributed to
-    /// it is flagged, not declared (an operator's judgment outranks the rule).
+    /// rule's; it only restricts, like an abort; `note` optional, logged). Logged as
+    /// `ident.revoked` with the engagements it stops: those in play on the track, and those
+    /// under way whose last picture held the track exempt from their keep-out and would fail
+    /// it without the declaration (a bystander). They are stopped next, before anything else
+    /// (cause `revoked`): voided before dispatch, aborted with their fallback after it
+    /// (returned for the bridge to command). The track goes back to its estimate; a later act
+    /// attributed to it is flagged, not declared (an operator's judgment outranks the rule,
+    /// until an operator declares it again).
     pub fn revoke_declaration(
         &mut self,
         by: &HumanAuthority,
@@ -2688,18 +2726,51 @@ impl Engine {
         let Some(d) = self.ident.declaration(track).cloned() else {
             return Err(EngineError::Identification(format!("no declaration in force on track {track}")));
         };
-        let engagements = crate::ident::engagements_on(
+        let on_track = crate::ident::engagements_on(
             self.intents.values().map(|i| (i.id(), i.spec(), i.state())),
             track,
         );
-        self.emit_ident(EventBody::IdentRevoked {
+        let t = self.now();
+        let body = EventBody::IdentRevoked {
             track: track.to_string(),
             declaration: d.id,
             by: by.operator().clone(),
             session: by.session(),
             note: note.clone(),
-            engagements: engagements.clone(),
-        })?;
+            engagements: Vec::new(),
+        };
+        // the bystanders: engagements under way whose keep-out this declaration exempted
+        let mut after = self.ident.clone();
+        after.step(t, &body);
+        let bystanders = crate::ident::revocation_bystanders(
+            self.intents
+                .values()
+                .filter(|i| matches!(i.state(), State::Approved | State::Dispatched))
+                .filter_map(|i| {
+                    let snap = i.engagement()?.snapshot.as_ref()?;
+                    let w = self.last_pictures.get(&i.id())?;
+                    Some((i.id(), snap.track_id.as_str(), snap, w))
+                }),
+            track,
+            &self.ident,
+            &after,
+            &self.policy.rules,
+        );
+        let mut engagements = on_track.clone();
+        engagements.extend(bystanders.iter().copied());
+        engagements.sort();
+        engagements.dedup();
+        self.emit_ident_at(
+            t,
+            EventBody::IdentRevoked {
+                track: track.to_string(),
+                declaration: d.id,
+                by: by.operator().clone(),
+                session: by.session(),
+                note: note.clone(),
+                engagements: engagements.clone(),
+            },
+        )?;
         let mut out = IdentOutcome {
             revoked: Some(d.id),
             ..IdentOutcome::default()
@@ -2712,11 +2783,19 @@ impl Engine {
                 track: track.to_string(),
                 declaration: d.id,
             };
-            let reason = format!(
-                "target_declared: the declaration of {track} was revoked by {}{why} (it was {})",
-                by.operator(),
-                d.describe()
-            );
+            let reason = if bystanders.contains(&id) && !on_track.contains(&id) {
+                format!(
+                    "keep_out_tracks: the declaration of {track}, which exempted it from this engagement's keep-out, was revoked by {}{why} (it was {})",
+                    by.operator(),
+                    d.describe()
+                )
+            } else {
+                format!(
+                    "target_declared: the declaration of {track} was revoked by {}{why} (it was {})",
+                    by.operator(),
+                    d.describe()
+                )
+            };
             match self.stop_engagement(id, cause, reason, true)? {
                 Some(f) => out.fallbacks.push(f),
                 None => out.voided.push(id),
@@ -2791,16 +2870,19 @@ impl Engine {
                 tracks: vec![track.clone()],
                 act: None,
                 related: Some(hostile.clone()),
-                raised_from: Some(found.estimate),
                 evidence: found.evidence,
             };
-            self.emit_ident(EventBody::IdentFlagged {
-                flag: flag.clone(),
-                inputs: Some(crate::ident::IdentInputs {
-                    t: world.t,
-                    tracks: crate::ident::escort_inputs(&tracks, &track, &hostile),
-                }),
-            })?;
+            self.emit_ident_at(
+                t,
+                EventBody::IdentFlagged {
+                    flag: flag.clone(),
+                    inputs: Some(crate::ident::IdentInputs {
+                        t: world.t,
+                        tracks: crate::ident::escort_inputs(&tracks, &track, &hostile),
+                        vehicles: std::collections::BTreeSet::new(),
+                    }),
+                },
+            )?;
             new.push(flag.id);
         }
         Ok(new)

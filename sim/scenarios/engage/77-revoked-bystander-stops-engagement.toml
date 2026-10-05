@@ -1,0 +1,130 @@
+# Rules 9: a revoked bystander. op-1 declares the fast boat T-0001 hostile. A second boat,
+# T-0002, 250 m from it, commits an act against our patrol USV and is declared hostile by
+# rule. The first nomination on T-0001 is rejected (T-0002, declared by rule and not yet
+# confirmed, stays protected in the keep-out); op-2 confirms T-0002's declaration, which
+# exempts it, and the second nomination is signed and dispatched. En route op-3 revokes
+# T-0002's declaration ("a ferry; the act was misattributed"): the engagement on T-0001,
+# whose keep-out the declaration exempted, is stopped in the revocation's own step, before
+# anything else, cause revoked (not a later picture failure), its fallback commanded. Found by
+# the review of rules 9 (the stop was logged as a picture failure). Afterwards the stop is
+# cut from the log; replay must catch it.
+title = "Revoking a bystander's declaration stops the engagement whose keep-out it exempted"
+invariant = "keep_out_tracks"
+attack = "a keep-out-exempt bystander's declaration revoked mid-engagement; the stop cut from the log"
+expect = "aborted"
+expect_rule = "keep_out_tracks"
+expect_stop = "revoked"
+expect_ident = [
+    "declared T-0001 hostile by op-1",
+    "declared T-0002 hostile by rule:hostile_act",
+    "confirmed T-0002 by op-2",
+    "revoked T-0002 by op-3 (stopping [i2])",
+]
+tamper = "drop_revocation_stop"
+end_s = 200
+
+[[operator]]
+id = "op-1"                 # declares and nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"
+at = [-122.4700, 37.8160]
+
+[[vehicle]]
+uid = "usv-1"
+platform = "seahunter"
+at = [-122.4820, 37.8090]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+truth = "hostile"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["usv-1:radar", "blade-1:eo_ir"]
+
+[[track]]
+id = "T-0002"
+at = [-122.4950, 37.81425]  # 250 m north of it, holding
+affiliation = "suspect"
+truth = "hostile"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["usv-1:radar", "blade-1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 2
+action = "act"
+by_track = "T-0002"
+against_vehicle = "usv-1"
+sensors = ["blade-1:eo_ir", "usv-1:radar"]
+sigma_m = 26
+
+[[step]]
+at_s = 4
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 5
+action = "expect"
+state = "rejected"
+rule = "keep_out_tracks"
+
+[[step]]
+at_s = 7
+action = "confirm_declaration"
+by = "op-2"
+track = "T-0002"
+
+[[step]]
+at_s = 9
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 13
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 16
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 17
+action = "expect"
+state = "dispatched"
+
+[[step]]
+at_s = 20
+action = "revoke_declaration"
+by = "op-3"
+track = "T-0002"
+note = "T-0002 is a ferry; the act was misattributed"

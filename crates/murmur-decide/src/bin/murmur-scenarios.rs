@@ -13,10 +13,12 @@
 //! sets the policy's `[identification] rule_declaration` (the evaluation's rule-versus-manual
 //! comparison on the same seeds), `--threshold X` its attribution threshold and
 //! `--nominate-unconfirmed` its nomination setting (the file's other keys stay);
-//! `--act-noise` adds seeded noise of each act's own sigma to where its author was observed;
-//! `--manual-delay S` (with `--ident off`) has a scripted operator proxy declare each observed
-//! act's author about S seconds after the act (lognormal, seeded), by the rule's own standard
-//! or, with `--manual-standard best`, the most likely track (a model, never human data).
+//! `--corroboration none|second_observation` its corroboration; `--act-noise` adds seeded
+//! noise of each act's own sigma to where its author (and each further observer's fix) was
+//! observed; `--proxy` has a scripted operator review what the identification puts in the
+//! inbox by its own procedure over what the console shows (`scenario::ReviewProxy`; with
+//! `--ident off` it declares from the acts itself; a model, never human data), and
+//! `--nominator` nominates every declared track and has two signers sign it.
 //! `--log-dir` writes each run's audit log as `<scenario>.jsonl`. `--root` is the
 //! repo (default: the current directory) for `sim/policy.toml`, `sim/platforms.toml` and
 //! `sim/areas`.
@@ -64,29 +66,36 @@ fn main() -> ExitCode {
             "--threshold" => opts.identification.attribution_threshold = args.next().and_then(|s| s.parse().ok()),
             "--nominate-unconfirmed" => opts.identification.nominate_unconfirmed = Some(true),
             "--act-noise" => opts.act_noise = true,
-            // the evaluation's manual arm (with --ident off): a scripted operator declares each
-            // observed act's author after a delay (median seconds), by the rule's standard or
-            // the best guess
-            "--manual-delay" => {
-                let delay_s = args.next().and_then(|s| s.parse().ok()).unwrap_or(30.0);
-                opts.manual.get_or_insert(murmur_decide::scenario::ManualProxy {
-                    delay_s,
-                    standard: murmur_decide::scenario::ManualStandard::Rule,
-                }).delay_s = delay_s;
-            }
-            "--manual-standard" => {
-                let standard = match args.next().as_deref() {
-                    Some("rule") => murmur_decide::scenario::ManualStandard::Rule,
-                    Some("best") => murmur_decide::scenario::ManualStandard::Best,
+            "--corroboration" => {
+                opts.identification.corroboration = match args.next().as_deref() {
+                    Some("none") => Some(murmur_decide::ident::Corroboration::None),
+                    Some("second_observation") => Some(murmur_decide::ident::Corroboration::SecondObservation),
                     _ => {
-                        eprintln!("murmur-scenarios: --manual-standard rule|best");
+                        eprintln!("murmur-scenarios: --corroboration none|second_observation");
                         return ExitCode::from(2);
                     }
                 };
-                opts.manual.get_or_insert(murmur_decide::scenario::ManualProxy { delay_s: 30.0, standard }).standard = standard;
             }
+            // the evaluation: a scripted operator reviewing the identification (a model, never
+            // human data), its parameters, and the nominator
+            "--proxy" => {
+                opts.proxy.get_or_insert_with(Default::default);
+            }
+            "--proxy-diligence" => {
+                let v = args.next().and_then(|s| s.parse().ok()).unwrap_or(0.8);
+                opts.proxy.get_or_insert_with(Default::default).diligence = v;
+            }
+            "--proxy-misread" => {
+                let v = args.next().and_then(|s| s.parse().ok()).unwrap_or(0.05);
+                opts.proxy.get_or_insert_with(Default::default).misread = v;
+            }
+            "--proxy-attend" => {
+                let v = args.next().and_then(|s| s.parse().ok()).unwrap_or(20.0);
+                opts.proxy.get_or_insert_with(Default::default).attend_s = v;
+            }
+            "--nominator" => opts.nominator = true,
             _ if a.starts_with("--") => {
-                eprintln!("usage: murmur-scenarios [--json] [--seed N --noise M --vnoise V] [--rules N] [--ident on|off] [--threshold X] [--nominate-unconfirmed] [--act-noise] [--manual-delay S] [--manual-standard rule|best] [--root DIR] [--log-dir DIR] <file-or-dir>...");
+                eprintln!("usage: murmur-scenarios [--json] [--seed N --noise M --vnoise V] [--rules N] [--ident on|off] [--threshold X] [--nominate-unconfirmed] [--corroboration none|second_observation] [--act-noise] [--proxy [--proxy-diligence P] [--proxy-misread P] [--proxy-attend S]] [--nominator] [--root DIR] [--log-dir DIR] <file-or-dir>...");
                 return ExitCode::from(2);
             }
             _ => paths.push(PathBuf::from(a)),

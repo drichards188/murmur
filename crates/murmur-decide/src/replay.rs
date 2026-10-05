@@ -648,6 +648,9 @@ struct Tracked {
     /// Engage: when the picture was last checked (the final approval, then each
     /// `engage.picture`).
     last_picture_t: Option<Time>,
+    /// Rules 9: the last `engage.picture`'s world as logged (what a revoked declaration
+    /// changes for a bystander).
+    last_picture_world: Option<WorldSnapshot>,
     /// An `intent.dispatched` waiting for its dispatch transition (its seq).
     dispatch_logged: Option<u64>,
     /// The dispatch transition happened: op states may refer to the intent from here on.
@@ -759,6 +762,7 @@ impl Tracked {
             plan: None,
             check_window: None,
             last_picture_t: None,
+            last_picture_world: None,
             dispatch_logged: None,
             dispatched: false,
             ready_t: None,
@@ -2599,6 +2603,9 @@ fn replay_inner<S: AsRef<str>>(
                     preloaded,
                 );
                 tr.last_picture_t = Some(e.t);
+                if pol.rules.rule_id() {
+                    tr.last_picture_world = Some(w.clone());
+                }
                 r.pictures_recomputed += 1;
                 if &again != results || h != *holds || rd != *ready {
                     bad(
@@ -3761,18 +3768,28 @@ fn replay_inner<S: AsRef<str>>(
                 if &again != candidates {
                     bad(&mut r, e, None, "an act's attribution differs", json(candidates), json(&again));
                 }
-                let v = crate::ident::verdict(act, &again, &inputs.tracks, &ident, &cfg);
+                // the victim, if one of our vehicles, among the fleet the act's inputs name
+                let fleet_needed = matches!(act.against, crate::ident::Against::Vehicle { .. });
+                if !fleet_needed && !inputs.vehicles.is_empty() {
+                    bad(&mut r, e, None, "an act not against a vehicle of ours logs a fleet", json(&inputs.vehicles), String::new());
+                }
+                let v = crate::ident::verdict(act, &again, &inputs.tracks, &inputs.vehicles, &ident, inputs.t, &cfg);
                 if &v != verdict {
                     bad(&mut r, e, None, "an act's verdict differs", json(verdict), json(&v));
                 }
                 match v {
-                    crate::ident::ActVerdict::Declare { track, attribution } => {
+                    crate::ident::ActVerdict::Declare {
+                        track,
+                        attribution,
+                        corroborated_by,
+                    } => {
                         ident_due = Some((
                             e.seq,
                             IdentDue::Declare {
                                 act: act.clone(),
                                 track,
                                 attribution,
+                                corroborated_by,
                             },
                         ));
                     }
@@ -3801,16 +3818,23 @@ fn replay_inner<S: AsRef<str>>(
                         // only right after the act whose recomputed verdict makes it, exactly as
                         // the rule makes it
                         let want = match ident_due.take() {
-                            Some((_, IdentDue::Declare { act, track, attribution })) => Some(
-                                crate::ident::rule_declaration(
-                                    ident.next_declaration(),
-                                    e.t,
-                                    &act,
-                                    &track,
+                            Some((
+                                _,
+                                IdentDue::Declare {
+                                    act,
+                                    track,
                                     attribution,
-                                    &pol.identification(),
-                                ),
-                            ),
+                                    corroborated_by,
+                                },
+                            )) => Some(crate::ident::rule_declaration(
+                                ident.next_declaration(),
+                                e.t,
+                                &act,
+                                &track,
+                                attribution,
+                                corroborated_by,
+                                &pol.identification(),
+                            )),
                             _ => None,
                         };
                         if want.as_ref() != Some(d) {
@@ -3918,10 +3942,31 @@ fn replay_inner<S: AsRef<str>>(
                         json(&ident.declaration(track)),
                     );
                 }
-                let want = crate::ident::engagements_on(
+                let mut want = crate::ident::engagements_on(
                     intents.iter().map(|(id, t)| (*id, &t.spec, t.state)),
                     track,
                 );
+                // the bystanders: engagements under way whose keep-out the declaration exempted
+                if let Some(pol) = policy.as_ref() {
+                    let mut after = ident.clone();
+                    after.step(e.t, &e.body);
+                    want.extend(crate::ident::revocation_bystanders(
+                        intents
+                            .iter()
+                            .filter(|(_, t)| matches!(t.state, State::Approved | State::Dispatched))
+                            .filter_map(|(id, t)| {
+                                let snap: &engage::EngageSnapshot = t.snapshot.as_deref()?;
+                                let w = t.last_picture_world.as_ref()?;
+                                Some((*id, snap.track_id.as_str(), snap, w))
+                            }),
+                        track,
+                        &ident,
+                        &after,
+                        &pol.rules,
+                    ));
+                    want.sort();
+                    want.dedup();
+                }
                 if *engagements != want {
                     bad(&mut r, e, None, "a revocation names other engagements than those in play on its track", json(engagements), json(&want));
                 }
@@ -3971,7 +4016,6 @@ fn replay_inner<S: AsRef<str>>(
                                 Some(&f.track) == flag.tracks.first()
                                     && Some(&f.hostile) == flag.related.as_ref()
                                     && f.evidence == flag.evidence
-                                    && Some(f.estimate) == flag.raised_from
                             });
                         if !ok {
                             bad(&mut r, e, None, "a proximity flag its two tracks' facts do not raise", json(flag), json(&found));
@@ -4563,6 +4607,7 @@ enum IdentDue {
         act: crate::ident::ActReport,
         track: String,
         attribution: f64,
+        corroborated_by: Option<crate::ident::Corroborating>,
     },
     Flag {
         act: crate::ident::ActReport,

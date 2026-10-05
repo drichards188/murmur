@@ -502,10 +502,16 @@ pub struct RunOptions {
     /// Rules 9: changes to the policy's `[identification]` (the evaluation's manual-versus-rule
     /// comparison on the same seeds): each key given replaces the file's, the rest stay.
     pub identification: IdentOverride,
-    /// Rules 9, the evaluation's manual arm: a scripted operator proxy (the file's first
-    /// operator) declares the author of each observed act hostile some seconds after the act
-    /// is recorded, as a person reading the inbox would. A model, not human data.
-    pub manual: Option<ManualProxy>,
+    /// Rules 9, the evaluation: a scripted operator (the file's first operator) who reviews
+    /// what the identification puts in the inbox, by its own procedure over what the console
+    /// shows ([`ReviewProxy`]). A model, never human data.
+    pub proxy: Option<ReviewProxy>,
+    /// Rules 9, the evaluation: nominate every track declared hostile (the file's first armed
+    /// vehicle, as the file's first operator, the effect radius 75 m, fallback return) as soon
+    /// as it is declared and again every 10 s while refused, and have the first two operators
+    /// with engagement authority look and sign 5 and 8 s after it waits for them. What an
+    /// engagement on a declared track would come to, by the clock.
+    pub nominator: bool,
 }
 
 /// Rules 9: the identification keys a batch sets over the file's policy.
@@ -514,37 +520,160 @@ pub struct IdentOverride {
     pub rule_declaration: Option<bool>,
     pub attribution_threshold: Option<f64>,
     pub nominate_unconfirmed: Option<bool>,
+    pub corroboration: Option<crate::ident::Corroboration>,
 }
 
 impl IdentOverride {
     pub fn is_empty(&self) -> bool {
-        self.rule_declaration.is_none() && self.attribution_threshold.is_none() && self.nominate_unconfirmed.is_none()
+        self.rule_declaration.is_none()
+            && self.attribution_threshold.is_none()
+            && self.nominate_unconfirmed.is_none()
+            && self.corroboration.is_none()
     }
 }
 
-/// Rules 9: the evaluation's scripted manual declarer (`RunOptions::manual`). It reads each
-/// observed act after a delay (lognormal around `delay_s`, sigma 0.4, seeded) and declares,
-/// as the file's first operator, by `standard`. Logged as an operator's declaration (dev
-/// auth: asserted, never a person's), with the note `manual proxy: act A-n`.
+/// Rules 9, the evaluation's scripted operator (`RunOptions::proxy`): a model with stated
+/// parameters, never human data, logged as the file's first operator (dev auth: asserted).
+///
+/// **When.** It looks at the inbox every `attend_s` (median; lognormal, sigma 0.4), an item
+/// first seen at a uniformly random point of that interval, and spends `read_s` (median;
+/// lognormal, sigma 0.3) on an item. At each look it reads the item with probability
+/// `diligence`, else skims.
+///
+/// **What it reads** ([`console_pick`]): what the console shows for an act, the fix's
+/// position with its 1-sigma, and the tracks there as shown (position, 1-sigma, affiliation
+/// and its confidence, a declaration). Its procedure, its own and not the engine's rule:
+/// the tracks within two combined sigmas of the fix (the victim excluded); if a declared
+/// hostile is among them, nothing to add; if exactly one track is there and it is not shown
+/// neutral or assumed friend at 0.5 or more, that is the author; anything else (none, several,
+/// only a neutral) and it can't say. With probability `misread` a reading goes wrong: it takes
+/// another track within three combined sigmas, or, reviewing a declaration, the other
+/// answer.
+///
+/// **What it does.** An act the rule only recorded (rule declaration off): when it reads it,
+/// it declares the author it picked (note `proxy: act A-n`); a skimmed act waits for its next
+/// look (five at most). A rule declaration: when it reads it, it confirms it if it picks the
+/// declared track, else revokes it; skimmed, it confirms (as the proxy operator approves a
+/// card it skims). A flag from an act: when it reads it, it declares the author it picked,
+/// answering the flag, else dismisses it; a skimmed flag waits. A proximity flag: dismissed
+/// when read (keeping company is not an act).
 #[derive(Clone, Debug)]
-pub struct ManualProxy {
-    pub delay_s: f64,
-    pub standard: ManualStandard,
+pub struct ReviewProxy {
+    pub attend_s: f64,
+    pub read_s: f64,
+    pub diligence: f64,
+    pub misread: f64,
 }
 
-/// What the manual proxy declares on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ManualStandard {
-    /// The engine's own evidence standard (what the rule would declare, with rule declaration
-    /// on and the same threshold): the arms then differ in latency and in who acted.
-    Rule,
-    /// The most likely track of every observed act, whatever its attribution (an operator who
-    /// takes the best guess): a sensitivity case.
-    Best,
+impl Default for ReviewProxy {
+    /// The proxy operator model's defaults (`eval/proxy.py`): a look every 20 s, 6 s to read,
+    /// reads 80% of items; a 5% slip.
+    fn default() -> Self {
+        ReviewProxy {
+            attend_s: 20.0,
+            read_s: 6.0,
+            diligence: 0.8,
+            misread: 0.05,
+        }
+    }
 }
 
-/// The note the manual proxy's declarations carry (the evaluation links them to the act).
-pub const MANUAL_NOTE: &str = "manual proxy: act ";
+/// The note the proxy's declarations carry (the evaluation links them to the act).
+pub const PROXY_NOTE: &str = "proxy: act ";
+
+/// What [`console_pick`] makes of an act.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Pick {
+    /// The one track the console shows at the fix: its author.
+    Author(String),
+    /// A declared hostile is at the fix already: nothing to add.
+    Declared(String),
+    /// It can't say (no track there, several, or only a neutral or friend).
+    CantSay(&'static str),
+}
+
+/// The evaluation proxy's procedure over what the console shows for an act (see
+/// [`ReviewProxy`]): the tracks within two combined sigmas of the fix (its victim excluded),
+/// on `tracks` as identified when the act came in.
+pub fn console_pick(report: &crate::ident::ActReport, tracks: &BTreeMap<String, TrackFacts>) -> Pick {
+    let victim = match &report.against {
+        crate::ident::Against::Track { track } => Some(track.as_str()),
+        _ => None,
+    };
+    let near: Vec<(&String, &TrackFacts)> = tracks
+        .iter()
+        .filter(|(id, _)| victim != Some(id.as_str()))
+        .filter(|(_, t)| {
+            let ring = 2.0 * (report.sigma_m.powi(2) + t.pos_sigma_m.powi(2)).sqrt();
+            haversine_m(engage::track_at(t, report.observed_t), report.location) <= ring
+        })
+        .collect();
+    if let Some((id, _)) = near
+        .iter()
+        .find(|(_, t)| t.affiliation.value == Affiliation::Hostile && t.declared_by.is_some())
+    {
+        return Pick::Declared((*id).clone());
+    }
+    match near.as_slice() {
+        [] => Pick::CantSay("no track at the fix"),
+        [(id, t)] => {
+            let shown_protected = matches!(t.affiliation.value, Affiliation::Neutral | Affiliation::AssumedFriend)
+                && t.affiliation_confidence >= 0.5;
+            if shown_protected {
+                Pick::CantSay("only a neutral or friend at the fix")
+            } else {
+                Pick::Author((*id).clone())
+            }
+        }
+        _ => Pick::CantSay("several tracks at the fix"),
+    }
+}
+
+/// A slip: another track within three combined sigmas of the fix (the victim excluded), if
+/// any, drawn with `u` in [0, 1).
+fn misread_pick(
+    report: &crate::ident::ActReport,
+    tracks: &BTreeMap<String, TrackFacts>,
+    not: Option<&str>,
+    u: f64,
+) -> Option<String> {
+    let victim = match &report.against {
+        crate::ident::Against::Track { track } => Some(track.as_str()),
+        _ => None,
+    };
+    let near: Vec<&String> = tracks
+        .iter()
+        .filter(|(id, _)| victim != Some(id.as_str()) && not != Some(id.as_str()))
+        .filter(|(_, t)| {
+            let ring = 3.0 * (report.sigma_m.powi(2) + t.pos_sigma_m.powi(2)).sqrt();
+            haversine_m(engage::track_at(t, report.observed_t), report.location) <= ring
+        })
+        .map(|(id, _)| id)
+        .collect();
+    if near.is_empty() {
+        return None;
+    }
+    let i = ((u * near.len() as f64) as usize).min(near.len() - 1);
+    Some(near[i].clone())
+}
+
+/// One item the proxy has to look at.
+#[derive(Clone, Debug)]
+struct ProxyItem {
+    due_s: u32,
+    looks: u32,
+    kind: ProxyKind,
+}
+
+#[derive(Clone, Debug)]
+enum ProxyKind {
+    /// An act the rule only recorded (its number).
+    Act(String),
+    /// A rule declaration (its track and number).
+    Declaration(String, u64),
+    /// A flag (its number).
+    Flag(u64),
+}
 
 fn act_sigma() -> f64 {
     20.0
@@ -736,6 +865,7 @@ fn terrain() -> PolygonTerrain {
     }
 }
 
+#[derive(Default)]
 struct Rng(u64);
 
 impl Rng {
@@ -778,6 +908,9 @@ pub fn run(
         let mut i = policy.identification.clone().unwrap_or_default();
         if let Some(on) = o.rule_declaration {
             i.rule_declaration = on;
+        }
+        if o.corroboration.is_some() {
+            i.corroboration = o.corroboration;
         }
         if o.attribution_threshold.is_some() {
             i.attribution_threshold = o.attribution_threshold;
@@ -894,12 +1027,11 @@ pub fn run(
             .seed
             .filter(|_| opts.act_noise)
             .map(|s| Rng(s ^ 0xAC75_0000_0000_0001)),
-        manual_rng: opts.seed.map(|s| Rng(s ^ 0x3A27_0000_0000_0002)),
-        manual_proxy: opts.manual.clone().filter(|_| rule_id),
+        proxy_rng: Rng(opts.seed.unwrap_or(1) ^ 0x3A27_0000_0000_0002),
+        proxy: opts.proxy.clone().filter(|_| rule_id),
+        nominator: opts.nominator && rule_id,
         ..Extra::default()
     };
-    let manual = extra.manual_proxy.clone();
-    let proxy = sc.operators.first().map(|o| o.id.clone());
 
     for s in 0..=end_s {
         let now = T0.plus_ms(i64::from(s) * 1000);
@@ -1020,32 +1152,47 @@ pub fn run(
             &mut failures,
             s,
         );
-        // rules 9, the evaluation's manual arm: the proxy's declarations now due
-        if let (Some(_), Some(op)) = (&manual, &proxy) {
-            let due: Vec<(u32, String, String)> = extra.manual.iter().filter(|d| d.0 <= s).cloned().collect();
-            extra.manual.retain(|d| d.0 > s);
-            for (_, track, act) in due {
-                let w = snapshot(&vehicles, &tracks, &catalog, &areas, now);
-                if let Some(sess) = sessions.get(op) {
-                    // already declared hostile (by rule or by someone): nothing to add
-                    let _ = engine.declare_track(
-                        sess.authority(),
-                        None,
-                        &track,
-                        Affiliation::Hostile,
-                        Some(format!("{MANUAL_NOTE}{act}")),
-                        None,
-                        &w,
-                    );
-                }
-            }
+        // rules 9, the evaluation: the review proxy's items now due, then the nominator
+        if extra.proxy.is_some() || extra.nominator {
+            proxies(
+                sc,
+                &mut engine,
+                &sessions,
+                &mut tracks,
+                &mut vehicles,
+                &catalog,
+                &areas,
+                now,
+                &terrain,
+                &mut last,
+                &mut refusals,
+                &mut fallback_seen,
+                &mut failures,
+                &mut engaging,
+                &mut extra,
+                s,
+            );
         }
         // the bridge's loop: expire, the weak-evidence rule (rules 9), then hold the picture /
         // release / observe
         let _ = engine.expire_due();
         let world = snapshot(&vehicles, &tracks, &catalog, &areas, now);
-        if rule_id && let Err(e) = engine.step_identification(&world) {
-            failures.push(format!("t={s}: step_identification: {e}"));
+        if rule_id {
+            match engine.step_identification(&world) {
+                Ok(new) => {
+                    if let Some(p) = extra.proxy.clone() {
+                        for f in new {
+                            let due = extra.first_look(&p, s);
+                            extra.proxy_items.push(ProxyItem {
+                                due_s: due,
+                                looks: 1,
+                                kind: ProxyKind::Flag(f),
+                            });
+                        }
+                    }
+                }
+                Err(e) => failures.push(format!("t={s}: step_identification: {e}")),
+            }
         }
         let outcome = if s < extra.stall_until {
             crate::engine::StepOutcome::default()
@@ -1125,13 +1272,21 @@ pub fn run(
                 failed_rules.push(r.rule.as_str().into());
             }
         }
-        // rules 9: stopped for a revoked declaration, before any picture could fail on it
-        if i.engagement()
+        // rules 9: stopped for a revoked declaration, before any picture could fail on it: the
+        // target's (target_declared) or a bystander's its keep-out exempted (keep_out_tracks)
+        if let Some(st) = i
+            .engagement()
             .and_then(|e| e.stop.as_ref())
-            .is_some_and(|st| matches!(st.cause, engage::StopCause::Revoked { .. }))
-            && !failed_rules.iter().any(|r| r == "target_declared")
+            .filter(|st| matches!(st.cause, engage::StopCause::Revoked { .. }))
         {
-            failed_rules.push("target_declared".into());
+            let rule = if st.reason.starts_with("keep_out_tracks") {
+                "keep_out_tracks"
+            } else {
+                "target_declared"
+            };
+            if !failed_rules.iter().any(|r| r == rule) {
+                failed_rules.push(rule.into());
+            }
         }
     }
     let assessment = intent
@@ -1357,10 +1512,10 @@ fn ident_records(
             EventBody::IdentDeclared { declaration: d } => {
                 let (kind, act, attribution) = match &d.by {
                     Declarer::Rule { evidence, .. } => ("rule_declaration", Some(evidence.act.clone()), Some(evidence.attribution)),
-                    // the evaluation's manual proxy names the act it read
+                    // the evaluation's proxy names the act it read
                     Declarer::Operator { note, .. } => (
                         "operator_declaration",
-                        note.as_deref().and_then(|n| n.strip_prefix(MANUAL_NOTE)).map(str::to_string),
+                        note.as_deref().and_then(|n| n.strip_prefix(PROXY_NOTE)).map(str::to_string),
                         None,
                     ),
                 };
@@ -1656,9 +1811,35 @@ fn act(
             if let Some([e, n]) = shift {
                 location = offset(location, *e, *n);
             }
+            let base = location;
             if let Some(rng) = extra.act_noise.as_mut() {
-                location = offset(location, rng.gauss() * sigma_m, rng.gauss() * sigma_m);
+                location = offset(base, rng.gauss() * sigma_m, rng.gauss() * sigma_m);
             }
+            // each further observer (the sensors' uid prefixes, in order) its own fix, its own
+            // noise
+            let mut observers: Vec<&str> = Vec::new();
+            for sensor in sensors {
+                let o = sensor.split(':').next().unwrap_or(sensor);
+                if !observers.contains(&o) {
+                    observers.push(o);
+                }
+            }
+            let fixes: Vec<crate::ident::Fix> = observers
+                .iter()
+                .skip(1)
+                .map(|o| {
+                    let loc = match extra.act_noise.as_mut() {
+                        Some(rng) => offset(base, rng.gauss() * sigma_m, rng.gauss() * sigma_m),
+                        None => base,
+                    };
+                    crate::ident::Fix {
+                        observer: (*o).to_string(),
+                        sensors: sensors.iter().filter(|x| x.split(':').next() == Some(*o)).cloned().collect(),
+                        location: loc,
+                        sigma_m: *sigma_m,
+                    }
+                })
+                .collect();
             let against = match (against_vehicle, against_track) {
                 (Some(u), _) => crate::ident::Against::Vehicle { uid: Uid::new(u) },
                 (None, Some(t)) => crate::ident::Against::Track { track: t.clone() },
@@ -1671,30 +1852,30 @@ fn act(
                 sensors: sensors.clone(),
                 location,
                 sigma_m: *sigma_m,
+                fixes,
+                channel: Some("scenario".into()),
             };
             let w = world(tracks, vehicles);
+            // what the console showed when the act came in (before anything it made)
+            let shown = extra.proxy.is_some().then(|| engine.identified(&w).tracks.clone());
             match engine.record_act(report.clone(), &w) {
                 Ok(out) => {
-                    // the evaluation's manual arm: the proxy will read this act after its delay
-                    if let Some(m) = extra.manual_proxy.clone()
-                        && matches!(out.verdict, crate::ident::ActVerdict::Recorded { .. })
-                    {
-                        let pick = match m.standard {
-                            ManualStandard::Best => out.candidates.first().map(|c| c.track.clone()),
-                            ManualStandard::Rule => {
-                                let mut cfg = engine.policy().rules.identification.clone();
-                                cfg.rule_declaration = true;
-                                let seen = engine.identified(&w);
-                                match crate::ident::verdict(&report, &out.candidates, &seen.tracks, engine.identification(), &cfg) {
-                                    crate::ident::ActVerdict::Declare { track, .. } => Some(track),
-                                    _ => None,
-                                }
+                    // the evaluation's review proxy: what the inbox now holds for it
+                    if let (Some(p), Some(shown)) = (extra.proxy.clone(), shown) {
+                        extra.act_pictures.insert(id.clone(), (report.clone(), shown));
+                        let kind = match (&out.verdict, &out.declaration, &out.flag) {
+                            (_, Some(d), _) => Some(ProxyKind::Declaration(d.track.clone(), d.id)),
+                            (_, _, Some(f)) => Some(ProxyKind::Flag(f.id)),
+                            (crate::ident::ActVerdict::Recorded { .. }, _, _)
+                                if !engine.policy().identification().rule_declaration =>
+                            {
+                                Some(ProxyKind::Act(id.clone()))
                             }
+                            _ => None,
                         };
-                        if let Some(track) = pick {
-                            let k = extra.manual_rng.as_mut().map_or(1.0, |r| (0.4 * r.gauss()).exp());
-                            let delay = (m.delay_s * k).max(1.0).round() as u32;
-                            extra.manual.push((s + delay, track, id.clone()));
+                        if let Some(kind) = kind {
+                            let due = extra.first_look(&p, s);
+                            extra.proxy_items.push(ProxyItem { due_s: due, looks: 1, kind });
                         }
                     }
                 }
@@ -2266,10 +2447,308 @@ struct Extra {
     /// the seeded noise on their observed positions (a batch with act noise).
     acts: BTreeMap<String, (String, u32)>,
     act_noise: Option<Rng>,
-    /// Rules 9: the manual proxy's declarations due (second, track, act) and its delay draws.
-    manual: Vec<(u32, String, String)>,
-    manual_rng: Option<Rng>,
-    manual_proxy: Option<ManualProxy>,
+    /// Rules 9, the evaluation: the review proxy, its draws, the items it has to look at, and
+    /// each act's report with the picture it came in on (what the console showed).
+    proxy: Option<ReviewProxy>,
+    proxy_rng: Rng,
+    proxy_items: Vec<ProxyItem>,
+    act_pictures: BTreeMap<String, (crate::ident::ActReport, BTreeMap<String, TrackFacts>)>,
+    /// Rules 9, the evaluation: the nominator, when each declared track is next nominated,
+    /// and the signatures due (second, intent, operator).
+    nominator: bool,
+    nominate_next: BTreeMap<String, (u32, u32)>,
+    sign_due: Vec<(u32, IntentId, String)>,
+}
+
+impl Extra {
+    /// When the proxy first gets to an item that came in at `s`: the rest of its look
+    /// interval, then the reading.
+    fn first_look(&mut self, p: &ReviewProxy, s: u32) -> u32 {
+        let attend = p.attend_s * (0.4 * self.proxy_rng.gauss()).exp();
+        let read = p.read_s * (0.3 * self.proxy_rng.gauss()).exp();
+        s + (self.proxy_rng.next() * attend + read).round().max(1.0) as u32
+    }
+
+    /// Its next look at an item it skimmed.
+    fn next_look(&mut self, p: &ReviewProxy, s: u32) -> u32 {
+        let attend = p.attend_s * (0.4 * self.proxy_rng.gauss()).exp();
+        let read = p.read_s * (0.3 * self.proxy_rng.gauss()).exp();
+        s + (attend + read).round().max(1.0) as u32
+    }
+}
+
+/// Rules 9, the evaluation, once a second: the review proxy's items now due, then the
+/// nominator and the signatures it set going. Each goes through the engine as the console's
+/// requests would.
+#[allow(clippy::too_many_arguments)]
+fn proxies(
+    sc: &Scenario,
+    engine: &mut Engine,
+    sessions: &BTreeMap<String, OperatorSession>,
+    tracks: &mut BTreeMap<String, TrackSim>,
+    vehicles: &mut BTreeMap<String, VehicleSim>,
+    catalog: &Catalog,
+    areas: &AreaSet,
+    now: Time,
+    terrain: &PolygonTerrain,
+    last: &mut Option<IntentId>,
+    refusals: &mut Vec<String>,
+    fallback_seen: &mut Option<String>,
+    failures: &mut Vec<String>,
+    engaging: &mut BTreeMap<IntentId, (String, LonLat)>,
+    extra: &mut Extra,
+    s: u32,
+) {
+    let Some(op) = sc.operators.first().map(|o| o.id.clone()) else {
+        return;
+    };
+    if let Some(p) = extra.proxy.clone() {
+        let (due, later): (Vec<ProxyItem>, Vec<ProxyItem>) = std::mem::take(&mut extra.proxy_items)
+            .into_iter()
+            .partition(|i| i.due_s <= s);
+        extra.proxy_items = later;
+        for mut item in due {
+            let reads = extra.proxy_rng.next() < p.diligence;
+            let slip = extra.proxy_rng.next() < p.misread;
+            let u = extra.proxy_rng.next();
+            let Some(sess) = sessions.get(&op) else { return };
+            let w = snapshot(vehicles, tracks, catalog, areas, now);
+            // what the console shows for the item's act, as it came in
+            let act_of = |k: &ProxyKind, engine: &Engine| -> Option<String> {
+                match k {
+                    ProxyKind::Act(a) => Some(a.clone()),
+                    ProxyKind::Declaration(track, id) => engine.identification().declaration(track).and_then(|d| match &d.by {
+                        crate::ident::Declarer::Rule { evidence, .. } if d.id == *id => Some(evidence.act.clone()),
+                        _ => None,
+                    }),
+                    ProxyKind::Flag(f) => engine.identification().flag(*f).and_then(|(fl, _)| fl.act.clone()),
+                }
+            };
+            let act = act_of(&item.kind, engine);
+            let shown = act.as_ref().and_then(|a| extra.act_pictures.get(a).cloned());
+            let pick = shown.as_ref().map(|(r, t)| {
+                let honest = console_pick(r, t);
+                if slip {
+                    let not = match &honest {
+                        Pick::Author(a) => Some(a.as_str()),
+                        _ => None,
+                    };
+                    match misread_pick(r, t, not, u) {
+                        Some(other) => Pick::Author(other),
+                        None => honest,
+                    }
+                } else {
+                    honest
+                }
+            });
+            match item.kind.clone() {
+                ProxyKind::Act(a) => {
+                    if !reads {
+                        if item.looks < 5 {
+                            item.looks += 1;
+                            item.due_s = extra.next_look(&p, s);
+                            extra.proxy_items.push(item);
+                        }
+                        continue;
+                    }
+                    if let Some(Pick::Author(track)) = pick
+                        && let Err(e) = engine.declare_track(
+                            sess.authority(),
+                            None,
+                            &track,
+                            Affiliation::Hostile,
+                            Some(format!("{PROXY_NOTE}{a}")),
+                            None,
+                            &w,
+                        )
+                    {
+                        refusals.push(format!("proxy: {e}"));
+                    }
+                }
+                ProxyKind::Declaration(track, id) => {
+                    // still the declaration it saw, not yet confirmed
+                    if !engine
+                        .identification()
+                        .declaration(&track)
+                        .is_some_and(|d| d.id == id && d.unconfirmed_rule())
+                    {
+                        continue;
+                    }
+                    let agrees = matches!(&pick, Some(Pick::Author(t)) if *t == track);
+                    // skimmed: confirmed, as a card skimmed is approved; a slip says the other
+                    let confirm = if !reads { true } else if slip { !agrees } else { agrees };
+                    let action = if confirm {
+                        Action::ConfirmDeclaration {
+                            by: op.clone(),
+                            track: track.clone(),
+                        }
+                    } else {
+                        Action::RevokeDeclaration {
+                            by: op.clone(),
+                            track: track.clone(),
+                            note: Some(format!(
+                                "proxy: {}",
+                                match &pick {
+                                    Some(Pick::Author(t)) => format!("the act looks like {t}'s"),
+                                    Some(Pick::Declared(t)) => format!("{t}, declared, is at the fix"),
+                                    Some(Pick::CantSay(why)) => format!("can't say: {why}"),
+                                    None => "nothing to go on".into(),
+                                }
+                            )),
+                        }
+                    };
+                    act_proxy(
+                        &action, engine, sessions, tracks, vehicles, catalog, areas, now, terrain, last, refusals,
+                        fallback_seen, failures, engaging, extra, s,
+                    );
+                }
+                ProxyKind::Flag(f) => {
+                    if !engine.identification().flag(f).is_some_and(|(_, st)| st.in_force()) {
+                        continue;
+                    }
+                    if !reads {
+                        if item.looks < 5 {
+                            item.looks += 1;
+                            item.due_s = extra.next_look(&p, s);
+                            extra.proxy_items.push(item);
+                        }
+                        continue;
+                    }
+                    let declared = match (&pick, &act) {
+                        (Some(Pick::Author(track)), Some(a)) => engine
+                            .declare_track(
+                                sess.authority(),
+                                None,
+                                track,
+                                Affiliation::Hostile,
+                                Some(format!("{PROXY_NOTE}{a}")),
+                                Some(f),
+                                &w,
+                            )
+                            .is_ok(),
+                        _ => false,
+                    };
+                    if !declared
+                        && let Err(e) = engine.resolve_flag(
+                            sess.authority(),
+                            f,
+                            crate::ident::FlagResolution::Dismissed,
+                            Some("proxy: can't say who did it".into()),
+                        )
+                    {
+                        refusals.push(format!("proxy: {e}"));
+                    }
+                }
+            }
+        }
+    }
+    if !extra.nominator {
+        return;
+    }
+    // the signatures due
+    type Signature = (u32, IntentId, String);
+    let (due, later): (Vec<Signature>, Vec<Signature>) =
+        std::mem::take(&mut extra.sign_due).into_iter().partition(|d| d.0 <= s);
+    extra.sign_due = later;
+    for (_, id, by) in due {
+        if engine.intent(id).is_some_and(|i| i.state() == State::PendingApproval) {
+            *last = Some(id);
+            act_proxy(
+                &Action::Approve { by }, engine, sessions, tracks, vehicles, catalog, areas, now, terrain, last, refusals,
+                fallback_seen, failures, engaging, extra, s,
+            );
+        }
+    }
+    // every track declared hostile, nominated as soon as it may be
+    let Some(platform) = sc
+        .vehicles
+        .iter()
+        .find(|v| catalog.get(&v.platform).is_some_and(|p| p.armed))
+        .map(|v| v.uid.clone())
+    else {
+        return;
+    };
+    let signers: Vec<String> = sc.operators.iter().filter(|o| o.engage).map(|o| o.id.clone()).take(2).collect();
+    let declared: Vec<String> = engine
+        .identification()
+        .declarations()
+        .filter(|d| d.affiliation == Affiliation::Hostile)
+        .map(|d| d.track.clone())
+        .collect();
+    for track in declared {
+        let busy = engine.intents().any(|i| {
+            matches!(i.spec().task, Task::Engage { .. })
+                && matches!(
+                    i.state(),
+                    State::PendingApproval | State::Approved | State::Dispatched | State::Effected | State::Done
+                )
+                && crate::engage::params(i.spec()).is_some_and(|p| p.0 == track)
+        });
+        if busy {
+            continue;
+        }
+        let (at, tries) = *extra.nominate_next.entry(track.clone()).or_insert((s + 5, 0));
+        if s < at || tries >= 12 {
+            continue;
+        }
+        let before = *last;
+        act_proxy(
+            &Action::Nominate {
+                by: Some(op.clone()),
+                agent: None,
+                rationale: Some(format!("{track} declared hostile")),
+                platform: platform.clone(),
+                track: track.clone(),
+                radius_m: 75.0,
+                fallback: Fallback::Return,
+                window_s: Some(600),
+                accept: Vec::new(),
+            },
+            engine, sessions, tracks, vehicles, catalog, areas, now, terrain, last, refusals, fallback_seen, failures,
+            engaging, extra, s,
+        );
+        let pending = (*last != before)
+            .then_some(*last)
+            .flatten()
+            .filter(|id| engine.intent(*id).is_some_and(|i| i.state() == State::PendingApproval));
+        match pending {
+            Some(id) => {
+                for (k, by) in signers.iter().enumerate() {
+                    extra.sign_due.push((s + 5 + 3 * k as u32, id, by.clone()));
+                }
+                extra.nominate_next.insert(track, (u32::MAX, tries + 1));
+            }
+            None => {
+                extra.nominate_next.insert(track, (s + 10, tries + 1));
+            }
+        }
+    }
+}
+
+/// An action the evaluation's proxies take, through the runner's own path.
+#[allow(clippy::too_many_arguments)]
+fn act_proxy(
+    a: &Action,
+    engine: &mut Engine,
+    sessions: &BTreeMap<String, OperatorSession>,
+    tracks: &mut BTreeMap<String, TrackSim>,
+    vehicles: &mut BTreeMap<String, VehicleSim>,
+    catalog: &Catalog,
+    areas: &AreaSet,
+    now: Time,
+    terrain: &PolygonTerrain,
+    last: &mut Option<IntentId>,
+    refusals: &mut Vec<String>,
+    fallback_seen: &mut Option<String>,
+    failures: &mut Vec<String>,
+    engaging: &mut BTreeMap<IntentId, (String, LonLat)>,
+    extra: &mut Extra,
+    s: u32,
+) {
+    act(
+        a, engine, sessions, tracks, vehicles, catalog, areas, now, terrain, last, refusals, fallback_seen, failures,
+        engaging, extra, s,
+    );
 }
 
 /// Rules 6: a dispatched engagement's lost-link preload, as the runner's platform answers it.
@@ -3165,6 +3644,7 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
                     *verdict = crate::ident::ActVerdict::Declare {
                         track: best.track.clone(),
                         attribution: best.confidence,
+                        corroborated_by: None,
                     };
                     (act.clone(), best)
                 }
@@ -3176,7 +3656,7 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
                 rule_declaration: true,
                 ..crate::ident::IdentConfig::default()
             };
-            let d = crate::ident::rule_declaration(declared + 1, t, &report, &best.track, best.confidence, &cfg);
+            let d = crate::ident::rule_declaration(declared + 1, t, &report, &best.track, best.confidence, None, &cfg);
             events[at + 1].body = EventBody::IdentDeclared {
                 declaration: Box::new(d),
             };
