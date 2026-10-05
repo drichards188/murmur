@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from .engage import load_suite
+from .ident import load_comparison
 from .evidence import RULEBOOK_VERSION
 from .metrics import NOT_HUMAN, compute_run
 from .provenance import code_id, is_doc
@@ -485,6 +486,70 @@ def engage_section(suite: dict[str, Any]) -> str:
     return "".join(out)
 
 
+def ident_section(comp: dict[str, Any]) -> str:
+    """Rules 9: rule-based identification against manual declaration, on the same seeds."""
+    arms = comp.get("arms") or []
+    summ = comp["summary"]
+    out = ["<h2>Identification: rule against manual (rules 9)</h2>"]
+    out.append('<div class="note"><strong>Model results, not human data.</strong> ' + esc(comp.get("label")) + "</div>")
+    out.append(
+        f"<p>Every scenario with a scripted hostile act ({esc(len(comp.get('scenarios') or []))} in <code>sim/scenarios/engage/</code>) "
+        f"played by the decision engine for each arm on seeds {esc(comp.get('seeds'))}, with seeded noise on where each act's author "
+        f"was observed. <strong>rule</strong>: the engine declares hostile by rule when the evidence is clear and flags what it is "
+        f"unsure of (the shipped policy); <strong>rule-nominate</strong>: the same, a rule declaration nominable before anyone "
+        f"confirms it (eval/policy/minimal.toml); <strong>manual</strong>: rule declaration off, a scripted operator proxy declares "
+        f"by the rule's own standard about {esc(comp.get('manual_delay_s'))} s after the act (a latency model); "
+        f"<strong>manual-best</strong>: the proxy declares the most likely track of every act (a looser standard). Labels are the "
+        f"scenario files' truth. A wrong declaration is <em>C2 showed it</em> when another track shared the attribution at 0.1 or "
+        f"more, the declared track's estimate was neutral or friendly, or a flag was on it; else <em>picture wrong</em>. A flag "
+        f"<em>prevented</em> a wrong declaration when its best candidate was not the hostile author, else it <em>held back</em> a "
+        f"right one. Nominations happen at the scenario's scripted seconds in every arm, so engagement outcomes across arms mostly "
+        f"measure whether a declaration existed by then.</p>"
+    )
+    head = (
+        "<tr><th>arm</th><th>runs</th><th>acts</th><th>hostile acts missed</th><th>correct declarations</th>"
+        "<th>false hostile</th><th>wrong author</th><th>wrong: C2 showed it</th><th>wrong: picture wrong</th>"
+        "<th>flags</th><th>flags that prevented a wrong one</th><th>flags that held back a right one</th>"
+        "<th>review items</th><th>declared by a person</th><th>act to declaration, median s</th></tr>"
+    )
+    trs = []
+    for a in arms:
+        r = summ["arms"].get(a)
+        if not r:
+            continue
+        bad = " bad" if r["false_hostile"] or r["wrong_author"] else ""
+        trs.append(
+            f"<tr><td><strong>{esc(a)}</strong></td><td class='n'>{r['runs']}</td><td class='n'>{r['acts']}</td>"
+            f"<td class='n'>{r['missed_hostile_acts']}/{r['hostile_acts']}</td><td class='n'>{r['correct']}</td>"
+            f"<td class='n{bad}'>{r['false_hostile']}</td><td class='n{bad}'>{r['wrong_author']}</td>"
+            f"<td class='n'>{r['wrong_c2_showed_it']}</td><td class='n'>{r['wrong_picture_wrong']}</td><td class='n'>{r['flags']}</td>"
+            f"<td class='n'>{r['flags_prevented_wrong']}</td><td class='n'>{r['flags_held_back_right']}</td>"
+            f"<td class='n'>{r['review_items']}</td><td class='n'>{r['person_declared']}</td>"
+            f"<td class='n'>{esc(r['time_to_declaration_median_s'])} <span class='muted'>(n={r['time_to_declaration_n']})</span></td></tr>"
+        )
+    out.append(f'<div class="card"><table><thead>{head}</thead><tbody>{"".join(trs)}</tbody></table></div>')
+    erows = []
+    for a in arms:
+        for basis, v in sorted(((summ["arms"].get(a) or {}).get("engagements") or {}).items()):
+            ends = ", ".join(f"{k} {n}" for k, n in sorted(v.items()) if k not in ("nominated", "effect"))
+            erows.append(f"<tr><td>{esc(a)}</td><td>{esc(basis)}</td><td class='n'>{v.get('nominated', 0)}</td><td class='n'>{v.get('effect', 0)}</td><td>{esc(ends)}</td></tr>")
+    if erows:
+        out.append("<h3>Engagements by how the target was declared when nominated</h3>")
+        out.append(f'<div class="card"><table><thead><tr><th>arm</th><th>target declared by</th><th>nominated</th><th>effects released</th><th>final states</th></tr></thead><tbody>{"".join(erows)}</tbody></table></div>')
+    crows = []
+    for c in summ["cells"]:
+        crows.append(
+            f"<tr><td><code>{esc(c['scenario'])}</code></td><td>{esc(c['arm'])}</td><td class='n'>{c['missed_hostile_acts']}/{c['hostile_acts']}</td>"
+            f"<td class='n'>{c['correct']}</td><td class='n'>{c['false_hostile']}</td><td class='n'>{c['wrong_author']}</td><td class='n'>{c['flags']}</td>"
+            f"<td class='n'>{esc(c['time_to_declaration_median_s'])}</td></tr>"
+        )
+    out.append("<h3>Per scenario</h3>")
+    out.append(f'<div class="card"><table><thead><tr><th>scenario</th><th>arm</th><th>missed</th><th>correct</th><th>false hostile</th><th>wrong author</th><th>flags</th><th>act to declaration, median s</th></tr></thead><tbody>{"".join(crows)}</tbody></table></div>')
+    if summ.get("errors"):
+        out.append("<p class='bad'>Errors: " + esc(summ["errors"]) + "</p>")
+    return "".join(out)
+
+
 def ci_text(b: dict[str, Any] | None) -> str:
     """Seed-clustered mean [t interval] (seeds with cases), then the pooled k/n [Wilson]."""
     if not b or not b.get("n"):
@@ -916,6 +981,7 @@ def build(batch: Path) -> Path:
     total_viol = sum(a["violations"] for a in agg.values())
     proxy = next((r["info"].get("proxy") for r in runs if r["info"].get("proxy")), None)
     suite = load_suite(batch)
+    ident = load_comparison(batch)
     prov_text, prov_warn = provenance_text(runs, meta)
     # the code computing this page's numbers from the runs' raw logs (may be newer than the
     # code the runs ran, which is what prov_text says)
@@ -924,7 +990,9 @@ def build(batch: Path) -> Path:
 
     body: list[str] = []
     body.append(f"<h1>Murmur evaluation: {esc(meta.get('id', batch.name))}</h1>")
-    if not runs and not excluded:
+    if not runs and not excluded and ident and not suite:
+        body.append(f'<p class="muted">The identification comparison only (rules 9); started {esc(meta.get("started"))}.</p>')
+    elif not runs and not excluded:
         body.append(f'<p class="muted">The engagement scenario suite only; started {esc(meta.get("started"))}; {esc(code_id(meta.get("provenance")))}.</p>')
     else:
         ready = [r["info"].get("ready_at_s") for r in runs if r["info"].get("ready_at_s") is not None]
@@ -1071,6 +1139,8 @@ def build(batch: Path) -> Path:
 
     if suite:
         body.append(engage_section(suite))
+    if ident:
+        body.append(ident_section(ident))
 
     body.append("<h2>What went wrong</h2>")
     body.append(

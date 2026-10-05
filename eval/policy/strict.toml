@@ -133,3 +133,9 @@ reason = "strict variant: every vehicle task is a human decision (approval fatig
 name = "default"
 tier = "auto"
 reason = "routine task inside the approved area"
+
+# Rules 9: identification as the shipped policy (sim/policy.toml; eval/tests checks it).
+[identification]
+rule_declaration = true
+attribution_threshold = 0.9
+nominate_unconfirmed = false

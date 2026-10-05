@@ -133,3 +133,9 @@ reason = "endurance unknown: reserves after the task could not be estimated"
 name = "default"
 tier = "auto"
 reason = "routine task inside the approved area"
+
+# Rules 9: identification as the shipped policy (sim/policy.toml; eval/tests checks it).
+[identification]
+rule_declaration = true
+attribution_threshold = 0.9
+nominate_unconfirmed = false

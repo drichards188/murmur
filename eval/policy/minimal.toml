@@ -1,0 +1,246 @@
+# The minimal-approval evaluation profile (rules 9; user direction 2026-10-05: the system
+# decides where the evidence is clear and flags for human review where it is unsure; the
+# evaluation shows what really needs a person). sim/policy.toml with these differences only,
+# which eval/tests/test_harness.py checks:
+#   - [identification] nominate_unconfirmed = true: a track the engine declared hostile by
+#     rule (an observed hostile act attributed above the threshold, nothing conflicting) may
+#     be nominated before an operator confirms the declaration (it stays a review item);
+#   - [approval] step_up_acts = []: no step-up besides the ones the rules always need (every
+#     engagement signature re-enters the signer's password in a credentials run).
+# Rule declaration is on, as in the shipped policy; agents' routine proposals are approved by
+# the shipped tiers (routine tasks inside the approved area: auto). What never changes: an
+# effect is released only on two signatures by distinct operators with engagement authority,
+# neither the proposer and never an agent, on one frozen plan; accepting a lost friendly is
+# an engagement-authority operator's act; agents can't declare, confirm, revoke, sign, stop
+# or release.
+
+[approval]
+expire_s = 120
+submitter_authorizes = true                 # default for human tiers that don't set it
+step_up_acts = []                           # minimal: no step-up besides engagement signatures
+# step_up_acts = ["declare_hostile", "accept_unknown", "confirm_declaration"]   (rules 8, policy
+#   schema 5; confirm_declaration rules 9, schema 6): acts besides approvals that re-enter the
+#   operator's password in a credentials run (a step-up, logged and quoted by the act):
+#   declaring a track hostile; accepting a lost vehicle for an engagement's keep-out;
+#   confirming the engine's rule declaration. Off by default (a user decision); each is one
+#   word here, and an unknown word fails to load.
+
+# Per task kind, [approval.kind.<kind>] replaces the fixed wait for intents of that kind:
+#   expire_s = <seconds>        a different fixed wait (also the fallback for `until`)
+#   until = "tasking_lead"      collect only: the approval expires when the chosen pass can
+#                               no longer be tasked (its collect time minus the class's
+#                               tasking lead time, scenario time, mapped to the bridge clock
+#                               at the scenario rate). An approval after that would fail the
+#                               lead-time check anyway; the inbox shows the real deadline.
+# approval.requested logs the deadline with its basis; replay recomputes it.
+[approval.kind.collect]
+until = "tasking_lead"
+
+# An engagement nomination waits at most this long, and never past its own window (an
+# approval after the window closes would fail its reach check anyway).
+[approval.kind.engage]
+expire_s = 300
+until = "window"
+
+# Rules 5 (murmur-5p4): the safe command queue. An approved (or auto-approved) order for a
+# vehicle the link can't carry it to right now is held here, not sent into a dead link: one not
+# heard from within link_intervals of its link's report interval (3 s on a streaming link, 60 s
+# for an AUV reporting every 20 s), or a mission (orbit, patrol; rtl on a sub) for one whose
+# link reports less often than every 5 s (an AUV on its acoustic modem: an upload can't cross
+# it). When it can be reached its checks run again on the world then: it is sent if they pass,
+# back to the inbox if a human approved a picture that has since changed (a check, the tier, a
+# reboot, an engagement now in play, a bridge restart since), voided if a check fails or a
+# newer order for its vehicle stands. Past its wait it expires; a human's approval is held no
+# longer than human_expire_s, then it goes back to the inbox. An order sent whose link is lost
+# before its vehicle started it comes back here (re-checked before it goes again); one its
+# vehicle started waits for a lost link this long too, 120 s at most.
+# Bounds: expire_s 1..3600; per kind 0..3600 (0: never queued, sent at once whatever the link,
+# as before rules 5); human_expire_s 1..3600; link_intervals 1..10. Vehicle tasks only.
+[queue]
+expire_s = 900                              # an order waits at most this long for its vehicles
+human_expire_s = 120                        # a human's approval, at most this long after it
+link_intervals = 3                          # reachable: heard within this many of its link's
+                                            # expected report intervals (the bridge's lost-link rule)
+
+# Safety commands: a short wait. A hold or rtl delivered long after it was given may no longer
+# be what the operator wants (the vehicle's own lost-link failsafe has acted by then).
+[queue.kind.hold]
+expire_s = 60
+
+[queue.kind.rtl]
+expire_s = 120
+
+[rules]
+max_fact_age_s = 10                         # older telemetry can't support a decision
+fact_age_intervals = 3                      # ...but a vehicle's limit is at least this many of its link's
+                                            # expected report intervals (acoustic AUV, 20 s: 60 s). The
+                                            # check detail names the limit. Absent: max_fact_age_s only
+orbit_radius_margin = 1.1                   # orbit radius >= 1.1 x minimum turn radius
+fixed_wing_default_min_turn_radius_m = 60   # ArduPlane WP_LOITER_RAD default, when the catalog has no turn rate
+reserve_pct = 20                            # endurance left after the task, % of full
+task_duration_s = 900                       # time on task assumed by the reserves estimate
+unknown_endurance = "human"                 # no endurance_h: "unverified", routed to a human (battery
+                                            # below reserve still fails); or "fail", or "battery_now"
+                                            # (check the battery against the reserve only)
+
+[rules.space]
+# Satellite tasking (collect, cover), on crates/murmur-space and sim/space/.
+epoch_mode = "auto"                         # scenario time vs element epoch: "auto" shifts whole days
+                                            # when the window is > 2 days from the elements (see the
+                                            # murmur-space README); "shift" always, "direct" never
+collect_match_tolerance_s = 120             # at approval, a fresh option of the chosen satellite within
+                                            # this of the chosen collect time is the same opportunity
+cover_min_fraction = 0.99                   # satcom cover: fraction of the window with a satellite above
+                                            # the mask, when the intent gives no min_level
+gnss_min_visible = 4                        # gnss cover: satellites in view at every sample (4 = 3D fix)
+link_step_s = 60                            # satcom coverage sample step
+gnss_step_s = 300                           # gnss visibility sample step
+
+[rules.engage]
+# Phase E: the engagement decision chain (crates/murmur-decide/src/engage.rs). The effect is
+# an abstract event (a point, a radius, a time); these thresholds are the fail-closed checks
+# on the nomination, the picture held after approval, the release and the assessment.
+min_identity_confidence = 0.6               # the track's identity confidence (0..1)
+min_track_confidence = 0.5                  # the track's existence confidence now (0..1)
+max_track_age_s = 5                         # last detection no older than this
+max_sigma_fraction = 0.5                    # track 1-sigma now <= this x effect radius
+max_effect_radius_m = 250                   # largest effect radius a nomination may ask for
+keep_out_m = 200                            # keep-out = effect radius + this: none of our vehicles and
+                                            # no protected track (anything but the target and tracks an
+                                            # operator declared hostile) predicted inside it at the effect time
+keep_out_sigma = 2                          # protected tracks count with this many sigma of uncertainty
+default_window_s = 600                      # a nomination without a window: open this long
+dispatch_delay_s = 20                       # the preview assumes the platform starts this long after it
+                                            # (the time the signatures have; a frozen plan then allows
+                                            # late_s more for a holding track, less for a moving one)
+max_transit_s = 900                         # longest intercept allowed
+unknown_endurance_max_transit_s = 600       # no endurance figure: transit at most this long, battery above
+                                            # the reserve now (a weaker check, stated in the detail)
+deviation_fraction = 1.0                    # after approval: the track within max(this x effect radius,
+deviation_min_m = 50                        # deviation_min_m) of where the approval's snapshot predicts it
+link_gap_s = 5                              # after approval: the platform heard within max(link_gap_s,
+link_gap_intervals = 3                      # link_gap_intervals x its report interval at approval); a
+                                            # report interval more than twice the approval's also voids
+arrival_m = 150                             # release: the platform within this of the effect point
+late_s = 60                                 # not released this long after the predicted time: abort
+assess_grace_s = 3                          # detections this soon after the effect don't count
+assess_dwell_s = 15                         # ceased: covered this long with no detection of the target
+assess_window_s = 120                       # unknown: not covered long enough within this long
+max_picture_gap_s = 5                       # the picture checked at least this often, or it fails
+token_ttl_s = 15                            # a picture token (what a signer is shown) is good this long
+max_signing_s = 120                         # every signature on one plan within this of the first
+plan_drift_max_m = 300                      # at most this allowance for a wobbling velocity estimate
+holding_speed_mps = 1.5                     # a target slower than this is predicted where it is
+friendly_growth_mps = 1.0                   # our vehicles count with keep_out_sigma x this x the
+                                            # prediction span of uncertainty
+# Rules 6 (crates/murmur-decide/README.md, "Keep-out model"): a protected track is predicted
+# along its velocity with its tracker's 1-sigma, this velocity error x the span, and its
+# manoeuvres as acceleration noise (position error q span^3 / 3, q = accel^2 x 1 s), not the
+# tracker's 0.3 x speed growth; one without a velocity estimate could be anywhere it reaches.
+track_velocity_sigma_mps = 1.0              # the velocity estimate's 1-sigma error (Phase G: wobble to
+                                            # 0.5 m/s per axis passed, 1 m/s per axis aborted late)
+track_accel_mps2 = { air = 2.0, ground = 2.0, surface = 0.2, subsurface = 0.2 }
+                                            # manoeuvre (1-sigma acceleration) by domain: a ferry's
+                                            # 300 m turn at 10 m/s is 0.33 m/s^2, an aircraft's
+                                            # standard-rate turn at 55 m/s 2.9 m/s^2
+vertical_rate_mps = 10.0                    # keep-outs in 3D where both altitudes are known: how fast
+                                            # an aircraft track, or one of our vehicles (at least its
+                                            # catalog climb), may climb or descend
+keep_out_vertical_m = 200                   # the keep-out above and below the effect, beyond its radius
+                                            # (an unknown altitude leaves it 2D: no ceiling)
+track_alt_max_age_s = 10                    # a track's altitude counts for the 3D keep-out only while its
+                                            # last ranged measurement (and that sensor's hit) is this recent, s
+
+[[tier]]
+name = "safety-commands"
+when = { kind = ["hold", "rtl"] }
+tier = "auto"
+reason = "hold and rtl reduce risk"
+
+# Satellite collection is someone else's asset pointed at a place on our behalf: it costs
+# (money, priority against other customers) and shows interest in that place. Start simple:
+# every collect needs a human. Later tiers can split this by sensitive area or by
+# cost/priority (e.g. auto for a routine, low-priority collect over the approved area).
+[[tier]]
+name = "satellite-collect"
+when = { kind = ["collect"] }
+tier = "human"
+reason = "a satellite collection is tasked on a human's say-so"
+submitter_authorizes = true
+
+# A cover asks whether SATCOM or GNSS service holds over an area; it commands nothing, so it
+# runs on its own (an unverified check still sends it to a human).
+[[tier]]
+name = "coverage-query"
+when = { kind = ["cover"] }
+tier = "auto"
+reason = "a coverage query commands nothing"
+
+# Phase E: an engagement always waits for humans with engagement authority
+# (MURMUR_ENGAGE_OPERATORS), never its proposer, here two of them. The engine holds a floor
+# whatever this file says: an engagement is never auto, never approved at submission, never
+# approved by its proposer, and needs at least two approvers.
+[[tier]]
+name = "engagement"
+when = { kind = ["engage"] }
+tier = "human"
+reason = "an engagement needs two operators with engagement authority, neither the proposer (DoD Directive 3000.09)"
+submitter_authorizes = false
+proposer_may_approve = false
+approvers = 2
+
+[[tier]]
+name = "armed-platform"
+when = { armed = true }
+tier = "human"
+reason = "armed platforms always need a human (DoD Directive 3000.09)"
+submitter_authorizes = true
+
+[[tier]]
+name = "outside-approved-area"
+when = { leaves_approved_area = true }
+tier = "human"
+reason = "leaves the operator's approved area"
+submitter_authorizes = true
+
+[[tier]]
+name = "endurance-unknown"
+when = { unverified = ["reserves"] }
+tier = "human"
+reason = "endurance unknown: reserves after the task could not be estimated"
+submitter_authorizes = true
+
+[[tier]]
+name = "default"
+tier = "auto"
+reason = "routine task inside the approved area (tunable; approval fatigue is measured in Phase G)"
+
+# Rule-based identification with human review (rules 9, policy schema 6; DECISIONS.md, "The
+# engine may declare hostile by rule, and flags what it is unsure of", 10-05). Every key is
+# optional and an unknown key fails to load.
+#   rule_declaration = true|false  the engine declares a track hostile by rule when an
+#                                  observed hostile act against ours (or a protected track)
+#                                  is attributed to it at attribution_threshold or more and
+#                                  nothing conflicts; unsure cases (a lower attribution,
+#                                  conflicting evidence, no track, a track keeping company
+#                                  with a declared hostile) are flagged for review, never
+#                                  declared. Off (or no section): rules 7's behaviour, only
+#                                  operators declare.
+#   attribution_threshold = 0.9    0.5..0.999
+#   nominate_unconfirmed = false   a track declared by rule may be nominated for an
+#                                  engagement before an operator confirms the declaration
+#   conflict_confidence = 0.7      a track shown neutral or assumed friend this confidently
+#                                  conflicts with an act attributed to it (0.3..1)
+#   untracked_per_km2 = 1          the attribution's alternative: contacts we hold no track
+#                                  of, per square kilometre (0.01..100)
+#   escort_m = 300, escort_speed_mps = 1.5   "keeps company with a declared hostile": within
+#                                  this distance, velocity within this much (a flag, never a
+#                                  declaration)
+# A rule declaration is a review item any operator confirms or revokes (a revocation stops
+# the engagements in play on the track first); a rule-declared track not confirmed stays
+# protected in another engagement's keep-out. Releasing an effect still needs two operators
+# with engagement authority on one frozen plan, whatever this section says.
+[identification]
+rule_declaration = true
+attribution_threshold = 0.9
+nominate_unconfirmed = true                 # minimal: a rule declaration may be nominated at once
