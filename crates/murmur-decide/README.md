@@ -193,8 +193,11 @@ approval of a kind the queue holds needs its reach (recomputed: every vehicle re
 `intent.requeued` needs every vehicle's last op state `requeued` or `unconfirmed`, none ever
 started, and its deadline from the policy; an op that reported its start going out
 (`starting`, `unconfirmed`, or the vehicle started it) never ends `requeued` on that
-delivery: the bridge ends it `unconfirmed`, it may be running (murmur-rcf; a later delivery,
-which only confirms it, may lose its link before it asks the vehicle and end `requeued`).
+delivery: the bridge ends it `unconfirmed`, it may be running (murmur-rcf). A later delivery
+that only confirms it may lose its link before it asks the vehicle what it holds, or while it
+asks (a mission download cut short), and end `requeued`; after a restart, a vehicle that had
+started the order is followed and never ends `requeued`, one whose start may have gone out
+is only confirmed and may.
 Each decision's `waiting` fact is recomputed from the queued intents. `intent.resumed` is
 checked against the previous log (`ReplayOptions::previous`, `murmur-replay --prev`, by
 default the file it names beside the log): that log is the one named (head, last seq),
@@ -323,16 +326,21 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
   still owed when the log ended (`ReplayReport::unrestored`, printed `UNRESTORED:` by
   `murmur-replay`); it is not a decision mismatch. Carried values are checked against the
   log they name (murmur-aca; `ReplayOptions::restores_from`, `murmur-replay --prev` or the
-  file of that name beside the log): exactly what that log still owed (`owed_restores`: each
+  file of that name beside the log): that log must replay (its own carry-overs trusted, one
+  generation), and the values must be exactly what it still owed (`owed_restores`: each
   platform's values, the vehicle they were preloaded on, the engagements named), none twice,
   every platform it owed carried, all from one log. That log is the one `.last-run-<port>`
   named, which can be another than the one the carried intents name (`.resume-<port>.json`
   is deleted by a clean stop, `MURMUR_RESUME=<log>` names any): `murmur-replay` takes one
-  `--prev` for each and matches them by file name. Without it the carried values are
-  reported unchecked (`ReplayReport::carried_restores`, printed `UNCHECKED:`), not a
-  mismatch. A carried restore names its log by file only (no head hash, unlike
-  `intent.resumed`), so that log's own anchors are what bind its content, and a log that
-  carried nothing names no log to check against.
+  `--prev` for each and matches them by file name, and looks beside the log only for a bare
+  file name (never a path, for either). Fail closed, as for carried intents: carried values
+  whose log is not given or found are a mismatch unless trusted (`--trust-resumed`, which
+  covers both carry-overs: it is the same trust decision about where the log came from, and
+  the bridge's own carry-over replay, which passes it, needs no change; the output still
+  names each unchecked one, `UNCHECKED:`), and a carried restore that names no log by its
+  file name is a mismatch, trusted or not. A carried restore names its log by file only (no
+  head hash, unlike `intent.resumed`): replay prints the head of the log it was checked
+  against, and that log's own anchors are what bind its content.
 - **Keep-out model** (rules 6, murmur-der.3; parameters in `[rules.engage]`, each bounded,
   schema 4):
   - *Tracks* are predicted along their velocity with a 1-sigma of `sqrt(pos_sigma^2 +
@@ -870,6 +878,13 @@ on the scenario clock.
 
 ## Not done yet
 
+- Carry-overs, defended only by anchors (`murmur-replay --anchors`), not by replay: a log
+  that deletes an op's `starting` and turns its `unconfirmed` into `requeued` reads as a
+  link lost before the start; a confirm-only delivery's "does not run it" (`unconfirmed`, a
+  human decides) rewritten as a lost link (`requeued`, back to the queue) reads as the
+  genuine one; and a log that removes every carried `platform.restore` names no earlier log
+  to check against, so what that log owed goes unchecked (closing it needs the bridge to log
+  the `.last-run-<port>` it read at start).
 - No HTTP endpoints, no tidewater client, no inbox UI (C.5): bridge and web work.
 - Routes are straight lines between the points the task commits to. An RTL commanded
   mid-loop flies home from wherever the vehicle is, which sweeps a region the return-leg

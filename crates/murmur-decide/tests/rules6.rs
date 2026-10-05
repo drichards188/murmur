@@ -475,12 +475,12 @@ fn owing_run() -> String {
     log.text()
 }
 
-/// The next run on the port: it carries them over from `a.jsonl` (`text`) and puts them back.
-fn carrying_run(text: &str) -> String {
+/// The next run on the port: it carries them over from `file` (`text`) and puts them back.
+fn carrying_run(file: &str, text: &str) -> String {
     let clock = ManualClock::new(T0.plus_ms(600_000));
     let log = MemorySink::new();
     let mut e = Engine::with_areas(policy(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
-    carry_from(&mut e, "a.jsonl", text);
+    carry_from(&mut e, file, text);
     clock.advance_ms(2_000);
     let own: BTreeMap<String, f64> = OWN.iter().map(|(n, v)| ((*n).to_string(), *v)).collect();
     let back = PlatformRestoreReport {
@@ -496,42 +496,67 @@ fn carrying_run(text: &str) -> String {
     log.text()
 }
 
-/// Replay `text` with the log its carried values name (`a.jsonl`) given.
-fn against(text: &str, a: &str) -> replay::ReplayReport {
+/// Replay `text` with `named` given as the log its carried values name, or trusting them.
+fn carried_with(text: &str, named: Option<(&str, &str)>, trusted: bool) -> replay::ReplayReport {
     let opts = replay::ReplayOptions {
-        restores_from: Some(("a.jsonl", a)),
+        restores_from: named,
+        trust_resumed: trusted,
         ..Default::default()
     };
     replay::replay_str_with(text, &opts).unwrap()
 }
 
+/// Replay `text` with the log its carried values name (`a.jsonl`) given.
+fn against(text: &str, a: &str) -> replay::ReplayReport {
+    carried_with(text, Some(("a.jsonl", a)), false)
+}
+
+fn whats_of(r: replay::ReplayReport) -> Vec<String> {
+    r.mismatches.into_iter().map(|m| m.what).collect()
+}
+
 #[test]
 fn carried_values_are_checked_against_what_the_log_they_name_still_owed() {
     let a = owing_run();
-    let b = carrying_run(&a);
+    let b = carrying_run("a.jsonl", &a);
     let owed = replay::owed_restores(&a);
     assert_eq!(owed.len(), 1, "{owed:?}");
     assert!(b.contains(&format!("\"from\":\"a.jsonl (preloaded by {})\"", owed[0].by[0])), "{b}");
-    let checked = |checked| vec![replay::CarriedRestores { log: "a.jsonl".into(), restores: 1, checked }];
-    // the genuine log: checked against a.jsonl, nothing wrong
+    let a_head = replay::replay_str(&a).unwrap().head_sha256;
+    let checked = |checked: bool| {
+        vec![replay::CarriedRestores {
+            log: "a.jsonl".into(),
+            restores: 1,
+            checked,
+            head: if checked { a_head.clone() } else { None },
+        }]
+    };
+    // the genuine log: checked against a.jsonl (its head reported, to compare with its
+    // anchors), nothing wrong
     let r = against(&b, &a);
     assert!(r.ok() && r.unrestored.is_empty(), "{:?} {:?}", r.mismatches, r.unrestored);
     assert_eq!(r.carried_restores, checked(true));
-    // without a.jsonl (or with another log than the one named): reported unchecked, not a
-    // mismatch
-    let r = replay::replay_str(&b).unwrap();
-    assert!(r.ok(), "{:?}", r.mismatches);
-    assert_eq!(r.carried_restores, checked(false));
-    let opts = replay::ReplayOptions { restores_from: Some(("other.jsonl", &a)), ..Default::default() };
-    let r = replay::replay_str_with(&b, &opts).unwrap();
-    assert!(r.ok(), "{:?}", r.mismatches);
-    assert_eq!(r.carried_restores, checked(false));
-    // forged and re-chained, each consistent within the log (it replays without a.jsonl) and
-    // caught against it
+    // without a.jsonl, or with another log than the one named: not verified, a mismatch
+    // (fail closed, as for carried intents); trusted, reported unchecked
+    for named in [None, Some(("other.jsonl", a.as_str()))] {
+        let r = carried_with(&b, named, false);
+        assert_eq!(r.carried_restores, checked(false));
+        let w = whats_of(r);
+        assert_eq!(
+            w,
+            ["lost-link values carried over from a.jsonl not verified: replay with that log (murmur-replay --prev), or trust it (--trust-resumed)"],
+            "{named:?}"
+        );
+        let r = carried_with(&b, named, true);
+        assert!(r.ok(), "{:?}", r.mismatches);
+        assert_eq!(r.carried_restores, checked(false));
+    }
+    // forged and re-chained, each consistent within the log (it replays trusting its
+    // carry-overs) and caught against a.jsonl
     let caught = |text: &str, what: &[&str]| {
-        let alone = replay::replay_str(text).unwrap();
+        let alone = carried_with(text, None, true);
         assert!(alone.ok(), "consistent on its own: {:?}", alone.mismatches);
-        let w: Vec<String> = against(text, &a).mismatches.into_iter().map(|m| m.what).collect();
+        let w = whats_of(against(text, &a));
         for m in what {
             assert!(w.iter().any(|x| x.contains(m)), "{m}: {w:?}");
         }
@@ -582,7 +607,7 @@ fn carried_values_are_checked_against_what_the_log_they_name_still_owed() {
         ev.insert(i + 1, twice);
     });
     caught(&text, &["carried over twice from the log it names"]);
-    // and from two logs (one start carries from one): caught without either
+    // and from two logs (one start carries from one): caught however it is replayed
     let text = forge(&b, |ev| {
         let i = ev.iter().position(|e| matches!(e.body, EventBody::PlatformRestore { carried: true, .. })).unwrap();
         let mut other = ev[i].clone();
@@ -591,8 +616,84 @@ fn carried_values_are_checked_against_what_the_log_they_name_still_owed() {
         }
         ev.insert(i + 1, other);
     });
-    let w = whats(&text);
+    let w = whats_of(carried_with(&text, None, true));
     assert!(w.iter().any(|m| m.contains("carried restores name more than one earlier log")), "{w:?}");
+}
+
+#[test]
+fn the_log_carried_values_name_must_replay_itself() {
+    // review of 3ed31ba, finding 1: the values were compared with whatever text was given
+    // under that name; a forged "a.jsonl" of one unchained line owing the forged values passed
+    let a = owing_run();
+    let b = carrying_run("a.jsonl", &a);
+    let forged_b = forge(&b, |ev| {
+        for e in ev.iter_mut() {
+            if let EventBody::PlatformRestore { values, readback, carried, from, .. } = &mut e.body {
+                values.insert("FS_LONG_TIMEOUT".into(), 600.0);
+                if !readback.is_empty() {
+                    readback.insert("FS_LONG_TIMEOUT".into(), 600.0);
+                }
+                if *carried {
+                    *from = Some("a.jsonl (carried over into it)".into());
+                }
+            }
+        }
+    });
+    let line = forged_b.lines().find(|l| l.contains("\"carried\":true")).unwrap();
+    let fake_a = format!("{line}\n");
+    assert_eq!(replay::owed_restores(&fake_a).len(), 1, "it owes the forged values");
+    let r = against(&forged_b, &fake_a);
+    let w: Vec<String> = r.mismatches.iter().map(|m| m.what.clone()).collect();
+    assert_eq!(w, ["the log the carried values name does not replay"], "{:?}", r.mismatches);
+    assert!(r.mismatches[0].logged.contains("run.started"), "{:?}", r.mismatches);
+    // nor one that can't be read at all
+    let w = whats_of(against(&b, "not a log\n"));
+    assert!(w.iter().any(|m| m == "the log the carried values name can't be read"), "{w:?}");
+    // the genuine one replays: its head is reported
+    let r = against(&b, &a);
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert!(r.carried_restores[0].head.is_some());
+}
+
+#[test]
+fn a_carried_restore_names_its_log_by_a_bare_file_name() {
+    // review of 3ed31ba, finding 4: a file name may hold " ("; the bridge's parenthesis is
+    // the last one
+    for (from, file) in [
+        ("a.jsonl (preloaded by i1, i4)", "a.jsonl"),
+        ("a.jsonl (carried over into it)", "a.jsonl"),
+        ("run (1).jsonl (preloaded by i3)", "run (1).jsonl"),
+        ("run (1).jsonl (carried over into it)", "run (1).jsonl"),
+        ("run (1).jsonl", "run (1).jsonl"),
+    ] {
+        assert_eq!(replay::carried_restore_log(Some(from)), file, "{from}");
+    }
+    for (name, bare) in [("a.jsonl", true), ("run (1).jsonl", true), ("../x/a.jsonl", false), ("/tmp/a.jsonl", false), ("..", false), ("", false), ("x\\a.jsonl", false)] {
+        assert_eq!(replay::is_log_file_name(name), bare, "{name}");
+    }
+    let a = owing_run();
+    let b = carrying_run("run (1).jsonl", &a);
+    let r = carried_with(&b, Some(("run (1).jsonl", &a)), false);
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert!(r.carried_restores[0].checked, "{:?}", r.carried_restores);
+    // a carried restore that names its log by a path, or names none: a mismatch, trusted or not
+    let b = carrying_run("a.jsonl", &a);
+    for from in [Some("../other/a.jsonl (preloaded by i1)"), None] {
+        let text = forge(&b, |ev| {
+            for e in ev.iter_mut() {
+                if let EventBody::PlatformRestore { carried: true, from: f, .. } = &mut e.body {
+                    *f = from.map(str::to_string);
+                }
+            }
+        });
+        for trusted in [false, true] {
+            let w = whats_of(carried_with(&text, Some(("a.jsonl", &a)), trusted));
+            assert!(
+                w.iter().any(|m| m.starts_with("carried restore names no earlier log by its file name")),
+                "{from:?} {trusted}: {w:?}"
+            );
+        }
+    }
 }
 
 /// A released engagement's log (scenario 01), its lines.

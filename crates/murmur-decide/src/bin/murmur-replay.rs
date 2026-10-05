@@ -13,19 +13,23 @@
 //!   and compares; a different segment is a cache mismatch, reported separately.
 //! - Rules 5: a log whose `intent.resumed` events carry intents over from the previous run
 //!   is checked against that log: `--prev <file>`, or by default the file the events name in
-//!   the same directory. `--trust-resumed` accepts them without it (trusting their origin).
+//!   the same directory.
 //! - Rules 6: a log whose carried `platform.restore` events put back lost-link values an
-//!   earlier run still owed is checked against the log they name (what it still owed), found
-//!   the same way. That log can be another one than the intents' (`.last-run-<port>` and
-//!   `.resume-<port>.json` can name different logs), so `--prev` may be given once for each:
-//!   each is matched to the events by its file name (a single `--prev` that matches neither is
-//!   taken for the intents, as before). The output says which log each check used, and what
-//!   was not checked because its log was absent (`UNCHECKED:`; carried values without their
-//!   log are not a mismatch).
+//!   earlier run still owed is checked against the log they name: that log must replay, and
+//!   they must be exactly what it still owed. It is found the same way, and it can be another
+//!   log than the intents' (`.last-run-<port>` and `.resume-<port>.json` can name different
+//!   logs), so `--prev` may be given once for each: each is matched to the events by its file
+//!   name (a single `--prev` that matches neither is taken for the intents, as before). Only
+//!   a bare file name is looked for beside the log, never a path.
+//! - Either carry-over whose earlier log is not given or found is a mismatch;
+//!   `--trust-resumed` accepts both without their logs (trusting their origin), and the
+//!   output says so (`UNCHECKED:`). It also says which log each check used, with the head of
+//!   the log the carried values name, to compare with that log's anchors.
 //!
 //! Exit status: 0 all decisions reproduced (and, with `--space`, every space query too; with
-//! `--anchors`, the anchors hold), 1 decision or anchor mismatches found, 2 unreadable log or
-//! usage, 3 decisions reproduced but some space queries could not be recomputed (cache
+//! `--anchors`, the anchors hold), 1 decision or anchor mismatches found (a carry-over whose
+//! earlier log was not given or found, without `--trust-resumed`, included), 2 unreadable log
+//! or usage, 3 decisions reproduced but some space queries could not be recomputed (cache
 //! mismatch).
 
 use std::path::Path;
@@ -34,7 +38,8 @@ use std::sync::Arc;
 
 use murmur_decide::SpaceSegment;
 use murmur_decide::replay::{
-    Mismatch, ReplayOptions, ReplayReport, RulesAccepted, carried_restore_logs, replay_str_with,
+    Mismatch, ReplayOptions, ReplayReport, RulesAccepted, carried_restore_logs, is_log_file_name,
+    replay_str_with,
 };
 
 const USAGE: &str = "usage: murmur-replay <audit-log.jsonl> [--rules N | --min-rules N] [--anchors <file>] [--space <constellations.toml> <cache-dir>] [--prev <previous-log.jsonl>]... [--trust-resumed]";
@@ -367,20 +372,25 @@ impl Earlier {
             }
         }
         for c in &report.carried_restores {
-            let from = if c.log.is_empty() { "no log named" } else { c.log.as_str() };
+            let from = &c.log;
             match &self.restores {
-                Some((name, p, t)) if c.checked && *name == c.log => {
+                Some((name, p, t)) if c.checked && name == from => {
                     let same = match &self.intents {
                         Some((_, u)) if u == t => ", the carried-over intents' log too",
                         _ => "",
                     };
+                    let head = c.head.as_deref().unwrap_or("none: it can't be read");
                     println!(
-                        "carried lost-link values: {} platform(s) from {from}, checked against what {p} still owed{same}",
+                        "carried lost-link values: {} platform(s) from {from}, checked against what {p} still owed{same} (its head {head}: compare with its anchors)",
                         c.restores
                     );
                 }
+                _ if trusted => println!(
+                    "UNCHECKED: {} platform(s)' carried lost-link values from {from}: trusted (--trust-resumed); that log was not given (--prev) or found beside this one",
+                    c.restores
+                ),
                 _ => println!(
-                    "UNCHECKED: {} platform(s)' carried lost-link values from {from}: that log was not given (--prev) or found beside this one",
+                    "carried lost-link values: {} platform(s) from {from}, NOT checked: that log was not given (--prev) or found beside this one",
                     c.restores
                 ),
             }
@@ -395,9 +405,10 @@ fn file_name(p: &str) -> Option<String> {
         .map(|f| f.to_string_lossy().into_owned())
 }
 
-/// The file `name` beside the log at `path`, if it exists and is another file than the log.
+/// The file `name` beside the log at `path`, if `name` is a bare file name (never a path out
+/// of the log's directory), the file exists and is another file than the log.
 fn beside(path: &str, name: &str) -> Option<String> {
-    if name.is_empty() {
+    if !is_log_file_name(name) {
         return None;
     }
     let dir = Path::new(path).parent().unwrap_or_else(|| Path::new("."));

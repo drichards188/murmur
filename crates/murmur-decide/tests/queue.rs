@@ -1343,6 +1343,72 @@ fn a_confirming_delivery_whose_link_drops_before_it_asks_is_requeued() {
     assert_eq!(r.requeued, 2);
 }
 
+/// Run A: an orbit for sky-1 and blade-1; sky-1 started it (`acked`), blade-1's start went out
+/// (`starting`) and the bridge stopped. Run B carries it over dispatched: sky-1 is followed
+/// (the bridge's Adopt op, never requeued), blade-1 only confirmed (its Confirm op may be).
+fn resumed_one_started_one_maybe() -> (Fx, Fx, IntentId) {
+    let mut a = fx();
+    let w = world_now(&a);
+    let id = a.submit(orbit(NEAR_CRISSY, 200.0, &["sky-1", "blade-1"]), &w);
+    a.engine.dispatch_or_queue(id, &w).unwrap();
+    let (sky, blade) = (uid("sky-1"), uid("blade-1"));
+    a.engine.record_op_state(id, &sky, "acked", "accepted").unwrap();
+    a.engine.record_op_state(id, &blade, "starting", "starting mission: mission mode commanded").unwrap();
+    let ra = replays(&a);
+    let open = ra.open.iter().find(|o| o.spec.id == id).unwrap();
+    assert_eq!((open.committed(), open.maybe_started.clone()), (vec![sky.clone()], vec![blade.clone()]));
+    assert_eq!(open.resumes_as(), State::Dispatched);
+    let mut b = fx();
+    b.clock.set(a.clock.now().plus_ms(10_000));
+    let from = ResumedFrom {
+        log: "a.jsonl".into(),
+        head: ra.head_sha256.clone().unwrap(),
+        seq: ra.last_seq,
+        was: open.state,
+    };
+    b.engine.resume(open, from).unwrap();
+    // blade-1's confirm-only op loses its link before it asks; sky-1's adopted op fails
+    b.engine.record_op_state(id, &blade, "sent", "asking what it holds").unwrap();
+    b.engine
+        .record_op_state(id, &blade, "requeued", "link lost waiting for MISSION_COUNT: back to the queue, re-checked before it is sent again")
+        .unwrap();
+    b.engine.record_op_state(id, &sky, "failed", "link lost following it").unwrap();
+    (a, b, id)
+}
+
+#[test]
+fn replay_catches_an_adopted_vehicle_requeued_after_a_restart() {
+    // review of 3ed31ba, finding 3: after a restart a vehicle that had started the order is
+    // followed (Adopt) and its op never ends requeued; only one whose start may have gone out
+    // is confirmed, and that one may
+    let (a, b, _) = resumed_one_started_one_maybe();
+    let a_text = a.log.text();
+    let check = |text: &str| -> Vec<String> {
+        let opts = ReplayOptions {
+            previous: Some(&a_text),
+            ..ReplayOptions::default()
+        };
+        replay_str_with(text, &opts).unwrap().mismatches.into_iter().map(|m| m.what).collect()
+    };
+    // the genuine log: blade-1's confirm-only op requeued, sky-1's adopted op failed
+    assert_eq!(check(&b.log.text()), Vec::<String>::new());
+    // sky-1's failed made to say requeued
+    let forged = forge(&b.log.text(), |ev| {
+        for e in ev.iter_mut() {
+            if let EventBody::OpState { uid, state, .. } = &mut e.body
+                && uid.as_str() == "sky-1"
+                && state == "failed"
+            {
+                *state = "requeued".into();
+            }
+        }
+    });
+    assert_eq!(
+        check(&forged),
+        ["op requeued after its start went out (it may be running: the bridge ends such an op unconfirmed)"]
+    );
+}
+
 #[test]
 fn an_agents_order_cant_replace_a_humans_order_no_vehicle_started_yet() {
     // review 2, finding 7: a human's order dispatched, its vehicle not started yet (link

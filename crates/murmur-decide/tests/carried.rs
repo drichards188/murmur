@@ -134,7 +134,9 @@ impl Dir {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         for (f, text) in files {
-            std::fs::write(dir.join(f), text).unwrap();
+            let f = dir.join(f);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, text).unwrap();
         }
         Dir(dir)
     }
@@ -145,8 +147,13 @@ impl Dir {
 
     /// `murmur-replay <dir>/b.jsonl <args>`: its exit status and output.
     fn replay(&self, args: &[String]) -> (Option<i32>, String) {
+        self.replay_log("b.jsonl", args)
+    }
+
+    /// `murmur-replay <dir>/<log> <args>`.
+    fn replay_log(&self, log: &str, args: &[String]) -> (Option<i32>, String) {
         let out = Command::new(env!("CARGO_BIN_EXE_murmur-replay"))
-            .arg(self.path("b.jsonl"))
+            .arg(self.path(log))
             .args(args)
             .output()
             .unwrap();
@@ -171,21 +178,13 @@ fn a_run_carrying_from_two_logs_is_checked_against_each_and_says_which() {
     let (code, out) = d.replay(&[]);
     assert_eq!(code, Some(0), "{out}");
     let intents = format!("carried-over intents: 1 from a1.jsonl, checked against {}", d.path("a1.jsonl"));
+    let head = replay_str(&a2).unwrap().head_sha256.unwrap();
     let values = format!(
-        "carried lost-link values: 1 platform(s) from a2.jsonl, checked against what {} still owed",
+        "carried lost-link values: 1 platform(s) from a2.jsonl, checked against what {} still owed (its head {head}: compare with its anchors)",
         d.path("a2.jsonl")
     );
     assert!(out.contains(&intents) && out.contains(&values), "{out}");
     assert!(!out.contains("UNCHECKED"), "{out}");
-    // only the intents' log at hand: the carried values are said to be unchecked, not failed
-    let d = Dir::with("one", &[("a1.jsonl", &a1), ("b.jsonl", &b)]);
-    let (code, out) = d.replay(&[]);
-    assert_eq!(code, Some(0), "{out}");
-    assert!(out.contains("carried-over intents: 1 from a1.jsonl, checked against"), "{out}");
-    assert!(
-        out.contains("UNCHECKED: 1 platform(s)' carried lost-link values from a2.jsonl: that log was not given (--prev) or found beside this one"),
-        "{out}"
-    );
     // given from elsewhere, one --prev each, matched by file name whatever their order; a
     // --prev the log names nowhere is said and not used
     let logs = Dir::with("logs", &[("a1.jsonl", &a1), ("a2.jsonl", &a2), ("x.jsonl", &a2)]);
@@ -197,10 +196,120 @@ fn a_run_carrying_from_two_logs_is_checked_against_each_and_says_which() {
     assert!(out.contains(&format!("checked against {}", logs.path("a1.jsonl"))), "{out}");
     assert!(out.contains(&format!("checked against what {} still owed", logs.path("a2.jsonl"))), "{out}");
     assert!(out.contains(&format!("--prev {}: not a log this one's carried-over", logs.path("x.jsonl"))), "{out}");
-    // the intents' log alone, a single --prev, as before
+    // the intents' log alone, a single --prev, as before: the values are not checked (below)
     let (code, out) = d.replay(&prev("a1.jsonl"));
+    assert_eq!(code, Some(1), "{out}");
+    assert!(out.contains(&format!("carried-over intents: 1 from a1.jsonl, checked against {}", logs.path("a1.jsonl"))), "{out}");
+}
+
+#[test]
+fn carried_values_whose_log_is_absent_or_unnamed_fail_closed() {
+    // review of 3ed31ba, finding 2: an absent log for the carried values is a mismatch, like
+    // one for carried intents, unless trusted (--trust-resumed covers both); a carried
+    // restore that names no log at all is a mismatch, trusted or not
+    let (a1, r1) = queued_run();
+    let a2 = owing_run();
+    let b = carrying_run(&r1, &a2);
+    let trust = ["--trust-resumed".to_string()];
+    // only the intents' log at hand
+    let d = Dir::with("one", &[("a1.jsonl", &a1), ("b.jsonl", &b)]);
+    let (code, out) = d.replay(&[]);
+    assert_eq!(code, Some(1), "{out}");
+    assert!(out.contains("carried-over intents: 1 from a1.jsonl, checked against"), "{out}");
+    assert!(
+        out.contains("carried lost-link values: 1 platform(s) from a2.jsonl, NOT checked: that log was not given (--prev) or found beside this one"),
+        "{out}"
+    );
+    assert!(out.contains("lost-link values carried over from a2.jsonl not verified"), "{out}");
+    let (code, out) = d.replay(&trust);
     assert_eq!(code, Some(0), "{out}");
-    assert!(out.contains("UNCHECKED: 1 platform(s)' carried lost-link values from a2.jsonl"), "{out}");
+    assert!(
+        out.contains("UNCHECKED: 1 platform(s)' carried lost-link values from a2.jsonl: trusted (--trust-resumed)"),
+        "{out}"
+    );
+    // the forger renames the log they come from to one that is not there
+    let renamed = forge(&b, |ev| {
+        for e in ev.iter_mut() {
+            if let EventBody::PlatformRestore { carried: true, from, .. } = &mut e.body {
+                *from = Some("gone.jsonl (carried over into it)".into());
+            }
+        }
+    });
+    let d = Dir::with("renamed", &[("a1.jsonl", &a1), ("a2.jsonl", &a2), ("b.jsonl", &renamed)]);
+    let (code, out) = d.replay(&[]);
+    assert_eq!(code, Some(1), "{out}");
+    assert!(out.contains("lost-link values carried over from gone.jsonl not verified"), "{out}");
+    // or drops the name: a mismatch even trusted
+    let unnamed = forge(&b, |ev| {
+        for e in ev.iter_mut() {
+            if let EventBody::PlatformRestore { carried: true, from, .. } = &mut e.body {
+                *from = None;
+            }
+        }
+    });
+    let d = Dir::with("unnamed", &[("a1.jsonl", &a1), ("a2.jsonl", &a2), ("b.jsonl", &unnamed)]);
+    for args in [&[][..], &trust[..]] {
+        let (code, out) = d.replay(args);
+        assert_eq!(code, Some(1), "{args:?}: {out}");
+        assert!(out.contains("carried restore names no earlier log by its file name"), "{out}");
+    }
+}
+
+#[test]
+fn the_log_carried_values_name_must_replay() {
+    // review of 3ed31ba, finding 1: B's values forged to a 120 s timer, and beside it a fake
+    // a2.jsonl of one unchained line that owes exactly those
+    let (a1, r1) = queued_run();
+    let a2 = owing_run();
+    let b = carrying_run(&r1, &a2);
+    let forged = forge(&b, |ev| {
+        for e in ev.iter_mut() {
+            if let EventBody::PlatformRestore { values, readback, .. } = &mut e.body {
+                values.insert("FS_GCS_TIMEOUT".into(), 120.0);
+                if !readback.is_empty() {
+                    readback.insert("FS_GCS_TIMEOUT".into(), 120.0);
+                }
+            }
+        }
+    });
+    let fake = format!("{}\n", forged.lines().find(|l| l.contains("\"carried\":true")).unwrap());
+    let d = Dir::with("fake", &[("a1.jsonl", &a1), ("a2.jsonl", &fake), ("b.jsonl", &forged)]);
+    let (code, out) = d.replay(&[]);
+    assert_eq!(code, Some(1), "{out}");
+    assert!(out.contains("the log the carried values name does not replay"), "{out}");
+    // the genuine a2 replays, and the forged values are caught against it
+    let d = Dir::with("real", &[("a1.jsonl", &a1), ("a2.jsonl", &a2), ("b.jsonl", &forged)]);
+    let (code, out) = d.replay(&[]);
+    assert_eq!(code, Some(1), "{out}");
+    assert!(!out.contains("does not replay"), "{out}");
+    assert!(out.contains("carried values differ from what the log it names still owed"), "{out}");
+}
+
+#[test]
+fn an_earlier_log_named_by_a_path_is_never_followed() {
+    // review of 3ed31ba, finding 4: the names in intent.resumed and a carried restore are
+    // file names (the bridge writes them so); a path out of the log's directory is not
+    // followed
+    let (a1, r1) = queued_run();
+    let a2 = owing_run();
+    let b = carrying_run(&r1, &a2);
+    let pathed = forge(&b, |ev| {
+        for e in ev.iter_mut() {
+            match &mut e.body {
+                EventBody::IntentResumed { from, .. } => from.log = "../other/a1.jsonl".into(),
+                EventBody::PlatformRestore { carried: true, from, .. } => {
+                    *from = Some("../other/a2.jsonl (carried over into it)".into());
+                }
+                _ => {}
+            }
+        }
+    });
+    let d = Dir::with("paths", &[("other/a1.jsonl", &a1), ("other/a2.jsonl", &a2), ("logs/b.jsonl", &pathed)]);
+    let (code, out) = d.replay_log("logs/b.jsonl", &[]);
+    assert_eq!(code, Some(1), "{out}");
+    assert!(!out.contains("checked against"), "nothing read from ../other: {out}");
+    assert!(out.contains("intent carried over from ../other/a1.jsonl not verified"), "{out}");
+    assert!(out.contains("carried restore names no earlier log by its file name"), "{out}");
 }
 
 #[test]

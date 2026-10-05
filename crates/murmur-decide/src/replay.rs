@@ -59,9 +59,11 @@
 //!   at-submission approvals are under the decider's own session.
 //! - carry-overs from an earlier run: each `intent.resumed` against the log it names
 //!   ([`ReplayOptions::previous`]), each carried `platform.restore` against what the log it
-//!   names still owed ([`ReplayOptions::restores_from`]; the two can be different logs, and
-//!   one not given is reported unchecked, [`ReplayReport::carried_restores`]); and an op
-//!   whose start went out (`starting`) never ends `requeued` on that delivery.
+//!   names still owed, that log replaying itself ([`ReplayOptions::restores_from`]; the two
+//!   can be different logs; either not given is a mismatch unless trusted,
+//!   [`ReplayOptions::trust_resumed`], and [`ReplayReport::carried_restores`] says which were
+//!   checked); and an op whose start went out (`starting`, or the vehicle started it, a
+//!   followed vehicle after a restart included) never ends `requeued` on that delivery.
 //!
 //! **Space recomputation.** [`replay_str_with_space`] also re-runs every logged space query
 //! on the segment given. If that segment is the one the query ran on (same
@@ -218,8 +220,10 @@ pub struct CarriedRestores {
     /// How many carried restores name it.
     pub restores: usize,
     /// Checked against what that log still owed ([`owed_restores`]); false: that log was
-    /// not given, so they were not.
+    /// not given, so they were not (a mismatch unless [`ReplayOptions::trust_resumed`]).
     pub checked: bool,
+    /// The head of that log as given (compare it with that log's anchors).
+    pub head: Option<String>,
 }
 
 /// Rules 6: the platforms' own lost-link values owed back to them: from a preload's
@@ -372,12 +376,26 @@ pub fn owed_restores(text: &str) -> Vec<OwedRestore> {
         .collect()
 }
 
-/// Rules 6: the earlier log a carried `platform.restore` names: its `from` up to the
-/// parenthesis the bridge adds (`<file> (preloaded by i3)`, `<file> (carried over into it)`);
+/// Rules 6: the earlier log a carried `platform.restore` names: its `from` less the
+/// parenthesis the bridge adds at the end (`<file> (preloaded by i3)`, `<file> (carried
+/// over into it)`; a file name may itself hold " ("); the whole `from` when it has neither;
 /// empty when it names none.
 pub fn carried_restore_log(from: Option<&str>) -> &str {
     let from = from.unwrap_or_default();
-    from.split_once(" (").map_or(from, |(file, _)| file)
+    if let Some(file) = from.strip_suffix(" (carried over into it)") {
+        return file;
+    }
+    match from.rsplit_once(" (preloaded by ") {
+        Some((file, by)) if by.ends_with(')') => file,
+        _ => from,
+    }
+}
+
+/// Whether `name` is a bare file name, as the bridge names an earlier log (in
+/// `intent.resumed` and a carried `platform.restore`): not empty, not `.` or `..`, no path
+/// separator. A name that is a path is never followed out of the log's directory.
+pub fn is_log_file_name(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\'])
 }
 
 /// Rules 6: the earlier logs a log's carried `platform.restore` events name (normally one:
@@ -601,9 +619,10 @@ struct Tracked {
     /// its current delivery only confirms.
     maybe_started: BTreeSet<Uid>,
     confirming: BTreeSet<Uid>,
-    /// The vehicles whose op on this delivery (since its dispatch in this log) reported its
-    /// start going out (`starting`, `unconfirmed`, or started): its op never ends
-    /// `requeued` after that (the bridge ends it `unconfirmed`: it may be running).
+    /// The vehicles whose op on this delivery (since its dispatch in this log, or its resume:
+    /// the vehicles that had started it, followed) reported its start going out (`starting`,
+    /// `unconfirmed`, or started): its op never ends `requeued` after that (the bridge ends
+    /// it `unconfirmed`: it may be running; a followed one fails).
     start_went_out: BTreeSet<Uid>,
 }
 
@@ -725,17 +744,21 @@ pub struct ReplayOptions<'a> {
     /// was there, and the log must be the one named (its head and last seq). One generation:
     /// that log's own resumed intents are trusted (replay it with its own predecessor).
     pub previous: Option<&'a str>,
-    /// Accept `intent.resumed` events without the previous log (trusting where they came
-    /// from, as accepting an older rules version trusts its log). Without this or
-    /// `previous`, a resumed intent is a mismatch.
+    /// Accept what this log carried over from earlier runs without their logs: its
+    /// `intent.resumed` events (without `previous`) and, rules 6, its carried
+    /// `platform.restore` values (without `restores_from`), trusting where they came from, as
+    /// accepting an older rules version trusts its log. Without this, a carry-over whose
+    /// earlier log is not given is a mismatch. A carried restore that names no log by its
+    /// file name is a mismatch either way.
     pub trust_resumed: bool,
     /// Rules 6: the earlier log this run's carried `platform.restore` events name, as (its
     /// file name as they name it, its text). It is the log `.last-run-<port>` named when the
     /// bridge started, which need not be `previous` (`.resume-<port>.json`, deleted by a
     /// clean stop, or `MURMUR_RESUME=<log>`, may name another log or none). Each carried
-    /// restore must be exactly what that log still owed ([`owed_restores`]), and everything
-    /// it owed carried. A carried restore that names another log, or none, is reported
-    /// unchecked ([`ReplayReport::carried_restores`]), not a mismatch.
+    /// restore must be exactly what that log still owed ([`owed_restores`]), everything it
+    /// owed carried, and that log must replay itself (its own carry-overs trusted: one
+    /// generation). Carried values from a log not given are a mismatch unless
+    /// [`Self::trust_resumed`] ([`ReplayReport::carried_restores`] says which were checked).
     pub restores_from: Option<(&'a str, &'a str)>,
 }
 
@@ -3048,6 +3071,9 @@ fn replay_inner<S: AsRef<str>>(
                 tr.dispatched_before = *dispatched_before;
                 tr.platforms = platforms.clone();
                 tr.maybe_started = maybe_started.iter().cloned().collect();
+                // a vehicle that had started it is followed (the bridge's Adopt op), never
+                // requeued; only one whose start may have gone out is confirmed and may be
+                tr.start_went_out = tr.committed.clone();
                 if let (Some(pol), Some(by_kind)) = (&policy, *expires_t) {
                     let cfg = pol.queue();
                     // not queued there: its kind's wait from the approval
@@ -3385,14 +3411,17 @@ type Carried<'e> = (
     Option<&'e engage::VehicleIdentity>,
 );
 
-/// Rules 6: every carried `platform.restore` against the earlier log it names, when that log
-/// is given ([`ReplayOptions::restores_from`]; one generation, like `intent.resumed`). The
-/// bridge derived them from it at start ([`owed_restores`]), so they must be exactly what
-/// it still owed: each platform's values, the vehicle they were preloaded on and the
-/// engagements named, none carried twice, every platform it owed carried. One start
-/// carries from the one log its `.last-run-<port>` pointer names, so they name one log.
-/// That log is named by its file only (no head hash, unlike `intent.resumed`): its own
-/// anchors bind what it holds. Without it they are reported unchecked, not a mismatch.
+/// Rules 6: every carried `platform.restore` against the earlier log it names
+/// ([`ReplayOptions::restores_from`]; one generation, like `intent.resumed`). The bridge
+/// derived them from it at start ([`owed_restores`]), so that log must replay (its own
+/// carry-overs trusted) and they must be exactly what it still owed: each platform's
+/// values, the vehicle they were preloaded on and the engagements named, none carried twice,
+/// every platform it owed carried. A carried restore names that log by its file name (no
+/// head hash, unlike `intent.resumed`: the head replay reports is to be compared with that
+/// log's anchors), and one start carries from the one log its `.last-run-<port>` pointer
+/// names. Without that log they are a mismatch unless trusted
+/// ([`ReplayOptions::trust_resumed`]); one that names no log by its file name is a mismatch
+/// either way.
 fn check_carried_restores(r: &mut ReplayReport, events: &[Event], opts: &ReplayOptions<'_>) {
     let carried: Vec<Carried<'_>> = events
         .iter()
@@ -3411,6 +3440,17 @@ fn check_carried_restores(r: &mut ReplayReport, events: &[Event], opts: &ReplayO
     let mut names: Vec<&str> = Vec::new();
     for c in &carried {
         let name = carried_restore_log(c.3);
+        if !is_log_file_name(name) {
+            bad(
+                r,
+                c.0,
+                None,
+                "carried restore names no earlier log by its file name (the bridge names the log it carried it from)",
+                json(&c.3),
+                "<file> (preloaded by ...) or <file> (carried over into it)".into(),
+            );
+            continue;
+        }
         if names.contains(&name) {
             continue;
         }
@@ -3428,13 +3468,64 @@ fn check_carried_restores(r: &mut ReplayReport, events: &[Event], opts: &ReplayO
     }
     for name in names {
         let these: Vec<&Carried<'_>> = carried.iter().filter(|c| carried_restore_log(c.3) == name).collect();
-        let given = opts.restores_from.filter(|(n, _)| *n == name);
+        let Some((_, text)) = opts.restores_from.filter(|(n, _)| *n == name) else {
+            r.carried_restores.push(CarriedRestores {
+                log: name.to_string(),
+                restores: these.len(),
+                checked: false,
+                head: None,
+            });
+            if !opts.trust_resumed {
+                for c in &these {
+                    bad(
+                        r,
+                        c.0,
+                        None,
+                        &format!(
+                            "lost-link values carried over from {name} not verified: replay with that log (murmur-replay --prev), or trust it (--trust-resumed)"
+                        ),
+                        c.1.to_string(),
+                        String::new(),
+                    );
+                }
+            }
+            continue;
+        };
+        // the log it names replays, its own carry-overs trusted (one generation)
+        let first = these[0].0;
+        let prev = replay_str_with(
+            text,
+            &ReplayOptions {
+                rules: RulesAccepted::AtLeast(1),
+                trust_resumed: true,
+                ..ReplayOptions::default()
+            },
+        );
+        let head = match prev {
+            Err(err) => {
+                bad(r, first, None, "the log the carried values name can't be read", format!("{name}: {err}"), String::new());
+                None
+            }
+            Ok(p) => {
+                if let Some(m) = p.mismatches.first() {
+                    bad(
+                        r,
+                        first,
+                        None,
+                        "the log the carried values name does not replay",
+                        format!("{name}: {} mismatch(es), first at seq {}: {}", p.mismatches.len(), m.seq, m.what),
+                        String::new(),
+                    );
+                }
+                p.head_sha256
+            }
+        };
         r.carried_restores.push(CarriedRestores {
             log: name.to_string(),
             restores: these.len(),
-            checked: given.is_some(),
+            checked: true,
+            head,
         });
-        let Some((_, text)) = given else { continue };
         let owed = owed_restores(text);
         let mut seen: BTreeSet<&Uid> = BTreeSet::new();
         for &&(e, uid, values, from, vehicle) in &these {
@@ -3485,17 +3576,15 @@ fn check_carried_restores(r: &mut ReplayReport, events: &[Event], opts: &ReplayO
                 );
             }
         }
-        if let Some(first) = these.first() {
-            for o in owed.iter().filter(|o| !seen.contains(&o.uid)) {
-                bad(
-                    r,
-                    first.0,
-                    None,
-                    "the log it names still owed a platform's values this run did not carry over",
-                    format!("{}: not carried", o.uid),
-                    json(&o.values),
-                );
-            }
+        for o in owed.iter().filter(|o| !seen.contains(&o.uid)) {
+            bad(
+                r,
+                first,
+                None,
+                "the log it names still owed a platform's values this run did not carry over",
+                format!("{}: not carried", o.uid),
+                json(&o.values),
+            );
         }
     }
 }
