@@ -95,10 +95,14 @@ if [ -n "${MURMUR_SCENARIO:-}" ]; then
   fi
 fi
 
+# This run's fleet manifest first, in both modes: the emulator binds every vehicle port from
+# it before any vehicle sends, and the bridge reads it as it starts (its carry-over check
+# compares the previous run's open orders against this run's fleet; started beside swarm.py
+# it could read the previous run's sim/run/fleet.json, murmur-0u7). swarm.py leaves it as it
+# is when it launches the vehicles. The bridge logs which manifest it read and how old it was.
+.venv/bin/python sim/swarm.py --base-port "$vehicle_base" "$@" --manifest-only
 bridge_env=()
 if [ "$linkemu" = 1 ]; then
-  # the manifest first, so the emulator binds every vehicle port before any vehicle sends
-  .venv/bin/python sim/swarm.py --base-port "$vehicle_base" "$@" --manifest-only
   emu_args=(--fleet sim/run/fleet.json --config "${MURMUR_LINKS:-sim/links.toml}" --vehicle-base "$vehicle_base"
             --bridge-base "$bridge_base" --manifest-out sim/run/bridge-fleet.json
             --http "127.0.0.1:$emu_port" --log-interval 10)
