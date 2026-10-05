@@ -275,7 +275,9 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
 (`uids`); a missing window is written into the spec at creation.
 
 - **Checks** (`engage::evaluate`, after the vehicle rules, each pass / fail / unverified /
-  not evaluated; engage is consequential so the last two block): `target_declared`,
+  not evaluated; engage is consequential so the last two block): `target_declared` (an
+  operator's declaration, or from rules 9 the hostile-act rule's, confirmed unless
+  `nominate_unconfirmed`),
   `target_identity`, `target_recency`, `target_uncertainty`, `engagement_zone`, `no_strike`
   (area kinds `engagement_zone` and `no_strike` in `sim/areas/*.geojson`),
   `keep_out_friendly`, `keep_out_tracks`, `platform_armed`, `reach`. Thresholds in
@@ -611,6 +613,14 @@ a human tier can let it stand as the approval; an agent's proposal can't be one.
   only `Engine::step_up` mints after the bridge checked the password again, for that session
   and that signature only. A dev run records that its ids were asserted, and replay and the
   evaluation keep it out of any claim about people.
+- Rules 9: the engine may declare a track hostile by its hostile-act rule, a deterministic
+  function of logged facts (`ident.rs`), and an operator may declare, confirm, revoke and
+  resolve flags; an agent may do none of it. `Engine::declare_track`,
+  `confirm_declaration`, `revoke_declaration`, `resolve_flag` and `record_act` take a
+  `&HumanAuthority` or are the engine's own, `AgentPort` has none of them (compile-fail
+  doctests on `AgentPort`, and one passing an agent id to `declare_track`). A rule
+  declaration authorizes nothing: the engagement floor (two signers with engagement
+  authority on one frozen plan, never the proposer) is unchanged.
 
 **Limits.** Rust privacy is a code-structure guarantee, not a security boundary. It keeps
 code that holds only an `AgentPort` (or only JSON) from authorizing, and it leaves one
@@ -975,6 +985,46 @@ Rules versions:
   logout). The bridge also logs a refused step-up (`operator.action step_up.refused`, never
   the password) and closes every login at a clean stop (`bridge stopped`).
 
+- **9** (rule-based identification with human review; every gate reads `RULE_ID_SINCE`,
+  policy schema 6 `RULE_ID_SCHEMA_SINCE`): the engine keeps an identification ledger
+  (`ident::Ledger`: declarations in force, flags and their standing, acts seen) and fills
+  every decision's tracks from it (`declared_by`, `declaration`, `review_flags`, and the
+  affiliation), so a declaration is no longer a field the bridge's picture supplies. An act
+  our sensors observed (`Engine::record_act`, `ident.act` with the picture it was attributed
+  in, its candidates and its verdict) is attributed to the tracks (a Gaussian likelihood
+  against an untracked density, rounded) and, with `[identification] rule_declaration = true`,
+  declares its author hostile by rule (`ident.declared`, `by: {kind: rule, rule: hostile_act,
+  evidence}`) at `attribution_threshold` or more with nothing conflicting, or is flagged
+  (`ident.flagged`: attribution, conflict, untracked, victim). `Engine::step_identification`
+  flags a track keeping company with a declared hostile (proximity: suspect, never a
+  declaration). Operators act under their own sessions: `declare_track` (`ident.declared`, `by:
+  {kind: operator, ...}`; a hostile one steps up where `step_up_acts` lists
+  `declare_hostile`), `confirm_declaration` (`ident.confirmed`; steps up only where
+  `confirm_declaration` is listed), `revoke_declaration` (`ident.revoked`, naming the
+  engagements in play on the track, each stopped next, before anything else, with cause
+  `revoked`: voided while pending or approved, aborted with its fallback once dispatched), and
+  `resolve_flag` (`ident.flag_resolved`). `target_declared` passes on an operator's
+  declaration or a rule's, a rule's only once confirmed unless `nominate_unconfirmed`; a
+  rule declaration nobody confirmed stays protected in other engagements' keep-outs; the
+  picture token and frozen plan carry the declaration (`TrackIdentity.declaration`), so a
+  confirmation mid-signing resets the plan. Rule declaration off (the default when the
+  section is absent), the engine decides exactly as rules 8 did. `Engine::record_declaration`
+  and the `track.declare` operator action are refused under rules 9. Replay recomputes every
+  attribution, verdict, declaration and flag from the logged inputs, binds every logged
+  picture's identification to the ledger, and catches a declaration without its act, above
+  its recomputed attribution, claimed for an operator who did not make it, a confirmation or
+  revocation of something not in force, and a revocation's stop cut from the log. Markers (a
+  log claiming rules 8 or older can't carry them): the `ident.*` events, a track's
+  `declaration` or `review_flags`, a stop's `revoked` cause, a policy's `[identification]`
+  (and its schema-6 claim, `confirm_declaration` in `step_up_acts`). Fixtures:
+  `tests/data/audit/v9-engagement-scenario-01.jsonl` (scenario 1, its declaration through the
+  ledger), the five rules 9 scenarios (`v9-hostile-act-declared-scenario-72.jsonl`,
+  `v9-ambiguous-attribution-flagged-scenario-73.jsonl`,
+  `v9-neutral-alongside-flagged-scenario-74.jsonl`,
+  `v9-revoked-mid-engagement-scenario-75.jsonl`, `v9-bystander-protected-scenario-76.jsonl`),
+  and a live run with its anchors (`v9-identification-live.jsonl`,
+  `tests/data/anchors/v9-identification-live.anchors`; see `tests/versions.rs`).
+
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
 `seen_max_age_s`, an unreleased build's name for it, is still read; **3** adds `[queue]`
@@ -982,7 +1032,10 @@ Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_s
 (a table by domain), `vertical_rate_mps`, `keep_out_vertical_m` and `track_alt_max_age_s`
 (optional; rules 6); **5** adds a tier's `step_up` (optional, human tiers only) and
 `[approval] step_up_acts` (optional: `declare_hostile`, `accept_unknown`;
-`STEP_UP_SCHEMA_SINCE`, rules 8).
+`STEP_UP_SCHEMA_SINCE`, rules 8); **6** adds `[identification]` (every key optional, unknown
+keys refused: `rule_declaration`, `attribution_threshold`, `nominate_unconfirmed`,
+`conflict_confidence`, `untracked_per_km2`, `escort_m`, `escort_speed_mps`, each bounded)
+and `confirm_declaration` in `step_up_acts` (`RULE_ID_SCHEMA_SINCE`, rules 9).
 
 ## Integration contract for the bridge
 

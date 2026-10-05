@@ -130,7 +130,9 @@ fired is in each run's decision records.
 Fleets are in `fleets/`, contacts in `scenarios/contacts/`, events in `scenarios/events/`,
 policies in `policy/` (`base.toml`: `sim/policy.toml` with `submitter_authorizes = false`, so
 a second human's consequential proposals wait in the inbox exactly as an agent's do;
-`strict.toml`: every orbit, patrol and track is a human decision).
+`strict.toml`: every orbit, patrol and track is a human decision; `minimal.toml`, rules 9:
+the shipped policy with a rule declaration nominable before an operator confirms it and no
+step-up besides the engagement signatures, the minimal-approval profile).
 
 ### Adding a scenario
 
@@ -210,6 +212,26 @@ takes nominations, but no supervisor here signs one yet (two operators with enga
 authority, each quoting a picture token). The four specs in `scenarios/engagement/` stay
 skipped (`requires = ["engage"]`) until the proxy can sign; `eval/engage.py` says what is
 missing.
+
+### Identification: rule against manual (rules 9)
+
+The engine may declare a track hostile by rule on an observed hostile act, and flags what it
+is unsure of (DECISIONS.md, 10-05). `eval/ident.py` measures what that changes against manual
+declaration, on the same scenarios and seeds: every scenario with a scripted act
+(`sim/scenarios/engage/`, five today) under `rule`, `rule-nominate` (the minimal profile),
+`manual` (a scripted operator proxy declaring by the rule's own standard about 16 s after the
+act) and `manual-best` (the proxy declaring the most likely track), with seeded noise on where
+each act's author was observed. Every batch runs it (`--ident-seeds`, `--no-ident`); alone:
+
+```
+.venv/bin/python -m eval.run ident --seeds 1 2 3 4 5 6 7 8 9 10
+.venv/bin/python -m eval.run ident --threshold 0.95 --manual-delay 30
+```
+
+It writes `ident/comparison.json` (every run's labelled declarations, acts and flags) and a
+report section; METRICS.md defines each number. These are model results from scripted proxies
+on scripted scenarios, dev runs with asserted ids, never human data; the live bridge's act
+sensing is exercised by `sim/scenarios/golden-gate-ident.toml` (a live run, not a batch arm).
 
 ## Arms
 

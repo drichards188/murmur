@@ -122,14 +122,15 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onNomin
             {!hostile.some((h) => h.id === track) && <option value={track}>{track || 'choose a declared-hostile track'}</option>}
             {hostile.map((h) => (
               <option key={h.id} value={h.id}>
-                {h.id} {kindLabel(h.identity.kind)} (declared hostile by {h.declared?.by})
+                {h.id} {kindLabel(h.identity.kind)} (declared hostile by{' '}
+                {h.declared?.rule ? (h.declared.confirmed_by ? `rule, confirmed by ${h.declared.confirmed_by}` : 'rule, not confirmed') : h.declared?.by})
               </option>
             ))}
           </select>
         </label>
         {t && !(t.affiliation === 'hostile' && t.declared) && (
           <p className="eg-hint">
-            {t.id} is {t.affiliation} by estimate. Hostile is never inferred: an operator must declare it (Tracks drawer) before it can be engaged.
+            {t.id} is {t.affiliation} by estimate. The tracker never infers hostile: an operator declares it (Tracks drawer), or the engine does by rule on a hostile act our sensors observed, before it can be engaged.
           </p>
         )}
         {!hostile.length && <p className="eg-hint">No track is declared hostile. Declare one in the Tracks drawer first.</p>}

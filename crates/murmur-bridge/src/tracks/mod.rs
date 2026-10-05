@@ -30,8 +30,11 @@
 //! process marks the contacts inside the radius; nothing here models damage.
 //!
 //! Operators may declare a track's affiliation (`POST /api/tracks/{id}/declare`, the
-//! signed-in operator as for intents; a dev run's header); the declaration is logged as an
-//! `operator.action` and overrides the estimate. Hostile is never derived by the model.
+//! signed-in operator as for intents; a dev run's header). From rules 9 every declaration is
+//! the decision engine's identification ledger (an operator's, or the engine's hostile-act
+//! rule's on an act these sensors observed: `sense_acts`); this store only mirrors it for
+//! display (`mirror`), and the decision facts carry the estimate alone. The tracker never
+//! derives hostile.
 
 pub mod model;
 pub mod sensing;

@@ -163,8 +163,9 @@ Built (first cut; see the module docs named here for the figures and the simplif
 - **Tracks** (`crates/murmur-bridge/src/tracks/`): position and velocity estimate, 1-sigma
   uncertainty growing with age, existence confidence that decays in silence, identity and
   affiliation estimates with confidence and the reason, sources, `last_seen_t`; stale after
-  10 s, dropped after 180 s. Hostile is never inferred: an operator declares it
-  (`POST /api/tracks/{id}/declare`, logged as `operator.action`). Exposed on
+  10 s, dropped after 180 s. The tracker never infers hostile: an operator declares it
+  (`POST /api/tracks/{id}/declare`), or from rules 9 the engine's rule on an observed
+  hostile act (Phase E, "Rules 9"), both in the engine's identification ledger. Exposed on
   `GET /api/tracks`, the WebSocket `tracks` message, `WorldSnapshot.tracks` (additive; old
   logs replay unchanged), the CoT export with the estimated affiliation as the TAK type,
   and to agents as the read-only MCP tool `get_tracks` and resource `murmur://tracks`
@@ -280,7 +281,8 @@ contacts `effect.rs`; console `EngagePanel`, `EngageCard`, `engageLayers.ts`):
    written into the spec as `default_window_s` from creation.
 2. **Check**, fail closed, each pass / fail / unverified / not evaluated with a precise
    detail (engage is consequential: unverified and not evaluated block): `target_declared`
-   (an operator's declaration; an inferred suspect is not enough), `target_identity`,
+   (an operator's declaration, or from rules 9 the hostile-act rule's, confirmed by an
+   operator unless the policy says otherwise; an inferred suspect is not enough), `target_identity`,
    `target_recency`, `target_uncertainty` (1-sigma now within `max_sigma_fraction` of the
    effect radius), `engagement_zone` (new area kind; the whole effect circle inside one),
    `no_strike` (new area kind: the bridge, Fort Point, Kirby Cove, Baker Beach, Crissy
@@ -288,7 +290,8 @@ contacts `effect.rs`; console `EngagePanel`, `EngageCard`, `engageLayers.ts`):
    ours but the platform, those the fleet manifest names but never heard from included, so
    they fail it; carried along its velocity to the effect time, else how far it could get
    at cruise speed), `keep_out_tracks` (every track but the target and tracks an operator
-   declared hostile, with 2-sigma of its predicted uncertainty), `platform_armed`,
+   declared hostile, from rules 9 also a rule declaration an operator confirmed, with
+   2-sigma of its predicted uncertainty), `platform_armed`,
    `reach` (catalog cruise speed, intercept inside the window and `max_transit_s`,
    endurance or, with none in the catalog, battery above the reserve and a short transit,
    the effect point on the surface a boat or UGV needs, from a sample within 50 m, logged
@@ -470,6 +473,30 @@ lost vehicle to the acts that step up (off by default). Passkeys come before a s
 real participants. Live log with anchors:
 `crates/murmur-decide/tests/data/audit/v8-auth-live.jsonl`.
 
+Rules 9, rule-based identification with human review (user direction 10-05: minimize
+manual approvals; `RULE_ID_SINCE`, policy schema 6; `crates/murmur-decide/src/ident.rs`,
+bridge `decision/ident.rs`, contacts `[[act]]`, console Review; DECISIONS.md "The engine may
+declare hostile by rule"): a contacts scenario scripts abstract hostile acts (a time, an
+author, a victim; no weapon); the bridge's sensing model decides which of our sensors
+observed each and where they place its author; the engine attributes each act to the tracks
+in the picture (a Gaussian likelihood against an untracked alternative), declares the
+author hostile by rule at `attribution_threshold` or more with nothing conflicting, logged
+as the rule's with its evidence, and flags what it is unsure of (below threshold,
+conflicting evidence, no track, a victim not ours, keeping company with a declared hostile:
+weak evidence, suspect at most). Rule declarations and flags are non-blocking review items
+in the inbox and the tracks drawer; any operator confirms or revokes a declaration, and
+confirms or dismisses a flag, under their own session; a revocation stops every engagement
+on the track first. The basis travels with the decision (picture token, frozen plan,
+engagement card, MCP reads), a rule declaration nobody confirmed stays protected in other
+engagements' keep-outs, and `nominate_unconfirmed` decides whether it can be nominated
+before a confirmation. Off (`rule_declaration = false`), rules 8's behaviour exactly. Replay
+recomputes every attribution, declaration and flag. Scenarios 72-76; the evaluation's
+rule-against-manual comparison under Phase G. Live demo:
+`MURMUR_CONTACTS=sim/scenarios/golden-gate-ident.toml make goldengate GG_FLEET=engage-demo`.
+What does not change: two signers with engagement authority on one frozen plan release an
+effect, never the proposer, never an agent; accepting a lost friendly stays an
+engagement-authority operator's act; agents cannot declare, confirm, revoke or resolve.
+
 Simplifications: straight-line intercept at cruise speed (no turn radius, no climb),
 keep-outs 2D wherever an altitude is unknown, the effect circle is checked against no-strike
 areas but the platform's own path only against no-go areas, the assessment trusts our sensor
@@ -576,6 +603,21 @@ numbers further down come from the re-run.
   harness's own invariants on every audit log. Live engagement steps in a storyline stay
   placeholders until the proxy can sign an engagement (two operators with engagement
   authority quoting picture tokens).
+- **Identification, rule against manual** (rules 9; `eval/ident.py`, METRICS.md): every
+  scenario with a scripted act, under the shipped rule, the minimal profile, a manual proxy
+  declaring by the rule's standard about 16 s after the act, and one declaring the best
+  guess, on the same seeds with noise on each act's observed position; declarations, acts and
+  flags labelled from truth, wrong declarations split "C2 showed it" / "picture wrong". First
+  numbers (2026-10-05, five scenarios x 10 seeds per arm, model results from scripted proxies,
+  unreviewed): the rule and the same-standard manual proxy declared the same tracks (20
+  correct, 9 false hostile, 10 hostile acts missed of 40), the rule at the act, the proxy a
+  median 15 s later, and the rule raised 41 flags (17 prevented a wrong declaration, 4 held
+  back a right one, 20 proximity) and 29 rule declarations as non-blocking review items where
+  the manual arm needed 29 declarations by a person; every false declaration was "picture
+  wrong" (the untracked author beside a fishing boat, scenario 75), which no review of the
+  shown evidence would catch; the best-guess proxy missed fewer acts (6) at the cost of 26
+  false declarations, 16 of them on evidence the C2 showed. The minimal profile changed
+  nothing here: the scripted timelines confirm before they nominate.
 - **Results** (2026-10-04, `docs/eval/phase-g-report.html`, `phase-g-summary.json`): 9
   scenarios (3 held out) x 4 arms x 5 seeds, 180 runs on 54fa0fa, every run scored (none
   failed, timed out or missing), every fleet ready before its origin (1 to 3 s, or 30 s when

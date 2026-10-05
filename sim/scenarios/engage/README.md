@@ -55,6 +55,16 @@ The effect is an abstract event: a point, a radius, a time. Nothing here models 
   engagement on its vehicles as a dispatched one does, and a mission (an orbit) waits for its
   platform's own lost-link values to be back. `RunOptions::rules_version` (`--rules N`) runs a
   file under older rules (its log replayed with them) to show what they did.
+- Rules 9: an `act` step is a hostile act our sensors observed (its author a track, or a
+  point we hold no track of; its observed position the author's, plus a scripted `offset`,
+  plus with `act_noise` seeded noise of its sigma). The engine attributes it and declares by
+  rule or flags; every second the runner also calls `Engine::step_identification` (the
+  proximity flag) before stepping engagements. `RunOptions::identification` changes the
+  policy's `[identification]` keys it names (`--ident on|off`, `--threshold X`,
+  `--nominate-unconfirmed`); `RunOptions::manual` (`--manual-delay S`, `--manual-standard
+  rule|best`) is the evaluation's scripted manual declarer. Result fields: `ident_reports`
+  (one line per identification event), `ident` (each with the truth behind it: the track's
+  `truth`, the act's real author), as `eval/ident.py` reads them.
 
 ## Format
 
@@ -77,7 +87,10 @@ tamper = "suppress_void"         # optional log attack replay must catch: propos
                                  # and rules 6: drop_preload, forge_preload,
                                  # drop_verify, drop_acceptance, acceptance_by_agent,
                                  # acceptance_without_authority, hide_self_accepted,
-                                 # and rules 7: drop_restore_owed
+                                 # and rules 7: drop_restore_owed,
+                                 # and rules 9: drop_act, declare_flagged_act,
+                                 # declaration_by_another_operator, drop_revocation_stop,
+                                 # confirm_in_inputs
                                  # (one with nothing to edit in a run's log reports "not
                                  # applicable")
 end_s = 120                      # seconds to run (default: the last step + 10)
@@ -91,8 +104,11 @@ expect_lost_link = "Loiter"      # optional: it followed its preloaded action on
 expect_preload = ["set confirmed", "restore confirmed"]   # optional, in order (also
                                  # "verify confirmed", "verify changed")
 expect_stop = "superseded"       # optional: how the last nomination was stopped (superseded,
-                                 # system, picture, operator); superseded also means no
+                                 # system, picture, operator, revoked); superseded also means no
                                  # fallback was commanded
+expect_ident = ["declared T-0001 hostile by rule:hostile_act"]   # rules 9, optional: substrings
+                                 # of the identification reports, in order
+expect_no_ident = ["declared T-0002"]   # rules 9, optional: substrings no report may contain
 restore_after_s = 60             # rules 6: the platform answers the restore of its own
                                  # lost-link values only from this second on (default: at once)
 # policy, catalog, areas = "path"  # optional, relative to the repo (defaults: sim/...)
@@ -121,7 +137,10 @@ at = [-122.4950, 37.8120]
 velocity = [0.0, 0.0]
 sigma_m = 15                     # 1-sigma now (default 15)
 affiliation = "suspect"          # unknown, suspect, hostile, neutral, assumed_friend
-declared_by = "op-1"             # optional: an operator's declaration
+declared_by = "op-1"             # optional: an operator's declaration (rules 9: made through
+                                 # the engine's identification ledger before the timeline)
+truth = "hostile"                # rules 9, optional: what its contact really is (labels only;
+                                 # nothing the engine sees)
 identity = "small_fast_boat"
 identity_confidence = 0.9        # default 0.9
 confidence = 0.9                 # existence, default 0.9
@@ -147,7 +166,12 @@ Actions (each `[[step]]` has `at_s` and `action`):
 
 | action | fields | what it does |
 |---|---|---|
-| `declare` | `track`, `affiliation`, `by` | an operator's declaration (logged `operator.action track.declare`) |
+| `declare` | `track`, `affiliation`, `by` | an operator's declaration (logged `operator.action track.declare`; from rules 9 `ident.declared` through the engine's ledger) |
+| `act` | `by_track` or `at` [lon, lat] (an author we hold no track of), `against_vehicle` or `against_track` (neither: unknown), `sensors`, `sigma_m` (default 20), `offset` [east, north] m | rules 9: a hostile act our sensors observed; the engine attributes it and declares its author by rule or flags it |
+| `confirm_declaration` | `by`, `track` | rules 9: an operator confirms the rule declaration in force |
+| `revoke_declaration` | `by`, `track`, `note` | rules 9: an operator revokes the declaration in force; the engagements on the track stop first |
+| `resolve_flag` | `by`, `track`, `flag` (optional: its number; default the newest on the track), `resolution` (`confirmed`, `dismissed`) | rules 9: an operator resolves a review flag |
+| `agent_declare` | `agent`, `track` | rules 9: an agent "tries" to declare: its port has no such method; recorded, nothing may change |
 | `nominate` | `by` or `agent` (+ `rationale`), `platform`, `track`, `radius_m`, `fallback` (`abort`, `return`, `loiter`), `window_s`, `accept` (rules 6: vehicles the operator accepts as lost, each since its last report) | a nomination; becomes "the last nomination" the other steps act on |
 | `accept` | `by`, `uid`, `since_s` (optional: another report than the last, which the engine refuses) | rules 6: an operator with engagement authority accepts a lost vehicle for the last nomination while it waits with no signature (without it: refused) |
 | `revoke` | `by`, `uid` | rules 6: any operator withdraws an acceptance from the last nomination (pending or under way) |
@@ -241,4 +265,9 @@ calls `Engine::step_engagements` (hold the picture, release, observe, assess).
 | 68-mission-waits-for-restore | restore_owed | rules 7: an orbit ordered after an abort while the USV's own lost-link values are not back (its restore answered 25 s late); the fact stripped from the log | the orbit waits in the queue and goes the second the restore confirms; tamper caught |
 | 69-restore-never-confirmed | restore_owed | rules 7: the USV never confirms its own values back | the orbit waits, then goes back to a human after 120 s saying why; a hold goes out at once |
 | 70-mission-refused-without-queue | restore_owed | rules 7: 68 under a policy that never queues an orbit (`[queue.kind.orbit] expire_s = 0`); the fact stripped from the log | the orbit is voided, saying why, not sent over the engagement's lost-link action; given again after the restore it goes at once; tamper caught |
+| 72-hostile-act-declared-by-rule | rule_declaration | rules 9: a clear act on our USV by the only track there; the act cut from the log | declared by rule, confirmed by op-2, done (ceased); tamper caught |
+| 73-ambiguous-attribution-flagged | rule_declaration | rules 9: an act between two tracks 15 m apart on a 60 m fix; an agent tries to declare; the flag forged into a rule declaration | flagged (attribution), nothing declared, the nomination rejected (target_declared); tamper caught |
+| 74-neutral-alongside-hostile-flagged | rule_declaration | rules 9: a ferry 150 m alongside a declared hostile, an act landing on the ferry; an agent nominates the ferry; the operator's declaration credited to another operator in the log | the ferry flagged (proximity, raised to suspect; the act: conflict), never declared; rejected; tamper caught |
+| 75-rule-declaration-revoked-mid-engagement | rule_declaration | rules 9: an untracked author beside a fishing boat (a false rule declaration), nominated before a confirmation, revoked en route; the stop cut from the log | aborted (revoked), fallback return; tamper caught |
+| 76-rule-declared-bystander-protected | keep_out_tracks | rules 9: a rule-declared, unconfirmed hostile 250 m from another engagement's target; the confirmation planted in an earlier picture in the log | rejected (keep_out_tracks) until confirmed, then done; tamper caught |
 | 71-refused-mission-supersedes-engagement | engagement_in_play | rules 7: 70's policy, the orbit ordered while the engagement is still under way, link up; the fact stripped from the log | the orbit is voided and in the same step the engagement is aborted, superseded by it, no fallback, its reason saying so; given again before the restore it is refused saying the restore is pending; after it, it goes at once; tamper caught |

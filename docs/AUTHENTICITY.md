@@ -142,6 +142,30 @@ thresholds) are marked in `params.rs`.
 - **Fixed-wing RTL** is done within its RTL circle plus 250 m: RTL_RADIUS (or WP_LOITER_RAD
   when 0), read at link-up, never tighter than the catalog's minimum turn radius.
 
+### Hostile acts and their observation (rules 9; simplifications, stated)
+
+What the identification rule reads is modelled, not measured; these are the shortcuts, so a
+result is read with them in mind (2026-10-05):
+
+- **An act is an abstract event**: a time, an author (a contact) and a victim (one of our
+  vehicles, or another contact), scripted in the contacts scenario (`[[act]]`). No weapon,
+  round, warhead or damage is modelled; nothing about an act's kind changes how it is seen.
+- **Who sees it**: the sensors that could detect its author at that moment, by the same
+  range, horizon, domain and detection probability as a detection (radar, EO/IR, sonar);
+  AIS (a broadcast) and ESM (a bearing) never observe one. One seeded draw per act and
+  sensor, so a run replays; real acts are often seen by nobody, or only heard.
+- **Where it puts the author**: the observer with the smallest position error places the
+  author with that sensor's error, drawn as for a detection. No fusion of several
+  observers' fixes, no bearing-only fix, no false act (a sensor never reports an act that
+  did not happen), and the victim is known exactly when it is ours.
+- **The picture it is attributed in** is the bridge's tracks, associated by the
+  simulation's contact id (10-02); a track's reported uncertainty is the tracker's own, which
+  in the first live run (2026-10-05) was optimistic (8 m reported, about 20 m off the
+  truth), so the attribution can be overconfident or, as there, too low for a clear act.
+- **The scenario runner's acts** (`sim/scenarios/engage`, the evaluation) skip the sensing
+  model: the file names the observing sensors and the sigma, and the observed position is the
+  author's plus a scripted offset plus, in evaluation batches, seeded noise of that sigma.
+
 ## Protocol groups (most realistic way a C2 reaches each platform)
 
 | Group | Platforms | Openly implementable? |

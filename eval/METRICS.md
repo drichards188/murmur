@@ -255,6 +255,40 @@ Each is a violation. Every audit log of Phase E's engagement scenario suite and 
 batch passes (the suite also checked against the release binary). These checks read only the
 log; murmur-replay checks the same things from the engine's side.
 
+## Identification: rule against manual (rules 9)
+
+`eval/ident.py` (`python -m eval.run ident`, and a step of every batch) plays the scenarios
+with a scripted hostile act (`sim/scenarios/engage/`, `action = "act"`) under four arms on
+the same seeds, with seeded noise of each act's own sigma on where its author was observed:
+`rule` (the shipped policy), `rule-nominate` (`eval/policy/minimal.toml`'s
+`nominate_unconfirmed`), `manual` (rule declaration off; a scripted operator proxy declares
+by the rule's own evidence standard after a lognormal delay, median 16 s, sigma 0.4: half the
+proxy operator's 20 s look interval plus its 6 s read) and `manual-best` (the proxy declares
+the most likely track of every act). Each run's `ident` records come with the scenario file's
+truth (`truth` on each track; an act's real author, a track or `untracked`).
+
+| measure | definition |
+| --- | --- |
+| correct declaration | a hostile declaration (the rule's, or the manual proxy's from an act) of the act's real author, whose contact is hostile |
+| false hostile declaration | one of a track whose contact is not hostile |
+| wrong-author declaration | one of a hostile that did not commit the act |
+| missed hostile act | an observed act by a tracked hostile whose track nobody (rule, proxy or a scripted operator) declared hostile by the end of the run |
+| C2 showed it / picture wrong | a wrong declaration is *C2 showed it* when, at the act, another track had 0.1 or more of the attribution, the declared track's estimate was neutral or assumed friend, or a review flag was on it; else *picture wrong*. Never pooled |
+| flag prevented a wrong one / held back a right one | a flag from an act whose best candidate was not its hostile author prevented a wrong declaration; one whose best candidate was held back a right one (a look a person had to give that the rule could have saved). Proximity flags (no act) are counted apart |
+| review items | the rule arms' non-blocking asks of a person: every rule declaration (confirm or revoke) and every flag |
+| declared by a person | the manual arms' declarations (the proxy's): every identification there is a person's act |
+| act to declaration | seconds from the act to the declaration it led to (the rule's at once; the proxy's after its delay); median over acts |
+| engagements by basis | every nomination grouped by how its target was declared when nominated (operator, rule confirmed, rule unconfirmed, none) and how it ended, effects released counted |
+
+What these are not: model results from scripted proxies on scripted scenarios, never human
+data. The manual proxy is a latency model with a fixed evidence standard (with `rule`'s
+standard it declares exactly what the rule would have, later), the scenario timelines are
+scripted (nominations, confirmations, revocations and flag resolutions at fixed seconds in
+every arm, so engagement outcomes across arms mostly measure whether a declaration existed
+at the nomination's second), the tracks are the scenario runner's (truth plus seeded noise,
+not the bridge's tracker), and the counts come from five scenarios built around the cases
+the rule must handle, not from a sample of situations.
+
 ## Provenance and exclusions
 
 Each run records the git commit, the paths that differed from it (changed tracked files and

@@ -45,6 +45,32 @@ group. Dates are 2026.
   so a log whose policy or decision was edited to one is caught). This closes the gap left
   by "the operator's own command is the human decision": that rule stands for every other
   kind; for an engagement the submitter's own command is never the approval.
+- **The engine may declare hostile by rule, and flags what it is unsure of** (10-05, user
+  direction: minimize manual approvals; the system decides where the evidence is clear,
+  flags for human review where it is unsure, and evaluation runs show what really needs a
+  person; rules 9, `RULE_ID_SINCE`; supersedes "Hostile is declared, never inferred", 10-02,
+  under Fleet and simulation). The engine declares a track hostile by its hostile-act rule
+  when one of our sensors observed a hostile act against one of our vehicles or a track we
+  protect, attributed it to that track at the policy's threshold or more (0.9 shipped), and
+  nothing conflicts (the track is not already declared otherwise, an operator has not revoked
+  a declaration of it, its own estimate is not neutral or assumed friend with confidence).
+  The declaration is the engine's, logged as such (`ident.declared`, `by: rule`, with the
+  act, the observing sensors, the time and the attribution), never as an operator's, and it
+  is a non-blocking review item: any operator confirms it or revokes it, under their own
+  session. What the engine is unsure of it flags and never declares: an attribution below the
+  threshold (two tracks close together, a loose fix), conflicting evidence, an author we hold
+  no track of, a victim that is not ours, and the weak evidence of keeping company with a
+  declared hostile (which may raise a track to suspect, never further). Any operator may still
+  declare any track. Why it is acceptable now: the declaration is a deterministic rule over
+  logged facts that replay recomputes (an agent's judgment would not be), it is shown as the
+  rule's everywhere it travels (the picture token, the frozen plan, the engagement card, MCP
+  reads), and the floor below does not move. **What stays human, in code and by type**:
+  releasing an effect needs two distinct operators with engagement authority signing one
+  frozen plan, never the proposer, never an agent; accepting a lost friendly is an
+  engagement-authority operator's act; agents cannot declare, confirm, revoke, resolve a
+  flag, sign, stop or release (the methods are absent from `AgentPort`, compile-fail
+  doctests). With `[identification] rule_declaration = false` the engine decides exactly as
+  rules 8 did (a test runs every earlier scenario both ways).
 - **One frozen plan for every signature** (10-03, second Phase E review; replaces comparing
   each signature's own picture). The first signature freezes the plan it was shown: the
   effect point and time, radius, window, platform, fallback, and the target as identified
@@ -370,11 +396,24 @@ group. Dates are 2026.
   only for sensing, and serves it back only on `GET /api/sim/truth` with
   `MURMUR_EVAL_TRUTH=1` (evaluation). A unit test asserts no truth field reaches
   `/api/tracks`, the WebSocket, the decision snapshot or CoT.
-- **Hostile is declared, never inferred** (10-02). The tracker derives unknown, suspect,
+- **Hostile is declared, never inferred** (10-02; superseded 10-05 by "The engine may
+  declare hostile by rule", under Direction). The tracker derives unknown, suspect,
   neutral and assumed friend from identity evidence (AIS, classification, speed
-  plausibility, conflicts); hostile takes an operator's declaration, logged as an
-  `operator.action`. The same discipline as "agents don't authorize": the consequential
-  label is a human act.
+  plausibility, conflicts); hostile took an operator's declaration, logged as an
+  `operator.action`. What still holds: the tracker never infers hostile from identity
+  evidence. From rules 9 hostile is an operator's declaration or the engine's rule on an
+  observed hostile act, both in the engine's identification ledger (`ident.declared`).
+- **A hostile act is an abstract event the sensors observe** (10-05, rules 9). A contacts
+  scenario scripts an act (`[[act]]`: a time, an author, a victim, one of ours or another
+  contact); nothing models a weapon or damage. It is truth: the bridge's sensing model
+  decides which of our sensors observed it, with the same range, horizon, domain and
+  detection probability as a detection (radar, EO/IR and sonar; not AIS, a broadcast, nor
+  ESM, a bearing), one seeded draw per act and sensor so a run replays, and the observer with
+  the smallest position error places the act's author with that error drawn as for a
+  detection. Simplifications, stated: one observation per act (no fusion of several
+  observers' fixes), the victim known exactly when it is ours, an act against a contact
+  named by the track the association gives it (the contact-id association of 10-02), and an
+  act nobody observed simply absent from the C2's picture (the evaluation view lists it).
 - **Sensing runs in the bridge, association is by contact id** (10-02). One seeded model
   in the bridge (which already loads the catalog and knows our vehicles) rather than in the
   contacts process; detections are associated to tracks by the simulation's contact id
@@ -407,6 +446,17 @@ group. Dates are 2026.
   diverge the EKF.
 
 ## Evaluation (Phase G)
+
+- **Rule against manual identification is a model comparison on scripted scenarios** (10-05,
+  rules 9). `python -m eval.run ident` plays every scenario with a scripted act under the
+  shipped rule, the minimal profile, and a manual arm (rule declaration off; a scripted
+  operator proxy declares by the rule's own evidence standard after a seeded delay of about
+  16 s, the proxy operator's half look interval plus its read time), plus a best-guess manual
+  arm as a sensitivity case, on the same seeds with seeded noise on each act's observed
+  position. It labels every declaration, act and flag from the scenario's truth and keeps "the
+  C2 showed it" apart from "picture wrong". Its numbers are model results from scripted
+  proxies (dev runs, asserted ids), never human data; a claim about people needs study runs,
+  which count only the participant's own acts with verified anchors.
 
 - **One isolated stand-in stack per run, Python runner** (10-03). `eval/run.py` starts the
   link emulator, bridge, stand-ins and contacts on a port block of their own (UDP 35000-36999,
@@ -884,6 +934,46 @@ group. Dates are 2026.
   acceptances share one step-up). Off by default, as built; replay requires the step-up on
   each listed act in a credentials run, and the console asks for the password where it
   applies.
+- **Attribution is a likelihood against the tracks and an untracked alternative** (10-05,
+  rules 9). Each track is predicted to the act's time along its velocity, its uncertainty
+  grown to then; its likelihood is the bivariate Gaussian density of the observed location
+  under the combined uncertainty, against a uniform density of contacts we hold no track of
+  (`untracked_per_km2`, 1 shipped). A track's attribution is its likelihood over the sum: two
+  tracks close together share it, and a lone track far from the fix loses it to the untracked
+  alternative. Candidates within five sigmas, the five most likely, rounded (1e-4, 0.1 m) so
+  a replay on another machine computes the same verdict. Why this and not nearest-track: a
+  nearest-track rule declares the nearer of two boats 15 m apart on a 60 m fix, which is a
+  coin toss, and declares a lone boat 2 km from the fix.
+- **Proximity is weak evidence** (10-05, rules 9). A track in the same domain within 300 m
+  of a declared hostile, velocity within 1.5 m/s of its, both velocities known, is flagged
+  once per pair and shown suspect; never declared. Same domain because an airliner over a
+  boat is not its escort (scenarios 61 and 64 flagged one before the rule required it).
+- **A rule declaration nobody confirmed stays protected in another engagement's keep-out**
+  (10-05, rules 9). A track declared hostile by an operator, or by the rule and confirmed by
+  one, is exempt from the keep-out of engagements on other targets, as before; one the rule
+  declared and nobody confirmed counts as protected unless it is the engagement's own target.
+  Conservative on purpose: a false rule declaration (an untracked author beside a fishing
+  boat, scenario 75) must not also lower the protection of everything near it. Whether a rule
+  declaration may be nominated before a confirmation is a policy switch
+  (`nominate_unconfirmed`, off shipped, on in the evaluation's minimal profile).
+- **A revocation stops the engagements on the track first** (10-05, rules 9). Any operator
+  may revoke any declaration (an operator's or the rule's): it only restricts. Before
+  anything else in that step every engagement in play on the track stops (cause `revoked`,
+  naming the operator, the track and the declaration): one waiting for signatures is voided,
+  one under way aborted with its fallback per the existing stop rules. A confirmation while
+  an engagement is being signed changes the target's identity in its plan, so the signatures
+  are dropped and taken again (conservative, as any picture change).
+- **Confirming a rule declaration does not step up by default** (10-05, user's minimal
+  approval). `confirm_declaration` is a name `[approval] step_up_acts` accepts (policy schema
+  6, `RULE_ID_SCHEMA_SINCE`), off unless listed; an unknown name fails to load. A rule
+  declaration carries no session and no step-up: it is the engine's. Revoking and resolving a
+  flag never step up (they restrict or record).
+- **The shipped policy turns rule declaration on, nomination before confirmation off**
+  (10-05). `sim/policy.toml` (and the evaluation's base and strict policies, which mirror it)
+  has `rule_declaration = true`, `attribution_threshold = 0.9`, `nominate_unconfirmed =
+  false`: the engine declares what is clear and a person confirms before it becomes a target;
+  `eval/policy/minimal.toml` drops that confirmation and every optional step-up, to measure
+  what minimal approval costs.
 - **Still placeholders, stated** (10-03; revised 10-04 by rules 8). Who holds engagement
   authority is now each person's credential, not a header (above); what is still not here:
   a second factor (a password is single-factor; passkeys are planned, above), a blocklist
