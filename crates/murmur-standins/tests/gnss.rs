@@ -1,6 +1,8 @@
 //! GNSS availability end to end: real constellation geometry (murmur-space's element-set
 //! fixture), and jamming and spoofing as scenario events driving each firmware's EKF and
-//! failsafe, stepped faster than real time.
+//! failsafe, stepped faster than real time. What a vehicle says is read from its link
+//! (`Link::capture`), not from a loopback socket, whose delivery lags such a loop and drops
+//! datagrams on a loaded host (bd murmur-ek3); every vehicle draws from a fixed seed.
 
 use std::sync::Arc;
 
@@ -44,15 +46,15 @@ fn config(spec: Spec, port: u16, alt: f64) -> VehicleConfig {
     }
 }
 
+/// A vehicle to step by hand, what it sends kept on its link ([`texts`]), its socket going
+/// to one nobody reads (kept open beside it).
 async fn offline(spec: Spec, alt: f64, events: &str) -> (Vehicle, std::net::UdpSocket) {
     let sink = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind");
-    sink.set_nonblocking(true).expect("nonblocking");
     let port = sink.local_addr().expect("addr").port();
     let sock = UdpSocket::bind("127.0.0.1:0").await.expect("bind");
     sock.connect(("127.0.0.1", port)).await.expect("connect");
-    // tokio only sends once it has seen the socket writable
-    sock.writable().await.expect("writable");
-    let mut v = Vehicle::new(config(spec, port, alt), sock, None).expect("vehicle");
+    let mut v = Vehicle::seeded(config(spec, port, alt), sock, None, 1).expect("vehicle");
+    v.link.capture();
     v.gnss = Some(Arc::new(Env {
         events: gnss::parse_events(events).expect("events"),
         ..Env::plain()
@@ -60,12 +62,11 @@ async fn offline(spec: Spec, alt: f64, events: &str) -> (Vehicle, std::net::UdpS
     (v, sink)
 }
 
-/// STATUSTEXTs sent so far.
-fn texts(sink: &std::net::UdpSocket) -> Vec<String> {
+/// STATUSTEXTs the vehicle sent since the last call, in order.
+fn texts(v: &mut Vehicle) -> Vec<String> {
     let mut out = Vec::new();
-    let mut buf = [0u8; 2048];
-    while let Ok(n) = sink.recv(&mut buf) {
-        let mut r = PeekReader::new(&buf[..n]);
+    for frame in v.link.take_captured() {
+        let mut r = PeekReader::new(&frame[..]);
         if let Ok((_, MavMessage::STATUSTEXT(t))) = mavlink::read_v2_msg::<MavMessage, _>(&mut r) {
             out.push(t.text.to_str().unwrap_or("").to_owned());
         }
@@ -73,14 +74,11 @@ fn texts(sink: &std::net::UdpSocket) -> Vec<String> {
     out
 }
 
-fn run(v: &mut Vehicle, seconds: f64, sink: &std::net::UdpSocket, log: &mut Vec<String>) {
+fn run(v: &mut Vehicle, seconds: f64, log: &mut Vec<String>) {
     for _ in 0..(seconds * 10.0).round() as usize {
         v.step();
-        log.extend(texts(sink));
+        log.extend(texts(v));
     }
-    // loopback delivery can lag a burst of sends
-    std::thread::sleep(std::time::Duration::from_millis(30));
-    log.extend(texts(sink));
 }
 
 fn gps_raw(v: &Vehicle) -> GPS_RAW_INT_DATA {
@@ -136,12 +134,12 @@ const DENY_HERE: &str = r#"
 /// -> LAND; constant position mode at 15 s; the fix back after the jammer clears it all.
 #[tokio::test]
 async fn copter_lands_when_jammed_and_recovers_after() {
-    let (mut v, sink) = offline(spec("copter", 10.0), 0.0, DENY_HERE).await;
+    let (mut v, _sink) = offline(spec("copter", 10.0), 0.0, DENY_HERE).await;
     let mut log = Vec::new();
     v.set_mode("GUIDED");
     cmd(&mut v, MavCmd::MAV_CMD_COMPONENT_ARM_DISARM, 1.0, 0.0);
     cmd(&mut v, MavCmd::MAV_CMD_NAV_TAKEOFF, 0.0, 40.0);
-    run(&mut v, 39.0, &sink, &mut log);
+    run(&mut v, 39.0, &mut log);
     assert!(v.airborne(), "{log:?}");
     assert_eq!(v.st.mode, "GUIDED");
     assert!(v.nav.fix && v.nav.ekf == Ekf::Gps);
@@ -153,7 +151,7 @@ async fn copter_lands_when_jammed_and_recovers_after() {
     );
 
     // the jammer comes on at 40 s
-    run(&mut v, 2.0, &sink, &mut log);
+    run(&mut v, 2.0, &mut log);
     let g = gps_raw(&v);
     assert_eq!(g.fix_type, GpsFixType::GPS_FIX_TYPE_NO_FIX);
     assert_eq!((g.eph, g.satellites_visible), (u16::MAX, 0));
@@ -162,7 +160,7 @@ async fn copter_lands_when_jammed_and_recovers_after() {
         flags.contains(EkfStatusFlags::EKF_POS_HORIZ_ABS),
         "EKF3 still claims absolute position before posTimeout"
     );
-    run(&mut v, 8.0, &sink, &mut log); // 49 s
+    run(&mut v, 8.0, &mut log); // 49 s
     let flags = telemetry::ekf_flags(&v);
     assert!(!flags.contains(EkfStatusFlags::EKF_POS_HORIZ_ABS));
     assert!(!flags.contains(EkfStatusFlags::EKF_POS_HORIZ_REL));
@@ -175,23 +173,23 @@ async fn copter_lands_when_jammed_and_recovers_after() {
         log.iter()
             .any(|t| t == "EKF Failsafe: changed to LAND Mode")
     );
-    run(&mut v, 7.0, &sink, &mut log); // 56 s
+    run(&mut v, 7.0, &mut log); // 56 s
     assert_eq!(v.nav.ekf, Ekf::ConstPos);
     assert!(telemetry::ekf_flags(&v).contains(EkfStatusFlags::EKF_CONST_POS_MODE));
     assert!(log.iter().any(|t| t == "EKF3 IMU0 stopped aiding"));
     // reported and true positions part: it drifts with wind it can no longer see
-    run(&mut v, 40.0, &sink, &mut log); // 97 s
+    run(&mut v, 40.0, &mut log); // 97 s
     let err = v.nav.error_m();
     assert!(err > 5.0, "{err:.1} m");
     let (tlat, tlon, _) = v.truth();
     assert!((distance_m(tlat, tlon, v.st.lat, v.st.lon) - err).abs() < 0.5);
 
     // the jammer goes at 100 s; the fix is back 10 s later
-    run(&mut v, 15.0, &sink, &mut log); // 112 s
+    run(&mut v, 15.0, &mut log); // 112 s
     assert!(v.nav.fix && v.nav.ekf == Ekf::Gps);
     assert_eq!(v.nav.error_m(), 0.0);
     assert!(log.iter().any(|t| t == "EKF3 IMU0 is using GPS"));
-    run(&mut v, 3.0, &sink, &mut log);
+    run(&mut v, 3.0, &mut log);
     assert!(log.iter().any(|t| t == "EKF Failsafe Cleared"), "{log:?}");
     assert_eq!(v.st.mode, "LAND", "ArduCopter stays in LAND");
 }
@@ -199,19 +197,19 @@ async fn copter_lands_when_jammed_and_recovers_after() {
 /// ArduRover (boat frame) in AUTO: "EKF variance", HOLD, "EKF failsafe".
 #[tokio::test]
 async fn boat_holds_when_jammed() {
-    let (mut v, sink) = offline(spec("boat", 3.0), 0.0, DENY_HERE).await;
+    let (mut v, _sink) = offline(spec("boat", 3.0), 0.0, DENY_HERE).await;
     let mut log = Vec::new();
     waypoints(&mut v, &[2000.0], 0.0);
     v.st.armed = true;
     v.set_mode("AUTO");
-    run(&mut v, 39.0, &sink, &mut log);
+    run(&mut v, 39.0, &mut log);
     assert_eq!(v.st.mode, "AUTO");
-    run(&mut v, 10.0, &sink, &mut log);
+    run(&mut v, 10.0, &mut log);
     assert_eq!(v.st.mode, "HOLD", "{log:?}");
     assert!(log.iter().any(|t| t == "EKF variance"), "{log:?}");
     assert!(log.iter().any(|t| t == "EKF failsafe"));
     assert!(v.failsafe_active(), "HEARTBEAT says CRITICAL");
-    run(&mut v, 75.0, &sink, &mut log);
+    run(&mut v, 75.0, &mut log);
     assert!(log.iter().any(|t| t == "EKF failsafe cleared"), "{log:?}");
     assert_eq!(v.st.mode, "HOLD");
 }
@@ -228,7 +226,7 @@ async fn plane_dead_reckons_through_a_jammer() {
         circle = { lat = 37.935, lon = -122.6, radius_m = 30000 }
         gnss = { effect = "jam", power_w = 0.25, height_m = 300 }
     "#;
-    let (mut v, sink) = offline(spec("plane", 40.0), 1000.0, events).await;
+    let (mut v, _sink) = offline(spec("plane", 40.0), 1000.0, events).await;
     let mut log = Vec::new();
     waypoints(&mut v, &[40_000.0], 1000.0);
     v.set_mode("AUTO");
@@ -236,7 +234,7 @@ async fn plane_dead_reckons_through_a_jammer() {
     let mut worst: f64 = 0.0;
     for _ in 0..(1100 * 10) {
         v.step();
-        log.extend(texts(&sink));
+        log.extend(texts(&mut v));
         if seen.last() != Some(&v.nav.ekf) {
             seen.push(v.nav.ekf);
         }
@@ -274,12 +272,12 @@ async fn spoofing_drags_a_boat_off_its_waypoint_with_good_flags() {
         circle = { lat = 37.8, lon = -122.6, radius_m = 5000 }
         gnss = { effect = "spoof", walk_mps = 1.0, bearing_deg = 90, max_offset_m = 150 }
     "#;
-    let (mut v, sink) = offline(spec("boat", 3.0), 0.0, events).await;
+    let (mut v, _sink) = offline(spec("boat", 3.0), 0.0, events).await;
     let mut log = Vec::new();
     waypoints(&mut v, &[400.0], 0.0);
     v.st.armed = true;
     v.set_mode("AUTO");
-    run(&mut v, 250.0, &sink, &mut log);
+    run(&mut v, 250.0, &mut log);
     assert_eq!(v.nav.ekf, Ekf::Gps);
     assert!(telemetry::ekf_flags(&v).contains(EkfStatusFlags::EKF_POS_HORIZ_ABS));
     assert_eq!(gps_raw(&v).fix_type, GpsFixType::GPS_FIX_TYPE_3D_FIX);
@@ -297,10 +295,10 @@ async fn spoofing_drags_a_boat_off_its_waypoint_with_good_flags() {
         "no warning at all: {log:?}"
     );
     // the spoofer stops at 310 s: the EKF rejects the 150 m jump for 10 s, then resets
-    run(&mut v, 65.0, &sink, &mut log);
+    run(&mut v, 65.0, &mut log);
     assert_eq!(v.nav.ekf, Ekf::Glitch);
     assert!(telemetry::ekf_flags(&v).contains(EkfStatusFlags::EKF_GPS_GLITCHING));
-    run(&mut v, 10.0, &sink, &mut log);
+    run(&mut v, 10.0, &mut log);
     assert_eq!(v.nav.ekf, Ekf::Gps);
     assert_eq!(v.nav.error_m(), 0.0);
 }

@@ -1,7 +1,10 @@
 //! The stand-in contract (docs/AUTHENTICITY.md): parameters, message rates, the mission
 //! protocol both ways, unknown commands, failsafes, navigation without GPS, the acoustic
 //! link. Some tests talk to a running vehicle over UDP; others step a vehicle's physics
-//! directly (faster than real time).
+//! directly (faster than real time) and read what it sends from its link
+//! (`Link::capture`: every frame as it is handed to the socket), not from a loopback socket
+//! whose delivery lags such a loop and drops datagrams on a loaded host (bd murmur-ek3).
+//! Every vehicle draws from a fixed seed, so its navigation errors are the same every run.
 
 use std::time::Duration;
 
@@ -15,9 +18,24 @@ use tokio::time::{Instant, timeout};
 
 const SYSID: u8 = 7;
 
+/// How long a frame that came ahead of one sent before it waits for that one before the
+/// gap is taken as a loss.
+const GAP_WAIT: Duration = Duration::from_secs(1);
+
+/// The GCS end of a running vehicle's link. It reads the vehicle's frames in the order the
+/// vehicle sent them (their MAVLink sequence): a loaded host's loopback can deliver two
+/// datagrams the other way round (each CPU queues what its sender sent, and a starved queue
+/// waits for its softirq thread while the next CPU's goes at once), and a test of "the
+/// texts sent ahead of the ACK" is about the vehicle's order, not the kernel's (bd
+/// murmur-ek3: a refusal's text came after its ACK at a load average of 56).
 struct Gcs {
     sock: UdpSocket,
     seq: u8,
+    /// the vehicle's sequence number of the next frame in its order
+    next: Option<u8>,
+    /// frames that came ahead of it, by sequence number, and since when they wait
+    held: std::collections::BTreeMap<u8, Vec<u8>>,
+    held_since: Option<Instant>,
 }
 
 impl Gcs {
@@ -37,10 +55,52 @@ impl Gcs {
         self.sock.send(&buf).await.expect("send");
     }
 
+    /// The vehicle's next frame in the order it sent them (see [`Gcs`]).
     async fn raw(&mut self) -> Vec<u8> {
         let mut buf = [0u8; 2048];
-        let n = self.sock.recv(&mut buf).await.expect("recv");
-        buf[..n].to_vec()
+        loop {
+            if let Some(want) = self.next
+                && let Some(f) = self.held.remove(&want)
+            {
+                self.next = Some(want.wrapping_add(1));
+                if self.held.is_empty() {
+                    self.held_since = None;
+                }
+                return f;
+            }
+            let n = match self.held_since {
+                Some(since) => match tokio::time::timeout_at(since + GAP_WAIT, self.sock.recv(&mut buf)).await {
+                    Ok(r) => r.expect("recv"),
+                    Err(_) => {
+                        // lost: go on from the earliest frame held
+                        let want = self.next.unwrap_or(0);
+                        let first = self.held.keys().copied().min_by_key(|s| s.wrapping_sub(want));
+                        self.next = first;
+                        self.held_since = Some(Instant::now());
+                        continue;
+                    }
+                },
+                None => self.sock.recv(&mut buf).await.expect("recv"),
+            };
+            let frame = buf[..n].to_vec();
+            // MAVLink 2: STX, length, flags, flags, sequence, ...
+            let Some(&seq) = frame.get(4).filter(|_| frame[0] == mavlink::MAV_STX_V2) else {
+                return frame;
+            };
+            match self.next {
+                Some(want) if seq != want && seq.wrapping_sub(want) < 128 => {
+                    // ahead of one sent before it: wait for that one
+                    self.held.insert(seq, frame);
+                    self.held_since.get_or_insert_with(Instant::now);
+                }
+                // in order (or one given up on arriving after all: as it comes)
+                Some(want) if seq != want => return frame,
+                _ => {
+                    self.next = Some(seq.wrapping_add(1));
+                    return frame;
+                }
+            }
+        }
     }
 
     /// Next message matching `f`, skipping the rest.
@@ -178,23 +238,31 @@ async fn start(spec: Spec, alt: f64) -> Gcs {
     gcs.connect(sock.local_addr().expect("addr"))
         .await
         .expect("connect");
-    let v = Vehicle::new(config(spec, port, alt), sock, None).expect("vehicle");
+    let v = Vehicle::seeded(config(spec, port, alt), sock, None, SEED).expect("vehicle");
     tokio::spawn(vehicle::run(v, Duration::ZERO));
-    Gcs { sock: gcs, seq: 0 }
+    Gcs {
+        sock: gcs,
+        seq: 0,
+        next: None,
+        held: Default::default(),
+        held_since: None,
+    }
 }
 
-/// A vehicle to step by hand (its link goes to a socket nobody reads).
+/// A vehicle to step by hand: what it sends is kept on its link ([`events`]); its socket
+/// goes to one nobody reads.
 async fn offline(spec: Spec, alt: f64) -> (Vehicle, UdpSocket) {
     let sink = UdpSocket::bind("127.0.0.1:0").await.expect("bind");
     let port = sink.local_addr().expect("addr").port();
     let sock = UdpSocket::bind("127.0.0.1:0").await.expect("bind");
     sock.connect(("127.0.0.1", port)).await.expect("connect");
-    // tokio's try_send needs the socket's writability observed once (the engine's run loop
-    // polls the reactor every tick; a stepped vehicle never yields to it)
-    sock.writable().await.expect("writable");
-    let v = Vehicle::new(config(spec, port, alt), sock, None).expect("vehicle");
+    let mut v = Vehicle::seeded(config(spec, port, alt), sock, None, SEED).expect("vehicle");
+    v.link.capture();
     (v, sink)
 }
+
+/// Every vehicle's draws (its navigation errors): the same every run.
+const SEED: u64 = 1;
 
 fn count(msgs: &[MavMessage], id: u32) -> usize {
     msgs.iter().filter(|m| m.message_id() == id).count()
@@ -650,13 +718,12 @@ async fn plane_rtl_circles_home_at_the_turn_bounded_radius() {
     );
 }
 
-/// Events as they went on the wire: "IR n" for MISSION_ITEM_REACHED, the STATUSTEXTs. The
-/// sink is read as a std socket: a stepped test never yields to tokio's reactor.
-fn events(sink: &std::net::UdpSocket) -> Vec<String> {
+/// Events as the vehicle sent them since the last call: "IR n" for MISSION_ITEM_REACHED,
+/// the STATUSTEXTs (the frames its link handed the socket, in order).
+fn events(v: &mut Vehicle) -> Vec<String> {
     let mut out = Vec::new();
-    let mut buf = [0u8; 2048];
-    while let Ok(n) = sink.recv(&mut buf) {
-        let mut r = PeekReader::new(&buf[..n]);
+    for frame in v.link.take_captured() {
+        let mut r = PeekReader::new(&frame[..]);
         match mavlink::read_v2_msg::<MavMessage, _>(&mut r) {
             Ok((_, MavMessage::STATUSTEXT(t))) => out.push(t.text.to_str().unwrap_or("").to_owned()),
             Ok((_, MavMessage::MISSION_ITEM_REACHED(m))) => out.push(format!("IR {}", m.seq)),
@@ -673,9 +740,7 @@ fn events(sink: &std::net::UdpSocket) -> Vec<String> {
 async fn boat_mission_with_do_items_twice_as_ardurover_reports_it() {
     let mut s = spec("boat");
     s.cruise_mps = 12.0;
-    let (mut v, sink) = offline(s, 0.0).await;
-    let sink = sink.into_std().expect("std socket");
-    sink.set_nonblocking(true).expect("nonblocking");
+    let (mut v, _sink) = offline(s, 0.0).await;
     let item = |seq: u16, command: MavCmd, north_m: f64, east_m: f64, p1: f32, p2: f32| {
         let located = (north_m, east_m) != (0.0, 0.0);
         MISSION_ITEM_INT_DATA {
@@ -700,32 +765,17 @@ async fn boat_mission_with_do_items_twice_as_ardurover_reports_it() {
     ]);
     v.st.armed = true;
     v.set_mode("AUTO");
-    let mut log = events(&sink);
+    let mut log = events(&mut v);
     let mut settle = 0;
     for _ in 0..3000 {
-        // as the engine's run loop does between ticks: a send that found the socket not
-        // writable clears tokio's readiness until the reactor sees it writable again
-        v.link.sock.writable().await.expect("writable");
         v.step();
-        // a breath for loopback delivery (a softirq) to keep up with ticks run back to back
-        std::thread::sleep(Duration::from_micros(200));
-        log.extend(events(&sink));
+        log.extend(events(&mut v));
         if v.mission.complete {
             settle += 1;
             if settle > 10 {
                 break;
             }
         }
-    }
-    // loopback delivery (a softirq) lags a loop that runs minutes of physics in milliseconds,
-    // more so beside the other tests: drain until nothing more comes for a while
-    let mut quiet = 0;
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while quiet < 6 && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
-        let more = events(&sink);
-        quiet = if more.is_empty() { quiet + 1 } else { 0 };
-        log.extend(more);
     }
     let pass = [
         "Mission: 1 WP",
@@ -905,41 +955,33 @@ async fn copter_gcs_failsafe_takes_its_fs_gcs_enable_action() {
 /// have (murmur-3zj).
 #[tokio::test]
 async fn blimp_gcs_failsafe_is_off_and_only_disarms_when_on() {
-    /// `steps` physics steps with the texts they put on the wire (as the boat mission test
-    /// steps: tokio's readiness observed before each send, a breath for loopback delivery)
-    /// and the modes the vehicle went through.
-    async fn run(v: &mut Vehicle, sink: &std::net::UdpSocket, steps: usize) -> (Vec<&'static str>, Vec<String>) {
+    /// `steps` physics steps with the texts they sent, and the modes the vehicle went through.
+    fn run(v: &mut Vehicle, steps: usize) -> (Vec<&'static str>, Vec<String>) {
         let mut modes = vec![v.st.mode];
-        let mut texts = events(sink);
+        let mut texts = events(v);
         for _ in 0..steps {
-            v.link.sock.writable().await.expect("writable");
             v.step();
-            std::thread::sleep(Duration::from_micros(200));
-            texts.extend(events(sink));
+            texts.extend(events(v));
             if modes.last() != Some(&v.st.mode) {
                 modes.push(v.st.mode);
             }
         }
-        std::thread::sleep(Duration::from_millis(20));
-        texts.extend(events(sink));
         (modes, texts)
     }
-    async fn blimp(enable: Option<f32>) -> (Vehicle, std::net::UdpSocket) {
-        let (mut v, sink) = offline(spec("blimp"), 30.0).await;
-        let sink = sink.into_std().expect("std socket");
-        sink.set_nonblocking(true).expect("nonblocking");
+    async fn blimp(enable: Option<f32>) -> Vehicle {
+        let (mut v, _sink) = offline(spec("blimp"), 30.0).await;
         if let Some(e) = enable {
             v.params.set("FS_GCS_ENABLE", e).expect("set");
         }
         v.st.armed = true;
         v.set_mode("LOITER");
         v.gcs_heartbeat(); // heard once, then silent: 10 s is the 5 s timer twice
-        (v, sink)
+        v
     }
     // off, as the SITL Blimp runs: silence changes nothing
-    let (mut v, sink) = blimp(None).await;
+    let mut v = blimp(None).await;
     assert_eq!(v.params.get("FS_GCS_ENABLE"), Some(0.0));
-    let (modes, texts) = run(&mut v, &sink, 100).await;
+    let (modes, texts) = run(&mut v, 100);
     assert_eq!(modes, ["LOITER"]);
     assert!(v.st.armed && !v.fs.gcs, "still armed, no failsafe");
     assert!(
@@ -948,8 +990,8 @@ async fn blimp_gcs_failsafe_is_off_and_only_disarms_when_on() {
     );
     // on (the documented 5, Land, included): the flag, a disarm, no mode change, no text
     // but the disarm's own
-    let (mut v, sink) = blimp(Some(5.0)).await;
-    let (modes, texts) = run(&mut v, &sink, 100).await;
+    let mut v = blimp(Some(5.0)).await;
+    let (modes, texts) = run(&mut v, 100);
     assert_eq!(modes, ["LOITER"], "no RTL, no LAND");
     assert!(v.fs.gcs && !v.st.armed, "the failsafe flag is up and the motors are disarmed");
     assert!(v.failsafe_active(), "system status critical");
@@ -957,7 +999,7 @@ async fn blimp_gcs_failsafe_is_off_and_only_disarms_when_on() {
     assert!(texts.iter().all(|t| !t.contains("Failsafe")), "{texts:?}");
     // the GCS heard again: cleared silently
     v.gcs_heartbeat();
-    let (_, texts) = run(&mut v, &sink, 5).await;
+    let (_, texts) = run(&mut v, 5);
     assert!(!v.fs.gcs);
     assert!(texts.is_empty(), "{texts:?}");
 }

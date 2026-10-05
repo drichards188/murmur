@@ -70,10 +70,23 @@ pub struct Vehicle {
 }
 
 impl Vehicle {
+    /// A vehicle whose random draws (its navigation errors, sensor noise) differ every run:
+    /// seeded from the wall clock.
     pub fn new(
         cfg: VehicleConfig,
         sock: UdpSocket,
         water: Option<Arc<Slot>>,
+    ) -> Result<Vehicle, String> {
+        Vehicle::seeded(cfg, sock, water, wall_nanos())
+    }
+
+    /// [`Vehicle::new`] drawing from `seed` (with its uid): the same draws every run, so a test
+    /// of what the errors do does not depend on when it ran (bd murmur-ek3).
+    pub fn seeded(
+        cfg: VehicleConfig,
+        sock: UdpSocket,
+        water: Option<Arc<Slot>>,
+        seed: u64,
     ) -> Result<Vehicle, String> {
         let behavior = behavior::create(&cfg.spec.behavior)
             .ok_or_else(|| format!("{}: unknown behavior {:?}", cfg.callsign, cfg.spec.behavior))?;
@@ -100,7 +113,7 @@ impl Vehicle {
             demand: 0.0,
         };
         behavior.spawn(&cfg.spec, &mut st);
-        let seed = u64::from(cfg.uid()).wrapping_mul(0x1000_0000_01B3) ^ wall_nanos();
+        let seed = u64::from(cfg.uid()).wrapping_mul(0x1000_0000_01B3) ^ seed;
         let mut rng = Gauss::new(seed);
         let firmware = behavior.firmware();
         let mut params = Params::seed(firmware, &cfg.spec, cfg.sysid());

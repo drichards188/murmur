@@ -22,6 +22,8 @@ pub struct Link {
     sysid: u8,
     seq: u8,
     buf: Vec<u8>,
+    /// Every frame handed to the socket since [`Link::capture`], for a test to read.
+    captured: Option<Vec<Vec<u8>>>,
 }
 
 impl Link {
@@ -31,6 +33,26 @@ impl Link {
             sysid,
             seq: 0,
             buf: Vec::with_capacity(280),
+            captured: None,
+        }
+    }
+
+    /// From now on keep a copy of every frame as it is handed to the socket: what a test
+    /// that steps a vehicle's physics reads, rather than a loopback socket, whose delivery (a
+    /// softirq) lags a loop that runs minutes of physics in milliseconds and drops datagrams
+    /// on a loaded host (bd murmur-ek3).
+    pub fn capture(&mut self) {
+        self.captured.get_or_insert_with(Vec::new);
+    }
+
+    /// The frames kept since the last call, in the order they were sent.
+    pub fn take_captured(&mut self) -> Vec<Vec<u8>> {
+        self.captured.as_mut().map(std::mem::take).unwrap_or_default()
+    }
+
+    fn keep(&mut self) {
+        if let Some(c) = &mut self.captured {
+            c.push(self.buf.clone());
         }
     }
 
@@ -43,6 +65,7 @@ impl Link {
         };
         self.buf.clear();
         if mavlink::write_v2_msg(&mut self.buf, header, msg).is_ok() {
+            self.keep();
             match self.sock.try_send(&self.buf) {
                 Ok(_) => SENT.fetch_add(1, Ordering::Relaxed),
                 Err(_) => SEND_ERRORS.fetch_add(1, Ordering::Relaxed),
@@ -78,6 +101,7 @@ impl Link {
         self.buf.extend_from_slice(&payload[..len]);
         let crc = mavlink::calculate_crc(&self.buf[1..], COMMAND_ACK_DATA::EXTRA_CRC);
         self.buf.extend_from_slice(&crc.to_le_bytes());
+        self.keep();
         match self.sock.try_send(&self.buf) {
             Ok(_) => SENT.fetch_add(1, Ordering::Relaxed),
             Err(_) => SEND_ERRORS.fetch_add(1, Ordering::Relaxed),
