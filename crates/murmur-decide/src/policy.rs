@@ -133,6 +133,24 @@ pub struct ApprovalConfig {
     /// existed, which is how those runs behaved.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub kind: BTreeMap<TaskKind, KindApproval>,
+    /// Rules 7 (policy schema 5): acts besides approvals that re-enter the operator's
+    /// credential in a credentials run (a step-up): `declare_hostile` (an operator declares a
+    /// track hostile), `accept_unknown` (an operator accepts a lost vehicle for an
+    /// engagement). Absent: none (approvals step up per tier, `step_up`, and every engagement
+    /// signature always does).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step_up_acts: Option<Vec<StepUpAct>>,
+}
+
+/// An act other than an approval that a policy may mark consequential (rules 7,
+/// `[approval] step_up_acts`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StepUpAct {
+    /// Declaring a track hostile (what makes it a target).
+    DeclareHostile,
+    /// Accepting a lost vehicle's unknown position for an engagement's keep-out.
+    AcceptUnknown,
 }
 
 impl Default for ApprovalConfig {
@@ -141,6 +159,7 @@ impl Default for ApprovalConfig {
             expire_s: 120,
             submitter_authorizes: None,
             kind: BTreeMap::new(),
+            step_up_acts: None,
         }
     }
 }
@@ -374,6 +393,13 @@ impl Policy {
     /// `[queue]`, or its defaults.
     pub fn queue(&self) -> crate::queue::QueueConfig {
         self.queue.clone().unwrap_or_default()
+    }
+
+    /// Rules 7: whether `act` re-enters the operator's credential (`[approval] step_up_acts`;
+    /// nothing before rules 7).
+    pub fn steps_up(&self, act: StepUpAct) -> bool {
+        self.rules.rules_version >= OPERATOR_AUTH_SINCE
+            && self.approval.step_up_acts.as_ref().is_some_and(|a| a.contains(&act))
     }
 
     /// Whether a human's own submission authorizes an intent routed to `tier` (`None`: the

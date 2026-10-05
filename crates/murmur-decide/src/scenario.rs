@@ -2014,7 +2014,7 @@ pub fn tamper(text: &str, kind: &str) -> Result<Tampered, String> {
 fn forge(text: &str, kind: &str) -> Result<String, String> {
     let mut events = parse_log(text).map_err(|e| format!("log: {e}"))?;
     let engage_intent = events.iter().find_map(|e| match &e.body {
-        EventBody::IntentCreated { intent } if matches!(intent.task, Task::Engage { .. }) => {
+        EventBody::IntentCreated { intent, .. } if matches!(intent.task, Task::Engage { .. }) => {
             Some(intent.clone())
         }
         _ => None,
@@ -2077,7 +2077,7 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             let order = events
                 .iter()
                 .find_map(|e| match &e.body {
-                    EventBody::IntentCreated { intent }
+                    EventBody::IntentCreated { intent, .. }
                         if intent.source.is_agent()
                             && matches!(intent.task, Task::Hold {} | Task::Rtl {}) =>
                     {

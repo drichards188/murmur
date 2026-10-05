@@ -307,7 +307,7 @@ pub use intent::{
     Constraints, IllegalTransition, Intent, IntentSpec, Proposal, ProposalError, Rationale, Source,
     State, Targets, Task, TaskKind, Transition, next_state,
 };
-pub use policy::{DeadlineBasis, KindApproval, Policy, PolicyDecision, Tier, Until};
+pub use policy::{DeadlineBasis, KindApproval, Policy, PolicyDecision, StepUpAct, Tier, Until};
 pub use queue::{
     Basis, CarriedApproval, KindQueue, OpenIntent, QueueConfig, QueueState, Reach, Recheck,
     RecheckRecord, ResumedFrom, Verdict,

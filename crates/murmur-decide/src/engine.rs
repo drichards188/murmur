@@ -473,8 +473,9 @@ impl Engine {
     }
 
     /// Rules 7: open a session for an operator whose identity the bridge established by
-    /// `method` (a credentials run: `Password`, checked against the operator's credential at
-    /// login; a dev run: `Asserted`). Logged as `operator.action session.opened` with
+    /// `method` (a credentials run: `Password`, a person's credential checked at login, or
+    /// `Scripted`, a harness-held one checked the same way but never a person's; a dev run:
+    /// `Asserted`). Logged as `operator.action session.opened` with
     /// `auth`. The only way into a session in a credentials run; refused when the method is
     /// not the run's ([`EngineError::NotAuthenticated`], nothing logged).
     pub fn open_authenticated_session(
@@ -505,16 +506,16 @@ impl Engine {
             });
         }
         if let Some(mode) = self.auth
-            && mode.method() != method
+            && !mode.admits(method)
         {
             return Err(EngineError::NotAuthenticated {
                 operator,
                 why: format!(
                     "a {} run opens sessions only on {} identities",
                     mode.as_str(),
-                    match mode.method() {
-                        AuthMethod::Password => "password-checked",
-                        AuthMethod::Asserted => "asserted",
+                    match mode {
+                        AuthMode::Credentials => "password-checked or scripted",
+                        AuthMode::Dev => "asserted",
                     }
                 ),
             });
@@ -531,9 +532,10 @@ impl Engine {
             },
             grants: (grants != Grants::default()).then_some(grants),
             auth: self.auth.map(|_| method),
+            step_up: None,
         })?;
         self.next_session += 1;
-        Ok(OperatorSession::mint(operator, session, grants))
+        Ok(OperatorSession::mint(operator, session, grants, self.auth.map(|_| method)))
     }
 
     /// How this run authenticates its operators (rules 7; None before).
@@ -562,6 +564,7 @@ impl Engine {
             detail: reason.to_string(),
             grants: None,
             auth: None,
+            step_up: None,
         })?;
         self.closed.insert(id);
         self.tokens.retain(|_, t| t.session != id);
@@ -596,9 +599,115 @@ impl Engine {
             action: "step_up".into(),
             detail: "credential re-entered to sign".into(),
             grants: None,
-            auth: Some(AuthMethod::Password),
+            // the credential the session was opened with: a person's password, or a
+            // machine-held one (the harness's scripted operators)
+            auth: Some(session.method().unwrap_or(AuthMethod::Password)),
+            step_up: None,
         })?;
         Ok(StepUp::mint(operator, id, self.seq, t))
+    }
+
+    /// Why `step` can't stand for an act by `by` in `session` now (another session's or
+    /// operator's, or older than [`STEP_UP_MAX_AGE_MS`]), else its reference.
+    fn valid_step(&self, by: &OperatorId, session: SessionId, step: &StepUp) -> Result<StepUpRef, String> {
+        let now = self.now();
+        if step.session() != session || step.operator() != by {
+            Err(format!("the step-up was made in session {} by {}, not this signer's", step.session().0, step.operator()))
+        } else if now.ms_since(step.t()) > STEP_UP_MAX_AGE_MS {
+            Err(format!("the step-up is {} ms old (at most {STEP_UP_MAX_AGE_MS})", now.ms_since(step.t())))
+        } else {
+            Ok(StepUpRef { seq: step.seq() })
+        }
+    }
+
+    /// Rules 7: the step-up an act other than an approval quotes (`[approval]
+    /// step_up_acts`): required for `act` in a credentials run when the policy lists it,
+    /// checked when given. Refused, nothing logged.
+    fn act_step_up(
+        &self,
+        act: policy::StepUpAct,
+        by: &OperatorId,
+        session: SessionId,
+        step: Option<StepUp>,
+    ) -> Result<Option<StepUpRef>, EngineError> {
+        let needed = self.auth == Some(AuthMode::Credentials) && self.policy.steps_up(act);
+        match step {
+            None if needed => Err(EngineError::NotAuthenticated {
+                operator: by.clone(),
+                why: "the policy marks this act consequential: re-enter your credential (a step-up)".into(),
+            }),
+            None => Ok(None),
+            Some(s) => self
+                .valid_step(by, session, &s)
+                .map(Some)
+                .map_err(|why| EngineError::NotAuthenticated { operator: by.clone(), why }),
+        }
+    }
+
+    /// Rules 7, a credentials run: a login for `operator` (on the roster) was refused; logged
+    /// as `auth.refused` with why and, when it locked the id, for how long. Never the
+    /// password. Refused for an operator not on the roster (nothing logged: made-up ids would
+    /// flood the log) and outside a credentials run.
+    pub fn record_login_refused(
+        &mut self,
+        operator: &OperatorId,
+        reason: &str,
+        locked_s: Option<u64>,
+    ) -> Result<(), EngineError> {
+        if self.auth != Some(AuthMode::Credentials) {
+            return Err(EngineError::NotAuthenticated {
+                operator: operator.clone(),
+                why: "only a credentials run has logins".into(),
+            });
+        }
+        if self.roster.refuses(operator, Grants::default()).is_some() {
+            return Err(EngineError::NotOnRoster {
+                operator: operator.clone(),
+                why: "not on the run's roster".into(),
+            });
+        }
+        self.emit(EventBody::AuthRefused {
+            operator: operator.clone(),
+            reason: reason.to_string(),
+            locked_s,
+        })?;
+        Ok(())
+    }
+
+    /// An operator declares a track's affiliation (logged as `operator.action track.declare`,
+    /// detail `track <id> declared <affiliation>[: <note>]`). Rules 7: declaring one hostile
+    /// quotes a step-up when `[approval] step_up_acts` lists `declare_hostile` (a credentials
+    /// run); the event records it.
+    pub fn record_declaration(
+        &mut self,
+        by: &OperatorSession,
+        step: Option<StepUp>,
+        track: &str,
+        affiliation: &str,
+        note: Option<&str>,
+    ) -> Result<(), EngineError> {
+        let a = by.authority();
+        let step_up = if affiliation == "hostile" {
+            self.act_step_up(policy::StepUpAct::DeclareHostile, a.operator(), a.session(), step)?
+        } else {
+            match step {
+                Some(s) => Some(
+                    self.valid_step(a.operator(), a.session(), &s)
+                        .map_err(|why| EngineError::NotAuthenticated { operator: a.operator().clone(), why })?,
+                ),
+                None => None,
+            }
+        };
+        self.emit(EventBody::OperatorAction {
+            operator: a.operator().clone(),
+            session: a.session(),
+            action: "track.declare".into(),
+            detail: format!("track {track} declared {affiliation}{}", note.map(|n| format!(": {n}")).unwrap_or_default()),
+            grants: None,
+            auth: None,
+            step_up,
+        })?;
+        Ok(())
     }
 
     /// Whether a signature on `id` by `by` in `session` may go ahead as far as step-up goes,
@@ -621,19 +730,13 @@ impl Engine {
             }
             return Ok(None);
         };
-        let now = self.now();
-        let why = if s.session() != session || s.operator() != by {
-            Some(format!("the step-up was made in session {} by {}, not this signer's", s.session().0, s.operator()))
-        } else if now.ms_since(s.t()) > STEP_UP_MAX_AGE_MS {
-            Some(format!("the step-up is {} ms old (at most {STEP_UP_MAX_AGE_MS})", now.ms_since(s.t())))
-        } else {
-            None
-        };
-        if let Some(why) = why {
-            self.refuse(by, session, id, &why)?;
-            return Err(EngineError::NotAuthenticated { operator: by.clone(), why });
+        match self.valid_step(by, session, &s) {
+            Ok(r) => Ok(Some(r)),
+            Err(why) => {
+                self.refuse(by, session, id, &why)?;
+                Err(EngineError::NotAuthenticated { operator: by.clone(), why })
+            }
         }
-        Ok(Some(StepUpRef { seq: s.seq() }))
     }
 
     /// A human's intent (also what `POST /api/tasks` becomes). If its checks pass and policy
@@ -674,6 +777,33 @@ impl Engine {
         world: &WorldSnapshot,
         terrain: &dyn TerrainOracle,
     ) -> Result<&Intent, EngineError> {
+        self.submit_accepting_inner(by, None, proposal, accept, world, terrain)
+    }
+
+    /// Rules 7: [`Engine::submit_accepting`] quoting a step-up, which every acceptance of
+    /// the nomination records; required in a credentials run when `[approval]
+    /// step_up_acts` lists `accept_unknown`.
+    pub fn submit_accepting_stepped(
+        &mut self,
+        by: &EngagementAuthority,
+        step: StepUp,
+        proposal: Proposal,
+        accept: &[(Uid, Option<Time>)],
+        world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
+    ) -> Result<&Intent, EngineError> {
+        self.submit_accepting_inner(by, Some(step), proposal, accept, world, terrain)
+    }
+
+    fn submit_accepting_inner(
+        &mut self,
+        by: &EngagementAuthority,
+        step: Option<StepUp>,
+        proposal: Proposal,
+        accept: &[(Uid, Option<Time>)],
+        world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
+    ) -> Result<&Intent, EngineError> {
         if let Some((uid, _)) = accept.first()
             && !matches!(proposal.task, Task::Engage { .. })
         {
@@ -685,6 +815,12 @@ impl Engine {
         for (uid, since) in accept {
             self.acceptable(uid, *since, world)?;
         }
+        // rules 7: accepting a lost vehicle may be marked consequential
+        let step_up = if accept.is_empty() {
+            None
+        } else {
+            self.act_step_up(policy::StepUpAct::AcceptUnknown, by.operator(), by.session(), step)?
+        };
         let source = Source::Human {
             id: by.operator().clone(),
         };
@@ -692,6 +828,7 @@ impl Engine {
             by: by.operator(),
             session: by.session(),
             list: accept,
+            step_up,
         };
         let human = by.human();
         let id = self.submit_inner(source, Some(&human), proposal, Some(acceptor), world, terrain)?;
@@ -715,6 +852,33 @@ impl Engine {
         since: Option<Time>,
         world: &WorldSnapshot,
     ) -> Result<&Intent, EngineError> {
+        self.accept_unknown_inner(id, by, None, uid, since, world)
+    }
+
+    /// Rules 7: [`Engine::accept_unknown_friendly`] quoting a step-up (recorded on
+    /// `engage.accepted`); required in a credentials run when `[approval] step_up_acts` lists
+    /// `accept_unknown`.
+    pub fn accept_unknown_friendly_stepped(
+        &mut self,
+        id: IntentId,
+        by: &EngagementAuthority,
+        step: StepUp,
+        uid: Uid,
+        since: Option<Time>,
+        world: &WorldSnapshot,
+    ) -> Result<&Intent, EngineError> {
+        self.accept_unknown_inner(id, by, Some(step), uid, since, world)
+    }
+
+    fn accept_unknown_inner(
+        &mut self,
+        id: IntentId,
+        by: &EngagementAuthority,
+        step: Option<StepUp>,
+        uid: Uid,
+        since: Option<Time>,
+        world: &WorldSnapshot,
+    ) -> Result<&Intent, EngineError> {
         let intent = self.get(id)?;
         if intent.spec().kind() != TaskKind::Engage {
             return Err(EngineError::NotAnEngagement(id));
@@ -732,6 +896,7 @@ impl Engine {
             });
         }
         self.acceptable(&uid, since, world)?;
+        let step_up = self.act_step_up(policy::StepUpAct::AcceptUnknown, by.operator(), by.session(), step)?;
         let vehicle = Box::new(world.vehicles.get(&uid).cloned().unwrap_or_default());
         self.emit(EventBody::EngageAccepted {
             intent: id,
@@ -741,6 +906,7 @@ impl Engine {
             session: by.session(),
             world_t: world.t,
             vehicle,
+            step_up,
         })?;
         self.get_mut(id)?.engagement_mut().accepted.insert(
             uid,
@@ -1149,6 +1315,7 @@ impl Engine {
             detail: format!("{id}: {why}"),
             grants: None,
             auth: None,
+            step_up: None,
         })?;
         Ok(())
     }
@@ -1571,6 +1738,7 @@ impl Engine {
             detail: amend_detail(id, new_id, &chosen),
             grants: None,
             auth: None,
+            step_up: None,
         })?;
         let source = Source::Human {
             id: by.operator().clone(),
@@ -1598,6 +1766,7 @@ impl Engine {
             detail: format!("{id}: {note}"),
             grants: None,
             auth: None,
+            step_up: None,
         })?;
         self.transition(
             id,
@@ -1608,12 +1777,24 @@ impl Engine {
     }
 
     /// Log something an operator did that isn't an intent decision (acknowledge, snooze).
+    /// Rules 7: the session's own events (`session.opened`, `session.closed`, `step_up`) are
+    /// the engine's to log, refused here; a hostile declaration the policy marks
+    /// consequential goes through [`Engine::record_declaration`] with its step-up.
     pub fn record_operator_action(
         &mut self,
         by: &HumanAuthority,
         action: &str,
         detail: &str,
     ) -> Result<(), EngineError> {
+        if self.auth.is_some() && matches!(action, "session.opened" | "session.closed" | "step_up") {
+            return Err(EngineError::NotAuthenticated {
+                operator: by.operator().clone(),
+                why: format!("{action} is logged by the session itself"),
+            });
+        }
+        if action == "track.declare" && declared_affiliation(detail) == Some("hostile") {
+            self.act_step_up(policy::StepUpAct::DeclareHostile, by.operator(), by.session(), None)?;
+        }
         self.emit(EventBody::OperatorAction {
             operator: by.operator().clone(),
             session: by.session(),
@@ -1621,6 +1802,7 @@ impl Engine {
             detail: detail.into(),
             grants: None,
             auth: None,
+            step_up: None,
         })?;
         Ok(())
     }
@@ -2658,6 +2840,24 @@ impl Engine {
         if !queue::queueable(open.spec.kind()) {
             return Err(refuse("only vehicle tasks are carried over"));
         }
+        // rules 7: only between runs that authenticated their operators alike (an approval on
+        // asserted ids never stands in a credentials run, nor the reverse)
+        let mut from = from;
+        if self.auth.is_some() {
+            let (was, now) = (
+                crate::authority::effective_mode(from.auth),
+                crate::authority::effective_mode(self.auth),
+            );
+            if was != now {
+                return Err(refuse(&format!(
+                    "carried from a {} run into a {} run: intents are carried only between runs that authenticate operators alike",
+                    was.as_str(),
+                    now.as_str()
+                )));
+            }
+        } else {
+            from.auth = None;
+        }
         let state = open.resumes_as();
         let cfg = self.policy.queue();
         // the deadline it carries: its own if it was queued, else its kind's wait from the
@@ -3117,6 +3317,8 @@ impl Engine {
         };
         self.emit(EventBody::IntentCreated {
             intent: spec.clone(),
+            // rules 7: a human's intent is made in a live session of theirs
+            session: if self.auth.is_some() { submitter.map(HumanAuthority::session) } else { None },
         })?;
         self.next_intent += 1;
         self.intents.insert(id, Intent::new(spec.clone()));
@@ -3132,6 +3334,7 @@ impl Engine {
                     session: a.session,
                     world_t: world.t,
                     vehicle: Box::new(world.vehicles.get(uid).cloned().unwrap_or_default()),
+                    step_up: a.step_up,
                 })?;
                 self.get_mut(id)?.engagement_mut().accepted.insert(
                     uid.clone(),
@@ -3424,6 +3627,8 @@ struct Acceptor<'a> {
     by: &'a OperatorId,
     session: SessionId,
     list: &'a [(Uid, Option<Time>)],
+    /// Rules 7: the step-up the acceptances quote (`[approval] step_up_acts`).
+    step_up: Option<StepUpRef>,
 }
 
 /// Rules 6: what the bridge reports of an engagement's lost-link preload
@@ -3958,4 +4163,12 @@ fn state_name(state: State) -> String {
         .ok()
         .and_then(|v| v.as_str().map(str::to_string))
         .unwrap_or_else(|| format!("{state:?}"))
+}
+
+/// The affiliation a `track.declare` detail names (`track <id> declared <affiliation>[:
+/// <note>]`, as [`Engine::record_declaration`] writes it).
+pub(crate) fn declared_affiliation(detail: &str) -> Option<&str> {
+    let (_, rest) = detail.split_once(" declared ")?;
+    let aff = rest.split(':').next()?.trim();
+    (!aff.is_empty()).then_some(aff)
 }

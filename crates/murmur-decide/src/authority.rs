@@ -168,13 +168,28 @@ impl AuthMode {
         }
     }
 
-    /// The session-opening method this mode allows.
+    /// The session-opening method a person uses in this mode.
     pub fn method(self) -> AuthMethod {
         match self {
             AuthMode::Credentials => AuthMethod::Password,
             AuthMode::Dev => AuthMethod::Asserted,
         }
     }
+
+    /// Whether a session may be opened by `method` in this mode: a credentials run takes a
+    /// person's password and a machine-held (scripted) credential, a dev run asserted ids.
+    pub fn admits(self, method: AuthMethod) -> bool {
+        match self {
+            AuthMode::Credentials => matches!(method, AuthMethod::Password | AuthMethod::Scripted),
+            AuthMode::Dev => method == AuthMethod::Asserted,
+        }
+    }
+}
+
+/// The run's mode for comparing two runs (carrying intents over): a log of rules before 7
+/// records none, and its ids were asserted, as in a dev run.
+pub fn effective_mode(mode: Option<AuthMode>) -> AuthMode {
+    mode.unwrap_or(AuthMode::Dev)
 }
 
 /// How one operator session was opened (rules 7; logged as `auth` on `session.opened`, and
@@ -182,8 +197,12 @@ impl AuthMode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthMethod {
-    /// The operator's password, checked by the bridge against its argon2id hash.
+    /// A person's password, checked by the bridge against its argon2id hash.
     Password,
+    /// A machine-held credential (`murmur-auth add --scripted`: the evaluation harness's
+    /// scripted operators, a script): checked like a password, but whoever holds it is a
+    /// program, so its acts are never evidence about a person.
+    Scripted,
     /// The operator's id as the request named it, unchecked (dev mode, scenarios, tests).
     Asserted,
 }
@@ -332,17 +351,26 @@ impl Roster {
 pub struct OperatorSession {
     authority: HumanAuthority,
     engagement: Option<EngagementAuthority>,
+    /// Rules 7: how it was opened (None before).
+    method: Option<AuthMethod>,
 }
 
 impl OperatorSession {
-    pub(crate) fn mint(operator: OperatorId, session: SessionId, grants: Grants) -> Self {
+    pub(crate) fn mint(operator: OperatorId, session: SessionId, grants: Grants, method: Option<AuthMethod>) -> Self {
         OperatorSession {
             engagement: grants.engage.then(|| EngagementAuthority {
                 operator: operator.clone(),
                 session,
             }),
             authority: HumanAuthority { operator, session },
+            method,
         }
+    }
+
+    /// Rules 7: how the session was opened (a person's password, a machine-held credential,
+    /// an asserted id); None under earlier rules.
+    pub fn method(&self) -> Option<AuthMethod> {
+        self.method
     }
 
     pub fn authority(&self) -> &HumanAuthority {

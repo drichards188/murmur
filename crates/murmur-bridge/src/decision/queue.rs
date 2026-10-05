@@ -333,9 +333,10 @@ impl Decision {
     /// `name`), and resume every vehicle intent it leaves open. Refused (nothing carried) if
     /// it does not replay, was written under rules before 5, or does not match its anchor
     /// file (`anchors`, when there is one; a missing shutdown anchor is a crash, the case this
-    /// is for). An intent is not carried when one of its vehicles is not the same platform
-    /// under its uid in this run's fleet, or when a human approved it who is not an operator
-    /// of this run.
+    /// is for), and nothing from a run that authenticated its operators otherwise (dev or
+    /// credentials; a log of rules before 7 counts as dev). An intent is not carried when
+    /// one of its vehicles is not the same platform under its uid in this run's fleet, or
+    /// when a human approved it who is not an operator of this run.
     pub fn carry_over(
         &self,
         name: &str,
@@ -366,6 +367,17 @@ impl Decision {
                 report.mismatches.first().map_or("", |m| m.what.as_str())
             ));
         }
+        // rules 7: only between runs that authenticate operators alike (an approval made on
+        // asserted ids never stands in a credentials run, nor a person's in a dev run; a log
+        // of earlier rules asserted its ids)
+        let was = murmur_decide::authority::effective_mode(report.auth);
+        if was != self.auth {
+            return Err(format!(
+                "{name} was a {} run and this is a {} run: approvals are carried only between runs that authenticate operators alike; nothing carried over",
+                was.as_str(),
+                self.auth.as_str()
+            ));
+        }
         let head = report.head_sha256.clone().unwrap_or_default();
         let platforms = self.fleet_platforms();
         let fleet_now = self.fleet_identity();
@@ -390,6 +402,7 @@ impl Decision {
                     head: head.clone(),
                     seq: report.last_seq,
                     was: open.state,
+                    auth: report.auth,
                 };
                 match core.engine.resume(open, from) {
                     Ok(id) => {

@@ -8,7 +8,9 @@
 //!   can't pass by claiming older, looser rules.
 //! - `--anchors <file>` checks the log against its run-time anchors (`logs/anchors/`): its
 //!   first line and every anchored head must hash as anchored, and the log must reach the
-//!   last anchor.
+//!   last anchor. A rewritten log replays as well as the original: a credentials
+//!   run's log is evidence about people only with its anchors checked, and without
+//!   `--anchors` the output says they were not.
 //! - `--space` also re-runs every logged space query (collect, cover) on that space segment
 //!   and compares; a different segment is a cache mismatch, reported separately.
 //! - Rules 5: a log whose `intent.resumed` events carry intents over from the previous run
@@ -186,10 +188,30 @@ fn main() -> ExitCode {
     }
     // rules 7: whose decisions these are, as far as the log can say
     match report.auth {
-        Some(murmur_decide::AuthMode::Credentials) => println!(
-            "auth: credentials (operators logged in with their own password; {} step-up(s), {} signature(s) quoting one, {} session(s) ended)",
-            report.step_ups, report.stepped_signatures, report.sessions_closed
-        ),
+        Some(murmur_decide::AuthMode::Credentials) => {
+            let list = |s: &std::collections::BTreeSet<murmur_decide::OperatorId>| {
+                if s.is_empty() {
+                    "none".to_string()
+                } else {
+                    s.iter().map(|o| o.as_str()).collect::<Vec<_>>().join(", ")
+                }
+            };
+            println!(
+                "auth: credentials (operators logged in with a checked credential; {} step-up(s), {} signature(s) and {} other act(s) quoting one, {} session(s) ended, {} login(s) refused)",
+                report.step_ups, report.stepped_signatures, report.stepped_acts, report.sessions_closed, report.logins_refused
+            );
+            println!(
+                "people (own password): {}; scripted (harness-held credential, not people): {}",
+                list(&report.people),
+                list(&report.scripted)
+            );
+            // a rewritten log replays too: only its anchors tell
+            if args.anchors.is_none() {
+                println!(
+                    "anchors: NOT checked (pass --anchors <file>): until they are, this log is not evidence about people"
+                );
+            }
+        }
         Some(murmur_decide::AuthMode::Dev) => println!(
             "auth: DEV (operator ids asserted by request headers, not authenticated): not evidence about people; exclude from any human-control claim"
         ),

@@ -134,7 +134,24 @@ pub enum EventBody {
     },
 
     #[serde(rename = "intent.created")]
-    IntentCreated { intent: IntentSpec },
+    IntentCreated {
+        intent: IntentSpec,
+        /// Rules 7: a human's intent is made in a live session of theirs (absent for an
+        /// agent's, and before rules 7); replay checks it is open and the proposer's.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<SessionId>,
+    },
+
+    /// Rules 7, a credentials run: a login for an operator on the roster was refused (a wrong
+    /// password; `locked_s`: the id is now locked that long). Never the password. A refused
+    /// step-up is `operator.action step_up.refused` under its session instead.
+    #[serde(rename = "auth.refused")]
+    AuthRefused {
+        operator: OperatorId,
+        reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        locked_s: Option<u64>,
+    },
 
     #[serde(rename = "check.result")]
     CheckResult {
@@ -442,6 +459,9 @@ pub enum EventBody {
         /// `session.closed` (detail: why) ends the session; nothing may follow under it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         auth: Option<AuthMethod>,
+        /// Rules 7: the step-up this act quoted (a declaration the policy marks consequential).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step_up: Option<StepUpRef>,
     },
 
     #[serde(rename = "agent.action")]
@@ -506,6 +526,10 @@ pub enum EventBody {
         /// checks it was lost since exactly `since`, by the link-aware freshness rule).
         world_t: Time,
         vehicle: Box<crate::world::VehicleFacts>,
+        /// Rules 7: the step-up the acceptance quoted (`[approval] step_up_acts` lists
+        /// `accept_unknown`); every acceptance of one nomination may quote the same one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step_up: Option<StepUpRef>,
     },
 
     /// Engage, rules 6: an operator withdrew an acceptance of a lost vehicle for this

@@ -520,6 +520,7 @@ fn restarted() -> (Fx, Fx, IntentId) {
         head: ra.head_sha256.clone().unwrap(),
         seq: ra.last_seq,
         was: open[0].state,
+        auth: ra.auth,
     };
     b.engine.reserve_ids(ra.next_intent);
     assert_eq!(b.engine.resume(open[0], from).unwrap(), id);
@@ -567,6 +568,7 @@ fn a_rules_5_engine_carries_a_queued_intent_over() {
         head: ra.head_sha256.clone().unwrap(),
         seq: ra.last_seq,
         was: open[0].state,
+        auth: ra.auth,
     };
     b.engine.reserve_ids(ra.next_intent);
     assert_eq!(b.engine.resume(open[0], from).unwrap(), id);
@@ -583,6 +585,107 @@ fn a_rules_5_engine_carries_a_queued_intent_over() {
     .unwrap();
     assert!(rb.ok(), "{:?}", rb.mismatches);
     assert_eq!(rb.resumed, 1);
+}
+
+/// A run whose operators authenticate by `mode` (op-1 in by the mode's method), on the sim
+/// policy.
+fn fx_auth(mode: AuthMode) -> Fx {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut engine = Engine::new(policy(), roster().with_auth(mode), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    let session = engine
+        .open_authenticated_session(OperatorId::new("op-1"), Grants::default(), mode.method())
+        .unwrap();
+    Fx {
+        clock,
+        engine,
+        log,
+        session,
+    }
+}
+
+/// Review fix 3 (rules 7): an approval made under one way of authenticating operators is not
+/// carried into a run of the other (an asserted approval is no person's; a person's is not
+/// evidence in a dev run), nor from a log of earlier rules (ids asserted) into a credentials
+/// run. Both directions refused by the engine, and replay catches a log that claims a carry
+/// across modes anyway.
+#[test]
+fn approvals_are_carried_only_between_runs_that_authenticate_alike() {
+    // run A in `was` leaves an approved order queued; run B in `now` is offered it, carrying
+    // `claimed` as A's mode
+    let carry = |was: AuthMode, now: AuthMode, claimed: Option<Option<AuthMode>>| {
+        let mut a = fx_auth(was);
+        let w = silent(&a, "sky-1", 5);
+        let id = a.submit(orbit_sky(), &w);
+        a.engine.dispatch_or_queue(id, &w).unwrap();
+        let ra = replays(&a);
+        assert_eq!(ra.auth, Some(was));
+        let open = ra.open.iter().find(|o| o.state == State::Queued).unwrap().clone();
+        let mut b = fx_auth(now);
+        b.clock.set(a.clock.now().plus_ms(30_000));
+        b.engine.reserve_ids(ra.next_intent);
+        let from = ResumedFrom {
+            log: "a.jsonl".into(),
+            head: ra.head_sha256.clone().unwrap(),
+            seq: ra.last_seq,
+            was: open.state,
+            auth: claimed.unwrap_or(ra.auth),
+        };
+        let res = b.engine.resume(&open, from);
+        (a, b, res)
+    };
+    for (was, now) in [(AuthMode::Dev, AuthMode::Credentials), (AuthMode::Credentials, AuthMode::Dev)] {
+        let (_, b, res) = carry(was, now, None);
+        let err = res.unwrap_err().to_string();
+        assert!(err.contains(&format!("carried from a {} run into a {} run", was.as_str(), now.as_str())), "{err}");
+        assert!(!b.log.text().contains("intent.resumed"), "nothing carried");
+    }
+    // a log of earlier rules (no auth recorded: asserted ids) into a credentials run: refused;
+    // into a dev run: carried
+    let (_, _, res) = carry(AuthMode::Dev, AuthMode::Credentials, Some(None));
+    assert!(res.is_err());
+    let (_, _, res) = carry(AuthMode::Dev, AuthMode::Dev, Some(None));
+    assert!(res.is_ok(), "{res:?}");
+    // alike: carried, and B replays against A
+    let (a, b, res) = carry(AuthMode::Credentials, AuthMode::Credentials, None);
+    assert!(res.is_ok(), "{res:?}");
+    let a_text = a.log.text();
+    let with_a = ReplayOptions {
+        previous: Some(&a_text),
+        ..ReplayOptions::default()
+    };
+    let rb = replay_str_with(&b.log.text(), &with_a).unwrap();
+    assert!(rb.ok(), "{:?}", rb.mismatches);
+    // a dev-to-dev carry whose run is relabelled credentials: caught
+    let (a, b, res) = carry(AuthMode::Dev, AuthMode::Dev, None);
+    assert!(res.is_ok());
+    let relabelled = forge(&b.log.text(), |events| {
+        if let EventBody::RunStarted { roster: Some(r), .. } = &mut events[0].body {
+            r.auth = Some(AuthMode::Credentials);
+        }
+    });
+    let w: Vec<String> = replay_str(&relabelled).unwrap().mismatches.into_iter().map(|m| m.what).collect();
+    assert!(w.iter().any(|m| m.contains("authenticated its operators otherwise")), "{w:?}");
+    // and one whose carried order claims another mode than the previous log's own
+    let claimed = forge(&b.log.text(), |events| {
+        for e in events.iter_mut() {
+            if let EventBody::IntentResumed { from, .. } = &mut e.body {
+                from.auth = Some(AuthMode::Credentials);
+            }
+        }
+    });
+    let a_text = a.log.text();
+    let rb = replay_str_with(
+        &claimed,
+        &ReplayOptions {
+            previous: Some(&a_text),
+            ..ReplayOptions::default()
+        },
+    )
+    .unwrap();
+    let w: Vec<String> = rb.mismatches.into_iter().map(|m| m.what).collect();
+    assert!(w.iter().any(|m| m.contains("claiming another authentication than the previous log's")), "{w:?}");
+    assert!(w.iter().any(|m| m.contains("authenticated its operators otherwise")), "{w:?}");
 }
 
 #[test]
@@ -712,6 +815,7 @@ fn a_started_order_resumes_dispatched_and_is_never_sent_again() {
         head: ra.head_sha256.clone().unwrap(),
         seq: ra.last_seq,
         was: open.state,
+        auth: ra.auth,
     };
     b.engine.resume(open, from).unwrap();
     assert_eq!(b.state(id), State::Dispatched);
@@ -1114,6 +1218,7 @@ fn a_carried_human_approval_goes_back_to_the_inbox() {
         head: ra.head_sha256.clone().unwrap(),
         seq: ra.last_seq,
         was: open.state,
+        auth: ra.auth,
     };
     b.engine.resume(open, from).unwrap();
     assert!(b.engine.intent(id).unwrap().basis_carried());
@@ -1151,6 +1256,7 @@ fn a_vehicle_that_started_an_order_stays_started_across_a_second_restart() {
             head: prev.head_sha256.clone().unwrap(),
             seq: prev.last_seq,
             was: open.state,
+            auth: ra.auth,
         };
         run.engine.resume(open, from).unwrap();
     };

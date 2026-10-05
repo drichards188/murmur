@@ -945,3 +945,60 @@ fn policy_keys_of_rules_6_are_bounded_and_of_schema_4() {
     assert_eq!(shipped.track_accel(Domain::Surface), 0.2);
     assert_eq!(shipped.keep_out_vertical(), 200.0);
 }
+
+/// Rules 7 (user decision, step-up scope): accepting a lost vehicle steps up when the policy
+/// lists `accept_unknown` (off by default). One step-up covers the acceptances a nomination
+/// carries, logged one after the other; replay requires it on each and lets no later act
+/// reuse it.
+#[test]
+fn the_policy_can_make_accepting_a_lost_vehicle_step_up() {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut p = policy();
+    p.approval.step_up_acts = Some(vec![StepUpAct::AcceptUnknown]);
+    let mut e = Engine::with_areas(p, Some(areas()), roster().with_auth(AuthMode::Credentials), Box::new(clock.clone()), Box::new(log.clone()))
+        .unwrap();
+    let op1 = e
+        .open_authenticated_session(OperatorId::new("op-1"), Grants { engage: true }, AuthMethod::Password)
+        .unwrap();
+    let a1 = op1.engagement_authority().unwrap();
+    clock.advance_ms(60_000);
+    // two of our vehicles lost since their reports a minute ago
+    let mut w = lost_drone_world(clock.now());
+    let mut second = w.vehicles[&Uid::new("drone-1")].clone();
+    if let Some(pos) = &mut second.position {
+        pos.value = LonLat::new(pos.value.lon, pos.value.lat + 0.001);
+    }
+    w.vehicles.insert(Uid::new("drone-2"), second);
+    let both = [(Uid::new("drone-1"), Some(T0)), (Uid::new("drone-2"), Some(T0))];
+    let n = log.lines().len();
+    let err = e.submit_accepting(a1, engage_nomination(), &both, &w, &terrain()).unwrap_err();
+    assert!(matches!(err, EngineError::NotAuthenticated { .. }), "{err}");
+    assert_eq!(log.lines().len(), n, "nothing logged");
+    let s = e.step_up(&op1).unwrap();
+    let i = e.submit_accepting_stepped(a1, s, engage_nomination(), &both, &w, &terrain()).unwrap();
+    assert_eq!(i.state(), State::PendingApproval, "{:?}", i.history());
+    let text = log.text();
+    assert_eq!(text.matches("\"type\":\"engage.accepted\"").count(), 2);
+    let rep = replay::replay_str(&text).unwrap();
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+    assert_eq!(rep.stepped_acts, 2);
+    let lines = log.lines();
+    // the second acceptance without it: caught
+    let mut dropped = lines.clone();
+    let k = dropped.iter().rposition(|l| l.contains("\"type\":\"engage.accepted\"")).unwrap();
+    let mut ev: audit::Event = serde_json::from_str(&dropped[k]).unwrap();
+    if let EventBody::EngageAccepted { step_up, .. } = &mut ev.body {
+        *step_up = None;
+    }
+    dropped[k] = serde_json::to_string(&ev).unwrap();
+    let w2 = whats(&rechain(&dropped));
+    assert!(w2.iter().any(|m| m.contains("an acceptance of a lost vehicle without a step-up")), "{w2:?}");
+    // the step-up quoted again later, by an acceptance not of that nomination's batch: caught
+    let mut again = lines.clone();
+    let first = again.iter().position(|l| l.contains("\"type\":\"engage.accepted\"")).unwrap();
+    let copy = again[first].clone();
+    again.push(copy);
+    let w3 = whats(&rechain(&again));
+    assert!(w3.iter().any(|m| m.contains("an acceptance of a lost vehicle quoting a step-up that is not the actor's own, fresh and unused")), "{w3:?}");
+}

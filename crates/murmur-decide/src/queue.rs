@@ -550,6 +550,12 @@ pub struct ResumedFrom {
     pub head: String,
     pub seq: u64,
     pub was: State,
+    /// Rules 7: how that run authenticated its operators (its roster's `auth`; none for a
+    /// log of earlier rules, whose ids were asserted). Intents are carried only between runs
+    /// authenticated alike: an approval made on asserted ids never stands in a credentials
+    /// run, nor the reverse; replay checks it against the previous log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<crate::authority::AuthMode>,
 }
 
 /// An intent a log leaves open for the next run (replay's [`crate::ReplayReport::open`]): a

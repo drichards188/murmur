@@ -344,6 +344,7 @@ fn nothing_acts_under_an_ended_session() {
                     detail: "logout".into(),
                     grants: None,
                     auth: None,
+                    step_up: None,
                 },
             },
         );
@@ -517,4 +518,177 @@ fn closing_a_session_logs_nothing_before_rules_7() {
     assert!(r.ok(), "{:?}", r.mismatches);
     assert_eq!(r.auth, None);
     assert!(!r.authenticated());
+}
+
+/// Review fix 7: a human's intent is made in a live session of theirs: one forged after its
+/// proposer logged out (a copy of their nomination under a new id, at the end of the log) is
+/// caught.
+#[test]
+fn a_human_intent_after_its_proposers_logout_is_caught() {
+    let (text, _) = signed_engagement();
+    let forged = forge(&text, |events| {
+        let mut copy = events
+            .iter()
+            .find(|e| matches!(&e.body, EventBody::IntentCreated { intent, .. } if !intent.source.is_agent()))
+            .cloned()
+            .unwrap();
+        if let EventBody::IntentCreated { intent, .. } = &mut copy.body {
+            intent.id = IntentId(99);
+        }
+        copy.t = events.last().unwrap().t;
+        events.push(copy);
+    });
+    let w = whats(&forged);
+    assert!(
+        w.iter().any(|m| m.contains("session that had ended") || m.contains("a live session of theirs")),
+        "{w:?}"
+    );
+}
+
+/// Review fix 2: a harness-held credential (`auth: scripted`) opens an authenticated session
+/// in a credentials run, but its operator is no person: replay names the people (password)
+/// apart from the scripted operators, and a scripted step-up can't pass as a person's.
+#[test]
+fn scripted_operators_are_authenticated_but_never_people() {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = engine(policy(), three().with_auth(AuthMode::Credentials), &clock, &log);
+    let op1 = login(&mut e, "op-1", false);
+    let op2 = e
+        .open_authenticated_session(OperatorId::new("op-2"), Grants { engage: true }, AuthMethod::Scripted)
+        .unwrap();
+    assert_eq!(op2.method(), Some(AuthMethod::Scripted));
+    let op3 = login(&mut e, "op-3", true);
+    let w = engage_world(T0);
+    let id = e.submit(op1.authority(), nomination(), &w, &terrain()).unwrap().id();
+    for op in [&op2, &op3] {
+        let a = op.engagement_authority().unwrap();
+        let t = e.issue_picture(id, a, &w).unwrap().id;
+        let s = e.step_up(op).unwrap();
+        e.approve_engagement_stepped(id, a, s, None, t, &w, &terrain()).unwrap();
+    }
+    assert_eq!(e.intent(id).unwrap().state(), State::Approved);
+    let text = log.text();
+    assert_eq!(text.matches("\"auth\":\"scripted\"").count(), 2, "the session and its step-up: {text}");
+    let r = replay::replay_str(&text).unwrap();
+    assert!(r.ok() && r.authenticated(), "{:?}", r.mismatches);
+    let ids = |v: &[&str]| v.iter().map(|o| OperatorId::new(*o)).collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(r.people, ids(&["op-1", "op-3"]));
+    assert_eq!(r.scripted, ids(&["op-2"]));
+    // a scripted step-up relabelled a person's: caught
+    let forged = forge(&text, |events| {
+        for ev in events.iter_mut() {
+            if let EventBody::OperatorAction { operator, action, auth, .. } = &mut ev.body
+                && operator.as_str() == "op-2"
+                && action == "step_up"
+            {
+                *auth = Some(AuthMethod::Password);
+            }
+        }
+    });
+    let w = whats(&forged);
+    assert!(w.iter().any(|m| m.contains("not by the credential its session was opened with")), "{w:?}");
+    // a dev run opens no scripted session: nothing there is checked
+    let mut d = engine(policy(), three(), &clock, &MemorySink::new());
+    assert!(matches!(
+        d.open_authenticated_session(OperatorId::new("op-1"), Grants::default(), AuthMethod::Scripted),
+        Err(EngineError::NotAuthenticated { .. })
+    ));
+}
+
+/// Review fix 1: a refused login is in the audit log (`auth.refused`: the id, why, the lock),
+/// for an operator the run lists and only in a credentials run; never a secret. Replay counts
+/// them and catches one where it can't be.
+#[test]
+fn refused_logins_are_logged_for_listed_operators() {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = engine(policy(), three().with_auth(AuthMode::Credentials), &clock, &log);
+    e.record_login_refused(&OperatorId::new("op-3"), "wrong password", None).unwrap();
+    clock.advance_ms(500);
+    e.record_login_refused(&OperatorId::new("op-3"), "wrong password", Some(30)).unwrap();
+    let n = log.lines().len();
+    assert!(e.record_login_refused(&OperatorId::new("mallory"), "wrong password", None).is_err());
+    assert_eq!(log.lines().len(), n, "a made-up id is not logged");
+    let text = log.text();
+    assert!(text.contains("\"type\":\"auth.refused\",\"operator\":\"op-3\",\"reason\":\"wrong password\",\"locked_s\":30"), "{text}");
+    let r = replay::replay_str(&text).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert_eq!(r.logins_refused, 2);
+    // a dev run has no logins to refuse
+    let mut d = engine(policy(), three(), &clock, &MemorySink::new());
+    assert!(d.record_login_refused(&OperatorId::new("op-3"), "wrong password", None).is_err());
+    // replay: one for an id the run does not list, and one in a run relabelled dev
+    let forged = forge(&text, |events| {
+        if let EventBody::AuthRefused { operator, .. } = &mut events[1].body {
+            *operator = OperatorId::new("mallory");
+        }
+    });
+    assert!(whats(&forged).iter().any(|m| m.contains("an operator the run does not list")), "{:?}", whats(&forged));
+    let forged = forge(&text, |events| {
+        if let EventBody::RunStarted { roster: Some(r), .. } = &mut events[0].body {
+            r.auth = Some(AuthMode::Dev);
+        }
+    });
+    assert!(whats(&forged).iter().any(|m| m.contains("a refused login outside a credentials run")), "{:?}", whats(&forged));
+}
+
+/// The policy with `[approval] step_up_acts` set.
+fn stepping(acts: &[StepUpAct]) -> Policy {
+    let mut p = policy();
+    p.approval.step_up_acts = Some(acts.to_vec());
+    p
+}
+
+/// User decision (step-up scope): declaring a track hostile steps up when the policy lists
+/// `declare_hostile` (off by default, as built); replay requires it and checks it.
+#[test]
+fn the_policy_can_make_a_hostile_declaration_step_up() {
+    let clock = ManualClock::new(T0);
+    // off by default: a declaration is logged as it always was
+    let log = MemorySink::new();
+    let mut e = engine(policy(), three().with_auth(AuthMode::Credentials), &clock, &log);
+    let op1 = login(&mut e, "op-1", false);
+    e.record_declaration(&op1, None, "T-0001", "hostile", None).unwrap();
+    let r = replay::replay_str(&log.text()).unwrap();
+    assert!(r.ok() && r.stepped_acts == 0, "{:?}", r.mismatches);
+    // listed: hostile needs the credential re-entered, by either path in; another
+    // affiliation does not
+    let log = MemorySink::new();
+    let mut e = engine(stepping(&[StepUpAct::DeclareHostile]), three().with_auth(AuthMode::Credentials), &clock, &log);
+    let op1 = login(&mut e, "op-1", false);
+    let err = e.record_declaration(&op1, None, "T-0001", "hostile", None).unwrap_err();
+    assert!(matches!(err, EngineError::NotAuthenticated { .. }), "{err}");
+    let err = e.record_operator_action(op1.authority(), "track.declare", "track T-0001 declared hostile").unwrap_err();
+    assert!(matches!(err, EngineError::NotAuthenticated { .. }), "{err}");
+    e.record_declaration(&op1, None, "T-0002", "neutral", None).unwrap();
+    let s = e.step_up(&op1).unwrap();
+    e.record_declaration(&op1, Some(s), "T-0001", "hostile", Some("fired on the cutter")).unwrap();
+    let text = log.text();
+    let r = replay::replay_str(&text).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert_eq!(r.stepped_acts, 1);
+    // the step-up dropped from the declaration: caught
+    let forged = forge(&text, |events| {
+        for ev in events.iter_mut() {
+            if let EventBody::OperatorAction { step_up, .. } = &mut ev.body {
+                *step_up = None;
+            }
+        }
+    });
+    assert!(whats(&forged).iter().any(|m| m.contains("a hostile declaration without a step-up")), "{:?}", whats(&forged));
+    // the key is policy schema 5
+    let forged = forge(&text, |events| {
+        if let EventBody::RunStarted { policy_schema, .. } = &mut events[0].body {
+            *policy_schema = Some(STEP_UP_SCHEMA_SINCE - 1);
+        }
+    });
+    let r = replay::replay_str(&forged).unwrap();
+    assert!(r.mismatches.iter().any(|m| m.logged.contains("approval.step_up_acts")), "{:?}", r.mismatches);
+    // a dev run has no credential to re-enter: the list asks nothing there
+    let mut d = engine(stepping(&[StepUpAct::DeclareHostile]), three(), &clock, &MemorySink::new());
+    let op1 = d.open_operator_session(OperatorId::new("op-1")).unwrap();
+    d.record_declaration(&op1, None, "T-0001", "hostile", None).unwrap();
+    // the session's own events are the engine's to log
+    assert!(d.record_operator_action(op1.authority(), "session.closed", "forged").is_err());
 }

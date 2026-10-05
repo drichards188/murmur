@@ -59,14 +59,20 @@
 //!   at-submission approvals are under the decider's own session.
 //! - authentication (rules 7, [`crate::rules::OPERATOR_AUTH_SINCE`]): `run.started` says how
 //!   operators were authenticated (the roster's `auth`, [`ReplayReport::auth`]); every
-//!   session was opened that way (`password` in a credentials run, `asserted` in a dev run);
-//!   every other operator action is under the operator's own session; nothing acts under a
-//!   session after its `session.closed`; a step-up is only in a credentials run, by
-//!   password; a signature quoting one quotes a step-up under its own session, unused, at
-//!   most [`crate::STEP_UP_MAX_AGE_MS`] old, and in a credentials run every signature whose
-//!   recomputed decision says `step_up` (every engagement signature) quotes one.
+//!   session was opened that way (`password` or a harness-held `scripted` credential in a
+//!   credentials run, `asserted` in a dev run; [`ReplayReport::people`] and
+//!   [`ReplayReport::scripted`] tell the first two apart); a human's `intent.created` names
+//!   the live session of theirs it was made in, an agent's none; every other operator action
+//!   is under the operator's own session; nothing acts under a session after its
+//!   `session.closed`; a step-up is only in a credentials run, by the credential its session
+//!   was opened with; an act quoting one quotes a step-up under its own session, unused, at
+//!   most [`crate::STEP_UP_MAX_AGE_MS`] old (one nomination's acceptances of lost vehicles
+//!   share theirs), and in a credentials run every signature whose recomputed decision says
+//!   `step_up` (every engagement signature), and every act `[approval] step_up_acts` lists,
+//!   quotes one; a refused login (`auth.refused`) is only in a credentials run, for an
+//!   operator it lists; an intent is carried over only from a run that authenticated alike.
 //!   [`ReplayReport::authenticated`] is what evaluation reads before counting a log's human
-//!   decisions as people's.
+//!   decisions, with the log's anchors checked and only its people's acts.
 //!
 //! **Space recomputation.** [`replay_str_with_space`] also re-runs every logged space query
 //! on the segment given. If that segment is the one the query ran on (same
@@ -98,7 +104,7 @@ use serde::Serialize;
 
 use crate::areas::AreaSet;
 use crate::audit::{CheckPhase, Event, EventBody, LogError, parse_log};
-use crate::authority::{AuthMethod, AuthMode, Grants, Roster, STEP_UP_MAX_AGE_MS, StepUpRef};
+use crate::authority::{AuthMethod, AuthMode, Grants, Roster, STEP_UP_MAX_AGE_MS, StepUpRef, effective_mode};
 use crate::engage::{
     self, EffectRecord, EngageOrder, EngageSnapshot, Fallback, FrozenPlan, ObserveStep,
     PictureToken, StopCause, TrackIdentity,
@@ -206,6 +212,18 @@ pub struct ReplayReport {
     pub step_ups: usize,
     pub stepped_signatures: usize,
     pub sessions_closed: usize,
+    /// Rules 7: acts other than signatures that quoted a step-up (a hostile declaration, a
+    /// nomination's acceptances of lost vehicles, when `[approval] step_up_acts` lists them).
+    pub stepped_acts: usize,
+    /// Rules 7, a credentials run: logins refused for operators the roster lists
+    /// (`auth.refused`: a wrong password or a locked id; nothing secret is logged).
+    pub logins_refused: usize,
+    /// Rules 7, a credentials run: the operators who logged in with their own password (a
+    /// person's), and those whose credential is harness-held (`auth: scripted`: a runner
+    /// logs them in; authenticated, but never a person's judgment). Only the first are
+    /// evidence about people.
+    pub people: BTreeSet<OperatorId>,
+    pub scripted: BTreeSet<OperatorId>,
 }
 
 impl ReplayReport {
@@ -214,10 +232,13 @@ impl ReplayReport {
         self.mismatches.is_empty()
     }
 
-    /// Whether the log's human decisions are bound to authenticated people: a credentials
+    /// Whether the log's human decisions are bound to authenticated operators: a credentials
     /// run (rules 7 or later) that reproduced. A dev run, and every log of earlier rules,
     /// names operators that requests asserted: never evidence about people, and excluded from
-    /// any claim about meaningful human control.
+    /// any claim about meaningful human control. Two things this does not say: whether an
+    /// operator is a person ([`Self::people`]; a scripted operator's credential is
+    /// harness-held), and whether the log is the one the run wrote (a rewritten log replays
+    /// too: only its anchors tell, `murmur-replay --anchors`, which a claim needs as well).
     pub fn authenticated(&self) -> bool {
         self.ok() && self.auth == Some(AuthMode::Credentials)
     }
@@ -806,6 +827,8 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (OPERATOR_AUTH_SINCE, "\"auth\":\"", "how an operator was authenticated"),
     (OPERATOR_AUTH_SINCE, "\"step_up\":", "a step-up (a credential re-entered to sign)"),
     (OPERATOR_AUTH_SINCE, "\"action\":\"session.closed\"", "a session's end"),
+    (OPERATOR_AUTH_SINCE, "\"type\":\"auth.refused\"", "a refused login"),
+    (OPERATOR_AUTH_SINCE, "\"step_up_acts\":", "acts other than signatures that step up"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.
@@ -956,6 +979,16 @@ fn check_claims<S: AsRef<str>>(r: &mut ReplayReport, events: &[Event], lines: &[
             format!("schema {schema}"),
         );
     }
+    if policy.approval.step_up_acts.is_some() && schema < STEP_UP_SCHEMA_SINCE {
+        bad(
+            r,
+            first,
+            None,
+            "logged policy uses a key of a later policy schema than it claims",
+            format!("approval.step_up_acts (schema {STEP_UP_SCHEMA_SINCE})"),
+            format!("schema {schema}"),
+        );
+    }
     if let Some(e) = &policy.rules.engage {
         for (since, key) in e.schema_keys() {
             if since > schema {
@@ -1006,9 +1039,11 @@ fn replay_inner<S: AsRef<str>>(
     // operator sessions as opened: who, with what grants
     let mut sessions: BTreeMap<SessionId, (OperatorId, Grants)> = BTreeMap::new();
     // rules 7: sessions ended (nothing may follow under one), and step-ups by their event's
-    // seq: (session, operator, when, used by a signature yet)
+    // seq
     let mut closed: BTreeSet<SessionId> = BTreeSet::new();
-    let mut step_ups: BTreeMap<u64, (SessionId, OperatorId, Time, bool)> = BTreeMap::new();
+    let mut step_ups: BTreeMap<u64, StepUpSeen> = BTreeMap::new();
+    // rules 7: how each session was opened (password, scripted, asserted)
+    let mut methods: BTreeMap<SessionId, AuthMethod> = BTreeMap::new();
     // rules 6: the platforms' own lost-link values owed back
     let mut restores = Restores::default();
     // picture tokens issued and not used yet
@@ -1159,7 +1194,7 @@ fn replay_inner<S: AsRef<str>>(
                     recompute_space(&mut r, e, answer, oracle, pinned);
                 }
             }
-            EventBody::IntentCreated { intent } => {
+            EventBody::IntentCreated { intent, session } => {
                 if intents.contains_key(&intent.id) {
                     bad(
                         &mut r,
@@ -1170,6 +1205,39 @@ fn replay_inner<S: AsRef<str>>(
                         String::new(),
                     );
                     continue;
+                }
+                // rules 7: a human's intent is made in a live session of theirs (an ended one
+                // is caught above), an agent's in none
+                let bound = policy.as_ref().is_some_and(|p| p.rules.rules_version >= OPERATOR_AUTH_SINCE);
+                match (&intent.source, session) {
+                    (_, Some(_)) if !bound => bad(
+                        &mut r,
+                        e,
+                        Some(intent.id),
+                        "an intent's session: only builds of rules 7 or later write it",
+                        json(session),
+                        String::new(),
+                    ),
+                    (Source::Human { id }, Some(s)) => {
+                        check_session(&mut r, e, intent.id, id, *s, &sessions, "a human's intent");
+                    }
+                    (Source::Human { id }, None) if bound => bad(
+                        &mut r,
+                        e,
+                        Some(intent.id),
+                        "a human's intent not made in a live session of theirs",
+                        id.to_string(),
+                        "session".into(),
+                    ),
+                    (Source::Agent { id }, Some(_)) => bad(
+                        &mut r,
+                        e,
+                        Some(intent.id),
+                        "an agent's intent under an operator session",
+                        id.to_string(),
+                        String::new(),
+                    ),
+                    _ => {}
                 }
                 intents.insert(intent.id, Tracked::new(intent.clone(), State::Proposed));
                 if intent.kind() == TaskKind::Engage {
@@ -1401,7 +1469,7 @@ fn replay_inner<S: AsRef<str>>(
                     continue;
                 };
                 check_signature(&mut r, e, *intent, tr, by, *session, &sessions);
-                check_step_up(&mut r, e, *intent, tr.step_up, by, *session, *step_up, &mut step_ups);
+                check_step_up(&mut r, e, Some(*intent), tr.step_up, by, *session, *step_up, &mut step_ups, StepUse::Signature);
                 check_self_accepted(&mut r, e, *intent, tr, by, *self_accepted);
                 let want = (u32::try_from(tr.signers.len()).unwrap_or(u32::MAX) + 1, tr.approvers);
                 if (*n, *of) != want || *n >= *of {
@@ -1551,7 +1619,7 @@ fn replay_inner<S: AsRef<str>>(
                     r.self_approvals += 1;
                 }
                 check_signature(&mut r, e, *intent, tr, by, *session, &sessions);
-                check_step_up(&mut r, e, *intent, tr.step_up, by, *session, *step_up, &mut step_ups);
+                check_step_up(&mut r, e, Some(*intent), tr.step_up, by, *session, *step_up, &mut step_ups, StepUse::Signature);
                 check_signed(&mut r, e, *intent, tr, by, *session, snapshot, token, supersedes, *checked_t, &mut issued, policy.as_ref());
                 if tr.spec.kind() == TaskKind::Engage {
                     tr.last_picture_t = snapshot.as_ref().map(|s| s.t);
@@ -2002,13 +2070,26 @@ fn replay_inner<S: AsRef<str>>(
                     policy.as_ref(),
                 );
             }
+            EventBody::AuthRefused { operator, .. } => {
+                // rules 7: a login refused, in a credentials run, for an operator it lists
+                // (an unknown id goes to the bridge's own log: the audit log names no one
+                // the run does not know)
+                if r.auth != Some(AuthMode::Credentials) {
+                    let logged = json(&r.auth);
+                    bad(&mut r, e, None, "a refused login outside a credentials run", logged, "credentials".into());
+                } else if !roster.as_ref().is_some_and(|ro| ro.operators.contains(operator)) {
+                    bad(&mut r, e, None, "a refused login for an operator the run does not list", operator.to_string(), String::new());
+                }
+                r.logins_refused += 1;
+            }
             EventBody::OperatorAction {
                 operator,
                 session,
                 action,
+                detail,
                 grants,
                 auth,
-                ..
+                step_up,
             } => {
                 let authenticated = policy
                     .as_ref()
@@ -2028,17 +2109,28 @@ fn replay_inner<S: AsRef<str>>(
                             json(&roster),
                         );
                     }
-                    // rules 7: opened the way the run authenticates (a password-checked login
-                    // in a credentials run, an asserted name in a dev run)
-                    if authenticated && auth.as_ref() != run_auth.map(AuthMode::method).as_ref() {
-                        bad(
-                            &mut r,
-                            e,
-                            None,
-                            "session opened by another method than the run authenticates with",
-                            json(auth),
-                            json(&run_auth.map(AuthMode::method)),
-                        );
+                    // rules 7: opened the way the run authenticates (a checked credential in a
+                    // credentials run: a person's password, or a harness-held scripted one; an
+                    // asserted name in a dev run)
+                    if authenticated {
+                        match (run_auth, *auth) {
+                            (Some(mode), Some(method)) if mode.admits(method) => {
+                                methods.insert(*session, method);
+                                match method {
+                                    AuthMethod::Password => r.people.insert(operator.clone()),
+                                    AuthMethod::Scripted => r.scripted.insert(operator.clone()),
+                                    AuthMethod::Asserted => false,
+                                };
+                            }
+                            _ => bad(
+                                &mut r,
+                                e,
+                                None,
+                                "session opened by another method than the run authenticates with",
+                                json(auth),
+                                json(&run_auth.map(AuthMode::method)),
+                            ),
+                        }
                     }
                     if sessions
                         .insert(*session, (operator.clone(), grants))
@@ -2072,21 +2164,58 @@ fn replay_inner<S: AsRef<str>>(
                             r.sessions_closed += 1;
                         }
                         "step_up" => {
-                            // a credential re-entered: only a credentials run has one
-                            if run_auth != Some(AuthMode::Credentials) || *auth != Some(AuthMethod::Password) {
+                            // a credential re-entered: only a credentials run has one, and it is
+                            // the kind the session was opened with (a scripted operator's
+                            // step-up is scripted too: never a person's)
+                            let opened = methods.get(session).copied();
+                            if run_auth != Some(AuthMode::Credentials)
+                                || auth.is_none()
+                                || *auth != opened
+                                || *auth == Some(AuthMethod::Asserted)
+                            {
                                 bad(
                                     &mut r,
                                     e,
                                     None,
-                                    "a step-up outside a credentials run, or not by password",
+                                    "a step-up outside a credentials run, or not by the credential its session was opened with",
                                     json(&(run_auth, auth)),
-                                    json(&(AuthMode::Credentials, AuthMethod::Password)),
+                                    json(&(AuthMode::Credentials, opened)),
                                 );
                             }
-                            step_ups.insert(e.seq, (*session, operator.clone(), e.t, false));
+                            step_ups.insert(
+                                e.seq,
+                                StepUpSeen { session: *session, operator: operator.clone(), t: e.t, used: StepUse::Unused },
+                            );
                             r.step_ups += 1;
                         }
+                        "track.declare" => {
+                            // a hostile declaration steps up when the policy lists it
+                            let hostile = crate::engine::declared_affiliation(detail) == Some("hostile");
+                            let needed = hostile
+                                && policy.as_ref().is_some_and(|p| p.steps_up(policy::StepUpAct::DeclareHostile));
+                            check_step_up(
+                                &mut r,
+                                e,
+                                None,
+                                needed,
+                                operator,
+                                *session,
+                                *step_up,
+                                &mut step_ups,
+                                StepUse::Declaration,
+                            );
+                        }
                         _ => {}
+                    }
+                    if step_up.is_some() && action != "track.declare" {
+                        bad(
+                            &mut r,
+                            e,
+                            None,
+                            "a step-up quoted by an act that takes none",
+                            action.clone(),
+                            "track.declare".into(),
+                        );
                     }
                 }
             }
@@ -2553,7 +2682,22 @@ fn replay_inner<S: AsRef<str>>(
                 session,
                 world_t,
                 vehicle,
+                step_up,
             } => {
+                // rules 7: the operator's credential re-entered for it, when the policy lists
+                // the act (a nomination's acceptances share one step-up)
+                let needed = policy.as_ref().is_some_and(|p| p.steps_up(policy::StepUpAct::AcceptUnknown));
+                check_step_up(
+                    &mut r,
+                    e,
+                    Some(*intent),
+                    needed,
+                    by,
+                    *session,
+                    *step_up,
+                    &mut step_ups,
+                    StepUse::Acceptances { intent: *intent, last_seq: e.seq },
+                );
                 let Some(tr) = intents.get_mut(intent) else {
                     bad(&mut r, e, Some(*intent), "acceptance for an unknown intent", String::new(), String::new());
                     continue;
@@ -3058,6 +3202,28 @@ fn replay_inner<S: AsRef<str>>(
                     bad(&mut r, e, Some(spec.id), "intent created twice", String::new(), String::new());
                     continue;
                 }
+                // rules 7: carried only between runs that authenticate alike (an asserted
+                // approval is no person's in a credentials run; a log before rules 7 asserted)
+                if r.rules_version >= OPERATOR_AUTH_SINCE && effective_mode(from.auth) != effective_mode(r.auth) {
+                    let here = json(&effective_mode(r.auth));
+                    bad(
+                        &mut r,
+                        e,
+                        Some(spec.id),
+                        "carried over from a run that authenticated its operators otherwise",
+                        json(&effective_mode(from.auth)),
+                        here,
+                    );
+                } else if r.rules_version < OPERATOR_AUTH_SINCE && from.auth.is_some() {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(spec.id),
+                        "a carried-over run's auth: only builds of rules 7 or later write it",
+                        json(&from.auth),
+                        String::new(),
+                    );
+                }
                 let open = OpenIntent {
                     spec: spec.clone(),
                     state: from.was,
@@ -3379,6 +3545,10 @@ fn check_resumed(r: &mut ReplayReport, resumed: &[ResumedEvent], opts: &ReplayOp
         if from.was != was.state {
             push(r, *seq, id, "carried over from another state than the previous log ends it in", json(&from.was), json(&was.state));
         }
+        // rules 7: the previous run's authentication, as it logged it
+        if r.rules_version >= OPERATOR_AUTH_SINCE && from.auth != prev.auth {
+            push(r, *seq, id, "carried over claiming another authentication than the previous log's", json(&from.auth), json(&prev.auth));
+        }
         if *state != was.resumes_as() {
             push(r, *seq, id, "resumed in another state than its op states allow", json(state), json(&was.resumes_as()));
         }
@@ -3429,6 +3599,7 @@ fn acting_session(body: &EventBody) -> Option<SessionId> {
         | EventBody::EngageAccepted { session, .. }
         | EventBody::EngageAcceptanceRevoked { session, .. }
         | EventBody::OperatorView { session, .. } => Some(*session),
+        EventBody::IntentCreated { session: Some(s), .. } => Some(*s),
         EventBody::PictureIssued { token, .. } => Some(token.session),
         EventBody::EngageStopped {
             cause: StopCause::Operator { session, .. },
@@ -3438,46 +3609,105 @@ fn acting_session(body: &EventBody) -> Option<SessionId> {
     }
 }
 
-/// Rules 7: a signature's step-up. One it quotes is a step-up logged under the signer's own
-/// session, used by no other signature, at most [`STEP_UP_MAX_AGE_MS`] before it; one the
-/// decision asks for (`step_up`) in a credentials run must be there.
+/// Rules 7: a step-up as logged: the session and operator it was entered in, when, and what
+/// used it so far.
+struct StepUpSeen {
+    session: SessionId,
+    operator: OperatorId,
+    t: Time,
+    used: StepUse,
+}
+
+/// What quotes a step-up: one signature, one hostile declaration, or one nomination's
+/// acceptances of lost vehicles (logged one after the other: they share it).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+enum StepUse {
+    Unused,
+    Signature,
+    Declaration,
+    Acceptances { intent: IntentId, last_seq: u64 },
+}
+
+impl StepUse {
+    fn what(self) -> &'static str {
+        match self {
+            StepUse::Unused | StepUse::Signature => "a signature",
+            StepUse::Declaration => "a hostile declaration",
+            StepUse::Acceptances { .. } => "an acceptance of a lost vehicle",
+        }
+    }
+}
+
+/// Rules 7: an act's step-up (`act`: a signature, a declaration, an acceptance). One it
+/// quotes is a step-up logged under the actor's own session, at most
+/// [`STEP_UP_MAX_AGE_MS`] before it, used by nothing else, except that one nomination's
+/// acceptances share theirs (the same intent, logged one after the other); one the act
+/// needs (`needed`: its decision asks for it, or `[approval] step_up_acts` lists the act) in
+/// a credentials run must be there.
 #[allow(clippy::too_many_arguments)]
 fn check_step_up(
     r: &mut ReplayReport,
     e: &Event,
-    id: IntentId,
+    id: Option<IntentId>,
     needed: bool,
     by: &OperatorId,
     session: SessionId,
     quoted: Option<StepUpRef>,
-    step_ups: &mut BTreeMap<u64, (SessionId, OperatorId, Time, bool)>,
+    step_ups: &mut BTreeMap<u64, StepUpSeen>,
+    act: StepUse,
 ) {
-    match quoted {
-        Some(s) => match step_ups.get_mut(&s.seq) {
-            Some((ss, op, t, used))
-                if *ss == session && op == by && !*used && e.t.ms_since(*t) <= STEP_UP_MAX_AGE_MS =>
-            {
-                *used = true;
-                r.stepped_signatures += 1;
+    let what = act.what();
+    let Some(s) = quoted else {
+        if needed && r.auth == Some(AuthMode::Credentials) {
+            let why = match act {
+                StepUse::Unused | StepUse::Signature => {
+                    "a consequential signature without a step-up (its decision asks for the signer's credential at signing)".to_string()
+                }
+                _ => format!("{what} without a step-up (the policy's step_up_acts asks for the actor's credential)"),
+            };
+            bad(r, e, id, &why, by.to_string(), "step_up".into());
+        }
+        return;
+    };
+    let shares = |used: StepUse| match (used, act) {
+        (StepUse::Unused, _) => true,
+        (StepUse::Acceptances { intent, last_seq }, StepUse::Acceptances { intent: now, .. }) => {
+            intent == now && e.seq == last_seq + 1
+        }
+        _ => false,
+    };
+    match step_ups.get_mut(&s.seq) {
+        Some(seen)
+            if seen.session == session
+                && &seen.operator == by
+                && shares(seen.used)
+                && e.t.ms_since(seen.t) <= STEP_UP_MAX_AGE_MS =>
+        {
+            seen.used = match act {
+                StepUse::Acceptances { intent, .. } => StepUse::Acceptances { intent, last_seq: e.seq },
+                other => other,
+            };
+            match act {
+                StepUse::Unused | StepUse::Signature => r.stepped_signatures += 1,
+                _ => r.stepped_acts += 1,
             }
-            other => bad(
+        }
+        other => {
+            let why = match act {
+                StepUse::Unused | StepUse::Signature => {
+                    "a signature quoting a step-up that is not the signer's own, fresh and unused".to_string()
+                }
+                _ => format!("{what} quoting a step-up that is not the actor's own, fresh and unused"),
+            };
+            bad(
                 r,
                 e,
-                Some(id),
-                "a signature quoting a step-up that is not the signer's own, fresh and unused",
+                id,
+                &why,
                 json(&(s.seq, by, session.0)),
-                json(&other.map(|(ss, op, t, used)| (ss.0, op.clone(), t.0, *used))),
-            ),
-        },
-        None if needed && r.auth == Some(AuthMode::Credentials) => bad(
-            r,
-            e,
-            Some(id),
-            "a consequential signature without a step-up (its decision asks for the signer's credential at signing)",
-            by.to_string(),
-            "step_up".into(),
-        ),
-        None => {}
+                json(&other.map(|seen| (seen.session.0, seen.operator.clone(), seen.t.0, seen.used))),
+            );
+        }
     }
 }
 
