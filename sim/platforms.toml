@@ -108,7 +108,14 @@ climb_mps = 40
 turn_dps = 8
 loiter_radius_m = 6000
 endurance_h = 3
-link = "los"
+# C2 over BLOS SATCOM, as the RQ-4 and MQ-9B (GUESS: CCA datalinks are not public). The
+# operator here is a ground station tens of km away from a jet that crosses the LOS class's
+# 25 km in two minutes, and that class's range is a small-UAS datalink's (Puma). The control
+# path in a fight, an air-to-air tactical link to a crewed lead, has no node in the fleet to
+# carry it (docs/DECISIONS.md, murmur-3zj).
+link = "satcom"
+space_class = "wgs"
+space_class_alt = "ku-geo"
 sidc = "SFAPMFQ--------"
 sensors = [{ type = "radar", range_m = 150000, guess = true, height = true }, { type = "eo_ir", range_m = 30000, guess = true }, { type = "esm", range_m = 200000, guess = true }]   # AESA fire-control radar: 3D
 protocol = "uci"

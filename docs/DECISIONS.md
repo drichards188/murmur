@@ -277,6 +277,32 @@ group. Dates are 2026.
 
 ## Fleet and simulation
 
+- **The CCA's C2 link is SATCOM, as the other large aircraft's** (10-04, murmur-3zj). The
+  stock fleets spawn it 21 km from Crissy Field at 11 km altitude, where the `los` class
+  (its range from Puma's 20 km figure, a GUESS) already loses about 40 % of packets and the
+  5 s lost-link timer fires within minutes. Moving the spawn in would only defer it: at
+  230 m/s the jet crosses the class's 25 km in under two minutes, so any sortie on a
+  100 km theatre would RTL at the edge. A jet combat UAS tasked from a ground station tens
+  of km away is on a BLOS link; the catalog maps it to WGS GEO (`space_class = "wgs"`,
+  alternative ku-geo) like the RQ-4 and MQ-9B, with the GEO lost-link timer (120 s, a
+  GUESS) and the reduced telemetry tier. Stated as a GUESS in the catalog: CCA datalinks
+  are not public, and the control path in a fight, an air-to-air tactical link to a crewed
+  lead, has no node in the fleet to carry it. Links no longer hinge on where a fleet file
+  happens to put the aircraft.
+- **The Blimp stand-in's GCS failsafe is the firmware's: off, and a disarm when on**
+  (10-04, murmur-3zj; supersedes the Blimp exception under "Lost-link timers follow the
+  link"). ArduPilot Blimp 4.8's `failsafe_gcs_check` (Blimp/events.cpp) raises the
+  failsafe flag and calls `arming.disarm`, armed or not, whatever `FS_GCS_ENABLE` says (the
+  parameter documents "5: Land"; no `failsafe_gcs_on_event` exists to do it), and ships it
+  off. The SITL Blimp has run it off for that reason while the stand-in announced "GCS
+  Failsafe" and went to RTL or LAND, a safer airship than the firmware has. The gap is
+  closed on the stand-in's side, since that is the honest model and a divergence would have
+  to be re-documented at every firmware change: it ships `FS_GCS_ENABLE 0` too and, when
+  the parameter is set, raises the flag (system status CRITICAL) and disarms ("Disarming
+  motors"; the envelope then drifts with the wind), with no failsafe text, no mode change,
+  and a silent clear. The bridge's estimate draws no lost-link branch for an airship, and
+  the engagement preload refuses one for the same reason. Regression:
+  `blimp_gcs_failsafe_is_off_and_only_disarms_when_on` (stand-in contract tests).
 - **Engagement effects are abstract, on the truth side only** (10-03, Phase E). The bridge
   hands the effect (point, radius, time) back to the contacts process on the labelled
   simulation channel (in the answer to its next `POST /api/sim/contacts`). Contacts inside
