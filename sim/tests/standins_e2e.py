@@ -70,7 +70,8 @@ def main():
     logs.mkdir(exist_ok=True)
 
     env = {**os.environ, "MURMUR_BASE_PORT": str(args.base_port),
-           "MURMUR_HTTP_PORT": str(args.http_port), "PYTHONUNBUFFERED": "1"}
+           "MURMUR_HTTP_PORT": str(args.http_port), "PYTHONUNBUFFERED": "1",
+           "MURMUR_AUTH": "dev"}
     for k in ("MURMUR_SCENARIO", "MURMUR_AT", "MURMUR_TIDEWATER_URL"):
         env.pop(k, None)
     bridge = subprocess.Popen([str(ROOT / "target" / "release" / "murmur-bridge")], cwd=ROOT,

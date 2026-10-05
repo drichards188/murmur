@@ -24,6 +24,7 @@ import asyncio
 import datetime
 import json
 import math
+import os
 import sys
 import time
 
@@ -36,6 +37,17 @@ except ImportError:  # pragma: no cover
     import httpx
 
 AGENT_HEADER = "X-Murmur-Agent"
+
+
+def agent_headers(agent: str, key: str | None = None) -> dict:
+    """What every MCP request carries: the agent's own key (`Authorization: Bearer`, issued
+    by `murmur-auth agent-add`; `--key` or MURMUR_AGENT_KEY) on a bridge that authenticates,
+    and its id (`X-Murmur-Agent`), which a dev bridge (MURMUR_AUTH=dev) believes on its own."""
+    h = {AGENT_HEADER: agent}
+    key = key or os.environ.get("MURMUR_AGENT_KEY")
+    if key:
+        h["Authorization"] = f"Bearer {key}"
+    return h
 
 
 def attr(obj, snake, camel):
@@ -146,11 +158,13 @@ async def follow(session, ids, seconds):
     return last
 
 
+# a dev bridge; a bridge that authenticates takes the session cookie of a signed-in operator
+# (curl -c jar -X POST {bridge}/api/auth/login -d '{"operator": ..., "password": ...}', then -b jar)
 OPERATOR_HINT = "X-Murmur-Operator: op-1"
 
 
 async def run(args):
-    http = httpx.AsyncClient(headers={AGENT_HEADER: args.agent}, timeout=httpx.Timeout(30, read=300))
+    http = httpx.AsyncClient(headers=agent_headers(args.agent, args.key), timeout=httpx.Timeout(30, read=300))
     async with streamable_http_client(args.url, http_client=http) as (read, write):
         info = types.Implementation(name=args.agent, version="0.1")
         async with ClientSession(read, write, client_info=info) as session:
@@ -260,7 +274,8 @@ async def run(args):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--url", default="http://127.0.0.1:8765/mcp", help="the bridge's MCP endpoint")
-    ap.add_argument("--agent", default="agent-planner", help="an id listed in MURMUR_AGENTS")
+    ap.add_argument("--agent", default="agent-planner", help="the agent's id (a dev bridge: one listed in MURMUR_AGENTS)")
+    ap.add_argument("--key", help="the agent's API key (murmur-auth agent-add; default MURMUR_AGENT_KEY): a bridge that authenticates needs it")
     ap.add_argument("--task", default="both",
                     help="auto (a hold), human (an orbit for an aircraft), both, collect (a satellite "
                          "collection, chosen from the options), or a task kind with --uid")

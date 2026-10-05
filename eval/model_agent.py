@@ -7,8 +7,9 @@ batch or `make check` uses it: the runner refuses the `agent+model` arm unless
 How it works. The model gets the bridge's own MCP tools (the agent tools of
 `crates/murmur-bridge/src/mcp/`, listed from the server at start, so it sees exactly what
 the scripted agent sees and nothing else: no approve tool exists) relayed through an MCP
-session as agent `agent-model` (`X-Murmur-Agent`). At each storyline `propose` step it gets
-the scenario's brief and the situation the step describes (the task, the vehicles, the
+session as agent `agent-model` (its key, or `X-Murmur-Agent` on a dev bridge). At each
+storyline `propose` step it gets the scenario's brief and the situation the step describes
+(the task, the vehicles, the
 track it is about), and is asked to check the picture with the tools and then either
 propose (it may adjust the request) or decline with a reason. Whatever it proposes goes
 through the same checks, policy and inbox as everything else, and the proxy operator
@@ -299,10 +300,12 @@ def situation(req: dict[str, Any], rationale: str, brief: str) -> str:
 class ModelProposer(Proposer):
     kind = "agent"
 
-    def __init__(self, mcp_url: str, model: str | None = None, brief: str = "", client: Any = None):
+    def __init__(self, mcp_url: str, model: str | None = None, brief: str = "", client: Any = None, key: str | None = None):
         if not os.environ.get("MURMUR_EVAL_MODEL"):
             raise ProposeError("the agent+model arm calls an external API: set MURMUR_EVAL_MODEL=1 to allow it")
         self.mcp_url = mcp_url
+        # its API key on a bridge that authenticates (a credentials run)
+        self.key = key
         self.model = model or os.environ.get("MURMUR_EVAL_MODEL_ID") or DEFAULT_MODEL
         self.source_id = AGENT_ID
         self.brief = brief
@@ -332,7 +335,7 @@ class ModelProposer(Proposer):
             except ImportError as e:
                 raise ProposeError("the agent+model arm needs the Anthropic SDK: pip install anthropic") from e
             self._client = anthropic.AsyncAnthropic()
-        self._session = AgentSession(self.mcp_url, self.source_id)
+        self._session = AgentSession(self.mcp_url, self.source_id, self.key)
         await self._session.__aenter__()
         assert self._session.session is not None
         listed = await self._session.session.list_tools()

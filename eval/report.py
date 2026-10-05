@@ -132,6 +132,18 @@ def collect(batch: Path) -> tuple[dict[str, Any], list[dict[str, Any]], list[dic
         except Exception as e:  # noqa: BLE001 (a broken run is reported, not fatal)
             excluded.append({"rel": rel, "why": f"metrics failed: {e!r}", "info": info})
             continue
+        auth = m.get("auth") or {}
+        if info.get("arm") == "study" and not auth.get("human_control_evidence"):
+            # a participant's decisions count only when they signed in with their own
+            # credential and the log replayed (rules 7)
+            excluded.append(
+                {
+                    "rel": rel,
+                    "why": f"a study run whose operators were not authenticated (auth {auth.get('mode')}): not evidence about people",
+                    "info": info,
+                }
+            )
+            continue
         story = []
         if (d / "storyline.jsonl").exists():
             for line in (d / "storyline.jsonl").read_text().splitlines():
@@ -924,6 +936,17 @@ def build(batch: Path) -> Path:
         )
     for note in meta.get("notes", []):
         body.append(f'<p class="muted">{esc(note)}</p>')
+    auth_modes: dict[str, int] = defaultdict(int)
+    for r in runs:
+        auth_modes[str((r["m"].get("auth") or {}).get("mode", "none recorded"))] += 1
+    if auth_modes:
+        body.append(
+            '<p class="muted">Operator identities: '
+            + esc(", ".join(f"{n} run(s) {mode}" for mode, n in sorted(auth_modes.items())))
+            + ". A dev run names its operators by request header (MURMUR_AUTH=dev): its deciders are scripts, and it is not "
+            "evidence about people. A study run counts only if its operators signed in with their own credentials (rules 7) "
+            "and its log replayed.</p>"
+        )
     body.append(
         '<div class="note"><strong>Not human data.</strong> ' + esc(NOT_HUMAN) + " The proxy operator is a model with explicit "
         f"parameters (eval/proxy.py, listed at the end). It reads a card with probability P(read) = diligence x fatigue "

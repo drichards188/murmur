@@ -14,6 +14,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import secrets
 import shutil
 import signal
 import subprocess
@@ -33,6 +34,22 @@ AGENTS = ["agent-planner", "agent-model"]
 SUPERVISOR = "op-1"
 PROPOSER_OPERATOR = "op-planner"
 AUTO_OPERATOR = "op-auto"
+# the study's participant (eval/proxy.py `Participant`): signs in at the console themselves
+PARTICIPANT_OPERATOR = "op-study"
+
+# How a stack's operators prove who they are (rules 7). `dev`: the bridge believes the ids
+# requests name (MURMUR_AUTH=dev), logged as dev: the proxy batches, where every decider is a
+# script. `credentials`: a run-local credential file, each operator with a fresh random
+# passphrase (the participant's printed for them, the scripted ones logged in by the runner),
+# each agent with a fresh key; the only mode whose decisions count as people's (study mode).
+AUTH_MODES = ("dev", "credentials")
+
+
+def passphrase() -> str:
+    """A fresh random passphrase someone can type: five groups of five letters and digits
+    (29 characters, about 129 bits)."""
+    alphabet = "abcdefghijkmnpqrstuvwxyz23456789"
+    return "-".join("".join(secrets.choice(alphabet) for _ in range(5)) for _ in range(5))
 
 
 class StackError(RuntimeError):
@@ -127,7 +144,14 @@ class Stack:
         run_id: str,
         tidewater_url: str | None = None,
         web: bool = False,
+        auth: str = "dev",
     ):
+        if auth not in AUTH_MODES:
+            raise StackError(f"auth {auth!r}: one of {', '.join(AUTH_MODES)}")
+        self.auth = auth
+        # credentials run: each operator's passphrase and each agent's key, in memory only
+        self.passwords: dict[str, str] = {}
+        self.agent_keys: dict[str, str] = {}
         self.spec = spec
         self.seed = seed
         self.block = block
@@ -160,6 +184,29 @@ class Stack:
     @property
     def standins_json(self) -> Path:
         return self.run_dir / "standins.json"
+
+    @property
+    def credentials_file(self) -> Path:
+        """A credentials run's own credential file (hashes and key digests only; removed when
+        the stack stops)."""
+        return self.run_dir / "credentials.json"
+
+    def write_credentials(self) -> None:
+        """Every operator with a fresh passphrase and every agent with a fresh key, through
+        the `murmur-auth` CLI as a script would (passwords on stdin); kept in memory only."""
+        tool = str(_binary("murmur-auth"))
+        f = str(self.credentials_file)
+        for op in OPERATORS:
+            pw = passphrase()
+            r = subprocess.run([tool, "--file", f, "add", op], input=pw + "\n", capture_output=True, text=True)
+            if r.returncode != 0:
+                raise StackError(f"murmur-auth add {op}: {r.stderr.strip()}")
+            self.passwords[op] = pw
+        for agent in AGENTS:
+            r = subprocess.run([tool, "--file", f, "agent-add", agent], capture_output=True, text=True)
+            if r.returncode != 0 or not r.stdout.strip():
+                raise StackError(f"murmur-auth agent-add {agent}: {r.stderr.strip()}")
+            self.agent_keys[agent] = r.stdout.strip()
 
     @property
     def events_file(self) -> Path:
@@ -312,15 +359,33 @@ class Stack:
             # every run starts clean: never carry another run's open intents over (port blocks
             # are reused, and with them the bridge's resume pointer)
             "MURMUR_RESUME": "0",
-            "MURMUR_OPERATORS": ",".join(OPERATORS),
-            "MURMUR_AGENTS": ",".join(AGENTS),
             "MURMUR_EVAL_TRUTH": "1",
             "MURMUR_SENSE_SEED": str(self.seed),
+            # the console's origin (study mode), the only one a browser may change things from
+            "MURMUR_WEB_PORT": str(b.web),
         }
+        if self.auth == "credentials":
+            self.write_credentials()
+            bridge_env["MURMUR_CREDENTIALS"] = str(self.credentials_file)
+        else:
+            # ids asserted by header, logged as dev: never evidence about people
+            bridge_env.update(
+                {
+                    "MURMUR_AUTH": "dev",
+                    "MURMUR_OPERATORS": ",".join(OPERATORS),
+                    "MURMUR_AGENTS": ",".join(AGENTS),
+                }
+            )
         if self.spec.sense_misclass is not None:
             bridge_env["MURMUR_SENSE_MISCLASS"] = str(self.spec.sense_misclass)
         bridge = self._spawn("bridge", [str(_binary("murmur-bridge"))], self._env(**bridge_env))
         self._wait_http(f"http://127.0.0.1:{b.http}/api/stats", bridge, 60)
+        if self.auth == "credentials":
+            # the scripted operators sign in as anyone would; the participant signs in at the
+            # console with the passphrase printed for them
+            for op, pw in self.passwords.items():
+                if op != PARTICIPANT_OPERATOR:
+                    self.bridge.login(op, pw)
 
         standins_env = {
             "MURMUR_STANDINS_TRUTH": str(self.run_dir / "standins-truth.jsonl"),
@@ -465,6 +530,10 @@ class Stack:
         dst = self.run_dir / "audit.jsonl"
         if self.audit_src.exists():
             shutil.move(str(self.audit_src), str(dst))
+        # the run's throwaway credentials go with it (hashes only, but no reason to keep them)
+        self.credentials_file.unlink(missing_ok=True)
+        self.passwords.clear()
+        self.agent_keys.clear()
         return exits
 
 

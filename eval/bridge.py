@@ -1,4 +1,10 @@
-"""A small client for the bridge's HTTP API (urllib only, no dependencies)."""
+"""A small client for the bridge's HTTP API (urllib only, no dependencies).
+
+Operators act two ways (rules 7). On a bridge that authenticates (a credentials run, study
+mode) each scripted operator logs in with its own password ([`Bridge.login`]) and its requests
+carry its session cookie. On a dev bridge (`MURMUR_AUTH=dev`, the proxy batches) a request
+names its operator in `X-Murmur-Operator`, which the bridge believes and records as dev.
+"""
 
 from __future__ import annotations
 
@@ -24,11 +30,35 @@ class Bridge:
         self.url = url.rstrip("/")
         self.operator = operator
         self.timeout = timeout
+        # operator -> "name=token": the session cookie of each operator logged in here
+        self.cookies: dict[str, str] = {}
+
+    def login(self, operator: str, password: str) -> dict:
+        """Log `operator` in (a bridge that authenticates); its later requests carry the
+        session cookie. The password is not kept."""
+        req = urllib.request.Request(
+            self.url + "/api/auth/login",
+            method="POST",
+            data=json.dumps({"operator": operator, "password": password}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                cookie = (r.headers.get("Set-Cookie") or "").split(";", 1)[0]
+                body = json.loads(r.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            raise BridgeError(e.code, {"detail": f"login of {operator} refused ({e.code})"}) from None
+        if not cookie:
+            raise BridgeError(500, {"detail": f"login of {operator}: no session cookie"})
+        self.cookies[operator] = cookie
+        return body
 
     def _call(self, method: str, path: str, body: Any = None, operator: str | None = None) -> tuple[int, Any]:
         headers = {"Content-Type": "application/json"}
         op = operator or self.operator
-        if op:
+        if op and op in self.cookies:
+            headers["Cookie"] = self.cookies[op]
+        elif op:
             headers[OPERATOR_HEADER] = op
         data = None if body is None else json.dumps(body).encode()
         req = urllib.request.Request(self.url + path, method=method, data=data, headers=headers)

@@ -1148,7 +1148,21 @@ def compute_run(run_dir: Path, rerun_replay: bool = False, info: dict[str, Any] 
     nav = load_jsonl(run_dir / "standins-truth.jsonl")
     m = compute(events, story, operators, replay, arm=info.get("arm"), cuts=cuts, samples=samples, nav=nav)
     m["run"] = {k: info.get(k) for k in ("run_id", "scenario", "arm", "seed", "status", "error", "ready", "ready_at_s", "warnings", "clocks", "clock_checks")}
+    m["auth"] = auth_of(events, replay)
     return m
+
+
+def auth_of(events: list[dict], replay: dict | None) -> dict[str, Any]:
+    """How the run's operators proved who they were (rules 7: the roster's `auth` in
+    `run.started`). `credentials`: each signed in with their own password, and every
+    engagement signature re-entered it; `dev`: ids asserted by request headers (the proxy
+    batches, scripted runs); `none recorded`: a log of earlier rules, ids asserted too. Only a
+    credentials run whose log replayed is evidence about people
+    (`human_control_evidence`); the report counts no other study run."""
+    first = events[0] if events else {}
+    mode = (first.get("roster") or {}).get("auth") if first.get("type") == "run.started" else None
+    replayed = bool(replay and replay.get("ran") and replay.get("ok"))
+    return {"mode": mode or "none recorded", "human_control_evidence": mode == "credentials" and replayed}
 
 
 def main() -> None:

@@ -614,3 +614,103 @@ def test_provenance_counts_untracked_code(monkeypatch):
     monkeypatch.setattr(V, "_git", lambda *a: status if a[0] == "status" else "abc1234")
     p = V.collect()
     assert p["changed"] == ["docs/PLAN.md", "eval/new_module.py"] and p["dirty"] is True
+
+
+# ---- who the operators were (rules 7) ---------------------------------------------------------
+
+
+def _run_started(auth: str | None) -> dict:
+    roster: dict = {"operators": ["op-1", "op-study"], "engage": []}
+    if auth:
+        roster["auth"] = auth
+    return {"seq": 1, "t": 0, "type": "run.started", "rules_version": 7, "roster": roster}
+
+
+def test_a_runs_auth_mode_and_whether_it_is_evidence_about_people():
+    from eval.metrics import auth_of
+
+    ok = {"ran": True, "ok": True}
+    assert auth_of([_run_started("credentials")], ok) == {"mode": "credentials", "human_control_evidence": True}
+    # a log that did not replay is no evidence, whatever it claims
+    assert auth_of([_run_started("credentials")], {"ran": True, "ok": False})["human_control_evidence"] is False
+    assert auth_of([_run_started("dev")], ok) == {"mode": "dev", "human_control_evidence": False}
+    # earlier rules recorded no mode: ids asserted
+    assert auth_of([_run_started(None)], ok) == {"mode": "none recorded", "human_control_evidence": False}
+    assert auth_of([], ok)["human_control_evidence"] is False
+
+
+def test_a_study_run_counts_only_with_authenticated_operators(tmp_path: Path):
+    from eval.report import build
+
+    rec = propose(
+        "wrong-centre", 1,
+        target={"track_id": "T-0001", "contact_id": "fastboat", "truth_present": True, "truth_affiliation": "hostile", "truth_position": [-122.47, 37.81]},
+        context={"radius_m": 300.0, "display_near": [], "truth_near": [], "aim_to_truth_m": 2500.0},
+        request={"task": "orbit", "uids": [4], "center": [-122.44, 37.82], "radius_m": 300.0},
+    )
+    for seed, auth in ((1, "credentials"), (2, "dev")):
+        d = tmp_path / "plausible-wrong" / "study" / f"seed-{seed}"
+        d.mkdir(parents=True)
+        log = Log()
+        log.created(1, 0)
+        log.checked(1, 0)
+        log.pending(1, 0)
+        log.reject(1, 10)
+        events = [_run_started(auth)] + log.events
+        (d / "audit.jsonl").write_text("\n".join(json.dumps(e) for e in events) + "\n")
+        (d / "storyline.jsonl").write_text(json.dumps(rec) + "\n")
+        info = {"scenario": "plausible-wrong", "arm": "study", "seed": seed, "status": "ok", "operators": ["op-1", "op-study"],
+                "replay": {"ran": True, "ok": True, "mismatches": 0}, "warnings": [], "auth": auth,
+                "provenance": {"short": "abc1234", "dirty": False, "binaries": {"murmur-bridge": "f" * 64}}}
+        (d / "run.json").write_text(json.dumps(info))
+    (tmp_path / "batch.json").write_text(json.dumps({"id": "study", "seeds": [1, 2], "jobs": []}))
+    text = build(tmp_path).read_text()
+    summary = json.loads((tmp_path / "summary.json").read_text())
+    assert summary["runs_scored"] == 1
+    assert any("not authenticated (auth dev)" in e.get("why", "") for e in summary["runs_excluded"]), summary["runs_excluded"]
+    assert "1 run(s) credentials" in text
+
+
+def test_the_client_signs_operators_in_and_sends_their_cookie():
+    import http.server
+
+    from eval.bridge import Bridge
+
+    seen: list[dict] = []
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):  # quiet
+            pass
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(n) or b"{}")
+            seen.append({"path": self.path, "cookie": self.headers.get("Cookie"), "op": self.headers.get("X-Murmur-Operator"), "body": body})
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            if self.path == "/api/auth/login":
+                self.send_header("Set-Cookie", f"murmur_session_1=tok-{body['operator']}; Path=/; HttpOnly; SameSite=Strict")
+            self.end_headers()
+            self.wfile.write(b'{"ok": true}')
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        b = Bridge(f"http://127.0.0.1:{srv.server_port}")
+        b.login("op-1", "a long enough passphrase")
+        b.post("/api/intents", {"task": "hold"}, operator="op-1")
+        b.post("/api/intents", {"task": "hold"}, operator="op-planner")
+    finally:
+        srv.shutdown()
+    assert seen[1]["cookie"] == "murmur_session_1=tok-op-1" and seen[1]["op"] is None
+    # an operator not signed in here names itself (a dev bridge)
+    assert seen[2]["cookie"] is None and seen[2]["op"] == "op-planner"
+    assert "passphrase" not in json.dumps(seen[1:])
+
+
+def test_run_passphrases_meet_the_password_policy():
+    from eval.stack import passphrase
+
+    ps = {passphrase() for _ in range(50)}
+    assert len(ps) == 50
+    assert all(len(p) >= 15 and p.count("-") == 4 for p in ps)

@@ -122,6 +122,7 @@ def run(sim, args):
     env = {**os.environ, "MURMUR_BASE_PORT": str(base_port), "MURMUR_HTTP_PORT": str(HTTP),
            "MURMUR_ROOT": str(ROOT), "MURMUR_FLEET_MANIFEST": str(ROOT / "sim" / "run" / "fleet.json"),
            "MURMUR_RUN_ID": f"e2e-pbs-{sim}", "MURMUR_STANDINS_STATS": "0", "PYTHONUNBUFFERED": "1",
+           "MURMUR_AUTH": "dev",
            "MURMUR_SITL_INSTANCE_BASE": str(args.instance)}
     for k in ("MURMUR_SCENARIO", "MURMUR_AT", "MURMUR_TIDEWATER_URL"):
         env.pop(k, None)

@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from scripted_agent import AGENT_HEADER, attr, call, content, fmt_age  # noqa: E402
+from scripted_agent import agent_headers, attr, call, content, fmt_age  # noqa: E402
 
 from mcp import ClientSession, types  # noqa: E402
 from mcp.client.streamable_http import streamable_http_client  # noqa: E402
@@ -52,15 +52,17 @@ def haversine_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
 class AgentSession:
     """An MCP session as one agent id. Use as `async with AgentSession(url, agent) as a:`."""
 
-    def __init__(self, url: str = "http://127.0.0.1:8765/mcp", agent: str = "agent-planner"):
+    def __init__(self, url: str = "http://127.0.0.1:8765/mcp", agent: str = "agent-planner", key: str | None = None):
         self.url = url
         self.agent = agent
+        # the agent's API key on a bridge that authenticates (MURMUR_AGENT_KEY by default)
+        self.key = key
         self.session: ClientSession | None = None
         self.tools: list[str] = []
         self._stack: list = []
 
     async def __aenter__(self) -> "AgentSession":
-        http = httpx.AsyncClient(headers={AGENT_HEADER: self.agent}, timeout=httpx.Timeout(30, read=300))
+        http = httpx.AsyncClient(headers=agent_headers(self.agent, self.key), timeout=httpx.Timeout(30, read=300))
         transport = streamable_http_client(self.url, http_client=http)
         read, write = await transport.__aenter__()
         self._stack.append(transport)
@@ -201,7 +203,7 @@ async def main_async(args) -> None:
     near = tuple(float(x) for x in args.near.split(","))
     if len(near) != 2:
         sys.exit("--near wants lon,lat")
-    async with AgentSession(args.url, args.agent) as a:
+    async with AgentSession(args.url, args.agent, args.key) as a:
         print(f"connected as {a.agent}; tools: {', '.join(a.tools)}")
         ids = await watch(a, (near[0], near[1]), args.radius_km, args.platform,
                           0 if args.once else args.watch, args.every)
@@ -214,6 +216,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--url", default="http://127.0.0.1:8765/mcp")
     ap.add_argument("--agent", default="agent-planner")
+    ap.add_argument("--key", help="the agent's API key (murmur-auth agent-add; default MURMUR_AGENT_KEY)")
     ap.add_argument("--near", default="-122.4780,37.8180", help="watch point, lon,lat (default: the Gate)")
     ap.add_argument("--radius-km", type=float, default=4.0)
     ap.add_argument("--platform", help="the sensor platform id to task (default: any unarmed aircraft)")

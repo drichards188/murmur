@@ -58,7 +58,8 @@ def main():
     logs = ROOT / "logs"
     logs.mkdir(exist_ok=True)
     env = {**os.environ, "MURMUR_BASE_PORT": str(args.base_port),
-           "MURMUR_HTTP_PORT": str(args.http_port), "MURMUR_ROOT": str(ROOT), "PYTHONUNBUFFERED": "1"}
+           "MURMUR_HTTP_PORT": str(args.http_port), "MURMUR_ROOT": str(ROOT), "PYTHONUNBUFFERED": "1",
+           "MURMUR_AUTH": "dev"}
     for k in ("MURMUR_SCENARIO", "MURMUR_AT", "MURMUR_TIDEWATER_URL"):
         env.pop(k, None)
     procs = [

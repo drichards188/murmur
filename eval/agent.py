@@ -110,15 +110,17 @@ class HumanProposer(Proposer):
 class AgentProposer(Proposer):
     kind = "agent"
 
-    def __init__(self, mcp_url: str, agent: str = "agent-planner"):
+    def __init__(self, mcp_url: str, agent: str = "agent-planner", key: str | None = None):
         self.mcp_url = mcp_url
         self.source_id = agent
+        # its API key on a bridge that authenticates (a credentials run)
+        self.key = key
         self._session = None
 
     async def start(self) -> None:
         from policy_agent import AgentSession  # agents/policy_agent.py
 
-        self._session = AgentSession(self.mcp_url, self.source_id)
+        self._session = AgentSession(self.mcp_url, self.source_id, self.key)
         await self._session.__aenter__()
 
     async def stop(self) -> None:
@@ -189,8 +191,8 @@ class AutonomousAgent(AgentProposer):
 
     autonomous = True
 
-    def __init__(self, mcp_url: str, agent: str = "agent-planner", policy: AgentPolicy | None = None):
-        super().__init__(mcp_url, agent)
+    def __init__(self, mcp_url: str, agent: str = "agent-planner", policy: AgentPolicy | None = None, key: str | None = None):
+        super().__init__(mcp_url, agent, key)
         self.policy = policy or AgentPolicy()
         self.proposed: set[str] = set()
         self.last_use: dict[int, float] = {}
@@ -240,17 +242,22 @@ class AutonomousAgent(AgentProposer):
         return {"track_id": t["id"], "uid": int(v["uid"]), "center": list(t["position"]), "radius_m": p.radius_m, "rationale": rationale}
 
 
-def make_proposer(kind: str, bridge: Bridge, mcp_url: str, model: str | None = None, brief: str = "") -> Proposer:
+def make_proposer(
+    kind: str, bridge: Bridge, mcp_url: str, model: str | None = None, brief: str = "", keys: dict[str, str] | None = None
+) -> Proposer:
+    """The proposer of an arm. `keys`: each agent's API key on a bridge that authenticates
+    (empty on a dev bridge, which believes the agent header)."""
+    keys = keys or {}
     if kind == "human":
         return HumanProposer(bridge)
     if kind == "agent":
-        return AgentProposer(mcp_url)
+        return AgentProposer(mcp_url, key=keys.get("agent-planner"))
     if kind == "agent-autonomous":
-        return AutonomousAgent(mcp_url)
+        return AutonomousAgent(mcp_url, key=keys.get("agent-planner"))
     if kind == "model":
-        from .model_agent import ModelProposer
+        from .model_agent import AGENT_ID, ModelProposer
 
-        return ModelProposer(mcp_url, model=model, brief=brief)
+        return ModelProposer(mcp_url, model=model, brief=brief, key=keys.get(AGENT_ID))
     raise ValueError(f"unknown proposer {kind!r}")
 
 

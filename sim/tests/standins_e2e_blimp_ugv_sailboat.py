@@ -96,7 +96,8 @@ def main():
     logs = HERE / "e2e"
     logs.mkdir(exist_ok=True)
     env = {**os.environ, "MURMUR_BASE_PORT": str(BASE_PORT),
-           "MURMUR_HTTP_PORT": str(HTTP), "PYTHONUNBUFFERED": "1", "CARGO_BUILD_JOBS": "4"}
+           "MURMUR_HTTP_PORT": str(HTTP), "PYTHONUNBUFFERED": "1",
+           "MURMUR_AUTH": "dev", "CARGO_BUILD_JOBS": "4"}
     for k in ("MURMUR_SCENARIO", "MURMUR_AT", "MURMUR_TIDEWATER_URL"):
         env.pop(k, None)
     if TW:

@@ -42,7 +42,7 @@ from .metrics import clock_checks, compute_run, run_replay
 from .ports import Allocator, PortBlock, ephemeral_range, lease_tidewater_port
 from .proxy import ProxyParams, make_supervisor, proxy_params
 from .spec import Spec, SpecError, load_spec, spec_summary
-from .stack import OPERATORS, Stack, StackError, kill_from_pids
+from .stack import OPERATORS, PARTICIPANT_OPERATOR, Stack, StackError, kill_from_pids
 from .provenance import collect as provenance
 from .storyline import Log, Storyline, TruthSampler, World
 
@@ -195,7 +195,13 @@ class Run:
 
     async def execute(self) -> dict[str, Any]:
         self.out.mkdir(parents=True, exist_ok=True)
-        stack = Stack(self.spec, self.seed, self.block, self.out, self.run_id, self.tidewater_url, web=self.arm.web)
+        # who the operators are (rules 7): a study's participant signs in with their own
+        # credential, so the run can count as people's decisions; the proxy arms are scripts
+        # and run with asserted ids (dev), which the log records and the report excludes from
+        # any human-control claim
+        auth = "credentials" if self.arm.supervisor == "participant" else "dev"
+        stack = Stack(self.spec, self.seed, self.block, self.out, self.run_id, self.tidewater_url, web=self.arm.web, auth=auth)
+        self.info["auth"] = auth
         self.info["tidewater_url"] = self.tidewater_url
         self.save()
         proposer = None
@@ -223,7 +229,15 @@ class Run:
             if self.arm.web:
                 self.info["console"] = f"http://127.0.0.1:{self.block.web}"
                 print(f"console for the participant: http://127.0.0.1:{self.block.web}", flush=True)
-            proposer = make_proposer(self.arm.proposer, bridge, mcp_url, self.model, self.spec.agent_brief)
+            if auth == "credentials" and self.arm.supervisor == "participant":
+                # shown to the person running the session, never written to the run directory
+                print(
+                    f"participant signs in as {PARTICIPANT_OPERATOR} with: {stack.passwords.get(PARTICIPANT_OPERATOR)}",
+                    flush=True,
+                )
+            proposer = make_proposer(
+                self.arm.proposer, bridge, mcp_url, self.model, self.spec.agent_brief, keys=dict(stack.agent_keys)
+            )
             await proposer.start()
             supervisor = make_supervisor(self.arm.supervisor, bridge, self.proxy, self.seed)
             self.info["supervisor_config"] = supervisor.describe()

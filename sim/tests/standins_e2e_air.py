@@ -98,7 +98,8 @@ def main():
     env = {**os.environ, "MURMUR_BASE_PORT": str(args.base_port),
            "MURMUR_HTTP_PORT": str(args.http_port), "MURMUR_ROOT": str(ROOT),
            "MURMUR_FLEET_MANIFEST": str(run / "fleet.json"), "MURMUR_RUN_ID": "e2e-air",
-           "MURMUR_STANDINS_STATS": "0", "PYTHONUNBUFFERED": "1"}
+           "MURMUR_STANDINS_STATS": "0", "PYTHONUNBUFFERED": "1",
+           "MURMUR_AUTH": "dev"}
     for k in ("MURMUR_SCENARIO", "MURMUR_AT", "MURMUR_TIDEWATER_URL"):
         env.pop(k, None)
     logs = ROOT / "logs"
