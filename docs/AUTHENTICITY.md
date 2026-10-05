@@ -160,12 +160,15 @@ result is read with them in mind (2026-10-05):
   false act (a sensor never reports an act that did not happen), and the victim is known
   exactly when it is ours (one of our fleet).
 - **The picture it is attributed in** is the bridge's tracks, associated by the
-  simulation's contact id (10-02). Each track's 1-sigma is its Kalman filter's (10-05),
-  checked against the simulation's truth by a test (coverage of the truth within two sigmas,
-  mean normalized error); in the first live run a track reported 8 m while 20 m off, a
-  2.5-sigma moment the old filter's numbers do not single out (it was mostly too loose).
+  simulation's contact id (10-02). Each track's 1-sigma is its two-model IMM filter's
+  (10-05), checked against the simulation's truth by a test on seeds and motions it was not
+  tuned on (zigzags, sprints and stops, weaves, random turns among them: the truth within two
+  sigmas at least 83% of the time in every class); the simulated contacts turn and stop more
+  sharply than most real vessels, and the sensors' errors are Gaussian with no clutter, so a
+  real tracker's honesty would need checking against real tracks.
 - **Only the stack's own contacts process** posts truth (and so acts): the simulation channel
-  takes the stack's token.
+  takes the stack's token, which only the bridge and the contacts process hold; a process of
+  the same user could still read it from theirs (`/proc/<pid>/environ`).
 - **The scenario runner's acts** (`sim/scenarios/engage`, the evaluation) skip the sensing
   model: the file names the observing sensors and the sigma, and the observed position is the
   author's plus a scripted offset plus, in evaluation batches, seeded noise of that sigma.

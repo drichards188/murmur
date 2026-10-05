@@ -1012,11 +1012,19 @@ Rules versions:
   one of our fleet (the act's inputs log it: `vehicles`) or a tracked contact not declared
   hostile, and never a candidate for its own author; `corroboration = "second_observation"`
   wants another observer's fix (`ActReport.fixes`) or an earlier act attributed to the same
-  track at the threshold (flag kind `uncorroborated` until then; `RuleEvidence.corroborated_by`
-  names it); an act names its channel (`sim:contacts`, `scenario`); a declaration's or flag's
-  time and its event's are one clock read; a revocation also stops an engagement under way
-  whose last picture held the track exempt from its keep-out (`ident::revocation_bystanders`,
-  recomputed by replay from the last logged pictures). Rule declaration off (the default when the
+  track at the threshold that passed every check but corroboration (a rule declaration, or an
+  `uncorroborated` flag; never one flagged for its victim or for conflicting evidence),
+  observed at most `corroboration_window_s` before (flag kind `uncorroborated` until then;
+  `RuleEvidence.corroborated_by` names it); an act names its channel (`sim:contacts`,
+  `scenario`); a declaration's or flag's time and its event's are one clock read; a revocation
+  also stops an engagement under way whose last picture held the track exempt from its
+  keep-out (`ident::revocation_bystanders`, recomputed by replay from the last logged pictures;
+  an approved engagement not yet watched counts its approval's re-check as its picture). After
+  the second review the keep-out reads two more facts the tracker gives (rules 9, absent from
+  older logs): a track's average velocity over the last minute (`mean_velocity_mps`: a region
+  along it) and, for a track that manoeuvred within the tracker's memory, the fastest it went
+  (`manoeuvre`: a region anywhere it reaches at that speed); `engage::track_reach` lists the
+  regions and the keep-out holds only if the effect point clears every one. Rule declaration off (the default when the
   section is absent), the engine decides exactly as rules 8 did. `Engine::record_declaration`
   and the `track.declare` operator action are refused under rules 9. Replay recomputes every
   attribution, verdict, declaration and flag from the logged inputs, binds every logged
@@ -1031,7 +1039,7 @@ Rules versions:
   `v9-ambiguous-attribution-flagged-scenario-73.jsonl`,
   `v9-neutral-alongside-flagged-scenario-74.jsonl`,
   `v9-revoked-mid-engagement-scenario-75.jsonl`, `v9-bystander-protected-scenario-76.jsonl`,
-  `v9-revoked-bystander-scenario-77.jsonl`),
+  `v9-revoked-bystander-scenario-77.jsonl`, `v9-revoked-before-picture-scenario-78.jsonl`),
   and a live run with its anchors (`v9-identification-live.jsonl`,
   `tests/data/anchors/v9-identification-live.anchors`; see `tests/versions.rs`).
 
@@ -1045,7 +1053,7 @@ Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_s
 `STEP_UP_SCHEMA_SINCE`, rules 8); **6** adds `[identification]` (every key optional, unknown
 keys refused: `rule_declaration`, `attribution_threshold`, `nominate_unconfirmed`,
 `conflict_confidence`, `untracked_per_km2`, `escort_m`, `escort_speed_mps`, each bounded,
-`corroboration`)
+`corroboration`, `corroboration_window_s`)
 and `confirm_declaration` in `step_up_acts` (`RULE_ID_SCHEMA_SINCE`, rules 9).
 
 ## Integration contract for the bridge

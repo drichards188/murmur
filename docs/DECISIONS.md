@@ -418,32 +418,84 @@ group. Dates are 2026.
   is ours, an act against a contact named by the track the association gives it (the
   contact-id association of 10-02), and an act nobody observed simply absent from the C2's
   picture (the evaluation view lists it).
-- **The simulation channel takes the stack's own token** (10-05, review of rules 9). Truth
-  reaches the sensing model, and through it acts reach the identification rule, so `POST
-  /api/sim/contacts` is no longer open: it carries `X-Murmur-Sim-Token`, compared as digests
-  in constant time with the bridge's `MURMUR_SIM_TOKEN`, or is refused before anything reads
-  it; with none set the channel is closed. `up.sh` and the evaluation's stacks generate a
-  fresh token per stack and give it to the bridge and the contacts process only (never
-  printed or written to a run directory). The review had injected a fishing boat and an act
-  with only an agent's key and got a rule declaration. Each act logs the channel it came in
-  on (`sim:contacts`).
-- **The tracker's uncertainty is the Kalman filter's own, checked against truth** (10-05,
-  user decision after the review of rules 9: a live track reported 8 m while about 20 m off).
-  Each track is a constant-velocity Kalman filter per horizontal axis: white-noise
-  acceleration by domain (spectral density, m^2/s^3: surface 0.05, air 2, subsurface 0.01,
-  ground 0.3), each detection a position measurement with its sensor's 1-sigma, an AIS
-  report's course and speed a velocity measurement (0.3 m/s), and a fix outside the
-  prediction's 99% (normalized innovation above 9.21) widening the prior by its own size (a
-  stop or a sharp turn the model did not expect). A test runs it against the simulation's
-  truth in eleven motions over five seeds (holding with one to four sensors, transits, a stop
-  after a transit and 15 minutes holding, a 90 degree turn, circling, an AIS ferry, a lone
-  radar at 6 km) and requires the truth within two sigmas at least 83% of the time and the
-  mean normalized error within 1.0..2.6 (expected 2): every case passes, mean NEES 1.3 to 2.2.
-  The old scalar filter measured mostly too loose (NEES 1.2 to 1.6: a sigma about 1.2 times
-  the errors), slightly too tight circling (coverage 84%) and on a lone far radar (one seed
-  77%); the live 8 m at 20 m was one moment, a 2.5-sigma error, which an honest filter shows
-  about 4% of the time. Keep-outs and attribution read this 1-sigma. Fusing several
-  observers' fixes of one act, and a gating tracker, are later work.
+- **The simulation channel takes the stack's own token** (10-05, review of rules 9; scope
+  corrected at the second review). Truth reaches the sensing model, and through it acts
+  reach the identification rule, so `POST /api/sim/contacts` is no longer open: it carries
+  `X-Murmur-Sim-Token`, compared as digests in constant time with the bridge's
+  `MURMUR_SIM_TOKEN`, checked on the headers before the body is read; without it the request
+  is refused (401); with no token set the channel is closed. `up.sh` (from the caller's
+  `MURMUR_SIM_TOKEN`, or a fresh one per stack) and the evaluation's stacks give it to the
+  bridge and the contacts process only: `up.sh` takes it out of the environment every other
+  process inherits (the first build exported it, so the stand-ins, the emulator, `swarm.py`
+  and vite had it too), and it is never printed or written to a run directory. What it stops:
+  a client that can only reach the bridge over HTTP (the review had injected a fishing boat
+  and an act with only an agent's key and got a rule declaration). What it does not stop: a
+  process running as the same user, which can read it from the bridge's or the contacts
+  process's `/proc/<pid>/environ`. Each act logs the channel it came in on (`sim:contacts`).
+- **The tracker is a two-model IMM, honest on motions it was not tuned on, and a keep-out
+  counts where a manoeuvring contact could go** (10-05, user decision after the review of
+  rules 9: a live track reported 8 m while about 20 m off; reworked after the second review
+  found the first Kalman filter honest only on the motions its noise was tuned to, and
+  keep-outs a minute ahead weaker than before on manoeuvring contacts). Each track is an
+  interacting multiple model filter (Blom and Bar-Shalom): two constant-velocity Kalman
+  filters per horizontal axis, steady and manoeuvring (white-noise acceleration, m^2/s^3:
+  surface 0.01 and 2, air 0.4 and 80, subsurface 0.002 and 0.4, ground 0.06 and 12; air,
+  ground and subsurface scaled from the surface values, not checked), switching as a Markov
+  chain (a manoeuvre every two minutes or so, lasting half a minute); every detection a
+  position measurement with its sensor's 1-sigma, an AIS report's course and speed a
+  velocity measurement. Each fix weighs the two models by how well each predicted it, and
+  the estimate and covariance are their mixture, which widens while they disagree. A fix
+  outside the manoeuvring model's 99% widens that model's prior by its own size (a stop from
+  speed within a second); the steady model keeps its own, so an outlier does not drag the
+  estimate. The reported covariance is the mixture's widened by the recent fixes'
+  consistency (their normalized distance from the prediction, averaged over about three
+  fixes, over 1.5 where 2 is expected): a run of fixes farther off than predicted means the
+  filter is behind a manoeuvre it has not taken in yet. Chosen over adaptive process noise
+  alone because the IMM's mode probability is a likelihood ratio, standard for manoeuvring
+  targets, and gives the manoeuvre evidence the keep-out needs; the consistency widening
+  was added because the two models alone stayed overconfident in the seconds after an
+  instant stop or turn. A minute ahead the filter's velocity is the current leg's, which a
+  zigzag or a weave does not keep (the old filter's velocity, an average of the last minute
+  or so, predicted those better), so the track also gives the engine (rules 9,
+  `TrackFacts`) its average velocity over the last minute (`mean_velocity_mps`) and, when its
+  velocity changed beyond its noise (2 m/s and a 99.9% chi-square) or the manoeuvring model
+  was all but certain (0.8) within the last 5 minutes, the fastest it went
+  (`manoeuvre.speed_mps`); a keep-out holds only if the effect point clears every region: along
+  the velocity (rules 6), along the average velocity, and, for a manoeuvring track, anywhere
+  it reaches at that speed. Acceptance (`tracks::tests::calib`), on four sets disjoint in
+  seeds: the review's classes (holding, transit, a stop after a transit, a 90 degree turn,
+  circling, a zigzag, a sprint and stop) and more (acceleration, weave, random legs, random
+  turns, a patrol box), each run on the new filter and on a replica of the one before the
+  review with the same detections; criteria per class when updated: the truth within two
+  sigmas at least 83% of the time and the mean normalized error at most 2.6 (expected 2);
+  a keep-out 60 and 100 s ahead holding every case at least as often as the old filter's.
+  History, stated: the first two-model constants failed the first held-out set (zigzag,
+  sprint and stop, weave and random legs overconfident), which became tuning data; the tuned
+  filter passed the second held-out set when updated, but its keep-out held a 60 degree
+  zigzag 70% of the time against the old filter's 92% (the average-velocity prediction was
+  added for that), and it became tuning data too; the third held-out set, written before
+  that change was run, passed on its first run: every class 85% or more within two sigmas,
+  NEES 1.0 to 2.0; keep-outs at least as often as before in every case (zigzag 89% against
+  52% at 60 s, sprint and stop 96% against 87%, weave 93% against 39%, holding and transit
+  100% against 91 to 97%). The first Kalman filter of this review fails the same test
+  (zigzag 72% when updated, NEES 3.7; sprint and stop 62%, 4.2; weave 59%, 5.5; its keep-out
+  held the 45 degree zigzag 25% of the time at 60 s against the old filter's 52%). Cost,
+  stated: a steady track's keep-out is about the same size (168 m against 163 m at 60 s,
+  2-sigma), a manoeuvring one's much larger (a zigzagging boat's 870 m), and steady tracks'
+  reported sigma is loose (NEES about 1.1: a sigma 1.3 times the error), conservative by
+  design. The live run's coast guard cutter (AIS, circling 1.2 km), 79% within two sigmas
+  with the first Kalman filter and 4% with the IMM at first, was the clock: on this host
+  (WSL) the bridge's wall clock steps back about 0.94 s every 32 s while the contacts
+  process's does not (measured: 9 steps in 5 minutes, 8.2 s in all), and the tracker dated
+  each fix by its arrival, so at every step it predicted 0.06 s of motion where the contact
+  had moved a second; with AIS velocity known to 0.3 m/s the stiff steady model then stayed
+  metres off for many seconds while its sigma said 1.5 m. Fixes are now dated by the truth
+  message's own clock (`Detection::measured_t`; staleness still reads the wall clock); a test
+  reproduces the steps (dated by arrival: NEES 21.7, 5% within two sigmas; by the message: honest).
+  Live with it (dev run, 7 minutes after a minute's settling, 2099 samples): every contact 93
+  to 99% within two sigmas, NEES 0.84 to 1.55 (the cutter 92.9%, 1.55; the AIS ferry 99.3%).
+  Keep-outs and attribution read this 1-sigma. Fusing several observers' fixes of one act,
+  and a gating tracker, are later work.
 - **Sensing runs in the bridge, association is by contact id** (10-02). One seeded model
   in the bridge (which already loads the catalog and knows our vehicles) rather than in the
   contacts process; detections are associated to tracks by the simulation's contact id
@@ -477,23 +529,31 @@ group. Dates are 2026.
 
 ## Evaluation (Phase G)
 
-- **Rule against manual identification is measured on generated situations, with a reviewer
-  of its own** (10-05, rules 9; rebuilt after the review found the first comparison circular:
-  its manual arm reused the engine's verdict, its nominate arm could not differ, and a
-  scenario's own policy leaked into an arm labelled shipped). `python -m eval.run ident`
-  generates situations per seed from stated distributions (a hostile author, tracked or not;
-  none to three contacts near it, neutral, unclassified, friendly or hostile; one or two
-  observers) that name no policy, and plays each under five arms, the shipped policy changed
-  only by flags: manual (rule off), rule, rule with nomination before confirmation, and both
-  with corroboration by a second observation. The same scripted operator reviews in every
-  arm (`scenario::ReviewProxy`: a look every 20 s, 6 s to read, reads 80%, slips 5%; its
-  procedure is its own over what the console shows: the one track within two combined sigmas
-  of the fix, not shown neutral or friendly, is the author; else it can't say), and a
-  nominator nominates every declared track as soon as the policy lets it, so the
-  confirmation requirement shows in the timing. Workload counts what a person had to look at
-  and do in each arm. Its numbers are model results from scripted proxies on generated
-  situations (dev runs, asserted ids), never human data; scenarios 72-77 illustrate the rule
-  and are not part of it.
+- **Rule against manual identification is measured on generated situations, and what it
+  can and cannot say is stated** (10-05, rules 9; rebuilt after the first review found the
+  first comparison circular, and its wording corrected after the second). `python -m eval.run
+  ident` generates situations per seed from stated distributions (a hostile author, tracked or
+  not, the untracked share a stated dimension run at 0.2 and 0.5; none to three contacts
+  near it, neutral, unclassified, friendly or hostile, each holding or under way as stated;
+  one or two observers) that name no policy, and plays each under five arms, the shipped
+  policy changed only by flags: manual (rule off), rule, rule with nomination before
+  confirmation, and both with corroboration by a second observation. The same scripted
+  operator reviews in every arm (`scenario::ReviewProxy`: a look every 20 s, 6 s to read,
+  reads 80%, slips 5%); a nominator nominates every declared track as soon as the policy lets
+  it, and scripted signers sign whatever is nominated. What it cannot say, stated with the
+  numbers: the proxy's procedure is close to the rule's own (the best fix, two combined
+  sigmas, the victim excluded, a track shown neutral or friendly at 0.5 left alone), so their
+  agreement is built in and the manual arm says nothing about how accurately a person
+  identifies; with confirmation required each rule declaration still costs a person one
+  decision (by design, the shipped policy does not reduce approvals); the rule's latency
+  advantage and what nomination before confirmation saves are the proxy's look interval and
+  reading time; a proxy that reads half its items makes the manual arm worse while the rule
+  arms hold, because a skimmed card is confirmed unread (a model assumption); and the signers
+  never refuse, so a declaration the C2 should not have made is carried to an effect. Workload
+  is the proxy's own tally, counted alike in every arm (one decision per item, whatever it
+  decided). Its numbers are model results from scripted proxies on generated situations (dev
+  runs, asserted ids), never human data; scenarios 72-78 illustrate the rule and are not part
+  of it.
 
 - **One isolated stand-in stack per run, Python runner** (10-03). `eval/run.py` starts the
   link emulator, bridge, stand-ins and contacts on a port block of their own (UDP 35000-36999,
@@ -1026,12 +1086,17 @@ group. Dates are 2026.
   classified, and at 0.5 it is protected from 0.625. An operator's revocation makes later
   acts attributed to the track conflict flags until an operator declares it again: a
   person's judgment outranks the rule until a person changes it.
-- **Corroboration is a policy switch, measured both ways** (10-05, user decision).
-  `[identification] corroboration = "none"` (shipped) declares on one observation;
-  `"second_observation"` waits for a second independent one, another observer's fix of the
-  same act or a second act, attributed to the same track at the threshold, and flags the act
-  (uncorroborated) until then. The declaration names what corroborated it; replay recomputes
-  it from the act's fixes and the ledger's earlier acts. The evaluation runs both.
+- **Corroboration is a policy switch, measured both ways** (10-05, user decision; the
+  second act's eligibility and window after the second review). `[identification]
+  corroboration = "none"` (shipped) declares on one observation; `"second_observation"` waits
+  for a second independent one, another observer's fix of the same act or a second act
+  attributed to the same track at the threshold, and flags the act (uncorroborated) until
+  then. A second act counts only if it would itself have counted (its verdict a rule
+  declaration, or a flag only for want of a second observation: never one flagged because its
+  victim was not ours or the track's evidence conflicted) and was observed at most
+  `corroboration_window_s` before (10..3600, shipped 600). The declaration names what
+  corroborated it; replay recomputes it from the act's fixes and the ledger's earlier acts.
+  The evaluation runs both.
 - **A rule declaration nobody confirmed stays protected in another engagement's keep-out**
   (10-05, rules 9). A track declared hostile by an operator, or by the rule and confirmed by
   one, is exempt from the keep-out of engagements on other targets, as before; one the rule
@@ -1047,10 +1112,19 @@ group. Dates are 2026.
   signatures is voided, one under way aborted with its fallback per the existing stop rules;
   so does every engagement under way whose last picture held the track exempt from its
   keep-out and would fail it without the declaration (a bystander: before, it was aborted in
-  the same tick but logged as a picture failure; scenario 77). The declarer, when someone
+  the same tick but logged as a picture failure; scenario 77). An engagement approved but
+  not yet watched holds the world its approval was checked on as its picture, so a
+  revocation between the approval and its first picture names it too (before, it was not
+  named and a later picture stopped it, cause `picture`; scenario 78). The declarer, when someone
   else revoked their declaration, gets an inbox notice with the note. A confirmation while
   an engagement is being signed changes the target's identity in its plan, so the signatures
   are dropped and taken again (conservative, as any picture change).
+- **Confirming is never the easy act in the console** (10-05, second review of rules 9). A
+  rule declaration's card opens its evidence first (the act, whom it was against, which
+  sensors saw it, the attribution against the threshold) and confirm sits there, a plain
+  button as revoke is; revoking (the brake) takes no more clicks than confirming, two each,
+  in the inbox and in the tracks drawer. The first build had a prominent one-click confirm and
+  a two-click revoke.
 - **Confirming a rule declaration does not step up by default** (10-05, user's minimal
   approval). `confirm_declaration` is a name `[approval] step_up_acts` accepts (policy schema
   6, `RULE_ID_SCHEMA_SINCE`), off unless listed; an unknown name fails to load. A rule

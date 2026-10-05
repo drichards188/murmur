@@ -490,14 +490,20 @@ on the track first. The basis travels with the decision (picture token, frozen p
 engagement card, MCP reads), a rule declaration nobody confirmed stays protected in other
 engagements' keep-outs, and `nominate_unconfirmed` decides whether it can be nominated
 before a confirmation; `corroboration = "second_observation"` waits for a second observer's
-fix or a second act. After the review of 10-05: a proximity flag never masks a track's own
-evidence, a victim is ours (in our fleet) or a protected track and never its own author, a
-revocation also stops an engagement whose keep-out it exempted (a bystander, scenario 77),
-the simulation channel takes the stack's own token, the tracker's uncertainty is a Kalman
-filter's checked against truth, and the declarer is told of a revocation. Off
-(`rule_declaration = false`), rules 8's behaviour exactly. Replay
-recomputes every attribution, declaration and flag. Scenarios 72-76; the evaluation's
-rule-against-manual comparison under Phase G. Live demo:
+fix or a second act (one that passed every other check, within `corroboration_window_s`).
+After the reviews of 10-05: a proximity flag never masks a track's own evidence, a victim is
+ours (in our fleet) or a protected track and never its own author, a revocation also stops an
+engagement whose keep-out it exempted (a bystander, scenario 77, and one approved but not yet
+watched, scenario 78), the simulation channel takes the stack's own token (given to the bridge
+and the contacts process only, checked before the body is read), the tracker is a two-model
+IMM honest against truth on seeds and motions it was not tuned on (and live, its fixes dated by
+the truth's own clock: this host's wall clock steps back a second every half minute), a
+keep-out also counts a
+track along its average velocity and, when it manoeuvred, anywhere it could reach
+(`engage::track_reach`), confirming in the console is a deliberate act after the evidence, and
+the declarer is told of a revocation. Off (`rule_declaration = false`), rules 8's behaviour
+exactly. Replay recomputes every attribution, declaration and flag. Scenarios 72-78; the
+evaluation's rule-against-manual comparison under Phase G. Live demo:
 `MURMUR_CONTACTS=sim/scenarios/golden-gate-ident.toml make goldengate GG_FLEET=engage-demo`.
 What does not change: two signers with engagement authority on one frozen plan release an
 effect, never the proposer, never an agent; accepting a lost friendly stays an
@@ -610,28 +616,32 @@ numbers further down come from the re-run.
   placeholders until the proxy can sign an engagement (two operators with engagement
   authority quoting picture tokens).
 - **Identification, rule against manual** (rules 9; `eval/ident.py`, METRICS.md; rebuilt
-  after the review of 10-05 found the first comparison circular): generated situations per
-  seed, the same in every arm, each arm the shipped policy changed only by its flags (manual,
-  rule, rule with nomination before confirmation, and both with corroboration by a second
-  observation); the same scripted reviewer in every arm, its own procedure over what the
-  console shows; a nominator that nominates every declared track as soon as the policy lets
-  it. First numbers (2026-10-05, 10 seeds x 20 situations per arm, 169 tracked authors and 31
-  untracked; model results from scripted proxies, unreviewed): the rule declared the author at
-  the act (median 0 s) where the person took 18 s, and both found the same authors (122 or 123
-  of 169) and missed the same (46 or 47, authors with other contacts at the fix, where neither
-  the rule nor the person could say); 5 wrong declarations in every arm (3 of contacts that
-  were not hostile, 2 of another hostile; 3 picture wrong, 2 the C2 showed), by the person in
-  the manual arm and 2 by the rule and 3 by the person (answering flags) in the rule arm; no
-  effect on a contact that was not hostile in any arm (the engagement checks, an unclassified
-  target and a neutral in the keep-out, stopped the rest); the reviewer revoked 2 right rule
-  declarations (a slip, or two contacts at the fix). The rule did not lower a person's work:
-  293 looks and 293 acts (108 confirmations and the flags' resolutions) against 246 looks and
-  127 declarations without it, and the first effect came as late (164.5 s against 165 s)
-  because the shipped policy waits for the confirmation; nominating before it brought the
-  effect about 20 s sooner (144.5 s) with the same 24 effects. Corroboration by a second
-  observation halved the rule's declarations (58), put 65 on the person and added 57 flags,
-  with the same wrong declarations. What "really needs a person" here is the ambiguous act,
-  which neither the rule nor this reviewer resolved.
+  after the first review of 10-05 found the first comparison circular, its wording corrected
+  after the second): generated situations per seed, the same in every arm, contacts holding
+  or under way from stated distributions, the share of authors we hold no track of a stated
+  dimension; each arm the shipped policy changed only by its flags (manual, rule, rule with
+  nomination before confirmation, and both with corroboration by a second observation); the
+  same scripted reviewer in every arm and a nominator whose scripted signers never refuse.
+  Numbers (2026-10-05, 10 seeds x 20 situations per arm and share, 2000 situation runs, every
+  one replayed; model results from scripted proxies, unreviewed). With a fifth of the authors
+  untracked (155 tracked): the rule and the person found the same authors (119 or 118) and
+  missed the same (36 or 37), with 3 wrong-author declarations and no false hostile in every
+  arm; in the manual arm the person's declarations named the rule's own choice 112 times of
+  121: the reviewer's procedure is close to the rule's, so this agreement is built in and the
+  manual arm says nothing about human accuracy. Workload, counted alike: 240 items and 240
+  decisions (121 consequential) without the rule, 237 and 237 (122) with it; with
+  confirmation required each rule declaration still cost a decision (112 confirmations, 27 of
+  them skimmed), so the shipped policy did not reduce approvals, by design. The rule declared
+  at the act (median 0 s) where the person took 18 s, and nominating before confirmation
+  brought the first effect 14 s sooner (135 s against 149 s): both the proxy's look and read
+  times, model parameters. With half the authors untracked: 6 false hostile and 6 wrong-author
+  declarations in every arm (11 of the 12 by the rule in the rule arm), and every arm released one
+  effect on a contact that was not hostile (sit-002-006: an untracked author 22 m from a
+  fishing boat shown neutral at 0.49, just under the 0.5 that would have protected it; the
+  rule declared the boat, the reviewer picked it too, the signers signed), so "no effect on a
+  non-hostile" is not a property of these arms. A reviewer reading half its items (0.2
+  untracked) left the manual arm worse (108 declared, 37 s) while the rule arms held (120),
+  because a skimmed rule declaration is confirmed unread: a model assumption, not a finding.
 - **Results** (2026-10-04, `docs/eval/phase-g-report.html`, `phase-g-summary.json`): 9
   scenarios (3 held out) x 4 arms x 5 seeds, 180 runs on 54fa0fa, every run scored (none
   failed, timed out or missing), every fleet ready before its origin (1 to 3 s, or 30 s when
