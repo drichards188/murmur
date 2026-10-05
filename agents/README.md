@@ -15,7 +15,8 @@ Source: `crates/murmur-bridge/src/mcp/` (the server), `crates/murmur-bridge/src/
 ## Connecting
 
 - Endpoint: `http://127.0.0.1:8765/mcp` (the bridge's HTTP port; `MURMUR_HTTP_PORT`).
-- Identity (rules 7): the agent's own key, `Authorization: Bearer <key>` on every request.
+- Identity (rules 7), in a credentials run (`MURMUR_AUTH=credentials`): the agent's own key,
+  `Authorization: Bearer <key>` on every request.
   Issue one with `target/release/murmur-auth agent-add agent-planner` (printed once on
   stdout; the credential file keeps only its SHA-256, compared in constant time);
   `agent-rotate` replaces it, `agent-remove` revokes it, both at once on a running bridge. A
@@ -24,7 +25,8 @@ Source: `crates/murmur-bridge/src/mcp/` (the server), `crates/murmur-bridge/src/
   names the agent and the key's id (`mma_<id>_...`), never the key. Each agent gets its own
   engine port; its proposals carry its id as their source. A key is not a login: on an
   operator's endpoint it is a 401, and no tool reaches an approval either way.
-- Dev run (`MURMUR_AUTH=dev`, logged as such and excluded from any human-control claim): the
+- Dev run (the default: `MURMUR_AUTH` unset or `dev`; logged as such and excluded from any
+  human-control claim): the
   `X-Murmur-Agent` header, or within an MCP session the `clientInfo.name` sent with
   `initialize`, names the agent, which must be listed in `MURMUR_AGENTS` (comma-separated;
   default `agent-planner,agent-watch`). Anyone who can reach the port can claim a listed id.
@@ -38,10 +40,18 @@ position (for the stand-in fleet that is outside the approved area: human tier, 
 inbox), then follows both with `explain_intent`:
 
 ```
-make up FLEET=standins-only            # or make goldengate
+make up FLEET=standins-only            # or make goldengate (a dev run)
+.venv/bin/python agents/scripted_agent.py --follow 120
+# an operator approves in the console, or over the API:
+curl -X POST http://127.0.0.1:8765/api/intents/<id>/approve -H 'X-Murmur-Operator: op-1'
+```
+
+In a credentials run (`MURMUR_AUTH=credentials make up ...`) the agent needs its key and the
+operator their own session:
+
+```
 export MURMUR_AGENT_KEY=$(target/release/murmur-auth agent-add agent-planner)   # once
 .venv/bin/python agents/scripted_agent.py --follow 120
-# an operator approves in the console, or over the API with their own session:
 curl -c jar -X POST http://127.0.0.1:8765/api/auth/login -H 'Content-Type: application/json' \
   -d "{\"operator\": \"op-1\", \"password\": \"$PASSWORD\"}"
 curl -b jar -X POST http://127.0.0.1:8765/api/intents/<id>/approve
@@ -49,8 +59,7 @@ curl -b jar -X POST http://127.0.0.1:8765/api/intents/<id>/approve
 
 `--task auto|human|both`, `--uid N --task orbit|hold|rtl` to task a given vehicle,
 `--withdraw` to withdraw a proposal still pending at the end, `--url`, `--agent` and `--key`
-for a second stack or a second agent. On a dev bridge (`MURMUR_AUTH=dev`) no key is needed,
-and the approve takes `-H 'X-Murmur-Operator: op-1'` instead of the session.
+for a second stack or a second agent.
 
 ### The policy agent (no model; the evaluation's proposer)
 

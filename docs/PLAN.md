@@ -437,9 +437,19 @@ credential end it, logged); every engagement signature, and any tier marked `ste
 re-enters the signer's password at signing (`operator.action step_up`, quoted by the
 signature, replay-checked), so two signatures are two credentials and no stale or shared
 session supplies one; failed attempts lock an id; browsers on other origins change nothing;
-agents present their own key on `/mcp`. `MURMUR_AUTH=dev` keeps the header identities for
-scripted runs, logged as dev and excluded from any human-control claim. Live log with
-anchors: `crates/murmur-decide/tests/data/audit/v7-auth-live.jsonl`.
+agents present their own key on `/mcp`. That is a credentials run (`MURMUR_AUTH=credentials`,
+every study); the default is a dev run, which keeps the header identities, needs no
+credential file, and is logged as dev and excluded from any human-control claim. After the
+security review (10-05): step-ups have a per-session limit apart from the login lock (a
+stranger's wrong passwords lock the next login only and are logged as `auth.refused`);
+concurrent logins can't outrun the lock; harness-held credentials log in as `scripted`, never
+people, and a study counts only its participant's acts with the log's anchors verified;
+approvals carry over only between runs that authenticate alike; a human's intent names its
+live session; display reports don't keep a session alive; a request with two session cookies
+is refused; `[approval] step_up_acts` can add a hostile declaration and an acceptance of a
+lost vehicle to the acts that step up (off by default). Passkeys come before a study with
+real participants. Live log with anchors:
+`crates/murmur-decide/tests/data/audit/v7-auth-live.jsonl`.
 
 Simplifications: straight-line intercept at cruise speed (no turn radius, no climb),
 keep-outs 2D wherever an altitude is unknown, the effect circle is checked against no-strike

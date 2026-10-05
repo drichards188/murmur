@@ -42,17 +42,24 @@ make goldengate GG_FLEET=full-spectrum AT=2026-06-14T10:00Z   # with real tide/c
 
 ```bash
 make setup   # once: .venv, Rust release build, ArduPilot SITL in ~/ardupilot, npm install (~10 min)
-target/release/murmur-auth add op-1 --engage   # once: an operator (password prompted, or on stdin)
-make up      # swarm + bridge + web; open http://127.0.0.1:5173 and sign in
+make up      # swarm + bridge + web (a dev run); open http://127.0.0.1:5173
 ```
 
-**Operators sign in.** Each operator has a credential of their own (argon2id hash) in
-`~/.config/murmur/credentials.json` (`MURMUR_CREDENTIALS` moves it; never in the repository),
-managed with `murmur-auth` (`add`, `passwd`, `engage`, `remove`, `list`; agents:
-`agent-add`, `agent-rotate`, `agent-remove`). An engagement needs two of them with engagement
-authority, each re-entering their password at the moment they sign. `MURMUR_AUTH=dev` runs
-with operator ids asserted by header instead, for scripted tests; the audit log records it,
-and such a run is never evidence about people (docs/DECISIONS.md).
+**Who acts.** By default a run is a dev run: the console's "Acting as" switcher names the
+operator in a header the bridge believes, a DEV pill says so, and the audit log records
+`auth: dev`, so such a run is never evidence about people (docs/DECISIONS.md). With
+`MURMUR_AUTH=credentials` operators sign in: each has a credential of their own (argon2id
+hash) in `~/.config/murmur/credentials.json` (`MURMUR_CREDENTIALS` moves it; never in the
+repository), managed with `murmur-auth` (`add [--engage] [--scripted]`, `passwd`, `engage`,
+`scripted`, `remove`, `list`; agents: `agent-add`, `agent-rotate`, `agent-remove`):
+
+```
+target/release/murmur-auth add op-1 --engage   # once: an operator (password prompted, or on stdin)
+MURMUR_AUTH=credentials make up                # open the console and sign in
+```
+
+An engagement then needs two of them with engagement authority, each re-entering their
+password at the moment they sign; the evaluation's study mode always runs this way.
 
 **Real conditions:** `make goldengate AT=2026-06-14T10:00Z` starts the swarm at the Golden
 Gate from the [tidewater](../tidewater) sibling repo's scenario. `scripts/up.sh` starts

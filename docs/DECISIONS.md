@@ -670,7 +670,8 @@ group. Dates are 2026.
   (10-04, murmur-der.1; rules 7, `OPERATOR_AUTH_SINCE`). Before, one person could declare a
   track, nominate it and supply both engagement signatures by switching the console's
   "Acting as" (a header the bridge believed), and a headerless request acted as the first
-  operator, so no log could say a person decided anything. Now, by default, each operator
+  operator, so no log could say a person decided anything. Now, in a credentials run
+  (`MURMUR_AUTH=credentials`; every study), each operator
   has a credential (argon2id hash, OWASP parameters pinned: 19 MiB, 2 passes; at least 15
   characters, NIST SP 800-63B-4 for single-factor) in a file outside the repository
   (`MURMUR_CREDENTIALS`, else `~/.config/murmur/credentials.json`, mode 0600, written
@@ -690,27 +691,89 @@ group. Dates are 2026.
   (left open) or shared (someone else at the keyboard); the signature should be made with
   the credential at the moment it matters, as a hardware-token PIN is. Two people still
   means two credentials: the engine refuses a second signature by the same operator however
-  they log in, and the proposer never signs. Five failed logins or step-ups lock an id (30
-  s, doubling to 15 minutes; failed step-ups also end that session); an unknown id costs the
-  same as a known one. A browser's state-changing request or WebSocket from another origin
+  they log in, and the proposer never signs. Five failed logins lock an id's next login (30
+  s, doubling to 15 minutes; an attempt is reserved before its password is checked, so
+  concurrent attempts can't outrun the lock), and each failed password for an operator on
+  the roster is logged (`auth.refused`: the id, why, the lock; never a secret; attempts
+  refused unchecked while locked, and ids not on the roster, go to stdout only, so no one can
+  flood the audit log). Step-ups count against a limit of the session's own: five wrong in a
+  row end that session, and only failures made under a session can end it (a stranger
+  guessing at the login form signs no one out). An unknown id costs the same as a known one.
+  A request carrying two cookies of the session's name is refused (another page on the host
+  can plant one with another path; never guess which is meant). A browser's state-changing
+  request or WebSocket from another origin
   is refused (Origin, else Sec-Fetch-Site): SameSite does not separate two ports of one
   host. Agents present their own key (`Authorization: Bearer`, SHA-256 kept, compared in
   constant time; `murmur-auth agent-add`) on every `/mcp` request, checked before an MCP
   session exists; they still have no path to an approval. `run.started` records the mode
-  (`roster.auth`). Reads (`/api/state`, the WebSocket feed, tracks) stay open on the local
-  port: they are the picture, not authority.
-- **A dev mode stays, explicit and excluded from claims** (10-04, murmur-der.1).
-  `MURMUR_AUTH=dev` keeps the header identities (and the console's switcher, in the top bar
-  beside a "DEV: IDS NOT AUTHENTICATED" pill) for scripted tests, the e2e scripts and the
-  evaluation's proxy arms, whose deciders are scripts anyway. The bridge says so in a banner
+  (`roster.auth`). A human's `intent.created` names the live session it was made in (an
+  agent's none), so replay refuses an intent attributed to someone after their logout. The
+  console's display reports (`/api/operator/view`) only peek at the session: instrumentation
+  does not keep an idle session alive. Reads (`/api/state`, the WebSocket feed, tracks) stay
+  open on the local port: they are the picture, not authority.
+- **The lockout leaves a denial of service on the next login, stated** (10-05, review of
+  rules 7). Anyone who can reach the port can type five wrong passwords for an operator's id
+  and lock that id's next login for 30 s (doubling, up to 15 minutes). We accept it: the
+  alternative (no lock, or a lock per source address on a single-host testbed where every
+  client is 127.0.0.1) gives an online guesser unlimited tries. What the lock no longer does
+  is reach a live session: step-ups have their own per-session limit, so a signed-in signer
+  keeps signing. The failed logins are in the audit log, so a run where it happened says so.
+- **Harness-held credentials are scripted, not people** (10-05, review of rules 7). The
+  evaluation's runner logs its scripted operators in with credentials it generated; those
+  sessions authenticate a script, not a person. A credential can be marked `scripted`
+  (`murmur-auth add <id> --scripted`, or `scripted <id> on`): its logins are `auth:
+  scripted`, admitted in a credentials run, step-ups included, and replay lists their
+  operators apart (`ReplayReport::people` vs `scripted`). A study marks every operator but
+  its participant scripted, and its evidence is the participant's own acts only, signed in
+  with their own password; the scripted operators' acts never count.
+- **Approvals carry over only between runs that authenticate alike** (10-05, review of rules
+  7). A crash-resumed run carries open intents with their approvals. An approval made on
+  asserted ids (a dev run, or any log before rules 7) is no person's in a credentials run, and
+  a person's has no place in a dev run's counts. So the bridge, `Engine::resume` and replay
+  refuse a carry-over whose previous run authenticated otherwise (its `ResumedFrom.auth`
+  against this run's mode; a log before rules 7 counts as dev), in both directions; nothing
+  is carried, and the operators decide again.
+- **Evidence about people needs the log's anchors too** (10-05, review of rules 7). A
+  rewritten log replays as well as the original. The evaluation keeps each run's anchors
+  with its log (`audit.anchors`), replays with `--anchors`, and counts a study run only when
+  they hold (`anchors: verified`); `murmur-replay` without `--anchors` says on a credentials
+  log that its anchors were not checked.
+- **What authentication can't see, stated** (10-05). One person holding two credentials (two
+  roster ids) signs as two people: the two-person rule is two credentials, and who holds
+  them is the study's procedure (one participant, one id, the others scripted and marked).
+  Two sessions in one browser are possible through separate cookie jars (127.0.0.1 and
+  localhost are different hosts to the browser), and from the bridge they look like two
+  logins. Neither is detectable from the log.
+- **A dev mode stays, explicit and excluded from claims; it is the default** (10-04,
+  murmur-der.1; default 10-05). A run is dev unless `MURMUR_AUTH=credentials`: `make up` and
+  `make goldengate` need no credential file. Dev keeps the header identities (and the
+  console's switcher, in the top bar beside a "DEV: IDS NOT AUTHENTICATED" pill) for
+  development, scripted tests, the e2e scripts and the evaluation's proxy arms, whose deciders
+  are scripts anyway; the evaluation's study mode always runs with credentials. Why dev by
+  default: most runs are development, a run that needs a credential file first would push
+  people to share one, and a dev run can never be mistaken for evidence (it says so in the
+  log). The bridge says so in a banner
   at start, `run.started` logs `auth: dev` and every session `auth: asserted`, replay prints
   "DEV ... exclude from any human-control claim" (`ReplayReport::authenticated` is false),
-  and the evaluation's metrics carry the mode: a study run counts only when its operators
-  signed in with their own credentials and its log replayed. Logs of earlier rules record
-  no mode and count as asserted. Engine-only runs (scenarios, tests) log `dev`.
+  and the evaluation's metrics carry the mode: a study run counts only when its participant
+  signed in with their own credential, its log replayed and its anchors held. Logs of earlier
+  rules record no mode and count as asserted. Engine-only runs (scenarios, tests) log `dev`.
+- **Second factor: password step-up now, passkeys before real participants** (10-05). A
+  consequential act re-enters the password today. Passkeys (WebAuthn: a key bound to the
+  device and the origin, not phishable, not shareable by telling) come later and are required
+  before a study with real participants; until then a study run is a pilot (study mode says
+  so at start).
+- **Which acts step up besides signatures is a policy switch** (10-05; the scope is not yet
+  decided). Every engagement signature steps up, and any human tier marked `step_up = true`
+  (the armed-platform tier is one line away). `[approval] step_up_acts` (policy schema 5)
+  adds others: `declare_hostile` (declaring a track hostile, what makes it a target) and
+  `accept_unknown` (accepting a lost vehicle for an engagement's keep-out; a nomination's
+  acceptances share one step-up). Off by default, as built; replay requires the step-up on
+  each listed act in a credentials run, and the console asks for the password where it
+  applies.
 - **Still placeholders, stated** (10-03; revised 10-04 by rules 7). Who holds engagement
   authority is now each person's credential, not a header (above); what is still not here:
-  a second factor (a password is single-factor; WebAuthn would be the next step), a blocklist
+  a second factor (a password is single-factor; passkeys are planned, above), a blocklist
   of common passwords, TLS (the bridge listens on 127.0.0.1; `MURMUR_COOKIE_SECURE=1` marks
   the cookie Secure behind an HTTPS proxy), signed or remotely anchored logs (the hash chain
   and anchors are tamper-evident only), and per-person identity on the reads. Until rules
