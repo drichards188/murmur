@@ -861,15 +861,16 @@ fn a_rules_8_log_claiming_rules_7_still_carries_its_authentication() {
     }
 }
 
-/// Rules 9, live, from a clean build of the review round's head (7508c90), anchored as it ran: a
-/// credentials run on its own ports (stand-ins, the engagement demo fleet,
-/// `sim/scenarios/golden-gate-ident.toml`, the honest tracker). Before the acts, a truth
-/// message with a fabricated contact and act was posted four ways without the stack's
-/// simulation token (none, a guess, an agent's key, an operator's session): each refused, 401,
-/// nothing logged. Three scripted acts came in through the sensing model: the fast boat firing
-/// on the USV, observed 97 m from its track (attribution 0.46, flagged); the skiff alongside the
-/// crab boat firing on the sensor ship (0.54 to the crab boat, 0.46 to the skiff: flagged); the fast
-/// boat again, declared hostile by rule (0.99). op-1 (no engagement authority) confirmed the
+/// Rules 9, live, from a clean build of the second review round's head (02eacca), anchored as it
+/// ran: a credentials run on its own ports (stand-ins, the engagement demo fleet,
+/// `sim/scenarios/golden-gate-ident.toml`, the two-model tracker with its fixes dated by the
+/// truth's own clock; tracks carry their average velocity and, after a manoeuvre, the fastest
+/// they went). Before the acts, a truth message with a fabricated contact and act was posted
+/// four ways without the stack's simulation token (none, a guess, an agent's key, an operator's
+/// session): each refused, 401, nothing logged. Three scripted acts came in through the sensing
+/// model: the fast boat firing on the USV, observed 83 m from its track (attribution 0.81,
+/// flagged); the skiff alongside the crab boat firing on the sensor ship (0.53 to the skiff,
+/// 0.47 to the crab boat: flagged); the fast boat again, declared hostile by rule (0.99). op-1 (no engagement authority) confirmed the
 /// rule declaration under their session, op-2 dismissed the ambiguous flag and op-1 confirmed
 /// the other; op-1 nominated the switchblade on the boat, op-2 and op-3 looked and signed, each
 /// with their password again; op-3 then revoked the declaration, and the engagement stopped
