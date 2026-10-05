@@ -23,7 +23,10 @@ meaningful. Decision and command, not weapons.
   ids in `MURMUR_AGENTS`; `agents/README.md`). Vehicles ready in ~30-60 s.
 - Live path is Rust: `crates/murmur-bridge`, `crates/murmur-standins`. `scripts/up.sh` builds
   their release binaries (`make build` does too) and, with a scenario, starts `tidewater serve`
-  (reused if one answers) and `tidewater drive`, and stops them with the stack.
+  (reused if one answers) and `tidewater drive`, and stops them with the stack. It writes
+  this run's `sim/run/fleet.json` (`swarm.py --manifest-only`) before the emulator and the
+  bridge start, in both link modes; the bridge logs which manifest it read and its age
+  (flagged past a minute, a previous run's).
 - `make check` (typecheck, lint, py_compile, `cargo clippy` and `cargo test` for the workspace;
   toolchain in `~/.cargo/bin`). Tidewater: `cd ~/tidewater && .venv/bin/pytest`.
 - `scripts/measure.py` measures bridge and stand-in load; `scripts/scale_fleet.py N` writes an
