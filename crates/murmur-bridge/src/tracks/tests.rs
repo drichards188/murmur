@@ -85,6 +85,7 @@ fn truth(s: f64, contacts: Vec<ContactTruth>) -> TruthMessage {
             misclassification_rate: 0.0,
         },
         contacts,
+        acts: Vec::new(),
     }
 }
 
@@ -432,16 +433,114 @@ fn operator_declaration_overrides_the_estimate() {
             .on_truth_with(truth(f64::from(s), vec![boat.clone()]), std::slice::from_ref(&o), T0 + f64::from(s))
             .expect("ok");
     }
-    assert!(tracks.declare("T-0009", Affiliation::Hostile, "op-1", None, T0 + 5.0).is_none());
-    let v = tracks
-        .declare("T-0001", Affiliation::Hostile, "op-1", Some("fired on the cutter".into()), T0 + 5.0)
-        .expect("declared");
+    // rules 9: the declaration is the decision engine's ledger; the store mirrors it
+    let mut ledger = murmur_decide::ident::Ledger::default();
+    ledger.step(
+        murmur_decide::Time((T0 * 1000.0) as i64 + 5000),
+        &declared(1, "T-0001", murmur_decide::Declarer::Operator {
+            operator: murmur_decide::OperatorId::new("op-1"),
+            session: murmur_decide::SessionId(1),
+            note: Some("fired on the cutter".into()),
+            flag: None,
+            step_up: None,
+        }),
+    );
+    tracks.mirror(&ledger);
+    let v = tracks.tracks_json(T0 + 5.0).into_iter().find(|t| t["id"] == "T-0001").expect("track");
     assert_eq!(v["affiliation"], "hostile");
     assert_eq!(v["declared"]["by"], "op-1");
+    assert_eq!(v["declared"]["note"], "fired on the cutter");
     assert!(v["sidc"].as_str().expect("sidc").starts_with("SHSP"));
+    // the decision facts are the estimate: the engine fills the declaration from its ledger
     let facts = tracks.facts(T0 + 6.0);
-    assert_eq!(facts["T-0001"].affiliation.value, Affiliation::Hostile);
-    assert_eq!(facts["T-0001"].declared_by.as_deref(), Some("op-1"));
+    assert_ne!(facts["T-0001"].affiliation.value, Affiliation::Hostile);
+    assert_eq!(facts["T-0001"].declared_by, None);
+    // a rule declaration shows its basis, and that nobody confirmed it
+    let evidence = murmur_decide::RuleEvidence {
+        act: "A-1".into(),
+        against: murmur_decide::Against::Vehicle { uid: murmur_decide::Uid::new("1") },
+        observed_t: murmur_decide::Time((T0 * 1000.0) as i64 + 5000),
+        sensors: vec!["1:eo_ir".into()],
+        attribution: 0.97,
+        threshold: 0.9,
+    };
+    let mut ledger = murmur_decide::ident::Ledger::default();
+    ledger.step(
+        murmur_decide::Time((T0 * 1000.0) as i64 + 5000),
+        &declared(1, "T-0001", murmur_decide::Declarer::Rule { rule: "hostile_act".into(), evidence }),
+    );
+    tracks.mirror(&ledger);
+    let v = tracks.tracks_json(T0 + 5.0).into_iter().find(|t| t["id"] == "T-0001").expect("track");
+    assert_eq!(v["declared"]["by"], "rule:hostile_act");
+    assert_eq!(v["declared"]["rule"], true);
+    assert!(v["declared"]["confirmed_by"].is_null());
+    assert!(v["affiliation_reason"].as_str().expect("why").contains("not confirmed by an operator"), "{v}");
+}
+
+/// An `ident.declared` event body for a ledger (rules 9).
+fn declared(id: u64, track: &str, by: murmur_decide::Declarer) -> murmur_decide::EventBody {
+    murmur_decide::EventBody::IdentDeclared {
+        declaration: Box::new(murmur_decide::Declaration {
+            id,
+            track: track.into(),
+            affiliation: Affiliation::Hostile,
+            t: murmur_decide::Time((T0 * 1000.0) as i64 + 5000),
+            by,
+            confirmed: None,
+        }),
+    }
+}
+
+#[test]
+fn a_hostile_act_is_observed_by_the_sensors_that_could_see_its_author() {
+    let (lat, lon) = at(BASE.0, BASE.1, 1_000.0, 0.0);
+    let boat = contact("raider", "small_fast_boat", Domain::Surface, lat, lon);
+    let (flat, flon) = at(BASE.0, BASE.1, 30_000.0, 0.0);
+    let far = contact("far", "small_fast_boat", Domain::Surface, flat, flon);
+    let o = observer(1, BASE.0, BASE.1, 0.0, &[(SensorType::EoIr, 5_000.0), (SensorType::Ais, 30_000.0)]);
+    let tracks = Tracks::new(catalog(), settings());
+    for s in 0..3 {
+        tracks
+            .on_truth_with(truth(f64::from(s), vec![boat.clone(), far.clone()]), std::slice::from_ref(&o), T0 + f64::from(s))
+            .expect("ok");
+    }
+    let act = |id: &str, by: &str, la: f64, lo: f64| crate::tracks::truth::ActTruth {
+        id: id.into(),
+        s: 3.0,
+        t: T0 + 3.0,
+        by: by.into(),
+        lat: la,
+        lon: lo,
+        against_vehicle: Some(1),
+        against_contact: None,
+        label: None,
+    };
+    let mut msg = truth(3.0, vec![boat.clone(), far.clone()]);
+    msg.acts = vec![act("act-1", "raider", lat, lon), act("act-2", "far", flat, flon)];
+    tracks.on_truth_with(msg, std::slice::from_ref(&o), T0 + 3.0).expect("ok");
+    // the near one: seen by the EO/IR (not the AIS receiver), its author placed near it
+    let reports = tracks.take_acts();
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    let r = &reports[0];
+    assert_eq!(r.act, "A-1");
+    assert_eq!(r.sensors, vec!["1:eo_ir".to_string()]);
+    assert_eq!(r.against, murmur_decide::Against::Vehicle { uid: murmur_decide::Uid::new("1") });
+    let off = murmur_decide::geo::haversine_m(r.location, murmur_decide::LonLat::new(lon, lat));
+    assert!(off < 5.0 * r.sigma_m, "{off} m off, sigma {}", r.sigma_m);
+    assert!(tracks.take_acts().is_empty(), "each once");
+    // the far one: nobody saw it; only the evaluation view knows it happened
+    let ev = tracks.eval_json(T0 + 4.0);
+    let acts = ev["acts"].as_array().expect("acts");
+    assert_eq!(acts.len(), 2);
+    assert_eq!(acts[0]["observed"], true);
+    assert_eq!(acts[0]["report"], "A-1");
+    assert_eq!(acts[1]["act"], "act-2");
+    assert_eq!(acts[1]["observed"], false);
+    // and the same act sent again is sensed once
+    let mut again = truth(4.0, vec![boat, far]);
+    again.acts = vec![act("act-1", "raider", lat, lon)];
+    tracks.on_truth_with(again, std::slice::from_ref(&o), T0 + 4.0).expect("ok");
+    assert!(tracks.take_acts().is_empty());
 }
 
 #[test]

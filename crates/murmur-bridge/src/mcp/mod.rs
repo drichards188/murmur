@@ -82,10 +82,15 @@ as uncertain, say so in your rationale, and prefer a hold or a return to a new t
 preview_intent before propose_intent to see the checks and the policy tier without creating \
 an intent; use explain_intent to follow what you proposed. Everything you do is written to \
 the audit log under your agent id. You may nominate an engagement (propose_intent with \
-task engage) on a track a human operator declared hostile, with one armed platform and a \
-rationale: the effect is an abstract event, and the nomination waits for two human \
-operators with engagement authority, never its proposer. You cannot approve, stop or \
-release an engagement: no such tool exists. get_nominations shows where each stands. While \
+task engage) on a track declared hostile (by a human operator, or by the engine's \
+hostile-act rule on an observed act against ours: get_tracks shows which, on what evidence, \
+and whether an operator confirmed it), with one armed platform and a rationale: the effect \
+is an abstract event, and the nomination waits for two human operators with engagement \
+authority, never its proposer. You cannot approve, stop or release an engagement, and you \
+cannot declare a track, confirm or revoke a declaration, or resolve a review flag: no such \
+tool exists. A track only near or moving with a declared hostile is weak evidence (it may be \
+a neutral): it is flagged for review, never declared. get_nominations shows where each \
+stands. While \
 an engagement is in play on a vehicle, anything you propose for that vehicle waits for a \
 human.";
 
@@ -418,7 +423,7 @@ pub fn resources() -> Vec<Resource> {
         r(
             "murmur://tracks",
             "tracks",
-            "Tracks of contacts that are not ours, as our own sensors see them (perception only): estimated position and its uncertainty now, velocity, existence confidence, identity estimate with confidence and conflicts, affiliation estimate with confidence and reason (hostile only when an operator declared it), the sensors and vehicles behind each track, and last_seen as as_of with age_s and stale.",
+            "Tracks of contacts that are not ours, as our own sensors see them (perception only): estimated position and its uncertainty now, velocity, existence confidence, identity estimate with confidence and conflicts, affiliation estimate with confidence and reason (hostile only when declared, by an operator or by the engine's hostile-act rule on an observed act, with the basis in declared and the review flags in force in review), the sensors and vehicles behind each track, and last_seen as as_of with age_s and stale.",
         ),
         r(
             "murmur://space/passes",

@@ -421,7 +421,11 @@ pub async fn tracks(
                  to now, pos_sigma_now_m is the 1-sigma uncertainty now (it grows while \
                  unseen) and confidence_now the existence confidence now (it decays). \
                  affiliation is an estimate from identity evidence, with its confidence and \
-                 reason; hostile appears only when a human operator declared it (declared). \
+                 reason; hostile appears only when declared (declared: by a human operator, \
+                 or by the engine's hostile-act rule on an observed act against ours, with \
+                 its evidence and whether an operator confirmed it); review lists the review \
+                 flags in force (a track near or moving with a declared hostile is raised to \
+                 suspect for review, never declared on that). \
                  identity.kind is the best classification with its confidence, the sensors \
                  that support it and any conflict (an AIS identity that does not fit what \
                  was seen). sources lists which of our vehicles and sensors hold the track.",

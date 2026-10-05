@@ -64,6 +64,7 @@ mod alerts;
 mod civil;
 pub mod engage;
 mod failsafe;
+pub mod ident;
 mod preload;
 pub mod queue;
 pub mod snapshot;
@@ -416,6 +417,8 @@ struct Core {
     /// the fleet identity last written beside the log, and when it was last looked at
     fleet_written: Option<queue::FleetIdentity>,
     fleet_looked: Option<f64>,
+    /// rules 9: the latest observed acts and what the engine made of them (display)
+    acts: Vec<Value>,
 }
 
 /// `operator.view` events an operator may log: a burst of this many, refilled at
@@ -667,6 +670,7 @@ impl Decision {
                 pointer_written: None,
                 fleet_written: None,
                 fleet_looked: None,
+                acts: Vec::new(),
             }),
             updates: watch::channel(Arc::new(String::new())).0,
             recent: agent::RecentEvents::default(),
@@ -735,7 +739,7 @@ impl Decision {
     /// are authenticated (`credentials` or `dev`), and the acts besides signatures that
     /// re-enter the credential in this run (`[approval] step_up_acts`; none in a dev run).
     pub fn operators_json(&self) -> Value {
-        let acts: Vec<StepUpAct> = [StepUpAct::DeclareHostile, StepUpAct::AcceptUnknown]
+        let acts: Vec<StepUpAct> = [StepUpAct::DeclareHostile, StepUpAct::AcceptUnknown, StepUpAct::ConfirmDeclaration]
             .into_iter()
             .filter(|a| self.steps_up(*a))
             .collect();
@@ -837,25 +841,6 @@ impl Decision {
         }
     }
 
-    /// An operator declares a track's affiliation (the tracks module has applied it):
-    /// `operator.action track.declare`, quoting the step-up when the policy marks a hostile
-    /// declaration consequential.
-    pub fn record_declaration(
-        &self,
-        by: &Actor,
-        step: Option<crate::auth::StepUpChecked>,
-        track: &str,
-        affiliation: &str,
-        note: Option<&str>,
-    ) -> Result<(), DecisionError> {
-        let mut guard = self.lock();
-        let core = &mut *guard;
-        let session = Self::session(&mut core.engine, &mut core.sessions, &core.logins, by, &self.engage_operators, self.auth)?;
-        let step = Self::mint_step(&mut core.engine, session, by, step)?;
-        core.engine
-            .record_declaration(session, step, track, affiliation, note)
-            .map_err(engine_err)
-    }
 
     fn all_operators(&self) -> Vec<OperatorId> {
         let mut v = self.operators.clone();
@@ -1711,6 +1696,9 @@ impl Decision {
             self.follow_resumed(core);
             self.follow_ops(core);
             self.follow_space(core);
+            // rules 9: observed acts to the engine, the weak-evidence rule, before the
+            // pictures are held (they read the ledger it changes)
+            self.step_identification(core);
             self.step_engagements(core);
             self.write_pointer(core);
             self.write_fleet(core);
@@ -2060,11 +2048,27 @@ impl Decision {
             let core = self.lock();
             self.queued_json(&core)
         };
+        // rules 9: identification review items (non-blocking: a rule declaration to confirm or
+        // revoke, a flag to confirm or dismiss), and the acts the rule only recorded (rule
+        // declaration off: an operator declares)
+        let (review, acts) = {
+            let core = self.lock();
+            (ident::review_of(core.engine.identification()), self.recorded_acts(&core))
+        };
+        let n_review = review["counts"]["declarations"].as_u64().unwrap_or(0)
+            + review["counts"]["flags"].as_u64().unwrap_or(0);
         json!({
             "pending": pending,
             "alerts": alerts,
             "queued": queued,
-            "counts": { "pending": pending.len(), "alerts": alerts.len(), "queued": queued.len() },
+            "review": review,
+            "acts": acts,
+            "counts": {
+                "pending": pending.len(),
+                "alerts": alerts.len(),
+                "queued": queued.len(),
+                "review": n_review,
+            },
         })
     }
 

@@ -172,6 +172,7 @@ impl Erig {
                 misclassification_rate: 0.0,
             },
             contacts,
+            acts: Vec::new(),
         };
         self.tracks
             .on_truth_with(msg, std::slice::from_ref(&observer), now_s)
@@ -188,13 +189,11 @@ impl Erig {
             self.sense_at(now - 90.0 + f64::from(s), true);
         }
         self.sense(true);
-        self.tracks
-            .declare("T-0001", Affiliation::Hostile, "op-1", None, self.now_s())
-            .expect("track");
+        // rules 9: through the engine's identification ledger, under op-1's session
         self.r
             .d
-            .record_action(&op("op-1"), "track.declare", "track T-0001 declared hostile")
-            .expect("logged");
+            .declare(&op("op-1"), None, "T-0001", Affiliation::Hostile, None, None)
+            .expect("declared");
     }
 
     pub(super) fn nomination(&self, fallback: &str) -> IntentRequest {
@@ -217,12 +216,12 @@ impl Erig {
 
     /// What the console asks for before a signature: the picture token (the plan and the
     /// track as the engine shows them to this operator).
-    fn look(&self, who: &str, id: IntentId) -> Result<Value, DecisionError> {
+    pub(super) fn look(&self, who: &str, id: IntentId) -> Result<Value, DecisionError> {
         self.r.d.issue_picture(&op(who), id.0)
     }
 
     /// A signature as the console sends it: look, then sign quoting the token.
-    async fn sign(&self, who: &str, id: IntentId) -> Result<Outcome, DecisionError> {
+    pub(super) async fn sign(&self, who: &str, id: IntentId) -> Result<Outcome, DecisionError> {
         // the console shows what refused the look (no authority, the proposer, signed)
         let token = self.look(who, id)?["id"].as_u64();
         self.r.d.approve_with(&op(who), id.0, None, token, false).await
@@ -264,7 +263,7 @@ impl Erig {
     /// Rules 6: the loop reports the platform's lost-link preload (read, set, read back on
     /// the fake autopilot) and only then sends the intercept (its preload step alone here,
     /// so the engagement is still under way when the test goes on).
-    async fn preloaded(&self, id: IntentId) {
+    pub(super) async fn preloaded(&self, id: IntentId) {
         for _ in 0..10 {
             sleep(Duration::from_millis(500)).await;
             let mut guard = self.r.d.lock();
@@ -349,20 +348,22 @@ async fn an_operator_abort_commands_the_recorded_fallback() {
 async fn a_changed_picture_aborts_with_the_fallback() {
     let e = engage_rig();
     let id = e.approved("abort").await;
-    // the declaration is withdrawn: the picture the approvers saw no longer holds
-    e.tracks
-        .declare("T-0001", Affiliation::Neutral, "op-1", None, e.now_s())
-        .expect("track");
+    // the declaration is withdrawn (op-1 declares it neutral): the hostile one is revoked
+    // first, which stops the engagement at once, with its fallback (rules 9: cause revoked)
+    e.r.d
+        .declare(&op("op-1"), None, "T-0001", Affiliation::Neutral, None, None)
+        .expect("declared");
     e.tick(true).await;
     assert_eq!(e.r.state(id), State::Aborted, "{}", e.r.reason(id));
     assert!(e.r.reason(id).contains("target_declared"), "{}", e.r.reason(id));
+    assert!(e.r.reason(id).contains("revoked by op-1"), "{}", e.r.reason(id));
     let ops = e.r.world.tasks.current_ops();
     let op1 = ops.iter().find(|o| o.uid == 1).expect("an op on the platform");
     assert_eq!(op1.task, crate::tasks::TaskKind::Hold);
     assert!(e.tracks.take_effects().is_empty(), "no effect after a void");
     let rep = replay::replay_str(&e.r.log.text()).expect("parses");
     assert!(rep.ok(), "{:?}", rep.mismatches);
-    assert_eq!(rep.picture_voids, 1);
+    assert_eq!((rep.revocations, rep.aborts), (1, 1));
 }
 
 #[tokio::test(start_paused = true)]

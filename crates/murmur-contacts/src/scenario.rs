@@ -127,6 +127,37 @@ pub struct Scenario {
     pub sensing: Sensing,
     #[serde(default, rename = "contact")]
     pub contacts: Vec<ContactSpec>,
+    /// Rules 9: scripted hostile acts (`[[act]]`), truth only.
+    #[serde(default, rename = "act")]
+    pub acts: Vec<ActSpec>,
+}
+
+/// Rules 9: an abstract hostile act a contact commits at a scenario second, against one of
+/// our vehicles (`against_vehicle`, its fleet uid) or another contact (`against_contact`).
+/// No weapon of any kind is modelled: an act is a time, an author and a victim. It is truth:
+/// the C2 learns of it only through its sensors (the bridge's sensing model decides which of
+/// ours observe it, and where they place its author).
+///
+/// ```toml
+/// [[act]]
+/// id = "act-1"
+/// at_s = 90
+/// by = "fast-boat"            # a contact id
+/// against_vehicle = 3         # or against_contact = "ferry-sausalito"
+/// label = "fires on the patrol USV"   # truth-side note, never seen by the C2
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActSpec {
+    pub id: String,
+    pub at_s: f64,
+    pub by: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub against_vehicle: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub against_contact: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// One contact as written in the file (flat fields; [`Motion`] is derived and validated).
@@ -318,6 +349,26 @@ impl Scenario {
                 return Err(format!("duplicate contact id {:?}", c.id));
             }
         }
+        let mut acts = std::collections::BTreeSet::new();
+        for a in &s.acts {
+            if a.id.trim().is_empty() || !acts.insert(a.id.as_str()) {
+                return Err(format!("act {:?}: an empty or duplicate id", a.id));
+            }
+            if !seen.contains(a.by.as_str()) {
+                return Err(format!("act {:?}: by {:?} is no contact of the scenario", a.id, a.by));
+            }
+            if a.against_vehicle.is_some() == a.against_contact.is_some() {
+                return Err(format!("act {:?}: name one of against_vehicle and against_contact", a.id));
+            }
+            if let Some(c) = &a.against_contact
+                && (!seen.contains(c.as_str()) || *c == a.by)
+            {
+                return Err(format!("act {:?}: against_contact {c:?} is no other contact of the scenario", a.id));
+            }
+            if !(a.at_s.is_finite() && a.at_s >= 0.0) {
+                return Err(format!("act {:?}: at_s must be a scenario second", a.id));
+            }
+        }
         Ok(s)
     }
 
@@ -401,5 +452,32 @@ mod tests {
         assert!(
             Scenario::from_toml("title = \"t\"\n[[contact]]\nid = \"a\"\naffiliation = \"neutral\"\ndomain = \"surface\"\nkind = \"ferry\"\nmotion = \"station\"\nat=[0,0]\n[[contact]]\nid = \"a\"\naffiliation = \"neutral\"\ndomain = \"surface\"\nkind = \"ferry\"\nmotion = \"station\"\nat=[0,0]\n").is_err()
         );
+    }
+
+    /// Rules 9: scripted acts name an author and exactly one victim among the scenario's
+    /// contacts or our vehicles; anything else fails to load.
+    #[test]
+    fn acts_name_an_author_and_one_victim() {
+        let two = "title = \"t\"\n\
+            [[contact]]\nid = \"boat\"\naffiliation = \"hostile\"\ndomain = \"surface\"\nkind = \"small_fast_boat\"\nmotion = \"station\"\nat = [-122.5, 37.8]\n\
+            [[contact]]\nid = \"ferry\"\naffiliation = \"neutral\"\ndomain = \"surface\"\nkind = \"ferry\"\nmotion = \"station\"\nat = [-122.49, 37.8]\n";
+        let with = |act: &str| Scenario::from_toml(&format!("{two}[[act]]\n{act}"));
+        let s = with("id = \"a1\"\nat_s = 30\nby = \"boat\"\nagainst_vehicle = 3\nlabel = \"fires on the USV\"").expect("parses");
+        assert_eq!(s.acts.len(), 1);
+        assert_eq!(s.acts[0].against_vehicle, Some(3));
+        assert!(with("id = \"a1\"\nat_s = 30\nby = \"boat\"\nagainst_contact = \"ferry\"").is_ok());
+        for bad in [
+            "id = \"a1\"\nat_s = 30\nby = \"nobody\"\nagainst_vehicle = 3",
+            "id = \"a1\"\nat_s = 30\nby = \"boat\"",
+            "id = \"a1\"\nat_s = 30\nby = \"boat\"\nagainst_vehicle = 3\nagainst_contact = \"ferry\"",
+            "id = \"a1\"\nat_s = 30\nby = \"boat\"\nagainst_contact = \"boat\"",
+            "id = \"a1\"\nat_s = -1\nby = \"boat\"\nagainst_vehicle = 3",
+            "id = \"\"\nat_s = 30\nby = \"boat\"\nagainst_vehicle = 3",
+            "id = \"a1\"\nat_s = 30\nby = \"boat\"\nagainst_vehicle = 3\nweapon = \"gun\"",
+        ] {
+            assert!(with(bad).is_err(), "{bad}");
+        }
+        let dup = format!("{two}[[act]]\nid = \"a\"\nat_s = 1\nby = \"boat\"\nagainst_vehicle = 1\n[[act]]\nid = \"a\"\nat_s = 2\nby = \"boat\"\nagainst_vehicle = 1\n");
+        assert!(Scenario::from_toml(&dup).is_err());
     }
 }

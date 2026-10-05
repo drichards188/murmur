@@ -444,6 +444,72 @@ pub fn detect(
     out
 }
 
+/// Rules 9: how our sensors observed an abstract hostile act: which of them (`"<uid>:<sensor>"`)
+/// and where the best of them placed its author, with that sensor's 1-sigma error.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActObservation {
+    pub sensors: Vec<String>,
+    pub lat: f64,
+    pub lon: f64,
+    pub sigma_m: f64,
+}
+
+/// Rules 9: what our sensors make of an abstract hostile act by contact `actor` (no weapon is
+/// modelled: the act is an event at the actor's position, now). A sensor that could detect the
+/// actor at this moment observes it with the same range, horizon, domain and probability as a
+/// detection (one seeded draw per act and sensor, so a run replays): radar, EO/IR, and sonar
+/// for a contact on or under the water; not AIS (a broadcast, not an observation) nor ESM (a
+/// bearing). The observer with the smallest position error places the act's author, with that
+/// error drawn as for a detection. None: nobody saw it (the C2 never learns of it).
+pub fn observe_act(p: Params, observers: &[Observer], actor: &ContactTruth, act_id: &str) -> Option<ActObservation> {
+    let key = format!("{act_id}/{}", actor.id);
+    let mut sensors = Vec::new();
+    let mut best: Option<(f64, f64, f64, u64, u64)> = None;
+    for o in observers {
+        for (si, s) in o.sensors.iter().enumerate() {
+            if !matches!(s.kind, SensorType::Radar | SensorType::EoIr | SensorType::Sonar) {
+                continue;
+            }
+            if o.submerged && s.kind != SensorType::Sonar {
+                continue;
+            }
+            if !s.kind.can_see(actor) {
+                continue;
+            }
+            let horiz = haversine_m(o.lat, o.lon, actor.lat, actor.lon);
+            let r = horiz.hypot(actor.alt_m - o.alt_msl);
+            if s.kind.needs_horizon() {
+                let h_sensor = if o.alt_msl > 20.0 { o.alt_msl } else { o.mast_m };
+                if horiz > horizon_m(h_sensor, contact_height_m(actor)) {
+                    continue;
+                }
+            }
+            let x = r / (s.range_m * actor.signature.max(0.01));
+            let salt = 0xAC70_0000 | (si as u64) << 8 | s.kind as u64;
+            let prob = pd(x, s.kind.pd_max());
+            if prob <= 0.0 || uniform(p.seed, p.tick, o.uid, &key, salt) >= prob {
+                continue;
+            }
+            sensors.push(format!("{}:{}", o.uid, s.kind.as_str()));
+            let sigma = s.kind.sigma_m(r);
+            if best.is_none_or(|b| sigma < b.0) {
+                best = Some((sigma, r, horiz, o.uid, salt));
+            }
+        }
+    }
+    let (sigma, _, _, uid, salt) = best?;
+    let (ne, nn) = (
+        normal(p.seed, p.tick, uid, &key, salt | 0x1_0000),
+        normal(p.seed, p.tick, uid, &key, salt | 0x2_0000),
+    );
+    Some(ActObservation {
+        sensors,
+        lat: actor.lat + sigma * nn / 111_320.0,
+        lon: actor.lon + sigma * ne / (111_320.0 * actor.lat.to_radians().cos()),
+        sigma_m: (sigma * 10.0).round() / 10.0,
+    })
+}
+
 /// The per-(contact, sensor type) misclassification draw: a property of the simulation
 /// (this sensor is wrong about this contact), stable for the run.
 pub fn misclassify_draw(seed: u64, contact_id: &str, sensor: SensorType, rate: f64) -> bool {

@@ -1327,7 +1327,10 @@ impl Decision {
                 "track": p.track,
             })),
         });
-        let now_track: Option<&TrackFacts> = world.tracks.get(track);
+        // rules 9: the track as decisions read it: its declaration and the basis of it (an
+        // operator's, or the hostile-act rule's with its evidence) from the engine's ledger
+        let filled = core.engine.identified(world);
+        let now_track: Option<&TrackFacts> = filled.tracks.get(track);
         if let Some(t) = now_track {
             let age = world.t.ms_since(t.last_seen_t) as f64 / 1000.0;
             v["track_now"] = json!({
@@ -1336,6 +1339,9 @@ impl Decision {
                 "age_s": age,
                 "affiliation": t.affiliation.value,
                 "declared_by": t.declared_by,
+                "declaration": t.declaration,
+                "basis": t.declaration.as_ref().map(|d| d.describe()),
+                "review_flags": t.review_flags,
                 "identity": t.identity,
                 "identity_confidence": t.identity_confidence,
             });
@@ -1447,7 +1453,11 @@ impl Decision {
                 rationale: None,
             };
             self.prefetch(&spec.task, &spec.uids).await;
-            let world = self.snapshot();
+            // rules 9: the picture as decisions read it (its declarations from the ledger)
+            let world = {
+                let w = self.snapshot();
+                self.lock().engine.identified(&w).into_owned()
+            };
             let inputs = world.for_intent_with(&spec, &self.terrain.oracle(), &self.rules);
             let checks = murmur_decide::rules::evaluate(&spec, &inputs, &self.rules);
             let passed = murmur_decide::rules::passed(&checks, murmur_decide::TaskKind::Engage);

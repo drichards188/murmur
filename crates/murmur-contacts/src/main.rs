@@ -150,6 +150,8 @@ async fn run() -> Result<(), String> {
     let mut last_error: Option<String> = None;
     // effects applied since the last message (Phase E), for the next one and the log
     let mut applied: Vec<EffectApplied> = Vec::new();
+    // rules 9: the scenario second of the last tick (acts in between are committed now)
+    let mut prev_s = f64::NEG_INFINITY;
     loop {
         tokio::select! {
             _ = every.tick() => {}
@@ -183,6 +185,22 @@ async fn run() -> Result<(), String> {
             &movers,
         );
         msg.effects = std::mem::take(&mut applied);
+        // rules 9: the hostile acts of this tick (truth; each once)
+        msg.acts = TruthMessage::acts_between(&scenario.acts, prev_s, s, t0, &movers);
+        for a in &msg.acts {
+            println!(
+                "act {} at {:.0} s: {} against {}{}",
+                a.id,
+                a.s,
+                a.by,
+                a.against_vehicle
+                    .map(|u| format!("our vehicle {u}"))
+                    .or_else(|| a.against_contact.clone())
+                    .unwrap_or_default(),
+                a.label.as_deref().map(|l| format!(" ({l})")).unwrap_or_default()
+            );
+        }
+        prev_s = s;
         if let Ok(line) = serde_json::to_string(&msg) {
             let _ = writeln!(log, "{line}");
             let _ = log.flush();

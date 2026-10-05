@@ -55,6 +55,30 @@ pub struct TruthMessage {
     /// radius, the intended contact, collateral).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<EffectApplied>,
+    /// Rules 9: hostile acts committed since the last message (truth: the bridge's sensing
+    /// model decides which of our sensors observe each), with where the author was.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub acts: Vec<ActTruth>,
+}
+
+/// Rules 9: one scripted hostile act as it happens (an abstract event: a time, an author, a
+/// victim; no weapon).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActTruth {
+    pub id: String,
+    /// Scenario seconds and unix seconds it happened at.
+    pub s: f64,
+    pub t: f64,
+    /// The contact that committed it, and where it was.
+    pub by: String,
+    pub lat: f64,
+    pub lon: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub against_vehicle: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub against_contact: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 fn round(x: f64, digits: i32) -> f64 {
@@ -100,6 +124,35 @@ impl TruthMessage {
                 })
                 .collect(),
             effects: Vec::new(),
+            acts: Vec::new(),
         }
+    }
+
+    /// Rules 9: the scenario's acts that happen in `(prev_s, s]`, each by a contact that
+    /// exists now (one that doesn't commits nothing), with where it is.
+    pub fn acts_between(
+        acts: &[crate::scenario::ActSpec],
+        prev_s: f64,
+        s: f64,
+        t0: f64,
+        movers: &[Mover],
+    ) -> Vec<ActTruth> {
+        acts.iter()
+            .filter(|a| a.at_s > prev_s && a.at_s <= s)
+            .filter_map(|a| {
+                let m = movers.iter().find(|m| m.contact.id == a.by && m.st.exists)?;
+                Some(ActTruth {
+                    id: a.id.clone(),
+                    s: round(s, 3),
+                    t: round(t0 + s, 3),
+                    by: a.by.clone(),
+                    lat: round(m.st.lat, 7),
+                    lon: round(m.st.lon, 7),
+                    against_vehicle: a.against_vehicle,
+                    against_contact: a.against_contact.clone(),
+                    label: a.label.clone(),
+                })
+            })
+            .collect()
     }
 }

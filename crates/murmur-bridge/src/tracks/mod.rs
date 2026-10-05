@@ -50,7 +50,7 @@ use axum::extract::{Path as AxPath, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use murmur_decide::{Affiliation, TrackFacts};
+use murmur_decide::{Affiliation, LonLat, Time, TrackFacts};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::watch;
@@ -103,6 +103,12 @@ struct Inner {
     /// ones already handed over (evaluation view)
     effects: Vec<Value>,
     effects_sent: Vec<Value>,
+    /// rules 9: hostile acts our sensors observed, waiting for the decision engine (its loop
+    /// takes them), the truth acts already sensed, and what became of each (evaluation view:
+    /// the truth act, its author's contact and track, the report it became, or unobserved)
+    acts: Vec<murmur_decide::ActReport>,
+    acts_seen: std::collections::BTreeSet<String>,
+    act_records: Vec<Value>,
 }
 
 pub struct Tracks {
@@ -129,6 +135,9 @@ impl Tracks {
                 last_detections: 0,
                 effects: Vec::new(),
                 effects_sent: Vec::new(),
+                acts: Vec::new(),
+                acts_seen: std::collections::BTreeSet::new(),
+                act_records: Vec::new(),
             }),
             updates: watch::channel(Arc::new(String::new())).0,
         };
@@ -218,6 +227,9 @@ impl Tracks {
         let n_tracks = {
             let mut inner = lock(&self.inner);
             self.fold(&mut inner, &detections, now);
+            // rules 9: the hostile acts of this tick, as our sensors observe them (after the
+            // fold: an act by a contact first seen this tick is attributed to its new track)
+            self.sense_acts(&mut inner, params, observers, &msg, now);
             inner.truth = Some((now, msg));
             inner.last_detections = detections.len();
             self.drop_old(&mut inner, now);
@@ -225,6 +237,102 @@ impl Tracks {
         };
         self.publish(now);
         Ok((n_contacts, detections.len(), n_tracks))
+    }
+
+    /// Rules 9: each new act in a truth message, observed by our sensors or not
+    /// (`sensing::observe_act`). An observed one becomes a report for the decision engine
+    /// (`A-<n>`, at the bridge's clock now): whom it was against (our vehicle, the track its
+    /// victim is associated with, or something we hold no track of), which sensors saw it,
+    /// where its author appeared to be and that position's error. Every act, observed or not,
+    /// is kept for the evaluation view with the truth behind it.
+    fn sense_acts(&self, inner: &mut Inner, params: Params, observers: &[Observer], msg: &TruthMessage, now: f64) {
+        for a in &msg.acts {
+            if !inner.acts_seen.insert(a.id.clone()) {
+                continue;
+            }
+            let actor = msg.contacts.iter().find(|c| c.id == a.by);
+            let actor_track = inner.by_contact.get(&a.by).cloned();
+            let observed = actor.and_then(|c| {
+                // the author where the act happened (the contacts process says where)
+                let mut c = c.clone();
+                c.lat = a.lat;
+                c.lon = a.lon;
+                sensing::observe_act(params, observers, &c, &a.id)
+            });
+            let Some(obs) = observed else {
+                inner.act_records.push(json!({
+                    "act": a.id, "s": a.s, "by": a.by, "by_track": actor_track,
+                    "against_vehicle": a.against_vehicle, "against_contact": a.against_contact,
+                    "observed": false,
+                }));
+                continue;
+            };
+            let n = inner.act_records.iter().filter(|r| r["observed"] == true).count() + 1;
+            let report_id = format!("A-{n}");
+            let against = match (a.against_vehicle, &a.against_contact) {
+                (Some(uid), _) => murmur_decide::Against::Vehicle {
+                    uid: crate::decision::snapshot::duid(uid),
+                },
+                (None, Some(c)) => match inner.by_contact.get(c) {
+                    Some(t) => murmur_decide::Against::Track { track: t.clone() },
+                    None => murmur_decide::Against::Unknown,
+                },
+                (None, None) => murmur_decide::Against::Unknown,
+            };
+            let report = murmur_decide::ActReport {
+                act: report_id.clone(),
+                against,
+                observed_t: Time((now * 1000.0).round() as i64),
+                sensors: obs.sensors.clone(),
+                location: LonLat::new(obs.lon, obs.lat),
+                sigma_m: obs.sigma_m,
+            };
+            inner.act_records.push(json!({
+                "act": a.id, "s": a.s, "by": a.by, "by_track": actor_track,
+                "against_vehicle": a.against_vehicle, "against_contact": a.against_contact,
+                "observed": true, "report": report_id, "sensors": obs.sensors,
+                "sigma_m": obs.sigma_m, "observed_t": report.observed_t.0,
+            }));
+            inner.acts.push(report);
+        }
+    }
+
+    /// Rules 9: the acts observed since the last call, for the decision engine (each once).
+    pub fn take_acts(&self) -> Vec<murmur_decide::ActReport> {
+        std::mem::take(&mut lock(&self.inner).acts)
+    }
+
+    /// Rules 9: mirror the decision engine's identification ledger for display: each track's
+    /// declaration in force (with its basis), the review flags in force on it, and the one
+    /// that raised it to suspect. Decisions never read this mirror (the engine fills the
+    /// picture from its ledger). Republishes if anything changed.
+    pub fn mirror(&self, ledger: &murmur_decide::ident::Ledger) {
+        let now = clock::wall();
+        {
+            let mut inner = lock(&self.inner);
+            for (id, t) in &mut inner.tracks {
+                t.declared = ledger.declaration(id).map(Declared::from_ledger);
+                t.review = ledger
+                    .flags()
+                    .filter(|(f, s)| s.in_force() && f.tracks.iter().any(|x| x == id))
+                    .map(|(f, s)| model::ReviewMark {
+                        flag: f.id,
+                        kind: f.kind.as_str().into(),
+                        status: s.name().into(),
+                        t: f.t.0 as f64 / 1000.0,
+                        evidence: f.evidence.clone(),
+                    })
+                    .collect();
+                t.raised = ledger.suspect_since(id).and_then(|_| {
+                    ledger
+                        .flags()
+                        .filter(|(f, s)| s.in_force() && f.kind.raises_suspect() && f.tracks.iter().any(|x| x == id))
+                        .map(|(f, _)| format!("F-{}: {}", f.id, f.evidence))
+                        .next()
+                });
+            }
+        }
+        self.publish(now);
     }
 
     fn fold(&self, inner: &mut Inner, detections: &[Detection], now: f64) {
@@ -401,29 +509,6 @@ impl Tracks {
         lock(&self.inner).tracks.contains_key(id)
     }
 
-    /// An operator's declaration. Returns the track's JSON.
-    pub fn declare(
-        &self,
-        id: &str,
-        affiliation: Affiliation,
-        by: &str,
-        note: Option<String>,
-        now: f64,
-    ) -> Option<Value> {
-        let mut inner = lock(&self.inner);
-        let t = inner.tracks.get_mut(id)?;
-        t.declared = Some(Declared {
-            affiliation,
-            by: by.to_string(),
-            t: now,
-            note,
-        });
-        let v = t.json(now);
-        drop(inner);
-        self.publish(now);
-        Some(v)
-    }
-
     /// An engagement's abstract effect, for the contacts process (see the module docs).
     pub fn queue_effect(&self, e: &murmur_decide::EffectOrder, ours: Vec<Value>) {
         let mut inner = lock(&self.inner);
@@ -468,6 +553,8 @@ impl Tracks {
             "association": pairs,
             "last_detections": inner.last_detections,
             "effects_sent": inner.effects_sent,
+            // rules 9: every hostile act, observed (and the report it became) or not
+            "acts": inner.act_records,
         })
     }
 
@@ -522,6 +609,10 @@ pub fn router<S: Clone + Send + Sync + 'static>(
         .route("/api/tracks", get(list))
         .route("/api/tracks/{id}", get(one))
         .route("/api/tracks/{id}/declare", post(declare))
+        .route("/api/tracks/{id}/confirm", post(confirm))
+        .route("/api/tracks/{id}/revoke", post(revoke))
+        .route("/api/review", get(review))
+        .route("/api/review/{flag}/resolve", post(resolve))
         .route("/api/sim/contacts", post(sim_contacts))
         .route("/api/sim/truth", get(sim_truth))
         .with_state(Api {
@@ -553,6 +644,9 @@ struct DeclareBody {
     /// consequential (`[approval] step_up_acts`); checked and dropped, never logged.
     #[serde(default)]
     password: Option<String>,
+    /// Rules 9: the review flag this declaration answers (in force on the track).
+    #[serde(default)]
+    flag: Option<u64>,
 }
 
 async fn declare(
@@ -583,22 +677,117 @@ async fn declare(
     if !api.tracks.has(&id) {
         return error(StatusCode::NOT_FOUND, format!("unknown track {id}"));
     }
-    // logged first: a declaration the log refuses (no step-up where one is needed) changes
-    // nothing
-    if let Err(e) = api.decision.record_declaration(&op, step, &id, body.affiliation.as_str(), body.note.as_deref()) {
-        return error(StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR), e.detail);
+    // rules 9: through the engine's identification ledger (logged as `ident.declared` under
+    // the operator's session before anything changes); the tracks mirror it for display
+    match api
+        .decision
+        .declare(&op, step, &id, body.affiliation, body.note.clone(), body.flag)
+    {
+        Ok(v) => Json(track_answer(&api, &id, v)).into_response(),
+        Err(e) => error(StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR), e.detail),
     }
+}
+
+/// The track as it stands now, with what the identification call did.
+fn track_answer(api: &Api, id: &str, outcome: Value) -> Value {
     let now = clock::wall();
-    let Some(track) = api.tracks.declare(
-        &id,
-        body.affiliation,
-        op.operator().as_str(),
-        body.note.clone(),
-        now,
-    ) else {
-        return error(StatusCode::NOT_FOUND, format!("unknown track {id}"));
+    let track = api.tracks.tracks_json(now).into_iter().find(|t| t["id"] == id);
+    let mut v = track.unwrap_or_else(|| json!({ "id": id }));
+    v["identification"] = outcome;
+    v
+}
+
+#[derive(Deserialize)]
+struct ConfirmBody {
+    /// Rules 8: the password again, when `[approval] step_up_acts` lists
+    /// `confirm_declaration` (off by default); checked and dropped, never logged.
+    #[serde(default)]
+    password: Option<String>,
+}
+
+/// Rules 9: `POST /api/tracks/{id}/confirm`: any operator confirms the rule declaration in
+/// force on the track (`ident.confirmed`, under their session).
+async fn confirm(
+    State(api): State<Api>,
+    AxPath(id): AxPath<String>,
+    headers: HeaderMap,
+    body: Option<Json<ConfirmBody>>,
+) -> Response {
+    let body = body.map(|Json(b)| b).unwrap_or(ConfirmBody { password: None });
+    let op = match api.auth.actor(&headers, true) {
+        Ok(op) => op,
+        Err(e) => return error(StatusCode::from_u16(e.status).unwrap_or(StatusCode::FORBIDDEN), e.detail),
     };
-    Json(track).into_response()
+    let needed = api.decision.steps_up(murmur_decide::StepUpAct::ConfirmDeclaration);
+    let step = match api.auth.step_up(&op, &format!("confirm {id}'s declaration"), body.password, needed).await {
+        Ok(s) => s,
+        Err(r) => return *r,
+    };
+    match api.decision.confirm(&op, step, &id) {
+        Ok(v) => Json(track_answer(&api, &id, v)).into_response(),
+        Err(e) => error(StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR), e.detail),
+    }
+}
+
+#[derive(Deserialize)]
+struct RevokeBody {
+    #[serde(default)]
+    note: Option<String>,
+}
+
+/// Rules 9: `POST /api/tracks/{id}/revoke`: any operator revokes the declaration in force on
+/// the track (an operator's or the rule's; it only restricts). Every engagement in play on
+/// the track is stopped first (cause revoked; the fallback where one was under way).
+async fn revoke(
+    State(api): State<Api>,
+    AxPath(id): AxPath<String>,
+    headers: HeaderMap,
+    body: Option<Json<RevokeBody>>,
+) -> Response {
+    let note = body.and_then(|Json(b)| b.note);
+    let op = match api.auth.actor(&headers, true) {
+        Ok(op) => op,
+        Err(e) => return error(StatusCode::from_u16(e.status).unwrap_or(StatusCode::FORBIDDEN), e.detail),
+    };
+    match api.decision.revoke(&op, &id, note) {
+        Ok(v) => Json(track_answer(&api, &id, v)).into_response(),
+        Err(e) => error(StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR), e.detail),
+    }
+}
+
+#[derive(Deserialize)]
+struct ResolveBody {
+    resolution: murmur_decide::FlagResolution,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+/// Rules 9: `POST /api/review/{flag}/resolve` `{resolution: confirmed|dismissed}`: any
+/// operator confirms or dismisses a review flag (`ident.flag_resolved`).
+async fn resolve(
+    State(api): State<Api>,
+    AxPath(flag): AxPath<u64>,
+    headers: HeaderMap,
+    body: Result<Json<ResolveBody>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, e.body_text()),
+    };
+    let op = match api.auth.actor(&headers, true) {
+        Ok(op) => op,
+        Err(e) => return error(StatusCode::from_u16(e.status).unwrap_or(StatusCode::FORBIDDEN), e.detail),
+    };
+    match api.decision.resolve_flag(&op, flag, body.resolution, body.note) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => error(StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR), e.detail),
+    }
+}
+
+/// Rules 9: `GET /api/review`: the identification review items (rule declarations awaiting
+/// an operator, flags in force, the latest resolved).
+async fn review(State(api): State<Api>) -> Response {
+    Json(api.decision.review_json()).into_response()
 }
 
 /// The simulation channel in. Truth: stored for the sensing model, never served back

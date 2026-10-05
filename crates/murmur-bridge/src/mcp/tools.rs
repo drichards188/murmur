@@ -118,8 +118,8 @@ pub struct TaskingParams {
 pub struct IntentParams {
     /// The task kind: orbit, patrol, hold, rtl or track on fleet vehicles; collect (satellite
     /// imagery or SAR of an area) or cover (is SATCOM or GNSS service good enough over an
-    /// area) on the space segment; engage (nominate an abstract effect on a track a human
-    /// operator declared hostile, with one armed platform: only human operators with
+    /// area) on the space segment; engage (nominate an abstract effect on a track declared
+    /// hostile, by an operator or by rule, with one armed platform: only human operators with
     /// engagement authority can decide it, never its proposer).
     pub task: String,
     /// Fleet uids of the vehicles to task (from get_fleet): at least one for a vehicle task,
@@ -163,7 +163,7 @@ pub struct IntentParams {
     /// cover: the level required, a fraction of the window with SATCOM coverage (default
     /// 0.99) or satellites in view at every GNSS sample (default 4).
     pub min_level: Option<f64>,
-    /// engage: the track id (from get_tracks) a human operator declared hostile.
+    /// engage: the track id (from get_tracks) declared hostile (by an operator or by rule).
     pub track_id: Option<String>,
     /// engage: the effect radius in metres (the policy caps it).
     pub effect_radius_m: Option<f64>,
@@ -316,7 +316,10 @@ pub fn tools() -> Vec<Tool> {
                  existence confidence now (decaying while unseen), the identity estimate \
                  (kind, an AIS identity if heard) with its confidence, the sensors that \
                  support it and any conflict, the affiliation estimate (unknown, suspect, \
-                 neutral, assumed_friend; hostile only when a human operator declared it) \
+                 neutral, assumed_friend; hostile only when declared: by a human operator, or \
+                 by the engine's hostile-act rule on an observed act, with its evidence and \
+                 whether an operator confirmed it, in declared; review lists the review flags \
+                 in force, and a track raised to suspect by one says so) \
                  with its confidence and reason, the sources behind it (which of our \
                  vehicles, which sensor, how many detections), and last_seen as as_of. \
                  {STALE_NOTE} A stale or low-confidence track cannot support a consequential \
@@ -372,7 +375,8 @@ pub fn tools() -> Vec<Tool> {
              track), a satellite collection (collect: area, window, capability, and chosen \
              from the options of a preview or get_satellite_tasking_options), a coverage \
              query (cover: area, window, service), or an engagement nomination (engage: \
-             track_id of a track a human operator declared hostile, one armed platform in \
+             track_id of a track declared hostile (by an operator, or by rule on an observed \
+             act: get_tracks says which), one armed platform in \
              uids, effect_radius_m, fallback abort, return or loiter, optional window_s; it \
              always waits for two human operators with engagement authority, never its \
              proposer, and the effect is an abstract event), with constraints and a required \

@@ -49,12 +49,62 @@ struct Classifier {
     last_t: f64,
 }
 
+/// A declaration in force, as the decision engine's identification ledger holds it (rules 9:
+/// the bridge mirrors the ledger here for display; decisions read the ledger itself).
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Declared {
     pub affiliation: Affiliation,
+    /// An operator, or `rule:hostile_act`.
     pub by: String,
     pub t: f64,
     pub note: Option<String>,
+    /// Its number in the run (`D-<id>`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<u64>,
+    /// Declared by the engine's hostile-act rule (not an operator).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub rule: bool,
+    /// The rule's evidence: the act, whom it was against, which of our sensors saw it, when,
+    /// and the attribution against the threshold.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<murmur_decide::RuleEvidence>,
+    /// The operator who confirmed a rule declaration (none: not confirmed yet).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confirmed_by: Option<String>,
+    /// The basis in a sentence, as the engagement checks and signers read it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub basis: Option<String>,
+}
+
+impl Declared {
+    /// The ledger's declaration, for display.
+    pub fn from_ledger(d: &murmur_decide::Declaration) -> Declared {
+        let (note, evidence) = match &d.by {
+            murmur_decide::Declarer::Operator { note, .. } => (note.clone(), None),
+            murmur_decide::Declarer::Rule { evidence, .. } => (None, Some(evidence.clone())),
+        };
+        Declared {
+            affiliation: d.affiliation,
+            by: d.label(),
+            t: d.t.0 as f64 / 1000.0,
+            note,
+            id: Some(d.id),
+            rule: d.is_rule(),
+            evidence,
+            confirmed_by: d.confirmed.as_ref().map(|c| c.by.to_string()),
+            basis: Some(d.describe()),
+        }
+    }
+}
+
+/// Rules 9: a review flag in force on a track (what the engine is unsure of), for display.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReviewMark {
+    pub flag: u64,
+    pub kind: String,
+    pub status: String,
+    pub t: f64,
+    pub evidence: String,
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +131,10 @@ pub struct Track {
     pub ais: Option<AisHeard>,
     ais_t: Option<f64>,
     pub declared: Option<Declared>,
+    /// Rules 9: the review flags in force on it, and the one that raised it to suspect (its
+    /// evidence), as the engine's ledger has them (display only).
+    pub review: Vec<ReviewMark>,
+    pub raised: Option<String>,
     /// the last position used for velocity (lat, lon, t)
     vel_anchor: (f64, f64, f64),
 }
@@ -156,6 +210,8 @@ impl Track {
             ais: None,
             ais_t: None,
             declared: None,
+            review: Vec::new(),
+            raised: None,
             vel_anchor: (d.lat, d.lon, now),
         };
         t.update(d, now);
@@ -378,16 +434,27 @@ impl Track {
         }
     }
 
-    /// The affiliation estimate and why, from the identity. Hostile is never derived here:
-    /// it takes an operator's declaration.
+    /// The affiliation shown and why: a declaration in force (an operator's, or the engine's
+    /// hostile-act rule's), else a suspect raise by a review flag, else the estimate.
     pub fn affiliation(&self) -> (Affiliation, f64, String) {
         if let Some(d) = &self.declared {
-            return (
-                d.affiliation,
-                1.0,
-                format!("declared by {}", d.by),
-            );
+            let why = match (&d.basis, d.rule) {
+                (Some(b), true) => b.clone(),
+                _ => format!("declared by {}", d.by),
+            };
+            return (d.affiliation, 1.0, why);
         }
+        let (aff, conf, why) = self.estimate();
+        if let Some(r) = &self.raised {
+            return (Affiliation::Suspect, conf, format!("raised to suspect for review: {r} (its own estimate: {}, {why})", aff.as_str()));
+        }
+        (aff, conf, why)
+    }
+
+    /// The affiliation estimate and why, from the identity alone (what the decision engine is
+    /// given; it fills declarations and raises from its own ledger). Hostile is never derived
+    /// here: it takes a declaration.
+    pub fn estimate(&self) -> (Affiliation, f64, String) {
         let id = self.identity();
         let conf = id.confidence;
         if let Some(c) = &id.conflict {
@@ -517,14 +584,17 @@ impl Track {
             "hits": self.hits,
             "state": if self.is_stale(now) { "stale" } else { "active" },
             "declared": self.declared,
+            "review": self.review,
             "sidc": self.sidc(now),
         })
     }
 
-    /// The decision layer's view (`WorldSnapshot.tracks`), at engine time `t` (wall ms).
+    /// The decision layer's view (`WorldSnapshot.tracks`), at engine time `t` (wall ms): the
+    /// estimate only. Rules 9: the engine fills declarations, their basis and suspect raises
+    /// from its identification ledger (the record); the mirror kept here is for display.
     pub fn facts(&self, now: f64) -> TrackFacts {
         let id = self.identity();
-        let (aff, aff_conf, _) = self.affiliation();
+        let (aff, aff_conf, _) = self.estimate();
         let ms = |s: f64| Time((s * 1000.0).round() as i64);
         TrackFacts {
             position: Fact::new(LonLat::new(self.lon, self.lat), ms(self.last_seen_t)),
@@ -534,10 +604,7 @@ impl Track {
             pos_sigma_m: self.sigma_at(now),
             sigma_growth_mps: Some(sigma_growth_mps(self.speed_mps())),
             confidence: self.confidence_at(now),
-            affiliation: Fact::new(
-                aff,
-                ms(self.declared.as_ref().map_or(self.last_seen_t, |d| d.t)),
-            ),
+            affiliation: Fact::new(aff, ms(self.last_seen_t)),
             affiliation_confidence: aff_conf,
             identity: id.kind,
             identity_confidence: id.confidence,
@@ -553,8 +620,8 @@ impl Track {
                 .collect(),
             domain: self.domain.decide(),
             last_seen_t: ms(self.last_seen_t),
-            declared_by: self.declared.as_ref().map(|d| d.by.clone()),
-            // rules 9: the engine fills both from its identification ledger
+            // rules 9: the engine fills these from its identification ledger
+            declared_by: None,
             declaration: None,
             review_flags: Vec::new(),
         }

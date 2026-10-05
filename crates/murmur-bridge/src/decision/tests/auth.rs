@@ -721,7 +721,14 @@ async fn a_listed_act_steps_up_through_the_api() {
     for s in 0..30 {
         h.e.sense_at(now - 30.0 + f64::from(s), true);
     }
-    let declared = |h: &H| h.e.tracks.facts(h.e.now_s()).get("T-0001").and_then(|t| t.declared_by.clone());
+    // rules 9: the declaration is the engine's ledger, mirrored into the track store
+    let declared = |h: &H| {
+        h.e.tracks
+            .tracks_json(h.e.now_s())
+            .into_iter()
+            .find(|t| t["id"] == "T-0001")
+            .and_then(|t| t["declared"]["by"].as_str().map(str::to_string))
+    };
     let (s, v) = h.post(&op1, "/api/tracks/T-0001/declare", json!({ "affiliation": "hostile" })).await;
     assert_eq!((s, v["step_up"].clone()), (StatusCode::UNAUTHORIZED, json!(true)), "{v}");
     let (s, v) = h
@@ -741,4 +748,61 @@ async fn a_listed_act_steps_up_through_the_api() {
     let r = h.replays_authenticated();
     assert_eq!(r.stepped_acts, 1);
     h.no_secret_logged(&[&op1]);
+}
+
+/// Rules 9 in a credentials run: the engine's rule declaration carries no session; an
+/// operator's confirmation, a flag's resolution and a revocation each go through the signed-in
+/// session (no cookie, another origin or an agent's key: refused, nothing logged). With
+/// `confirm_declaration` listed in `[approval] step_up_acts` (off by default) a confirmation
+/// re-enters the password.
+#[tokio::test]
+async fn a_rule_declaration_is_confirmed_and_revoked_under_the_operators_session() {
+    let h = harness_with(Duration::from_secs(1800), &[], |p| {
+        super::identification::rule_on(p, false);
+        p.approval.step_up_acts = Some(vec![murmur_decide::StepUpAct::ConfirmDeclaration]);
+    });
+    let op1 = h.login("op-1", PW1).await;
+    let (_, _, me) = h.call("GET", "/api/auth/session", None, &[("cookie", &op1)]).await;
+    assert_eq!(me["step_up_acts"], json!(["confirm_declaration"]), "{me}");
+    super::identification::picture(&h.e).await;
+    super::identification::act_now(&h.e, None);
+    let (s, _, review) = h.call("GET", "/api/review", None, &[]).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(review["declarations"][0]["declared_by"], "rule:hostile_act", "{review}");
+    let log = h.log();
+    let declared = log.lines().find(|l| l.contains("\"type\":\"ident.declared\"")).expect("declared");
+    assert!(!declared.contains("\"session\""), "the engine's, under no session: {declared}");
+    // refused without a session, from another origin, or with an agent's key
+    let bearer = format!("Bearer {}", h.key);
+    let before = h.log().lines().count();
+    for headers in [
+        vec![],
+        vec![("origin", "http://evil.example"), ("cookie", op1.as_str())],
+        vec![("authorization", bearer.as_str())],
+    ] {
+        for path in ["/api/tracks/T-0001/confirm", "/api/tracks/T-0001/revoke"] {
+            let (s, _, v) = h.call("POST", path, Some(json!({})), &headers).await;
+            assert!(s == StatusCode::UNAUTHORIZED || s == StatusCode::FORBIDDEN, "{path} {headers:?}: {s} {v}");
+        }
+    }
+    assert_eq!(h.log().lines().count(), before, "nothing logged");
+    // the listed step-up: no password, nothing changes; the password, confirmed
+    let (s, v) = h.post(&op1, "/api/tracks/T-0001/confirm", json!({})).await;
+    assert_eq!((s, v["step_up"].clone()), (StatusCode::UNAUTHORIZED, json!(true)), "{v}");
+    let (s, v) = h.post(&op1, "/api/tracks/T-0001/confirm", json!({ "password": PW1 })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["declared"]["confirmed_by"], "op-1", "{v}");
+    let confirmed = h.log().lines().find(|l| l.contains("\"type\":\"ident.confirmed\"")).expect("logged").to_string();
+    assert!(confirmed.contains("\"by\":\"op-1\",\"session\":"), "{confirmed}");
+    assert!(confirmed.contains("\"step_up\":"), "{confirmed}");
+    // another operator revokes it under their own session (never a step-up: it only restricts)
+    let op3 = h.login("op-3", PW3).await;
+    let (s, v) = h.post(&op3, "/api/tracks/T-0001/revoke", json!({ "note": "not the shooter" })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(v["declared"].is_null(), "{v}");
+    let revoked = h.log().lines().find(|l| l.contains("\"type\":\"ident.revoked\"")).expect("logged").to_string();
+    assert!(revoked.contains("\"by\":\"op-3\",\"session\":"), "{revoked}");
+    let r = h.replays_authenticated();
+    assert_eq!((r.rule_declarations, r.confirmations, r.revocations), (1, 1, 1));
+    h.no_secret_logged(&[&op1, &op3]);
 }

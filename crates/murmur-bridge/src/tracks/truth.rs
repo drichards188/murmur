@@ -109,6 +109,31 @@ pub struct TruthMessage {
     #[serde(default)]
     pub sensing: Sensing,
     pub contacts: Vec<ContactTruth>,
+    /// Rules 9: hostile acts committed since the last message (truth: the sensing model
+    /// decides which of our sensors observe each, `sensing::observe_act`).
+    #[serde(default)]
+    pub acts: Vec<ActTruth>,
+}
+
+/// Rules 9: one abstract hostile act (a time, an author, a victim; no weapon), as the contacts
+/// process scripts it. Truth: never served except on the evaluation endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActTruth {
+    pub id: String,
+    #[serde(default)]
+    pub s: f64,
+    #[serde(default)]
+    pub t: f64,
+    /// The contact that committed it, and where it was.
+    pub by: String,
+    pub lat: f64,
+    pub lon: f64,
+    #[serde(default)]
+    pub against_vehicle: Option<u64>,
+    #[serde(default)]
+    pub against_contact: Option<String>,
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 impl TruthMessage {

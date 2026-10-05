@@ -615,3 +615,7 @@ mod queue;
 
 /// Rules 8 through the bridge's HTTP surface: logins, step-ups, agent keys (`tests/auth.rs`).
 mod auth;
+
+/// Rules 9 through the bridge: observed acts, rule declarations, review, revocation
+/// (`tests/identification.rs`).
+mod identification;

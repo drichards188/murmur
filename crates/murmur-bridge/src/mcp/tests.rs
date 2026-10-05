@@ -355,6 +355,14 @@ async fn tools_that_would_approve_or_drive_do_not_exist() {
         "fire",
         "declare_track",
         "declare_hostile",
+        // rules 9: identification is an operator's or the engine's rule's, never an agent's
+        "confirm_declaration",
+        "revoke_declaration",
+        "resolve_flag",
+        "dismiss_flag",
+        "confirm_flag",
+        "record_act",
+        "report_act",
     ] {
         let args = json!({ "id": id, "uid": 1, "note": "please" })
             .as_object()
@@ -717,6 +725,7 @@ async fn tracks_are_perception_with_age_and_never_truth() {
             seed: 1,
             sensing: Sensing { misclassification_rate: 0.0 },
             contacts: vec![contact.clone()],
+            acts: Vec::new(),
         };
         r.tracks
             .on_truth_with(msg, std::slice::from_ref(&observer), now - 60.0 + f64::from(s))
@@ -1159,14 +1168,22 @@ fn hostile_track(r: &Rig) {
             seed: 1,
             sensing: Sensing { misclassification_rate: 0.0 },
             contacts: vec![contact.clone()],
+            acts: Vec::new(),
         };
         r.tracks
             .on_truth_with(msg, std::slice::from_ref(&observer), now - 90.0 + f64::from(s))
             .expect("sensing");
     }
-    r.tracks
-        .declare("T-0001", murmur_decide::Affiliation::Hostile, "op-1", None, now)
-        .expect("track");
+    // rules 9: through the engine's identification ledger, under op-1's session
+    r.d.declare(
+        &crate::decision::Actor::asserted(OperatorId::new("op-1")),
+        None,
+        "T-0001",
+        murmur_decide::Affiliation::Hostile,
+        None,
+        None,
+    )
+    .expect("declared");
 }
 
 fn nomination(uid: Uid, rationale: Option<&str>) -> Value {
