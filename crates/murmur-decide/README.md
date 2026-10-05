@@ -812,13 +812,17 @@ Rules versions:
   mode or method, a `step_up` (a tier's key, a decision's, a signature's, the event), a
   `session.closed`. Fixtures: `tests/data/audit/v7-engagement-scenario-01.jsonl` (the
   scenario runner: `auth: dev`) and a live run with its anchors (`v7-auth-live.jsonl`,
-  `tests/data/anchors/v7-auth-live.anchors`: three operators logged in with their own
-  passwords; a wrong password, an unknown operator, a bare header, an agent's key on an
-  operator endpoint and a request from another origin refused with nothing logged; a
-  nomination by an operator without engagement authority; its signatures refused without a
-  password, with a wrong one, with another person's, from the proposer, and a second time
-  from the same person over a second login; two signatures each quoting its step-up; the
-  engagement under way; every session closed at logout).
+  `tests/data/anchors/v7-auth-live.anchors`, from a clean build: three operators logged in
+  with their own passwords, one of them at the console; a wrong password, an unknown
+  operator, a bare header, an agent's key on an operator endpoint and a request from another
+  origin refused with nothing logged; a declaration and a nomination by an operator without
+  engagement authority, who could not sign it; a signature refused without a password, with
+  a wrong one and with another person's (each `step_up.refused` under the signer's session),
+  then made with their own; the same person again over a second login, stepping up, refused
+  by the engine (already signed); the second signature from the console, stepped up; the
+  effect released and assessed; an agent on its own key; every session closed at logout).
+  The bridge also logs a refused step-up (`operator.action step_up.refused`, never the
+  password) and closes every login at a clean stop (`bridge stopped`).
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that

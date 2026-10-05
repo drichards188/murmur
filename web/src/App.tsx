@@ -56,6 +56,9 @@ export default function App() {
   // who this console acts for (rules 7): asked once the bridge answers, and again on reconnect
   const auth = useAuth()
   useEffect(() => {
+    void refreshAuth()
+  }, [])
+  useEffect(() => {
     if (status === 'live') void refreshAuth()
   }, [status])
   perfRenderBegin()

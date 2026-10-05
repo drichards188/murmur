@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 12] = [
+const LOGS: [(&str, u32); 14] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -53,10 +53,15 @@ const LOGS: [(&str, u32); 12] = [
     ("v6-engagement-scenario-01.jsonl", 6),
     ("v6-lost-friendly-accepted-scenario-54.jsonl", 6),
     ("v6-engagement-live.jsonl", 6),
+    // rules 7 (clean builds): the same scenario, its roster saying its operators were asserted
+    // (auth dev: the scenario runner); and a live run, anchored as it ran, whose operators
+    // logged in with their own passwords and stepped up to sign (one of them at the console)
+    ("v7-engagement-scenario-01.jsonl", 7),
+    ("v7-auth-live.jsonl", 7),
 ];
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v6-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v7-engagement-scenario-01.jsonl";
 
 /// The committed scenario log of rules 5 (the queue).
 const V5_SCENARIO: &str = "v5-engagement-scenario-01.jsonl";
@@ -150,7 +155,7 @@ fn the_rules_6_live_log_preloads_restores_and_reads_altitude() {
     let a = anchor::verify(&log, &anchors);
     assert!(a.ok(), "{:?}", a.problems);
     assert!(a.shutdown, "a clean stop anchored the head");
-    let r = replay_str(&log).unwrap();
+    let r = with(&log, RulesAccepted::Exactly(6));
     assert!(r.ok(), "{:?}", r.mismatches);
     assert_eq!((r.engagements, r.effects, r.assessments), (3, 1, 1));
     assert_eq!(r.build.as_ref().map(|b| b.dirty), Some(Some(false)));
@@ -274,11 +279,15 @@ fn a_run_records_its_rules_schema_and_build() {
         "{first}"
     );
     assert!(first.contains("\"build\":{\"commit\":\""), "{first}");
-    // rules 4: who could act as an operator, and with engagement authority
+    // rules 4: who could act as an operator, and with engagement authority; rules 7: how they
+    // proved it (the scenario runner asserts its ids: dev)
     assert!(
-        first.contains("\"roster\":{\"operators\":[\"op-1\",\"op-2\",\"op-3\"],\"engage\":[\"op-2\",\"op-3\"]}"),
+        first.contains("\"roster\":{\"operators\":[\"op-1\",\"op-2\",\"op-3\"],\"engage\":[\"op-2\",\"op-3\"],\"auth\":\"dev\"}"),
         "{first}"
     );
+    let r = replay_str(&text).unwrap();
+    assert_eq!(r.auth, Some(AuthMode::Dev));
+    assert!(r.ok() && !r.authenticated(), "a dev run is not evidence about people");
 }
 
 #[test]
@@ -359,7 +368,7 @@ fn a_downgraded_claim_is_caught_by_what_the_log_carries() {
     // and one with an accepted lost friendly carries the acceptance and the climb rates
     for (name, markers) in [
         (
-            CURRENT,
+            "v6-engagement-scenario-01.jsonl",
             &["a lost-link preload report", "an engagement order's lost-link preload", "a fallback_preload check"][..],
         ),
         (
@@ -446,7 +455,7 @@ fn a_policy_schema_claim_must_fit_its_keys() {
     );
     // a rules 6 policy (schema 4 keys) claiming schema 3
     let mut ls = lines(&fixture(CURRENT));
-    ls[0] = ls[0].replacen("\"policy_schema\":4,", "\"policy_schema\":3,", 1);
+    ls[0] = ls[0].replacen(&format!("\"policy_schema\":{POLICY_SCHEMA},"), "\"policy_schema\":3,", 1);
     let r = replay_str(&rechain(&ls)).unwrap();
     let later: Vec<&str> = r
         .mismatches
@@ -597,4 +606,87 @@ fn the_live_queue_logs_replay_across_the_restart() {
     let edited = ls.join("\n");
     let r = replay_str_with(&after, &opts(Some(&edited))).unwrap();
     assert!(!r.ok(), "an edited previous log is not the one carried from");
+}
+
+/// Rules 7, live (murmur-der.1), from a clean build, anchored as it ran: three operators logged
+/// in with their own passwords (op-3 at the console in a browser, op-1 and op-2 over the HTTP
+/// API); a wrong password, an unknown operator, a bare header, an agent's key on an operator
+/// endpoint and a request from another origin refused with nothing logged; op-1, without
+/// engagement authority, declared and nominated; op-2's signature refused without a password,
+/// with a wrong one and with op-3's (each logged `step_up.refused`), then made with their own;
+/// op-2 again over a second login, stepping up, refused by the engine (already signed); op-3's
+/// signature from the console, stepped up; the effect released and assessed; an agent on its
+/// own key; every session closed at logout.
+const AUTH_LIVE: &str = "v7-auth-live.jsonl";
+
+#[test]
+fn the_rules_7_live_log_binds_every_signature_to_a_person() {
+    let log = fixture(AUTH_LIVE);
+    let a = anchor::verify(&log, &anchors_of(AUTH_LIVE));
+    assert!(a.ok(), "{:?}", a.problems);
+    assert!(a.shutdown, "a clean stop anchored the head");
+    let r = replay_str(&log).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert_eq!(r.rules_version, RULES_VERSION);
+    assert_eq!(r.build.as_ref().map(|b| b.dirty), Some(Some(false)));
+    assert_eq!(r.auth, Some(AuthMode::Credentials));
+    assert!(r.authenticated(), "a credentials run that reproduced");
+    assert_eq!((r.step_ups, r.stepped_signatures, r.sessions_closed), (3, 2, 4));
+    assert_eq!((r.engagements, r.concurrences, r.approvals, r.effects, r.assessments), (1, 1, 1, 1, 1));
+    let events = parse_log(&log).unwrap();
+    // every session opened on a checked password, every one closed at logout
+    let actions: Vec<(String, u64, String, String)> = events
+        .iter()
+        .filter_map(|e| match &e.body {
+            EventBody::OperatorAction { operator, session, action, detail, .. } => {
+                Some((operator.to_string(), session.0, action.clone(), detail.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    let opened = actions.iter().filter(|a| a.2 == "session.opened").count();
+    assert_eq!(opened, 4);
+    assert_eq!(log.matches("\"action\":\"session.opened\"").count(), log.matches("\"action\":\"session.opened\",\"detail\":\"\",\"auth\":\"password\"").count() + log.matches("\"grants\":{\"engage\":true},\"auth\":\"password\"").count());
+    assert_eq!(actions.iter().filter(|a| a.2 == "session.closed" && a.3 == "logout").count(), 4);
+    // the attempts the person signing could not back with their credential, on the record
+    let refused: Vec<&str> = actions.iter().filter(|a| a.2 == "step_up.refused").map(|a| a.3.as_str()).collect();
+    assert_eq!(refused, vec!["i2: no password given", "i2: wrong password", "i2: wrong password"]);
+    assert!(actions.iter().any(|a| a.0 == "op-2" && a.1 == 4 && a.2 == "approval.refused" && a.3.contains("already signed")));
+    // two people, each signature quoting a step-up under its own session
+    let sigs: Vec<(String, u64, Option<u64>)> = events
+        .iter()
+        .filter_map(|e| match &e.body {
+            EventBody::ApprovalConcurred { by, session, step_up, .. } | EventBody::ApprovalGranted { by, session, step_up, .. } => {
+                Some((by.to_string(), session.0, step_up.map(|s| s.seq)))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sigs.len(), 2);
+    assert_eq!((sigs[0].0.as_str(), sigs[1].0.as_str()), ("op-2", "op-3"));
+    for (by, session, seq) in &sigs {
+        let seq = seq.expect("every engagement signature steps up");
+        let step = events.iter().find(|e| e.seq == seq).expect("the step-up");
+        assert!(
+            matches!(&step.body, EventBody::OperatorAction { operator, session: s, action, .. } if operator.as_str() == by && s.0 == *session && action == "step_up"),
+            "{step:?}"
+        );
+    }
+    // the agent connected on its key, named by the key's id
+    assert!(log.contains("\"action\":\"session.connected\",\"detail\":\"via API key "));
+}
+
+#[test]
+fn a_rules_7_log_claiming_rules_6_still_carries_its_authentication() {
+    let mut ls = lines(&fixture(AUTH_LIVE));
+    assert!(ls[0].contains("\"rules_version\":7,"));
+    ls[0] = ls[0].replacen("\"rules_version\":7,", "\"rules_version\":6,", 1);
+    let r = with(&rechain(&ls), RulesAccepted::Exactly(6));
+    let w = whats(&r);
+    for marker in ["how an operator was authenticated", "a step-up", "a session's end"] {
+        assert!(
+            w.iter().any(|m| m.contains(marker) && m.contains(&format!("only builds of rules {OPERATOR_AUTH_SINCE}"))),
+            "{marker}: {w:?}"
+        );
+    }
 }
