@@ -772,6 +772,17 @@ fn the_trackers_uncertainty_covers_the_truth() {
             }),
         ),
         ("ferry with AIS, 10 m/s", "ferry", true, vec![ais_rx.clone()], Box::new(|s| ((-1500.0 + 10.0 * s, 300.0), (10.0, 0.0)))),
+        // the live run's coast guard cutter: AIS, circling 1.2 km at 6 m/s
+        (
+            "patrol boat with AIS circling 1.2 km at 6 m/s",
+            "ferry",
+            true,
+            vec![ais_rx.clone()],
+            Box::new(|s| {
+                let a = 6.0 / 1200.0 * s;
+                ((1200.0 * a.sin(), 1200.0 * a.cos()), (6.0 * a.cos(), -6.0 * a.sin()))
+            }),
+        ),
         ("radar only, 6 km", "cargo_ship", false, vec![far.clone()], Box::new(|s| ((0.0, -500.0 + 4.0 * s), (0.0, 4.0)))),
     ];
     let mut report = Vec::new();
