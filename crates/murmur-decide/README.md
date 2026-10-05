@@ -896,7 +896,7 @@ Rules versions:
   `v7-queued-order-supersedes-scenario-67.jsonl`,
   `v7-mission-waits-for-restore-scenario-68.jsonl`, and a live run with its anchors
   (`v7-queue-followups-live.jsonl`, `tests/data/anchors/v7-queue-followups-live.anchors`,
-  stand-ins, clean build 3b2127b: an operator's orbit for the engaging USV queued for its own
+  stand-ins, clean build 6e73f5c: an operator's orbit for the engaging USV queued for its own
   lost-link values, superseding the engagement with no fallback, sent the second after the
   restore confirmed, its start logged ahead; a second engagement aborted while the USV's link
   was cut, its values back the second the link returned; a third the same, with an orbit
