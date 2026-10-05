@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 27] = [
+const LOGS: [(&str, u32); 28] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -92,6 +92,9 @@ const LOGS: [(&str, u32); 27] = [
     ("v9-neutral-alongside-flagged-scenario-74.jsonl", RULE_ID_SINCE),
     ("v9-revoked-mid-engagement-scenario-75.jsonl", RULE_ID_SINCE),
     ("v9-bystander-protected-scenario-76.jsonl", RULE_ID_SINCE),
+    // 77 (the review of rules 9): a bystander whose declaration exempted it from an
+    // engagement's keep-out, revoked: the engagement stopped in the revocation's step
+    ("v9-revoked-bystander-scenario-77.jsonl", RULE_ID_SINCE),
     ("v9-identification-live.jsonl", RULE_ID_SINCE),
 ];
 
