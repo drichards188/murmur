@@ -717,6 +717,10 @@ fn a_started_order_resumes_dispatched_and_is_never_sent_again() {
     b.engine.resume(open, from).unwrap();
     assert_eq!(b.state(id), State::Dispatched);
     // followed: its op states are reported, no second intent.dispatched
+    // rules 7: the follow logged ahead like a start, then the vehicle's report
+    b.engine
+        .record_op_state_ahead(id, &uid("sky-1"), "the vehicle already runs it: followed, not sent again")
+        .unwrap();
     b.engine.record_op_state(id, &uid("sky-1"), "active", "adopted").unwrap();
     b.engine.finish(id, TaskOutcome::Done).unwrap();
     assert_eq!(count(&b, "intent.dispatched"), 0);

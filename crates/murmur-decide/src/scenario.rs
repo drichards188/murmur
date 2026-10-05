@@ -1978,6 +1978,8 @@ fn dispatch_approved(
                         supersede_engagements(engine, id, &uids, engaging, failures, s);
                     }
                 }
+                // rules 7: refused (no queue for its kind, the platform owed its values)
+                Ok(Routed::Voided { .. }) => {}
                 Err(e) => failures.push(format!("t={s}: dispatch {id}: {e}")),
             }
             continue;
@@ -1988,23 +1990,7 @@ fn dispatch_approved(
                     v.goal = Some(o.effect_point);
                     v.orbit = true;
                 }
-                // as on the bridge: older orders still waiting for this vehicle are void
-                let stale: Vec<IntentId> = engine
-                    .intents()
-                    .filter(|i| {
-                        i.id() != id
-                            && !matches!(i.spec().task, Task::Engage { .. })
-                            && matches!(i.state(), State::PendingApproval | State::Approved)
-                            && i.spec().uids.contains(&o.uid)
-                    })
-                    .map(|i| i.id())
-                    .collect();
-                for other in stale {
-                    if let Err(e) = engine.void(other, &format!("superseded: {id} was dispatched to vehicle {}", o.uid)) {
-                        failures.push(format!("t={s}: void {other}: {e}"));
-                    }
-                }
-                // and, as the bridge does, any other engagement in play on it (none can be:
+                // as the bridge does, any other engagement in play on it first, in the dispatch's step (none can be:
                 // one engagement per platform, the platform_free check)
                 let others: Vec<IntentId> = engine
                     .intents()
@@ -2022,6 +2008,22 @@ fn dispatch_approved(
                         failures.push(format!("t={s}: supersede {other}: {e}"));
                     }
                     engaging.remove(&other);
+                }
+                // then, as on the bridge, older orders still waiting for this vehicle are void
+                let stale: Vec<IntentId> = engine
+                    .intents()
+                    .filter(|i| {
+                        i.id() != id
+                            && !matches!(i.spec().task, Task::Engage { .. })
+                            && matches!(i.state(), State::PendingApproval | State::Approved)
+                            && i.spec().uids.contains(&o.uid)
+                    })
+                    .map(|i| i.id())
+                    .collect();
+                for other in stale {
+                    if let Err(e) = engine.void(other, &format!("superseded: {id} was dispatched to vehicle {}", o.uid)) {
+                        failures.push(format!("t={s}: void {other}: {e}"));
+                    }
                 }
                 engaging.insert(id, (o.uid.to_string(), o.effect_point));
             }

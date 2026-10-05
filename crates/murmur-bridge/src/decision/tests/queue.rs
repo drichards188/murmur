@@ -864,10 +864,13 @@ async fn an_order_approved_again_after_a_restart_asks_the_vehicle_first() {
     assert_eq!(w.count("MISSION_COUNT"), 1, "not uploaded again");
     assert_eq!(w.count("MAV_CMD_DO_SET_MISSION_CURRENT"), 1, "not started again");
     let b_text = blog.text();
-    assert!(
-        !b_text.contains("\"state\":\"sent\"") && !b_text.contains("\"state\":\"starting\""),
-        "followed: nothing sent in the second run"
-    );
+    assert!(!b_text.contains("\"state\":\"sent\""), "followed: nothing sent in the second run");
+    // rules 7: the follow is logged ahead like a start (from then on the copter runs it), and
+    // says it was followed
+    assert!(b_text.contains("followed, not sent again"), "the follow logged ahead");
+    for l in b_text.lines().filter(|l| l.contains("\"state\":\"starting\"")) {
+        assert!(l.contains("followed, not sent again") && l.contains("\"ahead\":true"), "{l}");
+    }
     replays_after(&blog, &r.log);
 }
 

@@ -384,9 +384,9 @@ and the target reversing between signatures, a transient reclassification, a pic
 before a reclassification, an approval that would stop an engagement, GNSS lost en route, a
 wobbling velocity estimate, a second engagement on a platform, a GPS glitch en route, a
 first signer's stale picture, a target getting under way while a signature waits, a friendly
-closing to just outside the keep-out; from rules 7, 66 to 68: an order queued for an
+closing to just outside the keep-out; from rules 7, 67 to 70: an order queued for an
 engaging platform, a mission ordered while an ended engagement's lost-link action is still
-preloaded, a restore that never confirms; from rules 6, 40 to 65: a fallback the firmware can't
+preloaded, a restore that never confirms, the same mission of a kind the policy never queues; from rules 6, 40 to 65: a fallback the firmware can't
 preload, a preload not answered, read back wrong, never reported, cut from the log or
 changed before the release, a distant and a near fast ferry, a track without a velocity
 estimate, friendlies and an aircraft track above the effect with their altitudes known or
@@ -438,7 +438,7 @@ Rules 7 follow-ups (murmur-85l, murmur-dma, murmur-636; provisional number,
   no backoff carried over from an outage), and an order other than a hold or rtl waits in the
   queue until the restore confirms (`restore_owed`, a decision's fact replay recomputes),
   bounded like any queued order (a human's approval back to the inbox after 120 s, saying
-  what held it); a hold or rtl is never held.
+  why it was queued); a hold or rtl is never held.
 - **A start is logged before it goes out.** A vehicle start is written to the audit log
   ahead of sending it, so a bridge that crashes right after still finds that the order may
   have started and never starts it again on its own; replay binds it.

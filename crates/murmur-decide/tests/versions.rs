@@ -57,16 +57,16 @@ const LOGS: [(&str, u32); 17] = [
     // fallback_preload refusal as rules 6 worded it (see the test below)
     ("v6-airship-nomination-scenario-66.jsonl", 6),
     // rules 7 (the queue's follow-ups; a provisional number, so the table names the constant):
-    // the same scenario; scenario 66, an operator's hold queued for the engaging USV whose link
-    // is cut supersedes the engagement (no fallback); scenario 67, an orbit ordered after an
+    // the same scenario; scenario 67, an operator's hold queued for the engaging USV whose link
+    // is cut supersedes the engagement (no fallback); scenario 68, an orbit ordered after an
     // abort waits for the USV's own lost-link values to be confirmed back; and a live run,
     // anchored as it ran (an orbit for the engaging USV queued for its own values, superseding
     // the engagement, sent once they were back, its start logged ahead; a second engagement
     // aborted while the USV's link was cut, its values back the second the link returned; a
     // third the same, with an orbit queued in the outage that went only after the restore)
     ("v7-engagement-scenario-01.jsonl", QUEUE_FOLLOWUPS_SINCE),
-    ("v7-queued-order-supersedes-scenario-66.jsonl", QUEUE_FOLLOWUPS_SINCE),
-    ("v7-mission-waits-for-restore-scenario-67.jsonl", QUEUE_FOLLOWUPS_SINCE),
+    ("v7-queued-order-supersedes-scenario-67.jsonl", QUEUE_FOLLOWUPS_SINCE),
+    ("v7-mission-waits-for-restore-scenario-68.jsonl", QUEUE_FOLLOWUPS_SINCE),
     ("v7-queue-followups-live.jsonl", QUEUE_FOLLOWUPS_SINCE),
 ];
 
@@ -473,7 +473,7 @@ fn a_downgraded_claim_is_caught_by_what_the_log_carries() {
     // decision's facts and its starts logged ahead
     let v7 = QUEUE_FOLLOWUPS_SINCE;
     for (name, markers) in [
-        ("v7-mission-waits-for-restore-scenario-67.jsonl", &["a vehicle's lost-link values owed back"][..]),
+        ("v7-mission-waits-for-restore-scenario-68.jsonl", &["a vehicle's lost-link values owed back"][..]),
         ("v7-queue-followups-live.jsonl", &["a vehicle's lost-link values owed back", "a vehicle start logged ahead of sending it"][..]),
     ] {
         let mut ls = lines(&fixture(name));
@@ -488,8 +488,8 @@ fn a_downgraded_claim_is_caught_by_what_the_log_carries() {
             );
         }
     }
-    // and scenario 66's engagement, superseded by a queued order, no rules 6 build could stop so
-    let mut ls = lines(&fixture("v7-queued-order-supersedes-scenario-66.jsonl"));
+    // and scenario 67's engagement, superseded by a queued order, no rules 6 build could stop so
+    let mut ls = lines(&fixture("v7-queued-order-supersedes-scenario-67.jsonl"));
     ls[0] = ls[0].replacen(&format!("\"rules_version\":{v7},"), "\"rules_version\":6,", 1);
     let r = with(&rechain(&ls), RulesAccepted::Exactly(6));
     assert!(whats(&r).contains(&"superseded by an order that was not dispatched"), "{:?}", whats(&r));

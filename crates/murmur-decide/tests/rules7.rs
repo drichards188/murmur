@@ -148,9 +148,10 @@ fn rules_6_logged_starts_when_they_were_seen() {
 }
 
 #[test]
-fn a_redelivery_that_only_follows_the_order_needs_no_new_start() {
+fn a_redelivery_logs_its_start_or_its_follow_ahead_too() {
     // the link lost after the start went out (unconfirmed): back to the queue; the next
-    // delivery only confirms it, and the vehicle running it is followed (acked, no start)
+    // delivery only confirms it, and the vehicle running it is followed: the follow is logged
+    // ahead like a start (from then on the vehicle runs it), and only then is it acked
     let (mut e, log, clock, s) = engine_on(RULES_VERSION);
     let w = world_at(clock.now());
     let id = e.submit(s.authority(), orbit(NEAR_CRISSY, 150.0, &["sky-1"]), &w, &terrain()).unwrap().id();
@@ -163,7 +164,47 @@ fn a_redelivery_that_only_follows_the_order_needs_no_new_start() {
     clock.advance_ms(20_000);
     let w = world_at(clock.now());
     assert!(matches!(e.dequeue(id, &w, &terrain()).unwrap(), Dequeued::Dispatched(_)));
+    let refused = |r: Result<(), EngineError>| matches!(r, Err(EngineError::NotItsOrder { .. }));
+    assert!(refused(e.record_op_state(id, &sky, "acked", "the vehicle already runs it: followed, not sent again")));
+    e.record_op_state_ahead(id, &sky, "the vehicle already runs it: followed, not sent again").unwrap();
     e.record_op_state(id, &sky, "acked", "the vehicle already runs it: followed, not sent again").unwrap();
+    let text = log.text();
+    let r = replay_str(&text).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+    // forged: the redelivery's follow dropped (review of 1a3cadb, finding 4: only a first
+    // delivery was held to it)
+    let follow_seq = parse_log(&text)
+        .unwrap()
+        .iter()
+        .filter(|e| matches!(&e.body, EventBody::OpState { ahead: true, .. }))
+        .map(|e| e.seq)
+        .max()
+        .unwrap();
+    let dropped = forge(&text, |ev| ev.retain(|e| e.seq != follow_seq));
+    let w = whats(&dropped, RulesAccepted::default());
+    assert!(w.iter().any(|m| m.contains("start was not logged ahead of it on this delivery")), "{w:?}");
+}
+
+#[test]
+fn a_requeued_order_redelivered_logs_its_start_ahead() {
+    // review of 1a3cadb, finding 4: requeued before its start went out, then dequeued: the
+    // redelivery's start goes through the write-ahead like the first's
+    let (mut e, log, clock, s) = engine_on(RULES_VERSION);
+    let w = world_at(clock.now());
+    let id = e.submit(s.authority(), orbit(NEAR_CRISSY, 150.0, &["sky-1"]), &w, &terrain()).unwrap().id();
+    e.dispatch_or_queue(id, &w).unwrap();
+    let sky = uid("sky-1");
+    e.record_op_state(id, &sky, "sent", "uploading").unwrap();
+    e.record_op_state(id, &sky, "requeued", "link lost mid-upload").unwrap();
+    e.requeue(id).unwrap();
+    clock.advance_ms(20_000);
+    let w = world_at(clock.now());
+    assert!(matches!(e.dequeue(id, &w, &terrain()).unwrap(), Dequeued::Dispatched(_)));
+    let refused = |r: Result<(), EngineError>| matches!(r, Err(EngineError::NotItsOrder { .. }));
+    assert!(refused(e.record_op_state(id, &sky, "acked", "accepted")));
+    assert!(refused(e.record_op_state(id, &sky, "active", "executing")));
+    e.record_op_state_ahead(id, &sky, "starting mission: mission mode commanded").unwrap();
+    e.record_op_state(id, &sky, "acked", "accepted").unwrap();
     let r = replay_str(&log.text()).unwrap();
     assert!(r.ok(), "{:?}", r.mismatches);
 }
@@ -172,7 +213,7 @@ fn a_redelivery_that_only_follows_the_order_needs_no_new_start() {
 
 #[test]
 fn an_order_queued_for_an_engaging_platform_supersedes_it_and_rules_6_did_not() {
-    let now = run("66-queued-order-supersedes-engagement.toml", None);
+    let now = run("67-queued-order-supersedes-engagement.toml", None);
     assert!(now.ok, "{:?}", now.failures);
     let stop = now
         .log
@@ -184,7 +225,7 @@ fn an_order_queued_for_an_engaging_platform_supersedes_it_and_rules_6_did_not() 
     assert!(stop.contains("queued until its vehicles can be reached"), "{stop}");
     // under rules 6 the queued hold left the engagement running until its picture failed,
     // and its fallback was commanded over the operator's hold
-    let before = run("66-queued-order-supersedes-engagement.toml", Some(6));
+    let before = run("67-queued-order-supersedes-engagement.toml", Some(6));
     assert!(!before.ok);
     assert!(
         before.failures.iter().any(|f| f.contains("expected the engagement stopped as superseded, it was picture")),
@@ -218,11 +259,73 @@ fn an_order_queued_for_an_engaging_platform_supersedes_it_and_rules_6_did_not() 
     assert!(w.iter().any(|m| m == "superseded by an order that was not dispatched"), "{w:?}");
 }
 
+/// `text` with the first `engage.stopped` (and the transition that follows it) moved `later`
+/// events further on, and re-chained: the stop now comes after other events.
+fn stop_moved_later(text: &str, later: usize) -> String {
+    forge(text, |ev| {
+        let stop = ev
+            .iter()
+            .position(|e| matches!(&e.body, EventBody::EngageStopped { .. }))
+            .unwrap();
+        let pair: Vec<_> = ev.drain(stop..stop + 2).collect();
+        let at = (stop + later).min(ev.len());
+        for (k, e) in pair.into_iter().enumerate() {
+            ev.insert(at + k, e);
+        }
+    })
+}
+
+#[test]
+fn a_supersede_is_only_in_the_step_that_queued_or_dispatched_the_order() {
+    // review of 1a3cadb, finding 3: the stop moved seconds after the queueing passed replay,
+    // so a later picture or system stop could have been relabelled superseded
+    let queued = run("67-queued-order-supersedes-engagement.toml", None);
+    assert!(queued.ok, "{:?}", queued.failures);
+    let w = whats(&stop_moved_later(&queued.log, 3), RulesAccepted::default());
+    assert!(w.iter().any(|m| m == "superseded by a queued order outside the step that queued it"), "{w:?}");
+    // the same for an order dispatched to the platform (scenario 22: an operator's hold)
+    let dispatched = run("22-agent-order-on-engaging-platform.toml", None);
+    assert!(dispatched.ok, "{:?}", dispatched.failures);
+    let w = whats(&stop_moved_later(&dispatched.log, 3), RulesAccepted::default());
+    assert!(w.iter().any(|m| m == "superseded by an order outside the step that dispatched it"), "{w:?}");
+    // the genuine logs: each stop right after its order's transition
+    for log in [&queued.log, &dispatched.log] {
+        let r = replay_str(log).unwrap();
+        assert!(r.ok(), "{:?}", r.mismatches);
+    }
+}
+
+#[test]
+fn with_no_queue_for_its_kind_a_mission_is_refused_not_sent_over_the_lost_link_action() {
+    // review of 1a3cadb, finding 1: [queue.kind.orbit] expire_s = 0 (a policy that never
+    // queues an orbit) let the orbit go at once at t=35 with the restore confirmed at t=60
+    let now = run("70-mission-refused-without-queue.toml", None);
+    assert!(now.ok, "{:?}", now.failures);
+    assert_eq!(now.tamper_detected, Some(true), "{:?}", now.tamper_mismatches);
+    let voided = now
+        .log
+        .lines()
+        .find(|l| l.contains("\"to\":\"voided\"") && l.contains("its own lost-link failsafe"))
+        .unwrap_or_else(|| panic!("the orbit refused, saying why:\n{}", now.log));
+    assert!(voided.contains("the policy queues no orbit order"), "{voided}");
+    // rules 6 sent it at once; that log, claimed as rules 7, is a mission dispatched to a
+    // vehicle still owed its values
+    let before = run("70-mission-refused-without-queue.toml", Some(6));
+    assert!(before.failures.iter().any(|f| f.contains("t=36: expected the task voided, got dispatched")), "{:?}", before.failures);
+    let claimed = forge(&before.log, |ev| {
+        if let EventBody::RunStarted { rules_version, .. } = &mut ev[0].body {
+            *rules_version = Some(RULES_VERSION);
+        }
+    });
+    let w = whats(&claimed, RulesAccepted::default());
+    assert!(w.iter().any(|m| m == "a mission dispatched to a vehicle still owed its own lost-link values (rules 7)"), "{w:?}");
+}
+
 // ---- murmur-85l: a mission waits for its platform's own lost-link values ----------------
 
 #[test]
 fn a_mission_waits_for_its_platforms_own_lost_link_values_and_rules_6_sent_it_at_once() {
-    let now = run("67-mission-waits-for-restore.toml", None);
+    let now = run("68-mission-waits-for-restore.toml", None);
     assert!(now.ok, "{:?}", now.failures);
     assert_eq!(now.tamper_detected, Some(true), "{:?}", now.tamper_mismatches);
     assert!(
@@ -244,7 +347,7 @@ fn a_mission_waits_for_its_platforms_own_lost_link_values_and_rules_6_sent_it_at
         .unwrap();
     assert!(queued < restored && restored < orbit, "queued {queued}, restored {restored}, sent {orbit}");
     // under rules 6 the same orbit went out at once
-    let before = run("67-mission-waits-for-restore.toml", Some(6));
+    let before = run("68-mission-waits-for-restore.toml", Some(6));
     assert!(!before.ok);
     assert!(before.failures.iter().any(|f| f.contains("t=36: expected the task queued, got dispatched")), "{:?}", before.failures);
     // a log claiming rules 6 can't carry the fact
@@ -259,9 +362,9 @@ fn a_mission_waits_for_its_platforms_own_lost_link_values_and_rules_6_sent_it_at
 
 #[test]
 fn a_restore_that_never_confirms_sends_the_mission_back_to_a_human_and_a_hold_still_goes() {
-    let r = run("68-restore-never-confirmed.toml", None);
+    let r = run("69-restore-never-confirmed.toml", None);
     assert!(r.ok, "{:?}", r.failures);
-    assert!(r.log.contains("back to the inbox for a new decision (its vehicles could not be reached: viper-1: heard, but its own lost-link failsafe"), "the reason says why");
+    assert!(r.log.contains("back to the inbox for a new decision (queued because its vehicles could not be reached: viper-1: heard, but its own lost-link failsafe"), "the reason says why");
 }
 
 #[test]
@@ -324,4 +427,21 @@ fn an_airships_fallback_refusal_says_its_failsafe_only_disarms() {
     // rules 6 logs keep the text they were decided with
     let (_, before) = detail(6);
     assert!(before.contains("only lost-link action is Land"), "{before}");
+}
+
+#[test]
+fn the_airship_scenario_under_rules_7_words_its_refusal_as_the_firmware_does() {
+    // the rules 7 counterpart of the committed rules 6 log of scenario 66 (versions.rs)
+    let r = run("66-airship-cannot-preload.toml", None);
+    assert!(r.ok, "{:?}", r.failures);
+    assert!(r.log.contains("only lost-link action is to disarm"), "the rules 7 wording");
+    assert!(!r.log.contains("only lost-link action is Land"));
+    // claimed as rules 6, its refusal is not what rules 6 decided
+    let claimed = forge(&r.log, |ev| {
+        if let EventBody::RunStarted { rules_version, .. } = &mut ev[0].body {
+            *rules_version = Some(6);
+        }
+    });
+    let w = whats(&claimed, RulesAccepted::Exactly(6));
+    assert!(w.iter().any(|m| m == "check results differ"), "{w:?}");
 }

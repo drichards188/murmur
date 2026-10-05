@@ -239,6 +239,10 @@ pub enum Routed {
     Dispatched(Order),
     /// Some vehicle can't be reached now: held (`intent.queued`) until `expires_t`.
     Queued { expires_t: Time, reach: Vec<Reach> },
+    /// Rules 7: a mission of a kind the policy never queues, for a vehicle still owed its own
+    /// lost-link values after an engagement: it has nowhere to wait, so it is voided (with
+    /// `reason`) rather than sent over the engagement's lost-link action.
+    Voided { reason: String },
 }
 
 /// What [`Engine::dequeue`] did with a queued intent.
@@ -292,6 +296,10 @@ pub struct Engine {
     /// Rules 7: the intent queued last: like the one dispatched last, it may supersede an
     /// engagement on its vehicles (the bridge does it in the same step as the queueing).
     last_queued: Option<IntentId>,
+    /// Rules 7: the order whose dispatch or queueing is the step in progress, and the seq of
+    /// that step's last event (its transition, or the last engagement it stopped): it
+    /// supersedes engagements only right there, nothing else logged in between.
+    step: Option<(IntentId, u64)>,
 }
 
 impl std::fmt::Debug for Engine {
@@ -357,6 +365,7 @@ impl Engine {
             rebooted: BTreeMap::new(),
             restores: crate::replay::Restores::default(),
             last_queued: None,
+            step: None,
         };
         let policy = e.policy.clone();
         e.emit(EventBody::RunStarted {
@@ -1474,13 +1483,17 @@ impl Engine {
         let platform = self.get(id)?.spec().uids.first().cloned();
         let other = self.get(by)?;
         let queued = other.state() == State::Queued;
-        // rules 7: the order queued last stands like the one dispatched last
-        let last = if queued {
+        let rules7 = self.policy.rules.rules_version >= rules::QUEUE_FOLLOWUPS_SINCE;
+        // the order dispatched last (rules 7: or queued last) stands; from rules 7 only in the
+        // step that dispatched or queued it, nothing else logged in between
+        let last = if rules7 {
+            self.step == Some((by, self.seq))
+        } else if queued {
             self.last_queued == Some(by)
         } else {
             self.last_dispatched == Some(by)
         };
-        let queued_ok = self.policy.rules.rules_version >= rules::QUEUE_FOLLOWUPS_SINCE;
+        let queued_ok = rules7;
         if let Some(why) = supersede_mismatch(
             id,
             by,
@@ -1504,6 +1517,10 @@ impl Engine {
         };
         let reason = format!("superseded by {by}{how} from {who}: that order stands; no fallback commanded");
         self.stop_engagement(id, StopCause::Superseded { by, source }, reason, false)?;
+        if rules7 {
+            // the step goes on: another engagement on its vehicles may be stopped next
+            self.step = Some((by, self.seq));
+        }
         Ok(())
     }
 
@@ -1812,6 +1829,17 @@ impl Engine {
         self.restores.owed_for(spec, &self.policy.rules)
     }
 
+    /// Rules 7: why `spec` (a vehicle task other than a hold or rtl) can't go now: a vehicle
+    /// still owed its own lost-link values by an engagement of this run. None otherwise.
+    fn restore_hold(&self, spec: &IntentSpec) -> Option<String> {
+        if matches!(spec.kind(), TaskKind::Hold | TaskKind::Rtl) {
+            return None;
+        }
+        let owed = self.restore_owed_for(spec);
+        let (uid, o) = owed.iter().next()?;
+        Some(format!("vehicle {uid}: {}", o.waiting_detail()))
+    }
+
     /// What [`queue::reach`] reads for `spec`: its part of `world`, and (rules 7) its
     /// vehicles' lost-link values still owed back.
     fn reach_inputs(&self, spec: &IntentSpec, world: &WorldSnapshot) -> WorldSnapshot {
@@ -2047,6 +2075,15 @@ impl Engine {
         let intent = self.get(id)?;
         next_state(intent.state(), Transition::Dispatch)
             .map_err(|err| EngineError::Illegal { id, err })?;
+        // rules 7: whatever the path (and whether the kind is queued or not), never a mission
+        // to a vehicle still owed its own lost-link values (replay checks every dispatch)
+        if let Some(why) = self.restore_hold(intent.spec()) {
+            return Err(EngineError::NotDispatchable {
+                id,
+                why: format!("{why}: a mission is not sent over an engagement's lost-link action"),
+            });
+        }
+        let intent = self.get(id)?;
         let order = order_for(
             intent.spec(),
             intent.space_answer(),
@@ -2079,6 +2116,7 @@ impl Engine {
         self.transition(id, Transition::Dispatch, reason.into())?;
         self.get_mut(id)?.mark_dispatched();
         self.last_dispatched = Some(id);
+        self.step = Some((id, self.seq));
         for u in uids {
             self.newest_on.insert(u, id);
         }
@@ -2109,6 +2147,16 @@ impl Engine {
         let spec = intent.spec().clone();
         let cfg = self.policy.queue();
         if !self.reach_needed(&spec) {
+            // rules 7: no queue for this kind, but still never a mission over an engagement's
+            // lost-link action: refused, saying why
+            if let Some(why) = self.restore_hold(&spec) {
+                let reason = format!(
+                    "not sent: {why}; the policy queues no {} order to wait for the restore, so give it again once the platform's own values are back",
+                    spec.kind().as_str()
+                );
+                self.void(id, &reason)?;
+                return Ok(Routed::Voided { reason });
+            }
             return Ok(Routed::Dispatched(self.dispatch_order(id)?));
         }
         let inputs = self.reach_inputs(&spec, world);
@@ -2153,6 +2201,7 @@ impl Engine {
             ),
         )?;
         self.last_queued = Some(id);
+        self.step = Some((id, self.seq));
         Ok(Routed::Queued { expires_t, reach })
     }
 
@@ -2198,13 +2247,6 @@ impl Engine {
         let cfg = self.policy.queue();
         let reach = queue::reach(&spec, &self.reach_inputs(&spec, world), &cfg, &self.policy.rules);
         if !queue::all_reachable(&reach) {
-            // rules 7: why it waits now, for the console and for the reason it expires with
-            // (not logged: nothing is while a vehicle can't be reached)
-            if self.policy.rules.rules_version >= rules::QUEUE_FOLLOWUPS_SINCE
-                && let Some(q) = self.get_mut(id)?.queue_mut()
-            {
-                q.reach = reach.clone();
-            }
             return Ok(Dequeued::Waiting(reach));
         }
         let (inputs, _, results, passed) =
@@ -2321,9 +2363,10 @@ impl Engine {
         next_state(intent.state(), tr).map_err(|err| EngineError::Illegal { id, err })?;
         let waited = expires_t.ms_since(since) / 1000;
         let reason = if inbox {
-            // rules 7: and why it could not go (the human sees what held it)
+            // rules 7: and why it was queued (the reach `intent.queued` logged; what holds it
+            // now is the queue's live view, not logged while it waits)
             let held = if self.policy.rules.rules_version >= rules::QUEUE_FOLLOWUPS_SINCE && !why.is_empty() {
-                format!(" (its vehicles could not be reached: {why})")
+                format!(" (queued because its vehicles could not be reached: {why})")
             } else {
                 String::new()
             };
@@ -2665,7 +2708,6 @@ impl Engine {
         let start = StartAhead {
             ahead,
             required: self.policy.rules.rules_version >= rules::QUEUE_FOLLOWUPS_SINCE,
-            fresh: intent.fresh_delivery(),
             started: intent.started_ahead().contains(uid),
         };
         if let Some(why) = op_state_mismatch(
@@ -3275,7 +3317,7 @@ pub(crate) fn supersede_mismatch(
     }
     if queued_ok && by_state == State::Queued {
         if !by_last {
-            return Some("superseded by a queued order other than the one queued last");
+            return Some("superseded by a queued order outside the step that queued it");
         }
         return None;
     }
@@ -3289,7 +3331,11 @@ pub(crate) fn supersede_mismatch(
         return Some("superseded by an order no longer under way");
     }
     if !by_last {
-        return Some("superseded by an order other than the one dispatched last");
+        return Some(if queued_ok {
+            "superseded by an order outside the step that dispatched it"
+        } else {
+            "superseded by an order other than the one dispatched last"
+        });
     }
     None
 }
@@ -3459,9 +3505,7 @@ pub(crate) struct StartAhead {
     pub ahead: bool,
     /// The log's rules write every vehicle start ahead (rules 7 on).
     pub required: bool,
-    /// The intent's current delivery is its first (nothing could hold or run it before).
-    pub fresh: bool,
-    /// This vehicle's start in the current delivery was logged ahead.
+    /// This vehicle's start (or follow) on the current delivery was logged ahead.
     pub started: bool,
 }
 
@@ -3473,10 +3517,11 @@ pub(crate) struct StartAhead {
 /// naming another fallback or task than that stop's (`"<fallback> commanded (<task>): ..."`,
 /// `"<fallback> could not be commanded ..."`). `fallback` is the engagement's stop, if any:
 /// `Some(None)` when it stopped without commanding one. Rules 7 (`start`): a vehicle task's
-/// `starting` is logged ahead of the start (and only it is), and on an order's first
-/// delivery a vehicle reports taking it (`acked`, `active`, `done`) only after its start was
-/// logged ahead: every way to it goes through the start, which waits for that write. The
-/// engine refuses these; replay flags them.
+/// `starting` is logged ahead of the start (and only it is), and on every delivery a vehicle
+/// reports taking the order (`acked`, `active`, `done`) only after its start was logged
+/// ahead: every way to it goes through the start, or through a follow of an order the vehicle
+/// already runs, which the bridge logs ahead the same way (from then on the vehicle runs it).
+/// The engine refuses these; replay flags them.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn op_state_mismatch(
     spec: &IntentSpec,
@@ -3503,8 +3548,8 @@ pub(crate) fn op_state_mismatch(
         if op == queue::STARTING_OP && !start.ahead {
             return Some("a vehicle start not logged ahead of sending it (from rules 7 every start is)");
         }
-        if start.fresh && queue::committed_op(op) && !start.started {
-            return Some("a vehicle took an order whose start was not logged ahead of it (rules 7)");
+        if queue::committed_op(op) && !start.started {
+            return Some("a vehicle took an order whose start was not logged ahead of it on this delivery (rules 7)");
         }
     }
     let engagement = spec.kind() == TaskKind::Engage;

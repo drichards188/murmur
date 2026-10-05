@@ -1,5 +1,5 @@
 # Rules 7 (murmur-85l), the bound: a restore that never confirms holds a mission no longer
-# than any order waits for an unreachable vehicle. As 67, but the platform never answers the
+# than any order waits for an unreachable vehicle. As 68, but the platform never answers the
 # restore of its own lost-link values. The operator's orbit waits in the queue; a human's
 # approval is held there at most 120 s, then it goes back to the inbox saying why (its own
 # failsafe not confirmed back), never silently stuck. A hold the operator gives meanwhile is

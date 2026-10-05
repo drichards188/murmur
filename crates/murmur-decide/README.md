@@ -188,11 +188,15 @@ link to fail, nor sent twice, nor sent stale.
   go out (`Engine::record_op_state_ahead`: `op.state` starting with `ahead: true`), under the
   decision lock, and sends nothing if the write fails; the tick no longer logs a `starting`.
   A carry-over then always finds it (`maybe_started`): only confirmed, never started again on
-  its own. The engine refuses, and replay flags, a vehicle task's `starting` not logged ahead,
-  an `ahead` on anything else, and, on an order's first delivery (`Intent::fresh_delivery`),
-  a vehicle taking it (`acked`, `active`, `done`) before its start was logged ahead: every way
-  to those goes through the start, so a forged log that drops the write-ahead is caught. A
-  redelivery (the order sent before) may be followed without a new start.
+  its own. A follow of an order the vehicle already runs (after a restart, or a redelivery
+  that finds it running it, or in the hold or rtl mode) is logged ahead the same way, saying
+  it was followed: from then on the vehicle runs it. The engine refuses, and replay flags, a
+  vehicle task's `starting` not logged ahead, an `ahead` on anything else, and, on every
+  delivery, a vehicle taking the order (`acked`, `active`, `done`) before its start or follow
+  on that delivery was logged ahead (`Intent::started_ahead`, cleared at each dispatch), so a
+  forged log that drops a write-ahead is caught, a redelivery's too. The write waits for the
+  decision lock off the runtime's worker (`block_in_place` on the bridge's multi-threaded
+  runtime), so a lock held for seconds stalls no other vehicle's receive loop.
 - **Rules 7: a mission waits for its platform's own lost-link values** (murmur-85l). After an
   engagement ended, its platform still carried the engagement's lost-link action (its
   fallback on a timer of a few seconds) until the restore confirmed, which backed off while
@@ -206,17 +210,28 @@ link to fail, nor sent twice, nor sent stale.
   onto the vehicle they were preloaded on, which the log can't tell). Its reach says why
   (`heard, but its own lost-link failsafe (...) is not confirmed back since engagement ...`),
   it goes the tick after the restore confirms, and its wait is bounded as any queued order's:
-  a human's approval back to the inbox after `human_expire_s` (the reason now says what held
-  it), else expired at its kind's wait. A hold or rtl, the safety commands, is never held: the
-  restore runs beside it. A mission for a platform whose engagement is still under way waits
-  the same way (queued, it supersedes the engagement, below; the restore runs; then it goes).
+  a human's approval back to the inbox after `human_expire_s` (the reason now quotes why it
+  was queued, the reach `intent.queued` logged), else expired at its kind's wait. A hold or
+  rtl, the safety commands, is never held: the restore runs beside it. A mission for a
+  platform whose engagement is still under way waits the same way (queued, it supersedes the
+  engagement, below; the restore runs; then it goes). The hold is not the queue's to waive:
+  for a kind the policy never queues (`[queue.kind.<kind>] expire_s = 0`) the mission has
+  nowhere to wait, so it is voided, saying why (`Routed::Voided`), and given again once the
+  restore confirmed; every dispatch path refuses one (`dispatch_inner`), and replay flags any
+  mission dispatched to a vehicle its ledger shows still owed, whatever the kind's queue.
   The bridge no longer tries a restore into a dead link and tries it at once when the vehicle
   is heard again, whatever the backoff of attempts the outage cost; the inbox's restore alert
   lists the missions waiting for it.
 - **Rules 7: a queued order supersedes an engagement** (murmur-636). An order queued for an
   engagement's platform stops the engagement in the step that queues it, as its dispatch
   would: cause `superseded` by that order, no fallback commanded (`Engine::supersede_engagement`
-  takes the intent queued last as it takes the one dispatched last; replay checks the same).
+  takes the intent queued last as it takes the one dispatched last, and from rules 7 only in
+  the step that dispatched or queued it: right after its transition, with nothing logged in
+  between but the other engagements that step stops; replay checks the same, so a later
+  picture or system stop can't be relabelled `superseded`). The bridge stops the engagements
+  first in that step, before it voids older orders. The platform's intercept is not stopped
+  (nothing can be sent before the queued order goes): it may keep loitering at the effect
+  point until then, with no engagement and nothing to release, and the restore alert says so.
   Before, the queue abandoned the engagement's unstarted intercept, the engagement read that
   as its intercept failing, stopped as `system` and commanded its fallback, which flew when the
   link returned while the operator's newer order still waited.
@@ -862,22 +877,24 @@ Rules versions:
   own; an order other than a hold or rtl held in the queue for a vehicle still owed its own
   lost-link values by an engagement of the run (`restore_owed`, a decision's fact the engine
   fills from its ledger and replay recomputes from the log's; the reach says why, and a
-  human's approval that goes back to the inbox from the queue says what held it); an order
+  human's approval that goes back to the inbox from the queue says why it was queued); an order
   queued for an engagement's platform supersedes the engagement in the step that queues it,
-  as a dispatch does (cause `superseded`, no fallback; the intent queued last); the engine
+  as a dispatch does (cause `superseded`, no fallback; from rules 7 a supersede, queued or
+  dispatched, only in the step of that order, nothing logged between); a mission for a kind
+  the policy never queues is voided while its platform is owed its values (never sent);
+  every delivery logs its start, or its follow of an order already running, ahead; the engine
   refuses an op that ends `requeued` after its start went out on that delivery (replay
   rejects that in every log; before rules 7 the engine still wrote it); and an airship's
   `fallback_preload` refusal says its GCS failsafe only disarms (it said Land, which Blimp 4.8
   doesn't have: murmur-a9h). Gated in
   `queue::reach`, `Engine::record_op_state_ahead` and `op_state_mismatch`,
-  `Engine::supersede_engagement` and `supersede_mismatch`, the dequeue's waiting reach and
-  `expire_queued`'s reason; the bridge's write-ahead, its restores (none into a dead link, one
+  `Engine::supersede_engagement` and `supersede_mismatch`, and `expire_queued`'s reason; the bridge's write-ahead, its restores (none into a dead link, one
   at once when the vehicle is heard again) and its supersede on queueing are gated on the same
   constant. Markers (a log claiming rules 6 or older can't carry them): `restore_owed` in a
   decision's inputs, `ahead` on an op state; and replay refuses an engagement superseded by a
   queued order under older rules. Fixtures: `tests/data/audit/v7-engagement-scenario-01.jsonl`,
-  `v7-queued-order-supersedes-scenario-66.jsonl`,
-  `v7-mission-waits-for-restore-scenario-67.jsonl`, and a live run with its anchors
+  `v7-queued-order-supersedes-scenario-67.jsonl`,
+  `v7-mission-waits-for-restore-scenario-68.jsonl`, and a live run with its anchors
   (`v7-queue-followups-live.jsonl`, `tests/data/anchors/v7-queue-followups-live.anchors`,
   stand-ins, clean build 3b2127b: an operator's orbit for the engaging USV queued for its own
   lost-link values, superseding the engagement with no fallback, sent the second after the

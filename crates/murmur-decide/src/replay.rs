@@ -658,9 +658,7 @@ struct Tracked {
     /// its current delivery only confirms.
     maybe_started: BTreeSet<Uid>,
     confirming: BTreeSet<Uid>,
-    /// Rules 7: its current delivery is its first, and the vehicles whose start in it was
-    /// logged ahead.
-    fresh: bool,
+    /// Rules 7: the vehicles whose start (or follow) on the current delivery was logged ahead.
     started_ahead: BTreeSet<Uid>,
     /// The vehicles whose op on this delivery (since its dispatch in this log, or its resume:
     /// the vehicles that had started it, followed) reported its start going out (`starting`,
@@ -729,7 +727,6 @@ impl Tracked {
             platforms: BTreeMap::new(),
             maybe_started: BTreeSet::new(),
             confirming: BTreeSet::new(),
-            fresh: false,
             started_ahead: BTreeSet::new(),
             start_went_out: BTreeSet::new(),
             preload: None,
@@ -1099,8 +1096,10 @@ fn replay_inner<S: AsRef<str>>(
     let mut roster: Option<Roster> = None;
     // the intent dispatched last, and per vehicle the one dispatched to it last
     let mut last_dispatch: Option<IntentId> = None;
-    // rules 7: the intent queued last (it may supersede an engagement on its vehicles)
+    // rules 7: the intent queued last (it may supersede an engagement on its vehicles), and
+    // the step in progress: the order dispatched or queued in it and the seq of its last event
     let mut last_queued: Option<IntentId> = None;
+    let mut step: Option<(IntentId, u64)> = None;
     let mut newest_on: BTreeMap<Uid, IntentId> = BTreeMap::new();
     // intents carried over from a previous run, checked against it after the loop
     let mut resumed: Vec<ResumedEvent> = Vec::new();
@@ -1897,13 +1896,13 @@ fn replay_inner<S: AsRef<str>>(
                     Transition::Dispatch => {
                         tr.dispatch_logged = None;
                         tr.dispatched = true;
-                        tr.fresh = !tr.dispatched_before;
                         tr.started_ahead.clear();
                         tr.dispatched_before = true;
                         tr.ops.clear();
                         tr.start_went_out.clear();
                         tr.confirming = tr.maybe_started.clone();
                         last_dispatch = Some(*intent);
+                        step = Some((*intent, e.seq));
                         for u in &tr.spec.uids {
                             newest_on.insert(u.clone(), *intent);
                         }
@@ -1921,6 +1920,7 @@ fn replay_inner<S: AsRef<str>>(
                         tr.queued_logged = None;
                         r.queued += 1;
                         last_queued = Some(*intent);
+                        step = Some((*intent, e.seq));
                     }
                     Transition::Expire if tr.state == State::Queued => {
                         tr.queue_expired = false;
@@ -1973,6 +1973,21 @@ fn replay_inner<S: AsRef<str>>(
             } => {
                 if let Some(inputs) = reach_inputs {
                     check_restore_owed(&mut r, e, *intent, &inputs.restore_owed, &intents, &restores, policy.as_ref());
+                }
+                // rules 7: never a mission to a vehicle still owed its own lost-link values,
+                // whether its kind is queued or not (a queued one's reach says so too)
+                if let (Some(pol), Some(tr)) = (&policy, intents.get(intent))
+                    && !matches!(tr.spec.kind(), TaskKind::Hold | TaskKind::Rtl)
+                    && !restores.owed_for(&tr.spec, &pol.rules).is_empty()
+                {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "a mission dispatched to a vehicle still owed its own lost-link values (rules 7)",
+                        json(&restores.owed_for(&tr.spec, &pol.rules)),
+                        "no values owed back, or a hold or rtl".into(),
+                    );
                 }
                 let Some(tr) = intents.get_mut(intent) else {
                     bad(
@@ -2332,10 +2347,16 @@ fn replay_inner<S: AsRef<str>>(
             } => {
                 // the order that superseded it, as replay tracked it: its spec and whether it
                 // was dispatched
+                let queued_ok = policy
+                    .as_ref()
+                    .is_some_and(|p| p.rules.rules_version >= rules::QUEUE_FOLLOWUPS_SINCE);
                 let superseder = match cause {
                     StopCause::Superseded { by, .. } => intents.get(by).map(|t| {
-                        // rules 7: the order queued last stands like the one dispatched last
-                        let last = if t.state == State::Queued {
+                        // the order dispatched last (rules 7: or queued last) stands; from
+                        // rules 7 only in the step that dispatched or queued it
+                        let last = if queued_ok {
+                            step == Some((*by, e.seq.saturating_sub(1)))
+                        } else if t.state == State::Queued {
                             last_queued == Some(*by)
                         } else {
                             last_dispatch == Some(*by)
@@ -2344,9 +2365,10 @@ fn replay_inner<S: AsRef<str>>(
                     }),
                     _ => None,
                 };
-                let queued_ok = policy
-                    .as_ref()
-                    .is_some_and(|p| p.rules.rules_version >= rules::QUEUE_FOLLOWUPS_SINCE);
+                // the step goes on past this stop and its transition (the next event)
+                if queued_ok && let StopCause::Superseded { by, .. } = cause {
+                    step = Some((*by, e.seq + 1));
+                }
                 let Some(tr) = intents.get_mut(intent) else {
                     bad(&mut r, e, Some(*intent), "unknown intent", String::new(), String::new());
                     continue;
@@ -3217,7 +3239,6 @@ fn replay_inner<S: AsRef<str>>(
                 let start = StartAhead {
                     ahead: *ahead,
                     required,
-                    fresh: tr.fresh,
                     started: tr.started_ahead.contains(uid),
                 };
                 if let Some(why) = op_state_mismatch(

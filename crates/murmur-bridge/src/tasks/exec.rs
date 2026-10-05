@@ -1112,6 +1112,17 @@ impl Task<'_> {
         Ok(())
     }
 
+    /// Rules 7 (the write-ahead installed): a follow of an order the vehicle already runs is
+    /// logged ahead like a start (`op.state` starting, saying it was followed): from here the
+    /// vehicle runs it, and a bridge that stops now finds it may have started. Before rules 7
+    /// a follow went straight to acked.
+    fn follow_ahead(&self, detail: &str) -> Result {
+        if self.ctx.ahead.is_some() {
+            self.mark_starting(detail)?;
+        }
+        Ok(())
+    }
+
     /// Armed and in its mission mode: flying a mission (any).
     fn in_mission_mode(&self) -> bool {
         let auto = self.auto_mode();
@@ -1141,12 +1152,18 @@ impl Task<'_> {
                 if !self.op().set(OpState::Starting, detail) {
                     return fail("ended before its start went out");
                 }
-                match &self.ctx.ahead {
-                    Some(log) => log(self.op(), detail).or_else(|e| {
-                        fail(format!("its start could not be logged ahead of sending it ({e}): not sent"))
-                    }),
-                    None => Ok(()),
-                }
+                let Some(log) = &self.ctx.ahead else {
+                    return Ok(());
+                };
+                // the write waits for the decision lock: on a multi-threaded runtime (the
+                // bridge's) the worker hands its other tasks off first, so a lock held for
+                // seconds never stalls other vehicles' receive loops behind a start
+                let write = || log(self.op(), detail);
+                let written = match tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor()) {
+                    Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(write),
+                    _ => write(),
+                };
+                written.or_else(|e| fail(format!("its start could not be logged ahead of sending it ({e}): not sent")))
             }
         }
     }
@@ -1196,6 +1213,7 @@ impl Task<'_> {
             .auto_mode()
             .ok_or_else(|| Stop::Failed(format!("{} has no {} mode", self.kind.name(), self.caps.auto)))?;
         if adopted {
+            self.follow_ahead("the vehicle already runs it: followed, not sent again")?;
             self.op().set(
                 OpState::Acked,
                 "the vehicle already runs it: followed, not sent again",
@@ -1403,6 +1421,7 @@ impl Task<'_> {
             .and_then(|t| mav::mode_number(t, rtl));
         let mode = match number {
             Some(n) if self.mode_after_restart(n, "returning")? => {
+                self.follow_ahead("the vehicle is already returning: followed, not sent again")?;
                 self.op().set(
                     OpState::Acked,
                     "the vehicle is already returning: followed, not sent again",
@@ -1431,6 +1450,7 @@ impl Task<'_> {
         if let Some(n) = number
             && self.mode_after_restart(n, "holding")?
         {
+            self.follow_ahead("holding (it already was: followed, not sent again)")?;
             self.op().set(
                 OpState::Done,
                 "holding (it already was: followed, not sent again)",

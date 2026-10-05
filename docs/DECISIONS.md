@@ -682,7 +682,11 @@ group. Dates are 2026.
   vehicle's state what the log can record exactly. Replay accepts the write-ahead and binds
   it: a vehicle task's start is logged ahead and nothing else is, and on an order's first
   delivery a vehicle reports taking it only after its start was logged, so a forged log that
-  drops the write-ahead is caught. The engine also refuses an op ending `requeued` after its
+  drops the write-ahead is caught, on every delivery (review of 1a3cadb: a redelivery after a
+  requeue was not held to it), and a follow of an order the vehicle already runs is logged
+  ahead the same way (from then on it runs it). The write waits for the decision lock off the
+  runtime's worker (`block_in_place`), so it stalls no other vehicle's receive loop. The engine
+  also refuses an op ending `requeued` after its
   start went out on that delivery (it may be running: it ends `unconfirmed`), which replay
   rejects in every log. Residual: a carry-over from a rules 5 or 6 log keeps the old window.
 - **A mission waits for its platform's own lost-link values; a hold or rtl never does**
@@ -699,10 +703,14 @@ group. Dates are 2026.
   holding it for a parameter exchange that may not finish could drop it, and the lost-link
   action it might meet in the seconds the restore takes is itself a safety action (brake,
   hold, loiter, return). The hold is bounded as any queued order's wait: a human's approval
-  goes back to the inbox after 120 s saying what held it, an automatic order expires at its
+  goes back to the inbox after 120 s saying why it was queued, an automatic order expires at its
   kind's wait, and the inbox's restore alert names the platform, its values, the attempts and
   the missions waiting. Nothing sends a mission over the engagement's lost-link action; an
-  operator who wants the platform elsewhere meanwhile gives a hold or rtl. An operator's own
+  operator who wants the platform elsewhere meanwhile gives a hold or rtl. The hold is not the
+  queue's to waive (review of 1a3cadb): a mission of a kind the policy never queues has nowhere
+  to wait, so it is voided saying why and given again once the restore confirmed, rather than
+  sent at once; every dispatch path refuses it, and replay flags a mission dispatched to a
+  vehicle its ledger shows still owed, whatever the kind's queue. An operator's own
   mission for a platform whose engagement is still under way waits the same way (queued, it
   supersedes the engagement, below; the restore runs; then it goes, seconds later on a working
   link); a hold or rtl still runs at once. The fact
@@ -717,8 +725,11 @@ group. Dates are 2026.
   with cause `system` and commanded its fallback, which flew when the link returned while the
   operator's order still waited; dispatched, the same order stopped it as `superseded` with
   no fallback. Made consistent: the newest order stands, the stop says `superseded` (Phase G
-  counts stop causes), no fallback is commanded, in the step that queues the order (replay
-  takes the intent queued last as it takes the one dispatched last). No safety reason
+  counts stop causes), no fallback is commanded, in the step that queues the order: replay
+  takes the intent queued last as it takes the one dispatched last, and from rules 7, for
+  both, only right after that order's transition with nothing else logged between (review of
+  1a3cadb: a stop moved seconds later passed, so a picture or system stop could have been
+  relabelled `superseded`); the bridge stops the engagements first in that step. No safety reason
   against it was found: a stop never releases anything and the chain's guarantees are
   untouched (two operators with engagement authority on one frozen plan, never an agent, a
   platform that leaves its intercept stopped before any release); only an operator's own
@@ -726,8 +737,10 @@ group. Dates are 2026.
   platform (an agent's goes to a human); and a platform cut off meanwhile still takes its
   preloaded fallback as its own lost-link action. What changes is the label and the bridge no
   longer commanding a fallback over the operator's order. The platform keeps its last order
-  (or its failsafe's) until the queued one reaches it; if that one expires instead, nothing is
-  commanded.
+  (or its failsafe's) until the queued one reaches it, possibly still loitering on the
+  intercept path at the effect point with no engagement (nothing can be released); if the
+  restore never confirms, the restore alert says so, and a hold or rtl takes it off; if the
+  queued order expires instead, nothing is commanded.
 - **A rules change is gated on a named constant** (10-04). Rules 7 is gated on
   `QUEUE_FOLLOWUPS_SINCE` (and `RULES_VERSION` is defined from it), never on a literal 7,
   because another branch (operator authentication) may take the next number first: the branch

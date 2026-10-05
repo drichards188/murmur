@@ -738,10 +738,8 @@ pub struct Intent {
     /// one that does not run it sends it to a human.
     #[serde(skip)]
     confirming: BTreeSet<Uid>,
-    /// Rules 7: its current delivery is its first (nothing could hold or run it before), and
-    /// the vehicles whose start in it was logged ahead of sending it.
-    #[serde(skip)]
-    fresh_delivery: bool,
+    /// Rules 7: the vehicles whose start (or follow) on the current delivery was logged ahead
+    /// of it.
     #[serde(skip)]
     started_ahead: BTreeSet<Uid>,
     /// The vehicles whose op on the current delivery reported its start going out
@@ -791,7 +789,6 @@ impl Intent {
             basis_carried: false,
             maybe_started: BTreeSet::new(),
             confirming: BTreeSet::new(),
-            fresh_delivery: false,
             started_ahead: BTreeSet::new(),
             start_went_out: BTreeSet::new(),
             ops: BTreeMap::new(),
@@ -875,10 +872,6 @@ impl Intent {
     pub fn confirming(&self) -> &BTreeSet<Uid> {
         &self.confirming
     }
-    /// Rules 7: its current delivery is its first.
-    pub fn fresh_delivery(&self) -> bool {
-        self.fresh_delivery
-    }
     /// Rules 7: the vehicles whose start in the current delivery was logged ahead of it.
     pub fn started_ahead(&self) -> &BTreeSet<Uid> {
         &self.started_ahead
@@ -959,7 +952,6 @@ impl Intent {
     /// Dispatched (again): a vehicle may hold it from now on; its op states start over, and
     /// the vehicles that may have started it are only confirmed this time.
     pub(crate) fn mark_dispatched(&mut self) {
-        self.fresh_delivery = !self.dispatched_before;
         self.dispatched_before = true;
         self.ops.clear();
         self.op_details.clear();

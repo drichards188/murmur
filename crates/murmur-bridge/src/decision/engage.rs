@@ -377,6 +377,9 @@ impl Decision {
         // platform's lane, once any job there has finished); the intercept goes out once its
         // read-back confirms
         if o.preload.is_some() {
+            // the older orders on the platform first, in the step of this dispatch (rules 7:
+            // nothing logged between)
+            self.supersede(core, id, &[spec.uids[0].clone()]);
             let mut run = EngageRun::new(None);
             run.platform = Some(uid);
             if fleet.contains_key(&uid) {
@@ -399,7 +402,6 @@ impl Decision {
                     self.command_fallback(core, f);
                 }
             }
-            self.supersede(core, id, &[spec.uids[0].clone()]);
             self.step_params(core);
             return Ok(());
         }
@@ -857,6 +859,21 @@ impl Decision {
                         .unwrap_or_default();
                     if owed.silent {
                         last.push_str("; its link is silent: put back as soon as it is heard again");
+                    }
+                    // rules 7: still flying the intercept of an engagement a queued order
+                    // superseded (its newest order waits for this restore): on the intercept
+                    // path, loitering at the effect point, though nothing can be released
+                    if let Some(op) = self.world.tasks.current_ops().into_iter().find(|o| o.uid == *uid)
+                        && op.task == crate::tasks::TaskKind::Orbit
+                        && !matches!(op.state, OpState::Failed | OpState::Superseded | OpState::Requeued | OpState::Unconfirmed)
+                        && let Some(e) = core.engine.intent(IntentId(op.intent_id))
+                        && matches!(e.spec().task, Task::Engage { .. })
+                        && e.state().is_terminal()
+                    {
+                        last.push_str(&format!(
+                            "; it is still on stopped engagement {}'s intercept path (loitering at its effect point; nothing can be released): a hold or rtl takes it off",
+                            e.id()
+                        ));
                     }
                     // rules 7: the missions waiting in the queue for it
                     let held: Vec<String> = core

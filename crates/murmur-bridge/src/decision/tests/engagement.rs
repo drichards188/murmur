@@ -1239,3 +1239,41 @@ async fn after_an_outage_the_platforms_own_values_go_back_before_a_queued_missio
     let rep = replay::replay_str(&e.r.log.text()).expect("parses");
     assert!(rep.ok(), "{:?}", rep.mismatches);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_platform_left_on_a_superseded_intercept_says_so_in_its_restore_alert() {
+    // review of 1a3cadb, finding 5: an orbit queued for the engaging platform (its link cut)
+    // supersedes the engagement; the platform's own lost-link values can't go back, so the
+    // orbit waits, and the platform keeps loitering at the effect point on the stopped
+    // engagement's intercept. Nothing can be released; the restore alert says where it is
+    let e = engage_rig_policy(None, PathBuf::from("memory"), |p| p.rules.task_duration_s = 60);
+    let (id, cell, w) = e.approved_watched("return").await;
+    // on station over the effect point
+    for _ in 0..5 {
+        e.tick_on_wall().await;
+    }
+    super::queue::go_silent(&cell, &w, 5.0);
+    let mut req = orbit(1);
+    req.params.center = Some([TARGET.1 + 0.004, TARGET.0]);
+    let o = e.r.d.submit(&op("op-1"), req).await.expect("orbit");
+    assert_eq!(o.state, State::Queued, "{}", o.intent);
+    assert_eq!(e.r.state(id), State::Aborted, "{}", e.r.reason(id));
+    for _ in 0..40 {
+        e.tick_on_wall().await;
+    }
+    let alerts = e.r.d.inbox_json()["alerts"].clone();
+    let alert = alerts
+        .as_array()
+        .and_then(|a| a.iter().find(|a| a["kind"] == "restore_pending"))
+        .cloned()
+        .unwrap_or_else(|| panic!("{alerts}"));
+    let detail = alert["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains(&format!("still on stopped engagement {id}'s intercept path")),
+        "{detail}"
+    );
+    assert!(detail.contains(&format!("{} (orbit)", o.id)), "the waiting orbit listed: {detail}");
+    assert!(e.tracks.take_effects().is_empty(), "nothing released");
+    let rep = replay::replay_str(&e.r.log.text()).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+}

@@ -170,6 +170,9 @@ impl Decision {
                 self.supersede_queued(core, id, &uids);
                 Ok(())
             }
+            // rules 7: refused, saying why (a mission of a kind never queued, its platform
+            // still owed its own lost-link values): nothing sent, nothing superseded
+            Routed::Voided { .. } => Ok(()),
         }
     }
 

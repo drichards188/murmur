@@ -1149,6 +1149,12 @@ impl Decision {
     /// that cause: the newest order stands. A newer order is never voided by an older one's
     /// dispatch (rules 5: an older queued order that comes out of the queue after it).
     fn supersede(&self, core: &mut Core, id: IntentId, uids: &[DUid]) {
+        // rules 7: the engagements first, right after the dispatch (the engine and replay take
+        // a superseding order only in the step that dispatched it, nothing logged between)
+        let rules7 = self.rules.rules_version >= rules::QUEUE_FOLLOWUPS_SINCE;
+        if rules7 {
+            self.stop_superseded_engagements(core, id, uids);
+        }
         let took: BTreeSet<&DUid> = uids.iter().collect();
         let stale: Vec<(IntentId, DUid)> = core
             .engine
@@ -1172,7 +1178,9 @@ impl Decision {
                 eprintln!("decision: void {other}: {e}");
             }
         }
-        self.stop_superseded_engagements(core, id, uids);
+        if !rules7 {
+            self.stop_superseded_engagements(core, id, uids);
+        }
     }
 
     /// A collect or cover: the engine releases its order (`intent.dispatched`), the space
