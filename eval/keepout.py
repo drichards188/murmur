@@ -1,41 +1,51 @@
 """Keep-outs against engagements, on generated situations (rules 6, 9 and 12): how often a
 keep-out blocks the nomination of an engagement on a hostile target, as a function of traffic
-density and behaviour, time to effect (the platform's speed and distance) and the rules
-version; whether a block protected someone or nobody was at risk; and which keep-out component
+density and behaviour, time to effect (the platform's speed and distance), how the tracks are
+made and the rules version; whether a block protected someone; and which keep-out component
 blocked. MODEL RESULTS FROM SIMULATED GEOMETRY, NEVER HUMAN DATA.
 
-**What runs.** For each seed, density and behaviour, `situation` draws a world from the stated
-distributions below (seeded, and paired: the same seed, density and index give the same
-target, contact positions, our vehicles and platform placements under every behaviour, only
-the motion differs): a hostile target holding in the engagement zone ez-gate-west, declared
-hostile by an operator; protected contacts (neutral or unknown, none declared) uniform over a
-disc of `FIELD_M` around it, as many as a Poisson draw of the density gives; our observing USV;
-sometimes one of ours lost; and the engaging platform placed for each nominal time to effect
-(`TTE_S`) and at each distance (`DIST_M`). Each contact moves by its behaviour (`MOTION`), and
-the generator writes the facts a tracker would report for it at the nomination, with the
-scenario runner's noise model (position error of the track's own 1-sigma, velocity error
-`vel_sigma` per axis) and the bridge tracker's rules for what it reports (no velocity in its
-first `VEL_KNOWN_S`, an average velocity over the last minute once tracked `MEAN_MIN_S`, a
-manoeuvre when its velocity changed by more than the bridge's threshold within its memory,
-`first_seen_t`). `murmur-keepout-probe` (eval/keepout_probe, read-only use of murmur-decide)
-runs every evaluation through the engine's own nomination checks (`rules::evaluate` on the
-engine's view of the world) under rules 6, 9 and 12, and lists each protected track's
-keep-out regions (`engage::track_reach`) with how far each reaches into the keep-out.
+**What runs.** For each variant (`VARIANTS`), seed, density and behaviour, `situation` draws a
+world from the stated distributions below (seeded, and paired: the same seed, density and index
+give the same target, contact positions, our vehicles and platform placements under every
+behaviour, only the motion differs): a hostile target holding in the engagement zone
+ez-gate-west, declared hostile by an operator; protected contacts (neutral or unknown, none
+declared) over a disc of `FIELD_M` around it, as many as a Poisson draw of the density gives,
+uniform or (the lanes layout) mostly in two lanes passing near it; our observing USV; sometimes
+one of ours lost; and the engaging platform placed for each nominal time to effect (`TTE_S`)
+and at each distance (`DIST_M`). Each contact moves by its behaviour (`MOTION`). What the
+engine reads about it comes from one of two trackers:
+
+- `radar` and `ais` (the primary): its last ten minutes played second by second through the
+  bridge's own sensing model and IMM tracker (eval/keepout_probe compiles
+  crates/murmur-bridge/src/tracks/{model,sensing,truth}.rs unchanged), the observing USV's
+  catalog sensors: its radar alone against contacts without AIS (`radar`), or every sensor it
+  carries against contacts that all broadcast AIS (`ais`, the best case). The target's track is
+  the generator's in every variant (a good track, as an engagement needs).
+- `model`: a stated model of the tracker's reports with the scenario runner's noise (position
+  off by the track's own 1-sigma, velocity off by `vel_sigma` per axis, no velocity in the
+  first `VEL_KNOWN_S`, an average velocity once tracked `MEAN_MIN_S`, a manoeuvre when the true
+  velocity changed beyond the bridge's threshold within its memory).
+
+`murmur-keepout-probe` (read-only use of murmur-decide) runs every evaluation through the
+engine's own nomination checks (`rules::evaluate` on the engine's view of the world) under
+rules 6, 9 and 12, and lists each protected track's keep-out regions (`engage::track_reach`)
+with how far each reaches into the keep-out.
 
 **Labels (truth).** From the effect point and time the engine predicted, each contact's true
-position then: a block is *needed* when a protected contact is truly inside the effect circle
-(the effect radius) at the effect time, else *conservative* (nobody at risk; *buffer* when
-someone is inside the keep-out but outside the effect circle). A *missed* danger is a pass
-with a protected contact truly inside the effect circle.
+position then. A block is *needed* when a protected contact is truly inside the keep-out (the
+effect radius plus the policy's 200 m) at the effect time, the policy's own line; it is
+*severe* when one is inside the effect circle. Otherwise it is *conservative*. A *missed*
+danger is a pass with a protected contact inside the keep-out (or, severe, the circle). The
+same labels over the release window (`late_s`, 60 s: a holding target may be released that
+late) count anyone inside at any time from the effect time to 60 s after.
 
 **What it is not.** The situations come from stated distributions, not from the world: open
-water with no land or channels, uniform traffic, surface contacts only, our tracker's
-behaviour replaced by a stated model of its reports (no noise-driven manoeuvre flags, no
-filter lag, no gaps or re-initialized tracks). The checks are the nomination's only (the
-plan's re-checks while signatures wait and after approval are not run). No person decides
-anything here.
+water with no land or channels, surface contacts only, one observing vehicle. The checks are
+the nomination's only (the plan's re-checks while signatures wait, and the release's own
+check, are not run): the nomination check is a screen, not the final outcome. No person
+decides anything here.
 
-    python -m eval.run keepout --seeds 1 2 3 4 5 6 7 8 9 10 --situations 100
+    python -m eval.run keepout --seeds 1 2 3 4 5 6 7 8 9 10 --situations 50
 """
 
 from __future__ import annotations
@@ -58,24 +68,29 @@ from typing import Any, Iterable, Iterator
 from . import REPO
 from .stats import t_interval, wilson
 
-PROBE_DIR = REPO / "eval" / "keepout_probe"
 PROBE = REPO / "target" / "release" / "murmur-keepout-probe"
+#: what the probe is built from (cargo decides whether it is current; this is for messages)
+PROBE_PACKAGE = "murmur-keepout-probe"
 NOT_HUMAN = (
     "Model results from simulated geometry: generated situations from stated distributions, "
-    "tracker reports from a stated model, every verdict the decision engine's own nomination "
-    "checks. Not human data, not field data, and not reviewed."
+    "tracks from the bridge's own tracker on simulated sensor fixes (or a stated model of it), "
+    "every verdict the decision engine's own nomination checks. Not human data, not field data, "
+    "and not reviewed."
 )
 
 # ---- the stated distributions -------------------------------------------------------------------
 
-#: protected contacts per km^2, uniform over a disc of FIELD_M around the target (0.03: about
-#: the 7 tracks of the 10-06 live run over the 8 km around the gate; 1: a busy harbour, a GUESS)
+#: protected contacts per km^2 over a disc of FIELD_M around the target (0.03: about the 7
+#: tracks of the 10-06 live run over the 8 km around the gate; 1: a busy harbour, a GUESS)
 DENSITIES = (0.03, 0.1, 0.3, 1.0)
-#: contacts are drawn this far from the target: beyond the farthest any keep-out region reaches
-#: at the longest nominal time to effect (a young track at 25 m/s for 300 s, plus the keep-out)
+#: contacts are drawn this far from the target: every keep-out region of a span up to about
+#: 310 s fits inside (a young track at 25 m/s, plus the keep-out); only evaluations whose
+#: actual time to effect ran longer (a holding target's velocity estimate above the holding
+#: speed) can lose a young region beyond it
 FIELD_M = 8000.0
 BEHAVIOURS = ("stationary", "transiting", "circling", "manoeuvring", "new", "mixed")
-#: the mixed traffic's behaviour shares (a stated GUESS for a busy harbour)
+#: the mixed traffic's behaviour shares (a stated GUESS for a busy harbour); `new_share`
+#: replaces the new share and scales the others
 MIX = (("stationary", 0.30), ("transiting", 0.40), ("circling", 0.10), ("manoeuvring", 0.15), ("new", 0.05))
 #: how each behaviour moves (truth), all uniform draws: m/s, m, s, degrees
 MOTION = {
@@ -88,6 +103,8 @@ MOTION = {
         "then 20 to 60 s stopped)"
     ),
     "new": "tracked for 0 to 45 s only; holds still (0.4) or transits as above (0.6)",
+    "lane": "lanes layout: 70% of the contacts in two lanes, each passing 0 to 1.5 km from the target on a uniform course, "
+    "100 m wide (1-sigma), transiting along it either way at 3 to 12 m/s; the rest as the behaviour says, uniform",
 }
 #: nominal times to effect (s): the engaging platform starts (TTE - dispatch delay) x cruise away
 TTE_S = (30, 45, 60, 90, 120, 180, 240, 300)
@@ -98,16 +115,17 @@ RULES = (6, 9, 12)
 RADIUS_M = 75.0
 #: the policy's dispatch_delay_s, for placing the platform only (the engine uses the policy's own)
 DISPATCH_S = 20.0
-#: a track's reported 1-sigma (m), uniform; its position estimate is off by that much per axis
+#: the policy's late_s: a holding target may be released up to this long after the plan's time
+LATE_S = 60.0
+#: the generated model's track 1-sigma (m), uniform; its position estimate is off by that much
 SIGMA_P = (8.0, 25.0)
-#: the velocity estimate's error per axis (m/s), the scenario runner's --vnoise; Phase G: 0.5
-#: passed the engagement suite
+#: the model's velocity error per axis (m/s), the scenario runner's --vnoise (Phase G: 0.5
+#: passed the engagement suite)
 VEL_SIGMA = 0.5
-#: the bridge tracker (crates/murmur-bridge/src/tracks/model.rs): a velocity once its 1-sigma is
-#: below 3 m/s (about 7 radar fixes at 15 m: a GUESS of 7 s), an average velocity over the last
-#: minute once tracked 45 s, a manoeuvre when the velocity changed by more than 2 m/s and its
-#: noise (chi-square 13.8 on two estimates' variances) within 300 s, remembered 300 s, its
-#: speed the fastest in the memory plus two sigmas
+#: the bridge tracker's rules the model follows (crates/murmur-bridge/src/tracks/model.rs): a
+#: velocity once its 1-sigma is below 3 m/s (a GUESS of 7 s of fixes), an average velocity
+#: once tracked 45 s, a manoeuvre when the velocity changed by more than 2 m/s and its noise
+#: (chi-square 13.8 on two estimates' variances) within 300 s, remembered 300 s
 VEL_KNOWN_S = 7.0
 MEAN_MIN_S = 45.0
 MEAN_WINDOW_S = 60.0
@@ -118,6 +136,9 @@ VEL_SAMPLE_S = 10.0
 #: an established track has been followed this long (s), uniform
 TRACKED_S = (60.0, 1800.0)
 NEW_TRACKED_S = (0.0, 45.0)
+#: the real tracker plays at most this much of a contact's history (the manoeuvre memory, 300 s,
+#: compares samples up to 300 s apart)
+MAX_HISTORY_S = 600.0
 #: the chance one of our vehicles is lost (its last report 15 to 300 s old, 2 to 8 km out)
 LOST_SHARE = 0.1
 #: where the target is: inside ez-gate-west, clear of the no-strike areas (eval/ident.py's box)
@@ -127,6 +148,43 @@ T0_MS = 1_781_000_000_000
 M_PER_DEG = 111_320.0
 #: how far into the future and past the motions are laid out (s)
 HORIZON_S = 900.0
+
+#: the measurement's variants: each the base parameters changed as given. `radar` is the
+#: primary (the bridge's tracker where it applies); the rest are comparisons and sensitivity.
+ALL = list(BEHAVIOURS)
+VARIANTS: dict[str, dict[str, Any]] = {
+    "radar": {"tracker": "radar", "behaviours": ALL, "about": "the bridge's tracker, the observing USV's radar alone, contacts without AIS (primary)"},
+    "model": {"tracker": "model", "behaviours": ALL, "about": "the stated tracker model (the first measurement's)"},
+    "ais": {"tracker": "ais", "behaviours": ALL, "about": "the bridge's tracker, every sensor of the observing USV, every contact on AIS (best case)"},
+    "lanes": {"tracker": "radar", "layout": "lanes", "behaviours": ["mixed"], "about": "radar tracker; 70% of contacts in two lanes passing 0 to 1.5 km from the target"},
+    "lanes-model": {"tracker": "model", "layout": "lanes", "behaviours": ["mixed"], "about": "model tracker; the lanes layout"},
+    "new0": {"tracker": "radar", "new_share": 0.0, "behaviours": ["mixed"], "about": "radar tracker; no new tracks in the mix"},
+    "new15": {"tracker": "radar", "new_share": 0.15, "behaviours": ["mixed"], "about": "radar tracker; 15% new tracks in the mix"},
+    "new25": {"tracker": "radar", "new_share": 0.25, "behaviours": ["mixed"], "about": "radar tracker; 25% new tracks in the mix"},
+    "vel1": {"tracker": "model", "vel_sigma": 1.0, "behaviours": ["mixed"], "about": "model tracker; velocity error 1 m/s per axis"},
+    "sigma60": {"tracker": "model", "sigma_p": [15.0, 60.0], "behaviours": ["mixed"], "about": "model tracker; track 1-sigma 15 to 60 m"},
+    "live": {
+        "tracker": "radar",
+        "behaviours": ["mixed"],
+        "densities": [0.03, 0.1],
+        "near_circler_km": 1.0,
+        "tte_s": [],
+        "dist_m": [1000, 1500, 2000],
+        "platforms": ["magura"],
+        "about": "the live run's question: a tour boat circling within 1 km of the target, mixed traffic around, a magura 1 to 2 km out",
+    },
+    "live2": {
+        "tracker": "radar",
+        "behaviours": ["mixed"],
+        "densities": [0.03, 0.1],
+        "near_circler_km": 2.0,
+        "tte_s": [],
+        "dist_m": [1000, 1500, 2000],
+        "platforms": ["magura"],
+        "about": "as live, the circling boat within 2 km",
+    },
+}
+PRIMARY = "radar"
 
 
 def default_params() -> dict[str, Any]:
@@ -142,16 +200,34 @@ def default_params() -> dict[str, Any]:
         "vel_sigma": VEL_SIGMA,
         "lost_share": LOST_SHARE,
         "mix": dict(MIX),
+        "new_share": dict(MIX)["new"],
         "motion": MOTION,
         "sigma_p": list(SIGMA_P),
         "tracked_s": list(TRACKED_S),
         "new_tracked_s": list(NEW_TRACKED_S),
+        "tracker": "model",
+        "layout": "uniform",
+        "near_circler_km": None,
+        "max_history_s": MAX_HISTORY_S,
+        "late_s": LATE_S,
+        "stats_per_chunk": 3,
     }
+
+
+def variant_params(name: str, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+    v = {k: x for k, x in VARIANTS[name].items() if k != "about"}
+    return {**default_params(), **v, **(overrides or {}), "variant": name, "about": VARIANTS[name]["about"]}
 
 
 def cruise_speeds(root: Path = REPO) -> dict[str, float]:
     cat = tomllib.loads((root / "sim" / "platforms.toml").read_text())
     return {k: float(v["cruise_mps"]) for k, v in cat.items() if isinstance(v, dict) and "cruise_mps" in v}
+
+
+def mix_for(new_share: float) -> list[tuple[str, float]]:
+    """MIX with the new share replaced and the others scaled to fill the rest."""
+    base_new = dict(MIX)["new"]
+    return [(b, new_share if b == "new" else w * (1.0 - new_share) / (1.0 - base_new)) for b, w in MIX]
 
 
 # ---- geometry: the engine's flat approximation around the target --------------------------------
@@ -169,6 +245,8 @@ def to_enu(origin: tuple[float, float], p: list[float] | tuple[float, float]) ->
 
 
 # ---- motions (truth), in metres from the target at the nomination, t in s from it ----------------
+# Each gives the probe its spec (eval/keepout_probe/src/realtrack.rs `Motion`, the same
+# formulas), for the real tracker's history.
 
 
 class Hold:
@@ -183,6 +261,9 @@ class Hold:
     def vel(self, t: float) -> tuple[float, float]:
         return (0.0, 0.0)
 
+    def spec(self) -> dict[str, Any]:
+        return {"kind": "hold", "p": list(self.p)}
+
 
 class Line:
     def __init__(self, p: tuple[float, float], v: tuple[float, float]):
@@ -195,6 +276,9 @@ class Line:
 
     def vel(self, t: float) -> tuple[float, float]:
         return self.v
+
+    def spec(self) -> dict[str, Any]:
+        return {"kind": "line", "p": list(self.p), "v": list(self.v)}
 
 
 class Circle:
@@ -214,6 +298,9 @@ class Circle:
     def vel(self, t: float) -> tuple[float, float]:
         a = self.phase + self.w * t
         return (self.r * self.w * math.cos(a), -self.r * self.w * math.sin(a))
+
+    def spec(self) -> dict[str, Any]:
+        return {"kind": "circle", "c": list(self.c), "r": self.r, "w": self.w, "phase": self.phase}
 
 
 class Legs:
@@ -247,6 +334,14 @@ class Legs:
 
     def vel(self, t: float) -> tuple[float, float]:
         return self.v[self._k(t)]
+
+    def spec(self) -> dict[str, Any]:
+        return {
+            "kind": "legs",
+            "starts": self.starts,
+            "v": [list(v) for v in self.v],
+            "at": [[a[0] + self.shift[0], a[1] + self.shift[1]] for a in self.acc],
+        }
 
 
 def _course(rng: random.Random) -> float:
@@ -300,7 +395,7 @@ def motion(behaviour: str, p: tuple[float, float], rng: random.Random) -> tuple[
     raise ValueError(f"unknown behaviour {behaviour!r}")
 
 
-# ---- what the tracker reports ---------------------------------------------------------------------
+# ---- what the tracker reports (the stated model) ------------------------------------------------
 
 
 def manoeuvre_seen(m: Any, tracked: float, vel_sigma: float) -> tuple[float, float, float] | None:
@@ -341,7 +436,8 @@ def facts(
     affiliation: str,
     affiliation_confidence: float,
 ) -> dict[str, Any]:
-    """The facts the tracker reports for a contact moving as `m` (murmur-decide's TrackFacts)."""
+    """The facts the stated model reports for a contact moving as `m` (murmur-decide's
+    TrackFacts)."""
     t_ms = T0_MS
     p = m.pos(0.0)
     err = (rng.gauss(0.0, sigma), rng.gauss(0.0, sigma))
@@ -394,6 +490,33 @@ def _disc(rng: random.Random, r: float) -> tuple[float, float]:
     return (d * math.sin(a), d * math.cos(a))
 
 
+def _disc_ring(rng: random.Random, lo: float, hi: float) -> tuple[float, float]:
+    d, a = rng.uniform(lo, hi), _course(rng)
+    return (d * math.sin(a), d * math.cos(a))
+
+
+def _lanes(rng: random.Random) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    """Two lanes: each (a point on it nearest the target, its direction), passing 0 to 1.5 km
+    from the target on a uniform course."""
+    out = []
+    for _ in range(2):
+        course, off = _course(rng), rng.uniform(0.0, 1500.0)
+        d = (math.sin(course), math.cos(course))
+        side = 1.0 if rng.random() < 0.5 else -1.0
+        out.append(((side * off * d[1], -side * off * d[0]), d))
+    return out
+
+
+def _lane_contact(rng: random.Random, lane: tuple[tuple[float, float], tuple[float, float]], field_m: float) -> tuple[Any, float]:
+    (q, d) = lane
+    off = math.hypot(*q)
+    half = math.sqrt(max(field_m * field_m - off * off, 0.0))
+    s, lateral = rng.uniform(-half, half), rng.gauss(0.0, 100.0)
+    p = (q[0] + s * d[0] + lateral * d[1], q[1] + s * d[1] - lateral * d[0])
+    speed = rng.uniform(3.0, 12.0) * (1.0 if rng.random() < 0.5 else -1.0)
+    return Line(p, (speed * d[0], speed * d[1])), rng.uniform(*TRACKED_S)
+
+
 def situation(seed: int, density: float, index: int, behaviour: str, params: dict[str, Any], cruise: dict[str, float]) -> dict[str, Any]:
     """One situation: the probe's input (`probe`) and the truth behind it (`truth`). Paired:
     everything but the contacts' motion (and the draws that follow it) comes from the field's
@@ -403,35 +526,58 @@ def situation(seed: int, density: float, index: int, behaviour: str, params: dic
     origin = (field.uniform(*CENTRE_BOX[0]), field.uniform(*CENTRE_BOX[1]))
     vel_sigma = float(params["vel_sigma"])
     field_m = float(params["field_m"])
+    sigma_p = tuple(params["sigma_p"])
+    tracker = params.get("tracker", "model")
     sid = f"{seed}-{density:g}-{index}-{behaviour}"
     tracks: dict[str, Any] = {}
-    # the target: holding, declared hostile by an operator, followed for 15 minutes
+    # the target: holding, declared hostile by an operator, followed for 15 minutes; its
+    # track the generator's in every variant (a good one, as an engagement needs)
     tsig = field.uniform(*SIGMA_P)
-    target = facts(Hold((0.0, 0.0)), 900.0, tsig, vel_sigma, field, origin, "hostile", 0.9)
+    target = facts(Hold((0.0, 0.0)), 900.0, tsig, VEL_SIGMA, field, origin, "hostile", 0.9)
     target.update({"declared_by": "op-1", "identity": "small_fast_boat", "identity_confidence": 0.8, "confidence": 0.95})
     tracks["T-0000"] = target
     truth: dict[str, Any] = {}
     n = _poisson(field, float(density) * math.pi * (field_m / 1000.0) ** 2)
-    mix_names = [b for b, _ in MIX]
-    mix_w = [w for _, w in MIX]
+    mix = mix_for(float(params.get("new_share", dict(MIX)["new"])))
+    mix_names = [b for b, _ in mix]
+    mix_w = [w for _, w in mix]
+    lanes = _lanes(field) if params.get("layout") == "lanes" else None
     kinds: dict[str, int] = defaultdict(int)
+    motions: dict[str, Any] = {}
+
+    def add(cid: str, kind: str, m: Any, tracked: float, sigma: float, aff: str, aff_c: float) -> None:
+        kinds[kind] += 1
+        f = facts(m, tracked, sigma, vel_sigma, move, origin, aff, aff_c)
+        if tracker == "model":
+            tracks[cid] = f
+        else:
+            motions[cid] = {"motion": m.spec(), "tracked_s": round(tracked, 3), "behaviour": kind}
+        truth[cid] = {"motion": m, "behaviour": kind, "tracked_s": tracked}
+
     for i in range(n):
         p = _disc(field, field_m)
-        sigma = field.uniform(*SIGMA_P)
+        sigma = field.uniform(*sigma_p)
         aff = "neutral" if field.random() < 0.6 else "unknown"
         aff_c = field.uniform(0.3, 0.9)
+        if lanes and move.random() < 0.7:
+            m, tracked = _lane_contact(move, lanes[move.randrange(2)], field_m)
+            add(f"C-{i + 1:04d}", "lane", m, tracked, sigma, aff, aff_c)
+            continue
         kind = move.choices(mix_names, mix_w)[0] if behaviour == "mixed" else behaviour
-        kinds[kind] += 1
         m, tracked = motion(kind, p, move)
-        cid = f"C-{i + 1:04d}"
-        tracks[cid] = facts(m, tracked, sigma, vel_sigma, move, origin, aff, aff_c)
-        truth[cid] = {"motion": m, "behaviour": kind, "tracked_s": tracked}
+        add(f"C-{i + 1:04d}", kind, m, tracked, sigma, aff, aff_c)
+    if params.get("near_circler_km"):
+        # the live run's question: a tour boat circling near the target, followed for a while
+        p = _disc(move, float(params["near_circler_km"]) * 1000.0)
+        m, _ = motion("circling", p, move)
+        add("C-9999", "circling (near)", m, move.uniform(*TRACKED_S), move.uniform(*sigma_p), "neutral", 0.8)
     # ours: the observing USV, holding or patrolling; sometimes another one lost
     vehicles = []
     ours: dict[str, Any] = {}
     p = _disc_ring(field, 1000.0, 3000.0)
     v = (0.0, 0.0) if field.random() < 0.5 else _vec(field.uniform(2.0, 6.0), _course(field))
-    vehicles.append({"uid": "usv-1", "platform": "seahunter", "at": to_lonlat(origin, *p), "velocity": list(v), "report_age_s": 0.0})
+    usv1 = to_lonlat(origin, *p)
+    vehicles.append({"uid": "usv-1", "platform": "seahunter", "at": usv1, "velocity": list(v), "report_age_s": 0.0})
     ours["usv-1"] = Line(p, v)
     if field.random() < float(params["lost_share"]):
         p = _disc_ring(field, 2000.0, 8000.0)
@@ -450,7 +596,7 @@ def situation(seed: int, density: float, index: int, behaviour: str, params: dic
         for plat in params["platforms"]:
             b = _course(field)
             evals.append({"key": f"dist-{dist}-{plat}", "platform": plat, "at": to_lonlat(origin, dist * math.sin(b), dist * math.cos(b))})
-    probe = {
+    probe: dict[str, Any] = {
         "id": sid,
         "t_ms": T0_MS,
         "target": "T-0000",
@@ -460,6 +606,18 @@ def situation(seed: int, density: float, index: int, behaviour: str, params: dic
         "vehicles": vehicles,
         "evals": evals,
     }
+    if tracker != "model":
+        # the observing USV, where it is (it watches from there; a holding or slow patrol moves
+        # it little over the history played)
+        probe["tracker"] = {
+            "mode": tracker,
+            "origin": list(origin),
+            "seed": int(field.random() * 2**53),
+            "observers": [{"uid": 1, "platform": "seahunter", "at": usv1}],
+            "contacts": motions,
+            "max_history_s": float(params["max_history_s"]),
+            "stats": index < int(params.get("stats_per_chunk", 0)),
+        }
     return {
         "id": sid,
         "seed": seed,
@@ -467,7 +625,7 @@ def situation(seed: int, density: float, index: int, behaviour: str, params: dic
         "index": index,
         "behaviour": behaviour,
         "origin": origin,
-        "n_contacts": n,
+        "n_contacts": len(truth),
         "kinds": dict(kinds),
         "probe": probe,
         "truth": truth,
@@ -475,39 +633,44 @@ def situation(seed: int, density: float, index: int, behaviour: str, params: dic
     }
 
 
-def _disc_ring(rng: random.Random, lo: float, hi: float) -> tuple[float, float]:
-    d, a = rng.uniform(lo, hi), _course(rng)
-    return (d * math.sin(a), d * math.cos(a))
-
-
 # ---- truth at the effect ------------------------------------------------------------------------------
 
 
-def at_risk(sit: dict[str, Any], effect: list[float], t_s: float, radius: float, keep_out: float) -> dict[str, Any]:
+def at_risk(sit: dict[str, Any], effect: list[float], t_s: float, radius: float, keep_out: float, late_s: float = 0.0, step_s: float = 2.0) -> dict[str, Any]:
     """Who is truly where at the effect time: protected contacts inside the effect circle
     (`danger`) and inside the keep-out (`near`, those included), ours inside the effect circle
-    (`ours_danger`)."""
+    (`ours_danger`); and over the release window, from the effect time to `late_s` after (every
+    `step_s` and its end): `danger_late`, `near_late`."""
     e = to_enu(sit["origin"], effect)
-    danger, near = [], []
+    danger, near, danger_late, near_late = [], [], [], []
     reach = keep_out + 1.0
+    times = [t_s + k * step_s for k in range(int(late_s // step_s) + 1)]
+    if late_s > 0 and times[-1] < t_s + late_s:
+        times.append(t_s + late_s)
     for cid, tr in sit["truth"].items():
         m = tr["motion"]
         p0 = m.pos(0.0)
-        # cheap bound first: it cannot get closer than this by then
-        if math.hypot(p0[0] - e[0], p0[1] - e[1]) - m.vmax * max(t_s, 0.0) > reach:
+        # cheap bound first: it cannot get closer than this by the end of the window
+        if math.hypot(p0[0] - e[0], p0[1] - e[1]) - m.vmax * max(t_s + late_s, 0.0) > reach:
             continue
-        p = m.pos(t_s)
-        d = math.hypot(p[0] - e[0], p[1] - e[1])
-        if d <= keep_out:
-            near.append(cid)
+        for k, t in enumerate(times):
+            p = m.pos(t)
+            d = math.hypot(p[0] - e[0], p[1] - e[1])
+            if k == 0 and d <= keep_out:
+                near.append(cid)
+                if d <= radius:
+                    danger.append(cid)
+            if d <= keep_out and cid not in near_late:
+                near_late.append(cid)
             if d <= radius:
-                danger.append(cid)
+                danger_late.append(cid)
+                break
     ours = []
     for uid, m in sit["ours"].items():
         p = m.pos(t_s)
         if math.hypot(p[0] - e[0], p[1] - e[1]) <= radius:
             ours.append(uid)
-    return {"danger": danger, "near": near, "ours_danger": ours}
+    return {"danger": danger, "near": near, "ours_danger": ours, "danger_late": danger_late, "near_late": near_late}
 
 
 # ---- running ------------------------------------------------------------------------------------------
@@ -518,10 +681,9 @@ def cargo() -> str:
 
 
 def build_probe() -> Path:
-    """Build the probe into the repository's target directory (a no-op when it is current)."""
-    # not --locked: a dependency murmur-decide gains later goes into the probe's own lock file (a
-    # change provenance shows) rather than failing the build
-    cmd = [cargo(), "build", "--release", "--manifest-path", str(PROBE_DIR / "Cargo.toml"), "--target-dir", str(REPO / "target")]
+    """Build the probe (a workspace member) into the repository's target directory; a no-op
+    when it is current."""
+    cmd = [cargo(), "build", "--release", "-p", PROBE_PACKAGE]
     p = subprocess.run(cmd, cwd=str(REPO), capture_output=True, text=True)
     if p.returncode != 0:
         raise RuntimeError(f"building the probe failed: {p.stderr.strip()[-2000:]}")
@@ -529,7 +691,8 @@ def build_probe() -> Path:
 
 
 def run_probe(inputs: list[dict[str, Any]], rules: Iterable[int] = RULES, probe: Path = PROBE) -> list[dict[str, Any]]:
-    """Every evaluation of `inputs` through the probe: one result per (situation, evaluation)."""
+    """Every evaluation of `inputs` through the probe: one result per (situation, evaluation),
+    and one `tracker` line per situation whose tracks the real tracker made."""
     data = "\n".join(json.dumps(s, separators=(",", ":")) for s in inputs) + "\n"
     p = subprocess.run(
         [str(probe), "--root", str(REPO), "--rules", ",".join(str(r) for r in rules)],
@@ -537,11 +700,17 @@ def run_probe(inputs: list[dict[str, Any]], rules: Iterable[int] = RULES, probe:
         capture_output=True,
         text=True,
         cwd=str(REPO),
-        timeout=3600,
+        timeout=7200,
     )
     if p.returncode != 0:
         raise RuntimeError(f"murmur-keepout-probe exited {p.returncode}: {p.stderr.strip()[-2000:]}")
     return [json.loads(line) for line in p.stdout.splitlines() if line.strip()]
+
+
+def motion_check(motions: list[Any], times: list[float], probe: Path = PROBE) -> list[list[list[float]]]:
+    """Where the probe's own copy of each motion puts it at `times` (it must be where ours does)."""
+    (r,) = run_probe([{"motion_check": {"motions": [m.spec() for m in motions], "times": times}}], probe=probe)
+    return r["positions"]
 
 
 #: reference tracks for the region-size table: (name, velocity, average velocity, tracked s,
@@ -625,11 +794,13 @@ def record(sit: dict[str, Any], res: dict[str, Any], params: dict[str, Any]) -> 
     out["preview"] = True
     out["tte_s"] = pv["tte_s"]
     keep_out = float(pv["keep_out_m"])
-    truth = at_risk(sit, pv["effect"], pv["tte_s"], float(params["radius_m"]), keep_out)
+    truth = at_risk(sit, pv["effect"], pv["tte_s"], float(params["radius_m"]), keep_out, float(params.get("late_s", LATE_S)))
     out["danger"] = len(truth["danger"])
     out["near"] = len(truth["near"])
+    out["danger_late"] = len(truth["danger_late"])
+    out["near_late"] = len(truth["near_late"])
     out["ours_danger"] = len(truth["ours_danger"])
-    out["danger_kinds"] = sorted({sit["truth"][c]["behaviour"] for c in truth["danger"]})
+    out["near_kinds"] = sorted({sit["truth"][c]["behaviour"] for c in truth["near"]})
     if res.get("preview_differs"):
         out["preview_differs"] = True
     rules: dict[str, Any] = {}
@@ -670,12 +841,24 @@ def run_chunk(job: tuple[int, float, str, int, dict[str, Any], str]) -> dict[str
     results = run_probe([s["probe"] for s in sits], params["rules"], Path(probe))
     t_probe = time.monotonic() - t0 - t_gen
     by_id = {s["id"]: s for s in sits}
-    records = [record(by_id[r["id"]], r, params) for r in results]
+    records, quality, untracked = [], [], [0, 0]
+    for r in results:
+        if "tracker" in r:
+            tr = r["tracker"]
+            untracked[0] += tr.get("contacts", 0)
+            untracked[1] += tr.get("contacts", 0) - tr.get("tracked", 0)
+            quality += tr.get("per_contact") or []
+            continue
+        if "eval" not in r:
+            raise RuntimeError(f"murmur-keepout-probe: {json.dumps(r)[:2000]}")
+        records.append(record(by_id[r["id"]], r, params))
     return {
         "seed": seed,
         "density": density,
         "behaviour": behaviour,
         "records": records,
+        "quality": quality,
+        "untracked": untracked,
         "contacts": sum(s["n_contacts"] for s in sits),
         "kinds": _sum_kinds(sits),
         "timing_s": {"generate": round(t_gen, 2), "probe": round(t_probe, 2), "label": round(time.monotonic() - t0 - t_gen - t_probe, 2)},
@@ -691,8 +874,8 @@ def _sum_kinds(sits: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def run(out: Path, seeds: list[int], situations: int, params: dict[str, Any] | None = None, workers: int | None = None, build: bool = True) -> dict[str, Any]:
-    """Every seed x density x behaviour chunk into `out`: `records.jsonl.gz` (one line per
-    evaluation, every rules version in it) and `summary.json`."""
+    """One variant: every seed x density x behaviour chunk into `out`: `records.jsonl.gz` (one
+    line per evaluation, every rules version in it) and `summary.json`."""
     params = {**default_params(), **(params or {})}
     cruise = cruise_speeds()
     missing = [p for p in params["platforms"] if p not in cruise]
@@ -703,17 +886,16 @@ def run(out: Path, seeds: list[int], situations: int, params: dict[str, Any] | N
     out.mkdir(parents=True, exist_ok=True)
     probe = build_probe() if build else PROBE
     if not probe.exists():
-        raise RuntimeError(f"missing {probe}: build eval/keepout_probe")
+        raise RuntimeError(f"missing {probe}: cargo build --release -p {PROBE_PACKAGE}")
     jobs = [(seed, float(d), b, situations, params, str(probe)) for seed in seeds for d in params["densities"] for b in params["behaviours"]]
     workers = workers or max(1, min(len(jobs), (os.cpu_count() or 2) // 2, 12))
     t0 = time.monotonic()
-    chunks: list[dict[str, Any]] = []
     if workers == 1:
         chunks = [run_chunk(j) for j in jobs]
     else:
         with ProcessPoolExecutor(max_workers=workers) as pool:
             chunks = list(pool.map(run_chunk, jobs))
-    chunks.sort(key=lambda c: (c["seed"], c["density"], BEHAVIOURS.index(c["behaviour"]) if c["behaviour"] in BEHAVIOURS else 99))
+    chunks.sort(key=lambda c: (c["seed"], c["density"], _bkey(c["behaviour"])))
     path = out / "records.jsonl.gz"
     with gzip.open(path, "wt") as f:
         for c in chunks:
@@ -730,6 +912,8 @@ def run(out: Path, seeds: list[int], situations: int, params: dict[str, Any] | N
         "params": params,
         "contacts": sum(c["contacts"] for c in chunks),
         "contact_behaviours": dict(kinds),
+        "untracked_contacts": [sum(c["untracked"][0] for c in chunks), sum(c["untracked"][1] for c in chunks)],
+        "tracker_quality": tracker_quality([q for c in chunks for q in c["quality"]]),
         "wall_s": round(time.monotonic() - t0, 1),
         "workers": workers,
         "timing_s": {k: round(sum(c["timing_s"][k] for c in chunks), 1) for k in ("generate", "probe", "label")},
@@ -738,6 +922,33 @@ def run(out: Path, seeds: list[int], situations: int, params: dict[str, Any] | N
     summary["regions"] = region_sizes(params["rules"], probe)
     (out / "summary.json").write_text(json.dumps(summary, indent=1, default=str))
     return summary
+
+
+def run_all(out: Path, seeds: list[int], situations: int, variants: Iterable[str] | None = None, overrides: dict[str, Any] | None = None, workers: int | None = None, build: bool = True) -> dict[str, Any]:
+    """Every variant into `out/<variant>/`, and `out/summary.json`: each variant's summary, the
+    sensitivity table across them, and which is the primary."""
+    names = list(variants or VARIANTS)
+    unknown = [v for v in names if v not in VARIANTS]
+    if unknown:
+        raise RuntimeError(f"unknown variants {unknown}; known: {list(VARIANTS)}")
+    if build:
+        build_probe()
+    out.mkdir(parents=True, exist_ok=True)
+    summaries = {}
+    t0 = time.monotonic()
+    for v in names:
+        summaries[v] = run(out / v, seeds, situations, variant_params(v, overrides), workers=workers, build=False)
+    combined = {
+        "label": NOT_HUMAN,
+        "primary": PRIMARY if PRIMARY in summaries else names[0],
+        "seeds": seeds,
+        "situations_per_cell_per_seed": situations,
+        "variants": summaries,
+        "sensitivity": sensitivity(summaries),
+        "wall_s": round(time.monotonic() - t0, 1),
+    }
+    (out / "summary.json").write_text(json.dumps(combined, indent=1, default=str))
+    return combined
 
 
 def read_records(path: Path) -> Iterator[dict[str, Any]]:
@@ -755,25 +966,30 @@ COMPONENTS = ("current", "mean", "manoeuvre", "young", "no_velocity")
 def would_pass_without(comp: dict[str, float], drop: str | Iterable[str]) -> bool:
     """Whether the keep-out on tracks would hold with the regions of `drop` left out: every
     other component's nearest region outside the keep-out (2D: the generated tracks carry no
-    altitude, so the verdict is every region's)."""
+    altitude, so the verdict is every region's). Margins are the probe's, unrounded."""
     drop = {drop} if isinstance(drop, str) else set(drop)
     return all(m >= 0.0 for c, m in comp.items() if c not in drop)
 
 
 def classify(r: dict[str, Any]) -> str:
-    """A block on tracks: `needed` (a protected contact truly inside the effect circle at the
-    effect time), `buffer` (inside the keep-out, outside the circle) or `clear` (nobody inside
-    the keep-out). `buffer` and `clear` are the conservative blocks."""
+    """A block on tracks: `needed` when a protected contact is truly inside the keep-out at the
+    effect time (the policy's own line), `severe` when one is inside the effect circle (needed
+    too); `conservative` when nobody is inside the keep-out."""
     if r.get("danger"):
-        return "needed"
+        return "severe"
     if r.get("near"):
-        return "buffer"
-    return "clear"
+        return "needed"
+    return "conservative"
 
 
 def _rate(k: int, n: int) -> dict[str, Any]:
     p, lo, hi = wilson(k, n)
     return {"k": k, "n": n, "rate": p, "lo": lo, "hi": hi}
+
+
+def upper_bound_zero(n: int, level: float = 0.95) -> float | None:
+    """The one-sided upper bound on a rate seen 0 times in `n` independent tries."""
+    return None if n <= 0 else 1.0 - (1.0 - level) ** (1.0 / n)
 
 
 def threshold(curve: list[tuple[float, float]], level: float) -> float | None:
@@ -789,12 +1005,12 @@ def threshold(curve: list[tuple[float, float]], level: float) -> float | None:
     return math.inf
 
 
-def _boot_thresholds(rows: list[list[int]], grid: list[float], levels: tuple[float, ...], draws: int, seed: int) -> dict[float, tuple[float | None, float | None, float | None]]:
+def _boot_thresholds(rows: list[list[int]], grid: list[float], levels: tuple[float, ...], draws: int, seed: int) -> dict[float, tuple[Any, Any, Any]]:
     """The thresholds on the pooled rows (one per situation: pass per grid point) and a
     percentile bootstrap over situations."""
     out = {}
     n = len(rows)
-    if n == 0:
+    if n == 0 or not grid:
         return {lv: (None, None, None) for lv in levels}
 
     def curve(sample: list[list[int]]) -> list[tuple[float, float]]:
@@ -828,7 +1044,7 @@ def cluster_rate(pairs: list[tuple[int, int]]) -> dict[str, Any]:
     """`sum k / sum n` pooled over clusters `(k_i, n_i)` (a situation's evaluations share its
     contacts), with a Wilson 95% interval on the effective sample size `n / deff`: `deff` the
     ratio's between-cluster variance over the binomial one, at least 1; at 0 or 1, where it
-    can't be estimated, one observation per cluster."""
+    can't be estimated, one observation per cluster (and the upper bound for none seen)."""
     pairs = [(k, n) for k, n in pairs if n > 0]
     m, k_sum, n_sum = len(pairs), sum(k for k, _ in pairs), sum(n for _, n in pairs)
     if n_sum == 0:
@@ -841,7 +1057,11 @@ def cluster_rate(pairs: list[tuple[int, int]]) -> dict[str, Any]:
     else:
         deff, n_eff = None, float(m)
     _, lo, hi = wilson(r * n_eff, n_eff)  # type: ignore[arg-type]
-    return {"k": k_sum, "n": n_sum, "rate": r, "lo": lo, "hi": hi, "clusters": m, "deff": None if deff is None else round(deff, 2)}
+    out = {"k": k_sum, "n": n_sum, "rate": r, "lo": lo, "hi": hi, "clusters": m, "deff": None if deff is None else round(deff, 2)}
+    if k_sum == 0:
+        out["upper95_tries"] = upper_bound_zero(n_sum)
+        out["upper95_clusters"] = upper_bound_zero(m)
+    return out
 
 
 def _field(sid: str) -> str:
@@ -850,16 +1070,63 @@ def _field(sid: str) -> str:
     return sid.rsplit("-", 1)[0]
 
 
+def _median(xs: list[float]) -> float | None:
+    if not xs:
+        return None
+    s = sorted(xs)
+    k = len(s) // 2
+    return round(s[k] if len(s) % 2 else (s[k - 1] + s[k]) / 2, 2)
+
+
+def tracker_quality(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """What the tracker reported against the truth, per contact behaviour: the share it held a
+    track of, of those the share with a velocity, an average velocity, a manoeuvre, young; the
+    median velocity error, position error and reported 1-sigma."""
+    by: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for r in rows:
+        by[r.get("behaviour", "?")].append(r)
+    out = []
+    for b in sorted(by, key=lambda x: (_bkey(x), x)):
+        rs = by[b]
+        tr = [r for r in rs if r.get("tracked")]
+        vel = [r for r in tr if r.get("vel")]
+        out.append(
+            {
+                "behaviour": b,
+                "contacts": len(rs),
+                "tracked": len(tr),
+                "with_velocity": len(vel),
+                "with_mean": sum(1 for r in tr if r.get("mean")),
+                "manoeuvre": sum(1 for r in tr if r.get("manoeuvre")),
+                "young": sum(1 for r in tr if r.get("young")),
+                "vel_err_median": _median([r["vel_err"] for r in vel if r.get("vel_err") is not None]),
+                "vel_err_p90": _quantile([r["vel_err"] for r in vel if r.get("vel_err") is not None], 0.9),
+                "pos_err_median": _median([r["pos_err"] for r in tr if r.get("pos_err") is not None]),
+                "sigma_median": _median([r["sigma"] for r in tr if r.get("sigma") is not None]),
+            }
+        )
+    return out
+
+
+def _quantile(xs: list[float], q: float) -> float | None:
+    if not xs:
+        return None
+    s = sorted(xs)
+    return round(s[min(len(s) - 1, int(q * len(s)))], 2)
+
+
 def summarize(records: Iterable[dict[str, Any]], meta: dict[str, Any] | None = None, draws: int = 1000) -> dict[str, Any]:
     """The tables, from the records alone. Rates per cell (one evaluation per situation) carry a
     Wilson interval; shares pooled over a situation's evaluations a clustered one
-    (`cluster_rate`); the keep-out on our vehicles counts each field once (it does not depend on
-    the contacts' behaviour)."""
+    (`cluster_rate`), every density and time to effect weighted as the grid has them (uniform);
+    the keep-out on our vehicles counts each field once (it does not depend on the contacts)."""
     meta = meta or {}
-    tte_cells: dict[tuple, list[int]] = defaultdict(lambda: [0, 0, 0, 0, 0])  # n, kot, kof, any, missed
-    seed_cells: dict[tuple, list[int]] = defaultdict(lambda: [0, 0])  # n, kot per seed
-    dist_cells: dict[tuple, list[int]] = defaultdict(lambda: [0, 0, 0, 0])  # n, kot, kof, any
-    # per (behaviour, rules), per situation: what its evaluations did
+    # per (behaviour, density, nominal, rules): n, blocked on tracks, on ours, either, and the
+    # truth: someone inside the keep-out (perfect knowledge would block), in the circle, and
+    # over the release window
+    tte_cells: dict[tuple, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    seed_cells: dict[tuple, list[int]] = defaultdict(lambda: [0, 0])
+    dist_cells: dict[tuple, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     per_sit: dict[tuple, dict[str, dict[str, int]]] = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
     pen: dict[tuple, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
     dom_behaviour: dict[tuple, dict[str, int]] = defaultdict(lambda: defaultdict(int))
@@ -888,6 +1155,7 @@ def summarize(records: Iterable[dict[str, Any]], meta: dict[str, Any] | None = N
             actual_tte[r["nominal"]].append(r["tte_s"])
             if abs(r["tte_s"] - r["nominal"]) > 5.0:
                 counts["tte_off"] += 1
+        truth = {"near": int(r["near"] > 0), "danger": int(r["danger"] > 0), "near_late": int(r.get("near_late", 0) > 0), "danger_late": int(r.get("danger_late", 0) > 0)}
         for v, x in r["rules"].items():
             v = int(v)
             if x.get("mismatch"):
@@ -895,19 +1163,16 @@ def summarize(records: Iterable[dict[str, Any]], meta: dict[str, Any] | None = N
             for c in x.get("other", []):
                 other[(r["kind"], v)][c] += 1
             other[(r["kind"], v)]["_n"] += 1
+            cell = tte_cells[(b, d, r["nominal"], v)] if r["kind"] == "tte" else dist_cells[(b, d, r["platform"], r["nominal"], v)]
+            cell["n"] += 1
+            cell["kot"] += x["kot"]
+            cell["kof"] += x["kof"]
+            cell["any"] += int(x["kot"] or x["kof"])
+            for k, t in truth.items():
+                cell[k] += t
+                cell["missed_" + k] += int(not x["kot"] and t)
             if r["kind"] != "tte":
-                cell = dist_cells[(b, d, r["platform"], r["nominal"], v)]
-                cell[0] += 1
-                cell[1] += x["kot"]
-                cell[2] += x["kof"]
-                cell[3] += int(x["kot"] or x["kof"])
                 continue
-            cell = tte_cells[(b, d, r["nominal"], v)]
-            cell[0] += 1
-            cell[1] += x["kot"]
-            cell[2] += x["kof"]
-            cell[3] += int(x["kot"] or x["kof"])
-            cell[4] += int(not x["kot"] and r["danger"] > 0)
             sc = seed_cells[(b, d, r["nominal"], v, r["seed"])]
             sc[0] += 1
             sc[1] += x["kot"]
@@ -922,21 +1187,22 @@ def summarize(records: Iterable[dict[str, Any]], meta: dict[str, Any] | None = N
                 if x["kof"]:
                     fr["lost" if x.get("kof_lost") else "predicted"] += 1
                     fr["needed"] += int(r["ours_danger"] > 0)
-            # blocks on tracks: needed or conservative, and what reached in
             ps = per_sit[(b, v)][r["id"]]
             tc = by_tte_class[(b, r["nominal"], v)]
             tc["n"] += 1
             if not x["kot"]:
                 ps["passes"] += 1
-                ps["missed"] += int(r["danger"] > 0)
+                for k, t in truth.items():
+                    ps["missed_" + k] += t
                 continue
-            cls = classify(r)
             ps["blocks"] += 1
-            ps[cls] += 1
             tc["blocks"] += 1
-            tc[cls] += 1
-            if cls == "needed":
+            for k, t in truth.items():
+                ps["blocked_" + k] += t
+                tc["blocked_" + k] += t
+            if truth["near"]:
                 continue
+            # conservative: nobody inside the keep-out at the effect time
             ps["cons"] += 1
             comp = x["comp"]
             if x["dom"]:
@@ -951,26 +1217,27 @@ def summarize(records: Iterable[dict[str, Any]], meta: dict[str, Any] | None = N
                         ps["alone:" + c] += 1
             if would_pass_without(comp, ("mean", "manoeuvre", "young")):
                 ps["alone:rules 9 and 12 regions"] += 1
+
+    def cellrow(c: dict[str, int]) -> dict[str, Any]:
+        n = c["n"]
+        return {
+            "tracks": _rate(c["kot"], n),
+            "friendly": _rate(c["kof"], n),
+            "any": _rate(c["any"], n),
+            "perfect": _rate(c["near"], n),
+            "perfect_circle": _rate(c["danger"], n),
+            "perfect_late": _rate(c["near_late"], n),
+            "missed": {k: c["missed_" + k] for k in ("near", "danger", "near_late", "danger_late")},
+        }
+
     rows_tte = []
-    for (b, d, t, v), (n, kot, kof, anyb, missed) in sorted(tte_cells.items(), key=lambda kv: (_bkey(kv[0][0]), kv[0][1], kv[0][3], kv[0][2])):
+    for (b, d, t, v), c in sorted(tte_cells.items(), key=lambda kv: (_bkey(kv[0][0]), kv[0][1], kv[0][3], kv[0][2])):
         seeds = [k / n_ for (bb, dd, tt, vv, _), (n_, k) in seed_cells.items() if (bb, dd, tt, vv) == (b, d, t, v) and n_]
         m, lo, hi = t_interval(seeds)
-        rows_tte.append(
-            {
-                "behaviour": b,
-                "density": d,
-                "tte_s": t,
-                "rules": v,
-                "tracks": _rate(kot, n),
-                "tracks_seed_t": {"mean": m, "lo": lo, "hi": hi, "seeds": len(seeds)},
-                "friendly": _rate(kof, n),
-                "any": _rate(anyb, n),
-                "missed": missed,
-            }
-        )
+        rows_tte.append({"behaviour": b, "density": d, "tte_s": t, "rules": v, **cellrow(c), "tracks_seed_t": {"mean": m, "lo": lo, "hi": hi, "seeds": len(seeds)}})
     rows_dist = []
-    for (b, d, plat, dist, v), (n, kot, kof, anyb) in sorted(dist_cells.items(), key=lambda kv: (_bkey(kv[0][0]), kv[0][1], kv[0][2], kv[0][4], kv[0][3])):
-        rows_dist.append({"behaviour": b, "density": d, "platform": plat, "dist_m": dist, "rules": v, "tracks": _rate(kot, n), "friendly": _rate(kof, n), "any": _rate(anyb, n)})
+    for (b, d, plat, dist, v), c in sorted(dist_cells.items(), key=lambda kv: (_bkey(kv[0][0]), kv[0][1], kv[0][2], kv[0][4], kv[0][3])):
+        rows_dist.append({"behaviour": b, "density": d, "platform": plat, "dist_m": dist, "rules": v, **cellrow(c)})
     block_rows = []
     for (b, v), sits in sorted(per_sit.items(), key=lambda kv: (_bkey(kv[0][0]), kv[0][1])):
         ss = list(sits.values())
@@ -983,12 +1250,16 @@ def summarize(records: Iterable[dict[str, Any]], meta: dict[str, Any] | None = N
                 "behaviour": b,
                 "rules": v,
                 "blocks": sum(s.get("blocks", 0) for s in ss),
-                "needed": share("needed", "blocks"),
-                "conservative": share("cons", "blocks"),
-                "buffer": sum(s.get("buffer", 0) for s in ss),
-                "clear": sum(s.get("clear", 0) for s in ss),
                 "passes": sum(s.get("passes", 0) for s in ss),
-                "missed": share("missed", "passes"),
+                "needed": share("blocked_near", "blocks"),
+                "severe": share("blocked_danger", "blocks"),
+                "needed_late": share("blocked_near_late", "blocks"),
+                "severe_late": share("blocked_danger_late", "blocks"),
+                "conservative": share("cons", "blocks"),
+                "missed": share("missed_near", "passes"),
+                "missed_severe": share("missed_danger", "passes"),
+                "missed_late": share("missed_near_late", "passes"),
+                "missed_severe_late": share("missed_danger_late", "passes"),
                 "conservative_by_component": {
                     c: {
                         "dominant": share("dom:" + c, "cons"),
@@ -1004,7 +1275,7 @@ def summarize(records: Iterable[dict[str, Any]], meta: dict[str, Any] | None = N
         )
     class_rows = []
     for (b, t, v), c in sorted(by_tte_class.items(), key=lambda kv: (_bkey(kv[0][0]), kv[0][2], kv[0][1])):
-        class_rows.append({"behaviour": b, "tte_s": t, "rules": v, "n": c["n"], "blocks": c["blocks"], "needed": c["needed"], "buffer": c["buffer"], "clear": c["clear"]})
+        class_rows.append({"behaviour": b, "tte_s": t, "rules": v, "n": c["n"], "blocks": c["blocks"], "needed": c["blocked_near"], "severe": c["blocked_danger"], "needed_late": c["blocked_near_late"]})
     thr_rows = []
     grid_all = sorted({t for (_, _, t, _) in tte_cells})
     for (b, d, v), per in sorted(pass_rows.items(), key=lambda kv: (_bkey(kv[0][0]), kv[0][1], kv[0][2])):
@@ -1032,6 +1303,33 @@ def summarize(records: Iterable[dict[str, Any]], meta: dict[str, Any] | None = N
     }
 
 
+def sensitivity(summaries: dict[str, dict[str, Any]], behaviour: str = "mixed") -> list[dict[str, Any]]:
+    """Across variants, for `behaviour` traffic: the block rate on tracks at 60, 120 and 180 s
+    per density and rules version beside what perfect knowledge would block, the needed share
+    of blocks and the passes that missed someone (rules 6 and 12), and the time to effect for a
+    50% chance of passing."""
+    out = []
+    for name, s in summaries.items():
+        cells = {(r["density"], r["tte_s"], r["rules"]): r for r in s.get("tte", []) if r["behaviour"] == behaviour}
+        blocks = {r["rules"]: r for r in s.get("blocks", []) if r["behaviour"] == behaviour}
+        thr = {(r["density"], r["rules"]): r for r in s.get("thresholds", []) if r["behaviour"] == behaviour}
+        dens = sorted({d for d, _, _ in cells})
+        if not dens:
+            continue
+        row: dict[str, Any] = {"variant": name, "about": (s.get("params") or {}).get("about"), "by_density": {}}
+        for d in dens:
+            row["by_density"][f"{d:g}"] = {
+                "blocked": {f"{t}|{v}": (cells.get((d, t, v)) or {}).get("tracks") for t in (60, 120, 180) for v in (6, 9, 12)},
+                "perfect": {f"{t}": (cells.get((d, t, 12)) or {}).get("perfect") for t in (60, 120, 180)},
+                "t50": {f"{v}": (thr.get((d, v)) or {}).get("t50") for v in (6, 9, 12)},
+            }
+        row["needed"] = {f"{v}": (blocks.get(v) or {}).get("needed") for v in (6, 9, 12)}
+        row["missed"] = {f"{v}": (blocks.get(v) or {}).get("missed") for v in (6, 9, 12)}
+        row["missed_late"] = {f"{v}": (blocks.get(v) or {}).get("missed_late") for v in (6, 9, 12)}
+        out.append(row)
+    return out
+
+
 def _stable_seed(*parts: Any) -> int:
     return sum((i + 1) * ord(ch) for i, ch in enumerate(" ".join(str(p) for p in parts))) % 1_000_003
 
@@ -1040,22 +1338,19 @@ def _bkey(b: str) -> int:
     return BEHAVIOURS.index(b) if b in BEHAVIOURS else len(BEHAVIOURS)
 
 
-def _median(xs: list[float]) -> float | None:
-    if not xs:
-        return None
-    s = sorted(xs)
-    k = len(s) // 2
-    return round(s[k] if len(s) % 2 else (s[k - 1] + s[k]) / 2, 1)
-
-
 def load_summary(batch: Path) -> dict[str, Any] | None:
+    """The combined summary of a batch's keep-out measurement (a single variant's is wrapped)."""
     p = Path(batch) / "keepout" / "summary.json"
     if not p.exists():
         return None
     try:
-        return json.loads(p.read_text())
+        s = json.loads(p.read_text())
     except ValueError:
         return None
+    if "variants" not in s:
+        name = (s.get("params") or {}).get("variant", "model")
+        s = {"label": s.get("label"), "primary": name, "variants": {name: s}, "sensitivity": sensitivity({name: s})}
+    return s
 
 
 # ---- plain text ------------------------------------------------------------------------------------
@@ -1078,66 +1373,113 @@ def _t(x: float | str | None) -> str:
     return f"{x:.0f}"
 
 
-def table(s: dict[str, Any]) -> str:
-    """The summary as plain text."""
-    lines = [s["label"], ""]
+def _miss(r: dict[str, Any] | None) -> str:
+    if not r or not r.get("n"):
+        return "-"
+    if r["k"] == 0 and r.get("upper95_tries") is not None:
+        return f"0/{r['n']} (<{100 * r['upper95_tries']:.2f}%)"
+    return f"{r['k']}/{r['n']}"
+
+
+def table_variant(s: dict[str, Any]) -> str:
+    """One variant's summary as plain text."""
+    p = s.get("params") or {}
+    lines = [f"variant {p.get('variant', '?')}: {p.get('about', '')}"]
+    c = s["counts"]
+    ut = s.get("untracked_contacts") or [0, 0]
+    lines.append(
+        f"{s['situations']} situations, {c['evaluations']} evaluations x rules {p.get('rules')}; {s.get('contacts', '?')} contacts"
+        + (f" ({ut[1]} of {ut[0]} never tracked)" if ut[0] else "")
+        + f"; mismatches {c['mismatches']}, errors {c['errors']}, no preview {c['no_preview']}"
+    )
     grid = sorted({r["tte_s"] for r in s["tte"]})
-    lines.append(f"{s['situations']} situations, {s['counts']['evaluations']} evaluations x rules {s.get('params', {}).get('rules')}; "
-                 f"{s.get('contacts', '?')} contacts; mismatches {s['counts']['mismatches']}, errors {s['counts']['errors']}, no preview {s['counts']['no_preview']}")
-    lines.append("")
-    lines.append("Blocked by keep_out_tracks, % [Wilson 95%], by nominal time to effect (s):")
-    for v in sorted({r["rules"] for r in s["tte"]}):
-        lines.append(f"rules {v}")
-        lines.append(f"{'behaviour':<13}{'per km2':>8}  " + "".join(f"{t:>12}" for t in grid))
-        cells = {(r["behaviour"], r["density"], r["tte_s"]): r for r in s["tte"] if r["rules"] == v}
-        for b in sorted({r["behaviour"] for r in s["tte"]}, key=_bkey):
-            for d in sorted({r["density"] for r in s["tte"]}):
-                row = [cells.get((b, d, t)) for t in grid]
-                lines.append(f"{b:<13}{d:>8g}  " + "".join(f"{_pct(c['tracks'] if c else None):>12}" for c in row))
+    if grid:
+        lines.append("Blocked by keep_out_tracks, % [Wilson 95%] (perfect knowledge would block: someone inside the keep-out), by nominal time to effect (s):")
+        for v in sorted({r["rules"] for r in s["tte"]}):
+            lines.append(f"rules {v}")
+            lines.append(f"{'behaviour':<13}{'per km2':>8}  " + "".join(f"{t:>16}" for t in grid))
+            cells = {(r["behaviour"], r["density"], r["tte_s"]): r for r in s["tte"] if r["rules"] == v}
+            for b in sorted({r["behaviour"] for r in s["tte"]}, key=_bkey):
+                for d in sorted({r["density"] for r in s["tte"]}):
+                    row = [cells.get((b, d, t)) for t in grid]
+                    lines.append(f"{b:<13}{d:>8g}  " + "".join(f"{(_pct(x['tracks']) + ' (' + _pct(x['perfect'], False) + ')') if x else '-':>16}" for x in row))
+            lines.append("")
+    if s.get("blocks"):
+        lines.append("Blocks on tracks: needed (someone inside the keep-out at the effect time), severe (inside the circle), conservative; passes that missed someone:")
+        lines.append(f"{'behaviour':<13}{'rules':>6}{'blocks':>8}{'needed %':>16}{'severe %':>14}{'release win. %':>16}{'passes':>8}{'missed':>18}{'severe':>10}{'win.':>10}")
+        for r in s["blocks"]:
+            lines.append(
+                f"{r['behaviour']:<13}{r['rules']:>6}{r['blocks']:>8}{_pct(r['needed']):>16}{_pct(r['severe']):>14}{_pct(r['needed_late']):>16}{r['passes']:>8}"
+                f"{_miss(r['missed']):>18}{r['missed_severe']['k']:>10}{r['missed_late']['k']:>10}"
+            )
         lines.append("")
-    lines.append("Blocks on tracks: needed (someone truly inside the effect circle) or conservative; passes that missed someone:")
-    lines.append(f"{'behaviour':<13}{'rules':>6}{'blocks':>8}{'needed %':>16}{'conserv. %':>16}{'buffer':>8}{'clear':>8}{'passes':>8}{'missed':>8}")
-    for r in s["blocks"]:
-        lines.append(f"{r['behaviour']:<13}{r['rules']:>6}{r['blocks']:>8}{_pct(r['needed']):>16}{_pct(r['conservative']):>16}{r['buffer']:>8}{r['clear']:>8}{r['passes']:>8}{r['missed']['k']:>8}")
-    lines.append("")
-    lines.append("Conservative blocks: the component reaching in deepest (dominant) and would pass without it, %:")
-    lines.append(f"{'behaviour':<13}{'rules':>6}{'cons.':>7}" + "".join(f"{c:>22}" for c in COMPONENTS) + f"{'w/o rules 9+12':>16}")
-    for r in s["blocks"]:
-        cons = r["conservative"]["k"]
-        cbc = r["conservative_by_component"]
-        cells = "".join(f"{_pct(cbc[c]['dominant'], False) + ' / ' + _pct(cbc[c]['pass_without'], False):>22}" for c in COMPONENTS)
-        lines.append(f"{r['behaviour']:<13}{r['rules']:>6}{cons:>7}{cells}{_pct(r['conservative_pass_without_rules_9_12'], False):>16}")
-    lines.append("")
-    lines.append("Longest time to effect (s) with a pass on tracks at least 50% / 90% of the time [bootstrap 95%]:")
-    lines.append(f"{'behaviour':<13}{'per km2':>8}{'rules':>6}{'50%':>20}{'90%':>20}")
-    for r in s["thresholds"]:
-        t50, t90 = r["t50"], r["t90"]
-        lines.append(f"{r['behaviour']:<13}{r['density']:>8g}{r['rules']:>6}{_t(t50[0]) + ' [' + _t(t50[1]) + '-' + _t(t50[2]) + ']':>20}{_t(t90[0]) + ' [' + _t(t90[1]) + '-' + _t(t90[2]) + ']':>20}")
-    lines.append("")
+        lines.append("Conservative blocks (nobody inside the keep-out): the component reaching in deepest / would pass without it, %:")
+        lines.append(f"{'behaviour':<13}{'rules':>6}{'cons.':>7}" + "".join(f"{c:>20}" for c in COMPONENTS) + f"{'w/o rules 9+12':>16}")
+        for r in s["blocks"]:
+            cbc = r["conservative_by_component"]
+            cells = "".join(f"{_pct(cbc[c]['dominant'], False) + ' / ' + _pct(cbc[c]['pass_without'], False):>20}" for c in COMPONENTS)
+            lines.append(f"{r['behaviour']:<13}{r['rules']:>6}{r['conservative']['k']:>7}{cells}{_pct(r['conservative_pass_without_rules_9_12'], False):>16}")
+        lines.append("")
+    if s.get("thresholds"):
+        lines.append("Longest time to effect (s) with a pass on tracks at least 50% / 90% of the time [bootstrap 95%]:")
+        for r in s["thresholds"]:
+            t50, t90 = r["t50"], r["t90"]
+            lines.append(f"  {r['behaviour']:<13}{r['density']:>6g}  rules {r['rules']:>2}  {_t(t50[0])} [{_t(t50[1])}-{_t(t50[2])}]   {_t(t90[0])} [{_t(t90[1])}-{_t(t90[2])}]")
+        lines.append("")
     if s.get("dist"):
-        lines.append("Blocked by keep_out_tracks by platform and distance, %, rules " + " / ".join(str(v) for v in sorted({r["rules"] for r in s["dist"]})) + ":")
         dists = sorted({r["dist_m"] for r in s["dist"]})
         plats = sorted({r["platform"] for r in s["dist"]})
-        cells = {(r["behaviour"], r["density"], r["platform"], r["dist_m"], r["rules"]): r for r in s["dist"]}
         versions = sorted({r["rules"] for r in s["dist"]})
-        lines.append(f"{'behaviour':<13}{'per km2':>8}  " + "".join(f"{p[:6] + ' ' + str(d):>16}" for p in plats for d in dists))
+        cells = {(r["behaviour"], r["density"], r["platform"], r["dist_m"], r["rules"]): r for r in s["dist"]}
+        lines.append("Blocked by keep_out_tracks by platform and distance, %, rules " + " / ".join(map(str, versions)) + " (perfect knowledge):")
+        lines.append(f"{'behaviour':<13}{'per km2':>8}  " + "".join(f"{p[:6] + ' ' + str(d):>20}" for p in plats for d in dists))
         for b in sorted({r["behaviour"] for r in s["dist"]}, key=_bkey):
             for d in sorted({r["density"] for r in s["dist"]}):
                 row = []
-                for p in plats:
+                for p_ in plats:
                     for dist in dists:
-                        vals = [cells.get((b, d, p, dist, v)) for v in versions]
-                        row.append("/".join(_pct(c["tracks"], False) if c else "-" for c in vals))
-                lines.append(f"{b:<13}{d:>8g}  " + "".join(f"{x:>16}" for x in row))
+                        vals = [cells.get((b, d, p_, dist, v)) for v in versions]
+                        pf = (vals[-1] or {}).get("perfect")
+                        row.append("/".join(_pct(x["tracks"], False) if x else "-" for x in vals) + f" ({_pct(pf, False)})")
+                lines.append(f"{b:<13}{d:>8g}  " + "".join(f"{x:>20}" for x in row))
         lines.append("")
-    if s.get("regions"):
-        lines.append("Keep-out regions the engine counts (radius m, keep_out_sigma included; centre offset m), rules 12, by span (s):")
-        for q in s["regions"]:
-            spans = q["rules"].get(str(max(int(k) for k in q["rules"])), [])
-            lines.append(f"  {q['regions']}")
-            comps = [c for c in COMPONENTS if any(c in x["regions"] for x in spans)]
-            lines.append(f"    {'region':<12}" + "".join(f"{x['span_s']:>8g}" for x in spans))
-            for c in comps:
-                lines.append(f"    {c:<12}" + "".join(f"{x['regions'][c]['radius_m']:>8.0f}" if c in x["regions"] else f"{'-':>8}" for x in spans))
+    q = s.get("tracker_quality") or []
+    if q:
+        lines.append("What the tracker reported (sampled contacts): tracked, with velocity, average velocity, manoeuvre, young; velocity error median / p90; position error, 1-sigma (medians):")
+        for r in q:
+            n, tr = r["contacts"], r["tracked"]
+            lines.append(
+                f"  {r['behaviour']:<16} {n:>6}  tracked {100 * tr / max(n, 1):5.1f}%  velocity {100 * r['with_velocity'] / max(tr, 1):5.1f}%  mean {100 * r['with_mean'] / max(tr, 1):5.1f}%"
+                f"  manoeuvre {100 * r['manoeuvre'] / max(tr, 1):5.1f}%  young {100 * r['young'] / max(tr, 1):5.1f}%  vel err {r['vel_err_median']} / {r['vel_err_p90']} m/s"
+                f"  pos err {r['pos_err_median']} m  sigma {r['sigma_median']} m"
+            )
         lines.append("")
+    return "\n".join(lines)
+
+
+def table(s: dict[str, Any]) -> str:
+    """The combined summary as plain text: the primary variant in full, the sensitivity table."""
+    if "variants" not in s:
+        return s.get("label", "") + "\n\n" + table_variant(s)
+    lines = [s["label"], ""]
+    prim = s["variants"].get(s["primary"])
+    if prim:
+        lines.append(table_variant(prim))
+    lines.append("Sensitivity, mixed traffic: blocked at 60 / 120 / 180 s, rules 6 | 9 | 12 (perfect knowledge at the same times); needed share of blocks and missed passes, rules 6 / 12:")
+    for row in s.get("sensitivity", []):
+        for d, x in row["by_density"].items():
+            b = x["blocked"]
+            blocked = " | ".join("/".join(_pct(b.get(f"{t}|{v}"), False) for t in (60, 120, 180)) for v in (6, 9, 12))
+            perfect = "/".join(_pct(x["perfect"].get(f"{t}"), False) for t in (60, 120, 180))
+            lines.append(
+                f"  {row['variant']:<12} {d:>5}/km2  {blocked}  (perfect {perfect})  t50 r12 {_t((x['t50'].get('12') or [None])[0])}"
+            )
+        lines.append(
+            f"  {'':<12} needed {_pct(row['needed'].get('6'), False)} / {_pct(row['needed'].get('12'), False)}%  missed {_miss(row['missed'].get('6'))} / {_miss(row['missed'].get('12'))}"
+            f"  missed over the release window {_miss(row['missed_late'].get('6'))} / {_miss(row['missed_late'].get('12'))}"
+        )
+    lines.append("")
+    for name, v in s["variants"].items():
+        if not v.get("tte") and v.get("dist"):
+            lines.append(table_variant(v))
     return "\n".join(lines)

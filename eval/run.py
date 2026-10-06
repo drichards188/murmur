@@ -44,7 +44,8 @@ from .engage import EngageAdapter, run_suite
 from .ident import DEFAULT_ARMS as IDENT_ARMS
 from .ident import run_comparison as run_ident
 from .ident import table as ident_table
-from .keepout import run as run_keepout
+from .keepout import VARIANTS as KEEPOUT_VARIANTS
+from .keepout import run_all as run_keepout
 from .keepout import table as keepout_table
 from .metrics import clock_checks, compute_run, run_replay
 from .ports import Allocator, PortBlock, ephemeral_range, lease_tidewater_port
@@ -532,13 +533,13 @@ def do_batch(args: argparse.Namespace) -> int:
         # keep-outs against engagements on generated situations under rules 6, 9 and 12 (the
         # engine's own nomination checks through eval/keepout_probe; model results)
         try:
-            ko = run_keepout(out / "keepout", list(args.keepout_seeds), args.keepout_situations)
+            ko = run_keepout(out / "keepout", list(args.keepout_seeds), args.keepout_situations, variants=["radar", "model"])
         except (RuntimeError, OSError, subprocess.SubprocessError) as e:
             # the probe could not be built or run: the batch goes on, and says so
             batch["keepout"] = {"error": str(e)[-2000:]}
             print(f"keep-out measurement skipped: {e}", flush=True)
         else:
-            batch["keepout"] = {"seeds": list(args.keepout_seeds), "situations_per_cell_per_seed": args.keepout_situations, "situations": ko["situations"]}
+            batch["keepout"] = {"seeds": list(args.keepout_seeds), "situations_per_cell_per_seed": args.keepout_situations, "variants": list(ko["variants"])}
             print(keepout_table(ko), flush=True)
     (out / "batch.json").write_text(json.dumps(batch, indent=1))
     print(f"batch {out.name}: {len(jobs)} runs, {parallel} in parallel; {note}", flush=True)
@@ -702,14 +703,14 @@ def do_keepout(args: argparse.Namespace) -> int:
         v = getattr(args, key, None)
         if v is not None:
             params[key] = v
-    summary = run_keepout(out / "keepout", list(args.seeds), args.situations, params=params, workers=args.workers)
+    summary = run_keepout(out / "keepout", list(args.seeds), args.situations, variants=args.variants, overrides=params, workers=args.workers)
     meta = {
         "id": out.name,
         "started": started,
         "ended": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
         "seeds": [],
         "provenance": provenance(),
-        "keepout": {"seeds": list(args.seeds), "situations_per_cell_per_seed": args.situations, "situations": summary["situations"]},
+        "keepout": {"seeds": list(args.seeds), "situations_per_cell_per_seed": args.situations, "variants": list(summary["variants"])},
         "runs": [],
     }
     (out / "batch.json").write_text(json.dumps(meta, indent=1))
@@ -718,8 +719,10 @@ def do_keepout(args: argparse.Namespace) -> int:
     report = build(out)
     print(keepout_table(summary))
     print(f"report: {report}")
-    c = summary["counts"]
-    return 0 if not c["errors"] and not c["mismatches"] else 1
+    bad = [v for v, s in summary["variants"].items() if s["counts"]["errors"] or s["counts"]["mismatches"]]
+    if bad:
+        print(f"errors or mismatches in: {', '.join(bad)}")
+    return 0 if not bad else 1
 
 
 def do_report(args: argparse.Namespace) -> int:
@@ -833,7 +836,7 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--ident-situations", type=int, default=20, help="generated identification situations per seed (default 20)")
     b.add_argument("--no-ident", action="store_true", help="skip the identification comparison (rules 9)")
     b.add_argument("--keepout-seeds", nargs="+", type=int, default=[1, 2, 3], help="keep-out measurement seeds (default 1-3)")
-    b.add_argument("--keepout-situations", type=int, default=10, help="generated keep-out situations per seed, density and behaviour (default 10)")
+    b.add_argument("--keepout-situations", type=int, default=10, help="generated keep-out situations per seed, density and behaviour, variants radar and model (default 10)")
     b.add_argument("--no-keepout", action="store_true", help="skip the keep-out measurement")
 
     e = sub.add_parser("engage", help="the engagement scenario suite (sim/scenarios/engage) over seeds and noise, and its report")
@@ -855,7 +858,8 @@ def main(argv: list[str] | None = None) -> int:
     ko = sub.add_parser("keepout", help="how often keep-outs block an engagement, on generated situations under rules 6, 9 and 12 (model results)")
     ko.add_argument("--seeds", nargs="+", type=int, default=list(range(1, 11)))
     ko.add_argument("--situations", type=int, default=100, help="generated situations per seed, density and behaviour (default 100)")
-    ko.add_argument("--densities", nargs="+", type=float, help="protected contacts per km^2 (default 0.03 0.1 0.3 1)")
+    ko.add_argument("--variants", nargs="+", choices=list(KEEPOUT_VARIANTS), help="default: all (radar, the bridge's tracker, is the primary)")
+    ko.add_argument("--densities", nargs="+", type=float, help="protected contacts per km^2 (default 0.03 0.1 0.3 1; overrides every variant's)")
     ko.add_argument("--behaviours", nargs="+", choices=["stationary", "transiting", "circling", "manoeuvring", "new", "mixed"], help="default: all")
     ko.add_argument("--tte-s", dest="tte_s", nargs="+", type=int, help="nominal times to effect, s (default 30 45 60 90 120 180 240 300)")
     ko.add_argument("--dist-m", dest="dist_m", nargs="+", type=int, help="platform distances for the platform table, m (default 500 1000 2000 3000)")
