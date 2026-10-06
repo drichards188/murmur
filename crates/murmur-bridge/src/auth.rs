@@ -258,6 +258,18 @@ pub fn roster_from(file: &CredentialFile) -> (Vec<OperatorId>, Vec<OperatorId>) 
     (ops, engage)
 }
 
+/// Rules 11 (murmur-jfi): the operators whose credential is harness-held (`scripted`) in
+/// `file` when the run starts: fixed on the run's roster, so a credential re-marked mid-run
+/// (`murmur-auth scripted <op> on|off`) can't move its operator between people and scripts in
+/// the log; its next login is refused until the bridge restarts.
+pub fn scripted_from(file: &CredentialFile) -> Vec<OperatorId> {
+    file.operators
+        .iter()
+        .filter(|(_, e)| e.scripted)
+        .map(|(id, _)| OperatorId::new(id))
+        .collect()
+}
+
 /// Proof, inside the bridge, that the password of `operator` was just checked again for
 /// login `session`: what [`Decision::approve_stepped`] takes before it asks the engine for a
 /// step-up. Made only by [`Auth::step_up`] (private fields, no constructor elsewhere).
@@ -429,10 +441,20 @@ fn decision_refusal(e: DecisionError) -> Response {
 }
 
 fn locked(retry: Duration) -> Response {
+    locked_for(retry, "this operator")
+}
+
+/// A step-up's limit is the session's own, not the operator's (murmur-jfi review): its 429
+/// says so.
+fn locked_session(retry: Duration) -> Response {
+    locked_for(retry, "this session")
+}
+
+fn locked_for(retry: Duration, whose: &str) -> Response {
     let secs = retry.as_secs().max(1);
     let mut r = refusal(
         StatusCode::TOO_MANY_REQUESTS,
-        &format!("too many failed attempts for this operator: try again in {secs} s"),
+        &format!("too many failed attempts for {whose}: try again in {secs} s"),
     );
     if let Ok(v) = HeaderValue::from_str(&secs.to_string()) {
         r.headers_mut().insert(header::RETRY_AFTER, v);
@@ -720,11 +742,11 @@ impl Auth {
                 for l in &gone {
                     self.end(l, "step-up failed repeatedly");
                 }
-                Err(Box::new(locked(d)))
+                Err(Box::new(locked_session(d)))
             }
             Err(Refused::Locked(d)) => {
                 refused("too many attempts at once");
-                Err(Box::new(locked(d)))
+                Err(Box::new(locked_session(d)))
             }
         }
     }
@@ -897,7 +919,7 @@ impl Auth {
         let t = now();
         if let Err(d) = lock(&self.step_limiter).begin(&key, t) {
             refused("too many attempts at once");
-            return Err(Box::new(locked(d)));
+            return Err(Box::new(locked_session(d)));
         }
         let outcome = match self.take_pending(assertion, actor.operator(), Some(session)) {
             Ok(p) => self.check_passkey(p, assertion).await.map_err(|(_, why)| why),
@@ -920,7 +942,7 @@ impl Auth {
                     for l in &gone {
                         self.end(l, "step-up failed repeatedly");
                     }
-                    return Err(Box::new(locked(d)));
+                    return Err(Box::new(locked_session(d)));
                 }
                 Err(deny(format!("passkey refused: {why}")))
             }
@@ -1503,11 +1525,11 @@ impl Auth {
                 for l in &gone {
                     self.end(l, "step-up failed repeatedly");
                 }
-                Err(Box::new(locked(d)))
+                Err(Box::new(locked_session(d)))
             }
             Err(Refused::Locked(d)) => {
                 refused("too many attempts at once");
-                Err(Box::new(locked(d)))
+                Err(Box::new(locked_session(d)))
             }
         }
     }

@@ -61,7 +61,18 @@ fn harness_with(idle: Duration, scripted: &[&str], edit: impl FnOnce(&mut Policy
     }
     let key = c.add_agent("agent-planner").expect("agent");
     c.save(&file).expect("saved");
-    let e = super::engagement::engage_rig_auth_policy(None, PathBuf::from("memory"), AuthMode::Credentials, edit);
+    // rules 11: the harness-held credentials are on the run's roster from its start
+    let e = super::engagement::engage_rig_full(
+        None,
+        PathBuf::from("memory"),
+        AuthMode::Credentials,
+        edit,
+        None,
+        None,
+        super::EngineClock::Manual,
+        scripted.iter().map(|o| OperatorId::new(*o)).collect(),
+        Vec::new(),
+    );
     let settings = AuthSettings {
         mode: AuthMode::Credentials,
         file: Some(file.clone()),
@@ -467,8 +478,10 @@ async fn repeated_wrong_step_ups_end_the_session() {
         let (s, _) = h.sign(&op2, id, Some("guessing guessing guessing")).await;
         assert_eq!(s, StatusCode::UNAUTHORIZED);
     }
-    let (s, _) = h.sign(&op2, id, Some("guessing guessing guessing")).await;
+    let (s, v) = h.sign(&op2, id, Some("guessing guessing guessing")).await;
     assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
+    // the limit is the session's own, and its answer says so (murmur-jfi review)
+    assert!(v["detail"].as_str().unwrap_or_default().starts_with("too many failed attempts for this session"), "{v}");
     assert!(h.log().contains("step-up failed repeatedly"));
     // the refusals came first, under the session, then its end
     let log = h.log();
@@ -722,6 +735,39 @@ async fn a_scripted_credential_logs_in_as_scripted_and_is_no_person() {
     let ids = |v: &[&str]| v.iter().map(|o| OperatorId::new(*o)).collect::<std::collections::BTreeSet<_>>();
     assert_eq!(r.people, ids(&["op-1", "op-3"]));
     assert_eq!(r.scripted, ids(&["op-2"]));
+}
+
+/// Rules 11 (murmur-jfi): which credentials are harness-held is fixed when the run starts
+/// (the roster's `scripted`, in `run.started`). Re-marking one mid-run (`murmur-auth scripted
+/// <op> off`) ends its sessions as any credential change does, and its next login is refused,
+/// saying why, until the bridge restarts: before, it logged in as a person's and replay listed
+/// the operator among the people. Re-marking a person's credential scripted is refused the
+/// same way.
+#[tokio::test]
+async fn a_credential_re_marked_mid_run_logs_in_only_after_a_restart() {
+    let h = harness_with(Duration::from_secs(1800), &["op-2"], |_| {});
+    assert!(h.log().lines().next().unwrap_or_default().contains("\"scripted\":[\"op-2\"]"), "{}", h.log());
+    let op2 = h.login("op-2", PW2).await;
+    let op3 = h.login("op-3", PW3).await;
+    let mut c = CredentialFile::load(&h.file).expect("file");
+    c.set_scripted("op-2", false).expect("a person's now");
+    c.set_scripted("op-3", true).expect("a harness's now");
+    c.save(&h.file).expect("saved");
+    h.auth.refresh();
+    for cookie in [&op2, &op3] {
+        let (s, _) = h.post(cookie, "/api/intents", json!({ "task": "hold", "uids": [1] })).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "the change ended its sessions");
+    }
+    for (who, pw, why) in [("op-2", PW2, "was harness-held (scripted) when the run started"), ("op-3", PW3, "was a person's when the run started")] {
+        let (s, _, v) = h
+            .call("POST", "/api/auth/login", Some(json!({ "operator": who, "password": pw })), &[("origin", CONSOLE)])
+            .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "{who}: {v}");
+        assert!(v["detail"].as_str().unwrap_or_default().contains(why), "{who}: {v}");
+    }
+    let r = h.replays_authenticated();
+    let ids = |v: &[&str]| v.iter().map(|o| OperatorId::new(*o)).collect::<std::collections::BTreeSet<_>>();
+    assert_eq!((r.people.clone(), r.scripted.clone()), (ids(&["op-3"]), ids(&["op-2"])));
 }
 
 /// User decision (step-up scope): with `[approval] step_up_acts = ["declare_hostile"]`, a

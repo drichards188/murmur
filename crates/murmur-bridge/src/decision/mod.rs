@@ -247,7 +247,8 @@ fn engine_err(e: EngineError) -> DecisionError {
         | EngineError::PlanChanged { .. }
         | EngineError::NoPicture { .. }
         | EngineError::SupersedesEngagement { .. }
-        | EngineError::NotAccepted { .. } => 409,
+        | EngineError::NotAccepted { .. }
+        | EngineError::NotWrittenOff(_) => 409,
         EngineError::EngagementNeedsAuthority(_)
         | EngineError::ProposerCannotApprove { .. }
         | EngineError::NotOnRoster { .. } => 403,
@@ -292,6 +293,9 @@ pub struct Settings {
     /// Those whose sessions carry engagement authority: the credential file's flag, or
     /// `MURMUR_ENGAGE_OPERATORS` (dev run).
     pub engage_operators: Vec<OperatorId>,
+    /// Rules 11, a credentials run: those whose credential is harness-held (`scripted`) when
+    /// the run starts, fixed for the run on the roster (`main` sets it from the file).
+    pub scripted: Vec<OperatorId>,
     /// How operators are authenticated (`MURMUR_AUTH`: credentials unless `dev`).
     pub auth: AuthMode,
     pub tidewater: Option<String>,
@@ -343,6 +347,7 @@ impl Settings {
             audit: root.join("logs/audit").join(format!("{run}.jsonl")),
             operators,
             engage_operators,
+            scripted: Vec::new(),
             // `main` sets it, and in a credentials run the roster, from `crate::auth::Settings`
             // (a dev run unless MURMUR_AUTH=credentials)
             auth: AuthMode::Dev,
@@ -477,12 +482,18 @@ pub struct Parts {
     pub terrain: Terrain,
     pub operators: Vec<OperatorId>,
     pub engage_operators: Vec<OperatorId>,
+    /// Rules 11, a credentials run: the operators whose credential is harness-held at the
+    /// start (logged on the roster; empty: none).
+    pub scripted: Vec<OperatorId>,
     pub auth: AuthMode,
     pub tracks: Option<Arc<Tracks>>,
     /// Rules 10, a credentials run: the relying party and the operators' passkeys when the run
     /// starts (logged on the roster), and the study it is, if one.
     pub passkeys: Option<murmur_decide::PasskeyRoster>,
     pub study: Option<murmur_decide::Study>,
+    /// Rules 11: what earlier runs' logs still owed, as the start read them
+    /// (`engage::read_carry`): logged in `run.started` and owed back from there.
+    pub carried_from: Vec<murmur_decide::replay::CarriedFrom>,
 }
 
 impl Decision {
@@ -520,6 +531,16 @@ impl Decision {
                 AuthMode::Credentials => "the credential file holds no operator".into(),
             });
         }
+        // rules 11: what earlier runs' logs still owe, read before this run's log is opened
+        // (a reused run id appends to the same file) and recorded in its first line
+        let followups = policy.rules.followups();
+        let (carried_from, carry_problem) = match (&s.last_run, followups) {
+            (Some(pointer), true) => match engage::read_carry(pointer) {
+                Ok(c) => (c, None),
+                Err(why) => (Vec::new(), Some(why)),
+            },
+            _ => (Vec::new(), None),
+        };
         let file = JsonlFile::open(&s.audit).map_err(|e| format!("{}: {e}", s.audit.display()))?;
         // anchored from its first event on: an anchor file that can't be opened stops the
         // bridge like an audit log that can't
@@ -548,10 +569,12 @@ impl Decision {
                 terrain: Terrain::new(s.tidewater.as_deref()),
                 operators: s.operators.clone(),
                 engage_operators: s.engage_operators.clone(),
+                scripted: s.scripted.clone(),
                 auth: s.auth,
                 tracks: None,
                 passkeys: s.passkeys.clone(),
                 study: s.study.clone(),
+                carried_from,
             },
         )?;
         if let Some(a) = anchors {
@@ -612,8 +635,11 @@ impl Decision {
                 Err(e) => eprintln!("decision: nothing carried over: {e}"),
             }
         }
-        // rules 6: lost-link values the last run on this port still owed back
-        if let Some(pointer) = &s.last_run {
+        // rules 6: lost-link values the last run on this port still owed back (rules 11: the
+        // engine took them in run.started; their lanes, the pointer to this log)
+        if followups {
+            d.seed_carried(s.last_run.as_deref(), carry_problem);
+        } else if let Some(pointer) = &s.last_run {
             d.carry_restores(pointer);
         }
         Ok(d)
@@ -674,10 +700,16 @@ impl Decision {
             Some(s) => roster.with_study(s),
             None => roster,
         };
-        let engine = Engine::with_areas(
+        // rules 11: the scripted operators, fixed at the start (a credentials run's)
+        let roster = match p.auth {
+            AuthMode::Credentials => roster.with_scripted(p.scripted.clone()),
+            AuthMode::Dev => roster,
+        };
+        let engine = Engine::start(
             p.policy,
             Some(p.areas.clone()),
             roster,
+            p.carried_from,
             Box::new(clock.clone()),
             p.sink,
         )
@@ -2212,6 +2244,8 @@ impl Decision {
             let core = self.lock();
             alerts.extend(self.restore_alerts(&core, clock::wall()));
             alerts.extend(self.carry_alert(&core, clock::wall()));
+            // rules 11: earlier logs whose carry failed, still owed
+            alerts.extend(self.pending_carry_alerts(&core, clock::wall()));
         }
         alerts.sort_by(|a, b| a.severity.cmp(&b.severity).then(a.since_t.total_cmp(&b.since_t)));
         // rules 5: orders held for vehicles the link can't carry them to now

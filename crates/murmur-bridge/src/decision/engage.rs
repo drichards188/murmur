@@ -212,7 +212,10 @@ pub(super) const RESTORE_ALERT_S: f64 = 30.0;
 
 /// Rules 6: a fleet vehicle as a preload's write-ahead names it: its platform and callsign
 /// (the manifest), its system id, and its home (from its telemetry, else the manifest's).
-fn identity_of(cell: &crate::vehicle::VehicleCell) -> murmur_decide::VehicleIdentity {
+/// Rules 11: the same identity of every vehicle goes into each world snapshot
+/// (`WorldSnapshot::identities`), so values carried over from an earlier run hold a mission
+/// only for the vehicle they were preloaded on.
+pub(super) fn identity_of(cell: &crate::vehicle::VehicleCell) -> murmur_decide::VehicleIdentity {
     cell.read(|v| {
         let ident = v.identity.as_ref();
         let manifest_home = ident
@@ -226,6 +229,62 @@ fn identity_of(cell: &crate::vehicle::VehicleCell) -> murmur_decide::VehicleIden
             home: v.home.or(manifest_home).map(|(lat, lon)| murmur_decide::LonLat::new(lon, lat)),
         }
     })
+}
+
+/// Rules 11 (murmur-cq3), before the engine starts: what earlier runs' logs still owe, as
+/// `run.started` records it (`carried_from`), in that one line: the log `pointer`
+/// (`.last-run-<port>`) names, then each log it still owed for because its carry had failed
+/// (named pending, looked for beside it), tried again, and theirs in turn. A log that can't be
+/// read is recorded with why: the log that records it owes for it (pending) until a later
+/// start reads it or an operator writes it off, so the chain never drops it. Empty: no pointer
+/// (a first start). Err: the pointer itself can't be read (nothing to name).
+pub(super) fn read_carry(pointer: &std::path::Path) -> Result<Vec<murmur_decide::replay::CarriedFrom>, String> {
+    let named = match std::fs::read_to_string(pointer) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => {
+            return Err(format!(
+                "{} can't be read ({e}): lost-link values the last run on this port still owed can't be carried over",
+                pointer.display()
+            ));
+        }
+        Ok(s) => std::path::PathBuf::from(s.trim()),
+    };
+    let dir = named.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+    let mut out: Vec<murmur_decide::replay::CarriedFrom> = Vec::new();
+    let mut todo = std::collections::VecDeque::from([named]);
+    while let Some(path) = todo.pop_front() {
+        let log = path
+            .file_name()
+            .map_or_else(|| path.display().to_string(), |f| f.to_string_lossy().into_owned());
+        if out.iter().any(|c| c.log == log) {
+            continue;
+        }
+        let mut entry = murmur_decide::replay::CarriedFrom {
+            log,
+            head: None,
+            last_seq: None,
+            owed: Vec::new(),
+            pending: Vec::new(),
+            error: None,
+        };
+        match std::fs::read_to_string(&path) {
+            Err(e) => entry.error = Some(e.to_string()),
+            Ok(text) => {
+                if let Some((head, seq)) = murmur_decide::replay::log_head(&text) {
+                    entry.head = Some(head);
+                    entry.last_seq = Some(seq);
+                }
+                let debts = murmur_decide::replay::owed_debts(&text);
+                for p in debts.pending.iter().filter(|p| murmur_decide::replay::is_log_file_name(p)) {
+                    todo.push_back(dir.join(p));
+                }
+                entry.owed = debts.owed;
+                entry.pending = debts.pending;
+            }
+        }
+        out.push(entry);
+    }
+    Ok(out)
 }
 
 /// The engine proposal for an engage request.
@@ -426,6 +485,7 @@ impl Decision {
     /// confirms. Then, on each free lane: a set waiting, else a re-read due, else the
     /// restore once no engagement holds the platform.
     pub(super) fn step_params(&self, core: &mut Core) {
+        self.drop_closed_restores(core);
         let mut stops: Vec<FallbackOrder> = Vec::new();
         let mut sends: Vec<(IntentId, TaskOrder)> = Vec::new();
         let now_mono = crate::clock::mono();
@@ -739,10 +799,97 @@ impl Decision {
         }
     }
 
+    /// Rules 11: a platform the ledger no longer owes anything (spent by its own effect, or
+    /// written off by an operator: `restore.closed`) is not restored: its lane forgets it.
+    pub(super) fn drop_closed_restores(&self, core: &mut Core) {
+        if !self.rules.followups() {
+            return;
+        }
+        let Core { engine, params, .. } = core;
+        for (uid, lane) in params.iter_mut() {
+            if lane.owed.is_some() && !engine.restore_owed_to(&duid(*uid)) {
+                lane.owed = None;
+            }
+        }
+    }
+
+    /// Rules 11, right after the engine started with what earlier logs still owed (in
+    /// `run.started`): the values carried over are owed back on their platforms' lanes (put
+    /// back once a vehicle that matches the one they were preloaded on answers), a log that
+    /// could not be read is said in the inbox, and `pointer` names this run's log from now on
+    /// (this log records the whole carry, failed ones included, so nothing drops out of the
+    /// chain).
+    pub(super) fn seed_carried(&self, pointer: Option<&std::path::Path>, problem: Option<String>) {
+        {
+            let mut guard = self.lock();
+            let core = &mut *guard;
+            for o in core.engine.carried_owed() {
+                let Some(uid) = bridge_uid(&o.uid) else { continue };
+                println!("lost-link values of vehicle {uid} owed back from an earlier run (run.started): restoring");
+                core.params.insert(uid, ParamLane::carrying(o.values, o.vehicle));
+            }
+            for (log, why) in core.engine.pending_carries() {
+                eprintln!("decision: the earlier log {log} can't be read ({why}): what it still owed is unknown and stays owed until a start reads it or an operator writes it off");
+            }
+            if let Some(why) = &problem {
+                eprintln!("decision: {why}");
+                core.carry_problem = Some((why.clone(), crate::clock::wall()));
+            }
+        }
+        if let (Some(pointer), None) = (pointer, problem)
+            && let Err(e) = std::fs::write(pointer, self.audit_path.display().to_string())
+        {
+            let why = format!(
+                "{} can't be written ({e}): the next run won't find this one's log to carry over from",
+                pointer.display()
+            );
+            eprintln!("decision: {why}");
+            self.lock().carry_problem = Some((why, crate::clock::wall()));
+        }
+    }
+
+    /// Rules 11 (murmur-q05, murmur-cq3): `POST /api/restores/write_off`: an operator writes
+    /// off, under their own session and saying why, the lost-link values owed back to a
+    /// vehicle (`uid`: lost, spent, another vehicle under the uid) or an earlier log whose
+    /// carry failed (`log`: gone for good). Logged as `restore.closed`; the vehicle's restore
+    /// stops, its missions no longer wait for it, nothing is carried to the next run.
+    pub fn write_off(
+        &self,
+        by: &super::Actor,
+        uid: Option<crate::vehicle::Uid>,
+        log: Option<String>,
+        note: &str,
+    ) -> Result<Value, DecisionError> {
+        let what = match (uid, log) {
+            (Some(u), None) => murmur_decide::WriteOff::Platform(duid(u)),
+            (None, Some(l)) => murmur_decide::WriteOff::Log(l),
+            _ => return Err(DecisionError::new(422, "write off one vehicle's values (uid) or one earlier log (log)")),
+        };
+        let out = {
+            let mut guard = self.lock();
+            let core = &mut *guard;
+            let session = Self::session(&mut core.engine, &mut core.sessions, &core.logins, by, &self.engage_operators, self.auth)?;
+            core.engine
+                .write_off_restore(session.authority(), what.clone(), note)
+                .map_err(engine_err)?;
+            self.drop_closed_restores(core);
+            if matches!(what, murmur_decide::WriteOff::Log(_)) && core.engine.pending_carries().is_empty() {
+                core.carry_problem = None;
+            }
+            json!({ "written_off": match &what {
+                murmur_decide::WriteOff::Platform(u) => json!({ "uid": u }),
+                murmur_decide::WriteOff::Log(l) => json!({ "log": l }),
+            } })
+        };
+        self.publish();
+        Ok(out)
+    }
+
     /// Rules 6, at start: the platforms' own lost-link values this station's last run still
     /// owed back when it ended (derived from its audit log, which `pointer` names), logged as
     /// carried (`platform.restore`) and put back like any other once the platform answers.
-    /// Then `pointer` names this run's log. A missing pointer or log is a first start.
+    /// Then `pointer` names this run's log. A missing pointer or log is a first start. Rules
+    /// before 11 only: from rules 11 the carry is in `run.started` ([`read_carry`]).
     pub(super) fn carry_restores(&self, pointer: &std::path::Path) {
         let fail = |why: String| {
             eprintln!("decision: {why}");
@@ -840,6 +987,28 @@ impl Decision {
         })
     }
 
+    /// Rules 11: an alert for each earlier log whose carry failed and nobody wrote off: what it
+    /// still owed is unknown; it is tried again at every start until read, or written off.
+    pub(super) fn pending_carry_alerts(&self, core: &Core, now_wall: f64) -> Vec<super::alerts::Alert> {
+        core.engine
+            .pending_carries()
+            .into_iter()
+            .map(|(log, why)| super::alerts::Alert {
+                id: format!("restore:carry:{log}"),
+                kind: "restore_pending",
+                severity: super::alerts::Severity::High,
+                uid: 0,
+                callsign: None,
+                detail: format!(
+                    "the earlier log {log} can't be read ({why}): the lost-link values it still owed are unknown; it is tried again at every start until read, or an operator writes it off (POST /api/restores/write_off {{\"log\": \"{log}\", \"note\": ...}})"
+                ),
+                since_t: now_wall,
+                op_id: None,
+                intent_id: None,
+            })
+            .collect()
+    }
+
     /// Rules 6: inbox alerts for platforms whose own lost-link values have been due back for
     /// longer than [`RESTORE_ALERT_S`] without a confirmed restore.
     pub(super) fn restore_alerts(&self, core: &Core, now_wall: f64) -> Vec<super::alerts::Alert> {
@@ -901,9 +1070,14 @@ impl Decision {
                         uid: *uid,
                         callsign: fleet.get(uid).and_then(|c| super::alerts::callsign(c)),
                         detail: format!(
-                            "its own lost-link failsafe ({}) is not confirmed back: it still carries an ended engagement's lost-link action; {} attempt(s){last}",
+                            "its own lost-link failsafe ({}) is not confirmed back: it still carries an ended engagement's lost-link action; {} attempt(s){last}{}",
                             values.join(", "),
-                            owed.attempts
+                            owed.attempts,
+                            if self.rules.followups() {
+                                "; an operator writes them off if the vehicle is lost or spent, or another vehicle has its uid now"
+                            } else {
+                                ""
+                            }
                         ),
                         since_t: since,
                         op_id: None,

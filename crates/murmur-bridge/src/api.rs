@@ -18,7 +18,9 @@
 //! stops an approved or dispatched engagement before its effect, any operator), `GET
 //! /api/inbox`, `GET /api/operators` (who may sign an engagement), `POST /api/engage/options`
 //! (the nomination form's dry run: which armed platforms could take it, with checks and
-//! preview; nothing is created or logged). Who acts is `crate::auth`'s answer: the operator
+//! preview; nothing is created or logged), `POST /api/restores/write_off` (rules 11: an
+//! operator writes off a vehicle's lost-link values owed back, or an earlier log whose carry
+//! failed, saying why). Who acts is `crate::auth`'s answer: the operator
 //! signed in on this browser (the session cookie; `POST /api/auth/login`), or in a dev run
 //! (`MURMUR_AUTH=dev`) the `X-Murmur-Operator` header. An approval the decision marks
 //! consequential (every engagement signature) carries `"password"`, the signer's own,
@@ -72,6 +74,7 @@ pub fn router(app: App) -> Router {
         .route("/api/intents/{id}", get(get_intent))
         .route("/api/intents/{id}/{action}", post(intent_action))
         .route("/api/inbox", get(inbox))
+        .route("/api/restores/write_off", post(write_off))
         .route("/api/operator/view", post(operator_view))
         .route("/api/operators", get(operators))
         .route("/api/engage/options", post(engage_options))
@@ -390,6 +393,40 @@ async fn intent_action(
 
 async fn inbox(State(app): State<App>) -> Response {
     Json(app.decision.inbox_json()).into_response()
+}
+
+/// `POST /api/restores/write_off` (rules 11): an operator writes off what is owed back: a
+/// vehicle's own lost-link values (`{"uid": n, "note": "..."}`: it is lost or spent, or another
+/// vehicle has its uid now) or an earlier log whose carry failed (`{"log": "<file>", "note":
+/// "..."}`: gone for good). Logged as `restore.closed` under the operator's own session; the
+/// note is required. 409 when nothing such is owed or an engagement is under way on the vehicle.
+async fn write_off(State(app): State<App>, headers: HeaderMap, body: Bytes) -> Response {
+    #[derive(Deserialize)]
+    struct WriteOff {
+        #[serde(default)]
+        uid: Option<crate::vehicle::Uid>,
+        #[serde(default)]
+        log: Option<String>,
+        #[serde(default)]
+        note: String,
+    }
+    let req = match serde_json::from_slice::<WriteOff>(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("write_off wants {{\"uid\": n}} or {{\"log\": \"<file>\"}} with a \"note\": {e}"),
+            );
+        }
+    };
+    let op = match app.auth.actor(&headers, false) {
+        Ok(op) => op,
+        Err(e) => return decision_error(e),
+    };
+    match app.decision.write_off(&op, req.uid, req.log, &req.note) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => decision_error(e),
+    }
 }
 
 /// `POST /api/operator/view` (Phase G): the console says what it showed for a pending

@@ -226,6 +226,8 @@ fn restart_on_the_bridge_clock(r: &Rig) -> (Arc<Decision>, MemorySink) {
             tracks: None,
             passkeys: None,
             study: None,
+            scripted: Vec::new(),
+            carried_from: Vec::new(),
         },
     )
     .expect("engine");

@@ -102,6 +102,8 @@ fn rig() -> Rig {
             tracks: Some(tracks.clone()),
             passkeys: None,
             study: None,
+            scripted: Vec::new(),
+            carried_from: Vec::new(),
         },
     )
     .expect("engine");

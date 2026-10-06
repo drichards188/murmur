@@ -491,6 +491,21 @@ impl Restores {
         &self.pending
     }
 
+    /// Rules 11: the values owed back that no engagement of this run preloaded (carried
+    /// over), with the vehicle they were preloaded on.
+    pub(crate) fn carried(&self) -> Vec<OwedRestore> {
+        self.owed
+            .iter()
+            .filter(|(_, o)| o.by.is_empty())
+            .map(|(uid, o)| OwedRestore {
+                uid: uid.clone(),
+                values: o.values.clone(),
+                by: Vec::new(),
+                vehicle: o.vehicle.clone(),
+            })
+            .collect()
+    }
+
     /// A preload set on `uid` read `before` as the platform's own values: while earlier
     /// values are owed, those it shares with them must be them (a value read off a preloaded
     /// platform is not its own); the others are owed too from now on. Err: the values owed.

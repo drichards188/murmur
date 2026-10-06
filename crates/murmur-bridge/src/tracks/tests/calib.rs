@@ -933,6 +933,16 @@ fn a_track_that_manoeuvred_says_so_in_its_facts() {
     assert!(f.manoeuvre.is_none(), "{:?}", f.manoeuvre);
     let [e, n] = f.mean_velocity_mps.unwrap_or([0.0, 0.0]);
     assert!(e.hypot(n) < 1.0, "{e:.2}, {n:.2}");
+    // rules 11 (murmur-9m0): the facts say when the tracker started the track; young (a
+    // velocity, no average velocity yet: its history too short to show a manoeuvre) for its
+    // first 45 s or so, so a keep-out counts it as possibly manoeuvring until then
+    let first = facts_at(holding, 0).position.t;
+    let young = facts_at(zigzag, 20);
+    assert_eq!(young.first_seen_t, Some(first), "{young:?}");
+    assert!(young.velocity_mps.is_some() && young.mean_velocity_mps.is_none(), "{young:?}");
+    let grown = facts_at(zigzag, 60);
+    assert_eq!(grown.first_seen_t, Some(first));
+    assert!(grown.mean_velocity_mps.is_some(), "{grown:?}");
 }
 
 /// The live run's clock (review of 10-05, the coast guard cutter's 79%): on this host the

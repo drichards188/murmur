@@ -1795,6 +1795,13 @@ impl Engine {
         self.restores.values_owed(uid).is_some()
     }
 
+    /// Rules 11: the values the ledger owes back that no engagement of this run preloaded
+    /// (carried over at the start), with the vehicle they were preloaded on: what the bridge
+    /// puts back once a vehicle that matches answers.
+    pub fn carried_owed(&self) -> Vec<crate::replay::OwedRestore> {
+        self.restores.carried()
+    }
+
     /// Rules 11 (murmur-q05): right after an engagement's release, close what is owed back to
     /// its platform when the platform is spent by its own effect (its catalog's
     /// `expended_by_effect`, as the release picture `world` has it): `restore.closed`,
@@ -3127,16 +3134,27 @@ impl Engine {
         if self.policy.rules.rule_id() {
             self.ident.fill(&mut w.tracks);
         }
+        self.drop_later_facts(w);
+    }
+
+    /// Rules 11: when the tracker started a track (`first_seen_t`) is a fact only rules 11
+    /// read: an engine of older rules never logs it (a log claiming them can't carry it).
+    fn drop_later_facts(&self, w: &mut WorldSnapshot) {
+        if !self.policy.rules.followups() {
+            for t in w.tracks.values_mut() {
+                t.first_seen_t = None;
+            }
+        }
     }
 
     /// The world as decisions read it (rules 9: its identification filled from the ledger),
     /// for readers outside the engine (the console, agents) and the engine's own checks.
     pub fn identified<'w>(&self, world: &'w WorldSnapshot) -> std::borrow::Cow<'w, WorldSnapshot> {
-        if !self.policy.rules.rule_id() {
+        if !self.policy.rules.rule_id() && self.policy.rules.followups() {
             return std::borrow::Cow::Borrowed(world);
         }
         let mut w = world.clone();
-        self.ident.fill(&mut w.tracks);
+        self.identify(&mut w);
         std::borrow::Cow::Owned(w)
     }
 

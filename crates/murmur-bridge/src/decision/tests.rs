@@ -141,6 +141,8 @@ fn rig_clocked(policy: Policy, auth: murmur_decide::AuthMode, engine_clock: Engi
             tracks: None,
             passkeys: None,
             study: None,
+            scripted: Vec::new(),
+            carried_from: Vec::new(),
         },
     )
     .expect("engine");
@@ -276,6 +278,8 @@ fn the_bridge_does_not_start_with_an_engagement_operator_who_is_no_operator() {
         tracks: None,
         passkeys: None,
         study: None,
+        scripted: Vec::new(),
+        carried_from: Vec::new(),
     };
     let world = || {
         World::new(Config {

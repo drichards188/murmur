@@ -1087,6 +1087,9 @@ impl Track {
                 .vel
                 .and(self.mean_velocity())
                 .map(|(e, n)| [(e * 100.0).round() / 100.0, (n * 100.0).round() / 100.0]),
+            // rules 11: when this track started (with no average velocity yet, it is young: the
+            // engine of older rules drops it)
+            first_seen_t: Some(ms(self.first_seen_t)),
         }
     }
 }
