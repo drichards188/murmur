@@ -1,0 +1,22 @@
+[package]
+name = "murmur-keepout-probe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Evaluation only (eval/keepout.py): generated engagement situations through murmur-decide's own nomination checks, read-only"
+
+# Its own workspace: the evaluation's tool, built into the repository's target directory by
+# eval/keepout.py (`cargo build --release --manifest-path eval/keepout_probe/Cargo.toml
+# --target-dir target`); it only reads murmur-decide.
+[workspace]
+
+[dependencies]
+murmur-decide = { path = "../../crates/murmur-decide" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "warn"
