@@ -738,9 +738,12 @@ group. Dates are 2026.
   (`Vehicle::seeded`; the AUV drift test drew under 1 m of error in 7 of 400 runs seeded from
   the wall clock), read what a stepped vehicle sent from its link (`Link::capture`), not a
   loopback socket, and their GCS reads a running vehicle's frames in its MAVLink sequence
-  order (a loaded host's loopback delivered a refusal's text after its ACK), each frame
-  waiting at most 2 s for an earlier one and a window's held frames counted with it (a lost
-  frame no longer holds a rate count back). Tests run the bridge's clock per thread
+  order (a loaded host's loopback delivered a refusal's text after its ACK), a frame
+  waiting at most 5 s for an earlier one and only within 32 sequence numbers of it (the
+  number is one byte: a longer wait let a burst wrap onto frames still held), and a
+  window's held frames counted with it (a lost frame no longer holds a rate count back).
+  What no harness fixes, stated: a datagram the kernel drops outright still fails a
+  real-time test, as it would a ground station. Tests run the bridge's clock per thread
   (`clock::test_clock`): a `multi_thread` runtime's workers and `spawn_blocking` threads do
   not see it.
 - **The engagement chain is in the engine, as pure functions of logged inputs** (10-03,
