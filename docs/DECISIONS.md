@@ -1112,7 +1112,83 @@ group. Dates are 2026.
   consequential act re-enters the password today. Passkeys (WebAuthn: a key bound to the
   device and the origin, not phishable, not shareable by telling) come later and are required
   before a study with real participants; until then a study run is a pilot (study mode says
-  so at start).
+  so at start). Built as rules 10 (below).
+- **Passkeys bind a step-up to its act, and replay verifies the signature itself** (10-05,
+  murmur-437; rules 10, `PASSKEY_SINCE`). A step-up (or a login) may be a passkey's: a WebAuthn
+  assertion with user verification (the authenticator's PIN, biometric or unlock). Its
+  challenge is not random: the engine derives it (`passkey::challenge`, SHA-256 of canonical
+  JSON) from the hash of the log's first line, the session, the operator, what it is for (an
+  engagement signature: the intent, the picture token quoted and the SHA-256 of that token,
+  which carries the plan and the track's identity; a hostile declaration: the track; a
+  confirmation: the declaration; an acceptance: the lost vehicles), a server nonce and the
+  issue time. The bridge checks the assertion with webauthn-rs, keeps its counter, and the
+  engine verifies it again with its own code (ES256, the `p256` crate) against the public key
+  the run logged before logging it (`operator.action step_up`, `auth: passkey`, `passkey`: the
+  assertion, nothing secret); the act that quotes the step-up must be the act it was made for.
+  Replay recomputes every challenge from the log and verifies every signature against the
+  roster's keys (`run.started` lists every operator's passkeys as public keys; one registered
+  during the run is `passkey.registered`), so a forger without the private key can't relabel a
+  password step-up as a passkey's, move an assertion to another intent, token, session or run,
+  claim another operator's credential, or answer a challenge twice; rewriting the roster in the
+  first line changes every challenge (and is what the anchors catch). Why derive the challenge
+  rather than keep webauthn-rs's random one bound in the bridge's memory: then the signed
+  client data itself says what was authorized, and the log is evidence of it, not the bridge's
+  word. webauthn-rs (kanidm, maintained) does registration (attestation parsing) and the live
+  check; the derived challenge goes into its ceremony state through its
+  `danger-allow-state-serialisation` feature (the state never leaves the bridge's memory).
+  ES256 only: every current platform authenticator and security key offers it, and replay
+  verifies one algorithm with its own code.
+- **The relying party is `localhost`; 127.0.0.1 can't use a passkey** (10-05, rules 10).
+  WebAuthn takes a domain as relying party id, never an IP address: the browser refuses
+  passkeys on `http://127.0.0.1:<port>`. The bridge's relying party is `MURMUR_PASSKEY_RP_ID`
+  (`localhost`) and an assertion may come only from the allowed console origins on that host
+  (`http://localhost:<MURMUR_WEB_PORT>` and the bridge's own port; logged on the roster and
+  checked by replay). A passkey registered for `localhost` works on any port of it; another
+  stack's origin must be listed. The console at 127.0.0.1 says so and links to the same console
+  on localhost (cookies are per host: sign in there); `make up` prints both addresses in a
+  credentials run, and the evaluation's study prints the localhost one. Behind an HTTPS proxy
+  with a real name, set `MURMUR_PASSKEY_RP_ID` and `MURMUR_ALLOWED_ORIGINS`. A passkey
+  sign-in names the operator first; its options have one shape for every id (an id with no
+  passkey, or no such operator, gets a made-up credential id derived from a bridge secret:
+  no authenticator answers), except that an operator with several passkeys gets several ids,
+  stated. Challenges waiting for an answer are bounded per operator on the roster (logins,
+  four) and per session (step-ups, eight), the oldest giving way, so no stranger can fill a
+  shared cap; an unanswered challenge leaves nothing in the log.
+- **What a step-up must be is policy; a study requires a passkey** (10-05, user decision;
+  policy schema 7, `PASSKEY_SCHEMA_SINCE`). `[approval] step_up_factor = "password"` (shipped,
+  the default for normal credentials runs) takes the password again or a passkey (at least as
+  strong); `"passkey"` takes only a passkey, and the bridge refuses a password there unchecked.
+  `[approval] login_factor` (`either`, the default; `password`; `passkey`) says how people sign
+  in. A scripted (harness-held) credential steps up as it is held and holds no passkey: its acts
+  are never evidence anyway. A study run (`MURMUR_STUDY=<participant>`, set by the evaluation's
+  study mode) logs its participant on the roster (`study`), runs with `step_up_factor =
+  "passkey"` whatever the file says, and does not start (the bridge, the engine and the
+  evaluation's runner each refuse) unless the participant is a person on the credential file
+  with a passkey, or `MURMUR_STUDY_PASSWORD_STEP_UP=<reason>` gives the explicit override: it
+  is logged in `run.started` (`password_step_up`), and such a run is a pilot, never evidence
+  (`ReplayReport::study_evidence`, the evaluation's `auth_of`). The evaluation counts a study
+  run only when the log names the study, without the override, and every consequential act of
+  the participant's quoted a passkey step-up.
+- **Registering a passkey re-enters the password, or takes a one-time invitation** (10-05,
+  rules 10). A session left open must not add a credential to someone's account, so the
+  console's registration (the operator menu) sends the password with its finish (a step-up,
+  counted against the session's limit, always a password: the passkey being registered can't
+  vouch for itself), and `passkey.registered` quotes it. `murmur-auth passkey-invite <op>`
+  prints a one-time link (`#enroll=<op>.<code>`, the code's SHA-256 kept, 30 minutes by
+  default, used once): whoever opens it registers a passkey for that operator, so it is handed
+  over as a password would be; the evaluation's `enroll` uses it for a participant before
+  their first session. The file keeps public keys and counters (and webauthn-rs's record),
+  never private material; `murmur-auth passkeys` lists them, `passkey-remove` removes one and
+  renews the operator's stamp (their sessions end: a lost authenticator), and a running bridge
+  logs the removal (`passkey.removed`). A passkey registered elsewhere while a run is up (another
+  bridge on the same file) is usable after a restart, as an operator added mid-run is.
+- **A counter that does not count up is refused, and kept before the act goes ahead** (10-05,
+  rules 10). WebAuthn's signature counter must increase for an authenticator that counts; a
+  repeat or a decrease means a cloned key, and the bridge, the engine and replay refuse it. The
+  bridge writes the new counter to the credential file (under its lock) before the act it
+  authorizes; a file it can't write refuses the step-up. Synced passkeys (a platform's
+  password manager) report 0 every time: that says nothing either way, and a passkey synced to
+  another device of the same person is the same credential, by design.
 - **Which acts step up besides signatures is a policy switch** (10-05; the scope is not yet
   decided). Every engagement signature steps up, and any human tier marked `step_up = true`
   (the armed-platform tier is one line away). `[approval] step_up_acts` (policy schema 5)
@@ -1205,12 +1281,18 @@ group. Dates are 2026.
   false`: the engine declares what is clear and a person confirms before it becomes a target;
   `eval/policy/minimal.toml` drops that confirmation and every optional step-up, to measure
   what minimal approval costs.
-- **Still placeholders, stated** (10-03; revised 10-04 by rules 8). Who holds engagement
-  authority is now each person's credential, not a header (above); what is still not here:
-  a second factor (a password is single-factor; passkeys are planned, above), a blocklist
-  of common passwords, TLS (the bridge listens on 127.0.0.1; `MURMUR_COOKIE_SECURE=1` marks
-  the cookie Secure behind an HTTPS proxy), signed or remotely anchored logs (the hash chain
-  and anchors are tamper-evident only), and per-person identity on the reads. Until rules
+- **Still placeholders, stated** (10-03; revised 10-04 by rules 8, 10-05 by rules 10). Who
+  holds engagement authority is now each person's credential, not a header (above), and a
+  consequential act can require that person's passkey (rules 10; a study always does). What is
+  still not here: attestation (any authenticator is accepted, a software one included: a
+  passkey proves the person holds a key they registered and unlocked it, not what kind of
+  device it lives in), which person unlocked the authenticator (one person holding two
+  credentials, or lending their device and PIN, still signs as two people), a password
+  required with a passkey login (`login_factor = "either"` lets a passkey alone sign in: it is
+  itself two factors), a blocklist of common passwords, TLS (the bridge listens on 127.0.0.1;
+  `MURMUR_COOKIE_SECURE=1` marks the cookie Secure behind an HTTPS proxy), signed or remotely
+  anchored logs (the hash chain and anchors are tamper-evident only), and per-person identity
+  on the reads. Until rules
   5 the fallback was only commanded by the bridge after a stop, so a platform that lost its
   link en route followed its own lost-link failsafe; from rules 6 it is preloaded as that
   failsafe (see above). A bridge restarted mid-engagement puts the platform's own failsafe

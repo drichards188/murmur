@@ -334,34 +334,56 @@ if any, the running cost). A decline is scored as caught by the proposer.
 ## Study mode (real participants)
 
 ```
+.venv/bin/python -m eval.run enroll --participant p07        # once: their passkey
 .venv/bin/python -m eval.run study misclassified-neutral --participant p07
 ```
 
-starts the same isolated stack plus the console on its own port (printed; `make setup` must
-have installed `web/node_modules`), runs the scripted agent's storyline, and records. The
+`enroll` registers the participant's passkey before their first session (rules 10; passkeys
+are required before a study with real participants). Their own credential file
+(`~/.config/murmur/study/p07.json`, `MURMUR_STUDY_DIR`, or `--credentials`; outside the
+repository) gets the operator `op-study` with a fresh passphrase printed once for the person
+running the session (their password, for signing in), and a one-time invitation; a bridge and
+the console start on a port block and the runner prints the link
+(`http://localhost:<port>/#enroll=...`), which the participant opens in the browser that
+holds their authenticator (the device's unlock, a security key, a phone) to register a
+passkey. The runner waits until the file holds it, then stops; the registration is in the
+enrollment's audit log (`passkey.registered`, by invitation). The file keeps the passkey's
+public key and counter only.
+
+`study` starts the same isolated stack plus the console on its own port (printed, on
+localhost: WebAuthn takes no IP address; `make setup` must have installed `web/node_modules`),
+runs the scripted agent's storyline, and records. It refuses to start when the participant's
+file holds no passkey (`murmur-auth`'s `op-study` without one), and so does the bridge
+(`MURMUR_STUDY`), unless `--password-step-up <reason>` gives the explicit override that lets
+the participant step up with their password: the bridge logs it, and such a run is a pilot,
+never evidence. The
 participant decides in the console's inbox; the console posts what each card showed and the
 tracks the participant opened while it was up (`web/src/operatorView.ts`), and everything
 lands in the audit log as for any run. In analysis the participant is the unit: rates are
 computed per participant and the interval is over participants (METRICS.md, "Rates").
 
-Who decided is authenticated (rules 8). A study stack always runs with credentials
-(`MURMUR_AUTH=credentials`) and gets its own credential file in the run directory, made with
-the `murmur-auth` CLI and removed with the stack: every operator a fresh random passphrase,
-every agent a fresh key. The runner prints the participant's passphrase (operator `op-study`)
-for the person running the session, never to the run directory; the participant signs in at
-the console with it (`auth: password` in the log). The scripted operators' credentials are
-marked scripted (`murmur-auth add --scripted`): the runner logs them in, and the log records
-`auth: scripted`, never a person's. The bridge writes the log's run-time anchors into the run
-directory (`audit.anchors`), and the replay checks the log against them. The report counts a
-study run only when all of these hold (`metrics.auth_of`, `human_control_evidence`): a
-credentials run, a log that replayed, its anchors verified, and the participant signed in
-with their own password; and then only the participant's own decisions (the scripted
-operators' acts are counted apart, `acts_scripted`, never as evidence). A study run that
-falls short is listed as excluded, with what was missing. Sign-in is by password with the
-password again for consequential acts; passkeys (WebAuthn) are required before a study with
-real participants (docs/DECISIONS.md), and until then a study run is a pilot. The proxy arms
-run with asserted ids (dev, the bridge's default): their deciders are scripts, the log records
-`auth: dev`, and the report says how many runs of each mode it holds.
+Who decided is authenticated (rules 8 and 10). A study stack always runs with credentials
+(`MURMUR_AUTH=credentials`, `MURMUR_STUDY=op-study`) and gets its own credential file in the
+run directory, made with the `murmur-auth` CLI and removed with the stack: the participant's
+own credential copied in from their file (`murmur-auth import`: their password hash and
+passkeys; the counters go back to their file at the end), every other operator a fresh random
+passphrase, every agent a fresh key. The participant signs in at the console with their
+passkey or password (`auth: passkey` or `password` in the log) and signs every consequential
+act with their passkey: the bridge takes no password from them there (the study's policy is
+`step_up_factor = "passkey"` whatever the scenario's says), and each signature's assertion is
+bound to the picture they were shown. The scripted operators' credentials are marked scripted
+(`murmur-auth add --scripted`): the runner logs them in, and the log records `auth: scripted`,
+never a person's. The bridge writes the log's run-time anchors into the run directory
+(`audit.anchors`), and the replay checks the log against them. The report counts a study run
+only when all of these hold (`metrics.auth_of`, `human_control_evidence`): a credentials run,
+a log that replayed, its anchors verified, the participant signed in as a person, the log
+naming the study without the password override, and every consequential act of the
+participant's stepped up by passkey (`participant_steps`); and then only the participant's
+own decisions (the scripted operators' acts are counted apart, `acts_scripted`, never as
+evidence). A study run that falls short is listed as excluded, with what was missing (a run of
+rules before 10, no passkeys, is a pilot). The proxy arms run with asserted ids (dev, the
+bridge's default): their deciders are scripts, the log records `auth: dev`, and the report
+says how many runs of each mode it holds.
 
 Running a session ethically:
 
@@ -374,8 +396,9 @@ Running a session ethically:
 - **No personal data.** The participant id is an anonymous label the study assigns (`p07`),
   never a name, email or employee number, and the key linking labels to people (if one is
   needed for consent records) is kept apart from the results. The console's operator id is
-  `op-study`, signed in with the passphrase the runner printed; don't create credentials
-  under a real name either. No screen, camera or audio recording happens here.
+  `op-study`, signed in with the participant's passkey or the passphrase `enroll` printed;
+  don't create credentials under a real name either (a passkey's user name is `op-study`
+  too: the authenticator stores no name). No screen, camera or audio recording happens here.
 - **Tell them what the arms are** after the session (debrief), including that the proposals
   were scripted and some were wrong on purpose.
 - **Don't mix** study runs into proxy batches: they are written to `eval/results/study/` and

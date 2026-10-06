@@ -181,5 +181,9 @@ fi
 
 echo "swarm, bridge (:$MURMUR_HTTP_PORT) and web starting; logs in ./logs"
 echo "open http://127.0.0.1:$web_port  (vehicles get a GPS fix ~20-30s after start)"
+if [ "${MURMUR_AUTH:-dev}" = credentials ]; then
+  # rules 10: WebAuthn takes no IP address as a relying party: passkeys need the localhost name
+  echo "passkeys (sign-in, step-ups, registering one): open http://localhost:$web_port instead"
+fi
 wait -n "${pids[@]}"
 echo "a process exited; see logs/. stopping the rest."

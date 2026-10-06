@@ -16,6 +16,15 @@ serde_json = "1"
 sha2 = "0.10"
 subtle = "2.6"
 thiserror = "2"
+# Passkeys (rules 10): the WebAuthn relying party (kanidm's webauthn-rs, maintained, audited):
+# registration (attestation parsing, user verification required) and each assertion's check.
+# `danger-allow-state-serialisation` only lets the bridge put the challenge it derives from the
+# act into a ceremony's state (the state never leaves the bridge's memory).
+webauthn-rs = { version = "0.5.5", features = ["danger-allow-state-serialisation"] }
+
+[dev-dependencies]
+# The software authenticator the tests register and sign with.
+murmur-decide = { path = "../murmur-decide", features = ["soft-authenticator"] }
 
 [target.'cfg(unix)'.dependencies]
 # O_NOFOLLOW for the credential file's temporary file.

@@ -37,7 +37,10 @@
 //! approval of it re-enters the approver's credential at that moment
 //! ([`PolicyDecision::step_up`]; the engine refuses a signature without a [`crate::StepUp`]),
 //! and the submitter's own request is never the approval (it waits in the inbox). An
-//! engagement always has it, whatever the file says.
+//! engagement always has it, whatever the file says. Rules 10 ([`crate::rules::PASSKEY_SINCE`],
+//! policy schema 7): `[approval] step_up_factor` says what a person's step-up must be
+//! (`password`, the default, takes the password or a passkey; `passkey` only a passkey bound to
+//! the act) and `login_factor` how people sign in.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -140,6 +143,67 @@ pub struct ApprovalConfig {
     /// signature always does).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub step_up_acts: Option<Vec<StepUpAct>>,
+    /// Rules 10 (policy schema 7): what a person's step-up must be in a credentials run.
+    /// `password` (absent: the default) takes the password again or a passkey; `passkey`
+    /// takes only a passkey (a WebAuthn assertion with user verification, bound to the act).
+    /// A scripted credential (harness-held, never a person's) steps up with what it holds. A
+    /// study run requires `passkey` unless its explicit override says otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step_up_factor: Option<StepUpFactor>,
+    /// Rules 10 (policy schema 7): how a person signs in. `either` (absent: the default): the
+    /// password or a passkey; `password` or `passkey`: only that one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub login_factor: Option<LoginFactor>,
+}
+
+/// What a person's step-up must be (rules 10, `[approval] step_up_factor`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StepUpFactor {
+    /// The password again, or a passkey (at least as strong).
+    Password,
+    /// A passkey only.
+    Passkey,
+}
+
+impl StepUpFactor {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StepUpFactor::Password => "password",
+            StepUpFactor::Passkey => "passkey",
+        }
+    }
+}
+
+/// How a person may sign in (rules 10, `[approval] login_factor`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoginFactor {
+    Either,
+    Password,
+    Passkey,
+}
+
+impl LoginFactor {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LoginFactor::Either => "either",
+            LoginFactor::Password => "password",
+            LoginFactor::Passkey => "passkey",
+        }
+    }
+
+    /// Whether a person may open a session by `method` (a password or a passkey).
+    pub fn admits(self, method: crate::authority::AuthMethod) -> bool {
+        use crate::authority::AuthMethod;
+        match (self, method) {
+            (LoginFactor::Either, AuthMethod::Password | AuthMethod::Passkey) => true,
+            (LoginFactor::Password, AuthMethod::Password) | (LoginFactor::Passkey, AuthMethod::Passkey) => true,
+            // a scripted credential is a harness's: it signs in as it is held
+            (_, AuthMethod::Scripted) => true,
+            _ => false,
+        }
+    }
 }
 
 /// An act other than an approval that a policy may mark consequential (rules 8,
@@ -164,6 +228,8 @@ impl Default for ApprovalConfig {
             submitter_authorizes: None,
             kind: BTreeMap::new(),
             step_up_acts: None,
+            step_up_factor: None,
+            login_factor: None,
         }
     }
 }
@@ -426,6 +492,26 @@ impl Policy {
     pub fn steps_up(&self, act: StepUpAct) -> bool {
         self.rules.rules_version >= OPERATOR_AUTH_SINCE
             && self.approval.step_up_acts.as_ref().is_some_and(|a| a.contains(&act))
+    }
+
+    /// Rules 10: what a person's step-up must be (`[approval] step_up_factor`; a password, or
+    /// a passkey, before rules 10 and when the key is absent).
+    pub fn step_up_factor(&self) -> StepUpFactor {
+        if self.rules.passkeys() {
+            self.approval.step_up_factor.unwrap_or(StepUpFactor::Password)
+        } else {
+            StepUpFactor::Password
+        }
+    }
+
+    /// Rules 10: how a person signs in (`[approval] login_factor`; the password only before
+    /// rules 10, either when the key is absent).
+    pub fn login_factor(&self) -> LoginFactor {
+        if self.rules.passkeys() {
+            self.approval.login_factor.unwrap_or(LoginFactor::Either)
+        } else {
+            LoginFactor::Password
+        }
     }
 
     /// Whether a human's own submission authorizes an intent routed to `tier` (`None`: the

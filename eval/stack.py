@@ -52,6 +52,43 @@ PARTICIPANT_OPERATOR = "op-study"
 AUTH_MODES = ("dev", "credentials")
 
 
+def study_credentials(participant: str) -> Path:
+    """Where a study participant's own credential file lives by default (outside the
+    repository): `$MURMUR_STUDY_DIR/<participant>.json`, else `~/.config/murmur/study/`."""
+    base = os.environ.get("MURMUR_STUDY_DIR") or str(Path.home() / ".config" / "murmur" / "study")
+    return Path(base) / f"{participant}.json"
+
+
+def check_participant(path: Path | None, password_step_up: str | None) -> None:
+    """Rules 10: a study needs its participant's passkey (`op-study` in their own credential
+    file, a person's credential, with at least one passkey), unless the explicit override
+    allows password step-ups (`password_step_up`, its reason; logged by the bridge; such a
+    run is never evidence). Refused before anything starts, saying what to do."""
+    if path is None:
+        if password_step_up:
+            return
+        raise StackError(
+            "a study needs the participant's passkey: enroll them first (`python -m eval.run enroll "
+            "--participant <id>`), or allow password step-ups explicitly with --password-step-up "
+            "<reason> (a pilot: never evidence)"
+        )
+    try:
+        f = json.loads(Path(path).read_text())
+    except (OSError, ValueError) as e:
+        raise StackError(f"{path}: {e} (enroll the participant first: python -m eval.run enroll)") from None
+    entry = (f.get("operators") or {}).get(PARTICIPANT_OPERATOR)
+    if not entry:
+        raise StackError(f"{path} holds no {PARTICIPANT_OPERATOR}: enroll the participant first (python -m eval.run enroll)")
+    if entry.get("scripted"):
+        raise StackError(f"{path}: {PARTICIPANT_OPERATOR} is marked scripted, a harness's credential, not a person's")
+    if not entry.get("passkeys") and not password_step_up:
+        raise StackError(
+            f"{path}: {PARTICIPANT_OPERATOR} has no passkey: the study refuses to start (enroll one: "
+            "python -m eval.run enroll; or allow password step-ups explicitly with --password-step-up "
+            "<reason>, a pilot that is never evidence)"
+        )
+
+
 def passphrase() -> str:
     """A fresh random passphrase someone can type: five groups of five letters and digits
     (29 characters, about 129 bits)."""
@@ -152,10 +189,22 @@ class Stack:
         tidewater_url: str | None = None,
         web: bool = False,
         auth: str = "dev",
+        participant_credentials: Path | None = None,
+        password_step_up: str | None = None,
     ):
         if auth not in AUTH_MODES:
             raise StackError(f"auth {auth!r}: one of {', '.join(AUTH_MODES)}")
         self.auth = auth
+        # rules 10, a study: the participant's own credential file (their password hash and
+        # passkeys, `op-study`), copied into this run's file; or the explicit override that
+        # lets them step up with a password (logged by the bridge; the run is then no evidence)
+        self.participant_credentials = participant_credentials
+        self.password_step_up = password_step_up
+        self.study = participant_credentials is not None or password_step_up is not None
+        if self.study:
+            if auth != "credentials":
+                raise StackError("a study authenticates with credentials")
+            check_participant(participant_credentials, password_step_up)
         # credentials run: each operator's passphrase and each agent's key, in memory only
         self.passwords: dict[str, str] = {}
         self.agent_keys: dict[str, str] = {}
@@ -253,6 +302,16 @@ class Stack:
         tool = str(_binary("murmur-auth"))
         f = str(self.credentials_file)
         for op in OPERATORS:
+            if op == PARTICIPANT_OPERATOR and self.participant_credentials is not None:
+                # rules 10: the participant's own credential (their password, their passkeys)
+                r = subprocess.run(
+                    [tool, "--file", f, "import", op, "--from", str(self.participant_credentials)],
+                    capture_output=True,
+                    text=True,
+                )
+                if r.returncode != 0:
+                    raise StackError(f"murmur-auth import {op}: {r.stderr.strip()}")
+                continue
             pw = passphrase()
             args = [tool, "--file", f, "add", op] + ([] if op == PARTICIPANT_OPERATOR else ["--scripted"])
             r = subprocess.run(args, input=pw + "\n", capture_output=True, text=True)
@@ -428,6 +487,12 @@ class Stack:
             self.write_credentials()
             bridge_env["MURMUR_AUTH"] = "credentials"
             bridge_env["MURMUR_CREDENTIALS"] = str(self.credentials_file)
+            if self.study:
+                # rules 10: the participant's passkey at every step-up (the bridge refuses to
+                # start without one), unless the explicit override says otherwise
+                bridge_env["MURMUR_STUDY"] = PARTICIPANT_OPERATOR
+                if self.password_step_up:
+                    bridge_env["MURMUR_STUDY_PASSWORD_STEP_UP"] = self.password_step_up
         else:
             # ids asserted by header, logged as dev: never evidence about people
             bridge_env.update(
@@ -603,11 +668,131 @@ class Stack:
             anchors.replace(self.run_dir / "audit.anchors")
         # the port's restore pointer names the log just moved: the next run must not read it
         self.clear_last_run("at_stop")
+        # rules 10: the participant's passkey counters went up in this run: back to their own
+        # file (a cloned authenticator stays detectable in the next run)
+        if self.participant_credentials is not None and self.credentials_file.exists():
+            r = subprocess.run(
+                [str(_binary("murmur-auth")), "--file", str(self.participant_credentials), "import", PARTICIPANT_OPERATOR, "--from", str(self.credentials_file)],
+                capture_output=True,
+                text=True,
+            )
+            if r.returncode != 0:
+                self.notes.append(f"the participant's passkey counters were not copied back: {r.stderr.strip()}")
         # the run's throwaway credentials go with it (hashes only, but no reason to keep them)
         self.credentials_file.unlink(missing_ok=True)
         self.passwords.clear()
         self.agent_keys.clear()
         return exits
+
+
+def enroll(participant: str, path: Path, block: PortBlock, run_dir: Path, minutes: int = 30, timeout_s: float = 1800.0) -> dict[str, Any]:
+    """Rules 10: register a study participant's passkey before their first session. Their own
+    credential file (`path`, outside the repository) gets `op-study` (a fresh passphrase,
+    printed once for the person running the session, if it has none yet) and a one-time
+    invitation (`murmur-auth passkey-invite`); a bridge on this block (credentials, no fleet)
+    and the console serve the link at http://localhost:<console port> (WebAuthn takes no IP
+    address), where the participant registers a passkey with their own authenticator. Waits
+    until the file holds one (or `timeout_s`), then stops both; the bridge's audit log (the
+    `passkey.registered` event) goes to `run_dir`."""
+    tool = str(_binary("murmur-auth"))
+    run_dir.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    def entry() -> dict[str, Any] | None:
+        try:
+            return (json.loads(path.read_text()).get("operators") or {}).get(PARTICIPANT_OPERATOR)
+        except (OSError, ValueError):
+            return None
+
+    out: dict[str, Any] = {"participant": participant, "credentials": str(path)}
+    before = entry()
+    if before is None:
+        pw = passphrase()
+        r = subprocess.run([tool, "--file", str(path), "add", PARTICIPANT_OPERATOR], input=pw + "\n", capture_output=True, text=True)
+        if r.returncode != 0:
+            raise StackError(f"murmur-auth add {PARTICIPANT_OPERATOR}: {r.stderr.strip()}")
+        print(f"the participant's password ({PARTICIPANT_OPERATOR}), shown once: {pw}", flush=True)
+    had = len((before or {}).get("passkeys") or [])
+    r = subprocess.run(
+        [tool, "--file", str(path), "passkey-invite", PARTICIPANT_OPERATOR, "--minutes", str(minutes), "--url", f"http://localhost:{block.web}"],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode != 0 or not r.stdout.strip():
+        raise StackError(f"murmur-auth passkey-invite: {r.stderr.strip()}")
+    link = r.stdout.strip()
+    run_id = f"enroll-{participant}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"
+    pointer = REPO / "logs" / "audit" / f".last-run-{block.http}"
+    pointer.unlink(missing_ok=True)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("MURMUR_")}
+    env.update(
+        {
+            "MURMUR_ROOT": str(REPO),
+            "MURMUR_AUTH": "credentials",
+            "MURMUR_CREDENTIALS": str(path),
+            "MURMUR_BASE_PORT": str(block.bridge_base),
+            "MURMUR_HTTP_PORT": str(block.http),
+            "MURMUR_WEB_PORT": str(block.web),
+            "MURMUR_RUN_ID": run_id,
+            "MURMUR_RESUME": "0",
+            "MURMUR_ANCHOR_DIR": str(run_dir),
+            "MURMUR_FLEET_MANIFEST": str(run_dir / "no-fleet.json"),
+        }
+    )
+    procs: list[subprocess.Popen] = []
+    try:
+        with open(run_dir / "bridge.log", "w") as log:
+            procs.append(subprocess.Popen([str(_binary("murmur-bridge"))], cwd=str(REPO), env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True))
+        client = Bridge(f"http://127.0.0.1:{block.http}")
+        deadline = time.monotonic() + 60
+        while client.try_get("/api/stats") is None:
+            if procs[0].poll() is not None or time.monotonic() > deadline:
+                raise StackError(f"the bridge did not start; see {run_dir / 'bridge.log'}")
+            time.sleep(0.3)
+        vite = REPO / "web" / "node_modules" / ".bin" / "vite"
+        if not vite.exists():
+            raise StackError(f"missing {vite}: run `make setup` (npm install)")
+        with open(run_dir / "web.log", "w") as log:
+            procs.append(
+                subprocess.Popen(
+                    [str(vite), "--host", "127.0.0.1", "--port", str(block.web), "--strictPort"],
+                    cwd=str(REPO / "web"),
+                    env={**env, "MURMUR_BRIDGE_URL": f"http://127.0.0.1:{block.http}"},
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+            )
+        print(f"the participant opens, in the browser that holds their authenticator:\n  {link}", flush=True)
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if len((entry() or {}).get("passkeys") or []) > had:
+                out["registered"] = True
+                break
+            time.sleep(1.0)
+        else:
+            out["registered"] = False
+    finally:
+        for p in reversed(procs):
+            if p.poll() is None:
+                try:
+                    os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+                except (ProcessLookupError, PermissionError):
+                    pass
+        for p in procs:
+            try:
+                p.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+        src = REPO / "logs" / "audit" / f"{run_id}.jsonl"
+        if src.exists():
+            shutil.move(str(src), str(run_dir / "audit.jsonl"))
+        a = run_dir / f"{run_id}.anchors"
+        if a.exists():
+            a.replace(run_dir / "audit.anchors")
+        pointer.unlink(missing_ok=True)
+    out["passkeys"] = len((entry() or {}).get("passkeys") or [])
+    return out
 
 
 def kill_from_pids(run_dir: Path) -> list[str]:

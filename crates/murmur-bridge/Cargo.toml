@@ -27,3 +27,5 @@ workspace = true
 
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["test-util", "macros", "rt-multi-thread"] }
+# Rules 10: the software authenticator the passkey tests register and sign with.
+murmur-decide = { path = "../murmur-decide", features = ["soft-authenticator"] }

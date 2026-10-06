@@ -308,6 +308,10 @@ pub struct Settings {
     /// The pointer to this run's log and the intents it leaves open
     /// (`logs/audit/.resume-<MURMUR_HTTP_PORT>.json`; none with `MURMUR_RESUME=0`).
     pub pointer: Option<PathBuf>,
+    /// Rules 10 (`main` sets them in a credentials run): the relying party and the operators'
+    /// passkeys from the credential file, and the study the run is (`MURMUR_STUDY`).
+    pub passkeys: Option<murmur_decide::PasskeyRoster>,
+    pub study: Option<murmur_decide::Study>,
 }
 
 impl Settings {
@@ -369,6 +373,8 @@ impl Settings {
                 let port = var("MURMUR_HTTP_PORT").unwrap_or_else(|| "8765".into());
                 root.join("logs/audit").join(format!(".resume-{}.json", port.trim()))
             }),
+            passkeys: None,
+            study: None,
         }
     }
 }
@@ -473,13 +479,32 @@ pub struct Parts {
     pub engage_operators: Vec<OperatorId>,
     pub auth: AuthMode,
     pub tracks: Option<Arc<Tracks>>,
+    /// Rules 10, a credentials run: the relying party and the operators' passkeys when the run
+    /// starts (logged on the roster), and the study it is, if one.
+    pub passkeys: Option<murmur_decide::PasskeyRoster>,
+    pub study: Option<murmur_decide::Study>,
 }
 
 impl Decision {
     /// Load policy, catalog and areas, open the audit log and start the engine. Any failure
     /// stops the bridge: without the decision layer nothing may reach a vehicle.
     pub fn load(world: Arc<World>, s: &Settings) -> Result<Arc<Decision>, String> {
-        let policy = Policy::load(&s.policy).map_err(|e| e.to_string())?;
+        let mut policy = Policy::load(&s.policy).map_err(|e| e.to_string())?;
+        // rules 10: a study requires its participant's passkey at every step-up, whatever the
+        // policy file says, unless the explicit override allows a password (logged; never
+        // evidence)
+        if let Some(st) = &s.study {
+            match &st.password_step_up {
+                None if policy.approval.step_up_factor != Some(murmur_decide::StepUpFactor::Passkey) => {
+                    println!("study: step-ups by passkey ([approval] step_up_factor = \"passkey\" for this run)");
+                    policy.approval.step_up_factor = Some(murmur_decide::StepUpFactor::Passkey);
+                }
+                None => {}
+                Some(why) => println!(
+                    "study: PASSWORD STEP-UPS ALLOWED by MURMUR_STUDY_PASSWORD_STEP_UP ({why}): logged, and this run is not evidence about people"
+                ),
+            }
+        }
         let catalog = Catalog::load(&s.catalog).map_err(|e| e.to_string())?;
         // the bridge's clock, never the wall clock itself: the facts are stamped on it, and a
         // wall clock that steps must not move the log's times or the ages decided on
@@ -525,6 +550,8 @@ impl Decision {
                 engage_operators: s.engage_operators.clone(),
                 auth: s.auth,
                 tracks: None,
+                passkeys: s.passkeys.clone(),
+                study: s.study.clone(),
             },
         )?;
         if let Some(a) = anchors {
@@ -638,6 +665,15 @@ impl Decision {
                 AuthMode::Credentials => format!("{e} (the credential file's operators)"),
             })?
             .with_auth(p.auth);
+        // rules 10: the relying party and the passkeys the run starts with, and a study
+        let roster = match p.passkeys {
+            Some(k) => roster.with_passkeys(k),
+            None => roster,
+        };
+        let roster = match p.study {
+            Some(s) => roster.with_study(s),
+            None => roster,
+        };
         let engine = Engine::with_areas(
             p.policy,
             Some(p.areas.clone()),
@@ -830,7 +866,8 @@ impl Decision {
     }
 
     /// Rules 8: the step-up `crate::auth` checked for `by`'s login, logged under `session`
-    /// (`operator.action step_up`) for the act about to quote it. None when none was checked.
+    /// (`operator.action step_up`) for the act about to quote it (rules 10: a passkey's with
+    /// its assertion, which the engine verifies again). None when none was checked.
     fn mint_step(
         engine: &mut Engine,
         session: &OperatorSession,
@@ -838,11 +875,140 @@ impl Decision {
         step: Option<crate::auth::StepUpChecked>,
     ) -> Result<Option<murmur_decide::StepUp>, DecisionError> {
         match step {
-            Some(c) if c.session() == by.login() && c.operator() == by.operator() => {
-                Ok(Some(engine.step_up(session).map_err(engine_err)?))
-            }
+            Some(c) if c.session() == by.login() && c.operator() == by.operator() => match c.into_factor() {
+                crate::auth::StepFactor::Password => Ok(Some(engine.step_up(session).map_err(engine_err)?)),
+                crate::auth::StepFactor::Passkey(proof) => {
+                    Ok(Some(engine.step_up_passkey(session, *proof).map_err(engine_err)?))
+                }
+            },
             Some(_) => Err(DecisionError::new(401, "the credential re-entered is not this session's")),
             None => Ok(None),
+        }
+    }
+
+    // ---- passkeys (rules 10) ----------------------------------------------------------------
+
+    /// The run's relying party and the passkeys the engine knows now (its roster's and those
+    /// registered since, not removed); None when the run takes no passkey.
+    pub fn passkey_roster(&self) -> Option<murmur_decide::PasskeyRoster> {
+        self.lock().engine.passkeys()
+    }
+
+    /// The study this run is, if it is one.
+    pub fn study(&self) -> Option<murmur_decide::Study> {
+        self.lock().engine.study().cloned()
+    }
+
+    /// What `by`'s step-up must be: a passkey where the policy asks people for one and `by` is
+    /// a person (signed in by password or passkey); a password otherwise (a dev run has none).
+    pub fn step_up_factor_for(&self, by: &Actor) -> murmur_decide::StepUpFactor {
+        let core = self.lock();
+        let person = by
+            .login
+            .and_then(|id| core.logins.get(&id))
+            .and_then(OperatorSession::method)
+            .is_some_and(AuthMethod::is_person);
+        if self.auth == AuthMode::Credentials && person {
+            core.engine.policy().step_up_factor()
+        } else {
+            murmur_decide::StepUpFactor::Password
+        }
+    }
+
+    /// The policy's step-up factor and login factor (for the console).
+    pub fn factors(&self) -> (murmur_decide::StepUpFactor, murmur_decide::LoginFactor) {
+        let core = self.lock();
+        (core.engine.policy().step_up_factor(), core.engine.policy().login_factor())
+    }
+
+    /// A passkey challenge for `purpose` by `op` (in `session`, a login of theirs; none for a
+    /// login), with the bridge's random `nonce`.
+    pub fn passkey_challenge(
+        &self,
+        op: &OperatorId,
+        session: Option<SessionId>,
+        purpose: murmur_decide::StepUpFor,
+        nonce: String,
+    ) -> Result<murmur_decide::passkey::Issued, DecisionError> {
+        let mut guard = self.lock();
+        let core = &mut *guard;
+        let s = match session {
+            Some(id) => Some(
+                core.logins
+                    .get(&id)
+                    .ok_or_else(|| DecisionError::new(401, "your session has ended: sign in again"))?,
+            ),
+            None => None,
+        };
+        core.engine.passkey_challenge(op, s, purpose, nonce).map_err(engine_err)
+    }
+
+    /// What a passkey signature on intent `id` (quoting picture `token`, an engagement's) is for.
+    pub fn sign_purpose(&self, id: u64, token: Option<u64>) -> Result<murmur_decide::StepUpFor, DecisionError> {
+        self.lock().engine.sign_purpose(IntentId(id), token).map_err(engine_err)
+    }
+
+    /// What a passkey confirmation of the rule declaration on `track` is for.
+    pub fn confirm_purpose(&self, track: &str) -> Result<murmur_decide::StepUpFor, DecisionError> {
+        self.lock().engine.confirm_purpose(track).map_err(engine_err)
+    }
+
+    /// What a passkey acceptance of lost vehicles is for (`intent` None: with a nomination).
+    pub fn accept_purpose(&self, intent: Option<u64>, list: &[engage::AcceptUnknown]) -> murmur_decide::StepUpFor {
+        let v: Vec<(DUid, Option<Time>)> = list.iter().map(engage::AcceptUnknown::engine).collect();
+        murmur_decide::StepUpFor::accepting(intent.map(IntentId), &v)
+    }
+
+    /// Credentials run, rules 10: open the engine session for a login whose passkey
+    /// `crate::auth` just checked (`session.opened`, `auth: passkey`, with the assertion, which
+    /// the engine verifies again).
+    pub fn open_passkey_login(
+        &self,
+        op: &OperatorId,
+        engage: bool,
+        proof: murmur_decide::PasskeyUse,
+    ) -> Result<SessionId, DecisionError> {
+        if self.auth != AuthMode::Credentials {
+            return Err(DecisionError::new(409, "this run asserts operator ids (MURMUR_AUTH=dev): there is no login"));
+        }
+        let grants = murmur_decide::Grants {
+            engage: engage && self.engage_operators.contains(op),
+        };
+        let mut core = self.lock();
+        let s = core.engine.open_passkey_session(op.clone(), grants, proof).map_err(engine_err)?;
+        let id = s.authority().session();
+        core.logins.insert(id, s);
+        Ok(id)
+    }
+
+    /// Rules 10: a passkey registered for `key.operator` (`passkey.registered`): through `by`'s
+    /// session with the password they re-entered for it (`step`), or (None) an invitation.
+    pub fn record_passkey_registered(
+        &self,
+        key: murmur_decide::PasskeyKey,
+        by: Option<(&Actor, crate::auth::StepUpChecked)>,
+    ) -> Result<(), DecisionError> {
+        let mut guard = self.lock();
+        let core = &mut *guard;
+        match by {
+            None => core.engine.record_passkey_registered(key, None).map_err(engine_err),
+            Some((actor, step)) => {
+                let session = Self::session(&mut core.engine, &mut core.sessions, &core.logins, actor, &self.engage_operators, self.auth)?;
+                let step = Self::mint_step(&mut core.engine, session, actor, Some(step))?
+                    .ok_or_else(|| DecisionError::new(401, "the password was not re-entered"))?;
+                core.engine
+                    .record_passkey_registered(key, Some((session, step)))
+                    .map_err(engine_err)
+            }
+        }
+    }
+
+    /// Rules 10: a passkey removed from the credential file while the run is up
+    /// (`passkey.removed`). A failure to log is reported, not fatal (nothing uses it: the
+    /// engine and the bridge both refuse it from here on).
+    pub fn record_passkey_removed(&self, op: &OperatorId, credential: &str, reason: &str) {
+        if let Err(e) = self.lock().engine.record_passkey_removed(op, credential, reason) {
+            eprintln!("decision: logging a removed passkey of {op}: {e}");
         }
     }
 

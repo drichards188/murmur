@@ -55,6 +55,16 @@ submitter_authorizes = true                 # default for human tiers that don't
 #   declaring a track hostile; accepting a lost vehicle for an engagement's keep-out;
 #   confirming the engine's rule declaration. Off by default (a user decision); each is one
 #   word here, and an unknown word fails to load.
+# step_up_factor (rules 10, policy schema 7): what a person's step-up must be in a credentials
+#   run. "password" (the default, a user decision): the password again, or a passkey (at least
+#   as strong); "passkey": a passkey only, a WebAuthn assertion with user verification whose
+#   challenge binds it to the act (an engagement signature: the intent and the picture token
+#   it quotes). A study run requires "passkey" whatever this file says, unless its explicit,
+#   logged override allows a password (such a run is never evidence). A scripted (harness-held)
+#   credential steps up as it is held.
+step_up_factor = "password"
+# login_factor (rules 10, schema 7): "either" (absent: the default) signs a person in with the
+#   password or a passkey; "password" or "passkey": only that one.
 
 # Per task kind, [approval.kind.<kind>] replaces the fixed wait for intents of that kind:
 #   expire_s = <seconds>        a different fixed wait (also the fallback for `until`)

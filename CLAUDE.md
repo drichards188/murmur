@@ -30,6 +30,16 @@ meaningful. Decision and command, not weapons.
   (`murmur-auth agent-add`), and every engagement signature re-enters the password. Study mode
   always uses credentials and marks its scripted operators. Replay a credentials log with
   `--anchors`, or it is not evidence.
+- Passkeys (rules 10, `PASSKEY_SINCE`, policy schema 7): the console must be opened at
+  http://localhost:<MURMUR_WEB_PORT> (RP id `localhost`; 127.0.0.1 gets a pointer and password
+  only; `MURMUR_PASSKEY_RP_ID` for a real domain). Register from the operator menu (password
+  re-entered) or by `murmur-auth passkey-invite <op>` (one-time `#enroll=` link); also
+  `murmur-auth passkeys`, `passkey-remove`, `import`. `[approval] step_up_factor` and
+  `login_factor` in the policy. A study (`MURMUR_STUDY=<participant>`; eval `eval.run enroll`,
+  `eval.run study --credentials`) refuses to start without the participant's passkey;
+  `MURMUR_STUDY_PASSWORD_STEP_UP=<why>` overrides, logged, and the run is not evidence. Each
+  passkey challenge is derived from its act, single use, 120 s; replay re-verifies every
+  assertion from the log.
 - Live path is Rust: `crates/murmur-bridge`, `crates/murmur-standins`. `scripts/up.sh` builds
   their release binaries (`make build` does too) and, with a scenario, starts `tidewater serve`
   (reused if one answers) and `tidewater drive`, and stops them with the stack. It writes

@@ -7,6 +7,7 @@
 [approval]
 expire_s = 120
 submitter_authorizes = false
+step_up_factor = "password"                 # as shipped (rules 10); a study run requires "passkey"
 
 [approval.kind.collect]
 until = "tasking_lead"

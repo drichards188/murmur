@@ -224,6 +224,8 @@ fn restart_on_the_bridge_clock(r: &Rig) -> (Arc<Decision>, MemorySink) {
             engage_operators: Vec::new(),
             auth: murmur_decide::AuthMode::Dev,
             tracks: None,
+            passkeys: None,
+            study: None,
         },
     )
     .expect("engine");

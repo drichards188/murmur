@@ -17,19 +17,26 @@
 //!   SameSite=Strict cookie, its digest in the bridge, an idle and an absolute expiry.
 //! - **Failed attempts** ([`limit::Limiter`]): five failures for an id lock it, the lock
 //!   doubling with each lockout.
+//! - **Passkeys** (rules 10, [`passkeys`]): an operator's WebAuthn credentials, registered at
+//!   the console (signed in, the password re-entered) or through a one-time invitation
+//!   (`murmur-auth passkey-invite`); the file keeps each one's public key and counter,
+//!   `murmur-auth passkeys` lists them and `passkey-remove` removes one.
 //!
 //! The file lives outside the repository ([`store::default_path`]) and holds no secret:
-//! passwords are argon2id hashes, keys are digests, both compared in constant time.
+//! passwords are argon2id hashes, keys and invitation codes are digests, passkeys are public
+//! keys; secrets are compared in constant time.
 
 pub mod keys;
 pub mod limit;
+pub mod passkeys;
 pub mod password;
 pub mod sessions;
 pub mod store;
 
 pub use limit::Limiter;
+pub use passkeys::RelyingParty;
 pub use sessions::{Expiry, Lookup, SessionTable};
-pub use store::{AgentEntry, CredentialFile, FileLock, OperatorEntry, default_path, validate_id};
+pub use store::{AgentEntry, CredentialFile, FileLock, Invite, OperatorEntry, PasskeyEntry, default_path, validate_id};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {

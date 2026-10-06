@@ -19,7 +19,12 @@
 //! ~/.config/murmur/credentials.json, managed with `murmur-auth`; the file's operators are the
 //! run's roster); MURMUR_SESSION_IDLE_S (1800),
 //! MURMUR_SESSION_MAX_S (28800), MURMUR_COOKIE_SECURE=1, MURMUR_WEB_PORT (5173) and
-//! MURMUR_ALLOWED_ORIGINS (who may send state-changing requests from a browser).
+//! MURMUR_ALLOWED_ORIGINS (who may send state-changing requests from a browser). Passkeys
+//! (rules 10, a credentials run): MURMUR_PASSKEY_RP_ID (the WebAuthn relying party, `localhost`;
+//! a domain, never an IP address: passkeys work at the console's localhost origin, not at
+//! 127.0.0.1); MURMUR_STUDY=<participant> (a study run: the participant's passkey at every
+//! step-up; the bridge refuses to start without one) and MURMUR_STUDY_PASSWORD_STEP_UP=<why>
+//! (the explicit override that allows a password, logged; never evidence).
 //! Link emulator: MURMUR_LINKEMU_URL (murmur-linkemu's stats endpoint, polled for
 //! `/api/links` and each link's `emu` state; unset: no emulator view). Behind the emulator
 //! MURMUR_BASE_PORT is the bridge-side base and MURMUR_FLEET_MANIFEST its rewritten manifest.
@@ -152,6 +157,70 @@ fn who_acts(
     );
     settings.operators = ops;
     settings.engage_operators = engage;
+    // rules 10: the relying party and every person's passkeys (public keys and counters), when
+    // a console origin is on the relying party's host (an IP address can't be one)
+    if a.passkey_origins.is_empty() {
+        println!(
+            "auth: passkeys off: no console origin on {} (MURMUR_ALLOWED_ORIGINS; WebAuthn takes no IP address)",
+            a.passkey_rp
+        );
+    } else {
+        let keys: Vec<murmur_decide::PasskeyKey> = file
+            .operators
+            .iter()
+            .filter(|(_, e)| !e.scripted)
+            .flat_map(|(id, e)| {
+                e.passkeys.iter().map(move |p| murmur_decide::PasskeyKey {
+                    operator: murmur_decide::OperatorId::new(id),
+                    id: p.id.clone(),
+                    public_key: p.public_key.clone(),
+                    counter: p.counter,
+                })
+            })
+            .collect();
+        println!(
+            "auth: passkeys for {} from {}: {} registered{}",
+            a.passkey_rp,
+            a.passkey_origins.join(", "),
+            keys.len(),
+            if keys.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " ({})",
+                    file.operators
+                        .iter()
+                        .filter(|(_, e)| !e.passkeys.is_empty() && !e.scripted)
+                        .map(|(id, e)| format!("{id} {}", e.passkeys.len()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }
+        );
+        settings.passkeys = Some(murmur_decide::PasskeyRoster {
+            rp_id: a.passkey_rp.clone(),
+            origins: a.passkey_origins.clone(),
+            keys,
+        });
+    }
+    // rules 10: a study's participant is a person on the file, with a passkey unless the
+    // explicit override allows password step-ups
+    if let Some(st) = &a.study {
+        let p = st.participant.as_str();
+        let Some(e) = file.operators.get(p) else {
+            return Err(format!("MURMUR_STUDY={p}: not an operator in the credential file"));
+        };
+        if e.scripted {
+            return Err(format!("MURMUR_STUDY={p}: a study's participant is a person, and this credential is marked scripted (a harness's)"));
+        }
+        if st.password_step_up.is_none() && (settings.passkeys.is_none() || e.passkeys.is_empty()) {
+            return Err(format!(
+                "study: the participant {p} has no passkey this run can use: register one before the run (`murmur-auth passkey-invite {p}`, then open the link), or allow password step-ups explicitly with MURMUR_STUDY_PASSWORD_STEP_UP=<why> (logged; the run is then not evidence about people)"
+            ));
+        }
+        println!("study: participant {p}");
+        settings.study = Some(st.clone());
+    }
     Ok(file)
 }
 

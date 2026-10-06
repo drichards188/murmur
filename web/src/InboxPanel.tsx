@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { Alert, Check, Decisions, Intent } from './decisions'
+import type { Alert, ApproveExtra, Check, Decisions, Intent } from './decisions'
 import {
   ALERT_LABEL,
   fmtDuration,
@@ -16,6 +16,8 @@ import { ReviewSection } from './ReviewSection'
 import { isEngage } from './engage'
 import { distanceM } from './geo'
 import { reportView } from './operatorView'
+import { StepUpField } from './StepUp'
+import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
 import type { LngLat, Vehicle } from './types'
 import { callsign } from './types'
 import './inbox.css'
@@ -195,9 +197,10 @@ function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone, eng
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // rules 8: a tier the policy marks consequential takes the approver's password again
+  // rules 8: a tier the policy marks consequential takes the approver's credential again
+  // (rules 10: by passkey where the run asks for one)
   const stepUp = stepsUp() && i.policy?.step_up === true
-  const [password, setPassword] = useState('')
+  const [step, setStep] = useStepUp()
   const [stepUpError, setStepUpError] = useState(false)
   const [operator] = useOperator()
   const selfApproval = i.source.kind === 'human' && i.source.id === operator
@@ -224,10 +227,10 @@ function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone, eng
     reportView(i, 'decide', view.current.openedAt, action)
     setStepUpError(false)
     try {
-      const extra: { acknowledge_supersede?: boolean; password?: string } = {}
+      const extra: ApproveExtra = {}
       if (action === 'approve' && engaged.length) extra.acknowledge_supersede = true
-      if (action === 'approve' && stepUp) extra.password = password
-      setPassword('')
+      if (action === 'approve' && stepUp) Object.assign(extra, await stepUpProof(step, { act: 'sign', intent: i.id }))
+      setStep({ password: '' })
       const r = await intentAction(i.id, action, note, extra)
       const last = r.intent.history[r.intent.history.length - 1]
       if (action === 'reject') onDone(`i${i.id} rejected by ${getOperator()}`, 'ok')
@@ -351,22 +354,20 @@ function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone, eng
         <button className="ix-reject" disabled={busy || expired} onClick={() => act('reject')}>
           Reject
         </button>
-        <button className="ix-approve" disabled={busy || expired || (stepUp && !password)} onClick={() => act('approve')} title={`as ${operator}`}>
+        <button className="ix-approve" disabled={busy || expired || (stepUp && !stepUpReady(step))} onClick={() => act('approve')} title={`as ${operator}`}>
           {engaged.length ? `Approve and stop i${engaged.map((e) => e.id).join(', i')}` : selfApproval ? 'Approve (self)' : 'Approve'}
         </button>
         {stepUp && (
-          <label className={`ix-stepup ${stepUpError ? 'bad' : ''}`}>
-            Consequential: your password to approve
-            <input
-              type="password"
-              autoComplete="current-password"
-              value={password}
-              disabled={busy}
-              onChange={(e) => setPassword(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && password && !busy && !expired && void act('approve')}
-              aria-label="Your password, to approve"
-            />
-          </label>
+          <StepUpField
+            passwordLabel="Consequential: your password to approve"
+            purpose="to sign this approval"
+            ariaLabel="Your password, to approve"
+            value={step}
+            onChange={setStep}
+            busy={busy}
+            bad={stepUpError}
+            onEnter={() => !expired && void act('approve')}
+          />
         )}
         {error && <p className="error ix-error">{error}</p>}
       </footer>

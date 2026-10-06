@@ -1234,21 +1234,50 @@ def auth_of(events: list[dict], replay: dict | None, participant: str | None = N
     about people (`human_control_evidence`) needs all of: a credentials run, a log that
     replayed, its anchors verified (a rewritten log replays too), and (a study,
     `participant`) the participant signed in as a person; only the participant's acts count
-    (`participant_acts`), the scripted operators' never. `why_not` says what is missing."""
+    (`participant_acts`), the scripted operators' never. Rules 10: a study also needs the log
+    to name it (`run.started`'s roster `study`, its participant), without the password
+    override, and every consequential act of the participant's stepped up by passkey
+    (`participant_steps`; a passkey registration's password step-up is not a decision). A
+    log of earlier rules names no study: a pilot. `why_not` says what is missing."""
     first = events[0] if events else {}
-    mode = (first.get("roster") or {}).get("auth") if first.get("type") == "run.started" else None
+    started = first if first.get("type") == "run.started" else {}
+    roster = started.get("roster") or {}
+    mode = roster.get("auth")
+    rules = started.get("rules_version") or 1
+    study = roster.get("study")
     replayed = bool(replay and replay.get("ran") and replay.get("ok"))
     anchors = (replay or {}).get("anchors") or "not checked"
     methods: dict[str, set[str]] = defaultdict(set)
     for e in events:
         if e.get("type") == "operator.action" and e.get("action") == "session.opened":
             methods[str(e.get("operator"))].add(str(e.get("auth")))
-    people = sorted(op for op, m in methods.items() if m == {"password"})
+    # a person signs in with their own password or (rules 10) their own passkey
+    people = sorted(op for op, m in methods.items() if m and m <= {"password", "passkey"})
     scripted = sorted(op for op, m in methods.items() if "scripted" in m)
     acts: dict[str, int] = defaultdict(int)
     for e in events:
         if e.get("type") in HUMAN_ACTS and e.get("by"):
             acts[str(e["by"])] += 1
+    # rules 10: each consequential act's step-up, by its factor (the `operator.action step_up`
+    # event its `step_up` names): a person's by passkey or by password
+    factor_of = {
+        e.get("seq"): str(e.get("auth"))
+        for e in events
+        if e.get("type") == "operator.action" and e.get("action") == "step_up"
+    }
+    stepped: dict[str, dict[str, int]] = defaultdict(lambda: {"passkey": 0, "password": 0, "other": 0})
+    for e in events:
+        if e.get("type") == "passkey.registered":
+            continue  # a registration re-enters the password by design: not a decision
+        ref = e.get("step_up")
+        by = e.get("by") or e.get("operator")
+        declarer = (e.get("declaration") or {}).get("by") or {}
+        if ref is None and declarer.get("kind") == "operator":
+            ref, by = declarer.get("step_up"), declarer.get("operator")
+        if not isinstance(ref, dict) or by is None:
+            continue
+        f = factor_of.get(ref.get("seq"), "other")
+        stepped[str(by)][f if f in ("passkey", "password") else "other"] += 1
     why_not = []
     if mode != "credentials":
         why_not.append(f"operators not authenticated (auth {mode or 'none recorded'})")
@@ -1257,7 +1286,17 @@ def auth_of(events: list[dict], replay: dict | None, participant: str | None = N
     if anchors != "verified":
         why_not.append(f"anchors {anchors}")
     if participant is not None and participant not in people:
-        why_not.append(f"{participant} did not sign in as a person (own password)")
+        why_not.append(f"{participant} did not sign in as a person (own password or passkey)")
+    if participant is not None:
+        # rules 10: a study counts only with the participant's passkey at every step-up (a log
+        # of earlier rules names no study: a pilot)
+        if not study or study.get("participant") != participant:
+            why_not.append(f"the log names no study of {participant} (rules {rules}; a study's bridge, MURMUR_STUDY, from rules 10)")
+        elif study.get("password_step_up"):
+            why_not.append(f"password step-ups allowed by the study's override ({study['password_step_up']}): a pilot")
+        mine = stepped.get(participant, {"passkey": 0, "password": 0, "other": 0})
+        if mine["password"] or mine["other"]:
+            why_not.append(f"{mine['password'] + mine['other']} of {participant}'s consequential acts stepped up without a passkey")
     out: dict[str, Any] = {
         "mode": mode or "none recorded",
         "anchors": anchors,
@@ -1271,6 +1310,9 @@ def auth_of(events: list[dict], replay: dict | None, participant: str | None = N
     if participant is not None:
         out["participant"] = participant
         out["participant_acts"] = acts[participant] if participant in people else 0
+        mine = stepped.get(participant, {"passkey": 0, "password": 0, "other": 0})
+        out["participant_steps"] = {"passkey": mine["passkey"], "password": mine["password"] + mine["other"]}
+        out["study"] = study
     return out
 
 

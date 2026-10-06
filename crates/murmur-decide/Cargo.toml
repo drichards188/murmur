@@ -14,6 +14,19 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 sha2 = "0.10"
 thiserror = "2"
 toml = "1"
+# Rules 10 (passkeys): replay verifies each logged WebAuthn assertion (ES256: ECDSA P-256 over
+# SHA-256) against the public key the run logged, independently of the bridge's WebAuthn
+# library. Verification only, unless the test authenticator below is asked for.
+p256 = { version = "0.14", default-features = false, features = ["ecdsa", "std"] }
+base64 = "0.22"
+
+[features]
+# A software authenticator (`passkey::soft`) for tests: it signs, so a production build leaves
+# it out.
+soft-authenticator = []
+
+[dev-dependencies]
+murmur-decide = { path = ".", features = ["soft-authenticator"] }
 
 [lints]
 workspace = true

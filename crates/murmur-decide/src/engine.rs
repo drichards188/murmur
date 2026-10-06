@@ -349,6 +349,22 @@ pub struct Engine {
     /// Rules 9: each engagement in play's last picture (its world as logged), for what a
     /// revoked declaration changes.
     last_pictures: BTreeMap<IntentId, WorldSnapshot>,
+    /// Rules 10: the SHA-256 of the `run.started` line, which every passkey challenge binds
+    /// to (an assertion from another run does not verify here).
+    run_hash: String,
+    /// Rules 10: the passkeys this run knows (its roster's, and those registered since), by
+    /// credential id.
+    passkeys: BTreeMap<String, KeySeen>,
+    /// Rules 10: the nonce of every passkey use logged: each challenge is answered once.
+    used_nonces: BTreeSet<String>,
+}
+
+/// Rules 10: a passkey as the engine follows it: whose, its public key, the last counter
+/// logged for it, and whether it was removed.
+#[derive(Clone, Debug)]
+struct KeySeen {
+    key: crate::passkey::PasskeyKey,
+    removed: bool,
 }
 
 impl std::fmt::Debug for Engine {
@@ -391,11 +407,26 @@ impl Engine {
         let mut roster = roster;
         roster.auth = (policy.rules.rules_version >= OPERATOR_AUTH_SINCE)
             .then(|| roster.auth.unwrap_or(AuthMode::Dev));
+        // rules 10: passkeys and a study, only from rules 10 (older rules never logged them),
+        // checked against the policy (a study requires passkey step-ups unless overridden)
+        if policy.rules.passkeys() {
+            roster
+                .validate_passkeys(policy.step_up_factor())
+                .map_err(EngineError::Roster)?;
+        } else {
+            roster.passkeys = None;
+            roster.study = None;
+        }
         // what the rules read from other sections (rules 9: `[identification]`, which older
         // rules don't have: no build of theirs logged one)
         let mut policy = policy;
         if !policy.rules.rule_id() {
             policy.identification = None;
+        }
+        // rules 10: the step-up and login factors (no build of older rules logged them)
+        if !policy.rules.passkeys() {
+            policy.approval.step_up_factor = None;
+            policy.approval.login_factor = None;
         }
         policy.sync();
         let areas = match areas {
@@ -432,8 +463,12 @@ impl Engine {
             step: None,
             ident: crate::ident::Ledger::default(),
             last_pictures: BTreeMap::new(),
+            run_hash: String::new(),
+            passkeys: BTreeMap::new(),
+            used_nonces: BTreeSet::new(),
         };
         let policy = e.policy.clone();
+        let keys = roster.passkeys.as_ref().map(|p| p.keys.clone()).unwrap_or_default();
         e.emit(EventBody::RunStarted {
             crate_version: env!("CARGO_PKG_VERSION").to_string(),
             rules_version: Some(policy.rules.rules_version),
@@ -444,7 +479,33 @@ impl Engine {
             areas: areas.clone(),
         })?;
         e.areas = areas;
+        e.run_hash = e.head.clone();
+        for k in keys {
+            e.passkeys.insert(k.id.clone(), KeySeen { key: k, removed: false });
+        }
         Ok(e)
+    }
+
+    /// Rules 10: the SHA-256 of this run's `run.started` line (every passkey challenge binds
+    /// to it).
+    pub fn run_hash(&self) -> &str {
+        &self.run_hash
+    }
+
+    /// Rules 10: the run's relying party and the passkeys it knows now (its roster's and those
+    /// registered since, not removed), public parts only.
+    pub fn passkeys(&self) -> Option<crate::passkey::PasskeyRoster> {
+        let p = self.roster.passkeys.as_ref()?;
+        Some(crate::passkey::PasskeyRoster {
+            rp_id: p.rp_id.clone(),
+            origins: p.origins.clone(),
+            keys: self.passkeys.values().filter(|k| !k.removed).map(|k| k.key.clone()).collect(),
+        })
+    }
+
+    /// Rules 10: the study this run is, if it is one.
+    pub fn study(&self) -> Option<&crate::passkey::Study> {
+        self.roster.study.as_deref()
     }
 
     /// SHA-256 of the last event written: the head of the log's hash chain. Publishing it
@@ -527,7 +588,7 @@ impl Engine {
         operator: OperatorId,
         grants: Grants,
     ) -> Result<OperatorSession, EngineError> {
-        self.open_session(operator, grants, AuthMethod::Asserted)
+        self.open_session(operator, grants, AuthMethod::Asserted, None)
     }
 
     /// Rules 8: open a session for an operator whose identity the bridge established by
@@ -548,7 +609,37 @@ impl Engine {
                 why: "these decision rules record no authentication: open the session with open_operator_session_with".into(),
             });
         }
-        self.open_session(operator, grants, method)
+        if method == AuthMethod::Passkey {
+            return Err(EngineError::NotAuthenticated {
+                operator,
+                why: "a passkey login carries its assertion: open_passkey_session".into(),
+            });
+        }
+        self.open_session(operator, grants, method, None)
+    }
+
+    /// Rules 10: open a session for an operator who signed in with a passkey: `proof` is the
+    /// assertion the bridge checked, made for a login ([`crate::StepUpFor::Login`]) on a
+    /// challenge [`Engine::passkey_challenge`] issued. The engine verifies it again against the
+    /// public key the run logged (the credential must be the operator's, its counter must
+    /// count up, the challenge unanswered and fresh) and logs it with the session
+    /// (`session.opened`, `auth: passkey`, `passkey`). Refused, nothing logged, otherwise, and
+    /// when the policy's `login_factor` is `password`.
+    pub fn open_passkey_session(
+        &mut self,
+        operator: OperatorId,
+        grants: Grants,
+        proof: crate::passkey::PasskeyUse,
+    ) -> Result<OperatorSession, EngineError> {
+        if proof.purpose != crate::passkey::StepUpFor::Login {
+            return Err(EngineError::NotAuthenticated {
+                operator,
+                why: format!("the passkey assertion was made for {}, not a login", proof.purpose.describe()),
+            });
+        }
+        self.check_passkey_use(&operator, None, &proof)
+            .map_err(|why| EngineError::NotAuthenticated { operator: operator.clone(), why })?;
+        self.open_session(operator, grants, AuthMethod::Passkey, Some(proof))
     }
 
     fn open_session(
@@ -556,6 +647,7 @@ impl Engine {
         operator: OperatorId,
         grants: Grants,
         method: AuthMethod,
+        proof: Option<crate::passkey::PasskeyUse>,
     ) -> Result<OperatorSession, EngineError> {
         if let Some(why) = self.roster.refuses(&operator, grants) {
             return Err(EngineError::NotOnRoster {
@@ -572,13 +664,30 @@ impl Engine {
                     "a {} run opens sessions only on {} identities",
                     mode.as_str(),
                     match mode {
-                        AuthMode::Credentials => "password-checked or scripted",
+                        AuthMode::Credentials => "password-checked, passkey-checked or scripted",
                         AuthMode::Dev => "asserted",
                     }
                 ),
             });
         }
+        if method == AuthMethod::Passkey && !self.policy.rules.passkeys() {
+            return Err(EngineError::NotAuthenticated {
+                operator,
+                why: "these decision rules have no passkeys".into(),
+            });
+        }
+        // rules 10: how a person may sign in (`[approval] login_factor`)
+        if self.auth == Some(AuthMode::Credentials) && !self.policy.login_factor().admits(method) {
+            return Err(EngineError::NotAuthenticated {
+                operator,
+                why: format!(
+                    "this run's policy signs people in by {} only ([approval] login_factor)",
+                    self.policy.login_factor().as_str()
+                ),
+            });
+        }
         let session = SessionId(self.next_session);
+        let counter = proof.as_ref().map(|p| (p.credential.clone(), p.counter, p.nonce.clone()));
         self.emit(EventBody::OperatorAction {
             operator: operator.clone(),
             session,
@@ -591,9 +700,265 @@ impl Engine {
             grants: (grants != Grants::default()).then_some(grants),
             auth: self.auth.map(|_| method),
             step_up: None,
+            passkey: proof.map(Box::new),
         })?;
+        if let Some((id, n, nonce)) = counter {
+            self.passkey_used(&id, n, nonce);
+        }
         self.next_session += 1;
         Ok(OperatorSession::mint(operator, session, grants, self.auth.map(|_| method)))
+    }
+
+    // ---- passkeys (rules 10) ---------------------------------------------------------
+
+    /// Rules 10: the challenge a passkey use for `purpose` by `operator` signs (in `session`;
+    /// none for a login), with the bridge's random `nonce`, issued now. Not logged: the use
+    /// logs it, and an unanswered challenge leaves no trace; but its time is a floor for every
+    /// later event's (a host clock that steps back can't log the use before its challenge).
+    /// Refused outside a credentials run of rules 10 that logged a relying party, for an
+    /// operator not on the roster, or a session that is not theirs or has ended.
+    pub fn passkey_challenge(
+        &mut self,
+        operator: &OperatorId,
+        session: Option<&OperatorSession>,
+        purpose: crate::passkey::StepUpFor,
+        nonce: String,
+    ) -> Result<crate::passkey::Issued, EngineError> {
+        let refuse = |why: &str| EngineError::NotAuthenticated { operator: operator.clone(), why: why.into() };
+        if !self.policy.rules.passkeys() || self.auth != Some(AuthMode::Credentials) || self.roster.passkeys.is_none() {
+            return Err(refuse("this run takes no passkey (a credentials run of rules 10 does)"));
+        }
+        if self.roster.refuses(operator, Grants::default()).is_some() {
+            return Err(refuse("not on the run's roster"));
+        }
+        let sid = match session {
+            Some(s) if s.operator() != operator => return Err(refuse("not this operator's session")),
+            Some(s) if self.closed.contains(&s.authority().session()) => return Err(refuse("the session has ended")),
+            Some(s) => Some(s.authority().session()),
+            None => None,
+        };
+        if (purpose == crate::passkey::StepUpFor::Login) != sid.is_none() {
+            return Err(refuse("a login's challenge has no session; every other one has its session"));
+        }
+        let issued_t = self.now();
+        self.last_t = issued_t;
+        let challenge = crate::passkey::challenge(&self.run_hash, sid, operator, &purpose, &nonce, issued_t);
+        Ok(crate::passkey::Issued {
+            purpose,
+            nonce,
+            issued_t,
+            challenge,
+        })
+    }
+
+    /// Rules 10: what a passkey signature on intent `id` is for: an engagement's names the
+    /// picture token `token` and the SHA-256 of that token (its plan, the track's identity);
+    /// any other intent's names the intent.
+    pub fn sign_purpose(&self, id: IntentId, token: Option<u64>) -> Result<crate::passkey::StepUpFor, EngineError> {
+        let intent = self.get(id)?;
+        if intent.spec().kind() != TaskKind::Engage {
+            return Ok(crate::passkey::StepUpFor::Sign { intent: id, token: None, picture_sha256: None });
+        }
+        let Some(t) = token else {
+            return Err(EngineError::StalePicture {
+                id,
+                why: "an engagement signature quotes the picture you were shown: ask for it first".into(),
+            });
+        };
+        let shown = self.tokens.get(&t).ok_or_else(|| EngineError::StalePicture {
+            id,
+            why: format!("no picture token {t} was issued (or it was used): look again"),
+        })?;
+        Ok(crate::passkey::StepUpFor::Sign {
+            intent: id,
+            token: Some(t),
+            picture_sha256: Some(crate::passkey::picture_sha256(shown)),
+        })
+    }
+
+    /// Rules 10: what a passkey confirmation of the rule declaration in force on `track` is
+    /// for (the declaration's number).
+    pub fn confirm_purpose(&self, track: &str) -> Result<crate::passkey::StepUpFor, EngineError> {
+        let d = self
+            .ident
+            .declaration(track)
+            .ok_or_else(|| EngineError::Identification(format!("no declaration in force on track {track}")))?;
+        Ok(crate::passkey::StepUpFor::ConfirmDeclaration {
+            track: track.to_string(),
+            declaration: d.id,
+        })
+    }
+
+    /// Why a passkey use by `operator` (in `session`; none for a login) can't be logged, if it
+    /// can't: see [`crate::passkey`]. Ok with the counter it reported.
+    fn check_passkey_use(
+        &self,
+        operator: &OperatorId,
+        session: Option<SessionId>,
+        u: &crate::passkey::PasskeyUse,
+    ) -> Result<u32, String> {
+        if !self.policy.rules.passkeys() || self.auth != Some(AuthMode::Credentials) {
+            return Err("only a credentials run of rules 10 takes a passkey".into());
+        }
+        let Some(rp) = &self.roster.passkeys else {
+            return Err("this run logged no relying party".into());
+        };
+        if self.used_nonces.contains(&u.nonce) {
+            return Err("this challenge was answered already (a passkey assertion is used once)".into());
+        }
+        let age = self.now().ms_since(u.issued_t);
+        if !(0..=crate::passkey::CHALLENGE_TTL_MS).contains(&age) {
+            return Err(format!(
+                "the challenge is {age} ms old (at most {} ms): ask for a new one",
+                crate::passkey::CHALLENGE_TTL_MS
+            ));
+        }
+        let Some(seen) = self.passkeys.get(&u.credential) else {
+            return Err("not a passkey this run knows".into());
+        };
+        if seen.removed {
+            return Err("this passkey was removed".into());
+        }
+        if &seen.key.operator != operator {
+            return Err("another operator's passkey".into());
+        }
+        let challenge = crate::passkey::challenge(&self.run_hash, session, operator, &u.purpose, &u.nonce, u.issued_t);
+        let v = crate::passkey::verify(&seen.key, &rp.rp_id, &rp.origins, &challenge, &u.assertion)?;
+        if v.counter != u.counter {
+            return Err(format!("the counter given ({}) is not the authenticator's ({})", u.counter, v.counter));
+        }
+        if !crate::passkey::counter_ok(seen.key.counter, v.counter) {
+            return Err(format!(
+                "the authenticator's counter went from {} to {}: it may have been cloned, refused",
+                seen.key.counter, v.counter
+            ));
+        }
+        Ok(v.counter)
+    }
+
+    /// A passkey use was logged: its counter and nonce.
+    fn passkey_used(&mut self, credential: &str, counter: u32, nonce: String) {
+        if let Some(k) = self.passkeys.get_mut(credential) {
+            k.key.counter = counter;
+        }
+        self.used_nonces.insert(nonce);
+    }
+
+    /// Rules 10, a credentials run: the operator of `session` stepped up with a passkey: the
+    /// bridge checked the assertion (made on a challenge [`Engine::passkey_challenge`] issued
+    /// for this session and act), the engine verifies it again against the run's logged
+    /// public key and logs it (`operator.action step_up`, `auth: passkey`, `passkey`: the
+    /// assertion and what it is for). The [`StepUp`] returned stands only for that act (the act
+    /// compares its own purpose), once, within [`STEP_UP_MAX_AGE_MS`]. Refused, nothing
+    /// logged, for a scripted session (a harness's credential holds no passkey), another
+    /// operator's credential, a counter that does not count up, a challenge answered before or
+    /// older than [`crate::CHALLENGE_TTL_MS`], or a login's assertion.
+    pub fn step_up_passkey(
+        &mut self,
+        session: &OperatorSession,
+        proof: crate::passkey::PasskeyUse,
+    ) -> Result<StepUp, EngineError> {
+        let operator = session.operator().clone();
+        let id = session.authority().session();
+        let refuse = |why: String| EngineError::NotAuthenticated { operator: operator.clone(), why };
+        if self.closed.contains(&id) {
+            return Err(refuse(format!("session {} has ended", id.0)));
+        }
+        if !session.method().is_some_and(AuthMethod::is_person) {
+            return Err(refuse("a passkey is a person's: this session is not (scripted or asserted)".into()));
+        }
+        if proof.purpose == crate::passkey::StepUpFor::Login {
+            return Err(refuse("a login's assertion is not a step-up".into()));
+        }
+        let counter = self.check_passkey_use(&operator, Some(id), &proof).map_err(refuse)?;
+        let purpose = proof.purpose.clone();
+        let nonce = proof.nonce.clone();
+        let credential = proof.credential.clone();
+        let t = self.emit(EventBody::OperatorAction {
+            operator: operator.clone(),
+            session: id,
+            action: "step_up".into(),
+            detail: format!("passkey for {}", purpose.describe()),
+            grants: None,
+            auth: Some(AuthMethod::Passkey),
+            step_up: None,
+            passkey: Some(Box::new(proof)),
+        })?;
+        self.passkey_used(&credential, counter, nonce);
+        Ok(StepUp::mint(operator, id, self.seq, t, AuthMethod::Passkey, session.method(), Some(purpose)))
+    }
+
+    /// Rules 10, a credentials run: a passkey was registered for `key.operator` while the run
+    /// is up (`passkey.registered`, public parts only): through `by`, the operator's own
+    /// session, quoting the step-up they just made (their credential re-entered: a session
+    /// left open does not add a credential to someone's account), or (`by` None) through a
+    /// one-time invitation the bridge checked. Usable from here on. Refused, nothing logged,
+    /// for a credential id the run knows already, a key that is not a P-256 point, an operator
+    /// not on the roster or not the session's, or a stale or missing step-up.
+    pub fn record_passkey_registered(
+        &mut self,
+        key: crate::passkey::PasskeyKey,
+        by: Option<(&OperatorSession, StepUp)>,
+    ) -> Result<(), EngineError> {
+        let operator = key.operator.clone();
+        let refuse = |why: String| EngineError::NotAuthenticated { operator: operator.clone(), why };
+        if !self.policy.rules.passkeys() || self.auth != Some(AuthMode::Credentials) || self.roster.passkeys.is_none() {
+            return Err(refuse("only a credentials run of rules 10 takes a passkey".into()));
+        }
+        if self.roster.refuses(&operator, Grants::default()).is_some() {
+            return Err(refuse("not on the run's roster".into()));
+        }
+        if self.passkeys.contains_key(&key.id) {
+            return Err(refuse("this credential is registered already".into()));
+        }
+        crate::passkey::check_key(&key.public_key).map_err(refuse)?;
+        let (session, step_up) = match by {
+            Some((s, step)) => {
+                if s.operator() != &operator {
+                    return Err(refuse("a passkey is registered for the session's own operator".into()));
+                }
+                let sid = s.authority().session();
+                if self.closed.contains(&sid) {
+                    return Err(refuse(format!("session {} has ended", sid.0)));
+                }
+                if !s.method().is_some_and(AuthMethod::is_person) {
+                    return Err(refuse("a passkey is a person's: this session is not (scripted or asserted)".into()));
+                }
+                if step.factor() != AuthMethod::Password {
+                    return Err(refuse("a registration re-enters the password (a passkey assertion is made for another act)".into()));
+                }
+                let r = self.fresh_step(&operator, sid, &step).map_err(refuse)?;
+                (Some(sid), Some(r))
+            }
+            None => (None, None),
+        };
+        self.emit(EventBody::PasskeyRegistered {
+            key: key.clone(),
+            via: if session.is_some() { "session".into() } else { "invitation".into() },
+            session,
+            step_up,
+        })?;
+        self.passkeys.insert(key.id.clone(), KeySeen { key, removed: false });
+        Ok(())
+    }
+
+    /// Rules 10: a passkey was removed from the credential file while the run is up
+    /// (`passkey.removed`); nothing may use it from here on. Nothing happens for one the run
+    /// does not know or already removed.
+    pub fn record_passkey_removed(&mut self, operator: &OperatorId, credential: &str, reason: &str) -> Result<(), EngineError> {
+        match self.passkeys.get(credential) {
+            Some(k) if !k.removed && &k.key.operator == operator => {}
+            _ => return Ok(()),
+        }
+        self.emit(EventBody::PasskeyRemoved {
+            operator: operator.clone(),
+            credential: credential.to_string(),
+            reason: reason.to_string(),
+        })?;
+        if let Some(k) = self.passkeys.get_mut(credential) {
+            k.removed = true;
+        }
+        Ok(())
     }
 
     /// How this run authenticates its operators (rules 8; None before).
@@ -623,6 +988,7 @@ impl Engine {
             grants: None,
             auth: None,
             step_up: None,
+            passkey: None,
         })?;
         self.closed.insert(id);
         self.tokens.retain(|_, t| t.session != id);
@@ -651,42 +1017,89 @@ impl Engine {
                 why: format!("session {} has ended", id.0),
             });
         }
+        // the password re-entered (a person's, whether their session opened on a password or,
+        // rules 10, a passkey), or a machine-held credential (the harness's scripted operators)
+        let factor = match session.method() {
+            Some(AuthMethod::Scripted) => AuthMethod::Scripted,
+            _ => AuthMethod::Password,
+        };
         let t = self.emit(EventBody::OperatorAction {
             operator: operator.clone(),
             session: id,
             action: "step_up".into(),
             detail: "credential re-entered to sign".into(),
             grants: None,
-            // the credential the session was opened with: a person's password, or a
-            // machine-held one (the harness's scripted operators)
-            auth: Some(session.method().unwrap_or(AuthMethod::Password)),
+            auth: Some(factor),
             step_up: None,
+            passkey: None,
         })?;
-        Ok(StepUp::mint(operator, id, self.seq, t))
+        Ok(StepUp::mint(operator, id, self.seq, t, factor, session.method(), None))
+    }
+
+    /// Why `step` can't stand for an act by `by` in `session` now (another session's or
+    /// operator's, older than [`STEP_UP_MAX_AGE_MS`]; rules 10: a passkey's made for another
+    /// act than `expected`, or a password where the policy asks a person for a passkey), else
+    /// its reference.
+    fn valid_step(
+        &self,
+        by: &OperatorId,
+        session: SessionId,
+        step: &StepUp,
+        expected: Option<&crate::passkey::StepUpFor>,
+    ) -> Result<StepUpRef, String> {
+        let r = self.fresh_step(by, session, step)?;
+        if let Some(made) = step.purpose()
+            && Some(made) != expected
+        {
+            return Err(format!(
+                "the passkey assertion was made for {}, not for {}",
+                made.describe(),
+                expected.map_or_else(|| "this act".to_string(), crate::passkey::StepUpFor::describe)
+            ));
+        }
+        if let Some(why) = self.factor_refusal(step) {
+            return Err(why);
+        }
+        Ok(r)
     }
 
     /// Why `step` can't stand for an act by `by` in `session` now (another session's or
     /// operator's, or older than [`STEP_UP_MAX_AGE_MS`]), else its reference.
-    fn valid_step(&self, by: &OperatorId, session: SessionId, step: &StepUp) -> Result<StepUpRef, String> {
+    fn fresh_step(&self, by: &OperatorId, session: SessionId, step: &StepUp) -> Result<StepUpRef, String> {
         let now = self.now();
         if step.session() != session || step.operator() != by {
-            Err(format!("the step-up was made in session {} by {}, not this signer's", step.session().0, step.operator()))
-        } else if now.ms_since(step.t()) > STEP_UP_MAX_AGE_MS {
-            Err(format!("the step-up is {} ms old (at most {STEP_UP_MAX_AGE_MS})", now.ms_since(step.t())))
-        } else {
-            Ok(StepUpRef { seq: step.seq() })
+            return Err(format!("the step-up was made in session {} by {}, not this signer's", step.session().0, step.operator()));
         }
+        if now.ms_since(step.t()) > STEP_UP_MAX_AGE_MS {
+            return Err(format!("the step-up is {} ms old (at most {STEP_UP_MAX_AGE_MS})", now.ms_since(step.t())));
+        }
+        Ok(StepUpRef { seq: step.seq() })
+    }
+
+    /// Rules 10: why a person's step-up does not meet the policy's `step_up_factor`, if it
+    /// doesn't (a scripted credential is a harness's: it steps up as it is held).
+    fn factor_refusal(&self, step: &StepUp) -> Option<String> {
+        let person = step.session_method().is_some_and(AuthMethod::is_person);
+        (self.auth == Some(AuthMode::Credentials)
+            && person
+            && self.policy.step_up_factor() == crate::policy::StepUpFactor::Passkey
+            && step.factor() != AuthMethod::Passkey)
+            .then(|| {
+                "this run's policy asks for your passkey at this step-up, not your password ([approval] step_up_factor = \"passkey\")".to_string()
+            })
     }
 
     /// Rules 8: the step-up an act other than an approval quotes (`[approval]
     /// step_up_acts`): required for `act` in a credentials run when the policy lists it,
-    /// checked when given. Refused, nothing logged.
+    /// checked when given (rules 10: a passkey's must have been made for `expected`, this
+    /// act). Refused, nothing logged.
     fn act_step_up(
         &self,
         act: policy::StepUpAct,
         by: &OperatorId,
         session: SessionId,
         step: Option<StepUp>,
+        expected: &crate::passkey::StepUpFor,
     ) -> Result<Option<StepUpRef>, EngineError> {
         let needed = self.auth == Some(AuthMode::Credentials) && self.policy.steps_up(act);
         match step {
@@ -696,7 +1109,7 @@ impl Engine {
             }),
             None => Ok(None),
             Some(s) => self
-                .valid_step(by, session, &s)
+                .valid_step(by, session, &s, Some(expected))
                 .map(Some)
                 .map_err(|why| EngineError::NotAuthenticated { operator: by.clone(), why }),
         }
@@ -751,12 +1164,13 @@ impl Engine {
             ));
         }
         let a = by.authority();
+        let hostile = crate::passkey::StepUpFor::DeclareHostile { track: track.to_string() };
         let step_up = if affiliation == "hostile" {
-            self.act_step_up(policy::StepUpAct::DeclareHostile, a.operator(), a.session(), step)?
+            self.act_step_up(policy::StepUpAct::DeclareHostile, a.operator(), a.session(), step, &hostile)?
         } else {
             match step {
                 Some(s) => Some(
-                    self.valid_step(a.operator(), a.session(), &s)
+                    self.valid_step(a.operator(), a.session(), &s, None)
                         .map_err(|why| EngineError::NotAuthenticated { operator: a.operator().clone(), why })?,
                 ),
                 None => None,
@@ -770,6 +1184,7 @@ impl Engine {
             grants: None,
             auth: None,
             step_up,
+            passkey: None,
         })?;
         Ok(())
     }
@@ -784,6 +1199,7 @@ impl Engine {
         by: &OperatorId,
         session: SessionId,
         step: Option<StepUp>,
+        expected: &crate::passkey::StepUpFor,
     ) -> Result<Option<StepUpRef>, EngineError> {
         let needed = self.auth == Some(AuthMode::Credentials)
             && self.get(id)?.policy().is_some_and(|p| p.step_up);
@@ -794,7 +1210,7 @@ impl Engine {
             }
             return Ok(None);
         };
-        match self.valid_step(by, session, &s) {
+        match self.valid_step(by, session, &s, Some(expected)) {
             Ok(r) => Ok(Some(r)),
             Err(why) => {
                 self.refuse(by, session, id, &why)?;
@@ -883,7 +1299,8 @@ impl Engine {
         let step_up = if accept.is_empty() {
             None
         } else {
-            self.act_step_up(policy::StepUpAct::AcceptUnknown, by.operator(), by.session(), step)?
+            let expected = crate::passkey::StepUpFor::accepting(None, accept);
+            self.act_step_up(policy::StepUpAct::AcceptUnknown, by.operator(), by.session(), step, &expected)?
         };
         let source = Source::Human {
             id: by.operator().clone(),
@@ -960,7 +1377,8 @@ impl Engine {
             });
         }
         self.acceptable(&uid, since, world)?;
-        let step_up = self.act_step_up(policy::StepUpAct::AcceptUnknown, by.operator(), by.session(), step)?;
+        let expected = crate::passkey::StepUpFor::accepting(Some(id), &[(uid.clone(), since)]);
+        let step_up = self.act_step_up(policy::StepUpAct::AcceptUnknown, by.operator(), by.session(), step, &expected)?;
         let vehicle = Box::new(world.vehicles.get(&uid).cloned().unwrap_or_default());
         self.emit(EventBody::EngageAccepted {
             intent: id,
@@ -1386,6 +1804,7 @@ impl Engine {
             grants: None,
             auth: None,
             step_up: None,
+            passkey: None,
         })?;
         Ok(())
     }
@@ -1427,8 +1846,10 @@ impl Engine {
             self.refuse(by, session, id, "already signed: another operator must")?;
             return Err(EngineError::AlreadySigned { id, by: by.clone() });
         }
-        // rules 8: a consequential approval quotes the approver's step-up
-        let step_up = self.check_step_up(id, by, session, step)?;
+        // rules 8: a consequential approval quotes the approver's step-up (rules 10: a
+        // passkey's, made for a signature on this intent)
+        let expected = crate::passkey::StepUpFor::Sign { intent: id, token: None, picture_sha256: None };
+        let step_up = self.check_step_up(id, by, session, step, &expected)?;
         let (inputs, _, results, ok) =
             self.run_checks_plan(&spec, CheckPhase::Approve, world, terrain, None)?;
         if !ok {
@@ -1573,8 +1994,15 @@ impl Engine {
             self.refuse(by, session, id, "already signed: another operator must")?;
             return Err(EngineError::AlreadySigned { id, by: by.clone() });
         }
-        // rules 8: every engagement signature quotes the signer's step-up (credentials run)
-        let step_up = self.check_step_up(id, by, session, step)?;
+        // rules 8: every engagement signature quotes the signer's step-up (credentials run);
+        // rules 10: a passkey's was made for this intent and this very picture token (its
+        // plan and the track's identity, by their hash)
+        let expected = crate::passkey::StepUpFor::Sign {
+            intent: id,
+            token: Some(token),
+            picture_sha256: self.tokens.get(&token).map(crate::passkey::picture_sha256),
+        };
+        let step_up = self.check_step_up(id, by, session, step, &expected)?;
         // the picture this signer was shown
         let track_id = engage::params(&spec).map(|p| p.0.to_string()).unwrap_or_default();
         let shown = match self.tokens.get(&token) {
@@ -1818,6 +2246,7 @@ impl Engine {
             grants: None,
             auth: None,
             step_up: None,
+            passkey: None,
         })?;
         let source = Source::Human {
             id: by.operator().clone(),
@@ -1846,6 +2275,7 @@ impl Engine {
             grants: None,
             auth: None,
             step_up: None,
+            passkey: None,
         })?;
         self.transition(
             id,
@@ -1877,7 +2307,8 @@ impl Engine {
             ));
         }
         if action == "track.declare" && declared_affiliation(detail) == Some("hostile") {
-            self.act_step_up(policy::StepUpAct::DeclareHostile, by.operator(), by.session(), None)?;
+            let expected = crate::passkey::StepUpFor::DeclareHostile { track: String::new() };
+            self.act_step_up(policy::StepUpAct::DeclareHostile, by.operator(), by.session(), None, &expected)?;
         }
         self.emit(EventBody::OperatorAction {
             operator: by.operator().clone(),
@@ -1887,6 +2318,7 @@ impl Engine {
             grants: None,
             auth: None,
             step_up: None,
+            passkey: None,
         })?;
         Ok(())
     }
@@ -2605,13 +3037,15 @@ impl Engine {
         if !world.tracks.contains_key(track) {
             return Err(EngineError::Identification(format!("track {track} is not in the picture")));
         }
-        // rules 8: declaring a track hostile may be marked consequential (a step-up)
+        // rules 8: declaring a track hostile may be marked consequential (a step-up; rules 10:
+        // a passkey's made for declaring this track hostile)
         let step_up = if affiliation == crate::world::Affiliation::Hostile {
-            self.act_step_up(policy::StepUpAct::DeclareHostile, by.operator(), by.session(), step)?
+            let expected = crate::passkey::StepUpFor::DeclareHostile { track: track.to_string() };
+            self.act_step_up(policy::StepUpAct::DeclareHostile, by.operator(), by.session(), step, &expected)?
         } else {
             match step {
                 Some(s) => Some(
-                    self.valid_step(by.operator(), by.session(), &s)
+                    self.valid_step(by.operator(), by.session(), &s, None)
                         .map_err(|why| EngineError::NotAuthenticated { operator: by.operator().clone(), why })?,
                 ),
                 None => None,
@@ -2689,7 +3123,8 @@ impl Engine {
                 d.describe()
             )));
         }
-        let step_up = self.act_step_up(policy::StepUpAct::ConfirmDeclaration, by.operator(), by.session(), step)?;
+        let expected = crate::passkey::StepUpFor::ConfirmDeclaration { track: track.to_string(), declaration: d.id };
+        let step_up = self.act_step_up(policy::StepUpAct::ConfirmDeclaration, by.operator(), by.session(), step, &expected)?;
         self.emit_ident(EventBody::IdentConfirmed {
             track: track.to_string(),
             declaration: d.id,

@@ -31,7 +31,7 @@ import { QueueButton, QueuePanel } from './QueuePanel'
 import { buildOrderLayers } from './orderLayers'
 import { noteFocusedIntent, noteTrackViewed } from './operatorView'
 import { refreshAuth, useAuth } from './auth'
-import { LoginScreen, OperatorBadge } from './Login'
+import { EnrollScreen, LoginScreen, OperatorBadge } from './Login'
 
 function useUtcClock() {
   const [now, setNow] = useState(() => new Date())
@@ -51,10 +51,21 @@ function PerfMark() {
   return null
 }
 
+/** Rules 10: the passkey invitation in the address (`#enroll=<operator>.<code>`), read once and
+ *  taken out of the address (it works once anyway). */
+function readInvite(): { operator: string; code: string } | null {
+  const m = /^#enroll=(.+)\.([A-Za-z0-9_-]+)$/.exec(window.location.hash)
+  if (!m) return null
+  window.history.replaceState(null, '', window.location.pathname + window.location.search)
+  return { operator: decodeURIComponent(m[1]), code: m[2] }
+}
+
 export default function App() {
   const { state, status, decisions, tracks, setView } = useBridge()
   // who this console acts for (rules 8): asked once the bridge answers, and again on reconnect
   const auth = useAuth()
+  // rules 10: a one-time passkey invitation in the address (`murmur-auth passkey-invite`)
+  const [invite, setInvite] = useState(readInvite)
   useEffect(() => {
     void refreshAuth()
   }, [])
@@ -307,6 +318,8 @@ export default function App() {
   useLayoutEffect(() => perfCommitted(), [state])
   useEffect(() => perfUpdateEnd(), [state])
 
+  // rules 10: a passkey invitation is registered first (no sign-in needed)
+  if (auth.auth === 'credentials' && invite) return <EnrollScreen invite={invite} onDone={() => setInvite(null)} />
   // a credentials run: nothing but the sign-in until an operator has signed in
   if (auth.auth === 'credentials' && !auth.signed_in) return <LoginScreen />
 

@@ -7,6 +7,7 @@
     python -m eval.run engage --seeds 1 2 3 --noise 0 3 10
     python -m eval.run ident --seeds 1 2 3 4 5 6 7 8 9 10 --situations 20 --untracked-share 0.2 0.5
     python -m eval.run report eval/results/<batch>
+    python -m eval.run enroll --participant p01        (once: the participant's passkey)
     python -m eval.run study eval/scenarios/plausible-wrong.toml --participant p01
     python -m eval.run measure
     python -m eval.run kill <run-dir>
@@ -46,7 +47,7 @@ from .metrics import clock_checks, compute_run, run_replay
 from .ports import Allocator, PortBlock, ephemeral_range, lease_tidewater_port
 from .proxy import ProxyParams, make_supervisor, proxy_params
 from .spec import Spec, SpecError, load_spec, spec_summary
-from .stack import OPERATORS, PARTICIPANT_OPERATOR, Stack, StackError, kill_from_pids
+from .stack import OPERATORS, PARTICIPANT_OPERATOR, Stack, StackError, check_participant, enroll, kill_from_pids, study_credentials
 from .provenance import collect as provenance
 from .storyline import Log, Storyline, TruthSampler, World
 
@@ -162,7 +163,13 @@ class Run:
         model: str | None = None,
         participant: str | None = None,
         duration_s: float | None = None,
+        participant_credentials: Path | None = None,
+        password_step_up: str | None = None,
     ):
+        # rules 10, a study: the participant's own credential file (their passkey), or the
+        # explicit override that allows password step-ups (a pilot)
+        self.participant_credentials = participant_credentials
+        self.password_step_up = password_step_up
         self.spec = spec
         self.arm = arm
         self.seed = seed
@@ -193,6 +200,9 @@ class Run:
             self.info["proxy"] = {**proxy.as_dict(), "note": "a scripted proxy, not a human; see eval/proxy.py"}
         if participant:
             self.info["participant"] = participant
+        if password_step_up:
+            # rules 10: said in the run's record as in the bridge's log: never evidence
+            self.info["password_step_up"] = password_step_up
 
     def save(self) -> None:
         (self.out / "run.json").write_text(json.dumps(self.info, indent=1))
@@ -204,7 +214,18 @@ class Run:
         # and run with asserted ids (dev), which the log records and the report excludes from
         # any human-control claim
         auth = "credentials" if self.arm.supervisor == "participant" else "dev"
-        stack = Stack(self.spec, self.seed, self.block, self.out, self.run_id, self.tidewater_url, web=self.arm.web, auth=auth)
+        stack = Stack(
+            self.spec,
+            self.seed,
+            self.block,
+            self.out,
+            self.run_id,
+            self.tidewater_url,
+            web=self.arm.web,
+            auth=auth,
+            participant_credentials=self.participant_credentials,
+            password_step_up=self.password_step_up,
+        )
         self.info["auth"] = auth
         self.info["tidewater_url"] = self.tidewater_url
         self.save()
@@ -231,12 +252,15 @@ class Run:
             bridge = stack.bridge
             mcp_url = f"http://127.0.0.1:{self.block.http}/mcp"
             if self.arm.web:
-                self.info["console"] = f"http://127.0.0.1:{self.block.web}"
-                print(f"console for the participant: http://127.0.0.1:{self.block.web}", flush=True)
+                # rules 10: on localhost (WebAuthn takes no IP address as a relying party)
+                self.info["console"] = f"http://localhost:{self.block.web}"
+                print(f"console for the participant: http://localhost:{self.block.web}", flush=True)
             if auth == "credentials" and self.arm.supervisor == "participant":
                 # shown to the person running the session, never written to the run directory
+                pw = stack.passwords.get(PARTICIPANT_OPERATOR)
                 print(
-                    f"participant signs in as {PARTICIPANT_OPERATOR} with: {stack.passwords.get(PARTICIPANT_OPERATOR)}",
+                    f"participant signs in as {PARTICIPANT_OPERATOR} with "
+                    + (f"this passphrase: {pw}" if pw else "their passkey (or their own password)"),
                     flush=True,
                 )
             proposer = make_proposer(
@@ -373,7 +397,20 @@ def do_run(args: argparse.Namespace) -> int:
         tw.start(args.tidewater or spec.tidewater, out)
         tidewater_url = tw.url
     try:
-        run = Run(spec, a, args.seed, out, block, tidewater_url, proxy_params(spec.proxy, args.proxy), args.model, args.participant, args.duration)
+        run = Run(
+            spec,
+            a,
+            args.seed,
+            out,
+            block,
+            tidewater_url,
+            proxy_params(spec.proxy, args.proxy),
+            args.model,
+            args.participant,
+            args.duration,
+            participant_credentials=getattr(args, "credentials_path", None),
+            password_step_up=getattr(args, "password_step_up", None),
+        )
         if tw.note:
             run.info["notes"].append(tw.note)
         try:
@@ -660,19 +697,55 @@ def do_study(args: argparse.Namespace) -> int:
     args.out = args.out or str(RESULTS / "study" / f"{args.participant}-{Path(args.scenario).stem}-{now_id()}")
     args.include_placeholders = False
     args.model = None
+    # rules 10: the participant's own credential file, with their passkey (enrolled first), or
+    # the explicit override for a pilot without one
+    path = Path(args.credentials) if args.credentials else study_credentials(args.participant)
+    args.credentials_path = path if (path.exists() or not args.password_step_up) else None
+    try:
+        check_participant(args.credentials_path, args.password_step_up)
+    except StackError as e:
+        print(f"study refused: {e}", file=sys.stderr)
+        return 2
     print(
         "Study session. Before starting: consent obtained, the participant knows the run is "
         "recorded (decisions and what the console showed, under an anonymous id, nothing else), "
         "and can stop at any time.",
         flush=True,
     )
-    print(
-        "Sign-in is by password, with the password again for consequential acts. Passkeys "
-        "(WebAuthn) are required before a study with real participants (docs/DECISIONS.md): "
-        "until then a study run is a pilot.",
-        flush=True,
-    )
+    if args.password_step_up:
+        print(
+            f"PASSWORD STEP-UPS ALLOWED ({args.password_step_up}): logged by the bridge; this run is a "
+            "pilot and never evidence about people.",
+            flush=True,
+        )
+    else:
+        print(
+            "The participant signs in at the console on localhost and signs every consequential "
+            "act with their passkey (the bridge refuses their password there).",
+            flush=True,
+        )
     return do_run(args)
+
+
+def do_enroll(args: argparse.Namespace) -> int:
+    """Rules 10: register a study participant's passkey before their first session (their own
+    credential file, outside the repository; see `eval/stack.py` `enroll`)."""
+    path = Path(args.credentials) if args.credentials else study_credentials(args.participant)
+    out = Path(args.out) if args.out else RESULTS / "study" / f"{args.participant}-enroll-{now_id()}"
+    lease = Allocator().allocate(args.block)
+    try:
+        r = enroll(args.participant, path, lease.block, out, minutes=args.minutes, timeout_s=args.timeout)
+    except StackError as e:
+        print(f"enrollment failed: {e}", file=sys.stderr)
+        return 1
+    finally:
+        lease.release()
+    (out / "enroll.json").write_text(json.dumps(r, indent=1))
+    if r.get("registered"):
+        print(f"{args.participant}: a passkey registered ({r['passkeys']} in {path}); the study runs with --credentials {path}")
+        return 0
+    print(f"{args.participant}: no passkey was registered before the time ran out", file=sys.stderr)
+    return 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -734,7 +807,17 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("study", help="a real participant on the console; the runner records")
     s.add_argument("scenario")
     s.add_argument("--participant", required=True, help="an anonymous id, e.g. p01")
+    s.add_argument("--credentials", help="the participant's own credential file (default ~/.config/murmur/study/<participant>.json, from `enroll`)")
+    s.add_argument("--password-step-up", metavar="REASON", help="allow the participant's password at step-ups (logged; a pilot, never evidence)")
     common(s)
+
+    en = sub.add_parser("enroll", help="register a study participant's passkey before their first session")
+    en.add_argument("--participant", required=True, help="an anonymous id, e.g. p01")
+    en.add_argument("--credentials", help="their credential file (default ~/.config/murmur/study/<participant>.json)")
+    en.add_argument("--block", type=int, help="port block index (default: first free)")
+    en.add_argument("--minutes", type=int, default=30, help="how long the invitation link works (default 30)")
+    en.add_argument("--timeout", type=float, default=1800.0, help="how long to wait for the registration, seconds")
+    en.add_argument("--out", help="where the enrollment's log goes (default eval/results/study/<participant>-enroll-...)")
 
     rp = sub.add_parser("report", help="build report.html for a batch directory")
     rp.add_argument("dir")
@@ -747,7 +830,7 @@ def main(argv: list[str] | None = None) -> int:
         args.tidewater_url = None
         args.tidewater = "none"
     try:
-        return {"run": do_run, "batch": do_batch, "engage": do_engage, "ident": do_ident, "report": do_report, "kill": do_kill, "measure": do_measure, "study": do_study}[args.cmd](args)
+        return {"run": do_run, "batch": do_batch, "engage": do_engage, "ident": do_ident, "report": do_report, "kill": do_kill, "measure": do_measure, "study": do_study, "enroll": do_enroll}[args.cmd](args)
     except SpecError as e:
         print(f"spec error: {e}", file=sys.stderr)
         return 2

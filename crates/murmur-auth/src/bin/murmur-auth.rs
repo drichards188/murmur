@@ -10,8 +10,23 @@
 //! murmur-auth [--file PATH] agent-add <agent>             prints the new API key, once
 //! murmur-auth [--file PATH] agent-rotate <agent>          prints a new key; the old one stops working
 //! murmur-auth [--file PATH] agent-remove <agent>
+//! murmur-auth [--file PATH] passkeys <operator>           list an operator's passkeys
+//! murmur-auth [--file PATH] passkey-invite <operator> [--minutes N] [--url BASE]
+//!                                                         a one-time registration link
+//! murmur-auth [--file PATH] passkey-remove <operator> <label | id prefix>
+//! murmur-auth [--file PATH] import <operator> --from FILE copy an operator's credential (its
+//!                                                         password hash, flags and passkeys) from another file
 //! murmur-auth [--file PATH] path                          the file it uses
 //! ```
+//!
+//! Passkeys (rules 10): an operator registers one at the console while signed in (their
+//! operator menu; the password is asked first), or through a one-time invitation:
+//! `passkey-invite` prints a link to the console (`--url`, default
+//! `http://localhost:$MURMUR_WEB_PORT`, 5173) carrying a code valid `--minutes` (30), used
+//! once; whoever opens it registers a passkey for that operator, so hand it over as you would
+//! the password. The file keeps public keys and counters only. `passkey-remove` removes one
+//! (by its label, or the start of its credential id as `passkeys` lists it) and ends the
+//! operator's sessions (a lost authenticator). A scripted credential holds no passkey.
 //!
 //! The file: `--file`, else `MURMUR_CREDENTIALS`, else `$XDG_CONFIG_HOME/murmur/credentials.json`,
 //! else `~/.config/murmur/credentials.json`. Passwords come from stdin: at a terminal it
@@ -29,7 +44,7 @@ use std::process::ExitCode;
 
 use murmur_auth::{AuthError, CredentialFile, FileLock, default_path};
 
-const USAGE: &str = "usage: murmur-auth [--file PATH] list | add <operator> [--engage] [--scripted] | passwd <operator> | engage <operator> on|off | scripted <operator> on|off | remove <operator> | agent-add <agent> | agent-rotate <agent> | agent-remove <agent> | path\n(passwords from stdin; see the module docs)";
+const USAGE: &str = "usage: murmur-auth [--file PATH] list | add <operator> [--engage] [--scripted] | passwd <operator> | engage <operator> on|off | scripted <operator> on|off | remove <operator> | agent-add <agent> | agent-rotate <agent> | agent-remove <agent> | passkeys <operator> | passkey-invite <operator> [--minutes N] [--url BASE] | passkey-remove <operator> <label|id prefix> | import <operator> --from FILE | path\n(passwords from stdin; see the module docs)";
 
 fn read_password(id: &str) -> Result<String, AuthError> {
     let io = |e| AuthError::Io("stdin".into(), e);
@@ -106,7 +121,32 @@ fn run(args: &[String]) -> Result<(), (u8, String)> {
                 (true, true) => "engagement, scripted",
                 (false, true) => "operator, scripted",
             };
-            println!("  {id:<24} {auth:<22} changed {}", utc(e.updated_unix));
+            let keys = match e.passkeys.len() {
+                0 => String::new(),
+                1 => ", 1 passkey".to_string(),
+                n => format!(", {n} passkeys"),
+            };
+            println!("  {id:<24} {auth:<22} changed {}{keys}", utc(e.updated_unix));
+        }
+        return Ok(());
+    }
+    if cmd == "passkeys" {
+        let id = one("an operator id")?;
+        let f = CredentialFile::load_or_new(&path).map_err(refused)?;
+        let e = f.operators.get(&id).ok_or_else(|| (1u8, format!("no operator {id}")))?;
+        println!("passkeys of {id} ({}):", e.passkeys.len());
+        for p in &e.passkeys {
+            let used = p.last_used_unix.map_or_else(|| "never used".to_string(), |t| format!("last used {}", utc(t)));
+            let label = if p.label.is_empty() { "(no label)" } else { p.label.as_str() };
+            println!(
+                "  {label:<20} id {}...  counter {:<6} registered {}, {used}",
+                p.id.chars().take(12).collect::<String>(),
+                p.counter,
+                utc(p.created_unix)
+            );
+        }
+        if let Some(i) = &e.passkey_invite {
+            println!("  an invitation to register one is open until {}", utc(i.expires_unix));
         }
         println!("agents ({}):", f.agents.len());
         for (id, e) in &f.agents {
@@ -196,14 +236,71 @@ fn run(args: &[String]) -> Result<(), (u8, String)> {
             f.remove_agent(&id).map_err(refused)?;
             format!("agent {id} removed")
         }
+        "passkey-invite" => {
+            let id = one("an operator id")?;
+            let mut minutes = 30u64;
+            let web = std::env::var("MURMUR_WEB_PORT").ok().filter(|p| p.parse::<u16>().is_ok()).unwrap_or_else(|| "5173".into());
+            let mut base = format!("http://localhost:{web}");
+            let mut opts = rest.iter().skip(1);
+            while let Some(o) = opts.next() {
+                match o.as_str() {
+                    "--minutes" => {
+                        minutes = opts
+                            .next()
+                            .and_then(|m| m.parse::<u64>().ok())
+                            .filter(|m| (1..=7 * 24 * 60).contains(m))
+                            .ok_or_else(|| usage("--minutes takes 1 to 10080"))?;
+                    }
+                    "--url" => {
+                        base = opts.next().ok_or_else(|| usage("--url takes the console's base URL"))?.trim_end_matches('/').to_string();
+                    }
+                    o => return Err(usage(&format!("unknown option {o}"))),
+                }
+            }
+            let code = f.invite_passkey(&id, minutes).map_err(refused)?;
+            key = Some(format!("{base}/#enroll={id}.{code}"));
+            format!(
+                "a one-time invitation for {id} to register a passkey, valid {minutes} min: open the link below in the browser that holds the authenticator (on localhost, not 127.0.0.1: WebAuthn takes no IP address); whoever opens it registers a passkey for {id}"
+            )
+        }
+        "passkey-remove" => {
+            let id = one("an operator id")?;
+            let which = rest.get(1).ok_or_else(|| usage("passkey-remove <operator> <label | id prefix>"))?;
+            let gone = f.remove_passkey(&id, which).map_err(refused)?;
+            format!("{id}: passkey {}... removed; their sessions end", gone.chars().take(12).collect::<String>())
+        }
+        "import" => {
+            let id = one("an operator id")?;
+            let from = match (rest.get(1).map(String::as_str), rest.get(2)) {
+                (Some("--from"), Some(p)) => PathBuf::from(p),
+                _ => return Err(usage("import <operator> --from <credential file>")),
+            };
+            let other = CredentialFile::load(&from).map_err(refused)?;
+            let entry = other
+                .operators
+                .get(&id)
+                .cloned()
+                .ok_or_else(|| (1u8, format!("no operator {id} in {}", from.display())))?;
+            if f.agents.contains_key(&id) {
+                return Err((1, format!("{id} is an agent here: an id is an operator or an agent, not both")));
+            }
+            let n = entry.passkeys.len();
+            f.operators.insert(id.clone(), entry);
+            format!("operator {id} imported from {} (password hash, flags, {n} passkey(s))", from.display())
+        }
         other => return Err(usage(&format!("unknown command {other}"))),
     };
     f.save(&path).map_err(refused)?;
     eprintln!("{what} ({})", path.display());
     if let Some(k) = key {
-        // the key alone on stdout, so a script can capture it; it is shown only this once
+        // the key (or the invitation link) alone on stdout, so a script can capture it; it is
+        // shown only this once
         println!("{k}");
-        eprintln!("the key above is shown once; give it to the agent as Authorization: Bearer <key>");
+        if cmd == "passkey-invite" {
+            eprintln!("the link above is shown once and works once");
+        } else {
+            eprintln!("the key above is shown once; give it to the agent as Authorization: Bearer <key>");
+        }
     }
     Ok(())
 }

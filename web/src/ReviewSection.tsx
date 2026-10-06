@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { stepsUpAct } from './auth'
 import { fmtDuration, StepUpNeeded, useOperator } from './decisions'
+import { StepUpField } from './StepUp'
+import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
 import { type Against, type ObservedAct, type Review, type ReviewDeclaration, type ReviewFlag, FLAG_LABEL, confirmDeclaration, resolveFlag, revokeDeclaration } from './ident'
 
 /** The inbox's Review (rules 9): what the identification asks of a human, none of it
@@ -48,7 +50,8 @@ function DeclarationItem({ d, now, onDone, onTrack }: { d: ReviewDeclaration; no
   const [open, setOpen] = useState<'none' | 'evidence' | 'revoke'>('none')
   const revoking = open === 'revoke'
   const stepUp = stepsUpAct('confirm_declaration')
-  const [password, setPassword] = useState('')
+  // rules 10: the password again, or the passkey (where the run asks for one)
+  const [step, setStep] = useStepUp()
   const [asking, setAsking] = useState(false)
   const run = async (what: string, f: () => Promise<unknown>) => {
     setBusy(true)
@@ -62,16 +65,19 @@ function DeclarationItem({ d, now, onDone, onTrack }: { d: ReviewDeclaration; no
       onDone(`${d.track}: ${what} refused: ${(e as Error).message}`, 'bad')
     } finally {
       setBusy(false)
-      setPassword('')
+      setStep({ password: '' })
     }
   }
   const ev = d.declaration.by.kind === 'rule' ? d.declaration.by.evidence : undefined
   const confirm = () => {
-    if (stepUp && !password) {
+    if (stepUp && !stepUpReady(step)) {
       setAsking(true)
       return
     }
-    void run('declaration confirmed', () => confirmDeclaration(d.track, stepUp ? password : undefined))
+    void run('declaration confirmed', async () => {
+      const proof = stepUp ? await stepUpProof(step, { act: 'confirm_declaration', track: d.track }) : {}
+      return confirmDeclaration(d.track, proof)
+    })
   }
   return (
     <article className="ix-card rv-card rv-decl" aria-label={`Rule declaration ${d.id} on ${d.track}`}>
@@ -138,13 +144,20 @@ function DeclarationItem({ d, now, onDone, onTrack }: { d: ReviewDeclaration; no
         </div>
       )}
       {asking && stepUp && (
-        <label className="ix-stepup">
-          Consequential: your password to confirm
-          <input type="password" autoComplete="current-password" value={password} disabled={busy} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && password && confirm()} aria-label="Your password, to confirm this declaration" autoFocus />
-          <button className="ghost mini" disabled={!password || busy} onClick={confirm}>
+        <div className="tk-stepup">
+          <StepUpField
+            passwordLabel="Consequential: your password to confirm"
+            purpose={`to confirm the engine's declaration of ${d.track}`}
+            ariaLabel="Your password, to confirm this declaration"
+            value={step}
+            onChange={setStep}
+            busy={busy}
+            onEnter={confirm}
+          />
+          <button className="ghost mini" disabled={!stepUpReady(step) || busy} onClick={confirm}>
             confirm
           </button>
-        </label>
+        </div>
       )}
     </article>
   )

@@ -42,6 +42,44 @@ pub struct OperatorEntry {
     pub stamp: String,
     /// When the entry last changed (Unix seconds).
     pub updated_unix: u64,
+    /// Rules 10: the operator's passkeys (public keys and counters; the private keys stay in
+    /// the authenticators). Registering one leaves the stamp (the session it was registered in
+    /// goes on); removing one renews it (a lost authenticator: every session ends).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub passkeys: Vec<PasskeyEntry>,
+    /// Rules 10: a one-time invitation to register a passkey (`murmur-auth passkey-invite`):
+    /// the code's SHA-256 and when it expires. Used once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passkey_invite: Option<Invite>,
+}
+
+/// One registered passkey (rules 10): public parts only.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PasskeyEntry {
+    /// The credential id, base64url.
+    pub id: String,
+    /// A name the operator gave it ("laptop"), to tell their passkeys apart.
+    #[serde(default)]
+    pub label: String,
+    /// The ES256 public key, the SEC1 uncompressed point, base64url (what the audit log
+    /// names, and replay verifies assertions with).
+    pub public_key: String,
+    /// The authenticator's signature counter as last seen (it must count up, or never count).
+    pub counter: u32,
+    pub created_unix: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used_unix: Option<u64>,
+    /// `webauthn-rs`'s record of the credential (what the bridge checks assertions with).
+    pub webauthn: serde_json::Value,
+}
+
+/// A one-time passkey invitation: the SHA-256 of its code (hex) and its expiry (Unix seconds).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Invite {
+    pub sha256: String,
+    pub expires_unix: u64,
 }
 
 /// An agent's API key, as its id and digest.
@@ -195,8 +233,105 @@ impl CredentialFile {
                 scripted: false,
                 stamp: keys::stamp()?,
                 updated_unix: now_unix(),
+                passkeys: Vec::new(),
+                passkey_invite: None,
             },
         );
+        Ok(())
+    }
+
+    // ---- passkeys (rules 10) ----------------------------------------------------------------
+
+    /// Keep a newly registered passkey for operator `id` (not a scripted credential's: a
+    /// passkey is a person's; not a credential id registered to anyone already). The stamp
+    /// stays: the session that registered it goes on.
+    pub fn add_passkey(&mut self, id: &str, entry: PasskeyEntry) -> Result<(), AuthError> {
+        if self.operators.values().flat_map(|e| &e.passkeys).any(|p| p.id == entry.id) {
+            return Err(AuthError::Invalid("this passkey is registered already".into()));
+        }
+        let e = self.operator_mut(id)?;
+        if e.scripted {
+            return Err(AuthError::Invalid(format!(
+                "{id} is a scripted credential (a harness's): passkeys are a person's"
+            )));
+        }
+        if e.passkeys.len() >= 16 {
+            return Err(AuthError::Invalid(format!("{id} has 16 passkeys already: remove one first")));
+        }
+        e.passkeys.push(entry);
+        Ok(())
+    }
+
+    /// Store a passkey's state after a use (its counter, when it was used); the stamp stays.
+    pub fn update_passkey(&mut self, id: &str, entry: &PasskeyEntry) -> Result<(), AuthError> {
+        let e = self.operator_mut(id)?;
+        let p = e
+            .passkeys
+            .iter_mut()
+            .find(|p| p.id == entry.id)
+            .ok_or_else(|| AuthError::Invalid(format!("{id} has no passkey {}", entry.id)))?;
+        // counters only go up, whoever wrote last
+        let counter = p.counter.max(entry.counter);
+        *p = entry.clone();
+        p.counter = counter;
+        Ok(())
+    }
+
+    /// Remove operator `id`'s passkey whose credential id starts with `which` (at least 6
+    /// characters) or whose label is `which`; exactly one must match. The stamp is renewed:
+    /// their sessions end (a lost authenticator). Returns the removed credential's id.
+    pub fn remove_passkey(&mut self, id: &str, which: &str) -> Result<String, AuthError> {
+        let e = self.operator_mut(id)?;
+        let hits: Vec<usize> = e
+            .passkeys
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| (which.len() >= 6 && p.id.starts_with(which)) || p.label == which)
+            .map(|(i, _)| i)
+            .collect();
+        let [i] = hits.as_slice() else {
+            return Err(AuthError::Invalid(format!(
+                "{} of {id}'s passkeys match {which:?}: name one by its label or the start of its id (at least 6 characters)",
+                hits.len()
+            )));
+        };
+        let gone = e.passkeys.remove(*i);
+        e.stamp = keys::stamp()?;
+        e.updated_unix = now_unix();
+        Ok(gone.id)
+    }
+
+    /// A one-time invitation for operator `id` to register a passkey, valid `minutes`: the
+    /// code (returned once; the file keeps its digest). A new invitation replaces an old one.
+    pub fn invite_passkey(&mut self, id: &str, minutes: u64) -> Result<String, AuthError> {
+        let code = keys::token()?;
+        let e = self.operator_mut(id)?;
+        if e.scripted {
+            return Err(AuthError::Invalid(format!("{id} is a scripted credential: passkeys are a person's")));
+        }
+        e.passkey_invite = Some(Invite {
+            sha256: keys::digest_hex(&code),
+            expires_unix: now_unix().saturating_add(minutes.saturating_mul(60)),
+        });
+        Ok(code)
+    }
+
+    /// Whether `code` is operator `id`'s invitation, unexpired at `now_unix` (compared in
+    /// constant time). An unknown id costs the same.
+    pub fn invite_valid(&self, id: &str, code: &str, now_unix: u64) -> bool {
+        let want = keys::digest_hex(code);
+        match self.operators.get(id).and_then(|e| e.passkey_invite.as_ref()) {
+            Some(i) => ct_eq(i.sha256.as_bytes(), want.as_bytes()) && now_unix < i.expires_unix,
+            None => {
+                let _ = ct_eq(want.as_bytes(), want.as_bytes());
+                false
+            }
+        }
+    }
+
+    /// Use up operator `id`'s invitation.
+    pub fn take_invite(&mut self, id: &str) -> Result<(), AuthError> {
+        self.operator_mut(id)?.passkey_invite = None;
         Ok(())
     }
 
@@ -204,6 +339,11 @@ impl CredentialFile {
     /// renews the stamp (their sessions end).
     pub fn set_scripted(&mut self, id: &str, scripted: bool) -> Result<(), AuthError> {
         let e = self.operator_mut(id)?;
+        if scripted && !e.passkeys.is_empty() {
+            return Err(AuthError::Invalid(format!(
+                "{id} has passkeys, a person's: remove them first (passkey-remove) to make the credential a harness's"
+            )));
+        }
         if e.scripted != scripted {
             e.scripted = scripted;
             e.stamp = keys::stamp()?;

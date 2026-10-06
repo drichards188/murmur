@@ -13,6 +13,10 @@
 //!   `--anchors` the output says they were not.
 //! - `--space` also re-runs every logged space query (collect, cover) on that space segment
 //!   and compares; a different segment is a cache mismatch, reported separately.
+//! - Rules 10: every passkey login and step-up's assertion is verified against the public key
+//!   the run logged (its challenge recomputed from the run, the session and the act it was made
+//!   for, its counter counting up, each challenge answered once); the output counts them, and
+//!   for a study says whether its participant's every consequential act was by passkey.
 //! - Rules 5: a log whose `intent.resumed` events carry intents over from the previous run
 //!   is checked against that log: `--prev <file>`, or by default the file the events name in
 //!   the same directory.
@@ -220,10 +224,37 @@ fn main() -> ExitCode {
                 report.step_ups, report.stepped_signatures, report.stepped_acts, report.sessions_closed, report.logins_refused
             );
             println!(
-                "people (own password): {}; scripted (harness-held credential, not people): {}",
+                "people (own password or passkey): {}; scripted (harness-held credential, not people): {}",
                 list(&report.people),
                 list(&report.scripted)
             );
+            // rules 10: passkeys, each use verified against the public key the run logged
+            if report.passkey_logins + report.passkey_step_ups + report.passkeys_registered + report.passkeys_removed > 0 {
+                println!(
+                    "passkeys: {} login(s) and {} step-up(s) by passkey, each assertion verified against the run's logged key and bound to its act; {} step-up(s) by password; {} registered and {} removed during the run",
+                    report.passkey_logins,
+                    report.passkey_step_ups,
+                    report.password_step_ups,
+                    report.passkeys_registered,
+                    report.passkeys_removed
+                );
+            }
+            if let Some(s) = &report.study {
+                let verdict = if report.study_evidence() {
+                    "every consequential act of theirs by passkey"
+                } else if s.password_step_up.is_some() {
+                    "PASSWORD STEP-UPS ALLOWED by the override: a pilot, NOT evidence about people"
+                } else {
+                    "NOT evidence about people (see the counts)"
+                };
+                println!(
+                    "study: participant {} ({} act(s) by passkey, {} by password{}): {verdict}",
+                    s.participant,
+                    s.passkey_acts,
+                    s.password_acts,
+                    s.password_step_up.as_ref().map(|w| format!("; override: {w}")).unwrap_or_default()
+                );
+            }
             // a rewritten log replays too: only its anchors tell
             if args.anchors.is_none() {
                 println!(

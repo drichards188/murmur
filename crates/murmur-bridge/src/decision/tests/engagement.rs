@@ -63,15 +63,41 @@ pub(super) fn engage_rig_auth_policy(
     auth: murmur_decide::AuthMode,
     tweak: impl FnOnce(&mut Policy),
 ) -> Erig {
-    engage_rig_clocked(on, audit_path, auth, tweak, EngineClock::Manual)
+    engage_rig_passkeys(on, audit_path, auth, tweak, None, None)
 }
 
-/// [`engage_rig_auth_policy`] with the engine on `engine_clock`.
+/// [`engage_rig_auth_policy`] with (rules 10) the run's relying party and passkeys, and a study.
+pub(super) fn engage_rig_passkeys(
+    on: Option<(Arc<World>, Arc<Tracks>)>,
+    audit_path: PathBuf,
+    auth: murmur_decide::AuthMode,
+    tweak: impl FnOnce(&mut Policy),
+    passkeys: Option<murmur_decide::PasskeyRoster>,
+    study: Option<murmur_decide::Study>,
+) -> Erig {
+    engage_rig_full(on, audit_path, auth, tweak, passkeys, study, EngineClock::Manual)
+}
+
+/// [`engage_rig_auth_policy`] with the engine on `engine_clock` (murmur-dup).
 pub(super) fn engage_rig_clocked(
     on: Option<(Arc<World>, Arc<Tracks>)>,
     audit_path: PathBuf,
     auth: murmur_decide::AuthMode,
     tweak: impl FnOnce(&mut Policy),
+    engine_clock: EngineClock,
+) -> Erig {
+    engage_rig_full(on, audit_path, auth, tweak, None, None, engine_clock)
+}
+
+/// The engagement rig: passkeys and a study (rules 10), the engine on `engine_clock`.
+#[allow(clippy::too_many_arguments)]
+fn engage_rig_full(
+    on: Option<(Arc<World>, Arc<Tracks>)>,
+    audit_path: PathBuf,
+    auth: murmur_decide::AuthMode,
+    tweak: impl FnOnce(&mut Policy),
+    passkeys: Option<murmur_decide::PasskeyRoster>,
+    study: Option<murmur_decide::Study>,
     engine_clock: EngineClock,
 ) -> Erig {
     let root = root();
@@ -125,6 +151,8 @@ pub(super) fn engage_rig_clocked(
             engage_operators: vec![OperatorId::new("op-2"), OperatorId::new("op-3")],
             auth,
             tracks: Some(tracks.clone()),
+            passkeys,
+            study,
         },
     )
     .expect("engine");

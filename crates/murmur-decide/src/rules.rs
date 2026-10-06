@@ -214,7 +214,23 @@ pub enum UnknownEndurance {
 /// ([`QUEUE_FOLLOWUPS_SINCE`]): the queue's follow-ups to rules 5 and 6. Version 8 binds
 /// every human act to an authenticated person ([`OPERATOR_AUTH_SINCE`]). Version 9
 /// ([`RULE_ID_SINCE`]): rule-based identification with human review ([`crate::ident`]).
-pub const RULES_VERSION: u32 = RULE_ID_SINCE;
+/// Version 10 ([`PASSKEY_SINCE`]): passkeys (WebAuthn) for logins and step-ups
+/// ([`crate::passkey`]).
+pub const RULES_VERSION: u32 = PASSKEY_SINCE;
+
+/// The rules version from which a login or a step-up may be a passkey's (murmur-437): the
+/// run logs its relying party and its operators' passkeys as public keys (the roster's
+/// `passkeys`), each use logs the assertion with what it authorizes (`passkey` on
+/// `session.opened` and `operator.action step_up`, `auth: passkey`), its challenge derived from
+/// the run, the session and the act, and the act that quotes a passkey step-up must be the
+/// act it was made for; registrations and removals during the run are logged
+/// (`passkey.registered`, `passkey.removed`); the policy may require passkey step-ups
+/// (`[approval] step_up_factor`) and say how operators sign in (`login_factor`); a study run
+/// names its participant (the roster's `study`) and requires the participant's passkey at
+/// every step-up unless an explicit override, logged, allows a password. Every gate of that
+/// change reads this constant, never a literal: another change taking 10 first renumbers it
+/// in this one line.
+pub const PASSKEY_SINCE: u32 = 10;
 
 /// The rules version from which identification is the engine's ledger and may be made by
 /// rule ([`crate::ident`]): operators' declarations, confirmations and revocations go through
@@ -253,7 +269,12 @@ pub const OPERATOR_AUTH_SINCE: u32 = 8;
 /// A renamed or removed key stays an optional field of its own, so an old log both parses
 /// and re-serializes byte for byte; `run.started` records it (absent: 1), and replay checks
 /// that the logged policy uses no key of a later schema ([`crate::EngageRules::schema_keys`]).
-pub const POLICY_SCHEMA: u32 = RULE_ID_SCHEMA_SINCE;
+pub const POLICY_SCHEMA: u32 = PASSKEY_SCHEMA_SINCE;
+
+/// The policy schema that adds `[approval] step_up_factor` and `login_factor` (with
+/// [`PASSKEY_SINCE`]): named so that a branch merging beside another schema bump renumbers it
+/// in one line.
+pub const PASSKEY_SCHEMA_SINCE: u32 = 7;
 
 /// The policy schema that added a tier's `step_up` key and `[approval] step_up_acts` (with
 /// [`OPERATOR_AUTH_SINCE`]).
@@ -328,6 +349,11 @@ impl RulesConfig {
     /// Rules 9: identification is the engine's ledger (and may be made by rule).
     pub fn rule_id(&self) -> bool {
         self.rules_version >= RULE_ID_SINCE
+    }
+
+    /// Rules 10: logins and step-ups may be passkeys' ([`crate::passkey`]).
+    pub fn passkeys(&self) -> bool {
+        self.rules_version >= PASSKEY_SINCE
     }
 
     /// `[rules.engage]`, or its defaults.

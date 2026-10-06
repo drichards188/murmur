@@ -59,14 +59,18 @@
 //! ```
 //!
 //! A step-up (the signer's credential re-entered at the moment of signing, rules 8) is a
-//! [`StepUp`]: only [`crate::Engine::step_up`] makes one, after logging it under the session
-//! it is for, and a signature consumes it. It can't be forged, copied or read from JSON
-//! either, so a signature can't quote a step-up it did not just make:
+//! [`StepUp`]: only [`crate::Engine::step_up`] (or, rules 10, a passkey's,
+//! [`crate::Engine::step_up_passkey`]) makes one, after logging it under the session it is
+//! for, and a signature consumes it. It can't be forged, copied or read from JSON either, so
+//! a signature can't quote a step-up it did not just make:
 //!
 //! ```compile_fail,E0451
 //! // Forging a step-up by struct literal: the fields are private.
-//! use murmur_decide::{OperatorId, SessionId, StepUp, Time};
-//! let forged = StepUp { operator: OperatorId::new("mallory"), session: SessionId(1), seq: 7, t: Time(0) };
+//! use murmur_decide::{AuthMethod, OperatorId, SessionId, StepUp, Time};
+//! let forged = StepUp {
+//!     operator: OperatorId::new("mallory"), session: SessionId(1), seq: 7, t: Time(0),
+//!     factor: AuthMethod::Passkey, session_method: None, purpose: None,
+//! };
 //! ```
 //!
 //! ```compile_fail,E0277
@@ -177,10 +181,11 @@ impl AuthMode {
     }
 
     /// Whether a session may be opened by `method` in this mode: a credentials run takes a
-    /// person's password and a machine-held (scripted) credential, a dev run asserted ids.
+    /// person's password or (rules 10) passkey and a machine-held (scripted) credential, a dev
+    /// run asserted ids.
     pub fn admits(self, method: AuthMethod) -> bool {
         match self {
-            AuthMode::Credentials => matches!(method, AuthMethod::Password | AuthMethod::Scripted),
+            AuthMode::Credentials => matches!(method, AuthMethod::Password | AuthMethod::Passkey | AuthMethod::Scripted),
             AuthMode::Dev => method == AuthMethod::Asserted,
         }
     }
@@ -205,10 +210,31 @@ pub enum AuthMethod {
     Scripted,
     /// The operator's id as the request named it, unchecked (dev mode, scenarios, tests).
     Asserted,
+    /// Rules 10: a person's passkey, a WebAuthn assertion with user verification the bridge
+    /// checked and the engine verified against the public key the run logged (the use is
+    /// logged with it: `passkey`).
+    Passkey,
+}
+
+impl AuthMethod {
+    /// A person's credential (a password or a passkey), not a harness's or an asserted name.
+    pub fn is_person(self) -> bool {
+        matches!(self, AuthMethod::Password | AuthMethod::Passkey)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AuthMethod::Password => "password",
+            AuthMethod::Scripted => "scripted",
+            AuthMethod::Asserted => "asserted",
+            AuthMethod::Passkey => "passkey",
+        }
+    }
 }
 
 /// Proof that the signer re-entered their credential just now (rules 8, a credentials run):
-/// made only by [`crate::Engine::step_up`], which logs it (`operator.action step_up`) under
+/// made only by [`crate::Engine::step_up`] (rules 10: or [`crate::Engine::step_up_passkey`],
+/// with the assertion and what it is for), which logs it (`operator.action step_up`) under
 /// the session it is for, and consumed by the one signature that quotes it. Not `Clone`, not
 /// `Default`, not `Deserialize`, no public fields. The engine refuses it for another session
 /// or once it is older than [`STEP_UP_MAX_AGE_MS`]; the signature records the step-up's
@@ -219,6 +245,13 @@ pub struct StepUp {
     session: SessionId,
     seq: u64,
     t: Time,
+    /// Rules 10: how the credential was re-entered (a password, a passkey, a scripted
+    /// credential), and how its session was opened.
+    factor: AuthMethod,
+    session_method: Option<AuthMethod>,
+    /// Rules 10, a passkey's: the act its assertion was made for (the act quoting it must be
+    /// that act).
+    purpose: Option<crate::passkey::StepUpFor>,
 }
 
 /// The oldest a step-up may be when the signature quoting it is checked. The bridge checks
@@ -226,13 +259,39 @@ pub struct StepUp {
 pub const STEP_UP_MAX_AGE_MS: i64 = 10_000;
 
 impl StepUp {
-    pub(crate) fn mint(operator: OperatorId, session: SessionId, seq: u64, t: Time) -> StepUp {
+    pub(crate) fn mint(
+        operator: OperatorId,
+        session: SessionId,
+        seq: u64,
+        t: Time,
+        factor: AuthMethod,
+        session_method: Option<AuthMethod>,
+        purpose: Option<crate::passkey::StepUpFor>,
+    ) -> StepUp {
         StepUp {
             operator,
             session,
             seq,
             t,
+            factor,
+            session_method,
+            purpose,
         }
+    }
+
+    /// How the credential was re-entered.
+    pub fn factor(&self) -> AuthMethod {
+        self.factor
+    }
+
+    /// How the session it was made in was opened.
+    pub fn session_method(&self) -> Option<AuthMethod> {
+        self.session_method
+    }
+
+    /// A passkey step-up's act.
+    pub fn purpose(&self) -> Option<&crate::passkey::StepUpFor> {
+        self.purpose.as_ref()
     }
 
     pub fn operator(&self) -> &OperatorId {
@@ -280,6 +339,15 @@ pub struct Roster {
     /// engine of rules 8 or later always logs it, `dev` when none was given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<AuthMode>,
+    /// Rules 10, a credentials run: the WebAuthn relying party and every operator's passkeys
+    /// when the run started, as public keys (replay verifies each logged assertion against
+    /// them). Absent in a dev run and before rules 10.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passkeys: Option<Box<crate::passkey::PasskeyRoster>>,
+    /// Rules 10: a study run's participant and, only by explicit choice, the override that
+    /// lets them step up with a password (such a run is never evidence).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub study: Option<Box<crate::passkey::Study>>,
 }
 
 impl Roster {
@@ -291,6 +359,8 @@ impl Roster {
             operators,
             engage,
             auth: None,
+            passkeys: None,
+            study: None,
         };
         r.validate()?;
         Ok(r)
@@ -301,6 +371,72 @@ impl Roster {
     pub fn with_auth(mut self, mode: AuthMode) -> Roster {
         self.auth = Some(mode);
         self
+    }
+
+    /// Rules 10: the same roster with the relying party and the operators' passkeys.
+    #[must_use]
+    pub fn with_passkeys(mut self, passkeys: crate::passkey::PasskeyRoster) -> Roster {
+        self.passkeys = Some(Box::new(passkeys));
+        self
+    }
+
+    /// Rules 10: the same roster for a study run.
+    #[must_use]
+    pub fn with_study(mut self, study: crate::passkey::Study) -> Roster {
+        self.study = Some(Box::new(study));
+        self
+    }
+
+    /// Rules 10: why the passkeys and the study this roster names could not be a run's, if
+    /// they couldn't (`policy_factor`: the policy's step-up factor). Checked by the engine at
+    /// start and by replay on the logged roster.
+    pub fn validate_passkeys(&self, policy_factor: crate::policy::StepUpFactor) -> Result<(), String> {
+        let credentials = self.auth == Some(AuthMode::Credentials);
+        if let Some(p) = &self.passkeys {
+            if !credentials {
+                return Err("passkeys on the roster of a run that does not authenticate with credentials".into());
+            }
+            if p.rp_id.trim().is_empty() || p.rp_id.parse::<std::net::IpAddr>().is_ok() {
+                return Err(format!("relying party id {:?}: a domain (WebAuthn takes no IP address)", p.rp_id));
+            }
+            if p.origins.is_empty() {
+                return Err("passkeys without an origin they may be used from".into());
+            }
+            let mut ids = std::collections::BTreeSet::new();
+            for k in &p.keys {
+                if !self.operators.contains(&k.operator) {
+                    return Err(format!("a passkey of {}, who is not on the roster", k.operator));
+                }
+                if !ids.insert(k.id.as_str()) {
+                    return Err(format!("passkey {} listed twice", k.id));
+                }
+                crate::passkey::check_key(&k.public_key).map_err(|e| format!("passkey {}: {e}", k.id))?;
+            }
+        }
+        if let Some(s) = &self.study {
+            if !credentials {
+                return Err("a study run authenticates with credentials".into());
+            }
+            if !self.operators.contains(&s.participant) {
+                return Err(format!("the study's participant {} is not on the roster", s.participant));
+            }
+            if s.password_step_up.is_none() {
+                if policy_factor != crate::policy::StepUpFactor::Passkey {
+                    return Err("a study run requires passkey step-ups ([approval] step_up_factor = \"passkey\") unless its override allows a password".into());
+                }
+                let has = self
+                    .passkeys
+                    .as_ref()
+                    .is_some_and(|p| p.keys.iter().any(|k| k.operator == s.participant));
+                if !has {
+                    return Err(format!(
+                        "the study's participant {} has no passkey: register one before the run (or allow password step-ups, explicitly)",
+                        s.participant
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Why this roster could not have been configured, if it couldn't.

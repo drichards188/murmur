@@ -693,6 +693,9 @@ struct DeclareBody {
     /// consequential (`[approval] step_up_acts`); checked and dropped, never logged.
     #[serde(default)]
     password: Option<String>,
+    /// Rules 10: or a passkey's assertion made for declaring this track hostile (logged).
+    #[serde(default)]
+    passkey: Option<serde_json::Value>,
     /// Rules 9: the review flag this declaration answers (in force on the track).
     #[serde(default)]
     flag: Option<u64>,
@@ -716,10 +719,11 @@ async fn declare(
     // checked before anything changes
     let hostile = body.affiliation == Affiliation::Hostile;
     let needed = hostile && api.decision.steps_up(murmur_decide::StepUpAct::DeclareHostile);
-    if body.password.is_some() && !hostile {
-        return error(StatusCode::UNPROCESSABLE_ENTITY, "a password goes with a hostile declaration (a step-up) only");
+    let proof = crate::auth::Proof { password: body.password, passkey: body.passkey };
+    if proof.is_some() && !hostile {
+        return error(StatusCode::UNPROCESSABLE_ENTITY, "a password or passkey goes with a hostile declaration (a step-up) only");
     }
-    let step = match api.auth.step_up(&op, &format!("declare {id} hostile"), body.password, needed).await {
+    let step = match api.auth.step_up(&op, &format!("declare {id} hostile"), proof, needed).await {
         Ok(s) => s,
         Err(r) => return *r,
     };
@@ -752,6 +756,9 @@ struct ConfirmBody {
     /// `confirm_declaration` (off by default); checked and dropped, never logged.
     #[serde(default)]
     password: Option<String>,
+    /// Rules 10: or a passkey's assertion made for this confirmation (logged).
+    #[serde(default)]
+    passkey: Option<serde_json::Value>,
 }
 
 /// Rules 9: `POST /api/tracks/{id}/confirm`: any operator confirms the rule declaration in
@@ -762,13 +769,14 @@ async fn confirm(
     headers: HeaderMap,
     body: Option<Json<ConfirmBody>>,
 ) -> Response {
-    let body = body.map(|Json(b)| b).unwrap_or(ConfirmBody { password: None });
+    let body = body.map(|Json(b)| b).unwrap_or(ConfirmBody { password: None, passkey: None });
     let op = match api.auth.actor(&headers, true) {
         Ok(op) => op,
         Err(e) => return error(StatusCode::from_u16(e.status).unwrap_or(StatusCode::FORBIDDEN), e.detail),
     };
     let needed = api.decision.steps_up(murmur_decide::StepUpAct::ConfirmDeclaration);
-    let step = match api.auth.step_up(&op, &format!("confirm {id}'s declaration"), body.password, needed).await {
+    let proof = crate::auth::Proof { password: body.password, passkey: body.passkey };
+    let step = match api.auth.step_up(&op, &format!("confirm {id}'s declaration"), proof, needed).await {
         Ok(s) => s,
         Err(r) => return *r,
     };

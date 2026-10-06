@@ -80,6 +80,17 @@
 //!   operator it lists; an intent is carried over only from a run that authenticated alike.
 //!   [`ReplayReport::authenticated`] is what evaluation reads before counting a log's human
 //!   decisions, with the log's anchors checked and only its people's acts.
+//! - passkeys (rules 10, [`crate::rules::PASSKEY_SINCE`]): the roster's relying party and keys
+//!   are ones a run could start with (a credentials run, a domain, keys on the curve, a study's
+//!   participant with a passkey and a passkey policy unless overridden); every passkey login
+//!   and step-up's assertion verifies ([`crate::passkey::verify`]) against the key the run
+//!   logged or registered since (not removed, the operator's own), on the challenge recomputed
+//!   from the first line's hash, the session, what it was for, the nonce and the issue time,
+//!   each nonce once, within [`crate::passkey::CHALLENGE_TTL_MS`], its counter counting up; an
+//!   act quoting a passkey step-up is the act it was made for, and where the policy asks a
+//!   person for a passkey their quoted step-up is one; a registration through a session quotes
+//!   a password step-up. [`ReplayReport::study_evidence`] says whether a study's participant
+//!   signed every consequential act by passkey.
 //!
 //! **Space recomputation.** [`replay_str_with_space`] also re-runs every logged space query
 //! on the segment given. If that segment is the one the query ran on (same
@@ -127,7 +138,10 @@ use crate::ids::IntentId;
 use crate::intent::{IntentSpec, Source, State, Task, TaskKind, Transition, next_state};
 use crate::policy::{self, Policy, PolicyDecision, Tier};
 use crate::queue::{self as queue, Basis, CarriedApproval, OpenIntent, Verdict};
-use crate::rules::{self, CheckResult, OPERATOR_AUTH_SINCE, RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE, STEP_UP_SCHEMA_SINCE};
+use crate::rules::{
+    self, CheckResult, OPERATOR_AUTH_SINCE, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE,
+    STEP_UP_SCHEMA_SINCE,
+};
 use crate::space::{ScenarioMap, SpaceAnswer, SpaceOracle, SpaceOrder};
 use crate::time::Time;
 use crate::world::{LoggedInputs, LoggedSpace, WorldSnapshot};
@@ -244,6 +258,29 @@ pub struct ReplayReport {
     /// evidence about people.
     pub people: BTreeSet<OperatorId>,
     pub scripted: BTreeSet<OperatorId>,
+    /// Rules 10: logins by passkey, people's step-ups by passkey and by password, and passkeys
+    /// registered and removed while the run was up. Every passkey use was verified against
+    /// the public key the run logged.
+    pub passkey_logins: usize,
+    pub passkey_step_ups: usize,
+    pub password_step_ups: usize,
+    pub passkeys_registered: usize,
+    pub passkeys_removed: usize,
+    /// Rules 10: a study run, its participant and how their consequential acts were stepped up.
+    pub study: Option<StudyReport>,
+}
+
+/// Rules 10: what a study run's log shows of its participant.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct StudyReport {
+    pub participant: OperatorId,
+    /// The explicit override that allowed password step-ups, and its reason: a run with it is
+    /// never evidence.
+    pub password_step_up: Option<String>,
+    /// The participant's signatures and other stepped-up acts, by the factor of the step-up
+    /// each quoted.
+    pub passkey_acts: usize,
+    pub password_acts: usize,
 }
 
 impl ReplayReport {
@@ -261,6 +298,17 @@ impl ReplayReport {
     /// too: only its anchors tell, `murmur-replay --anchors`, which a claim needs as well).
     pub fn authenticated(&self) -> bool {
         self.ok() && self.auth == Some(AuthMode::Credentials)
+    }
+
+    /// Rules 10: whether a study run's log is evidence about its participant: it is
+    /// [`Self::authenticated`], a study, without the password override, its participant
+    /// signed in as a person, and every consequential act of theirs quoted a passkey step-up.
+    /// (The anchors are still the caller's to check: `murmur-replay --anchors`.)
+    pub fn study_evidence(&self) -> bool {
+        self.authenticated()
+            && self.study.as_ref().is_some_and(|s| {
+                s.password_step_up.is_none() && s.password_acts == 0 && self.people.contains(&s.participant)
+            })
     }
 
     /// Every logged space query was re-run on the same segment and reproduced.
@@ -995,6 +1043,14 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (OPERATOR_AUTH_SINCE, "\"action\":\"session.closed\"", "a session's end"),
     (OPERATOR_AUTH_SINCE, "\"type\":\"auth.refused\"", "a refused login"),
     (OPERATOR_AUTH_SINCE, "\"step_up_acts\":", "acts other than signatures that step up"),
+    (PASSKEY_SINCE, "\"auth\":\"passkey\"", "a passkey login or step-up"),
+    (PASSKEY_SINCE, "\"passkey\":{", "a passkey assertion"),
+    (PASSKEY_SINCE, "\"passkeys\":{", "the run's relying party and passkeys"),
+    (PASSKEY_SINCE, "\"study\":{", "a study run's participant"),
+    (PASSKEY_SINCE, "\"type\":\"passkey.registered\"", "a passkey registered"),
+    (PASSKEY_SINCE, "\"type\":\"passkey.removed\"", "a passkey removed"),
+    (PASSKEY_SINCE, "\"step_up_factor\":", "a policy's step-up factor"),
+    (PASSKEY_SINCE, "\"login_factor\":", "a policy's login factor"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.
@@ -1182,6 +1238,31 @@ fn check_claims<S: AsRef<str>>(r: &mut ReplayReport, events: &[Event], lines: &[
             format!("schema {schema}"),
         );
     }
+    // rules 10: the step-up and login factors are schema 7
+    for (set, key) in [
+        (policy.approval.step_up_factor.is_some(), "approval.step_up_factor"),
+        (policy.approval.login_factor.is_some(), "approval.login_factor"),
+    ] {
+        if set && schema < PASSKEY_SCHEMA_SINCE {
+            bad(
+                r,
+                first,
+                None,
+                "logged policy uses a key of a later policy schema than it claims",
+                format!("{key} (schema {PASSKEY_SCHEMA_SINCE})"),
+                format!("schema {schema}"),
+            );
+        }
+    }
+    // rules 10: the passkeys and the study on the roster are ones a run could have started with
+    if version >= PASSKEY_SINCE
+        && let Some(listed) = roster
+    {
+        let factor = policy.approval.step_up_factor.unwrap_or(policy::StepUpFactor::Password);
+        if let Err(why) = listed.validate_passkeys(factor) {
+            bad(r, first, None, "logged passkeys or study could not be a run's", why, String::new());
+        }
+    }
     if let Some(e) = &policy.rules.engage {
         for (since, key) in e.schema_keys() {
             if since > schema {
@@ -1260,6 +1341,12 @@ fn replay_inner<S: AsRef<str>>(
     let mut ident = crate::ident::Ledger::default();
     let mut ident_due: Option<(u64, IdentDue)> = None;
     let mut revoke_due: Option<RevokeDue> = None;
+    // rules 10: the passkeys the log knows (the roster's, registered since), each challenge's
+    // nonce once answered, and the hash of the first line every challenge binds to
+    let mut passkeys = PasskeysSeen {
+        run_hash: hashes.first().cloned().unwrap_or_default(),
+        ..PasskeysSeen::default()
+    };
 
     for (i, e) in events.iter().enumerate() {
         let want_prev = if i == 0 {
@@ -1393,6 +1480,23 @@ fn replay_inner<S: AsRef<str>>(
                 p.rules.rules_version = version;
                 // rules 9: what the rules read from `[identification]`
                 p.sync();
+                // rules 10: the relying party and the passkeys the run started with
+                if p.rules.passkeys()
+                    && let Some(pk) = listed.as_ref().and_then(|ro| ro.passkeys.as_ref())
+                {
+                    passkeys.rp = Some((pk.rp_id.clone(), pk.origins.clone()));
+                    for k in &pk.keys {
+                        passkeys.keys.insert(k.id.clone(), (k.clone(), false));
+                    }
+                }
+                if let Some(s) = listed.as_ref().and_then(|ro| ro.study.as_ref()) {
+                    r.study = Some(StudyReport {
+                        participant: s.participant.clone(),
+                        password_step_up: s.password_step_up.clone(),
+                        passkey_acts: 0,
+                        password_acts: 0,
+                    });
+                }
                 policy = Some(p);
                 areas = None;
                 if let Some(a) = a {
@@ -1716,7 +1820,19 @@ fn replay_inner<S: AsRef<str>>(
                     continue;
                 };
                 check_signature(&mut r, e, *intent, tr, by, *session, &sessions);
-                check_step_up(&mut r, e, Some(*intent), tr.step_up, by, *session, *step_up, &mut step_ups, StepUse::Signature);
+                check_step_up(
+                    &mut r,
+                    e,
+                    Some(*intent),
+                    tr.step_up,
+                    by,
+                    *session,
+                    *step_up,
+                    &mut step_ups,
+                    StepUse::Signature,
+                    &sign_expected(*intent, token.as_deref()),
+                    policy.as_ref(),
+                );
                 check_self_accepted(&mut r, e, *intent, tr, by, *self_accepted);
                 let want = (u32::try_from(tr.signers.len()).unwrap_or(u32::MAX) + 1, tr.approvers);
                 if (*n, *of) != want || *n >= *of {
@@ -1868,7 +1984,19 @@ fn replay_inner<S: AsRef<str>>(
                     r.self_approvals += 1;
                 }
                 check_signature(&mut r, e, *intent, tr, by, *session, &sessions);
-                check_step_up(&mut r, e, Some(*intent), tr.step_up, by, *session, *step_up, &mut step_ups, StepUse::Signature);
+                check_step_up(
+                    &mut r,
+                    e,
+                    Some(*intent),
+                    tr.step_up,
+                    by,
+                    *session,
+                    *step_up,
+                    &mut step_ups,
+                    StepUse::Signature,
+                    &sign_expected(*intent, token.as_deref()),
+                    policy.as_ref(),
+                );
                 check_signed(&mut r, e, *intent, tr, by, *session, snapshot, token, supersedes, *checked_t, &mut issued, policy.as_ref());
                 if tr.spec.kind() == TaskKind::Engage {
                     tr.last_picture_t = snapshot.as_ref().map(|s| s.t);
@@ -2374,6 +2502,71 @@ fn replay_inner<S: AsRef<str>>(
                 }
                 r.logins_refused += 1;
             }
+            EventBody::PasskeyRegistered { key, via, session, step_up } => {
+                // rules 10: a passkey registered while the run was up: an operator it lists, a
+                // credential it does not know yet, a P-256 key; through the operator's own
+                // session (a person's) quoting the credential they re-entered for it, or
+                // through an invitation (no session, no step-up)
+                let passkey_rules = policy.as_ref().is_some_and(|p| p.rules.passkeys());
+                if !passkey_rules || r.auth != Some(AuthMode::Credentials) || passkeys.rp.is_none() {
+                    bad(&mut r, e, None, "a passkey registered outside a credentials run of rules 10 with a relying party", String::new(), String::new());
+                }
+                if !roster.as_ref().is_some_and(|ro| ro.operators.contains(&key.operator)) {
+                    bad(&mut r, e, None, "a passkey registered for an operator the run does not list", key.operator.to_string(), String::new());
+                }
+                if passkeys.keys.contains_key(&key.id) {
+                    bad(&mut r, e, None, "a passkey registered twice", key.id.clone(), String::new());
+                }
+                if let Err(why) = crate::passkey::check_key(&key.public_key) {
+                    bad(&mut r, e, None, "a registered passkey that is not a P-256 key", why, String::new());
+                }
+                match (via.as_str(), session) {
+                    ("session", Some(s)) => {
+                        check_operator(&mut r, e, &key.operator, *s, &sessions, "a passkey registration");
+                        if !methods.get(s).copied().is_some_and(AuthMethod::is_person) {
+                            bad(&mut r, e, None, "a passkey registered through a session that is not a person's", s.0.to_string(), String::new());
+                        }
+                        check_step_up(
+                            &mut r,
+                            e,
+                            None,
+                            true,
+                            &key.operator,
+                            *s,
+                            *step_up,
+                            &mut step_ups,
+                            StepUse::Registration,
+                            &Expected::Registration,
+                            policy.as_ref(),
+                        );
+                    }
+                    ("invitation", None) if step_up.is_none() => {}
+                    _ => bad(
+                        &mut r,
+                        e,
+                        None,
+                        "a registration is through a session (quoting its step-up) or an invitation (neither)",
+                        json(&(via, session, step_up)),
+                        String::new(),
+                    ),
+                }
+                passkeys.keys.insert(key.id.clone(), (key.clone(), false));
+                r.passkeys_registered += 1;
+            }
+            EventBody::PasskeyRemoved { operator, credential, .. } => {
+                match passkeys.keys.get_mut(credential) {
+                    Some((k, removed)) if &k.operator == operator && !*removed => *removed = true,
+                    _ => bad(
+                        &mut r,
+                        e,
+                        None,
+                        "a removal of a passkey the run does not hold for that operator",
+                        credential.clone(),
+                        operator.to_string(),
+                    ),
+                }
+                r.passkeys_removed += 1;
+            }
             EventBody::OperatorAction {
                 operator,
                 session,
@@ -2382,12 +2575,52 @@ fn replay_inner<S: AsRef<str>>(
                 grants,
                 auth,
                 step_up,
+                passkey: proof,
             } => {
                 let authenticated = policy
                     .as_ref()
                     .is_some_and(|p| p.rules.rules_version >= OPERATOR_AUTH_SINCE);
+                let passkey_rules = policy.as_ref().is_some_and(|p| p.rules.passkeys());
                 let run_auth = r.auth;
+                // rules 10: an assertion goes with a passkey login or step-up, and only there
+                let passkey_act = matches!(action.as_str(), "session.opened" | "step_up") && *auth == Some(AuthMethod::Passkey);
+                if proof.is_some() != passkey_act {
+                    bad(
+                        &mut r,
+                        e,
+                        None,
+                        "a passkey assertion logged without a passkey login or step-up, or one without its assertion",
+                        json(&(action, auth, proof.is_some())),
+                        String::new(),
+                    );
+                }
                 if action == "session.opened" {
+                    // rules 10: a passkey login's assertion, verified against the run's key
+                    if let Some(u) = proof {
+                        if !passkey_rules {
+                            bad(&mut r, e, None, "a passkey login under rules that have none", String::new(), String::new());
+                        } else if u.purpose != crate::passkey::StepUpFor::Login {
+                            bad(&mut r, e, None, "a login's assertion made for another act", u.purpose.describe(), "a login".into());
+                        } else if let Err(why) = passkeys.use_once(operator, None, e.t, u) {
+                            bad(&mut r, e, None, &format!("passkey login: {why}"), u.credential.clone(), String::new());
+                        }
+                        r.passkey_logins += 1;
+                    }
+                    // rules 10: how a person may sign in (`[approval] login_factor`)
+                    if passkey_rules
+                        && run_auth == Some(AuthMode::Credentials)
+                        && let (Some(method), Some(p)) = (*auth, policy.as_ref())
+                        && !p.login_factor().admits(method)
+                    {
+                        bad(
+                            &mut r,
+                            e,
+                            None,
+                            "a session opened by a method the policy's login_factor does not admit",
+                            method.as_str().into(),
+                            p.login_factor().as_str().into(),
+                        );
+                    }
                     let grants = grants.unwrap_or_default();
                     // only operators the run was configured with, engagement authority only
                     // for its engagement operators (rules 4 on: before, no roster was logged)
@@ -2409,7 +2642,7 @@ fn replay_inner<S: AsRef<str>>(
                             (Some(mode), Some(method)) if mode.admits(method) => {
                                 methods.insert(*session, method);
                                 match method {
-                                    AuthMethod::Password => r.people.insert(operator.clone()),
+                                    AuthMethod::Password | AuthMethod::Passkey => r.people.insert(operator.clone()),
                                     AuthMethod::Scripted => r.scripted.insert(operator.clone()),
                                     AuthMethod::Asserted => false,
                                 };
@@ -2458,13 +2691,20 @@ fn replay_inner<S: AsRef<str>>(
                         "step_up" => {
                             // a credential re-entered: only a credentials run has one, and it is
                             // the kind the session was opened with (a scripted operator's
-                            // step-up is scripted too: never a person's)
+                            // step-up is scripted too: never a person's); rules 10: a person
+                            // (signed in by password or passkey) re-enters their password or
+                            // uses their passkey
                             let opened = methods.get(session).copied();
-                            if run_auth != Some(AuthMode::Credentials)
-                                || auth.is_none()
-                                || *auth != opened
-                                || *auth == Some(AuthMethod::Asserted)
-                            {
+                            let by_kind = if passkey_rules {
+                                match (opened, *auth) {
+                                    (Some(AuthMethod::Scripted), Some(AuthMethod::Scripted)) => true,
+                                    (Some(o), Some(AuthMethod::Password | AuthMethod::Passkey)) => o.is_person(),
+                                    _ => false,
+                                }
+                            } else {
+                                auth.is_some() && *auth == opened && *auth != Some(AuthMethod::Asserted)
+                            };
+                            if run_auth != Some(AuthMode::Credentials) || !by_kind {
                                 bad(
                                     &mut r,
                                     e,
@@ -2474,9 +2714,33 @@ fn replay_inner<S: AsRef<str>>(
                                     json(&(AuthMode::Credentials, opened)),
                                 );
                             }
+                            // rules 10: a passkey's assertion, verified against the run's key for
+                            // this session and what it was made for
+                            if let Some(u) = proof {
+                                if !passkey_rules {
+                                    bad(&mut r, e, None, "a passkey step-up under rules that have none", String::new(), String::new());
+                                } else if u.purpose == crate::passkey::StepUpFor::Login {
+                                    bad(&mut r, e, None, "a login's assertion logged as a step-up", u.credential.clone(), String::new());
+                                } else if let Err(why) = passkeys.use_once(operator, Some(*session), e.t, u) {
+                                    bad(&mut r, e, None, &format!("passkey step-up: {why}"), u.credential.clone(), String::new());
+                                }
+                            }
+                            match *auth {
+                                Some(AuthMethod::Passkey) => r.passkey_step_ups += 1,
+                                Some(AuthMethod::Password) => r.password_step_ups += 1,
+                                _ => {}
+                            }
                             step_ups.insert(
                                 e.seq,
-                                StepUpSeen { session: *session, operator: operator.clone(), t: e.t, used: StepUse::Unused },
+                                StepUpSeen {
+                                    session: *session,
+                                    operator: operator.clone(),
+                                    t: e.t,
+                                    used: StepUse::Unused,
+                                    factor: *auth,
+                                    person: opened.is_some_and(AuthMethod::is_person),
+                                    purpose: proof.as_ref().map(|u| u.purpose.clone()),
+                                },
                             );
                             r.step_ups += 1;
                         }
@@ -2507,6 +2771,8 @@ fn replay_inner<S: AsRef<str>>(
                                 *step_up,
                                 &mut step_ups,
                                 StepUse::Declaration,
+                                &Expected::Unbound,
+                                policy.as_ref(),
                             );
                         }
                         _ => {}
@@ -3032,6 +3298,11 @@ fn replay_inner<S: AsRef<str>>(
                     *step_up,
                     &mut step_ups,
                     StepUse::Acceptances { intent: *intent, last_seq: e.seq },
+                    &Expected::Acceptance {
+                        intent: *intent,
+                        vehicle: crate::passkey::AcceptedVehicle { uid: uid.clone(), since: *since },
+                    },
+                    policy.as_ref(),
                 );
                 let Some(tr) = intents.get_mut(intent) else {
                     bad(&mut r, e, Some(*intent), "acceptance for an unknown intent", String::new(), String::new());
@@ -3881,9 +4152,26 @@ fn replay_inner<S: AsRef<str>>(
                                 bad(&mut r, e, None, "a declaration answering a flag not in force on its track", format!("F-{f}"), d.track.clone());
                             }
                         }
-                        let needed = d.affiliation == crate::world::Affiliation::Hostile
-                            && pol.steps_up(policy::StepUpAct::DeclareHostile);
-                        check_step_up(&mut r, e, None, needed, operator, *session, *step_up, &mut step_ups, StepUse::Declaration);
+                        let hostile = d.affiliation == crate::world::Affiliation::Hostile;
+                        let needed = hostile && pol.steps_up(policy::StepUpAct::DeclareHostile);
+                        let expected = if hostile {
+                            Expected::Is(crate::passkey::StepUpFor::DeclareHostile { track: d.track.clone() })
+                        } else {
+                            Expected::Unbound
+                        };
+                        check_step_up(
+                            &mut r,
+                            e,
+                            None,
+                            needed,
+                            operator,
+                            *session,
+                            *step_up,
+                            &mut step_ups,
+                            StepUse::Declaration,
+                            &expected,
+                            Some(pol),
+                        );
                         r.operator_declarations += 1;
                     }
                 }
@@ -3922,7 +4210,23 @@ fn replay_inner<S: AsRef<str>>(
                     ),
                 }
                 let needed = pol.steps_up(policy::StepUpAct::ConfirmDeclaration);
-                check_step_up(&mut r, e, None, needed, by, *session, *step_up, &mut step_ups, StepUse::Declaration);
+                let expected = Expected::Is(crate::passkey::StepUpFor::ConfirmDeclaration {
+                    track: track.clone(),
+                    declaration: *declaration,
+                });
+                check_step_up(
+                    &mut r,
+                    e,
+                    None,
+                    needed,
+                    by,
+                    *session,
+                    *step_up,
+                    &mut step_ups,
+                    StepUse::Declaration,
+                    &expected,
+                    Some(pol),
+                );
                 r.confirmations += 1;
                 ident.step(e.t, &e.body);
             }
@@ -4488,6 +4792,8 @@ fn acting_session(body: &EventBody) -> Option<SessionId> {
         | EventBody::EngageAcceptanceRevoked { session, .. }
         | EventBody::OperatorView { session, .. } => Some(*session),
         EventBody::IntentCreated { session: Some(s), .. } => Some(*s),
+        // rules 10: a passkey registered through a session
+        EventBody::PasskeyRegistered { session: Some(s), .. } => Some(*s),
         EventBody::PictureIssued { token, .. } => Some(token.session),
         EventBody::EngageStopped {
             cause: StopCause::Operator { session, .. } | StopCause::Revoked { session, .. },
@@ -4506,22 +4812,28 @@ fn acting_session(body: &EventBody) -> Option<SessionId> {
 }
 
 /// Rules 8: a step-up as logged: the session and operator it was entered in, when, and what
-/// used it so far.
+/// used it so far; rules 10: its factor (password, passkey, scripted), whether its session was
+/// a person's, and a passkey's purpose.
 struct StepUpSeen {
     session: SessionId,
     operator: OperatorId,
     t: Time,
     used: StepUse,
+    factor: Option<AuthMethod>,
+    person: bool,
+    purpose: Option<crate::passkey::StepUpFor>,
 }
 
-/// What quotes a step-up: one signature, one hostile declaration, or one nomination's
-/// acceptances of lost vehicles (logged one after the other: they share it).
+/// What quotes a step-up: one signature, one hostile declaration, one nomination's
+/// acceptances of lost vehicles (logged one after the other: they share it), or (rules 10) one
+/// passkey registration.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 enum StepUse {
     Unused,
     Signature,
     Declaration,
     Acceptances { intent: IntentId, last_seq: u64 },
+    Registration,
 }
 
 impl StepUse {
@@ -4530,7 +4842,126 @@ impl StepUse {
             StepUse::Unused | StepUse::Signature => "a signature",
             StepUse::Declaration => "a hostile declaration",
             StepUse::Acceptances { .. } => "an acceptance of a lost vehicle",
+            StepUse::Registration => "a passkey registration",
         }
+    }
+}
+
+/// Rules 10: the act quoting a step-up, for a passkey's purpose to be compared with.
+enum Expected {
+    /// Exactly this purpose (a signature on its intent and picture token, a hostile
+    /// declaration of its track, a confirmation of its declaration).
+    Is(crate::passkey::StepUpFor),
+    /// An acceptance of `vehicle` for `intent`: a passkey made for the acceptances of a
+    /// nomination (no intent yet) or for this intent, naming the vehicle.
+    Acceptance {
+        intent: IntentId,
+        vehicle: crate::passkey::AcceptedVehicle,
+    },
+    /// A passkey registration: it re-enters the password, whatever the step-up factor.
+    Registration,
+    /// An act no passkey assertion is made for (rules 8's `track.declare`, a declaration that
+    /// is not hostile).
+    Unbound,
+}
+
+/// What a signature on `intent` quoting `token` (an engagement's) is for.
+fn sign_expected(intent: IntentId, token: Option<&PictureToken>) -> Expected {
+    Expected::Is(crate::passkey::StepUpFor::Sign {
+        intent,
+        token: token.map(|t| t.id),
+        picture_sha256: token.map(crate::passkey::picture_sha256),
+    })
+}
+
+impl Expected {
+    /// Why a valid step-up (`seen`) can't stand for this act, if it can't: a passkey's made
+    /// for another act, a password where the policy asks a person for a passkey (a
+    /// registration excepted), a passkey quoted by a registration.
+    fn refuses(&self, seen: &StepUpSeen, policy: Option<&Policy>, auth: Option<AuthMode>) -> Option<String> {
+        use crate::passkey::StepUpFor;
+        if let Some(made) = &seen.purpose {
+            let fits = match self {
+                Expected::Is(want) => want == made,
+                Expected::Acceptance { intent, vehicle } => matches!(
+                    made,
+                    StepUpFor::AcceptUnknown { intent: i, vehicles }
+                        if (i.is_none() || *i == Some(*intent)) && vehicles.contains(vehicle)
+                ),
+                Expected::Registration | Expected::Unbound => false,
+            };
+            if !fits {
+                return Some(format!("a passkey assertion made for {} quoted by another act", made.describe()));
+            }
+        }
+        match self {
+            Expected::Registration if seen.factor == Some(AuthMethod::Passkey) => {
+                Some("a passkey registration quoting a passkey step-up (it re-enters the password)".into())
+            }
+            Expected::Registration => None,
+            _ if auth == Some(AuthMode::Credentials)
+                && seen.person
+                && policy.is_some_and(|p| p.step_up_factor() == policy::StepUpFactor::Passkey)
+                && seen.factor != Some(AuthMethod::Passkey) =>
+            {
+                Some("a person's step-up by password where the policy requires a passkey (step_up_factor)".into())
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Rules 10: the passkeys a log knows, as replay follows them.
+#[derive(Default)]
+struct PasskeysSeen {
+    /// The hash of the log's first line: every challenge binds to it.
+    run_hash: String,
+    /// The relying party id and the origins (`run.started`).
+    rp: Option<(String, Vec<String>)>,
+    /// By credential id: the key (its counter the last one logged) and whether it was removed.
+    keys: BTreeMap<String, (crate::passkey::PasskeyKey, bool)>,
+    /// Every challenge's nonce answered so far.
+    nonces: BTreeSet<String>,
+}
+
+impl PasskeysSeen {
+    /// Check one logged passkey use by `operator` (in `session`; none for a login) at `t`
+    /// (see [`crate::passkey`]), then record its counter and nonce. Err says why it is not a
+    /// use the run could have accepted.
+    fn use_once(
+        &mut self,
+        operator: &OperatorId,
+        session: Option<SessionId>,
+        t: Time,
+        u: &crate::passkey::PasskeyUse,
+    ) -> Result<(), String> {
+        let (rp_id, origins) = self.rp.clone().ok_or("the run logged no relying party")?;
+        if !self.nonces.insert(u.nonce.clone()) {
+            return Err("a challenge answered twice (an assertion used again)".into());
+        }
+        let age = t.ms_since(u.issued_t);
+        if !(0..=crate::passkey::CHALLENGE_TTL_MS).contains(&age) {
+            return Err(format!("its challenge was {age} ms old (at most {})", crate::passkey::CHALLENGE_TTL_MS));
+        }
+        let Some((key, removed)) = self.keys.get_mut(&u.credential) else {
+            return Err("a credential the run does not know".into());
+        };
+        if *removed {
+            return Err("a passkey used after its removal".into());
+        }
+        if &key.operator != operator {
+            return Err(format!("{}'s passkey claimed by {operator}", key.operator));
+        }
+        let challenge = crate::passkey::challenge(&self.run_hash, session, operator, &u.purpose, &u.nonce, u.issued_t);
+        let v = crate::passkey::verify(key, &rp_id, &origins, &challenge, &u.assertion)?;
+        if v.counter != u.counter {
+            return Err(format!("the logged counter {} is not the authenticator's {}", u.counter, v.counter));
+        }
+        if !crate::passkey::counter_ok(key.counter, v.counter) {
+            return Err(format!("the counter went from {} to {} (a cloned authenticator)", key.counter, v.counter));
+        }
+        key.counter = v.counter;
+        Ok(())
     }
 }
 
@@ -4539,7 +4970,8 @@ impl StepUse {
 /// [`STEP_UP_MAX_AGE_MS`] before it, used by nothing else, except that one nomination's
 /// acceptances share theirs (the same intent, logged one after the other); one the act
 /// needs (`needed`: its decision asks for it, or `[approval] step_up_acts` lists the act) in
-/// a credentials run must be there.
+/// a credentials run must be there. Rules 10: a passkey's was made for this act (`expected`),
+/// and the policy's step-up factor holds; a study counts its participant's acts by factor.
 #[allow(clippy::too_many_arguments)]
 fn check_step_up(
     r: &mut ReplayReport,
@@ -4551,6 +4983,8 @@ fn check_step_up(
     quoted: Option<StepUpRef>,
     step_ups: &mut BTreeMap<u64, StepUpSeen>,
     act: StepUse,
+    expected: &Expected,
+    policy: Option<&Policy>,
 ) {
     let what = act.what();
     let Some(s) = quoted else {
@@ -4558,6 +4992,9 @@ fn check_step_up(
             let why = match act {
                 StepUse::Unused | StepUse::Signature => {
                     "a consequential signature without a step-up (its decision asks for the signer's credential at signing)".to_string()
+                }
+                StepUse::Registration => {
+                    "a passkey registration without a step-up (through a session, the operator re-enters their password first)".to_string()
                 }
                 _ => format!("{what} without a step-up (the policy's step_up_acts asks for the actor's credential)"),
             };
@@ -4586,6 +5023,21 @@ fn check_step_up(
             match act {
                 StepUse::Unused | StepUse::Signature => r.stepped_signatures += 1,
                 _ => r.stepped_acts += 1,
+            }
+            // rules 10: what a passkey was made for, and the policy's factor
+            if let Some(why) = expected.refuses(seen, policy, r.auth) {
+                bad(r, e, id, &why, json(&(s.seq, &seen.purpose, seen.factor)), what.into());
+            }
+            // a study: its participant's consequential acts, by factor
+            let factor = seen.factor;
+            if !matches!(act, StepUse::Registration)
+                && let Some(st) = r.study.as_mut().filter(|st| &st.participant == by)
+            {
+                if factor == Some(AuthMethod::Passkey) {
+                    st.passkey_acts += 1;
+                } else {
+                    st.password_acts += 1;
+                }
             }
         }
         other => {

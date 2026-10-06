@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Check, Intent } from './decisions'
+import type { ApproveExtra, Check, Intent } from './decisions'
 import { fmtDuration, getOperator, intentAction, StepUpNeeded, stepsUp, useOperator, useOperators } from './decisions'
 import { reportView } from './operatorView'
+import { StepUpField } from './StepUp'
+import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
 import {
   abortEngagement,
   engageParams,
@@ -189,10 +191,11 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // rules 8: every engagement signature re-enters the signer's password (credentials run),
-  // so a signature can't come from a stale or shared session
+  // rules 8: every engagement signature re-enters the signer's credential (credentials run),
+  // so a signature can't come from a stale or shared session; rules 10: by passkey where the
+  // run asks for one (its challenge made for this very picture)
   const stepUp = stepsUp()
-  const [password, setPassword] = useState('')
+  const [step, setStep] = useStepUp()
   const [stepUpError, setStepUpError] = useState(false)
   const [operator] = useOperator()
   const ops = useOperators()
@@ -267,11 +270,11 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
     reportView(i, 'decide', viewed.current.openedAt, action)
     setStepUpError(false)
     try {
-      const extra: { token?: number; password?: string } = {}
+      const extra: ApproveExtra = {}
       if (action === 'approve' && shown) extra.token = shown.id
-      if (action === 'approve' && stepUp) extra.password = password
+      if (action === 'approve' && stepUp) Object.assign(extra, await stepUpProof(step, { act: 'sign', intent: i.id, token: shown?.id }))
       setShown(null)
-      setPassword('')
+      setStep({ password: '' })
       const r = await intentAction(i.id, action, note, extra)
       const last = r.intent.history[r.intent.history.length - 1]
       if (action === 'reject') onDone(`i${i.id} engagement rejected by ${getOperator()}`, 'ok')
@@ -406,20 +409,18 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
           Reject
         </button>
         {canSign && stepUp && (
-          <label className={`ix-stepup ${stepUpError ? 'bad' : ''}`}>
-            Your password, to sign
-            <input
-              type="password"
-              autoComplete="current-password"
-              value={password}
-              disabled={busy}
-              onChange={(e) => setPassword(e.target.value)}
-              aria-label="Your password, to sign this engagement"
-            />
-          </label>
+          <StepUpField
+            passwordLabel="Your password, to sign"
+            purpose="to sign this plan"
+            ariaLabel="Your password, to sign this engagement"
+            value={step}
+            onChange={setStep}
+            busy={busy}
+            bad={stepUpError}
+          />
         )}
         {shown ? (
-          <button className="ix-approve eg-approve" disabled={busy || expired || !canApprove || shownLeft <= 0 || (stepUp && !password)} onClick={() => act('approve')} title={signHint}>
+          <button className="ix-approve eg-approve" disabled={busy || expired || !canApprove || shownLeft <= 0 || (stepUp && !stepUpReady(step))} onClick={() => act('approve')} title={signHint}>
             Sign this plan {signed.length + 1}/{needed}
           </button>
         ) : (
