@@ -261,10 +261,14 @@ protected contacts' tracks with the bridge's sensing model and IMM tracker from 
 sensor fixes of their motion (or takes the generator's stated tracker model), runs every
 nomination through the engine's own checks (`rules::evaluate`) under each rules version, and
 lists each protected track's keep-out regions (`engage::track_reach`). The variants
-(`keepout.VARIANTS`): `radar` (the bridge's tracker on our observing USV's radar, the
-primary), `model`, `ais` (best case), `lanes`, `lanes-model`, new-track shares `new0`,
-`new15`, `new25`, `vel1`, `sigma60`, `air` (a loitering light aircraft added) and `live`,
-`live2` (the live run's question). `eval.run keepout` builds the probe (`cargo build --release
+(`keepout.VARIANTS`): `radar` (the bridge's tracker on our observing USV's radar alone, the
+pessimistic sensor case, with the full tables) and `all` (every sensor it carries), `model`,
+`ais` (best case), `lanes`, `lanes-model`, new-track shares `new0`, `new15`, `new25`, `vel1`,
+`sigma60`, the buffer copies of the policy `buffer100`, `buffer50`, `all-buffer100`,
+`all-buffer50` (`--keep-out-m` on the probe), the air worst case `air`, `air-straight`,
+`air-all`, `air-all-straight` (a light aircraft added), and the live run's question under every
+tracker (`live`, `live-all`, `live-ais`, `live-model`, and `live2*` with the circling boat
+within 2 km). `eval.run keepout` builds the probe (`cargo build --release
 -p murmur-keepout-probe`, a no-op when current), runs each variant on half the CPUs into
 `keepout/<variant>/` (`records.jsonl.gz`, one line per evaluation, and `summary.json`), writes
 the combined `keepout/summary.json` with the sensitivity table, and builds the report. Every
@@ -272,7 +276,7 @@ batch runs `radar` and `model` small (`--keepout-seeds`, `--keepout-situations`,
 `--no-keepout`); alone:
 
 ```
-.venv/bin/python -m eval.run keepout --seeds 1 2 3 4 5 6 7 8 9 10 --situations 100   # every variant, about 15 minutes
+.venv/bin/python -m eval.run keepout --seeds 1 2 3 4 5 6 7 8 9 10 --situations 100   # every variant, about 16 minutes
 .venv/bin/python -m eval.run keepout --variants radar model --densities 0.1 --behaviours circling mixed --tte-s 60 120 180
 ```
 

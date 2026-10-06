@@ -339,16 +339,20 @@ differs):
 | target | holding in ez-gate-west (eval/ident.py's box), declared hostile by an operator, its track the generator's in every variant (1-sigma 8 to 25 m: the good track an engagement needs) |
 | protected contacts | over 8 km around the target, a Poisson count at 0.03, 0.1, 0.3 or 1 per km^2 (0.03 is about the 7 tracks of the 10-06 live run; 1 a busy harbour, a guess); neutral or unknown, none declared; surface; uniform, or (lanes) 70% in two lanes each passing 0 to 1.5 km from the target on a uniform course, 100 m wide, transiting along it either way at 3 to 12 m/s |
 | behaviour | all contacts one of: stationary; transiting (3 to 12 m/s, a uniform course); circling (100 to 600 m radius, 2 to 8 m/s); manoeuvring (a zigzag, 0.6: 30 to 90 s legs 30 to 60 degrees either side of a course at 3 to 10 m/s; or sprints and stops, 0.4: 5 to 12 m/s for 30 to 90 s, up to 90 degrees of turn each time, 20 to 60 s stopped); new (tracked 0 to 45 s, holding 0.4 or transiting 0.6); or mixed (0.30, 0.40, 0.10, 0.15, 0.05 of those, a guess; the new share 0, 15 or 25% in the sensitivity variants, the others scaled) |
-| air (one variant) | one light aircraft loitering within 4 km: circling 500 to 1500 m at 30 to 55 m/s, 150 to 1500 m up, added to the radar variant's mixed traffic (the surface traffic unchanged) |
+| air (four variants) | one light aircraft within 4 km, loitering (circling 500 to 1500 m at 30 to 55 m/s) or flying straight past at that speed, 150 to 1500 m up, added to the mixed traffic (the surface traffic unchanged), tracked on our radar alone or every sensor: the worst case, no ADS-B and no height-finding radar |
+| buffer (four variants) | copies of the shipped policy with `keep_out_m` 100 or 50 (shipped: 200), on the radar or all-sensors tracker, mixed traffic; the truth labels keep the shipped line |
 | our vehicles | the observing USV (Sea Hunter class) 1 to 3 km out, holding or straight at 2 to 6 m/s; with chance 0.1 another USV lost (last report 15 to 300 s old, 2 to 8 km out) |
 | engaging platform | for each nominal time to effect (30, 45, 60, 90, 120, 180, 240, 300 s) one platform drawn (magura 12 m/s or switchblade 28 m/s) placed (time - 20 s dispatch delay) x cruise away; and each platform at 0.5, 1, 2 and 3 km; bearing uniform |
 | nomination | by an operator, effect radius 75 m, fallback return, no window; the shipped policy (keep-out 200 m beyond the radius) |
 
-**Tracks.** In the primary variant (`radar`) every protected contact's last ten minutes are
-played second by second through the bridge's own sensing model and IMM tracker
+**Tracks.** In the real-tracker variants every protected contact's last ten minutes are played
+second by second through the bridge's own sensing model and IMM tracker
 (`eval/keepout_probe` compiles `crates/murmur-bridge/src/tracks/{model,sensing,truth}.rs`
-unchanged, by path): the observing USV's catalog radar (2D, 30 m + 1% of range per fix)
-against contacts without AIS. `ais` gives the tracker every sensor the USV carries and every
+unchanged, by path), against contacts without AIS: `radar` is the observing USV's catalog
+radar alone (2D, 30 m + 1% of range per fix), the pessimistic sensor case, not the general one;
+`all` is every sensor it carries (radar, EO/IR, sonar). The live stack, with three to five
+observers carrying radar and EO/IR, gave non-AIS circling boats a velocity in 97 to 100% of
+samples (1-sigma 6 to 9 m), better than either. `ais` gives the tracker every sensor and every
 contact an AIS broadcast (the best case). `model` is the first measurement's stated model of the
 tracker's reports with the scenario runner's noise (position off by its own 1-sigma, velocity
 off by 0.5 m/s per axis, no velocity in the first 7 s, an average velocity once tracked 45 s, a
@@ -371,7 +375,7 @@ evaluation (`mismatch` otherwise; 0 in every run).
 | --- | --- |
 | blocked | `keep_out_tracks` failed at the nomination (the keep-out on our vehicles is reported apart) |
 | perfect knowledge | the share of the same nominations with a protected contact truly inside the keep-out at the effect time: what a keep-out that knew where everyone would be would block |
-| needed | a block with a protected contact truly inside the keep-out (the effect radius plus 200 m, the policy's own line) at the effect time, from the engine's predicted point and time against the generated motion |
+| needed | a block with a protected contact truly inside the keep-out (the effect radius plus 200 m, the shipped policy's own line, in every variant) at the effect time, from the engine's predicted point and time against the generated motion |
 | severe | a needed block with someone inside the effect circle (the radius) |
 | conservative | any other block: nobody inside the keep-out |
 | missed | a pass with a protected contact inside the keep-out (severe: the circle) at the effect time |
@@ -392,114 +396,159 @@ field once.
 
 ### Measurement (10-06, unreviewed)
 
-Model results from simulated geometry, not human data, not field data. Commit a306d96, clean
-tree; `python -m eval.run keepout --seeds 1 2 3 4 5 6 7 8 9 10 --situations 100`: 13 variants,
-108,000 situations (`radar`, `model` and `ais` 24,000 each over every behaviour and density;
-`lanes`, `lanes-model`, `new0`, `new15`, `new25`, `vel1`, `sigma60` and `air` 4,000 each over
-mixed traffic; `live` and `live2` 2,000 each), 7.5 million contacts, 1,676,000 nominations each
-decided under rules 6, 9 and 12; 0 mismatches, 0 errors, every nomination previewed; 378 of the
-radar variant's 1.73 million contacts never tracked (new ones in their first second). About ten
-minutes on 12 processes. Rates in percent; at 1,000 situations a cell every interval is within
-3 points (mixed at 0.1 per km^2, 120 s, rules 12: 50, 47-53).
+Model results from simulated geometry, not human data, not field data. Commit 7ad80be, clean
+tree, master aab563f merged (the probe's output byte-identical across the merge);
+`python -m eval.run keepout --seeds 1 2 3 4 5 6 7 8 9 10 --situations 100`: 27 variants,
+172,000 situations (`radar`, `all`, `model` and `ais` 24,000 each over every behaviour and
+density; 15 mixed-traffic variants 4,000 each; 8 live variants 2,000 each), 11.5 million
+contacts, 2,544,000 nominations each decided under rules 6, 9 and 12; 0 mismatches, 0 errors,
+every nomination previewed. About 16 minutes on 12 processes. Rates in percent; at 1,000
+situations a cell every interval is within 3 points (radar, mixed, 0.1 per km^2, 120 s:
+rules 6 35, 32-38; rules 12 50, 47-53).
 
-Blocked on tracks, mixed traffic, the bridge's tracker on our radar (primary), rules 6 / 9 / 12,
-and perfect knowledge (rules-independent):
+Blocked on tracks, mixed traffic, rules 6 / 9 / 12, the bridge's tracker on our USV's radar
+alone (the pessimistic sensor case) and on every sensor it carries, and perfect knowledge
+(rules- and sensor-independent):
 
-| per km^2 | 30 s | 60 s | 120 s | 180 s | 300 s | perfect knowledge (keep-out; over the release window) |
-| --- | --- | --- | --- | --- | --- | --- |
-| 0.03 | 2 / 3 / 4 | 5 / 6 / 7 | 11 / 15 / 17 | 24 / 32 / 35 | 58 / 64 / 68 | 1; 1-2 |
-| 0.1 | 8 / 10 / 11 | 14 / 19 / 22 | 35 / 45 / 50 | 59 / 71 / 76 | 95 / 98 / 99 | 2-3; 4 |
-| 0.3 | 18 / 22 / 24 | 36 / 45 / 48 | 72 / 83 / 88 | 93 / 97 / 98 | 100 | 6-7; 9-11 |
-| 1 | 48 / 57 / 62 | 74 / 84 / 89 | 99 / 100 / 100 | 100 | 100 | 18-22; 29-33 |
-
-By behaviour, the same tracker, rules 6 / 9 / 12 (perfect knowledge 2 to 3% at 0.1 per km^2,
-6 to 8% at 0.3):
-
-| per km^2 | time to effect | stationary | transiting | circling | manoeuvring | new | mixed |
+| per km^2 | tracker | 30 s | 60 s | 120 s | 180 s | 300 s | perfect knowledge (keep-out; over the release window) |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 0.1 | 60 s | 8 / 9 / 9 | 8 / 8 / 8 | 15 / 29 / 29 | 30 / 44 / 44 | 37 / 37 / 68 | 14 / 19 / 22 |
-| 0.1 | 120 s | 18 / 18 / 18 | 18 / 19 / 19 | 37 / 63 / 63 | 68 / 84 / 84 | 77 / 77 / 97 | 35 / 45 / 50 |
-| 0.1 | 180 s | 32 / 33 / 33 | 32 / 34 / 34 | 65 / 88 / 88 | 93 / 98 / 98 | 97 / 97 / 100 | 59 / 71 / 76 |
-| 0.3 | 60 s | 20 / 20 / 20 | 19 / 20 / 20 | 36 / 63 / 63 | 66 / 82 / 82 | 74 / 74 / 96 | 36 / 45 / 48 |
-| 0.3 | 120 s | 41 / 44 / 44 | 42 / 44 / 44 | 75 / 94 / 94 | 97 / 99 / 99 | 99 / 99 / 100 | 72 / 83 / 88 |
+| 0.03 | radar | 2 / 3 / 4 | 5 / 6 / 7 | 11 / 15 / 17 | 24 / 32 / 35 | 58 / 64 / 68 | 1; 1-2 |
+| 0.03 | all | 2 / 3 / 3 | 2 / 5 / 6 | 8 / 13 / 16 | 17 / 25 / 31 | 46 / 59 / 66 | |
+| 0.1 | radar | 8 / 10 / 11 | 14 / 19 / 22 | 35 / 45 / 50 | 59 / 71 / 76 | 95 / 98 / 99 | 2-3; 4 |
+| 0.1 | all | 6 / 9 / 10 | 10 / 17 / 21 | 26 / 40 / 47 | 48 / 64 / 73 | 87 / 95 / 98 | |
+| 0.3 | radar | 18 / 22 / 24 | 36 / 45 / 48 | 72 / 83 / 88 | 93 / 97 / 98 | 100 | 6-7; 9-11 |
+| 0.3 | all | 15 / 19 / 22 | 27 / 37 / 42 | 57 / 75 / 83 | 85 / 94 / 98 | 100 | |
+| 1 | radar | 48 / 57 / 62 | 74 / 84 / 89 | 99 / 100 / 100 | 100 | 100 | 18-22; 29-33 |
+| 1 | all | 40 / 51 / 57 | 65 / 79 / 86 | 96 / 99 / 100 | 100 | 100 | |
 
-What the tracker reported against the truth (the radar variant, about 52,000 sampled contacts):
-stationary and transiting contacts 98% with a velocity, its error 0.94 m/s median (1.8 at p90),
-position 25 m off, reported 1-sigma 30 m; circling 86% with a velocity, error 1.8 m/s (3.9),
-a manoeuvre seen on 62%; manoeuvring only 66% with a velocity, error 2.8 m/s (8.6), a manoeuvre
-seen on 58%; new tracks 43% with a velocity. The stated model assumed about 0.6 m/s, 8 to 25 m,
-every established track with a velocity and 84% of new ones. With AIS every track had a
-velocity, errors 0.05 to 0.2 m/s and a 2 m 1-sigma. The loitering light aircraft never had a
-velocity (0 of 120 sampled): the tracker withholds it while a track turns.
+By behaviour at 0.1 per km^2, 120 s, rules 6 / 9 / 12 (perfect knowledge 2 to 3%):
 
-Needed or conservative, and misses (pooled over densities and times; clustered intervals):
+| tracker | stationary | transiting | circling | manoeuvring | new | mixed |
+| --- | --- | --- | --- | --- | --- | --- |
+| radar | 18 / 18 / 18 | 18 / 19 / 19 | 37 / 63 / 63 | 68 / 84 / 84 | 77 / 77 / 97 | 35 / 45 / 50 |
+| all | 15 / 15 / 15 | 15 / 16 / 16 | 23 / 55 / 55 | 51 / 79 / 79 | 60 / 60 / 97 | 26 / 40 / 47 |
+| model | 14 / 15 / 15 | 14 / 16 / 16 | 13 / 34 / 34 | 14 / 51 / 51 | 50 / 50 / 97 | 16 / 26 / 35 |
 
-| variant | behaviour | rules | blocks | needed (keep-out) | severe (circle) | needed over the window | missed (keep-out) | missed (circle) | missed over the window (keep-out / circle) |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| radar | mixed | 6 | 16,542 | 14 (13-15) | 1.1 | 21 | 37 of 15,458 | 2 | 278 / 30 |
-| radar | mixed | 9 | 18,179 | 13 (12-14) | 1.0 | 20 | 10 of 13,821 | 0 | 151 / 15 |
-| radar | mixed | 12 | 18,932 | 13 (12-14) | 0.9 | 19 | 8 of 13,068 | 0 (< 0.023%) | 120 / 11 |
-| radar | circling | 6 | 17,012 | 14 | 1.1 | 21 | 96 of 14,988 | 3 | 402 / 45 |
-| radar | circling | 9 and 12 | 20,935 | 12 | 0.9 | 19 | 0 of 11,065 (< 0.027%) | 0 | 26 / 2 |
-| radar | manoeuvring | 6 | 21,551 | 12 | 0.9 | 19 | 56 of 10,449 | 2 | 190 / 27 |
-| radar | manoeuvring | 9 and 12 | 23,682 | 11 | 0.8 | 18 | 1 of 8,318 | 0 | 21 / 0 |
-| radar | stationary, transiting | 6, 9, 12 | 12,400 to 12,700 | 20 to 21 | 1.8 to 1.9 | 20 to 35 | 0 or 1 | 0 | 0 to 557 |
-| model | circling | 6 | 10,913 | 22 | 1.7 | 30 | 186 of 21,087 | 7 | 747 / 87 |
-| model | manoeuvring | 6 | 10,978 | 21 | 1.7 | 32 | 241 of 21,022 | 13 | 794 / 108 |
-| model | mixed | 6 | 11,673 | 20 | 1.5 | 29 | 63 of 20,327 | 2 | 450 / 52 |
-| model | every behaviour | 9 and 12 | | 10 to 23 | 0.7 to 2.0 | 15 to 38 | 0 (< 0.014 to 0.05%) | 0 | 0 to 554 / 0 to 62 |
-| lanes (radar) | mixed | 6 / 12 | | 28 / 26 | | | 9 / 1 | | 412 / 351 |
+What the tracker reported against the truth (about 52,000 sampled contacts each):
 
-Conservative blocks under the bridge's tracker, the component deepest / alone (percent): mixed
-traffic at rules 6, no velocity 87 / 42 and current 13 / 11; at rules 12, no velocity 58 / 19,
-young 19 / 5, manoeuvre 17 / 8, current and mean 3 / 0 to 1, and 14% would have passed without
-the rules 9 and 12 regions; circling at rules 9, no velocity 58 / 12 and manoeuvre 40 / 20;
-manoeuvring at rules 9, no velocity 77 / 20 and manoeuvre 22 / 9. Under the stated model, where
-almost every track has a velocity, the manoeuvre region dominated instead (circling 80 / 27,
-manoeuvring 95 / 36) and the young one in mixed traffic (53 / 15).
+| tracker | steady contacts: velocity, its error (median / p90), 1-sigma | circling: velocity, error, manoeuvre seen | manoeuvring: velocity, error, manoeuvre seen | new: velocity |
+| --- | --- | --- | --- | --- |
+| radar | 98%, 0.94 / 1.8 m/s, 30 m | 86%, 1.8 m/s, 62% | 66%, 2.8 m/s (8.6 at p90), 58% | 43% |
+| all | 99%, 0.63 / 1.3 m/s, 15 m | 93%, 1.3 m/s, 82% | 76%, 1.6 m/s (7.5), 87% | 68% |
+| ais | 100%, 0.05 / 0.13 m/s, 2 m | 100%, 0.2 m/s, 99% | 100%, 0.06 m/s, 100% | 100% |
+| model (assumed) | 100%, about 0.6 m/s, 8 to 25 m | 100% | 100% | 84% |
+
+Needed or conservative, and misses, mixed traffic (pooled over densities and times; clustered
+intervals; the line is the shipped keep-out):
+
+| tracker | rules | blocks | needed (keep-out) | severe (circle) | missed at the keep-out line | missed in the circle | missed over the window (keep-out / circle) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| radar | 6 | 16,542 | 14 (13-15) | 1.1 | 37 of 15,458 | 2 | 278 / 30 |
+| radar | 9 | 18,179 | 13 | 1.0 | 10 of 13,821 | 0 | 151 / 15 |
+| radar | 12 | 18,932 | 13 | 0.9 | 8 of 13,068 | 0 (< 0.023%) | 120 / 11 |
+| all | 6 | 14,642 | 16 (15-17) | 1.2 | 63 of 17,358 | 3 | 362 / 47 |
+| all | 9 | 17,132 | 14 | 1.0 | 2 of 14,868 | 0 | 159 / 20 |
+| all | 12 | 18,312 | 13 | 1.0 | 2 of 13,688 | 0 (< 0.022%) | 129 / 13 |
+| model | 6 / 12 | 11,673 / 16,337 | 20 / 15 | 1.5 / 1.1 | 63 / 0 of 15,663 | 2 / 0 | 450 / 52; 173 / 15 |
+| ais | 6 / 12 | 10,861 / 15,949 | 22 / 15 | 1.6 / 1.1 | 66 / 0 of 16,051 | 2 / 0 | 465 / 47; 201 / 18 |
+
+By behaviour, rules 6 passed with someone in the circle 2 to 13 times per 10,000 to 21,000
+passes (circling: radar 3, all 8, model 7; manoeuvring: 2, 3, 13), and with someone inside the
+keep-out line 56 to 245 times in circling or manoeuvring traffic; rules 9 and 12 never with
+someone in the circle, and 0 or 1 at the keep-out line. Of the blocks, 10 to 31% were needed at
+the keep-out line in every variant (1 to 2% in the effect circle).
+
+Conservative blocks, mixed traffic, rules 12, the component deepest / alone (percent): on the
+radar alone, no velocity 58 / 19, young 19 / 5, manoeuvre 17 / 8; on every sensor, no velocity
+37 / 10, young 31 / 7, manoeuvre 26 / 11 (23% would have passed without the rules 9 and 12
+regions); under the stated model, young 53 / 15, manoeuvre 22 / 9. A track without a velocity is
+a 25 m/s disc: on one radar alone that region drives most conservative blocks, less so with more
+sensors, and the live stack's several observers gave velocities far more often.
 
 The longest time to effect with a pass on tracks at least 50% / 90% of the time, mixed traffic,
-the bridge's tracker, rules 12 (bootstrap 95%), and the distance that is for a holding target:
+rules 12 (bootstrap 95%), and the distance that is for a holding target:
 
-| per km^2 | 50% | 90% | magura within (50% / 90%) | switchblade within |
+| per km^2 | radar | all | magura within, radar / all (50%) | switchblade within, radar / all (50%) |
 | --- | --- | --- | --- | --- |
-| 0.03 | 235 s (224-245) | 81 s (69-94) | 2.6 / 0.7 km | 6.0 / 1.7 km |
-| 0.1 | 120 s (114-127) | <30 s (<30-34) | 1.2 / <0.1 km | 2.8 / <0.3 km |
-| 0.3 | 62 s (58-66) | <30 s | 0.5 / <0.1 km | 1.2 / <0.3 km |
-| 1 | <30 s | <30 s | | |
+| 0.03 | 235 s (224-245) / 81 s (69-94) | 244 s (234-254) / 85 s (74-96) | 2.6 / 2.7 km | 6.0 / 6.3 km |
+| 0.1 | 120 s (114-127) / <30 s | 128 s (120-134) / 31 s (<30-36) | 1.2 / 1.3 km | 2.8 / 3.0 km |
+| 0.3 | 62 s (58-66) / <30 s | 69 s (66-73) / <30 s | 0.5 / 0.6 km | 1.2 / 1.4 km |
+| 1 | <30 s / <30 s | <30 s / <30 s | | |
 
-(rules 6: 274, 157, 83 and 32 s for 50% at the four densities.)
+The 200 m buffer (copies of the policy with `keep_out_m` 100 and 50; mixed traffic; the misses
+counted at the shipped line):
 
-The live run's question (`live`, `live2`: one boat circling within 1 or 2 km of the target,
-followed for a while, mixed traffic around, a magura at 1, 1.5 and 2 km; the bridge's tracker):
+| tracker | keep_out_m | rules 12 at 30 / 60 / 120 s, 0.1 per km^2 | rules 6 at 30 s, 0.1 | rules 12 at 30 s, 0.3 | 90% pass, rules 12, 0.1 | missed at the shipped keep-out line, rules 6 / 12 | missed in the circle, rules 6 / 12 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| radar | 200 | 11 / 22 / 50 | 8 | 24 | <30 s | 37 / 8 | 2 / 0 |
+| radar | 100 | 8 / 19 / 46 | 5 | 18 | 36 s | 118 / 42 | 3 / 0 |
+| radar | 50 | 7 / 17 / 45 | 4 | 16 | 40 s | 215 / 105 | 5 / 0 |
+| all | 200 | 10 / 21 / 47 | 6 | 22 | 31 s | 63 / 2 | 3 / 0 |
+| all | 100 | 7 / 17 / 43 | 4 | 16 | 39 s | 154 / 27 | 4 / 0 |
+| all | 50 | 5 / 16 / 41 | 3 | 13 | 44 s | 299 / 113 | 5 / 0 |
 
-| circling boat within | per km^2 | rules 6 at 1 / 1.5 / 2 km | rules 9 and 12 | perfect knowledge (keep-out; over the window) |
-| --- | --- | --- | --- | --- |
-| 1 km | 0.03 | 40 / 51 / 59 | 87 / 91 / 94 | 8-9; 12-14 |
-| 1 km | 0.1 | 54 / 70 / 82 | 92 / 95-96 / 98 | 8-10; 13-15 |
-| 2 km | 0.03 | 22 / 33 / 45 | 53-54 / 76-77 / 86-87 | 2-3; 5 |
-| 2 km | 0.1 | 41 / 59 / 75 | 70-73 / 88-90 / 95-96 | 4; 7 |
+The buffer is a lever about as large as better sensors (radar alone to every sensor: 50 to
+47% at 120 s; 200 to 50 m: 50 to 45%), mainly at short times to effect, where it halves rules 6
+at 30 s. A smaller buffer passes more nominations with someone inside the shipped line (rules
+12: 8 to 105 on the radar) though none with someone in the effect circle under rules 9 or 12;
+whether the buffer may shrink is a decision about the effect model's margin, which this does
+not measure.
 
-Sensitivity, mixed traffic at 0.1 per km^2 (other densities in the report and `summary.json`):
+The live run's question (one boat circling within 1 or 2 km of the target, followed for a
+while, mixed traffic around, a magura at 1, 1.5 and 2 km), rules 12 (rules 9 within a point or
+two) and rules 6:
 
-| variant | blocked at 60 / 120 / 180 s, rules 6 | rules 12 | perfect knowledge | 50% pass, rules 12 | needed share, rules 12 | missed (keep-out), rules 6 / 12 |
+| circling boat within | per km^2 | radar | all | ais | model | perfect knowledge |
 | --- | --- | --- | --- | --- | --- | --- |
-| radar (primary) | 14 / 35 / 59 | 22 / 50 / 76 | 3 / 2 / 3 | 120 s | 13 | 37 / 8 |
-| model | 8 / 16 / 28 | 16 / 35 / 59 | 3 / 2 / 3 | 158 s | 15 | 63 / 0 |
-| ais | 7 / 15 / 25 | 15 / 34 / 55 | 3 / 2 / 3 | 165 s | 15 | 66 / 0 |
-| lanes (radar) | 21 / 43 / 67 | 23 / 48 / 73 | 8 / 7 / 8 | 124 s | 26 | 9 / 1 |
-| lanes-model | 17 / 34 / 57 | 20 / 40 / 65 | 8 / 7 / 8 | 144 s | 29 | 11 / 1 |
-| new0 (radar) | 13 / 30 / 53 | 18 / 40 / 67 | 3 / 3 / 3 | 142 s | 15 | 29 / 2 |
-| new15 (radar) | 18 / 41 / 70 | 29 / 62 / 87 | 4 / 3 / 3 | 98 s | 13 | 24 / 2 |
-| new25 (radar) | 20 / 48 / 78 | 34 / 72 / 94 | 3 / 3 / 2 | 84 s | 11 | 12 / 1 |
-| vel1 (model) | 8 / 16 / 28 | 17 / 37 / 61 | 3 / 2 / 3 | 153 s | 15 | 66 / 0 |
-| sigma60 (model) | 9 / 16 / 28 | 18 / 37 / 60 | 3 / 2 / 3 | 154 s | 14 | 56 / 0 |
-| air (radar, one aircraft) | 100 / 100 / 100 | 100 / 100 / 100 | 3 / 2 / 3 | <30 s | 8 | 0 / 0 |
+| 1 km | 0.03 | 87 / 91 / 94 (r6 40 / 51 / 59) | 92 / 96 / 98 (35 / 44 / 52) | 77 / 93 / 97 (31 / 38 / 43) | 84 / 95 / 98 (32 / 38 / 44) | 8-9 |
+| 1 km | 0.1 | 92 / 96 / 98 (54 / 70 / 82) | 95 / 98 / 99 (48 / 61 / 72) | 84 / 96 / 99 (41 / 50 / 58) | 88 / 98 / 100 (42 / 52 / 60) | 8-10 |
+| 2 km | 0.03 | 54 / 77 / 87 (22 / 33 / 45) | 46 / 73 / 88 (15 / 27 / 39) | 26 / 43 / 62 (11 / 20 / 27) | 29 / 46 / 67 (10 / 20 / 28) | 2-3 |
+| 2 km | 0.1 | 73 / 90 / 96 (41 / 59 / 75) | 66 / 87 / 94 (31 / 47 / 63) | 45 / 64 / 83 (20 / 30 / 45) | 48 / 68 / 85 (21 / 32 / 47) | 4 |
+
+A boat circling within 1 km blocks 77 to 100% of these nominations under rules 9 and 12 for
+every tracker, as the live run's 77 of 77; within 2 km it depends on the tracker (26 to 83% with
+AIS, 54 to 96% on the radar alone).
+
+Air traffic, the worst case (one light aircraft within 4 km, no ADS-B, no height-finding radar;
+the engine counts it in plan), 120 sampled aircraft each:
+
+| variant | aircraft with a velocity | its reported 1-sigma | rules 12 at 30 / 60 / 120 s, 0.03 per km^2 |
+| --- | --- | --- | --- |
+| radar, loitering | 0 | 46 m | 67 / 100 / 100 |
+| radar, straight | 1 | 31 m | 73 / 100 / 100 |
+| all sensors, loitering | 2 | 24 m | 65 / 100 / 100 |
+| all sensors, straight | 50 | 16 m | 41 / 64 / 70 |
+
+The cause is not turning: on 2D radar fixes the bridge's air tracker keeps the velocity's
+uncertainty above the 3 m/s it reports at, straight or turning, so the keep-out counts the
+aircraft anywhere within 100 m/s of where it was; EO/IR helps a straight one, not a loitering
+one. The air tracker's constants (initial velocity uncertainty, process noise) were scaled from
+the surface ones and never checked against truth, so these rows say what the bridge does today,
+not what a validated air tracker would.
+
+Sensitivity, mixed traffic at 0.1 per km^2 (other densities in the report):
+
+| variant | rules 6 at 30 / 60 / 120 / 180 s | rules 12 | perfect knowledge | 50% / 90% pass, rules 12 | needed share, rules 12 | missed at the line, rules 6 / 12 | in the circle, rules 6 / 12 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| radar | 8 / 14 / 35 / 59 | 11 / 22 / 50 / 76 | 3 / 3 / 2 / 3 | 120 / <30 s | 13 | 37 / 8 | 2 / 0 |
+| all | 6 / 10 / 26 / 48 | 10 / 21 / 47 / 73 | 3 / 3 / 2 / 3 | 128 / 31 s | 13 | 63 / 2 | 3 / 0 |
+| model | 5 / 8 / 16 / 28 | 8 / 16 / 35 / 59 | 3 / 3 / 2 / 3 | 158 / 38 s | 15 | 63 / 0 | 2 / 0 |
+| ais | 5 / 7 / 15 / 25 | 7 / 15 / 34 / 55 | 3 / 3 / 2 / 3 | 165 / 44 s | 15 | 66 / 0 | 2 / 0 |
+| lanes (radar) | 12 / 21 / 43 / 67 | 13 / 23 / 48 / 73 | 7 / 8 / 7 / 8 | 124 / <30 s | 26 | 9 / 1 | 0 / 0 |
+| lanes-model | 11 / 17 / 34 / 57 | 12 / 20 / 40 / 65 | 7 / 8 / 7 / 8 | 144 / <30 s | 29 | 11 / 1 | 0 / 0 |
+| new0 (radar) | 6 / 13 / 30 / 53 | 9 / 18 / 40 / 67 | 2 / 3 / 3 / 3 | 142 / 34 s | 15 | 29 / 2 | 0 / 0 |
+| new15 (radar) | 8 / 18 / 41 / 70 | 13 / 29 / 62 / 87 | 3 / 4 / 3 / 3 | 98 / <30 s | 13 | 24 / 2 | 0 / 0 |
+| new25 (radar) | 10 / 20 / 48 / 78 | 16 / 34 / 72 / 94 | 3 / 3 / 3 / 2 | 84 / <30 s | 11 | 12 / 1 | 0 / 0 |
+| vel1 (model) | 5 / 8 / 16 / 28 | 8 / 17 / 37 / 61 | 3 / 3 / 2 / 3 | 153 / 36 s | 15 | 66 / 0 | 2 / 0 |
+| sigma60 (model) | 6 / 9 / 16 / 28 | 9 / 18 / 37 / 60 | 3 / 3 / 2 / 3 | 154 / 33 s | 14 | 56 / 0 | 2 / 0 |
+| buffer100 (radar) | 5 / 11 / 32 / 56 | 8 / 19 / 46 / 74 | 3 / 3 / 2 / 3 | 128 / 36 s | 13 | 118 / 42 | 3 / 0 |
+| buffer50 (radar) | 4 / 10 / 30 / 54 | 7 / 17 / 45 / 73 | 3 / 3 / 2 / 3 | 131 / 40 s | 13 | 215 / 105 | 5 / 0 |
+| air (radar) | 70 / 100 / 100 / 100 | 71 / 100 / 100 / 100 | 3 / 3 / 2 / 3 | <30 / <30 s | 8 | 0 / 0 | 0 / 0 |
 
 Velocity error 1 m/s and track sigma 15 to 60 m barely move the model's rates (3 points or
-less). The tracker (the bridge's on one radar against the model: 50 against 35% at 120 s), the
-share of new tracks (40 to 72% from none to a quarter) and the layout move them a lot, and one
-loitering aircraft decides every nomination near it.
+less). The sensors (radar alone to every sensor: 50 to 47% at 120 s, 35 to 26% under rules 6),
+the share of new tracks (40 to 72% from none to a quarter), the layout and the buffer move them;
+one aircraft seen only by our radar decides every nomination near it.
 
 The keep-out on our vehicles blocked at most 1% up to 120 s and 6% (6-7) at 300 s, the lost
 vehicle in about a quarter of those. The region sizes the engine gives a 15 m track (rules 12,
@@ -510,38 +559,43 @@ no-velocity region at 100 m/s four times that). The 8 km field holds every regio
 310 s of span; only the few nominations whose actual time to effect ran longer (1,560 of
 192,000 more than 5 s off the nominal, at most 357 s) can lose a young region beyond it.
 
-**What this shows, in plain words, for the decision.**
+**What these numbers can support** (model results, unreviewed):
 
-- Robust in every variant: blocks climb steeply with the time to effect and with traffic
-  density. Launching closer is the strongest lever: at 0.1 contacts per km^2 a nomination
-  under rules 12 passes half the time at about 2 minutes to effect (a magura within about
-  1.2 km) and nine times in ten only under about 30 s.
-- Robust: rules 9 adds blocks mainly in circling or manoeuvring traffic, and rules 12 near
-  young tracks. Rules 9's regions caught every release rules 6 allowed with someone truly
-  inside the effect circle, and nearly every one with someone inside the keep-out (radar,
-  mixed: 37 rules 6 misses at the keep-out, 8 at rules 12, none in the circle).
-- Robust: most blocks come from not knowing where contacts will be, not from contacts being
-  close. Perfect knowledge would block 2 to 3% of these nominations at 0.1 per km^2 (7 to 8% in
-  lanes); the engine blocks 15 to 76% at 60 to 180 s. That gap is the price of uncertainty as
-  the engine models it, not evidence that the constants are too large for real boats. Of the
-  blocks, 10 to 31% were needed at the keep-out line (1 to 2% in the effect circle).
-- So the levers for fewer blocks are shorter prediction spans, better track quality (a track
-  without a velocity is a 25 m/s disc: under the bridge's tracker on one radar that region, not
-  the rules 9 or 12 ones, drives most conservative blocks), and how young tracks are handled,
-  not the 200 m buffer.
-- Not robust: every absolute rate. The tracker, the share of new tracks, the layout and air
-  traffic each move them by tens of points; one loitering aircraft without a velocity estimate
-  blocks every nomination within reach.
-- The nomination check is a screen: over the 60 s release window more contacts move in (radar,
-  mixed, rules 12: 120 passes with someone inside the keep-out by then, 11 in the circle), which
-  the release's own check is meant to catch.
+- Blocks climb steeply with the time to effect and with traffic density, for every tracker:
+  launching closer is the strongest lever (at 0.1 contacts per km^2, rules 12 passes half the
+  time at about 2 minutes to effect, a magura within about 1.2 km, and nine times in ten only
+  around 30 s).
+- Rules 9 and 12 never let a nomination through with someone in the effect circle, in any
+  variant at the shipped buffer; rules 6 did, 2 to 13 times per 10,000 to 21,000 passes
+  depending on traffic and tracker. At the keep-out line rules 9 and 12 cut the misses from 37 to
+  66 to 0 to 8 per 13,000 to 16,000 passes of mixed traffic.
+- A boat circling within 1 km of the target blocks nearly everything under rules 9 and 12 (77 to
+  100%, every tracker), matching the live run.
+- Most blocks come from uncertainty about where contacts will be, not from contacts being
+  close: perfect knowledge would block 2 to 3% of these nominations at 0.1 per km^2 (7 to 8% in
+  lanes) where the engine blocks 15 to 76% at 60 to 180 s. That gap is the price of uncertainty
+  as the engine models it, not evidence that the constants are too large for real boats.
+- Aircraft seen only by our 2D radar (no ADS-B, no height-finding radar) block engagements
+  within their reach.
+- The levers for fewer blocks are launching closer, better tracks (more sensors), how young
+  tracks are handled, and the buffer, which is about as large a lever as better sensors, mainly
+  at short times to effect. Whether the buffer may shrink is a decision about the effect model's
+  margin, which this does not measure.
 
-What it cannot support: calling blocks unnecessary, loosening a keep-out, or any absolute rate
-for a real place. Any loosening should be judged by the misses at the keep-out level it brings,
-under the real tracker. Not measured: how often such situations arise, more than one observing
-sensor, land and channels, air traffic beyond one aircraft, out-of-view contacts and dropped
-tracks, the plan's re-checks while signatures wait, and what operators do when blocked (wait,
-reposition, accept a lost vehicle, give up).
+**What they cannot support:**
+
+- That missing velocity estimates drive surface blocks in general: that holds for one USV's
+  radar alone and depends on the sensors.
+- That the buffer is not a lever.
+- Any absolute rate for a real place, or any loosening: judge a loosening by the misses at the
+  keep-out line it brings, under the real tracker (a 50 m buffer took them from 8 to 105 on the
+  radar, none in the circle).
+- Anything about the plan's re-checks while signatures wait, the release's own check (over the
+  60 s window more contacts move in, which it is meant to catch), or what operators do when
+  blocked (wait, reposition, accept a lost vehicle, give up).
+
+Not measured either: how often such situations arise, more than one observing vehicle, land
+and channels, air traffic beyond one aircraft, out-of-view contacts and dropped tracks.
 
 ## Provenance and exclusions
 
