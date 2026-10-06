@@ -289,6 +289,109 @@
   color: #ff8a8a !important;
 }
 
+/* the keep-out explanation (murmur-12e): read-only, calm; amber for what blocks, grey for what
+   nearly does, blue for the platform's move-within hint (as on the map) */
+.eg-opt .ko-sum {
+  color: #ffd39a;
+  font-size: 11px;
+}
+.ko .ix-label em {
+  color: #ffd39a;
+}
+.ko-lead {
+  margin: 2px 0 6px;
+  font-size: 12px;
+  color: #9aa6b2;
+}
+.ko-item {
+  border-left: 2px solid #ffb347;
+  padding: 4px 0 4px 8px;
+  margin: 4px 0;
+  font-size: 12px;
+}
+.ko-item.near {
+  border-left-color: #3a4652;
+  opacity: 0.9;
+}
+.ko-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
+.ko-kind {
+  font: 600 10px var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #ffd39a;
+  border: 1px solid #5a4a30;
+  padding: 0 4px;
+}
+.ko-item.near .ko-kind {
+  color: #aab6c3;
+  border-color: #3a4652;
+}
+.ko-num {
+  margin-left: auto;
+  font: 600 11px var(--mono);
+  color: #ffd39a;
+}
+.ko-item.near .ko-num {
+  color: #8fe0b0;
+}
+.ko-reason {
+  margin-top: 2px;
+  color: #d7dde4;
+}
+.ko-alt {
+  margin-top: 2px;
+  color: #9aa6b2;
+}
+.ko-clears {
+  margin: 4px 0 0;
+  padding-left: 16px;
+  color: #c3ccd6;
+}
+.ko-clears li {
+  margin: 1px 0;
+}
+.ko-at {
+  color: #7d8b9a;
+}
+.ko-near summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: #9aa6b2;
+}
+.ko-hints {
+  margin: 6px 0 2px;
+  padding: 4px 8px;
+  background: #121a22;
+  border: 1px solid #2c3742;
+}
+.ko-hint {
+  display: flex;
+  gap: 8px;
+  margin: 3px 0;
+  font-size: 12px;
+}
+.ko-hint b {
+  flex: 0 0 46px;
+  font: 600 10px var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #9aa6b2;
+  padding-top: 2px;
+}
+.ko-hint.move b {
+  color: #8ab4ff;
+}
+.ko-foot {
+  margin: 4px 0 0;
+  font-size: 10.5px;
+  color: #7d8b9a;
+}
+
 @media (max-width: 720px) {
   .eg-panel {
     left: 8px;

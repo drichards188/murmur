@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { Check } from './decisions'
 import { useOperator } from './decisions'
-import { engageOptions, FALLBACK_LABEL, fmtRel, nominate, type EngageOption, type EngagePreview, type Fallback } from './engage'
+import { engageOptions, FALLBACK_LABEL, fmtDist, fmtRel, KEEP_OUT_KIND_LABEL, nominate, type EngageOption, type EngagePreview, type Fallback, type KeepOutExplanation } from './engage'
 import './engage.css'
+import { KeepOutExplain } from './KeepOutExplain'
 import type { TracksMessage } from './tracks'
 import { kindLabel } from './tracks'
 import type { Vehicle } from './types'
@@ -23,6 +24,8 @@ interface Props {
   initial: { track?: string; uid?: number }
   /** the selected option's preview, to draw on the map */
   onPreview: (p: EngagePreview | null) => void
+  /** murmur-12e: the selected option's keep-out explanation, to draw its regions on the map */
+  onKeepOuts: (ex: KeepOutExplanation | null) => void
   onNominated: (intentId: number) => void
   onClose: () => void
 }
@@ -33,7 +36,19 @@ function firstFail(checks: Check[]) {
   return checks.find((c) => c.outcome !== 'pass')
 }
 
-export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onNominated, onClose }: Props) {
+/** One line for an option a keep-out blocks: the worst item and the closer hint. */
+function keepOutLine(o: EngageOption) {
+  const ex = o.keep_outs
+  const worst = ex?.items.find((i) => i.blocks)
+  if (!ex?.blocked || !worst) return null
+  const kind = worst.region ? KEEP_OUT_KIND_LABEL[worst.region.kind] : 'cannot be placed'
+  const short = worst.short_m != null ? `, short ${fmtDist(worst.short_m)}` : ''
+  const mw = ex.move_within
+  const closer = mw?.possible && mw.within_m != null ? `; clears within ${fmtDist(mw.within_m)}` : ''
+  return `keep-out: ${worst.id} ${kind}${short}${closer}`
+}
+
+export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepOuts, onNominated, onClose }: Props) {
   const [operator] = useOperator()
   const hostile = useMemo(() => (tracks?.tracks ?? []).filter((t) => t.affiliation === 'hostile' && t.declared), [tracks])
   const [track, setTrack] = useState<string>(initial.track ?? hostile[0]?.id ?? '')
@@ -83,6 +98,10 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onNomin
     onPreview(chosen?.preview ?? null)
   }, [chosen, onPreview])
   useEffect(() => () => onPreview(null), [onPreview])
+  useEffect(() => {
+    onKeepOuts(chosen?.keep_outs ?? null)
+  }, [chosen, onKeepOuts])
+  useEffect(() => () => onKeepOuts(null), [onKeepOuts])
 
   const t = (tracks?.tracks ?? []).find((x) => x.id === track)
   const reachable = (options ?? []).filter((o) => o.passed)
@@ -162,6 +181,7 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onNomin
         {uid == null && options && options.length > 0 && <p className="eg-hint">Pick a platform: nothing is chosen for you.</p>}
         {(options ?? []).map((o) => {
           const f = firstFail(o.checks)
+          const ko = keepOutLine(o)
           return (
             <button key={o.uid} className={`eg-opt ${o.passed ? 'ok' : 'bad'} ${uid === o.uid ? 'on' : ''}`} onClick={() => setUid(o.uid)}>
               <b>{nameOf(o.uid)}</b>
@@ -172,6 +192,7 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onNomin
               ) : (
                 <span>{f ? `${f.rule}: ${f.detail}` : 'some check did not pass'}</span>
               )}
+              {ko && <span className="ko-sum">{ko}</span>}
             </button>
           )
         })}
@@ -196,6 +217,7 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onNomin
           </div>
         </section>
       )}
+      {chosen?.keep_outs && <KeepOutExplain ex={chosen.keep_outs} name={nameOf(chosen.uid)} now={now} />}
 
       <label className="eg-rationale">
         Rationale (optional for an operator; shown to the approvers)

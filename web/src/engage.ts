@@ -201,6 +201,112 @@ export interface EngageOption {
   passed: boolean
   checks: Check[]
   preview: EngagePreview | null
+  /** murmur-12e: why a keep-out blocks (or nearly blocks) this option, and what would clear
+   *  it; null with `keep_outs_none` saying why there is none (no preview, say) */
+  keep_outs?: KeepOutExplanation | null
+  keep_outs_none?: string | null
+}
+
+// ---- the keep-out explanation (murmur-12e) -------------------------------------------------
+
+/** The bridge's `keep_outs` (`murmur_decide::keepout`): for each track or vehicle of ours that
+ *  blocks the keep-out, or nearly does, the region that blocks, the numbers, and what would
+ *  clear it. Read-only, from the functions the checks read on the snapshot the dry run
+ *  checked: the checks decide, and nothing here relaxes a keep-out. Times are engine ms. */
+export interface KeepOutExplanation {
+  t: number
+  track: string
+  platform: string | null
+  effect_point: LngLat
+  effect_t: number
+  effect_radius_m: number
+  /** every region must stay this far from the effect point: effect radius plus keep-out */
+  clearance_m: number
+  blocked: boolean
+  /** the keep-out checks themselves on this snapshot */
+  checks: Check[]
+  /** blocking first (largest shortfall first), then those that nearly block */
+  items: KeepOutItem[]
+  /** for the platform: how close it would need to be (on the picture now) */
+  move_within: MoveWithin | null
+  /** the first nomination time at which every keep-out would hold, if everything keeps
+   *  behaving as now; else `wait_none` says why not */
+  wait: KeepOutWait | null
+  wait_none: string | null
+  assumptions: string
+  note: string
+}
+
+export type KeepOutKind = 'velocity' | 'mean_velocity' | 'manoeuvre' | 'young' | 'no_velocity' | 'circling' | 'cruise_reach' | 'lost'
+
+export interface KeepOutRegion {
+  kind: KeepOutKind
+  center: LngLat
+  radius_m: number
+  /** its edge from the effect point (negative: it covers the point) */
+  edge_m: number
+  /** this region alone reaches into the clearance */
+  inside: boolean
+  /** the check's own words */
+  how: string
+}
+
+export interface KeepOutWait {
+  nominate_t: number
+  effect_t: number
+  why: string
+}
+
+export interface KeepOutItem {
+  rule: string
+  subject: 'track' | 'vehicle'
+  id: string
+  label: string
+  domain: string | null
+  /** where it is now */
+  now: LngLat | null
+  blocks: boolean
+  /** the region the check reads (nearest the effect point) */
+  region: KeepOutRegion | null
+  regions: KeepOutRegion[]
+  edge_m: number | null
+  /** positive: by how much it fails; negative: by how much it clears */
+  short_m: number | null
+  altitude: string | null
+  clear_by_altitude: string | null
+  reason: string
+  manoeuvring_now: boolean | null
+  /** same picture: every effect from the earliest up to this time leaves it clear */
+  fits_until_t: number | null
+  wait: KeepOutWait | null
+  not_by_waiting: string | null
+  other: string | null
+}
+
+export interface MoveWithin {
+  possible: boolean
+  effect_by_t: number | null
+  point: LngLat | null
+  within_m: number | null
+  now_m: number | null
+  holding: boolean
+  why: string
+}
+
+export const KEEP_OUT_KIND_LABEL: Record<KeepOutKind, string> = {
+  velocity: 'on its course',
+  mean_velocity: 'average course',
+  manoeuvre: 'manoeuvre reach',
+  young: 'young track reach',
+  no_velocity: 'no velocity yet',
+  circling: 'circling',
+  cruise_reach: 'cruise reach',
+  lost: 'lost: cruise reach',
+}
+
+/** A distance for the form: metres below a kilometre, else kilometres. */
+export function fmtDist(m: number) {
+  return Math.abs(m) >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${Math.round(m)} m`
 }
 
 /** The nomination form's dry run: which armed platforms could take it now (read-only). */

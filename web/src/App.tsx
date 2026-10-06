@@ -16,12 +16,12 @@ import { TracksButton, TracksPanel } from './TracksPanel'
 import { type Track, trackPredicted } from './tracks'
 import { VehicleDetails } from './VehicleDetails'
 import type { LngLat, Vehicle } from './types'
-import { DOMAIN_LABEL, domainOf, isStale } from './types'
+import { callsign, DOMAIN_LABEL, domainOf, isStale } from './types'
 import { useBridge } from './useBridge'
 import { ErrorBoundary } from './ErrorBoundary'
 import { EngagePanel } from './EngagePanel'
-import { isEngage, previewOf, RUNNING, type EngagePreview } from './engage'
-import { buildEngageLayers, type EngageDrawing } from './engageLayers'
+import { isEngage, previewOf, RUNNING, type EngagePreview, type KeepOutExplanation } from './engage'
+import { buildEngageLayers, buildKeepOutLayers, type EngageDrawing } from './engageLayers'
 import { estimated } from './estimate'
 import { buildEstimateLayers } from './estimateLayers'
 import { circle } from './geo'
@@ -107,6 +107,8 @@ export default function App() {
   // armed platform, and the preview of the platform it would use
   const [engageForm, setEngageForm] = useState<{ track?: string; uid?: number } | null>(null)
   const [engageDraft, setEngageDraft] = useState<EngagePreview | null>(null)
+  // murmur-12e: why the chosen platform's keep-out blocks (its regions on the map)
+  const [engageKeepOuts, setEngageKeepOuts] = useState<KeepOutExplanation | null>(null)
 
   // space data is fetched only while a space view is open
   const spaceOn = showSpace || showGlobe
@@ -206,10 +208,18 @@ export default function App() {
   // confirmed labelled
   const queuedIntents = decisions?.inbox.queued
   const orderTick = Math.floor(now() / 1000)
+  // the nomination form's keep-out explanation: the platform by its callsign
+  const keepOutLayers = useMemo(() => {
+    if (!engageKeepOuts) return []
+    const v = vehicles.find((x) => String(x.uid) === engageKeepOuts.platform)
+    return buildKeepOutLayers(engageKeepOuts, v ? callsign(v) : `vehicle ${engageKeepOuts.platform ?? ''}`)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engageKeepOuts])
   const mapLayers = useCallback<MapLayers>(
     (view) => [
       ...estimateLayers(view),
       ...trackLayers(view),
+      ...keepOutLayers,
       ...(engageDrawings.length ? buildEngageLayers(engageDrawings, now(), view) : []),
       ...buildOrderLayers(
         { queued: queuedIntents ?? [], intents: allIntents ?? [], taskings: state?.taskings ?? [], vehicles: state?.vehicles ?? [], nowMs: now() },
@@ -217,7 +227,7 @@ export default function App() {
       ),
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [estimateLayers, trackLayers, engageDrawings, queuedIntents, allIntents, state?.taskings, state?.vehicles, orderTick],
+    [estimateLayers, trackLayers, keepOutLayers, engageDrawings, queuedIntents, allIntents, state?.taskings, state?.vehicles, orderTick],
   )
   const focusTrack = useCallback(
     (t: Track) => setFit((f) => ({ points: [trackPredicted(t, now())], n: (f?.n ?? 0) + 1, padRight: 400 })),
@@ -487,9 +497,11 @@ export default function App() {
             now={now}
             initial={engageForm}
             onPreview={setEngageDraft}
+            onKeepOuts={setEngageKeepOuts}
             onNominated={(id) => {
               setEngageForm(null)
               setEngageDraft(null)
+              setEngageKeepOuts(null)
               setShowInbox(true)
               setInboxTab('inbox')
               setInboxSel({ kind: 'intent', id })
@@ -497,6 +509,7 @@ export default function App() {
             onClose={() => {
               setEngageForm(null)
               setEngageDraft(null)
+              setEngageKeepOuts(null)
             }}
           />
           </ErrorBoundary>
