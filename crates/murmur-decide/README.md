@@ -500,30 +500,41 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
   checks judge each track and vehicle of ours through `engage::track_standing` and
   `engage::friendly_standing` (the region the check reads, its kind, centre and radius,
   with the same numbers and words as before: 820 scenario logs unchanged), and
-  `keepout::explain(spec, world, cfg, memory)` reads the same functions on the dry run's
-  snapshot. For every track or vehicle that blocks the keep-out, or nearly does (its nearest
-  region's edge within twice the clearance), an `Item`: the region that blocks (along its
-  velocity or average velocity, a manoeuvre's or a young track's reach, no velocity; for
-  ours a course, a circle, a cruise reach, lost), that region at the effect time, the
-  clearance (effect radius plus `keep_out_m`), the shortfall, how altitude counted (for
-  aircraft), and what would clear it: `fits_until_t` (same picture: the latest effect time
-  up to which every earlier one leaves it clear, a scan of effect times every 0.25 s from the
-  dispatch delay), `wait` (the first nomination time, on a 1 s grid within 10 min, at which a
-  dry run would find it clear on the picture carried forward by `keepout::project`: tracks
-  in view hold course and speed and are seen as now, a young track gets its velocity as its
-  average after `mean_min_s`, a manoeuvre leaves the memory after `manoeuvre_memory_s`, an
-  unseen track's uncertainty grows, our vehicles keep doing what they do, the platform
-  holds), or why waiting does not (lost, not in view), and `other` (a report, a velocity
-  estimate, an operator's logged acceptance of a lost friendly). For the platform,
-  `MoveWithin` (within cruise times the span of the contiguous passing effect times, of
-  where the target is then) and the first nomination time at which every keep-out holds.
-  It refuses (Err) when its blocking items do not match the checks' outcomes. The tracker's
-  memories come from the bridge (`tracks::model::memory()`); the defaults are the same.
+  `keepout::explain(spec, world, cfg, options)` reads the same functions on the dry run's
+  snapshot (`options`: the tracker's memories, our vehicles' callsigns for its words). For
+  every track or vehicle that blocks the keep-out, or nearly does (its nearest region's edge
+  within twice the clearance; at most 12 listed, blocking first, the rest counted), an
+  `Item`: the region that blocks (along its velocity or average velocity, a manoeuvre's or a
+  young track's reach, no velocity; for ours a course, a circle, a cruise reach, lost), that
+  region at the effect time, the clearance (effect radius plus `keep_out_m`), the shortfall,
+  how altitude counted (for aircraft), and what would clear it: `clear_windows` (same
+  picture: the stretches of effect times, scanned every 0.25 s from the earliest any
+  position allows, the dispatch delay or the window's opening, to the latest a nomination
+  allows, the window's close or the longest transit, at which it is clear; `fits_until_t`
+  when the first starts at the earliest), `wait` (the first nomination time, on a 1 s grid
+  within 10 min, at which a dry run would find it clear on the picture carried forward by
+  `keepout::project`: tracks in view, seen within the tracker's 10 s stale limit, hold course
+  and speed and are seen as now, a young track gets its velocity as its average after
+  `mean_min_s`, a manoeuvre leaves the memory after `manoeuvre_memory_s`; our vehicles keep
+  doing what they do, carried as the check predicts them, a circle that holds one keeping it
+  on it; the platform holds), or what happens instead (a track out of view: its region grows
+  while unseen, and the tracker drops a track unseen for `drop_after_s`, after which it no
+  longer counts, stated, not offered as a hint; one of ours lost: its reach grows), and
+  `other` (a report, a velocity estimate once the track settles, an operator's logged
+  acceptance of a lost friendly). For the platform, `MoveWithin`: every window of effect
+  times at which every keep-out holds, as distances from the target when it holds where it
+  is ("within X m" when the first starts at the earliest, "between X and Y m" farther), or
+  that no position clears it, naming what blocks the earliest effect. It refuses (Err) for an
+  effect radius above the policy's maximum, and unless every track and vehicle it lists as
+  blocking is one the check fails on, judged alone (a picture with only it), and no other.
+  The tracker's memories come from the bridge (`Tracks::memory()`); the defaults are the same.
   `tests/keepout.rs` checks each claim against `rules::evaluate`: on seeded random pictures
   (240 in the suite; `MURMUR_KO_SEED`, `MURMUR_KO_WORLDS` for more), a dry run at the stated
   nomination time on the projected picture passes that item's keep-out and one second
-  earlier fails; the platform placed within the stated distance passes and, with a holding
-  target, one step farther fails; and the explanation's checks are the dry run's.
+  earlier fails; the platform placed within the stated distance passes and one step farther
+  fails; placed so the effect lands exactly at times inside a window (a moving target's
+  effect time set by placing the platform ahead of it on its course) it passes, at grid
+  times outside every window it fails; and the explanation's checks are the dry run's.
 - **Scenarios** (`scenario.rs`, `murmur-scenarios`, `sim/scenarios/engage/`): the
   adversarial set, one or more per invariant, with log tampering; see that directory's
   README for the format.

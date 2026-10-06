@@ -2,7 +2,7 @@
 # whose sensors cover only part of the bay, so the scenario's contacts (sim/scenarios/
 # golden-gate.toml) are picked up as they come into range and fade as they leave it.
 # No HALE/MALE aircraft here on purpose: their radars see the whole bay at once.
-#   MURMUR_CONTACTS=sim/scenarios/golden-gate.toml make goldengate GG_FLEET=contacts-demo
+#   make goldengate GG_FLEET=contacts-demo CONTACTS=sim/scenarios/golden-gate.toml
 title = "Contacts demo: partial sensor coverage at the Gate (stand-ins)"
 
 [[unit]]

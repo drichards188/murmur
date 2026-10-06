@@ -744,13 +744,23 @@ group. Dates are 2026.
   scenarios in ten variants write the same 820 logs as before (the build stamp and the hash
   chain it feeds aside), the fixtures and the audit logs replay as before. (3) It cannot
   disagree with the checks: the same functions on the snapshot the dry run checked, it
-  refuses to explain when its blocking items do not match the checks' outcomes, and every
-  hint is tested by a dry run that tries it (`tests/keepout.rs`). (4) Agents may read it,
-  as they read a preview; they still cannot authorize anything, and like the console's dry
-  run it is not logged. Its limits, stated: hints are conditional (a circling boat's wait
-  hint holds only "if it stops manoeuvring", which it never does, and says so); move-within
-  is on the picture now, which moves (the form refreshes every 4 s); waits are the first on
-  a 1 s grid within 10 min; options stay listed by uid, unranked. Live (engage demo, the
+  refuses to explain unless every track and vehicle it lists as blocking is one the check
+  fails on judged alone, and no other, and every hint is tested by a dry run that tries it
+  (`tests/keepout.rs`). (4) Agents may read it, as they read a preview; they still cannot
+  authorize anything, and like the console's dry run it is not logged (an agent's dry runs
+  are at most one a second). Its limits, stated: hints are conditional (a circling boat's
+  wait hint holds only "if it stops manoeuvring", which it never does, and says so);
+  closer and farther are on the picture now, which moves (the form refreshes every 4 s);
+  waits are the first on a 1 s grid within 10 min; options stay listed by uid, unranked. A
+  track out of view gets no wait hint: what happens is stated (the tracker drops a track
+  unseen for 180 s, and it then no longer counts in the keep-out), never offered as
+  something to wait for; whether a contact should stop protecting once dropped is a
+  separate question (filed by the review). After the review of 2f4f46a: the scan of effect
+  times runs to the latest a nomination allows, so a farther platform that clears what no
+  closer one does is found ("between X and Y m"; it had said no position clears it), the
+  dry run reads the engagements in play and the spent platforms as the engine does (both
+  were missing: `platform_free` and a spent platform's readiness passed in the form), and
+  our vehicles are named by callsign. Live (engage demo, the
   tour boat circling and a light aircraft with no velocity estimate): the Magura-class USV
   2.1 km out was told "within 693 m of the target"; ordered closer, the dry run still
   failed at 836 m (the hint then 816 m, moving with the aircraft) and passed every check at
