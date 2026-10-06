@@ -721,10 +721,10 @@ group. Dates are 2026.
 - **The reviews' follow-ups are one rules version, gated on a named constant** (10-06,
   rules 12, `REVIEW_FOLLOWUPS_SINCE`). The six follow-ups below change what is logged or
   decided, so they share one version; every gate reads the constant (and `RULES_VERSION` is
-  defined from it), never a literal: if another branch (space tasks) takes 11 first, the
-  branch that merges second renumbers in one line and has its fixtures written again by the
-  merged build. No policy key changes (schema 7 stays). Logs of rules 1 to 10 replay
-  unchanged with their own rules; the tests of the rules 6 to 10 carry are pinned to rules 10.
+  defined from it), never a literal. The space tasks' follow-ups took 11 first (merged
+  10-06), so these are 12: one line renumbered, the fixtures written again by the merged
+  build. No policy key changes (schema 7 stays). Logs of rules 1 to 11 replay unchanged with
+  their own rules; the tests of the rules 6 to 10 carry are pinned to rules 10.
 - **A platform spent by its own effect is owed nothing back; an operator may write off what
   never comes back** (10-06, murmur-q05; rules 12). A loitering munition's own lost-link
   values were owed back for good after its effect (the passkeys live run: the switchblade
@@ -743,6 +743,21 @@ group. Dates are 2026.
   In the simulation the munition flies on with the preloaded failsafe (a safety action); the
   bridge stops trying to restore it. A write-off records a judgement about the fleet and
   authorizes nothing, so it needs no step-up.
+  After the review (M1): an expended closure marks the platform spent, a logged state, and a
+  spent platform takes no order and no nomination: `readiness` fails for it (the decision's
+  `expended` fact, checked against the ledger by replay), every dispatch path refuses it, an
+  order approved before the effect is voided saying so, and replay flags any order sent to it.
+  Without that, the closure left a live, taskable platform carrying the engagement's lost-link
+  action: an orbit went at once with no restore, and a second engagement's preload would have
+  read the first one's fallback as the platform's own values, past the rules 6 guard. The
+  other option, closing only once the platform is no longer heard, was not taken: a one-way
+  munition in the simulation (and a real one whose link outlives it a while) stays heard, so
+  the debt would stay owed and the inbox alert with it, which is what q05 set out to end; and
+  "no longer heard" is a link fact, not the platform's state. Spent includes the safety
+  commands (a hold or an rtl): a platform spent by its own effect has nothing left to hold or
+  return, and a command to it would only look as if it did. An operator who believes the
+  platform survived has no override in this version (proposed follow-up: an un-spend with a
+  note, under the operator's own session, logged and bound like a write-off).
 - **A young track counts as possibly manoeuvring until the tracker has the facts** (10-06,
   murmur-9m0; rules 12). Rules 9 read a track's average velocity (after about 45 s of history)
   and its manoeuvre memory; a track too young for either fell back to the single region along
@@ -785,6 +800,17 @@ group. Dates are 2026.
   a pointer listing every log still owed, was not taken: the pointer is not logged, so replay
   could not check that a debt was kept. Residual, stated: removing the record from the first
   line reads as a first start, caught only by the start anchor (like the roster).
+  After the review (M2, L4, L5, L7): what the last run left behind never stops a start. A
+  pointer that is empty, garbled, names no log (a crash mid-write, a stray edit) or can't be
+  read is a failed carry like a log that can't be read, recorded under the pointer's own name
+  (the log it named is unknown), alerted, owed until an operator writes it off; before, the
+  bridge refused to start until someone edited the file, leaving an empty log at each try.
+  The pointer is written whole or not at all (a temporary file, synced, renamed over it), and
+  rewritten at every start, whatever the carry found; a start that fails after opening its log
+  leaves no empty log behind. The start records the head and last seq of the last complete
+  event it read, and replay checks the log carried from up to there (a torn last line is not
+  part of what was read). A log recorded as failed that is at hand and reads, still owing, is a
+  mismatch (unless trusted): its failure can't be told from a forged one.
 - **Values carried over hold a mission for the vehicle they were preloaded on** (10-06,
   murmur-qjf; rules 12). Rules 7 held a mission only for values an engagement of this run
   preloaded, because the log could not tell which vehicle has the uid after a restart; so in
@@ -797,12 +823,36 @@ group. Dates are 2026.
   values refuse it whatever vehicle has the uid (an operator writes them off if it is another).
   The identity is the bridge's report, as any fact is: replay proves the hold follows from it,
   not that it was true.
+  After the review (M3): the rule is that only the platform, the callsign or the system id,
+  where both identities know it, says another vehicle; the home never does, alone or with
+  others. ArduPilot and the stand-ins set home again at every arming, so the very vehicle a
+  preload was set on reports another home once it armed elsewhere: live after a crash, the USV
+  under uid 2 (same platform, VIPER 1, system id 2) was judged another vehicle on a home
+  1215 m away, its orbit went at once and its restore was never tried. A home mismatch now
+  holds the mission and the restore is tried; a different vehicle that shares platform,
+  callsign and system id under the uid is not told apart (an operator writes the values off).
+  After the review (L9): what a failed carry owed is unknown, but not which vehicles it could
+  owe it to: only an armed platform is ever preloaded, and the run's fleet file beside the log
+  (`<log stem>.fleet.json`, written as the run went) names its platforms. The start records
+  them with the failed carry (`may_owe`: uid and identity, values unknown), and a mission for
+  one waits in the Queue, as for values known, until the log is read or written off (fail
+  closed; a hold or rtl goes at once; another vehicle under the uid is not held). Without a
+  readable fleet file (or for a pointer that could not be read) no mission is held, and the
+  pending carry's alert says so; it names the vehicles otherwise. `may_owe` comes from a file
+  outside the hash chain: replay checks it is only on a failed carry, not that it is complete,
+  and only the start anchor binds it. Not covered, stated: a nomination for such a platform is
+  not refused (its preload reads what the platform holds now); proposed follow-up.
 - **A refused mission says which older orders still stand** (10-06, murmur-54l; rules 12). A
   mission refused for its platform's own values (its kind never queued) replaces nothing, so
   an older queued hold or rtl still goes when the link allows (safer: a safety command), but
   the refusal did not say so. Its reason now names every order still queued on its vehicles,
   with the advice to cancel one meant to be replaced, and replay recomputes the reason from the
   ledger, the engagements in play and the queue.
+  After the review (L6): replay compares the whole reason, not a prefix, and not only for a
+  reason that begins as a refusal does: any other void of such an order while its platform's
+  values hold it must be one the bridge gives for something else (its task layer can't take
+  the order, a vehicle lost, a newer order); replay can't recompute which of those held, only
+  that the reason is one of them.
 
 - **The bridge keeps one clock that never steps, steered to within about 2 s of the wall
   clock; the wall clock itself only dates what another clock reads** (10-05, murmur-dup;

@@ -165,7 +165,8 @@ alt_age_s = 0                    # rules 6: its altitude was last ranged this lo
 tracked_s = 600                  # rules 12, optional: the tracker started it this long before
                                  # the start (`first_seen_t`); it has an average velocity once
                                  # tracked 45 s with a velocity, and until then it is young
-                                 # (absent: the tracker does not say, judged as rules 10 did)
+                                 # (absent: 600, an established track; a `track` step that
+                                 # makes one: 0, it appears then)
 
 [[step]]
 at_s = 0
@@ -288,6 +289,6 @@ calls `Engine::step_engagements` (hold the picture, release, observe, assess).
 | 78-revoked-bystander-before-first-picture | keep_out_tracks | rules 9 (second review): as 77, but op-3 revokes the bystander's declaration in the second the engagement is approved, before its first picture; the stop cut from the log | voided in the revocation's step, cause revoked (keep_out_tracks), not a later picture failure; tamper caught |
 | 71-refused-mission-supersedes-engagement | engagement_in_play | rules 7: 70's policy, the orbit ordered while the engagement is still under way, link up; the fact stripped from the log | the orbit is voided and in the same step the engagement is aborted, superseded by it, no fallback, its reason saying so; given again before the restore it is refused saying the restore is pending; after it, it goes at once; tamper caught |
 | 79-young-track-blocks-until-tracked | keep_out_tracks | rules 12: a ferry first detected a second before the nomination, 1.2 km north of the effect point and heading away (no average velocity yet); its first detection dropped from the log | rejected (keep_out_tracks: anywhere it reaches at 25 m/s), then, tracked 59 s, the same nomination waits for its signers; tamper caught |
-| 80-expended-munition-owes-nothing | restore_owed | rules 12: a switchblade's engagement released (the munition spent by its effect); the catalog fact dropped from every picture in the log | done (ceased); its values closed right after the release (`restore.closed`, expended), nothing owed at the end; tamper caught |
+| 80-expended-munition-owes-nothing | restore_owed | rules 12: a switchblade's engagement released (the munition spent by its effect); then an orbit and a second nomination for it; the catalog fact dropped from every picture in the log | done (ceased); its values closed right after the release (`restore.closed`, expended), nothing owed at the end; the orbit and the nomination rejected (readiness: spent by its own effect); tamper caught |
 | 81-refusal-names-the-order-still-queued | restore_owed | rules 12: 67 under 70's policy: the hold queued for the cut-off USV, then an orbit refused for its own values; the clause cut from the refusal in the log | the orbit voided, its reason naming the hold still queued (`i2 (hold, vehicle viper-1)`); the hold goes when the link returns; tamper caught |
 | 82-restore-written-off | restore_owed | rules 12: 69, the USV never confirming its values back; op-1 writes them off; the write-off credited to another operator in the log | the waiting orbit goes at once after the write-off, nothing owed at the end; tamper caught |

@@ -1246,20 +1246,26 @@ Rules versions:
     Replay checks each: the values exactly what was owed, an expended closure right after that
     engagement's release with its release picture showing the platform spent, a write-off
     under the operator's own session with a note; it lists them (`restores_closed`,
-    `CLOSED:`).
+    `CLOSED:`). An expended closure also marks the platform spent: from then on it takes no
+    order and no nomination (`readiness` fails on the decision's `expended` fact, which replay
+    checks against the ledger; every dispatch path refuses it; an order approved before the
+    effect is voided, `spent platform: ...`; replay flags any order sent to it).
   - *A young track counts as possibly manoeuvring* (murmur-9m0): the tracker reports when it
     started a track (`first_seen_t`); a track with a velocity but no average velocity yet (its
     history too short to show a manoeuvre: its first 45 s or so, or after a gap) also counts in
     a keep-out anywhere it reaches at its domain's top speed (25 m/s on the surface), or at its
     own speed plus `keep_out_sigma` of its velocity error if that is faster. Before, it fell
     back to the one region along its velocity. Cost: larger keep-outs for a new track's first
-    minute (a surface track 2 km away blocks an effect 80 s out).
+    minute (a surface track 2 km away blocks an effect 80 s out). The scenario runner gives a
+    track the file lists 600 s of history (`tracked_s` overrides it) and one a step makes none:
+    it appears then.
   - *Scripted operators fixed at the start* (murmur-jfi): a credentials run's roster lists the
     harness-held credentials (`scripted`, always, empty when none); a session opens by the
     method it gives its operator (the engine refuses, and replay flags, a scripted session for
     a person or a person's for a scripted credential), so a credential re-marked mid-run can't
     move an operator between people and scripts in the log, and a relabelled session (forgery
-    14) is caught. The bridge's step-up 429 says "for this session".
+    14) is caught. The bridge's step-up 429 says "for this session". A login refused for it is
+    logged (`auth.refused`), and the browser's own session ends only once a new one opened.
   - *What a start carried, in one line* (murmur-cq3): `run.started` records `carried_from`:
     the log `.last-run-<port>` named and, tried again, every log it still owed for whose carry
     had failed, each with its head and last seq as read and what it still owed (the
@@ -1270,21 +1276,32 @@ Rules versions:
     replays, it is the one read, it still owed exactly that; a log carried that nobody named,
     or a pending one not tried again, is a mismatch. A failed carry stays owed (pending) in
     the log that recorded it until a later start reads it or an operator writes it off, so the
-    pointer's rewrite no longer drops it from the chain.
+    pointer's rewrite no longer drops it from the chain. A pointer that is empty, garbled, names
+    no log or can't be read is a failed carry under its own name (`.last-run-<port>`: the log it
+    named is unknown), never a failed start; the bridge rewrites it at every start, whole
+    (temporary file and rename). Replay checks a log carried from up to the last seq recorded
+    (a torn last line is not part of it), and a log recorded as failed that is at hand and
+    reads, still owing, is a mismatch unless trusted. A failed carry records the armed
+    platforms its run's fleet file names (`may_owe`: identity, values unknown); a mission for
+    one waits in the Queue until the log is read or written off.
   - *Carried values hold a mission* (murmur-qjf): values carried over from an earlier run hold
     an order other than a hold or rtl for the vehicle they were preloaded on, as an
     engagement's of this run do; the decision's `restore_owed` fact carries the bridge's
     identity of the vehicle under the uid now (`carried`: `from`, `preloaded_on`, `now`,
     `other_vehicle`), and replay recomputes from it whether they hold (another vehicle: they
     don't; unknown: they do). A kind the policy never queues logs no reach, so there they hold
-    whatever vehicle has the uid.
+    whatever vehicle has the uid. Only the platform, the callsign or the system id says another
+    vehicle; the home never does (ArduPilot sets it again at every arming).
   - *A refusal names the orders still queued* (murmur-54l): a mission refused for its
     platform's own values replaces no older queued order; its reason now names those still
-    standing on its vehicles, and replay recomputes the reason.
+    standing on its vehicles, and replay recomputes the reason and compares it whole (any other
+    void of such an order must be one the bridge gives for something else: its task layer, a
+    vehicle lost, a newer order).
 
-  Markers (a log claiming rules 10 or older can't carry them): `carried_from`,
+  Markers (a log claiming rules 11 or older can't carry them): `carried_from`,
   `restore.closed`, the roster's `scripted`, a track's `first_seen_t`, a `restore_owed`
-  entry's `carried`. Older carry tests are pinned to rules 10 (`tests/carried.rs`,
+  entry's `carried`, a decision's or a closure's `expended`, a failed carry's `may_owe`. Older
+  carry tests are pinned to rules 10 (`tests/carried.rs`,
   `tests/rules6.rs`). Fixtures (a clean build of `0734adb`): `tests/data/audit/
   v12-engagement-scenario-01.jsonl` (the switchblade owed nothing after its effect, as scenario
   80), `v12-young-track-blocks-scenario-79.jsonl`, `v12-refusal-names-queued-order-scenario-81.jsonl`,
