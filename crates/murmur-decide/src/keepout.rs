@@ -940,9 +940,19 @@ fn same_picture(ctx: &Ctx, items: &mut [(Item, Probe)]) -> MoveWithin {
     }
 }
 
-/// Why a track cleared by `w`: compared with its regions now.
-fn track_why(now_kinds: &[&str], then: &TrackFacts, w_effect: Time, ec: &EngageRules, mem: &TrackerMemory) -> String {
+/// Why a track cleared for a nomination at `w` (its effect at `w_effect`): compared with its
+/// regions now, and the time from nomination to effect now (`span_now_ms`) and then.
+fn track_why(
+    now_kinds: &[&str],
+    then: &TrackFacts,
+    w: Time,
+    w_effect: Time,
+    span_now_ms: i64,
+    ec: &EngageRules,
+    mem: &TrackerMemory,
+) -> String {
     let then_kinds: Vec<ReachKind> = engage::track_regions(then, w_effect, ec).iter().map(|r| r.kind).collect();
+    let reach = now_kinds.iter().any(|k| ["young", "manoeuvre", "no_velocity"].contains(k));
     if now_kinds.contains(&"young") && !then_kinds.contains(&ReachKind::Young) {
         format!(
             "by then it has been tracked {:.0} s, long enough for an average velocity: a manoeuvre is no longer assumed",
@@ -953,8 +963,14 @@ fn track_why(now_kinds: &[&str], then: &TrackFacts, w_effect: Time, ec: &EngageR
             "by then its last manoeuvre is more than {:.0} min old, out of the tracker's memory",
             mem.manoeuvre_memory_s / 60.0
         )
+    } else if reach && w_effect.ms_since(w) + 5_000 <= span_now_ms {
+        format!(
+            "by then the effect would come {:.0} s after the nomination instead of {:.0} s (the target nearer the platform), so its reach is shorter",
+            secs(w_effect.ms_since(w)),
+            secs(span_now_ms)
+        )
     } else {
-        "by then its predicted region has moved clear of the effect point".to_string()
+        "by then its predicted region and the effect point have moved apart".to_string()
     }
 }
 
@@ -1071,7 +1087,10 @@ fn carried_forward(ctx: &Ctx, items: &mut [(Item, Probe)]) -> (Option<Wait>, Opt
             let (item, _) = &items[i];
             let (ok, why) = match item.subject {
                 Subject::Track => match tracks.iter().find(|t| t.id == item.id) {
-                    Some(t) if track_ok(t) => (true, track_why(&t.now_kinds, &t.then, at, ec, mem)),
+                    Some(t) if track_ok(t) => (
+                        true,
+                        track_why(&t.now_kinds, &t.then, w, at, ctx.pv.effect_t.ms_since(now), ec, mem),
+                    ),
                     _ => (false, String::new()),
                 },
                 Subject::Vehicle => match vehicles.iter().find(|v| v.uid.to_string() == item.id) {
