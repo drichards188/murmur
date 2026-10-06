@@ -1,7 +1,7 @@
 # Golden Gate traffic for rule-based identification (rules 9): scripted hostile acts, clear
 # and ambiguous. Run with the engagement demo fleet (stand-ins; uids in file order:
 # 1 switchblade, 2 magura, 3 ugv_armed, 4 corsair, 5 x10):
-#   MURMUR_CONTACTS=sim/scenarios/golden-gate-ident.toml make goldengate GG_FLEET=engage-demo
+#   make goldengate GG_FLEET=engage-demo CONTACTS=sim/scenarios/golden-gate-ident.toml
 #   (with MURMUR_OPERATORS=op-1,op-2,op-3 MURMUR_ENGAGE_OPERATORS=op-2,op-3 for two approvers)
 # and `[identification] rule_declaration = true` in the policy (sim/policy.toml has it).
 #

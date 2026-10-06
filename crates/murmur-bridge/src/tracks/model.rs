@@ -102,8 +102,21 @@ const REPORT_NIS: f64 = 1.5;
 /// The average velocity a keep-out also predicts along is over about this long, s (the
 /// displacement since the position sample nearest this long ago, at least
 /// [`MEAN_MIN_S`] ago).
-const MEAN_WINDOW_S: f64 = 60.0;
-const MEAN_MIN_S: f64 = 45.0;
+pub const MEAN_WINDOW_S: f64 = 60.0;
+pub const MEAN_MIN_S: f64 = 45.0;
+
+/// The memories above, as the keep-out explanation ages a picture with them
+/// (`murmur_decide::keepout::project`), with the stale limit and how long an unseen track is
+/// kept (`drop_after_s`, the run's `MURMUR_TRACK_DROP_S`).
+pub fn memory(drop_after_s: f64) -> murmur_decide::keepout::TrackerMemory {
+    murmur_decide::keepout::TrackerMemory {
+        mean_min_s: MEAN_MIN_S,
+        mean_window_s: MEAN_WINDOW_S,
+        manoeuvre_memory_s: MANOEUVRE_MEMORY_S,
+        stale_after_s: STALE_S,
+        drop_after_s,
+    }
+}
 
 /// The manoeuvring model's probability above which the track counts as manoeuvring for the
 /// keep-out (as well as a velocity change beyond its noise).

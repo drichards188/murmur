@@ -718,6 +718,54 @@ group. Dates are 2026.
 
 ## Engineering
 
+- **A keep-out that blocks is explained, read-only; nothing here relaxes one** (10-06,
+  murmur-12e; no rules change). Measured live: with manoeuvring civilian traffic near the
+  target, keep-outs blocked 77 of 77 nominations while the platform was 1 to 2 km out (a
+  circling tour boat's rules 9 manoeuvre region, a light aircraft with no velocity
+  estimate), and the operator saw a rejection naming the first track in id order, not why
+  or what would help. Now the nomination form's dry run (`POST /api/engage/options`, and
+  agents' `get_nomination_options`) carries `keep_outs` (`murmur_decide::keepout`): for each
+  track or vehicle of ours that blocks the keep-out, or nearly does, the region that blocks
+  (its course, its average course, a manoeuvre's or a young track's reach, no velocity yet, a
+  lost vehicle of ours, no altitude ceiling), its numbers (the region at the effect time, the
+  clearance, the shortfall), and what would clear it: a shorter span (the platform closer:
+  "within 693 m of the target"), a later nomination if everything keeps behaving as now
+  (a young track's average velocity, a manoeuvre leaving the tracker's five-minute memory, a
+  region moving off), or why waiting does not help (lost, out of view) and what would (a
+  report, a velocity estimate, the existing logged acceptance of a lost friendly). The
+  console draws the blocking regions at the effect time and the platform's move-within ring.
+  Read-only, and why: (1) the problem measured was understanding, and whether any keep-out
+  should be tuned or overridable is the user's decision after the evaluation measures
+  blocking rates (murmur-12e); an explanation that tuned or offered an override would make
+  that decision by the back door. (2) A second path that could act would sit outside what
+  replay binds; kept out of every decision and out of the log (a dry run is not a decision,
+  10-03), it leaves replay's guarantee whole: the checks now judge each item through
+  `track_standing` and `friendly_standing`, which the explanation reads too, and the 82
+  scenarios in ten variants write the same 820 logs as before (the build stamp and the hash
+  chain it feeds aside), the fixtures and the audit logs replay as before. (3) It cannot
+  disagree with the checks: the same functions on the snapshot the dry run checked, it
+  refuses to explain unless every track and vehicle it lists as blocking is one the check
+  fails on judged alone, and no other, and every hint is tested by a dry run that tries it
+  (`tests/keepout.rs`). (4) Agents may read it, as they read a preview; they still cannot
+  authorize anything, and like the console's dry run it is not logged (an agent's dry runs
+  are at most one a second). Its limits, stated: hints are conditional (a circling boat's
+  wait hint holds only "if it stops manoeuvring", which it never does, and says so);
+  closer and farther are on the picture now, which moves (the form refreshes every 4 s);
+  waits are the first on a 1 s grid within 10 min; options stay listed by uid, unranked. A
+  track out of view gets no wait hint: what happens is stated (the tracker drops a track
+  unseen for 180 s, and it then no longer counts in the keep-out), never offered as
+  something to wait for; whether a contact should stop protecting once dropped is a
+  separate question (filed by the review). After the review of 2f4f46a: the scan of effect
+  times runs to the latest a nomination allows, so a farther platform that clears what no
+  closer one does is found ("between X and Y m"; it had said no position clears it), the
+  dry run reads the engagements in play and the spent platforms as the engine does (both
+  were missing: `platform_free` and a spent platform's readiness passed in the form), and
+  our vehicles are named by callsign. Live (engage demo, the
+  tour boat circling and a light aircraft with no velocity estimate): the Magura-class USV
+  2.1 km out was told "within 693 m of the target"; ordered closer, the dry run still
+  failed at 836 m (the hint then 816 m, moving with the aircraft) and passed every check at
+  810 m, and the nomination went to the inbox with both keep-outs passing; the dry runs
+  (about 40) logged nothing, and the log replays with its anchors.
 - **The reviews' follow-ups are one rules version, gated on a named constant** (10-06,
   rules 12, `REVIEW_FOLLOWUPS_SINCE`). The six follow-ups below change what is logged or
   decided, so they share one version; every gate reads the constant (and `RULES_VERSION` is
@@ -1500,7 +1548,8 @@ group. Dates are 2026.
   runs the engagement checks and preview for every armed platform on the world now, creates
   nothing and logs nothing; the decision is the nomination and its signatures, each
   re-checked by the engine. It lists platforms by uid with no ranking and no recommendation,
-  and the form preselects nothing: the operator picks the platform.
+  and the form preselects nothing: the operator picks the platform. From 10-06 each option
+  also explains its keep-outs, read-only (murmur-12e, under Engineering).
 - **The MCP server lives in the bridge, on in-process `AgentPort`s** (10-02, Phase F). Not a
   separate process over HTTP: there is no agent HTTP path, so the only way for agent code to
   reach the engine is the typed `AgentPort`, and "no approve tool" is the absence of a method,

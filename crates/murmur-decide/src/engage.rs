@@ -2157,173 +2157,33 @@ pub fn keep_out_friendly(
         if Some(uid) == platform {
             continue;
         }
-        let pos_fresh = fresh(&v.position, v, "position", world, cfg).is_ok();
-        // rules 6: lost since exactly the report an operator accepted for this engagement
-        if ec.v6()
-            && !pos_fresh
-            && let Some(a) = world.unknown_accepted.get(uid)
-            && a.since == v.position.as_ref().map(|p| p.t)
-        {
-            accepted.push(format!("{uid}: {}, accepted by {}", lost_since(v, world), a.by));
-            continue;
-        }
-        count += 1;
-        let Some(pos) = &v.position else {
-            return check(
-                r,
-                Some(uid),
-                Outcome::Fail,
-                if ec.v6() {
-                    format!(
-                        "vehicle {uid} has no position: cannot clear the keep-out ({}: an operator may accept it as unknown)",
-                        lost_since(v, world)
-                    )
-                } else {
-                    format!("vehicle {uid} has no position: cannot clear the keep-out")
-                },
-            );
-        };
-        // rules 3: a vehicle flying a circle stays on it; its momentary heading, carried
-        // a minute or more ahead, would put it kilometres away in any direction. The circle
-        // holds only a vehicle that is on it: its position, reported with the circle, within
-        // the circle's radius and a small slack of the center. Otherwise the circle is
-        // wrong or stale, and the vehicle is predicted from where it is.
-        // Each report is judged on its own freshness: the position by the usual link-aware
-        // rule, the center by its own age.
-        let reported = v.circling.as_ref().filter(|_| ec.v3());
-        let circling = reported.filter(|c| {
-            let center_fresh = match c.value.center_t {
-                Some(ct) => world.t.ms_since(ct) <= CIRCLE_CENTER_MAX_AGE_MS,
-                None => fresh(&v.circling, v, "circle", world, cfg).is_ok(),
-            };
-            pos_fresh
-                && center_fresh
-                && haversine_m(pos.value, c.value.center) <= c.value.radius_m + CIRCLE_SLACK_M
-        });
-        let vel = v
-            .velocity_mps
-            .as_ref()
-            .filter(|_| pos_fresh)
-            .and_then(|f| fresh(&v.velocity_mps, v, "velocity", world, cfg).ok().map(|_| f.value));
-        let span = secs(effect_t.ms_since(pos.t)).max(0.0);
-        let off_circle = reported.is_some() && circling.is_none();
-        // from where it is: along its velocity (or how far it could reach), over the whole
-        // span, or with a circle that holds it for at most CIRCLE_CARRY_S; the uncertainty
-        // grows over the whole span either way
-        let carry = if circling.is_some() {
-            span.min(CIRCLE_CARRY_S)
-        } else {
-            span
-        };
-        let disc = circling.map(|c| {
-            // anywhere on its disc, slack included, with the same uncertainty growth as any
-            // of ours (it may be retasked) since the older of its reports; fail closed on
-            // the near edge
-            let dt = secs(effect_t.ms_since(if c.t < pos.t { c.t } else { pos.t })).max(0.0);
-            let margin = ec.keep_out_sigma * ec.friendly_growth() * dt;
-            (
-                (haversine_m(c.value.center, point) - c.value.radius_m - CIRCLE_SLACK_M - margin)
-                    .max(0.0),
-                std::borrow::Cow::<'static, str>::from(format!(
-                    "circling within {:.0} m of its center, less its uncertainty",
-                    c.value.radius_m
-                )),
-            )
-        });
-        let here: Option<(f64, std::borrow::Cow<'static, str>)> = match vel {
-            Some([e, n]) => {
-                // along its velocity, with an uncertainty that grows with the span (it may
-                // turn or be retasked); fail closed on the near edge
-                let p = offset(pos.value, e * carry, n * carry);
-                let margin = ec.keep_out_sigma * ec.friendly_growth() * span;
-                Some(if circling.is_some() {
-                    (
-                        (haversine_m(p, point) - margin).max(0.0),
-                        format!(
-                            "predicted along its velocity for {CIRCLE_CARRY_S:.0} s, then on its circle, less its uncertainty"
-                        )
-                        .into(),
-                    )
-                } else if off_circle {
-                    (
-                        (haversine_m(p, point) - margin).max(0.0),
-                        "predicted along its velocity, less its uncertainty; its reported circle does not hold its position".into(),
-                    )
-                } else if ec.v2() {
-                    (
-                        (haversine_m(p, point) - margin).max(0.0),
-                        "predicted along its velocity, less its uncertainty".into(),
-                    )
-                } else {
-                    (haversine_m(p, point), "predicted along its velocity".into())
-                })
-            }
-            None => {
-                let cruise = v
-                    .platform
-                    .as_ref()
-                    .and_then(|p| p.cruise_mps)
-                    .filter(|c| c.is_finite() && *c >= 0.0);
-                let Some(cruise) = cruise else {
-                    return check(
-                        r,
-                        Some(uid),
-                        Outcome::Fail,
-                        format!(
-                            "vehicle {uid}: no fresh velocity and no cruise speed: cannot clear the keep-out"
-                        ),
-                    );
-                };
-                Some((
-                    (haversine_m(pos.value, point) - cruise * carry).max(0.0),
-                    if ec.v6() && !pos_fresh {
-                        format!(
-                            "how far it could reach at cruise speed; {}: an operator may accept it as unknown",
-                            lost_since(v, world)
-                        )
-                        .into()
-                    } else {
-                        "how far it could reach at cruise speed".into()
-                    },
-                ))
-            }
-        };
-        let (d, how) = match (disc, here) {
-            (Some(a), Some(b)) => {
-                if b.0 < a.0 {
-                    b
-                } else {
-                    a
+        let (d, how, clear_by_alt, alt_known) =
+            match friendly_standing(uid, v, point, effect_t, keep_out_m, world, cfg, alt, true) {
+                FriendlyStanding::Accepted { note } => {
+                    accepted.push(note);
+                    continue;
                 }
-            }
-            (Some(a), None) | (None, Some(a)) => a,
-            // no circle holds it and nothing from its position: fail closed
-            (None, None) => {
-                return check(
-                    r,
-                    Some(uid),
-                    Outcome::Fail,
-                    format!("vehicle {uid}: cannot predict it: cannot clear the keep-out"),
-                );
-            }
-        };
+                FriendlyStanding::Unclearable { detail, .. } => {
+                    return check(r, Some(uid), Outcome::Fail, detail);
+                }
+                FriendlyStanding::Judged {
+                    d,
+                    how,
+                    by_alt,
+                    alt_known,
+                    ..
+                } => (d, how, by_alt, alt_known),
+            };
+        count += 1;
         if d < keep_out_m {
             // rules 6: in 3D where its altitude (fresh) and the effect's are known: clear when
             // even climbing or descending at its vertical rate it stays outside the keep-out
             // above or below the effect
-            if let Some(e) = alt.filter(|_| ec.v6())
-                && let Ok(a) = fresh(&v.alt_msl_m, v, "altitude", world, cfg)
-            {
-                let alt_t = v.alt_msl_m.as_ref().map_or(pos.t, |f| f.t);
-                let alt_span = secs(effect_t.ms_since(alt_t)).max(0.0);
-                let rate = friendly_vertical_mps(v, &ec);
-                let m = ec.keep_out_sigma * VEHICLE_ALT_SIGMA_M + rate * alt_span;
-                if let Some(c) = vertical_clear(&e, *a, m) {
-                    by_alt.push(format!(
-                        "{uid} at {a:.0} m ({c:.0} m outside the vertical keep-out with {m:.0} m of altitude uncertainty)"
-                    ));
-                    continue;
-                }
+            if let Some((a, c, m)) = clear_by_alt {
+                by_alt.push(format!(
+                    "{uid} at {a:.0} m ({c:.0} m outside the vertical keep-out with {m:.0} m of altitude uncertainty)"
+                ));
+                continue;
             }
             return check(
                 r,
@@ -2331,7 +2191,7 @@ pub fn keep_out_friendly(
                 Outcome::Fail,
                 format!(
                     "vehicle {uid} could be {d:.0} m from the effect point at the effect time ({how}); keep-out {keep_out_m:.0} m{}",
-                    vertical_note(alt.filter(|_| ec.v6()), v.alt_msl_m.is_some())
+                    vertical_note(alt.filter(|_| ec.v6()), alt_known)
                 ),
             );
         }
@@ -2353,6 +2213,296 @@ pub fn keep_out_friendly(
         Outcome::Pass,
         format!("{count} vehicle(s) of ours clear of the {keep_out_m:.0} m keep-out at the effect time{near}{tail}"),
     )
+}
+
+/// Which region of one of our vehicles the friendly keep-out counts ([`friendly_standing`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FriendlyKind {
+    /// Along its velocity, less an uncertainty growing over the span.
+    Velocity,
+    /// Rules 3: anywhere on the circle it flies, less the same uncertainty.
+    Circling,
+    /// No fresh velocity: anywhere its cruise speed reaches.
+    CruiseReach,
+    /// Its position is not fresh (its link is lost or late): anywhere its cruise speed
+    /// reaches since its last report.
+    Lost,
+    /// It never reported a position.
+    NoPosition,
+    /// No fresh velocity and no cruise speed (or nothing to predict it from).
+    Unpredictable,
+}
+
+impl FriendlyKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FriendlyKind::Velocity => "velocity",
+            FriendlyKind::Circling => "circling",
+            FriendlyKind::CruiseReach => "cruise_reach",
+            FriendlyKind::Lost => "lost",
+            FriendlyKind::NoPosition => "no_position",
+            FriendlyKind::Unpredictable => "unpredictable",
+        }
+    }
+}
+
+/// How one of our vehicles stands against an engagement's keep-out, as
+/// [`keep_out_friendly`] judges each vehicle but the platform (see [`friendly_standing`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum FriendlyStanding {
+    /// Rules 6: lost since exactly the report an operator accepted for this engagement: left
+    /// out (the check's note).
+    Accepted { note: String },
+    /// It can't clear the keep-out at all: the check fails with this detail.
+    Unclearable { kind: FriendlyKind, detail: String },
+    /// Where it could be at the effect time: a region (`center`, `radius_m`, for an
+    /// explanation) whose near edge is `d` from the point (0 inside it: the check's distance),
+    /// said `how`; when `d` is inside the keep-out and both altitudes are known, whether it is
+    /// clear by altitude (its altitude, how far outside the vertical keep-out, its margin).
+    Judged {
+        kind: FriendlyKind,
+        center: LonLat,
+        radius_m: f64,
+        d: f64,
+        how: std::borrow::Cow<'static, str>,
+        by_alt: Option<(f64, f64, f64)>,
+        /// It reported an altitude (whether or not fresh), for the detail's note.
+        alt_known: bool,
+    },
+}
+
+/// Rules 3: the circle a vehicle reports, when it holds the vehicle on `world` (what
+/// [`friendly_standing`] predicts it on). A vehicle flying a circle stays on it; its
+/// momentary heading, carried a minute or more ahead, would put it kilometres away in any
+/// direction. The circle holds only a vehicle that is on it: its position, reported with the
+/// circle, within the circle's radius and a small slack of the center. Otherwise the circle
+/// is wrong or stale, and the vehicle is predicted from where it is. Each report is judged on
+/// its own freshness: the position by the usual link-aware rule, the center by its own age.
+pub fn circle_holding<'v>(
+    v: &'v crate::world::VehicleFacts,
+    world: &WorldSnapshot,
+    cfg: &RulesConfig,
+) -> Option<&'v crate::world::Fact<crate::world::Circle>> {
+    let ec = cfg.engage_rules();
+    let pos = v.position.as_ref()?;
+    let pos_fresh = fresh(&v.position, v, "position", world, cfg).is_ok();
+    v.circling.as_ref().filter(|_| ec.v3()).filter(|c| {
+        let center_fresh = match c.value.center_t {
+            Some(ct) => world.t.ms_since(ct) <= CIRCLE_CENTER_MAX_AGE_MS,
+            None => fresh(&v.circling, v, "circle", world, cfg).is_ok(),
+        };
+        pos_fresh
+            && center_fresh
+            && haversine_m(pos.value, c.value.center) <= c.value.radius_m + CIRCLE_SLACK_M
+    })
+}
+
+/// One of our vehicles (`uid`, not the platform) against a keep-out reaching `keep_out_m`
+/// from `point` at `effect_t`: what [`keep_out_friendly`] reads for each. With a fresh
+/// velocity it is carried along it, less an uncertainty growing over the span; a vehicle a
+/// circle holds (rules 3) is anywhere on its disc (or carried at most [`CIRCLE_CARRY_S`]
+/// along its velocity, the nearer counting); without a fresh velocity, as far as its cruise
+/// speed reaches; lost (rules 6), the same from its last report, unless an operator accepted
+/// exactly that loss for this engagement. `words`: with the detail's words (`how`; else
+/// empty where they would be formatted).
+#[allow(clippy::too_many_arguments)]
+pub fn friendly_standing(
+    uid: &Uid,
+    v: &crate::world::VehicleFacts,
+    point: LonLat,
+    effect_t: Time,
+    keep_out_m: f64,
+    world: &WorldSnapshot,
+    cfg: &RulesConfig,
+    alt: Option<EffectAlt>,
+    words: bool,
+) -> FriendlyStanding {
+    let ec = cfg.engage_rules();
+    let pos_fresh = fresh(&v.position, v, "position", world, cfg).is_ok();
+    // rules 6: lost since exactly the report an operator accepted for this engagement
+    if ec.v6()
+        && !pos_fresh
+        && let Some(a) = world.unknown_accepted.get(uid)
+        && a.since == v.position.as_ref().map(|p| p.t)
+    {
+        return FriendlyStanding::Accepted {
+            note: format!("{uid}: {}, accepted by {}", lost_since(v, world), a.by),
+        };
+    }
+    let Some(pos) = &v.position else {
+        return FriendlyStanding::Unclearable {
+            kind: FriendlyKind::NoPosition,
+            detail: if ec.v6() {
+                format!(
+                    "vehicle {uid} has no position: cannot clear the keep-out ({}: an operator may accept it as unknown)",
+                    lost_since(v, world)
+                )
+            } else {
+                format!("vehicle {uid} has no position: cannot clear the keep-out")
+            },
+        };
+    };
+    let reported = v.circling.as_ref().filter(|_| ec.v3());
+    let circling = circle_holding(v, world, cfg);
+    let vel = v
+        .velocity_mps
+        .as_ref()
+        .filter(|_| pos_fresh)
+        .and_then(|f| fresh(&v.velocity_mps, v, "velocity", world, cfg).ok().map(|_| f.value));
+    let span = secs(effect_t.ms_since(pos.t)).max(0.0);
+    let off_circle = reported.is_some() && circling.is_none();
+    // from where it is: along its velocity (or how far it could reach), over the whole
+    // span, or with a circle that holds it for at most CIRCLE_CARRY_S; the uncertainty
+    // grows over the whole span either way
+    let carry = if circling.is_some() {
+        span.min(CIRCLE_CARRY_S)
+    } else {
+        span
+    };
+    // each candidate: (distance of its near edge, the words, kind, centre, radius)
+    type Region = (f64, std::borrow::Cow<'static, str>, FriendlyKind, LonLat, f64);
+    let disc: Option<Region> = circling.map(|c| {
+        // anywhere on its disc, slack included, with the same uncertainty growth as any
+        // of ours (it may be retasked) since the older of its reports; fail closed on
+        // the near edge
+        let dt = secs(effect_t.ms_since(if c.t < pos.t { c.t } else { pos.t })).max(0.0);
+        let margin = ec.keep_out_sigma * ec.friendly_growth() * dt;
+        (
+            (haversine_m(c.value.center, point) - c.value.radius_m - CIRCLE_SLACK_M - margin).max(0.0),
+            if words {
+                std::borrow::Cow::<'static, str>::from(format!(
+                    "circling within {:.0} m of its center, less its uncertainty",
+                    c.value.radius_m
+                ))
+            } else {
+                std::borrow::Cow::Borrowed("")
+            },
+            FriendlyKind::Circling,
+            c.value.center,
+            c.value.radius_m + CIRCLE_SLACK_M + margin,
+        )
+    });
+    let here: Option<Region> = match vel {
+        Some([e, n]) => {
+            // along its velocity, with an uncertainty that grows with the span (it may
+            // turn or be retasked); fail closed on the near edge
+            let p = offset(pos.value, e * carry, n * carry);
+            let margin = ec.keep_out_sigma * ec.friendly_growth() * span;
+            let k = FriendlyKind::Velocity;
+            Some(if circling.is_some() {
+                (
+                    (haversine_m(p, point) - margin).max(0.0),
+                    if words {
+                        format!(
+                            "predicted along its velocity for {CIRCLE_CARRY_S:.0} s, then on its circle, less its uncertainty"
+                        )
+                        .into()
+                    } else {
+                        "".into()
+                    },
+                    k,
+                    p,
+                    margin,
+                )
+            } else if off_circle {
+                (
+                    (haversine_m(p, point) - margin).max(0.0),
+                    "predicted along its velocity, less its uncertainty; its reported circle does not hold its position".into(),
+                    k,
+                    p,
+                    margin,
+                )
+            } else if ec.v2() {
+                (
+                    (haversine_m(p, point) - margin).max(0.0),
+                    "predicted along its velocity, less its uncertainty".into(),
+                    k,
+                    p,
+                    margin,
+                )
+            } else {
+                (haversine_m(p, point), "predicted along its velocity".into(), k, p, 0.0)
+            })
+        }
+        None => {
+            let cruise = v
+                .platform
+                .as_ref()
+                .and_then(|p| p.cruise_mps)
+                .filter(|c| c.is_finite() && *c >= 0.0);
+            let Some(cruise) = cruise else {
+                return FriendlyStanding::Unclearable {
+                    kind: FriendlyKind::Unpredictable,
+                    detail: format!(
+                        "vehicle {uid}: no fresh velocity and no cruise speed: cannot clear the keep-out"
+                    ),
+                };
+            };
+            Some((
+                (haversine_m(pos.value, point) - cruise * carry).max(0.0),
+                if ec.v6() && !pos_fresh {
+                    if words {
+                        format!(
+                            "how far it could reach at cruise speed; {}: an operator may accept it as unknown",
+                            lost_since(v, world)
+                        )
+                        .into()
+                    } else {
+                        "".into()
+                    }
+                } else {
+                    "how far it could reach at cruise speed".into()
+                },
+                if pos_fresh {
+                    FriendlyKind::CruiseReach
+                } else {
+                    FriendlyKind::Lost
+                },
+                pos.value,
+                cruise * carry,
+            ))
+        }
+    };
+    let (d, how, kind, center, radius_m) = match (disc, here) {
+        (Some(a), Some(b)) => {
+            if b.0 < a.0 {
+                b
+            } else {
+                a
+            }
+        }
+        (Some(a), None) | (None, Some(a)) => a,
+        // no circle holds it and nothing from its position: fail closed
+        (None, None) => {
+            return FriendlyStanding::Unclearable {
+                kind: FriendlyKind::Unpredictable,
+                detail: format!("vehicle {uid}: cannot predict it: cannot clear the keep-out"),
+            };
+        }
+    };
+    let mut by_alt = None;
+    if d < keep_out_m
+        && let Some(e) = alt.filter(|_| ec.v6())
+        && let Ok(a) = fresh(&v.alt_msl_m, v, "altitude", world, cfg)
+    {
+        let alt_t = v.alt_msl_m.as_ref().map_or(pos.t, |f| f.t);
+        let alt_span = secs(effect_t.ms_since(alt_t)).max(0.0);
+        let rate = friendly_vertical_mps(v, &ec);
+        let m = ec.keep_out_sigma * VEHICLE_ALT_SIGMA_M + rate * alt_span;
+        if let Some(c) = vertical_clear(&e, *a, m) {
+            by_alt = Some((*a, c, m));
+        }
+    }
+    FriendlyStanding::Judged {
+        kind,
+        center,
+        radius_m,
+        d,
+        how,
+        by_alt,
+        alt_known: v.alt_msl_m.is_some(),
+    }
 }
 
 /// How long one of our vehicles has been lost, for an operator to accept: "position unknown
@@ -2461,7 +2611,40 @@ pub fn track_prediction_sigma(t: &TrackFacts, span_s: f64, ec: &EngageRules) -> 
 pub struct TrackReach {
     pub center: LonLat,
     pub radius_m: f64,
+    /// In words, as a check's detail quotes it (empty from [`track_regions`]).
     pub how: String,
+    /// Which region it is: the checks read the geometry; an explanation
+    /// ([`crate::keepout`]) names the region.
+    pub kind: ReachKind,
+}
+
+/// Which of a protected track's regions a [`TrackReach`] is (see [`track_reach`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReachKind {
+    /// Rules 6: along its velocity of the moment, with its predicted uncertainty.
+    Velocity,
+    /// Rules 6: no velocity estimate: anywhere it reaches at its domain's top speed.
+    NoVelocity,
+    /// Rules 9: along its average velocity of the last minute.
+    MeanVelocity,
+    /// Rules 9: the tracker saw it manoeuvre: anywhere it reaches at the fastest it went.
+    Manoeuvre,
+    /// Rules 12: too young for an average velocity: anywhere it reaches at its domain's
+    /// plausible top speed.
+    Young,
+}
+
+impl ReachKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReachKind::Velocity => "velocity",
+            ReachKind::NoVelocity => "no_velocity",
+            ReachKind::MeanVelocity => "mean_velocity",
+            ReachKind::Manoeuvre => "manoeuvre",
+            ReachKind::Young => "young",
+        }
+    }
 }
 
 /// Rules 6 and 9: where a protected track may be at `effect_t`, from its estimate over the
@@ -2481,6 +2664,17 @@ pub struct TrackReach {
 /// faster: fail closed, at the cost of larger keep-outs for its first minute or so. The
 /// keep-out holds only if every region clears it.
 pub fn track_reach(t: &TrackFacts, effect_t: Time, ec: &EngageRules) -> Vec<TrackReach> {
+    reach(t, effect_t, ec, true)
+}
+
+/// [`track_reach`] without the words (each `how` empty): the same regions, for a scan over
+/// many effect times ([`crate::keepout`]).
+pub fn track_regions(t: &TrackFacts, effect_t: Time, ec: &EngageRules) -> Vec<TrackReach> {
+    reach(t, effect_t, ec, false)
+}
+
+/// The regions of [`track_reach`]; `words`: with each region's `how`.
+fn reach(t: &TrackFacts, effect_t: Time, ec: &EngageRules, words: bool) -> Vec<TrackReach> {
     let span = secs(effect_t.ms_since(t.position.t)).max(0.0);
     let k = ec.keep_out_sigma;
     let Some([ve, vn]) = t.velocity_mps else {
@@ -2489,33 +2683,48 @@ pub fn track_reach(t: &TrackFacts, effect_t: Time, ec: &EngageRules) -> Vec<Trac
         return vec![TrackReach {
             center: t.position.value,
             radius_m,
-            how: format!(
-                "no velocity estimate: anywhere it reaches at {top:.0} m/s in {span:.0} s, {radius_m:.0} m with its {k:.0}-sigma"
-            ),
+            how: if words {
+                format!(
+                    "no velocity estimate: anywhere it reaches at {top:.0} m/s in {span:.0} s, {radius_m:.0} m with its {k:.0}-sigma"
+                )
+            } else {
+                String::new()
+            },
+            kind: ReachKind::NoVelocity,
         }];
     };
     let sigma = track_prediction_sigma(t, span, ec);
     let mut out = vec![TrackReach {
         center: track_at(t, effect_t),
         radius_m: k * sigma,
-        how: format!(
-            "{k:.0}-sigma {:.0} m over {span:.0} s: tracker {:.0} m, velocity {:.0} m, manoeuvre {:.0} m",
-            k * sigma,
-            t.pos_sigma_m,
-            ec.track_velocity_sigma() * span,
-            ec.track_accel(t.domain) * (span.powi(3) / 3.0).sqrt()
-        ),
+        how: if words {
+            format!(
+                "{k:.0}-sigma {:.0} m over {span:.0} s: tracker {:.0} m, velocity {:.0} m, manoeuvre {:.0} m",
+                k * sigma,
+                t.pos_sigma_m,
+                ec.track_velocity_sigma() * span,
+                ec.track_accel(t.domain) * (span.powi(3) / 3.0).sqrt()
+            )
+        } else {
+            String::new()
+        },
+        kind: ReachKind::Velocity,
     }];
     if let Some([e, n]) = t.mean_velocity_mps.filter(|_| ec.v9()) {
         let dt = secs(effect_t.ms_since(t.position.t));
         out.push(TrackReach {
             center: offset(t.position.value, e * dt, n * dt),
             radius_m: k * sigma,
-            how: format!(
-                "along its average velocity of the last minute ({:.1} m/s), {k:.0}-sigma {:.0} m over {span:.0} s",
-                e.hypot(n),
-                k * sigma
-            ),
+            how: if words {
+                format!(
+                    "along its average velocity of the last minute ({:.1} m/s), {k:.0}-sigma {:.0} m over {span:.0} s",
+                    e.hypot(n),
+                    k * sigma
+                )
+            } else {
+                String::new()
+            },
+            kind: ReachKind::MeanVelocity,
         });
     }
     if let Some(m) = t.manoeuvre.filter(|_| ec.v9()) {
@@ -2523,12 +2732,17 @@ pub fn track_reach(t: &TrackFacts, effect_t: Time, ec: &EngageRules) -> Vec<Trac
         out.push(TrackReach {
             center: t.position.value,
             radius_m,
-            how: format!(
-                "manoeuvring (its velocity changed by {:.1} m/s, last {:.0} s before its estimate): anywhere it reaches at {:.1} m/s in {span:.0} s, {radius_m:.0} m with its {k:.0}-sigma",
-                m.change_mps,
-                secs(t.position.t.ms_since(m.t)).max(0.0),
-                m.speed_mps
-            ),
+            how: if words {
+                format!(
+                    "manoeuvring (its velocity changed by {:.1} m/s, last {:.0} s before its estimate): anywhere it reaches at {:.1} m/s in {span:.0} s, {radius_m:.0} m with its {k:.0}-sigma",
+                    m.change_mps,
+                    secs(t.position.t.ms_since(m.t)).max(0.0),
+                    m.speed_mps
+                )
+            } else {
+                String::new()
+            },
+            kind: ReachKind::Manoeuvre,
         });
     }
     // rules 12: young, so a manoeuvre is not ruled out yet
@@ -2544,9 +2758,14 @@ pub fn track_reach(t: &TrackFacts, effect_t: Time, ec: &EngageRules) -> Vec<Trac
         out.push(TrackReach {
             center: t.position.value,
             radius_m,
-            how: format!(
-                "young (tracked {tracked:.0} s, no average velocity yet: a manoeuvre is not ruled out): anywhere it reaches at {speed:.1} m/s in {span:.0} s, {radius_m:.0} m with its {k:.0}-sigma"
-            ),
+            how: if words {
+                format!(
+                    "young (tracked {tracked:.0} s, no average velocity yet: a manoeuvre is not ruled out): anywhere it reaches at {speed:.1} m/s in {span:.0} s, {radius_m:.0} m with its {k:.0}-sigma"
+                )
+            } else {
+                String::new()
+            },
+            kind: ReachKind::Young,
         });
     }
     out
@@ -2627,6 +2846,94 @@ fn vertical_clear(e: &EffectAlt, alt_m: f64, margin_m: f64) -> Option<f64> {
     (c > 0.0).then_some(c)
 }
 
+/// Whether [`keep_out_tracks`] leaves track `id` out: the target, and other tracks an
+/// operator declared hostile (an affiliation without a declaration is protected); rules 9: a
+/// track declared by rule and not confirmed by an operator stays protected unless it is the
+/// target (conservative).
+pub fn track_exempt(id: &str, t: &TrackFacts, target: &str, ec: &EngageRules) -> bool {
+    let declared_hostile = if ec.v9() {
+        crate::ident::exempt_in_keep_out(t)
+    } else {
+        t.affiliation.value == Affiliation::Hostile && t.declared_by.is_some()
+    };
+    id == target || declared_hostile
+}
+
+/// Rules 6 on: how one protected track stands against a keep-out reaching `keep_out_m` from
+/// `point` at `effect_t`, as [`keep_out_tracks`] judges each track it does not exempt: its
+/// regions ([`track_reach`], or [`track_regions`] without `words`), the one whose edge is
+/// nearest the point (the first of equals), and, when that edge is inside the keep-out,
+/// whether it is clear by altitude (where the effect's altitude, `alt`, and its own recent
+/// ranged altitude at `now` are both known). None when it has no region (never: every track
+/// has at least one).
+#[allow(clippy::too_many_arguments)]
+pub fn track_standing(
+    t: &TrackFacts,
+    point: LonLat,
+    effect_t: Time,
+    keep_out_m: f64,
+    now: Time,
+    ec: &EngageRules,
+    alt: Option<EffectAlt>,
+    words: bool,
+) -> Option<TrackStanding> {
+    let regions = reach(t, effect_t, ec, words);
+    let (nearest, edge, d) = regions
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let d = haversine_m(r.center, point);
+            (i, d - r.radius_m, d)
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))?;
+    let known = track_altitude(t, now, ec);
+    let mut by_alt = None;
+    // in 3D where both altitudes are known (recent and ranged), the margin growing from the
+    // altitude's own time
+    if edge < keep_out_m
+        && let (Some(e), Some((a, alt_t))) = (alt, known)
+    {
+        let alt_span = secs(effect_t.ms_since(alt_t)).max(0.0);
+        let m = ec.keep_out_sigma * track_alt_sigma_m(t.domain) + track_vertical_mps(t.domain, ec) * alt_span;
+        if let Some(c) = vertical_clear(&e, a, m) {
+            by_alt = Some((a, c, m));
+        }
+    }
+    Some(TrackStanding {
+        regions,
+        nearest,
+        d,
+        edge,
+        by_alt,
+        alt_known: known.is_some(),
+    })
+}
+
+/// See [`track_standing`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrackStanding {
+    pub regions: Vec<TrackReach>,
+    /// The region whose edge is nearest the point (an index into `regions`).
+    pub nearest: usize,
+    /// Its centre's distance from the point, m.
+    pub d: f64,
+    /// Its edge's distance from the point (`d` less its radius; negative when the point is
+    /// inside it), m. The keep-out holds for this track when it is at least `keep_out_m`.
+    pub edge: f64,
+    /// Inside the keep-out in 2D, but clear of it by altitude: its altitude, how far outside
+    /// the vertical keep-out, and its altitude margin, m.
+    pub by_alt: Option<(f64, f64, f64)>,
+    /// Whether its altitude counted for a 3D keep-out (recent and ranged).
+    pub alt_known: bool,
+}
+
+impl TrackStanding {
+    /// Whether this track keeps a keep-out of `keep_out_m` from holding.
+    pub fn blocks(&self, keep_out_m: f64) -> bool {
+        self.edge < keep_out_m && self.by_alt.is_none()
+    }
+}
+
 /// No track but the target and tracks an operator declared hostile (`declared_by` set) may be
 /// inside the keep-out at `effect_t`, with `keep_out_sigma` of its predicted uncertainty:
 /// neutral, unknown, suspect and assumed friend tracks are protected, a hostile affiliation
@@ -2653,15 +2960,7 @@ pub fn keep_out_tracks(
     let mut count = 0;
     let mut by_alt: Vec<String> = Vec::new();
     for (id, t) in &world.tracks {
-        // exempt: the target, and other tracks an operator declared hostile (an affiliation
-        // without a declaration is protected); rules 9: a track declared by rule and not
-        // confirmed by an operator stays protected unless it is the target (conservative)
-        let declared_hostile = if ec.v9() {
-            crate::ident::exempt_in_keep_out(t)
-        } else {
-            t.affiliation.value == Affiliation::Hostile && t.declared_by.is_some()
-        };
-        if id == target || declared_hostile {
+        if track_exempt(id, t, target, ec) {
             continue;
         }
         count += 1;
@@ -2690,30 +2989,20 @@ pub fn keep_out_tracks(
         }
         // rules 6: from its estimate, over the span since it (rules 9: a manoeuvring track
         // also anywhere it reaches at the fastest it went); the region nearest the point
-        let Some((edge, d, how)) = track_reach(t, effect_t, ec)
-            .into_iter()
-            .map(|r| {
-                let d = haversine_m(r.center, point);
-                (d - r.radius_m, d, r.how)
-            })
-            .min_by(|a, b| a.0.total_cmp(&b.0))
-        else {
+        let Some(s) = track_standing(t, point, effect_t, keep_out_m, world.t, ec, alt, true) else {
             continue;
         };
+        let edge = s.edge;
         if edge < keep_out_m {
             // in 3D where both altitudes are known (recent and ranged: track_altitude), the
             // margin growing from the altitude's own time
-            if let (Some(e), Some((a, alt_t))) = (alt, track_altitude(t, world.t, ec)) {
-                let alt_span = secs(effect_t.ms_since(alt_t)).max(0.0);
-                let m = ec.keep_out_sigma * track_alt_sigma_m(t.domain)
-                    + track_vertical_mps(t.domain, ec) * alt_span;
-                if let Some(c) = vertical_clear(&e, a, m) {
-                    by_alt.push(format!(
-                        "{id} at {a:.0} m ({c:.0} m outside the vertical keep-out with {m:.0} m of altitude uncertainty)"
-                    ));
-                    continue;
-                }
+            if let Some((a, c, m)) = s.by_alt {
+                by_alt.push(format!(
+                    "{id} at {a:.0} m ({c:.0} m outside the vertical keep-out with {m:.0} m of altitude uncertainty)"
+                ));
+                continue;
             }
+            let (d, how) = (s.d, &s.regions[s.nearest].how);
             return check(
                 r,
                 None,
@@ -2721,7 +3010,7 @@ pub fn keep_out_tracks(
                 format!(
                     "track {} predicted {d:.0} m from the effect point at the effect time ({how}); keep-out {keep_out_m:.0} m{}",
                     describe_track(id, t),
-                    vertical_note(alt, track_altitude(t, world.t, ec).is_some())
+                    vertical_note(alt, s.alt_known)
                 ),
             );
         }

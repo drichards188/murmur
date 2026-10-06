@@ -283,6 +283,7 @@ pub mod hash;
 pub mod ident;
 pub mod ids;
 pub mod intent;
+pub mod keepout;
 pub mod passkey;
 pub mod policy;
 pub mod queue;

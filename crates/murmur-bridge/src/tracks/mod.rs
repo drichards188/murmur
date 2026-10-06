@@ -169,6 +169,11 @@ impl Tracks {
         self.settings.eval_truth
     }
 
+    /// The tracker's memories for the keep-out explanation, this run's drop time included.
+    pub fn memory(&self) -> murmur_decide::keepout::TrackerMemory {
+        model::memory(self.settings.drop_s)
+    }
+
     /// Whether a request on the simulation channel carries this stack's token (compared as
     /// digests, in constant time). Without a token configured the channel is closed.
     pub fn sim_token_ok(&self, headers: &HeaderMap) -> Result<(), &'static str> {

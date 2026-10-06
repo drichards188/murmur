@@ -152,7 +152,9 @@ Built (first cut; see the module docs named here for the figures and the simplif
   drift), seeded. **Truth** goes to the bridge only on the labelled simulation channel
   (`POST /api/sim/contacts`) and to `logs/contacts-truth.jsonl` for evaluation; the bridge
   serves it back only on `GET /api/sim/truth` with `MURMUR_EVAL_TRUTH=1`.
-  `MURMUR_CONTACTS=<scenario>` makes `up.sh` run it; `make goldengate` does by default.
+  `MURMUR_CONTACTS=<scenario>` makes `up.sh` run it; `make goldengate` does by default, with
+  the scenario from `CONTACTS=<scenario>` (it sets `MURMUR_CONTACTS` itself, so one from the
+  environment is not read).
 - **Sensing model** (`sim/platforms.toml` `sensors = [{type, range_m, guess}]`, `mast_m`;
   `crates/murmur-bridge/src/tracks/sensing.rs`): detections only from our platforms' radar,
   EO/IR, AIS receiver, sonar and ESM; probability falls with range (0.5 at the nominal range,
@@ -543,7 +545,7 @@ track along its average velocity and, when it manoeuvred, anywhere it could reac
 the declarer is told of a revocation. Off (`rule_declaration = false`), rules 8's behaviour
 exactly. Replay recomputes every attribution, declaration and flag. Scenarios 72-78; the
 evaluation's rule-against-manual comparison under Phase G. Live demo:
-`MURMUR_CONTACTS=sim/scenarios/golden-gate-ident.toml make goldengate GG_FLEET=engage-demo`.
+`make goldengate GG_FLEET=engage-demo CONTACTS=sim/scenarios/golden-gate-ident.toml`.
 What does not change: two signers with engagement authority on one frozen plan release an
 effect, never the proposer, never an agent; accepting a lost friendly stays an
 engagement-authority operator's act; agents cannot declare, confirm, revoke or resolve.

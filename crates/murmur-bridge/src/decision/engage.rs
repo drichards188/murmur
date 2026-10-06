@@ -1691,6 +1691,10 @@ impl Decision {
     /// A dry run for the nomination form (read-only, not a decision, not logged): for each
     /// armed vehicle, the checks a nomination with it would get on the world now, and its
     /// preview. Listed by uid, with no ranking and no recommendation: the operator picks.
+    /// Murmur-12e: each option also carries `keep_outs`, the keep-out explanation on the
+    /// same inputs (`murmur_decide::keepout`: which track or vehicle of ours blocks or nearly
+    /// blocks the keep-out, why, by how much, and what would clear it), read-only like the
+    /// rest; `keep_outs_none` says why there is none (no preview, say).
     pub async fn engage_options(&self, req: OptionsRequest) -> Result<Value, DecisionError> {
         let fleet = self.fleet();
         let armed: Vec<crate::vehicle::Uid> = fleet
@@ -1722,6 +1726,23 @@ impl Decision {
                 ) * 1000,
             ),
         };
+        // murmur-12e: the explanation's words name our vehicles by callsign, and age the
+        // picture with this run's tracker memories
+        let names: BTreeMap<murmur_decide::Uid, String> = fleet
+            .iter()
+            .filter_map(|(u, c)| {
+                c.read(|v| {
+                    v.identity
+                        .as_ref()
+                        .and_then(|i| i.str("callsign"))
+                        .map(|s| (duid(*u), s.to_string()))
+                })
+            })
+            .collect();
+        let opts = Arc::new(murmur_decide::keepout::Options {
+            memory: self.tracks.as_ref().map_or_else(Default::default, |t| t.memory()),
+            names,
+        });
         let mut out = Vec::new();
         for uid in armed {
             let spec = murmur_decide::IntentSpec {
@@ -1741,15 +1762,28 @@ impl Decision {
                 rationale: None,
             };
             self.prefetch(&spec.task, &spec.uids).await;
-            // rules 9: the picture as decisions read it (its declarations from the ledger)
-            let world = {
+            // the inputs a decision on it would read now, as the engine fills them (rules 9
+            // identification; the engagements in play and, rules 12, the spent platforms),
+            // nothing logged
+            let inputs = {
                 let w = self.snapshot();
-                self.lock().engine.identified(&w).into_owned()
+                self.lock().engine.dry_run_inputs(&spec, &w, &self.terrain.oracle())
             };
-            let inputs = world.for_intent_with(&spec, &self.terrain.oracle(), &self.rules);
             let checks = murmur_decide::rules::evaluate(&spec, &inputs, &self.rules);
             let passed = murmur_decide::rules::passed(&checks, murmur_decide::TaskKind::Engage);
             let preview = engage::preview(&spec, &inputs, &self.rules).ok();
+            // murmur-12e: why the keep-outs block, on the same inputs, off the async runtime
+            // (it scans effect and nomination times); shown only when its checks are the ones
+            // just run (they are: the same functions on the same inputs)
+            let (rules, o) = (self.rules.clone(), opts.clone());
+            let explained =
+                tokio::task::spawn_blocking(move || murmur_decide::keepout::explain(&spec, &inputs, &rules, &o)).await;
+            let (keep_outs, keep_outs_none) = match explained {
+                Ok(Ok(x)) if x.checks.iter().all(|c| checks.contains(c)) => (serde_json::to_value(&x).ok(), None),
+                Ok(Ok(_)) => (None, Some("the explanation does not match the checks: not shown".to_string())),
+                Ok(Err(e)) => (None, Some(e)),
+                Err(e) => (None, Some(format!("the explanation failed: {e}"))),
+            };
             let callsign = fleet.get(&uid).and_then(|c| {
                 c.read(|v| {
                     v.identity
@@ -1764,6 +1798,8 @@ impl Decision {
                 "passed": passed,
                 "checks": checks,
                 "preview": preview,
+                "keep_outs": keep_outs,
+                "keep_outs_none": keep_outs_none,
             }));
         }
         // by uid (the fleet's order): no "best" first
@@ -1771,7 +1807,9 @@ impl Decision {
             "t": now,
             "track": req.track,
             "options": out,
-            "note": "listed by uid; not a ranking or a recommendation",
+            "note": "listed by uid; not a ranking or a recommendation. keep_outs explains each \
+                     keep-out that blocks or nearly blocks (read-only: the checks decide, and \
+                     nothing here relaxes one)",
         }))
     }
 

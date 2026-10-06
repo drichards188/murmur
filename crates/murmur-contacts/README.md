@@ -8,7 +8,8 @@ really are, on the bridge's simulation channel. The C2 (bridge tracks, console, 
 only ever sees what our own platforms' sensors make of them.
 
 ```
-MURMUR_CONTACTS=sim/scenarios/golden-gate.toml make goldengate          # with the stack
+make goldengate CONTACTS=sim/scenarios/golden-gate.toml                  # with the stack
+MURMUR_CONTACTS=sim/scenarios/golden-gate.toml scripts/up.sh --fleet ...  # up.sh reads the variable
 target/release/murmur-contacts sim/scenarios/golden-gate.toml           # alone
 ```
 

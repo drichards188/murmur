@@ -2,8 +2,9 @@
 # Gate, for the engagement decision chain against sim/scenarios/golden-gate-engage.toml (a
 # fast boat holding west of the bridge, a harbor tour boat circling nearby). Stand-ins
 # only: no ArduPilot SITL needed.
-#   MURMUR_CONTACTS=sim/scenarios/golden-gate-engage.toml make goldengate GG_FLEET=engage-demo
-#   (with MURMUR_ENGAGE_OPERATORS=op-2,op-3 MURMUR_OPERATORS=op-1 for two approvers)
+#   make goldengate GG_FLEET=engage-demo CONTACTS=sim/scenarios/golden-gate-engage.toml
+#   (with MURMUR_OPERATORS=op-1,op-2,op-3 MURMUR_ENGAGE_OPERATORS=op-2,op-3 for two approvers;
+#   `make goldengate` sets the contacts from CONTACTS=, not from MURMUR_CONTACTS)
 # The effect is an abstract event (a point, a radius, a time); see docs/PLAN.md, Phase E.
 title = "Engagement demo: armed stand-ins and sensors at the Gate"
 

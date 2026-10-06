@@ -400,6 +400,81 @@ async fn an_engagement_through_the_bridge_releases_an_abstract_effect() {
     assert!(rep.restores_closed[0].contains("expended by its own effect"), "{:?}", rep.restores_closed);
 }
 
+/// Review M2: a platform spent by its own effect (rules 12) takes no nomination; the
+/// nomination form's dry run and agents' read now say so (readiness fails, as the engine's
+/// own checks would), where before its inputs left the spent platforms out and it passed.
+/// Nothing is logged.
+#[tokio::test(start_paused = true)]
+async fn the_dry_run_sees_a_platform_spent_by_its_effect() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode, header};
+    use tower::ServiceExt;
+    let e = engage_rig();
+    let id = e.approved("return").await;
+    for _ in 0..4 {
+        e.tick(true).await;
+        if e.r.state(id) == State::Effected {
+            break;
+        }
+    }
+    for _ in 0..60 {
+        e.tick(true).await;
+    }
+    assert!(e.r.log.text().contains("\"type\":\"restore.closed\",\"uid\":\"1\""));
+    let lines = e.r.log.lines().len();
+    let spent = |v: &Value| {
+        let c = v["options"][0]["checks"]
+            .as_array()
+            .expect("checks")
+            .iter()
+            .find(|c| c["rule"] == "readiness")
+            .cloned()
+            .expect("readiness");
+        c["outcome"] == "fail" && c["detail"].as_str().unwrap_or("").contains("spent by its own effect")
+    };
+    // the console's API, as an operator
+    let auth = crate::auth::Auth::new(crate::auth::Settings::dev(), e.r.d.clone(), murmur_auth::CredentialFile::default());
+    let api = crate::api::router(crate::api::App {
+        world: e.r.world.clone(),
+        frames: Arc::new(tokio::sync::watch::channel(None).0),
+        decision: e.r.d.clone(),
+        tracks: e.tracks.clone(),
+        lod: crate::push::LodSettings::default(),
+        auth,
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/engage/options")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("X-Murmur-Operator", "op-1")
+        .body(Body::from(json!({ "track": "T-0001", "effect_radius_m": 100.0 }).to_string()))
+        .expect("request");
+    let resp = api.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 22).await.expect("body");
+    let v: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(spent(&v), "{v}");
+    // agents
+    let agent = murmur_decide::AgentId::new("agent-planner");
+    let mcp = crate::mcp::Mcp::new(
+        crate::mcp::Settings {
+            agents: vec![agent.clone()],
+            keys: None,
+        },
+        e.r.world.clone(),
+        e.r.d.clone(),
+        api,
+    );
+    let args = json!({ "track_id": "T-0001", "effect_radius_m": 100.0 })
+        .as_object()
+        .cloned()
+        .expect("object");
+    let res = crate::mcp::tools::call(&mcp, &agent, "get_nomination_options", args).await.expect("tool");
+    let v = res.structured_content.expect("structured");
+    assert!(spent(&v), "{v}");
+    assert_eq!(e.r.log.lines().len(), lines, "a dry run logs nothing");
+}
+
 #[tokio::test(start_paused = true)]
 async fn an_operator_abort_commands_the_recorded_fallback() {
     let e = engage_rig();
