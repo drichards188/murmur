@@ -162,6 +162,14 @@ meaningful. Decision and command, not weapons.
   counts at its domain's top speed in keep-outs. A credentials run fixes scripted operators
   at start. To crash a bridge for a carry test: `kill -9` the PID that is the run id's
   suffix in `logs/audit/<run-id>.jsonl`, never `pkill -f`.
+- Keep-out explanation (murmur-12e; read-only, not logged, no rules change): the nomination
+  form and `POST /api/engage/options` (`keep_outs`) say which track or vehicle blocks, which
+  region, the shortfall, and what would clear it ("within X m", "between X and Y m", or a wait
+  "if it keeps behaving as now"; scanned on a 0.25 s grid); agents read it with
+  `get_nomination_options` (one call a second). It shares the checks' own per-item judgement
+  (`engage::track_standing`, `friendly_standing`, `circle_holding`): changing those changes
+  decisions. The dry run fills what the engine fills (`Engine::dry_run_inputs`). More
+  pictures: `MURMUR_KO_SEED=N MURMUR_KO_WORLDS=1500 cargo test -p murmur-decide --test keepout`.
 - The tracker is a two-model IMM; changes must pass `tracks::tests::calib`. Its held-out seeds
   (66-95) are not for tuning: write a new held-out set if you tune on them.
 - This host's wall clock (WSL) stepped back 0.5 to 0.9 s every ~32 s for the first two hours or
