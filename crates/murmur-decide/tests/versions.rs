@@ -971,7 +971,7 @@ fn the_rules_9_live_log_declares_by_rule_and_operators_review_it_under_their_ses
     assert!(pictures.iter().all(|l| l.contains("\"rule\":\"hostile_act\"")), "{pictures:?}");
 }
 
-/// Rules 10, live, from a clean build of 0802f86, anchored as it ran: a credentials run on its
+/// Rules 10, live, from a clean build of 2eff85c, anchored as it ran: a credentials run on its
 /// own ports (stand-ins, the engagement demo fleet, `sim/scenarios/golden-gate-ident.toml`), the
 /// shipped policy with `[approval] step_up_factor = "passkey"`, the console in Chrome on
 /// localhost with a virtual authenticator (the DevTools protocol's WebAuthn domain; on
@@ -980,10 +980,11 @@ fn the_rules_9_live_log_declares_by_rule_and_operators_review_it_under_their_ses
 /// it; op-3 signed in by password and registered one from the operator menu, refused with a
 /// wrong password, then with their own; op-1 declared the fast boat hostile and nominated the
 /// switchblade; op-2, signed in by password over the API, tried to sign with the password and
-/// was refused unchecked (the policy asks for a passkey); op-3 (a password session) signed with
-/// their passkey on the picture they were shown, then op-2 signed in by passkey again and
-/// signed with it; the effect was released and assessed (the expended switchblade never
-/// answered its restore); everyone signed out and the bridge stopped.
+/// was refused unchecked (the policy asks for a passkey); op-3 (still the password session)
+/// stepped up with their passkey but the picture they were shown had expired when the signature
+/// arrived (refused, the step-up left unused); op-2 signed in by passkey and signed with it,
+/// then op-3, signed in by passkey too; the effect was released and assessed (the expended
+/// switchblade never answered its restore); everyone signed out and the bridge stopped.
 const PASSKEY_LIVE: &str = "v10-passkeys-live.jsonl";
 
 #[test]
@@ -998,11 +999,11 @@ fn the_rules_10_live_log_signs_with_passkeys_bound_to_their_acts() {
     assert_eq!(r.build.as_ref().map(|b| b.dirty), Some(Some(false)));
     assert!(r.authenticated(), "a credentials run that reproduced");
     // two registrations during the run (an invitation, a session quoting its password
-    // step-up), two passkey logins, two passkey signatures, one password step-up (the
-    // registration's)
-    assert_eq!((r.passkeys_registered, r.passkey_logins, r.passkey_step_ups, r.password_step_ups), (2, 2, 2, 1));
-    // four nominations, three rejected for the engagement zone while the boat came to its hold
-    assert_eq!((r.stepped_signatures, r.engagements, r.effects, r.assessments), (2, 4, 1, 1));
+    // step-up), three passkey logins, three passkey step-ups (one left unused: its signature came
+    // after the picture expired), one password step-up (the registration's)
+    assert_eq!((r.passkeys_registered, r.passkey_logins, r.passkey_step_ups, r.password_step_ups), (2, 3, 3, 1));
+    // three nominations, two rejected for the engagement zone while the boat came to its hold
+    assert_eq!((r.stepped_signatures, r.engagements, r.effects, r.assessments), (2, 3, 1, 1));
     let first = log.lines().next().unwrap();
     assert!(
         first.contains("\"passkeys\":{\"rp_id\":\"localhost\",\"origins\":[\"http://localhost:27173\",\"http://localhost:27765\"]}"),
@@ -1019,7 +1020,7 @@ fn the_rules_10_live_log_signs_with_passkeys_bound_to_their_acts() {
             _ => None,
         })
         .collect();
-    assert_eq!(refused, vec!["register a passkey: wrong password", "i4: a password where the policy asks for a passkey"]);
+    assert_eq!(refused, vec!["register a passkey: wrong password", "i3: a password where the policy asks for a passkey"]);
     // each signature quotes a passkey step-up made for it: its intent, the picture token it
     // quotes and that token's hash
     let mut signed = 0;
@@ -1036,7 +1037,7 @@ fn the_rules_10_live_log_signs_with_passkeys_bound_to_their_acts() {
         assert_eq!((operator, *auth), (by, Some(AuthMethod::Passkey)));
         assert_eq!(
             u.purpose,
-            StepUpFor::Sign { intent: IntentId(4), token: Some(token.id), picture_sha256: Some(passkey::picture_sha256(token)) }
+            StepUpFor::Sign { intent: IntentId(3), token: Some(token.id), picture_sha256: Some(passkey::picture_sha256(token)) }
         );
         signed += 1;
     }
