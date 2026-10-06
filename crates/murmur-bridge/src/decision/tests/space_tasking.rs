@@ -519,7 +519,14 @@ fn pinned_space(days: Option<i64>) -> Arc<murmur_space::Space> {
     Arc::new(s)
 }
 
-/// The lock is never held longer than a bound while a long cover is submitted: the query
+/// How long the decision lock may be held while a long cover is submitted or previewed:
+/// the query (seconds of SGP4) runs outside it, and what stays under it is the decision on
+/// the answer and its audit write (50 to 100 ms for a week of Starlink over nine points on
+/// the fixture, more on a loaded host). Half a second is a tenth of the picture-gap limit
+/// that aborts engagements (5 s) and a thirtieth of what the review measured (13 to 14 s).
+const LOCK_HOLD_BOUND: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The lock is never held longer than the bound while a long cover is submitted: the query
 /// runs outside it, the decision on the answer under it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_long_cover_never_holds_the_decision_lock_long() {
@@ -531,7 +538,7 @@ async fn a_long_cover_never_holds_the_decision_lock_long() {
     assert_eq!(out.state, State::Dispatched, "{}", out.intent);
     let worst = watch.worst();
     eprintln!("long cover: submit {took:?}, longest lock wait {worst:?}");
-    assert!(worst < std::time::Duration::from_millis(100), "the lock was held {worst:?}");
+    assert!(worst < LOCK_HOLD_BOUND, "the lock was held {worst:?}");
     // and a tick, which the engagement watch depends on, goes through
     r.d.tick();
     r.replays_with_space();
@@ -569,8 +576,8 @@ async fn an_agents_preview_of_a_long_cover_cannot_block_the_tick() {
     let tick_worst = *slowest.lock().expect("slowest");
     let worst = watch.worst();
     eprintln!("agent preview: longest lock wait {worst:?}, slowest tick and inbox read {tick_worst:?}");
-    assert!(worst < std::time::Duration::from_millis(100), "the lock was held {worst:?}");
-    assert!(tick_worst < std::time::Duration::from_millis(500), "a tick took {tick_worst:?}");
+    assert!(worst < LOCK_HOLD_BOUND, "the lock was held {worst:?}");
+    assert!(tick_worst < LOCK_HOLD_BOUND, "a tick took {tick_worst:?}");
     assert_eq!(r.events("intent.created"), 0, "a preview creates no intent");
 }
 

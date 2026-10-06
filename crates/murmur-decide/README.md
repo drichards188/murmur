@@ -596,9 +596,11 @@ an `Order::Cover`.
   cover is never computed by the engine: its check fails closed, saying so, and the bridge
   prepares again outside the lock when the engine would not take what it had
   (`Decision::lock_with_space`, a few attempts). So no submission, approval or agent's
-  preview holds the lock for the query, whatever the cover's size; `tests/space_tasking.rs`
-  measures the longest wait for the lock while a week of Starlink over a 50 km circle is
-  submitted and previewed (under 100 ms). The logged answer is the one the decision used.
+  preview holds the lock for the query, whatever the cover's size: what stays under it is the
+  decision on the answer and its audit write; `tests/space_tasking.rs` measures the longest
+  wait for the lock while a week of Starlink over a 50 km circle is submitted and previewed
+  (bounded at half a second, a tenth of the picture-gap limit; tens of milliseconds on the
+  fixture, under 25 ms live). The logged answer is the one the decision used.
 
 **Replay.** Each space query is logged once as `space.query`: the query, the answer
 (`compute_ms` zeroed, the one non-deterministic field), its `time_map`, and the segment
