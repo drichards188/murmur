@@ -600,6 +600,7 @@ impl OldTrack {
             review_flags: Vec::new(),
             manoeuvre: None,
             mean_velocity_mps: None,
+            first_seen_t: None,
         }
     }
 }

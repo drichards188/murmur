@@ -327,6 +327,12 @@ impl EngageRules {
         self.rules_version >= crate::rules::RULE_ID_SINCE
     }
 
+    /// The decisions of rules 11 on ([`crate::rules::REVIEW_FOLLOWUPS_SINCE`]): a young track
+    /// counts as possibly manoeuvring in a keep-out ([`track_reach`]).
+    pub fn v11(&self) -> bool {
+        self.rules_version >= crate::rules::REVIEW_FOLLOWUPS_SINCE
+    }
+
     /// The optional keys this section sets, each with the policy schema that introduced it
     /// (or, for an old name, the first schema whose builds read it): a log claiming an
     /// older schema can't carry them (replay checks).
@@ -880,6 +886,29 @@ impl VehicleIdentity {
                 }
             }
         }
+    }
+
+    /// Rules 11: why `now` is known to be another vehicle than this one, if it is: a field
+    /// both know that differs (the home farther than [`Self::HOME_TOLERANCE_M`]). Unlike
+    /// [`Self::matches`], a field `now` does not know yet is no difference (fail closed: a
+    /// carried restore's hold stays until the vehicle is known to be another).
+    pub fn differs(&self, now: &VehicleIdentity) -> Option<String> {
+        fn other<T: PartialEq + std::fmt::Debug>(what: &str, was: &Option<T>, is: &Option<T>) -> Option<String> {
+            match (was, is) {
+                (Some(a), Some(b)) if a != b => Some(format!("its {what} is {b:?}, not {a:?}")),
+                _ => None,
+            }
+        }
+        other("platform", &self.platform, &now.platform)
+            .or_else(|| other("callsign", &self.callsign, &now.callsign))
+            .or_else(|| other("system id", &self.sysid, &now.sysid))
+            .or_else(|| match (self.home, now.home) {
+                (Some(a), Some(b)) => {
+                    let d = haversine_m(a, b);
+                    (d > Self::HOME_TOLERANCE_M).then(|| format!("its home is {d:.0} m from the one preloaded"))
+                }
+                _ => None,
+            })
     }
 }
 
@@ -2447,12 +2476,18 @@ pub struct TrackReach {
 /// saw manoeuvre within its memory ([`TrackFacts::manoeuvre`]) anywhere it reaches at the
 /// fastest it went, whichever way it turns: a minute ahead, a contact that zigzags, weaves or
 /// sprints and stops is not where its velocity of the moment says (the tracker of rules 9
-/// follows a manoeuvre within seconds, so its velocity is the current leg's). The keep-out
-/// holds only if every region clears it.
+/// follows a manoeuvre within seconds, so its velocity is the current leg's). Rules 11
+/// (murmur-9m0): a young track, one the tracker started ([`TrackFacts::first_seen_t`]) too
+/// recently to have an average velocity, can't yet be said not to manoeuvre (the facts above
+/// do not exist yet: before, it fell back to the one region along its velocity), so it also
+/// counts anywhere it reaches at its domain's plausible top speed ([`top_speed_mps`]), or at
+/// its own speed bound (its speed and `keep_out_sigma` of its velocity error) when that is
+/// faster: fail closed, at the cost of larger keep-outs for its first minute or so. The
+/// keep-out holds only if every region clears it.
 pub fn track_reach(t: &TrackFacts, effect_t: Time, ec: &EngageRules) -> Vec<TrackReach> {
     let span = secs(effect_t.ms_since(t.position.t)).max(0.0);
     let k = ec.keep_out_sigma;
-    let Some(_) = t.velocity_mps else {
+    let Some([ve, vn]) = t.velocity_mps else {
         let top = top_speed_mps(t.domain);
         let radius_m = k * t.pos_sigma_m + top * span;
         return vec![TrackReach {
@@ -2497,6 +2532,24 @@ pub fn track_reach(t: &TrackFacts, effect_t: Time, ec: &EngageRules) -> Vec<Trac
                 m.change_mps,
                 secs(t.position.t.ms_since(m.t)).max(0.0),
                 m.speed_mps
+            ),
+        });
+    }
+    // rules 11: young, so a manoeuvre is not ruled out yet
+    if ec.v11()
+        && t.mean_velocity_mps.is_none()
+        && let Some(first) = t.first_seen_t
+    {
+        let tracked = secs(t.position.t.ms_since(first)).max(0.0);
+        let top = top_speed_mps(t.domain);
+        let bound = ve.hypot(vn) + k * ec.track_velocity_sigma();
+        let speed = top.max(bound);
+        let radius_m = k * t.pos_sigma_m + speed * span;
+        out.push(TrackReach {
+            center: t.position.value,
+            radius_m,
+            how: format!(
+                "young (tracked {tracked:.0} s, no average velocity yet: a manoeuvre is not ruled out): anywhere it reaches at {speed:.1} m/s in {span:.0} s, {radius_m:.0} m with its {k:.0}-sigma"
             ),
         });
     }

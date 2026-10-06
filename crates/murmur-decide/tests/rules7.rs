@@ -438,6 +438,7 @@ fn a_hold_or_rtl_is_never_held_for_a_restore() {
     let owed = queue::RestoreOwed {
         values: [("FS_ACTION".to_string(), 1.0), ("FS_GCS_TIMEOUT".to_string(), 30.0)].into_iter().collect(),
         by: vec![IntentId(1)],
+        carried: None,
     };
     w.restore_owed.insert(uid("sky-1"), owed);
     let cfg = QueueConfig::default();

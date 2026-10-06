@@ -46,6 +46,7 @@ fn track(t: Time, at: LonLat, vel: Option<[f64; 2]>, aff: Affiliation, domain: D
         review_flags: Vec::new(),
         manoeuvre: None,
         mean_velocity_mps: None,
+        first_seen_t: None,
     }
 }
 
@@ -329,10 +330,11 @@ fn values_owed_back_are_reported_carried_and_never_taken_off_a_preloaded_platfor
     let r = replay::replay_str(&log.text()).unwrap();
     assert!(r.ok() && r.unrestored.is_empty(), "{:?} {:?}", r.mismatches, r.unrestored);
     // a log that carries them over from an earlier run owes them from its start; a preload
-    // that then reads the preloaded values as the platform's own is caught
+    // that then reads the preloaded values as the platform's own is caught (rules 10, the
+    // last to carry them with platform.restore events: rules 11 carry in run.started)
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();
-    let mut e = Engine::with_areas(policy(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    let mut e = Engine::with_areas(policy10(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
     declare_shown(&mut e, &world(clock.now()));
     let carried = PlatformRestoreReport {
         uid: Uid::new("blade-1"),
@@ -346,8 +348,16 @@ fn values_owed_back_are_reported_carried_and_never_taken_off_a_preloaded_platfor
     assert!(!e.record_platform_restore(carried).unwrap());
     let (id, _) = dispatched(&mut e, &clock);
     set(&mut e, id, SET, SET).unwrap();
-    let w = whats(&log.text());
+    let w = whats_of(carried_with(&log.text(), None, true));
     assert!(w.iter().any(|m| m.contains("while earlier ones were owed back")), "{w:?}");
+}
+
+/// The rules of the tests that carry values over with `platform.restore` events: 10, the last
+/// to (rules 11 carry them in `run.started`: tests/rules11.rs).
+fn policy10() -> Policy {
+    let mut p = policy();
+    p.rules.rules_version = PASSKEY_SINCE;
+    p
 }
 
 #[test]
@@ -488,11 +498,12 @@ fn owing_run() -> String {
     log.text()
 }
 
-/// The next run on the port: it carries them over from `file` (`text`) and puts them back.
+/// The next run on the port: it carries them over from `file` (`text`) and puts them back
+/// (rules 10: with `platform.restore` events).
 fn carrying_run(file: &str, text: &str) -> String {
     let clock = ManualClock::new(T0.plus_ms(600_000));
     let log = MemorySink::new();
-    let mut e = Engine::with_areas(policy(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    let mut e = Engine::with_areas(policy10(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
     declare_shown(&mut e, &world(clock.now()));
     carry_from(&mut e, file, text);
     clock.advance_ms(2_000);
@@ -513,6 +524,7 @@ fn carrying_run(file: &str, text: &str) -> String {
 /// Replay `text` with `named` given as the log its carried values name, or trusting them.
 fn carried_with(text: &str, named: Option<(&str, &str)>, trusted: bool) -> replay::ReplayReport {
     let opts = replay::ReplayOptions {
+        rules: replay::RulesAccepted::AtLeast(PASSKEY_SINCE),
         restores_from: named,
         trust_resumed: trusted,
         ..Default::default()
@@ -543,6 +555,7 @@ fn carried_values_are_checked_against_what_the_log_they_name_still_owed() {
             restores: 1,
             checked,
             head: if checked { a_head.clone() } else { None },
+            failed: None,
         }]
     };
     // the genuine log: checked against a.jsonl (its head reported, to compare with its

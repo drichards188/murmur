@@ -63,6 +63,7 @@ fn engage_world(t: Time) -> WorldSnapshot {
             review_flags: Vec::new(),
             manoeuvre: None,
             mean_velocity_mps: None,
+            first_seen_t: None,
         },
     );
     w
@@ -207,7 +208,7 @@ fn two_people_sign_an_engagement_with_their_passkeys() {
     let r = report(&text);
     assert!(r.ok(), "{:?}", r.mismatches);
     assert!(r.authenticated());
-    assert_eq!(r.rules_version, PASSKEY_SINCE);
+    assert_eq!(r.rules_version, RULES_VERSION);
     assert_eq!(r.stepped_signatures, 2);
     assert_eq!((r.passkey_step_ups, r.password_step_ups), (3, 1), "every step-up is logged, used or not");
     // the run names its relying party and keys; each use its assertion, never a secret

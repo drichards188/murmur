@@ -14,8 +14,29 @@ use std::process::Command;
 
 use common::*;
 use murmur_decide::audit::EventBody;
-use murmur_decide::replay::{ReplayOptions, ReplayReport, owed_restores, replay_str, replay_str_with};
+use murmur_decide::replay::{ReplayOptions, ReplayReport, RulesAccepted, owed_restores, replay_str_with};
 use murmur_decide::*;
+
+/// These logs are of rules 10 (`PASSKEY_SINCE`), the last to carry values over with
+/// `platform.restore` events; rules 11 carry them in `run.started` (tests/rules11.rs).
+fn engine10(clock: &ManualClock) -> (Engine, MemorySink) {
+    let log = MemorySink::new();
+    let mut p = policy();
+    p.rules.rules_version = PASSKEY_SINCE;
+    let e = Engine::new(p, roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    (e, log)
+}
+
+/// Replay a rules 10 log.
+fn replay10(text: &str) -> Result<ReplayReport, murmur_decide::audit::LogError> {
+    replay_str_with(
+        text,
+        &ReplayOptions {
+            rules: RulesAccepted::AtLeast(PASSKEY_SINCE),
+            ..ReplayOptions::default()
+        },
+    )
+}
 
 /// boat-1's own lost-link values (ArduRover: hold on a lost link after 5 s).
 fn own() -> BTreeMap<String, f64> {
@@ -38,7 +59,7 @@ fn boat() -> VehicleIdentity {
 /// Run A1: an orbit queued for sky-1 (its link silent), still open when the bridge crashed.
 fn queued_run() -> (String, ReplayReport) {
     let clock = ManualClock::new(T0.plus_ms(5_000));
-    let (mut e, log) = engine(&clock);
+    let (mut e, log) = engine10(&clock);
     let op = e.open_operator_session(OperatorId::new("op-1")).unwrap();
     // every fact 5 s old: fresh enough for the checks, a link silent for 3 of its intervals
     let mut w = world();
@@ -49,7 +70,7 @@ fn queued_run() -> (String, ReplayReport) {
         .id();
     assert!(matches!(e.dispatch_or_queue(id, &w).unwrap(), Routed::Queued { .. }));
     let text = log.text();
-    let r = replay_str(&text).unwrap();
+    let r = replay10(&text).unwrap();
     assert!(r.ok() && r.open.len() == 1, "{:?} {:?}", r.mismatches, r.open);
     (text, r)
 }
@@ -58,7 +79,7 @@ fn queued_run() -> (String, ReplayReport) {
 /// run, never confirmed back (the boat did not answer): it still owes them.
 fn owing_run() -> String {
     let clock = ManualClock::new(T0.plus_ms(30_000));
-    let (mut e, log) = engine(&clock);
+    let (mut e, log) = engine10(&clock);
     let carried = PlatformRestoreReport {
         uid: uid("boat-1"),
         values: own(),
@@ -88,7 +109,7 @@ fn owing_run() -> String {
 /// the bridge's `carry_from` writes it, naming a2.jsonl), put back once the boat answered.
 fn carrying_run(a1: &ReplayReport, a2: &str) -> String {
     let clock = ManualClock::new(T0.plus_ms(120_000));
-    let (mut e, log) = engine(&clock);
+    let (mut e, log) = engine10(&clock);
     e.reserve_ids(a1.next_intent);
     let open = &a1.open[0];
     let from = ResumedFrom {
@@ -155,6 +176,7 @@ impl Dir {
     fn replay_log(&self, log: &str, args: &[String]) -> (Option<i32>, String) {
         let out = Command::new(env!("CARGO_BIN_EXE_murmur-replay"))
             .arg(self.path(log))
+            .args(["--min-rules", "10"])
             .args(args)
             .output()
             .unwrap();
@@ -179,7 +201,7 @@ fn a_run_carrying_from_two_logs_is_checked_against_each_and_says_which() {
     let (code, out) = d.replay(&[]);
     assert_eq!(code, Some(0), "{out}");
     let intents = format!("carried-over intents: 1 from a1.jsonl, checked against {}", d.path("a1.jsonl"));
-    let head = replay_str(&a2).unwrap().head_sha256.unwrap();
+    let head = replay10(&a2).unwrap().head_sha256.unwrap();
     let values = format!(
         "carried lost-link values: 1 platform(s) from a2.jsonl, checked against what {} still owed (its head {head}: compare with its anchors)",
         d.path("a2.jsonl")
@@ -334,6 +356,7 @@ fn carried_values_the_log_they_name_did_not_owe_are_caught() {
         }
     });
     let trusted = ReplayOptions {
+        rules: RulesAccepted::AtLeast(PASSKEY_SINCE),
         trust_resumed: true,
         ..ReplayOptions::default()
     };

@@ -215,8 +215,23 @@ pub enum UnknownEndurance {
 /// every human act to an authenticated person ([`OPERATOR_AUTH_SINCE`]). Version 9
 /// ([`RULE_ID_SINCE`]): rule-based identification with human review ([`crate::ident`]).
 /// Version 10 ([`PASSKEY_SINCE`]): passkeys (WebAuthn) for logins and step-ups
-/// ([`crate::passkey`]).
-pub const RULES_VERSION: u32 = PASSKEY_SINCE;
+/// ([`crate::passkey`]). Version 11 ([`REVIEW_FOLLOWUPS_SINCE`]): the follow-ups of the
+/// reviews of rules 6 to 10.
+pub const RULES_VERSION: u32 = REVIEW_FOLLOWUPS_SINCE;
+
+/// The rules version from which the follow-ups of the reviews of rules 6 to 10 decide: an
+/// expended platform's lost-link values are closed with the reason, and an operator may write
+/// off what is owed back (`restore.closed`, murmur-q05); a young track counts as possibly
+/// manoeuvring in a keep-out until the tracker has the facts that say otherwise (its
+/// `first_seen_t`, murmur-9m0); the scripted operators are fixed at run start (the roster's
+/// `scripted`) and every session's method is checked against them (murmur-jfi); the bridge
+/// records in `run.started` what it carried over from earlier runs' logs, which logs, their
+/// heads and what each still owed, in one line (`carried_from`, murmur-cq3); values carried
+/// over hold a mission for the vehicle they were preloaded on (murmur-qjf); and a mission
+/// refused for its platform's own values names the older queued orders still standing on its
+/// vehicles (murmur-54l). Every gate of that change reads this constant, never a literal:
+/// another change taking 11 first renumbers it in this one line.
+pub const REVIEW_FOLLOWUPS_SINCE: u32 = 11;
 
 /// The rules version from which a login or a step-up may be a passkey's (murmur-437): the
 /// run logs its relying party and its operators' passkeys as public keys (the roster's
@@ -354,6 +369,11 @@ impl RulesConfig {
     /// Rules 10: logins and step-ups may be passkeys' ([`crate::passkey`]).
     pub fn passkeys(&self) -> bool {
         self.rules_version >= PASSKEY_SINCE
+    }
+
+    /// Rules 11 ([`REVIEW_FOLLOWUPS_SINCE`]): the follow-ups of the reviews of rules 6 to 10.
+    pub fn followups(&self) -> bool {
+        self.rules_version >= REVIEW_FOLLOWUPS_SINCE
     }
 
     /// `[rules.engage]`, or its defaults.

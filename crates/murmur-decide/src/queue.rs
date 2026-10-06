@@ -304,7 +304,7 @@ pub fn reach(
             // safety commands, goes: the restore runs beside it)
             if rules.rules_version >= QUEUE_FOLLOWUPS_SINCE
                 && !matches!(spec.kind(), TaskKind::Hold | TaskKind::Rtl)
-                && let Some(owed) = world.restore_owed.get(uid)
+                && let Some(owed) = world.restore_owed.get(uid).filter(|o| o.holds())
             {
                 return out(false, owed.waiting_detail());
             }
@@ -336,27 +336,74 @@ pub fn reach(
 /// on a timer of a few seconds), so a mission is not sent to it: [`reach`] holds the order in
 /// the queue until a restore confirms (a hold or rtl is never held). A decision's fact the
 /// engine fills from its ledger (`restore_owed`) and replay recomputes from the log's.
-/// Values carried over from an earlier run's log (`platform.restore` carried) do not hold
-/// orders: the bridge puts them back only onto the vehicle they were preloaded on, which the
-/// log alone can't tell.
+/// Before rules 11, values carried over from an earlier run's log held no order (the log could
+/// not tell which vehicle has the uid now); from rules 11 they do, unless the vehicle with the
+/// uid now is known to be another one than they were preloaded on ([`CarriedHold`]: the
+/// bridge's identity of it is logged with the fact, and replay recomputes the judgement).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RestoreOwed {
     /// The vehicle's own values, by parameter name.
     pub values: BTreeMap<String, f64>,
-    /// The engagements that preloaded them.
+    /// The engagements that preloaded them (none: carried over from an earlier run's log).
     pub by: Vec<IntentId>,
+    /// Rules 11: values carried over from an earlier run's log (no engagement of this run
+    /// preloaded the platform since): where from, and whether the vehicle with the uid now is
+    /// the one they were preloaded on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carried: Option<Box<CarriedHold>>,
+}
+
+/// Rules 11 (murmur-qjf): values carried over from an earlier run's log, owed to a vehicle of
+/// this run's: the log, the vehicle they were preloaded on (that log's write-ahead) and the
+/// one with the uid now as the bridge identifies it (its platform, callsign, system id, home;
+/// absent: not known). They hold a mission, as an engagement's of this run do, unless `now`
+/// is known to be another vehicle (`other_vehicle` says how: then the bridge does not write
+/// them to it either, and nothing is held); a vehicle not known yet is held (fail closed).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CarriedHold {
+    pub from: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preloaded_on: Option<crate::engage::VehicleIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub now: Option<crate::engage::VehicleIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub other_vehicle: Option<String>,
 }
 
 impl RestoreOwed {
+    /// Whether they hold a mission for the vehicle: always for values an engagement of this
+    /// run preloaded; for carried ones unless the vehicle is known to be another.
+    pub fn holds(&self) -> bool {
+        self.carried.as_ref().is_none_or(|c| c.other_vehicle.is_none())
+    }
+
+    /// Since when they are owed, in words: the engagements that preloaded them, or the
+    /// earlier log they were carried over from.
+    pub fn since(&self) -> String {
+        match &self.carried {
+            Some(c) => format!("they were carried over from {}", c.from),
+            None => {
+                let by: Vec<String> = self.by.iter().map(ToString::to_string).collect();
+                format!("engagement {} preloaded it", by.join(", "))
+            }
+        }
+    }
+
     /// Why an order other than a hold or rtl waits for it.
     pub fn waiting_detail(&self) -> String {
         let values: Vec<String> = self.values.iter().map(|(n, v)| format!("{n} {v}")).collect();
-        let by: Vec<String> = self.by.iter().map(ToString::to_string).collect();
-        format!(
-            "heard, but its own lost-link failsafe ({}) is not confirmed back since engagement {} preloaded it: a mission waits for the restore (a hold or rtl goes)",
-            values.join(", "),
-            by.join(", ")
-        )
+        match &self.carried {
+            Some(c) => format!(
+                "heard, but its own lost-link failsafe ({}) is not confirmed back since it was carried over from {} (an engagement there preloaded it): a mission waits for the restore (a hold or rtl goes; an operator writes the values off if this is not the vehicle they were preloaded on)",
+                values.join(", "),
+                c.from
+            ),
+            None => format!(
+                "heard, but its own lost-link failsafe ({}) is not confirmed back since {}: a mission waits for the restore (a hold or rtl goes)",
+                values.join(", "),
+                self.since()
+            ),
+        }
     }
 }
 

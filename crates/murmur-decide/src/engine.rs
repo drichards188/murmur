@@ -113,6 +113,18 @@ pub enum EngineError {
     /// nothing was logged.
     #[error("identification: {0}")]
     Identification(String),
+    /// Rules 11: a write-off of a restore the engine can't take (nothing owed, no note, an
+    /// engagement under way on the platform, rules before 11): nothing was logged.
+    #[error("write-off: {0}")]
+    NotWrittenOff(String),
+}
+
+/// Rules 11: what an operator writes off ([`Engine::write_off_restore`]): the lost-link values
+/// owed back to one platform, or an earlier log whose carry failed (by its file name).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WriteOff {
+    Platform(Uid),
+    Log(String),
 }
 
 /// Rules 9: what [`Engine::record_act`] did with an observed act: the verdict, and the rule
@@ -243,6 +255,88 @@ pub(crate) fn waiting_vehicles<'a>(
         }
     }
     out
+}
+
+/// Rules 11: the orders queued on `spec`'s vehicles, other than `spec` itself, by id, with
+/// their kind and the vehicles they share with it: they still stand (each goes when its
+/// vehicles can be reached, unless voided or cancelled). Replay recomputes it from its own
+/// intents.
+pub(crate) fn queued_on<'a>(
+    intents: impl Iterator<Item = (IntentId, &'a IntentSpec, State)>,
+    spec: &IntentSpec,
+) -> Vec<(IntentId, TaskKind, Vec<Uid>)> {
+    intents
+        .filter(|(id, _, state)| *id != spec.id && *state == State::Queued)
+        .filter_map(|(id, s, _)| {
+            let shared: Vec<Uid> = s.uids.iter().filter(|u| spec.uids.contains(u)).cloned().collect();
+            (!shared.is_empty()).then(|| (id, s.kind(), shared))
+        })
+        .collect()
+}
+
+/// Rules 7: the reason a mission of a kind the policy never queues is refused (voided)
+/// instead of sent while a vehicle of its is owed its own lost-link values that hold it
+/// (`owed`, the ledger's on no identity: values carried over hold whatever vehicle has the
+/// uid), if it is: whether the engagements in play on its vehicles (`engaged`) are stopped by
+/// it or the restore is pending, and that a hold or rtl goes at once. Rules 11 (murmur-54l):
+/// it also names the orders still queued on its vehicles (`standing`, [`queued_on`]): the
+/// refusal leaves them in place, and an operator who meant this order to replace one cancels
+/// it. Replay recomputes it. None for a hold or rtl, or with nothing owed that holds.
+pub(crate) fn refusal_reason(
+    spec: &IntentSpec,
+    owed: &BTreeMap<Uid, queue::RestoreOwed>,
+    engaged: &BTreeSet<IntentId>,
+    standing: &[(IntentId, TaskKind, Vec<Uid>)],
+    rules: &rules::RulesConfig,
+) -> Option<String> {
+    if matches!(spec.kind(), TaskKind::Hold | TaskKind::Rtl) {
+        return None;
+    }
+    let (uid, o) = owed.iter().find(|(_, o)| o.holds())?;
+    let values: Vec<String> = o.values.iter().map(|(n, v)| format!("{n} {v}")).collect();
+    let by: Vec<String> = o.by.iter().map(ToString::to_string).collect();
+    let engaged: Vec<String> = engaged.iter().map(ToString::to_string).collect();
+    let kind = spec.kind().as_str();
+    let mut out = match (&o.carried, engaged.is_empty()) {
+        (Some(c), true) => format!(
+            "{REFUSED}vehicle {uid}'s own lost-link failsafe ({}) is not confirmed back since it was carried over from {}, and the policy queues no {kind} order to wait for the restore: give it again once the restore confirms, or have an operator write the values off if this is not the vehicle they were preloaded on (a hold or rtl goes at once)",
+            values.join(", "),
+            c.from
+        ),
+        (Some(c), false) => format!(
+            "{REFUSED}vehicle {uid}'s own lost-link failsafe ({}) is not confirmed back since it was carried over from {}; this order stops engagement {} (superseded, no fallback), but the policy queues no {kind} order to wait for the restore: give it again once the restore confirms (a hold or rtl goes at once)",
+            values.join(", "),
+            c.from,
+            engaged.join(", ")
+        ),
+        (None, true) => format!(
+            "{REFUSED}vehicle {uid}'s own lost-link failsafe ({}) is not confirmed back since engagement {} preloaded it, and the policy queues no {kind} order to wait for the restore: give it again once the restore confirms (a hold or rtl goes at once)",
+            values.join(", "),
+            by.join(", ")
+        ),
+        (None, false) => format!(
+            "{REFUSED}vehicle {uid} carries engagement {}'s lost-link action (its own failsafe {} owed back); this order stops engagement {} (superseded, no fallback) and the restore of its own values starts now (as soon as the platform is heard), but the policy queues no {kind} order to wait for it: give it again once the restore confirms (a hold or rtl goes at once)",
+            by.join(", "),
+            values.join(", "),
+            engaged.join(", ")
+        ),
+    };
+    // rules 11: the refusal replaces nothing: an older order queued on its vehicles still goes
+    if rules.followups() && !standing.is_empty() {
+        let list: Vec<String> = standing
+            .iter()
+            .map(|(id, kind, uids)| {
+                let uids: Vec<String> = uids.iter().map(ToString::to_string).collect();
+                format!("{id} ({}, vehicle {})", kind.as_str(), uids.join(", "))
+            })
+            .collect();
+        let (each, one) = if standing.len() == 1 { ("it", "it") } else { ("each", "one") };
+        out.push_str(&format!(
+            "; this refusal replaces no order: still standing, queued on its vehicles: {} ({each} goes when its vehicles can be reached; cancel {one} in the Queue if this order was to replace it)",
+            list.join(", ")
+        ));
+    }
+    Some(out)
 }
 
 /// What the task layer should execute for an approved intent.
@@ -400,6 +494,35 @@ impl Engine {
         clock: Box<dyn Clock + Send>,
         sink: Box<dyn AuditSink + Send>,
     ) -> Result<Self, EngineError> {
+        Self::start(policy, areas, roster, Vec::new(), clock, sink)
+    }
+
+    /// [`Engine::with_areas`] for a bridge that carried over what earlier runs' logs still owed
+    /// (rules 11, [`crate::rules::REVIEW_FOLLOWUPS_SINCE`]): `carried_from` goes into
+    /// `run.started` (the log `.last-run-<port>` named first, then any log whose carry had
+    /// failed, each with its head and what it owed), in that one line, and seeds the ledger of
+    /// the platforms' own lost-link values owed back. Refused before rules 11 (those carry with
+    /// `platform.restore` events, [`Engine::record_platform_restore`]) and for an entry that
+    /// does not name a log by its bare file name.
+    pub fn start(
+        policy: Policy,
+        areas: Option<AreaSet>,
+        roster: Roster,
+        carried_from: Vec<crate::replay::CarriedFrom>,
+        clock: Box<dyn Clock + Send>,
+        sink: Box<dyn AuditSink + Send>,
+    ) -> Result<Self, EngineError> {
+        if !carried_from.is_empty() && !policy.rules.followups() {
+            return Err(EngineError::Roster(
+                "these decision rules carry earlier runs' debts with platform.restore events, not in run.started".into(),
+            ));
+        }
+        if let Some(c) = carried_from.iter().find(|c| !crate::replay::is_log_file_name(&c.log)) {
+            return Err(EngineError::Roster(format!(
+                "a carried-over log is named by its bare file name, not {:?}",
+                c.log
+            )));
+        }
         roster.validate().map_err(EngineError::Roster)?;
         // rules 8: the roster says how its operators are authenticated (dev when the caller
         // said nothing: names asserted, never evidence about people); older rules never
@@ -416,6 +539,13 @@ impl Engine {
         } else {
             roster.passkeys = None;
             roster.study = None;
+        }
+        // rules 11: a credentials run fixes its scripted (harness-held) operators at the start,
+        // an empty list when none is; never before rules 11, never in a dev run
+        if policy.rules.followups() && roster.auth == Some(AuthMode::Credentials) {
+            roster.scripted.get_or_insert_with(Vec::new);
+        } else {
+            roster.scripted = None;
         }
         // what the rules read from other sections (rules 9: `[identification]`, which older
         // rules don't have: no build of theirs logged one)
@@ -477,7 +607,10 @@ impl Engine {
             roster: Some(roster),
             policy,
             areas: areas.clone(),
+            carried_from: carried_from.clone(),
         })?;
+        // rules 11: what earlier runs still owed, owed back from here on
+        e.restores.carry(&carried_from);
         e.areas = areas;
         e.run_hash = e.head.clone();
         for k in keys {
@@ -675,6 +808,13 @@ impl Engine {
                 operator,
                 why: "these decision rules have no passkeys".into(),
             });
+        }
+        // rules 11: a scripted credential opens scripted sessions, a person's a person's, as
+        // the roster fixed them at the run's start
+        if self.policy.rules.followups()
+            && let Some(why) = self.roster.method_refused(&operator, method)
+        {
+            return Err(EngineError::NotAuthenticated { operator, why });
         }
         // rules 10: how a person may sign in (`[approval] login_factor`)
         if self.auth == Some(AuthMode::Credentials) && !self.policy.login_factor().admits(method) {
@@ -1546,6 +1686,14 @@ impl Engine {
     /// attempt confirmed (the read-back shows every value back, no error; replay recomputes
     /// it, and reports a platform whose values were still owed when the log ended).
     pub fn record_platform_restore(&mut self, report: PlatformRestoreReport) -> Result<bool, EngineError> {
+        // rules 11: what an earlier run owed is carried in run.started, in one line
+        // (Engine::start), never event by event
+        if report.carried && self.policy.rules.followups() {
+            return Err(EngineError::NotItsOrder {
+                id: IntentId(0),
+                why: "values carried over from an earlier run go into run.started under these rules (Engine::start)".into(),
+            });
+        }
         // never while an engagement holds the platform: that would undo its preload
         if !report.carried
             && let Some(other) = self.engagement_holding(&report.uid, None)
@@ -1573,6 +1721,105 @@ impl Engine {
         self.emit(body.clone())?;
         self.restores.step_body(&body);
         Ok(confirmed)
+    }
+
+    /// Rules 11 (murmur-q05, murmur-cq3): an operator writes off a debt of the ledger, under
+    /// their own session, saying why: the platform's own lost-link values owed back to `uid`
+    /// (the vehicle is lost or destroyed, spent, or another vehicle has the uid now), or an
+    /// earlier log whose carry failed (`log`: gone for good). Logged as `restore.closed`
+    /// (`written_off`, with the values closed); nothing is owed back for it from then on, in
+    /// this run or a later one, and the bridge stops trying. Any operator may (it records a
+    /// judgement about the fleet, it authorizes nothing); an agent can't ([`AgentPort`] has no
+    /// such method). Refused before rules 11, without a note, for nothing owed, and while an
+    /// engagement is under way on the platform (its own restore is still to come).
+    pub fn write_off_restore(
+        &mut self,
+        by: &HumanAuthority,
+        what: WriteOff,
+        note: &str,
+    ) -> Result<(), EngineError> {
+        let refuse = |why: String| Err(EngineError::NotWrittenOff(why));
+        if !self.policy.rules.followups() {
+            return refuse("these decision rules have no write-off of a restore".into());
+        }
+        let note = note.trim();
+        if note.is_empty() {
+            return refuse("say why it is written off (a note)".into());
+        }
+        let (uid, values, log) = match what {
+            WriteOff::Platform(uid) => {
+                let Some(values) = self.restores.values_owed(&uid).cloned() else {
+                    return refuse(format!("nothing is owed back to vehicle {uid}"));
+                };
+                if let Some(other) = self.engagement_holding(&uid, None) {
+                    return refuse(format!(
+                        "engagement {other} is under way on vehicle {uid}: its own restore comes when it ends"
+                    ));
+                }
+                (Some(uid), values, None)
+            }
+            WriteOff::Log(log) => {
+                if !self.restores.is_pending(&log) {
+                    return refuse(format!("{log} is not an earlier log whose carry failed"));
+                }
+                (None, BTreeMap::new(), Some(log))
+            }
+        };
+        let body = EventBody::RestoreClosed {
+            uid,
+            values,
+            log,
+            closed_by: crate::audit::RestoreClosure::WrittenOff {
+                operator: by.operator().clone(),
+                session: by.session(),
+                note: note.to_string(),
+            },
+        };
+        self.emit(body.clone())?;
+        self.restores.step_body(&body);
+        Ok(())
+    }
+
+    /// Rules 11: the platforms' own lost-link values owed back and the earlier logs whose carry
+    /// failed, as the ledger has them (for the inbox: what an operator could write off).
+    pub fn pending_carries(&self) -> Vec<(String, String)> {
+        self.restores
+            .pending()
+            .iter()
+            .map(|(l, w)| (l.clone(), w.clone()))
+            .collect()
+    }
+
+    /// Rules 11: whether the ledger still owes `uid` its own lost-link values.
+    pub fn restore_owed_to(&self, uid: &Uid) -> bool {
+        self.restores.values_owed(uid).is_some()
+    }
+
+    /// Rules 11 (murmur-q05): right after an engagement's release, close what is owed back to
+    /// its platform when the platform is spent by its own effect (its catalog's
+    /// `expended_by_effect`, as the release picture `world` has it): `restore.closed`,
+    /// `expended`. Nothing to do otherwise.
+    fn close_expended(&mut self, id: IntentId, uid: &Uid, world: &WorldSnapshot) -> Result<(), EngineError> {
+        if !self.policy.rules.followups() {
+            return Ok(());
+        }
+        let spent = world
+            .vehicles
+            .get(uid)
+            .and_then(|v| v.platform.as_ref())
+            .is_some_and(|p| p.expended_by_effect);
+        let Some(values) = self.restores.values_owed(uid).cloned().filter(|_| spent) else {
+            return Ok(());
+        };
+        let body = EventBody::RestoreClosed {
+            uid: Some(uid.clone()),
+            values,
+            log: None,
+            closed_by: crate::audit::RestoreClosure::Expended { intent: id },
+        };
+        self.emit(body.clone())?;
+        self.restores.step_body(&body);
+        Ok(())
     }
 
     /// Rules 6: another engagement than `id` under way on vehicle `uid`.
@@ -2691,6 +2938,8 @@ impl Engine {
                 p.effect_point.lon, p.effect_point.lat, p.effect_radius_m
             ),
         )?;
+        // rules 11: a platform spent by its own effect is owed nothing back from now on
+        self.close_expended(id, &uid, &inputs)?;
         Ok(Some(EngagementEvent::Effect(EffectOrder {
             intent: id,
             uid,
@@ -2741,58 +2990,62 @@ impl Engine {
     /// Rules 7: `spec`'s vehicles still owed their own lost-link values by an engagement of
     /// this run (a fact the engine logs with each decision, `restore_owed`; replay recomputes
     /// it from the log's ledger). Empty before rules 7 and for anything but a vehicle task.
-    fn restore_owed_for(&self, spec: &IntentSpec) -> BTreeMap<Uid, queue::RestoreOwed> {
-        self.restores.owed_for(spec, &self.policy.rules)
+    fn restore_owed_for(
+        &self,
+        spec: &IntentSpec,
+        identities: &BTreeMap<Uid, engage::VehicleIdentity>,
+    ) -> BTreeMap<Uid, queue::RestoreOwed> {
+        self.restores.owed_for(spec, &self.policy.rules, identities)
     }
 
     /// Rules 7: why `spec` (a vehicle task other than a hold or rtl) can't go now: a vehicle
-    /// still owed its own lost-link values by an engagement of this run. None otherwise.
-    fn restore_hold(&self, spec: &IntentSpec) -> Option<String> {
+    /// still owed its own lost-link values by an engagement of this run (rules 11: or carried
+    /// over from an earlier run's, unless `owed` shows the vehicle is another). `owed`: the
+    /// fact its reach was judged on; none (a kind the policy never queues, no reach logged):
+    /// the ledger's, carried values holding whatever vehicle has the uid. None otherwise.
+    fn restore_hold(
+        &self,
+        spec: &IntentSpec,
+        owed: Option<&BTreeMap<Uid, queue::RestoreOwed>>,
+    ) -> Option<String> {
         if matches!(spec.kind(), TaskKind::Hold | TaskKind::Rtl) {
             return None;
         }
-        let owed = self.restore_owed_for(spec);
-        let (uid, o) = owed.iter().next()?;
+        let ledger;
+        let owed = match owed {
+            Some(o) => o,
+            None => {
+                ledger = self.restore_owed_for(spec, &BTreeMap::new());
+                &ledger
+            }
+        };
+        let (uid, o) = owed.iter().find(|(_, o)| o.holds())?;
         Some(format!("vehicle {uid}: {}", o.waiting_detail()))
     }
 
     /// Rules 7: why a mission of a kind the policy never queues is refused (voided) instead of
-    /// sent, if it is: a vehicle still owed its own lost-link values. Says whether an
-    /// engagement in play there is stopped by this order (the bridge supersedes it in the same
-    /// step; its restore then goes) or the restore is pending, and that a hold or rtl goes.
+    /// sent, if it is: a vehicle still owed its own lost-link values (no reach is logged for
+    /// such a kind, so values carried over from an earlier run hold whatever vehicle has the
+    /// uid). Says whether an engagement in play there is stopped by this order (the bridge
+    /// supersedes it in the same step; its restore then goes) or the restore is pending, that a
+    /// hold or rtl goes, and (rules 11) the orders still queued on its vehicles.
     fn refusal(&self, spec: &IntentSpec) -> Option<String> {
-        if matches!(spec.kind(), TaskKind::Hold | TaskKind::Rtl) {
-            return None;
-        }
-        let owed = self.restore_owed_for(spec);
-        let (uid, o) = owed.iter().next()?;
-        let values: Vec<String> = o.values.iter().map(|(n, v)| format!("{n} {v}")).collect();
-        let by: Vec<String> = o.by.iter().map(ToString::to_string).collect();
+        let owed = self.restore_owed_for(spec, &BTreeMap::new());
         let engaged: BTreeSet<IntentId> = self.engaged_for(spec).into_values().collect();
-        let engaged: Vec<String> = engaged.iter().map(ToString::to_string).collect();
-        let kind = spec.kind().as_str();
-        Some(if engaged.is_empty() {
-            format!(
-                "{REFUSED}vehicle {uid}'s own lost-link failsafe ({}) is not confirmed back since engagement {} preloaded it, and the policy queues no {kind} order to wait for the restore: give it again once the restore confirms (a hold or rtl goes at once)",
-                values.join(", "),
-                by.join(", ")
-            )
-        } else {
-            format!(
-                "{REFUSED}vehicle {uid} carries engagement {}'s lost-link action (its own failsafe {} owed back); this order stops engagement {} (superseded, no fallback) and the restore of its own values starts now (as soon as the platform is heard), but the policy queues no {kind} order to wait for it: give it again once the restore confirms (a hold or rtl goes at once)",
-                by.join(", "),
-                values.join(", "),
-                engaged.join(", ")
-            )
-        })
+        let standing = queued_on(
+            self.intents.values().map(|i| (i.id(), i.spec(), i.state())),
+            spec,
+        );
+        refusal_reason(spec, &owed, &engaged, &standing, &self.policy.rules)
     }
 
     /// What [`queue::reach`] reads for `spec`: its part of `world`, and (rules 7) its
-    /// vehicles' lost-link values still owed back.
+    /// vehicles' lost-link values still owed back (rules 11: with the bridge's identity of a
+    /// vehicle owed values carried over).
     fn reach_inputs(&self, spec: &IntentSpec, world: &WorldSnapshot) -> WorldSnapshot {
         let mut inputs = world.subset_for(spec);
         self.identify(&mut inputs);
-        inputs.restore_owed = self.restore_owed_for(spec);
+        inputs.restore_owed = self.restore_owed_for(spec, &inputs.identities);
         inputs
     }
 
@@ -3431,7 +3684,7 @@ impl Engine {
                 });
             }
             let logged = self.log_inputs(&inputs)?;
-            self.dispatch_inner(id, Some((logged, reach)))?
+            self.dispatch_inner(id, Some((logged, reach)), None)?
         } else {
             self.dispatch_order(id)?
         };
@@ -3474,22 +3727,26 @@ impl Engine {
             });
         }
         self.refuse_queued(id)?;
-        self.dispatch_inner(id, None)
+        self.dispatch_inner(id, None, None)
     }
 
     /// The dispatch itself: `intent.dispatched` (with the reach that allowed it, when one was
-    /// judged), then the transition.
+    /// judged), then the transition. `rechecked`: the lost-link values owed back as a dequeue's
+    /// re-check read them (rules 11: with the identity of a vehicle owed carried values).
     fn dispatch_inner(
         &mut self,
         id: IntentId,
         reached: Option<(LoggedInputs, Vec<Reach>)>,
+        rechecked: Option<&BTreeMap<Uid, queue::RestoreOwed>>,
     ) -> Result<Order, EngineError> {
         let intent = self.get(id)?;
         next_state(intent.state(), Transition::Dispatch)
             .map_err(|err| EngineError::Illegal { id, err })?;
         // rules 7: whatever the path (and whether the kind is queued or not), never a mission
-        // to a vehicle still owed its own lost-link values (replay checks every dispatch)
-        if let Some(why) = self.restore_hold(intent.spec()) {
+        // to a vehicle still owed its own lost-link values (replay checks every dispatch); rules
+        // 11: the reach it was judged on says whether carried values hold its vehicle
+        let judged = reached.as_ref().map(|(i, _)| &i.restore_owed).or(rechecked);
+        if let Some(why) = self.restore_hold(intent.spec(), judged) {
             return Err(EngineError::NotDispatchable {
                 id,
                 why: format!("{why}: a mission is not sent over an engagement's lost-link action"),
@@ -3575,7 +3832,7 @@ impl Engine {
         let logged = self.log_inputs(&inputs)?;
         if queue::all_reachable(&reach) {
             return Ok(Routed::Dispatched(
-                self.dispatch_inner(id, Some((logged, reach)))?,
+                self.dispatch_inner(id, Some((logged, reach)), None)?,
             ));
         }
         // one instant for the deadline and the event, so replay recomputes it from e.t
@@ -3697,7 +3954,11 @@ impl Engine {
         }
         match (recheck.verdict, decision) {
             // the order goes out at once, right after the re-check that allows it
-            (Verdict::Dispatch, _) => Ok(Dequeued::Dispatched(self.dispatch_inner(id, None)?)),
+            (Verdict::Dispatch, _) => Ok(Dequeued::Dispatched(self.dispatch_inner(
+                id,
+                None,
+                Some(&inputs.restore_owed),
+            )?)),
             (Verdict::Inbox, Some(decision)) => {
                 self.back_to_inbox(
                     id,
@@ -4345,7 +4606,7 @@ impl Engine {
         }
         inputs.engaged = self.engaged_for(spec);
         inputs.waiting = self.waiting_for(spec);
-        inputs.restore_owed = self.restore_owed_for(spec);
+        inputs.restore_owed = self.restore_owed_for(spec, &inputs.identities);
         if spec.kind() == TaskKind::Engage {
             inputs.unknown_accepted = self.accepted_for(spec.id);
         }
@@ -5289,7 +5550,7 @@ impl AgentPort<'_> {
         }
         inputs.engaged = self.engine.engaged_for(&spec);
         inputs.waiting = self.engine.waiting_for(&spec);
-        inputs.restore_owed = self.engine.restore_owed_for(&spec);
+        inputs.restore_owed = self.engine.restore_owed_for(&spec, &inputs.identities);
         let checks = rules::evaluate(&spec, &inputs, &self.engine.policy.rules);
         let passed = rules::passed(&checks, spec.kind());
         let policy = passed.then(|| policy::decide(&spec, &inputs, &self.engine.policy));

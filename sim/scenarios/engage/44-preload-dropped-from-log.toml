@@ -1,13 +1,14 @@
 # Rules 6: the nominal chain with the preload: set and read back a second after dispatch,
-# the effect released, the platform's own values put back. Then the log is forged to drop
-# the preload report (as if the release had not needed it); replay recomputes the release
-# picture without a confirmed preload and catches it.
+# the effect released, the platform's own values put back (until rules 11: from rules 11 the
+# switchblade is spent by its effect and owed nothing back, scenario 80). Then the log is
+# forged to drop the preload report (as if the release had not needed it); replay recomputes
+# the release picture without a confirmed preload and catches it.
 title = "The preload report is cut from the log"
 invariant = "fallback_preload"
 attack = "drop the platform's preload report from the log of a released engagement"
 expect = "done"
 expect_assessment = "ceased"
-expect_preload = ["set confirmed", "restore confirmed"]
+expect_preload = ["set confirmed"]
 tamper = "drop_preload"
 end_s = 200
 

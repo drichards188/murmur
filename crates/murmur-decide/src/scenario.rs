@@ -94,6 +94,13 @@ pub struct Scenario {
     /// declared, whatever happened).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expect_no_ident: Vec<String>,
+    /// Rules 11: debts closed without a restore that replay must list, in order (substrings
+    /// of its `restores_closed`: `expended by its own effect`, `written off by op-1`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expect_closed: Vec<String>,
+    /// Rules 11: nothing may still be owed back when the log ends (replay's `unrestored`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub expect_nothing_owed: bool,
     /// After the run, attack the log and require replay to catch it:
     /// `proposer_approval`, `agent_approval`, `suppress_void`, `edit_snapshot`,
     /// `drop_signature`, `edit_effect`, `strip_approvers`, `drop_reset`, `agent_order_auto`,
@@ -254,7 +261,17 @@ pub struct TrackDef {
     /// at the start, and the fastest it went since, m/s ([`TrackFacts::manoeuvre`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manoeuvre_speed_mps: Option<f64>,
+    /// Rules 11: the tracker started it this long before the start, s
+    /// ([`TrackFacts::first_seen_t`]); it has an average velocity (the velocity it holds)
+    /// once it has been tracked [`SCENARIO_MEAN_MIN_S`] with a velocity estimate, as the
+    /// bridge's tracker does. Absent: the tracker does not say (judged as rules 10 did).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracked_s: Option<f64>,
 }
+
+/// Rules 11, scenarios: how long a track is tracked with a velocity estimate before it has an
+/// average velocity (the bridge tracker's `MEAN_MIN_S`).
+pub const SCENARIO_MEAN_MIN_S: f64 = 45.0;
 
 fn sigma() -> f64 {
     15.0
@@ -398,6 +415,10 @@ pub enum Action {
         /// Its estimated altitude, m (rules 6 read keep-outs in 3D where it is known).
         #[serde(default)]
         alt_m: Option<f64>,
+        /// Rules 11: a track this step makes is one the tracker started this long ago, s
+        /// ([`TrackDef::tracked_s`]: 0, a new track).
+        #[serde(default)]
+        tracked_s: Option<f64>,
     },
     /// One of our vehicles changes: position, velocity, link (silent: no reports; a report
     /// interval: the link class changed), navigation source (`gnss`, `dead_reckoning`).
@@ -475,6 +496,9 @@ pub enum Action {
     /// Rules 9: an agent "tries" to declare a track hostile: there is no such method on its
     /// port, so it is recorded and nothing may change.
     AgentDeclare { agent: String, track: String },
+    /// Rules 11: an operator writes off the lost-link values owed back to one of our vehicles
+    /// (it is lost, spent, or not the vehicle they were preloaded on), saying why.
+    WriteOff { by: String, uid: String, note: String },
     /// Check the last nomination now.
     Expect {
         #[serde(default)]
@@ -1053,6 +1077,11 @@ pub fn run(
         if opts.seed.is_some() {
             sim.facts.pos_sigma_m = sim.facts.pos_sigma_m.max(opts.track_noise_m);
         }
+        // rules 11: the bridge reports when it started a track only from rules 11 on
+        if !engine.policy().rules.followups() {
+            sim.facts.first_seen_t = None;
+            sim.facts.mean_velocity_mps = None;
+        }
         tracks.insert(t.id.clone(), sim);
     }
     // rules 9: a track the file lists as declared is declared through the engine's ledger,
@@ -1134,6 +1163,13 @@ pub fn run(
                 };
                 tr.facts.position = Fact::new(noisy, now);
                 tr.facts.last_seen_t = now;
+                // rules 11: its average velocity once tracked long enough with a velocity
+                if let (Some(first), Some(v)) = (tr.facts.first_seen_t, tr.facts.velocity_mps)
+                    && tr.facts.mean_velocity_mps.is_none()
+                    && now.ms_since(first) as f64 >= SCENARIO_MEAN_MIN_S * 1000.0
+                {
+                    tr.facts.mean_velocity_mps = Some(v);
+                }
                 // every source hit it; the ranging ones (and so the altitude) unless they lost it
                 let frozen = tr.alt_frozen;
                 for (src, st) in &mut tr.facts.source_t {
@@ -1458,6 +1494,20 @@ pub fn run(
     if !report.ok() {
         failures.push(format!("replay: {}", replay_mismatches.join("; ")));
     }
+    // rules 11: debts closed without a restore, and nothing left owed
+    let mut closed = report.restores_closed.iter();
+    for want in &sc.expect_closed {
+        if !closed.any(|c| c.contains(want.as_str())) {
+            failures.push(format!(
+                "expected restores closed {:?} in order, replay lists {:?}",
+                sc.expect_closed, report.restores_closed
+            ));
+            break;
+        }
+    }
+    if sc.expect_nothing_owed && !report.unrestored.is_empty() {
+        failures.push(format!("expected nothing owed back at the end, replay reports {:?}", report.unrestored));
+    }
     let mut tamper_not_applicable = None;
     let (tamper_detected, tamper_mismatches) = match &sc.tamper {
         None => (None, Vec::new()),
@@ -1732,7 +1782,12 @@ fn track_sim(t: &TrackDef) -> TrackSim {
                 change_mps: v,
                 speed_mps: v,
             }),
-            mean_velocity_mps: None,
+            // rules 11: tracked long enough, a steady track's average velocity is its velocity
+            mean_velocity_mps: t
+                .tracked_s
+                .filter(|s| *s >= SCENARIO_MEAN_MIN_S && !t.no_velocity_estimate)
+                .map(|_| t.velocity),
+            first_seen_t: t.tracked_s.map(|s| T0.plus_ms(-((s * 1000.0).round() as i64))),
         },
         silent: t.silent,
         no_velocity: t.no_velocity_estimate,
@@ -1986,6 +2041,14 @@ fn act(
                 return refusals.push(format!("no review flag in force on {track}"));
             };
             if let Err(e) = engine.resolve_flag(sess.authority(), flag, *resolution, None) {
+                refusals.push(e.to_string());
+            }
+        }
+        Action::WriteOff { by, uid, note } => {
+            let Some(sess) = session(by) else {
+                return failures.push(format!("t={s}: unknown operator {by}"));
+            };
+            if let Err(e) = engine.write_off_restore(sess.authority(), crate::engine::WriteOff::Platform(Uid::new(uid)), note) {
                 refusals.push(e.to_string());
             }
         }
@@ -2282,7 +2345,9 @@ fn act(
             silent,
             velocity_error,
             alt_m,
+            tracked_s,
         } => {
+            let new = !tracks.contains_key(id);
             let t = tracks.entry(id.clone()).or_insert_with(|| {
                 track_sim(&TrackDef {
                     id: id.clone(),
@@ -2304,8 +2369,14 @@ fn act(
                     alt_age_s: 0.0,
                     truth: None,
                     manoeuvre_speed_mps: None,
+                    tracked_s: None,
                 })
             });
+            // rules 11: a new track started this long ago (its average velocity comes later)
+            if let (true, Some(s)) = (new && engine.policy().rules.followups(), tracked_s) {
+                t.facts.first_seen_t = Some(now.plus_ms(-((s * 1000.0).round() as i64)));
+                t.facts.mean_velocity_mps = None;
+            }
             if let Some(a) = alt_m {
                 t.facts.alt_m = Some(*a);
                 t.facts.alt_t = Some(now);
@@ -3100,12 +3171,15 @@ fn preloads(
         }
         // its own values back once the engagement has ended (when it can hear us, and from
         // `restore_after_s` on)
+        // (rules 11: nothing if no longer owed: the platform was spent by its effect, or its
+        // values were written off)
         if ps.set.is_some()
             && !ps.restored
             && !ps.before.is_empty()
             && state != State::Dispatched
             && !silent
             && s >= restore_after_s
+            && engine.restore_owed_to(&Uid::new(&ps.uid))
         {
             let report = PreloadReport {
                 uid: Uid::new(&ps.uid),
@@ -3867,6 +3941,74 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             }
             if !done {
                 return Err("no unconfirmed rule declaration in any picture".into());
+            }
+        }
+        "drop_expended_fact" => {
+            // rules 11: a platform's closure as expended kept, the catalog fact that justifies
+            // it taken out of every picture (as if the platform could be restored)
+            if !events.iter().any(|e| matches!(&e.body, EventBody::RestoreClosed { closed_by: crate::audit::RestoreClosure::Expended { .. }, .. })) {
+                return Err("no restore closed as expended".into());
+            }
+            let mut out = Vec::new();
+            for e in &events {
+                let line = serde_json::to_string(e).map_err(|err| err.to_string())?;
+                let line = line.replace(",\"expended_by_effect\":true", "");
+                out.push(serde_json::from_str::<crate::audit::Event>(&line).map_err(|err| err.to_string())?);
+            }
+            events = out;
+        }
+        "write_off_by_another" => {
+            // rules 11: a write-off credited to another operator than the session's
+            let mut done = false;
+            for e in &mut events {
+                if let EventBody::RestoreClosed {
+                    closed_by: crate::audit::RestoreClosure::WrittenOff { operator, .. },
+                    ..
+                } = &mut e.body
+                {
+                    *operator = OperatorId::new(if operator.as_str() == "op-2" { "op-3" } else { "op-2" });
+                    done = true;
+                }
+            }
+            if !done {
+                return Err("no write-off".into());
+            }
+        }
+        "drop_standing_clause" => {
+            // rules 11: a refusal's reason cut of the orders it leaves standing
+            let mut done = false;
+            for e in &mut events {
+                if let EventBody::IntentState { reason, .. } = &mut e.body
+                    && let Some(i) = reason.find("; this refusal replaces no order")
+                {
+                    reason.truncate(i);
+                    done = true;
+                }
+            }
+            if !done {
+                return Err("no refusal naming an order still standing".into());
+            }
+        }
+        "drop_first_seen" => {
+            // rules 11: every track made to look as if the tracker had not said when it
+            // started it (a young track's keep-out region would not be there)
+            let mut done = false;
+            for e in &mut events {
+                let inputs = match &mut e.body {
+                    EventBody::CheckResult { inputs, .. }
+                    | EventBody::PolicyDecision { inputs, .. }
+                    | EventBody::EngagePicture { inputs, .. }
+                    | EventBody::EngageObserve { inputs, .. } => Some(inputs),
+                    _ => None,
+                };
+                for t in inputs.into_iter().flat_map(|i| i.tracks.values_mut()) {
+                    if t.first_seen_t.take().is_some() {
+                        done = true;
+                    }
+                }
+            }
+            if !done {
+                return Err("no track's first detection in any decision's inputs".into());
             }
         }
         other => return Err(format!("unknown tamper {other:?}")),

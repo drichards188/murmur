@@ -105,6 +105,15 @@ pub enum EventBody {
         roster: Option<Roster>,
         policy: Policy,
         areas: Option<LoggedAreas>,
+        /// Rules 11 ([`crate::rules::REVIEW_FOLLOWUPS_SINCE`]): what the bridge carried over at
+        /// start from earlier runs' logs, in one line (a crash can't leave half of it): the log
+        /// its `.last-run-<port>` pointer named, then any log whose carry failed before and that
+        /// nobody wrote off, each with its head and last seq as read and what it still owed
+        /// (the platforms' own lost-link values, and the logs it had not carried), or why it
+        /// could not be read. The platforms' values seed this run's ledger. Absent when no
+        /// pointer named a log (a first start), in a scenario and before rules 11.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        carried_from: Vec<crate::replay::CarriedFrom>,
     },
 
     /// A new area set is in force (the first one, if none was given at start, or a
@@ -604,6 +613,23 @@ pub enum EventBody {
         vehicle: Option<Box<crate::engage::VehicleIdentity>>,
     },
 
+    /// Rules 11: a debt of the ledger closed without a restore: a platform's own lost-link
+    /// values (`uid`, `values`: exactly what was owed) or an earlier log whose carry failed
+    /// (`log`: what it owed is unknown), closed because the platform was expended by its own
+    /// effect (`expended`: right after the release, its catalog's `expended_by_effect`), or
+    /// because an operator wrote it off under their own session, saying why (`written_off`).
+    /// Nothing is owed back for it from then on, in this run or a later one.
+    #[serde(rename = "restore.closed")]
+    RestoreClosed {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        uid: Option<Uid>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        values: BTreeMap<String, f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        log: Option<String>,
+        closed_by: RestoreClosure,
+    },
+
     /// Engage, rules 6: the platform's own lost-link values read and logged before anything is
     /// written (`intent`, the write-ahead: owed back from here on, with the vehicle's
     /// identity), the platform's own lost-link action set as the engagement's fallback
@@ -804,6 +830,32 @@ pub struct ViewShown {
     pub rationale: bool,
     #[serde(default)]
     pub tracks: Vec<String>,
+}
+
+/// Rules 11: why a debt of the ledger was closed without a restore (`restore.closed`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RestoreClosure {
+    /// The platform's engagement released its effect and the platform is spent by it (a
+    /// loitering munition: the catalog's `expended_by_effect`): there is nothing to put its
+    /// values back on.
+    Expended { intent: IntentId },
+    /// An operator wrote it off, under their own session, saying why (the vehicle is lost or
+    /// destroyed, another vehicle has the uid now, an earlier log is gone for good).
+    WrittenOff {
+        operator: OperatorId,
+        session: SessionId,
+        note: String,
+    },
+}
+
+impl RestoreClosure {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RestoreClosure::Expended { .. } => "expended",
+            RestoreClosure::WrittenOff { .. } => "written_off",
+        }
+    }
 }
 
 /// The build a log was written by (`run.started`).

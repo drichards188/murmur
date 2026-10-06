@@ -56,6 +56,12 @@
 //!   picture token it quotes), the engine verifies it against the public key the run logged
 //!   before logging it, and the act that quotes it must be the act it was made for. The policy
 //!   may require it (`[approval] step_up_factor = "passkey"`); a study always does.
+//! - Rules 11 ([`REVIEW_FOLLOWUPS_SINCE`]): the scripted (harness-held) operators are fixed
+//!   on the roster at run start ([`Roster::scripted`]), and a session opens by the method the
+//!   roster gives its operator (a person's password or passkey, or a scripted credential);
+//!   an operator may write off a platform's lost-link values owed back, or an earlier log's
+//!   carry that failed ([`Engine::write_off_restore`]), under their own session, and an
+//!   agent can't.
 //!
 //! `compile_fail` doctests on [`HumanAuthority`] (module `authority`) and [`AgentPort`]
 //! prove the forbidden programs don't compile. The replay also checks the property from
@@ -225,7 +231,7 @@
 //!     platform: Some(PlatformFacts {
 //!         id: "x10".into(), domain: Domain::Air, armed: false, cruise_mps: Some(12.0),
 //!         min_turn_radius_m: None, endurance_h: Some(0.65), autopilot: Some(AutopilotKind::Copter),
-//!         sensors: Vec::new(), climb_mps: None, max_mps: None,
+//!         sensors: Vec::new(), climb_mps: None, max_mps: None, expended_by_effect: false,
 //!     }),
 //!     autopilot: Some(Fact::new(AutopilotKind::Copter, t)),
 //!     nav_ready: Some(Fact::new(true, t)),
@@ -299,6 +305,7 @@ pub use authority::{
     AuthMethod, AuthMode, EngagementAuthority, Grants, HumanAuthority, OperatorSession, Roster,
     STEP_UP_MAX_AGE_MS, StepUp, StepUpRef,
 };
+pub use audit::RestoreClosure;
 pub use catalog::{AutopilotKind, Catalog, Domain, PlatformFacts, SensorFact};
 pub use engage::{
     AssessResult, Assessment, EffectOrder, EffectRecord, EngageOrder, EngagePreview, EngageRules,
@@ -310,7 +317,7 @@ pub use engage::{
 pub use engine::{
     ActOutcome, AgentPort, Dequeued, DispatchOrder, Engine, EngineError, IdentOutcome, Order,
     PREPARED_SPACE_MAX_AGE_MS, PlatformRestoreReport, PreloadReport, PreparedSpace, Preview,
-    Routed, StepOutcome, TaskOutcome, prepare_space,
+    Routed, StepOutcome, TaskOutcome, WriteOff, prepare_space,
 };
 pub use geo::{LonLat, Polygon};
 pub use ident::{
@@ -331,14 +338,14 @@ pub use policy::{
     Until,
 };
 pub use queue::{
-    Basis, CarriedApproval, KindQueue, OpenIntent, QueueConfig, QueueState, Reach, Recheck,
-    RecheckRecord, RestoreOwed, ResumedFrom, Verdict,
+    Basis, CarriedApproval, CarriedHold, KindQueue, OpenIntent, QueueConfig, QueueState, Reach,
+    Recheck, RecheckRecord, RestoreOwed, ResumedFrom, Verdict,
 };
 pub use route::{LegKind, Route, Segment};
 pub use rules::{
     CheckResult, OPERATOR_AUTH_SINCE, Outcome, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, POLICY_SCHEMA,
-    QUEUE_FOLLOWUPS_SINCE, RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE, RULES_VERSION, RuleId, RulesConfig,
-    STEP_UP_SCHEMA_SINCE, UnknownEndurance,
+    QUEUE_FOLLOWUPS_SINCE, REVIEW_FOLLOWUPS_SINCE, RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE, RULES_VERSION,
+    RuleId, RulesConfig, STEP_UP_SCHEMA_SINCE, UnknownEndurance,
 };
 pub use space::{
     ChosenCollect, CollectCapability, CollectOrder, CoverOrder, CoverService, ScenarioMap,

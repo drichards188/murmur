@@ -348,6 +348,14 @@ pub struct Roster {
     /// lets them step up with a password (such a run is never evidence).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub study: Option<Box<crate::passkey::Study>>,
+    /// Rules 11 ([`crate::rules::REVIEW_FOLLOWUPS_SINCE`]), a credentials run: the operators
+    /// whose credential was harness-held (`scripted`) when the run started, fixed for the run
+    /// (an empty list when none was). Their sessions open as `scripted`, everyone else's as a
+    /// person's (`password`, `passkey`): the engine refuses, and replay flags, a session opened
+    /// otherwise, so a credential re-marked mid-run can't move an operator between people and
+    /// scripts in the log. Absent in a dev run and before rules 11.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scripted: Option<Vec<OperatorId>>,
 }
 
 impl Roster {
@@ -361,6 +369,7 @@ impl Roster {
             auth: None,
             passkeys: None,
             study: None,
+            scripted: None,
         };
         r.validate()?;
         Ok(r)
@@ -385,6 +394,39 @@ impl Roster {
     pub fn with_study(mut self, study: crate::passkey::Study) -> Roster {
         self.study = Some(Box::new(study));
         self
+    }
+
+    /// Rules 11: the same roster with the operators whose credential is harness-held
+    /// (`scripted`) at the run's start (a credentials run's; the engine logs an empty list
+    /// when it is given none).
+    #[must_use]
+    pub fn with_scripted(mut self, scripted: Vec<OperatorId>) -> Roster {
+        self.scripted = Some(scripted);
+        self
+    }
+
+    /// Rules 11: how `operator` opens a session in this run, if the roster fixes it: `true`
+    /// for a scripted (harness-held) credential, `false` for a person's. None without a
+    /// scripted list (a dev run, older rules).
+    pub fn is_scripted(&self, operator: &OperatorId) -> Option<bool> {
+        self.scripted.as_ref().map(|s| s.contains(operator))
+    }
+
+    /// Rules 11: why a session of `operator` opened by `method` is not the one the roster's
+    /// scripted list gives it, if it is not (a scripted credential opens `scripted` sessions,
+    /// a person's `password` or `passkey` ones). None without a scripted list, and for an
+    /// asserted session (a dev run's, refused elsewhere in a credentials run).
+    pub fn method_refused(&self, operator: &OperatorId, method: AuthMethod) -> Option<String> {
+        let scripted = self.is_scripted(operator)?;
+        match method {
+            AuthMethod::Scripted if !scripted => Some(format!(
+                "{operator}'s credential was a person's when the run started, not a harness's (scripted): restart the bridge for a change of it to count"
+            )),
+            AuthMethod::Password | AuthMethod::Passkey if scripted => Some(format!(
+                "{operator}'s credential was harness-held (scripted) when the run started: its sessions are scripted, never a person's (restart the bridge for a change of it to count)"
+            )),
+            _ => None,
+        }
     }
 
     /// Rules 10: why the passkeys and the study this roster names could not be a run's, if
@@ -419,6 +461,13 @@ impl Roster {
             }
             if !self.operators.contains(&s.participant) {
                 return Err(format!("the study's participant {} is not on the roster", s.participant));
+            }
+            // rules 11: a study's participant is a person, never a harness's credential
+            if self.is_scripted(&s.participant) == Some(true) {
+                return Err(format!(
+                    "the study's participant {} is marked scripted (a harness's credential): a participant is a person",
+                    s.participant
+                ));
             }
             if s.password_step_up.is_none() {
                 if policy_factor != crate::policy::StepUpFactor::Passkey {
@@ -460,6 +509,20 @@ impl Roster {
             }
             if self.engage[..i].contains(o) {
                 return Err(format!("the roster lists engagement operator {o} twice"));
+            }
+        }
+        // rules 11: the scripted operators are on the roster, once each, in a credentials run
+        if let Some(list) = &self.scripted {
+            if self.auth != Some(AuthMode::Credentials) {
+                return Err("scripted operators on the roster of a run that does not authenticate with credentials".into());
+            }
+            for (i, o) in list.iter().enumerate() {
+                if !self.operators.contains(o) {
+                    return Err(format!("scripted operator {o} is not on the operator roster"));
+                }
+                if list[..i].contains(o) {
+                    return Err(format!("the roster lists scripted operator {o} twice"));
+                }
             }
         }
         Ok(())

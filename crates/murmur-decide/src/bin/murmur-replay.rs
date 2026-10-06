@@ -27,6 +27,13 @@
 //!   logs), so `--prev` may be given once for each: each is matched to the events by its file
 //!   name (a single `--prev` that matches neither is taken for the intents, as before). Only
 //!   a bare file name is looked for beside the log, never a path.
+//! - Rules 11: a log whose `run.started` records what the bridge carried over at start
+//!   (`carried_from`: the log `.last-run-<port>` named and any whose carry had failed) is
+//!   checked against each log it names, found the same way (`--prev` matched by file name,
+//!   else beside the log): each must replay, be the one read (its head and last seq), and have
+//!   still owed exactly what was carried. A log whose carry failed is reported, and stays
+//!   owed until a later start reads it or an operator writes it off. Restores closed without a
+//!   restore (a platform expended by its own effect, a write-off) are listed (`CLOSED:`).
 //! - Either carry-over whose earlier log is not given or found is a mismatch;
 //!   `--trust-resumed` accepts both without their logs (trusting their origin), and the
 //!   output says so (`UNCHECKED:`). It also says which log each check used, with the head of
@@ -44,8 +51,8 @@ use std::sync::Arc;
 
 use murmur_decide::SpaceSegment;
 use murmur_decide::replay::{
-    Mismatch, ReplayOptions, ReplayReport, RulesAccepted, carried_restore_logs, is_log_file_name,
-    replay_str_with,
+    Mismatch, ReplayOptions, ReplayReport, RulesAccepted, carried_from_logs, carried_restore_logs,
+    is_log_file_name, replay_str_with,
 };
 
 const USAGE: &str = "usage: murmur-replay <audit-log.jsonl> [--rules N | --min-rules N] [--anchors <file>] [--space <constellations.toml> <cache-dir>] [--prev <previous-log.jsonl>]... [--trust-resumed]";
@@ -161,7 +168,13 @@ fn main() -> ExitCode {
     for p in &earlier.unused {
         println!("--prev {p}: not a log this one's carried-over intents or lost-link values name; not used");
     }
+    let carried_logs: Vec<(&str, &str)> = earlier
+        .carried
+        .iter()
+        .map(|(name, _, t)| (name.as_str(), t.as_str()))
+        .collect();
     let opts = ReplayOptions {
+        carried_logs: &carried_logs,
         rules: args.rules,
         space: oracle,
         previous: earlier.intents.as_ref().map(|(_, t)| t.as_str()),
@@ -328,6 +341,10 @@ fn main() -> ExitCode {
     if let Some(head) = &report.head_sha256 {
         println!("head {head} (compare with an external anchor to detect a rewrite or truncation)");
     }
+    // rules 11: debts closed without a restore (a platform spent by its effect, a write-off)
+    for c in &report.restores_closed {
+        println!("CLOSED: {c}");
+    }
     // rules 6: not a decision mismatch, but the operator should know
     for u in &report.unrestored {
         println!("UNRESTORED: {u}");
@@ -383,7 +400,10 @@ struct Earlier {
     /// Rules 6: the log the carried `platform.restore` events name (the first, if they name
     /// several: a mismatch) as used: its name, path, text.
     restores: Option<(String, String, String)>,
-    /// `--prev` files neither is.
+    /// Rules 11: the logs `run.started` says the start carried over from (`carried_from`), as
+    /// found: name, path, text.
+    carried: Vec<(String, String, String)>,
+    /// `--prev` files none is.
     unused: Vec<String>,
 }
 
@@ -397,6 +417,7 @@ impl Earlier {
             v.get("from")?.get("log")?.as_str().map(str::to_string)
         });
         let restores_named = carried_restore_logs(text).into_iter().next();
+        let carried_named = carried_from_logs(text);
         let named = |n: &str| given.iter().find(|g| file_name(g).as_deref() == Some(n)).cloned();
         let intents_file = intents_named.as_deref().and_then(|n| {
             named(n)
@@ -404,7 +425,9 @@ impl Earlier {
                     // as before: a single --prev is the intents' log, whatever its name (the
                     // head and last seq the events name bind it), unless it is the restores'
                     let only = (given.len() == 1).then(|| given[0].clone())?;
-                    (file_name(&only) != restores_named).then_some(only)
+                    let name = file_name(&only);
+                    (name != restores_named && !name.as_ref().is_some_and(|n| carried_named.contains(n)))
+                        .then_some(only)
                 })
                 .or_else(|| beside(path, n))
         });
@@ -420,15 +443,27 @@ impl Earlier {
             (Some(n), Some(f)) => Some((n.clone(), f.clone(), read(f)?)),
             _ => None,
         };
+        let mut carried = Vec::new();
+        for n in &carried_named {
+            if let Some(f) = named(n).or_else(|| beside(path, n)) {
+                let t = read(&f)?;
+                carried.push((n.clone(), f, t));
+            }
+        }
         let unused = given
             .iter()
-            .filter(|g| Some(*g) != intents_file.as_ref() && Some(*g) != restores_file.as_ref())
+            .filter(|g| {
+                Some(*g) != intents_file.as_ref()
+                    && Some(*g) != restores_file.as_ref()
+                    && !carried.iter().any(|(_, f, _)| f == *g)
+            })
             .cloned()
             .collect();
         Ok(Earlier {
             intents_named,
             intents,
             restores,
+            carried,
             unused,
         })
     }
@@ -454,6 +489,25 @@ impl Earlier {
         }
         for c in &report.carried_restores {
             let from = &c.log;
+            // rules 11: a log the start could not read: still owed, what it owed unknown
+            if let Some(why) = &c.failed {
+                println!(
+                    "carried-over log {from}: its carry FAILED at the start ({why}): what it still owed is unknown, owed until a later start reads it or an operator writes it off"
+                );
+                continue;
+            }
+            if let Some((_, p, t)) = self.carried.iter().find(|(n, _, _)| n == from).filter(|_| c.checked) {
+                let same = match &self.intents {
+                    Some((_, u)) if u == t => ", the carried-over intents' log too",
+                    _ => "",
+                };
+                let head = c.head.as_deref().unwrap_or("none: it can't be read");
+                println!(
+                    "carried over at start (run.started): {} platform(s)' lost-link values from {from}, checked against what {p} still owed{same} (its head {head}, as read at the start: compare with its anchors)",
+                    c.restores
+                );
+                continue;
+            }
             match &self.restores {
                 Some((name, p, t)) if c.checked && name == from => {
                     let same = match &self.intents {

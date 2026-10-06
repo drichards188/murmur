@@ -1,0 +1,112 @@
+# Rules 11 (murmur-54l): a mission refused because its platform is still owed its own
+# lost-link values leaves older queued orders in place (safer when the older order is a hold
+# or rtl), but until rules 11 its reason did not say so. As 67, under a policy that never
+# queues an orbit: the USV's link is cut mid-engagement, op-1's hold is queued (it supersedes
+# the engagement), then op-1's orbit is refused (nowhere to wait for the restore). Under
+# dispatch semantics the newer order would have voided the hold; here the hold still goes
+# when the link returns, and the refusal now names it, so the operator knows it stands (and
+# can cancel it if the orbit was meant to replace it). Then the log is forged to cut that
+# clause from the refusal; replay must catch it (from rules 11 it recomputes the reason).
+title = "A refused mission names the older order still queued on its vehicle"
+invariant = "restore_owed"
+attack = "an orbit refused for its platform's own values while an older hold stays queued, unsaid"
+expect = "aborted"
+expect_stop = "superseded"
+policy = "sim/scenarios/engage/policies/orbit-never-queued.toml"
+tamper = "drop_standing_clause"
+end_s = 90
+
+[[operator]]
+id = "op-1"                 # nominates and orders the hold and the orbit; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "viper-1"
+platform = "magura"         # armed USV (ArduRover), LEO SATCOM: a 30 s lost-link timer
+at = [-122.4700, 37.8160]
+lost_link_s = 30
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "viper-1"
+track = "T-0001"
+radius_m = 75
+fallback = "loiter"
+window_s = 600
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"
+
+[[step]]
+at_s = 40
+action = "vehicle"
+uid = "viper-1"
+silent = true
+
+[[step]]
+at_s = 44                   # silent 4 s: the hold is queued, and supersedes the engagement
+action = "task"
+by = "op-1"
+task = "hold"
+uids = ["viper-1"]
+
+[[step]]
+at_s = 45
+action = "expect"
+state = "aborted"
+task_state = "queued"
+
+[[step]]
+at_s = 50                   # an orbit: never queued under this policy, refused for the restore
+action = "task"
+by = "op-1"
+task = "orbit"
+uids = ["viper-1"]
+center = [-122.4600, 37.8160]
+radius_m = 150
+
+[[step]]
+at_s = 51
+action = "expect"
+task_state = "voided"
+task_reason = "still standing, queued on its vehicles: i2 (hold, vehicle viper-1)"
+
+[[step]]
+at_s = 70                   # the link returns: its own values back, the older hold goes out
+action = "vehicle"
+uid = "viper-1"
+silent = false

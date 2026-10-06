@@ -241,6 +241,14 @@ pub struct TrackFacts {
     /// ([`crate::engage::track_reach`]). Absent: too young a track (or an older log).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mean_velocity_mps: Option<[f64; 2]>,
+    /// Rules 11: when the tracker started this track (its first detection): the history behind
+    /// its average velocity and its manoeuvre memory begins then. With it, a track that has a
+    /// velocity but no average velocity yet is young (the tracker can't yet say whether it
+    /// manoeuvred), and a keep-out counts it as possibly manoeuvring
+    /// ([`crate::engage::track_reach`]). Absent: a caller that does not say (a scenario, an
+    /// older log), judged as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_seen_t: Option<Time>,
 }
 
 /// Rules 9: a manoeuvre the tracker saw (see [`TrackFacts::manoeuvre`]).
@@ -422,6 +430,13 @@ pub struct WorldSnapshot {
     /// Absent when none.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub restore_owed: BTreeMap<Uid, crate::queue::RestoreOwed>,
+    /// Rules 11, the bridge's: each fleet vehicle's identity as it knows it now (platform,
+    /// callsign, system id, home). Never logged as such: the engine copies the identity of a
+    /// vehicle still owed values carried over from an earlier run into that fact
+    /// (`restore_owed`, [`crate::queue::CarriedHold`]), the only thing that reads it. Empty
+    /// where the caller gives none (scenarios, tests): carried values then hold.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub identities: BTreeMap<Uid, crate::engage::VehicleIdentity>,
 }
 
 /// A decision's inputs as logged: the [`WorldSnapshot`] with the area set replaced by its
@@ -527,6 +542,7 @@ impl LoggedInputs {
             plan: self.plan.clone(),
             unknown_accepted: self.unknown_accepted.clone(),
             restore_owed: self.restore_owed.clone(),
+            identities: BTreeMap::new(),
         }
     }
 }
@@ -572,6 +588,13 @@ impl WorldSnapshot {
             plan: None,
             unknown_accepted: BTreeMap::new(),
             restore_owed: BTreeMap::new(),
+            // rules 11: the bridge's identities of the intent's vehicles (a carried restore's
+            // hold reads them)
+            identities: spec
+                .uids
+                .iter()
+                .filter_map(|u| self.identities.get(u).map(|i| (u.clone(), i.clone())))
+                .collect(),
         }
     }
 

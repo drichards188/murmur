@@ -1,0 +1,101 @@
+# Rules 11 (murmur-q05, murmur-cq3): a platform that never answers the restore of its own
+# lost-link values (lost, spent, or another vehicle under the uid) held its missions and stayed
+# owed for good: until rules 11 nothing could close the debt but a confirmed restore. As 69:
+# the engagement is aborted and the USV never confirms its values back; op-1's orbit waits in
+# the queue for the restore. op-1 writes the values off, under their own session, saying why
+# (`restore.closed`, written off): nothing is owed back from then on, so the orbit goes at
+# once and nothing is carried to the next run. Then the log is forged to credit the write-off
+# to another operator than the session's; replay must catch it.
+title = "An operator writes off lost-link values that will never be confirmed back"
+invariant = "restore_owed"
+attack = "a platform owed its own values for good, holding its missions"
+expect = "aborted"
+expect_stop = "operator"
+expect_preload = ["set confirmed"]
+expect_closed = ["written off by op-1"]
+expect_nothing_owed = true
+restore_after_s = 100000
+tamper = "write_off_by_another"
+end_s = 80
+
+[[operator]]
+id = "op-1"                 # nominates, aborts, orders the orbit, writes the values off
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "viper-1"
+platform = "magura"         # armed USV (ArduRover), LEO SATCOM: a 30 s lost-link timer
+at = [-122.4700, 37.8160]
+lost_link_s = 30
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "viper-1"
+track = "T-0001"
+radius_m = 75
+fallback = "loiter"
+window_s = 600
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 30
+action = "abort"
+by = "op-1"
+
+[[step]]
+at_s = 35
+action = "task"
+by = "op-1"
+task = "orbit"
+uids = ["viper-1"]
+center = [-122.4600, 37.8160]
+radius_m = 150
+
+[[step]]
+at_s = 45
+action = "expect"
+task_state = "queued"
+task_reason = "lost-link failsafe"
+
+[[step]]
+at_s = 50
+action = "write_off"
+by = "op-1"
+uid = "viper-1"
+note = "no answer since the abort: the vessel is presumed lost; its own failsafe values are recorded off the ledger"
+
+[[step]]
+at_s = 52
+action = "expect"
+task_state = "dispatched"

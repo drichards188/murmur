@@ -156,6 +156,7 @@ fn target(t: Time, at: LonLat, vel: [f64; 2], declared: bool) -> TrackFacts {
         review_flags: Vec::new(),
         manoeuvre: None,
         mean_velocity_mps: None,
+        first_seen_t: None,
     }
 }
 

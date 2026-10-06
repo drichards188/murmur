@@ -1,0 +1,87 @@
+# Rules 11 (murmur-9m0), fail closed on missing facts: a protected track the tracker started
+# a second ago has a velocity but no average velocity yet, and no manoeuvre seen, because its
+# history is too short to show either: the tracker can't yet say it does not manoeuvre. Until
+# rules 11 the keep-out then fell back to the one region along its velocity (a ferry 1.2 km
+# north and heading away, clear). From rules 11 a young track also counts anywhere it reaches
+# at its domain's plausible top speed (25 m/s on the surface) by the effect time, so the first
+# nomination is rejected; once the track has been followed 45 s its average velocity exists,
+# the young region goes, and the same nomination waits for its signers. The cost: larger
+# keep-outs during a track's first minute. Then the log is forged to drop when the tracker
+# started the track from every decision; replay must catch it.
+title = "A young track blocks by its reach until the tracker has its average velocity"
+invariant = "keep_out_tracks"
+attack = "a protected track first detected a second before the nomination, 1.2 km from the effect point"
+expect = "pending_approval"
+tamper = "drop_first_seen"
+end_s = 70
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+tracked_s = 600             # followed for ten minutes: its facts exist
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1                    # a ferry the radar picks up now, 1.2 km north, heading away
+action = "track"
+id = "T-0002"
+at = [-122.4950, 37.8228]
+velocity = [0.0, 5.0]
+affiliation = "neutral"
+identity = "ferry"
+tracked_s = 0
+
+[[step]]
+at_s = 2
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 3
+action = "expect"
+state = "rejected"
+rule = "keep_out_tracks"
+
+[[step]]
+at_s = 60                   # followed 59 s: its average velocity exists, it is not young
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 61
+action = "expect"
+state = "pending_approval"

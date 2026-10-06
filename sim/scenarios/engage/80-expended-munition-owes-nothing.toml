@@ -1,0 +1,73 @@
+# Rules 11 (murmur-q05): a loitering munition is spent by its own effect. Its lost-link values
+# were preloaded for the engagement (its own owed back from the write-ahead on); after the
+# release there is no platform left to put them back on, and until rules 11 the debt stayed
+# owed for good (the passkeys live run: the expended switchblade never answered the restore,
+# replay reported it UNRESTORED, the inbox alerted, and the next run carried it over). From
+# rules 11 the catalog says the platform is spent by its effect (`expended_by_effect`), and the
+# engine closes what is owed to it right after the release (`restore.closed`, expended, with
+# the engagement): nothing is owed at the end, nothing is carried. Then the log is forged to
+# drop the catalog fact from every picture while keeping the closure; replay must catch it.
+title = "A munition spent by its effect is owed nothing back"
+invariant = "restore_owed"
+attack = "an expended platform's lost-link values left owed back for good"
+expect = "done"
+expect_assessment = "ceased"
+expect_preload = ["set confirmed"]
+expect_closed = ["expended by its own effect"]
+expect_nothing_owed = true
+tamper = "drop_expended_fact"
+end_s = 200
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # a loitering munition: expended_by_effect in the catalog
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"

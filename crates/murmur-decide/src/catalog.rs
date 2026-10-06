@@ -124,6 +124,13 @@ pub struct PlatformFacts {
     /// to dive at it down `FIXED_WING_DIVE_DEG`. Absent where the catalog has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_mps: Option<f64>,
+    /// The catalog's `expended_by_effect = true`: the platform is spent by its own effect (a
+    /// loitering munition, a one-way strike drone). Rules 11 close what is owed back to it
+    /// right after its engagement's release (`restore.closed`, `expended`): there is no
+    /// platform left to put its own lost-link values back on. Absent (false) elsewhere and in
+    /// older logs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub expended_by_effect: bool,
 }
 
 /// One sensor from the catalog: its type (`radar`, `eo_ir`, `ais`, `sonar`, `esm`) and its
@@ -148,6 +155,8 @@ struct RawPlatform {
     endurance_h: Option<f64>,
     climb_mps: Option<f64>,
     max_mps: Option<f64>,
+    #[serde(default)]
+    expended_by_effect: bool,
     #[serde(default)]
     sensors: Vec<RawSensor>,
 }
@@ -203,6 +212,7 @@ impl Catalog {
                         .collect(),
                     climb_mps: r.climb_mps.filter(|c| c.is_finite() && *c > 0.0),
                     max_mps: r.max_mps.filter(|c| c.is_finite() && *c > 0.0),
+                    expended_by_effect: r.expended_by_effect,
                 };
                 (id, facts)
             })

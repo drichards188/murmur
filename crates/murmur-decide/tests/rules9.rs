@@ -57,6 +57,7 @@ fn track(at: LonLat, aff: Affiliation, sigma: f64) -> TrackFacts {
         review_flags: Vec::new(),
         manoeuvre: None,
         mean_velocity_mps: None,
+        first_seen_t: None,
     }
 }
 
@@ -230,7 +231,10 @@ fn rule_declaration_off_decides_as_rules_8_did() {
     let dir = root().join("sim/scenarios/engage");
     let mut n = 0;
     for f in scenario::files(&dir).unwrap() {
-        if std::fs::read_to_string(&f).unwrap().contains("action = \"act\"") {
+        // (and none of rules 11's young tracks: the keep-out counts those as possibly
+        // manoeuvring, by design)
+        let text = std::fs::read_to_string(&f).unwrap();
+        if text.contains("action = \"act\"") || text.contains("tracked_s") {
             continue;
         }
         let off = RunOptions {

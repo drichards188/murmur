@@ -56,6 +56,7 @@ fn engage_world(t: Time) -> WorldSnapshot {
             review_flags: Vec::new(),
             manoeuvre: None,
             mean_velocity_mps: None,
+            first_seen_t: None,
         },
     );
     w
@@ -560,7 +561,12 @@ fn a_human_intent_after_its_proposers_logout_is_caught() {
 fn scripted_operators_are_authenticated_but_never_people() {
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();
-    let mut e = engine(policy(), three().with_auth(AuthMode::Credentials), &clock, &log);
+    // rules 11: the run fixes its scripted operators at the start (op-2's credential is a
+    // harness's)
+    let roster = three()
+        .with_auth(AuthMode::Credentials)
+        .with_scripted(vec![OperatorId::new("op-2")]);
+    let mut e = engine(policy(), roster, &clock, &log);
     let op1 = login(&mut e, "op-1", false);
     let op2 = e
         .open_authenticated_session(OperatorId::new("op-2"), Grants { engage: true }, AuthMethod::Scripted)
@@ -603,6 +609,95 @@ fn scripted_operators_are_authenticated_but_never_people() {
         d.open_authenticated_session(OperatorId::new("op-1"), Grants::default(), AuthMethod::Scripted),
         Err(EngineError::NotAuthenticated { .. })
     ));
+}
+
+/// Rules 11 (murmur-jfi): which operators are scripted is fixed at the run's start, on the
+/// roster in `run.started`; a session opens by the method the roster gives its operator, and
+/// replay checks every session against it. Before, the bridge read the flag from the
+/// credential file at each login, so a credential re-marked mid-run logged its next login as a
+/// person's, and a session's `password` rewritten as `scripted` (or back) passed replay
+/// (forgery 14), caught only by the anchors.
+#[test]
+fn scripted_operators_are_fixed_at_the_start_and_every_session_is_checked_against_them() {
+    let run = |version: u32| {
+        let clock = ManualClock::new(T0);
+        let log = MemorySink::new();
+        let mut p = policy();
+        p.rules.rules_version = version;
+        let roster = three()
+            .with_auth(AuthMode::Credentials)
+            .with_scripted(vec![OperatorId::new("op-2")]);
+        let mut e = engine(p, roster, &clock, &log);
+        let op1 = login(&mut e, "op-1", false);
+        let op2 = e
+            .open_authenticated_session(OperatorId::new("op-2"), Grants { engage: true }, AuthMethod::Scripted)
+            .unwrap();
+        e.close_operator_session(op1, "logout").unwrap();
+        e.close_operator_session(op2, "logout").unwrap();
+        (e, log)
+    };
+    let (mut e, log) = run(RULES_VERSION);
+    let first = log.text().lines().next().unwrap().to_string();
+    assert!(first.contains("\"scripted\":[\"op-2\"]"), "{first}");
+    // the engine opens no session by another method than the roster gives its operator (a
+    // credential re-marked mid-run counts from the next start)
+    let n = log.lines().len();
+    let err = e
+        .open_authenticated_session(OperatorId::new("op-2"), Grants { engage: true }, AuthMethod::Password)
+        .unwrap_err();
+    assert!(matches!(err, EngineError::NotAuthenticated { .. }) && err.to_string().contains("harness-held"), "{err}");
+    let err = e
+        .open_authenticated_session(OperatorId::new("op-1"), Grants::default(), AuthMethod::Scripted)
+        .unwrap_err();
+    assert!(err.to_string().contains("a person's when the run started"), "{err}");
+    assert_eq!(log.lines().len(), n, "nothing logged");
+    let text = log.text();
+    let r = replay::replay_str(&text).unwrap();
+    assert!(r.ok() && r.authenticated(), "{:?}", r.mismatches);
+    let ids = |v: &[&str]| v.iter().map(|o| OperatorId::new(*o)).collect::<std::collections::BTreeSet<_>>();
+    assert_eq!((r.people.clone(), r.scripted.clone()), (ids(&["op-1"]), ids(&["op-2"])));
+    // forgery 14: a person's session relabelled scripted, and a scripted one a person's
+    let relabel = |text: &str, who: &str, to: AuthMethod| {
+        forge(text, |events| {
+            for ev in events.iter_mut() {
+                if let EventBody::OperatorAction { operator, action, auth, .. } = &mut ev.body
+                    && operator.as_str() == who
+                    && action == "session.opened"
+                {
+                    *auth = Some(to);
+                }
+            }
+        })
+    };
+    for (who, to) in [("op-1", AuthMethod::Scripted), ("op-2", AuthMethod::Password)] {
+        let w = whats(&relabel(&text, who, to));
+        assert!(w.iter().any(|m| m.contains("session opened by another method than the roster fixes")), "{who}: {w:?}");
+    }
+    // the list dropped from the roster: a credentials log of these rules names it
+    let stripped = forge(&text, |events| {
+        if let EventBody::RunStarted { roster: Some(r), .. } = &mut events[0].body {
+            r.scripted = None;
+        }
+    });
+    let w = whats(&stripped);
+    assert!(w.iter().any(|m| m.contains("names its scripted operators on the roster")), "{w:?}");
+    // rules 10, before the fix: no list, and the same relabels pass replay
+    let (_, log10) = run(PASSKEY_SINCE);
+    let text10 = log10.text();
+    assert!(!text10.contains("\"scripted\":["), "rules 10 logged no list");
+    let opts10 = ReplayOptions {
+        rules: RulesAccepted::AtLeast(PASSKEY_SINCE),
+        ..ReplayOptions::default()
+    };
+    for (who, to) in [("op-1", AuthMethod::Scripted), ("op-2", AuthMethod::Password)] {
+        let r = replay::replay_str_with(&relabel(&text10, who, to), &opts10).unwrap();
+        assert!(r.ok(), "rules 10 could not tell ({who}): {:?}", r.mismatches);
+    }
+    // a scripted list on a dev run's roster, or naming someone off the roster: no run's
+    let dev = three().with_scripted(vec![OperatorId::new("op-2")]);
+    assert!(dev.validate().is_err());
+    let off = three().with_auth(AuthMode::Credentials).with_scripted(vec![OperatorId::new("op-9")]);
+    assert!(off.validate().is_err());
 }
 
 /// Review fix 1: a refused login is in the audit log (`auth.refused`: the id, why, the lock),
