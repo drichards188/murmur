@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 29] = [
+const LOGS: [(&str, u32); 31] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -99,13 +99,18 @@ const LOGS: [(&str, u32); 29] = [
     // named and stopped in the revocation's step
     ("v9-revoked-before-picture-scenario-78.jsonl", RULE_ID_SINCE),
     ("v9-identification-live.jsonl", RULE_ID_SINCE),
+    // rules 10 (passkeys; the table names the constant): the same scenario (the runner asserts
+    // its ids: no passkeys) and a live run, anchored as it ran, whose signers registered
+    // passkeys and signed with them (see the test below)
+    ("v10-engagement-scenario-01.jsonl", PASSKEY_SINCE),
+    ("v10-passkeys-live.jsonl", PASSKEY_SINCE),
 ];
 
 /// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
 const V6_AIRSHIP: &str = "v6-airship-nomination-scenario-66.jsonl";
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v9-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v10-engagement-scenario-01.jsonl";
 
 /// The committed scenario log of rules 6 (the lost-link preload).
 const V6_SCENARIO: &str = "v6-engagement-scenario-01.jsonl";
@@ -964,4 +969,144 @@ fn the_rules_9_live_log_declares_by_rule_and_operators_review_it_under_their_ses
     let pictures: Vec<&str> = log.lines().filter(|l| l.contains("\"type\":\"picture.issued\"")).collect();
     assert_eq!(pictures.len(), 2);
     assert!(pictures.iter().all(|l| l.contains("\"rule\":\"hostile_act\"")), "{pictures:?}");
+}
+
+/// Rules 10, live, from a clean build of 0802f86, anchored as it ran: a credentials run on its
+/// own ports (stand-ins, the engagement demo fleet, `sim/scenarios/golden-gate-ident.toml`), the
+/// shipped policy with `[approval] step_up_factor = "passkey"`, the console in Chrome on
+/// localhost with a virtual authenticator (the DevTools protocol's WebAuthn domain; on
+/// 127.0.0.1 the sign-in screen offered no passkey and pointed to localhost). op-2 registered a
+/// passkey through a one-time invitation link (`murmur-auth passkey-invite`) and signed in with
+/// it; op-3 signed in by password and registered one from the operator menu, refused with a
+/// wrong password, then with their own; op-1 declared the fast boat hostile and nominated the
+/// switchblade; op-2, signed in by password over the API, tried to sign with the password and
+/// was refused unchecked (the policy asks for a passkey); op-3 (a password session) signed with
+/// their passkey on the picture they were shown, then op-2 signed in by passkey again and
+/// signed with it; the effect was released and assessed (the expended switchblade never
+/// answered its restore); everyone signed out and the bridge stopped.
+const PASSKEY_LIVE: &str = "v10-passkeys-live.jsonl";
+
+#[test]
+fn the_rules_10_live_log_signs_with_passkeys_bound_to_their_acts() {
+    let log = fixture(PASSKEY_LIVE);
+    let a = anchor::verify(&log, &anchors_of(PASSKEY_LIVE));
+    assert!(a.ok(), "{:?}", a.problems);
+    assert!(a.shutdown, "a clean stop anchored the head");
+    let r = with(&log, RulesAccepted::Exactly(PASSKEY_SINCE));
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert_eq!(r.rules_version, PASSKEY_SINCE);
+    assert_eq!(r.build.as_ref().map(|b| b.dirty), Some(Some(false)));
+    assert!(r.authenticated(), "a credentials run that reproduced");
+    // two registrations during the run (an invitation, a session quoting its password
+    // step-up), two passkey logins, two passkey signatures, one password step-up (the
+    // registration's)
+    assert_eq!((r.passkeys_registered, r.passkey_logins, r.passkey_step_ups, r.password_step_ups), (2, 2, 2, 1));
+    // four nominations, three rejected for the engagement zone while the boat came to its hold
+    assert_eq!((r.stepped_signatures, r.engagements, r.effects, r.assessments), (2, 4, 1, 1));
+    let first = log.lines().next().unwrap();
+    assert!(
+        first.contains("\"passkeys\":{\"rp_id\":\"localhost\",\"origins\":[\"http://localhost:27173\",\"http://localhost:27765\"]}"),
+        "{first}"
+    );
+    assert!(first.contains("\"step_up_factor\":\"passkey\""), "{first}");
+    // the refusals on the record: a registration's wrong password, a password signature where
+    // the policy asks for a passkey (not even checked)
+    let events = parse_log(&log).unwrap();
+    let refused: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match &e.body {
+            EventBody::OperatorAction { action, detail, .. } if action == "step_up.refused" => Some(detail.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(refused, vec!["register a passkey: wrong password", "i4: a password where the policy asks for a passkey"]);
+    // each signature quotes a passkey step-up made for it: its intent, the picture token it
+    // quotes and that token's hash
+    let mut signed = 0;
+    for e in &events {
+        let (by, token, step) = match &e.body {
+            EventBody::ApprovalConcurred { by, token: Some(t), step_up: Some(s), .. }
+            | EventBody::ApprovalGranted { by, token: Some(t), step_up: Some(s), .. } => (by, t, s),
+            _ => continue,
+        };
+        let step = events.iter().find(|x| x.seq == step.seq).expect("the step-up");
+        let EventBody::OperatorAction { operator, auth, passkey: Some(u), .. } = &step.body else {
+            panic!("not a passkey step-up: {step:?}")
+        };
+        assert_eq!((operator, *auth), (by, Some(AuthMethod::Passkey)));
+        assert_eq!(
+            u.purpose,
+            StepUpFor::Sign { intent: IntentId(4), token: Some(token.id), picture_sha256: Some(passkey::picture_sha256(token)) }
+        );
+        signed += 1;
+    }
+    assert_eq!(signed, 2);
+    // forged, on the browser's own assertions: op-2's signature relabelled a password's (its
+    // assertion dropped), where the policy asks for a passkey; op-3's assertion moved onto
+    // op-2's step-up
+    let mut ev = events.clone();
+    for e in ev.iter_mut() {
+        if let EventBody::OperatorAction { operator, action, auth, passkey, .. } = &mut e.body
+            && action == "step_up"
+            && operator.as_str() == "op-2"
+        {
+            *auth = Some(AuthMethod::Password);
+            *passkey = None;
+        }
+    }
+    let w: Vec<String> = replay(&rechain_events(ev)).mismatches.into_iter().map(|m| m.what).collect();
+    assert!(w.iter().any(|m| m.contains("by password where the policy requires a passkey")), "{w:?}");
+    let op3 = events
+        .iter()
+        .find_map(|e| match &e.body {
+            EventBody::OperatorAction { operator, passkey: Some(u), action, .. } if action == "step_up" && operator.as_str() == "op-3" => {
+                Some(u.clone())
+            }
+            _ => None,
+        })
+        .unwrap();
+    let mut ev = events.clone();
+    for e in ev.iter_mut() {
+        if let EventBody::OperatorAction { operator, action, passkey: Some(u), .. } = &mut e.body
+            && action == "step_up"
+            && operator.as_str() == "op-2"
+        {
+            *u = op3.clone();
+        }
+    }
+    let w: Vec<String> = replay(&rechain_events(ev)).mismatches.into_iter().map(|m| m.what).collect();
+    assert!(w.iter().any(|m| m.starts_with("passkey step-up:")), "{w:?}");
+}
+
+/// The events renumbered and re-hashed as their serialization (a forger's tool).
+fn rechain_events(mut events: Vec<audit::Event>) -> Vec<audit::Event> {
+    let mut prev = murmur_decide::hash::GENESIS.to_string();
+    for (i, e) in events.iter_mut().enumerate() {
+        e.seq = i as u64 + 1;
+        e.prev = prev.clone();
+        prev = murmur_decide::hash::sha256_hex(serde_json::to_string(&*e).unwrap().as_bytes());
+    }
+    events
+}
+
+#[test]
+fn a_rules_10_log_claiming_rules_9_still_carries_its_passkeys() {
+    let (now, before) = (PASSKEY_SINCE, PASSKEY_SINCE - 1);
+    let mut ls = lines(&fixture(PASSKEY_LIVE));
+    assert!(ls[0].contains(&format!("\"rules_version\":{now},")));
+    ls[0] = ls[0].replacen(&format!("\"rules_version\":{now},"), &format!("\"rules_version\":{before},"), 1);
+    let r = with(&rechain(&ls), RulesAccepted::Exactly(before));
+    let w = whats(&r);
+    for marker in [
+        "a passkey login or step-up",
+        "a passkey assertion",
+        "the run's relying party and passkeys",
+        "a passkey registered",
+        "a policy's step-up factor",
+    ] {
+        assert!(
+            w.iter().any(|m| m.contains(marker) && m.contains(&format!("only builds of rules {PASSKEY_SINCE}"))),
+            "{marker}: {w:?}"
+        );
+    }
 }
