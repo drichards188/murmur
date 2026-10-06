@@ -65,6 +65,15 @@ impl Timeline {
         )
     }
 
+    /// The timeline as of now: its wall-clock start (the scenario clock's without
+    /// `MURMUR_AT`) read again, at the moment the emulator's elapsed time starts.
+    pub fn started(self) -> Timeline {
+        Timeline {
+            wall0: wall_unix(),
+            ..self
+        }
+    }
+
     /// Scenario unix time `elapsed_s` wall seconds after the emulator started. Without a
     /// scenario clock this is the wall clock at the start plus `elapsed_s` (it was the wall
     /// clock now, which steps).
@@ -182,5 +191,13 @@ mod tests {
         let b = t.scenario_unix(42.5);
         assert_eq!(b - a, 32.5);
         assert!((a - (t.wall0 + 10.0)).abs() < 1e-6);
+        // started with the elapsed time's origin, not when the timeline was made
+        let made = Timeline {
+            wall0: t.wall0 - 30.0,
+            ..t
+        };
+        let s = made.started();
+        assert!(s.wall0 >= t.wall0, "{} {}", s.wall0, t.wall0);
+        assert_eq!(s.rate, made.rate);
     }
 }

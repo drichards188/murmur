@@ -191,7 +191,10 @@ fn real_main() -> Result<(), String> {
     let sats: Vec<Arc<SatShared>> = links.iter().filter_map(Link::sat_shared).collect();
     let space_cfg = cfg.space.clone();
     rt.block_on(async move {
+        // the scenario clock without MURMUR_AT starts at the wall clock read with t0, not
+        // when the timeline was made (before the DEM request and the links were built)
         let t0 = Instant::now();
+        let timeline = timeline.started();
         let opts = Options {
             listen_host: args.listen_host.clone(),
             bridge_host: args.bridge_host.clone(),

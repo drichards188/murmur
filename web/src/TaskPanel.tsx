@@ -31,8 +31,10 @@ const TASKS: { kind: TaskKind; label: string; hint: string }[] = [
   { kind: 'track', label: 'Track', hint: 'Select one antenna tracker and the one vehicle it should point at.' },
 ]
 
-function age(t: number) {
-  const s = Math.max(0, Math.round(Date.now() / 1000 - t))
+/** How long ago `t` (the bridge's clock, s) was, at `nowMs` (the bridge's clock as the
+ *  console keeps it, ms: `useBridgeClock`), not the browser's clock, which can differ. */
+function age(t: number, nowMs: number) {
+  const s = Math.max(0, Math.round(nowMs / 1000 - t))
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`
 }
 
@@ -218,7 +220,7 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings, pendi
             <div className="tcard-head">
               <strong>{t.task.toUpperCase()}</strong>
               <span className="muted">#{t.id}</span>
-              <span className="muted right">{age(t.created)} ago</span>
+              <span className="muted right">{age(t.created, now ? now() : Date.now())} ago</span>
             </div>
             {authorized.has(t.id) && <p className="muted">authorized by you ({authorized.get(t.id)})</p>}
             {t.ops.map((o) => {
