@@ -19,6 +19,10 @@ use murmur_decide::replay::{
 };
 use murmur_decide::*;
 
+fn root() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
 /// sky-1's own lost-link values (ArduCopter: land on a lost link after 5 s).
 fn own() -> BTreeMap<String, f64> {
     [("FS_GCS_ENABLE", 1.0), ("FS_GCS_TIMEOUT", 5.0), ("FS_OPTIONS", 0.0)]
@@ -86,6 +90,7 @@ fn carry_of(name: &str, text: &str) -> CarriedFrom {
         last_seq: Some(seq),
         owed: d.owed,
         pending: d.pending,
+        may_owe: Vec::new(),
         error: None,
     }
 }
@@ -114,6 +119,7 @@ fn owing_run() -> String {
             },
         ],
         pending: Vec::new(),
+        may_owe: Vec::new(),
         error: None,
     };
     let (mut e, log) = start(RULES_VERSION, vec![a0], &clock);
@@ -308,6 +314,7 @@ fn a_failed_carry_stays_owed_until_a_later_start_reads_it_or_an_operator_writes_
         last_seq: None,
         owed: Vec::new(),
         pending: Vec::new(),
+        may_owe: Vec::new(),
         error: Some("Permission denied (os error 13)".into()),
     };
     let (_, log) = start(RULES_VERSION, vec![failed.clone()], &clock);
@@ -543,6 +550,13 @@ fn another_vehicle_with_the_uid_is_not_held_and_an_unknown_one_is() {
     let a = owing_run();
     let r = replay_str_with(&text, &with(&[("a.jsonl", &a)], false)).unwrap();
     assert!(r.ok(), "{:?}", r.mismatches);
+    // the same vehicle armed elsewhere since (ArduPilot sets home again at arming): its home
+    // 1.2 km from the one preloaded is no difference, held (murmur-qjf review, M3)
+    let mut rearmed = sky();
+    rearmed.home = Some(LonLat::new(CRISSY.lon + 1_200.0 / 87_943.0, CRISSY.lat));
+    let (_, log, _, _, routed) = orbit_after_carry(RULES_VERSION, Some(rearmed));
+    assert!(matches!(routed, Routed::Queued { .. }), "{routed:?}");
+    assert!(!log.text().contains("\"other_vehicle\""), "home alone says nothing");
     // not known yet (no identity from the bridge): held, fail closed
     let (_, _, _, _, routed) = orbit_after_carry(RULES_VERSION, None);
     assert!(matches!(routed, Routed::Queued { .. }), "{routed:?}");
@@ -559,4 +573,162 @@ fn another_vehicle_with_the_uid_is_not_held_and_an_unknown_one_is() {
     )
     .unwrap();
     assert!(r.ok(), "rules 10 found nothing wrong with it: {:?}", r.mismatches);
+}
+
+// ---- the review of rules 11: torn logs, failed carries, the refusal, unknown debts ---------
+
+/// Review L4: a crash can tear the last line of the log the start reads; the start records the
+/// head and last seq of its last complete event, and replay checks the predecessor up to
+/// there. Before, replay read the torn line too and the successor failed to replay.
+#[test]
+fn a_torn_last_line_in_the_log_carried_from_does_not_fail_its_successor() {
+    let a = owing_run();
+    let torn = format!("{a}{{\"seq\":99,\"t\":17814");
+    let clock = ManualClock::new(T0.plus_ms(600_000));
+    let carried = carry_of("a.jsonl", &torn);
+    let (head, seq) = log_head(&a).unwrap();
+    assert_eq!((carried.head.clone(), carried.last_seq), (Some(head), Some(seq)));
+    let (_, log) = start(RULES_VERSION, vec![carried], &clock);
+    let b = log.text();
+    let logs = [("a.jsonl", torn.as_str())];
+    let r = replay_str_with(&b, &with(&logs, false)).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert!(r.carried_restores[0].checked, "{:?}", r.carried_restores);
+}
+
+/// Review L5: a log recorded as a failed carry that is at hand (beside the log, or given) and
+/// reads, still owing, is a mismatch: what it owed was not carried, and replay can't tell its
+/// failure from a forged one (a forger marks the pointer's log failed and drops what it owed).
+/// Trusted (`--trust-resumed`), or not at hand, it stands as recorded (owed until written off).
+#[test]
+fn a_log_recorded_as_a_failed_carry_that_reads_is_checked() {
+    let a = owing_run();
+    let clock = ManualClock::new(T0.plus_ms(600_000));
+    let failed = CarriedFrom {
+        log: "a.jsonl".into(),
+        head: None,
+        last_seq: None,
+        owed: Vec::new(),
+        pending: Vec::new(),
+        may_owe: Vec::new(),
+        error: Some("No such file or directory (os error 2)".into()),
+    };
+    let (_, log) = start(RULES_VERSION, vec![failed], &clock);
+    let b = log.text();
+    let logs = [("a.jsonl", a.as_str())];
+    let w = whats(&replay_str_with(&b, &with(&logs, false)).unwrap());
+    assert!(
+        has(&w, "a.jsonl is recorded as a failed carry (No such file or directory (os error 2)), yet it reads and still owed"),
+        "{w:?}"
+    );
+    assert!(replay_str_with(&b, &with(&logs, true)).unwrap().ok(), "trusted");
+    assert!(replay_str(&b).unwrap().ok(), "not at hand: as recorded");
+    // a read record that says what a failed one may owe is inconsistent on its own
+    let inconsistent = forge(&b, |ev| {
+        if let EventBody::RunStarted { carried_from, .. } = &mut ev[0].body {
+            carried_from[0].error = None;
+            carried_from[0].may_owe = vec![OwedRestore {
+                uid: uid("sky-1"),
+                values: BTreeMap::new(),
+                by: Vec::new(),
+                vehicle: Some(sky()),
+            }];
+        }
+    });
+    let w = whats(&replay_str_with(&inconsistent, &with(&[], true)).unwrap());
+    assert!(has(&w, "carries what a failed carry may owe"), "{w:?}");
+}
+
+/// Review L9: what a failed carry owed is unknown, but the bridge records the armed platforms
+/// the unreadable log's fleet named (`may_owe`): a mission for one of them waits in the Queue,
+/// saying why, until the log is read or written off (fail closed); a hold goes at once, another
+/// vehicle under the uid is not held, and replay holds the engine to it.
+#[test]
+fn a_failed_carry_holds_missions_for_the_platforms_it_may_owe() {
+    let failed = |who: VehicleIdentity| CarriedFrom {
+        log: "a.jsonl".into(),
+        head: None,
+        last_seq: None,
+        owed: Vec::new(),
+        pending: Vec::new(),
+        may_owe: vec![OwedRestore {
+            uid: uid("sky-1"),
+            values: BTreeMap::new(),
+            by: Vec::new(),
+            vehicle: Some(who),
+        }],
+        error: Some("Permission denied (os error 13)".into()),
+    };
+    let clock = ManualClock::new(T0.plus_ms(600_000));
+    let (mut e, log) = start(RULES_VERSION, vec![failed(sky())], &clock);
+    let op = e.open_operator_session(OperatorId::new("op-1")).unwrap();
+    let w = world_at(clock.now(), Some(sky()));
+    let id = e.submit(op.authority(), orbit(NEAR_CRISSY, 150.0, &["sky-1"]), &w, &terrain()).unwrap().id();
+    let Routed::Queued { reach, .. } = e.dispatch_or_queue(id, &w).unwrap() else {
+        panic!("held");
+    };
+    assert!(reach[0].detail.contains("a.jsonl") && reach[0].detail.contains("a.jsonl may owe it values"), "{reach:?}");
+    let other = e.submit(op.authority(), orbit(NEAR_CRISSY, 150.0, &["mule-1"]), &w, &terrain()).unwrap().id();
+    assert!(matches!(e.dispatch_or_queue(other, &w).unwrap(), Routed::Dispatched(_)), "a vehicle it did not name");
+    let h = e.submit(op.authority(), hold(&["sky-1"]), &w, &terrain()).unwrap().id();
+    assert!(matches!(e.dispatch_or_queue(h, &w).unwrap(), Routed::Dispatched(_)), "a hold goes at once");
+    // written off: a new orbit goes
+    e.write_off_restore(op.authority(), WriteOff::Log("a.jsonl".into()), "the disk that held it failed")
+        .unwrap();
+    let w = world_at(clock.now(), Some(sky()));
+    let again = e.submit(op.authority(), orbit(NEAR_CRISSY, 150.0, &["sky-1"]), &w, &terrain()).unwrap().id();
+    assert!(matches!(e.dispatch_or_queue(again, &w).unwrap(), Routed::Dispatched(_)));
+    let text = log.text();
+    let r = replay_str(&text).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+    // forged: the hold's fact stripped from the decision that queued the orbit: caught
+    let stripped = forge(&text, |ev| {
+        for e in ev.iter_mut() {
+            if let EventBody::IntentQueued { inputs, .. } = &mut e.body {
+                inputs.restore_owed.clear();
+            }
+        }
+    });
+    let w = whats(&replay_str(&stripped).unwrap());
+    assert!(has(&w, "lost-link values owed back differ from the log's ledger"), "{w:?}");
+    // another vehicle under the uid now (its callsign): not held
+    let mut nine = sky();
+    nine.callsign = Some("SKY 9".into());
+    let (mut e, _) = start(RULES_VERSION, vec![failed(sky())], &clock);
+    let op = e.open_operator_session(OperatorId::new("op-1")).unwrap();
+    let w = world_at(clock.now(), Some(nine));
+    let id = e.submit(op.authority(), orbit(NEAR_CRISSY, 150.0, &["sky-1"]), &w, &terrain()).unwrap().id();
+    assert!(matches!(e.dispatch_or_queue(id, &w).unwrap(), Routed::Dispatched(_)));
+}
+
+/// Review L6: a refusal (a mission of a kind never queued, its platform's own values owed)
+/// says exactly what its facts give: text appended to it, or another reason put in its
+/// place, is caught (before, only a prefix was compared, and only for a reason that began as
+/// a refusal does).
+#[test]
+fn a_refusal_says_exactly_why_and_nothing_else() {
+    let f = root().join("sim/scenarios/engage/81-refusal-names-the-order-still-queued.toml");
+    let r = scenario::run_file(&f, &root(), &scenario::RunOptions::default()).unwrap();
+    assert!(replay_str(&r.log).unwrap().ok());
+    type Edit = Box<dyn Fn(&mut String)>;
+    let edits: [(&str, Edit); 2] = [
+        ("appended", Box::new(|s: &mut String| s.push_str("; and the operator agreed"))),
+        ("replaced", Box::new(|s: &mut String| *s = "system: voided: the world changed".into())),
+    ];
+    for (what, edit) in edits {
+        let mut done = false;
+        let forged = forge(&r.log, |ev| {
+            for e in ev.iter_mut() {
+                if let EventBody::IntentState { reason, .. } = &mut e.body
+                    && reason.starts_with("system: not sent: ")
+                {
+                    edit(reason);
+                    done = true;
+                }
+            }
+        });
+        assert!(done, "{what}: a refusal in the scenario");
+        let w = whats(&replay_str(&forged).unwrap());
+        assert!(has(&w, "a refusal's reason differs from the one its facts give"), "{what}: {w:?}");
+    }
 }

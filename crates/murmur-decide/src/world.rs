@@ -430,6 +430,11 @@ pub struct WorldSnapshot {
     /// Absent when none.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub restore_owed: BTreeMap<Uid, crate::queue::RestoreOwed>,
+    /// Engine-filled (rules 11): the intent's vehicles spent by their own effect (a loitering
+    /// munition after its release: `restore.closed`, expended), by the engagement that released
+    /// it. No order or nomination is taken for one (`readiness` fails). Absent when none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub expended: BTreeMap<Uid, IntentId>,
     /// Rules 11, the bridge's: each fleet vehicle's identity as it knows it now (platform,
     /// callsign, system id, home). Never logged as such: the engine copies the identity of a
     /// vehicle still owed values carried over from an earlier run into that fact
@@ -474,6 +479,9 @@ pub struct LoggedInputs {
     /// none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub restore_owed: BTreeMap<Uid, crate::queue::RestoreOwed>,
+    /// The intent's vehicles spent by their own effect (rules 11; absent when none).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub expended: BTreeMap<Uid, IntentId>,
 }
 
 impl LoggedInputs {
@@ -499,6 +507,7 @@ impl LoggedInputs {
             plan: world.plan.clone(),
             unknown_accepted: world.unknown_accepted.clone(),
             restore_owed: world.restore_owed.clone(),
+            expended: world.expended.clone(),
         }
     }
 
@@ -542,6 +551,7 @@ impl LoggedInputs {
             plan: self.plan.clone(),
             unknown_accepted: self.unknown_accepted.clone(),
             restore_owed: self.restore_owed.clone(),
+            expended: self.expended.clone(),
             identities: BTreeMap::new(),
         }
     }
@@ -588,6 +598,7 @@ impl WorldSnapshot {
             plan: None,
             unknown_accepted: BTreeMap::new(),
             restore_owed: BTreeMap::new(),
+            expended: BTreeMap::new(),
             // rules 11: the bridge's identities of the intent's vehicles (a carried restore's
             // hold reads them)
             identities: spec

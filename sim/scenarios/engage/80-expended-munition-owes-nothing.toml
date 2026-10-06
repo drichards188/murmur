@@ -5,13 +5,17 @@
 # replay reported it UNRESTORED, the inbox alerted, and the next run carried it over). From
 # rules 11 the catalog says the platform is spent by its effect (`expended_by_effect`), and the
 # engine closes what is owed to it right after the release (`restore.closed`, expended, with
-# the engagement): nothing is owed at the end, nothing is carried. Then the log is forged to
-# drop the catalog fact from every picture while keeping the closure; replay must catch it.
-title = "A munition spent by its effect is owed nothing back"
+# the engagement): nothing is owed at the end, nothing is carried. The closure also marks the
+# platform spent: it still carries the engagement's lost-link action (in the simulation it
+# flies on), so it takes no order and no nomination from then on (`readiness` fails: an orbit
+# for it is rejected, and a second nomination too, which would otherwise read the first
+# engagement's fallback as the platform's own values). Then the log is forged to drop the
+# catalog fact from every picture while keeping the closure; replay must catch it.
+title = "A munition spent by its effect is owed nothing back and takes no order"
 invariant = "restore_owed"
-attack = "an expended platform's lost-link values left owed back for good"
-expect = "done"
-expect_assessment = "ceased"
+attack = "an expended platform's lost-link values left owed back for good; an order and a nomination for it after"
+expect = "rejected"
+expect_rule = "readiness"
 expect_preload = ["set confirmed"]
 expect_closed = ["expended by its own effect"]
 expect_nothing_owed = true
@@ -71,3 +75,33 @@ by = "op-3"
 at_s = 9
 action = "expect"
 state = "dispatched"
+
+[[step]]
+at_s = 150                  # released and assessed: the munition is spent
+action = "expect"
+state = "done"
+
+[[step]]
+at_s = 160                  # an orbit for the spent munition: refused (it takes no order)
+action = "task"
+by = "op-1"
+task = "orbit"
+uids = ["blade-1"]
+center = [-122.4700, 37.8160]
+radius_m = 150
+
+[[step]]
+at_s = 161
+action = "expect"
+task_state = "rejected"
+task_reason = "spent by its own effect"
+
+[[step]]
+at_s = 170                  # and a second nomination on it: refused too
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600

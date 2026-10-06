@@ -264,7 +264,9 @@ pub struct TrackDef {
     /// Rules 11: the tracker started it this long before the start, s
     /// ([`TrackFacts::first_seen_t`]); it has an average velocity (the velocity it holds)
     /// once it has been tracked [`SCENARIO_MEAN_MIN_S`] with a velocity estimate, as the
-    /// bridge's tracker does. Absent: the tracker does not say (judged as rules 10 did).
+    /// bridge's tracker does. Absent: [`SCENARIO_TRACKED_S`] for a track the file lists (one
+    /// the tracker followed before the scenario starts), 0 for one a `track` step makes (it
+    /// appears then: young for its first [`SCENARIO_MEAN_MIN_S`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tracked_s: Option<f64>,
 }
@@ -272,6 +274,10 @@ pub struct TrackDef {
 /// Rules 11, scenarios: how long a track is tracked with a velocity estimate before it has an
 /// average velocity (the bridge tracker's `MEAN_MIN_S`).
 pub const SCENARIO_MEAN_MIN_S: f64 = 45.0;
+
+/// Rules 11, scenarios: how long a track the file lists was followed before the start, unless
+/// it says (`tracked_s`): the scenarios' world begins with established tracks.
+pub const SCENARIO_TRACKED_S: f64 = 600.0;
 
 fn sigma() -> f64 {
     15.0
@@ -1783,11 +1789,10 @@ fn track_sim(t: &TrackDef) -> TrackSim {
                 speed_mps: v,
             }),
             // rules 11: tracked long enough, a steady track's average velocity is its velocity
-            mean_velocity_mps: t
-                .tracked_s
+            mean_velocity_mps: Some(t.tracked_s.unwrap_or(SCENARIO_TRACKED_S))
                 .filter(|s| *s >= SCENARIO_MEAN_MIN_S && !t.no_velocity_estimate)
                 .map(|_| t.velocity),
-            first_seen_t: t.tracked_s.map(|s| T0.plus_ms(-((s * 1000.0).round() as i64))),
+            first_seen_t: Some(T0.plus_ms(-((t.tracked_s.unwrap_or(SCENARIO_TRACKED_S) * 1000.0).round() as i64))),
         },
         silent: t.silent,
         no_velocity: t.no_velocity_estimate,
@@ -2372,9 +2377,15 @@ fn act(
                     tracked_s: None,
                 })
             });
-            // rules 11: a new track started this long ago (its average velocity comes later)
-            if let (true, Some(s)) = (new && engine.policy().rules.followups(), tracked_s) {
+            // rules 11: a track a step makes appears now (or `tracked_s` ago): young, its
+            // average velocity comes once tracked long enough
+            if new && engine.policy().rules.followups() {
+                let s = tracked_s.unwrap_or(0.0);
                 t.facts.first_seen_t = Some(now.plus_ms(-((s * 1000.0).round() as i64)));
+                t.facts.mean_velocity_mps = (s >= SCENARIO_MEAN_MIN_S && t.facts.velocity_mps.is_some())
+                    .then_some(t.truth_vel);
+            } else if new {
+                t.facts.first_seen_t = None;
                 t.facts.mean_velocity_mps = None;
             }
             if let Some(a) = alt_m {

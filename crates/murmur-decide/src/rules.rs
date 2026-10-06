@@ -558,6 +558,17 @@ pub fn readiness(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) ->
     let kind = spec.kind();
     per_vehicle(spec, world, r, |uid, v| {
         let res = |o, d: String| CheckResult::new(r, Some(uid), o, d);
+        // rules 11: a platform spent by its own effect takes no order, a safety command
+        // included, and no nomination (it carries the engagement's lost-link action, and a new
+        // preload would read that action as its own values)
+        if cfg.followups()
+            && let Some(id) = world.expended.get(uid)
+        {
+            return res(
+                Outcome::Fail,
+                format!("spent by its own effect (engagement {id}): a spent platform takes no order"),
+            );
+        }
         if is_safety_command(kind) {
             return res(Outcome::Pass, format!("not required for {}", kind.as_str()));
         }

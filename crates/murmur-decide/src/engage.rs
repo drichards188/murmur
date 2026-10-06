@@ -888,10 +888,13 @@ impl VehicleIdentity {
         }
     }
 
-    /// Rules 11: why `now` is known to be another vehicle than this one, if it is: a field
-    /// both know that differs (the home farther than [`Self::HOME_TOLERANCE_M`]). Unlike
-    /// [`Self::matches`], a field `now` does not know yet is no difference (fail closed: a
-    /// carried restore's hold stays until the vehicle is known to be another).
+    /// Rules 11: why `now` is known to be another vehicle than this one, if it is: its
+    /// platform, callsign or system id, where both know it, differs. The home is never enough:
+    /// ArduPilot (and the stand-ins) set home again at every arming, so the very vehicle a
+    /// preload was set on reports another home after a restart once it armed elsewhere (a live
+    /// run after a crash: the same USV, 1215 m away). Unlike [`Self::matches`], a field `now`
+    /// does not know yet is no difference (fail closed: a carried restore's hold stays, and the
+    /// restore is tried, until the vehicle is known to be another).
     pub fn differs(&self, now: &VehicleIdentity) -> Option<String> {
         fn other<T: PartialEq + std::fmt::Debug>(what: &str, was: &Option<T>, is: &Option<T>) -> Option<String> {
             match (was, is) {
@@ -902,13 +905,6 @@ impl VehicleIdentity {
         other("platform", &self.platform, &now.platform)
             .or_else(|| other("callsign", &self.callsign, &now.callsign))
             .or_else(|| other("system id", &self.sysid, &now.sysid))
-            .or_else(|| match (self.home, now.home) {
-                (Some(a), Some(b)) => {
-                    let d = haversine_m(a, b);
-                    (d > Self::HOME_TOLERANCE_M).then(|| format!("its home is {d:.0} m from the one preloaded"))
-                }
-                _ => None,
-            })
     }
 }
 

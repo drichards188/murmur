@@ -389,9 +389,24 @@ impl RestoreOwed {
         }
     }
 
+    /// The values as a reason quotes them; rules 11, none known (an armed platform a failed
+    /// carry's fleet named): says so.
+    pub fn values_text(&self) -> String {
+        match (&self.carried, self.values.is_empty()) {
+            (Some(c), true) => format!("values unknown: {}, which may owe them, could not be read at the start", c.from),
+            _ => self.values.iter().map(|(n, v)| format!("{n} {v}")).collect::<Vec<_>>().join(", "),
+        }
+    }
+
     /// Why an order other than a hold or rtl waits for it.
     pub fn waiting_detail(&self) -> String {
         let values: Vec<String> = self.values.iter().map(|(n, v)| format!("{n} {v}")).collect();
+        if let (Some(c), true) = (&self.carried, self.values.is_empty()) {
+            return format!(
+                "heard, but its own lost-link failsafe may still be an engagement's: {} may owe it values (an armed platform of that run's fleet) and could not be read at the start: a mission waits until that log is read or an operator writes it off (a hold or rtl goes)",
+                c.from
+            );
+        }
         match &self.carried {
             Some(c) => format!(
                 "heard, but its own lost-link failsafe ({}) is not confirmed back since it was carried over from {} (an engagement there preloaded it): a mission waits for the restore (a hold or rtl goes; an operator writes the values off if this is not the vehicle they were preloaded on)",

@@ -1293,3 +1293,80 @@ fn the_policy_can_make_accepting_a_lost_vehicle_step_up() {
     let w3 = whats(&rechain(&again));
     assert!(w3.iter().any(|m| m.contains("an acceptance of a lost vehicle quoting a step-up that is not the actor's own, fresh and unused")), "{w3:?}");
 }
+
+// ---- rules 11: the ledger's guards with write-offs and values carried in run.started ------
+
+/// Rules 11 (review L11): an operator's write-off is refused while an engagement is under way
+/// on the platform (its own restore is still to come), nothing logged; once it ended, taken.
+#[test]
+fn a_write_off_is_refused_while_an_engagement_holds_the_platform() {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = Engine::with_areas(policy(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    declare_shown(&mut e, &world(clock.now()));
+    let (id, _) = dispatched(&mut e, &clock);
+    set(&mut e, id, OWN, SET).unwrap();
+    let op = e.open_operator_session(OperatorId::new("op-1")).unwrap();
+    let n = log.lines().len();
+    let err = e
+        .write_off_restore(op.authority(), WriteOff::Platform(Uid::new("blade-1")), "lost")
+        .unwrap_err();
+    assert!(matches!(&err, EngineError::NotWrittenOff(why) if why.contains("under way")), "{err}");
+    assert_eq!(log.lines().len(), n, "nothing logged");
+    e.abort_engagement(id, op.authority(), "stop").unwrap();
+    e.write_off_restore(op.authority(), WriteOff::Platform(Uid::new("blade-1")), "lost over the water")
+        .unwrap();
+    let r = replay::replay_str(&log.text()).unwrap();
+    assert!(r.ok() && r.unrestored.is_empty(), "{:?} {:?}", r.mismatches, r.unrestored);
+    // a write-off forged in while the engagement was still under way: caught
+    let mut lines = log.lines();
+    let closed = lines.pop().unwrap();
+    let stop = lines.iter().position(|l| l.contains("\"type\":\"engage.stopped\"")).unwrap();
+    lines.insert(stop, closed);
+    let w = whats(&rechain(&lines));
+    assert!(w.iter().any(|m| m.contains("a write-off while an engagement is under way")), "{w:?}");
+}
+
+/// What a start carried over from `a.jsonl`: blade-1's own values (`OWN`), preloaded there.
+fn carried_own() -> replay::CarriedFrom {
+    replay::CarriedFrom {
+        log: "a.jsonl".into(),
+        head: Some("0".repeat(64)),
+        last_seq: Some(9),
+        owed: vec![replay::OwedRestore {
+            uid: Uid::new("blade-1"),
+            values: OWN.iter().map(|(n, v)| ((*n).to_string(), *v)).collect(),
+            by: vec![IntentId(1)],
+            vehicle: None,
+        }],
+        pending: Vec::new(),
+        may_owe: Vec::new(),
+        error: None,
+    }
+}
+
+/// Rules 11 (review L11): values carried over in `run.started` are owed from the first line,
+/// so a preload that then reads the still-preloaded values as the platform's own is caught,
+/// as it is for values carried event by event under rules 6 to 10; its own values are fine.
+#[test]
+fn under_rules_11_a_preload_reading_carried_values_as_its_own_is_caught() {
+    for (before, caught) in [(SET, true), (OWN, false)] {
+        let clock = ManualClock::new(T0);
+        let log = MemorySink::new();
+        let mut e = Engine::start(policy(), Some(areas()), roster(), vec![carried_own()], Box::new(clock.clone()), Box::new(log.clone()))
+            .unwrap();
+        declare_shown(&mut e, &world(clock.now()));
+        let (id, _) = dispatched(&mut e, &clock);
+        set(&mut e, id, before, SET).unwrap();
+        let opts = replay::ReplayOptions {
+            trust_resumed: true,
+            ..Default::default()
+        };
+        let r = replay::replay_str_with(&log.text(), &opts).unwrap();
+        let w: Vec<String> = r.mismatches.into_iter().map(|m| m.what).collect();
+        assert_eq!(w.iter().any(|m| m.contains("while earlier ones were owed back")), caught, "{before:?}: {w:?}");
+        if !caught {
+            assert!(w.is_empty(), "{w:?}");
+        }
+    }
+}

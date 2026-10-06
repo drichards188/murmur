@@ -117,6 +117,10 @@ pub enum EngineError {
     /// engagement under way on the platform, rules before 11): nothing was logged.
     #[error("write-off: {0}")]
     NotWrittenOff(String),
+    /// Rules 11: what a start carried over can't go into `run.started` (a log not named by its
+    /// bare file name, rules before 11): the engine did not start.
+    #[error("carry-over: {0}")]
+    Carry(String),
 }
 
 /// Rules 11: what an operator writes off ([`Engine::write_off_restore`]): the lost-link values
@@ -300,12 +304,12 @@ pub(crate) fn refusal_reason(
     let mut out = match (&o.carried, engaged.is_empty()) {
         (Some(c), true) => format!(
             "{REFUSED}vehicle {uid}'s own lost-link failsafe ({}) is not confirmed back since it was carried over from {}, and the policy queues no {kind} order to wait for the restore: give it again once the restore confirms, or have an operator write the values off if this is not the vehicle they were preloaded on (a hold or rtl goes at once)",
-            values.join(", "),
+            o.values_text(),
             c.from
         ),
         (Some(c), false) => format!(
             "{REFUSED}vehicle {uid}'s own lost-link failsafe ({}) is not confirmed back since it was carried over from {}; this order stops engagement {} (superseded, no fallback), but the policy queues no {kind} order to wait for the restore: give it again once the restore confirms (a hold or rtl goes at once)",
-            values.join(", "),
+            o.values_text(),
             c.from,
             engaged.join(", ")
         ),
@@ -513,12 +517,12 @@ impl Engine {
         sink: Box<dyn AuditSink + Send>,
     ) -> Result<Self, EngineError> {
         if !carried_from.is_empty() && !policy.rules.followups() {
-            return Err(EngineError::Roster(
+            return Err(EngineError::Carry(
                 "these decision rules carry earlier runs' debts with platform.restore events, not in run.started".into(),
             ));
         }
         if let Some(c) = carried_from.iter().find(|c| !crate::replay::is_log_file_name(&c.log)) {
-            return Err(EngineError::Roster(format!(
+            return Err(EngineError::Carry(format!(
                 "a carried-over log is named by its bare file name, not {:?}",
                 c.log
             )));
@@ -1780,14 +1784,17 @@ impl Engine {
         Ok(())
     }
 
-    /// Rules 11: the platforms' own lost-link values owed back and the earlier logs whose carry
-    /// failed, as the ledger has them (for the inbox: what an operator could write off).
-    pub fn pending_carries(&self) -> Vec<(String, String)> {
-        self.restores
-            .pending()
-            .iter()
-            .map(|(l, w)| (l.clone(), w.clone()))
-            .collect()
+    /// Rules 11: the earlier logs whose carry failed, as the ledger has them, with why and the
+    /// armed platforms their fleet named (a mission for one waits until the log is read or
+    /// written off): for the inbox, what an operator could write off.
+    pub fn pending_carries(&self) -> Vec<(String, String, Vec<Uid>)> {
+        self.restores.pending()
+    }
+
+    /// Rules 11: the engagement whose effect spent `uid`, if one did: no order or nomination
+    /// for it is taken any more.
+    pub fn expended_by(&self, uid: &Uid) -> Option<IntentId> {
+        self.restores.expended_by(uid)
     }
 
     /// Rules 11: whether the ledger still owes `uid` its own lost-link values.
@@ -1802,10 +1809,13 @@ impl Engine {
         self.restores.carried()
     }
 
-    /// Rules 11 (murmur-q05): right after an engagement's release, close what is owed back to
-    /// its platform when the platform is spent by its own effect (its catalog's
-    /// `expended_by_effect`, as the release picture `world` has it): `restore.closed`,
-    /// `expended`. Nothing to do otherwise.
+    /// Rules 11 (murmur-q05): right after an engagement's release, when its platform is spent
+    /// by its own effect (its catalog's `expended_by_effect`, as the release picture `world`
+    /// has it), close what is owed back to it (possibly nothing) and mark it spent:
+    /// `restore.closed`, `expended`. From then on it takes no order and no nomination (the
+    /// `readiness` check fails for it, every dispatch path refuses it, replay flags one sent):
+    /// it carries the engagement's lost-link action, and a new preload would read that as its
+    /// own values. Nothing to do otherwise.
     fn close_expended(&mut self, id: IntentId, uid: &Uid, world: &WorldSnapshot) -> Result<(), EngineError> {
         if !self.policy.rules.followups() {
             return Ok(());
@@ -1815,9 +1825,10 @@ impl Engine {
             .get(uid)
             .and_then(|v| v.platform.as_ref())
             .is_some_and(|p| p.expended_by_effect);
-        let Some(values) = self.restores.values_owed(uid).cloned().filter(|_| spent) else {
+        if !spent {
             return Ok(());
-        };
+        }
+        let values = self.restores.values_owed(uid).cloned().unwrap_or_default();
         let body = EventBody::RestoreClosed {
             uid: Some(uid.clone()),
             values,
@@ -3053,6 +3064,7 @@ impl Engine {
         let mut inputs = world.subset_for(spec);
         self.identify(&mut inputs);
         inputs.restore_owed = self.restore_owed_for(spec, &inputs.identities);
+        inputs.expended = self.restores.expended_for(spec, &self.policy.rules);
         inputs
     }
 
@@ -3150,9 +3162,7 @@ impl Engine {
     /// The world as decisions read it (rules 9: its identification filled from the ledger),
     /// for readers outside the engine (the console, agents) and the engine's own checks.
     pub fn identified<'w>(&self, world: &'w WorldSnapshot) -> std::borrow::Cow<'w, WorldSnapshot> {
-        if !self.policy.rules.rule_id() && self.policy.rules.followups() {
-            return std::borrow::Cow::Borrowed(world);
-        }
+        // always a copy: rules 9 fill the identification, and older rules drop rules 11's facts
         let mut w = world.clone();
         self.identify(&mut w);
         std::borrow::Cow::Owned(w)
@@ -3763,6 +3773,18 @@ impl Engine {
         // rules 7: whatever the path (and whether the kind is queued or not), never a mission
         // to a vehicle still owed its own lost-link values (replay checks every dispatch); rules
         // 11: the reach it was judged on says whether carried values hold its vehicle
+        // rules 11: never an order to a platform spent by its own effect
+        if let Some((uid, by)) = intent
+            .spec()
+            .uids
+            .iter()
+            .find_map(|u| Some((u, self.restores.expended_by(u).filter(|_| self.policy.rules.followups())?)))
+        {
+            return Err(EngineError::NotDispatchable {
+                id,
+                why: format!("vehicle {uid} was spent by its own effect (engagement {by}): a spent platform takes no order"),
+            });
+        }
         let judged = reached.as_ref().map(|(i, _)| &i.restore_owed).or(rechecked);
         if let Some(why) = self.restore_hold(intent.spec(), judged) {
             return Err(EngineError::NotDispatchable {
@@ -3832,6 +3854,20 @@ impl Engine {
             return Err(EngineError::Illegal { id, err });
         }
         let spec = intent.spec().clone();
+        // rules 11: approved before its platform was spent by its own effect: voided, saying why
+        // (it takes no order)
+        if self.policy.rules.followups()
+            && let Some((uid, by)) = spec
+                .uids
+                .iter()
+                .find_map(|u| Some((u.clone(), self.restores.expended_by(u)?)))
+        {
+            let reason = format!(
+                "spent platform: vehicle {uid} was spent by its own effect (engagement {by}) and takes no order"
+            );
+            self.void(id, &reason)?;
+            return Ok(Routed::Voided { reason });
+        }
         let cfg = self.policy.queue();
         if !self.reach_needed(&spec) {
             // rules 7: no queue for this kind, but still never a mission over an engagement's
@@ -4625,6 +4661,7 @@ impl Engine {
         inputs.engaged = self.engaged_for(spec);
         inputs.waiting = self.waiting_for(spec);
         inputs.restore_owed = self.restore_owed_for(spec, &inputs.identities);
+        inputs.expended = self.restores.expended_for(spec, &self.policy.rules);
         if spec.kind() == TaskKind::Engage {
             inputs.unknown_accepted = self.accepted_for(spec.id);
         }
@@ -5569,6 +5606,7 @@ impl AgentPort<'_> {
         inputs.engaged = self.engine.engaged_for(&spec);
         inputs.waiting = self.engine.waiting_for(&spec);
         inputs.restore_owed = self.engine.restore_owed_for(&spec, &inputs.identities);
+        inputs.expended = self.engine.restores.expended_for(&spec, &self.engine.policy.rules);
         let checks = rules::evaluate(&spec, &inputs, &self.engine.policy.rules);
         let passed = rules::passed(&checks, spec.kind());
         let policy = passed.then(|| policy::decide(&spec, &inputs, &self.engine.policy));
