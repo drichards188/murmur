@@ -434,7 +434,7 @@ fn area_gnss_matches_per_point_gnss() {
     let (from, to) = (t("2026-10-02T00:00:00Z"), t("2026-10-02T12:00:00Z"));
     let tm = sp.time_map(EpochMode::Direct, from, to);
     let area = sp
-        .gnss_area(&points, from, to, "gps", 900.0, None, tm)
+        .gnss_area(&points, from, to, "gps", 900.0, tm)
         .expect("area gnss");
     assert_eq!(area.points.len(), points.len());
     for (i, p) in points.iter().enumerate() {

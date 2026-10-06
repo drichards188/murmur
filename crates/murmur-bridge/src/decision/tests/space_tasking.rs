@@ -489,8 +489,7 @@ impl LockWatch {
     fn worst(self) -> std::time::Duration {
         self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
         self.handle.join().expect("watcher");
-        let w = *self.worst.lock().expect("worst");
-        w
+        *self.worst.lock().expect("worst")
     }
 }
 

@@ -1018,7 +1018,7 @@ pub fn answer(
             }
             let tm = space.time_map(q.epoch_mode, q.from, q.to);
             let rep = space
-                .gnss_area(&q.points, q.from, q.to, &q.class, q.step_s, None, tm)
+                .gnss_area(&q.points, q.from, q.to, &q.class, q.step_s, tm)
                 .map_err(|e| format!("GNSS query failed: {e}"))?;
             let points = rep
                 .points

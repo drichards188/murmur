@@ -578,7 +578,8 @@ impl Space {
     }
 
     /// GNSS visibility and DOP at several points of an area over [from, to], sampled every
-    /// `step_s`, each satellite propagated once per sample for every point.
+    /// `step_s` above the class's own mask, each satellite propagated once per sample for
+    /// every point.
     pub fn gnss_area(
         &self,
         points: &[Geodetic],
@@ -586,7 +587,6 @@ impl Space {
         to: DateTime<Utc>,
         class: &str,
         step_s: f64,
-        mask_deg: Option<f64>,
         tm: TimeMap,
     ) -> Result<AreaGnssReport, SpaceError> {
         let started = std::time::Instant::now();
@@ -597,9 +597,7 @@ impl Space {
         if cs.class.capability != Capability::Gnss {
             return Err(SpaceError::Invalid(format!("{class} is not a GNSS class")));
         }
-        let mask = mask_deg
-            .or(cs.class.comms.as_ref().map(|c| c.min_elevation_deg))
-            .unwrap_or(5.0);
+        let mask = cs.class.comms.as_ref().map_or(5.0, |c| c.min_elevation_deg);
         let observers: Vec<Observer> = points.iter().map(|p| Observer::new(*p)).collect();
         let (sats, stale) = self.usable(cs, &tm, from, to);
         let step = Duration::milliseconds((step_s.max(1.0) * 1000.0) as i64);
