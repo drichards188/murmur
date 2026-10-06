@@ -2624,6 +2624,18 @@ pub enum ReachKind {
     Young,
 }
 
+impl ReachKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReachKind::Velocity => "velocity",
+            ReachKind::NoVelocity => "no_velocity",
+            ReachKind::MeanVelocity => "mean_velocity",
+            ReachKind::Manoeuvre => "manoeuvre",
+            ReachKind::Young => "young",
+        }
+    }
+}
+
 /// Rules 6 and 9: where a protected track may be at `effect_t`, from its estimate over the
 /// span since it. Rules 6: along its velocity with `keep_out_sigma` of
 /// [`track_prediction_sigma`], or, without a velocity estimate, anywhere it reaches at its
