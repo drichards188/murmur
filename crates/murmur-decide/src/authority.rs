@@ -66,8 +66,11 @@
 //!
 //! ```compile_fail,E0451
 //! // Forging a step-up by struct literal: the fields are private.
-//! use murmur_decide::{OperatorId, SessionId, StepUp, Time};
-//! let forged = StepUp { operator: OperatorId::new("mallory"), session: SessionId(1), seq: 7, t: Time(0) };
+//! use murmur_decide::{AuthMethod, OperatorId, SessionId, StepUp, Time};
+//! let forged = StepUp {
+//!     operator: OperatorId::new("mallory"), session: SessionId(1), seq: 7, t: Time(0),
+//!     factor: AuthMethod::Passkey, session_method: None, purpose: None,
+//! };
 //! ```
 //!
 //! ```compile_fail,E0277
