@@ -101,6 +101,16 @@ pub struct ContactIn {
     pub tracked_s: f64,
     #[serde(default)]
     pub behaviour: String,
+    /// `air` for an aircraft (the sensing model's horizon, the tracker's process noise and
+    /// initial velocity uncertainty, the keep-out's top speed are the domain's); else surface
+    #[serde(default)]
+    pub domain: Option<String>,
+    /// its altitude, m (an aircraft's)
+    #[serde(default)]
+    pub alt_m: f64,
+    /// what it is (`light_aircraft`; default a fishing vessel)
+    #[serde(default)]
+    pub kind: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -175,6 +185,10 @@ pub fn simulate(cat: &SensorCatalog, input: &TrackerIn, now_s: f64) -> Result<(B
             ship_type: "fishing".into(),
             spoofed: false,
         });
+        let domain = match c.domain.as_deref() {
+            Some("air") => Domain::Air,
+            _ => Domain::Surface,
+        };
         let h = c.tracked_s.min(input.max_history_s).max(0.0).floor() as i64;
         let mut track: Option<Track> = None;
         for s in -h..=0 {
@@ -186,11 +200,11 @@ pub fn simulate(cat: &SensorCatalog, input: &TrackerIn, now_s: f64) -> Result<(B
                 id: cid.clone(),
                 name: String::new(),
                 affiliation: TruthAffiliation::Neutral,
-                domain: Domain::Surface,
-                kind: "fishing_vessel".into(),
+                domain,
+                kind: c.kind.clone().unwrap_or_else(|| "fishing_vessel".into()),
                 lat: ll[1],
                 lon: ll[0],
-                alt_m: 0.0,
+                alt_m: c.alt_m,
                 speed_mps: ve.hypot(vn),
                 course_deg: ve.atan2(vn).to_degrees().rem_euclid(360.0),
                 emits: false,
@@ -227,7 +241,7 @@ pub fn simulate(cat: &SensorCatalog, input: &TrackerIn, now_s: f64) -> Result<(B
                     let vel_err = f.velocity_mps.map(|[a, b]| (a - v[0]).hypot(b - v[1]));
                     let tracked_for = f.first_seen_t.map(|t0| now_s - t0.0 as f64 / 1000.0);
                     json!({
-                        "behaviour": c.behaviour, "tracked": true, "vel": f.velocity_mps.is_some(),
+                        "behaviour": c.behaviour, "tracked": true, "vel": f.velocity_mps.is_some(), "alt": f.alt_m,
                         "vel_err": vel_err, "pos_err": pos_err, "sigma": f.pos_sigma_m,
                         "mean": f.mean_velocity_mps.is_some(), "manoeuvre": f.manoeuvre.is_some(),
                         "young": f.mean_velocity_mps.is_none() && tracked_for.is_some_and(|x| x < MEAN_MIN_S),

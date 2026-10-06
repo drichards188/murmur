@@ -198,6 +198,15 @@ def test_truth_labels_on_hand_built_cases():
     assert K.at_risk(sit, effect, 100.0, 75.0, 275.0)["ours_danger"] == ["usv-1"]
     off = K.at_risk(sit, K.to_lonlat(ORIGIN, -300.0, 0.0), 30.0, 75.0, 275.0)
     assert "crossing" in off["danger"]
+    # an aircraft over the point counts in 3D: above the keep-out's height it is outside it,
+    # between the radius and that height inside the keep-out only
+    air = {
+        "origin": ORIGIN,
+        "truth": {f"a{h}": {"motion": K.Hold((0.0, 0.0)), "behaviour": "air", "alt_m": float(h)} for h in (50, 200, 1000)},
+        "ours": {},
+    }
+    r = K.at_risk(air, effect, 10.0, 75.0, 275.0)
+    assert r["danger"] == ["a50"] and sorted(r["near"]) == ["a200", "a50"]
     e, n = K.to_enu(ORIGIN, K.to_lonlat(ORIGIN, 1234.0, -567.0))
     assert (e, n) == pytest.approx((1234.0, -567.0), abs=1e-6)
 
@@ -405,6 +414,15 @@ def test_the_real_tracker_makes_the_tracks(probe):
         out[mode] = steady
     assert out["ais"]["vel_err_median"] < 0.5 * out["radar"]["vel_err_median"]
     assert out["ais"]["sigma_median"] < out["radar"]["sigma_median"]
+    # the air variant: the same surface traffic plus a loitering light aircraft, an air track
+    # on our 2D radar (no altitude); while it turns the tracker gives it no velocity
+    a = K.situation(1, 0.03, 0, "mixed", K.variant_params("air", {"tte_s": [120], "dist_m": []}), cruise)
+    b = K.situation(1, 0.03, 0, "mixed", K.variant_params("radar", {"tte_s": [120], "dist_m": []}), cruise)
+    assert set(a["truth"]) == set(b["truth"]) | {"A-0001"} and a["probe"]["tracker"]["contacts"]["A-0001"]["domain"] == "air"
+    res = K.run_probe([a["probe"]], probe=probe)
+    (t,) = [r["tracker"] for r in res if "tracker" in r]
+    ac = next(p for p in t["per_contact"] if p["behaviour"] == "air")
+    assert ac["tracked"] and ac["alt"] is None
 
 
 def test_a_small_run_is_deterministic_and_versions_only_add_regions(probe, tmp_path: Path):

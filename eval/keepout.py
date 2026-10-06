@@ -40,7 +40,9 @@ same labels over the release window (`late_s`, 60 s: a holding target may be rel
 late) count anyone inside at any time from the effect time to 60 s after.
 
 **What it is not.** The situations come from stated distributions, not from the world: open
-water with no land or channels, surface contacts only, one observing vehicle. The checks are
+water with no land or channels, surface contacts (one variant adds a loitering light aircraft),
+one observing vehicle, every contact within its sensors' reach (so the bridge's drop of a track
+unseen for 180 s never fires; a contact never detected has no track and is not protected). The checks are
 the nomination's only (the plan's re-checks while signatures wait, and the release's own
 check, are not run): the nomination check is a screen, not the final outcome. No person
 decides anything here.
@@ -105,6 +107,8 @@ MOTION = {
     "new": "tracked for 0 to 45 s only; holds still (0.4) or transits as above (0.6)",
     "lane": "lanes layout: 70% of the contacts in two lanes, each passing 0 to 1.5 km from the target on a uniform course, "
     "100 m wide (1-sigma), transiting along it either way at 3 to 12 m/s; the rest as the behaviour says, uniform",
+    "air": "a light aircraft loitering: circling 500 to 1500 m radius at 30 to 55 m/s, 150 to 1500 m up, centred within 4 km of the target "
+    "(the air variant adds one to the surface traffic)",
 }
 #: nominal times to effect (s): the engaging platform starts (TTE - dispatch delay) x cruise away
 TTE_S = (30, 45, 60, 90, 120, 180, 240, 300)
@@ -173,6 +177,12 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "platforms": ["magura"],
         "about": "the live run's question: a tour boat circling within 1 km of the target, mixed traffic around, a magura 1 to 2 km out",
     },
+    "air": {
+        "tracker": "radar",
+        "behaviours": ["mixed"],
+        "air_contacts": 1,
+        "about": "radar tracker; mixed traffic plus one light aircraft loitering within 4 km (the same surface traffic as radar's mixed)",
+    },
     "live2": {
         "tracker": "radar",
         "behaviours": ["mixed"],
@@ -211,6 +221,8 @@ def default_params() -> dict[str, Any]:
         "max_history_s": MAX_HISTORY_S,
         "late_s": LATE_S,
         "stats_per_chunk": 3,
+        "air_contacts": 0,
+        "air_within_m": 4000.0,
     }
 
 
@@ -435,6 +447,7 @@ def facts(
     origin: tuple[float, float],
     affiliation: str,
     affiliation_confidence: float,
+    domain: str = "surface",
 ) -> dict[str, Any]:
     """The facts the stated model reports for a contact moving as `m` (murmur-decide's
     TrackFacts)."""
@@ -450,7 +463,7 @@ def facts(
         "affiliation_confidence": round(affiliation_confidence, 2),
         "identity_confidence": 0.2,
         "sources": ["usv-1:radar"],
-        "domain": "surface",
+        "domain": domain,
         "last_seen_t": t_ms,
         "first_seen_t": t_ms - int(round(tracked * 1000.0)),
     }
@@ -545,14 +558,18 @@ def situation(seed: int, density: float, index: int, behaviour: str, params: dic
     kinds: dict[str, int] = defaultdict(int)
     motions: dict[str, Any] = {}
 
-    def add(cid: str, kind: str, m: Any, tracked: float, sigma: float, aff: str, aff_c: float) -> None:
+    def add(cid: str, kind: str, m: Any, tracked: float, sigma: float, aff: str, aff_c: float, alt_m: float | None = None) -> None:
         kinds[kind] += 1
-        f = facts(m, tracked, sigma, vel_sigma, move, origin, aff, aff_c)
+        f = facts(m, tracked, sigma, vel_sigma, move, origin, aff, aff_c, "air" if alt_m is not None else "surface")
         if tracker == "model":
             tracks[cid] = f
         else:
             motions[cid] = {"motion": m.spec(), "tracked_s": round(tracked, 3), "behaviour": kind}
+            if alt_m is not None:
+                motions[cid].update({"domain": "air", "alt_m": round(alt_m, 1), "kind": "light_aircraft"})
         truth[cid] = {"motion": m, "behaviour": kind, "tracked_s": tracked}
+        if alt_m is not None:
+            truth[cid]["alt_m"] = alt_m
 
     for i in range(n):
         p = _disc(field, field_m)
@@ -571,6 +588,14 @@ def situation(seed: int, density: float, index: int, behaviour: str, params: dic
         p = _disc(move, float(params["near_circler_km"]) * 1000.0)
         m, _ = motion("circling", p, move)
         add("C-9999", "circling (near)", m, move.uniform(*TRACKED_S), move.uniform(*sigma_p), "neutral", 0.8)
+    for k in range(int(params.get("air_contacts") or 0)):
+        # a light aircraft loitering near the target (after the surface traffic: that stays the
+        # same as without it)
+        r, speed = move.uniform(500.0, 1500.0), move.uniform(30.0, 55.0)
+        c = _disc(move, float(params.get("air_within_m") or 4000.0))
+        sense = 1 if move.random() < 0.5 else -1
+        m = Circle(c, r, speed, sense, _course(move))
+        add(f"A-{k + 1:04d}", "air", m, move.uniform(*TRACKED_S), move.uniform(*sigma_p), "unknown", 0.5, alt_m=move.uniform(150.0, 1500.0))
     # ours: the observing USV, holding or patrolling; sometimes another one lost
     vehicles = []
     ours: dict[str, Any] = {}
@@ -653,9 +678,17 @@ def at_risk(sit: dict[str, Any], effect: list[float], t_s: float, radius: float,
         # cheap bound first: it cannot get closer than this by the end of the window
         if math.hypot(p0[0] - e[0], p0[1] - e[1]) - m.vmax * max(t_s + late_s, 0.0) > reach:
             continue
+        # an aircraft counts where it is in 3D: above the keep-out's height (the effect radius
+        # plus the policy's 200 m over the surface effect) it is outside it, above the radius
+        # outside the effect
+        alt = abs(tr.get("alt_m") or 0.0)
+        if alt > keep_out:
+            continue
         for k, t in enumerate(times):
             p = m.pos(t)
             d = math.hypot(p[0] - e[0], p[1] - e[1])
+            if alt > radius:
+                d = max(d, radius + 1e-6) if d <= keep_out else d
             if k == 0 and d <= keep_out:
                 near.append(cid)
                 if d <= radius:
@@ -1014,13 +1047,13 @@ def _boot_thresholds(rows: list[list[int]], grid: list[float], levels: tuple[flo
         return {lv: (None, None, None) for lv in levels}
 
     def curve(sample: list[list[int]]) -> list[tuple[float, float]]:
-        return [(g, sum(r[i] for r in sample) / len(sample)) for i, g in enumerate(grid)]
+        return [(g, sum(col) / len(sample)) for g, col in zip(grid, zip(*sample))]
 
     est = {lv: threshold(curve(rows), lv) for lv in levels}
     rng = random.Random(seed)
     boots: dict[float, list[float]] = {lv: [] for lv in levels}
     for _ in range(draws):
-        sample = [rows[rng.randrange(n)] for _ in range(n)]
+        sample = rng.choices(rows, k=n)
         c = curve(sample)
         for lv in levels:
             t = threshold(c, lv)
