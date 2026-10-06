@@ -147,6 +147,13 @@ fn passkeys_are_invited_listed_and_removed() {
     let text = String::from_utf8_lossy(&cli(&file, &["passkeys", "op-2"], "").stdout).to_string();
     assert!(text.contains("passkeys of op-2 (2)") && text.contains("laptop") && text.contains("phone"), "{text}");
     assert!(String::from_utf8_lossy(&cli(&file, &["list"], "").stdout).contains("2 passkeys"));
+    // a credential copied into another file (a study's run-local one), passkeys and all
+    let run_file = dir.join("run-credentials.json");
+    let out = cli(&run_file, &["import", "op-2", "--from", file.to_str().unwrap()], "");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let copied = CredentialFile::load(&run_file).unwrap();
+    assert_eq!(copied.operators["op-2"], CredentialFile::load(&file).unwrap().operators["op-2"]);
+    assert_eq!(cli(&run_file, &["import", "op-9", "--from", file.to_str().unwrap()], "").status.code(), Some(1));
     assert_eq!(cli(&file, &["passkey-remove", "op-2", "tablet"], "").status.code(), Some(1), "no such passkey");
     assert!(cli(&file, &["passkey-remove", "op-2", "laptop"], "").status.success());
     let f = CredentialFile::load(&file).unwrap();

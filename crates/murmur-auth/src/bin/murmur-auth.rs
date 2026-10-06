@@ -14,6 +14,8 @@
 //! murmur-auth [--file PATH] passkey-invite <operator> [--minutes N] [--url BASE]
 //!                                                         a one-time registration link
 //! murmur-auth [--file PATH] passkey-remove <operator> <label | id prefix>
+//! murmur-auth [--file PATH] import <operator> --from FILE copy an operator's credential (its
+//!                                                         password hash, flags and passkeys) from another file
 //! murmur-auth [--file PATH] path                          the file it uses
 //! ```
 //!
@@ -42,7 +44,7 @@ use std::process::ExitCode;
 
 use murmur_auth::{AuthError, CredentialFile, FileLock, default_path};
 
-const USAGE: &str = "usage: murmur-auth [--file PATH] list | add <operator> [--engage] [--scripted] | passwd <operator> | engage <operator> on|off | scripted <operator> on|off | remove <operator> | agent-add <agent> | agent-rotate <agent> | agent-remove <agent> | passkeys <operator> | passkey-invite <operator> [--minutes N] [--url BASE] | passkey-remove <operator> <label|id prefix> | path\n(passwords from stdin; see the module docs)";
+const USAGE: &str = "usage: murmur-auth [--file PATH] list | add <operator> [--engage] [--scripted] | passwd <operator> | engage <operator> on|off | scripted <operator> on|off | remove <operator> | agent-add <agent> | agent-rotate <agent> | agent-remove <agent> | passkeys <operator> | passkey-invite <operator> [--minutes N] [--url BASE] | passkey-remove <operator> <label|id prefix> | import <operator> --from FILE | path\n(passwords from stdin; see the module docs)";
 
 fn read_password(id: &str) -> Result<String, AuthError> {
     let io = |e| AuthError::Io("stdin".into(), e);
@@ -266,6 +268,25 @@ fn run(args: &[String]) -> Result<(), (u8, String)> {
             let which = rest.get(1).ok_or_else(|| usage("passkey-remove <operator> <label | id prefix>"))?;
             let gone = f.remove_passkey(&id, which).map_err(refused)?;
             format!("{id}: passkey {}... removed; their sessions end", gone.chars().take(12).collect::<String>())
+        }
+        "import" => {
+            let id = one("an operator id")?;
+            let from = match (rest.get(1).map(String::as_str), rest.get(2)) {
+                (Some("--from"), Some(p)) => PathBuf::from(p),
+                _ => return Err(usage("import <operator> --from <credential file>")),
+            };
+            let other = CredentialFile::load(&from).map_err(refused)?;
+            let entry = other
+                .operators
+                .get(&id)
+                .cloned()
+                .ok_or_else(|| (1u8, format!("no operator {id} in {}", from.display())))?;
+            if f.agents.contains_key(&id) {
+                return Err((1, format!("{id} is an agent here: an id is an operator or an agent, not both")));
+            }
+            let n = entry.passkeys.len();
+            f.operators.insert(id.clone(), entry);
+            format!("operator {id} imported from {} (password hash, flags, {n} passkey(s))", from.display())
         }
         other => return Err(usage(&format!("unknown command {other}"))),
     };

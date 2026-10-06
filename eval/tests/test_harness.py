@@ -767,11 +767,25 @@ def test_provenance_counts_untracked_code(monkeypatch):
 # ---- who the operators were (rules 8) ---------------------------------------------------------
 
 
-def _run_started(auth: str | None) -> dict:
+def _run_started(auth: str | None, study: dict | None = None, rules: int = 8) -> dict:
     roster: dict = {"operators": ["op-1", "op-study"], "engage": []}
     if auth:
         roster["auth"] = auth
-    return {"seq": 1, "t": 0, "type": "run.started", "rules_version": 8, "roster": roster}
+    if study is not None:
+        roster["study"] = study
+    return {"seq": 1, "t": 0, "type": "run.started", "rules_version": rules, "roster": roster}
+
+
+# rules 10: a study's run.started names its participant
+STUDY = {"participant": "op-study"}
+
+
+def _step_up(op: str, auth: str, seq: int) -> dict:
+    return {"seq": seq, "t": seq, "type": "operator.action", "operator": op, "session": 3, "action": "step_up", "detail": "", "auth": auth}
+
+
+def _concurred(op: str, seq: int, step_seq: int) -> dict:
+    return {"seq": seq, "t": seq, "type": "approval.concurred", "intent": 1, "by": op, "session": 3, "n": 1, "of": 2, "step_up": {"seq": step_seq}}
 
 
 def _opened(op: str, auth: str, seq: int) -> dict:
@@ -810,7 +824,7 @@ def test_only_the_participants_own_acts_are_evidence():
     from eval.metrics import auth_of
 
     ok = {"ran": True, "ok": True, "anchors": "verified"}
-    events = [_run_started("credentials"), _opened("op-1", "scripted", 2), _opened("op-study", "password", 3),
+    events = [_run_started("credentials", STUDY, 10), _opened("op-1", "scripted", 2), _opened("op-study", "password", 3),
               _signed("op-1", 4), _signed("op-1", 5), _signed("op-study", 6)]
     a = auth_of(events, ok, "op-study")
     assert a["human_control_evidence"] is True, a
@@ -820,7 +834,40 @@ def test_only_the_participants_own_acts_are_evidence():
     events[2] = _opened("op-study", "scripted", 3)
     a = auth_of(events, ok, "op-study")
     assert a["human_control_evidence"] is False and a["participant_acts"] == 0
-    assert a["why_not"] == ["op-study did not sign in as a person (own password)"]
+    assert a["why_not"] == ["op-study did not sign in as a person (own password or passkey)"]
+
+
+def test_a_study_counts_only_with_the_participants_passkey_at_every_step_up():
+    """Rules 10 (murmur-437): a study run is evidence only when its log names the study, no
+    override allowed password step-ups, and every consequential act of the participant's
+    quoted a passkey step-up; a log of earlier rules (no passkeys, no study) is a pilot."""
+    from eval.metrics import auth_of
+
+    ok = {"ran": True, "ok": True, "anchors": "verified"}
+    base = [_opened("op-1", "scripted", 2), _opened("op-study", "passkey", 3)]
+    # a signature by passkey: evidence (a passkey login is a person's)
+    events = [_run_started("credentials", STUDY, 10)] + base + [_step_up("op-study", "passkey", 4), _concurred("op-study", 5, 4)]
+    a = auth_of(events, ok, "op-study")
+    assert a["human_control_evidence"] is True, a
+    assert a["participant_steps"] == {"passkey": 1, "password": 0}
+    assert a["people"] == ["op-study"]
+    # the same signature quoting a password step-up: not evidence, and said why
+    events = [_run_started("credentials", STUDY, 10)] + base + [_step_up("op-study", "password", 4), _concurred("op-study", 5, 4)]
+    a = auth_of(events, ok, "op-study")
+    assert a["human_control_evidence"] is False
+    assert a["why_not"] == ["1 of op-study's consequential acts stepped up without a passkey"], a
+    # the override allowed passwords: a pilot whatever the acts were
+    over = {**STUDY, "password_step_up": "pilot: no authenticators yet"}
+    events = [_run_started("credentials", over, 10)] + base + [_step_up("op-study", "passkey", 4), _concurred("op-study", 5, 4)]
+    a = auth_of(events, ok, "op-study")
+    assert a["human_control_evidence"] is False and "override" in a["why_not"][0], a
+    # a log of rules 9 names no study: a pilot
+    events = [_run_started("credentials", None, 9)] + base
+    a = auth_of(events, ok, "op-study")
+    assert a["human_control_evidence"] is False and "names no study" in a["why_not"][0], a
+    # the scripted operators' password step-ups are theirs, never the participant's
+    events = [_run_started("credentials", STUDY, 10)] + base + [_step_up("op-1", "scripted", 4), _concurred("op-1", 5, 4)]
+    assert auth_of(events, ok, "op-study")["human_control_evidence"] is True
 
 
 def test_a_study_run_counts_only_with_authenticated_operators(tmp_path: Path):
@@ -841,7 +888,8 @@ def test_a_study_run_counts_only_with_authenticated_operators(tmp_path: Path):
         log.pending(1, 0)
         log.reject(1, 10, by="op-study")
         signed_in = [_opened("op-1", "scripted", 2), _opened("op-study", "password", 3)] if auth == "credentials" else []
-        events = [_run_started(auth)] + signed_in + log.events
+        started = _run_started(auth, STUDY, 10) if auth == "credentials" else _run_started(auth)
+        events = [started] + signed_in + log.events
         (d / "audit.jsonl").write_text("\n".join(json.dumps(e) for e in events) + "\n")
         (d / "storyline.jsonl").write_text(json.dumps(rec) + "\n")
         info = {"scenario": "plausible-wrong", "arm": "study", "seed": seed, "status": "ok", "operators": ["op-1", "op-study"],
@@ -914,6 +962,44 @@ def test_a_credentials_stack_writes_its_own_credentials_with_the_cli(tmp_path: P
     # a bad mode is refused
     with pytest.raises(K.StackError):
         K.Stack(spec, 1, block, tmp_path, "x", auth="header")
+
+
+def test_a_study_refuses_to_start_without_the_participants_passkey(tmp_path: Path):
+    """Rules 10: a study needs its participant's own credential file with a passkey (from
+    `enroll`), or the explicit override; the run-local file then carries the participant's
+    credential (their password hash, their passkeys), copied with the CLI."""
+    from eval import stack as K
+
+    spec = load_spec(REPO / "eval" / "scenarios" / "plausible-wrong.toml")
+    block = P.PortBlock(index=0)  # no port is opened
+    # no file at all, no override: refused, saying how to enroll
+    with pytest.raises(K.StackError, match="enroll"):
+        K.Stack(spec, 1, block, tmp_path, "x", auth="credentials", participant_credentials=tmp_path / "nobody.json")
+    with pytest.raises(K.StackError, match="passkey"):
+        K.check_participant(None, None)
+    entry = {"password": "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0$aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaA", "engage": False,
+             "stamp": "0011223344556677", "updated_unix": 1}
+    f = tmp_path / "p07.json"
+    f.write_text(json.dumps({"murmur_credentials": 1, "operators": {"op-study": entry}}))
+    with pytest.raises(K.StackError, match="has no passkey"):
+        K.check_participant(f, None)
+    # the override lets it through (a pilot), and so does a passkey
+    K.check_participant(f, "pilot: no authenticators yet")
+    K.check_participant(None, "pilot: no file")
+    key = {"id": "Y3JlZC1pZA", "label": "laptop", "public_key": "BAAA", "counter": 3, "created_unix": 1, "webauthn": {}}
+    f.write_text(json.dumps({"murmur_credentials": 1, "operators": {"op-study": {**entry, "passkeys": [key]}}}))
+    K.check_participant(f, None)
+    s = K.Stack(spec, 1, block, tmp_path, "test-run", auth="credentials", participant_credentials=f)
+    assert s.study
+    if not (REPO / "target" / "release" / "murmur-auth").exists():
+        pytest.skip("murmur-auth not built (make build)")
+    s.write_credentials()
+    stored = json.loads(s.credentials_file.read_text())
+    assert stored["operators"]["op-study"]["passkeys"] == [key], "the participant's own credential, passkeys and all"
+    assert "op-study" not in s.passwords, "no fresh passphrase: the participant has their own"
+    # a dev stack can't be a study
+    with pytest.raises(K.StackError):
+        K.Stack(spec, 1, block, tmp_path, "x", auth="dev", password_step_up="why")
 
 
 def test_run_passphrases_meet_the_password_policy():

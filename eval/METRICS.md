@@ -126,6 +126,17 @@ pooled Wilson interval then; it is never narrower than the counts allow.
 For the study arm, the unit is the participant: each participant's rate, then their mean and
 t interval (a participant is one cluster however many scenarios or seeds they play).
 
+A study run counts at all only when it is evidence about its participant
+(`metrics.auth_of`, `human_control_evidence`): a credentials run whose log replayed with its
+anchors verified, the participant (`op-study`) signed in as a person (their own password or
+passkey), and, from rules 10 (passkeys), the log naming the study (`run.started`'s roster
+`study`, its participant), no override that allowed password step-ups, and every
+consequential act of the participant's (a signature, an acceptance of a lost vehicle, a
+hostile declaration or confirmation where the policy steps them up) quoting a passkey step-up
+(`participant_steps`; a passkey registration's password is not a decision). Only the
+participant's own acts count; the scripted operators' never. A run that falls short is listed
+as excluded with what was missing; a log of earlier rules (no passkeys) is a pilot.
+
 No rate pools scenarios, and none pools the catchable and picture-wrong categories.
 
 - **Should-reject caught** = (`caught_by_rules` + `rejected_in_inbox` + `caught_by_system`
