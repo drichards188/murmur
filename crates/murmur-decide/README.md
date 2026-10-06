@@ -1302,17 +1302,21 @@ Rules versions:
   `restore.closed`, the roster's `scripted`, a track's `first_seen_t`, a `restore_owed`
   entry's `carried`, a decision's or a closure's `expended`, a failed carry's `may_owe`. Older
   carry tests are pinned to rules 10 (`tests/carried.rs`,
-  `tests/rules6.rs`). Fixtures (a clean build of `0734adb`): `tests/data/audit/
-  v12-engagement-scenario-01.jsonl` (the switchblade owed nothing after its effect, as scenario
-  80), `v12-young-track-blocks-scenario-79.jsonl`, `v12-refusal-names-queued-order-scenario-81.jsonl`,
-  `v12-restore-written-off-scenario-82.jsonl`, and three live logs with their anchors, stand-ins
-  at the Gate (`v12-carry-live-crash-1.jsonl`, `v12-carry-live-crash-2.jsonl`,
-  `v12-carry-live-after.jsonl`, `tests/data/anchors/` the same names): the bridge killed
-  (SIGKILL) twice a second after the USV's lost-link preload confirmed, each next start
-  recording the crashed log, its head and the USV's values owed in `run.started` and putting
-  them back on the same vehicle; in the last, the USV heard but its downlink cut for 150 s, an
-  orbit for it held in the queue for the values carried over and sent the second the restore
-  confirmed, then a clean stop owing nothing (see `tests/versions.rs`).
+  `tests/rules6.rs`). Fixtures (a clean build of `69c1c24`, master's rules 11 merged):
+  `tests/data/audit/v12-engagement-scenario-01.jsonl` (the switchblade owed nothing after its
+  effect, as scenario 80), `v12-young-track-blocks-scenario-79.jsonl`,
+  `v12-refusal-names-queued-order-scenario-81.jsonl`, `v12-restore-written-off-scenario-82.jsonl`,
+  and three live logs with their anchors, stand-ins at the Gate (`v12-carry-live-crash-1.jsonl`,
+  `v12-carry-live-crash-2.jsonl`, `v12-carry-live-after.jsonl`, `tests/data/anchors/` the same
+  names): the first started on an empty `.last-run` pointer (recorded as a failed carry,
+  alerted, the pointer rewritten); the bridge killed (SIGKILL) twice a second after the USV's
+  lost-link preload confirmed, each next start recording the crashed log, its head and the
+  USV's values owed in `run.started` and putting them back on the same vehicle (op-1 wrote the
+  pointer's unknown debt off in the second); in the last, the USV spawned 1.2 km away (its
+  home about 980 m from the one preloaded, as after arming elsewhere) and heard but its
+  downlink cut for 150 s, an orbit for it held in the queue for the values carried over and
+  sent the second the restore confirmed, then a clean stop owing nothing (see
+  `tests/versions.rs`).
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that

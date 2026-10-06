@@ -1110,19 +1110,24 @@ fn rechain_events(mut events: Vec<audit::Event>) -> Vec<audit::Event> {
     events
 }
 
-/// Rules 12, live (murmur-cq3, murmur-qjf), from a clean build of the rules 12 head,
-/// anchored as they ran, stand-ins at the Gate: the first of these runs (`CRASH_1`) started
-/// after a clean one and recorded it in `run.started` (its head, owing nothing); an operator's
-/// orbit took the USV near the fast boat, two signers sent it to engage, and the bridge was
-/// killed (SIGKILL) a second after the USV's lost-link preload was confirmed, its own values
-/// owed. The next run (`CRASH_2`) recorded that log in `run.started` with its head and what it
-/// owed (the USV's values, the vehicle they were preloaded on) in one line, put them back when
-/// the USV answered, engaged again the same way and was killed the same way. The last
-/// (`AFTER`) carried from it, with the USV heard but its downlink cut for 150 s: an orbit for
-/// it waited in the queue for the values carried over (the attempts unanswered), went the
-/// second the restore confirmed, and the run stopped cleanly owing nothing.
-const CRASH_1: (&str, &str) = ("v12-carry-live-crash-1.jsonl", "20261006T151152Z-2228432.jsonl");
-const CRASH_2: (&str, &str) = ("v12-carry-live-crash-2.jsonl", "20261006T151836Z-2261359.jsonl");
+/// Rules 12, live (murmur-cq3, murmur-qjf and their review), from a clean build of the rules
+/// 12 head, anchored as they ran, stand-ins at the Gate on their own ports. The first of these
+/// runs (`CRASH_1`) started on a `.last-run` pointer left empty (as a crash mid-write leaves
+/// it): it started all the same, recording the pointer as a failed carry (owed, unknown) in
+/// `run.started` and alerting; an operator's orbit took the USV near the fast boat, two
+/// signers sent it to engage, and the bridge was killed (SIGKILL) a second after the USV's
+/// lost-link preload was confirmed, its own values owed. The next run (`CRASH_2`) recorded
+/// that log in `run.started` with its head and what it owed (the USV's values, the vehicle
+/// they were preloaded on, the pointer still pending) and the pointer tried again, failed;
+/// op-1 wrote the pointer off; the values went back when the USV answered; it engaged again
+/// the same way and was killed the same way. The last (`AFTER`) carried from it with the USV
+/// spawned 1.2 km east of where it was preloaded (its home about 980 m from the one logged
+/// then, as a vehicle that armed elsewhere reports) and heard, but its downlink cut for
+/// 150 s: an orbit for it waited in the queue for the values carried over (the attempts
+/// unanswered; the home alone said nothing), went the second the restore confirmed, and the
+/// run stopped cleanly owing nothing.
+const CRASH_1: (&str, &str) = ("v12-carry-live-crash-1.jsonl", "20261006T173331Z-2705405.jsonl");
+const CRASH_2: (&str, &str) = ("v12-carry-live-crash-2.jsonl", "20261006T173940Z-2717315.jsonl");
 const AFTER: &str = "v12-carry-live-after.jsonl";
 
 #[test]
@@ -1137,21 +1142,30 @@ fn the_rules_12_live_logs_carry_across_two_crashes_in_one_line_each() {
     }
     let a = anchor::verify(&after, &anchors_of(AFTER));
     assert!(a.ok() && a.shutdown, "{:?}", a.problems);
-    // the first: its start recorded the clean run before it (owing nothing: not at hand, so
-    // reported unchecked, no mismatch); it owes the USV's values when it ends
+    // the first: started on an empty pointer, recorded as a failed carry under its own name;
+    // it owes the USV's values when it ends, and the pointer's unknown debt
+    let first = c1.lines().next().unwrap();
+    assert!(
+        first.contains("\"carried_from\":[{\"log\":\".last-run-27765\",\"error\":\"the pointer is empty"),
+        "{first}"
+    );
     let r = replay_str(&c1).unwrap();
     assert!(r.ok(), "{:?}", r.mismatches);
     assert_eq!(r.build.as_ref().map(|b| b.dirty), Some(Some(false)));
-    assert_eq!((r.carried_restores.len(), r.carried_restores[0].checked, r.carried_restores[0].restores), (1, false, 0));
-    assert_eq!(r.unrestored.len(), 1, "{:?}", r.unrestored);
+    assert_eq!(r.carried_restores.len(), 1);
+    assert!(r.carried_restores[0].failed.as_deref().is_some_and(|f| f.starts_with("the pointer is empty")), "{:?}", r.carried_restores);
+    assert_eq!(r.unrestored.len(), 2, "{:?}", r.unrestored);
     let owed = murmur_decide::replay::owed_debts(&c1);
     assert_eq!(owed.owed.len(), 1);
     assert_eq!(owed.owed[0].vehicle.as_ref().and_then(|v| v.callsign.as_deref()), Some("VIPER 1"));
-    // the second: its first line names the first log, its head and last seq, and what it owed;
-    // checked against it, put back on the same vehicle
+    assert_eq!(owed.pending, [".last-run-27765"]);
+    // the second: its first line names the first log, its head and last seq, what it owed and
+    // the pointer still pending, then the pointer, failed again; checked against the first,
+    // the values put back on the same vehicle, the pointer written off by op-1
     let (head, seq) = murmur_decide::replay::log_head(&c1).unwrap();
     let first = c2.lines().next().unwrap();
     assert!(first.contains(&format!("\"carried_from\":[{{\"log\":\"{}\",\"head\":\"{head}\",\"last_seq\":{seq},\"owed\":[{{\"uid\":\"2\"", CRASH_1.1)), "{first}");
+    assert!(first.contains("\"pending\":[\".last-run-27765\"]},{\"log\":\".last-run-27765\",\"error\":"), "{first}");
     let logs = [(CRASH_1.1, c1.as_str())];
     let opts = ReplayOptions {
         carried_logs: &logs,
@@ -1160,11 +1174,15 @@ fn the_rules_12_live_logs_carry_across_two_crashes_in_one_line_each() {
     let r = replay_str_with(&c2, &opts).unwrap();
     assert!(r.ok(), "{:?}", r.mismatches);
     assert!(r.carried_restores[0].checked && r.carried_restores[0].restores == 1, "{:?}", r.carried_restores);
+    assert_eq!(r.restores_closed.len(), 1, "{:?}", r.restores_closed);
+    assert!(r.restores_closed[0].starts_with("earlier log .last-run-27765: what it owed (its carry had failed): written off by op-1"), "{:?}", r.restores_closed);
+    assert_eq!(r.unrestored.len(), 1, "only the second engagement's values: {:?}", r.unrestored);
     assert!(c2.contains("\"type\":\"platform.restore\",\"uid\":\"2\"") && c2.contains("\"confirmed\":true"));
     assert!(!c2.contains("\"carried\":true"), "no carried events under rules 12");
     let r = replay_str(&c2).unwrap();
     assert!(whats(&r).iter().any(|w| w.contains("not verified")), "{:?}", whats(&r));
-    // the last: the orbit held for the carried values, sent only once they were back
+    // the last: the orbit held for the carried values on the same vehicle, its home moved
+    // (no other_vehicle), sent only once they were back
     let logs = [(CRASH_2.1, c2.as_str())];
     let opts = ReplayOptions {
         carried_logs: &logs,
@@ -1175,6 +1193,13 @@ fn the_rules_12_live_logs_carry_across_two_crashes_in_one_line_each() {
     assert_eq!((r.queued, r.recheck_dispatched), (1, 1));
     let ls = lines(&after);
     let queued = at(&ls, 0, &["\"type\":\"intent.queued\"", &format!("since it was carried over from {}", CRASH_2.1), "\"carried\":{"]);
+    assert!(!after.contains("\"other_vehicle\""), "the home alone says nothing");
+    let held: Event = serde_json::from_str(&ls[queued]).unwrap();
+    let EventBody::IntentQueued { inputs, .. } = &held.body else { panic!("queued") };
+    let carried = inputs.restore_owed.values().find_map(|o| o.carried.as_deref()).expect("carried");
+    let (was, now) = (carried.preloaded_on.as_ref().and_then(|v| v.home).unwrap(), carried.now.as_ref().and_then(|v| v.home).unwrap());
+    let moved = murmur_decide::geo::haversine_m(was, now);
+    assert!(moved > murmur_decide::VehicleIdentity::HOME_TOLERANCE_M, "its home moved {moved:.0} m");
     let restored = at(&ls, queued, &["\"type\":\"platform.restore\"", "\"confirmed\":true"]);
     let sent = at(&ls, queued, &["\"type\":\"intent.dispatched\"", "\"kind\":\"orbit\""]);
     assert!(restored < sent, "its own values back at {restored}, the orbit sent at {sent}");
@@ -1195,6 +1220,20 @@ fn the_rules_12_live_logs_carry_across_two_crashes_in_one_line_each() {
     let r = replay_str_with(&rechain(&other), &opts).unwrap();
     let w = whats(&r);
     assert!(w.iter().any(|m| m.contains("the log given is not the one carried over from")), "{w:?}");
+    // and the held decision forged to say another vehicle (on the moved home, as rules 12
+    // before its review judged it): caught against the identities it logged
+    let mut forged: Vec<Event> = ls.iter().map(|l| serde_json::from_str(l).unwrap()).collect();
+    if let EventBody::IntentQueued { inputs, .. } = &mut forged[queued].body {
+        for o in inputs.restore_owed.values_mut() {
+            if let Some(c) = o.carried.as_deref_mut() {
+                c.other_vehicle = Some(format!("its home is {moved:.0} m from the one preloaded"));
+            }
+        }
+    }
+    let forged: Vec<String> = rechain_events(forged).iter().map(|e| serde_json::to_string(e).unwrap()).collect();
+    let r = replay_str_with(&forged.join("\n"), &opts).unwrap();
+    let w = whats(&r);
+    assert!(w.iter().any(|m| m.contains("lost-link values owed back differ from the log's ledger")), "{w:?}");
 }
 
 #[test]
