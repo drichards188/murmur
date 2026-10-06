@@ -698,6 +698,16 @@ impl SpaceAnswer {
         Ok(sha256_hex(serde_json::to_string(self)?.as_bytes()))
     }
 
+    /// The same question answered the same way (the query, the time map and the result; the
+    /// segment's identity is compared on its own, since a logged one may predate the pin
+    /// being part of it).
+    pub fn same_answer(&self, other: &SpaceAnswer) -> bool {
+        let part = |a: &SpaceAnswer| {
+            serde_json::to_string(&(&a.query, &a.time_map, &a.result)).ok()
+        };
+        part(self).is_some() && part(self) == part(other)
+    }
+
     pub fn tasking(&self) -> Option<&TaskingResult> {
         match &self.result {
             SpaceResult::Tasking(r) => Some(r),

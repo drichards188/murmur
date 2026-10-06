@@ -5530,7 +5530,7 @@ fn recompute_space(
     }
     r.space_recomputed += 1;
     match oracle.answer(&logged.query) {
-        Ok(again) if again == *logged => {}
+        Ok(again) if again.same_answer(logged) => {}
         Ok(again) => bad(
             r,
             e,
