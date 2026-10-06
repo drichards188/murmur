@@ -36,7 +36,8 @@ function firstFail(checks: Check[]) {
   return checks.find((c) => c.outcome !== 'pass')
 }
 
-/** One line for an option a keep-out blocks: the worst item and the closer hint. */
+/** One line for an option a keep-out blocks: the worst item and where the platform would
+ *  let every keep-out hold, on the picture now. */
 function keepOutLine(o: EngageOption) {
   const ex = o.keep_outs
   const worst = ex?.items.find((i) => i.blocks)
@@ -44,8 +45,14 @@ function keepOutLine(o: EngageOption) {
   const kind = worst.region ? KEEP_OUT_KIND_LABEL[worst.region.kind] : 'cannot be placed'
   const short = worst.short_m != null ? `, short ${fmtDist(worst.short_m)}` : ''
   const mw = ex.move_within
-  const closer = mw?.possible && mw.within_m != null ? `; clears within ${fmtDist(mw.within_m)}` : ''
-  return `keep-out: ${worst.id} ${kind}${short}${closer}`
+  const band = mw?.windows.find((w) => w.from_m != null && w.until_m != null)
+  const where =
+    mw?.within_m != null
+      ? `; every keep-out holds within ${fmtDist(mw.within_m)} (on the picture now)`
+      : band && band.from_m != null && band.until_m != null
+        ? `; every keep-out holds ${fmtDist(band.from_m)} to ${fmtDist(band.until_m)} out (on the picture now)`
+        : ''
+  return `keep-out: ${worst.label} ${kind}${short}${where}`
 }
 
 export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepOuts, onNominated, onClose }: Props) {

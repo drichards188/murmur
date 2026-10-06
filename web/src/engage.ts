@@ -217,17 +217,24 @@ export interface KeepOutExplanation {
   t: number
   track: string
   platform: string | null
+  /** the platform by its callsign */
+  platform_name: string | null
   effect_point: LngLat
   effect_t: number
   effect_radius_m: number
   /** every region must stay this far from the effect point: effect radius plus keep-out */
   clearance_m: number
   blocked: boolean
+  /** how many block in all (`items` lists at most twelve) */
+  blocking: number
   /** the keep-out checks themselves on this snapshot */
   checks: Check[]
   /** blocking first (largest shortfall first), then those that nearly block */
   items: KeepOutItem[]
-  /** for the platform: how close it would need to be (on the picture now) */
+  /** items not listed */
+  omitted: number
+  /** for the platform: which effect times (and distances) let every keep-out hold, on the
+   *  picture now */
   move_within: MoveWithin | null
   /** the first nomination time at which every keep-out would hold, if everything keeps
    *  behaving as now; else `wait_none` says why not */
@@ -278,13 +285,30 @@ export interface KeepOutItem {
   manoeuvring_now: boolean | null
   /** same picture: every effect from the earliest up to this time leaves it clear */
   fits_until_t: number | null
+  /** same picture: the stretches of effect times at which it is clear */
+  clear_windows: EffectWindow[]
   wait: KeepOutWait | null
   not_by_waiting: string | null
   other: string | null
 }
 
+/** A stretch of effect times (engine ms); for a holding target, the platform's distances
+ *  from it that make an effect then. */
+export interface EffectWindow {
+  from_t: number
+  until_t: number
+  from_m: number | null
+  until_m: number | null
+}
+
 export interface MoveWithin {
   possible: boolean
+  /** the earliest effect any position allows, and the latest a nomination allows */
+  earliest_t: number
+  latest_t: number
+  /** the stretches of effect times at which every keep-out holds */
+  windows: EffectWindow[]
+  /** the first window, when it starts at the earliest: within `within_m` of `point` */
   effect_by_t: number | null
   point: LngLat | null
   within_m: number | null

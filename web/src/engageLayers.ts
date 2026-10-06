@@ -144,6 +144,9 @@ interface Label {
   at: LngLat
   text: string
   color: RGBA
+  /** the platform's labels sit centred below their ring, clear of the nomination's label
+   *  (above right of the effect point) and the tracks' (right of each track) */
+  below?: boolean
 }
 
 /** The nomination form's keep-out explanation on the map: for each track or vehicle of ours
@@ -175,14 +178,26 @@ export function buildKeepOutLayers(ex: KeepOutExplanation, platformName: string)
       marks.push({ at: i.now, color })
       const kind = r ? KEEP_OUT_KIND_LABEL[r.kind] : 'cannot be placed'
       const num = i.short_m == null ? '' : i.blocks ? ` · short ${fmtDist(i.short_m)}` : ` · clear by ${fmtDist(-i.short_m)}`
-      labels.push({ at: i.now, text: `${i.id} ${kind}${num}`, color: i.blocks ? [255, 211, 154, 255] : [200, 208, 216, 255] })
+      const who = i.subject === 'vehicle' ? i.label : i.id
+      labels.push({ at: i.now, text: `${who} ${kind}${num}`, color: i.blocks ? [255, 211, 154, 255] : [200, 208, 216, 255] })
     }
   }
   const mw = ex.blocked ? ex.move_within : null
+  const blue: RGBA = [170, 205, 255, 255]
   if (mw?.possible && mw.point && mw.within_m != null) {
     for (const d of dashedRing(mw.point, mw.within_m, 40)) paths.push({ path: d, color: a(OURS, 0.95), width: 2 })
-    // at the ring's south point, clear of the track labels near the target
-    labels.push({ at: circle(mw.point, mw.within_m, 4)[2], text: `${platformName} within ${fmtDist(mw.within_m)}`, color: [170, 205, 255, 255] })
+    labels.push({ at: circle(mw.point, mw.within_m, 4)[2], text: `${platformName} within ${fmtDist(mw.within_m)}`, color: blue, below: true })
+  }
+  // a holding target and a band farther out (no closer position): its two rings
+  const band = mw?.possible && mw.holding && mw.within_m == null ? mw.windows.find((w) => w.from_m != null && w.until_m != null) : undefined
+  if (band && band.from_m != null && band.until_m != null) {
+    for (const r of [band.from_m, band.until_m]) for (const d of dashedRing(ex.effect_point, r, 40)) paths.push({ path: d, color: a(OURS, 0.7), width: 1.5 })
+    labels.push({
+      at: circle(ex.effect_point, band.until_m, 4)[2],
+      text: `${platformName} ${fmtDist(band.from_m)} to ${fmtDist(band.until_m)} out`,
+      color: blue,
+      below: true,
+    })
   }
   return [
     new PolygonLayer<{ ring: LngLat[]; color: RGBA }>({
@@ -223,9 +238,9 @@ export function buildKeepOutLayers(ex: KeepOutExplanation, platformName: string)
       getText: (l) => l.text,
       getSize: 11,
       getColor: (l) => l.color,
-      getTextAnchor: 'start',
+      getTextAnchor: (l) => (l.below ? 'middle' : 'start'),
       getAlignmentBaseline: 'top',
-      getPixelOffset: [12, 6],
+      getPixelOffset: (l) => (l.below ? [0, 10] : [12, 6]),
       fontFamily: FONT,
       fontWeight: 600,
       outlineWidth: 3,
