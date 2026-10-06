@@ -82,7 +82,9 @@
 //!    engagement authority, [`Roster::with_auth`]`(AuthMode::Credentials)`; a dev run:
 //!    `MURMUR_OPERATORS`, and `MURMUR_ENGAGE_OPERATORS`, who must be operators too:
 //!    [`Roster::new`] refuses otherwise, and the bridge does not start). Create the
-//!    engine with [`Engine::with_areas`] (policy, the area set, the roster, [`SystemClock`],
+//!    engine with [`Engine::with_areas`] (policy, the area set, the roster, a [`Clock`] that
+//!    never steps and stamps the facts too (the bridge's: the wall clock at its start plus
+//!    monotonic time; [`SystemClock`] reads the wall clock, which can step),
 //!    a [`JsonlFile`] at `logs/audit/<run-id>.jsonl`), so `run.started` carries the area set
 //!    and its hash and the roster. Pass the same set in every snapshot; a different one is
 //!    logged once as `areas.loaded`. Sessions open only for operators on the roster

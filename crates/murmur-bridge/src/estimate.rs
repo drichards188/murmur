@@ -88,10 +88,10 @@ pub type LngLat = [f64; 2];
 /// What the console draws and the details card explains.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Estimate {
-    /// When the model starts (wall clock, s): the last position report, or a drift track's
+    /// When the model starts (the bridge's clock, s): the last position report, or a drift track's
     /// last step. `dt` counts from it.
     pub t0: f64,
-    /// The last report the estimate rests on: the link's last packet (wall clock, s). The
+    /// The last report the estimate rests on: the link's last packet (the bridge's clock, s). The
     /// silence is counted from here, whatever the model's start.
     pub since_t: f64,
     /// orbit | patrol | hold | rtl | velocity | stationary

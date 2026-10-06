@@ -359,7 +359,7 @@ pub struct Sample {
     pub groundspeed: Option<f64>,
     pub battery_pct: Option<i8>,
     pub gps_fix: u8,
-    /// wall-clock seconds of the last packet from the vehicle
+    /// the last packet from the vehicle (the bridge's clock, s)
     pub last_rx: Option<f64>,
     pub loss_pct: Option<i64>,
     pub rtt_ms: Option<i64>,
@@ -411,7 +411,8 @@ pub fn type_for(s: &Sample) -> String {
         .unwrap_or_else(|| fallback_type(s.domain.as_deref(), s.kind.as_deref()))
 }
 
-/// One CoT event as XML. `now` is wall seconds; `period` the steady update interval.
+/// One CoT event as XML. `now` is its date (the wall clock, s); `period` the steady update
+/// interval.
 pub fn build_event(cfg: &CotConfig, s: &Sample, now: f64, period: f64) -> String {
     let uid = uid_for(cfg, s.uid);
     let callsign = s

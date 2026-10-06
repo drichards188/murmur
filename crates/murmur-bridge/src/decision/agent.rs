@@ -26,7 +26,7 @@ const RECENT_EVENTS: usize = 500;
 /// A vehicle event the audit log recorded (`vehicle.event`), kept for `get_recent_events`.
 #[derive(Clone, Debug, Serialize)]
 pub struct RecentEvent {
-    /// Wall-clock seconds when the bridge logged it.
+    /// When the bridge logged it (the bridge's clock, s).
     pub t: f64,
     pub uid: Uid,
     pub callsign: Option<String>,

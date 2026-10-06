@@ -490,7 +490,8 @@ group. Dates are 2026.
   each fix by its arrival, so at every step it predicted 0.06 s of motion where the contact
   had moved a second; with AIS velocity known to 0.3 m/s the stiff steady model then stayed
   metres off for many seconds while its sigma said 1.5 m. Fixes are now dated by the truth
-  message's own clock (`Detection::measured_t`; staleness still reads the wall clock); a test
+  message's own clock (`Detection::measured_t`; staleness reads the bridge's clock, which no
+  longer steps either: murmur-dup, under Engineering); a test
   reproduces the steps (dated by arrival: NEES 21.7, 5% within two sigmas; by the message: honest).
   Live with it (dev run, 7 minutes after a minute's settling, 2099 samples): every contact 93
   to 99% within two sigmas, NEES 0.84 to 1.55 (the cutter 92.9%, 1.55; the AIS ferry 99.3%).
@@ -674,6 +675,52 @@ group. Dates are 2026.
 
 ## Engineering
 
+- **The bridge keeps one clock that never steps; the wall clock only dates what another
+  clock reads** (10-05, murmur-dup). On this host (WSL) the wall clock steps back about
+  0.65 s every 32 s (measured on a fresh boot, 5 steps in 160 s; 0.94 s on an earlier one)
+  because the monotonic clock runs 2.1 % fast against the Windows host's (90.2 s against
+  88.4 s) and time sync pulls the wall clock back to the host's; NTP or a resumed virtual
+  machine can step a wall clock either way. The bridge stamped every fact with the wall
+  clock and gave the engine the wall clock, so every age, expiry and window decided on moved
+  with a step, and tests that step the wall clock showed it: an hour forward voided a waiting
+  intent ("no heartbeat for 3600 s"); 120 s forward rejected an order (its navigation status
+  "120.0 s old"); 30 s forward expired a signer's picture token and aborted an engagement on
+  `picture_gap`; 300 s forward dropped every track; 0.94 s back left a vehicle silent past
+  its limit unvoided and put the picture's time before a track's last fix, so a 20 m/s boat
+  was predicted back along its course; and anchor files, timed by the wall clock, failed
+  their own order check ("anchors out of order") when two anchors less than a step apart
+  straddled one, so a genuine log could fail `murmur-replay --anchors`. Decided: `clock::wall`
+  is the wall clock at its first read plus monotonic time since, and the engine reads it
+  (`clock::BridgeClock`); durations and timeouts stay on the monotonic clock (as they were:
+  TIMESYNC round trips, the GCS heartbeat thread, the decision tick, sessions and locks,
+  restore backoff, telemetry re-sends); the wall clock itself (`clock::utc`) dates only what
+  another clock reads: CoT events (a TAK client compares them with its own), inbound CoT stale
+  times, the resume pointer the next run reads, the run id. Anchors are timed on the log's
+  clock and never earlier than the one before. Without `MURMUR_AT` the link emulator's
+  scenario clock is the wall clock at its start plus elapsed seconds too (it read the wall
+  clock for every satellite sample). Why the monotonic rate, not one slewed to follow the wall
+  clock: the stand-ins, the contacts process and the emulator all run their scenario clocks
+  on monotonic time, so the bridge's ages and predictions are in the world's own seconds, and
+  replay, which sees only logged times, sees the durations decided on. Cost, stated: where a
+  host's clocks disagree the log's times part from UTC at that rate (here about 75 s an hour);
+  the console takes its offset from the bridge's messages; the evaluation's truth samples and
+  storyline are dated by Python's wall clock, so on this host they part from the log by 2.1 %
+  of a run's length (the emulator's cut windows, monotonic, parted the same way from the old
+  log). Not a rules change: no rule changed and replay recomputes the same decisions from the
+  logged times whichever clock wrote them; the engine never logs a time earlier than the last
+  one, so even a clock stepping back leaves a log in order and replayed (every scenario, on
+  clocks stepping back 1.5 s every 32 s and 3 s every 5 s), though each step would have moved
+  the waits it decided on (scenario 69's human approval held about 6 s longer).
+- **Tests do not depend on when they run or how loaded the host is** (10-05, murmur-ek3).
+  The bridge's rigs start at a fixed instant (2026-06-14T10:00:00Z) and stamp the vehicles'
+  facts on the engine's clock, the test's manual one or the bridge's own pinned to that start
+  in a paused runtime (`clock::test_clock`, per thread); before, facts were stamped by the
+  wall clock while the engine ran on the test's clock, and the sensing model's noise followed
+  the second a test started in. The stand-ins' tests draw from a fixed seed
+  (`Vehicle::seeded`; the AUV drift test drew under 1 m of error in 7 of 400 runs seeded from
+  the wall clock), read what a stepped vehicle sent from its link (`Link::capture`), not a
+  loopback socket, and their GCS reads a running vehicle's frames in its MAVLink sequence
+  order (a loaded host's loopback delivered a refusal's text after its ACK).
 - **The engagement chain is in the engine, as pure functions of logged inputs** (10-03,
   Phase E). Checks, preview, snapshot, picture watch, release, observation and assessment
   live in `murmur-decide` (`engage.rs`) and every result is logged with its inputs, so

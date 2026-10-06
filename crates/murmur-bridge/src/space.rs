@@ -3,7 +3,8 @@
 //!
 //! Times in and out are scenario time: the scenario clock reads `MURMUR_AT` when the bridge
 //! starts and runs at `MURMUR_RATE` (the stand-ins' convention); without `MURMUR_AT` it is
-//! the wall clock. Every response carries the `time_map` and `time_shifted`: element sets are
+//! the bridge's clock (`clock::wall`: the wall clock at the start plus monotonic time, as the
+//! engine reads). Every response carries the `time_map` and `time_shifted`: element sets are
 //! current while scenarios are dated, so orbits are propagated a whole number of days later
 //! (see crates/murmur-space/README.md, "Epoch honesty"). The shift is pinned for the session
 //! so that every view describes the same propagation day.
@@ -53,8 +54,8 @@ const FETCH_HINT: &str = "fetch the element sets once with `cargo run -p murmur-
 
 // ------------------------------------------------------------------ scenario clock
 
-/// `MURMUR_AT` + elapsed x `MURMUR_RATE`, else the wall clock. Elapsed is wall-clock time
-/// since the bridge started, the clock the decision engine runs on, so the scenario clock is
+/// `MURMUR_AT` + elapsed x `MURMUR_RATE`, else the bridge's clock. Elapsed is the bridge's
+/// clock since it started, the clock the decision engine runs on, so the scenario clock is
 /// exactly the [`ScenarioMap`] the engine's space segment gets ([`ScenarioClock::map`]): a
 /// rate other than 1 is a linear map, not a fixed offset.
 #[derive(Debug, Clone)]

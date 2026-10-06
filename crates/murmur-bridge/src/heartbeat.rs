@@ -55,7 +55,8 @@ pub fn gcs_heartbeat() -> MavMessage {
 /// One minute of rounds.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
 pub struct Minute {
-    /// Wall clock (s since the epoch) when the minute closed; for the open one, its last round.
+    /// The bridge's clock (s since the epoch) when the minute closed; for the open one, its last
+    /// round.
     pub t: f64,
     pub rounds: u32,
     /// Rounds skipped: the thread woke after the next one was already due.

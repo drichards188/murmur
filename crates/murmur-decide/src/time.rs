@@ -43,7 +43,9 @@ pub trait Clock {
     fn now(&self) -> Time;
 }
 
-/// Wall-clock time, for the live bridge.
+/// The wall clock. It can step (NTP, a resumed virtual machine, this WSL host back about
+/// 0.65 s every 32 s), so the live bridge gives the engine a clock of its own that never does
+/// (`clock::BridgeClock` in murmur-bridge, murmur-dup).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemClock;
 

@@ -1,5 +1,6 @@
 //! The world model as the decision layer sees it: a [`WorldSnapshot`] keyed by uid, each
-//! fact stamped with when the message carrying it arrived, unknown left `None`.
+//! fact stamped with when the message carrying it arrived (on the bridge's clock, which the
+//! engine reads too), unknown left `None`.
 
 use murmur_decide::{
     AreaSet, AutopilotKind, Catalog, Circle, CircleSource, Fact, GpsFixFrom, LonLat, Time,
@@ -20,7 +21,8 @@ pub fn bridge_uid(uid: &DUid) -> Option<Uid> {
     uid.as_str().parse().ok()
 }
 
-/// Wall-clock seconds to the engine's integer milliseconds.
+/// The bridge's clock's seconds (`clock::wall`, the engine's clock) to the engine's integer
+/// milliseconds.
 pub fn ms(wall_s: f64) -> Time {
     Time((wall_s * 1000.0).round() as i64)
 }

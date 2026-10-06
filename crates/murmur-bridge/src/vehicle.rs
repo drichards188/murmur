@@ -209,7 +209,7 @@ pub struct Vehicle {
     /// distance from the position then): the loiter center in LOITER, home or a rally point
     /// in RTL. Stamped `seen.nav_target`.
     pub nav_target: Option<(f64, f64)>,
-    /// When the mode last changed (wall clock, s): a navigation target reported before it
+    /// When the mode last changed (the bridge's clock, s): a navigation target reported before it
     /// belongs to the previous mode (the last AUTO waypoint, say).
     pub mode_since: Option<f64>,
     /// The GPS fix comes from a HIGH_LATENCY2 report (which carries no fix type: without
@@ -218,7 +218,7 @@ pub struct Vehicle {
     fix_since: Option<f64>,
     /// the telemetry plan went out at least once
     pub rates_sent: bool,
-    /// When each fact the decision layer reads last arrived (wall clock, seconds): every
+    /// When each fact the decision layer reads last arrived (the bridge's clock, `clock::wall`, s): every
     /// fact in a decision's world snapshot carries its age.
     pub seen: FactTimes,
     /// Events for the audit log (`vehicle.event`), oldest first.
@@ -228,7 +228,7 @@ pub struct Vehicle {
     /// tells a lost link mid-exchange from a vehicle that refuses.
     pub heard_mono: Option<f64>,
     /// The last time since boot it reported (ms: GLOBAL_POSITION_INT, ATTITUDE, SYSTEM_TIME,
-    /// HIGH_LATENCY2), when it booted by that (wall s, estimated once: the arrival time less
+    /// HIGH_LATENCY2), when it booted by that (the bridge's clock, s, estimated once: the arrival time less
     /// the time since boot) and how many reboots the bridge has seen (each one: the time since
     /// boot went back). An op started before a reboot is over: the vehicle lost the mode and
     /// armed state its order set.
@@ -243,7 +243,7 @@ pub struct Vehicle {
     boot_heard_mono: Option<f64>,
 }
 
-/// Arrival times (wall clock, seconds) of the messages behind each decision fact.
+/// Arrival times (the bridge's clock, `clock::wall`, s) of the messages behind each decision fact.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct FactTimes {
     /// autopilot HEARTBEAT (kind, mode)
@@ -281,7 +281,7 @@ pub struct LoiterCircle {
     pub radius_m: f64,
     /// circling in RTL (else LOITER)
     pub rtl: bool,
-    /// when the center was reported (wall clock, s)
+    /// when the center was reported (the bridge's clock, s)
     pub center_t: f64,
 }
 
@@ -294,7 +294,7 @@ pub struct VehicleEvent {
 }
 
 /// A reboot the bridge saw: the time since boot before and after (ms), the new boot instant
-/// and the one before (wall s). Logged as `vehicle.rebooted` by the decision loop.
+/// and the one before (the bridge's clock, s). Logged as `vehicle.rebooted` by the decision loop.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Reboot {
     pub boot_ms_before: u64,
