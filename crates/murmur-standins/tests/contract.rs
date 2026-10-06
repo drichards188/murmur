@@ -36,6 +36,9 @@ struct Gcs {
     next: Option<u8>,
     /// frames that came ahead of it, by sequence number, and when each arrived
     held: std::collections::BTreeMap<u8, (Vec<u8>, Instant)>,
+    /// a test of losses: (message id, n): the frame of that id after the next n is lost on
+    /// the way
+    drop_once: Option<(u32, u32)>,
 }
 
 impl Gcs {
@@ -82,10 +85,18 @@ impl Gcs {
                 None => self.sock.recv(&mut buf).await.expect("recv"),
             };
             let frame = buf[..n].to_vec();
-            // MAVLink 2: STX, length, flags, flags, sequence, ...
+            // MAVLink 2: STX, length, flags, flags, sequence, system, component, message id
             let Some(&seq) = frame.get(4).filter(|_| frame[0] == mavlink::MAV_STX_V2) else {
                 return frame;
             };
+            if let (Some((id, n)), Some(b)) = (self.drop_once, frame.get(7..10))
+                && u32::from_le_bytes([b[0], b[1], b[2], 0]) == id
+            {
+                self.drop_once = n.checked_sub(1).map(|n| (id, n));
+                if n == 0 {
+                    continue;
+                }
+            }
             match self.next {
                 Some(want) if seq != want && seq.wrapping_sub(want) < 128 => {
                     // ahead of one sent before it: wait for that one
@@ -119,16 +130,29 @@ impl Gcs {
     }
 
     /// Everything that arrives for `secs`.
+    /// Everything that arrives for `secs`: frames still held at the end for an earlier one
+    /// (lost, or late) came inside the window too, and count, in the vehicle's order.
     async fn collect(&mut self, secs: f64) -> Vec<MavMessage> {
         let end = Instant::now() + Duration::from_secs_f64(secs);
-        let mut out = Vec::new();
+        let mut frames = Vec::new();
         while let Ok(d) = tokio::time::timeout_at(end, self.raw()).await {
-            let mut r = PeekReader::new(&d[..]);
-            if let Ok((_, m)) = mavlink::read_v2_msg::<MavMessage, _>(&mut r) {
-                out.push(m);
-            }
+            frames.push(d);
         }
-        out
+        let want = self.next.unwrap_or(0);
+        let mut held: Vec<(u8, Vec<u8>)> = std::mem::take(&mut self.held)
+            .into_iter()
+            .map(|(seq, (f, _))| (seq, f))
+            .collect();
+        held.sort_by_key(|(seq, _)| seq.wrapping_sub(want));
+        if let Some((last, _)) = held.last() {
+            self.next = Some(last.wrapping_add(1));
+        }
+        frames.extend(held.into_iter().map(|(_, f)| f));
+        frames
+            .iter()
+            .filter_map(|d| mavlink::read_v2_msg::<MavMessage, _>(&mut PeekReader::new(&d[..])).ok())
+            .map(|(_, m)| m)
+            .collect()
     }
 
     async fn command(&mut self, command: MavCmd, p: [f32; 3]) -> MavResult {
@@ -243,6 +267,7 @@ async fn start(spec: Spec, alt: f64) -> Gcs {
         seq: 0,
         next: None,
         held: Default::default(),
+        drop_once: None,
     }
 }
 
@@ -379,6 +404,28 @@ async fn message_rates_follow_set_message_interval() {
     );
     let after = g.collect(1.5).await;
     assert_eq!(count(&after, AUTOPILOT_VERSION_DATA::ID), 1);
+}
+
+/// A datagram lost on the way holds back none of the frames after it past the window they
+/// came in: the GCS reads in the vehicle's order, and what waited for the lost frame is
+/// counted with the window (review of 9ab8089: one lost GLOBAL_POSITION_INT left 7 to 11 of
+/// the 15 a 5 Hz stream sends in 3 s).
+#[tokio::test]
+async fn a_lost_frame_holds_back_nothing_past_its_window() {
+    let mut g = start(spec("boat"), 0.0).await;
+    let gpi = GLOBAL_POSITION_INT_DATA::ID;
+    let set = MavCmd::MAV_CMD_SET_MESSAGE_INTERVAL;
+    assert_eq!(
+        g.command(set, [gpi as f32, 200_000.0, 0.0]).await,
+        MavResult::MAV_RESULT_ACCEPTED
+    );
+    let _ = g.collect(0.5).await;
+    // the eighth of the window's, 1.6 s in: what came after it was still held at the end
+    g.drop_once = Some((gpi, 7));
+    let five_hz = g.collect(3.0).await;
+    let n = count(&five_hz, gpi);
+    assert!((12..=17).contains(&n), "5 Hz for 3 s, one lost: {n}");
+    assert!(g.drop_once.is_none(), "one was lost");
 }
 
 #[tokio::test]
