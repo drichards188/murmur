@@ -1154,11 +1154,17 @@ Rules versions:
   Markers (a log claiming rules 10 or older can't carry them): `carried_from`,
   `restore.closed`, the roster's `scripted`, a track's `first_seen_t`, a `restore_owed`
   entry's `carried`. Older carry tests are pinned to rules 10 (`tests/carried.rs`,
-  `tests/rules6.rs`). Fixtures: `tests/data/audit/v11-engagement-scenario-01.jsonl` (the
-  switchblade owed nothing after its effect), `v11-young-track-blocks-scenario-79.jsonl`,
-  `v11-expended-munition-scenario-80.jsonl`, `v11-refusal-names-queued-order-scenario-81.jsonl`,
-  `v11-restore-written-off-scenario-82.jsonl`, and a live run across a crash with its anchors
-  (see `tests/versions.rs`).
+  `tests/rules6.rs`). Fixtures (a clean build of `0734adb`): `tests/data/audit/
+  v11-engagement-scenario-01.jsonl` (the switchblade owed nothing after its effect, as scenario
+  80), `v11-young-track-blocks-scenario-79.jsonl`, `v11-refusal-names-queued-order-scenario-81.jsonl`,
+  `v11-restore-written-off-scenario-82.jsonl`, and three live logs with their anchors, stand-ins
+  at the Gate (`v11-carry-live-crash-1.jsonl`, `v11-carry-live-crash-2.jsonl`,
+  `v11-carry-live-after.jsonl`, `tests/data/anchors/` the same names): the bridge killed
+  (SIGKILL) twice a second after the USV's lost-link preload confirmed, each next start
+  recording the crashed log, its head and the USV's values owed in `run.started` and putting
+  them back on the same vehicle; in the last, the USV heard but its downlink cut for 150 s, an
+  orbit for it held in the queue for the values carried over and sent the second the restore
+  confirmed, then a clean stop owing nothing (see `tests/versions.rs`).
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that

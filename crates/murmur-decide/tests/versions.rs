@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 36] = [
+const LOGS: [(&str, u32); 35] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -106,12 +106,12 @@ const LOGS: [(&str, u32); 36] = [
     ("v10-passkeys-live.jsonl", PASSKEY_SINCE),
     // rules 11 (the reviews' follow-ups; the table names the constant): the same scenario, its
     // switchblade spent by its effect and owed nothing back after the release (restore.closed,
-    // expended); scenario 79, a young track blocking by its reach until the tracker has its
-    // average velocity; 80, the expended munition; 81, a refused orbit naming the older hold
-    // still queued; 82, an operator writing off values that will never be confirmed back
+    // expended, as scenario 80); scenario 79, a young track blocking by its reach until the
+    // tracker has its average velocity; 81, a refused orbit naming the older hold still queued;
+    // 82, an operator writing off values that will never be confirmed back. The live logs,
+    // across two crashes, are checked against each other below
     ("v11-engagement-scenario-01.jsonl", REVIEW_FOLLOWUPS_SINCE),
     ("v11-young-track-blocks-scenario-79.jsonl", REVIEW_FOLLOWUPS_SINCE),
-    ("v11-expended-munition-scenario-80.jsonl", REVIEW_FOLLOWUPS_SINCE),
     ("v11-refusal-names-queued-order-scenario-81.jsonl", REVIEW_FOLLOWUPS_SINCE),
     ("v11-restore-written-off-scenario-82.jsonl", REVIEW_FOLLOWUPS_SINCE),
 ];
@@ -1098,6 +1098,93 @@ fn rechain_events(mut events: Vec<audit::Event>) -> Vec<audit::Event> {
         prev = murmur_decide::hash::sha256_hex(serde_json::to_string(&*e).unwrap().as_bytes());
     }
     events
+}
+
+/// Rules 11, live (murmur-cq3, murmur-qjf), from a clean build of the rules 11 head,
+/// anchored as they ran, stand-ins at the Gate: the first of these runs (`CRASH_1`) started
+/// after a clean one and recorded it in `run.started` (its head, owing nothing); an operator's
+/// orbit took the USV near the fast boat, two signers sent it to engage, and the bridge was
+/// killed (SIGKILL) a second after the USV's lost-link preload was confirmed, its own values
+/// owed. The next run (`CRASH_2`) recorded that log in `run.started` with its head and what it
+/// owed (the USV's values, the vehicle they were preloaded on) in one line, put them back when
+/// the USV answered, engaged again the same way and was killed the same way. The last
+/// (`AFTER`) carried from it, with the USV heard but its downlink cut for 150 s: an orbit for
+/// it waited in the queue for the values carried over (the attempts unanswered), went the
+/// second the restore confirmed, and the run stopped cleanly owing nothing.
+const CRASH_1: (&str, &str) = ("v11-carry-live-crash-1.jsonl", "20261006T151152Z-2228432.jsonl");
+const CRASH_2: (&str, &str) = ("v11-carry-live-crash-2.jsonl", "20261006T151836Z-2261359.jsonl");
+const AFTER: &str = "v11-carry-live-after.jsonl";
+
+#[test]
+fn the_rules_11_live_logs_carry_across_two_crashes_in_one_line_each() {
+    let (c1, c2, after) = (fixture(CRASH_1.0), fixture(CRASH_2.0), fixture(AFTER));
+    // both crashed: anchored up to their last decision, no shutdown anchor; the last stopped
+    // cleanly
+    for (name, text) in [(CRASH_1.0, &c1), (CRASH_2.0, &c2)] {
+        let a = anchor::verify(text, &anchors_of(name));
+        assert!(!a.shutdown, "{name}");
+        assert!(a.problems.iter().all(|p| p.what.starts_with("no shutdown anchor")), "{name}: {:?}", a.problems);
+    }
+    let a = anchor::verify(&after, &anchors_of(AFTER));
+    assert!(a.ok() && a.shutdown, "{:?}", a.problems);
+    // the first: its start recorded the clean run before it (owing nothing: not at hand, so
+    // reported unchecked, no mismatch); it owes the USV's values when it ends
+    let r = replay_str(&c1).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert_eq!(r.build.as_ref().map(|b| b.dirty), Some(Some(false)));
+    assert_eq!((r.carried_restores.len(), r.carried_restores[0].checked, r.carried_restores[0].restores), (1, false, 0));
+    assert_eq!(r.unrestored.len(), 1, "{:?}", r.unrestored);
+    let owed = murmur_decide::replay::owed_debts(&c1);
+    assert_eq!(owed.owed.len(), 1);
+    assert_eq!(owed.owed[0].vehicle.as_ref().and_then(|v| v.callsign.as_deref()), Some("VIPER 1"));
+    // the second: its first line names the first log, its head and last seq, and what it owed;
+    // checked against it, put back on the same vehicle
+    let (head, seq) = murmur_decide::replay::log_head(&c1).unwrap();
+    let first = c2.lines().next().unwrap();
+    assert!(first.contains(&format!("\"carried_from\":[{{\"log\":\"{}\",\"head\":\"{head}\",\"last_seq\":{seq},\"owed\":[{{\"uid\":\"2\"", CRASH_1.1)), "{first}");
+    let logs = [(CRASH_1.1, c1.as_str())];
+    let opts = ReplayOptions {
+        carried_logs: &logs,
+        ..ReplayOptions::default()
+    };
+    let r = replay_str_with(&c2, &opts).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert!(r.carried_restores[0].checked && r.carried_restores[0].restores == 1, "{:?}", r.carried_restores);
+    assert!(c2.contains("\"type\":\"platform.restore\",\"uid\":\"2\"") && c2.contains("\"confirmed\":true"));
+    assert!(!c2.contains("\"carried\":true"), "no carried events under rules 11");
+    let r = replay_str(&c2).unwrap();
+    assert!(whats(&r).iter().any(|w| w.contains("not verified")), "{:?}", whats(&r));
+    // the last: the orbit held for the carried values, sent only once they were back
+    let logs = [(CRASH_2.1, c2.as_str())];
+    let opts = ReplayOptions {
+        carried_logs: &logs,
+        ..ReplayOptions::default()
+    };
+    let r = replay_str_with(&after, &opts).unwrap();
+    assert!(r.ok() && r.unrestored.is_empty(), "{:?} {:?}", r.mismatches, r.unrestored);
+    assert_eq!((r.queued, r.recheck_dispatched), (1, 1));
+    let ls = lines(&after);
+    let queued = at(&ls, 0, &["\"type\":\"intent.queued\"", &format!("since it was carried over from {}", CRASH_2.1), "\"carried\":{"]);
+    let restored = at(&ls, queued, &["\"type\":\"platform.restore\"", "\"confirmed\":true"]);
+    let sent = at(&ls, queued, &["\"type\":\"intent.dispatched\"", "\"kind\":\"orbit\""]);
+    assert!(restored < sent, "its own values back at {restored}, the orbit sent at {sent}");
+    assert!(ls[..restored].iter().any(|l| l.contains("\"type\":\"platform.restore\"") && l.contains("\"error\":")), "attempts unanswered while the downlink was cut");
+    // forgery C3 on the live log: the carry emptied, or another log's head, caught against
+    // the crashed log (each re-chained, consistent on its own)
+    let mut emptied = lines(&after);
+    let i = emptied[0].find(",\"owed\":[").unwrap();
+    let j = emptied[0][i..].find("}}]").unwrap() + i + 3;
+    emptied[0].replace_range(i..j, "");
+    let emptied = rechain(&emptied);
+    let r = replay_str_with(&emptied, &opts).unwrap();
+    let w = whats(&r);
+    assert!(w.iter().any(|m| m.contains("carried values differ from what the log they name still owed")), "{w:?}");
+    let mut other = lines(&after);
+    let (h2, _) = murmur_decide::replay::log_head(&c2).unwrap();
+    other[0] = other[0].replacen(&h2, &"1".repeat(64), 1);
+    let r = replay_str_with(&rechain(&other), &opts).unwrap();
+    let w = whats(&r);
+    assert!(w.iter().any(|m| m.contains("the log given is not the one carried over from")), "{w:?}");
 }
 
 #[test]
