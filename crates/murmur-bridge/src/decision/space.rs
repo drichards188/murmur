@@ -281,6 +281,10 @@ pub struct SpaceRun {
     events: Vec<Logged>,
     outcome: Option<TaskOutcome>,
     ended: Option<Ended>,
+    /// When (wall clock) a re-check found it no longer feasible, for the alert.
+    lost_wall: Option<f64>,
+    /// A re-check whose later answer could not be computed: when (wall clock) and why.
+    unknown: Option<(f64, String)>,
 }
 
 impl SpaceRun {
@@ -294,6 +298,8 @@ impl SpaceRun {
             events: Vec::new(),
             outcome: None,
             ended: None,
+            lost_wall: None,
+            unknown: None,
         }
     }
 
@@ -312,6 +318,8 @@ impl SpaceRun {
             events: Vec::new(),
             outcome: None,
             ended: None,
+            lost_wall: None,
+            unknown: None,
         }
     }
 
@@ -334,6 +342,7 @@ impl SpaceRun {
             return;
         }
         self.ended = Some(Ended::Lost);
+        self.lost_wall = Some(crate::clock::wall());
         self.note(now, scen, murmur_decide::space::MISSED_OP, detail);
     }
 
@@ -373,6 +382,68 @@ impl SpaceRun {
         match &self.kind {
             RunKind::Collect(c) => &c.order.resource,
             RunKind::Cover(c) => &c.order.resource,
+        }
+    }
+
+    /// A collect's pass time (scenario time); none for a cover.
+    pub fn collect_time(&self) -> Option<Time> {
+        match &self.kind {
+            RunKind::Collect(c) => Some(c.order.collect_time),
+            RunKind::Cover(_) => None,
+        }
+    }
+
+    /// Rules 11: a re-check whose later answer could not be computed: the run goes on, the
+    /// operator hears of it ([`SpaceRun::alert`]).
+    pub fn unknown(&mut self, now_wall: f64, reason: String) {
+        self.unknown = Some((now_wall, reason));
+    }
+
+    /// Rules 11: what this run asks of the operator, if anything: no longer feasible by a
+    /// re-check (the missed report, with a collect's fresh options), or a re-check nothing
+    /// could be made of.
+    pub fn alert(&self, now_wall: f64) -> Option<super::alerts::Alert> {
+        let intent_id = Some(self.intent.0);
+        let callsign = Some(self.resource().as_str().to_string());
+        if self.ended == Some(Ended::Lost) {
+            let last = self.events.last()?;
+            return Some(super::alerts::Alert {
+                id: format!("space:{}", self.intent.0),
+                kind: "space_missed",
+                severity: super::alerts::Severity::Medium,
+                uid: 0,
+                callsign,
+                detail: format!("{} i{}: {}", self.kind_name(), self.intent.0, last.detail),
+                since_t: self.lost_wall.unwrap_or(now_wall),
+                op_id: None,
+                intent_id,
+            });
+        }
+        let (since, reason) = self.unknown.as_ref()?;
+        if self.finished() {
+            return None;
+        }
+        Some(super::alerts::Alert {
+            id: format!("space:{}", self.intent.0),
+            kind: "space_recheck_unknown",
+            severity: super::alerts::Severity::Medium,
+            uid: 0,
+            callsign,
+            detail: format!(
+                "{} i{} runs on, but its re-check on the reloaded element sets gave no answer: {reason}",
+                self.kind_name(),
+                self.intent.0
+            ),
+            since_t: *since,
+            op_id: None,
+            intent_id,
+        })
+    }
+
+    fn kind_name(&self) -> &'static str {
+        match &self.kind {
+            RunKind::Collect(_) => "collect",
+            RunKind::Cover(_) => "cover",
         }
     }
 

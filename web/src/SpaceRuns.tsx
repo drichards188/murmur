@@ -38,10 +38,10 @@ function Steps({ run }: { run: SpaceRun }) {
 /** Cancel a running collect or cover (rules 11): a collect's tasking request is withdrawn
  *  before its pass, a pass already under way cannot be recalled (its product is no longer
  *  awaited); a cover's watch ends. The bridge logs what the cancel meant. */
-function CancelButton({ run }: { run: SpaceRun }) {
+function CancelButton({ run, enabled }: { run: SpaceRun; enabled: boolean }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
-  if (run.outcome) return null
+  if (run.outcome || !enabled) return null
   const cancel = async () => {
     setBusy(true)
     setErr(null)
@@ -73,7 +73,7 @@ function outcomeLabel(run: SpaceRun) {
 }
 
 /** One collect or cover in the command log. */
-export function SpaceRunCard({ run, map, scen, onOpen }: { run: SpaceRun; map: ScenarioMap; scen: number; onOpen?: (intentId: number) => void }) {
+export function SpaceRunCard({ run, map, scen, onOpen, cancellable = false }: { run: SpaceRun; map: ScenarioMap; scen: number; onOpen?: (intentId: number) => void; cancellable?: boolean }) {
   const last = run.events[run.events.length - 1]
   const age = last ? fmtDuration(Math.max(0, (scen - run.events[0].scenario_t) / 1000)) : null
   if (run.kind === 'collect' && run.collect) {
@@ -90,7 +90,7 @@ export function SpaceRunCard({ run, map, scen, onOpen }: { run: SpaceRun; map: S
           <span className="tl-swatch" style={{ background: classColor(c.class_id) }} />
           <span className="sr-sat">{c.satellite}</span>
           <span className="muted right">{age} scen.</span>
-          <CancelButton run={run} />
+          <CancelButton run={run} enabled={cancellable} />
         </div>
         <div className="op">
           <span className="op-name" title={`${run.resource} (${c.class_id}, ${c.capability})`}>
@@ -126,7 +126,7 @@ export function SpaceRunCard({ run, map, scen, onOpen }: { run: SpaceRun; map: S
         <span className="tl-swatch" style={{ background: classColor(cv.service.class) }} />
         <span className="sr-sat">{label}</span>
         <span className={`sr-badge ${inOutage && !run.outcome ? 'bad' : run.outcome ? '' : 'ok'}`}>{run.outcome ? outcomeLabel(run) : inOutage ? 'OUTAGE' : scen < cv.window.from ? 'waiting' : 'covered'}</span>
-        <CancelButton run={run} />
+        <CancelButton run={run} enabled={cancellable} />
       </div>
       <div className="op">
         <span className="op-name">watch</span>

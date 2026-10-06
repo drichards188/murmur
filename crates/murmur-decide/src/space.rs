@@ -49,7 +49,7 @@ use murmur_space::{Capability, EpochMode, Geodetic, Space, TimeMap};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::geo::LonLat;
+use crate::geo::{LonLat, haversine_m};
 use crate::hash::sha256_hex;
 use crate::ids::{IntentId, Uid};
 use crate::intent::Task;
@@ -85,30 +85,65 @@ pub const COVER_BOUNDARY_SAMPLES: usize = 8;
 /// boundary ([`COVER_BOUNDARY_SAMPLES`]). Pure in the area, so replay rebuilds the same
 /// query from the logged intent.
 pub fn cover_points(area: &SpaceArea) -> Vec<Geodetic> {
-    let space = area.to_space();
-    let c = space.centroid();
-    let mut points = vec![Geodetic::new(c.lat_deg, c.lon_deg, 0.0)];
     match area {
         SpaceArea::Circle { radius_km, .. } => {
+            let c = area.to_space().centroid();
+            let mut points = vec![Geodetic::new(c.lat_deg, c.lon_deg, 0.0)];
             let step = 360.0 / COVER_BOUNDARY_SAMPLES as f64;
             for i in 0..COVER_BOUNDARY_SAMPLES {
                 let p = c.destination(i as f64 * step, *radius_km);
                 points.push(Geodetic::new(p.lat_deg, p.lon_deg, 0.0));
             }
+            points
         }
         SpaceArea::Polygon { ring } => {
+            // a closed ring repeats its first vertex: it counts once, in the centroid too
+            let mut ring: Vec<LonLat> = ring.clone();
+            if ring.len() > 3 && ring.first() == ring.last() {
+                ring.pop();
+            }
             let n = ring.len();
-            let picked: Vec<&LonLat> = if n <= COVER_BOUNDARY_SAMPLES {
-                ring.iter().collect()
+            let c = murmur_space::Area::Polygon {
+                ring: ring.iter().map(|p| [p.lon, p.lat]).collect(),
+            }
+            .centroid();
+            let mut points = vec![Geodetic::new(c.lat_deg, c.lon_deg, 0.0)];
+            let picked: Vec<LonLat> = if n <= COVER_BOUNDARY_SAMPLES {
+                ring
             } else {
-                (0..COVER_BOUNDARY_SAMPLES)
-                    .map(|i| &ring[i * n / COVER_BOUNDARY_SAMPLES])
-                    .collect()
+                // by geometry, not by index: the vertex farthest from the centroid first,
+                // then each time the one farthest from every vertex chosen so far, so the
+                // extremes of the outline (its far tips) are always sampled
+                let centroid = LonLat::new(c.lon_deg, c.lat_deg);
+                let mut chosen: Vec<usize> = Vec::with_capacity(COVER_BOUNDARY_SAMPLES);
+                let first = (0..n)
+                    .max_by(|&a, &b| {
+                        haversine_m(ring[a], centroid)
+                            .total_cmp(&haversine_m(ring[b], centroid))
+                            .then(b.cmp(&a))
+                    })
+                    .unwrap_or(0);
+                chosen.push(first);
+                while chosen.len() < COVER_BOUNDARY_SAMPLES {
+                    let next = (0..n)
+                        .filter(|i| !chosen.contains(i))
+                        .max_by(|&a, &b| {
+                            let da = chosen.iter().map(|&k| haversine_m(ring[a], ring[k])).fold(f64::INFINITY, f64::min);
+                            let db = chosen.iter().map(|&k| haversine_m(ring[b], ring[k])).fold(f64::INFINITY, f64::min);
+                            da.total_cmp(&db).then(b.cmp(&a))
+                        });
+                    match next {
+                        Some(i) => chosen.push(i),
+                        None => break,
+                    }
+                }
+                chosen.sort_unstable();
+                chosen.into_iter().map(|i| ring[i]).collect()
             };
             points.extend(picked.into_iter().map(|p| Geodetic::new(p.lat, p.lon, 0.0)));
+            points
         }
     }
-    points
 }
 /// Longest window a collect or cover may name: link queries scale with it.
 pub const MAX_WINDOW_MS: i64 = 7 * 24 * 3600 * 1000;
@@ -439,6 +474,53 @@ pub struct CoverGnssSummary {
     pub points: Vec<PointGnss>,
 }
 
+/// Rules 11: whether an area answer's points are its query's, in order, with the query's
+/// class (a forged answer that drops, moves or copies a result point is not the answer to
+/// the question).
+pub fn points_match(query: &SpaceQuery, result: &SpaceResult) -> Result<(), String> {
+    let (want, got, class_want, class_got): (Vec<Geodetic>, Vec<Geodetic>, &str, &str) =
+        match (query, result) {
+            (SpaceQuery::CoverLinks(q), SpaceResult::CoverLinks(r)) => (
+                q.points.clone(),
+                r.points.iter().map(|p| p.point).collect(),
+                &q.class,
+                &r.class_id,
+            ),
+            (SpaceQuery::CoverGnss(q), SpaceResult::CoverGnss(r)) => (
+                q.points.clone(),
+                r.points.iter().map(|p| p.point).collect(),
+                &q.class,
+                &r.class_id,
+            ),
+            (SpaceQuery::CoverLinks(_) | SpaceQuery::CoverGnss(_), _)
+            | (_, SpaceResult::CoverLinks(_) | SpaceResult::CoverGnss(_)) => {
+                return Err("the space answer's result is not of its query's kind".into());
+            }
+            _ => return Ok(()),
+        };
+    if class_want != class_got {
+        return Err(format!(
+            "the space answer's class ({class_got}) is not the query's ({class_want})"
+        ));
+    }
+    if want.len() != got.len() || want.iter().zip(&got).any(|(a, b)| a != b) {
+        return Err(format!(
+            "the space answer's points ({}) are not the query's ({})",
+            got.len(),
+            want.len()
+        ));
+    }
+    let class_ok = match result {
+        SpaceResult::CoverLinks(r) => r.points.iter().all(|p| p.links.class_id == class_want),
+        SpaceResult::CoverGnss(r) => r.points.iter().all(|p| p.gnss.class_id == class_want),
+        _ => true,
+    };
+    if !class_ok {
+        return Err("a point of the space answer is of another class than the query's".into());
+    }
+    Ok(())
+}
+
 impl CoverLinksSummary {
     /// The point with the least coverage (the first of equals): the cover holds only if it
     /// holds there.
@@ -487,7 +569,9 @@ pub enum SpaceResult {
     CoverGnss(CoverGnssSummary),
 }
 
-/// Which space segment answered: the catalog and element sets, by content.
+/// Which space segment answered: the catalog and element sets, by content, and (rules 11)
+/// the time shift pinned on them, since the same elements pinned a day apart answer
+/// differently.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SegmentId {
     /// SHA-256 over the catalog and every satellite (identity, element epoch, mean elements,
@@ -499,11 +583,16 @@ pub struct SegmentId {
     /// Per CelesTrak query: when the cached element sets were fetched (empty for in-memory
     /// sources such as test fixtures).
     pub cache_meta: Vec<CacheMeta>,
+    /// The time shift pinned on the segment for the session (none: picked per window).
+    /// Absent from logs written before rules 11 (they carry it in `space.loaded`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_shift_days: Option<i64>,
 }
 
+/// Two segments are the same when the elements and the pin are: a re-pin is a new segment.
 impl PartialEq for SegmentId {
     fn eq(&self, other: &Self) -> bool {
-        self.sha256 == other.sha256
+        self.sha256 == other.sha256 && self.pinned_shift_days == other.pinned_shift_days
     }
 }
 
@@ -546,7 +635,13 @@ impl SegmentId {
             reference: space.reference,
             satellites: n,
             cache_meta: space.cache_meta.clone(),
+            pinned_shift_days: space.pinned_shift_days,
         })
+    }
+
+    /// The same element sets (the pin aside).
+    pub fn same_elements(&self, other: &SegmentId) -> bool {
+        self.sha256 == other.sha256
     }
 
     /// `"segment 1a2b3c4d5e6f (fetched 2026-10-02T09:00:00Z)"`, for details.
@@ -559,8 +654,11 @@ impl SegmentId {
             .map_or("in-memory elements".to_string(), |t| {
                 format!("fetched {}", fmt_utc(t))
             });
+        let pin = self
+            .pinned_shift_days
+            .map_or(String::new(), |d| format!(", pinned {d:+} d"));
         format!(
-            "segment {} ({fetched})",
+            "segment {} ({fetched}{pin})",
             &self.sha256[..12.min(self.sha256.len())]
         )
     }
@@ -875,36 +973,40 @@ pub fn answer(
             if q.points.is_empty() {
                 return Err("a cover names no sample point".into());
             }
-            // one time map for every point: a window rounds to one day shift
+            // one time map for every point (a window rounds to one day shift), every
+            // satellite propagated once for all of them
             let tm = space.time_map(q.epoch_mode, q.from, q.to);
-            let mut points = Vec::with_capacity(q.points.len());
-            for point in &q.points {
-                let rep = space
-                    .links_with_time_map(
-                        &LinkQuery {
-                            point: *point,
-                            from: q.from,
-                            to: q.to,
-                            classes: vec![q.class.clone()],
-                            epoch_mode: q.epoch_mode,
-                            sample_step_s: q.sample_step_s,
-                            include_samples: false,
-                        },
-                        tm,
-                    )
-                    .map_err(|e| format!("link query failed: {e}"))?;
-                let Some(c) = rep.classes.into_iter().next() else {
-                    return Err(format!("link query returned nothing for {}", q.class));
-                };
-                points.push(PointLinks {
-                    point: *point,
-                    links: link_summary(c),
-                });
-            }
+            let rep = space
+                .links_area(&q.points, q.from, q.to, &q.class, q.sample_step_s, tm)
+                .map_err(|e| format!("link query failed: {e}"))?;
+            let points = rep
+                .points
+                .into_iter()
+                .map(|p| PointLinks {
+                    point: p.point,
+                    links: LinkSummary {
+                        class_id: rep.class_id.clone(),
+                        satellites: rep.satellites,
+                        stale_skipped: rep.stale_skipped,
+                        not_yet_launched: rep.not_yet_launched,
+                        mask_deg: rep.mask_deg,
+                        windows: p.windows,
+                        coverage_fraction: p.coverage_fraction,
+                        outages: p.outages,
+                        longest_outage_s: p.longest_outage_s,
+                        visible_min: p.visible_min,
+                        visible_max: p.visible_max,
+                        visible_mean: p.visible_mean,
+                        latency_ms_min: p.latency_ms_min,
+                        latency_ms_median: p.latency_ms_median,
+                        latency_ms_max: p.latency_ms_max,
+                    },
+                })
+                .collect();
             (
-                tm,
+                rep.time_map,
                 SpaceResult::CoverLinks(CoverLinksSummary {
-                    class_id: q.class.clone(),
+                    class_id: rep.class_id,
                     points,
                 }),
             )
@@ -914,33 +1016,34 @@ pub fn answer(
             if q.points.is_empty() {
                 return Err("a cover names no sample point".into());
             }
-            let mut points = Vec::with_capacity(q.points.len());
-            let mut time_map = None;
-            for point in &q.points {
-                let rep = space
-                    .gnss(&GnssQuery {
-                        point: *point,
-                        from: q.from,
-                        to: q.to,
-                        step_s: q.step_s,
-                        class: q.class.clone(),
-                        mask_deg: None,
-                        epoch_mode: q.epoch_mode,
-                    })
-                    .map_err(|e| format!("GNSS query failed: {e}"))?;
-                time_map.get_or_insert(rep.time_map);
-                points.push(PointGnss {
-                    point: *point,
-                    gnss: gnss_summary(rep),
-                });
-            }
-            let Some(tm) = time_map else {
-                return Err("a cover names no sample point".into());
-            };
+            let tm = space.time_map(q.epoch_mode, q.from, q.to);
+            let rep = space
+                .gnss_area(&q.points, q.from, q.to, &q.class, q.step_s, None, tm)
+                .map_err(|e| format!("GNSS query failed: {e}"))?;
+            let points = rep
+                .points
+                .into_iter()
+                .map(|p| PointGnss {
+                    point: p.point,
+                    gnss: GnssSummary {
+                        class_id: rep.class_id.clone(),
+                        mask_deg: rep.mask_deg,
+                        satellites: rep.satellites,
+                        stale_skipped: rep.stale_skipped,
+                        not_yet_launched: rep.not_yet_launched,
+                        samples: p.samples,
+                        visible_min: p.visible_min,
+                        visible_max: p.visible_max,
+                        visible_min_at: p.visible_min_at,
+                        pdop_max: p.pdop_max,
+                        pdop_mean: p.pdop_mean,
+                    },
+                })
+                .collect();
             (
-                tm,
+                rep.time_map,
                 SpaceResult::CoverGnss(CoverGnssSummary {
-                    class_id: q.class.clone(),
+                    class_id: rep.class_id,
                     points,
                 }),
             )
@@ -1261,11 +1364,14 @@ pub fn cancel_detail(order: &SpaceOrder, scen: Time) -> String {
 /// The engine's report after a re-check of a dispatched collect or cover against a later
 /// answer (`op.state rechecked` or `missed`; replay recomputes it from its recomputed
 /// results): what still holds, or every check that fails and, for a collect, the fresh
-/// options a human may choose from instead.
+/// options a human may choose from instead, those still taskable from `now` (the check's
+/// scenario time: the answer was asked at the old request time, so it lists passes since
+/// gone and passes whose lead time has run out).
 pub fn recheck_detail(
     results: &[crate::rules::CheckResult],
     passed: bool,
     answer: Option<&SpaceAnswer>,
+    now: Time,
 ) -> String {
     use crate::rules::{Outcome, RuleId};
     if passed {
@@ -1282,7 +1388,7 @@ pub fn recheck_detail(
         .map(|r| format!("{}: {}", r.rule.as_str(), r.detail))
         .collect();
     if let Some(t) = answer.and_then(SpaceAnswer::tasking) {
-        failed.push(crate::rules::fresh_options(t));
+        failed.push(crate::rules::fresh_options(t, now));
     }
     format!("{NO_LONGER_FEASIBLE}{}", failed.join("; "))
 }

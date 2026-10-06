@@ -102,6 +102,9 @@ use crate::world::World;
 pub const DEFAULT_ORBIT_RADIUS_M: f64 = 200.0;
 /// Collect and cover never reach the vehicle task layer.
 const SPACE_NOT_VEHICLES: &str = "collect and cover request satellites: they run in the space executor, not the vehicle task layer";
+/// How many times a space answer is prepared again, outside the lock, when the segment was
+/// reloaded between the preparation and the lock ([`Decision::lock_with_space`]).
+const SPACE_PREPARE_ATTEMPTS: usize = 3;
 /// The WebSocket inbox message lists this many recent intents.
 const PUSH_INTENTS: usize = 50;
 
@@ -767,9 +770,12 @@ impl Decision {
         };
         let running: Vec<(IntentId, Task, Option<Time>)> = {
             let core = self.lock();
+            let scen = core.engine.scenario_map().scenario(self.clock.now());
             core.space_runs
                 .iter()
                 .filter(|(_, run)| !run.finished())
+                // a collect whose pass has come was collected: nothing to re-check
+                .filter(|(_, run)| run.collect_time().is_none_or(|t| scen < t))
                 .filter_map(|(id, _)| {
                     let i = core.engine.intent(*id)?;
                     Some((*id, i.spec().task.clone(), i.space_answer().and_then(|a| a.now())))
@@ -809,6 +815,12 @@ impl Decision {
                         run.lost(now, scen, detail);
                     }
                 }
+                Ok(murmur_decide::SpaceRecheck::Unknown { reason }) => {
+                    eprintln!("decision: space re-check {id}: the later answer could not be computed: {reason}");
+                    if let Some(run) = core.space_runs.get_mut(&id) {
+                        run.unknown(clock::wall(), reason);
+                    }
+                }
                 Err(e) => eprintln!("decision: space re-check {id}: {e}"),
             }
         }
@@ -837,6 +849,47 @@ impl Decision {
 
     fn lock(&self) -> MutexGuard<'_, Core> {
         self.core.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The decision lock, with `task`'s space answer prepared outside it and handed to the
+    /// engine for the check that follows ([`Self::prepare_space`]). If the segment was
+    /// reloaded between the preparation and the lock, the engine would not take the answer
+    /// (a cover is never computed under the lock: the check would fail closed), so the lock
+    /// is released and the answer prepared again, a few times. A vehicle task takes the lock
+    /// plainly.
+    async fn lock_with_space(&self, task: &Task) -> MutexGuard<'_, Core> {
+        if !task.is_space() {
+            return self.lock();
+        }
+        let mut prepared = self.prepare_space(task).await;
+        for attempt in 1..=SPACE_PREPARE_ATTEMPTS {
+            // the guard never lives across an await: taken, judged and either kept or
+            // dropped inside a plain call
+            if let Some(guard) = self.lock_if_fits(&mut prepared, attempt == SPACE_PREPARE_ATTEMPTS) {
+                return guard;
+            }
+            eprintln!("decision: the space segment changed while an answer was prepared: preparing again");
+            prepared = self.prepare_space(task).await;
+        }
+        self.lock()
+    }
+
+    /// The lock with `prepared` handed to the engine, if it fits the segment the engine
+    /// holds (or `anyway`); else nothing, the lock released, the answer left to prepare
+    /// again.
+    fn lock_if_fits(&self, prepared: &mut Option<murmur_decide::PreparedSpace>, anyway: bool) -> Option<MutexGuard<'_, Core>> {
+        let mut guard = self.lock();
+        match prepared.take() {
+            None => Some(guard),
+            Some(p) if anyway || guard.engine.prepared_space_fits(&p) => {
+                guard.engine.use_prepared_space(p);
+                Some(guard)
+            }
+            Some(p) => {
+                *prepared = Some(p);
+                None
+            }
+        }
     }
 
     /// The track store: the injected one, else the process-wide one (`tracks::init`).
@@ -1312,9 +1365,10 @@ impl Decision {
     }
 
     /// A human's collect or cover. The space query runs before the decision lock is taken
-    /// ([`Self::prepare_space`]; SGP4 over the cached elements: well under a second for a
-    /// collect at the scenario area, over a second for a week of Starlink coverage), and the
-    /// engine uses that answer if it is still fresh when the checks run.
+    /// ([`Self::lock_with_space`]; SGP4 over the cached elements: milliseconds for a
+    /// collect at the scenario area, seconds for a week of Starlink coverage over the area's
+    /// nine points), and the engine decides on that answer under the lock; a cover is never
+    /// computed under it.
     async fn submit_space(&self, by: &Actor, req: &IntentRequest) -> Result<Outcome, DecisionError> {
         let proposal = space::proposal(
             &req.task,
@@ -1322,15 +1376,11 @@ impl Decision {
             &req.space,
             req.rationale.as_deref(),
         )?;
-        let prepared = self.prepare_space(&proposal.task).await;
         let out = {
-            let mut guard = self.lock();
+            let mut guard = self.lock_with_space(&proposal.task).await;
             let core = &mut *guard;
             let world = self.snapshot();
             let session = Self::session(&mut core.engine, &mut core.sessions, &core.logins, by, &self.engage_operators, self.auth)?;
-            if let Some(p) = prepared {
-                core.engine.use_prepared_space(p);
-            }
             let id = core
                 .engine
                 .submit(
@@ -1445,15 +1495,11 @@ impl Decision {
         } else {
             self.prefetch(&task, &uids).await;
         }
-        let prepared = self.prepare_space(&task).await;
         let out = {
-            let mut guard = self.lock();
+            let mut guard = self.lock_with_space(&task).await;
             let core = &mut *guard;
             let world = self.snapshot();
             let session = Self::session(&mut core.engine, &mut core.sessions, &core.logins, by, &self.engage_operators, self.auth)?;
-            if let Some(p) = prepared {
-                core.engine.use_prepared_space(p);
-            }
             // rules 8: the password was just checked again for this login: log the step-up
             // under its session, for this signature to quote
             let step = Self::mint_step(&mut core.engine, session, by, step)?;
@@ -1784,8 +1830,20 @@ impl Decision {
         json!({
             "clock": core.engine.scenario_map(),
             "loaded": core.engine.space_segment().is_some(),
+            // rules 11: a running collect or cover may be cancelled
+            "cancellable": self.rules.rules_version >= rules::SPACE_FOLLOWUPS_SINCE,
             "runs": core.space_runs.values().rev().map(space::SpaceRun::json).collect::<Vec<_>>(),
         })
+    }
+
+    /// Rules 11: what the space executor asks of the operator: a collect or cover found no
+    /// longer feasible by a re-check (missed; a collect's report lists the fresh options),
+    /// and a re-check whose later answer could not be computed (the task runs on unknown).
+    fn space_alerts(&self, core: &Core, now_wall: f64) -> Vec<alerts::Alert> {
+        core.space_runs
+            .values()
+            .filter_map(|run| run.alert(now_wall))
+            .collect()
     }
 
     /// `GET /api/space/runs`.
@@ -2291,11 +2349,13 @@ impl Decision {
             &self.world.tasks.current_ops(),
             clock::wall(),
         );
-        // rules 6: platforms whose own lost-link failsafe has not been confirmed back
+        // rules 6: platforms whose own lost-link failsafe has not been confirmed back;
+        // rules 11: space tasks a re-check lost or could not judge
         {
             let core = self.lock();
             alerts.extend(self.restore_alerts(&core, clock::wall()));
             alerts.extend(self.carry_alert(&core, clock::wall()));
+            alerts.extend(self.space_alerts(&core, clock::wall()));
         }
         alerts.sort_by(|a, b| a.severity.cmp(&b.severity).then(a.since_t.total_cmp(&b.since_t)));
         // rules 5: orders held for vehicles the link can't carry them to now

@@ -1002,7 +1002,7 @@ function CoverageForm({
       {space && scen != null && watches.length > 0 && (
         <div className="sr-watches">
           {watches.map((r) => (
-            <SpaceRunCard key={r.intent_id} run={r} map={space.clock} scen={scen} onOpen={onIntent} />
+            <SpaceRunCard key={r.intent_id} run={r} map={space.clock} scen={scen} onOpen={onIntent} cancellable={space.cancellable ?? false} />
           ))}
         </div>
       )}

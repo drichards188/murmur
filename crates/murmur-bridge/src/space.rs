@@ -185,6 +185,8 @@ pub struct SpaceApi {
     /// The loaded segment (or why it did not load); `None` while the first load runs.
     /// Replaced when the element sets change on disk ([`CACHE_POLL`]).
     space: RwLock<Option<Result<Arc<Space>, String>>>,
+    /// The time shift pinned at the first load, kept for the session.
+    session_pin: std::sync::OnceLock<Option<i64>>,
     areas: Vec<NamedArea>,
     /// SATCOM classes per platform id, from `space_class` / `space_class_alt` in
     /// sim/platforms.toml (read once at start).
@@ -264,6 +266,7 @@ impl SpaceApi {
             root,
             clock,
             space: RwLock::new(None),
+            session_pin: std::sync::OnceLock::new(),
             areas,
             satcom,
             cache: Mutex::new(HashMap::new()),
@@ -285,10 +288,15 @@ impl SpaceApi {
         Ok(Arc::new(space))
     }
 
-    /// One time shift for the whole session, chosen for the scenario's first day.
+    /// One time shift for the whole session, chosen for the scenario's first day at the
+    /// first load and kept on every reload (the same elements pinned a day apart are another
+    /// segment to the decision layer: `SegmentId` carries the pin).
     fn pin(&self, space: &mut Space) {
-        let now = self.clock.now();
-        space.pin_shift(Some((now, now + Duration::days(1))));
+        let pinned = *self.session_pin.get_or_init(|| {
+            let now = self.clock.now();
+            Some(TimeMap::for_window(EpochMode::Auto, space.reference, now, now + Duration::days(1)).shift_days)
+        });
+        space.pinned_shift_days = pinned;
     }
 
     /// Load the segment from disk and hand it on: at start, and again when the element

@@ -977,6 +977,11 @@ fn checked_answer<'a>(
     if !same {
         return Err("cannot evaluate: the space answer is not for this intent's query".into());
     }
+    // rules 11: an area answer's points are the query's (a result point dropped, moved or
+    // copied over another is not the answer to the question)
+    if let Err(why) = crate::space::points_match(&answer.query, &answer.result) {
+        return Err(format!("cannot evaluate: {why}"));
+    }
     Ok(answer)
 }
 
@@ -1168,17 +1173,29 @@ fn collect_feasible(
 }
 
 /// Rules 11, after a re-check that lost the chosen pass: the first ranked options of the
-/// later answer, for a human to choose from (the engine never re-chooses on its own).
-pub(crate) fn fresh_options(result: &murmur_space::tasking::TaskingResult) -> String {
+/// later answer still taskable at `now` (collect time at or after now plus the class's lead
+/// time, which the answer carries as each option's `earliest_collect` less its request
+/// time), for a human to choose from (the engine never re-chooses on its own).
+pub(crate) fn fresh_options(result: &murmur_space::tasking::TaskingResult, now: crate::time::Time) -> String {
     const SHOWN: usize = 3;
-    if result.options.is_empty() {
-        return "no feasible option left in the window".to_string();
+    let asked = from_utc(result.request.now);
+    let still: Vec<&murmur_space::tasking::TaskOption> = result
+        .options
+        .iter()
+        .filter(|o| {
+            let lead = from_utc(o.earliest_collect).ms_since(asked).max(0);
+            from_utc(o.collect_time) >= now.plus_ms(lead)
+        })
+        .collect();
+    if still.is_empty() {
+        return format!("no feasible option left in the window from {}", fmt_time(now));
     }
     let mut s = format!(
-        "{} feasible options now; a new collect may choose one:",
-        result.options.len()
+        "{} feasible options from {}; a new collect may choose one:",
+        still.len(),
+        fmt_time(now)
     );
-    for o in result.options.iter().take(SHOWN) {
+    for o in still.iter().take(SHOWN) {
         s.push_str(&format!(
             " #{} {} {} collect {} product {};",
             o.rank,

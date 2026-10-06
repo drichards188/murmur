@@ -333,3 +333,129 @@ fn june_scenario_is_shifted_and_reported_in_scenario_time() {
         assert!(w.sun_elevation_deg > 40.0, "{w:?}");
     }
 }
+
+// ---- area queries: every satellite propagated once for all of an area's points ----------
+
+/// Nine points of a 50 km circle on the Gate (the centroid and eight bearings), as a cover
+/// samples an area.
+fn area_points() -> Vec<Geodetic> {
+    let c = Geodetic::new(GG_BRIDGE.0, GG_BRIDGE.1, 0.0);
+    let mut pts = vec![c];
+    for i in 0..8 {
+        let p = c.destination(f64::from(i) * 45.0, 50.0);
+        pts.push(Geodetic::new(p.lat_deg, p.lon_deg, 0.0));
+    }
+    pts
+}
+
+/// The multi-target search finds each target's windows as the single-target search does,
+/// edge for edge (within the bisection tolerance), with one propagation per step.
+#[test]
+fn multi_target_windows_match_single_target_windows() {
+    let sp = space();
+    let (_, iss) = sp.satellite(25544).expect("iss");
+    let targets: Vec<Observer> = area_points().into_iter().map(Observer::new).collect();
+    let c = Constraint::MinElevation(10.0);
+    let (t0, t1) = (t("2026-10-02T00:00:00Z"), t("2026-10-04T00:00:00Z"));
+    let multi = access::find_windows_multi(
+        iss,
+        &targets,
+        t0,
+        t1,
+        c.psi_max(iss.max_radius_km()),
+        SearchParams::default(),
+        |_, g| c.holds(g),
+    );
+    assert_eq!(multi.len(), targets.len());
+    let mut checked = 0;
+    for (i, target) in targets.iter().enumerate() {
+        let single = access::find_windows(
+            iss,
+            target,
+            t0,
+            t1,
+            c.psi_max(iss.max_radius_km()),
+            SearchParams::default(),
+            |_, g| c.holds(g),
+        );
+        assert_eq!(multi[i].len(), single.len(), "point {i}: window counts");
+        for (a, b) in multi[i].iter().zip(&single) {
+            let tol = Duration::milliseconds(200);
+            assert!((a.start - b.start).abs() <= tol, "point {i}: start {} vs {}", a.start, b.start);
+            assert!((a.end - b.end).abs() <= tol, "point {i}: end {} vs {}", a.end, b.end);
+            checked += 1;
+        }
+    }
+    assert!(checked >= 9 * 7, "{checked} windows compared");
+}
+
+/// An area link query gives each point what its own link query gives (coverage, outages,
+/// visible counts), the centroid first, in one pass over the constellation.
+#[test]
+fn area_links_match_per_point_links() {
+    let sp = space();
+    let points = area_points();
+    let (from, to) = (t("2026-10-02T00:00:00Z"), t("2026-10-03T00:00:00Z"));
+    let tm = sp.time_map(EpochMode::Direct, from, to);
+    let area = sp
+        .links_area(&points, from, to, "iss", 600.0, tm)
+        .expect("area links");
+    assert_eq!(area.points.len(), points.len());
+    assert_eq!(area.points[0].point, points[0]);
+    for (i, p) in points.iter().enumerate() {
+        let one = sp
+            .links(&LinkQuery {
+                point: *p,
+                from,
+                to,
+                classes: vec!["iss".into()],
+                epoch_mode: EpochMode::Direct,
+                sample_step_s: 600.0,
+                include_samples: false,
+            })
+            .expect("links");
+        let c = &one.classes[0];
+        let a = &area.points[i];
+        assert_eq!(a.windows, c.windows.len(), "point {i}: windows");
+        assert!((a.coverage_fraction - c.coverage_fraction).abs() < 1e-4, "point {i}: coverage {} vs {}", a.coverage_fraction, c.coverage_fraction);
+        assert_eq!(a.outages.len(), c.outages.len(), "point {i}: outages");
+        assert_eq!((a.visible_min, a.visible_max), (c.visible_min, c.visible_max), "point {i}: visible");
+        assert_eq!(a.latency_ms_median.is_some(), c.latency_ms_median.is_some(), "point {i}: latency");
+    }
+    // the points differ: the far ones see the station at other times
+    assert!(area.points.iter().any(|p| p.outages != area.points[0].outages));
+}
+
+/// An area GNSS query gives each point what its own GNSS query gives.
+#[test]
+fn area_gnss_matches_per_point_gnss() {
+    let sp = space();
+    let points = area_points();
+    let (from, to) = (t("2026-10-02T00:00:00Z"), t("2026-10-02T12:00:00Z"));
+    let tm = sp.time_map(EpochMode::Direct, from, to);
+    let area = sp
+        .gnss_area(&points, from, to, "gps", 900.0, None, tm)
+        .expect("area gnss");
+    assert_eq!(area.points.len(), points.len());
+    for (i, p) in points.iter().enumerate() {
+        let one = sp
+            .gnss(&GnssQuery {
+                point: *p,
+                from,
+                to,
+                step_s: 900.0,
+                class: "gps".into(),
+                mask_deg: None,
+                epoch_mode: EpochMode::Direct,
+            })
+            .expect("gnss");
+        let a = &area.points[i];
+        assert_eq!(a.samples, one.samples.len(), "point {i}");
+        assert_eq!((a.visible_min, a.visible_max), (one.visible_min, one.visible_max), "point {i}");
+        assert_eq!(a.visible_min_at, one.samples.iter().find(|s| s.visible == one.visible_min).map(|s| s.t), "point {i}");
+        match (a.pdop_max, one.pdop_max) {
+            (Some(x), Some(y)) => assert!((x - y).abs() < 1e-9, "point {i}: pdop"),
+            (x, y) => assert_eq!(x.is_some(), y.is_some(), "point {i}: pdop"),
+        }
+    }
+}

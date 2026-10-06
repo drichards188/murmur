@@ -170,7 +170,7 @@ export type Severity = 'high' | 'medium'
 
 export interface Alert {
   id: string // link:<uid>, op:<op id> or restore:<uid>; stable while the condition lasts
-  kind: 'lost_link' | 'not_moving' | 'left_task' | 'task_failed' | 'ack_timeout' | 'restore_pending'
+  kind: 'lost_link' | 'not_moving' | 'left_task' | 'task_failed' | 'ack_timeout' | 'restore_pending' | 'space_missed' | 'space_recheck_unknown'
   severity: Severity
   uid: number
   callsign: string | null
@@ -263,6 +263,8 @@ export interface SpaceRun {
 export interface SpaceRuns {
   clock: ScenarioMap
   loaded: boolean
+  /** rules 11: a running collect or cover may be cancelled (older rules refuse it) */
+  cancellable?: boolean
   runs: SpaceRun[] // newest first
 }
 
@@ -298,6 +300,8 @@ export const ALERT_LABEL: Record<Alert['kind'], string> = {
   task_failed: 'TASK FAILED',
   ack_timeout: 'NO ACK',
   restore_pending: 'FAILSAFE NOT RESTORED',
+  space_missed: 'SATELLITE TASK LOST',
+  space_recheck_unknown: 'SATELLITE RE-CHECK UNKNOWN',
 }
 
 // ---- operator ------------------------------------------------------------------------------

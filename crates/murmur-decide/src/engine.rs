@@ -225,6 +225,19 @@ pub enum SpaceRecheck {
     /// (`no longer feasible: ...`, a collect's with the fresh options a human may choose
     /// from) and the intent failed.
     Lost { detail: String },
+    /// The later answer could not be computed (the query failed on the segment): nothing is
+    /// known and nothing is logged; the task runs on, and the operator should hear of it.
+    Unknown { reason: String },
+}
+
+/// Who reports an op state: the bridge (the task layer, the space executor), the bridge
+/// ahead of a vehicle start (rules 7), or the engine itself (rules 11: a space task's cancel
+/// and re-check).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OpReport {
+    Bridge,
+    Ahead,
+    Engine,
 }
 
 /// What [`Engine::step_engagements`] did: what the bridge must act on, and the engagements
@@ -2342,10 +2355,11 @@ impl Engine {
             passkey: None,
         })?;
         if let (true, Some(order)) = (after_dispatch, order) {
+            // one clock read: the report is logged at the instant its detail was computed for
             let t = self.now();
             let scen = self.scenario_map().scenario(t);
             let detail = space::cancel_detail(&order, scen);
-            self.report_space(id, order.resource(), space::CANCELLED_OP, &detail)?;
+            self.op_state(id, order.resource(), space::CANCELLED_OP, &detail, OpReport::Engine, Some(t))?;
         }
         self.transition(
             id,
@@ -2403,7 +2417,7 @@ impl Engine {
         }
         match (self.space.as_ref().map(|o| o.segment()), fresh) {
             (Some(seg), Some(a)) if a.segment != *seg => {
-                return Err(refuse("the prepared answer is from another space segment than the engine's"));
+                return Err(refuse("the prepared answer is from another space segment (or pin) than the engine's"));
             }
             (None, Some(_)) => return Err(refuse("no space segment loaded")),
             _ => {}
@@ -2412,6 +2426,19 @@ impl Engine {
             .space_order()
             .cloned()
             .ok_or_else(|| refuse("no space order recorded for its dispatch"))?;
+        // a collect whose pass has come was collected (simulated): nothing to re-check, and
+        // a later answer must not fail it
+        if let SpaceOrder::Collect(c) = &order
+            && self.scenario_map().scenario(self.now()) >= c.collect_time
+        {
+            return Err(refuse("its pass has come: the scene was collected, there is nothing to re-check"));
+        }
+        // a query that failed on the segment is not a later answer: nothing is known
+        if let SpaceInputs::Unavailable { reason } = &prepared.inputs {
+            return Ok(SpaceRecheck::Unknown {
+                reason: reason.clone(),
+            });
+        }
         let old_hash = current.map(SpaceAnswer::content_hash).transpose()?;
         if let SpaceInputs::Answered { sha256, .. } = &prepared.inputs
             && Some(sha256) == old_hash.as_ref()
@@ -2423,21 +2450,17 @@ impl Engine {
         let world = WorldSnapshot::new(t);
         let (inputs, _, results, passed) =
             self.run_checks(&spec, CheckPhase::Dispatched, &world, &NoTerrain)?;
-        let detail = space::recheck_detail(&results, passed, inputs.space.answer());
+        // the fresh options are ranked from the check's own scenario time
+        let checked_at = self.scenario_map().scenario(self.last_t);
+        let detail = space::recheck_detail(&results, passed, inputs.space.answer(), checked_at);
         if passed {
-            self.report_space(id, order.resource(), space::RECHECKED_OP, &detail)?;
+            self.op_state(id, order.resource(), space::RECHECKED_OP, &detail, OpReport::Engine, None)?;
             Ok(SpaceRecheck::Holds { detail })
         } else {
-            self.report_space(id, order.resource(), space::MISSED_OP, &detail)?;
+            self.op_state(id, order.resource(), space::MISSED_OP, &detail, OpReport::Engine, None)?;
             self.transition(id, Transition::Fail, space::missed_reason(&spec.task, &detail))?;
             Ok(SpaceRecheck::Lost { detail })
         }
-    }
-
-    /// Rules 11: an op state the engine reports on a space task itself (a cancel's, a
-    /// re-check's), under the order's resource, with the usual refusals.
-    fn report_space(&mut self, id: IntentId, uid: &Uid, state: &str, detail: &str) -> Result<(), EngineError> {
-        self.op_state(id, uid, state, detail, false, true)
     }
 
     /// Log something an operator did that isn't an intent decision (acknowledge, snooze).
@@ -4259,7 +4282,7 @@ impl Engine {
         state: &str,
         detail: &str,
     ) -> Result<(), EngineError> {
-        self.op_state(id, uid, state, detail, false, false)
+        self.op_state(id, uid, state, detail, OpReport::Bridge, None)
     }
 
     /// Rules 7 ([`rules::QUEUE_FOLLOWUPS_SINCE`]): a vehicle task's start, logged ahead of
@@ -4276,22 +4299,25 @@ impl Engine {
                 why: "these decision rules log no start ahead of sending it".into(),
             });
         }
-        self.op_state(id, uid, queue::STARTING_OP, detail, true, false)
+        self.op_state(id, uid, queue::STARTING_OP, detail, OpReport::Ahead, None)
     }
 
+    /// An op state, from `by`; logged at `at` when given (a report whose detail was
+    /// computed for that instant), else now.
     fn op_state(
         &mut self,
         id: IntentId,
         uid: &Uid,
         state: &str,
         detail: &str,
-        ahead: bool,
-        engine_reported: bool,
+        by: OpReport,
+        at: Option<Time>,
     ) -> Result<(), EngineError> {
+        let ahead = by == OpReport::Ahead;
         let intent = self.get(id)?;
         // rules 11: a space task's cancel and re-check are reported by the engine itself,
         // bound to the operator's cancel or the check before them; the bridge is refused them
-        if !engine_reported
+        if by != OpReport::Engine
             && self.policy.rules.space_followups()
             && intent.spec().task.is_space()
             && space::engine_reported(state, detail)
@@ -4333,13 +4359,17 @@ impl Engine {
                 why: "op requeued after its start went out (it may be running: it ends unconfirmed)".into(),
             });
         }
-        self.emit(EventBody::OpState {
-            intent: id,
-            uid: uid.clone(),
-            state: state.into(),
-            detail: detail.into(),
-            ahead,
-        })?;
+        let at = at.unwrap_or_else(|| self.now());
+        self.emit_at(
+            at,
+            EventBody::OpState {
+                intent: id,
+                uid: uid.clone(),
+                state: state.into(),
+                detail: detail.into(),
+                ahead,
+            },
+        )?;
         self.get_mut(id)?
             .record_op(uid, state, detail, queue::committed_op(state), ahead);
         Ok(())
@@ -4554,16 +4584,21 @@ impl Engine {
     /// Ask the space segment this task's question at snapshot time `t`. Failures become
     /// `Unavailable` (the space rule then fails, saying why); only a hashing error is an
     /// engine error. An answer prepared outside the lock ([`prepare_space`]) is used when
-    /// nothing it depended on changed: the same task, computed within
-    /// [`PREPARED_SPACE_MAX_AGE_MS`] of `t`, and answered by the segment the engine holds
-    /// now (one reloaded in between answers again); otherwise the engine asks its own
-    /// segment here, under the lock.
+    /// nothing it depended on changed: the same task, answered by the segment (and pin) the
+    /// engine holds now (one reloaded in between answers again:
+    /// [`Engine::prepared_space_fits`]), and, for a collect, computed within
+    /// [`PREPARED_SPACE_MAX_AGE_MS`] of `t` (its query carries the request time; a cover's
+    /// does not depend on when it was asked, so its age is no concern). Without one, a
+    /// collect's tasking query (milliseconds) is asked here, under whatever lock the caller
+    /// holds; a cover's (seconds of SGP4 over nine points) never is: it is `Unavailable`
+    /// (the check fails closed, saying the bridge prepares it outside the lock).
     fn ask_space(&mut self, task: &Task, t: Time) -> Result<SpaceInputs, EngineError> {
-        // computed outside the lock for this very question, a moment ago
+        let cover = matches!(task, Task::Cover { .. });
+        // computed outside the lock for this very question
         if let Some(p) = self.prepared_space.take()
             && p.task == *task
-            && (t.ms_since(p.t)).abs() <= PREPARED_SPACE_MAX_AGE_MS
-            && self.prepared_fits(&p)
+            && (cover || (t.ms_since(p.t)).abs() <= PREPARED_SPACE_MAX_AGE_MS)
+            && self.prepared_space_fits(&p)
         {
             return Ok(p.inputs);
         }
@@ -4572,6 +4607,11 @@ impl Engine {
                 reason: "no space segment loaded".into(),
             });
         };
+        if cover {
+            return Ok(SpaceInputs::Unavailable {
+                reason: "no cover answer prepared on the segment the engine holds (a cover is computed outside the decision lock, prepare_space)".into(),
+            });
+        }
         space_inputs(oracle.as_ref(), task, t, &self.policy.rules)
     }
 
@@ -4581,9 +4621,11 @@ impl Engine {
         self.prepared_space = Some(prepared);
     }
 
-    /// A prepared answer was given by the segment the engine holds now (an answer prepared
-    /// on a segment since replaced is not what the engine would answer).
-    fn prepared_fits(&self, p: &PreparedSpace) -> bool {
+    /// Whether a prepared answer was given by the segment (and pin) the engine holds now: an
+    /// answer prepared on a segment since replaced is not what the engine would answer. The
+    /// bridge asks this under its lock before deciding on it and prepares again outside the
+    /// lock if not.
+    pub fn prepared_space_fits(&self, p: &PreparedSpace) -> bool {
         match (self.space.as_ref(), p.inputs.answer()) {
             (Some(o), Some(a)) => a.segment == *o.segment(),
             (None, Some(_)) => false,

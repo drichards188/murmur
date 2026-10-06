@@ -5,7 +5,7 @@ use crate::area::Area;
 use crate::cache::{Cache, CacheMeta};
 use crate::catalog::{Capability, Catalog, EffectiveSensor, SatClass};
 use crate::geo::{
-    C_KM_S, EARTH_MEAN_RADIUS_KM, Geodetic, Observer, ViewGeometry, sun_elevation_deg,
+    C_KM_S, EARTH_MEAN_RADIUS_KM, Geodetic, Observer, ViewGeometry, sun_elevation_deg, view_geometry,
 };
 use crate::orbit::{Satellite, Sgp4Mode};
 use crate::timemap::{EpochMode, TimeMap};
@@ -375,6 +375,297 @@ impl Space {
             to: q.to,
             time_map: tm,
             classes,
+            compute_ms: started.elapsed().as_millis() as u64,
+        })
+    }
+}
+
+/// One point of an area link query ([`Space::links_area`]): what a coverage judgement
+/// reads, no per-window detail.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AreaLinkPoint {
+    pub point: Geodetic,
+    pub windows: usize,
+    pub coverage_fraction: f64,
+    pub outages: Vec<Interval>,
+    pub longest_outage_s: f64,
+    pub visible_min: usize,
+    pub visible_max: usize,
+    pub visible_mean: f64,
+    pub latency_ms_min: Option<f64>,
+    pub latency_ms_median: Option<f64>,
+    pub latency_ms_max: Option<f64>,
+}
+
+/// An area link query's answer: one SATCOM class over several points.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AreaLinkReport {
+    pub class_id: String,
+    pub satellites: usize,
+    pub stale_skipped: usize,
+    pub not_yet_launched: usize,
+    pub mask_deg: f64,
+    pub time_map: TimeMap,
+    pub points: Vec<AreaLinkPoint>,
+    pub compute_ms: u64,
+}
+
+/// One point of an area GNSS query ([`Space::gnss_area`]).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AreaGnssPoint {
+    pub point: Geodetic,
+    pub samples: usize,
+    pub visible_min: usize,
+    pub visible_max: usize,
+    /// First sample with the fewest satellites in view.
+    pub visible_min_at: Option<DateTime<Utc>>,
+    pub pdop_max: Option<f64>,
+    pub pdop_mean: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AreaGnssReport {
+    pub class_id: String,
+    pub mask_deg: f64,
+    pub satellites: usize,
+    pub stale_skipped: usize,
+    pub not_yet_launched: usize,
+    pub time_map: TimeMap,
+    pub points: Vec<AreaGnssPoint>,
+    pub compute_ms: u64,
+}
+
+impl Space {
+    /// SATCOM coverage of one class at several points of an area (the first the centroid)
+    /// over [from, to] (scenario time, `tm` fixed): each satellite's windows found with one
+    /// search for every point ([`access::find_windows_multi`]), and the visible counts and
+    /// latencies sampled every `step_s` with each satellite propagated once per sample for
+    /// every point. Costs about one point's [`Space::links`].
+    pub fn links_area(
+        &self,
+        points: &[Geodetic],
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        class: &str,
+        step_s: f64,
+        tm: TimeMap,
+    ) -> Result<AreaLinkReport, SpaceError> {
+        let started = std::time::Instant::now();
+        if points.is_empty() {
+            return Err(SpaceError::Invalid("an area query names no point".into()));
+        }
+        let cs = self.class(class)?;
+        // any class with a comms model (a reference class too, as `links` takes it)
+        let comms = cs.class.comms.clone().ok_or_else(|| {
+            SpaceError::Invalid(format!("{} has no comms model", cs.class.id))
+        })?;
+        let observers: Vec<Observer> = points.iter().map(|p| Observer::new(*p)).collect();
+        let (pfrom, pto) = (tm.to_prop(from), tm.to_prop(to));
+        let (sats, stale) = self.usable(cs, &tm, from, to);
+        // per satellite, per point: its windows (scenario time)
+        let per_sat: Vec<(usize, Vec<Vec<Interval>>)> = sats
+            .par_iter()
+            .enumerate()
+            .map(|(k, sat)| {
+                let alt = sat.semi_major_axis_km() - EARTH_MEAN_RADIUS_KM;
+                let mask = comms.min_elevation_for_alt(alt);
+                let c = Constraint::MinElevation(mask);
+                let raw = access::find_windows_multi(
+                    sat,
+                    &observers,
+                    pfrom,
+                    pto,
+                    c.psi_max(sat.max_radius_km()),
+                    SearchParams::default(),
+                    |_, g| c.holds(g),
+                );
+                let wins: Vec<Vec<Interval>> = raw
+                    .into_iter()
+                    .map(|ws| {
+                        ws.into_iter()
+                            .map(|w| Interval {
+                                start: tm.to_scenario(w.start),
+                                end: tm.to_scenario(w.end),
+                            })
+                            .collect()
+                    })
+                    .collect();
+                (k, wins)
+            })
+            .collect();
+        let n = observers.len();
+        // the samples: each satellite in any point's window propagated once, every point
+        // judged on that state
+        let step = Duration::milliseconds((step_s.max(1.0) * 1000.0) as i64);
+        let mut times = Vec::new();
+        let mut t = from;
+        while t <= to {
+            times.push(t);
+            t += step;
+        }
+        let samples: Vec<Vec<(usize, Option<f64>)>> = times
+            .par_iter()
+            .map(|t| {
+                let tp = tm.to_prop(*t);
+                let mut per_point: Vec<(usize, Option<f64>)> = vec![(0, None); n];
+                let mut best_el: Vec<f64> = vec![f64::NEG_INFINITY; n];
+                for (k, wins) in &per_sat {
+                    let inside: Vec<bool> = wins
+                        .iter()
+                        .map(|ws| ws.iter().any(|w| w.start <= *t && *t <= w.end))
+                        .collect();
+                    if !inside.iter().any(|&b| b) {
+                        continue;
+                    }
+                    let Ok(st) = sats[*k].state(&tp) else {
+                        continue;
+                    };
+                    let alt = st.ecef.norm() - EARTH_MEAN_RADIUS_KM;
+                    for (i, obs) in observers.iter().enumerate() {
+                        if !inside[i] {
+                            continue;
+                        }
+                        let g = view_geometry(obs, &st.ecef, alt);
+                        per_point[i].0 += 1;
+                        if g.elevation_deg > best_el[i] {
+                            best_el[i] = g.elevation_deg;
+                            per_point[i].1 = one_way_latency_ms(&comms, g.range_km);
+                        }
+                    }
+                }
+                per_point
+            })
+            .collect();
+        let total_s = (to - from).num_milliseconds() as f64 / 1000.0;
+        let mut out = Vec::with_capacity(n);
+        for (i, point) in points.iter().enumerate() {
+            let all: Vec<Interval> = per_sat.iter().flat_map(|(_, w)| w[i].iter().copied()).collect();
+            let windows = all.len();
+            let covered = access::union(all);
+            let outages = access::gaps(&covered, from, to);
+            let covered_s: f64 = covered.iter().map(Interval::duration_s).sum();
+            let visible: Vec<usize> = samples.iter().map(|s| s[i].0).collect();
+            let mut lat: Vec<f64> = samples.iter().filter_map(|s| s[i].1).collect();
+            lat.sort_by(f64::total_cmp);
+            out.push(AreaLinkPoint {
+                point: *point,
+                windows,
+                coverage_fraction: if total_s > 0.0 { covered_s / total_s } else { 0.0 },
+                longest_outage_s: outages.iter().map(Interval::duration_s).fold(0.0, f64::max),
+                outages,
+                visible_min: visible.iter().copied().min().unwrap_or(0),
+                visible_max: visible.iter().copied().max().unwrap_or(0),
+                visible_mean: if visible.is_empty() {
+                    0.0
+                } else {
+                    visible.iter().sum::<usize>() as f64 / visible.len() as f64
+                },
+                latency_ms_min: lat.first().copied(),
+                latency_ms_median: lat.get(lat.len() / 2).copied(),
+                latency_ms_max: lat.last().copied(),
+            });
+        }
+        Ok(AreaLinkReport {
+            class_id: cs.class.id.clone(),
+            satellites: cs.sats.len(),
+            stale_skipped: stale.stale,
+            not_yet_launched: stale.not_yet_launched,
+            mask_deg: comms.min_elevation_deg,
+            time_map: tm,
+            points: out,
+            compute_ms: started.elapsed().as_millis() as u64,
+        })
+    }
+
+    /// GNSS visibility and DOP at several points of an area over [from, to], sampled every
+    /// `step_s`, each satellite propagated once per sample for every point.
+    pub fn gnss_area(
+        &self,
+        points: &[Geodetic],
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        class: &str,
+        step_s: f64,
+        mask_deg: Option<f64>,
+        tm: TimeMap,
+    ) -> Result<AreaGnssReport, SpaceError> {
+        let started = std::time::Instant::now();
+        if points.is_empty() {
+            return Err(SpaceError::Invalid("an area query names no point".into()));
+        }
+        let cs = self.class(class)?;
+        if cs.class.capability != Capability::Gnss {
+            return Err(SpaceError::Invalid(format!("{class} is not a GNSS class")));
+        }
+        let mask = mask_deg
+            .or(cs.class.comms.as_ref().map(|c| c.min_elevation_deg))
+            .unwrap_or(5.0);
+        let observers: Vec<Observer> = points.iter().map(|p| Observer::new(*p)).collect();
+        let (sats, stale) = self.usable(cs, &tm, from, to);
+        let step = Duration::milliseconds((step_s.max(1.0) * 1000.0) as i64);
+        let mut times = Vec::new();
+        let mut t = from;
+        while t <= to {
+            times.push(t);
+            t += step;
+        }
+        let n = observers.len();
+        // per sample, per point: in view and PDOP
+        let samples: Vec<Vec<(usize, Option<f64>)>> = times
+            .par_iter()
+            .map(|t| {
+                let tp = tm.to_prop(*t);
+                let mut los: Vec<Vec<ViewGeometry>> = vec![Vec::new(); n];
+                for sat in &sats {
+                    let Ok(st) = sat.state(&tp) else {
+                        continue;
+                    };
+                    let alt = st.ecef.norm() - EARTH_MEAN_RADIUS_KM;
+                    for (i, obs) in observers.iter().enumerate() {
+                        let g = view_geometry(obs, &st.ecef, alt);
+                        if g.elevation_deg >= mask {
+                            los[i].push(g);
+                        }
+                    }
+                }
+                los.iter()
+                    .map(|v| (v.len(), crate::gnss::dop(v).map(|d| d.pdop)))
+                    .collect()
+            })
+            .collect();
+        let mut out = Vec::with_capacity(n);
+        for (i, point) in points.iter().enumerate() {
+            let visible: Vec<usize> = samples.iter().map(|s| s[i].0).collect();
+            let pdops: Vec<f64> = samples.iter().filter_map(|s| s[i].1).collect();
+            let visible_min = visible.iter().copied().min().unwrap_or(0);
+            out.push(AreaGnssPoint {
+                point: *point,
+                samples: visible.len(),
+                visible_min,
+                visible_max: visible.iter().copied().max().unwrap_or(0),
+                visible_min_at: visible
+                    .iter()
+                    .position(|v| *v == visible_min)
+                    .and_then(|k| times.get(k).copied()),
+                pdop_max: pdops
+                    .iter()
+                    .copied()
+                    .fold(None, |m: Option<f64>, x| Some(m.map_or(x, |m| m.max(x)))),
+                pdop_mean: if pdops.is_empty() {
+                    None
+                } else {
+                    Some(pdops.iter().sum::<f64>() / pdops.len() as f64)
+                },
+            });
+        }
+        Ok(AreaGnssReport {
+            class_id: cs.class.id.clone(),
+            mask_deg: mask,
+            satellites: cs.sats.len(),
+            stale_skipped: stale.stale,
+            not_yet_launched: stale.not_yet_launched,
+            time_map: tm,
+            points: out,
             compute_ms: started.elapsed().as_millis() as u64,
         })
     }

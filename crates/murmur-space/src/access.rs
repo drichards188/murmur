@@ -188,6 +188,122 @@ where
     out
 }
 
+/// [`find_windows`] for several targets at once, with the satellite propagated once per
+/// step: the search is driven by the first target (an area's centroid) with its cone
+/// widened by the farthest other target, which contains every target's own cone, and
+/// each propagated state is judged for every target; each target's window edges are
+/// bisected on their own. One result list per target, in the targets' order. For nine
+/// points of an area a few hundred km across this costs about one target's search.
+pub fn find_windows_multi<F>(
+    sat: &Satellite,
+    targets: &[Observer],
+    t0: DateTime<Utc>,
+    t1: DateTime<Utc>,
+    psi_max: f64,
+    params: SearchParams,
+    pred: F,
+) -> Vec<Vec<RawWindow>>
+where
+    F: Fn(&DateTime<Utc>, &ViewGeometry) -> bool,
+{
+    let n = targets.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let rate = sat.max_ground_angular_rate();
+    let core = (psi_max - 0.6f64.to_radians()).max(0.0);
+    let fine = params.fine_step_s.min((2.0 * core / rate / 3.0).max(0.5));
+    let params = SearchParams {
+        fine_step_s: fine,
+        ..params
+    };
+    let center_dir = targets[0].ecef.unit();
+    let spread = targets
+        .iter()
+        .map(|o| o.ecef.unit().angle_to(&center_dir))
+        .fold(0.0, f64::max);
+    let psi_search = psi_max + spread;
+    // one propagation, every target judged
+    let eval_all = |t: &DateTime<Utc>| -> (Vec<bool>, f64) {
+        match sat.state(t) {
+            Ok(st) => {
+                let psi = st.ecef.angle_to(&center_dir);
+                if psi > psi_search {
+                    return (vec![false; n], psi);
+                }
+                let alt = st.ecef.norm() - crate::geo::EARTH_MEAN_RADIUS_KM;
+                let oks = targets
+                    .iter()
+                    .map(|o| pred(t, &view_geometry(o, &st.ecef, alt)))
+                    .collect();
+                (oks, psi)
+            }
+            Err(_) => (vec![false; n], psi_search + rate * 60.0),
+        }
+    };
+    let eval_one = |i: usize, t: &DateTime<Utc>| -> bool {
+        geometry_at(sat, &targets[i], t).is_some_and(|(_, g)| pred(t, &g))
+    };
+    let bisect = |i: usize, mut lo: DateTime<Utc>, mut hi: DateTime<Utc>, lo_ok: bool| -> DateTime<Utc> {
+        while (hi - lo).num_microseconds().unwrap_or(0) as f64 > params.edge_tol_s * 1e6 {
+            let mid = lo + (hi - lo) / 2;
+            if eval_one(i, &mid) == lo_ok {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        if lo_ok { lo } else { hi }
+    };
+
+    let mut out: Vec<Vec<RawWindow>> = vec![Vec::new(); n];
+    let mut t = t0;
+    let (mut prev_ok, mut psi) = eval_all(&t);
+    let mut prev_t = t;
+    let mut open: Vec<Option<(DateTime<Utc>, bool)>> =
+        prev_ok.iter().map(|&ok| ok.then_some((t0, true))).collect();
+    while t < t1 {
+        let any = prev_ok.iter().any(|&ok| ok);
+        let step = if !any && psi > psi_search {
+            ((psi - psi_search) / rate).max(params.fine_step_s)
+        } else {
+            params.fine_step_s
+        };
+        t = (t + secs(step)).min(t1);
+        let (ok, p) = eval_all(&t);
+        psi = p;
+        for i in 0..n {
+            if ok[i] == prev_ok[i] {
+                continue;
+            }
+            let edge = bisect(i, prev_t, t, prev_ok[i]);
+            if ok[i] {
+                open[i] = Some((edge, false));
+            } else if let Some((s, clipped)) = open[i].take() {
+                out[i].push(RawWindow {
+                    start: s,
+                    end: edge,
+                    clipped_start: clipped,
+                    clipped_end: false,
+                });
+            }
+        }
+        prev_ok = ok;
+        prev_t = t;
+    }
+    for (i, o) in open.into_iter().enumerate() {
+        if let Some((s, clipped)) = o {
+            out[i].push(RawWindow {
+                start: s,
+                end: t1,
+                clipped_start: clipped,
+                clipped_end: true,
+            });
+        }
+    }
+    out
+}
+
 /// Time of maximum elevation within [a, b] (golden-section search; elevation is unimodal
 /// over a single pass).
 pub fn peak_time(

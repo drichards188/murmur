@@ -746,6 +746,10 @@ struct Tracked {
     /// `rechecked` or `missed` report; a `missed` report (its detail) waiting for the failure.
     recheck_due: Option<(bool, String)>,
     recheck_lost: Option<String>,
+    /// Rules 11: the answer a space task was dispatched on (its request time, its segment):
+    /// a re-check keeps the request time and comes from another segment.
+    dispatch_now: Option<Time>,
+    last_segment: Option<crate::space::SegmentId>,
     /// The last check's recomputed results, its phase and seq.
     last_results: Vec<CheckResult>,
     last_phase: Option<CheckPhase>,
@@ -869,6 +873,8 @@ impl Tracked {
             cancel_reported: false,
             recheck_due: None,
             recheck_lost: None,
+            dispatch_now: None,
+            last_segment: None,
         }
     }
 
@@ -1336,6 +1342,8 @@ fn replay_inner<S: AsRef<str>>(
     let mut prev: Option<&Event> = None;
     // from the last `space.loaded`
     let mut scenario_map = ScenarioMap::IDENTITY;
+    // rules 11: the segment in force (the last `space.loaded`), which a re-check must be on
+    let mut current_segment: Option<crate::space::SegmentId> = None;
     let mut pinned: Option<i64> = None;
     // operator sessions as opened: who, with what grants
     let mut sessions: BTreeMap<SessionId, (OperatorId, Grants)> = BTreeMap::new();
@@ -1534,9 +1542,9 @@ fn replay_inner<S: AsRef<str>>(
                 areas = Some(load_areas(&mut r, e, sha256, set));
             }
             EventBody::SpaceLoaded {
+                segment,
                 scenario,
                 pinned_shift_days,
-                ..
             } => {
                 r.space_segments += 1;
                 let map = scenario.unwrap_or(ScenarioMap::IDENTITY);
@@ -1545,6 +1553,7 @@ fn replay_inner<S: AsRef<str>>(
                 }
                 scenario_map = map;
                 pinned = *pinned_shift_days;
+                current_segment = Some(segment.clone());
             }
             EventBody::SpaceQuery { sha256, answer } => {
                 r.space_queries += 1;
@@ -1709,8 +1718,28 @@ fn replay_inner<S: AsRef<str>>(
                     if !(pol.rules.space_followups() && tr.spec.task.is_space() && tr.state == State::Dispatched) {
                         bad(&mut r, e, Some(*intent), "a dispatched-phase check on something but a running space task under rules 11", json(&(tr.spec.kind(), tr.state, pol.rules.rules_version)), String::new());
                     }
-                    tr.recheck_due = Some((again_passed, space::recheck_detail(&again, again_passed, inputs.space.answer())));
+                    // a collect whose pass has come was collected: never re-checked
+                    if let Some(SpaceOrder::Collect(c)) = &tr.space_order
+                        && scenario_map.scenario(e.t) >= c.collect_time
+                    {
+                        bad(&mut r, e, Some(*intent), "a collect re-checked after its pass had come (it was collected; a later answer can't miss it)", json(&scenario_map.scenario(e.t)), json(&c.collect_time));
+                    }
+                    if let Some(a) = inputs.space.answer() {
+                        // at the request time it was tasked at, on the segment the engine
+                        // holds, which is not the one its last answer came from
+                        if a.now().is_some() && a.now() != tr.dispatch_now {
+                            bad(&mut r, e, Some(*intent), "a re-check at another request time than the task was tasked at", json(&a.now()), json(&tr.dispatch_now));
+                        }
+                        if current_segment.as_ref() != Some(&a.segment) {
+                            bad(&mut r, e, Some(*intent), "a re-check on a segment other than the one loaded (space.loaded) at that point", a.segment.short(), current_segment.as_ref().map_or(String::new(), |s| s.short()));
+                        }
+                        if tr.last_segment.as_ref() == Some(&a.segment) {
+                            bad(&mut r, e, Some(*intent), "a re-check on the segment the task already runs on (the engine re-checks only a reloaded segment)", a.segment.short(), String::new());
+                        }
+                    }
+                    tr.recheck_due = Some((again_passed, space::recheck_detail(&again, again_passed, inputs.space.answer(), scenario_map.scenario(e.t))));
                 }
+                tr.last_segment = inputs.space.answer().map(|a| a.segment.clone());
                 // which platform each of its vehicles was (a next run carries it only onto the
                 // same ones)
                 for u in &tr.spec.uids {
@@ -2467,6 +2496,9 @@ fn replay_inner<S: AsRef<str>>(
                     continue;
                 };
                 tr.space_order = order.clone();
+                if let Some(a) = tr.last_inputs.as_deref().and_then(|w| w.space.answer()) {
+                    tr.dispatch_now = a.now();
+                }
                 if let Some(seq) = tr.dispatch_logged {
                     bad(
                         &mut r,

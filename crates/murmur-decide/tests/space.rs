@@ -126,6 +126,15 @@ impl Run {
     }
 }
 
+/// A cover's answer, prepared outside the engine as the bridge does before it takes its
+/// lock: the engine computes no cover itself (rules 11; it would hold the decision lock for
+/// seconds), so a test hands it one.
+fn prime(run: &mut Run, p: &Proposal) {
+    let rules = run.engine.policy().rules.clone();
+    let prepared = prepare_space(&segment(), &p.task, run.clock.now(), &rules).unwrap();
+    run.engine.use_prepared_space(prepared);
+}
+
 fn check(i: &Intent, rule: RuleId) -> &CheckResult {
     i.checks()
         .iter()
@@ -738,15 +747,17 @@ fn approval_kind_settings_are_validated() {
 fn satcom_cover_runs_on_its_own_and_dispatches_a_coverage_watch() {
     let mut run = run(policy(), true);
     let world = run.world();
+    let c = cover(
+        CoverService::Satcom {
+            class: "wgs".into(),
+        },
+        None,
+    );
+    prime(&mut run, &c);
     let mut port = run.engine.agent_port(AgentId::new("planner"));
     let i = port
         .propose(
-            cover(
-                CoverService::Satcom {
-                    class: "wgs".into(),
-                },
-                None,
-            ),
+            c,
             rationale("relay for the USV"),
             &world,
             &NoTerrain,
@@ -790,11 +801,13 @@ fn gnss_cover_below_the_level_fails() {
     let gps = || CoverService::Gnss {
         class: "gps".into(),
     };
+    prime(&mut run, &cover(gps(), None));
     let ok = run
         .engine
         .submit(session.authority(), cover(gps(), None), &world, &NoTerrain)
         .unwrap();
     assert_eq!(ok.state(), State::AutoApproved, "{:#?}", ok.checks());
+    prime(&mut run, &cover(gps(), Some(40.0)));
     let too_many = run
         .engine
         .submit(
@@ -808,6 +821,15 @@ fn gnss_cover_below_the_level_fails() {
     let c = check(too_many, RuleId::Coverage);
     assert!(c.detail.contains("needs 40"), "{}", c.detail);
     // A SATCOM cover naming a GNSS class fails closed.
+    prime(
+        &mut run,
+        &cover(
+            CoverService::Satcom {
+                class: "gps".into(),
+            },
+            None,
+        ),
+    );
     let wrong = run
         .engine
         .submit(
@@ -1259,6 +1281,7 @@ fn a_cover_is_evaluated_at_sample_points_over_its_area() {
         .open_operator_session(OperatorId::new("op-1"))
         .unwrap();
     let world = run.world();
+    prime(&mut run, &cover(wgs(), None));
     let i = run
         .engine
         .submit(session.authority(), cover(wgs(), None), &world, &NoTerrain)
@@ -1301,22 +1324,19 @@ fn a_cover_is_evaluated_at_sample_points_over_its_area() {
         ring: (0..24).map(|k| LonLat::new(-122.5 + 0.004 * f64::from(k), 37.8 + 0.001 * f64::from(k % 3))).collect(),
     };
     assert_eq!(cover_points(&many).len(), 1 + COVER_BOUNDARY_SAMPLES, "thinned to the sample count");
+    let poly = Proposal::space(Task::Cover {
+        area: polygon,
+        window: Window {
+            from: t0(),
+            to: t0().plus_ms(3_600_000),
+        },
+        service: wgs(),
+        min_level: None,
+    });
+    prime(&mut run, &poly);
     let p = run
         .engine
-        .submit(
-            session.authority(),
-            Proposal::space(Task::Cover {
-                area: polygon,
-                window: Window {
-                    from: t0(),
-                    to: t0().plus_ms(3_600_000),
-                },
-                service: wgs(),
-                min_level: None,
-            }),
-            &world,
-            &NoTerrain,
-        )
+        .submit(session.authority(), poly, &world, &NoTerrain)
         .unwrap();
     assert!(check(p, RuleId::Coverage).detail.contains("of 5 sample points"), "{}", check(p, RuleId::Coverage).detail);
     // the watch handed on carries the area; its answer the points
@@ -1339,6 +1359,7 @@ fn before_rules_11_a_cover_is_evaluated_at_the_centroid() {
         .open_operator_session(OperatorId::new("op-1"))
         .unwrap();
     let world = run.world();
+    prime(&mut run, &cover(wgs(), None));
     let i = run
         .engine
         .submit(session.authority(), cover(wgs(), None), &world, &NoTerrain)
@@ -1373,9 +1394,11 @@ fn a_cover_verdict_that_does_not_match_the_area_evaluation_is_caught() {
         class: "gps".into(),
     };
     // the fewest satellites in view at the worst sample point decide: ask for more than that
+    let c = cover(gps, Some(40.0));
+    prime(&mut run, &c);
     let i = run
         .engine
-        .submit(session.authority(), cover(gps, Some(40.0)), &world, &NoTerrain)
+        .submit(session.authority(), c, &world, &NoTerrain)
         .unwrap();
     assert_eq!(i.state(), State::Rejected);
     let c = check(i, RuleId::Coverage);
@@ -1565,6 +1588,7 @@ fn a_watching_cover_is_cancelled_but_an_agent_withdraws_nothing_after_dispatch()
         .open_operator_session(OperatorId::new("op-1"))
         .unwrap();
     let world = run.world();
+    prime(&mut run, &cover(wgs(), None));
     let id = run
         .engine
         .submit(session.authority(), cover(wgs(), None), &world, &NoTerrain)
@@ -1586,6 +1610,7 @@ fn a_watching_cover_is_cancelled_but_an_agent_withdraws_nothing_after_dispatch()
         "{detail}"
     );
     // an agent's own cover, dispatched: the agent withdraws nothing after dispatch
+    prime(&mut run, &cover(wgs(), None));
     let aid = run
         .engine
         .agent_port(AgentId::new("planner"))
@@ -1665,7 +1690,7 @@ fn a_dispatched_collect_is_rechecked_against_a_later_segment() {
     assert!(detail.starts_with(&format!("{NO_LONGER_FEASIBLE}feasibility: NORAD {}", chosen.norad_id)), "{detail}");
     assert!(detail.contains("no pass of that satellite in the window"), "{detail}");
     assert!(
-        detail.contains("feasible options now; a new collect may choose one:") || detail.contains("no feasible option left"),
+        detail.contains("feasible options from") || detail.contains("no feasible option left"),
         "{detail}"
     );
     let i = run.engine.intent(id).unwrap();
@@ -1839,6 +1864,7 @@ fn writes_the_rules_11_fixture_when_asked() {
         .unwrap();
     // a cover over the area, watched to the end of its window
     let world = run.world();
+    prime(&mut run, &cover(wgs(), None));
     let cid = run
         .engine
         .submit(session.authority(), cover(wgs(), None), &world, &NoTerrain)
@@ -1886,4 +1912,463 @@ fn writes_the_rules_11_fixture_when_asked() {
     if let Ok(path) = std::env::var("MURMUR_WRITE_FIXTURE") {
         std::fs::write(&path, &text).unwrap_or_else(|e| panic!("{path}: {e}"));
     }
+}
+
+// ---- the review of 8738abd ---------------------------------------------------------------
+
+/// An oracle whose every query fails (a segment that cannot answer).
+struct Failing(SegmentId);
+
+impl SpaceOracle for Failing {
+    fn segment(&self) -> &SegmentId {
+        &self.0
+    }
+    fn answer(&self, _: &SpaceQuery) -> Result<SpaceAnswer, String> {
+        Err("the element sets could not be read".into())
+    }
+}
+
+/// A clock that moves a second at every read (what two reads straddling a second do).
+#[derive(Clone)]
+struct Ticking(Arc<std::sync::atomic::AtomicI64>);
+
+impl Clock for Ticking {
+    fn now(&self) -> Time {
+        Time(self.0.fetch_add(1_000, std::sync::atomic::Ordering::SeqCst))
+    }
+}
+
+/// The fixture pinned to a given shift (the same elements, another pin).
+fn pinned_space(days: Option<i64>) -> Arc<Space> {
+    let mut s = build_space(FIXTURE, CONSTELLATIONS);
+    s.pinned_shift_days = days;
+    Arc::new(s)
+}
+
+/// Rewrite the last logged space answer (a re-check's) and every reference to it.
+fn edit_last_answer(ev: &mut [Event], edit: impl Fn(&mut SpaceAnswer)) {
+    let last = ev
+        .iter()
+        .rposition(|e| matches!(e.body, audit::EventBody::SpaceQuery { .. }))
+        .expect("a space answer");
+    let (old, new) = {
+        let audit::EventBody::SpaceQuery { sha256, answer } = &mut ev[last].body else {
+            unreachable!()
+        };
+        edit(answer);
+        let new = answer.content_hash().unwrap();
+        let old = sha256.clone();
+        *sha256 = new.clone();
+        (old, new)
+    };
+    for e in ev.iter_mut() {
+        if let audit::EventBody::CheckResult { inputs, .. } | audit::EventBody::PolicyDecision { inputs, .. } = &mut e.body
+            && let LoggedSpace::Answered { sha256 } = &mut inputs.space
+            && *sha256 == old
+        {
+            *sha256 = new.clone();
+        }
+    }
+}
+
+/// H1: the engine computes no cover (seconds of SGP4 under whatever lock the caller holds):
+/// a cover decides only on an answer prepared outside, which stays its answer whatever its
+/// age (its query does not depend on when it was asked); a collect's query (milliseconds)
+/// is still asked when none was prepared.
+#[test]
+fn a_cover_is_never_computed_by_the_engine_itself() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut run = run(policy(), false);
+    run.engine
+        .set_space(Box::new(Counting(segment(), calls.clone())))
+        .unwrap();
+    let session = run
+        .engine
+        .open_operator_session(OperatorId::new("op-1"))
+        .unwrap();
+    let world = run.world();
+    // nothing prepared: the cover fails closed and the segment is not asked
+    let i = run
+        .engine
+        .submit(session.authority(), cover(wgs(), None), &world, &NoTerrain)
+        .unwrap();
+    assert_eq!(i.state(), State::Rejected);
+    let q = check(i, RuleId::SpaceQuery);
+    assert!(q.detail.contains("no cover answer prepared"), "{}", q.detail);
+    assert_eq!(calls.load(SeqCst), 0, "no cover computed under the lock");
+    // an answer prepared a minute before the check (past the collect bound of 5 s) is still
+    // the cover's answer
+    let outside = Counting(segment(), calls.clone());
+    let prepared = prepare_space(&outside, &cover(wgs(), None).task, t0(), &policy().rules).unwrap();
+    assert_eq!(calls.load(SeqCst), 1);
+    run.engine.use_prepared_space(prepared);
+    run.advance_to(t0().plus_ms(60_000));
+    let world = run.world();
+    let i = run
+        .engine
+        .submit(session.authority(), cover(wgs(), None), &world, &NoTerrain)
+        .unwrap();
+    assert_eq!(i.state(), State::AutoApproved, "{:#?}", i.checks());
+    assert_eq!(calls.load(SeqCst), 1, "not asked again under the lock");
+    // a collect's tasking query is asked when nothing was prepared (milliseconds)
+    let i = run
+        .engine
+        .submit(session.authority(), collect(None), &world, &NoTerrain)
+        .unwrap();
+    assert_eq!(check(i, RuleId::SpaceQuery).outcome, Outcome::Pass);
+    assert_eq!(calls.load(SeqCst), 2);
+    assert_replays(&run.log);
+}
+
+/// M2: the pin is part of a segment's identity: the same elements pinned otherwise are
+/// another segment, which a prepared answer from them does not fit.
+#[test]
+fn a_prepared_answer_fits_only_the_segment_and_pin_the_engine_holds() {
+    let run = run(policy(), true);
+    let task = cover(wgs(), None).task;
+    let rules = policy().rules;
+    let p = prepare_space(&segment(), &task, t0(), &rules).unwrap();
+    assert!(run.engine.prepared_space_fits(&p));
+    let pinned = SpaceSegment::new(pinned_space(Some(-7))).unwrap();
+    assert!(pinned.segment().same_elements(segment().segment()));
+    assert_ne!(*pinned.segment(), *segment().segment());
+    assert!(pinned.segment().short().contains("pinned -7 d"), "{}", pinned.segment().short());
+    let p = prepare_space(&pinned, &task, t0(), &rules).unwrap();
+    assert!(!run.engine.prepared_space_fits(&p));
+    let other = SpaceSegment::new(space_without(25544)).unwrap();
+    let p = prepare_space(&other, &task, t0(), &rules).unwrap();
+    assert!(!run.engine.prepared_space_fits(&p));
+    // an answer that could not be computed carries no segment: it fits (and fails closed)
+    let failing = Failing(segment().segment().clone());
+    let p = prepare_space(&failing, &task, t0(), &rules).unwrap();
+    assert!(run.engine.prepared_space_fits(&p));
+}
+
+/// M1: a collect whose pass has come was collected: a later answer does not re-check it,
+/// and replay refuses a re-check written after the pass.
+#[test]
+fn a_collect_whose_pass_has_come_is_not_rechecked() {
+    let mut run = run(policy(), true);
+    let session = run
+        .engine
+        .open_operator_session(OperatorId::new("op-1"))
+        .unwrap();
+    let (id, chosen, order) = dispatched_collect(&mut run, &session);
+    let (task, now) = {
+        let i = run.engine.intent(id).unwrap();
+        (i.spec().task.clone(), i.space_answer().unwrap().now().unwrap())
+    };
+    run.advance_to(chosen.collect_time.plus_ms(1_000));
+    run.engine
+        .record_op_state(id, &order.resource, "collected", "simulated")
+        .unwrap();
+    let later = space_without(chosen.norad_id);
+    let seg2 = SpaceSegment::new(later.clone()).unwrap();
+    run.engine
+        .set_space(Box::new(SpaceSegment::new(later).unwrap()))
+        .unwrap();
+    let p = prepare_space_at(&seg2, &task, run.clock.now(), now, &policy().rules).unwrap();
+    let err = run.engine.recheck_space(id, p).unwrap_err();
+    assert!(err.to_string().contains("its pass has come"), "{err}");
+    let i = run.engine.intent(id).unwrap();
+    assert_eq!(i.state(), State::Dispatched);
+    assert_eq!(i.ops()[&order.resource], "collected");
+    assert!(!run.log.text().contains("\"phase\":\"dispatched\""));
+    run.engine.finish(id, TaskOutcome::Done).unwrap();
+    let r = replay_str(&run.log.text()).unwrap();
+    assert!(r.ok(), "{:#?}", r.mismatches);
+    // forged from an honest re-check before the pass: its events re-timed past the pass
+    let mut run = self::run(policy(), true);
+    let session = run
+        .engine
+        .open_operator_session(OperatorId::new("op-1"))
+        .unwrap();
+    let (id, chosen, _) = dispatched_collect(&mut run, &session);
+    let (task, now) = {
+        let i = run.engine.intent(id).unwrap();
+        (i.spec().task.clone(), i.space_answer().unwrap().now().unwrap())
+    };
+    let later = space_without(chosen.norad_id);
+    let seg2 = SpaceSegment::new(later.clone()).unwrap();
+    run.engine
+        .set_space(Box::new(SpaceSegment::new(later).unwrap()))
+        .unwrap();
+    let p = prepare_space_at(&seg2, &task, run.clock.now(), now, &policy().rules).unwrap();
+    assert!(matches!(run.engine.recheck_space(id, p).unwrap(), SpaceRecheck::Lost { .. }));
+    let honest = run.log.text();
+    let after = chosen.collect_time.plus_ms(5_000);
+    let w = forged_whats(&honest, |ev| {
+        let mut moving = false;
+        for e in ev {
+            if matches!(e.body, audit::EventBody::SpaceLoaded { .. }) && e.seq > 2 {
+                moving = true;
+            }
+            if moving {
+                e.t = after;
+            }
+        }
+    });
+    assert!(
+        w.iter().any(|m| m.starts_with("a collect re-checked after its pass had come")),
+        "{w:?}"
+    );
+}
+
+/// M3: an area answer's result points are its query's: one dropped, moved or copied over
+/// another (the query left as it was) is not the answer to the question.
+#[test]
+fn a_cover_answer_whose_points_are_not_its_querys_is_caught() {
+    let mut run = run(policy(), true);
+    let session = run
+        .engine
+        .open_operator_session(OperatorId::new("op-1"))
+        .unwrap();
+    let world = run.world();
+    let gps = CoverService::Gnss {
+        class: "gps".into(),
+    };
+    let c = cover(gps, Some(40.0));
+    prime(&mut run, &c);
+    let i = run
+        .engine
+        .submit(session.authority(), c, &world, &NoTerrain)
+        .unwrap();
+    assert_eq!(i.state(), State::Rejected);
+    let SpaceResult::CoverGnss(g) = &i.space_answer().unwrap().result else {
+        panic!("not an area answer");
+    };
+    let worst = g.points.iter().position(|p| p.gnss.visible_min == g.worst().unwrap().gnss.visible_min).unwrap();
+    // another point's entry (over a 5 km circle every point sees the same satellites, so
+    // the entries differ by their coordinates alone)
+    let best = (worst + 1) % g.points.len();
+    let honest = run.log.text();
+    type Edit = fn(&mut SpaceAnswer, usize, usize);
+    let cases: [(Edit, &str); 3] = [
+        (
+            |a, worst, _| {
+                if let SpaceResult::CoverGnss(c) = &mut a.result {
+                    c.points.remove(worst);
+                }
+            },
+            "dropped",
+        ),
+        (
+            |a, worst, _| {
+                if let SpaceResult::CoverGnss(c) = &mut a.result {
+                    let other = (worst + 1) % c.points.len();
+                    c.points[worst].point = c.points[other].point;
+                }
+            },
+            "moved",
+        ),
+        (
+            |a, worst, best| {
+                if let SpaceResult::CoverGnss(c) = &mut a.result {
+                    let entry = c.points[best].clone();
+                    c.points[worst] = entry;
+                }
+            },
+            "copied over",
+        ),
+    ];
+    for (edit, what) in cases {
+        let forged = forge(&honest, |ev| edit_answer(ev, |a| edit(a, worst, best)));
+        let r = replay_str(&forged).unwrap();
+        let w = whats(&r);
+        assert!(w.iter().any(|m| m == "check results differ"), "{what}: {w:?}");
+        assert!(
+            r.mismatches.iter().any(|m| m.recomputed.contains("the space answer's points")),
+            "{what}: {:#?}",
+            r.mismatches
+        );
+    }
+}
+
+/// M4: a re-check is at the request time the task was tasked at and on the segment loaded
+/// after it: one at a later request time, or with the reload cut from the log, is caught.
+#[test]
+fn a_recheck_is_tied_to_its_request_time_and_to_the_reload() {
+    let mut run = run(policy(), true);
+    let session = run
+        .engine
+        .open_operator_session(OperatorId::new("op-1"))
+        .unwrap();
+    let (id, chosen, _) = dispatched_collect(&mut run, &session);
+    let (task, now) = {
+        let i = run.engine.intent(id).unwrap();
+        (i.spec().task.clone(), i.space_answer().unwrap().now().unwrap())
+    };
+    run.clock.advance_ms(60_000);
+    let later = space_without(chosen.norad_id);
+    let seg2 = SpaceSegment::new(later.clone()).unwrap();
+    run.engine
+        .set_space(Box::new(SpaceSegment::new(later).unwrap()))
+        .unwrap();
+    let p = prepare_space_at(&seg2, &task, run.clock.now(), now, &policy().rules).unwrap();
+    assert!(matches!(run.engine.recheck_space(id, p).unwrap(), SpaceRecheck::Lost { .. }));
+    let honest = run.log.text();
+    assert!(replay_str(&honest).unwrap().ok());
+    // F12: the re-check's answer asked an hour later (the engine refuses it)
+    let w = forged_whats(&honest, |ev| {
+        edit_last_answer(ev, |a| {
+            if let SpaceQuery::Tasking(q) = &mut a.query {
+                q.now += chrono::Duration::hours(1);
+            }
+            if let SpaceResult::Tasking(t) = &mut a.result {
+                t.request.now += chrono::Duration::hours(1);
+            }
+        });
+    });
+    assert!(
+        w.iter().any(|m| m == "a re-check at another request time than the task was tasked at"),
+        "{w:?}"
+    );
+    // F7: the reload cut from the log
+    let w = forged_whats(&honest, |ev| {
+        let last = ev.iter().rposition(|e| matches!(e.body, audit::EventBody::SpaceLoaded { .. })).unwrap();
+        ev.remove(last);
+    });
+    assert!(
+        w.iter().any(|m| m.starts_with("a re-check on a segment other than the one loaded")),
+        "{w:?}"
+    );
+}
+
+/// L1: the cancel's report is logged at the instant its detail was computed for, so an
+/// honest log whose clock moved between the two replays.
+#[test]
+fn a_cancel_whose_clock_moved_between_reads_still_replays() {
+    let clock = Ticking(Arc::new(std::sync::atomic::AtomicI64::new(t0().0)));
+    let log = MemorySink::new();
+    let mut engine = Engine::new(policy(), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    engine.set_space(Box::new(segment())).unwrap();
+    let session = engine
+        .open_operator_session(OperatorId::new("op-1"))
+        .unwrap();
+    let world = WorldSnapshot::new(clock.now());
+    let q = engine
+        .submit(session.authority(), collect(None), &world, &NoTerrain)
+        .unwrap();
+    let chosen = ChosenCollect::from_option(&q.space_answer().unwrap().tasking().unwrap().options[0]);
+    let qid = q.id();
+    let world = WorldSnapshot::new(clock.now());
+    let id = engine
+        .amend_collect(session.authority(), qid, chosen, &world, &NoTerrain)
+        .unwrap()
+        .id();
+    let Order::Collect(order) = engine.dispatch_order(id).unwrap() else {
+        panic!("not a collect order");
+    };
+    engine
+        .record_op_state(id, &order.resource, "tasked", "simulated")
+        .unwrap();
+    let i = engine.cancel(id, session.authority(), "weather").unwrap();
+    assert_eq!(i.state(), State::Aborted);
+    let r = replay_str(&log.text()).unwrap();
+    assert!(r.ok(), "{:#?}", r.mismatches);
+    assert_eq!(r.space_cancelled, 1);
+}
+
+/// L2: a polygon is thinned by geometry (its far tip is always sampled) and a closed ring
+/// samples its first vertex once.
+#[test]
+fn polygon_sampling_keeps_the_far_tip_and_a_closed_ring_once() {
+    let c = GOLDEN_GATE;
+    let around = |bearing: f64, km: f64| {
+        let g = murmur_space::Geodetic::new(c.lat, c.lon, 0.0).destination(bearing, km);
+        LonLat::new(g.lon_deg, g.lat_deg)
+    };
+    // eight vertices 20 km out and a ninth, the tip, 138 km east: thinning by index
+    // (every k-th vertex) would leave the ninth out
+    let mut ring: Vec<LonLat> = (0..8).map(|k| around(f64::from(k) * 45.0, 20.0)).collect();
+    let tip = around(90.0, 138.0);
+    ring.push(tip);
+    let pts = cover_points(&SpaceArea::Polygon { ring: ring.clone() });
+    assert_eq!(pts.len(), 1 + COVER_BOUNDARY_SAMPLES);
+    assert!(
+        pts.iter().any(|p| murmur_decide::geo::haversine_m(LonLat::new(p.lon_deg, p.lat_deg), tip) < 1.0),
+        "the tip is sampled: {pts:?}"
+    );
+    // the same ring closed: the first vertex once
+    let mut closed = ring.clone();
+    closed.push(ring[0]);
+    let pts2 = cover_points(&SpaceArea::Polygon { ring: closed });
+    assert_eq!(pts2, pts);
+    let small: Vec<LonLat> = (0..4).map(|k| around(f64::from(k) * 90.0, 10.0)).collect();
+    let mut small_closed = small.clone();
+    small_closed.push(small[0]);
+    assert_eq!(cover_points(&SpaceArea::Polygon { ring: small_closed }).len(), 5);
+}
+
+/// L3: a later answer that could not be computed is no answer: the task runs on, nothing
+/// is logged, and the bridge hears why.
+#[test]
+fn a_recheck_whose_answer_failed_keeps_the_task() {
+    let mut run = run(policy(), true);
+    let session = run
+        .engine
+        .open_operator_session(OperatorId::new("op-1"))
+        .unwrap();
+    let (id, _, order) = dispatched_collect(&mut run, &session);
+    let (task, now) = {
+        let i = run.engine.intent(id).unwrap();
+        (i.spec().task.clone(), i.space_answer().unwrap().now().unwrap())
+    };
+    let before = run.log.lines().len();
+    let failing = Failing(segment().segment().clone());
+    let p = prepare_space_at(&failing, &task, run.clock.now(), now, &policy().rules).unwrap();
+    let SpaceRecheck::Unknown { reason } = run.engine.recheck_space(id, p).unwrap() else {
+        panic!("a failed query is no answer");
+    };
+    assert!(reason.contains("could not be read"), "{reason}");
+    let i = run.engine.intent(id).unwrap();
+    assert_eq!(i.state(), State::Dispatched);
+    assert_eq!(i.ops()[&order.resource], "tasked");
+    assert_eq!(run.log.lines().len(), before, "nothing logged");
+    assert_replays(&run.log);
+}
+
+/// L4: a lost pass's fresh options are those still taskable at the re-check's own time, not
+/// at the request time the answer was asked at.
+#[test]
+fn fresh_options_after_a_lost_pass_are_those_still_taskable_now() {
+    let mut run = run(policy(), true);
+    let session = run
+        .engine
+        .open_operator_session(OperatorId::new("op-1"))
+        .unwrap();
+    let (id, chosen, _) = dispatched_collect(&mut run, &session);
+    let (task, now, options) = {
+        let i = run.engine.intent(id).unwrap();
+        let a = i.space_answer().unwrap();
+        (i.spec().task.clone(), a.now().unwrap(), a.tasking().unwrap().options.clone())
+    };
+    // just before the chosen pass: the earlier options are gone and the lead time of the
+    // next ones is running out
+    let at = chosen.collect_time.plus_ms(-10_000);
+    run.advance_to(at);
+    let later = space_without(chosen.norad_id);
+    let seg2 = SpaceSegment::new(later.clone()).unwrap();
+    run.engine
+        .set_space(Box::new(SpaceSegment::new(later).unwrap()))
+        .unwrap();
+    let p = prepare_space_at(&seg2, &task, run.clock.now(), now, &policy().rules).unwrap();
+    let SpaceRecheck::Lost { detail } = run.engine.recheck_space(id, p).unwrap() else {
+        panic!("the pass should be gone");
+    };
+    let from = murmur_decide::space::fmt_time(at);
+    assert!(
+        detail.contains(&format!("feasible options from {from}")) || detail.contains(&format!("no feasible option left in the window from {from}")),
+        "{detail}"
+    );
+    // nothing listed collects before now plus its lead time
+    for o in &options {
+        let lead = from_utc(o.earliest_collect).ms_since(now).max(0);
+        if from_utc(o.collect_time) < at.plus_ms(lead) {
+            assert!(!detail.contains(&format!("{} {} collect", o.satellite, o.norad_id)), "{detail}");
+        }
+    }
+    let r = replay_str(&run.log.text()).unwrap();
+    assert!(r.ok(), "{:#?}", r.mismatches);
 }
