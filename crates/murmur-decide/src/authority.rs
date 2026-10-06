@@ -59,9 +59,10 @@
 //! ```
 //!
 //! A step-up (the signer's credential re-entered at the moment of signing, rules 8) is a
-//! [`StepUp`]: only [`crate::Engine::step_up`] makes one, after logging it under the session
-//! it is for, and a signature consumes it. It can't be forged, copied or read from JSON
-//! either, so a signature can't quote a step-up it did not just make:
+//! [`StepUp`]: only [`crate::Engine::step_up`] (or, rules 10, a passkey's,
+//! [`crate::Engine::step_up_passkey`]) makes one, after logging it under the session it is
+//! for, and a signature consumes it. It can't be forged, copied or read from JSON either, so
+//! a signature can't quote a step-up it did not just make:
 //!
 //! ```compile_fail,E0451
 //! // Forging a step-up by struct literal: the fields are private.
@@ -229,7 +230,8 @@ impl AuthMethod {
 }
 
 /// Proof that the signer re-entered their credential just now (rules 8, a credentials run):
-/// made only by [`crate::Engine::step_up`], which logs it (`operator.action step_up`) under
+/// made only by [`crate::Engine::step_up`] (rules 10: or [`crate::Engine::step_up_passkey`],
+/// with the assertion and what it is for), which logs it (`operator.action step_up`) under
 /// the session it is for, and consumed by the one signature that quotes it. Not `Clone`, not
 /// `Default`, not `Deserialize`, no public fields. The engine refuses it for another session
 /// or once it is older than [`STEP_UP_MAX_AGE_MS`]; the signature records the step-up's

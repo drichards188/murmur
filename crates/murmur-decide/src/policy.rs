@@ -37,7 +37,10 @@
 //! approval of it re-enters the approver's credential at that moment
 //! ([`PolicyDecision::step_up`]; the engine refuses a signature without a [`crate::StepUp`]),
 //! and the submitter's own request is never the approval (it waits in the inbox). An
-//! engagement always has it, whatever the file says.
+//! engagement always has it, whatever the file says. Rules 10 ([`crate::rules::PASSKEY_SINCE`],
+//! policy schema 7): `[approval] step_up_factor` says what a person's step-up must be
+//! (`password`, the default, takes the password or a passkey; `passkey` only a passkey bound to
+//! the act) and `login_factor` how people sign in.
 
 use std::collections::BTreeMap;
 use std::path::Path;

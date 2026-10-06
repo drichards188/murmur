@@ -80,6 +80,17 @@
 //!   operator it lists; an intent is carried over only from a run that authenticated alike.
 //!   [`ReplayReport::authenticated`] is what evaluation reads before counting a log's human
 //!   decisions, with the log's anchors checked and only its people's acts.
+//! - passkeys (rules 10, [`crate::rules::PASSKEY_SINCE`]): the roster's relying party and keys
+//!   are ones a run could start with (a credentials run, a domain, keys on the curve, a study's
+//!   participant with a passkey and a passkey policy unless overridden); every passkey login
+//!   and step-up's assertion verifies ([`crate::passkey::verify`]) against the key the run
+//!   logged or registered since (not removed, the operator's own), on the challenge recomputed
+//!   from the first line's hash, the session, what it was for, the nonce and the issue time,
+//!   each nonce once, within [`crate::passkey::CHALLENGE_TTL_MS`], its counter counting up; an
+//!   act quoting a passkey step-up is the act it was made for, and where the policy asks a
+//!   person for a passkey their quoted step-up is one; a registration through a session quotes
+//!   a password step-up. [`ReplayReport::study_evidence`] says whether a study's participant
+//!   signed every consequential act by passkey.
 //!
 //! **Space recomputation.** [`replay_str_with_space`] also re-runs every logged space query
 //! on the segment given. If that segment is the one the query ran on (same

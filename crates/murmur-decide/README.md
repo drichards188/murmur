@@ -1043,6 +1043,50 @@ Rules versions:
   and a live run with its anchors (`v9-identification-live.jsonl`,
   `tests/data/anchors/v9-identification-live.anchors`; see `tests/versions.rs`).
 
+- **10** (murmur-437, passkeys; every gate reads `PASSKEY_SINCE`, policy schema 7
+  `PASSKEY_SCHEMA_SINCE`, so another change taking the number first renumbers it in one line):
+  a login or a step-up may be a passkey's (`crate::passkey`). A credentials run's
+  `run.started` roster names the WebAuthn relying party and every operator's passkeys as
+  public keys (`passkeys`: `rp_id`, the console `origins`, per key the operator, credential id,
+  ES256 public key as a SEC1 point, and its counter); a dev run takes none. A passkey use is
+  logged with its assertion (`passkey` on `session.opened` and `operator.action step_up`, `auth:
+  passkey`: the credential, its counter, what it is for, `for`, the server's nonce and issue
+  time, and the authenticator data, client data and signature, none of them secret); its
+  challenge is derived (`passkey::challenge`) from the hash of the log's first line, the
+  session (none for a login), the operator, `for`, the nonce and the issue time, so the
+  signature binds the person's authenticator to that act in that run. The engine
+  (`Engine::passkey_challenge`, `step_up_passkey`, `open_passkey_session`) verifies each use
+  with its own code (`passkey::verify`: the client data a `webauthn.get` for exactly that
+  challenge from a listed origin, the authenticator data for the relying party with the user
+  present and verified, the ECDSA P-256 signature under the logged key), refuses another
+  operator's credential, a removed one, a counter that does not count up (a cloned
+  authenticator; 0 then 0 is a passkey that never counts), a challenge answered twice or older
+  than `CHALLENGE_TTL_MS` (120 s), a login's assertion as a step-up and a scripted session's
+  passkey; and an act quoting a passkey step-up must be the act it was made for (`StepUpFor`:
+  a signature's intent and, for an engagement, the picture token it quotes and the SHA-256 of
+  that token; a hostile declaration's track; a confirmation's declaration; acceptances' lost
+  vehicles), else it is refused (`approval.refused` for a signature). `[approval]
+  step_up_factor` (`password`, the default, takes either; `passkey` refuses a person's password
+  step-up) and `login_factor` (`either`, `password`, `passkey`) are policy schema 7; a scripted
+  credential steps up as it is held. Passkeys registered or removed while the run is up are
+  logged (`passkey.registered`: the key, `via` a session quoting its password step-up, or an
+  invitation; `passkey.removed`). A study run names its participant on the roster (`study`,
+  with `password_step_up`, the reason of the explicit override, when one allowed passwords);
+  the engine refuses to start one without the participant's passkey or with a policy that would
+  take a password, unless overridden. Replay re-verifies every assertion against the roster's
+  keys and those registered since (challenge, origin, relying party, flags, signature, counter,
+  nonce used once, issue time within the lifetime), checks every quoted passkey step-up was made
+  for the act quoting it and the policy's factor (a registration's step-up is a password by
+  design), and reports passkey logins, step-ups by factor, registrations, removals and the
+  study (`StudyReport`; `ReplayReport::study_evidence`: authenticated, a study, no override,
+  every consequential act of the participant's by passkey). Markers (a log claiming rules 9 or
+  older can't carry them): `auth: passkey`, a `passkey` assertion, the roster's `passkeys` and
+  `study`, `passkey.registered`, `passkey.removed`, `step_up_factor`, `login_factor`. An
+  engine of older rules drops a roster's passkeys and study and a policy's factors. Fixtures:
+  `tests/data/audit/v10-engagement-scenario-01.jsonl` (the scenario runner: `auth: dev`, no
+  passkeys) and a live run with its anchors (`v10-passkeys-live.jsonl`,
+  `tests/data/anchors/v10-passkeys-live.anchors`; see `tests/versions.rs`).
+
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
 `seen_max_age_s`, an unreleased build's name for it, is still read; **3** adds `[queue]`
@@ -1054,7 +1098,9 @@ Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_s
 keys refused: `rule_declaration`, `attribution_threshold`, `nominate_unconfirmed`,
 `conflict_confidence`, `untracked_per_km2`, `escort_m`, `escort_speed_mps`, each bounded,
 `corroboration`, `corroboration_window_s`)
-and `confirm_declaration` in `step_up_acts` (`RULE_ID_SCHEMA_SINCE`, rules 9).
+and `confirm_declaration` in `step_up_acts` (`RULE_ID_SCHEMA_SINCE`, rules 9); **7** adds
+`[approval] step_up_factor` (`password`, `passkey`) and `login_factor` (`either`, `password`,
+`passkey`), both optional (`PASSKEY_SCHEMA_SINCE`, rules 10).
 
 ## Integration contract for the bridge
 
@@ -1080,7 +1126,13 @@ The full contract is in the crate docs (`src/lib.rs`). In short:
    the password) and closes it at logout, expiry or a credential change
    (`close_operator_session`); a consequential approval (`PolicyDecision::step_up`) checks
    the password again, then `step_up` and `approve_stepped` or
-   `approve_engagement_stepped`. Agent (MCP) side: an `AgentPort` per agent, nothing else.
+   `approve_engagement_stepped`. Rules 10: log the relying party and the operators' passkeys
+   on the roster (`Roster::with_passkeys`), and a study (`with_study`); for a passkey use, ask
+   `passkey_challenge` for the act (`sign_purpose` for a signature, `confirm_purpose`), have
+   the browser sign it, check it (webauthn-rs in the bridge), then `step_up_passkey` (or
+   `open_passkey_session` for a login) with the assertion; log registrations and removals
+   (`record_passkey_registered`, `record_passkey_removed`). Agent (MCP) side: an `AgentPort`
+   per agent, nothing else.
 5. Every second: `expire_due` (pending approvals and, rules 5, queued intents past their
    deadline). For approved intents: `dispatch_or_queue` with the world now gives
    `Routed::Dispatched(Order)` (a vehicle order: a `DispatchOrder` for the existing task
@@ -1164,7 +1216,9 @@ on the scenario clock.
 - Engagements: a straight-line intercept (no turn radius or climb), keep-outs 2D wherever
   an altitude is unknown (and a vertical cylinder, not a volume shaped by any effect model,
   where both are known), the platform's own path checked against no-go areas but not
-  no-strike areas, signers authenticated by password only (no second factor; rules 8). An
+  no-strike areas, signers' passkeys required only where the policy (or a study) asks
+  (rules 10; the shipped policy takes the password or a passkey), no attestation of what
+  kind of authenticator holds a passkey. An
   engagement does not survive a bridge restart: the next run puts the platform's own
   lost-link values back (carried over from the last run's log, onto the same
   vehicle only, see the lost-link preload above), but the engagement itself is not resumed.

@@ -57,6 +57,11 @@ curl -c jar -X POST http://127.0.0.1:8765/api/auth/login -H 'Content-Type: appli
 curl -b jar -X POST http://127.0.0.1:8765/api/intents/<id>/approve
 ```
 
+(An approval that steps up, such as an engagement signature, also carries the password again,
+`"password"`; where the policy asks for a passkey (`[approval] step_up_factor = "passkey"`,
+rules 10, a study always) only a person's passkey, at the console on localhost, signs it: an
+agent holds no passkey and never authorizes either way.)
+
 `--task auto|human|both`, `--uid N --task orbit|hold|rtl` to task a given vehicle,
 `--withdraw` to withdraw a proposal still pending at the end, `--url`, `--agent` and `--key`
 for a second stack or a second agent.

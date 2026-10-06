@@ -473,6 +473,21 @@ lost vehicle to the acts that step up (off by default). Passkeys come before a s
 real participants. Live log with anchors:
 `crates/murmur-decide/tests/data/audit/v8-auth-live.jsonl`.
 
+Rules 10, passkeys (murmur-437; `PASSKEY_SINCE`, policy schema 7; `crates/murmur-decide/src/
+passkey.rs`, `crates/murmur-auth/src/passkeys.rs` on webauthn-rs, bridge `auth.rs`, console
+`passkey.ts`; DECISIONS.md "Passkeys bind a step-up to its act"): an operator registers
+passkeys (WebAuthn, user verification required) at the console while signed in, the password
+re-entered, or through a one-time invitation link (`murmur-auth passkey-invite`); signs in with
+one; and steps up with one, its challenge derived from the run, the session and the act (an
+engagement signature: the intent and the picture token shown), verified by the engine against
+the public key the run logged and again by replay with its own code. `[approval]
+step_up_factor = "passkey"` requires it (default `password`, which takes either); a study
+(`MURMUR_STUDY`) requires it and does not start without the participant's passkey, unless an
+explicit, logged override allows a password (never evidence); the evaluation counts a study
+run only with the participant's passkey at every step-up. The relying party is `localhost`
+(WebAuthn takes no IP address): passkeys work at the console's localhost origin. Live log with
+anchors: `crates/murmur-decide/tests/data/audit/v10-passkeys-live.jsonl`.
+
 Rules 9, rule-based identification with human review (user direction 10-05: minimize
 manual approvals; `RULE_ID_SINCE`, policy schema 6; `crates/murmur-decide/src/ident.rs`,
 bridge `decision/ident.rs`, contacts `[[act]]`, console Review; DECISIONS.md "The engine may
