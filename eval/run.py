@@ -6,6 +6,7 @@
         --seeds 1 2 3 --parallel 3
     python -m eval.run engage --seeds 1 2 3 --noise 0 3 10
     python -m eval.run ident --seeds 1 2 3 4 5 6 7 8 9 10 --situations 20 --untracked-share 0.2 0.5
+    python -m eval.run keepout --seeds 1 2 3 4 5 6 7 8 9 10 --situations 100
     python -m eval.run report eval/results/<batch>
     python -m eval.run enroll --participant p01        (once: the participant's passkey)
     python -m eval.run study eval/scenarios/plausible-wrong.toml --participant p01
@@ -43,6 +44,8 @@ from .engage import EngageAdapter, run_suite
 from .ident import DEFAULT_ARMS as IDENT_ARMS
 from .ident import run_comparison as run_ident
 from .ident import table as ident_table
+from .keepout import run as run_keepout
+from .keepout import table as keepout_table
 from .metrics import clock_checks, compute_run, run_replay
 from .ports import Allocator, PortBlock, ephemeral_range, lease_tidewater_port
 from .proxy import ProxyParams, make_supervisor, proxy_params
@@ -525,6 +528,12 @@ def do_batch(args: argparse.Namespace) -> int:
             "untracked_shares": comp["untracked_shares"],
         }
         print(ident_table(comp), flush=True)
+    if not args.no_keepout:
+        # keep-outs against engagements on generated situations under rules 6, 9 and 12 (the
+        # engine's own nomination checks through eval/keepout_probe; model results)
+        ko = run_keepout(out / "keepout", list(args.keepout_seeds), args.keepout_situations)
+        batch["keepout"] = {"seeds": list(args.keepout_seeds), "situations_per_cell_per_seed": args.keepout_situations, "situations": ko["situations"]}
+        print(keepout_table(ko), flush=True)
     (out / "batch.json").write_text(json.dumps(batch, indent=1))
     print(f"batch {out.name}: {len(jobs)} runs, {parallel} in parallel; {note}", flush=True)
     alloc = Allocator()
@@ -677,6 +686,36 @@ def do_ident(args: argparse.Namespace) -> int:
     return 0 if not comp["summary"]["errors"] else 1
 
 
+def do_keepout(args: argparse.Namespace) -> int:
+    """How often keep-outs block an engagement, on generated situations (model results)."""
+    out = Path(args.out) if args.out else RESULTS / f"keepout-{now_id()}"
+    out.mkdir(parents=True, exist_ok=True)
+    started = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    params: dict[str, Any] = {}
+    for key in ("densities", "behaviours", "tte_s", "dist_m", "platforms", "rules", "vel_sigma", "lost_share", "radius_m"):
+        v = getattr(args, key, None)
+        if v is not None:
+            params[key] = v
+    summary = run_keepout(out / "keepout", list(args.seeds), args.situations, params=params, workers=args.workers)
+    meta = {
+        "id": out.name,
+        "started": started,
+        "ended": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "seeds": [],
+        "provenance": provenance(),
+        "keepout": {"seeds": list(args.seeds), "situations_per_cell_per_seed": args.situations, "situations": summary["situations"]},
+        "runs": [],
+    }
+    (out / "batch.json").write_text(json.dumps(meta, indent=1))
+    from .report import build
+
+    report = build(out)
+    print(keepout_table(summary))
+    print(f"report: {report}")
+    c = summary["counts"]
+    return 0 if not c["errors"] and not c["mismatches"] else 1
+
+
 def do_report(args: argparse.Namespace) -> int:
     from .report import build
 
@@ -787,6 +826,9 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--ident-seeds", nargs="+", type=int, default=list(range(1, 11)), help="identification comparison seeds (default 1-10)")
     b.add_argument("--ident-situations", type=int, default=20, help="generated identification situations per seed (default 20)")
     b.add_argument("--no-ident", action="store_true", help="skip the identification comparison (rules 9)")
+    b.add_argument("--keepout-seeds", nargs="+", type=int, default=[1, 2, 3], help="keep-out measurement seeds (default 1-3)")
+    b.add_argument("--keepout-situations", type=int, default=10, help="generated keep-out situations per seed, density and behaviour (default 10)")
+    b.add_argument("--no-keepout", action="store_true", help="skip the keep-out measurement")
 
     e = sub.add_parser("engage", help="the engagement scenario suite (sim/scenarios/engage) over seeds and noise, and its report")
     e.add_argument("--seeds", nargs="+", type=int, default=list(range(1, 11)))
@@ -803,6 +845,21 @@ def main(argv: list[str] | None = None) -> int:
     i.add_argument("--proxy-misread", type=float, help="the review proxy's slip rate (default 0.05)")
     i.add_argument("--untracked-share", nargs="+", type=float, default=[0.2, 0.5], help="shares of authors we hold no track of, each its own comparison (default 0.2 0.5)")
     i.add_argument("--out")
+
+    ko = sub.add_parser("keepout", help="how often keep-outs block an engagement, on generated situations under rules 6, 9 and 12 (model results)")
+    ko.add_argument("--seeds", nargs="+", type=int, default=list(range(1, 11)))
+    ko.add_argument("--situations", type=int, default=100, help="generated situations per seed, density and behaviour (default 100)")
+    ko.add_argument("--densities", nargs="+", type=float, help="protected contacts per km^2 (default 0.03 0.1 0.3 1)")
+    ko.add_argument("--behaviours", nargs="+", choices=["stationary", "transiting", "circling", "manoeuvring", "new", "mixed"], help="default: all")
+    ko.add_argument("--tte-s", dest="tte_s", nargs="+", type=int, help="nominal times to effect, s (default 30 45 60 90 120 180 240 300)")
+    ko.add_argument("--dist-m", dest="dist_m", nargs="+", type=int, help="platform distances for the platform table, m (default 500 1000 2000 3000)")
+    ko.add_argument("--platforms", nargs="+", help="armed platforms from the catalog (default magura switchblade)")
+    ko.add_argument("--rules", nargs="+", type=int, help="rules versions (default 6 9 12)")
+    ko.add_argument("--vel-sigma", dest="vel_sigma", type=float, help="velocity estimate error per axis, m/s (default 0.5)")
+    ko.add_argument("--lost-share", dest="lost_share", type=float, help="chance one of our vehicles is lost (default 0.1)")
+    ko.add_argument("--radius-m", dest="radius_m", type=float, help="effect radius, m (default 75)")
+    ko.add_argument("--workers", type=int, help="processes (default: half the CPUs, at most 12)")
+    ko.add_argument("--out")
 
     s = sub.add_parser("study", help="a real participant on the console; the runner records")
     s.add_argument("scenario")
@@ -830,7 +887,7 @@ def main(argv: list[str] | None = None) -> int:
         args.tidewater_url = None
         args.tidewater = "none"
     try:
-        return {"run": do_run, "batch": do_batch, "engage": do_engage, "ident": do_ident, "report": do_report, "kill": do_kill, "measure": do_measure, "study": do_study, "enroll": do_enroll}[args.cmd](args)
+        return {"run": do_run, "batch": do_batch, "engage": do_engage, "ident": do_ident, "keepout": do_keepout, "report": do_report, "kill": do_kill, "measure": do_measure, "study": do_study, "enroll": do_enroll}[args.cmd](args)
     except SpecError as e:
         print(f"spec error: {e}", file=sys.stderr)
         return 2
