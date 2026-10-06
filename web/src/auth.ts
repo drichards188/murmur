@@ -128,8 +128,15 @@ export async function logout(): Promise<void> {
   try {
     await fetch('/api/auth/logout', { method: 'POST' })
   } finally {
-    set({ auth: 'credentials', signed_in: false })
+    set(signedOut())
   }
+}
+
+/** Signed out, keeping what the sign-in screen needs to know (rules 10: whether a passkey can
+ *  sign in here, and on which host). */
+function signedOut(ended?: string): AuthState {
+  const pk = state.passkey ? { rp_id: state.passkey.rp_id, origins: state.passkey.origins } : undefined
+  return { auth: 'credentials', signed_in: false, ended, passkey: pk, login_factor: state.login_factor }
 }
 
 /** The headers an operator's request carries: in a dev run the asserted operator id, in a
@@ -145,7 +152,7 @@ export async function operatorFetch(input: string, init: RequestInit): Promise<R
   const res = await fetch(input, init)
   if (res.status === 401 && state.auth === 'credentials') {
     const b = await res.clone().json().catch(() => ({}))
-    if (!b.step_up) set({ auth: 'credentials', signed_in: false, ended: b.detail ?? 'your session has ended' })
+    if (!b.step_up) set(signedOut(b.detail ?? 'your session has ended'))
   }
   return res
 }
