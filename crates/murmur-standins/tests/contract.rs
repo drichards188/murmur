@@ -21,7 +21,11 @@ const SYSID: u8 = 7;
 /// How long a frame that came ahead of one sent before it waits for that one before the
 /// gap is taken as a loss: no frame is delivered later than this after it arrived, however
 /// many are lost (a loaded host's loopback drops some too).
-const GAP_WAIT: Duration = Duration::from_secs(2);
+const GAP_WAIT: Duration = Duration::from_secs(5);
+/// How far ahead of the one it waits for a frame may be and still wait: past it the gap is
+/// taken as a loss at once. Reordering on loopback is a few frames; the sequence number is
+/// one byte, so a burst held for long would wrap onto frames still held.
+const REORDER_MAX: u8 = 32;
 
 /// The GCS end of a running vehicle's link. It reads the vehicle's frames in the order the
 /// vehicle sent them (their MAVLink sequence): a loaded host's loopback can deliver two
@@ -36,6 +40,10 @@ struct Gcs {
     next: Option<u8>,
     /// frames that came ahead of it, by sequence number, and when each arrived
     held: std::collections::BTreeMap<u8, (Vec<u8>, Instant)>,
+    /// a frame received and not placed yet: it waits for the held ones to go first
+    incoming: Option<Vec<u8>>,
+    /// the gap the held frames wait at is given up (lost): they go now, in order
+    give_up: bool,
     /// a test of losses: (message id, n): the frame of that id after the next n is lost on
     /// the way
     drop_once: Option<(u32, u32)>,
@@ -68,23 +76,28 @@ impl Gcs {
                 self.next = Some(want.wrapping_add(1));
                 return f;
             }
-            // a frame held GAP_WAIT: the one it waited for is lost; go on from the earliest held
+            // a frame held GAP_WAIT, or a gap given up: the one waited for is lost; go on
+            // from the earliest held
             let oldest = self.held.values().map(|(_, at)| *at).min();
-            if let Some(at) = oldest
-                && at.elapsed() >= GAP_WAIT
-            {
+            if !self.held.is_empty() && (self.give_up || oldest.is_some_and(|at| at.elapsed() >= GAP_WAIT)) {
                 let want = self.next.unwrap_or(0);
                 self.next = self.held.keys().copied().min_by_key(|s| s.wrapping_sub(want));
                 continue;
             }
-            let n = match oldest {
-                Some(at) => match tokio::time::timeout_at(at + GAP_WAIT, self.sock.recv(&mut buf)).await {
-                    Ok(r) => r.expect("recv"),
-                    Err(_) => continue,
-                },
-                None => self.sock.recv(&mut buf).await.expect("recv"),
+            self.give_up = false;
+            let frame = match self.incoming.take() {
+                Some(f) => f,
+                None => {
+                    let n = match oldest {
+                        Some(at) => match tokio::time::timeout_at(at + GAP_WAIT, self.sock.recv(&mut buf)).await {
+                            Ok(r) => r.expect("recv"),
+                            Err(_) => continue,
+                        },
+                        None => self.sock.recv(&mut buf).await.expect("recv"),
+                    };
+                    buf[..n].to_vec()
+                }
             };
-            let frame = buf[..n].to_vec();
             // MAVLink 2: STX, length, flags, flags, sequence, system, component, message id
             let Some(&seq) = frame.get(4).filter(|_| frame[0] == mavlink::MAV_STX_V2) else {
                 return frame;
@@ -99,8 +112,18 @@ impl Gcs {
             }
             match self.next {
                 Some(want) if seq != want && seq.wrapping_sub(want) < 128 => {
-                    // ahead of one sent before it: wait for that one
-                    self.held.insert(seq, (frame, Instant::now()));
+                    if seq.wrapping_sub(want) < REORDER_MAX && !self.held.contains_key(&seq) {
+                        // a little ahead of one sent before it: wait for that one
+                        self.held.insert(seq, (frame, Instant::now()));
+                    } else if self.held.is_empty() {
+                        // far ahead: what it would wait for is lost
+                        self.next = Some(seq.wrapping_add(1));
+                        return frame;
+                    } else {
+                        // far ahead, or wrapped onto one held: the held go first
+                        self.incoming = Some(frame);
+                        self.give_up = true;
+                    }
                 }
                 // in order (or one given up on arriving after all: as it comes)
                 Some(want) if seq != want => return frame,
@@ -148,6 +171,8 @@ impl Gcs {
             self.next = Some(last.wrapping_add(1));
         }
         frames.extend(held.into_iter().map(|(_, f)| f));
+        frames.extend(self.incoming.take());
+        self.give_up = false;
         frames
             .iter()
             .filter_map(|d| mavlink::read_v2_msg::<MavMessage, _>(&mut PeekReader::new(&d[..])).ok())
@@ -267,6 +292,8 @@ async fn start(spec: Spec, alt: f64) -> Gcs {
         seq: 0,
         next: None,
         held: Default::default(),
+        incoming: None,
+        give_up: false,
         drop_once: None,
     }
 }
