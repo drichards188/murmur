@@ -1823,3 +1823,67 @@ fn a_prepared_answer_from_another_segment_is_not_used() {
     assert_eq!(i.space_answer().unwrap().segment.sha256, segment().segment().sha256);
     assert_replays(&run.log);
 }
+
+/// The committed rules 11 fixture of the engine on the element-set fixture
+/// (`tests/data/audit/v11-space-followups-engine.jsonl`, replayed by `tests/versions.rs`):
+/// an area cover watched to its end, a collect cancelled before its pass, a collect
+/// re-checked on a reloaded segment (the chosen satellite gone) and missed. Written to
+/// `MURMUR_WRITE_FIXTURE` when that is set (from a clean build of the head the fixture
+/// names), checked here either way.
+#[test]
+fn writes_the_rules_11_fixture_when_asked() {
+    let mut run = run(policy(), true);
+    let session = run
+        .engine
+        .open_operator_session(OperatorId::new("op-1"))
+        .unwrap();
+    // a cover over the area, watched to the end of its window
+    let world = run.world();
+    let cid = run
+        .engine
+        .submit(session.authority(), cover(wgs(), None), &world, &NoTerrain)
+        .unwrap()
+        .id();
+    let Order::Cover(watch) = run.engine.dispatch_order(cid).unwrap() else {
+        panic!("not a cover order");
+    };
+    run.engine
+        .record_op_state(cid, &watch.resource, "watching", "wgs SATCOM over the area until the window end")
+        .unwrap();
+    // a collect cancelled a minute after it was tasked, before its pass
+    let (id, _, _) = dispatched_collect(&mut run, &session);
+    run.clock.advance_ms(60_000);
+    let i = run
+        .engine
+        .cancel(id, session.authority(), "weather closed in")
+        .unwrap();
+    assert_eq!(i.state(), State::Aborted);
+    // a second collect, its segment reloaded without its satellite: missed
+    let (id, chosen, _) = dispatched_collect(&mut run, &session);
+    let (task, now) = {
+        let i = run.engine.intent(id).unwrap();
+        (i.spec().task.clone(), i.space_answer().unwrap().now().unwrap())
+    };
+    run.clock.advance_ms(60_000);
+    let later = space_without(chosen.norad_id);
+    let seg2 = SpaceSegment::new(later.clone()).unwrap();
+    run.engine
+        .set_space(Box::new(SpaceSegment::new(later).unwrap()))
+        .unwrap();
+    let p = prepare_space_at(&seg2, &task, run.clock.now(), now, &policy().rules).unwrap();
+    assert!(matches!(run.engine.recheck_space(id, p).unwrap(), SpaceRecheck::Lost { .. }));
+    assert_eq!(run.engine.intent(id).unwrap().state(), State::Failed);
+    // the watch ends with its window
+    run.advance_to(t0().plus_ms(6 * 3600 * 1000));
+    run.engine
+        .record_op_state(cid, &watch.resource, "ended", "coverage window ended")
+        .unwrap();
+    run.engine.finish(cid, TaskOutcome::Done).unwrap();
+    let text = run.log.text();
+    let r = replay_str(&text).unwrap();
+    assert!(r.ok(), "{:#?}", r.mismatches);
+    assert_eq!((r.space_cancelled, r.space_rechecked, r.space_missed), (1, 0, 1));
+    if let Ok(path) = std::env::var("MURMUR_WRITE_FIXTURE") {
+        std::fs::write(&path, &text).unwrap_or_else(|e| panic!("{path}: {e}"));
+    }
+}

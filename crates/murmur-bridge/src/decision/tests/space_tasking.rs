@@ -433,7 +433,7 @@ async fn a_reloaded_segment_rechecks_every_running_space_task() {
     let by_id = |id: IntentId| {
         runs["runs"]
             .as_array()
-            .unwrap()
+            .expect("runs")
             .iter()
             .find(|v| v["intent_id"] == id.0)
             .cloned()
