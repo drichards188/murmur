@@ -708,7 +708,7 @@ pub fn log_head(text: &str) -> Option<(String, u64)> {
     text.lines()
         .filter(|l| !l.trim().is_empty())
         .filter_map(|l| serde_json::from_str::<Event>(l).ok().map(|e| (sha256_hex(l.as_bytes()), e.seq)))
-        .last()
+        .next_back()
 }
 
 /// Rules 6: the earlier log a carried `platform.restore` names: its `from` less the

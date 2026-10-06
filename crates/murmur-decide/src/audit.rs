@@ -80,6 +80,9 @@ pub enum CheckPhase {
     Dequeue,
 }
 
+// `run.started` (the policy, the roster, the areas and, rules 11, the carry) is the largest
+// variant by far and is written once per run: boxing it would only reshape every match.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum EventBody {

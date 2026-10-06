@@ -43,10 +43,8 @@ fn world_at(t: Time, who: Option<VehicleIdentity>) -> WorldSnapshot {
     let mut w = world();
     w.t = t;
     for v in w.vehicles.values_mut() {
-        for f in [&mut v.nav_ready] {
-            if let Some(f) = f {
-                f.t = t;
-            }
+        if let Some(f) = &mut v.nav_ready {
+            f.t = t;
         }
         if let Some(f) = &mut v.autopilot {
             f.t = t;
