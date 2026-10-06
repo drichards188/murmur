@@ -519,7 +519,9 @@ def cargo() -> str:
 
 def build_probe() -> Path:
     """Build the probe into the repository's target directory (a no-op when it is current)."""
-    cmd = [cargo(), "build", "--release", "--locked", "--manifest-path", str(PROBE_DIR / "Cargo.toml"), "--target-dir", str(REPO / "target")]
+    # not --locked: a dependency murmur-decide gains later goes into the probe's own lock file (a
+    # change provenance shows) rather than failing the build
+    cmd = [cargo(), "build", "--release", "--manifest-path", str(PROBE_DIR / "Cargo.toml"), "--target-dir", str(REPO / "target")]
     p = subprocess.run(cmd, cwd=str(REPO), capture_output=True, text=True)
     if p.returncode != 0:
         raise RuntimeError(f"building the probe failed: {p.stderr.strip()[-2000:]}")

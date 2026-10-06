@@ -531,9 +531,15 @@ def do_batch(args: argparse.Namespace) -> int:
     if not args.no_keepout:
         # keep-outs against engagements on generated situations under rules 6, 9 and 12 (the
         # engine's own nomination checks through eval/keepout_probe; model results)
-        ko = run_keepout(out / "keepout", list(args.keepout_seeds), args.keepout_situations)
-        batch["keepout"] = {"seeds": list(args.keepout_seeds), "situations_per_cell_per_seed": args.keepout_situations, "situations": ko["situations"]}
-        print(keepout_table(ko), flush=True)
+        try:
+            ko = run_keepout(out / "keepout", list(args.keepout_seeds), args.keepout_situations)
+        except (RuntimeError, OSError, subprocess.SubprocessError) as e:
+            # the probe could not be built or run: the batch goes on, and says so
+            batch["keepout"] = {"error": str(e)[-2000:]}
+            print(f"keep-out measurement skipped: {e}", flush=True)
+        else:
+            batch["keepout"] = {"seeds": list(args.keepout_seeds), "situations_per_cell_per_seed": args.keepout_situations, "situations": ko["situations"]}
+            print(keepout_table(ko), flush=True)
     (out / "batch.json").write_text(json.dumps(batch, indent=1))
     print(f"batch {out.name}: {len(jobs)} runs, {parallel} in parallel; {note}", flush=True)
     alloc = Allocator()

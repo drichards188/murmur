@@ -1387,6 +1387,9 @@ def build(batch: Path) -> Path:
         body.append(ident_section(ident))
     if keepout:
         body.append(keepout_section(keepout))
+    elif (meta.get("keepout") or {}).get("error"):
+        body.append("<h2>Keep-outs against engagements (rules 6, 9, 12)</h2>")
+        body.append(f"<p class='bad'>Not measured in this batch: {esc(meta['keepout']['error'])}</p>")
 
     body.append("<h2>What went wrong</h2>")
     body.append(
