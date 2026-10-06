@@ -170,6 +170,12 @@ meaningful. Decision and command, not weapons.
   (`engage::track_standing`, `friendly_standing`, `circle_holding`): changing those changes
   decisions. The dry run fills what the engine fills (`Engine::dry_run_inputs`). More
   pictures: `MURMUR_KO_SEED=N MURMUR_KO_WORLDS=1500 cargo test -p murmur-decide --test keepout`.
+- Keep-out measurement: `.venv/bin/python -m eval.run keepout --seeds 1 2 3 4 5 6 7 8 9 10
+  --situations 100` (every variant, ~16 min; `--variants radar all` for less). `eval/keepout_probe`
+  is a workspace member that compiles the bridge's `tracks/{model,sensing,truth}.rs` by path, so
+  `make check` lints and tests it with them. Model results: read METRICS.md "Keep-outs against
+  engagements" before quoting (radar alone is the pessimistic sensor case; the air tracker's
+  constants are unvalidated).
 - The tracker is a two-model IMM; changes must pass `tracks::tests::calib`. Its held-out seeds
   (66-95) are not for tuning: write a new held-out set if you tune on them.
 - This host's wall clock (WSL) stepped back 0.5 to 0.9 s every ~32 s for the first two hours or
