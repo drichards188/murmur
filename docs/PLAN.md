@@ -473,6 +473,20 @@ lost vehicle to the acts that step up (off by default). Passkeys come before a s
 real participants. Live log with anchors:
 `crates/murmur-decide/tests/data/audit/v8-auth-live.jsonl`.
 
+Rules 11, the reviews' follow-ups (murmur-q05, -9m0, -jfi, -cq3, -qjf, -54l;
+`REVIEW_FOLLOWUPS_SINCE`, policy schema 7 unchanged; DECISIONS.md, the entries of 10-06): a
+platform spent by its own effect is owed nothing back after the release, and an operator may
+write off lost-link values that will never be confirmed back (or an earlier log whose carry
+failed), under their own session, saying why (`restore.closed`; the console's Write off); a
+young track counts as possibly manoeuvring in a keep-out until the tracker has its average
+velocity (`first_seen_t`); the scripted operators are fixed on the roster at run start; what
+a start carries over from earlier logs is one line of `run.started` (`carried_from`, with each
+log's head), checked by replay against those logs, and a failed carry stays owed until read or
+written off; values carried over hold a mission for the vehicle they were preloaded on (its
+identity logged with the decision); a refused mission names the older orders still queued on
+its vehicles. Scenarios 79 to 82; live log across a crash with anchors in
+`crates/murmur-decide/tests/data/audit/`.
+
 Rules 10, passkeys (murmur-437; `PASSKEY_SINCE`, policy schema 7; `crates/murmur-decide/src/
 passkey.rs`, `crates/murmur-auth/src/passkeys.rs` on webauthn-rs, bridge `auth.rs`, console
 `passkey.ts`; DECISIONS.md "Passkeys bind a step-up to its act"): an operator registers

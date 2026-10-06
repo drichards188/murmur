@@ -675,6 +675,92 @@ group. Dates are 2026.
 
 ## Engineering
 
+- **The reviews' follow-ups are one rules version, gated on a named constant** (10-06,
+  rules 11, `REVIEW_FOLLOWUPS_SINCE`). The six follow-ups below change what is logged or
+  decided, so they share one version; every gate reads the constant (and `RULES_VERSION` is
+  defined from it), never a literal: if another branch (space tasks) takes 11 first, the
+  branch that merges second renumbers in one line and has its fixtures written again by the
+  merged build. No policy key changes (schema 7 stays). Logs of rules 1 to 10 replay
+  unchanged with their own rules; the tests of the rules 6 to 10 carry are pinned to rules 10.
+- **A platform spent by its own effect is owed nothing back; an operator may write off what
+  never comes back** (10-06, murmur-q05; rules 11). A loitering munition's own lost-link
+  values were owed back for good after its effect (the passkeys live run: the switchblade
+  never answered, replay said UNRESTORED, the inbox alerted for the rest of the run, and the
+  next run carried it over), since only a confirmed restore closed the debt. Decided, both:
+  the catalog marks a platform spent by its effect (`expended_by_effect`: switchblade and fpv;
+  not magura, whose variants are not all one-way), and the engine closes what is owed to it
+  right after its engagement's release (`restore.closed`, `expended`, naming the engagement),
+  automatically, since there is nothing to put the values on (minimal approval: no person is
+  asked to confirm the obvious); and any operator may write off a platform's values (lost,
+  destroyed, another vehicle under the uid) or a failed carry, under their own session with a
+  note (`written_off`, `POST /api/restores/write_off`, the console's Write off), never while an
+  engagement is under way on the platform, never an agent. Replay binds both (exactly the
+  values owed; an expended closure only right after that engagement's release, with its
+  release picture showing the platform spent; a write-off under the operator's own session).
+  In the simulation the munition flies on with the preloaded failsafe (a safety action); the
+  bridge stops trying to restore it. A write-off records a judgement about the fleet and
+  authorizes nothing, so it needs no step-up.
+- **A young track counts as possibly manoeuvring until the tracker has the facts** (10-06,
+  murmur-9m0; rules 11). Rules 9 read a track's average velocity (after about 45 s of history)
+  and its manoeuvre memory; a track too young for either fell back to the single region along
+  its velocity: fail open. Now the tracker reports when it started the track (`first_seen_t`)
+  and a track with a velocity but no average velocity yet also counts anywhere it reaches at
+  its domain's plausible top speed (25 m/s surface, 100 air, 30 ground, 15 under water: the
+  figures that already bound a track without a velocity), or at its own speed plus
+  `keep_out_sigma` of its velocity error when that is faster. Why the top speed rather than
+  the speed seen so far: a few seconds of fixes say nothing about a weave, a zigzag or a
+  sprint, and the cost is bounded in time. The cost, stated: larger keep-outs during a track's
+  first minute (and after a gap that cleared its history): a surface contact first detected
+  2 km from an effect 80 s out blocks the nomination, and one detected near an engagement
+  under way aborts it, until the tracker has followed it about 45 s. A scenario or caller that
+  gives no `first_seen_t` is judged as before.
+- **The scripted operators are fixed at the run's start** (10-06, murmur-jfi; rules 11).
+  Whether a credential is harness-held was read from the file at each login and not logged,
+  so turning it off mid-run logged the next login as a person's (the operator joined the
+  people in replay), and a session's `password` relabelled `scripted` or back passed replay
+  (forgery 14). Now a credentials run's roster lists them (`scripted`, an empty list when
+  none); the engine opens a session only by the method that gives its operator, and replay
+  checks every session against it. A credential re-marked while the run is up ends its
+  sessions (its stamp changes, as before) and its next login is refused, saying why, until the
+  bridge restarts: the roster is fixed for the run, as for operators added or removed. The
+  step-up 429 now says the limit is the session's.
+- **What a start carries over is one line of `run.started`, and a failed carry stays owed**
+  (10-06, murmur-cq3; rules 11). Replay could not tell a successor log with every carried
+  `platform.restore` removed (forgery C3: nothing in the log said a carry was due), a crash
+  between two carried events left half a carry, and `.last-run` was rewritten even when the
+  log it named could not be read, dropping that log's debt from the chain with only an inbox
+  alert. Decided: the bridge reads what the earlier logs still owe before this run's log is
+  opened, and the engine records it in `run.started` (`carried_from`: the log the pointer
+  named and, tried again, every log it still owed for whose carry had failed, each with its
+  head and last seq as read and what it still owed, or why it could not be read). One line, so
+  atomic, and covered by the start anchor; the ledger is seeded from it (carried
+  `platform.restore` events are refused from rules 11). Replay checks each named log: it
+  replays, it is the one read (its head), it still owed exactly that, and every pending log
+  was tried again. The pointer always names the newest log; the chain lives in the logs: a log
+  whose carry failed is pending in the log that recorded it, so the next start reads it again,
+  until it is read or an operator writes it off (`restore.closed`, `log`). The other option,
+  a pointer listing every log still owed, was not taken: the pointer is not logged, so replay
+  could not check that a debt was kept. Residual, stated: removing the record from the first
+  line reads as a first start, caught only by the start anchor (like the roster).
+- **Values carried over hold a mission for the vehicle they were preloaded on** (10-06,
+  murmur-qjf; rules 11). Rules 7 held a mission only for values an engagement of this run
+  preloaded, because the log could not tell which vehicle has the uid after a restart; so in
+  exactly the crash case a carried mission could fly over the preloaded fallback. Now each
+  snapshot carries the bridge's identity of every vehicle (platform, callsign, system id,
+  home), and a decision's `restore_owed` fact for carried values logs it (`carried`: the log,
+  the vehicle preloaded, the vehicle now, `other_vehicle` when they differ); they hold unless
+  the vehicle is known to be another (unknown fields hold: fail closed), and replay recomputes
+  the hold from the logged identity. A kind the policy never queues logs no reach, so carried
+  values refuse it whatever vehicle has the uid (an operator writes them off if it is another).
+  The identity is the bridge's report, as any fact is: replay proves the hold follows from it,
+  not that it was true.
+- **A refused mission says which older orders still stand** (10-06, murmur-54l; rules 11). A
+  mission refused for its platform's own values (its kind never queued) replaces nothing, so
+  an older queued hold or rtl still goes when the link allows (safer: a safety command), but
+  the refusal did not say so. Its reason now names every order still queued on its vehicles,
+  with the advice to cancel one meant to be replaced, and replay recomputes the reason from the
+  ledger, the engagements in play and the queue.
+
 - **The bridge keeps one clock that never steps, steered to within about 2 s of the wall
   clock; the wall clock itself only dates what another clock reads** (10-05, murmur-dup;
   bounded after the review of 9ab8089, 10-06). On this host (WSL), early after boot, the
@@ -959,7 +1045,9 @@ group. Dates are 2026.
   can't strip it. Values carried over from an earlier run's log hold no order (stated
   limitation): the bridge writes those back only onto the vehicle they were preloaded on,
   which the log alone can't tell, and another vehicle under the uid would otherwise be held
-  for the whole run; they still go back at once when heard, alerted until they do.
+  for the whole run; they still go back at once when heard, alerted until they do. (Lifted
+  by rules 11: they hold for the vehicle they were preloaded on, judged on the identity logged
+  with the fact; see "Values carried over hold a mission" above.)
 - **An order queued for an engagement's platform supersedes it, as a dispatched one does**
   (10-04, murmur-636; rules 7). A newer order queued for the platform abandoned the
   engagement's unstarted intercept, the engagement read that as an intercept failure, stopped

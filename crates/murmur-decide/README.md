@@ -205,9 +205,11 @@ link to fail, nor sent twice, nor sent stale.
   The engine keeps the platforms' own values owed back as the log has them (the ledger replay
   keeps, `replay::Restores`), and `queue::reach` holds an order other than a hold or rtl for
   a vehicle still owed values an engagement of this run preloaded (`restore_owed`, a
-  decision's fact logged with the inputs and recomputed by replay from its ledger; values only
-  carried over from an earlier run's log hold nothing, since the bridge puts those back only
-  onto the vehicle they were preloaded on, which the log can't tell). Its reach says why
+  decision's fact logged with the inputs and recomputed by replay from its ledger; under rules
+  7 to 10 values only carried over from an earlier run's log hold nothing, since the bridge
+  puts those back only onto the vehicle they were preloaded on, which the log can't tell;
+  from rules 11 they hold too, unless the bridge's identity of the vehicle under the uid,
+  logged with the fact, shows another one: see the changelog). Its reach says why
   (`heard, but its own lost-link failsafe (...) is not confirmed back since engagement ...`),
   it goes the tick after the restore confirms, and its wait is bounded as any queued order's:
   a human's approval back to the inbox after `human_expire_s` (the reason now quotes why it
@@ -406,7 +408,14 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
   names each unchecked one, `UNCHECKED:`), and a carried restore that names no log by its
   file name is a mismatch, trusted or not. A carried restore names its log by file only (no
   head hash, unlike `intent.resumed`): replay prints the head of the log it was checked
-  against, and that log's own anchors are what bind its content.
+  against, and that log's own anchors are what bind its content. From rules 11 the carry is
+  not events at all but one line: the bridge reads the logs before this run's log is opened
+  and the engine records them in `run.started` (`carried_from`: the log `.last-run` named and
+  every log it still owed for whose carry had failed, tried again, each with its head and last
+  seq as read and what it still owed, or why it could not be read), seeding the ledger from
+  it; replay checks each against the log it names (`ReplayOptions::carried_logs`), its head
+  included, so a successor with the carry emptied, partial or naming another log is caught,
+  and a failed carry stays owed in the chain until read or written off (`restore.closed`).
 - **Keep-out model** (rules 6, murmur-der.3; parameters in `[rules.engage]`, each bounded,
   schema 4):
   - *Tracks* are predicted along their velocity with a 1-sigma of `sqrt(pos_sigma^2 +
@@ -1090,6 +1099,67 @@ Rules versions:
   passkeys) and a live run with its anchors (`v10-passkeys-live.jsonl`,
   `tests/data/anchors/v10-passkeys-live.anchors`; see `tests/versions.rs`).
 
+- **11** (the reviews' follow-ups; every gate reads `REVIEW_FOLLOWUPS_SINCE`, so another
+  change taking the number first renumbers it in one line; no policy key changes, schema 7):
+  - *A debt closed without a restore* (murmur-q05): `restore.closed` closes a platform's own
+    lost-link values (or an earlier log whose carry failed) for good. Right after the release
+    of an engagement whose platform the catalog says is spent by its own effect
+    (`expended_by_effect`: switchblade, fpv; a world fact of the platform, read off the release
+    picture), the engine closes what is owed to it (`expended`, naming the engagement): there
+    is no platform left to put its values back on, and before they stayed owed for good (the
+    passkeys live run's switchblade: UNRESTORED, alerted, carried into the next run). An
+    operator writes off a platform's values (lost, spent, another vehicle under its uid) or a
+    failed carry, under their own session with a note (`Engine::write_off_restore`,
+    `written_off`; the bridge's `POST /api/restores/write_off`, the console's Write off on a
+    restore alert); never while an engagement is under way on the platform; an agent can't.
+    Replay checks each: the values exactly what was owed, an expended closure right after that
+    engagement's release with its release picture showing the platform spent, a write-off
+    under the operator's own session with a note; it lists them (`restores_closed`,
+    `CLOSED:`).
+  - *A young track counts as possibly manoeuvring* (murmur-9m0): the tracker reports when it
+    started a track (`first_seen_t`); a track with a velocity but no average velocity yet (its
+    history too short to show a manoeuvre: its first 45 s or so, or after a gap) also counts in
+    a keep-out anywhere it reaches at its domain's top speed (25 m/s on the surface), or at its
+    own speed plus `keep_out_sigma` of its velocity error if that is faster. Before, it fell
+    back to the one region along its velocity. Cost: larger keep-outs for a new track's first
+    minute (a surface track 2 km away blocks an effect 80 s out).
+  - *Scripted operators fixed at the start* (murmur-jfi): a credentials run's roster lists the
+    harness-held credentials (`scripted`, always, empty when none); a session opens by the
+    method it gives its operator (the engine refuses, and replay flags, a scripted session for
+    a person or a person's for a scripted credential), so a credential re-marked mid-run can't
+    move an operator between people and scripts in the log, and a relabelled session (forgery
+    14) is caught. The bridge's step-up 429 says "for this session".
+  - *What a start carried, in one line* (murmur-cq3): `run.started` records `carried_from`:
+    the log `.last-run-<port>` named and, tried again, every log it still owed for whose carry
+    had failed, each with its head and last seq as read and what it still owed (the
+    platforms' values, the vehicles, the engagements, the logs pending), or why it could not be
+    read. The ledger is seeded from it (no carried `platform.restore` any more: the engine
+    refuses one and replay flags it), so a crash can't leave half a carry. Replay checks each
+    named log (`ReplayOptions::carried_logs`, `murmur-replay` beside the log or `--prev`): it
+    replays, it is the one read, it still owed exactly that; a log carried that nobody named,
+    or a pending one not tried again, is a mismatch. A failed carry stays owed (pending) in
+    the log that recorded it until a later start reads it or an operator writes it off, so the
+    pointer's rewrite no longer drops it from the chain.
+  - *Carried values hold a mission* (murmur-qjf): values carried over from an earlier run hold
+    an order other than a hold or rtl for the vehicle they were preloaded on, as an
+    engagement's of this run do; the decision's `restore_owed` fact carries the bridge's
+    identity of the vehicle under the uid now (`carried`: `from`, `preloaded_on`, `now`,
+    `other_vehicle`), and replay recomputes from it whether they hold (another vehicle: they
+    don't; unknown: they do). A kind the policy never queues logs no reach, so there they hold
+    whatever vehicle has the uid.
+  - *A refusal names the orders still queued* (murmur-54l): a mission refused for its
+    platform's own values replaces no older queued order; its reason now names those still
+    standing on its vehicles, and replay recomputes the reason.
+
+  Markers (a log claiming rules 10 or older can't carry them): `carried_from`,
+  `restore.closed`, the roster's `scripted`, a track's `first_seen_t`, a `restore_owed`
+  entry's `carried`. Older carry tests are pinned to rules 10 (`tests/carried.rs`,
+  `tests/rules6.rs`). Fixtures: `tests/data/audit/v11-engagement-scenario-01.jsonl` (the
+  switchblade owed nothing after its effect), `v11-young-track-blocks-scenario-79.jsonl`,
+  `v11-expended-munition-scenario-80.jsonl`, `v11-refusal-names-queued-order-scenario-81.jsonl`,
+  `v11-restore-written-off-scenario-82.jsonl`, and a live run across a crash with its anchors
+  (see `tests/versions.rs`).
+
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
 `seen_max_age_s`, an unreleased build's name for it, is still read; **3** adds `[queue]`
@@ -1164,7 +1234,11 @@ The full contract is in the crate docs (`src/lib.rs`). In short:
    own values back once no engagement holds it (`record_preload` restore by the
    engagement that preloaded last, `record_platform_restore` otherwise or when the engine
    refuses it), never reading a preloaded value as its own; at start, carry over what the
-   previous log still owed (`replay::owed_restores`, `record_platform_restore` carried). A
+   previous log still owed (`replay::owed_restores`, `record_platform_restore` carried; rules
+   11: `replay::owed_debts` and `log_head` of each log, before this run's log is opened, into
+   `Engine::start`'s `carried_from`; give each snapshot the fleet's identities,
+   `WorldSnapshot::identities`; take an operator's `write_off_restore`; restore nothing the
+   ledger no longer owes, `Engine::restore_owed_to`). A
    nomination that accepts lost vehicles goes through `submit_accepting`; one already
    waiting through `accept_unknown_friendly`: both an operator's request with engagement
    authority only; `revoke_unknown_friendly` any operator's. Rules 7: report a vehicle
@@ -1208,9 +1282,10 @@ on the scenario clock.
   that deletes an op's `starting` and turns its `unconfirmed` into `requeued` reads as a
   link lost before the start; a confirm-only delivery's "does not run it" (`unconfirmed`, a
   human decides) rewritten as a lost link (`requeued`, back to the queue) reads as the
-  genuine one; and a log that removes every carried `platform.restore` names no earlier log
-  to check against, so what that log owed goes unchecked (closing it needs the bridge to log
-  the `.last-run-<port>` it read at start).
+  genuine one. (Rules 6 to 10: a log that removes every carried `platform.restore` names no
+  earlier log to check against, so what that log owed goes unchecked; rules 11 record the
+  carry in `run.started`, and only removing that record from the first line, which the start
+  anchor covers, reads as a first start.)
 - No HTTP endpoints, no tidewater client, no inbox UI (C.5): bridge and web work.
 - Routes are straight lines between the points the task commits to. An RTL commanded
   mid-loop flies home from wherever the vehicle is, which sweeps a region the return-leg
