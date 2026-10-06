@@ -10,6 +10,8 @@ import {
   useAlertMemory,
   useOperator,
   verdict,
+  writeOffRestore,
+  writeOffTarget,
 } from './decisions'
 import { EngageCard, EngagementsSection } from './EngageCard'
 import { ReviewSection } from './ReviewSection'
@@ -399,6 +401,12 @@ function AlertCard({
   onFocus: () => void
 }) {
   const [snoozing, setSnoozing] = useState(false)
+  // rules 11: a restore that will never be confirmed (the vehicle lost or spent, another one
+  // under its uid, an earlier log gone) is written off by an operator, saying why
+  const target = writeOffTarget(a)
+  const [writing, setWriting] = useState(false)
+  const [note, setNote] = useState('')
+  const [writeErr, setWriteErr] = useState<string | null>(null)
   const age = Math.max(0, now() / 1000 - a.since_t)
   return (
     <article className={`ix-alert ${a.severity} ${selected ? 'sel' : ''} ${muted ? 'muted-card' : ''}`} tabIndex={0} onClick={onFocus} onKeyDown={(e) => e.key === 'Enter' && e.target === e.currentTarget && onFocus()}>
@@ -416,6 +424,32 @@ function AlertCard({
             <button className="ghost" onClick={() => mem.wake(a)}>
               Restore
             </button>
+          </>
+        ) : writing && target ? (
+          <>
+            <input
+              className="ix-note"
+              placeholder="Why: lost, spent, another vehicle, log gone"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              aria-label="Why the restore is written off"
+            />
+            <button
+              className="ghost"
+              disabled={!note.trim()}
+              onClick={() => {
+                setWriteErr(null)
+                writeOffRestore(target, note.trim())
+                  .then(() => setWriting(false))
+                  .catch((e: Error) => setWriteErr(e.message))
+              }}
+            >
+              Write off
+            </button>
+            <button className="ghost" onClick={() => setWriting(false)}>
+              Back
+            </button>
+            {writeErr && <span className="muted ix-muted">{writeErr}</span>}
           </>
         ) : snoozing ? (
           <>
@@ -442,6 +476,11 @@ function AlertCard({
               Fly to
             </button>
             <span className="spacer" />
+            {target && (
+              <button className="ghost" onClick={() => setWriting(true)}>
+                Write off
+              </button>
+            )}
             <button className="ghost" onClick={() => setSnoozing(true)}>
               Snooze
             </button>

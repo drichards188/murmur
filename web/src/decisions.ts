@@ -285,6 +285,28 @@ export async function submitIntent(body: Record<string, unknown>): Promise<{ int
   return b
 }
 
+/** Rules 11: what a restore alert lets an operator write off: a vehicle's own lost-link
+ *  values owed back (`restore:<uid>`) or an earlier log whose carry failed
+ *  (`restore:carry:<log>`); none for other alerts. */
+export function writeOffTarget(a: Alert): { uid: number } | { log: string } | null {
+  if (a.kind !== 'restore_pending') return null
+  if (a.id.startsWith('restore:carry:')) return { log: a.id.slice('restore:carry:'.length) }
+  if (a.id.startsWith('restore:') && a.uid > 0) return { uid: a.uid }
+  return null
+}
+
+/** Rules 11: POST /api/restores/write_off as the console's operator, saying why (logged as
+ *  `restore.closed` under their session). Throws an Error with the bridge's reason. */
+export async function writeOffRestore(target: { uid: number } | { log: string }, note: string): Promise<void> {
+  const res = await operatorFetch('/api/restores/write_off', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...operatorHeaders(getOperator()) },
+    body: JSON.stringify({ ...target, note }),
+  })
+  const b = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(b.detail ?? `bridge returned ${res.status}`)
+}
+
 export const ALERT_LABEL: Record<Alert['kind'], string> = {
   lost_link: 'LOST LINK',
   not_moving: 'NOT MOVING',
