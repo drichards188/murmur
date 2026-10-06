@@ -19,8 +19,9 @@ use tokio::time::{Instant, timeout};
 const SYSID: u8 = 7;
 
 /// How long a frame that came ahead of one sent before it waits for that one before the
-/// gap is taken as a loss.
-const GAP_WAIT: Duration = Duration::from_secs(1);
+/// gap is taken as a loss: no frame is delivered later than this after it arrived, however
+/// many are lost (a loaded host's loopback drops some too).
+const GAP_WAIT: Duration = Duration::from_secs(2);
 
 /// The GCS end of a running vehicle's link. It reads the vehicle's frames in the order the
 /// vehicle sent them (their MAVLink sequence): a loaded host's loopback can deliver two
@@ -33,9 +34,8 @@ struct Gcs {
     seq: u8,
     /// the vehicle's sequence number of the next frame in its order
     next: Option<u8>,
-    /// frames that came ahead of it, by sequence number, and since when they wait
-    held: std::collections::BTreeMap<u8, Vec<u8>>,
-    held_since: Option<Instant>,
+    /// frames that came ahead of it, by sequence number, and when each arrived
+    held: std::collections::BTreeMap<u8, (Vec<u8>, Instant)>,
 }
 
 impl Gcs {
@@ -60,25 +60,24 @@ impl Gcs {
         let mut buf = [0u8; 2048];
         loop {
             if let Some(want) = self.next
-                && let Some(f) = self.held.remove(&want)
+                && let Some((f, _)) = self.held.remove(&want)
             {
                 self.next = Some(want.wrapping_add(1));
-                if self.held.is_empty() {
-                    self.held_since = None;
-                }
                 return f;
             }
-            let n = match self.held_since {
-                Some(since) => match tokio::time::timeout_at(since + GAP_WAIT, self.sock.recv(&mut buf)).await {
+            // a frame held GAP_WAIT: the one it waited for is lost; go on from the earliest held
+            let oldest = self.held.values().map(|(_, at)| *at).min();
+            if let Some(at) = oldest
+                && at.elapsed() >= GAP_WAIT
+            {
+                let want = self.next.unwrap_or(0);
+                self.next = self.held.keys().copied().min_by_key(|s| s.wrapping_sub(want));
+                continue;
+            }
+            let n = match oldest {
+                Some(at) => match tokio::time::timeout_at(at + GAP_WAIT, self.sock.recv(&mut buf)).await {
                     Ok(r) => r.expect("recv"),
-                    Err(_) => {
-                        // lost: go on from the earliest frame held
-                        let want = self.next.unwrap_or(0);
-                        let first = self.held.keys().copied().min_by_key(|s| s.wrapping_sub(want));
-                        self.next = first;
-                        self.held_since = Some(Instant::now());
-                        continue;
-                    }
+                    Err(_) => continue,
                 },
                 None => self.sock.recv(&mut buf).await.expect("recv"),
             };
@@ -90,8 +89,7 @@ impl Gcs {
             match self.next {
                 Some(want) if seq != want && seq.wrapping_sub(want) < 128 => {
                     // ahead of one sent before it: wait for that one
-                    self.held.insert(seq, frame);
-                    self.held_since.get_or_insert_with(Instant::now);
+                    self.held.insert(seq, (frame, Instant::now()));
                 }
                 // in order (or one given up on arriving after all: as it comes)
                 Some(want) if seq != want => return frame,
@@ -245,7 +243,6 @@ async fn start(spec: Spec, alt: f64) -> Gcs {
         seq: 0,
         next: None,
         held: Default::default(),
-        held_since: None,
     }
 }
 
