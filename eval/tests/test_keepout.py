@@ -397,13 +397,34 @@ def test_the_engine_decides_hand_built_contacts_by_version(probe):
     assert not K.would_pass_without(r["rules"]["6"]["comp"], "mean")
 
 
+def test_a_smaller_buffer_is_a_copy_of_the_policy_and_labels_keep_the_shipped_line(probe):
+    """`keep_out_m` 50 (a copy of the policy) passes a boat holding 250 m off at 30 s to effect
+    that the shipped 200 m blocks; the labels still count it inside the shipped line, so that
+    pass is a miss at the keep-out line (not in the effect circle)."""
+    p = _params(tte_s=[30], dist_m=[], keep_out_m=50.0)
+    s = K.situation(1, 0.0, 0, "stationary", p, K.cruise_speeds())
+    origin = s["origin"]
+    tgt = K.to_enu(origin, s["probe"]["tracks"]["T-0000"]["position"]["value"])
+    m = K.Hold((tgt[0] + 250.0, tgt[1]))
+    s["probe"]["tracks"]["C-0001"] = K.facts(m, 600.0, 10.0, 0.0, random.Random(2), origin, "neutral", 0.6)
+    s["truth"]["C-0001"] = {"motion": m, "behaviour": "stationary", "tracked_s": 600.0}
+    (a,) = [r for r in K.run_probe([s["probe"]], probe=probe) if "eval" in r]
+    (b,) = [r for r in K.run_probe([s["probe"]], probe=probe, keep_out_m=50.0) if "eval" in r]
+    assert a["preview"]["keep_out_m"] == 275.0 and b["preview"]["keep_out_m"] == 125.0
+    assert a["rules"]["12"]["kot"] == "fail" and b["rules"]["12"]["kot"] == "pass"
+    rec = K.record(s, b, p)
+    assert rec["near"] == 1 and rec["danger"] == 0 and rec["rules"]["12"]["kot"] == 0
+    with pytest.raises(RuntimeError):
+        K.run_probe([s["probe"]], probe=probe, keep_out_m=10.0)  # below the policy's bound (50)
+
+
 def test_the_real_tracker_makes_the_tracks(probe):
     """The radar variant's tracks come from the bridge's tracker: every contact near our USV is
     tracked, reported with its own 1-sigma and velocity, and with AIS (every sensor, every
     contact broadcasting) the tracks are much better than radar alone."""
     cruise = K.cruise_speeds()
     out = {}
-    for mode in ("radar", "ais"):
+    for mode in ("radar", "all", "ais"):
         sits = [K.situation(1, 0.3, i, "mixed", K.variant_params(mode, {"tte_s": [60], "dist_m": []}), cruise) for i in range(3)]
         res = K.run_probe([s["probe"] for s in sits], probe=probe)
         tr = [r["tracker"] for r in res if "tracker" in r]
@@ -413,7 +434,8 @@ def test_the_real_tracker_makes_the_tracks(probe):
         steady = next(x for x in q if x["behaviour"] == "transiting")
         out[mode] = steady
     assert out["ais"]["vel_err_median"] < 0.5 * out["radar"]["vel_err_median"]
-    assert out["ais"]["sigma_median"] < out["radar"]["sigma_median"]
+    # every sensor the USV carries (EO/IR too) makes better tracks than its radar alone, AIS better still
+    assert out["ais"]["sigma_median"] < out["all"]["sigma_median"] < out["radar"]["sigma_median"]
     # the air variant: the same surface traffic plus a loitering light aircraft, an air track
     # on our 2D radar (no altitude); while it turns the tracker gives it no velocity
     a = K.situation(1, 0.03, 0, "mixed", K.variant_params("air", {"tte_s": [120], "dist_m": []}), cruise)

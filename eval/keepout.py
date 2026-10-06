@@ -15,11 +15,12 @@ one of ours lost; and the engaging platform placed for each nominal time to effe
 and at each distance (`DIST_M`). Each contact moves by its behaviour (`MOTION`). What the
 engine reads about it comes from one of two trackers:
 
-- `radar` and `ais` (the primary): its last ten minutes played second by second through the
-  bridge's own sensing model and IMM tracker (eval/keepout_probe compiles
+- `radar`, `all` and `ais`: its last ten minutes played second by second through the bridge's
+  own sensing model and IMM tracker (eval/keepout_probe compiles
   crates/murmur-bridge/src/tracks/{model,sensing,truth}.rs unchanged), the observing USV's
-  catalog sensors: its radar alone against contacts without AIS (`radar`), or every sensor it
-  carries against contacts that all broadcast AIS (`ais`, the best case). The target's track is
+  catalog sensors: its radar alone against contacts without AIS (`radar`, the pessimistic
+  sensor case), every sensor it carries (radar, EO/IR, sonar) against contacts without AIS
+  (`all`), or every sensor against contacts that all broadcast AIS (`ais`, the best case). The target's track is
   the generator's in every variant (a good track, as an engagement needs).
 - `model`: a stated model of the tracker's reports with the scenario runner's noise (position
   off by the track's own 1-sigma, velocity off by `vel_sigma` per axis, no velocity in the
@@ -121,6 +122,9 @@ RADIUS_M = 75.0
 DISPATCH_S = 20.0
 #: the policy's late_s: a holding target may be released up to this long after the plan's time
 LATE_S = 60.0
+#: the line the truth labels use: the effect radius plus the shipped policy's keep_out_m, in
+#: every variant (a buffer variant changes what the engine checks, not who counts as at risk)
+LABEL_BUFFER_M = 200.0
 #: the generated model's track 1-sigma (m), uniform; its position estimate is off by that much
 SIGMA_P = (8.0, 25.0)
 #: the model's velocity error per axis (m/s), the scenario runner's --vnoise (Phase G: 0.5
@@ -153,13 +157,31 @@ M_PER_DEG = 111_320.0
 #: how far into the future and past the motions are laid out (s)
 HORIZON_S = 900.0
 
-#: the measurement's variants: each the base parameters changed as given. `radar` is the
-#: primary (the bridge's tracker where it applies); the rest are comparisons and sensitivity.
+#: the measurement's variants: each the base parameters changed as given. `radar` (one USV's
+#: radar alone: the pessimistic sensor case) and `all` (every sensor it carries) are the bridge's
+#: own tracker on contacts without AIS; `radar` carries the full tables; the rest are comparisons
+#: and sensitivity.
 ALL = list(BEHAVIOURS)
+
+
+def _live(tracker: str, km: float, about: str) -> dict[str, Any]:
+    return {
+        "tracker": tracker,
+        "behaviours": ["mixed"],
+        "densities": [0.03, 0.1],
+        "near_circler_km": km,
+        "tte_s": [],
+        "dist_m": [1000, 1500, 2000],
+        "platforms": ["magura"],
+        "about": about,
+    }
+
+
 VARIANTS: dict[str, dict[str, Any]] = {
-    "radar": {"tracker": "radar", "behaviours": ALL, "about": "the bridge's tracker, the observing USV's radar alone, contacts without AIS (primary)"},
+    "radar": {"tracker": "radar", "behaviours": ALL, "about": "the bridge's tracker on the observing USV's radar alone, contacts without AIS (the pessimistic sensor case)"},
+    "all": {"tracker": "all", "behaviours": ALL, "about": "the bridge's tracker on every sensor the observing USV carries (radar, EO/IR, sonar), contacts without AIS"},
     "model": {"tracker": "model", "behaviours": ALL, "about": "the stated tracker model (the first measurement's)"},
-    "ais": {"tracker": "ais", "behaviours": ALL, "about": "the bridge's tracker, every sensor of the observing USV, every contact on AIS (best case)"},
+    "ais": {"tracker": "ais", "behaviours": ALL, "about": "the bridge's tracker on every sensor of the observing USV, every contact on AIS (best case)"},
     "lanes": {"tracker": "radar", "layout": "lanes", "behaviours": ["mixed"], "about": "radar tracker; 70% of contacts in two lanes passing 0 to 1.5 km from the target"},
     "lanes-model": {"tracker": "model", "layout": "lanes", "behaviours": ["mixed"], "about": "model tracker; the lanes layout"},
     "new0": {"tracker": "radar", "new_share": 0.0, "behaviours": ["mixed"], "about": "radar tracker; no new tracks in the mix"},
@@ -167,32 +189,22 @@ VARIANTS: dict[str, dict[str, Any]] = {
     "new25": {"tracker": "radar", "new_share": 0.25, "behaviours": ["mixed"], "about": "radar tracker; 25% new tracks in the mix"},
     "vel1": {"tracker": "model", "vel_sigma": 1.0, "behaviours": ["mixed"], "about": "model tracker; velocity error 1 m/s per axis"},
     "sigma60": {"tracker": "model", "sigma_p": [15.0, 60.0], "behaviours": ["mixed"], "about": "model tracker; track 1-sigma 15 to 60 m"},
-    "live": {
-        "tracker": "radar",
-        "behaviours": ["mixed"],
-        "densities": [0.03, 0.1],
-        "near_circler_km": 1.0,
-        "tte_s": [],
-        "dist_m": [1000, 1500, 2000],
-        "platforms": ["magura"],
-        "about": "the live run's question: a tour boat circling within 1 km of the target, mixed traffic around, a magura 1 to 2 km out",
-    },
-    "air": {
-        "tracker": "radar",
-        "behaviours": ["mixed"],
-        "air_contacts": 1,
-        "about": "radar tracker; mixed traffic plus one light aircraft loitering within 4 km (the same surface traffic as radar's mixed)",
-    },
-    "live2": {
-        "tracker": "radar",
-        "behaviours": ["mixed"],
-        "densities": [0.03, 0.1],
-        "near_circler_km": 2.0,
-        "tte_s": [],
-        "dist_m": [1000, 1500, 2000],
-        "platforms": ["magura"],
-        "about": "as live, the circling boat within 2 km",
-    },
+    "buffer100": {"tracker": "radar", "keep_out_m": 100.0, "behaviours": ["mixed"], "about": "radar tracker; a copy of the policy with keep_out_m 100 (the shipped 200)"},
+    "buffer50": {"tracker": "radar", "keep_out_m": 50.0, "behaviours": ["mixed"], "about": "radar tracker; a copy of the policy with keep_out_m 50"},
+    "all-buffer100": {"tracker": "all", "keep_out_m": 100.0, "behaviours": ["mixed"], "about": "all-sensors tracker; keep_out_m 100"},
+    "all-buffer50": {"tracker": "all", "keep_out_m": 50.0, "behaviours": ["mixed"], "about": "all-sensors tracker; keep_out_m 50"},
+    "air": {"tracker": "radar", "behaviours": ["mixed"], "air_contacts": 1, "about": "radar tracker; mixed traffic plus one light aircraft loitering within 4 km (the worst case: no ADS-B, no height-finding radar)"},
+    "air-straight": {"tracker": "radar", "behaviours": ["mixed"], "air_contacts": 1, "air_motion": "straight", "about": "radar tracker; mixed traffic plus one light aircraft flying straight past within 4 km"},
+    "air-all": {"tracker": "all", "behaviours": ["mixed"], "air_contacts": 1, "about": "all-sensors tracker; mixed traffic plus one light aircraft loitering within 4 km"},
+    "air-all-straight": {"tracker": "all", "behaviours": ["mixed"], "air_contacts": 1, "air_motion": "straight", "about": "all-sensors tracker; one light aircraft flying straight past within 4 km"},
+    "live": _live("radar", 1.0, "the live run's question: a tour boat circling within 1 km of the target, mixed traffic around, a magura 1 to 2 km out; radar tracker"),
+    "live-all": _live("all", 1.0, "as live, all-sensors tracker"),
+    "live-ais": _live("ais", 1.0, "as live, every contact on AIS"),
+    "live-model": _live("model", 1.0, "as live, the stated tracker model"),
+    "live2": _live("radar", 2.0, "as live, the circling boat within 2 km; radar tracker"),
+    "live2-all": _live("all", 2.0, "as live2, all-sensors tracker"),
+    "live2-ais": _live("ais", 2.0, "as live2, every contact on AIS"),
+    "live2-model": _live("model", 2.0, "as live2, the stated tracker model"),
 }
 PRIMARY = "radar"
 
@@ -223,6 +235,8 @@ def default_params() -> dict[str, Any]:
         "stats_per_chunk": 3,
         "air_contacts": 0,
         "air_within_m": 4000.0,
+        "air_motion": "loiter",
+        "keep_out_m": None,
     }
 
 
@@ -594,7 +608,10 @@ def situation(seed: int, density: float, index: int, behaviour: str, params: dic
         r, speed = move.uniform(500.0, 1500.0), move.uniform(30.0, 55.0)
         c = _disc(move, float(params.get("air_within_m") or 4000.0))
         sense = 1 if move.random() < 0.5 else -1
-        m = Circle(c, r, speed, sense, _course(move))
+        m: Any = Circle(c, r, speed, sense, _course(move))
+        if params.get("air_motion") == "straight":
+            # flying straight past: at the same point now, on a uniform course
+            m = Line(c, _vec(speed, _course(move)))
         add(f"A-{k + 1:04d}", "air", m, move.uniform(*TRACKED_S), move.uniform(*sigma_p), "unknown", 0.5, alt_m=move.uniform(150.0, 1500.0))
     # ours: the observing USV, holding or patrolling; sometimes another one lost
     vehicles = []
@@ -723,12 +740,14 @@ def build_probe() -> Path:
     return PROBE
 
 
-def run_probe(inputs: list[dict[str, Any]], rules: Iterable[int] = RULES, probe: Path = PROBE) -> list[dict[str, Any]]:
+def run_probe(inputs: list[dict[str, Any]], rules: Iterable[int] = RULES, probe: Path = PROBE, keep_out_m: float | None = None) -> list[dict[str, Any]]:
     """Every evaluation of `inputs` through the probe: one result per (situation, evaluation),
-    and one `tracker` line per situation whose tracks the real tracker made."""
+    and one `tracker` line per situation whose tracks the real tracker made. `keep_out_m`: a copy
+    of the policy with that buffer."""
     data = "\n".join(json.dumps(s, separators=(",", ":")) for s in inputs) + "\n"
+    extra = ["--keep-out-m", f"{keep_out_m:g}"] if keep_out_m is not None else []
     p = subprocess.run(
-        [str(probe), "--root", str(REPO), "--rules", ",".join(str(r) for r in rules)],
+        [str(probe), "--root", str(REPO), "--rules", ",".join(str(r) for r in rules), *extra],
         input=data,
         capture_output=True,
         text=True,
@@ -827,7 +846,8 @@ def record(sit: dict[str, Any], res: dict[str, Any], params: dict[str, Any]) -> 
     out["preview"] = True
     out["tte_s"] = pv["tte_s"]
     keep_out = float(pv["keep_out_m"])
-    truth = at_risk(sit, pv["effect"], pv["tte_s"], float(params["radius_m"]), keep_out, float(params.get("late_s", LATE_S)))
+    line = float(params["radius_m"]) + LABEL_BUFFER_M
+    truth = at_risk(sit, pv["effect"], pv["tte_s"], float(params["radius_m"]), line, float(params.get("late_s", LATE_S)))
     out["danger"] = len(truth["danger"])
     out["near"] = len(truth["near"])
     out["danger_late"] = len(truth["danger_late"])
@@ -871,7 +891,7 @@ def run_chunk(job: tuple[int, float, str, int, dict[str, Any], str]) -> dict[str
     t0 = time.monotonic()
     sits = [situation(seed, density, i, behaviour, params, cruise) for i in range(n)]
     t_gen = time.monotonic() - t0
-    results = run_probe([s["probe"] for s in sits], params["rules"], Path(probe))
+    results = run_probe([s["probe"] for s in sits], params["rules"], Path(probe), params.get("keep_out_m"))
     t_probe = time.monotonic() - t0 - t_gen
     by_id = {s["id"]: s for s in sits}
     records, quality, untracked = [], [], [0, 0]
@@ -1336,6 +1356,10 @@ def summarize(records: Iterable[dict[str, Any]], meta: dict[str, Any] | None = N
     }
 
 
+#: the times to effect the sensitivity table shows
+SENS_TTE = (30, 60, 120, 180)
+
+
 def sensitivity(summaries: dict[str, dict[str, Any]], behaviour: str = "mixed") -> list[dict[str, Any]]:
     """Across variants, for `behaviour` traffic: the block rate on tracks at 60, 120 and 180 s
     per density and rules version beside what perfect knowledge would block, the needed share
@@ -1352,12 +1376,14 @@ def sensitivity(summaries: dict[str, dict[str, Any]], behaviour: str = "mixed") 
         row: dict[str, Any] = {"variant": name, "about": (s.get("params") or {}).get("about"), "by_density": {}}
         for d in dens:
             row["by_density"][f"{d:g}"] = {
-                "blocked": {f"{t}|{v}": (cells.get((d, t, v)) or {}).get("tracks") for t in (60, 120, 180) for v in (6, 9, 12)},
-                "perfect": {f"{t}": (cells.get((d, t, 12)) or {}).get("perfect") for t in (60, 120, 180)},
+                "blocked": {f"{t}|{v}": (cells.get((d, t, v)) or {}).get("tracks") for t in SENS_TTE for v in (6, 9, 12)},
+                "perfect": {f"{t}": (cells.get((d, t, 12)) or {}).get("perfect") for t in SENS_TTE},
                 "t50": {f"{v}": (thr.get((d, v)) or {}).get("t50") for v in (6, 9, 12)},
+                "t90": {f"{v}": (thr.get((d, v)) or {}).get("t90") for v in (6, 9, 12)},
             }
         row["needed"] = {f"{v}": (blocks.get(v) or {}).get("needed") for v in (6, 9, 12)}
         row["missed"] = {f"{v}": (blocks.get(v) or {}).get("missed") for v in (6, 9, 12)}
+        row["missed_severe"] = {f"{v}": (blocks.get(v) or {}).get("missed_severe") for v in (6, 9, 12)}
         row["missed_late"] = {f"{v}": (blocks.get(v) or {}).get("missed_late") for v in (6, 9, 12)}
         out.append(row)
     return out
@@ -1498,17 +1524,18 @@ def table(s: dict[str, Any]) -> str:
     prim = s["variants"].get(s["primary"])
     if prim:
         lines.append(table_variant(prim))
-    lines.append("Sensitivity, mixed traffic: blocked at 60 / 120 / 180 s, rules 6 | 9 | 12 (perfect knowledge at the same times); needed share of blocks and missed passes, rules 6 / 12:")
+    lines.append("Sensitivity, mixed traffic: blocked at 30 / 60 / 120 / 180 s, rules 6 | 9 | 12 (perfect knowledge at the same times); needed share of blocks and missed passes, rules 6 / 12:")
     for row in s.get("sensitivity", []):
         for d, x in row["by_density"].items():
             b = x["blocked"]
-            blocked = " | ".join("/".join(_pct(b.get(f"{t}|{v}"), False) for t in (60, 120, 180)) for v in (6, 9, 12))
-            perfect = "/".join(_pct(x["perfect"].get(f"{t}"), False) for t in (60, 120, 180))
+            blocked = " | ".join("/".join(_pct(b.get(f"{t}|{v}"), False) for t in SENS_TTE) for v in (6, 9, 12))
+            perfect = "/".join(_pct(x["perfect"].get(f"{t}"), False) for t in SENS_TTE)
             lines.append(
-                f"  {row['variant']:<12} {d:>5}/km2  {blocked}  (perfect {perfect})  t50 r12 {_t((x['t50'].get('12') or [None])[0])}"
+                f"  {row['variant']:<16} {d:>5}/km2  {blocked}  (perfect {perfect})  t50 r12 {_t((x['t50'].get('12') or [None])[0])}  t90 r12 {_t((x['t90'].get('12') or [None])[0])}"
             )
         lines.append(
-            f"  {'':<12} needed {_pct(row['needed'].get('6'), False)} / {_pct(row['needed'].get('12'), False)}%  missed {_miss(row['missed'].get('6'))} / {_miss(row['missed'].get('12'))}"
+            f"  {'':<16} needed {_pct(row['needed'].get('6'), False)} / {_pct(row['needed'].get('12'), False)}%  missed {_miss(row['missed'].get('6'))} / {_miss(row['missed'].get('12'))}"
+            f"  in the circle {_miss(row['missed_severe'].get('6'))} / {_miss(row['missed_severe'].get('12'))}"
             f"  missed over the release window {_miss(row['missed_late'].get('6'))} / {_miss(row['missed_late'].get('12'))}"
         )
     lines.append("")

@@ -5,8 +5,9 @@
 //! to the engine. The motion is the generator's (eval/keepout.py), given here as a spec and
 //! evaluated with the same formulas.
 //!
-//! Modes: `radar` (the observers' radars only, contacts without AIS) and `ais` (every sensor
-//! the observers carry, every contact broadcasting AIS: the tracker's best case). A contact no
+//! Modes: `radar` (the observers' radars only, contacts without AIS: the pessimistic sensor
+//! case), `all` (every sensor the observers carry, contacts without AIS) and `ais` (every sensor,
+//! every contact broadcasting AIS: the tracker's best case). A contact no
 //! sensor detected has no track, so the keep-out does not protect it, as on the bridge.
 
 use std::collections::BTreeMap;
@@ -122,7 +123,7 @@ pub struct ObserverIn {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct TrackerIn {
-    /// `radar` or `ais`
+    /// `radar`, `all` or `ais`
     pub mode: String,
     /// [lon, lat] of the motions' origin
     pub origin: [f64; 2],
@@ -171,8 +172,8 @@ pub fn observers(cat: &SensorCatalog, input: &TrackerIn) -> Result<Vec<Observer>
 /// Every contact's history through the sensing model and the tracker; the facts at `now_s`
 /// of those with a track, and (with `stats`) each contact's facts against its truth.
 pub fn simulate(cat: &SensorCatalog, input: &TrackerIn, now_s: f64) -> Result<(BTreeMap<String, TrackFacts>, Value), String> {
-    if !matches!(input.mode.as_str(), "radar" | "ais") {
-        return Err(format!("tracker mode {:?}: radar or ais", input.mode));
+    if !matches!(input.mode.as_str(), "radar" | "all" | "ais") {
+        return Err(format!("tracker mode {:?}: radar, all or ais", input.mode));
     }
     let obs = observers(cat, input)?;
     let mut facts = BTreeMap::new();

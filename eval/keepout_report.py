@@ -7,7 +7,7 @@ from __future__ import annotations
 import html
 from typing import Any
 
-from .keepout import BEHAVIOURS, COMPONENTS, VARIANTS
+from .keepout import BEHAVIOURS, COMPONENTS, SENS_TTE
 
 
 def esc(x: Any) -> str:
@@ -223,30 +223,86 @@ def sensitivity_table(c: dict[str, Any]) -> str:
     rows = c.get("sensitivity") or []
     if not rows:
         return ""
+    times = SENS_TTE
+    tl = " / ".join(f"{t}" for t in times)
     head = (
-        "<tr><th>variant</th><th>per km<sup>2</sup></th><th class='n'>blocked at 60 / 120 / 180 s: rules 6</th><th class='n'>rules 9</th><th class='n'>rules 12</th>"
-        "<th class='n'>perfect knowledge</th><th class='n'>50% pass, rules 12</th><th class='n'>needed share of blocks, rules 6 / 12</th>"
-        "<th class='n'>missed (keep-out), rules 6 / 12</th><th class='n'>missed over the release window, rules 6 / 12</th></tr>"
+        f"<tr><th>variant</th><th>per km<sup>2</sup></th><th class='n'>blocked at {tl} s: rules 6</th><th class='n'>rules 9</th><th class='n'>rules 12</th>"
+        "<th class='n'>perfect knowledge</th><th class='n'>50% / 90% pass, rules 12</th><th class='n'>needed share of blocks, rules 6 / 12</th>"
+        "<th class='n'>missed at the keep-out line, rules 6 / 12</th><th class='n'>missed in the effect circle, rules 6 / 12</th>"
+        "<th class='n'>missed over the release window, rules 6 / 12</th></tr>"
     )
+
+    def tt(x: Any) -> str:
+        return "n/a" if x is None else (esc(x) if isinstance(x, str) else f"{x:.0f} s")
+
     trs = []
     for row in rows:
         dens = list(row["by_density"].items())
         for i, (d, x) in enumerate(dens):
             b = x["blocked"]
-            cells = "".join("<td class='n'>" + " / ".join(pct(b.get(f"{t}|{v}"), False) for t in (60, 120, 180)) + "</td>" for v in (6, 9, 12))
-            perf = " / ".join(pct(x["perfect"].get(f"{t}"), False) for t in (60, 120, 180))
+            cells = "".join("<td class='n'>" + " / ".join(pct(b.get(f"{t}|{v}"), False) for t in times) + "</td>" for v in (6, 9, 12))
+            perf = " / ".join(pct(x["perfect"].get(f"{t}"), False) for t in times)
             t50 = (x["t50"].get("12") or [None])[0]
-            t50s = "n/a" if t50 is None else (esc(t50) if isinstance(t50, str) else f"{t50:.0f} s")
+            t90 = ((x.get("t90") or {}).get("12") or [None])[0]
             tail = ""
             if i == 0:
                 n = len(dens)
+                ms = row.get("missed_severe") or {}
                 tail = (
                     f"<td class='n' rowspan='{n}'>{pct(row['needed'].get('6'), False)} / {pct(row['needed'].get('12'), False)}</td>"
                     f"<td class='n' rowspan='{n}'>{miss(row['missed'].get('6'))} / {miss(row['missed'].get('12'))}</td>"
+                    f"<td class='n' rowspan='{n}'>{miss(ms.get('6'))} / {miss(ms.get('12'))}</td>"
                     f"<td class='n' rowspan='{n}'>{miss(row['missed_late'].get('6'))} / {miss(row['missed_late'].get('12'))}</td>"
                 )
             name = f"<td rowspan='{len(dens)}'><strong>{esc(row['variant'])}</strong><br><span class='muted'>{esc(row.get('about'))}</span></td>" if i == 0 else ""
-            trs.append(f"<tr>{name}<td class='n'>{esc(d)}</td>{cells}<td class='n'>{perf}</td><td class='n'>{t50s}</td>{tail}</tr>")
+            trs.append(f"<tr>{name}<td class='n'>{esc(d)}</td>{cells}<td class='n'>{perf}</td><td class='n'>{tt(t50)} / {tt(t90)}</td>{tail}</tr>")
+    return table(head, trs)
+
+
+def live_table(variants: dict[str, Any]) -> str:
+    """The live run's question across trackers: blocked on tracks at each distance, rules 6 and
+    9 / 12, perfect knowledge."""
+    live = [(n, s) for n, s in variants.items() if not s.get("tte") and s.get("dist")]
+    if not live:
+        return ""
+    dists = sorted({r["dist_m"] for _, s in live for r in s["dist"]})
+    head = "<tr><th>variant</th><th>tracker</th><th class='n'>circling boat within</th><th class='n'>per km<sup>2</sup></th>" + "".join(
+        f"<th class='n'>magura {d / 1000:g} km: rules 6 / 9 / 12 (perfect)</th>" for d in dists
+    ) + "</tr>"
+    trs = []
+    for n, s in live:
+        p = s.get("params") or {}
+        cells = {(r["density"], r["dist_m"], r["rules"]): r for r in s["dist"]}
+        for d in sorted({r["density"] for r in s["dist"]}):
+            tds = []
+            for dist in dists:
+                vals = [cells.get((d, dist, v)) for v in (6, 9, 12)]
+                pf = (vals[-1] or {}).get("perfect")
+                tds.append("<td class='n'>" + " / ".join(pct(x["tracks"], False) if x else "n/a" for x in vals) + f" <span class='muted'>({pct(pf, False)})</span></td>")
+            trs.append(f"<tr><td>{esc(n)}</td><td>{esc(p.get('tracker'))}</td><td class='n'>{esc(p.get('near_circler_km'))} km</td><td class='n'>{d:g}</td>{''.join(tds)}</tr>")
+    return table(head, trs)
+
+
+def air_table(variants: dict[str, Any]) -> str:
+    """The air variants: the aircraft's track, and what it does to the block rate."""
+    rows = [(n, s) for n, s in variants.items() if (s.get("params") or {}).get("air_contacts")]
+    if not rows:
+        return ""
+    head = (
+        "<tr><th>variant</th><th>tracker</th><th>aircraft</th><th class='n'>aircraft with a velocity (sampled)</th><th class='n'>its reported 1-sigma</th>"
+        "<th class='n'>blocked, rules 12, at 30 / 60 / 120 s, 0.03 per km<sup>2</sup></th><th class='n'>0.1 per km<sup>2</sup></th></tr>"
+    )
+    trs = []
+    for n, s in rows:
+        p = s.get("params") or {}
+        q = next((x for x in s.get("tracker_quality") or [] if x["behaviour"] == "air"), None)
+        cells = {(r["density"], r["tte_s"], r["rules"]): r for r in s.get("tte", []) if r["behaviour"] == "mixed"}
+        bl = ["<td class='n'>" + " / ".join(pct((cells.get((d, t, 12)) or {}).get("tracks"), False) for t in (30, 60, 120)) + "</td>" for d in (0.03, 0.1)]
+        vel = f"{q['with_velocity']} of {q['tracked']}" if q else "n/a"
+        trs.append(
+            f"<tr><td>{esc(n)}</td><td>{esc(p.get('tracker'))}</td><td>{esc(p.get('air_motion', 'loiter'))}</td><td class='n'>{vel}</td>"
+            f"<td class='n'>{esc(q['sigma_median'] if q else None)} m</td>{''.join(bl)}</tr>"
+        )
     return table(head, trs)
 
 
@@ -260,19 +316,21 @@ def variant_block(s: dict[str, Any], title: str) -> str:
         f"<p class='muted'>{esc(p.get('about'))}. {s.get('situations')} situations ({esc(s.get('situations_per_cell_per_seed'))} per seed, density and behaviour; "
         f"seeds {esc(s.get('seeds'))}), {esc(s.get('contacts'))} protected contacts"
         + (f" ({ut[1]} never tracked)" if ut[0] else "")
-        + f", {esc(c.get('evaluations'))} evaluations each under rules {esc(', '.join(str(v) for v in p.get('rules') or []))}; evaluations where the regions "
-        f"disagree with the engine's verdict {esc(c.get('mismatches'))} (must be 0), errors {esc(c.get('errors'))}, no preview {esc(c.get('no_preview'))}; "
-        f"the actual time to effect within 5 s of the nominal in all but {esc(c.get('tte_off'))} of {esc(c.get('tte_evaluations'))}.</p>"
+        + f", {esc(c.get('evaluations'))} evaluations each under rules {esc(', '.join(str(v) for v in p.get('rules') or []))}"
+        + (f"; keep_out_m {esc(p.get('keep_out_m'))} (a copy of the policy)" if p.get("keep_out_m") is not None else "")
+        + f"; evaluations where the regions disagree with the engine's verdict {esc(c.get('mismatches'))} (must be 0), errors {esc(c.get('errors'))}, "
+        f"no preview {esc(c.get('no_preview'))}; the actual time to effect within 5 s of the nominal in all but {esc(c.get('tte_off'))} of {esc(c.get('tte_evaluations'))}.</p>"
     )
     out.append(rate_tables(s))
     if s.get("blocks"):
         out.append(
             "<p><strong>Needed or conservative</strong>, pooled over the grid's densities and times to effect, each weighted as the grid has them (uniform; "
             "the per-time counts are in summary.json, <code>blocks_by_tte</code>), with intervals clustered by situation. <strong>Needed</strong>: a protected "
-            "contact truly inside the keep-out (the effect radius plus 200 m, the policy's own line) at the effect time; <strong>severe</strong>: inside the "
-            "effect circle. <strong>Missed</strong>: a pass with someone inside (the bound in brackets: the 95% upper bound when none was seen, treating passes "
-            "as independent; per situation it is wider). The release window counts anyone inside from the effect time to 60 s after (a holding target may be "
-            "released that late): the nomination check is a screen, and the release's own check (not run here) is meant to catch what moves in later.</p>"
+            "contact truly inside the shipped policy's keep-out line (the effect radius plus 200 m, in every variant) at the effect time; <strong>severe</strong>: "
+            "inside the effect circle. <strong>Missed</strong>: a pass with someone inside (the bound in brackets: the 95% upper bound when none was seen, "
+            "treating passes as independent; per situation it is wider). The release window counts anyone inside from the effect time to 60 s after (a holding "
+            "target may be released that late): the nomination check is a screen, and the release's own check (not run here) is meant to catch what moves in "
+            "later.</p>"
         )
         out.append(blocks_table(s))
         out.append("<p><strong>Which component blocks</strong> the conservative blocks (nobody inside the keep-out): the component reaching in deepest, and whether the nomination would have passed with that component's regions left out and every other region as it was (alone).</p>")
@@ -290,6 +348,25 @@ def variant_block(s: dict[str, Any], title: str) -> str:
     return "".join(out)
 
 
+CAN = (
+    "<p><strong>What these numbers can support</strong> (model results, unreviewed):</p><ul>"
+    "<li>Blocks climb steeply with the time to effect and with traffic density, for every tracker: launching closer is the strongest lever.</li>"
+    "<li>Rules 9 and 12 never let a nomination through with someone in the effect circle, in any variant; rules 6 did, a few times per 15,000 passes. At "
+    "the keep-out line rules 9 and 12 cut the misses several-fold (the sensitivity table has the counts).</li>"
+    "<li>A boat circling within 1 km of the target blocks nearly every nomination under rules 9 and 12, whatever the tracker, matching the live run; "
+    "within 2 km it depends on the tracker.</li>"
+    "<li>Most blocks come from uncertainty about where contacts will be, not from contacts being close: compare each rate with perfect knowledge.</li>"
+    "<li>The 200 m buffer is a lever about as large as better sensors, mainly at short times to effect; whether it may shrink is a decision about the "
+    "effect model's margin, which this does not measure.</li>"
+    "<li>An aircraft seen only by our 2D radar (no ADS-B, no height-finding radar) blocks every nomination within its reach.</li>"
+    "</ul><p><strong>What they cannot support:</strong></p><ul>"
+    "<li>That missing velocity estimates drive surface blocks in general: that holds for one USV's radar alone and depends on the sensors.</li>"
+    "<li>That the buffer is not a lever.</li>"
+    "<li>Any absolute rate for a real place, or any loosening (judge a loosening by the misses at the keep-out line it brings, under the real tracker).</li>"
+    "<li>Anything about the plan's re-checks while signatures wait, the release's own check, or what operators do when blocked.</li></ul>"
+)
+
+
 def keepout_section(c: dict[str, Any]) -> str:
     variants = c.get("variants") or {}
     prim_name = c.get("primary")
@@ -301,37 +378,35 @@ def keepout_section(c: dict[str, Any]) -> str:
         "<p>Generated situations (eval/keepout.py: stated distributions, seeded) decided by the engine's own nomination checks under rules 6, 9 and 12 "
         "(eval/keepout_probe: <code>rules::evaluate</code> on the engine's view of the world, read-only). A hostile target holds in ez-gate-west, declared by "
         "an operator; protected contacts (neutral or unknown, none declared) around it at a density per km<sup>2</sup>, moving as one behaviour or a mix; our "
-        "observing USV 1 to 3 km out; sometimes another of ours lost; the engaging platform placed for each time to effect. The primary variant, "
-        f"<strong>{esc(prim_name)}</strong>, makes every protected contact's track with the bridge's own sensing model and IMM tracker (compiled from "
-        "crates/murmur-bridge/src/tracks unchanged) from simulated radar fixes of its motion; the others are listed below.</p>"
+        "observing USV 1 to 3 km out; sometimes another of ours lost; the engaging platform placed for each time to effect. The protected contacts' tracks "
+        "come from the bridge's own sensing model and IMM tracker (compiled from crates/murmur-bridge/src/tracks unchanged) on simulated fixes of their "
+        "motion: <strong>radar</strong>, the observing USV's radar alone (the pessimistic sensor case, with the full tables), and <strong>all</strong>, every "
+        "sensor it carries; or from a stated model; the variants are listed below.</p>"
     )
     items = "".join(f"<li><strong>{esc(k)}</strong>: {esc(v)}</li>" for k, v in (p.get("motion") or {}).items())
     mix = p.get("mix") or {}
     out.append(f"<ul>{items}<li><strong>mixed</strong>: {esc(', '.join(f'{k} {v:g}' for k, v in mix.items()))}</li></ul>")
-    out.append(
-        "<p><strong>Read this first.</strong> In every variant blocks climb steeply with the time to effect and with traffic density: launching closer is the "
-        "strongest lever. Rules 9 adds blocks mainly in circling or manoeuvring traffic, rules 12 near young tracks. Rules 9's regions caught every release "
-        "rules 6 allowed with someone truly inside the effect circle, and nearly every one with someone inside the keep-out. Most blocks come from not knowing "
-        "where contacts will be, not from contacts being close: compare each rate with what perfect knowledge would block. So the levers for fewer blocks are "
-        "shorter prediction spans, better track quality and how young tracks are handled, not the 200 m buffer. These numbers cannot support calling blocks "
-        "unnecessary, loosening a keep-out, or any absolute rate for a real place; a loosening should be judged by the misses at the keep-out level it brings, "
-        "under the real tracker.</p>"
-    )
+    out.append(CAN)
     out.append(sensitivity_table(c) and ("<h3>Sensitivity, mixed traffic</h3><p>Each variant changes one thing from its tracker's base (stated beside it). "
-               "Blocked on tracks at 60, 120 and 180 s, what perfect knowledge would block at the same times (rules-independent), the time to effect for a 50% "
-               "chance of passing under rules 12, the needed share of blocks and the passes that missed someone inside the keep-out, at the effect time and over "
-               "the release window.</p>" + sensitivity_table(c)))
-    live = [(n, s) for n, s in variants.items() if not s.get("tte") and s.get("dist")]
-    if live:
+               "Blocked on tracks at each time, what perfect knowledge would block then (rules-independent), the time to effect for a 50% and a 90% chance of "
+               "passing under rules 12, the needed share of blocks and the passes that missed someone: inside the shipped keep-out line, inside the effect "
+               "circle, and over the release window.</p>" + sensitivity_table(c)))
+    lt = live_table(variants)
+    if lt:
         out.append(
             "<h3>The live run's question</h3><p>The 10-06 live run blocked 77 of 77 nominations while a magura was 1 to 2 km out near a circling tour "
-            "boat. Here: one boat circling within the stated distance of the target (followed for a while, as the live one was), mixed traffic around it at "
-            "the live run's density and above, our observing USV's radar making every track, and a magura at 1, 1.5 and 2 km; blocked on tracks under each "
-            "rules version, perfect knowledge in brackets.</p>"
+            "boat. Here: one boat circling within 1 or 2 km of the target (followed for a while, as the live one was), mixed traffic around it at the live "
+            "run's density and above, a magura at 1, 1.5 and 2 km, under each tracker.</p>" + lt
         )
-        for n, s in live:
-            out.append(f"<p><strong>{esc(n)}</strong>: {esc((s.get('params') or {}).get('about'))}</p>" + dist_table(s))
-    out.append(variant_block(prim, f"Primary: {prim_name}"))
+    at = air_table(variants)
+    if at:
+        out.append(
+            "<h3>Air traffic: the worst case</h3><p>One light aircraft added to the surface traffic, seen only by our sensors (no ADS-B, no height-finding "
+            "radar). On 2D radar fixes the bridge's air tracker keeps the aircraft's velocity too uncertain to report, flying straight or turning, so the "
+            "keep-out counts it anywhere within 100 m/s of where it was; EO/IR helps a straight one, not a loitering one. The air tracker's constants were "
+            "scaled from the surface ones and never checked against truth.</p>" + at
+        )
+    out.append(variant_block(prim, f"{prim_name}: the pessimistic sensor case"))
     for name, s in variants.items():
         if name == prim_name:
             continue
@@ -343,22 +418,15 @@ def keepout_section(c: dict[str, Any]) -> str:
             "<code>engage::track_reach</code> gives reference surface tracks (15 m 1-sigma), newest rules, by the span from the track's estimate to the effect; "
             "the keep-out (the effect radius plus 200 m) is beyond the effect point on top.</p>" + reg
         )
-    out.append("<h3>What this does and does not show</h3>")
+    out.append("<h3>What this does not cover</h3>")
     out.append(
         "<ul>"
-        "<li>It shows what the engine's keep-out checks decide at a nomination on generated geometry: every verdict is the engine's, and the component split "
-        "re-applies the keep-out's own comparison to each region (the regions together reproduce every verdict).</li>"
-        "<li>The gap between the engine's block rate and perfect knowledge is the price of uncertainty as the engine models it (where a contact may be by the "
-        "effect time). It is not evidence that the constants are too large for real boats.</li>"
-        "<li>It does not show how often such situations arise: the densities, behaviours, their mix, the share of new tracks and the lanes are assumptions. "
-        "The real-tracker variants use one observing vehicle's sensors; more sensors would mean better tracks.</li>"
+        "<li>How often such situations arise: the densities, behaviours, their mix, the share of new tracks, the lanes and the single observing vehicle are "
+        "assumptions; the live stack's several observers gave better tracks than one USV's radar.</li>"
         "<li>Truth labels use the generated motion; real traffic turns, stops and gets retasked. An aircraft counts in 3D for the labels (above the "
         "keep-out's height it is outside it), while the engine, with no altitude from our 2D radar, counts it in plan.</li>"
-        "<li>Air traffic is one variant only (a loitering light aircraft added to the surface traffic): while it turns the bridge's tracker gives it no "
-        "velocity, so the keep-out counts it anywhere within 100 m/s of where it was, and that alone can decide every nomination near an airfield or a "
-        "loitering aircraft. Out-of-view contacts are not modelled: every contact stays within our sensors, so the bridge's drop of a track unseen for 180 s "
-        "never fires here (a dropped track stops counting in keep-outs: murmur-533); a contact our sensors never detected (a new one in its first second) "
-        "has no track and is not protected.</li>"
+        "<li>Out-of-view contacts: every contact stays within our sensors, so the bridge's drop of a track unseen for 180 s never fires here (a dropped "
+        "track stops counting in keep-outs: murmur-533); a contact never detected (a new one in its first second) has no track and is not protected.</li>"
         "<li>Only the nomination's checks run: the plan's re-checks while signatures wait (every second) would block more, and the release's own check is "
         "what stops an effect with someone inside it then.</li>"
         "<li>No person decides anything here: what operators do when blocked (wait, reposition, accept a lost vehicle, give up) is not modelled.</li>"

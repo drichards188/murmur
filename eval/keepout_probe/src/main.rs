@@ -2,7 +2,7 @@
 //! situations through murmur-decide's own nomination checks, read-only. Nothing here is part
 //! of the C2 or decides anything for it; the engine's rules are called, never restated.
 //!
-//! `murmur-keepout-probe [--root DIR] [--rules 6,9,12]` reads one situation per line on
+//! `murmur-keepout-probe [--root DIR] [--rules 6,9,12] [--keep-out-m M]` reads one situation per line on
 //! stdin and writes one result per line on stdout for each of its evaluations.
 //!
 //! **A situation** (JSON): `id`, `t_ms` (engine time now), `target` (a track id), `radius_m`,
@@ -120,9 +120,21 @@ impl Env {
     /// `sim/policy.toml` under each rules version as the scenario runner sets one
     /// (`--rules N`: the version, and no `[identification]` before rules 9).
     pub fn load(root: &Path, versions: &[u32]) -> Result<Env, String> {
+        Self::load_with(root, versions, None)
+    }
+
+    /// [`Env::load`] with `[rules.engage] keep_out_m` set to `keep_out_m` (a copy of the policy
+    /// with another buffer, inside the bounds a policy file must meet).
+    pub fn load_with(root: &Path, versions: &[u32], keep_out_m: Option<f64>) -> Result<Env, String> {
         let catalog = Catalog::load(&root.join("sim/platforms.toml")).map_err(|e| e.to_string())?;
         let areas = AreaSet::load_dir(&root.join("sim/areas"), T0).map_err(|e| e.to_string())?;
-        let base = Policy::load(&root.join("sim/policy.toml")).map_err(|e| e.to_string())?;
+        let mut base = Policy::load(&root.join("sim/policy.toml")).map_err(|e| e.to_string())?;
+        if let Some(k) = keep_out_m {
+            let mut e = base.rules.engage.clone().unwrap_or_default();
+            e.keep_out_m = k;
+            e.validate()?;
+            base.rules.engage = Some(e);
+        }
         let mut cfgs = BTreeMap::new();
         for &v in versions {
             if v == 0 || v > rules::RULES_VERSION {
@@ -492,6 +504,7 @@ fn main() -> std::process::ExitCode {
     let mut args = std::env::args().skip(1);
     let mut root = PathBuf::from(".");
     let mut versions = vec![6, 9, 12];
+    let mut keep_out_m: Option<f64> = None;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--root" => root = args.next().map(PathBuf::from).unwrap_or(root),
@@ -503,13 +516,15 @@ fn main() -> std::process::ExitCode {
                     .filter_map(|v| v.trim().parse().ok())
                     .collect();
             }
+            // a copy of the policy with another keep-out buffer, metres
+            "--keep-out-m" => keep_out_m = args.next().and_then(|v| v.parse().ok()),
             _ => {
-                eprintln!("usage: murmur-keepout-probe [--root DIR] [--rules 6,9,12] < situations.jsonl");
+                eprintln!("usage: murmur-keepout-probe [--root DIR] [--rules 6,9,12] [--keep-out-m M] < situations.jsonl");
                 return std::process::ExitCode::from(2);
             }
         }
     }
-    let env = match Env::load(&root, &versions) {
+    let env = match Env::load_with(&root, &versions, keep_out_m) {
         Ok(e) => e,
         Err(e) => {
             eprintln!("murmur-keepout-probe: {e}");
