@@ -117,6 +117,7 @@ rules' freshness limit for that vehicle's link):
 | `get_satellite_passes` | imaging access windows over an area (read-only) |
 | `get_satellite_tasking_options` | ranked collection options and exclusions (read-only) |
 | `get_nominations` | engagement nominations (Phase E): checks, preview, signatures needed and given, the picture held since approval, the effect, a stop, the assessment |
+| `get_nomination_options` | the nomination form's dry run for a declared-hostile track: each armed platform's checks and preview now, and `keep_outs`: which track or vehicle of ours blocks (or nearly blocks) the keep-out, the region that blocks and by how much, and what would clear it (a closer platform, a later nomination if everything keeps behaving as now). Read-only and not logged; listed by uid, not ranked; no keep-out is relaxed (murmur-12e) |
 
 Proposing:
 
