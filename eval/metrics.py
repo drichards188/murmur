@@ -10,11 +10,13 @@ The functions are pure over parsed records, so tests feed them synthetic logs
 
 from __future__ import annotations
 
+import bisect
 import json
 import subprocess
 import sys
 import tomllib
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -346,16 +348,47 @@ def resolve_label(rec: dict[str, Any], t: Trail | None = None, cuts: list[tuple[
     return "legitimate", "truth: nothing wrong when proposed or when decided"
 
 
+def _bridge_t(sm: dict) -> float | None:
+    """A truth sample's time on the bridge's clock (the `bridge_t` it recorded, the clock a
+    decision's time is on), else its wall time (samples from runs before it was recorded)."""
+    bt = sm.get("bridge_t")
+    return float(bt) if bt is not None else sm.get("t")
+
+
+def wall_to_bridge(samples: list[dict] | None) -> Callable[[float], float]:
+    """Map a wall-clock time (the runner's time.time(), the stand-ins' navigation log, the
+    emulator's cut windows) to the bridge's clock through the truth samples' (t, bridge_t)
+    pairs: the offset of the sample nearest in wall time. The bridge keeps a clock of its own
+    (murmur-dup: steered to within about 2 s of the wall clock); mapping through the pairs
+    keeps the labels independent of that bound. Identity without pairs (older runs)."""
+    pairs = sorted(
+        (float(sm["t"]), float(sm["bridge_t"]) - float(sm["t"]))
+        for sm in samples or []
+        if sm.get("t") is not None and sm.get("bridge_t") is not None
+    )
+    if not pairs:
+        return lambda x: x
+    ts = [p[0] for p in pairs]
+
+    def to_bridge(x: float) -> float:
+        i = bisect.bisect_left(ts, x)
+        j = min((k for k in (i - 1, i) if 0 <= k < len(pairs)), key=lambda k: abs(ts[k] - x))
+        return x + pairs[j][1]
+
+    return to_bridge
+
+
 def _sample_at(samples: list[dict], moment: float, max_gap_s: float = 10.0) -> dict | None:
-    """The last truth sample at or before `moment` (wall seconds), if one is that recent."""
-    best = None
+    """The last truth sample at or before `moment` (the bridge's clock, s: a decision's time),
+    if one is that recent, by the time on the bridge's clock each sample recorded."""
+    best, best_t = None, None
     for sm in samples:
-        ts = sm.get("t")
+        ts = _bridge_t(sm)
         if ts is None or ts > moment:
             continue
-        if best is None or ts > best["t"]:
-            best = sm
-    if best is None or moment - best["t"] > max_gap_s:
+        if best_t is None or ts > best_t:
+            best, best_t = sm, ts
+    if best is None or best_t is None or moment - best_t > max_gap_s:
         return None
     return best
 
@@ -418,10 +451,16 @@ def label_at_decision(
                     if d <= float(r):
                         why.append(f"truth at the decision: {c['id']} ({c['affiliation']}) is {d:.0f} m from the aim point")
         uids = set(t.uids)
-        last = None
+        # the navigation log is on the stand-ins' wall clock: on the bridge's, through the
+        # samples' pairs
+        to_bridge = wall_to_bridge(samples)
+        last, last_t = None, None
         for line in nav or []:
-            if str(line.get("uid")) in uids and line.get("t") is not None and line["t"] <= moment and (last is None or line["t"] > last["t"]):
-                last = line
+            if str(line.get("uid")) not in uids or line.get("t") is None:
+                continue
+            lt = to_bridge(float(line["t"]))
+            if lt <= moment and (last_t is None or lt > last_t):
+                last, last_t = line, lt
         if last is not None:
             off = max(float(last.get("spoof_m") or 0.0), float(last.get("error_m") or 0.0))
             if off > SPOOF_M:
@@ -1167,9 +1206,11 @@ def compute_run(run_dir: Path, rerun_replay: bool = False, info: dict[str, Any] 
         replay = run_replay(run_dir / "audit.jsonl")
     # a study's evidence is its participant's decisions only (the other operators are scripts)
     participant = PARTICIPANT_OPERATOR if info.get("arm") == "study" else None
-    cuts = link_cuts(run_dir, info.get("clocks"), story)
     samples = load_jsonl(run_dir / "truth.jsonl")
     nav = load_jsonl(run_dir / "standins-truth.jsonl")
+    # the emulator's cut windows are on the wall clock, a decision's time on the bridge's
+    to_bridge = wall_to_bridge(samples)
+    cuts = [(u, to_bridge(a), to_bridge(b)) for u, a, b in link_cuts(run_dir, info.get("clocks"), story)]
     m = compute(
         events, story, operators, replay, arm=info.get("arm"), cuts=cuts, samples=samples, nav=nav,
         deciders={participant} if participant else None,

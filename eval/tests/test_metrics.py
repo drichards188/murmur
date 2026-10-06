@@ -763,6 +763,36 @@ def test_label_at_decision_follows_truth_then():
     assert M.label_at_decision(propose("x", 1, label="legitimate"), t, [], there, []) is None
 
 
+def test_truth_at_the_decision_is_matched_on_the_bridges_clock():
+    """murmur-dup: a decision's time is on the bridge's clock and the truth samples and the
+    navigation log on the wall clock; with the bridge 6.3 s ahead (a 300 s station on a host
+    whose monotonic clock ran 2.1 % fast, before the bridge's clock was bounded) a match on
+    the wall clock took the sample after the decision and a navigation fault that came after
+    it. Matched on each sample's `bridge_t`, and the log mapped through them, both hold."""
+    hostile = {"id": "fastboat", "affiliation": "hostile", "distance_m": 0.0}
+    rec = propose("c", 1, target=hostile_target(), context=at_aim(hostile), **orbit())
+    t = trail(decided_s=40)
+    there = [{"id": "fastboat", "affiliation": "hostile", "lon": AIM[0], "lat": AIM[1]}]
+    ahead = 6.3
+    # wall 33.7: there (bridge 40.0); wall 38.7: gone (bridge 45.0, after the decision)
+    samples = [
+        {"t": T0 / 1000 + 33.7, "bridge_t": T0 / 1000 + 40.0, "contacts": there},
+        {"t": T0 / 1000 + 38.7, "bridge_t": T0 / 1000 + 45.0, "contacts": []},
+    ]
+    assert M._sample_at(samples, T0 / 1000 + 40.0) is samples[0]
+    assert M.label_at_decision(rec, t, [], samples, [])[0] == "legitimate"
+    # the navigation went off at wall 36 (bridge 42.3): after the decision
+    nav = [{"t": T0 / 1000 + 36.0, "uid": 4, "spoof_m": 400.0, "error_m": 0.0}]
+    assert M.label_at_decision(rec, t, [], samples, nav)[0] == "legitimate"
+    # at wall 33 (bridge 39.3): before it
+    nav = [{"t": T0 / 1000 + 33.0, "uid": 4, "spoof_m": 400.0, "error_m": 0.0}]
+    assert M.label_at_decision(rec, t, [], samples, nav)[0] == "should_reject"
+    to_bridge = M.wall_to_bridge(samples)
+    assert abs(to_bridge(T0 / 1000 + 36.0) - (T0 / 1000 + 36.0 + ahead)) < 1e-6
+    # runs from before `bridge_t` was recorded: the wall clock, as before
+    assert M.wall_to_bridge([{"t": 5.0}])(7.0) == 7.0
+
+
 def test_an_armed_task_the_rules_rejected_is_still_armed():
     """No policy decision (the rules rejected it first): the platform's armed flag from the
     storyline record decides, so a wrong armed orbit is not labelled legitimate."""
