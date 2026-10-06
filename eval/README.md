@@ -250,26 +250,36 @@ ids, never human data; the live bridge's act sensing is exercised by
 
 How often the keep-outs block the nomination of an engagement on a genuinely hostile target,
 by traffic density and behaviour (stationary, transiting, circling, manoeuvring, new, mixed),
-time to effect (the platform's speed and distance) and rules version, whether a block protected
-anyone, and which keep-out component blocked (METRICS.md, "Keep-outs against engagements",
-with the first measurement). `eval/keepout.py` generates the situations from stated
-distributions (seeded, paired across behaviours) and the facts a tracker would report;
-`eval/keepout_probe`, a small Rust tool in its own Cargo workspace that only reads
-murmur-decide, runs each through the engine's own nomination checks (`rules::evaluate`) under
-each rules version and lists each protected track's keep-out regions (`engage::track_reach`).
-`eval.run keepout` builds the probe into `target/release` (cargo, a no-op when current), runs
-the situations on half the CPUs, and writes `keepout/records.jsonl.gz` (one line per
-evaluation), `keepout/summary.json` and the report. Every batch runs a small one
-(`--keepout-seeds`, `--keepout-situations`, `--no-keepout`); alone:
+time to effect (the platform's speed and distance), how the tracks are made and the rules
+version; whether a block protected anyone (someone truly inside the keep-out, or the effect
+circle, at the effect time and over the release window); and which keep-out component blocked
+(METRICS.md, "Keep-outs against engagements", with the measurement). `eval/keepout.py`
+generates the situations from stated distributions (seeded, paired across behaviours).
+`eval/keepout_probe`, a small Rust tool in the workspace (so `make check` lints and tests it)
+that only reads murmur-decide and compiles the bridge's own tracker files by path, makes the
+protected contacts' tracks with the bridge's sensing model and IMM tracker from simulated
+sensor fixes of their motion (or takes the generator's stated tracker model), runs every
+nomination through the engine's own checks (`rules::evaluate`) under each rules version, and
+lists each protected track's keep-out regions (`engage::track_reach`). The variants
+(`keepout.VARIANTS`): `radar` (the bridge's tracker on our observing USV's radar, the
+primary), `model`, `ais` (best case), `lanes`, `lanes-model`, new-track shares `new0`,
+`new15`, `new25`, `vel1`, `sigma60`, `air` (a loitering light aircraft added) and `live`,
+`live2` (the live run's question). `eval.run keepout` builds the probe (`cargo build --release
+-p murmur-keepout-probe`, a no-op when current), runs each variant on half the CPUs into
+`keepout/<variant>/` (`records.jsonl.gz`, one line per evaluation, and `summary.json`), writes
+the combined `keepout/summary.json` with the sensitivity table, and builds the report. Every
+batch runs `radar` and `model` small (`--keepout-seeds`, `--keepout-situations`,
+`--no-keepout`); alone:
 
 ```
-.venv/bin/python -m eval.run keepout --seeds 1 2 3 4 5 6 7 8 9 10 --situations 100   # about a minute
-.venv/bin/python -m eval.run keepout --densities 0.1 --behaviours circling mixed --tte-s 60 120 180 --rules 6 12
+.venv/bin/python -m eval.run keepout --seeds 1 2 3 4 5 6 7 8 9 10 --situations 100   # every variant, about 15 minutes
+.venv/bin/python -m eval.run keepout --variants radar model --densities 0.1 --behaviours circling mixed --tte-s 60 120 180
 ```
 
 Model results from simulated geometry, never human or field data: the densities, behaviours,
-their mix and the tracker-report model are assumptions stated in `eval/keepout.py`, and only
-the nomination's checks run (not the plan's re-checks while signatures wait).
+their mix, the lanes and the observing vehicle are assumptions stated in `eval/keepout.py`, and
+only the nomination's checks run (not the plan's re-checks while signatures wait, nor the
+release's own check): the nomination check is a screen, not the final outcome.
 
 ## Arms
 
