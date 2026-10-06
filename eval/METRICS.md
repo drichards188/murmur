@@ -319,6 +319,169 @@ parameters and slip rate are assumptions; the tracks are the scenario runner's (
 seeded noise), not the bridge's tracker. Scenarios 72-78 illustrate the rule and run in the
 engagement suite; they are not part of this measurement.
 
+## Keep-outs against engagements (rules 6, 9, 12)
+
+`eval/keepout.py` (`python -m eval.run keepout`, and a small one in every batch) measures how
+often the keep-outs block the nomination of an engagement on a genuinely hostile target, and
+why. It generates situations from stated distributions, decides each with the engine's own
+nomination checks under rules 6, 9 and 12, and labels each decision from the generated truth.
+The question it serves (murmur-12e): a live run saw 77 of 77 nominations blocked while the
+platform was 1 to 2 km out near a circling tour boat; is that the keep-outs working, or making
+engagements near ordinary traffic impossible?
+
+**Situations** (seeded; paired: a seed, density and index give the same target, contact
+positions, our vehicles and platform placements under every behaviour, only the motion
+differs):
+
+| part | distribution |
+| --- | --- |
+| target | holding in ez-gate-west (eval/ident.py's box), declared hostile by an operator, 1-sigma 8 to 25 m |
+| protected contacts | uniform over 8 km around the target, a Poisson count at 0.03, 0.1, 0.3 or 1 per km^2 (0.03 is about the 7 tracks of the 10-06 live run; 1 a busy harbour, a guess); neutral or unknown, none declared; surface |
+| behaviour | all contacts one of: stationary; transiting (3 to 12 m/s, a uniform course); circling (100 to 600 m radius, 2 to 8 m/s); manoeuvring (a zigzag, 0.6: 30 to 90 s legs 30 to 60 degrees either side of a course at 3 to 10 m/s; or sprints and stops, 0.4: 5 to 12 m/s for 30 to 90 s, up to 90 degrees of turn each time, 20 to 60 s stopped); new (tracked 0 to 45 s, holding 0.4 or transiting 0.6); or mixed (0.30, 0.40, 0.10, 0.15, 0.05 of those, a guess) |
+| our vehicles | the observing USV 1 to 3 km out, holding or straight at 2 to 6 m/s; with chance 0.1 another USV lost (last report 15 to 300 s old, 2 to 8 km out) |
+| engaging platform | for each nominal time to effect (30, 45, 60, 90, 120, 180, 240, 300 s) one platform drawn (magura 12 m/s or switchblade 28 m/s) placed (time - 20 s dispatch delay) x cruise away; and each platform at 0.5, 1, 2 and 3 km; bearing uniform |
+| nomination | by an operator, effect radius 75 m, fallback return, no window; the shipped policy (keep-out 200 m beyond the radius) |
+
+**What the tracker reports** for each contact (the facts the engine reads; a stated model of
+the bridge tracker, `crates/murmur-bridge/src/tracks/model.rs`, with the scenario runner's
+noise): its position off by its own 1-sigma (8 to 25 m) per axis; a velocity off by 0.5 m/s
+per axis (the scenario runner's `--vnoise`; the Phase G value that passed), none in its first
+7 s (a guess at the fixes a 3 m/s velocity sigma takes); an average velocity over the last
+minute once tracked 45 s (from two position estimates, each with its noise); a manoeuvre when
+its true velocity, sampled every 10 s since the track began, changed by more than
+max(2 m/s, the chi-square 13.8 test on two estimates at 0.5 m/s) within 300 s, remembered
+300 s, with the fastest speed in the memory plus two sigmas; when the track began. Not
+modelled: noise-driven manoeuvre flags on steady tracks, filter lag after a turn, track breaks
+and re-initialized tracks, land, channels, air traffic.
+
+**What decides.** `eval/keepout_probe` (its own Cargo workspace, read-only use of
+murmur-decide) runs `rules::evaluate` on `WorldSnapshot::for_intent_with` for each evaluation
+and rules version: the checks `Engine::submit` runs at a nomination. For the keep-out on
+tracks it also lists every protected track's regions (`engage::track_reach`) and applies the
+keep-out's own comparison to each region alone, giving each **component**'s margin (its
+region's near edge outside the keep-out, negative inside): `current` along the velocity (rules
+6), `mean` along the average velocity (rules 9), `manoeuvre` anywhere at the fastest it went
+(rules 9), `young` anywhere at the domain's top speed in a track's first 45 s (rules 12),
+`no_velocity` anywhere at the top speed before a velocity exists (rules 6). The regions
+together must give the engine's verdict for every evaluation (`mismatch` otherwise; 0 in every
+run so far).
+
+| measure | definition |
+| --- | --- |
+| blocked (tracks) | `keep_out_tracks` failed at the nomination |
+| blocked (ours) | `keep_out_friendly` failed; by the lost vehicle or by one predicted along its velocity |
+| needed | a block with a protected contact truly inside the effect circle (the radius) at the effect time, the engine's predicted point and time against the generated motion |
+| conservative | any other block: *buffer* (a protected contact inside the keep-out, outside the circle) or *clear* (nobody inside the keep-out) |
+| missed | a pass with a protected contact truly inside the effect circle at the effect time |
+| deepest | of a conservative block, the component whose region reaches deepest into the keep-out |
+| alone | of a conservative block, the component without whose regions it would have passed, every other region as it was (several components can be inside at once, so the shares need not add up) |
+| without rules 9 and 12 regions | a conservative block that would have passed with the `mean`, `manoeuvre` and `young` regions left out |
+| time to effect for 50% (90%) | the longest nominal time to effect at which the keep-out on tracks still passes at least half (nine tenths) of the time, linearly interpolated on the grid |
+
+**Intervals.** A cell (density, behaviour, time to effect, rules) has one evaluation per
+situation, and situations are independent draws: Wilson 95%. The per-seed rates' Student t
+interval is kept beside it in `summary.json` (`tracks_seed_t`); they agree. Shares pooled over a
+situation's evaluations (needed, components, missed) treat the situation as a cluster: Wilson
+on the effective sample size (the design effect of the ratio). The thresholds' intervals are a
+percentile bootstrap over situations. The keep-out on our vehicles counts each field once (it
+does not depend on the contacts' behaviour).
+
+### First measurement (10-06, unreviewed)
+
+Model results from simulated geometry, not human data, not field data. Commit 913d457, clean
+tree; `python -m eval.run keepout --seeds 1 2 3 4 5 6 7 8 9 10 --situations 100`: 24,000
+situations (4,000 fields x 6 behaviours), 1.73 million contacts, 384,000 evaluations each
+under rules 6, 9 and 12; 0 mismatches, 0 errors, every evaluation previewed; 40 s on 12
+processes. Rates in percent with Wilson 95% intervals; 1,000 situations per cell.
+
+Blocked by the keep-out on tracks, mixed traffic:
+
+| per km^2 | rules | 30 s | 60 s | 120 s | 180 s | 300 s |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0.03 | 6 | 2 (1-3) | 2 (1-3) | 4 (3-6) | 7 (6-9) | 23 (21-26) |
+| 0.03 | 9 | 2 (1-3) | 3 (2-4) | 8 (6-9) | 13 (11-15) | 34 (32-37) |
+| 0.03 | 12 | 3 (2-4) | 4 (3-6) | 11 (9-13) | 21 (19-24) | 48 (45-51) |
+| 0.1 | 6 | 5 (4-7) | 8 (6-10) | 16 (14-18) | 28 (25-31) | 62 (59-65) |
+| 0.1 | 9 | 7 (6-9) | 13 (11-15) | 26 (23-28) | 44 (41-47) | 79 (77-82) |
+| 0.1 | 12 | 8 (6-10) | 16 (14-19) | 35 (32-38) | 59 (56-62) | 92 (90-93) |
+| 0.3 | 6 | 13 (11-15) | 19 (17-22) | 38 (35-41) | 63 (60-66) | 95 (93-96) |
+| 0.3 | 9 | 16 (14-18) | 26 (24-29) | 55 (52-58) | 81 (78-83) | 99 (98-99) |
+| 0.3 | 12 | 19 (17-22) | 33 (30-36) | 69 (66-72) | 92 (90-94) | 100 (99-100) |
+| 1 | 6 | 35 (32-38) | 52 (49-55) | 82 (80-85) | 96 (95-97) | 100 (100-100) |
+| 1 | 9 | 44 (41-47) | 68 (65-70) | 95 (93-96) | 99 (98-100) | 100 (100-100) |
+| 1 | 12 | 51 (48-54) | 79 (76-81) | 99 (98-100) | 100 (100-100) | 100 (100-100) |
+
+By behaviour, rules 6 / 9 / 12 (intervals within about 3 points at these sizes):
+
+| per km^2 | time to effect | stationary | transiting | circling | manoeuvring | new | mixed |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0.1 | 60 s | 8 / 8 / 8 | 7 / 8 / 8 | 6 / 15 / 15 | 6 / 20 / 20 | 22 / 22 / 67 | 8 / 13 / 16 |
+| 0.1 | 120 s | 14 / 15 / 15 | 14 / 16 / 16 | 13 / 34 / 34 | 14 / 51 / 51 | 50 / 50 / 97 | 16 / 26 / 35 |
+| 0.1 | 180 s | 24 / 27 / 27 | 25 / 27 / 27 | 25 / 54 / 54 | 26 / 74 / 74 | 76 / 76 / 100 | 28 / 44 / 59 |
+| 0.3 | 60 s | 17 / 18 / 18 | 17 / 18 / 18 | 16 / 37 / 37 | 17 / 51 / 51 | 48 / 48 / 96 | 19 / 26 / 33 |
+| 0.3 | 120 s | 35 / 38 / 38 | 35 / 38 / 38 | 34 / 69 / 69 | 33 / 86 / 86 | 87 / 87 / 100 | 38 / 55 / 69 |
+| 0.3 | 180 s | 58 / 61 / 61 | 57 / 61 / 61 | 57 / 89 / 89 | 57 / 98 / 98 | 98 / 98 / 100 | 63 / 81 / 92 |
+
+Needed or conservative, pooled over densities and times (clustered intervals): under every
+rules version and behaviour 1 to 2% of blocks were needed and 98 to 99% conservative; in 9 to
+22% of blocks a protected contact was inside the 200 m buffer (but not the circle), in the rest
+nobody was inside the keep-out. Missed: rules 6 passed 7 circling and 13 manoeuvring evaluations
+(of about 21,000 passes each) and 2 mixed with a protected contact truly inside the effect
+circle at the effect time; rules 9 and 12 passed none. Those 20 were bought with about 13,000
+more blocks in those two behaviours (circling 10,913 to 16,062, manoeuvring 10,978 to
+18,875), nearly all conservative.
+
+Conservative blocks, the component deepest / alone (percent):
+
+| behaviour | rules | conservative | current | mean | manoeuvre | young | no velocity | without rules 9 and 12 regions |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| stationary | 9 | 11,270 | 50 / 4 | 50 / 4 | | | | 4 |
+| circling | 9 | 15,866 | 11 / 1 | 9 / 1 | 81 / 24 | | | 32 |
+| manoeuvring | 9 | 18,675 | 3 / 1 | 1 / 0 | 95 / 32 | | | 42 |
+| new | 6 | 18,584 | 9 / 8 | | | | 91 / 47 | |
+| new | 12 | 26,041 | 0 / 0 | | | 84 / 29 | 16 / 3 | 29 |
+| mixed | 6 | 11,499 | 71 / 68 | | | | 29 / 7 | |
+| mixed | 12 | 16,161 | 9 / 1 | 9 / 1 | 22 / 8 | 51 / 13 | 10 / 2 | 29 |
+
+The longest time to effect with a pass on tracks at least 50% / 90% of the time, mixed traffic
+(bootstrap 95%), and the distance that is for a holding target at the platform's cruise speed:
+
+| per km^2 | rules | 50% | 90% | magura within (50% / 90%) | switchblade within |
+| --- | --- | --- | --- | --- | --- |
+| 0.03 | 6 | >300 s | 203 s (189-219) | >3.4 / 2.2 km | >7.8 / 5.1 km |
+| 0.03 | 12 | >300 s | 110 s (98-124) | >3.4 / 1.1 km | >7.8 / 2.5 km |
+| 0.1 | 6 | 257 s (247-268) | 79 s (63-95) | 2.8 / 0.7 km | 6.6 / 1.6 km |
+| 0.1 | 9 | 199 s (190-208) | 47 s (37-56) | 2.2 / 0.3 km | 5.0 / 0.8 km |
+| 0.1 | 12 | 158 s (151-165) | 38 s (32-46) | 1.7 / 0.2 km | 3.9 / 0.5 km |
+| 0.3 | 6 | 150 s (144-156) | <30 s | 1.6 / <0.1 km | 3.6 / <0.3 km |
+| 0.3 | 12 | 88 s (83-93) | <30 s | 0.8 / <0.1 km | 1.9 / <0.3 km |
+| 1 | 12 | <30 s | <30 s | | |
+
+The live run's geometry (a magura 1 to 2 km out, circling traffic): blocked 27 and 56% at 0.1
+per km^2 and 61 and 90% at 0.3 under rules 9 and 12 (rules 6: 10 and 27%, 29 and 59%). The
+keep-out on our vehicles blocked at most 1% up to 120 s and 6% (6-7) at 300 s, the lost vehicle
+in about a quarter of those. The region sizes the engine gives a 15 m track (rules 12,
+2-sigma included): along a velocity 164 m at 60 s, 388 m at 120 s, 664 m at 180 s, 1,342 m at
+300 s; a circling 5 m/s track's manoeuvre region 390, 750, 1,110, 1,830 m; a 10 m/s zigzag's
+690, 1,350, 2,010, 3,330 m; a young or new track's 1.5, 3.0, 4.5, 7.5 km.
+
+What these show, read plainly: under the stated distributions the time to effect and the
+density decide most of it, and the platform's speed only through the time it gives. Rules 6
+alone blocks a third of nominations at 120 s at 0.3 contacts per km^2 even when every
+contact holds still or keeps its course, because a steady track's region along its velocity
+grows with the span (the 1 m/s velocity error and 0.2 m/s^2 manoeuvre noise). Rules 9's
+manoeuvre region multiplies the rate in circling or manoeuvring traffic by two to four at one
+to three minutes at 0.1 per km^2 (less where the rate nears 100%), and rules 12's young region raises it wherever new tracks appear, by an amount that
+follows the share of new tracks (5% in the mix, a guess). Almost every block is conservative:
+nobody truly inside the effect circle. Rules 9's regions caught the few cases rules 6 missed.
+
+What they do not show: how often such situations arise (densities, behaviours and mix are
+assumptions); real tracker behaviour (a model of its reports); what the plan's re-checks
+while signatures wait would add (more blocks, not fewer); air traffic, land and channels;
+whether traffic converging on the target (a harbour mouth) would make more blocks needed; what
+operators do when blocked (wait, reposition, accept a lost vehicle, give up), which no part of
+this measures.
+
 ## Provenance and exclusions
 
 Each run records the git commit, the paths that differed from it (changed tracked files and
