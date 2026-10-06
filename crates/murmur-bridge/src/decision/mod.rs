@@ -496,6 +496,13 @@ pub struct Parts {
     pub carried_from: Vec<murmur_decide::replay::CarriedFrom>,
 }
 
+/// Remove `path` if it is an empty file (a start that failed before writing to it).
+fn remove_if_empty(path: &Path) {
+    if std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() == 0) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 impl Decision {
     /// Load policy, catalog and areas, open the audit log and start the engine. Any failure
     /// stops the bridge: without the decision layer nothing may reach a vehicle.
@@ -532,23 +539,30 @@ impl Decision {
             });
         }
         // rules 11: what earlier runs' logs still owe, read before this run's log is opened
-        // (a reused run id appends to the same file) and recorded in its first line
+        // (a reused run id appends to the same file) and recorded in its first line; a
+        // pointer or a log that can't be read is a failed carry there, never a failed start
         let followups = policy.rules.followups();
-        let (carried_from, carry_problem) = match (&s.last_run, followups) {
-            (Some(pointer), true) => match engage::read_carry(pointer) {
-                Ok(c) => (c, None),
-                Err(why) => (Vec::new(), Some(why)),
-            },
-            _ => (Vec::new(), None),
+        let carried_from = match (&s.last_run, followups) {
+            (Some(pointer), true) => engage::read_carry(pointer, &catalog),
+            _ => Vec::new(),
         };
         let file = JsonlFile::open(&s.audit).map_err(|e| format!("{}: {e}", s.audit.display()))?;
+        // a start that fails from here on leaves no empty log or anchor file behind (a log
+        // reused by its run id, already written, stays)
+        let undo = |e: String| -> String {
+            remove_if_empty(&s.audit);
+            if let Some(cfg) = &s.anchors {
+                remove_if_empty(&cfg.path);
+            }
+            e
+        };
         // anchored from its first event on: an anchor file that can't be opened stops the
         // bridge like an audit log that can't
         let anchors = match &s.anchors {
             Some(cfg) => Some(
                 // timed on the log's own clock
                 Anchors::open_with(cfg, &s.audit, Box::new(clock::BridgeClock))
-                    .map_err(|e| format!("anchors {}: {e}", cfg.path.display()))?
+                    .map_err(|e| undo(format!("anchors {}: {e}", cfg.path.display())))?
                     .with_utc(Box::new(clock::UtcClock)),
             ),
             None => None,
@@ -576,7 +590,8 @@ impl Decision {
                 study: s.study.clone(),
                 carried_from,
             },
-        )?;
+        )
+        .map_err(undo)?;
         if let Some(a) = anchors {
             let _ = d.anchors.set(a);
         }
@@ -638,7 +653,7 @@ impl Decision {
         // rules 6: lost-link values the last run on this port still owed back (rules 11: the
         // engine took them in run.started; their lanes, the pointer to this log)
         if followups {
-            d.seed_carried(s.last_run.as_deref(), carry_problem);
+            d.seed_carried(s.last_run.as_deref());
         } else if let Some(pointer) = &s.last_run {
             d.carry_restores(pointer);
         }

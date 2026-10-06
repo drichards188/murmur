@@ -759,10 +759,8 @@ fn carrying_rig_policy(
     pointer: &std::path::Path,
     tweak: impl FnOnce(&mut Policy),
 ) -> Erig {
-    let (carried, problem) = match engage::read_carry(pointer) {
-        Ok(c) => (c, None),
-        Err(why) => (Vec::new(), Some(why)),
-    };
+    let catalog = murmur_decide::Catalog::load(&root().join("sim/platforms.toml")).expect("catalog");
+    let carried = engage::read_carry(pointer, &catalog);
     let e = engage_rig_full(
         on,
         audit_path,
@@ -774,7 +772,7 @@ fn carrying_rig_policy(
         Vec::new(),
         carried,
     );
-    e.r.d.seed_carried(Some(pointer), problem);
+    e.r.d.seed_carried(Some(pointer));
     e
 }
 
@@ -793,6 +791,7 @@ fn owing(uid: u64, values: &[(&str, f64)], vehicle: Option<murmur_decide::Vehicl
             vehicle,
         }],
         pending: Vec::new(),
+        may_owe: Vec::new(),
         error: None,
     };
     murmur_decide::Engine::start(
@@ -1143,15 +1142,21 @@ async fn a_carried_restore_is_not_written_to_another_vehicle_with_the_uid() {
 /// over the preloaded fallback.
 #[tokio::test(start_paused = true)]
 async fn values_carried_over_hold_an_orbit_for_the_vehicle_they_were_preloaded_on() {
-    for (callsign, held) in [("fpv 1", true), ("fpv 9", false)] {
-        let dir = std::env::temp_dir().join(format!("murmur-carry-hold-{}-{held}", std::process::id()));
+    // (and M3: the same vehicle whose home moved 1.2 km, as ArduPilot sets it again at every
+    // arming, is the same vehicle: held, and its values put back)
+    let rearmed = murmur_decide::LonLat::new(TARGET.1 + 1_200.0 / 87_943.0, TARGET.0);
+    for (n, (callsign, home, held)) in [("fpv 1", None, true), ("fpv 1", Some(rearmed), true), ("fpv 9", None, false)]
+        .into_iter()
+        .enumerate()
+    {
+        let dir = std::env::temp_dir().join(format!("murmur-carry-hold-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("dir");
         let log = dir.join("run-0.jsonl");
         let earlier = owing_log(murmur_decide::VehicleIdentity {
             platform: Some("fpv".into()),
             callsign: Some(callsign.into()),
             sysid: None,
-            home: None,
+            home,
         });
         std::fs::write(&log, &earlier).expect("log");
         let pointer = dir.join(".last-run-0");
@@ -1194,6 +1199,155 @@ async fn values_carried_over_hold_an_orbit_for_the_vehicle_they_were_preloaded_o
     }
 }
 
+/// Rules 11 (review L9): what a failed carry owed is unknown, but its fleet (`<log stem>.fleet.json`
+/// beside it, when that reads) names the armed platforms it may owe values to (only an armed
+/// platform is ever preloaded): their missions wait in the Queue until the log is read or
+/// written off, fail closed, and the alert names them. A vehicle it did not name, or one it
+/// named that is not armed, is not held.
+#[tokio::test(start_paused = true)]
+async fn a_failed_carry_holds_missions_for_the_armed_platforms_its_fleet_named() {
+    let dir = std::env::temp_dir().join(format!("murmur-carry-fleet-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let pointer = dir.join(".last-run-0");
+    std::fs::write(&pointer, dir.join("gone.jsonl").display().to_string()).expect("pointer");
+    let fleet = json!({
+        "1": { "platform": "fpv", "callsign": "fpv 1", "home": [TARGET.0, TARGET.1] },
+        "2": { "platform": "x10", "callsign": "x10 2", "home": [TARGET.0, TARGET.1] },
+    });
+    std::fs::write(dir.join("gone.fleet.json"), fleet.to_string()).expect("fleet");
+    let e = carrying_rig_policy(None, PathBuf::from("memory"), &pointer, |p| p.rules.task_duration_s = 60);
+    let first = e.r.log.lines()[0].clone();
+    assert!(first.contains("\"may_owe\":[{\"uid\":\"1\"") && !first.contains("x10 2"), "{first}");
+    let inbox = e.r.d.inbox_json();
+    let alert = inbox["alerts"].as_array().expect("alerts").iter().find(|a| a["id"] == "restore:carry:gone.jsonl").cloned().expect("alert");
+    assert!(alert["detail"].as_str().unwrap_or_default().contains("vehicle(s) 1 (the armed platforms its fleet named)"), "{alert}");
+    e.r.vehicle(1, Firmware::Copter, "fpv", TARGET);
+    e.r.vehicle(2, Firmware::Copter, "x10", TARGET);
+    e.r.vehicle(3, Firmware::Copter, "fpv", TARGET);
+    sleep(Duration::from_millis(500)).await;
+    let at = |uid| {
+        let mut req = orbit(uid);
+        req.params.center = Some([TARGET.1 + 0.004, TARGET.0]);
+        req
+    };
+    let held = e.r.d.submit(&op("op-1"), at(1)).await.expect("orbit 1");
+    assert_eq!(held.state, State::Queued, "{}", held.intent);
+    assert!(held.intent["history"].to_string().contains("gone.jsonl"), "{}", held.intent);
+    for uid in [2, 3] {
+        let o = e.r.d.submit(&op("op-1"), at(uid)).await.expect("orbit");
+        assert_eq!(o.state, State::Dispatched, "vehicle {uid} is not held: {}", o.intent);
+    }
+    // written off: the orbit goes
+    e.r.d.write_off(&op("op-1"), None, Some("gone.jsonl".into()), "the old disk is gone").expect("written off");
+    for _ in 0..20 {
+        e.tick_on_wall().await;
+        if e.r.state(held.id) == State::Dispatched {
+            break;
+        }
+    }
+    assert_eq!(e.r.state(held.id), State::Dispatched, "{}", e.r.reason(held.id));
+    let rep = replay::replay_str(&e.r.log.text()).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Rules 11 (review M2, L7): a `.last-run` pointer that is empty, garbled, torn (a crash
+/// mid-write) or unreadable does not stop the bridge, through `Decision::load` as the bridge
+/// starts: the start records it in `run.started` as a failed carry under the pointer's own
+/// name (the log it named is unknown), alerts, and rewrites the pointer to this run's log,
+/// whole (through a temporary file, none left behind). The next start carries the chain on
+/// (that entry stays owed) until an operator writes it off. A start that fails leaves no
+/// empty log behind.
+#[tokio::test(start_paused = true)]
+async fn a_bad_pointer_is_a_failed_carry_not_a_failed_start() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let world = || {
+        World::new(Config {
+            base_port: 0,
+            http_port: 0,
+            default_ports: 0,
+            manifest: root().join("sim/run/no-such-manifest.json"),
+            platforms: root().join("sim/platforms.toml"),
+            root: root(),
+        })
+    };
+    let settings = |audit: PathBuf, pointer: &std::path::Path| Settings {
+        policy: root().join("sim/policy.toml"),
+        catalog: root().join("sim/platforms.toml"),
+        areas: root().join("sim/areas"),
+        audit,
+        operators: vec![OperatorId::new("op-1")],
+        engage_operators: Vec::new(),
+        scripted: Vec::new(),
+        auth: murmur_decide::AuthMode::Dev,
+        tidewater: None,
+        anchors: None,
+        last_run: Some(pointer.to_path_buf()),
+        resume: crate::decision::queue::ResumeFrom::Off,
+        pointer: None,
+        passkeys: None,
+        study: None,
+    };
+    let cases: [(&str, Option<&[u8]>, &str); 4] = [
+        ("empty", Some(b""), "the pointer is empty"),
+        ("garbled", Some(&[0xff, 0xfe, 0x00, 0x41]), "the pointer is garbled"),
+        ("torn", Some(b"/home/op/murmur/logs/audit/20261006T0"), "the pointer names no log"),
+        ("unreadable", None, "the pointer can't be read"),
+    ];
+    for (what, bytes, why) in cases {
+        let dir = std::env::temp_dir().join(format!("murmur-carry-pointer-{}-{what}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let pointer = dir.join(".last-run-0");
+        match bytes {
+            Some(b) => std::fs::write(&pointer, b).expect("pointer"),
+            None => {
+                std::fs::write(&pointer, dir.join("run-0.jsonl").display().to_string()).expect("pointer");
+                std::fs::set_permissions(&pointer, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+            }
+        }
+        let run1 = dir.join("run-1.jsonl");
+        let d = Decision::load(world(), &settings(run1.clone(), &pointer)).unwrap_or_else(|e| panic!("{what}: the bridge starts: {e}"));
+        let text = std::fs::read_to_string(&run1).expect("log");
+        let first = text.lines().next().unwrap_or_default().to_string();
+        assert!(first.contains("\"carried_from\":[{\"log\":\".last-run-0\",\"error\":") && first.contains(why), "{what}: {first}");
+        let alerts = d.inbox_json()["alerts"].clone();
+        let alert = alerts.as_array().expect("alerts").iter().find(|a| a["id"] == "restore:carry:.last-run-0").cloned();
+        assert!(alert.is_some_and(|a| a["detail"].as_str().unwrap_or_default().contains("no mission is held")), "{what}: {alerts}");
+        assert_eq!(std::fs::read_to_string(&pointer).expect("rewritten"), run1.display().to_string(), "{what}");
+        assert!(!dir.join(".last-run-0.tmp").exists(), "{what}: no temporary file left");
+        drop(d);
+        // the next start: this run's log still owes for the pointer's lost log
+        let run2 = dir.join("run-2.jsonl");
+        let d2 = Decision::load(world(), &settings(run2.clone(), &pointer)).expect("second start");
+        let first = std::fs::read_to_string(&run2).expect("log").lines().next().unwrap_or_default().to_string();
+        assert!(
+            first.contains("{\"log\":\"run-1.jsonl\"") && first.contains("\"pending\":[\".last-run-0\"]") && first.contains("{\"log\":\".last-run-0\",\"error\":"),
+            "{what}: {first}"
+        );
+        d2.write_off(&op("op-1"), None, Some(".last-run-0".into()), "a crash tore the pointer").expect("written off");
+        assert!(!d2.inbox_json()["alerts"].to_string().contains("restore:carry"), "{what}");
+        let text = std::fs::read_to_string(&run2).expect("log");
+        assert!(replay::owed_debts(&text).is_empty(), "{what}");
+        let r1 = std::fs::read_to_string(&run1).expect("run 1");
+        let logs = [("run-1.jsonl", r1.as_str())];
+        let rep = replay::replay_str_with(&text, &replay::ReplayOptions { carried_logs: &logs, ..replay::ReplayOptions::default() }).expect("parses");
+        assert!(rep.ok() && rep.unrestored.is_empty(), "{what}: {:?} {:?}", rep.mismatches, rep.unrestored);
+        drop(d2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    // a start that fails after opening its log (here: an engagement operator the roster
+    // does not list) leaves no empty log behind
+    let dir = std::env::temp_dir().join(format!("murmur-carry-pointer-{}-fails", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let pointer = dir.join(".last-run-0");
+    let run = dir.join("run-1.jsonl");
+    let mut s = settings(run.clone(), &pointer);
+    s.engage_operators = vec![OperatorId::new("op-9")];
+    assert!(Decision::load(world(), &s).is_err());
+    assert!(!run.exists(), "no empty log left");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_start_that_cannot_read_the_last_runs_log_says_so() {
     let dir = std::env::temp_dir().join(format!("murmur-carry-missing-{}", std::process::id()));
@@ -1207,7 +1361,10 @@ async fn a_start_that_cannot_read_the_last_runs_log_says_so() {
     assert!(first.contains("\"carried_from\":[{\"log\":\"gone.jsonl\",\"error\":"), "{first}");
     let inbox = e.r.d.inbox_json();
     let alert = inbox["alerts"].as_array().expect("alerts").iter().find(|a| a["id"] == "restore:carry:gone.jsonl").cloned().expect("alert");
-    assert!(alert["detail"].as_str().unwrap_or_default().contains("the earlier log gone.jsonl can't be read"), "{alert}");
+    let detail = alert["detail"].as_str().unwrap_or_default();
+    assert!(detail.contains("the earlier log gone.jsonl can't be carried over"), "{alert}");
+    // (no fleet beside it: which vehicles it may owe is unknown, and the alert says so)
+    assert!(detail.contains("no mission is held for it"), "{alert}");
     // the pointer names this run's log now: its log still owes for gone.jsonl, so the next
     // start tries it again (the chain keeps it until it is read or written off)
     assert_eq!(std::fs::read_to_string(&pointer).expect("pointer"), this.display().to_string());

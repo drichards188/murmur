@@ -742,11 +742,13 @@ async fn a_scripted_credential_logs_in_as_scripted_and_is_no_person() {
 /// <op> off`) ends its sessions as any credential change does, and its next login is refused,
 /// saying why, until the bridge restarts: before, it logged in as a person's and replay listed
 /// the operator among the people. Re-marking a person's credential scripted is refused the
-/// same way.
+/// same way. Such a refused login is logged (`auth.refused`, saying why) like a wrong
+/// password, and the session the browser already held (op-1's here) stays (review L8).
 #[tokio::test]
 async fn a_credential_re_marked_mid_run_logs_in_only_after_a_restart() {
     let h = harness_with(Duration::from_secs(1800), &["op-2"], |_| {});
     assert!(h.log().lines().next().unwrap_or_default().contains("\"scripted\":[\"op-2\"]"), "{}", h.log());
+    let op1 = h.login("op-1", PW1).await;
     let op2 = h.login("op-2", PW2).await;
     let op3 = h.login("op-3", PW3).await;
     let mut c = CredentialFile::load(&h.file).expect("file");
@@ -760,14 +762,24 @@ async fn a_credential_re_marked_mid_run_logs_in_only_after_a_restart() {
     }
     for (who, pw, why) in [("op-2", PW2, "was harness-held (scripted) when the run started"), ("op-3", PW3, "was a person's when the run started")] {
         let (s, _, v) = h
-            .call("POST", "/api/auth/login", Some(json!({ "operator": who, "password": pw })), &[("origin", CONSOLE)])
+            .call(
+                "POST",
+                "/api/auth/login",
+                Some(json!({ "operator": who, "password": pw })),
+                &[("origin", CONSOLE), ("cookie", &op1)],
+            )
             .await;
         assert_eq!(s, StatusCode::UNAUTHORIZED, "{who}: {v}");
         assert!(v["detail"].as_str().unwrap_or_default().contains(why), "{who}: {v}");
     }
+    let refused: Vec<String> = h.log().lines().filter(|l| l.contains("\"type\":\"auth.refused\"")).map(str::to_string).collect();
+    assert_eq!(refused.len(), 2, "{refused:?}");
+    assert!(refused[0].contains("\"operator\":\"op-2\"") && refused[0].contains("harness-held"), "{refused:?}");
+    let (s, v) = h.post(&op1, "/api/intents", json!({ "task": "hold", "uids": [1] })).await;
+    assert_ne!(s, StatusCode::UNAUTHORIZED, "op-1's session in that browser stays: {v}");
     let r = h.replays_authenticated();
     let ids = |v: &[&str]| v.iter().map(|o| OperatorId::new(*o)).collect::<std::collections::BTreeSet<_>>();
-    assert_eq!((r.people.clone(), r.scripted.clone()), (ids(&["op-3"]), ids(&["op-2"])));
+    assert_eq!((r.people.clone(), r.scripted.clone()), (ids(&["op-1", "op-3"]), ids(&["op-2"])));
 }
 
 /// User decision (step-up scope): with `[approval] step_up_acts = ["declare_hostile"]`, a

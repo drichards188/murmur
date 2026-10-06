@@ -48,7 +48,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use murmur_decide::{
-    Clock,
+    Catalog, Clock,
     CheckResult, EffectOrder, EngageOrder, EngageWindow, Fallback, FallbackOrder, Intent,
     IntentId, Outcome as CheckOutcome, Proposal, Rationale, State, Task, Time, TrackFacts,
     engage,
@@ -235,19 +235,38 @@ pub(super) fn identity_of(cell: &crate::vehicle::VehicleCell) -> murmur_decide::
 /// `run.started` records it (`carried_from`), in that one line: the log `pointer`
 /// (`.last-run-<port>`) names, then each log it still owed for because its carry had failed
 /// (named pending, looked for beside it), tried again, and theirs in turn. A log that can't be
-/// read is recorded with why: the log that records it owes for it (pending) until a later
-/// start reads it or an operator writes it off, so the chain never drops it. Empty: no pointer
-/// (a first start). Err: the pointer itself can't be read (nothing to name).
-pub(super) fn read_carry(pointer: &std::path::Path) -> Result<Vec<murmur_decide::replay::CarriedFrom>, String> {
-    let named = match std::fs::read_to_string(pointer) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => {
-            return Err(format!(
-                "{} can't be read ({e}): lost-link values the last run on this port still owed can't be carried over",
-                pointer.display()
-            ));
-        }
-        Ok(s) => std::path::PathBuf::from(s.trim()),
+/// read is recorded with why, and with the armed platforms its fleet named (`may_owe`, from the
+/// fleet identity beside it when that reads): the log that records it owes for it (pending)
+/// until a later start reads it or an operator writes it off, so the chain never drops it.
+/// A pointer that can't be read, is empty or names no log (a crash mid-write, a stray edit) is
+/// a failed carry too, named by the pointer's own file name (the log it named is unknown: it
+/// stays owed until written off). Empty: no pointer (a first start). Never an error: a start
+/// is never stopped by what the last one left behind.
+pub(super) fn read_carry(pointer: &std::path::Path, catalog: &Catalog) -> Vec<murmur_decide::replay::CarriedFrom> {
+    let empty = |log: String| murmur_decide::replay::CarriedFrom {
+        log,
+        head: None,
+        last_seq: None,
+        owed: Vec::new(),
+        pending: Vec::new(),
+        may_owe: Vec::new(),
+        error: None,
+    };
+    let pointer_name = pointer
+        .file_name()
+        .map_or_else(|| ".last-run".to_string(), |f| f.to_string_lossy().into_owned());
+    let unknown = |why: String| {
+        let mut e = empty(pointer_name.clone());
+        e.error = Some(why);
+        vec![e]
+    };
+    let named = match std::fs::read(pointer) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(e) => return unknown(format!("the pointer can't be read ({e}): the log it named is unknown")),
+        Ok(bytes) => match pointer_target(&bytes) {
+            Ok(p) => p,
+            Err(why) => return unknown(why),
+        },
     };
     let dir = named.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
     let mut out: Vec<murmur_decide::replay::CarriedFrom> = Vec::new();
@@ -259,16 +278,19 @@ pub(super) fn read_carry(pointer: &std::path::Path) -> Result<Vec<murmur_decide:
         if out.iter().any(|c| c.log == log) {
             continue;
         }
-        let mut entry = murmur_decide::replay::CarriedFrom {
-            log,
-            head: None,
-            last_seq: None,
-            owed: Vec::new(),
-            pending: Vec::new(),
-            error: None,
-        };
+        let mut entry = empty(log.clone());
+        // a pointer recorded as a failed carry before: the log it named is unknown, so there
+        // is nothing to read again (it stays owed until written off)
+        if murmur_decide::replay::is_pointer_name(&log) {
+            entry.error = Some("a .last-run pointer that could not be read, recorded so at an earlier start: the log it named is unknown".into());
+            out.push(entry);
+            continue;
+        }
         match std::fs::read_to_string(&path) {
-            Err(e) => entry.error = Some(e.to_string()),
+            Err(e) => {
+                entry.error = Some(e.to_string());
+                entry.may_owe = armed_of(&path, catalog);
+            }
             Ok(text) => {
                 if let Some((head, seq)) = murmur_decide::replay::log_head(&text) {
                     entry.head = Some(head);
@@ -284,7 +306,83 @@ pub(super) fn read_carry(pointer: &std::path::Path) -> Result<Vec<murmur_decide:
         }
         out.push(entry);
     }
-    Ok(out)
+    out
+}
+
+/// Rules 11: what a pending carry's alert says of the vehicles it may owe values to.
+fn may_owe_text(may_owe: &[murmur_decide::Uid]) -> String {
+    if may_owe.is_empty() {
+        return "which vehicles it may owe is unknown (its fleet can't be read either), so no mission is held for it".into();
+    }
+    let uids: Vec<&str> = may_owe.iter().map(murmur_decide::Uid::as_str).collect();
+    format!(
+        "it may owe them to vehicle(s) {} (the armed platforms its fleet named): their missions wait in the Queue until it is read or written off",
+        uids.join(", ")
+    )
+}
+
+/// Rules 11 (review M2): `pointer` names `log`, written whole or not at all: to a temporary
+/// file beside it, synced, then renamed over it, so a crash mid-write leaves the old pointer
+/// or the new one, never a torn one.
+pub(super) fn write_pointer(pointer: &std::path::Path, log: &std::path::Path) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut name = pointer.file_name().unwrap_or_default().to_os_string();
+    name.push(".tmp");
+    let tmp = pointer.with_file_name(name);
+    let mut f = std::fs::File::create(&tmp)?;
+    f.write_all(log.display().to_string().as_bytes())?;
+    f.sync_all()?;
+    drop(f);
+    std::fs::rename(&tmp, pointer).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
+}
+
+/// Rules 11: the log a `.last-run` pointer's content names: one line, a path whose file name
+/// is a log's (`*.jsonl`, a bare file name). Err says why not (empty, torn, garbled).
+fn pointer_target(bytes: &[u8]) -> Result<std::path::PathBuf, String> {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return Err("the pointer is garbled (not text): the log it named is unknown".into());
+    };
+    let line = text.trim();
+    if line.is_empty() {
+        return Err("the pointer is empty (a write cut short?): the log it named is unknown".into());
+    }
+    let path = std::path::PathBuf::from(line);
+    let name = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+    if line.contains('\n') || !name.ends_with(".jsonl") || !murmur_decide::replay::is_log_file_name(&name) {
+        let shown: String = line.chars().take(80).collect();
+        return Err(format!("the pointer names no log ({shown:?}): the log it named is unknown"));
+    }
+    Ok(path)
+}
+
+/// Rules 11: the armed platforms the fleet beside an unreadable log named (its run's
+/// `<log stem>.fleet.json`), as the vehicles they were: values it may owe them are unknown. Only an
+/// armed platform is ever preloaded (engagements are on armed platforms). Empty when the fleet
+/// can't be read either.
+fn armed_of(log: &std::path::Path, catalog: &Catalog) -> Vec<murmur_decide::replay::OwedRestore> {
+    let Some(fleet) = std::fs::read(super::queue::fleet_file(log))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<super::queue::FleetIdentity>(&b).ok())
+    else {
+        return Vec::new();
+    };
+    fleet
+        .into_iter()
+        .filter(|(_, v)| v.platform.as_deref().and_then(|p| catalog.get(p)).is_some_and(|p| p.armed))
+        .map(|(uid, v)| murmur_decide::replay::OwedRestore {
+            uid: duid(uid),
+            values: BTreeMap::new(),
+            by: Vec::new(),
+            vehicle: Some(murmur_decide::VehicleIdentity {
+                platform: v.platform,
+                callsign: v.callsign,
+                sysid: None,
+                home: v.home.map(|[lat, lon]| murmur_decide::LonLat::new(lon, lat)),
+            }),
+        })
+        .collect()
 }
 
 /// The engine proposal for an engage request.
@@ -764,8 +862,11 @@ impl Decision {
             let Some(owed) = lane.owed.as_mut() else { continue };
             owed.due_since.get_or_insert(now_mono);
             // values carried over from an earlier run go back only to the vehicle they were
-            // preloaded on (the uid may name another one now)
+            // preloaded on (the uid may name another one now); rules 11: another vehicle is
+            // one whose platform, callsign or system id differs, never its home alone (set
+            // again at every arming), as the engine's hold judges it
             let mismatch = match (&cell, owed.owner, &owed.vehicle) {
+                (Some(c), None, Some(was)) if self.rules.followups() => was.differs(&identity_of(c)),
                 (Some(c), None, Some(was)) => was.matches(&identity_of(c)).err(),
                 _ => None,
             };
@@ -816,10 +917,11 @@ impl Decision {
     /// Rules 11, right after the engine started with what earlier logs still owed (in
     /// `run.started`): the values carried over are owed back on their platforms' lanes (put
     /// back once a vehicle that matches the one they were preloaded on answers), a log that
-    /// could not be read is said in the inbox, and `pointer` names this run's log from now on
-    /// (this log records the whole carry, failed ones included, so nothing drops out of the
-    /// chain).
-    pub(super) fn seed_carried(&self, pointer: Option<&std::path::Path>, problem: Option<String>) {
+    /// could not be read (or a pointer that could not) is said in the inbox, and `pointer`
+    /// names this run's log from now on, always (this log records the whole carry, failed
+    /// ones included, so nothing drops out of the chain), written whole or not at all
+    /// ([`write_pointer`]).
+    pub(super) fn seed_carried(&self, pointer: Option<&std::path::Path>) {
         {
             let mut guard = self.lock();
             let core = &mut *guard;
@@ -828,16 +930,15 @@ impl Decision {
                 println!("lost-link values of vehicle {uid} owed back from an earlier run (run.started): restoring");
                 core.params.insert(uid, ParamLane::carrying(o.values, o.vehicle));
             }
-            for (log, why) in core.engine.pending_carries() {
-                eprintln!("decision: the earlier log {log} can't be read ({why}): what it still owed is unknown and stays owed until a start reads it or an operator writes it off");
-            }
-            if let Some(why) = &problem {
-                eprintln!("decision: {why}");
-                core.carry_problem = Some((why.clone(), crate::clock::wall()));
+            for (log, why, may_owe) in core.engine.pending_carries() {
+                eprintln!(
+                    "decision: the earlier log {log} can't be carried over ({why}): what it still owed is unknown and stays owed until a start reads it or an operator writes it off; {}",
+                    may_owe_text(&may_owe)
+                );
             }
         }
-        if let (Some(pointer), None) = (pointer, problem)
-            && let Err(e) = std::fs::write(pointer, self.audit_path.display().to_string())
+        if let Some(pointer) = pointer
+            && let Err(e) = write_pointer(pointer, &self.audit_path)
         {
             let why = format!(
                 "{} can't be written ({e}): the next run won't find this one's log to carry over from",
@@ -873,9 +974,6 @@ impl Decision {
                 .write_off_restore(session.authority(), what.clone(), note)
                 .map_err(engine_err)?;
             self.drop_closed_restores(core);
-            if matches!(what, murmur_decide::WriteOff::Log(_)) && core.engine.pending_carries().is_empty() {
-                core.carry_problem = None;
-            }
             json!({ "written_off": match &what {
                 murmur_decide::WriteOff::Platform(u) => json!({ "uid": u }),
                 murmur_decide::WriteOff::Log(l) => json!({ "log": l }),
@@ -932,7 +1030,7 @@ impl Decision {
                 }
             }
         }
-        if let Err(e) = std::fs::write(pointer, self.audit_path.display().to_string()) {
+        if let Err(e) = write_pointer(pointer, &self.audit_path) {
             fail(format!(
                 "{} can't be written ({e}): the next run won't find this one's log to carry over from",
                 pointer.display()
@@ -972,7 +1070,8 @@ impl Decision {
     }
 
     /// Rules 6: an alert of the bridge's start (the last run's log could not be read, so what
-    /// it owed could not be carried over).
+    /// it owed could not be carried over; from rules 11, that this run's pointer could not be
+    /// written).
     pub(super) fn carry_alert(&self, core: &Core, now_wall: f64) -> Option<super::alerts::Alert> {
         core.carry_problem.as_ref().map(|(why, t)| super::alerts::Alert {
             id: "restore:carry".into(),
@@ -988,19 +1087,22 @@ impl Decision {
     }
 
     /// Rules 11: an alert for each earlier log whose carry failed and nobody wrote off: what it
-    /// still owed is unknown; it is tried again at every start until read, or written off.
+    /// still owed is unknown; it is tried again at every start until read, or written off. It
+    /// names the vehicles it may owe values to (the armed platforms of its fleet, whose
+    /// missions wait meanwhile), or says no mission is held when they are unknown.
     pub(super) fn pending_carry_alerts(&self, core: &Core, now_wall: f64) -> Vec<super::alerts::Alert> {
         core.engine
             .pending_carries()
             .into_iter()
-            .map(|(log, why)| super::alerts::Alert {
+            .map(|(log, why, may_owe)| super::alerts::Alert {
                 id: format!("restore:carry:{log}"),
                 kind: "restore_pending",
                 severity: super::alerts::Severity::High,
                 uid: 0,
                 callsign: None,
                 detail: format!(
-                    "the earlier log {log} can't be read ({why}): the lost-link values it still owed are unknown; it is tried again at every start until read, or an operator writes it off (POST /api/restores/write_off {{\"log\": \"{log}\", \"note\": ...}})"
+                    "the earlier log {log} can't be carried over ({why}): the lost-link values it still owed are unknown; {}. It is tried again at every start until read, or an operator writes it off (POST /api/restores/write_off {{\"log\": \"{log}\", \"note\": ...}})",
+                    may_owe_text(&may_owe)
                 ),
                 since_t: now_wall,
                 op_id: None,

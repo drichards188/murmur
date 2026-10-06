@@ -1197,9 +1197,10 @@ async fn login_by_passkey(auth: &Arc<Auth>, headers: &HeaderMap, op: OperatorId,
     signed_in(auth, headers, op.clone(), entry, move |engage| auth.decision.open_passkey_login(&op, engage, proof))
 }
 
-/// The end of a checked login (password or passkey): the operator is on the run's roster, a
-/// session the browser still holds ends, the engine session opens (`open`, given whether the
-/// credential holds engagement authority now), and the cookie is set.
+/// The end of a checked login (password or passkey): the operator is on the run's roster, the
+/// engine session opens (`open`, given whether the credential holds engagement authority
+/// now; a refusal there is logged as `auth.refused`), a session the browser still holds
+/// ends, and the cookie is set.
 fn signed_in(
     auth: &Arc<Auth>,
     headers: &HeaderMap,
@@ -1214,7 +1215,19 @@ fn signed_in(
             "your credential was added after this run started: it is not on the run's roster (restart the bridge to admit it)",
         );
     }
-    // a login from a browser that still holds a session ends that one
+    let session = match open(engage) {
+        Ok(s) => s,
+        Err(e) => {
+            // a login the engine refuses after the credential checked (rules 11: a credential
+            // re-marked scripted or not since the start; a factor the policy does not admit)
+            // is a refused login like a wrong password, on the record, and the browser's own
+            // session stays
+            println!("auth: login for {op} refused: {}", e.detail);
+            auth.decision.record_login_refused(&op, &e.detail, None);
+            return decision_refusal(e);
+        }
+    };
+    // a login from a browser that still holds a session ends that one, once this one opened
     let old: Vec<String> = auth.tokens(headers).into_iter().map(str::to_string).collect();
     for t in old {
         let prev = lock(&auth.sessions).remove(&t);
@@ -1222,10 +1235,6 @@ fn signed_in(
             auth.end(&l, "signed in again");
         }
     }
-    let session = match open(engage) {
-        Ok(s) => s,
-        Err(e) => return decision_refusal(e),
-    };
     let engage = engage && auth.decision.roster_entry(&op) == Some(true);
     let token = match lock(&auth.sessions).create(
         Login {
