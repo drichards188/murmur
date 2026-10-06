@@ -148,6 +148,19 @@ meaningful. Decision and command, not weapons.
   re-checked). A cover is judged at the centroid and boundary samples (the least covered
   point); the engine never computes a cover itself (`Decision::lock_with_space` prepares it
   outside the lock), so long covers don't hold the lock.
+- Rules 12 (`REVIEW_FOLLOWUPS_SINCE`): a start records what it carried in `run.started`
+  (`carried_from`: each earlier log, its head, what it owed); replay finds those logs beside
+  the log or by `--prev`. A `.last-run-<port>` that is empty, garbled or unreadable is a
+  failed carry (alerted), never a failed start; the pointer is rewritten whole at every start.
+  A failed carry holds missions for the armed platforms its `<log stem>.fleet.json` names
+  until read or written off (`POST /api/restores/write_off` with a note, or the console's
+  Write off). Carried lost-link values hold a mission on the vehicle they were preloaded on:
+  only platform, callsign or sysid say another vehicle under a uid, never its home. A
+  platform spent by its own effect (catalog `expended_by_effect`) takes no order or
+  nomination and its values are closed (`restore.closed`). A track with no mean velocity yet
+  counts at its domain's top speed in keep-outs. A credentials run fixes scripted operators
+  at start. To crash a bridge for a carry test: `kill -9` the PID that is the run id's
+  suffix in `logs/audit/<run-id>.jsonl`, never `pkill -f`.
 - The tracker is a two-model IMM; changes must pass `tracks::tests::calib`. Its held-out seeds
   (66-95) are not for tuning: write a new held-out set if you tune on them.
 - This host's wall clock (WSL) stepped back 0.5 to 0.9 s every ~32 s for the first two hours or
