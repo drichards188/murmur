@@ -1190,6 +1190,108 @@ fn hostile_track(r: &Rig) {
     .expect("declared");
 }
 
+/// A neutral boat holding 200 m north of the hostile one, seen by the same observer for as
+/// long: inside the keep-out of any effect on the hostile boat.
+fn neutral_alongside(r: &Rig) {
+    use crate::tracks::sensing::{Observer, SensorSpec, SensorType};
+    use crate::tracks::truth::{ContactTruth, Domain, Sensing, TruthAffiliation, TruthMessage};
+    let observer = Observer {
+        uid: 9,
+        lat: 37.8120,
+        lon: -122.4780,
+        alt_msl: 0.0,
+        mast_m: 4.0,
+        submerged: false,
+        sensors: vec![
+            SensorSpec { kind: SensorType::Radar, range_m: 8_000.0, guess: true, height: false },
+            SensorSpec { kind: SensorType::EoIr, range_m: 5_000.0, guess: true, height: false },
+        ],
+    };
+    let contact = |id: &str, aff, kind: &str, lat: f64| ContactTruth {
+        id: id.into(),
+        name: id.into(),
+        affiliation: aff,
+        domain: Domain::Surface,
+        kind: kind.into(),
+        lat,
+        lon: -122.4950,
+        alt_m: 0.0,
+        speed_mps: 0.0,
+        course_deg: 0.0,
+        emits: false,
+        signature: 1.0,
+        ais: None,
+    };
+    let now = crate::clock::wall();
+    for s in 0..=90 {
+        let msg = TruthMessage {
+            t: now,
+            s: f64::from(s),
+            seq: s as u64,
+            scenario: "test".into(),
+            seed: 1,
+            sensing: Sensing { misclassification_rate: 0.0 },
+            contacts: vec![
+                contact("fastboat", TruthAffiliation::Hostile, "small_fast_boat", 37.8120),
+                contact("fisher", TruthAffiliation::Neutral, "fishing_vessel", 37.8138),
+            ],
+            acts: Vec::new(),
+        };
+        r.tracks
+            .on_truth_with(msg, std::slice::from_ref(&observer), now - 90.0 + f64::from(s))
+            .expect("sensing");
+    }
+    r.d.declare(
+        &crate::decision::Actor::asserted(OperatorId::new("op-1")),
+        None,
+        "T-0001",
+        murmur_decide::Affiliation::Hostile,
+        None,
+        None,
+    )
+    .expect("declared");
+}
+
+/// Murmur-12e: an agent reads why a keep-out blocks a nomination it might make (the same dry
+/// run as the console's form): which track, why, by how much, what would clear it. Reading
+/// it logs nothing and moves nothing.
+#[tokio::test(start_paused = true)]
+async fn an_agent_reads_why_a_keep_out_blocks_and_nothing_is_logged() {
+    let r = rig();
+    r.vehicle(2, Firmware::Copter, "fpv", (37.8120, -122.4900)); // armed, 440 m away
+    sleep(Duration::from_millis(500)).await;
+    r.clock.set(snapshot::ms(crate::clock::wall()));
+    neutral_alongside(&r);
+    let lines = r.log.lines().len();
+    let v = r
+        .ok(&planner(), "get_nomination_options", json!({ "track_id": "T-0001", "effect_radius_m": 75.0 }))
+        .await;
+    assert_eq!(r.log.lines().len(), lines, "a read logs nothing");
+    let o = &v["options"][0];
+    assert_eq!(o["uid"], 2, "{v}");
+    assert_eq!(o["passed"], false, "{o}");
+    let ko = &o["keep_outs"];
+    assert_eq!(ko["blocked"], true, "{o}");
+    let item = &ko["items"][0];
+    assert_eq!(item["id"], "T-0002", "{ko}");
+    assert_eq!(item["blocks"], true, "{ko}");
+    assert_eq!(item["subject"], "track", "{ko}");
+    assert!(item["short_m"].as_f64().unwrap_or(0.0) > 0.0, "{item}");
+    assert!(item["reason"].as_str().unwrap_or("").contains("short by"), "{item}");
+    // a boat holding 200 m off: no position of the platform clears it, nor does waiting
+    assert_eq!(ko["move_within"]["possible"], false, "{ko}");
+    assert!(ko["wait"].is_null() && ko["wait_none"].is_string(), "{ko}");
+    // the explanation quotes the dry run's own keep-out checks
+    let checks = o["checks"].as_array().expect("checks");
+    for c in ko["checks"].as_array().expect("its checks") {
+        assert!(checks.contains(c), "{c}");
+    }
+    // an explanation is not a nomination: nothing exists, nothing waits
+    assert_eq!(r.events("intent.created"), 0);
+    assert!(r.d.nominations_json().is_empty());
+    r.replays();
+}
+
 fn nomination(uid: Uid, rationale: Option<&str>) -> Value {
     let mut v = json!({
         "task": "engage", "uids": [uid], "track_id": "T-0001", "effect_radius_m": 100.0,

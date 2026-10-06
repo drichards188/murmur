@@ -90,7 +90,9 @@ authority, never its proposer. You cannot approve, stop or release an engagement
 cannot declare a track, confirm or revoke a declaration, or resolve a review flag: no such \
 tool exists. A track only near or moving with a declared hostile is weak evidence (it may be \
 a neutral): it is flagged for review, never declared. get_nominations shows where each \
-stands. While \
+stands; get_nomination_options shows, before a nomination, which armed platforms pass every \
+check now and, where a keep-out blocks, which track or vehicle of ours blocks it, why and \
+what would clear it (read-only: no keep-out is relaxed). While \
 an engagement is in play on a vehicle, anything you propose for that vehicle waits for a \
 human.";
 

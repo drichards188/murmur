@@ -1691,6 +1691,10 @@ impl Decision {
     /// A dry run for the nomination form (read-only, not a decision, not logged): for each
     /// armed vehicle, the checks a nomination with it would get on the world now, and its
     /// preview. Listed by uid, with no ranking and no recommendation: the operator picks.
+    /// Murmur-12e: each option also carries `keep_outs`, the keep-out explanation on the
+    /// same inputs (`murmur_decide::keepout`: which track or vehicle of ours blocks or nearly
+    /// blocks the keep-out, why, by how much, and what would clear it), read-only like the
+    /// rest; `keep_outs_none` says why there is none (no preview, say).
     pub async fn engage_options(&self, req: OptionsRequest) -> Result<Value, DecisionError> {
         let fleet = self.fleet();
         let armed: Vec<crate::vehicle::Uid> = fleet
@@ -1750,6 +1754,14 @@ impl Decision {
             let checks = murmur_decide::rules::evaluate(&spec, &inputs, &self.rules);
             let passed = murmur_decide::rules::passed(&checks, murmur_decide::TaskKind::Engage);
             let preview = engage::preview(&spec, &inputs, &self.rules).ok();
+            // murmur-12e: why the keep-outs block, on the same inputs; shown only when its
+            // checks are the ones just run (they are: the same functions on the same inputs)
+            let (keep_outs, keep_outs_none) =
+                match murmur_decide::keepout::explain(&spec, &inputs, &self.rules, &crate::tracks::model::memory()) {
+                    Ok(x) if x.checks.iter().all(|c| checks.contains(c)) => (serde_json::to_value(&x).ok(), None),
+                    Ok(_) => (None, Some("the explanation does not match the checks: not shown".to_string())),
+                    Err(e) => (None, Some(e)),
+                };
             let callsign = fleet.get(&uid).and_then(|c| {
                 c.read(|v| {
                     v.identity
@@ -1764,6 +1776,8 @@ impl Decision {
                 "passed": passed,
                 "checks": checks,
                 "preview": preview,
+                "keep_outs": keep_outs,
+                "keep_outs_none": keep_outs_none,
             }));
         }
         // by uid (the fleet's order): no "best" first
@@ -1771,7 +1785,9 @@ impl Decision {
             "t": now,
             "track": req.track,
             "options": out,
-            "note": "listed by uid; not a ranking or a recommendation",
+            "note": "listed by uid; not a ranking or a recommendation. keep_outs explains each \
+                     keep-out that blocks or nearly blocks (read-only: the checks decide, and \
+                     nothing here relaxes one)",
         }))
     }
 

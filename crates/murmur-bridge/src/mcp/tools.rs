@@ -188,6 +188,20 @@ pub struct NominationsParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct NominationOptionsParams {
+    /// The track id (from get_tracks) of a track declared hostile.
+    pub track_id: String,
+    /// The effect radius in metres (default 75; the policy caps it).
+    pub effect_radius_m: Option<f64>,
+    /// The window closes this many seconds from now (default from the policy).
+    pub window_s: Option<u32>,
+    /// abort (hold where it is), return (home) or loiter (orbit where it is); default return.
+    pub fallback: Option<String>,
+    /// Only these fleet uids (default: every armed vehicle).
+    pub uids: Option<Vec<u64>>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct IdParams {
     /// The intent id (from propose_intent, get_intents or get_inbox).
     pub id: u64,
@@ -405,6 +419,26 @@ pub fn tools() -> Vec<Tool> {
             ),
             true,
         ),
+        tool::<NominationOptionsParams>(
+            "get_nomination_options",
+            format!(
+                "Read the nomination form's dry run for a track declared hostile (read-only: \
+                 nothing is created or logged): for every armed vehicle in the fleet (or the \
+                 uids given), each check a nomination with it would get on the world now, its \
+                 preview, and keep_outs, an explanation of the keep-outs: for each track, or \
+                 vehicle of ours, that blocks the keep-out or nearly does, the region that \
+                 blocks (its course, its average course, the reach of a manoeuvre the tracker \
+                 saw, a young track's reach, no velocity yet, a lost vehicle of ours, no \
+                 altitude ceiling) with the numbers (that region at the effect time, the \
+                 clearance needed, the shortfall), and what would clear it: an earlier effect \
+                 (move_within: how close the platform would need to be) or a later nomination \
+                 if everything keeps behaving as now (the assumptions are stated). It is an \
+                 explanation, not a decision and not a recommendation: options are listed by \
+                 uid, unranked; the checks decide and no keep-out is relaxed; only human \
+                 operators with engagement authority decide a nomination. {STALE_NOTE}"
+            ),
+            true,
+        ),
         tool::<IdParams>(
             "explain_intent",
             "Explain one intent: every check with its outcome and detail, the policy tier \
@@ -521,6 +555,18 @@ pub async fn call(
                 p.mine.unwrap_or(false),
                 p.state.as_deref(),
             ))
+        }
+        "get_nomination_options" => {
+            let p = params!(NominationOptionsParams);
+            mcp.decision
+                .engage_options(crate::decision::engage::OptionsRequest {
+                    track: p.track_id,
+                    effect_radius_m: p.effect_radius_m.unwrap_or(75.0),
+                    window_s: p.window_s,
+                    fallback: p.fallback,
+                    uids: p.uids,
+                })
+                .await
         }
         "get_recent_events" => {
             let p = params!(EventsParams);
