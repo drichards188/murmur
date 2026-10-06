@@ -2272,6 +2272,32 @@ pub enum FriendlyStanding {
     },
 }
 
+/// Rules 3: the circle a vehicle reports, when it holds the vehicle on `world` (what
+/// [`friendly_standing`] predicts it on). A vehicle flying a circle stays on it; its
+/// momentary heading, carried a minute or more ahead, would put it kilometres away in any
+/// direction. The circle holds only a vehicle that is on it: its position, reported with the
+/// circle, within the circle's radius and a small slack of the center. Otherwise the circle
+/// is wrong or stale, and the vehicle is predicted from where it is. Each report is judged on
+/// its own freshness: the position by the usual link-aware rule, the center by its own age.
+pub fn circle_holding<'v>(
+    v: &'v crate::world::VehicleFacts,
+    world: &WorldSnapshot,
+    cfg: &RulesConfig,
+) -> Option<&'v crate::world::Fact<crate::world::Circle>> {
+    let ec = cfg.engage_rules();
+    let pos = v.position.as_ref()?;
+    let pos_fresh = fresh(&v.position, v, "position", world, cfg).is_ok();
+    v.circling.as_ref().filter(|_| ec.v3()).filter(|c| {
+        let center_fresh = match c.value.center_t {
+            Some(ct) => world.t.ms_since(ct) <= CIRCLE_CENTER_MAX_AGE_MS,
+            None => fresh(&v.circling, v, "circle", world, cfg).is_ok(),
+        };
+        pos_fresh
+            && center_fresh
+            && haversine_m(pos.value, c.value.center) <= c.value.radius_m + CIRCLE_SLACK_M
+    })
+}
+
 /// One of our vehicles (`uid`, not the platform) against a keep-out reaching `keep_out_m`
 /// from `point` at `effect_t`: what [`keep_out_friendly`] reads for each. With a fresh
 /// velocity it is carried along it, less an uncertainty growing over the span; a vehicle a
@@ -2317,23 +2343,8 @@ pub fn friendly_standing(
             },
         };
     };
-    // rules 3: a vehicle flying a circle stays on it; its momentary heading, carried
-    // a minute or more ahead, would put it kilometres away in any direction. The circle
-    // holds only a vehicle that is on it: its position, reported with the circle, within
-    // the circle's radius and a small slack of the center. Otherwise the circle is
-    // wrong or stale, and the vehicle is predicted from where it is.
-    // Each report is judged on its own freshness: the position by the usual link-aware
-    // rule, the center by its own age.
     let reported = v.circling.as_ref().filter(|_| ec.v3());
-    let circling = reported.filter(|c| {
-        let center_fresh = match c.value.center_t {
-            Some(ct) => world.t.ms_since(ct) <= CIRCLE_CENTER_MAX_AGE_MS,
-            None => fresh(&v.circling, v, "circle", world, cfg).is_ok(),
-        };
-        pos_fresh
-            && center_fresh
-            && haversine_m(pos.value, c.value.center) <= c.value.radius_m + CIRCLE_SLACK_M
-    });
+    let circling = circle_holding(v, world, cfg);
     let vel = v
         .velocity_mps
         .as_ref()

@@ -4,8 +4,9 @@
 //! signatures, each checked again by the engine. It relaxes nothing and overrides nothing.
 //! It reads the functions the keep-out checks read ([`engage::track_standing`],
 //! [`engage::friendly_standing`], [`engage::preview`], [`engage::effect_alt`]) on the
-//! snapshot the dry run checked, and refuses to explain when its blocking items do not
-//! match the checks' outcomes, so it cannot disagree with them.
+//! snapshot the dry run checked, and refuses to explain unless every track and vehicle it
+//! calls blocking is exactly one the checks fail on (each check run on that item alone), so
+//! it cannot disagree with them.
 //!
 //! For every track or vehicle of ours that blocks the keep-out, or nearly does (its nearest
 //! region's edge within [`NEAR_FACTOR`] times the clearance of the effect point), an
@@ -18,27 +19,32 @@
 //!   clearance the keep-out needs (the effect radius plus `keep_out_m`) and by how much the
 //!   region fails it;
 //! - what would clear it, each under a stated assumption:
-//!   - [`Item::fits_until_t`], on the same picture: the latest effect time up to which every
-//!     earlier effect leaves it clear (a shorter span: the platform closer);
+//!   - [`Item::clear_windows`], on the same picture: every stretch of effect times, from the
+//!     earliest any platform could make (the dispatch delay, or the window's opening) to the
+//!     latest a nomination allows (the window's close, or the longest transit), at which it
+//!     is clear; [`Item::fits_until_t`] when the first starts at the earliest (a closer
+//!     platform);
 //!   - [`Item::wait`], on the picture carried forward ([`project`], "if it keeps behaving as
 //!     now"): the first nomination time at which a dry run would find it clear, and that
 //!     nomination's effect time (a young track gets its average velocity, a manoeuvre ages
 //!     out of the tracker's memory, its predicted region moves off);
-//!   - [`Item::not_by_waiting`] and [`Item::other`] when waiting does not clear it (lost,
-//!     not in view), with what would (a report, an operator's logged acceptance).
+//!   - [`Item::not_by_waiting`] and [`Item::other`] when waiting does not clear it (lost, not
+//!     in view), stated as what happens, with what else would (a report, an operator's logged
+//!     acceptance).
 //!
-//! and, for the platform, [`MoveWithin`]: how close it would need to be for every keep-out
-//! to hold, and [`Explanation::wait`]: the first nomination time at which every keep-out
-//! would hold. `tests/keepout.rs` checks each claim against the checks themselves: a dry run
-//! at the stated time, or with the platform within the stated distance, passes the keep-outs;
-//! a second earlier (where testable, one step farther) it does not.
+//! and, for the platform, [`MoveWithin`]: every stretch of effect times at which every
+//! keep-out holds, as distances from the target when it holds where it is ("within X m",
+//! "between X and Y m"); and [`Explanation::wait`]: the first nomination time at which every
+//! keep-out would hold. `tests/keepout.rs` checks each claim against the checks themselves.
+
+use std::collections::BTreeMap;
 
 use serde::Serialize;
 
 use crate::catalog::Domain;
 use crate::engage::{
-    self, EffectAlt, EngagePreview, EngageRules, FriendlyKind, FriendlyStanding, ReachKind,
-    TrackStanding,
+    self, EffectAlt, EngagePreview, EngageRules, EngageWindow, FriendlyKind, FriendlyStanding,
+    ReachKind, TrackStanding,
 };
 use crate::geo::{LonLat, haversine_m};
 use crate::ids::Uid;
@@ -50,24 +56,32 @@ use crate::world::{Fact, TrackFacts, VehicleFacts, WorldSnapshot};
 /// An item nearly blocks when its nearest region's edge is within this many times the
 /// clearance of the effect point (and it does not block).
 pub const NEAR_FACTOR: f64 = 2.0;
+/// At most this many items are listed (blocking first, by shortfall); the rest are counted.
+pub const MAX_ITEMS: usize = 12;
+/// At most this many effect-time windows are listed, for an item or the platform.
+pub const MAX_WINDOWS: usize = 4;
 /// How far ahead [`Item::wait`] and [`Explanation::wait`] look, s.
 pub const WAIT_HORIZON_S: i64 = 600;
 /// Their grid, ms: the first passing nomination time on it.
 pub const WAIT_STEP_MS: i64 = 1_000;
-/// The grid of effect times [`Item::fits_until_t`] and [`MoveWithin`] scan, ms.
+/// The grid of effect times the windows are scanned on, ms.
 pub const SPAN_STEP_MS: i64 = 250;
 /// A manoeuvre seen this recently before a track's estimate means it is manoeuvring now, s.
 pub const MANOEUVRING_NOW_S: f64 = 30.0;
 
 /// The tracker's memories a projection ages ([`project`]): how long a track must be followed
-/// before it has an average velocity, over how long that average is taken, and how long a
-/// manoeuvre is remembered. The bridge passes its tracker's own constants; the defaults are
-/// them (`tracks/model.rs`: `MEAN_MIN_S`, `MEAN_WINDOW_S`, `MANOEUVRE_MEMORY_S`).
+/// before it has an average velocity, over how long that average is taken, how long a
+/// manoeuvre is remembered, after how long without a detection a track is stale (not in
+/// view: it is no longer carried forward as seen) and after how long the tracker drops it.
+/// The bridge passes its tracker's own; the defaults are them (`tracks/model.rs`:
+/// `MEAN_MIN_S`, `MEAN_WINDOW_S`, `MANOEUVRE_MEMORY_S`, `STALE_S`; `MURMUR_TRACK_DROP_S`).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct TrackerMemory {
     pub mean_min_s: f64,
     pub mean_window_s: f64,
     pub manoeuvre_memory_s: f64,
+    pub stale_after_s: f64,
+    pub drop_after_s: f64,
 }
 
 impl Default for TrackerMemory {
@@ -76,7 +90,23 @@ impl Default for TrackerMemory {
             mean_min_s: 45.0,
             mean_window_s: 60.0,
             manoeuvre_memory_s: 300.0,
+            stale_after_s: 10.0,
+            drop_after_s: 180.0,
         }
+    }
+}
+
+/// What [`explain`] is told besides the picture: the tracker's memories, and what to call our
+/// vehicles in its words (callsigns by uid; else "vehicle <uid>").
+#[derive(Clone, Debug, Default)]
+pub struct Options {
+    pub memory: TrackerMemory,
+    pub names: BTreeMap<Uid, String>,
+}
+
+impl Options {
+    fn name(&self, uid: &Uid) -> String {
+        self.names.get(uid).cloned().unwrap_or_else(|| format!("vehicle {uid}"))
     }
 }
 
@@ -87,6 +117,8 @@ pub struct Explanation {
     pub t: Time,
     pub track: String,
     pub platform: Option<Uid>,
+    /// The platform as the words call it.
+    pub platform_name: Option<String>,
     pub effect_point: LonLat,
     pub effect_t: Time,
     pub effect_radius_m: f64,
@@ -97,16 +129,22 @@ pub struct Explanation {
     pub vertical: Option<Vertical>,
     /// Whether either keep-out check fails on this snapshot.
     pub blocked: bool,
+    /// How many tracks and vehicles of ours block it (all of them; `items` lists at most
+    /// [`MAX_ITEMS`]).
+    pub blocking: usize,
     /// The checks themselves on this snapshot, as the dry run reports them.
     pub checks: Vec<CheckResult>,
     /// Blocking first (the largest shortfall first), then those that nearly block.
     pub items: Vec<Item>,
-    /// For the platform, when blocked: how close it would need to be.
+    /// Items not listed (beyond [`MAX_ITEMS`]).
+    pub omitted: usize,
+    /// For the platform, when blocked: which effect times, and so which distances, would
+    /// let every keep-out hold, on the picture now.
     pub move_within: Option<MoveWithin>,
     /// When blocked: the first nomination time at which every keep-out would hold, if
     /// everything keeps behaving as now.
     pub wait: Option<Wait>,
-    /// When blocked and no such time is found: why.
+    /// When blocked and no such time is given: why.
     pub wait_none: Option<String>,
     /// The assumptions behind the hints.
     pub assumptions: String,
@@ -136,7 +174,7 @@ pub struct Item {
     pub subject: Subject,
     /// The track id, or the vehicle's uid.
     pub id: String,
-    /// As a check's detail names it: "T-0003 (neutral, ferry)", "vehicle 4".
+    /// "T-0003 (neutral, ferry)", or our vehicle's callsign.
     pub label: String,
     pub domain: Option<Domain>,
     /// Where it is now: a track's estimate carried to now, a vehicle's last report.
@@ -154,7 +192,7 @@ pub struct Item {
     /// The clearance less that edge: positive, by how much it fails; negative, by how much
     /// it clears, m.
     pub short_m: Option<f64>,
-    /// How altitude counted, when it is relevant.
+    /// How altitude counted, when it is relevant (aircraft).
     pub altitude: Option<String>,
     /// In 2D inside the keep-out, but clear of it by altitude.
     pub clear_by_altitude: Option<String>,
@@ -163,14 +201,17 @@ pub struct Item {
     /// A track the tracker saw manoeuvre: whether that was within [`MANOEUVRING_NOW_S`] of
     /// its estimate (it is manoeuvring now, and a wait hint holds only if it stops).
     pub manoeuvring_now: Option<bool>,
-    /// Same picture, when it blocks: every effect time from the earliest (the dispatch
-    /// delay, the platform already at the point) up to this one leaves it clear: the span
-    /// its reach fits in. None: not even the earliest.
+    /// Same picture, when it blocks: every effect time from the earliest up to this one
+    /// leaves it clear (the first of `clear_windows`, when it starts at the earliest).
     pub fits_until_t: Option<Time>,
+    /// Same picture, when it blocks: the stretches of effect times (between the earliest and
+    /// the latest a nomination allows) at which it is clear, at most [`MAX_WINDOWS`]; empty:
+    /// none.
+    pub clear_windows: Vec<EffectWindow>,
     /// When it blocks: the first nomination time at which a dry run would find it clear if
     /// it (and the target) keep behaving as now and the platform holds where it is.
     pub wait: Option<Wait>,
-    /// When it blocks and waiting does not clear it: why.
+    /// When it blocks and no wait is given: what happens instead.
     pub not_by_waiting: Option<String>,
     /// Something else that would clear it (never an override).
     pub other: Option<String>,
@@ -200,21 +241,38 @@ pub struct Wait {
     pub why: String,
 }
 
+/// A stretch of effect times, both ends on the scan's grid and passing, and, when the target
+/// holds where it is, the platform's distances from it that make an effect then (its cruise
+/// speed times the time from its start).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct EffectWindow {
+    pub from_t: Time,
+    pub until_t: Time,
+    pub from_m: Option<f64>,
+    pub until_m: Option<f64>,
+}
+
 /// See [`Explanation::move_within`].
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct MoveWithin {
-    /// Whether any position of the platform lets every keep-out hold on this picture.
+    /// Whether some effect time between `earliest_t` and `latest_t` lets every keep-out hold.
     pub possible: bool,
-    /// Every effect time from the earliest up to this one passes the keep-outs.
+    /// The earliest effect any position allows (the dispatch delay, or the window's opening)
+    /// and the latest a nomination allows (the window's close, or the longest transit).
+    pub earliest_t: Time,
+    pub latest_t: Time,
+    /// The stretches of effect times at which every keep-out holds (at most [`MAX_WINDOWS`]).
+    pub windows: Vec<EffectWindow>,
+    /// The first window, when it starts at the earliest: every effect up to this time passes.
     pub effect_by_t: Option<Time>,
     /// Where the target is predicted then: the platform within `within_m` of it intercepts
     /// by `effect_by_t`.
     pub point: Option<LonLat>,
     /// The platform's cruise speed times the time from its start to `effect_by_t`, m.
     pub within_m: Option<f64>,
-    /// The platform's distance from `point` now, m.
+    /// The platform's distance now from `point` (or from the target, holding), m.
     pub now_m: Option<f64>,
-    /// The target is predicted where it is (holding): `point` is its position.
+    /// The target is predicted where it is (holding): distances alone set the effect time.
     pub holding: bool,
     pub why: String,
 }
@@ -226,6 +284,10 @@ fn secs(ms: i64) -> f64 {
     ms as f64 / 1000.0
 }
 
+fn ms(s: f64) -> i64 {
+    (s * 1000.0).round() as i64
+}
+
 /// A distance for a sentence: metres below a kilometre, else kilometres.
 fn dist(m: f64) -> String {
     if m.abs() >= 1000.0 {
@@ -235,7 +297,7 @@ fn dist(m: f64) -> String {
     }
 }
 
-/// "+95 s" relative to `now`, or minutes and seconds.
+/// "95 s", "3 min 36 s", relative to `now`.
 fn after(t: Time, now: Time) -> String {
     let s = secs(t.ms_since(now)).round() as i64;
     if s.abs() < 120 {
@@ -260,10 +322,9 @@ pub fn spec_at(spec: &IntentSpec, now: Time, w: Time) -> IntentSpec {
     s
 }
 
-/// Whether a track is in view now: detected within the target recency limit
-/// (`max_track_age_s`).
-fn in_view(t: &TrackFacts, now: Time, ec: &EngageRules) -> bool {
-    secs(now.ms_since(t.last_seen_t)) <= ec.max_track_age_s
+/// Whether a track is in view now: detected within the tracker's stale limit.
+fn in_view(t: &TrackFacts, now: Time, mem: &TrackerMemory) -> bool {
+    secs(now.ms_since(t.last_seen_t)) <= mem.stale_after_s
 }
 
 /// A track carried from `now` to `w` "if it keeps behaving as now", into `out` (a copy of
@@ -272,18 +333,18 @@ fn in_view(t: &TrackFacts, now: Time, ec: &EngageRules) -> bool {
 /// the memory is forgotten (no new one), a young track gets its velocity as its average once
 /// it has been followed `mean_min_s`, and an average velocity becomes its velocity once a
 /// whole `mean_window_s` has passed on its course; not in view, it stays where it was seen and
-/// its uncertainty grows at its rate.
+/// its uncertainty grows at its rate (the tracker's drop of a track long unseen is not
+/// modelled: the explanation says when it happens, it does not hint at it).
 pub fn project_track_into(
     base: &TrackFacts,
     out: &mut TrackFacts,
     now: Time,
     w: Time,
     mem: &TrackerMemory,
-    ec: &EngageRules,
 ) {
     let d = w.ms_since(now);
     let dt = secs(d).max(0.0);
-    if !in_view(base, now, ec) {
+    if !in_view(base, now, mem) {
         out.pos_sigma_m = base.pos_sigma_m + engage::sigma_growth(base) * dt;
         return;
     }
@@ -317,8 +378,9 @@ fn shifted<T: Clone>(f: &Option<Fact<T>>, d: i64) -> Option<Fact<T>> {
 /// One of our vehicles carried from `now` to `w` "if it keeps doing what it does", into
 /// `out` (a copy of `base`): reporting now (`reporting`: its position fresh), every report is
 /// `w - now` later and its position moves along its fresh velocity (`vel`), unless it holds
-/// (the platform: where it is) or flies a circle (it stays on it); not reporting, nothing
-/// changes (still lost: its reach keeps growing from its last report).
+/// where it is (`holds`: the platform, or a vehicle on a circle that holds it, as the check
+/// predicts it on its disc); not reporting, nothing changes (still lost: its reach keeps
+/// growing from its last report).
 pub fn project_vehicle_into(
     base: &VehicleFacts,
     out: &mut VehicleFacts,
@@ -348,22 +410,23 @@ pub fn project_vehicle_into(
     });
     out.position = base.position.as_ref().map(|p| {
         let at = match vel {
-            Some([e, n]) if !holds && base.circling.is_none() => engage::offset(p.value, e * dt, n * dt),
+            Some([e, n]) if !holds => engage::offset(p.value, e * dt, n * dt),
             _ => p.value,
         };
         Fact::new(at, p.t.plus_ms(d))
     });
 }
 
-/// Whether one of our vehicles reports now (its position fresh), and its fresh velocity.
-fn reporting(v: &VehicleFacts, world: &WorldSnapshot, cfg: &RulesConfig) -> (bool, Option<[f64; 2]>) {
+/// How one of our vehicles is carried forward: whether it reports now (its position fresh),
+/// its fresh velocity, and whether a circle holds it (as the check reads it).
+fn reporting(v: &VehicleFacts, world: &WorldSnapshot, cfg: &RulesConfig) -> (bool, Option<[f64; 2]>, bool) {
     let pos = fresh(&v.position, v, "position", world, cfg).is_ok();
     let vel = v
         .velocity_mps
         .as_ref()
         .filter(|_| pos)
         .and_then(|f| fresh(&v.velocity_mps, v, "velocity", world, cfg).ok().map(|_| f.value));
-    (pos, vel)
+    (pos, vel, engage::circle_holding(v, world, cfg).is_some())
 }
 
 /// The picture at `w` if everything keeps behaving as now ([`project_track_into`] for every
@@ -371,19 +434,18 @@ fn reporting(v: &VehicleFacts, world: &WorldSnapshot, cfg: &RulesConfig) -> (boo
 /// it is): what [`Item::wait`] and [`Explanation::wait`] read. A dry run of
 /// [`spec_at`]`(spec, world.t, w)` on it is the test of a wait hint.
 pub fn project(world: &WorldSnapshot, spec: &IntentSpec, w: Time, cfg: &RulesConfig, mem: &TrackerMemory) -> WorldSnapshot {
-    let ec = cfg.engage_rules();
     let platform = spec.uids.first();
     let mut out = world.clone();
     out.t = w;
     for (id, t) in out.tracks.iter_mut() {
         if let Some(base) = world.tracks.get(id) {
-            project_track_into(base, t, world.t, w, mem, &ec);
+            project_track_into(base, t, world.t, w, mem);
         }
     }
     for (uid, v) in out.vehicles.iter_mut() {
         if let Some(base) = world.vehicles.get(uid) {
-            let (rep, vel) = reporting(base, world, cfg);
-            project_vehicle_into(base, v, Some(uid) == platform, rep, vel, world.t, w);
+            let (rep, vel, circle) = reporting(base, world, cfg);
+            project_vehicle_into(base, v, Some(uid) == platform || circle, rep, vel, world.t, w);
         }
     }
     out
@@ -395,13 +457,20 @@ struct Ctx<'a> {
     world: &'a WorldSnapshot,
     cfg: &'a RulesConfig,
     ec: EngageRules,
-    mem: &'a TrackerMemory,
+    opts: &'a Options,
     platform: Option<&'a Uid>,
     track_id: &'a str,
     target: &'a TrackFacts,
     radius: f64,
     clearance: f64,
+    window: EngageWindow,
     pv: EngagePreview,
+}
+
+impl Ctx<'_> {
+    fn platform_name(&self) -> String {
+        self.platform.map_or("the platform".to_string(), |u| self.opts.name(u))
+    }
 }
 
 /// A track or vehicle as the scans read it.
@@ -412,10 +481,11 @@ enum Probe<'a> {
 }
 
 impl Probe<'_> {
-    fn id(&self) -> String {
+    /// As the words name it.
+    fn label(&self, opts: &Options) -> String {
         match self {
-            Probe::Track(id, _) => (*id).to_string(),
-            Probe::Vehicle(u, _) => u.to_string(),
+            Probe::Track(id, t) => track_label(id, t),
+            Probe::Vehicle(u, _) => format!("{} (ours)", opts.name(u)),
         }
     }
 }
@@ -459,15 +529,38 @@ fn grid(from: Time, to: Time, step: i64) -> Vec<Time> {
     out
 }
 
-/// See the module. Err when there is nothing to explain (not an engagement, no preview, a
-/// signature's frozen plan, rules before 6) or when the explanation would not agree with the
-/// checks (then nothing is shown rather than something wrong).
-pub fn explain(
-    spec: &IntentSpec,
-    world: &WorldSnapshot,
-    cfg: &RulesConfig,
-    mem: &TrackerMemory,
-) -> Result<Explanation, String> {
+/// The stretches of passing grid points, in order.
+#[derive(Default)]
+struct Runs {
+    done: Vec<(Time, Time)>,
+    open: Option<(Time, Time)>,
+}
+
+impl Runs {
+    fn push(&mut self, t: Time, ok: bool) {
+        if ok {
+            match &mut self.open {
+                Some((_, end)) => *end = t,
+                None => self.open = Some((t, t)),
+            }
+        } else if let Some(w) = self.open.take() {
+            self.done.push(w);
+        }
+    }
+
+    fn finish(mut self) -> Vec<(Time, Time)> {
+        if let Some(w) = self.open.take() {
+            self.done.push(w);
+        }
+        self.done
+    }
+}
+
+/// See the module. Err when there is nothing to explain (not an engagement, no preview, an
+/// effect radius above the policy's maximum, a signature's frozen plan, rules before 6) or
+/// when the explanation would not agree with the checks (then nothing is shown rather than
+/// something wrong).
+pub fn explain(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig, opts: &Options) -> Result<Explanation, String> {
     let ec = cfg.engage_rules();
     if !ec.v6() {
         return Err("the explanation reads the keep-out model of rules 6 and later".into());
@@ -476,6 +569,13 @@ pub fn explain(
         return Err("a frozen plan's checks are not explained here".into());
     }
     let (track_id, radius, _, _) = engage::params(spec).ok_or("not an engagement")?;
+    if !(radius.is_finite() && radius > 0.0 && radius <= ec.max_effect_radius_m) {
+        return Err(format!(
+            "the effect radius ({radius} m) is outside the policy's 0 to {:.0} m: the keep-outs are not explained",
+            ec.max_effect_radius_m
+        ));
+    }
+    let window = engage::effective_window(spec, &ec).ok_or("not an engagement")?;
     let pv = engage::preview(spec, world, cfg).map_err(|e| format!("no preview: {e}"))?;
     let target = world
         .tracks
@@ -486,12 +586,13 @@ pub fn explain(
         world,
         cfg,
         ec: ec.clone(),
-        mem,
+        opts,
         platform: spec.uids.first(),
         track_id,
         target,
         radius,
         clearance: pv.keep_out_m,
+        window,
         pv,
     };
     let (point, effect_t, clearance) = (ctx.pv.effect_point, ctx.pv.effect_t, ctx.clearance);
@@ -522,28 +623,27 @@ pub fn explain(
             items.push((item, Probe::Vehicle(uid, v)));
         }
     }
-    // the blocking items are exactly what the checks fail on, or nothing is shown
-    let fails = |r: RuleId| checks.iter().any(|c| c.rule == r && c.outcome != Outcome::Pass);
-    let blocks = |s: Subject| items.iter().any(|(i, _)| i.blocks && i.subject == s);
-    if blocks(Subject::Track) != fails(RuleId::KeepOutTracks) || blocks(Subject::Vehicle) != fails(RuleId::KeepOutFriendly) {
-        return Err("the explanation does not agree with the keep-out checks: not shown".into());
-    }
-    let (mut move_within, mut wait, mut wait_none) = (None, None, None);
-    if blocked {
-        move_within = Some(same_picture(&ctx, &mut items));
-        (wait, wait_none) = carried_forward(&ctx, &mut items);
-    }
-    let mut items: Vec<Item> = items.into_iter().map(|(i, _)| i).collect();
-    items.sort_by(|a, b| {
+    agrees(&ctx, &checks, &items, alt)?;
+    let blocking = items.iter().filter(|(i, _)| i.blocks).count();
+    items.sort_by(|(a, _), (b, _)| {
         b.blocks
             .cmp(&a.blocks)
             .then(b.short_m.unwrap_or(f64::INFINITY).total_cmp(&a.short_m.unwrap_or(f64::INFINITY)))
             .then(a.id.cmp(&b.id))
     });
+    let shown = items.len().min(MAX_ITEMS);
+    let (mut move_within, mut wait, mut wait_none) = (None, None, None);
+    if blocked {
+        move_within = Some(same_picture(&ctx, &mut items[..shown], blocking > shown));
+        (wait, wait_none) = carried_forward(&ctx, &mut items, shown);
+    }
+    let omitted = items.len() - shown;
+    let items: Vec<Item> = items.into_iter().take(shown).map(|(i, _)| i).collect();
     Ok(Explanation {
         t: world.t,
         track: track_id.to_string(),
         platform: ctx.platform.cloned(),
+        platform_name: ctx.platform.map(|u| opts.name(u)),
         effect_point: point,
         effect_t,
         effect_radius_m: ctx.pv.effect_radius_m,
@@ -554,18 +654,60 @@ pub fn explain(
             half_height_m: a.half_height_m,
         }),
         blocked,
+        blocking,
         checks,
         items,
+        omitted,
         move_within,
         wait,
         wait_none,
         assumptions: format!(
-            "Move-within is on the picture now. Wait hints carry it forward: every track holds its course and speed and stays in view (no new manoeuvre; a young track's first minute as now), our vehicles keep doing what they do, the platform holds where it is; each is the first nomination time on a {} s grid within {} min.",
+            "Closer and farther are on the picture now (effect times every {} s from the earliest to the latest a nomination allows). Wait hints carry the picture forward: every track in view holds its course and speed and stays in view (no new manoeuvre; a young track's first minute as now), our vehicles keep doing what they do, the platform holds where it is; each is the first nomination time on a {} s grid within {} min.",
+            SPAN_STEP_MS as f64 / 1000.0,
             WAIT_STEP_MS / 1000,
             WAIT_HORIZON_S / 60
         ),
         note: NOTE,
     })
+}
+
+/// The guard: every track and vehicle the keep-out checks judge, judged alone by the check
+/// itself (a picture with only it), blocks exactly when the explanation lists it as blocking;
+/// and each check fails exactly when some item under it blocks.
+fn agrees(ctx: &Ctx, checks: &[CheckResult], items: &[(Item, Probe)], alt: Option<EffectAlt>) -> Result<(), String> {
+    let (world, ec, cfg) = (ctx.world, &ctx.ec, ctx.cfg);
+    let (point, effect_t, clearance) = (ctx.pv.effect_point, ctx.pv.effect_t, ctx.clearance);
+    let listed = |s: Subject, id: &str| items.iter().any(|(i, _)| i.blocks && i.subject == s && i.id == id);
+    let disagree = || Err("the explanation does not agree with the keep-out checks: not shown".to_string());
+    for (id, t) in &world.tracks {
+        if engage::track_exempt(id, t, ctx.track_id, ec) {
+            continue;
+        }
+        let mut alone = WorldSnapshot::new(world.t);
+        alone.tracks.insert(id.clone(), t.clone());
+        let fails = engage::keep_out_tracks(point, effect_t, clearance, ctx.track_id, &alone, ec, alt).outcome != Outcome::Pass;
+        if fails != listed(Subject::Track, id) {
+            return disagree();
+        }
+    }
+    for (uid, v) in &world.vehicles {
+        if Some(uid) == ctx.platform {
+            continue;
+        }
+        let mut alone = WorldSnapshot::new(world.t);
+        alone.unknown_accepted = world.unknown_accepted.clone();
+        alone.vehicles.insert(uid.clone(), v.clone());
+        let fails = engage::keep_out_friendly(point, effect_t, clearance, ctx.platform, &alone, cfg, alt).outcome != Outcome::Pass;
+        if fails != listed(Subject::Vehicle, &uid.to_string()) {
+            return disagree();
+        }
+    }
+    let fails = |r: RuleId| checks.iter().any(|c| c.rule == r && c.outcome != Outcome::Pass);
+    let blocks = |s: Subject| items.iter().any(|(i, _)| i.blocks && i.subject == s);
+    if blocks(Subject::Track) != fails(RuleId::KeepOutTracks) || blocks(Subject::Vehicle) != fails(RuleId::KeepOutFriendly) {
+        return disagree();
+    }
+    Ok(())
 }
 
 /// The verdict sentence for a region whose edge is `edge` from the effect point.
@@ -697,10 +839,11 @@ fn track_item(ctx: &Ctx, id: &str, t: &TrackFacts, s: &TrackStanding, alt: Optio
         reason,
         manoeuvring_now,
         fits_until_t: None,
+        clear_windows: Vec::new(),
         wait: None,
         not_by_waiting: None,
         other: (blocks && near.kind == ReachKind::NoVelocity).then(|| {
-            "A velocity estimate (a few more fixes from our sensors) would replace this reach with a prediction along its course.".to_string()
+            "When the tracker has a velocity estimate for it (it gives none while its velocity is uncertain, as in a turn), this reach becomes a prediction along its course.".to_string()
         }),
     }
 }
@@ -717,16 +860,11 @@ fn track_label(id: &str, t: &TrackFacts) -> String {
 fn vehicle_item(ctx: &Ctx, uid: &Uid, v: &VehicleFacts, st: FriendlyStanding, alt: Option<EffectAlt>) -> Option<Item> {
     let clearance = ctx.clearance;
     let point = ctx.pv.effect_point;
-    let label = format!("vehicle {uid}");
-    let callsign = v.platform.as_ref().map(|p| p.id.clone());
     let base = Item {
         rule: RuleId::KeepOutFriendly,
         subject: Subject::Vehicle,
         id: uid.to_string(),
-        label: match &callsign {
-            Some(p) => format!("{label} ({p})"),
-            None => label,
-        },
+        label: ctx.opts.name(uid),
         domain: v.platform.as_ref().map(|p| p.domain),
         now: v.position.as_ref().map(|p| p.value),
         blocks: true,
@@ -739,6 +877,7 @@ fn vehicle_item(ctx: &Ctx, uid: &Uid, v: &VehicleFacts, st: FriendlyStanding, al
         reason: String::new(),
         manoeuvring_now: None,
         fits_until_t: None,
+        clear_windows: Vec::new(),
         wait: None,
         not_by_waiting: None,
         other: None,
@@ -843,22 +982,12 @@ fn vehicle_item(ctx: &Ctx, uid: &Uid, v: &VehicleFacts, st: FriendlyStanding, al
     }
 }
 
-/// Whether an item could clear by waiting (else its `not_by_waiting` says why).
-fn waitable(ctx: &Ctx, item: &Item, probe: &Probe) -> bool {
-    if item.not_by_waiting.is_some() {
-        return false;
-    }
-    match probe {
-        Probe::Track(_, t) => in_view(t, ctx.world.t, &ctx.ec),
-        Probe::Vehicle(..) => true,
-    }
-}
-
-/// Same picture: for each blocking item, the latest effect time up to which it stays clear
-/// from the earliest; for the platform, how close it would need to be for every keep-out to
-/// hold.
-fn same_picture(ctx: &Ctx, items: &mut [(Item, Probe)]) -> MoveWithin {
-    let (world, ec, cfg) = (ctx.world, &ctx.ec, ctx.cfg);
+/// Same picture: the stretches of effect times, from the earliest any position allows to
+/// the latest a nomination allows, at which each listed blocking item is clear, and at which
+/// every keep-out holds (the platform's distances, when the target holds where it is).
+/// `more_blocking`: some blocking items are not listed (their windows are not computed).
+fn same_picture(ctx: &Ctx, items: &mut [(Item, Probe)], more_blocking: bool) -> MoveWithin {
+    let (world, ec, cfg, opts) = (ctx.world, &ctx.ec, ctx.cfg, ctx.opts);
     let all: Vec<Probe> = world
         .tracks
         .iter()
@@ -877,73 +1006,151 @@ fn same_picture(ctx: &Ctx, items: &mut [(Item, Probe)]) -> MoveWithin {
         Probe::Vehicle(u, v) => vehicle_clear(u, v, point, at, ctx.clearance, world, cfg, alt),
     };
     let start = ctx.pv.start_t;
-    let mut pending: Vec<usize> = (0..items.len()).filter(|&i| items[i].0.blocks).collect();
-    let mut all_until: Option<Time> = None;
-    let mut all_done = false;
-    let mut first_block: Option<String> = None;
-    for at in grid(start, ctx.pv.effect_t, SPAN_STEP_MS) {
-        let point = engage::target_at(ctx.target, at, ec);
-        let alt = engage::effect_alt(Some(ctx.target), world.t, at, ctx.radius, ec);
-        pending.retain(|&i| {
-            let ok = clear_at(&items[i].1, point, at, alt);
-            if ok {
-                items[i].0.fits_until_t = Some(at);
+    // L1: an effect never comes before the window opens (the preview waits for it)
+    let opens = ctx.window.from.filter(|f| *f > start);
+    let earliest = opens.unwrap_or(start);
+    let longest = start.plus_ms(ms(ec.max_transit_s));
+    let latest = ctx.window.until.min(longest);
+    let holding = engage::target_velocity(ctx.target, ec) == [0.0, 0.0];
+    let cruise = ctx.pv.cruise_mps;
+    let window_of = |(a, b): (Time, Time)| EffectWindow {
+        from_t: a,
+        until_t: b,
+        from_m: holding.then(|| cruise * secs(a.ms_since(start))),
+        until_m: holding.then(|| cruise * secs(b.ms_since(start))),
+    };
+    let blocking: Vec<usize> = (0..items.len()).filter(|&i| items[i].0.blocks).collect();
+    let mut item_runs: Vec<Runs> = blocking.iter().map(|_| Runs::default()).collect();
+    let mut all_runs = Runs::default();
+    let mut last_fail: Option<usize> = None;
+    let mut earliest_blocker: Option<String> = None;
+    if latest >= earliest {
+        for at in grid(earliest, latest, SPAN_STEP_MS) {
+            let point = engage::target_at(ctx.target, at, ec);
+            let alt = engage::effect_alt(Some(ctx.target), world.t, at, ctx.radius, ec);
+            for (k, &i) in blocking.iter().enumerate() {
+                item_runs[k].push(at, clear_at(&items[i].1, point, at, alt));
             }
-            ok
-        });
-        if !all_done {
-            match all.iter().find(|p| !clear_at(p, point, at, alt)) {
-                None => all_until = Some(at),
-                Some(p) => {
-                    all_done = true;
-                    if all_until.is_none() {
-                        first_block = Some(p.id());
+            // every keep-out: the probe that failed last time first (it usually fails again)
+            let ok = if let Some(j) = last_fail
+                && !clear_at(&all[j], point, at, alt)
+            {
+                false
+            } else {
+                match all.iter().position(|p| !clear_at(p, point, at, alt)) {
+                    None => true,
+                    Some(j) => {
+                        last_fail = Some(j);
+                        false
                     }
                 }
+            };
+            if at == earliest && !ok {
+                earliest_blocker = last_fail.map(|j| all[j].label(opts));
             }
-        }
-        if all_done && pending.is_empty() {
-            break;
+            all_runs.push(at, ok);
         }
     }
-    let holding = engage::target_velocity(ctx.target, ec) == [0.0, 0.0];
-    let name = ctx.platform.map_or("the platform".to_string(), |u| format!("vehicle {u}"));
-    let of = if holding { "the target" } else { "where the target will be then" };
-    match all_until {
-        Some(by) => {
-            let point = engage::target_at(ctx.target, by, ec);
-            let within = ctx.pv.cruise_mps * secs(by.ms_since(start));
-            let now_m = haversine_m(ctx.pv.start, point);
-            MoveWithin {
-                possible: true,
-                effect_by_t: Some(by),
-                point: Some(point),
-                within_m: Some(within),
-                now_m: Some(now_m),
-                holding,
-                why: format!(
-                    "Every keep-out holds for an effect up to {} from now: {name} within {} of {of} (at {:.0} m/s, after the {:.0} s dispatch delay) would make it; it is {} away now.",
-                    after(by, world.t),
-                    dist(within),
-                    ctx.pv.cruise_mps,
-                    ec.dispatch_delay_s,
-                    dist(now_m)
-                ),
-            }
-        }
-        None => MoveWithin {
-            possible: false,
-            effect_by_t: None,
-            point: None,
-            within_m: None,
-            now_m: None,
-            holding,
-            why: format!(
-                "No position of {name} clears it: even the earliest effect ({:.0} s from now, the dispatch delay, with the platform already at the point) is blocked{}.",
-                ec.dispatch_delay_s,
-                first_block.map_or(String::new(), |id| format!(" by {id}"))
-            ),
+    for (k, runs) in item_runs.into_iter().enumerate() {
+        let windows = runs.finish();
+        let item = &mut items[blocking[k]].0;
+        item.fits_until_t = windows.first().filter(|w| w.0 == earliest).map(|w| w.1);
+        item.clear_windows = windows.into_iter().take(MAX_WINDOWS).map(window_of).collect();
+    }
+    let windows = all_runs.finish();
+    let name = ctx.platform_name();
+    let from_now = |t: Time| after(t, world.t);
+    let range = format!(
+        "between {} from now (the earliest: {}) and {} from now ({})",
+        from_now(earliest),
+        if opens.is_some() {
+            "the window opens then".to_string()
+        } else {
+            format!("the {:.0} s dispatch delay, the platform already at the point", ec.dispatch_delay_s)
         },
+        from_now(latest),
+        if latest == ctx.window.until {
+            "the window closes"
+        } else {
+            "the longest transit"
+        }
+    );
+    let unlisted = if more_blocking {
+        " (more items block than are listed)"
+    } else {
+        ""
+    };
+    let first = windows.first().copied();
+    let listed: Vec<EffectWindow> = windows.iter().copied().take(MAX_WINDOWS).map(window_of).collect();
+    let mut mw = MoveWithin {
+        possible: first.is_some(),
+        earliest_t: earliest,
+        latest_t: latest,
+        windows: listed,
+        effect_by_t: None,
+        point: None,
+        within_m: None,
+        now_m: holding.then(|| haversine_m(ctx.pv.start, engage::target_at(ctx.target, world.t, ec))),
+        holding,
+        why: String::new(),
+    };
+    let blocker = earliest_blocker.map_or(String::new(), |b| format!(", by {b}"));
+    match first {
+        None => {
+            mw.why = format!(
+                "No position of {name} clears it on this picture: no effect time {range} passes every keep-out{unlisted}; the earliest is blocked{blocker}."
+            );
+        }
+        Some((a, b)) if a == earliest => {
+            let p = engage::target_at(ctx.target, b, ec);
+            let within = cruise * secs(b.ms_since(start));
+            let now_m = haversine_m(ctx.pv.start, p);
+            mw.effect_by_t = Some(b);
+            mw.point = Some(p);
+            mw.within_m = Some(within);
+            mw.now_m = Some(now_m);
+            let of = if holding { "the target" } else { "where the target will be then" };
+            mw.why = format!(
+                "Every keep-out holds for an effect up to {} from now: {name} within {} of {of} (at {cruise:.0} m/s) would make it; it is {} away now.{}",
+                from_now(b),
+                dist(within),
+                dist(now_m),
+                farther(&windows[1..], &name, holding, world.t, &window_of)
+            );
+        }
+        Some(_) => {
+            mw.why = format!(
+                "No closer position clears it: the earliest effect is blocked{blocker}.{}",
+                farther(&windows, &name, holding, world.t, &window_of)
+            );
+        }
+    }
+    mw
+}
+
+/// The later windows in words: distances when the target holds, effect times otherwise.
+fn farther(windows: &[(Time, Time)], name: &str, holding: bool, now: Time, window_of: &dyn Fn((Time, Time)) -> EffectWindow) -> String {
+    if windows.is_empty() {
+        return String::new();
+    }
+    let parts: Vec<String> = windows
+        .iter()
+        .take(MAX_WINDOWS)
+        .map(|w| {
+            let e = window_of(*w);
+            match (e.from_m, e.until_m) {
+                (Some(a), Some(b)) => format!("{} to {} out (effect {} to {} from now)", dist(a), dist(b), after(w.0, now), after(w.1, now)),
+                _ => format!("an effect {} to {} from now", after(w.0, now), after(w.1, now)),
+            }
+        })
+        .collect();
+    if holding {
+        format!(" Farther, every keep-out holds with {name} {}.", parts.join("; or "))
+    } else {
+        format!(
+            " Later, every keep-out holds for {}; with the target moving, the platform's distance alone does not set the effect time.",
+            parts.join("; or ")
+        )
     }
 }
 
@@ -981,21 +1188,30 @@ fn track_why(
     }
 }
 
-/// The picture carried forward: for each blocking item that waiting may clear, the first
-/// nomination time a dry run would find it clear; and the first at which every keep-out
-/// holds.
-fn carried_forward(ctx: &Ctx, items: &mut [(Item, Probe)]) -> (Option<Wait>, Option<String>) {
-    let (world, ec, cfg, mem) = (ctx.world, &ctx.ec, ctx.cfg, ctx.mem);
+/// The picture carried forward: for each listed blocking item (the first `shown`) that
+/// waiting may clear, the first nomination time a dry run would find it clear; and the first
+/// at which every keep-out holds. A track out of view and a lost vehicle of ours are not
+/// carried forward as seen: the first says what happens (the tracker drops a track long
+/// unseen), the second that its reach grows.
+fn carried_forward(ctx: &Ctx, items: &mut [(Item, Probe)], shown: usize) -> (Option<Wait>, Option<String>) {
+    let (world, ec, cfg, mem) = (ctx.world, &ctx.ec, ctx.cfg, &ctx.opts.memory);
     let now = world.t;
-    // what can't clear by waiting says so
+    // out of view, lost, or not placed at all: no wait; each says what happens instead
     let mut stuck: Vec<String> = Vec::new();
     for (item, probe) in items.iter_mut().filter(|(i, _)| i.blocks) {
-        if !waitable(ctx, item, probe) {
-            if item.not_by_waiting.is_none() {
-                item.not_by_waiting =
-                    Some("Waiting does not clear it: it is not in view, and its region only grows while unseen.".to_string());
-            }
-            stuck.push(item.id.clone());
+        let out_of_view = match probe {
+            Probe::Track(_, t) => (!in_view(t, now, mem)).then(|| secs(now.ms_since(t.last_seen_t))),
+            Probe::Vehicle(..) => None,
+        };
+        if let Some(unseen) = out_of_view {
+            item.not_by_waiting = Some(format!(
+                "Not seen for {unseen:.0} s: its region grows while it is unseen. The tracker drops a track unseen for {:.0} s, after which it no longer counts in the keep-out (about {:.0} s from now, unless it is seen again).",
+                mem.drop_after_s,
+                (mem.drop_after_s - unseen).max(0.0)
+            ));
+        }
+        if item.not_by_waiting.is_some() {
+            stuck.push(item.label.clone());
         }
     }
     // scratch copies of everything the keep-outs read, carried forward in place each step
@@ -1010,6 +1226,7 @@ fn carried_forward(ctx: &Ctx, items: &mut [(Item, Probe)]) -> (Option<Wait>, Opt
         base: &'a VehicleFacts,
         rep: bool,
         vel: Option<[f64; 2]>,
+        circle: bool,
         then: VehicleFacts,
     }
     let mut tracks: Vec<T> = world
@@ -1032,12 +1249,13 @@ fn carried_forward(ctx: &Ctx, items: &mut [(Item, Probe)]) -> (Option<Wait>, Opt
         .iter()
         .filter(|(u, _)| Some(*u) != ctx.platform)
         .map(|(u, v)| {
-            let (rep, vel) = reporting(v, world, cfg);
+            let (rep, vel, circle) = reporting(v, world, cfg);
             V {
                 uid: u,
                 base: v,
                 rep,
                 vel,
+                circle,
                 then: v.clone(),
             }
         })
@@ -1050,7 +1268,7 @@ fn carried_forward(ctx: &Ctx, items: &mut [(Item, Probe)]) -> (Option<Wait>, Opt
     if let Some((u, v, _)) = plat {
         lean.vehicles.insert(u.clone(), v.clone());
     }
-    let mut pending: Vec<usize> = (0..items.len())
+    let mut pending: Vec<usize> = (0..shown)
         .filter(|&i| items[i].0.blocks && items[i].0.not_by_waiting.is_none())
         .collect();
     let mut all: Option<Wait> = None;
@@ -1062,9 +1280,9 @@ fn carried_forward(ctx: &Ctx, items: &mut [(Item, Probe)]) -> (Option<Wait>, Opt
         let w = now.plus_ms(k * WAIT_STEP_MS);
         lean.t = w;
         if let Some(t) = lean.tracks.get_mut(ctx.track_id) {
-            project_track_into(ctx.target, t, now, w, mem, ec);
+            project_track_into(ctx.target, t, now, w, mem);
         }
-        if let Some((u, base, (rep, vel))) = plat
+        if let Some((u, base, (rep, vel, _))) = plat
             && let Some(v) = lean.vehicles.get_mut(u)
         {
             project_vehicle_into(base, v, true, rep, vel, now, w);
@@ -1080,12 +1298,12 @@ fn carried_forward(ctx: &Ctx, items: &mut [(Item, Probe)]) -> (Option<Wait>, Opt
         let want_all = all.is_none() && all_possible;
         for t in tracks.iter_mut() {
             if want_all || pending.iter().any(|&i| items[i].0.subject == Subject::Track && items[i].0.id == t.id) {
-                project_track_into(t.base, &mut t.then, now, w, mem, ec);
+                project_track_into(t.base, &mut t.then, now, w, mem);
             }
         }
         for v in vehicles.iter_mut() {
             if want_all || pending.iter().any(|&i| items[i].0.subject == Subject::Vehicle && items[i].0.id == v.uid.to_string()) {
-                project_vehicle_into(v.base, &mut v.then, false, v.rep, v.vel, now, w);
+                project_vehicle_into(v.base, &mut v.then, v.circle, v.rep, v.vel, now, w);
             }
         }
         let track_ok = |t: &T| track_clear(&t.then, point, at, ctx.clearance, w, ec, alt);
@@ -1152,7 +1370,10 @@ fn carried_forward(ctx: &Ctx, items: &mut [(Item, Probe)]) -> (Option<Wait>, Opt
     let none = if all.is_some() {
         None
     } else if !all_possible {
-        Some(format!("Waiting alone does not clear it: {} (see each).", stuck.join(", ")))
+        Some(format!(
+            "No wait is given while {} cannot be carried forward (see each).",
+            stuck.join(", ")
+        ))
     } else {
         Some(format!(
             "No nomination within {} min has every keep-out holding at once, if everything keeps behaving as now.",

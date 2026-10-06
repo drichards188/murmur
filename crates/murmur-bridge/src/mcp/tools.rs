@@ -430,9 +430,11 @@ pub fn tools() -> Vec<Tool> {
                  blocks (its course, its average course, the reach of a manoeuvre the tracker \
                  saw, a young track's reach, no velocity yet, a lost vehicle of ours, no \
                  altitude ceiling) with the numbers (that region at the effect time, the \
-                 clearance needed, the shortfall), and what would clear it: an earlier effect \
-                 (move_within: how close the platform would need to be) or a later nomination \
-                 if everything keeps behaving as now (the assumptions are stated). It is an \
+                 clearance needed, the shortfall), and what would clear it: another effect time \
+                 (move_within: the effect times, and for a holding target the distances, at \
+                 which every keep-out holds on the picture now) or a later nomination if \
+                 everything keeps behaving as now (the assumptions are stated). At most one \
+                 call a second per agent. It is an \
                  explanation, not a decision and not a recommendation: options are listed by \
                  uid, unranked; the checks decide and no keep-out is relaxed; only human \
                  operators with engagement authority decide a nomination. {STALE_NOTE}"
@@ -558,6 +560,14 @@ pub async fn call(
         }
         "get_nomination_options" => {
             let p = params!(NominationOptionsParams);
+            if let Err(wait) = mcp.dry_run_slot(agent) {
+                return Ok(CallToolResult::structured_error(json!({
+                    "error": format!(
+                        "get_nomination_options runs every armed platform's checks: at most one call a second per agent; try again in {} ms",
+                        wait.as_millis()
+                    ),
+                })));
+            }
             mcp.decision
                 .engage_options(crate::decision::engage::OptionsRequest {
                     track: p.track_id,

@@ -1292,6 +1292,62 @@ async fn an_agent_reads_why_a_keep_out_blocks_and_nothing_is_logged() {
     r.replays();
 }
 
+/// Review M2: the nomination dry run reads what a decision would: with a nomination already
+/// waiting on a platform, `platform_free` fails there, in the console's API and for agents
+/// (before, its inputs left the engagements in play out and it passed). Nothing is logged; an
+/// agent's dry runs are at most one a second.
+#[tokio::test(start_paused = true)]
+async fn the_dry_run_sees_an_engagement_already_in_play_on_the_platform() {
+    let r = rig();
+    r.vehicle(2, Firmware::Copter, "fpv", (37.8120, -122.4900)); // armed, 440 m away
+    sleep(Duration::from_millis(500)).await;
+    r.clock.set(snapshot::ms(crate::clock::wall()));
+    hostile_track(&r);
+    let out = r
+        .ok(&planner(), "propose_intent", nomination(2, Some("T-0001 is declared hostile and holding in ez-gate-west")))
+        .await;
+    let id = out["id"].as_u64().expect("id");
+    assert_eq!(out["state"], "pending_approval", "{out}");
+    let lines = r.log.lines().len();
+    let free = |v: &Value| {
+        v["options"][0]["checks"]
+            .as_array()
+            .expect("checks")
+            .iter()
+            .find(|c| c["rule"] == "platform_free")
+            .cloned()
+            .expect("platform_free")
+    };
+    // agents
+    let args = json!({ "track_id": "T-0001", "effect_radius_m": 100.0 });
+    let v = r.ok(&watch(), "get_nomination_options", args.clone()).await;
+    let c = free(&v);
+    assert_eq!(c["outcome"], "fail", "{c}");
+    assert!(c["detail"].as_str().unwrap_or("").contains(&format!("engagement i{id} in play")), "{c}");
+    // the console's API, as an operator
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/engage/options")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("X-Murmur-Operator", "op-1")
+        .body(Body::from(json!({ "track": "T-0001", "effect_radius_m": 100.0 }).to_string()))
+        .expect("request");
+    let resp = r.api.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 22).await.expect("body");
+    let v: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(free(&v)["outcome"], "fail", "{v}");
+    assert_eq!(r.log.lines().len(), lines, "a dry run logs nothing");
+    // at most one a second per agent; another agent is not held up, and a second later it may
+    let (err, v) = r.call(&watch(), "get_nomination_options", args.clone()).await;
+    assert!(err && v["error"].as_str().unwrap_or("").contains("at most one call a second"), "{v}");
+    let _ = r.ok(&planner(), "get_nomination_options", args.clone()).await;
+    sleep(Duration::from_secs(1)).await;
+    let _ = r.ok(&watch(), "get_nomination_options", args).await;
+    assert_eq!(r.state(id), State::PendingApproval);
+    r.replays();
+}
+
 fn nomination(uid: Uid, rationale: Option<&str>) -> Value {
     let mut v = json!({
         "task": "engage", "uids": [uid], "track_id": "T-0001", "effect_radius_m": 100.0,

@@ -32,7 +32,7 @@
 //! Satellite reads go through the bridge's own `/api/space/*` handlers in process (the
 //! answers the console gets), all of them read-only.
 
-mod tools;
+pub(crate) mod tools;
 mod world;
 #[cfg(test)]
 mod tests;
@@ -135,7 +135,13 @@ pub struct Mcp {
     keys: Option<Arc<crate::auth::Auth>>,
     /// Agents that have connected this run (`agent.action session.connected`, once each).
     seen: Mutex<BTreeSet<AgentId>>,
+    /// When each agent last read the nomination dry run (`get_nomination_options` runs every
+    /// armed platform's checks and keep-out explanation): at most one a second each.
+    dry_runs: Mutex<std::collections::BTreeMap<AgentId, tokio::time::Instant>>,
 }
+
+/// The least time between two of one agent's nomination dry runs.
+pub const DRY_RUN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl Mcp {
     pub fn new(
@@ -151,7 +157,22 @@ impl Mcp {
             agents: settings.agents,
             keys: settings.keys,
             seen: Mutex::new(BTreeSet::new()),
+            dry_runs: Mutex::new(std::collections::BTreeMap::new()),
         })
+    }
+
+    /// Whether `agent` may run a nomination dry run now ([`DRY_RUN_INTERVAL`] since its last),
+    /// recording it if so; else how long to wait.
+    pub(crate) fn dry_run_slot(&self, agent: &AgentId) -> Result<(), std::time::Duration> {
+        let now = tokio::time::Instant::now();
+        let mut last = self.dry_runs.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(t) = last.get(agent)
+            && now.duration_since(*t) < DRY_RUN_INTERVAL
+        {
+            return Err(DRY_RUN_INTERVAL - now.duration_since(*t));
+        }
+        last.insert(agent.clone(), now);
+        Ok(())
     }
 
     /// The agent a request acts for. Credentials run: the agent whose key the request's

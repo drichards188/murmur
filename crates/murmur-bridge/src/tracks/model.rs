@@ -106,12 +106,15 @@ pub const MEAN_WINDOW_S: f64 = 60.0;
 pub const MEAN_MIN_S: f64 = 45.0;
 
 /// The memories above, as the keep-out explanation ages a picture with them
-/// (`murmur_decide::keepout::project`).
-pub fn memory() -> murmur_decide::keepout::TrackerMemory {
+/// (`murmur_decide::keepout::project`), with the stale limit and how long an unseen track is
+/// kept (`drop_after_s`, the run's `MURMUR_TRACK_DROP_S`).
+pub fn memory(drop_after_s: f64) -> murmur_decide::keepout::TrackerMemory {
     murmur_decide::keepout::TrackerMemory {
         mean_min_s: MEAN_MIN_S,
         mean_window_s: MEAN_WINDOW_S,
         manoeuvre_memory_s: MANOEUVRE_MEMORY_S,
+        stale_after_s: STALE_S,
+        drop_after_s,
     }
 }
 

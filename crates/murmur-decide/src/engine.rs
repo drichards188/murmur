@@ -3346,6 +3346,22 @@ impl Engine {
         std::borrow::Cow::Owned(w)
     }
 
+    /// The inputs a decision on `spec` would read on `world` now, filled as the engine fills
+    /// them before its checks (rules 9 identification; the engagements in play and the
+    /// queued orders on its vehicles; their lost-link values still owed; rules 12 spent
+    /// platforms), for a dry run that is not a decision (the nomination form's,
+    /// `POST /api/engage/options`, and agents' `get_nomination_options`): nothing is logged
+    /// or changed. A space task's answer is not asked for.
+    pub fn dry_run_inputs(&self, spec: &IntentSpec, world: &WorldSnapshot, terrain: &dyn TerrainOracle) -> WorldSnapshot {
+        let mut inputs = world.for_intent_with(spec, terrain, &self.policy.rules);
+        self.identify(&mut inputs);
+        inputs.engaged = self.engaged_for(spec);
+        inputs.waiting = self.waiting_for(spec);
+        inputs.restore_owed = self.restore_owed_for(spec, &inputs.identities);
+        inputs.expended = self.restores.expended_for(spec, &self.policy.rules);
+        inputs
+    }
+
     /// Rules 9: the identification ledger (declarations in force, flags, acts seen).
     pub fn identification(&self) -> &crate::ident::Ledger {
         &self.ident
