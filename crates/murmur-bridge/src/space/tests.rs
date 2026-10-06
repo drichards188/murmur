@@ -121,7 +121,7 @@ fn pinned_shift_keeps_every_window_on_one_day() {
 #[tokio::test]
 async fn unloaded_space_answers_503_with_a_hint() {
     let api = api("2026-06-14T17:00Z", false);
-    let _ = api.space.set(Err(format!(
+    *api.space.write().expect("space lock") = Some(Err(format!(
         "space segment unavailable: no element sets; {FETCH_HINT}"
     )));
     let (status, body) = get_json(&api, "/api/space/catalog").await;

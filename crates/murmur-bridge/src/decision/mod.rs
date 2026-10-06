@@ -794,18 +794,19 @@ impl Decision {
             };
             let mut guard = self.lock();
             let core = &mut *guard;
-            let scen = core.engine.scenario_map().scenario(self.clock.now());
+            let now = self.clock.now();
+            let scen = core.engine.scenario_map().scenario(now);
             match core.engine.recheck_space(id, prepared) {
                 Ok(murmur_decide::SpaceRecheck::Unchanged) => {}
-                Ok(murmur_decide::SpaceRecheck::Holds { .. }) => {
+                Ok(murmur_decide::SpaceRecheck::Holds { detail }) => {
                     let answer = core.engine.intent(id).and_then(|i| i.space_answer().cloned());
                     if let Some(run) = core.space_runs.get_mut(&id) {
-                        run.replan(answer.as_ref(), scen);
+                        run.replan(answer.as_ref(), now, scen, detail);
                     }
                 }
-                Ok(murmur_decide::SpaceRecheck::Lost { .. }) => {
+                Ok(murmur_decide::SpaceRecheck::Lost { detail }) => {
                     if let Some(run) = core.space_runs.get_mut(&id) {
-                        run.lost();
+                        run.lost(now, scen, detail);
                     }
                 }
                 Err(e) => eprintln!("decision: space re-check {id}: {e}"),
@@ -1537,10 +1538,17 @@ impl Decision {
             let note = note.unwrap_or_else(|| "cancelled".into());
             match core.engine.cancel(id, session.authority(), &note) {
                 Ok(i) => {
-                    if i.state() == State::Aborted
+                    // rules 11: a dispatched space task: the engine's report, for the run's card
+                    let report = (i.state() == State::Aborted)
+                        .then(|| i.space_order().map(|o| o.resource().clone()))
+                        .flatten()
+                        .and_then(|res| i.op_details().get(&res).cloned());
+                    if let Some(detail) = report
                         && let Some(run) = core.space_runs.get_mut(&id)
                     {
-                        run.cancel();
+                        let now = self.clock.now();
+                        let scen = core.engine.scenario_map().scenario(now);
+                        run.cancel(now, scen, detail);
                     }
                     Ok(self.outcome(core, id))
                 }

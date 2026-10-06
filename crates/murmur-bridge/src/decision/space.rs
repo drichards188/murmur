@@ -315,26 +315,37 @@ impl SpaceRun {
         }
     }
 
-    /// Rules 11: an operator cancelled the intent after dispatch (the engine reported what
-    /// that means and aborted it): nothing more is reported.
-    pub fn cancel(&mut self) {
-        if self.outcome.is_none() {
-            self.ended = Some(Ended::Cancelled);
+    /// Rules 11: an operator cancelled the intent after dispatch; the engine reported what
+    /// that means (`detail`, its `op.state cancelled` at engine time `now`) and aborted
+    /// it. The run shows the report and reports nothing more.
+    pub fn cancel(&mut self, now: Time, scen: Time, detail: String) {
+        if self.finished() {
+            return;
         }
+        self.ended = Some(Ended::Cancelled);
+        self.note(now, scen, murmur_decide::space::CANCELLED_OP, detail);
     }
 
-    /// Rules 11: a re-check found the task can no longer be met (the engine reported
-    /// `missed` and failed the intent): nothing more is reported.
-    pub fn lost(&mut self) {
-        if self.outcome.is_none() {
-            self.ended = Some(Ended::Lost);
+    /// Rules 11: a re-check found the task can no longer be met; the engine reported
+    /// `missed` (`detail`) and failed the intent. The run shows the report and reports
+    /// nothing more.
+    pub fn lost(&mut self, now: Time, scen: Time, detail: String) {
+        if self.finished() {
+            return;
         }
+        self.ended = Some(Ended::Lost);
+        self.note(now, scen, murmur_decide::space::MISSED_OP, detail);
     }
 
-    /// Rules 11: a re-check found the task still holds on a later answer: a cover's watch
-    /// takes the new answer's predicted outages (those already reached at scenario time
-    /// `scen` are not reported again); a collect keeps its approved pass.
-    pub fn replan(&mut self, answer: Option<&SpaceAnswer>, scen: Time) {
+    /// Rules 11: a re-check found the task still holds on a later answer (the engine
+    /// reported `rechecked`, `detail`): a cover's watch takes the new answer's predicted
+    /// outages (those already reached at scenario time `scen` are not reported again); a
+    /// collect keeps its approved pass.
+    pub fn replan(&mut self, answer: Option<&SpaceAnswer>, now: Time, scen: Time, detail: String) {
+        if self.finished() {
+            return;
+        }
+        self.note(now, scen, murmur_decide::space::RECHECKED_OP, detail);
         let RunKind::Cover(c) = &mut self.kind else {
             return;
         };
@@ -346,6 +357,16 @@ impl SpaceRun {
         c.outages = outages;
         c.fewest = fewest.filter(|(t, _)| scen < *t);
         c.summary = summary;
+    }
+
+    /// An op state the engine reported on this run, for the console.
+    fn note(&mut self, t: Time, scenario_t: Time, state: &'static str, detail: String) {
+        self.events.push(Logged {
+            t,
+            scenario_t,
+            state,
+            detail,
+        });
     }
 
     pub fn resource(&self) -> &murmur_decide::Uid {
