@@ -58,8 +58,9 @@ use crate::time::Time;
 // ---- intent parameters ----------------------------------------------------------------
 
 /// The ground a collect images or a cover serves. Points are `[lon, lat]` like every point
-/// in this crate. Pointing and service are computed at the centroid (the vertex mean for a
-/// polygon); the radius decides whether one scene covers the area.
+/// in this crate. A collect points at the centroid (the vertex mean for a polygon); the
+/// radius decides whether one scene covers the area. A cover's service is evaluated at
+/// sample points over the area from rules 11 ([`cover_points`]), at the centroid before.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SpaceArea {
@@ -67,9 +68,48 @@ pub enum SpaceArea {
     Circle { center: LonLat, radius_km: f64 },
 }
 
-/// Largest area a collect or cover may name (radius from the centroid). Pointing at one
-/// centroid stops meaning much beyond this.
+/// Largest area a collect or cover may name (radius from the centroid). Pointing a collect
+/// at one centroid stops meaning much beyond this.
 pub const MAX_AREA_RADIUS_KM: f64 = 200.0;
+
+/// Rules 11: how many boundary points a cover is evaluated at, beside the centroid: a circle
+/// is sampled at this many bearings (every 45 degrees from north), a polygon at its vertices,
+/// thinned to at most this many (every k-th vertex, the first kept) when it has more. SATCOM
+/// and GNSS coverage varies on the scale of a satellite footprint (hundreds of km), slowly
+/// over an area of at most [`MAX_AREA_RADIUS_KM`], so the extremes of the service over a
+/// convex area lie on its boundary: the centroid and the boundary bound the area. A week of
+/// Starlink coverage costs about a second of SGP4 per point, so the count is small and fixed.
+pub const COVER_BOUNDARY_SAMPLES: usize = 8;
+
+/// Rules 11: the points a cover's service is evaluated at: the centroid first, then the
+/// boundary ([`COVER_BOUNDARY_SAMPLES`]). Pure in the area, so replay rebuilds the same
+/// query from the logged intent.
+pub fn cover_points(area: &SpaceArea) -> Vec<Geodetic> {
+    let space = area.to_space();
+    let c = space.centroid();
+    let mut points = vec![Geodetic::new(c.lat_deg, c.lon_deg, 0.0)];
+    match area {
+        SpaceArea::Circle { radius_km, .. } => {
+            let step = 360.0 / COVER_BOUNDARY_SAMPLES as f64;
+            for i in 0..COVER_BOUNDARY_SAMPLES {
+                let p = c.destination(i as f64 * step, *radius_km);
+                points.push(Geodetic::new(p.lat_deg, p.lon_deg, 0.0));
+            }
+        }
+        SpaceArea::Polygon { ring } => {
+            let n = ring.len();
+            let picked: Vec<&LonLat> = if n <= COVER_BOUNDARY_SAMPLES {
+                ring.iter().collect()
+            } else {
+                (0..COVER_BOUNDARY_SAMPLES)
+                    .map(|i| &ring[i * n / COVER_BOUNDARY_SAMPLES])
+                    .collect()
+            };
+            points.extend(picked.into_iter().map(|p| Geodetic::new(p.lat, p.lon, 0.0)));
+        }
+    }
+    points
+}
 /// Longest window a collect or cover may name: link queries scale with it.
 pub const MAX_WINDOW_MS: i64 = 7 * 24 * 3600 * 1000;
 
@@ -226,6 +266,10 @@ impl CoverService {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SpaceRules {
+    /// The rules version the space rules run under (copied from
+    /// [`crate::rules::RulesConfig`] by `space_rules()`; not a policy key, not logged here).
+    #[serde(skip, default = "current_rules_version")]
+    pub rules_version: u32,
     /// How scenario time maps to the element sets' epoch (`auto`: shift whole days when the
     /// window is more than 2 days from the elements; see the murmur-space README).
     pub epoch_mode: EpochMode,
@@ -246,9 +290,14 @@ pub struct SpaceRules {
     pub gnss_step_s: u32,
 }
 
+fn current_rules_version() -> u32 {
+    crate::rules::RULES_VERSION
+}
+
 impl Default for SpaceRules {
     fn default() -> Self {
         SpaceRules {
+            rules_version: crate::rules::RULES_VERSION,
             epoch_mode: EpochMode::Auto,
             collect_match_tolerance_s: 120,
             cover_min_fraction: 0.99,
@@ -260,6 +309,12 @@ impl Default for SpaceRules {
 }
 
 impl SpaceRules {
+    /// Rules 11 ([`crate::rules::SPACE_FOLLOWUPS_SINCE`]): a cover is evaluated at sample
+    /// points over its area ([`cover_points`]), not at the centroid alone.
+    pub fn area_cover(&self) -> bool {
+        self.rules_version >= crate::rules::SPACE_FOLLOWUPS_SINCE
+    }
+
     pub(crate) fn validate(&self) -> Result<(), String> {
         if self.collect_match_tolerance_s == 0 {
             return Err("rules.space.collect_match_tolerance_s must be > 0".into());
@@ -283,10 +338,37 @@ impl SpaceRules {
 pub enum SpaceQuery {
     /// Collect: ranked tasking options and exclusions.
     Tasking(TaskRequest),
-    /// Cover, SATCOM: link windows and coverage from the area's centroid.
+    /// Cover, SATCOM, rules before 11: link windows and coverage from the area's centroid.
     Links(LinkQuery),
-    /// Cover, GNSS: visibility and DOP at the area's centroid.
+    /// Cover, GNSS, rules before 11: visibility and DOP at the area's centroid.
     Gnss(GnssQuery),
+    /// Cover, SATCOM, rules 11: coverage at each of the area's sample points.
+    CoverLinks(CoverLinkQuery),
+    /// Cover, GNSS, rules 11: visibility at each of the area's sample points.
+    CoverGnss(CoverGnssQuery),
+}
+
+/// Rules 11: a SATCOM cover's query, one class over the area's sample points
+/// ([`cover_points`]: the centroid first).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CoverLinkQuery {
+    pub points: Vec<Geodetic>,
+    pub from: DateTime<Utc>,
+    pub to: DateTime<Utc>,
+    pub class: String,
+    pub epoch_mode: EpochMode,
+    pub sample_step_s: f64,
+}
+
+/// Rules 11: a GNSS cover's query over the area's sample points.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CoverGnssQuery {
+    pub points: Vec<Geodetic>,
+    pub from: DateTime<Utc>,
+    pub to: DateTime<Utc>,
+    pub step_s: f64,
+    pub class: String,
+    pub epoch_mode: EpochMode,
 }
 
 /// What the cover rule reads from a link query: coverage and outages, not the (possibly
@@ -327,6 +409,73 @@ pub struct GnssSummary {
     pub pdop_mean: Option<f64>,
 }
 
+/// Rules 11: one sample point's SATCOM coverage.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PointLinks {
+    pub point: Geodetic,
+    pub links: LinkSummary,
+}
+
+/// Rules 11: what the cover rule reads from an area link query: each sample point's
+/// coverage, the centroid first. The rule aggregates (the service holds where it holds at
+/// every point); nothing aggregated is logged, so a forged aggregate has nowhere to go.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CoverLinksSummary {
+    pub class_id: String,
+    pub points: Vec<PointLinks>,
+}
+
+/// Rules 11: one sample point's GNSS visibility.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PointGnss {
+    pub point: Geodetic,
+    pub gnss: GnssSummary,
+}
+
+/// Rules 11: what the cover rule reads from an area GNSS query.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CoverGnssSummary {
+    pub class_id: String,
+    pub points: Vec<PointGnss>,
+}
+
+impl CoverLinksSummary {
+    /// The point with the least coverage (the first of equals): the cover holds only if it
+    /// holds there.
+    pub fn worst(&self) -> Option<&PointLinks> {
+        self.points
+            .iter()
+            .min_by(|a, b| a.links.coverage_fraction.total_cmp(&b.links.coverage_fraction))
+    }
+
+    /// Mean coverage over the points.
+    pub fn mean_coverage(&self) -> f64 {
+        if self.points.is_empty() {
+            return 0.0;
+        }
+        self.points.iter().map(|p| p.links.coverage_fraction).sum::<f64>() / self.points.len() as f64
+    }
+
+    /// Every point's outages merged: when no satellite is above the mask somewhere over the
+    /// area.
+    pub fn outages(&self) -> Vec<Interval> {
+        murmur_space::access::union(
+            self.points
+                .iter()
+                .flat_map(|p| p.links.outages.iter().cloned())
+                .collect(),
+        )
+    }
+}
+
+impl CoverGnssSummary {
+    /// The point with the fewest satellites in view at its worst sample (the first of
+    /// equals).
+    pub fn worst(&self) -> Option<&PointGnss> {
+        self.points.iter().min_by_key(|p| p.gnss.visible_min)
+    }
+}
+
 /// A query's output, as logged (`compute_ms` zeroed).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
@@ -334,6 +483,8 @@ pub enum SpaceResult {
     Tasking(TaskingResult),
     Links(LinkSummary),
     Gnss(GnssSummary),
+    CoverLinks(CoverLinksSummary),
+    CoverGnss(CoverGnssSummary),
 }
 
 /// Which space segment answered: the catalog and element sets, by content.
@@ -703,64 +854,94 @@ pub fn answer(
             let [class] = q.classes.as_slice() else {
                 return Err("a cover link query names exactly one class".into());
             };
-            let cs = space.class(class).map_err(|e| e.to_string())?;
-            if cs.class.capability != Capability::Satcom {
-                return Err(format!("{class} is not a SATCOM class"));
-            }
+            satcom_class(space, class)?;
             let rep = space
                 .links(q)
                 .map_err(|e| format!("link query failed: {e}"))?;
             let Some(c) = rep.classes.into_iter().next() else {
                 return Err(format!("link query returned nothing for {class}"));
             };
-            (
-                rep.time_map,
-                SpaceResult::Links(LinkSummary {
-                    class_id: c.class_id,
-                    satellites: c.satellites,
-                    stale_skipped: c.stale_skipped,
-                    not_yet_launched: c.not_yet_launched,
-                    mask_deg: c.mask_deg,
-                    windows: c.windows.len(),
-                    coverage_fraction: c.coverage_fraction,
-                    outages: c.outages,
-                    longest_outage_s: c.longest_outage_s,
-                    visible_min: c.visible_min,
-                    visible_max: c.visible_max,
-                    visible_mean: c.visible_mean,
-                    latency_ms_min: c.latency_ms_min,
-                    latency_ms_median: c.latency_ms_median,
-                    latency_ms_max: c.latency_ms_max,
-                }),
-            )
+            (rep.time_map, SpaceResult::Links(link_summary(c)))
         }
         SpaceQuery::Gnss(q) => {
-            let cs = space.class(&q.class).map_err(|e| e.to_string())?;
-            if cs.class.capability != Capability::Gnss {
-                return Err(format!("{} is not a GNSS class", q.class));
-            }
+            gnss_class(space, &q.class)?;
             let rep = space
                 .gnss(q)
                 .map_err(|e| format!("GNSS query failed: {e}"))?;
-            let visible_min_at = rep
-                .samples
-                .iter()
-                .find(|s| s.visible == rep.visible_min)
-                .map(|s| s.t);
+            (rep.time_map, SpaceResult::Gnss(gnss_summary(rep)))
+        }
+        SpaceQuery::CoverLinks(q) => {
+            satcom_class(space, &q.class)?;
+            if q.points.is_empty() {
+                return Err("a cover names no sample point".into());
+            }
+            // one time map for every point: a window rounds to one day shift
+            let tm = space.time_map(q.epoch_mode, q.from, q.to);
+            let mut points = Vec::with_capacity(q.points.len());
+            for point in &q.points {
+                let rep = space
+                    .links_with_time_map(
+                        &LinkQuery {
+                            point: *point,
+                            from: q.from,
+                            to: q.to,
+                            classes: vec![q.class.clone()],
+                            epoch_mode: q.epoch_mode,
+                            sample_step_s: q.sample_step_s,
+                            include_samples: false,
+                        },
+                        tm,
+                    )
+                    .map_err(|e| format!("link query failed: {e}"))?;
+                let Some(c) = rep.classes.into_iter().next() else {
+                    return Err(format!("link query returned nothing for {}", q.class));
+                };
+                points.push(PointLinks {
+                    point: *point,
+                    links: link_summary(c),
+                });
+            }
             (
-                rep.time_map,
-                SpaceResult::Gnss(GnssSummary {
-                    class_id: rep.class_id,
-                    mask_deg: rep.mask_deg,
-                    satellites: rep.satellites,
-                    stale_skipped: rep.stale_skipped,
-                    not_yet_launched: rep.not_yet_launched,
-                    samples: rep.samples.len(),
-                    visible_min: rep.visible_min,
-                    visible_max: rep.visible_max,
-                    visible_min_at,
-                    pdop_max: rep.pdop_max,
-                    pdop_mean: rep.pdop_mean,
+                tm,
+                SpaceResult::CoverLinks(CoverLinksSummary {
+                    class_id: q.class.clone(),
+                    points,
+                }),
+            )
+        }
+        SpaceQuery::CoverGnss(q) => {
+            gnss_class(space, &q.class)?;
+            if q.points.is_empty() {
+                return Err("a cover names no sample point".into());
+            }
+            let mut points = Vec::with_capacity(q.points.len());
+            let mut time_map = None;
+            for point in &q.points {
+                let rep = space
+                    .gnss(&GnssQuery {
+                        point: *point,
+                        from: q.from,
+                        to: q.to,
+                        step_s: q.step_s,
+                        class: q.class.clone(),
+                        mask_deg: None,
+                        epoch_mode: q.epoch_mode,
+                    })
+                    .map_err(|e| format!("GNSS query failed: {e}"))?;
+                time_map.get_or_insert(rep.time_map);
+                points.push(PointGnss {
+                    point: *point,
+                    gnss: gnss_summary(rep),
+                });
+            }
+            let Some(tm) = time_map else {
+                return Err("a cover names no sample point".into());
+            };
+            (
+                tm,
+                SpaceResult::CoverGnss(CoverGnssSummary {
+                    class_id: q.class.clone(),
+                    points,
                 }),
             )
         }
@@ -773,9 +954,67 @@ pub fn answer(
     })
 }
 
+fn satcom_class(space: &Space, class: &str) -> Result<(), String> {
+    let cs = space.class(class).map_err(|e| e.to_string())?;
+    if cs.class.capability != Capability::Satcom {
+        return Err(format!("{class} is not a SATCOM class"));
+    }
+    Ok(())
+}
+
+fn gnss_class(space: &Space, class: &str) -> Result<(), String> {
+    let cs = space.class(class).map_err(|e| e.to_string())?;
+    if cs.class.capability != Capability::Gnss {
+        return Err(format!("{class} is not a GNSS class"));
+    }
+    Ok(())
+}
+
+fn link_summary(c: murmur_space::space::LinkClassReport) -> LinkSummary {
+    LinkSummary {
+        class_id: c.class_id,
+        satellites: c.satellites,
+        stale_skipped: c.stale_skipped,
+        not_yet_launched: c.not_yet_launched,
+        mask_deg: c.mask_deg,
+        windows: c.windows.len(),
+        coverage_fraction: c.coverage_fraction,
+        outages: c.outages,
+        longest_outage_s: c.longest_outage_s,
+        visible_min: c.visible_min,
+        visible_max: c.visible_max,
+        visible_mean: c.visible_mean,
+        latency_ms_min: c.latency_ms_min,
+        latency_ms_median: c.latency_ms_median,
+        latency_ms_max: c.latency_ms_max,
+    }
+}
+
+fn gnss_summary(rep: murmur_space::GnssReport) -> GnssSummary {
+    let visible_min_at = rep
+        .samples
+        .iter()
+        .find(|s| s.visible == rep.visible_min)
+        .map(|s| s.t);
+    GnssSummary {
+        class_id: rep.class_id,
+        mask_deg: rep.mask_deg,
+        satellites: rep.satellites,
+        stale_skipped: rep.stale_skipped,
+        not_yet_launched: rep.not_yet_launched,
+        samples: rep.samples.len(),
+        visible_min: rep.visible_min,
+        visible_max: rep.visible_max,
+        visible_min_at,
+        pdop_max: rep.pdop_max,
+        pdop_mean: rep.pdop_mean,
+    }
+}
+
 /// The query a collect or cover asks, at scenario time `now`. `None` for vehicle tasks.
 /// Pure: the space rule rebuilds it from the logged answer's `now` and checks that the
-/// answer is the answer to this intent's question.
+/// answer is the answer to this intent's question. A cover's query is over the area's
+/// sample points from rules 11 (`cfg.area_cover()`), at the centroid before.
 pub fn query_for(task: &Task, now: Time, cfg: &SpaceRules) -> Option<Result<SpaceQuery, String>> {
     let utc = |t: Time, what: &str| to_utc(t).ok_or_else(|| format!("{what} out of range"));
     Some(match task {
@@ -809,12 +1048,33 @@ pub fn query_for(task: &Task, now: Time, cfg: &SpaceRules) -> Option<Result<Spac
             service,
             ..
         } => (|| {
-            let c = area.centroid();
-            let point = Geodetic::new(c.lat, c.lon, 0.0);
             let (from, to) = (
                 utc(window.from, "window start")?,
                 utc(window.to, "window end")?,
             );
+            if cfg.area_cover() {
+                let points = cover_points(area);
+                return Ok(match service {
+                    CoverService::Satcom { class } => SpaceQuery::CoverLinks(CoverLinkQuery {
+                        points,
+                        from,
+                        to,
+                        class: class.clone(),
+                        epoch_mode: cfg.epoch_mode,
+                        sample_step_s: f64::from(cfg.link_step_s),
+                    }),
+                    CoverService::Gnss { class } => SpaceQuery::CoverGnss(CoverGnssQuery {
+                        points,
+                        from,
+                        to,
+                        step_s: f64::from(cfg.gnss_step_s),
+                        class: class.clone(),
+                        epoch_mode: cfg.epoch_mode,
+                    }),
+                });
+            }
+            let c = area.centroid();
+            let point = Geodetic::new(c.lat, c.lon, 0.0);
             Ok(match service {
                 CoverService::Satcom { class } => SpaceQuery::Links(LinkQuery {
                     point,
@@ -907,6 +1167,132 @@ pub struct CoverOrder {
 pub enum SpaceOrder {
     Collect(CollectOrder),
     Cover(CoverOrder),
+}
+
+impl SpaceOrder {
+    /// The resource op states are reported under.
+    pub fn resource(&self) -> &Uid {
+        match self {
+            SpaceOrder::Collect(c) => &c.resource,
+            SpaceOrder::Cover(c) => &c.resource,
+        }
+    }
+
+    pub fn intent(&self) -> IntentId {
+        match self {
+            SpaceOrder::Collect(c) => c.intent,
+            SpaceOrder::Cover(c) => c.intent,
+        }
+    }
+}
+
+// ---- follow-ups after dispatch (rules 11) ---------------------------------------------
+
+/// Op state the engine reports when an operator cancels a dispatched collect or cover.
+pub const CANCELLED_OP: &str = "cancelled";
+/// Op state the engine reports when a dispatched collect or cover still holds against a
+/// later space answer.
+pub const RECHECKED_OP: &str = "rechecked";
+/// Op state a collect or cover ends with when it can no longer be met: the engine's, after
+/// a re-check (detail from [`NO_LONGER_FEASIBLE`]), or the bridge's, for a pass lost on
+/// the clock.
+pub const MISSED_OP: &str = "missed";
+/// How the engine's `missed` detail starts (the bridge's clock-based ones never do).
+pub const NO_LONGER_FEASIBLE: &str = "no longer feasible: ";
+/// How the engine's `rechecked` detail starts.
+pub const STILL_FEASIBLE: &str = "still feasible: ";
+
+/// Whether an op state on a space task is one the engine reports itself (rules 11): the
+/// bridge is refused it, and replay binds it to the cancel or re-check before it.
+pub fn engine_reported(state: &str, detail: &str) -> bool {
+    state == CANCELLED_OP
+        || state == RECHECKED_OP
+        || (state == MISSED_OP && detail.starts_with(NO_LONGER_FEASIBLE))
+}
+
+/// What a cancel at scenario time `scen` means for a dispatched order (the engine's
+/// `op.state cancelled`; replay recomputes it from the dispatched order and the event's
+/// time). A collect before its pass: the simulated tasking request is withdrawn, nothing
+/// is collected. A collect whose pass has come: a pass under way or over cannot be
+/// recalled, the scene counts as collected, and its product is no longer awaited (none is
+/// delivered). A cover: the watch ends where it is; nothing was commanded.
+pub fn cancel_detail(order: &SpaceOrder, scen: Time) -> String {
+    match order {
+        SpaceOrder::Collect(o) => {
+            if scen < o.collect_time {
+                format!(
+                    "tasking request withdrawn {} s before the pass: {} ({}, NORAD {}) will not collect at {} (simulated; nothing was collected)",
+                    o.collect_time.ms_since(scen) / 1000,
+                    o.satellite,
+                    o.class_id,
+                    o.norad_id,
+                    fmt_time(o.collect_time)
+                )
+            } else {
+                format!(
+                    "cancelled {} s after the pass: {} ({}, NORAD {}) collected the scene at {} before the cancel (a pass under way cannot be recalled); its product{} is no longer awaited and none is delivered",
+                    scen.ms_since(o.collect_time) / 1000,
+                    o.satellite,
+                    o.class_id,
+                    o.norad_id,
+                    fmt_time(o.collect_time),
+                    o.product_time
+                        .map_or(String::new(), |p| format!(", due {}", fmt_time(p)))
+                )
+            }
+        }
+        SpaceOrder::Cover(o) => {
+            let w = o.window;
+            let when = if scen < w.from {
+                format!("{} s before the window opened at {}", w.from.ms_since(scen) / 1000, fmt_time(w.from))
+            } else if scen < w.to {
+                format!("{} s before the window ended at {}", w.to.ms_since(scen) / 1000, fmt_time(w.to))
+            } else {
+                format!("after the window ended at {}", fmt_time(w.to))
+            };
+            format!(
+                "coverage watch ended by the cancel at {}, {when}: nothing was commanded",
+                fmt_time(scen)
+            )
+        }
+    }
+}
+
+/// The engine's report after a re-check of a dispatched collect or cover against a later
+/// answer (`op.state rechecked` or `missed`; replay recomputes it from its recomputed
+/// results): what still holds, or every check that fails and, for a collect, the fresh
+/// options a human may choose from instead.
+pub fn recheck_detail(
+    results: &[crate::rules::CheckResult],
+    passed: bool,
+    answer: Option<&SpaceAnswer>,
+) -> String {
+    use crate::rules::{Outcome, RuleId};
+    if passed {
+        let holds: Vec<String> = results
+            .iter()
+            .filter(|r| matches!(r.rule, RuleId::Feasibility | RuleId::Coverage))
+            .map(|r| r.detail.clone())
+            .collect();
+        return format!("{STILL_FEASIBLE}{}", holds.join("; "));
+    }
+    let mut failed: Vec<String> = results
+        .iter()
+        .filter(|r| r.outcome != Outcome::Pass)
+        .map(|r| format!("{}: {}", r.rule.as_str(), r.detail))
+        .collect();
+    if let Some(t) = answer.and_then(SpaceAnswer::tasking) {
+        failed.push(crate::rules::fresh_options(t));
+    }
+    format!("{NO_LONGER_FEASIBLE}{}", failed.join("; "))
+}
+
+/// The reason a space task fails with after a re-check found it can no longer be met.
+pub fn missed_reason(task: &Task, detail: &str) -> String {
+    match task {
+        Task::Collect { .. } => format!("collection missed: {detail}"),
+        _ => format!("coverage missed: {detail}"),
+    }
 }
 
 // ---- time helpers ---------------------------------------------------------------------

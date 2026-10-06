@@ -157,9 +157,13 @@ export interface IntentSpace {
   exclusions_total?: number
   chosen?: TaskOption
   tasking_lead_s?: number
-  /** cover */
+  /** cover: the centroid's figures (rules 10 and before), or from rules 11 the least covered
+   *  of the area's sample points (the one the check decided on) */
   links?: { class_id: string; coverage_fraction: number; outages: { start: string; end: string }[]; longest_outage_s: number }
   gnss?: { class_id: string; visible_min: number; visible_max: number; pdop_max: number | null }
+  /** rules 11: the area's sample points (the centroid and the boundary), the worst one as
+   *  [lon, lat], and for SATCOM the least and mean coverage and the outages merged over the area */
+  cover?: { points: number; worst: LngLat; coverage_fraction_min?: number; coverage_fraction_mean?: number; outages?: { start: string; end: string }[] }
 }
 
 export type Severity = 'high' | 'medium'
@@ -241,13 +245,15 @@ export interface CoverRunInfo {
 }
 
 /** A dispatched collect (tasked, collected, product_ready, or missed) or cover (watching,
- *  outage, restored, fewest_in_view, ended). Simulated: no satellite operator behind it. */
+ *  outage, restored, fewest_in_view, ended). Rules 11: either may be `cancelled` by an
+ *  operator after dispatch, or `rechecked` against a later space answer (and `missed` when
+ *  it can no longer be met). Simulated: no satellite operator behind it. */
 export interface SpaceRun {
   intent_id: number
   kind: 'collect' | 'cover'
   resource: string
   state: string | null
-  outcome: 'done' | 'failed' | null
+  outcome: 'done' | 'failed' | 'cancelled' | null
   outcome_detail: string | null
   events: SpaceRunEvent[]
   collect?: CollectRunInfo

@@ -70,14 +70,16 @@ pub struct LoggedAreas {
     pub areas: AreaSet,
 }
 
-/// When a check ran: at submission, again at approval against the then-current world, or
-/// (rules 5) when a queued intent's vehicles are reachable again, before it may go.
+/// When a check ran: at submission, again at approval against the then-current world,
+/// (rules 5) when a queued intent's vehicles are reachable again, before it may go, or
+/// (rules 11) on a dispatched collect or cover against a later space answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CheckPhase {
     Submit,
     Approve,
     Dequeue,
+    Dispatched,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

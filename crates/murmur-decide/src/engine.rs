@@ -27,10 +27,10 @@ use crate::queue::{
 use crate::rules::{self, CheckResult, OPERATOR_AUTH_SINCE, Outcome};
 use serde::Serialize;
 use crate::space::{
-    ChosenCollect, CollectOrder, CoverOrder, ScenarioMap, SegmentId, SpaceOracle, SpaceOrder,
-    from_utc, matched_option, query_for,
+    self, ChosenCollect, CollectOrder, CoverOrder, ScenarioMap, SegmentId, SpaceAnswer,
+    SpaceOracle, SpaceOrder, from_utc, matched_option, query_for,
 };
-use crate::terrain::TerrainOracle;
+use crate::terrain::{NoTerrain, TerrainOracle};
 use crate::time::{Clock, Time};
 use crate::world::{LoggedInputs, SpaceInputs, WorldSnapshot};
 
@@ -165,13 +165,39 @@ pub fn prepare_space(
     })
 }
 
+/// [`prepare_space`] with the query's request time given (scenario time) instead of taken
+/// from `t`: a dispatched collect is re-checked at the request time of the answer it was
+/// tasked on ([`Engine::recheck_space`]), so a later answer differs only where the segment
+/// does, not by the lead time spent since.
+pub fn prepare_space_at(
+    oracle: &dyn SpaceOracle,
+    task: &Task,
+    t: Time,
+    now: Time,
+    rules: &crate::rules::RulesConfig,
+) -> Result<PreparedSpace, EngineError> {
+    Ok(PreparedSpace {
+        task: task.clone(),
+        t,
+        inputs: space_inputs_at(oracle, task, now, rules)?,
+    })
+}
+
 fn space_inputs(
     oracle: &dyn SpaceOracle,
     task: &Task,
     t: Time,
     rules: &crate::rules::RulesConfig,
 ) -> Result<SpaceInputs, EngineError> {
-    let now = oracle.scenario_time(t);
+    space_inputs_at(oracle, task, oracle.scenario_time(t), rules)
+}
+
+fn space_inputs_at(
+    oracle: &dyn SpaceOracle,
+    task: &Task,
+    now: Time,
+    rules: &crate::rules::RulesConfig,
+) -> Result<SpaceInputs, EngineError> {
     let query = match query_for(task, now, &rules.space_rules()) {
         Some(Ok(q)) => q,
         Some(Err(reason)) => return Ok(SpaceInputs::Unavailable { reason }),
@@ -184,6 +210,21 @@ fn space_inputs(
         },
         Err(reason) => SpaceInputs::Unavailable { reason },
     })
+}
+
+/// Rules 11: what [`Engine::recheck_space`] found a dispatched collect or cover to be
+/// against a later space answer.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SpaceRecheck {
+    /// The later answer is the one the task runs on: nothing logged.
+    Unchanged,
+    /// A new answer, and the task can still be met: `check.result` (phase `dispatched`) and
+    /// `op.state rechecked`; a cover's watch takes the new answer's outages.
+    Holds { detail: String },
+    /// A new answer, and the task can no longer be met: `check.result`, `op.state missed`
+    /// (`no longer feasible: ...`, a collect's with the fresh options a human may choose
+    /// from) and the intent failed.
+    Lost { detail: String },
 }
 
 /// What [`Engine::step_engagements`] did: what the bridge must act on, and the engagements
@@ -2258,15 +2299,38 @@ impl Engine {
         self.get(new_id)
     }
 
-    /// An operator withdraws an intent before dispatch (pending or approved).
+    /// An operator withdraws an intent before dispatch (pending, approved or queued:
+    /// `voided`), or, rules 11 ([`rules::SPACE_FOLLOWUPS_SINCE`]), a dispatched collect or
+    /// cover: the engine then reports what the cancel means for the order under its
+    /// resource (`op.state cancelled`, [`space::cancel_detail`]: a tasking request
+    /// withdrawn before its pass; a pass already under way, which cannot be recalled, its
+    /// product no longer awaited; a watch ended) and the intent is `aborted` (transition
+    /// `cancel`). A dispatched vehicle task or engagement is refused as before (a newer
+    /// order supersedes the one, an abort stops the other), and an agent withdraws nothing
+    /// after dispatch.
     pub fn cancel(
         &mut self,
         id: IntentId,
         by: &HumanAuthority,
         note: &str,
     ) -> Result<&Intent, EngineError> {
-        next_state(self.get(id)?.state(), Transition::Void)
-            .map_err(|err| EngineError::Illegal { id, err })?;
+        let intent = self.get(id)?;
+        let after_dispatch = intent.state() == State::Dispatched
+            && intent.spec().task.is_space()
+            && self.policy.rules.space_followups();
+        let transition = if after_dispatch {
+            Transition::Cancel
+        } else {
+            Transition::Void
+        };
+        next_state(intent.state(), transition).map_err(|err| EngineError::Illegal { id, err })?;
+        let order = intent.space_order().cloned();
+        if after_dispatch && order.is_none() {
+            return Err(EngineError::NotDispatchable {
+                id,
+                why: "no space order recorded for its dispatch".into(),
+            });
+        }
         self.emit(EventBody::OperatorAction {
             operator: by.operator().clone(),
             session: by.session(),
@@ -2277,12 +2341,103 @@ impl Engine {
             step_up: None,
             passkey: None,
         })?;
+        if let (true, Some(order)) = (after_dispatch, order) {
+            let t = self.now();
+            let scen = self.scenario_map().scenario(t);
+            let detail = space::cancel_detail(&order, scen);
+            self.report_space(id, order.resource(), space::CANCELLED_OP, &detail)?;
+        }
         self.transition(
             id,
-            Transition::Void,
+            transition,
             format!("cancelled by {}: {note}", by.operator()),
         )?;
         self.get(id)
+    }
+
+    /// Rules 11 ([`rules::SPACE_FOLLOWUPS_SINCE`]): a dispatched collect or cover checked
+    /// again against a later space answer (`prepared`: the bridge's, computed outside its
+    /// lock on the segment it reloaded, at the request time of the answer the task was
+    /// tasked on, [`prepare_space_at`]). An answer with the hash the task already runs on
+    /// changes nothing and logs nothing ([`SpaceRecheck::Unchanged`]). A new answer is
+    /// checked as a submission is (`check.result`, phase `dispatched`, the rules reading
+    /// only the logged answer): the task still holds (`op.state rechecked`,
+    /// [`SpaceRecheck::Holds`]: a collect keeps its approved pass, a fresh pass within the
+    /// tolerance being the same opportunity; a cover's watch takes the new outages), or it
+    /// can no longer be met (`op.state missed`, `no longer feasible: ...`, with a collect's
+    /// fresh options for a human to choose from, and the intent failed,
+    /// [`SpaceRecheck::Lost`]). Refused for anything but a dispatched space task, a
+    /// `prepared` for another task, request time or segment than the engine's, and under
+    /// older rules; nothing is logged then.
+    pub fn recheck_space(
+        &mut self,
+        id: IntentId,
+        prepared: PreparedSpace,
+    ) -> Result<SpaceRecheck, EngineError> {
+        let refuse = |why: &str| EngineError::NotDispatchable {
+            id,
+            why: why.to_string(),
+        };
+        if !self.policy.rules.space_followups() {
+            return Err(refuse("these decision rules re-check no space task after dispatch"));
+        }
+        let intent = self.get(id)?;
+        let spec = intent.spec().clone();
+        if !spec.task.is_space() {
+            return Err(refuse("not a collect or cover"));
+        }
+        if intent.state() != State::Dispatched {
+            return Err(refuse("not dispatched: a space task is re-checked only while it runs"));
+        }
+        if prepared.task != spec.task {
+            return Err(refuse("the prepared answer is for another task"));
+        }
+        let current = intent.space_answer();
+        let fresh = prepared.inputs.answer();
+        if let (Some(a), Some(b)) = (current.and_then(SpaceAnswer::now), fresh.and_then(SpaceAnswer::now))
+            && a != b
+        {
+            return Err(refuse(
+                "the prepared answer is for another request time than the answer the task runs on",
+            ));
+        }
+        match (self.space.as_ref().map(|o| o.segment()), fresh) {
+            (Some(seg), Some(a)) if a.segment != *seg => {
+                return Err(refuse("the prepared answer is from another space segment than the engine's"));
+            }
+            (None, Some(_)) => return Err(refuse("no space segment loaded")),
+            _ => {}
+        }
+        let order = intent
+            .space_order()
+            .cloned()
+            .ok_or_else(|| refuse("no space order recorded for its dispatch"))?;
+        let old_hash = current.map(SpaceAnswer::content_hash).transpose()?;
+        if let SpaceInputs::Answered { sha256, .. } = &prepared.inputs
+            && Some(sha256) == old_hash.as_ref()
+        {
+            return Ok(SpaceRecheck::Unchanged);
+        }
+        let t = prepared.t;
+        self.prepared_space = Some(prepared);
+        let world = WorldSnapshot::new(t);
+        let (inputs, _, results, passed) =
+            self.run_checks(&spec, CheckPhase::Dispatched, &world, &NoTerrain)?;
+        let detail = space::recheck_detail(&results, passed, inputs.space.answer());
+        if passed {
+            self.report_space(id, order.resource(), space::RECHECKED_OP, &detail)?;
+            Ok(SpaceRecheck::Holds { detail })
+        } else {
+            self.report_space(id, order.resource(), space::MISSED_OP, &detail)?;
+            self.transition(id, Transition::Fail, space::missed_reason(&spec.task, &detail))?;
+            Ok(SpaceRecheck::Lost { detail })
+        }
+    }
+
+    /// Rules 11: an op state the engine reports on a space task itself (a cancel's, a
+    /// re-check's), under the order's resource, with the usual refusals.
+    fn report_space(&mut self, id: IntentId, uid: &Uid, state: &str, detail: &str) -> Result<(), EngineError> {
+        self.op_state(id, uid, state, detail, false, true)
     }
 
     /// Log something an operator did that isn't an intent decision (acknowledge, snooze).
@@ -3527,6 +3682,11 @@ impl Engine {
         self.emit(event)?;
         self.transition(id, Transition::Dispatch, reason.into())?;
         self.get_mut(id)?.mark_dispatched();
+        match &order {
+            Order::Collect(c) => self.get_mut(id)?.set_space_order(SpaceOrder::Collect(c.clone())),
+            Order::Cover(c) => self.get_mut(id)?.set_space_order(SpaceOrder::Cover(c.clone())),
+            Order::Vehicles(_) | Order::Engage(_) => {}
+        }
         self.last_dispatched = Some(id);
         self.step = Some((id, self.seq));
         for u in uids {
@@ -4099,7 +4259,7 @@ impl Engine {
         state: &str,
         detail: &str,
     ) -> Result<(), EngineError> {
-        self.op_state(id, uid, state, detail, false)
+        self.op_state(id, uid, state, detail, false, false)
     }
 
     /// Rules 7 ([`rules::QUEUE_FOLLOWUPS_SINCE`]): a vehicle task's start, logged ahead of
@@ -4116,7 +4276,7 @@ impl Engine {
                 why: "these decision rules log no start ahead of sending it".into(),
             });
         }
-        self.op_state(id, uid, queue::STARTING_OP, detail, true)
+        self.op_state(id, uid, queue::STARTING_OP, detail, true, false)
     }
 
     fn op_state(
@@ -4126,8 +4286,21 @@ impl Engine {
         state: &str,
         detail: &str,
         ahead: bool,
+        engine_reported: bool,
     ) -> Result<(), EngineError> {
         let intent = self.get(id)?;
+        // rules 11: a space task's cancel and re-check are reported by the engine itself,
+        // bound to the operator's cancel or the check before them; the bridge is refused them
+        if !engine_reported
+            && self.policy.rules.space_followups()
+            && intent.spec().task.is_space()
+            && space::engine_reported(state, detail)
+        {
+            return Err(EngineError::NotItsOrder {
+                id,
+                why: format!("op state {state} on a space task is the engine's own report (cancel, recheck_space)"),
+            });
+        }
         let dispatched = intent.history().iter().any(|h| h.state == State::Dispatched);
         let fallback = intent
             .engagement()
@@ -4380,12 +4553,17 @@ impl Engine {
 
     /// Ask the space segment this task's question at snapshot time `t`. Failures become
     /// `Unavailable` (the space rule then fails, saying why); only a hashing error is an
-    /// engine error.
+    /// engine error. An answer prepared outside the lock ([`prepare_space`]) is used when
+    /// nothing it depended on changed: the same task, computed within
+    /// [`PREPARED_SPACE_MAX_AGE_MS`] of `t`, and answered by the segment the engine holds
+    /// now (one reloaded in between answers again); otherwise the engine asks its own
+    /// segment here, under the lock.
     fn ask_space(&mut self, task: &Task, t: Time) -> Result<SpaceInputs, EngineError> {
         // computed outside the lock for this very question, a moment ago
         if let Some(p) = self.prepared_space.take()
             && p.task == *task
             && (t.ms_since(p.t)).abs() <= PREPARED_SPACE_MAX_AGE_MS
+            && self.prepared_fits(&p)
         {
             return Ok(p.inputs);
         }
@@ -4401,6 +4579,16 @@ impl Engine {
     /// of the same task, if it is still fresh then; otherwise the engine asks again.
     pub fn use_prepared_space(&mut self, prepared: PreparedSpace) {
         self.prepared_space = Some(prepared);
+    }
+
+    /// A prepared answer was given by the segment the engine holds now (an answer prepared
+    /// on a segment since replaced is not what the engine would answer).
+    fn prepared_fits(&self, p: &PreparedSpace) -> bool {
+        match (self.space.as_ref(), p.inputs.answer()) {
+            (Some(o), Some(a)) => a.segment == *o.segment(),
+            (None, Some(_)) => false,
+            (_, None) => true,
+        }
     }
 
     /// An engagement without a window gets the default one, written into its spec (so the

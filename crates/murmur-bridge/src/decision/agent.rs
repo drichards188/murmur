@@ -309,6 +309,8 @@ fn compact_answer(a: &SpaceAnswer) -> Value {
         }
         SpaceResult::Links(l) => v["links"] = json!(l),
         SpaceResult::Gnss(g) => v["gnss"] = json!(g),
+        SpaceResult::CoverLinks(c) => super::space::cover_links_json(&mut v, c),
+        SpaceResult::CoverGnss(c) => super::space::cover_gnss_json(&mut v, c),
     }
     v
 }

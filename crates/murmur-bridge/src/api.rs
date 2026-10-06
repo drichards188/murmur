@@ -81,7 +81,7 @@ pub fn router(app: App) -> Router {
         .route("/api/space/runs", get(space_runs))
         .merge(crate::space::router(app.world.clone(), {
             let d = app.decision.clone();
-            Some(Box::new(move |space, map| d.install_space(space, map)))
+            Some(Arc::new(move |space, map| d.install_space(space, map)))
         }))
         .merge(crate::cot::router())
         .merge(crate::tracks::router(

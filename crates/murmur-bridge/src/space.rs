@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration as StdDuration, Instant};
 
 use axum::Json;
@@ -182,7 +182,9 @@ pub struct SpaceApi {
     world: Arc<World>,
     root: PathBuf,
     pub clock: ScenarioClock,
-    space: OnceLock<Result<Arc<Space>, String>>,
+    /// The loaded segment (or why it did not load); `None` while the first load runs.
+    /// Replaced when the element sets change on disk ([`CACHE_POLL`]).
+    space: RwLock<Option<Result<Arc<Space>, String>>>,
     areas: Vec<NamedArea>,
     /// SATCOM classes per platform id, from `space_class` / `space_class_alt` in
     /// sim/platforms.toml (read once at start).
@@ -192,9 +194,15 @@ pub struct SpaceApi {
 
 type Api = Arc<SpaceApi>;
 
-/// Called once the segment has loaded, with the scenario clock as a map from the wall clock
-/// (the decision layer gives both to its engine, for collect and cover).
-pub type OnLoaded = Box<dyn FnOnce(Arc<Space>, ScenarioMap) + Send>;
+/// Called when the segment has loaded, with the scenario clock as a map from the wall clock
+/// (the decision layer gives both to its engine, for collect and cover), and again each time
+/// it is reloaded because the element sets changed on disk.
+pub type OnLoaded = Arc<dyn Fn(Arc<Space>, ScenarioMap) + Send + Sync>;
+
+/// How often the loader looks at `sim/space/cache` for changed element sets (a
+/// `murmur-space fetch` while the bridge runs): a reload gives the decision layer a later
+/// answer for every running collect and cover (rules 11).
+pub const CACHE_POLL: StdDuration = StdDuration::from_secs(30);
 
 /// The routes, with their own state, mergeable into any router. Loading starts on a
 /// background thread; until it finishes the endpoints answer 503.
@@ -206,22 +214,17 @@ pub fn router<S: Clone + Send + Sync + 'static>(
     let api = Arc::new(SpaceApi::new(world, root, ScenarioClock::from_env()));
     let loader = api.clone();
     std::thread::spawn(move || {
-        let t0 = Instant::now();
-        let result = loader.load();
-        match &result {
-            Ok(s) => println!(
-                "space: {} satellites in {} classes loaded in {} ms; time shift {:?} d",
-                s.classes.iter().map(|c| c.sats.len()).sum::<usize>(),
-                s.classes.len(),
-                t0.elapsed().as_millis(),
-                s.pinned_shift_days,
-            ),
-            Err(e) => eprintln!("space: {e}"),
+        let mut seen = loader.cache_signature();
+        loader.load_and_install(on_loaded.as_ref(), "loaded");
+        // the element sets changed on disk (a fetch while the bridge runs): load them again
+        loop {
+            std::thread::sleep(CACHE_POLL);
+            let now = loader.cache_signature();
+            if now != seen {
+                seen = now;
+                loader.load_and_install(on_loaded.as_ref(), "reloaded (element sets changed on disk)");
+            }
         }
-        if let (Ok(s), Some(f)) = (&result, on_loaded) {
-            f(s.clone(), loader.clock.map());
-        }
-        let _ = loader.space.set(result);
     });
     routes(api)
 }
@@ -260,7 +263,7 @@ impl SpaceApi {
             world,
             root,
             clock,
-            space: OnceLock::new(),
+            space: RwLock::new(None),
             areas,
             satcom,
             cache: Mutex::new(HashMap::new()),
@@ -288,15 +291,58 @@ impl SpaceApi {
         space.pin_shift(Some((now, now + Duration::days(1))));
     }
 
+    /// Load the segment from disk and hand it on: at start, and again when the element
+    /// sets changed.
+    fn load_and_install(&self, on_loaded: Option<&OnLoaded>, what: &str) {
+        let t0 = Instant::now();
+        let result = self.load();
+        match &result {
+            Ok(s) => println!(
+                "space: {} satellites in {} classes {what} in {} ms; time shift {:?} d",
+                s.classes.iter().map(|c| c.sats.len()).sum::<usize>(),
+                s.classes.len(),
+                t0.elapsed().as_millis(),
+                s.pinned_shift_days,
+            ),
+            Err(e) => eprintln!("space: {e}"),
+        }
+        if let Ok(s) = &result {
+            *self.space.write().unwrap_or_else(|e| e.into_inner()) = Some(Ok(s.clone()));
+            if let Some(f) = on_loaded {
+                f(s.clone(), self.clock.map());
+            }
+        } else if self.space.read().unwrap_or_else(|e| e.into_inner()).is_none() {
+            // nothing loaded yet: say why; a segment already loaded stays
+            *self.space.write().unwrap_or_else(|e| e.into_inner()) = Some(result);
+        }
+    }
+
+    /// What is in the cache directory: each file's name, size and modification time.
+    fn cache_signature(&self) -> Vec<(String, u64, Option<std::time::SystemTime>)> {
+        let dir = self.root.join("sim/space/cache");
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return Vec::new();
+        };
+        let mut out: Vec<_> = entries
+            .filter_map(Result::ok)
+            .filter_map(|e| {
+                let m = e.metadata().ok()?;
+                Some((e.file_name().to_string_lossy().into_owned(), m.len(), m.modified().ok()))
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
     /// For tests: install an already-built Space.
     #[cfg(test)]
     pub fn install(&self, mut space: Space) {
         self.pin(&mut space);
-        let _ = self.space.set(Ok(Arc::new(space)));
+        *self.space.write().unwrap_or_else(|e| e.into_inner()) = Some(Ok(Arc::new(space)));
     }
 
     fn space(&self) -> Result<Arc<Space>, ApiError> {
-        match self.space.get() {
+        match &*self.space.read().unwrap_or_else(|e| e.into_inner()) {
             Some(Ok(s)) => Ok(s.clone()),
             Some(Err(e)) => Err(ApiError(StatusCode::SERVICE_UNAVAILABLE, e.clone())),
             None => Err(ApiError(

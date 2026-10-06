@@ -142,7 +142,7 @@ use crate::rules::{
     self, CheckResult, OPERATOR_AUTH_SINCE, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE,
     STEP_UP_SCHEMA_SINCE,
 };
-use crate::space::{ScenarioMap, SpaceAnswer, SpaceOracle, SpaceOrder};
+use crate::space::{self, ScenarioMap, SpaceAnswer, SpaceOracle, SpaceOrder};
 use crate::time::Time;
 use crate::world::{LoggedInputs, LoggedSpace, WorldSnapshot};
 
@@ -216,6 +216,11 @@ pub struct ReplayReport {
     pub reboots: usize,
     /// Rules 5: dispatched intents sent back to the queue (their link lost before the start).
     pub requeued: usize,
+    /// Rules 11: space tasks cancelled after dispatch, re-checked against a later answer and
+    /// found to hold, and found no longer feasible (failed).
+    pub space_cancelled: usize,
+    pub space_rechecked: usize,
+    pub space_missed: usize,
     /// Rules 6: the carried `platform.restore` events, by the earlier log they name: how
     /// many, and whether they were checked against what that log still owed (it was given,
     /// [`ReplayOptions::restores_from`]) or not (it was absent).
@@ -730,6 +735,17 @@ struct Tracked {
     preload_stop_due: Option<(u64, &'static str)>,
     /// Engage, rules 6: our vehicles operators accepted as lost for it (`engage.accepted`).
     accepted: BTreeMap<Uid, engage::AcceptedUnknown>,
+    /// Collect and cover: the order it was dispatched with (what a cancel's and a re-check's
+    /// reports are recomputed against).
+    space_order: Option<SpaceOrder>,
+    /// Rules 11: an operator's cancel of this dispatched space task (who, seq) waiting for
+    /// the engine's cancelled report and the cancel transition; the report came.
+    cancel_due: Option<(OperatorId, u64)>,
+    cancel_reported: bool,
+    /// Rules 11: a dispatched-phase check (passed, the report it calls for) waiting for its
+    /// `rechecked` or `missed` report; a `missed` report (its detail) waiting for the failure.
+    recheck_due: Option<(bool, String)>,
+    recheck_lost: Option<String>,
     /// The last check's recomputed results, its phase and seq.
     last_results: Vec<CheckResult>,
     last_phase: Option<CheckPhase>,
@@ -848,6 +864,11 @@ impl Tracked {
             preload_read: None,
             preload_stop_due: None,
             accepted: BTreeMap::new(),
+            space_order: None,
+            cancel_due: None,
+            cancel_reported: false,
+            recheck_due: None,
+            recheck_lost: None,
         }
     }
 
@@ -1051,6 +1072,12 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (PASSKEY_SINCE, "\"type\":\"passkey.removed\"", "a passkey removed"),
     (PASSKEY_SINCE, "\"step_up_factor\":", "a policy's step-up factor"),
     (PASSKEY_SINCE, "\"login_factor\":", "a policy's login factor"),
+    (rules::SPACE_FOLLOWUPS_SINCE, "\"query\":\"cover_links\"", "a SATCOM cover evaluated over the area's sample points"),
+    (rules::SPACE_FOLLOWUPS_SINCE, "\"query\":\"cover_gnss\"", "a GNSS cover evaluated over the area's sample points"),
+    (rules::SPACE_FOLLOWUPS_SINCE, "\"transition\":\"cancel\"", "a space task cancelled after dispatch"),
+    (rules::SPACE_FOLLOWUPS_SINCE, "\"state\":\"cancelled\"", "a space task's cancelled report"),
+    (rules::SPACE_FOLLOWUPS_SINCE, "\"phase\":\"dispatched\"", "a space task re-checked after dispatch"),
+    (rules::SPACE_FOLLOWUPS_SINCE, "\"state\":\"rechecked\"", "a space task's re-check report"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.
@@ -1670,6 +1697,20 @@ fn replay_inner<S: AsRef<str>>(
                     }
                 }
                 tr.last_check_passed = Some(again_passed);
+                // rules 11: a dispatched-phase check is a running space task's, re-checked
+                // against a later answer; its report (rechecked or missed) follows at once
+                if tr.cancel_due.is_some() {
+                    bad(&mut r, e, Some(*intent), "a check between an operator's cancel of a dispatched space task and its cancelled report", json(phase), String::new());
+                }
+                if tr.recheck_due.is_some() || tr.recheck_lost.is_some() {
+                    bad(&mut r, e, Some(*intent), "a check between a space task's re-check and its report or failure", json(phase), String::new());
+                }
+                if *phase == CheckPhase::Dispatched {
+                    if !(pol.rules.space_followups() && tr.spec.task.is_space() && tr.state == State::Dispatched) {
+                        bad(&mut r, e, Some(*intent), "a dispatched-phase check on something but a running space task under rules 11", json(&(tr.spec.kind(), tr.state, pol.rules.rules_version)), String::new());
+                    }
+                    tr.recheck_due = Some((again_passed, space::recheck_detail(&again, again_passed, inputs.space.answer())));
+                }
                 // which platform each of its vehicles was (a next run carries it only onto the
                 // same ones)
                 for u in &tr.spec.uids {
@@ -2185,6 +2226,36 @@ fn replay_inner<S: AsRef<str>>(
                         json(&tr.state),
                     );
                 }
+                // rules 11: a cancel after dispatch follows the operator's cancel and the
+                // engine's report at once, naming the operator; a missed report is followed by
+                // the failure for it; nothing of the intent comes between
+                let space11 = policy.as_ref().is_some_and(|p| p.rules.space_followups()) && tr.spec.task.is_space();
+                if let Some((op, _)) = tr.cancel_due.take() {
+                    if *transition != Transition::Cancel {
+                        bad(&mut r, e, Some(*intent), "an operator's cancel of a dispatched space task not carried out by the next transition", json(transition), json(&Transition::Cancel));
+                    } else if !tr.cancel_reported {
+                        bad(&mut r, e, Some(*intent), "cancelled after dispatch without the engine's cancelled report", String::new(), space::CANCELLED_OP.into());
+                    } else if !reason.starts_with(&format!("cancelled by {op}: ")) {
+                        bad(&mut r, e, Some(*intent), "a cancel after dispatch that does not name the operator who cancelled", reason.clone(), format!("cancelled by {op}: ..."));
+                    }
+                } else if *transition == Transition::Cancel {
+                    bad(&mut r, e, Some(*intent), "cancelled after dispatch without an operator's cancel right before it", reason.clone(), "operator.action intent.cancel".into());
+                }
+                if *transition == Transition::Cancel && !space11 {
+                    bad(&mut r, e, Some(*intent), "a cancel after dispatch on something but a space task under rules 11", json(&tr.spec.kind()), String::new());
+                }
+                if tr.recheck_due.is_some() {
+                    bad(&mut r, e, Some(*intent), "a transition between a space task's re-check and its report", json(transition), "op.state rechecked or missed".into());
+                    tr.recheck_due = None;
+                }
+                if let Some(want) = tr.recheck_lost.take() {
+                    let reason_want = space::missed_reason(&tr.spec.task, &want);
+                    if *transition != Transition::Fail || *reason != reason_want {
+                        bad(&mut r, e, Some(*intent), "a space task's missed report not followed by its failure for it", json(&(transition, reason)), reason_want);
+                    }
+                } else if *transition == Transition::Fail && space11 && reason.contains(space::NO_LONGER_FEASIBLE) {
+                    bad(&mut r, e, Some(*intent), "a space task failed as no longer feasible without the re-check and report that found it", reason.clone(), "check.result phase dispatched, op.state missed".into());
+                }
                 match next_state(tr.state, *transition) {
                     Ok(s) if s == *to => {}
                     Ok(s) => bad(
@@ -2306,6 +2377,10 @@ fn replay_inner<S: AsRef<str>>(
                         step = Some((*intent, e.seq));
                     }
                     Transition::Void => tr.stopped = false,
+                    Transition::Cancel => {
+                        tr.cancel_reported = false;
+                        r.space_cancelled += 1;
+                    }
                     Transition::Queue => {
                         tr.queued_logged = None;
                         r.queued += 1;
@@ -2391,6 +2466,7 @@ fn replay_inner<S: AsRef<str>>(
                     );
                     continue;
                 };
+                tr.space_order = order.clone();
                 if let Some(seq) = tr.dispatch_logged {
                     bad(
                         &mut r,
@@ -2584,6 +2660,20 @@ fn replay_inner<S: AsRef<str>>(
                 let run_auth = r.auth;
                 // rules 10: an assertion goes with a passkey login or step-up, and only there
                 let passkey_act = matches!(action.as_str(), "session.opened" | "step_up") && *auth == Some(AuthMethod::Passkey);
+                // rules 11: an operator's cancel of a dispatched collect or cover: the engine's
+                // cancelled report and the cancel transition must follow at once
+                if action == "intent.cancel"
+                    && policy.as_ref().is_some_and(|p| p.rules.space_followups())
+                    && let Some(id) = cancelled_intent(detail)
+                    && let Some(tr) = intents.get_mut(&id)
+                    && tr.state == State::Dispatched
+                    && tr.spec.task.is_space()
+                {
+                    if tr.recheck_due.is_some() || tr.recheck_lost.is_some() {
+                        bad(&mut r, e, Some(id), "a cancel between a space task's re-check and its report", String::new(), String::new());
+                    }
+                    tr.cancel_due = Some((operator.clone(), e.seq));
+                }
                 if proof.is_some() != passkey_act {
                     bad(
                         &mut r,
@@ -4001,6 +4091,52 @@ fn replay_inner<S: AsRef<str>>(
                 if *ahead {
                     tr.started_ahead.insert(uid.clone());
                 }
+                // rules 11: the engine's own reports on a space task (a cancel's, a re-check's)
+                // are bound to the cancel or check right before them, their details recomputed
+                if policy.as_ref().is_some_and(|p| p.rules.space_followups()) && tr.spec.task.is_space() {
+                    if tr.cancel_due.is_some() && state != space::CANCELLED_OP {
+                        bad(&mut r, e, Some(*intent), "an op state between an operator's cancel of a dispatched space task and its cancelled report", json(&(uid, state)), space::CANCELLED_OP.into());
+                    }
+                    let recheck_report = state == space::RECHECKED_OP
+                        || (state == space::MISSED_OP && detail.starts_with(space::NO_LONGER_FEASIBLE));
+                    if tr.recheck_due.is_some() && !recheck_report {
+                        bad(&mut r, e, Some(*intent), "an op state between a space task's re-check and its report", json(&(uid, state)), "rechecked or missed".into());
+                    }
+                    if tr.recheck_lost.is_some() {
+                        bad(&mut r, e, Some(*intent), "an op state between a space task's missed report and its failure", json(&(uid, state)), "intent.state fail".into());
+                    }
+                    if state == space::CANCELLED_OP {
+                        match (&tr.cancel_due, &tr.space_order) {
+                            (Some(_), Some(order)) => {
+                                let want = space::cancel_detail(order, scenario_map.scenario(e.t));
+                                if *detail != want {
+                                    bad(&mut r, e, Some(*intent), "cancelled report differs from what the cancel means for the dispatched order at that time", detail.clone(), want);
+                                }
+                                tr.cancel_reported = true;
+                            }
+                            _ => bad(&mut r, e, Some(*intent), "a cancelled report without an operator's cancel of the dispatched space task right before it", json(&(uid, detail)), "operator.action intent.cancel".into()),
+                        }
+                    }
+                    if recheck_report {
+                        match tr.recheck_due.take() {
+                            Some((passed, want)) => {
+                                if (state == space::RECHECKED_OP) != passed {
+                                    bad(&mut r, e, Some(*intent), "a re-check report that contradicts its check", state.clone(), if passed { space::RECHECKED_OP.into() } else { space::MISSED_OP.into() });
+                                }
+                                if *detail != want {
+                                    bad(&mut r, e, Some(*intent), "re-check report differs from the recomputed check", detail.clone(), want.clone());
+                                }
+                                if passed {
+                                    r.space_rechecked += 1;
+                                } else {
+                                    r.space_missed += 1;
+                                    tr.recheck_lost = Some(want);
+                                }
+                            }
+                            None => bad(&mut r, e, Some(*intent), "a re-check report without its dispatched-phase check right before it", json(&(uid, state, detail)), "check.result phase dispatched".into()),
+                        }
+                    }
+                }
                 tr.ops.insert(uid.clone(), state.clone());
             }
             EventBody::VehicleEvent { uid, kind, text } => {
@@ -4412,6 +4548,34 @@ fn replay_inner<S: AsRef<str>>(
                     .into(),
                 logged: String::new(),
                 recomputed: "engage.stopped".into(),
+            });
+        }
+        // rules 11: a cancel, a re-check and a missed report each call for what follows them
+        if let Some((_, seq)) = &tr.cancel_due {
+            r.mismatches.push(Mismatch {
+                seq: *seq,
+                intent: Some(*id),
+                what: "an operator's cancel of a dispatched space task never carried out".into(),
+                logged: String::new(),
+                recomputed: "op.state cancelled, intent.state cancel".into(),
+            });
+        }
+        if tr.recheck_due.is_some() {
+            r.mismatches.push(Mismatch {
+                seq: tr.last_check_seq,
+                intent: Some(*id),
+                what: "a space task's re-check never reported".into(),
+                logged: String::new(),
+                recomputed: "op.state rechecked or missed".into(),
+            });
+        }
+        if tr.recheck_lost.is_some() {
+            r.mismatches.push(Mismatch {
+                seq: last_seq,
+                intent: Some(*id),
+                what: "a space task reported missed but never failed".into(),
+                logged: String::new(),
+                recomputed: "intent.state fail".into(),
             });
         }
     }
@@ -5681,6 +5845,9 @@ fn unbacked(tr: &Tracked, t: Transition) -> Option<&'static str> {
         }
         Transition::Release if !tr.effect_logged => Some("released without an engage.effect"),
         Transition::Abort if !tr.stopped => Some("aborted without an engage.stopped"),
+        Transition::Cancel if !tr.cancel_reported => {
+            Some("cancelled after dispatch without the operator's cancel and the engine's cancelled report")
+        }
         Transition::Complete if tr.spec.kind() == TaskKind::Engage && !tr.assessed => {
             Some("engagement completed without an assessment")
         }
@@ -5691,6 +5858,12 @@ fn unbacked(tr: &Tracked, t: Transition) -> Option<&'static str> {
         Transition::Expire if !tr.expired => Some("expired without an approval.expired"),
         _ => None,
     }
+}
+
+/// The intent an `operator.action intent.cancel` names (`"i12: note"`).
+fn cancelled_intent(detail: &str) -> Option<IntentId> {
+    let (id, _) = detail.split_once(':')?;
+    id.strip_prefix('i')?.parse().ok().map(IntentId)
 }
 
 fn json<T: Serialize>(v: &T) -> String {

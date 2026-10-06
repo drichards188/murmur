@@ -61,7 +61,7 @@ fn every_transition_legal_and_illegal() {
             checked += 1;
         }
     }
-    assert_eq!(checked, 14 * 16);
+    assert_eq!(checked, 14 * 17);
     for s in State::ALL {
         if s.is_terminal() {
             assert!(

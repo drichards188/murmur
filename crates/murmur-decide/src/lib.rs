@@ -310,7 +310,7 @@ pub use engage::{
 pub use engine::{
     ActOutcome, AgentPort, Dequeued, DispatchOrder, Engine, EngineError, IdentOutcome, Order,
     PREPARED_SPACE_MAX_AGE_MS, PlatformRestoreReport, PreloadReport, PreparedSpace, Preview,
-    Routed, StepOutcome, TaskOutcome, prepare_space,
+    Routed, SpaceRecheck, StepOutcome, TaskOutcome, prepare_space, prepare_space_at,
 };
 pub use geo::{LonLat, Polygon};
 pub use ident::{
@@ -338,7 +338,7 @@ pub use route::{LegKind, Route, Segment};
 pub use rules::{
     CheckResult, OPERATOR_AUTH_SINCE, Outcome, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, POLICY_SCHEMA,
     QUEUE_FOLLOWUPS_SINCE, RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE, RULES_VERSION, RuleId, RulesConfig,
-    STEP_UP_SCHEMA_SINCE, UnknownEndurance,
+    SPACE_FOLLOWUPS_SINCE, STEP_UP_SCHEMA_SINCE, UnknownEndurance,
 };
 pub use space::{
     ChosenCollect, CollectCapability, CollectOrder, CoverOrder, CoverService, ScenarioMap,

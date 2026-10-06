@@ -17,7 +17,7 @@ use crate::policy::PolicyDecision;
 use crate::rules::CheckResult;
 use crate::engage::{EngageWindow, Engagement, Fallback};
 use crate::space::{
-    ChosenCollect, CollectCapability, CoverService, SpaceAnswer, SpaceArea, Window,
+    ChosenCollect, CollectCapability, CoverService, SpaceAnswer, SpaceArea, SpaceOrder, Window,
 };
 use crate::time::Time;
 
@@ -494,9 +494,11 @@ pub enum State {
     /// an expiry, until it can. Dispatched only after its checks pass again on the world
     /// then; back to the inbox when a human approved a picture that has since changed.
     Queued,
-    /// Engage only: stopped after dispatch and before the effect (an operator's abort, a
-    /// void when the picture changed, link loss, the window closing); the platform was sent
-    /// its recorded fallback.
+    /// Engage: stopped after dispatch and before the effect (an operator's abort, a void
+    /// when the picture changed, link loss, the window closing); the platform was sent its
+    /// recorded fallback. Rules 11: a collect or cover an operator cancelled after dispatch
+    /// (transition `cancel`; its `op.state cancelled` says what the cancel meant for the
+    /// pass).
     Aborted,
     Done,
     Failed,
@@ -570,10 +572,13 @@ pub enum Transition {
     /// Rules 5: dispatched, but the link to every vehicle was lost before any started it:
     /// back to the queue (`intent.requeued`), re-checked before it is sent again.
     Requeue,
+    /// Rules 11: a dispatched collect or cover withdrawn by an operator (`operator.action
+    /// intent.cancel`, then the engine's `op.state cancelled`): `aborted`.
+    Cancel,
 }
 
 impl Transition {
-    pub const ALL: [Transition; 16] = [
+    pub const ALL: [Transition; 17] = [
         Transition::Check,
         Transition::ChecksFailed,
         Transition::AutoApprove,
@@ -590,6 +595,7 @@ impl Transition {
         Transition::Fail,
         Transition::Queue,
         Transition::Requeue,
+        Transition::Cancel,
     ];
 }
 
@@ -650,6 +656,7 @@ pub fn next_state(from: State, transition: Transition) -> Result<State, IllegalT
         (S::Dispatched, T::Fail) => S::Failed,
         (S::Dispatched, T::Release) => S::Effected,
         (S::Dispatched, T::Abort) => S::Aborted,
+        (S::Dispatched, T::Cancel) => S::Aborted,
         (S::Effected, T::Complete) => S::Done,
         (S::Effected, T::Fail) => S::Failed,
         _ => return Err(IllegalTransition { from, transition }),
@@ -701,6 +708,10 @@ pub struct Intent {
     /// exclusions for a collect; coverage for a cover). Also in the log as `space.query`.
     #[serde(skip_serializing_if = "Option::is_none")]
     space: Option<Box<SpaceAnswer>>,
+    /// Collect and cover: the order it was dispatched with (`intent.dispatched`'s `space`),
+    /// what a cancel after dispatch and a re-check report against.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    order: Option<Box<SpaceOrder>>,
     /// Signatures recorded before the last one, when the tier needs more than one approver
     /// (two-person approval): each a distinct operator, none the proposer where the tier
     /// excludes the proposer. The last signature is `approval`.
@@ -782,6 +793,7 @@ impl Intent {
                 reason: "created".into(),
             }],
             space: None,
+            order: None,
             concurrences: Vec::new(),
             engagement: None,
             queue: None,
@@ -826,6 +838,10 @@ impl Intent {
     /// Collect and cover: the space answer the last check read.
     pub fn space_answer(&self) -> Option<&SpaceAnswer> {
         self.space.as_deref()
+    }
+    /// Collect and cover: the order it was dispatched with.
+    pub fn space_order(&self) -> Option<&SpaceOrder> {
+        self.order.as_deref()
     }
     /// Signatures before the last (see the field).
     pub fn concurrences(&self) -> &[Approval] {
@@ -911,6 +927,9 @@ impl Intent {
     }
     pub(crate) fn set_space(&mut self, a: Option<Box<SpaceAnswer>>) {
         self.space = a;
+    }
+    pub(crate) fn set_space_order(&mut self, o: SpaceOrder) {
+        self.order = Some(Box::new(o));
     }
     pub(crate) fn set_expires(&mut self, t: Time) {
         self.expires_t = Some(t);

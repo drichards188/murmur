@@ -734,7 +734,9 @@ impl Decision {
 
     /// Give the engine the space segment (once `crate::space` has loaded it), with the
     /// scenario clock as a map from the engine clock. Until then collects and covers fail
-    /// closed ("no space segment loaded").
+    /// closed ("no space segment loaded"). Given again (the element sets changed on disk and
+    /// `crate::space` reloaded them), the engine logs the new segment and, rules 11, every
+    /// running collect and cover is re-checked against it ([`Self::recheck_space_runs`]).
     pub fn install_space(&self, space: Arc<murmur_space::Space>, map: ScenarioMap) {
         let seg = match SpaceSegment::new(space).and_then(|s| s.with_scenario_map(map)) {
             Ok(s) => Arc::new(s),
@@ -744,6 +746,71 @@ impl Decision {
             return eprintln!("decision: space segment: {e}");
         }
         *self.space.write().unwrap_or_else(|e| e.into_inner()) = Some(seg);
+        self.publish();
+        self.recheck_space_runs();
+    }
+
+    /// Rules 11: every running collect and cover checked again against the segment the
+    /// engine holds now. The query runs here, outside the decision lock (a collect at the
+    /// request time of the answer it was tasked on, so only the segment can change it; a
+    /// cover over its sample points); the engine decides on the answer under the lock
+    /// ([`murmur_decide::Engine::recheck_space`]): unchanged (nothing logged), still
+    /// feasible (`rechecked`; a cover's watch takes the new outages), or no longer feasible
+    /// (`missed`, the intent failed, the run ended). Called when the segment is reloaded;
+    /// on the same segment every answer is unchanged.
+    pub fn recheck_space_runs(&self) {
+        if self.rules.rules_version < rules::SPACE_FOLLOWUPS_SINCE {
+            return;
+        }
+        let Some(seg) = self.space.read().unwrap_or_else(|e| e.into_inner()).clone() else {
+            return;
+        };
+        let running: Vec<(IntentId, Task, Option<Time>)> = {
+            let core = self.lock();
+            core.space_runs
+                .iter()
+                .filter(|(_, run)| !run.finished())
+                .filter_map(|(id, _)| {
+                    let i = core.engine.intent(*id)?;
+                    Some((*id, i.spec().task.clone(), i.space_answer().and_then(|a| a.now())))
+                })
+                .collect()
+        };
+        if running.is_empty() {
+            return;
+        }
+        for (id, task, now) in running {
+            let t = self.clock.now();
+            let prepared = match now {
+                Some(now) => murmur_decide::prepare_space_at(&seg, &task, t, now, &self.rules),
+                None => murmur_decide::prepare_space(&seg, &task, t, &self.rules),
+            };
+            let prepared = match prepared {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("decision: space re-check {id}: {e}");
+                    continue;
+                }
+            };
+            let mut guard = self.lock();
+            let core = &mut *guard;
+            let scen = core.engine.scenario_map().scenario(self.clock.now());
+            match core.engine.recheck_space(id, prepared) {
+                Ok(murmur_decide::SpaceRecheck::Unchanged) => {}
+                Ok(murmur_decide::SpaceRecheck::Holds { .. }) => {
+                    let answer = core.engine.intent(id).and_then(|i| i.space_answer().cloned());
+                    if let Some(run) = core.space_runs.get_mut(&id) {
+                        run.replan(answer.as_ref(), scen);
+                    }
+                }
+                Ok(murmur_decide::SpaceRecheck::Lost { .. }) => {
+                    if let Some(run) = core.space_runs.get_mut(&id) {
+                        run.lost();
+                    }
+                }
+                Err(e) => eprintln!("decision: space re-check {id}: {e}"),
+            }
+        }
         self.publish();
     }
 
@@ -1453,7 +1520,9 @@ impl Decision {
         out
     }
 
-    /// Withdraw an intent before dispatch.
+    /// Withdraw an intent before dispatch, or (rules 11) a dispatched collect or cover:
+    /// the engine reports what the cancel means for the order and aborts it; the space
+    /// executor stops following it.
     pub fn cancel(
         &self,
         by: &Actor,
@@ -1467,7 +1536,14 @@ impl Decision {
             let session = Self::session(&mut core.engine, &mut core.sessions, &core.logins, by, &self.engage_operators, self.auth)?;
             let note = note.unwrap_or_else(|| "cancelled".into());
             match core.engine.cancel(id, session.authority(), &note) {
-                Ok(_) => Ok(self.outcome(core, id)),
+                Ok(i) => {
+                    if i.state() == State::Aborted
+                        && let Some(run) = core.space_runs.get_mut(&id)
+                    {
+                        run.cancel();
+                    }
+                    Ok(self.outcome(core, id))
+                }
                 Err(e) => Err(self.with_intent(core, id, engine_err(e))),
             }
         };
