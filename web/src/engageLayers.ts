@@ -181,7 +181,8 @@ export function buildKeepOutLayers(ex: KeepOutExplanation, platformName: string)
   const mw = ex.blocked ? ex.move_within : null
   if (mw?.possible && mw.point && mw.within_m != null) {
     for (const d of dashedRing(mw.point, mw.within_m, 40)) paths.push({ path: d, color: a(OURS, 0.95), width: 2 })
-    labels.push({ at: circle(mw.point, mw.within_m, 4)[0], text: `${platformName} within ${fmtDist(mw.within_m)}`, color: [170, 205, 255, 255] })
+    // at the ring's south point, clear of the track labels near the target
+    labels.push({ at: circle(mw.point, mw.within_m, 4)[2], text: `${platformName} within ${fmtDist(mw.within_m)}`, color: [170, 205, 255, 255] })
   }
   return [
     new PolygonLayer<{ ring: LngLat[]; color: RGBA }>({

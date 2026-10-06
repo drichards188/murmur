@@ -655,14 +655,16 @@ fn track_item(ctx: &Ctx, id: &str, t: &TrackFacts, s: &TrackStanding, alt: Optio
         ),
     };
     let edge = s.edge;
+    // altitude matters for an aircraft (a vessel is at sea level either way)
     let altitude = match (alt, s.alt_known) {
+        _ if t.domain != Domain::Air => None,
         (Some(_), true) if s.by_alt.is_none() && edge < clearance => {
             Some("In 3D too: its altitude puts it within the keep-out's vertical band.".to_string())
         }
         (Some(_), false) => Some(
             "Its altitude is not a recent ranged measurement, so the keep-out has no ceiling for it.".to_string(),
         ),
-        (None, _) if t.domain == Domain::Air => Some(
+        (None, _) => Some(
             "The target's altitude is not a recent ranged measurement, so the keep-out has no ceiling.".to_string(),
         ),
         _ => None,
@@ -697,7 +699,9 @@ fn track_item(ctx: &Ctx, id: &str, t: &TrackFacts, s: &TrackStanding, alt: Optio
         fits_until_t: None,
         wait: None,
         not_by_waiting: None,
-        other: None,
+        other: (blocks && near.kind == ReachKind::NoVelocity).then(|| {
+            "A velocity estimate (a few more fixes from our sensors) would replace this reach with a prediction along its course.".to_string()
+        }),
     }
 }
 
@@ -793,12 +797,15 @@ fn vehicle_item(ctx: &Ctx, uid: &Uid, v: &VehicleFacts, st: FriendlyStanding, al
             let clear_by_altitude = by_alt.map(|(a, c, m)| {
                 format!("Clear by altitude: at {a:.0} m it stays {c:.0} m outside the vertical keep-out, with {m:.0} m of altitude uncertainty.")
             });
+            // altitude matters for one of our aircraft
+            let air = v.platform.as_ref().is_some_and(|p| p.domain == Domain::Air);
             let altitude = match alt {
+                _ if !air => None,
                 Some(_) if blocks && alt_known => {
                     Some("In 3D too: its altitude puts it within the keep-out's vertical band (or is not fresh).".to_string())
                 }
                 Some(_) if !alt_known => Some("It reports no altitude, so the keep-out has no ceiling for it.".to_string()),
-                None if v.platform.as_ref().is_some_and(|p| p.domain == Domain::Air) => Some(
+                None => Some(
                     "The target's altitude is not a recent ranged measurement, so the keep-out has no ceiling.".to_string(),
                 ),
                 _ => None,
@@ -1148,7 +1155,7 @@ fn carried_forward(ctx: &Ctx, items: &mut [(Item, Probe)]) -> (Option<Wait>, Opt
         Some(format!("Waiting alone does not clear it: {} (see each).", stuck.join(", ")))
     } else {
         Some(format!(
-            "Every keep-out does not hold together within {} min if everything keeps behaving as now.",
+            "No nomination within {} min has every keep-out holding at once, if everything keeps behaving as now.",
             WAIT_HORIZON_S / 60
         ))
     };
