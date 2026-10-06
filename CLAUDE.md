@@ -142,9 +142,15 @@ meaningful. Decision and command, not weapons.
   truth by hand, set it in both.
 - The tracker is a two-model IMM; changes must pass `tracks::tests::calib`. Its held-out seeds
   (66-95) are not for tuning: write a new held-out set if you tune on them.
-- This host's wall clock (WSL) steps back about 1 s every ~32 s. The tracker dates fixes by the
-  truth message's clock (`Detection::measured_t`); anything else timing by arrival sees the
-  steps (murmur-dup).
+- This host's wall clock (WSL) stepped back 0.5 to 0.9 s every ~32 s for the first two hours or
+  so after boot (monotonic up to 2 % fast against Windows), then stopped. The bridge times
+  everything on `clock::wall` (the monotonic rate, steered within ~2 s of the wall clock at
+  5 % at most, never back; the engine reads it as `clock::BridgeClock`; anchors record UTC
+  beside it); `clock::utc` only for dates another clock reads (CoT, the resume pointer,
+  credential-file times); `clock::mono` for durations. The tracker dates fixes by the truth
+  message's clock (`Detection::measured_t`). Tests: `clock::test_clock` (`step_utc`, `pin`,
+  `pin_drifting`, `restart`; per thread). Stepped stand-in tests read `Link::capture`; test
+  vehicles use `Vehicle::seeded` (murmur-dup, murmur-ek3).
 - The bridge's task-layer timeouts follow each link's measured round trip (`LinkTiming` in
   `crates/murmur-bridge/src/link.rs`; floors 1 s per ACK, 1.5 s per mission item, as before on
   fast links) and its telemetry plan follows the link class (`crates/murmur-bridge/src/

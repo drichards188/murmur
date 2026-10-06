@@ -253,7 +253,6 @@ pub mod test_clock {
             .map(|p| p.epoch + (super::mono() - p.m0) * (1.0 - p.drift) + utc_offset())
     }
 
-    /// The bridge's clock on this thread, if a test put it somewhere.
     /// The bridge's clock on this thread: the manual clock it follows, its pinned clocks,
     /// else the wall clock at the thread's first read plus its own monotonic time since (a
     /// paused runtime's time is the thread's own; one clock shared by every test thread
