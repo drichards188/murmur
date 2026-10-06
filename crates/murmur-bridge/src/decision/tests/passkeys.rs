@@ -366,14 +366,46 @@ async fn login_options_do_not_say_who_has_a_passkey() {
     let (s2, b) = h.local(None, "/api/auth/login/passkey", json!({ "operator": "op-1" })).await;
     let (s3, c) = h.local(None, "/api/auth/login/passkey", json!({ "operator": "op-2" })).await;
     assert_eq!((s1, s2, s3), (StatusCode::OK, StatusCode::OK, StatusCode::OK));
+    // one shape for all three: the same keys, one credential id each, the same values but the
+    // challenge and the id
+    let shape = |v: &Value| {
+        let mut v = v.clone();
+        v["publicKey"]["challenge"] = json!("");
+        v["publicKey"]["allowCredentials"][0]["id"] = json!("");
+        v
+    };
     for v in [&a, &b, &c] {
-        let keys: Vec<&str> = v["publicKey"].as_object().expect("options").keys().map(String::as_str).collect();
-        assert!(keys.contains(&"challenge") && keys.contains(&"allowCredentials") && keys.contains(&"rpId"), "{v}");
         assert_eq!(v["publicKey"]["allowCredentials"].as_array().map(Vec::len), Some(1), "{v}");
         assert_eq!(v["publicKey"]["userVerification"], "required");
+        assert_eq!(shape(v), shape(&c), "{v} against op-2's real options {c}");
     }
     // nothing logged for any of them (a challenge is not an act)
     assert_eq!(h.log().lines().count(), 1, "{}", h.log());
+}
+
+/// Ceremonies waiting are bounded per operator (logins) and per session (step-ups), not by a
+/// shared cap a stranger could fill: past the bound the oldest gives way.
+#[tokio::test]
+async fn waiting_ceremonies_are_bounded_per_operator_the_oldest_giving_way() {
+    let (h, mut keys) = harness(&["op-2"], |_| {}, None);
+    let mut k2 = keys.remove("op-2").expect("op-2's");
+    let mut options = Vec::new();
+    for _ in 0..5 {
+        let (s, o) = h.local(None, "/api/auth/login/passkey", json!({ "operator": "op-2" })).await;
+        assert_eq!(s, StatusCode::OK);
+        options.push(o);
+    }
+    // a stranger's requests for ids without passkeys keep nothing: no effect on op-2's
+    for i in 0..50 {
+        let (s, _) = h.local(None, "/api/auth/login/passkey", json!({ "operator": format!("x{i}") })).await;
+        assert_eq!(s, StatusCode::OK);
+    }
+    let answer = |o: &Value, k: &mut SoftAuthenticator| json!({ "operator": "op-2", "passkey": k.assertion_json("localhost", LOCAL, &challenge(o)) });
+    let (s, _, v) = h.call("POST", "/api/auth/login", Some(answer(&options[0], &mut k2)), &[("origin", LOCAL)]).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "the oldest gave way: {v}");
+    let (s, _, v) = h.call("POST", "/api/auth/login", Some(answer(&options[4], &mut k2)), &[("origin", LOCAL)]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    h.replays_authenticated();
 }
 
 #[tokio::test]

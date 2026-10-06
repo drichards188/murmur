@@ -190,9 +190,24 @@ impl RelyingParty {
             .webauthn
             .start_passkey_authentication(&keys)
             .map_err(|e| invalid(format!("passkey assertion: {e}")))?;
-        // the challenge is the act's, not a random one: put it into the options and the state
-        let mut options = serde_json::to_value(&rcr).map_err(invalid)?;
-        options["publicKey"]["challenge"] = json!(b64(&challenge));
+        // the challenge is the act's, not a random one: put it into the options and the state.
+        // The options are written out in one shape (the decoy's): the challenge, the timeout,
+        // the relying party, the credential ids (no transport hints), user verification
+        let full = serde_json::to_value(&rcr).map_err(invalid)?;
+        let ids: Vec<Value> = full["publicKey"]["allowCredentials"]
+            .as_array()
+            .map(|a| a.iter().map(|c| json!({ "type": "public-key", "id": c["id"] })).collect())
+            .unwrap_or_default();
+        let options = json!({
+            "publicKey": {
+                "challenge": b64(&challenge),
+                "timeout": full["publicKey"]["timeout"],
+                "rpId": self.rp_id,
+                "allowCredentials": ids,
+                "userVerification": "required",
+            },
+            "mediation": null,
+        });
         let mut st = serde_json::to_value(&state).map_err(invalid)?;
         let slot = st
             .get_mut("ast")
@@ -205,7 +220,8 @@ impl RelyingParty {
 
     /// Options shaped as [`RelyingParty::start_assertion`]'s for an operator who has no passkey
     /// (or no such operator): one made-up credential id derived from `secret` and the id, so
-    /// the answer does not say which ids exist or have a passkey (the browser finds none).
+    /// the answer does not say which ids exist or have a passkey (the browser finds none). An
+    /// operator with several passkeys gets as many ids: the count is the one thing that tells.
     pub fn decoy_options(&self, operator: &str, secret: &[u8], challenge: [u8; 32]) -> Value {
         let mut h = Sha256::new();
         h.update(secret);

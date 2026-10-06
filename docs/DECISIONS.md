@@ -1078,7 +1078,13 @@ group. Dates are 2026.
   stack's origin must be listed. The console at 127.0.0.1 says so and links to the same console
   on localhost (cookies are per host: sign in there); `make up` prints both addresses in a
   credentials run, and the evaluation's study prints the localhost one. Behind an HTTPS proxy
-  with a real name, set `MURMUR_PASSKEY_RP_ID` and `MURMUR_ALLOWED_ORIGINS`.
+  with a real name, set `MURMUR_PASSKEY_RP_ID` and `MURMUR_ALLOWED_ORIGINS`. A passkey
+  sign-in names the operator first; its options have one shape for every id (an id with no
+  passkey, or no such operator, gets a made-up credential id derived from a bridge secret:
+  no authenticator answers), except that an operator with several passkeys gets several ids,
+  stated. Challenges waiting for an answer are bounded per operator on the roster (logins,
+  four) and per session (step-ups, eight), the oldest giving way, so no stranger can fill a
+  shared cap; an unanswered challenge leaves nothing in the log.
 - **What a step-up must be is policy; a study requires a passkey** (10-05, user decision;
   policy schema 7, `PASSKEY_SCHEMA_SINCE`). `[approval] step_up_factor = "password"` (shipped,
   the default for normal credentials runs) takes the password again or a passkey (at least as

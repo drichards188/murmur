@@ -336,8 +336,12 @@ struct PendingReg {
 
 /// How long a registration may take (finding the authenticator, a PIN, a touch).
 const REGISTRATION_TTL: Duration = Duration::from_secs(300);
-/// At most this many passkey ceremonies wait at once (a flood can't grow memory).
+/// At most this many registrations wait at once (a flood can't grow memory).
 const PENDING_CAP: usize = 256;
+/// Passkey logins waiting per operator on the roster, and step-ups per session (the oldest
+/// gives way): bounded by the roster and the sessions, so no stranger can fill a shared cap.
+const PENDING_PER_OPERATOR: usize = 4;
+const PENDING_PER_SESSION: usize = 8;
 
 /// The credential file as last read, and the digest that tells it changed.
 struct Store {
@@ -782,15 +786,26 @@ impl Auth {
                 "you have no passkey this run can use: register one from your operator menu (one registered elsewhere since this run started is usable after a restart)",
             ));
         }
-        if lock(&self.pending).len() >= PENDING_CAP {
-            return Err(DecisionError::new(429, "too many passkey requests waiting: try again in a minute"));
-        }
         let issued = self.decision.passkey_challenge(op, session, purpose, Self::nonce()?)?;
         let (options, pending) = rp
             .start_assertion(&entries, issued.challenge)
             .map_err(|e| DecisionError::new(500, e.to_string()))?;
         let ttl = Duration::from_millis(u64::try_from(murmur_decide::CHALLENGE_TTL_MS).unwrap_or(120_000));
-        lock(&self.pending).insert(
+        let mut waiting = lock(&self.pending);
+        // bounded without a global cap anyone could fill: a few logins waiting per operator on
+        // the roster (an unknown id gets a decoy, nothing kept), a few step-ups per session;
+        // the oldest gives way
+        let cap = if login { PENDING_PER_OPERATOR } else { PENDING_PER_SESSION };
+        let mut mine: Vec<(String, Instant)> = waiting
+            .iter()
+            .filter(|(_, p)| p.session == session && (!login || &p.operator == op))
+            .map(|(k, p)| (k.clone(), p.until))
+            .collect();
+        mine.sort_by_key(|m| m.1);
+        for (k, _) in mine.iter().take((mine.len() + 1).saturating_sub(cap)) {
+            waiting.remove(k);
+        }
+        waiting.insert(
             murmur_decide::passkey::b64(&issued.challenge),
             PendingUse {
                 operator: op.clone(),
