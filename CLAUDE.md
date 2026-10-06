@@ -134,7 +134,7 @@ meaningful. Decision and command, not weapons.
   for review; effect release and accepting a lost friendly stay human. `[identification]` in
   `sim/policy.toml` (`rule_declaration` on, `nominate_unconfirmed` off, `corroboration`);
   acts are `[[act]]` in contacts scenarios; review at `GET /api/review`. Live demo:
-  `MURMUR_CONTACTS=sim/scenarios/golden-gate-ident.toml make goldengate GG_FLEET=engage-demo`.
+  `make goldengate GG_FLEET=engage-demo CONTACTS=sim/scenarios/golden-gate-ident.toml` (the Makefile sets `MURMUR_CONTACTS` from `CONTACTS=`; an exported `MURMUR_CONTACTS` is overridden).
   Eval: `.venv/bin/python -m eval.run ident --seeds 1 2 3 4 5 6 7 8 9 10 --situations 20
   --untracked-share 0.2 0.5` (model results: read METRICS.md's caveats before quoting).
 - `POST /api/sim/contacts` needs `X-Murmur-Sim-Token` equal to the bridge's
