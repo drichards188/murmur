@@ -1389,7 +1389,7 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (rules::REVIEW_FOLLOWUPS_SINCE, "\"scripted\":[", "the run's scripted operators on the roster"),
     (rules::REVIEW_FOLLOWUPS_SINCE, "\"first_seen_t\":", "when the tracker started a track (keep-out reach)"),
     (rules::REVIEW_FOLLOWUPS_SINCE, "\"carried\":{", "values carried over holding a vehicle (a decision's fact)"),
-    (rules::REVIEW_FOLLOWUPS_SINCE, "\"expended\":{", "a platform spent by its own effect (a decision's fact, a closure)"),
+    (rules::REVIEW_FOLLOWUPS_SINCE, "\"expended\":{", "a platform spent by its own effect (a decision's fact)"),
     (rules::REVIEW_FOLLOWUPS_SINCE, "\"may_owe\":[", "the platforms a failed carry may owe values to"),
 ];
 

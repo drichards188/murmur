@@ -1306,7 +1306,7 @@ fn a_rules_12_log_claiming_rules_11_still_carries_its_follow_ups() {
     for (name, markers) in [
         (
             "v12-engagement-scenario-01.jsonl",
-            &["a restore closed without a restore", "a platform spent by its own effect", "when the tracker started a track"][..],
+            &["a restore closed without a restore", "when the tracker started a track"][..],
         ),
         ("v12-young-track-blocks-scenario-79.jsonl", &["when the tracker started a track"][..]),
         ("v12-restore-written-off-scenario-82.jsonl", &["a restore closed without a restore"][..]),

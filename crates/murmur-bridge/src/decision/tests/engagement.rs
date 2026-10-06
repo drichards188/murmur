@@ -1312,7 +1312,13 @@ async fn a_bad_pointer_is_a_failed_carry_not_a_failed_start() {
         assert!(first.contains("\"carried_from\":[{\"log\":\".last-run-0\",\"error\":") && first.contains(why), "{what}: {first}");
         let alerts = d.inbox_json()["alerts"].clone();
         let alert = alerts.as_array().expect("alerts").iter().find(|a| a["id"] == "restore:carry:.last-run-0").cloned();
-        assert!(alert.is_some_and(|a| a["detail"].as_str().unwrap_or_default().contains("no mission is held")), "{what}: {alerts}");
+        assert!(
+            alert.is_some_and(|a| {
+                let d = a["detail"].as_str().unwrap_or_default();
+                d.starts_with("the pointer .last-run-0 (the log it named is unknown) can't be carried over") && d.contains("no mission is held")
+            }),
+            "{what}: {alerts}"
+        );
         assert_eq!(std::fs::read_to_string(&pointer).expect("rewritten"), run1.display().to_string(), "{what}");
         assert!(!dir.join(".last-run-0.tmp").exists(), "{what}: no temporary file left");
         drop(d);

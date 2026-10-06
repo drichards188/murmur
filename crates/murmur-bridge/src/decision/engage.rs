@@ -309,6 +309,16 @@ pub(super) fn read_carry(pointer: &std::path::Path, catalog: &Catalog) -> Vec<mu
     out
 }
 
+/// Rules 12: a pending carry as the inbox names it: an earlier log, or a `.last-run` pointer
+/// that could not be read (the log it named unknown).
+fn carry_name(log: &str) -> String {
+    if murmur_decide::replay::is_pointer_name(log) {
+        format!("the pointer {log} (the log it named is unknown)")
+    } else {
+        format!("the earlier log {log}")
+    }
+}
+
 /// Rules 12: what a pending carry's alert says of the vehicles it may owe values to.
 fn may_owe_text(may_owe: &[murmur_decide::Uid]) -> String {
     if may_owe.is_empty() {
@@ -932,7 +942,8 @@ impl Decision {
             }
             for (log, why, may_owe) in core.engine.pending_carries() {
                 eprintln!(
-                    "decision: the earlier log {log} can't be carried over ({why}): what it still owed is unknown and stays owed until a start reads it or an operator writes it off; {}",
+                    "decision: {} can't be carried over ({why}): what it still owed is unknown and stays owed until a start reads it or an operator writes it off; {}",
+                    carry_name(&log),
                     may_owe_text(&may_owe)
                 );
             }
@@ -1101,7 +1112,8 @@ impl Decision {
                 uid: 0,
                 callsign: None,
                 detail: format!(
-                    "the earlier log {log} can't be carried over ({why}): the lost-link values it still owed are unknown; {}. It is tried again at every start until read, or an operator writes it off (POST /api/restores/write_off {{\"log\": \"{log}\", \"note\": ...}})",
+                    "{} can't be carried over ({why}): the lost-link values it still owed are unknown; {}. It is tried again at every start until read, or an operator writes it off (POST /api/restores/write_off {{\"log\": \"{log}\", \"note\": ...}})",
+                    carry_name(&log),
                     may_owe_text(&may_owe)
                 ),
                 since_t: now_wall,
