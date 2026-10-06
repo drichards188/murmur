@@ -3,11 +3,11 @@
 //!
 //! Times in and out are scenario time: the scenario clock reads `MURMUR_AT` when the bridge
 //! starts and runs at `MURMUR_RATE` (the stand-ins' convention); without `MURMUR_AT` it is
-//! the bridge's clock (`clock::wall`: the wall clock at the start plus monotonic time, as the
-//! engine reads). Every response carries the `time_map` and `time_shifted`: element sets are
-//! current while scenarios are dated, so orbits are propagated a whole number of days later
-//! (see crates/murmur-space/README.md, "Epoch honesty"). The shift is pinned for the session
-//! so that every view describes the same propagation day.
+//! the bridge's clock (`clock::wall`: the monotonic rate steered within about 2 s of the wall
+//! clock, as the engine reads). Every response carries the `time_map` and `time_shifted`:
+//! element sets are current while scenarios are dated, so orbits are propagated a whole
+//! number of days later (see crates/murmur-space/README.md, "Epoch honesty"). The shift is
+//! pinned for the session so that every view describes the same propagation day.
 //!
 //! Read-only: tasking queries (`POST /api/space/task`) return options without creating an
 //! intent; tasking a collection (`POST /api/intents`, task `collect`) belongs to the

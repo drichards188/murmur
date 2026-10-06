@@ -55,8 +55,8 @@ struct Rig {
 pub(super) const T0_S: f64 = 1_781_431_200.0;
 
 /// The clock a rig's engine reads: the manual one the test moves (`Rig::clock`), or the
-/// bridge's own as `Decision::load` gives it ([`clock::BridgeClock`]: the wall clock at the
-/// first read plus monotonic time since).
+/// bridge's own as `Decision::load` gives it ([`clock::BridgeClock`]: the monotonic rate,
+/// steered within about 2 s of the wall clock; pinned to the rig's start here).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum EngineClock {
     Manual,
@@ -72,12 +72,17 @@ fn rig() -> Rig {
 /// The sim policy with `submitter_authorizes = false` everywhere: an operator's own request
 /// in a human tier waits in the inbox (as a two-person tier would), so the inbox paths run.
 fn waiting_rig() -> Rig {
+    rig_with(waiting_policy())
+}
+
+/// The policy of [`waiting_rig`].
+fn waiting_policy() -> Policy {
     let mut p = Policy::load(&root().join("sim/policy.toml")).expect("policy");
     p.approval.submitter_authorizes = Some(false);
     for t in &mut p.tiers {
         t.submitter_authorizes = None;
     }
-    rig_with(p)
+    p
 }
 
 fn rig_with(policy: Policy) -> Rig {

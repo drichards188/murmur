@@ -283,7 +283,11 @@ fn a_clock_stepping_back_leaves_the_anchors_in_order() {
         cmd: None,
     };
     let wall = ManualClock::new(T0);
-    let anchors = Anchors::open_with(&cfg, Path::new("memory"), Box::new(wall.clone())).unwrap();
+    // each anchor also records the wall clock beside the writer's (here 1.5 s behind it), so
+    // a log's times map to UTC
+    let anchors = Anchors::open_with(&cfg, Path::new("memory"), Box::new(wall.clone()))
+        .unwrap()
+        .with_utc(Box::new(ManualClock::new(T0.plus_ms(-1500))));
     let log = MemorySink::new();
     let clock = ManualClock::new(T0);
     let mut e = Engine::with_areas(
@@ -313,5 +317,8 @@ fn a_clock_stepping_back_leaves_the_anchors_in_order() {
         .map(|l| serde_json::from_str::<Anchor>(l).unwrap().t)
         .collect();
     assert!(ts.windows(2).all(|w| w[0] <= w[1]), "{ts:?}");
+    for l in lines(&text) {
+        assert_eq!(serde_json::from_str::<Anchor>(&l).unwrap().utc, Some(T0.0 - 1500), "{l}");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

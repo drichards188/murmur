@@ -502,7 +502,8 @@ impl Decision {
             Some(cfg) => Some(
                 // timed on the log's own clock
                 Anchors::open_with(cfg, &s.audit, Box::new(clock::BridgeClock))
-                    .map_err(|e| format!("anchors {}: {e}", cfg.path.display()))?,
+                    .map_err(|e| format!("anchors {}: {e}", cfg.path.display()))?
+                    .with_utc(Box::new(clock::UtcClock)),
             ),
             None => None,
         };

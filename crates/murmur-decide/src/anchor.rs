@@ -50,6 +50,11 @@ pub struct Anchor {
     /// holds the file to it, so a removed anchor shows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub every: Option<u64>,
+    /// The wall clock (ms since the Unix epoch) when it was taken, beside `t` on the writer's
+    /// clock, when the writer keeps a clock of its own (the bridge's, murmur-dup): any time
+    /// in the log maps to UTC through the nearest pair.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub utc: Option<i64>,
 }
 
 /// Where anchors go and how often.
@@ -73,6 +78,8 @@ enum HookJob {
 
 struct State {
     clock: Box<dyn Clock + Send>,
+    /// The wall clock each anchor records beside `clock`'s time, when it is another clock.
+    utc: Option<Box<dyn Clock + Send>>,
     /// The last anchor's time: the next is never earlier (the verifier holds the file to it).
     last_t: i64,
     file: File,
@@ -109,6 +116,7 @@ impl Anchors {
         let hook = cfg.cmd.clone().filter(|c| !c.trim().is_empty()).map(spawn_hook);
         Ok(Anchors(Arc::new(Mutex::new(State {
             clock,
+            utc: None,
             last_t: i64::MIN,
             file,
             path: cfg.path.clone(),
@@ -125,6 +133,13 @@ impl Anchors {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Record `utc` (the wall clock) beside each anchor's time, so a log written on a clock
+    /// of its own maps to UTC.
+    pub fn with_utc(self, utc: Box<dyn Clock + Send>) -> Anchors {
+        self.lock().utc = Some(utc);
+        self
     }
 
     /// The anchor file.
@@ -217,6 +232,7 @@ impl State {
             head: self.head.clone().unwrap_or_default(),
             why: why.to_string(),
             every: Some(self.every),
+            utc: self.utc.as_ref().map(|c| c.now().0),
         };
         let json = serde_json::to_string(&a).map_err(std::io::Error::other)?;
         let mut buf = Vec::with_capacity(json.len() + 1);

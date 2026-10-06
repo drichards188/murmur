@@ -388,10 +388,12 @@ fn the_pointer_names_the_log_to_resume_from() {
     crate::decision::queue::drop_pointer(&ptr, &theirs);
     assert!(!ptr.exists());
     assert_eq!(previous_log(&window, Some(&ptr), &ours), None);
-    // murmur-dup: the pointer's time is the wall clock's, read against the wall clock: a
-    // bridge clock that ran ahead of it (the monotonic rate on a host whose clocks disagree,
-    // 75 s an hour here) neither keeps a stale pointer fresh nor ages a fresh one
-    clock::test_clock::pin(clock::utc() + 3_600.0);
+    // murmur-dup: the pointer's time is the wall clock's, read against the wall clock, so a
+    // bridge clock apart from it (here still slewing after the wall clock jumped 300 s)
+    // neither keeps a stale pointer fresh nor ages a fresh one
+    clock::test_clock::pin(clock::utc());
+    clock::test_clock::step_utc(300.0);
+    assert!(clock::utc() - clock::wall() > 290.0);
     write(&theirs, clock::utc() - 1_000.0);
     assert_eq!(previous_log(&window, Some(&ptr), &ours), None);
     write(&theirs, clock::utc() - 60.0);

@@ -556,7 +556,8 @@ append-only file: after the first event, every `MURMUR_ANCHOR_EVERY` events (100
 every event a restart carries intents over by (`intent.state`, `intent.resumed`,
 `op.state`: "decision"), and at a clean shutdown (`logs/anchors/<run-id>.anchors`, each
 timed on the clock the writer gives, the bridge's own, never earlier than the anchor before:
-the verifier refuses anchors out of order, murmur-dup;
+the verifier refuses anchors out of order, murmur-dup; and with the wall clock beside it,
+`utc`, so any time in the log maps to UTC;
 `MURMUR_ANCHOR_DIR` moves it,
 `MURMUR_ANCHORS=0` turns it off). `MURMUR_ANCHOR_CMD`, a shell command, gets each anchor's
 JSON on its stdin (and in `MURMUR_ANCHOR`), run in order on a thread of its own, to post it
@@ -1071,8 +1072,9 @@ The full contract is in the crate docs (`src/lib.rs`). In short:
    logs/audit/<run-id>.jsonl)` (`Engine::new` works too; the set is then logged at first
    use). Sessions open only for operators on the roster, with engagement authority only for
    those on its engagement list. The clock is one that never steps and that the facts are
-   stamped on too (murmur-dup): the bridge gives its own (`clock::BridgeClock`, the wall
-   clock at its first read plus monotonic time since), since every age, expiry and window the
+   stamped on too (murmur-dup): the bridge gives its own (`clock::BridgeClock`: the
+   monotonic rate, steered within about 2 s of the wall clock at 5 % at most, never back),
+   since every age, expiry and window the
    engine decides on is a difference of its times and the facts', and replay sees only those.
    `SystemClock` reads the wall clock, which steps (this WSL host's back about 0.65 s every
    32 s; NTP or a resumed virtual machine either way). The engine never logs a time earlier
