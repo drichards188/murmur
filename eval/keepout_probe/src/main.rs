@@ -44,6 +44,22 @@ use murmur_decide::world::{Fact, NavSource, TrackFacts, VehicleFacts, WorldSnaps
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+mod realtrack;
+mod tracks;
+
+/// The bridge's `clock::round` (crates/murmur-bridge/src/clock.rs, whose wall clock needs
+/// tokio), for the tracker included by path: Python's round(x, digits).
+mod clock {
+    pub fn round(x: f64, digits: usize) -> f64 {
+        format!("{x:.digits$}").parse().unwrap_or(x)
+    }
+}
+
+/// The bridge's own `geo.rs`, which its sensing model calls.
+#[allow(dead_code)]
+#[path = "../../../crates/murmur-bridge/src/geo.rs"]
+mod geo;
+
 /// The engaging platform's uid in every evaluation.
 pub const STRIKE: &str = "strike-1";
 /// The nominating operator (dev ids, as the scenario runner's).
@@ -81,6 +97,10 @@ pub struct Situation {
     #[serde(default)]
     pub vehicles: Vec<VehicleIn>,
     pub evals: Vec<EvalIn>,
+    /// The real-tracker option ([`realtrack`]): the protected contacts' facts come from the
+    /// bridge's tracker on their motion instead of `tracks` (the target's stay as given).
+    #[serde(default)]
+    pub tracker: Option<realtrack::TrackerIn>,
 }
 
 /// The repository's policy, catalog and areas, and the rules configuration per version.
@@ -89,6 +109,8 @@ pub struct Env {
     pub areas: AreaSet,
     pub terrain: PolygonTerrain,
     pub cfgs: BTreeMap<u32, RulesConfig>,
+    /// The catalog's sensors, for the real-tracker option.
+    pub sensors: tracks::sensing::SensorCatalog,
 }
 
 /// The scenario runner's clock origin (`scenario::T0`): areas are loaded at it.
@@ -114,7 +136,9 @@ impl Env {
             }
             cfgs.insert(v, p.rules);
         }
+        let sensors = tracks::sensing::SensorCatalog::load(&root.join("sim/platforms.toml"))?;
         Ok(Env {
+            sensors,
             catalog,
             areas,
             terrain: terrain(),
@@ -322,13 +346,14 @@ pub fn evaluate(env: &Env, s: &Situation, base: &WorldSnapshot, version: u32) ->
     }
     intr.sort_by(|a, b| a.0.total_cmp(&b.0));
     let n_intr = intr.len();
-    out["margin_m"] = json!(nearest.map(|(m, _)| round1(m)));
+    // margins unrounded: a region 4 cm inside is inside
+    out["margin_m"] = json!(nearest.map(|(m, _)| m));
     out["nearest"] = json!(nearest.map(|(_, id)| id));
-    out["comp"] = json!(comp.iter().map(|(k, v)| (k.to_string(), round1(*v))).collect::<BTreeMap<_, _>>());
+    out["comp"] = json!(comp.iter().map(|(k, v)| (k.to_string(), *v)).collect::<BTreeMap<_, _>>());
     out["intr"] = json!(intr
         .into_iter()
         .take(MAX_LISTED)
-        .map(|(m, id, label, r)| json!([id, label, round1(m), round1(r)]))
+        .map(|(m, id, label, r)| json!([id, label, m, round1(r)]))
         .collect::<Vec<_>>());
     out["n_intr"] = json!(n_intr);
     out["n_tracks_intr"] = json!(tracks_in);
@@ -393,12 +418,37 @@ pub fn run_situation(env: &Env, s: &Situation) -> Vec<Value> {
     lines
 }
 
+/// The situation with its protected contacts' facts from the bridge's tracker (when it asks
+/// for it), and the tracker's account of them.
+pub fn with_tracker(env: &Env, mut s: Situation) -> Result<(Situation, Option<Value>), String> {
+    let Some(input) = s.tracker.take() else {
+        return Ok((s, None));
+    };
+    let now_s = s.t_ms as f64 / 1000.0;
+    let (facts, stats) = realtrack::simulate(&env.sensors, &input, now_s).map_err(|e| format!("{}: {e}", s.id))?;
+    let target = s.tracks.remove(&s.target);
+    s.tracks = facts;
+    if let Some(t) = target {
+        s.tracks.insert(s.target.clone(), t);
+    }
+    Ok((s, Some(stats)))
+}
+
 /// A line of input: a situation, or a question about one track's regions.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(untagged)]
 pub enum Input {
     Regions { regions: Box<RegionQuery> },
+    MotionCheck { motion_check: MotionCheck },
     Situation(Box<Situation>),
+}
+
+/// Where the probe's copy of each motion ([`realtrack::Motion`]) puts it at `times`: the
+/// generator's own formulas must agree (eval/tests/test_keepout.py).
+#[derive(Clone, Debug, Deserialize)]
+pub struct MotionCheck {
+    pub motions: Vec<realtrack::Motion>,
+    pub times: Vec<f64>,
 }
 
 /// How large each of `track`'s keep-out regions is (`keep_out_sigma` included) and how far its
@@ -489,7 +539,26 @@ fn main() -> std::process::ExitCode {
         };
         let lines = match input {
             Input::Regions { regions } => vec![region_sizes(&env, &regions)],
-            Input::Situation(s) => run_situation(&env, &s),
+            Input::MotionCheck { motion_check } => vec![json!({
+                "positions": motion_check
+                    .motions
+                    .iter()
+                    .map(|m| motion_check.times.iter().map(|t| m.pos(*t)).collect::<Vec<_>>())
+                    .collect::<Vec<_>>()
+            })],
+            Input::Situation(s) => {
+                let id = s.id.clone();
+                match with_tracker(&env, *s) {
+                    Ok((s, stats)) => {
+                        let mut lines = run_situation(&env, &s);
+                        if let Some(st) = stats {
+                            lines.push(json!({"id": s.id, "tracker": st}));
+                        }
+                        lines
+                    }
+                    Err(e) => vec![json!({"id": id, "error": e})],
+                }
+            }
         };
         for v in lines {
             if writeln!(out, "{v}").is_err() {
@@ -571,6 +640,7 @@ mod tests {
                 platform: "magura".into(),
                 at: east(-platform_m),
             }],
+            tracker: None,
         }
     }
 

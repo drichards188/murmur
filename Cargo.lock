@@ -1467,6 +1467,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "murmur-keepout-probe"
+version = "0.1.0"
+dependencies = [
+ "murmur-decide",
+ "serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
 name = "murmur-linkemu"
 version = "0.1.0"
 dependencies = [
