@@ -1,6 +1,6 @@
-# Rules 11 (murmur-q05, murmur-cq3): a platform that never answers the restore of its own
+# Rules 12 (murmur-q05, murmur-cq3): a platform that never answers the restore of its own
 # lost-link values (lost, spent, or another vehicle under the uid) held its missions and stayed
-# owed for good: until rules 11 nothing could close the debt but a confirmed restore. As 69:
+# owed for good: until rules 12 nothing could close the debt but a confirmed restore. As 69:
 # the engagement is aborted and the USV never confirms its values back; op-1's orbit waits in
 # the queue for the restore. op-1 writes the values off, under their own session, saying why
 # (`restore.closed`, written off): nothing is owed back from then on, so the orbit goes at

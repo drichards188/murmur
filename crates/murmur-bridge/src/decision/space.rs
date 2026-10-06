@@ -15,9 +15,21 @@
 //! time late (the clock jumped, or the bridge stalled through the pass).
 //!
 //! **Cover** ([`SpaceRun::cover`]): `watching` at dispatch, then `outage` and `restored` at
-//! each outage the answer predicted (SATCOM, at the area's centroid), `fewest_in_view` at
-//! the GNSS sample with the fewest satellites, and `ended` at the window end (then
-//! `finish(Done)`). Outages are predictions from the logged answer, not measurements.
+//! each outage the answer predicted (SATCOM; rules 11: anywhere over the area's sample
+//! points, merged; before, at the centroid), `fewest_in_view` at the GNSS sample with the
+//! fewest satellites (rules 11: at the worst sample point), and `ended` at the window end
+//! (then `finish(Done)`). Outages are predictions from the logged answer, not measurements.
+//!
+//! **After dispatch** (rules 11, `SPACE_FOLLOWUPS_SINCE`): an operator may cancel either
+//! (`POST /api/intents/{id}/cancel`): the engine reports what the cancel means under the
+//! order's resource (`cancelled`: a tasking request withdrawn before its pass, a pass under
+//! way that cannot be recalled and whose product is no longer awaited, a watch ended) and
+//! the run stops ([`SpaceRun::cancel`]). When the space segment is reloaded (the element
+//! sets changed on disk: `crate::space`), every running collect and cover is re-checked
+//! against the new answer outside the decision lock (`Decision::recheck_space_runs`,
+//! `Engine::recheck_space`): the engine reports `rechecked` (a cover's watch takes the new
+//! answer's outages, [`SpaceRun::replan`]) or `missed` with why and fails the intent
+//! ([`SpaceRun::lost`]).
 //!
 //! **Time.** Order times are scenario time. The bridge's scenario clock is a
 //! [`ScenarioMap`] from the engine clock (`MURMUR_AT` at bridge start, `MURMUR_RATE`
@@ -25,8 +37,10 @@
 //! the engine's deadlines (the collect's tasking-lead approval deadline) follow the same map.
 
 use murmur_decide::space::{
-    CoverService, GnssSummary, LinkSummary, SpaceResult, fmt_time, from_utc,
+    CoverGnssSummary, CoverLinksSummary, CoverService, GnssSummary, LinkSummary, SpaceResult,
+    fmt_time, from_utc,
 };
+use murmur_space::access::Interval;
 use murmur_decide::{
     ChosenCollect, CollectCapability, CollectOrder, CoverOrder, Intent, IntentId, LonLat, Proposal,
     Rationale, ScenarioMap, SpaceAnswer, SpaceArea, Task, TaskOutcome, Time, Window,
@@ -251,6 +265,14 @@ struct Logged {
     detail: String,
 }
 
+/// How a run ended other than by its own events: cancelled by an operator, or found no
+/// longer feasible by a re-check (the engine finished the intent itself).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ended {
+    Cancelled,
+    Lost,
+}
+
 /// A dispatched collect or cover, followed by the decision loop.
 #[derive(Debug, Clone)]
 pub struct SpaceRun {
@@ -258,6 +280,11 @@ pub struct SpaceRun {
     kind: RunKind,
     events: Vec<Logged>,
     outcome: Option<TaskOutcome>,
+    ended: Option<Ended>,
+    /// When (wall clock) a re-check found it no longer feasible, for the alert.
+    lost_wall: Option<f64>,
+    /// A re-check whose later answer could not be computed: when (wall clock) and why.
+    unknown: Option<(f64, String)>,
 }
 
 impl SpaceRun {
@@ -270,17 +297,15 @@ impl SpaceRun {
             }),
             events: Vec::new(),
             outcome: None,
+            ended: None,
+            lost_wall: None,
+            unknown: None,
         }
     }
 
     /// A cover watch, with the outages the intent's answer predicted.
     pub fn cover(order: CoverOrder, answer: Option<&SpaceAnswer>) -> SpaceRun {
-        let w = order.window;
-        let (outages, fewest, summary) = match answer.map(|a| &a.result) {
-            Some(SpaceResult::Links(l)) => (outages(l, &w), None, links_summary(l)),
-            Some(SpaceResult::Gnss(g)) => (Vec::new(), fewest(g), gnss_summary(g)),
-            _ => (Vec::new(), None, "no coverage answer recorded".into()),
-        };
+        let (outages, fewest, summary) = predicted(&order.window, answer);
         SpaceRun {
             intent: order.intent,
             kind: RunKind::Cover(CoverRun {
@@ -292,7 +317,65 @@ impl SpaceRun {
             }),
             events: Vec::new(),
             outcome: None,
+            ended: None,
+            lost_wall: None,
+            unknown: None,
         }
+    }
+
+    /// Rules 11: an operator cancelled the intent after dispatch; the engine reported what
+    /// that means (`detail`, its `op.state cancelled` at engine time `now`) and aborted
+    /// it. The run shows the report and reports nothing more.
+    pub fn cancel(&mut self, now: Time, scen: Time, detail: String) {
+        if self.finished() {
+            return;
+        }
+        self.ended = Some(Ended::Cancelled);
+        self.note(now, scen, murmur_decide::space::CANCELLED_OP, detail);
+    }
+
+    /// Rules 11: a re-check found the task can no longer be met; the engine reported
+    /// `missed` (`detail`) and failed the intent. The run shows the report and reports
+    /// nothing more.
+    pub fn lost(&mut self, now: Time, scen: Time, detail: String) {
+        if self.finished() {
+            return;
+        }
+        self.ended = Some(Ended::Lost);
+        self.lost_wall = Some(crate::clock::wall());
+        self.note(now, scen, murmur_decide::space::MISSED_OP, detail);
+    }
+
+    /// Rules 11: a re-check found the task still holds on a later answer (the engine
+    /// reported `rechecked`, `detail`): a cover's watch takes the new answer's predicted
+    /// outages (those already reached at scenario time `scen` are not reported again); a
+    /// collect keeps its approved pass.
+    pub fn replan(&mut self, answer: Option<&SpaceAnswer>, now: Time, scen: Time, detail: String) {
+        if self.finished() {
+            return;
+        }
+        self.note(now, scen, murmur_decide::space::RECHECKED_OP, detail);
+        let RunKind::Cover(c) = &mut self.kind else {
+            return;
+        };
+        let (mut outages, fewest, summary) = predicted(&c.order.window, answer);
+        for g in &mut outages {
+            g.opened = scen >= g.start;
+            g.closed = scen >= g.end;
+        }
+        c.outages = outages;
+        c.fewest = fewest.filter(|(t, _)| scen < *t);
+        c.summary = summary;
+    }
+
+    /// An op state the engine reported on this run, for the console.
+    fn note(&mut self, t: Time, scenario_t: Time, state: &'static str, detail: String) {
+        self.events.push(Logged {
+            t,
+            scenario_t,
+            state,
+            detail,
+        });
     }
 
     pub fn resource(&self) -> &murmur_decide::Uid {
@@ -302,8 +385,70 @@ impl SpaceRun {
         }
     }
 
+    /// A collect's pass time (scenario time); none for a cover.
+    pub fn collect_time(&self) -> Option<Time> {
+        match &self.kind {
+            RunKind::Collect(c) => Some(c.order.collect_time),
+            RunKind::Cover(_) => None,
+        }
+    }
+
+    /// Rules 11: a re-check whose later answer could not be computed: the run goes on, the
+    /// operator hears of it ([`SpaceRun::alert`]).
+    pub fn unknown(&mut self, now_wall: f64, reason: String) {
+        self.unknown = Some((now_wall, reason));
+    }
+
+    /// Rules 11: what this run asks of the operator, if anything: no longer feasible by a
+    /// re-check (the missed report, with a collect's fresh options), or a re-check nothing
+    /// could be made of.
+    pub fn alert(&self, now_wall: f64) -> Option<super::alerts::Alert> {
+        let intent_id = Some(self.intent.0);
+        let callsign = Some(self.resource().as_str().to_string());
+        if self.ended == Some(Ended::Lost) {
+            let last = self.events.last()?;
+            return Some(super::alerts::Alert {
+                id: format!("space:{}", self.intent.0),
+                kind: "space_missed",
+                severity: super::alerts::Severity::Medium,
+                uid: 0,
+                callsign,
+                detail: format!("{} i{}: {}", self.kind_name(), self.intent.0, last.detail),
+                since_t: self.lost_wall.unwrap_or(now_wall),
+                op_id: None,
+                intent_id,
+            });
+        }
+        let (since, reason) = self.unknown.as_ref()?;
+        if self.finished() {
+            return None;
+        }
+        Some(super::alerts::Alert {
+            id: format!("space:{}", self.intent.0),
+            kind: "space_recheck_unknown",
+            severity: super::alerts::Severity::Medium,
+            uid: 0,
+            callsign,
+            detail: format!(
+                "{} i{} runs on, but its re-check on the reloaded element sets gave no answer: {reason}",
+                self.kind_name(),
+                self.intent.0
+            ),
+            since_t: *since,
+            op_id: None,
+            intent_id,
+        })
+    }
+
+    fn kind_name(&self) -> &'static str {
+        match &self.kind {
+            RunKind::Collect(_) => "collect",
+            RunKind::Cover(_) => "cover",
+        }
+    }
+
     pub fn finished(&self) -> bool {
-        self.outcome.is_some()
+        self.outcome.is_some() || self.ended.is_some()
     }
 
     /// The outcome to `finish` the intent with, once the run has ended.
@@ -314,7 +459,7 @@ impl SpaceRun {
     /// Advance to engine time `now` (scenario time through `map`): what to report, in order.
     /// The first step (at dispatch) reports `tasked` or `watching`.
     pub fn step(&mut self, now: Time, map: &ScenarioMap) -> Vec<Report> {
-        if self.outcome.is_some() {
+        if self.finished() {
             return Vec::new();
         }
         let first = self.events.is_empty();
@@ -485,10 +630,12 @@ impl SpaceRun {
             .iter()
             .map(|e| json!({"t": e.t, "scenario_t": e.scenario_t, "state": e.state, "detail": e.detail}))
             .collect();
-        let (outcome, outcome_detail) = match &self.outcome {
-            None => (Value::Null, Value::Null),
-            Some(TaskOutcome::Done) => (json!("done"), Value::Null),
-            Some(TaskOutcome::Failed { detail }) => (json!("failed"), json!(detail)),
+        let (outcome, outcome_detail) = match (&self.outcome, self.ended) {
+            (Some(TaskOutcome::Done), _) => (json!("done"), Value::Null),
+            (Some(TaskOutcome::Failed { detail }), _) => (json!("failed"), json!(detail)),
+            (None, Some(Ended::Cancelled)) => (json!("cancelled"), Value::Null),
+            (None, Some(Ended::Lost)) => (json!("failed"), json!("no longer feasible")),
+            (None, None) => (Value::Null, Value::Null),
         };
         let mut v = json!({
             "intent_id": self.intent.0,
@@ -545,9 +692,25 @@ fn service_label(s: &CoverService) -> String {
     }
 }
 
+/// What a cover's answer predicts for its window: the outages (SATCOM), the sample with
+/// the fewest satellites (GNSS), and a summary.
+fn predicted(w: &Window, answer: Option<&SpaceAnswer>) -> (Vec<Outage>, Option<(Time, String)>, String) {
+    match answer.map(|a| &a.result) {
+        Some(SpaceResult::Links(l)) => (outages(&l.outages, w), None, links_summary(l)),
+        Some(SpaceResult::Gnss(g)) => (Vec::new(), fewest(g), gnss_summary(g)),
+        Some(SpaceResult::CoverLinks(c)) => (outages(&c.outages(), w), None, cover_links_summary(c)),
+        Some(SpaceResult::CoverGnss(c)) => (
+            Vec::new(),
+            c.worst().and_then(|p| fewest(&p.gnss)),
+            cover_gnss_summary(c),
+        ),
+        _ => (Vec::new(), None, "no coverage answer recorded".into()),
+    }
+}
+
 /// Predicted outages inside the window, scenario time.
-fn outages(l: &LinkSummary, w: &Window) -> Vec<Outage> {
-    l.outages
+fn outages(predicted: &[Interval], w: &Window) -> Vec<Outage> {
+    predicted
         .iter()
         .map(|o| (from_utc(o.start).max(w.from), from_utc(o.end).min(w.to)))
         .filter(|(s, e)| e > s)
@@ -569,6 +732,53 @@ fn links_summary(l: &LinkSummary) -> String {
         l.longest_outage_s,
         l.visible_min,
         l.visible_max
+    )
+}
+
+/// Rules 11: the area's sample points, the least covered one deciding.
+fn cover_links_summary(c: &CoverLinksSummary) -> String {
+    let Some(w) = c.worst() else {
+        return "no sample point in the answer".into();
+    };
+    let outages = c.outages();
+    let longest = c
+        .points
+        .iter()
+        .map(|p| p.links.longest_outage_s)
+        .fold(0.0, f64::max);
+    let vmin = c.points.iter().map(|p| p.links.visible_min).min().unwrap_or(0);
+    let vmax = c.points.iter().map(|p| p.links.visible_max).max().unwrap_or(0);
+    format!(
+        "{:.1}% covered at the least covered of {} sample points over the area (mean {:.1}%), {} outage{} predicted anywhere over it (longest {:.0} s), {}-{} in view",
+        w.links.coverage_fraction * 100.0,
+        c.points.len(),
+        c.mean_coverage() * 100.0,
+        outages.len(),
+        if outages.len() == 1 { "" } else { "s" },
+        longest,
+        vmin,
+        vmax
+    )
+}
+
+/// Rules 11: the area's sample points, the one with the fewest in view deciding.
+fn cover_gnss_summary(c: &CoverGnssSummary) -> String {
+    let Some(w) = c.worst() else {
+        return "no sample point in the answer".into();
+    };
+    let pdop = c
+        .points
+        .iter()
+        .filter_map(|p| p.gnss.pdop_max)
+        .fold(None, |m: Option<f64>, x| Some(m.map_or(x, |m| m.max(x))))
+        .map_or("PDOP unknown".into(), |p| format!("PDOP max {p:.2}"));
+    let vmax = c.points.iter().map(|p| p.gnss.visible_max).max().unwrap_or(0);
+    format!(
+        "{}-{} satellites in view over {} samples at the worst of {} sample points over the area, {pdop}",
+        w.gnss.visible_min,
+        vmax,
+        w.gnss.samples,
+        c.points.len()
     )
 }
 
@@ -619,9 +829,37 @@ pub fn compact(i: &Intent, tolerance_s: u32) -> Option<Value> {
         }
         (SpaceResult::Links(l), _) => v["links"] = json!(l),
         (SpaceResult::Gnss(g), _) => v["gnss"] = json!(g),
+        (SpaceResult::CoverLinks(c), _) => cover_links_json(&mut v, c),
+        (SpaceResult::CoverGnss(c), _) => cover_gnss_json(&mut v, c),
         _ => {}
     }
     Some(v)
+}
+
+/// Rules 11: an area cover's compact form: `links` is the least covered sample point's
+/// summary (what the check decided on), `cover` the area figures.
+pub fn cover_links_json(v: &mut Value, c: &CoverLinksSummary) {
+    if let Some(w) = c.worst() {
+        v["links"] = json!(w.links);
+        v["cover"] = json!({
+            "points": c.points.len(),
+            "worst": [w.point.lon_deg, w.point.lat_deg],
+            "coverage_fraction_min": w.links.coverage_fraction,
+            "coverage_fraction_mean": c.mean_coverage(),
+            "outages": c.outages(),
+        });
+    }
+}
+
+/// Rules 11: an area GNSS cover's compact form: `gnss` is the worst sample point's summary.
+pub fn cover_gnss_json(v: &mut Value, c: &CoverGnssSummary) {
+    if let Some(w) = c.worst() {
+        v["gnss"] = json!(w.gnss);
+        v["cover"] = json!({
+            "points": c.points.len(),
+            "worst": [w.point.lon_deg, w.point.lat_deg],
+        });
+    }
 }
 
 #[cfg(test)]

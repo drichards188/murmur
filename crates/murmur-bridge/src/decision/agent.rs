@@ -67,14 +67,10 @@ impl Decision {
             })?;
         let proposal = self.agent_proposal(&req)?;
         self.prefetch(&proposal.task, &proposal.uids).await;
-        let prepared = self.prepare_space(&proposal.task).await;
         let out = {
-            let mut guard = self.lock();
+            let mut guard = self.lock_with_space(&proposal.task).await;
             let core = &mut *guard;
             let world = self.snapshot();
-            if let Some(p) = prepared {
-                core.engine.use_prepared_space(p);
-            }
             let id = core
                 .engine
                 .agent_port(agent.clone())
@@ -97,12 +93,8 @@ impl Decision {
     ) -> Result<Value, DecisionError> {
         let proposal = self.agent_proposal(&req)?;
         self.prefetch(&proposal.task, &proposal.uids).await;
-        let prepared = self.prepare_space(&proposal.task).await;
         let preview = {
-            let mut guard = self.lock();
-            if let Some(p) = prepared {
-                guard.engine.use_prepared_space(p);
-            }
+            let mut guard = self.lock_with_space(&proposal.task).await;
             guard
                 .engine
                 .agent_port(agent.clone())
@@ -309,6 +301,8 @@ fn compact_answer(a: &SpaceAnswer) -> Value {
         }
         SpaceResult::Links(l) => v["links"] = json!(l),
         SpaceResult::Gnss(g) => v["gnss"] = json!(g),
+        SpaceResult::CoverLinks(c) => super::space::cover_links_json(&mut v, c),
+        SpaceResult::CoverGnss(c) => super::space::cover_gnss_json(&mut v, c),
     }
     v
 }

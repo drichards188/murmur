@@ -94,11 +94,11 @@ pub struct Scenario {
     /// declared, whatever happened).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expect_no_ident: Vec<String>,
-    /// Rules 11: debts closed without a restore that replay must list, in order (substrings
+    /// Rules 12: debts closed without a restore that replay must list, in order (substrings
     /// of its `restores_closed`: `expended by its own effect`, `written off by op-1`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expect_closed: Vec<String>,
-    /// Rules 11: nothing may still be owed back when the log ends (replay's `unrestored`).
+    /// Rules 12: nothing may still be owed back when the log ends (replay's `unrestored`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub expect_nothing_owed: bool,
     /// After the run, attack the log and require replay to catch it:
@@ -261,7 +261,7 @@ pub struct TrackDef {
     /// at the start, and the fastest it went since, m/s ([`TrackFacts::manoeuvre`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manoeuvre_speed_mps: Option<f64>,
-    /// Rules 11: the tracker started it this long before the start, s
+    /// Rules 12: the tracker started it this long before the start, s
     /// ([`TrackFacts::first_seen_t`]); it has an average velocity (the velocity it holds)
     /// once it has been tracked [`SCENARIO_MEAN_MIN_S`] with a velocity estimate, as the
     /// bridge's tracker does. Absent: [`SCENARIO_TRACKED_S`] for a track the file lists (one
@@ -271,11 +271,11 @@ pub struct TrackDef {
     pub tracked_s: Option<f64>,
 }
 
-/// Rules 11, scenarios: how long a track is tracked with a velocity estimate before it has an
+/// Rules 12, scenarios: how long a track is tracked with a velocity estimate before it has an
 /// average velocity (the bridge tracker's `MEAN_MIN_S`).
 pub const SCENARIO_MEAN_MIN_S: f64 = 45.0;
 
-/// Rules 11, scenarios: how long a track the file lists was followed before the start, unless
+/// Rules 12, scenarios: how long a track the file lists was followed before the start, unless
 /// it says (`tracked_s`): the scenarios' world begins with established tracks.
 pub const SCENARIO_TRACKED_S: f64 = 600.0;
 
@@ -421,7 +421,7 @@ pub enum Action {
         /// Its estimated altitude, m (rules 6 read keep-outs in 3D where it is known).
         #[serde(default)]
         alt_m: Option<f64>,
-        /// Rules 11: a track this step makes is one the tracker started this long ago, s
+        /// Rules 12: a track this step makes is one the tracker started this long ago, s
         /// ([`TrackDef::tracked_s`]: 0, a new track).
         #[serde(default)]
         tracked_s: Option<f64>,
@@ -502,7 +502,7 @@ pub enum Action {
     /// Rules 9: an agent "tries" to declare a track hostile: there is no such method on its
     /// port, so it is recorded and nothing may change.
     AgentDeclare { agent: String, track: String },
-    /// Rules 11: an operator writes off the lost-link values owed back to one of our vehicles
+    /// Rules 12: an operator writes off the lost-link values owed back to one of our vehicles
     /// (it is lost, spent, or not the vehicle they were preloaded on), saying why.
     WriteOff { by: String, uid: String, note: String },
     /// Check the last nomination now.
@@ -1083,7 +1083,7 @@ pub fn run(
         if opts.seed.is_some() {
             sim.facts.pos_sigma_m = sim.facts.pos_sigma_m.max(opts.track_noise_m);
         }
-        // rules 11: the bridge reports when it started a track only from rules 11 on
+        // rules 12: the bridge reports when it started a track only from rules 12 on
         if !engine.policy().rules.followups() {
             sim.facts.first_seen_t = None;
             sim.facts.mean_velocity_mps = None;
@@ -1169,7 +1169,7 @@ pub fn run(
                 };
                 tr.facts.position = Fact::new(noisy, now);
                 tr.facts.last_seen_t = now;
-                // rules 11: its average velocity once tracked long enough with a velocity
+                // rules 12: its average velocity once tracked long enough with a velocity
                 if let (Some(first), Some(v)) = (tr.facts.first_seen_t, tr.facts.velocity_mps)
                     && tr.facts.mean_velocity_mps.is_none()
                     && now.ms_since(first) as f64 >= SCENARIO_MEAN_MIN_S * 1000.0
@@ -1500,7 +1500,7 @@ pub fn run(
     if !report.ok() {
         failures.push(format!("replay: {}", replay_mismatches.join("; ")));
     }
-    // rules 11: debts closed without a restore, and nothing left owed
+    // rules 12: debts closed without a restore, and nothing left owed
     let mut closed = report.restores_closed.iter();
     for want in &sc.expect_closed {
         if !closed.any(|c| c.contains(want.as_str())) {
@@ -1788,7 +1788,7 @@ fn track_sim(t: &TrackDef) -> TrackSim {
                 change_mps: v,
                 speed_mps: v,
             }),
-            // rules 11: tracked long enough, a steady track's average velocity is its velocity
+            // rules 12: tracked long enough, a steady track's average velocity is its velocity
             mean_velocity_mps: Some(t.tracked_s.unwrap_or(SCENARIO_TRACKED_S))
                 .filter(|s| *s >= SCENARIO_MEAN_MIN_S && !t.no_velocity_estimate)
                 .map(|_| t.velocity),
@@ -2377,7 +2377,7 @@ fn act(
                     tracked_s: None,
                 })
             });
-            // rules 11: a track a step makes appears now (or `tracked_s` ago): young, its
+            // rules 12: a track a step makes appears now (or `tracked_s` ago): young, its
             // average velocity comes once tracked long enough
             if new && engine.policy().rules.followups() {
                 let s = tracked_s.unwrap_or(0.0);
@@ -3182,7 +3182,7 @@ fn preloads(
         }
         // its own values back once the engagement has ended (when it can hear us, and from
         // `restore_after_s` on)
-        // (rules 11: nothing if no longer owed: the platform was spent by its effect, or its
+        // (rules 12: nothing if no longer owed: the platform was spent by its effect, or its
         // values were written off)
         if ps.set.is_some()
             && !ps.restored
@@ -3955,7 +3955,7 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             }
         }
         "drop_expended_fact" => {
-            // rules 11: a platform's closure as expended kept, the catalog fact that justifies
+            // rules 12: a platform's closure as expended kept, the catalog fact that justifies
             // it taken out of every picture (as if the platform could be restored)
             if !events.iter().any(|e| matches!(&e.body, EventBody::RestoreClosed { closed_by: crate::audit::RestoreClosure::Expended { .. }, .. })) {
                 return Err("no restore closed as expended".into());
@@ -3969,7 +3969,7 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             events = out;
         }
         "write_off_by_another" => {
-            // rules 11: a write-off credited to another operator than the session's
+            // rules 12: a write-off credited to another operator than the session's
             let mut done = false;
             for e in &mut events {
                 if let EventBody::RestoreClosed {
@@ -3986,7 +3986,7 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             }
         }
         "drop_standing_clause" => {
-            // rules 11: a refusal's reason cut of the orders it leaves standing
+            // rules 12: a refusal's reason cut of the orders it leaves standing
             let mut done = false;
             for e in &mut events {
                 if let EventBody::IntentState { reason, .. } = &mut e.body
@@ -4001,7 +4001,7 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             }
         }
         "drop_first_seen" => {
-            // rules 11: every track made to look as if the tracker had not said when it
+            // rules 12: every track made to look as if the tracker had not said when it
             // started it (a young track's keep-out region would not be there)
             let mut done = false;
             for e in &mut events {

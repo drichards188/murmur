@@ -561,7 +561,7 @@ fn a_human_intent_after_its_proposers_logout_is_caught() {
 fn scripted_operators_are_authenticated_but_never_people() {
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();
-    // rules 11: the run fixes its scripted operators at the start (op-2's credential is a
+    // rules 12: the run fixes its scripted operators at the start (op-2's credential is a
     // harness's)
     let roster = three()
         .with_auth(AuthMode::Credentials)
@@ -611,7 +611,7 @@ fn scripted_operators_are_authenticated_but_never_people() {
     ));
 }
 
-/// Rules 11 (murmur-jfi): which operators are scripted is fixed at the run's start, on the
+/// Rules 12 (murmur-jfi): which operators are scripted is fixed at the run's start, on the
 /// roster in `run.started`; a session opens by the method the roster gives its operator, and
 /// replay checks every session against it. Before, the bridge read the flag from the
 /// credential file at each login, so a credential re-marked mid-run logged its next login as a

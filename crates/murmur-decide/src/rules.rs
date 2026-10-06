@@ -215,23 +215,37 @@ pub enum UnknownEndurance {
 /// every human act to an authenticated person ([`OPERATOR_AUTH_SINCE`]). Version 9
 /// ([`RULE_ID_SINCE`]): rule-based identification with human review ([`crate::ident`]).
 /// Version 10 ([`PASSKEY_SINCE`]): passkeys (WebAuthn) for logins and step-ups
-/// ([`crate::passkey`]). Version 11 ([`REVIEW_FOLLOWUPS_SINCE`]): the follow-ups of the
+/// ([`crate::passkey`]). Version 11 ([`SPACE_FOLLOWUPS_SINCE`]): satellite tasks cancelled
+/// after dispatch, re-checked against a later space answer, and covers evaluated over the
+/// area ([`crate::space`]). Version 12 ([`REVIEW_FOLLOWUPS_SINCE`]): the follow-ups of the
 /// reviews of rules 6 to 10.
 pub const RULES_VERSION: u32 = REVIEW_FOLLOWUPS_SINCE;
 
 /// The rules version from which the follow-ups of the reviews of rules 6 to 10 decide: an
-/// expended platform's lost-link values are closed with the reason, and an operator may write
-/// off what is owed back (`restore.closed`, murmur-q05); a young track counts as possibly
-/// manoeuvring in a keep-out until the tracker has the facts that say otherwise (its
-/// `first_seen_t`, murmur-9m0); the scripted operators are fixed at run start (the roster's
-/// `scripted`) and every session's method is checked against them (murmur-jfi); the bridge
-/// records in `run.started` what it carried over from earlier runs' logs, which logs, their
-/// heads and what each still owed, in one line (`carried_from`, murmur-cq3); values carried
-/// over hold a mission for the vehicle they were preloaded on (murmur-qjf); and a mission
-/// refused for its platform's own values names the older queued orders still standing on its
-/// vehicles (murmur-54l). Every gate of that change reads this constant, never a literal:
-/// another change taking 11 first renumbers it in this one line.
-pub const REVIEW_FOLLOWUPS_SINCE: u32 = 11;
+/// expended platform's lost-link values are closed with the reason and the platform is spent
+/// (it takes no order and no nomination), and an operator may write off what is owed back
+/// (`restore.closed`, murmur-q05); a young track counts as possibly manoeuvring in a keep-out
+/// until the tracker has the facts that say otherwise (its `first_seen_t`, murmur-9m0); the
+/// scripted operators are fixed at run start (the roster's `scripted`) and every session's
+/// method is checked against them (murmur-jfi); the bridge records in `run.started` what it
+/// carried over from earlier runs' logs, which logs, their heads and what each still owed,
+/// in one line (`carried_from`, murmur-cq3); values carried over hold a mission for the
+/// vehicle they were preloaded on (murmur-qjf); and a mission refused for its platform's own
+/// values names the older queued orders still standing on its vehicles (murmur-54l). Every
+/// gate of that change reads this constant, never a literal: another change taking 12 first
+/// renumbers it in this one line.
+pub const REVIEW_FOLLOWUPS_SINCE: u32 = 12;
+
+/// The rules version from which a dispatched collect or cover is followed up (murmur-0nv.1.7):
+/// an operator may cancel it after dispatch (`operator.action intent.cancel`, the engine's own
+/// `op.state cancelled` saying what the cancel means for the pass, transition `cancel` to
+/// `aborted`); a later space answer (the element sets reloaded) re-checks it after dispatch
+/// (`check.result` phase `dispatched`, then the engine's `op.state rechecked`, or `missed`
+/// and the intent failed); and a cover is evaluated at sample points over its area (the
+/// centroid and the boundary: `SpaceQuery::CoverLinks`, `CoverGnss`), the service holding
+/// only where it holds at every point. Every gate of that change reads this constant, never
+/// a literal: another change taking 11 first renumbers it in this one line.
+pub const SPACE_FOLLOWUPS_SINCE: u32 = 11;
 
 /// The rules version from which a login or a step-up may be a passkey's (murmur-437): the
 /// run logs its relying party and its operators' passkeys as public keys (the roster's
@@ -356,9 +370,17 @@ impl RulesConfig {
         }
     }
 
-    /// `[rules.space]`, or its defaults.
+    /// `[rules.space]`, or its defaults, under this configuration's rules version.
     pub fn space_rules(&self) -> SpaceRules {
-        self.space.clone().unwrap_or_default()
+        let mut s = self.space.clone().unwrap_or_default();
+        s.rules_version = self.rules_version;
+        s
+    }
+
+    /// Rules 11: space tasks are followed up after dispatch and covers evaluated over the
+    /// area ([`SPACE_FOLLOWUPS_SINCE`]).
+    pub fn space_followups(&self) -> bool {
+        self.rules_version >= SPACE_FOLLOWUPS_SINCE
     }
 
     /// Rules 9: identification is the engine's ledger (and may be made by rule).
@@ -371,7 +393,7 @@ impl RulesConfig {
         self.rules_version >= PASSKEY_SINCE
     }
 
-    /// Rules 11 ([`REVIEW_FOLLOWUPS_SINCE`]): the follow-ups of the reviews of rules 6 to 10.
+    /// Rules 12 ([`REVIEW_FOLLOWUPS_SINCE`]): the follow-ups of the reviews of rules 6 to 10.
     pub fn followups(&self) -> bool {
         self.rules_version >= REVIEW_FOLLOWUPS_SINCE
     }
@@ -558,7 +580,7 @@ pub fn readiness(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) ->
     let kind = spec.kind();
     per_vehicle(spec, world, r, |uid, v| {
         let res = |o, d: String| CheckResult::new(r, Some(uid), o, d);
-        // rules 11: a platform spent by its own effect takes no order, a safety command
+        // rules 12: a platform spent by its own effect takes no order, a safety command
         // included, and no nomination (it carries the engagement's lost-link action, and a new
         // preload would read that action as its own values)
         if cfg.followups()
@@ -987,6 +1009,11 @@ fn checked_answer<'a>(
     if !same {
         return Err("cannot evaluate: the space answer is not for this intent's query".into());
     }
+    // rules 11: an area answer's points are the query's (a result point dropped, moved or
+    // copied over another is not the answer to the question)
+    if let Err(why) = crate::space::points_match(&answer.query, &answer.result) {
+        return Err(format!("cannot evaluate: {why}"));
+    }
     Ok(answer)
 }
 
@@ -1019,6 +1046,19 @@ pub fn space_query(
         SpaceResult::Gnss(g) => format!(
             "gnss {}: {} samples from {} satellites",
             g.class_id, g.samples, g.satellites
+        ),
+        SpaceResult::CoverLinks(c) => format!(
+            "satcom {}: {} sample points over the area, {} satellites",
+            c.class_id,
+            c.points.len(),
+            c.points.first().map_or(0, |p| p.links.satellites)
+        ),
+        SpaceResult::CoverGnss(c) => format!(
+            "gnss {}: {} sample points over the area, {} samples each from {} satellites",
+            c.class_id,
+            c.points.len(),
+            c.points.first().map_or(0, |p| p.gnss.samples),
+            c.points.first().map_or(0, |p| p.gnss.satellites)
         ),
     };
     let tm = &answer.time_map;
@@ -1164,6 +1204,42 @@ fn collect_feasible(
     }
 }
 
+/// Rules 11, after a re-check that lost the chosen pass: the first ranked options of the
+/// later answer still taskable at `now` (collect time at or after now plus the class's lead
+/// time, which the answer carries as each option's `earliest_collect` less its request
+/// time), for a human to choose from (the engine never re-chooses on its own).
+pub(crate) fn fresh_options(result: &murmur_space::tasking::TaskingResult, now: crate::time::Time) -> String {
+    const SHOWN: usize = 3;
+    let asked = from_utc(result.request.now);
+    let still: Vec<&murmur_space::tasking::TaskOption> = result
+        .options
+        .iter()
+        .filter(|o| {
+            let lead = from_utc(o.earliest_collect).ms_since(asked).max(0);
+            from_utc(o.collect_time) >= now.plus_ms(lead)
+        })
+        .collect();
+    if still.is_empty() {
+        return format!("no feasible option left in the window from {}", fmt_time(now));
+    }
+    let mut s = format!(
+        "{} feasible options from {}; a new collect may choose one:",
+        still.len(),
+        fmt_time(now)
+    );
+    for o in still.iter().take(SHOWN) {
+        s.push_str(&format!(
+            " #{} {} {} collect {} product {};",
+            o.rank,
+            o.satellite,
+            o.norad_id,
+            fmt_utc(o.collect_time),
+            o.product_time.map_or("unknown".to_string(), fmt_utc),
+        ));
+    }
+    s
+}
+
 /// "no option chosen: ..." with the first ranked options and the exclusion summary.
 fn options_summary(result: &murmur_space::tasking::TaskingResult) -> String {
     const SHOWN: usize = 5;
@@ -1201,7 +1277,9 @@ fn options_summary(result: &murmur_space::tasking::TaskingResult) -> String {
 
 /// A cover's service holds over the window: SATCOM coverage fraction at least `min_level`
 /// (default `cover_min_fraction`), or GNSS satellites in view at every sample at least
-/// `min_level` (default `gnss_min_visible`).
+/// `min_level` (default `gnss_min_visible`). Rules 11: over the area, which means at every
+/// one of its sample points ([`crate::space::cover_points`]): the least covered point
+/// decides, and the detail names it; before, at the centroid alone.
 pub fn coverage(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Vec<CheckResult> {
     let r = RuleId::Coverage;
     let Task::Cover {
@@ -1257,6 +1335,85 @@ pub fn coverage(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
                 d.push_str(&format!("; fewest at {}", fmt_utc(t)));
             }
             let ok = g.samples > 0 && g.visible_min as f64 >= need;
+            res(if ok { Outcome::Pass } else { Outcome::Fail }, d)
+        }
+        (CoverService::Satcom { .. }, SpaceResult::CoverLinks(c)) => {
+            let need = min_level.unwrap_or(sc.cover_min_fraction);
+            let Some(worst) = c.worst() else {
+                return res(
+                    Outcome::Fail,
+                    "cannot evaluate: the answer has no sample point".into(),
+                );
+            };
+            let w = &worst.links;
+            let lat = w
+                .latency_ms_median
+                .map_or("latency unknown".to_string(), |m| {
+                    format!("latency median {m:.0} ms")
+                });
+            let longest = c
+                .points
+                .iter()
+                .map(|p| p.links.longest_outage_s)
+                .fold(0.0, f64::max);
+            let vmin = c.points.iter().map(|p| p.links.visible_min).min().unwrap_or(0);
+            let vmax = c.points.iter().map(|p| p.links.visible_max).max().unwrap_or(0);
+            let mut d = format!(
+                "{}: covered {:.1}% of the window at the least covered of {} sample points over the area ({:.4}, {:.4}) (needs {:.1}% at every point; mean {:.1}%), longest outage {:.0} s, {}-{} in view, {lat}",
+                c.class_id,
+                w.coverage_fraction * 100.0,
+                c.points.len(),
+                worst.point.lat_deg,
+                worst.point.lon_deg,
+                need * 100.0,
+                c.mean_coverage() * 100.0,
+                longest,
+                vmin,
+                vmax,
+            );
+            let outages = c.outages();
+            if let Some(o) = outages.first() {
+                d.push_str(&format!(
+                    "; first outage anywhere over the area {} to {} ({} outages merged over the area)",
+                    fmt_utc(o.start),
+                    fmt_utc(o.end),
+                    outages.len()
+                ));
+            }
+            let ok = w.coverage_fraction >= need;
+            res(if ok { Outcome::Pass } else { Outcome::Fail }, d)
+        }
+        (CoverService::Gnss { .. }, SpaceResult::CoverGnss(c)) => {
+            let need = min_level.unwrap_or(f64::from(sc.gnss_min_visible));
+            let Some(worst) = c.worst() else {
+                return res(
+                    Outcome::Fail,
+                    "cannot evaluate: the answer has no sample point".into(),
+                );
+            };
+            let g = &worst.gnss;
+            let pdop = c
+                .points
+                .iter()
+                .filter_map(|p| p.gnss.pdop_max)
+                .fold(None, |m: Option<f64>, x| Some(m.map_or(x, |m| m.max(x))))
+                .map_or("PDOP unknown".to_string(), |p| format!("PDOP max {p:.2}"));
+            let samples = c.points.iter().map(|p| p.gnss.samples).min().unwrap_or(0);
+            let vmax = c.points.iter().map(|p| p.gnss.visible_max).max().unwrap_or(0);
+            let mut d = format!(
+                "{}: {}-{} satellites in view over {} samples at the worst of {} sample points over the area ({:.4}, {:.4}) (needs {need:.0} at every sample of every point), {pdop}",
+                c.class_id,
+                g.visible_min,
+                vmax,
+                samples,
+                c.points.len(),
+                worst.point.lat_deg,
+                worst.point.lon_deg,
+            );
+            if let Some(t) = g.visible_min_at {
+                d.push_str(&format!("; fewest at {}", fmt_utc(t)));
+            }
+            let ok = samples > 0 && g.visible_min as f64 >= need;
             res(if ok { Outcome::Pass } else { Outcome::Fail }, d)
         }
         _ => res(

@@ -61,7 +61,7 @@ fn harness_with(idle: Duration, scripted: &[&str], edit: impl FnOnce(&mut Policy
     }
     let key = c.add_agent("agent-planner").expect("agent");
     c.save(&file).expect("saved");
-    // rules 11: the harness-held credentials are on the run's roster from its start
+    // rules 12: the harness-held credentials are on the run's roster from its start
     let e = super::engagement::engage_rig_full(
         None,
         PathBuf::from("memory"),
@@ -737,7 +737,7 @@ async fn a_scripted_credential_logs_in_as_scripted_and_is_no_person() {
     assert_eq!(r.scripted, ids(&["op-2"]));
 }
 
-/// Rules 11 (murmur-jfi): which credentials are harness-held is fixed when the run starts
+/// Rules 12 (murmur-jfi): which credentials are harness-held is fixed when the run starts
 /// (the roster's `scripted`, in `run.started`). Re-marking one mid-run (`murmur-auth scripted
 /// <op> off`) ends its sessions as any credential change does, and its next login is refused,
 /// saying why, until the bridge restarts: before, it logged in as a person's and replay listed

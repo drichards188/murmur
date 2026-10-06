@@ -27,7 +27,7 @@
 //!   logs), so `--prev` may be given once for each: each is matched to the events by its file
 //!   name (a single `--prev` that matches neither is taken for the intents, as before). Only
 //!   a bare file name is looked for beside the log, never a path.
-//! - Rules 11: a log whose `run.started` records what the bridge carried over at start
+//! - Rules 12: a log whose `run.started` records what the bridge carried over at start
 //!   (`carried_from`: the log `.last-run-<port>` named and any whose carry had failed) is
 //!   checked against each log it names, found the same way (`--prev` matched by file name,
 //!   else beside the log): each must replay, be the one read (its head and last seq), and have
@@ -341,7 +341,7 @@ fn main() -> ExitCode {
     if let Some(head) = &report.head_sha256 {
         println!("head {head} (compare with an external anchor to detect a rewrite or truncation)");
     }
-    // rules 11: debts closed without a restore (a platform spent by its effect, a write-off)
+    // rules 12: debts closed without a restore (a platform spent by its effect, a write-off)
     for c in &report.restores_closed {
         println!("CLOSED: {c}");
     }
@@ -400,7 +400,7 @@ struct Earlier {
     /// Rules 6: the log the carried `platform.restore` events name (the first, if they name
     /// several: a mismatch) as used: its name, path, text.
     restores: Option<(String, String, String)>,
-    /// Rules 11: the logs `run.started` says the start carried over from (`carried_from`), as
+    /// Rules 12: the logs `run.started` says the start carried over from (`carried_from`), as
     /// found: name, path, text.
     carried: Vec<(String, String, String)>,
     /// `--prev` files none is.
@@ -489,7 +489,7 @@ impl Earlier {
         }
         for c in &report.carried_restores {
             let from = &c.log;
-            // rules 11: a log the start could not read: still owed, what it owed unknown
+            // rules 12: a log the start could not read: still owed, what it owed unknown
             if let Some(why) = &c.failed {
                 println!(
                     "carried-over log {from}: its carry FAILED at the start ({why}): what it still owed is unknown, owed until a later start reads it or an operator writes it off"

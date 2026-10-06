@@ -70,17 +70,19 @@ pub struct LoggedAreas {
     pub areas: AreaSet,
 }
 
-/// When a check ran: at submission, again at approval against the then-current world, or
-/// (rules 5) when a queued intent's vehicles are reachable again, before it may go.
+/// When a check ran: at submission, again at approval against the then-current world,
+/// (rules 5) when a queued intent's vehicles are reachable again, before it may go, or
+/// (rules 11) on a dispatched collect or cover against a later space answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CheckPhase {
     Submit,
     Approve,
     Dequeue,
+    Dispatched,
 }
 
-// `run.started` (the policy, the roster, the areas and, rules 11, the carry) is the largest
+// `run.started` (the policy, the roster, the areas and, rules 12, the carry) is the largest
 // variant by far and is written once per run: boxing it would only reshape every match.
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -108,13 +110,13 @@ pub enum EventBody {
         roster: Option<Roster>,
         policy: Policy,
         areas: Option<LoggedAreas>,
-        /// Rules 11 ([`crate::rules::REVIEW_FOLLOWUPS_SINCE`]): what the bridge carried over at
+        /// Rules 12 ([`crate::rules::REVIEW_FOLLOWUPS_SINCE`]): what the bridge carried over at
         /// start from earlier runs' logs, in one line (a crash can't leave half of it): the log
         /// its `.last-run-<port>` pointer named, then any log whose carry failed before and that
         /// nobody wrote off, each with its head and last seq as read and what it still owed
         /// (the platforms' own lost-link values, and the logs it had not carried), or why it
         /// could not be read. The platforms' values seed this run's ledger. Absent when no
-        /// pointer named a log (a first start), in a scenario and before rules 11.
+        /// pointer named a log (a first start), in a scenario and before rules 12.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         carried_from: Vec<crate::replay::CarriedFrom>,
     },
@@ -616,7 +618,7 @@ pub enum EventBody {
         vehicle: Option<Box<crate::engage::VehicleIdentity>>,
     },
 
-    /// Rules 11: a debt of the ledger closed without a restore: a platform's own lost-link
+    /// Rules 12: a debt of the ledger closed without a restore: a platform's own lost-link
     /// values (`uid`, `values`: exactly what was owed) or an earlier log whose carry failed
     /// (`log`: what it owed is unknown), closed because the platform was expended by its own
     /// effect (`expended`: right after the release, its catalog's `expended_by_effect`), or
@@ -835,7 +837,7 @@ pub struct ViewShown {
     pub tracks: Vec<String>,
 }
 
-/// Rules 11: why a debt of the ledger was closed without a restore (`restore.closed`).
+/// Rules 12: why a debt of the ledger was closed without a restore (`restore.closed`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RestoreClosure {

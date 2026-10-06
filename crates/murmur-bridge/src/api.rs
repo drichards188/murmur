@@ -18,7 +18,7 @@
 //! stops an approved or dispatched engagement before its effect, any operator), `GET
 //! /api/inbox`, `GET /api/operators` (who may sign an engagement), `POST /api/engage/options`
 //! (the nomination form's dry run: which armed platforms could take it, with checks and
-//! preview; nothing is created or logged), `POST /api/restores/write_off` (rules 11: an
+//! preview; nothing is created or logged), `POST /api/restores/write_off` (rules 12: an
 //! operator writes off a vehicle's lost-link values owed back, or an earlier log whose carry
 //! failed, saying why). Who acts is `crate::auth`'s answer: the operator
 //! signed in on this browser (the session cookie; `POST /api/auth/login`), or in a dev run
@@ -84,7 +84,7 @@ pub fn router(app: App) -> Router {
         .route("/api/space/runs", get(space_runs))
         .merge(crate::space::router(app.world.clone(), {
             let d = app.decision.clone();
-            Some(Box::new(move |space, map| d.install_space(space, map)))
+            Some(Arc::new(move |space, map| d.install_space(space, map)))
         }))
         .merge(crate::cot::router())
         .merge(crate::tracks::router(
@@ -395,7 +395,7 @@ async fn inbox(State(app): State<App>) -> Response {
     Json(app.decision.inbox_json()).into_response()
 }
 
-/// `POST /api/restores/write_off` (rules 11): an operator writes off what is owed back: a
+/// `POST /api/restores/write_off` (rules 12): an operator writes off what is owed back: a
 /// vehicle's own lost-link values (`{"uid": n, "note": "..."}`: it is lost or spent, or another
 /// vehicle has its uid now) or an earlier log whose carry failed (`{"log": "<file>", "note":
 /// "..."}`: gone for good). Logged as `restore.closed` under the operator's own session; the

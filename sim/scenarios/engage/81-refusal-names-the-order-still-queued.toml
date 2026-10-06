@@ -1,12 +1,12 @@
-# Rules 11 (murmur-54l): a mission refused because its platform is still owed its own
+# Rules 12 (murmur-54l): a mission refused because its platform is still owed its own
 # lost-link values leaves older queued orders in place (safer when the older order is a hold
-# or rtl), but until rules 11 its reason did not say so. As 67, under a policy that never
+# or rtl), but until rules 12 its reason did not say so. As 67, under a policy that never
 # queues an orbit: the USV's link is cut mid-engagement, op-1's hold is queued (it supersedes
 # the engagement), then op-1's orbit is refused (nowhere to wait for the restore). Under
 # dispatch semantics the newer order would have voided the hold; here the hold still goes
 # when the link returns, and the refusal now names it, so the operator knows it stands (and
 # can cancel it if the orbit was meant to replace it). Then the log is forged to cut that
-# clause from the refusal; replay must catch it (from rules 11 it recomputes the reason).
+# clause from the refusal; replay must catch it (from rules 12 it recomputes the reason).
 title = "A refused mission names the older order still queued on its vehicle"
 invariant = "restore_owed"
 attack = "an orbit refused for its platform's own values while an older hold stays queued, unsaid"

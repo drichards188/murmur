@@ -1,9 +1,9 @@
-# Rules 11 (murmur-q05): a loitering munition is spent by its own effect. Its lost-link values
+# Rules 12 (murmur-q05): a loitering munition is spent by its own effect. Its lost-link values
 # were preloaded for the engagement (its own owed back from the write-ahead on); after the
-# release there is no platform left to put them back on, and until rules 11 the debt stayed
+# release there is no platform left to put them back on, and until rules 12 the debt stayed
 # owed for good (the passkeys live run: the expended switchblade never answered the restore,
 # replay reported it UNRESTORED, the inbox alerted, and the next run carried it over). From
-# rules 11 the catalog says the platform is spent by its effect (`expended_by_effect`), and the
+# rules 12 the catalog says the platform is spent by its effect (`expended_by_effect`), and the
 # engine closes what is owed to it right after the release (`restore.closed`, expended, with
 # the engagement): nothing is owed at the end, nothing is carried. The closure also marks the
 # platform spent: it still carries the engagement's lost-link action (in the simulation it

@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 35] = [
+const LOGS: [(&str, u32); 38] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -104,23 +104,33 @@ const LOGS: [(&str, u32); 35] = [
     // passkeys and signed with them (see the test below)
     ("v10-engagement-scenario-01.jsonl", PASSKEY_SINCE),
     ("v10-passkeys-live.jsonl", PASSKEY_SINCE),
-    // rules 11 (the reviews' follow-ups; the table names the constant): the same scenario, its
+    // rules 11 (space tasks followed up after dispatch, covers over the area; the table
+    // names the constant): the same scenario; the engine on the element-set fixture (an
+    // area cover watched to its end, a collect cancelled before its pass, a collect
+    // re-checked on a reloaded segment and missed; written by tests/space.rs); and a live
+    // run with its anchors (stand-ins, a cover over the Golden Gate box evaluated at its
+    // sample points, a collect chosen, dispatched and cancelled before its pass; see the
+    // test below)
+    ("v11-engagement-scenario-01.jsonl", SPACE_FOLLOWUPS_SINCE),
+    ("v11-space-followups-engine.jsonl", SPACE_FOLLOWUPS_SINCE),
+    ("v11-space-followups-live.jsonl", SPACE_FOLLOWUPS_SINCE),
+    // rules 12 (the reviews' follow-ups; the table names the constant): the same scenario, its
     // switchblade spent by its effect and owed nothing back after the release (restore.closed,
     // expended, as scenario 80); scenario 79, a young track blocking by its reach until the
     // tracker has its average velocity; 81, a refused orbit naming the older hold still queued;
     // 82, an operator writing off values that will never be confirmed back. The live logs,
     // across two crashes, are checked against each other below
-    ("v11-engagement-scenario-01.jsonl", REVIEW_FOLLOWUPS_SINCE),
-    ("v11-young-track-blocks-scenario-79.jsonl", REVIEW_FOLLOWUPS_SINCE),
-    ("v11-refusal-names-queued-order-scenario-81.jsonl", REVIEW_FOLLOWUPS_SINCE),
-    ("v11-restore-written-off-scenario-82.jsonl", REVIEW_FOLLOWUPS_SINCE),
+    ("v12-engagement-scenario-01.jsonl", REVIEW_FOLLOWUPS_SINCE),
+    ("v12-young-track-blocks-scenario-79.jsonl", REVIEW_FOLLOWUPS_SINCE),
+    ("v12-refusal-names-queued-order-scenario-81.jsonl", REVIEW_FOLLOWUPS_SINCE),
+    ("v12-restore-written-off-scenario-82.jsonl", REVIEW_FOLLOWUPS_SINCE),
 ];
 
 /// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
 const V6_AIRSHIP: &str = "v6-airship-nomination-scenario-66.jsonl";
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v11-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v12-engagement-scenario-01.jsonl";
 
 /// The committed scenario log of rules 6 (the lost-link preload).
 const V6_SCENARIO: &str = "v6-engagement-scenario-01.jsonl";
@@ -1100,7 +1110,7 @@ fn rechain_events(mut events: Vec<audit::Event>) -> Vec<audit::Event> {
     events
 }
 
-/// Rules 11, live (murmur-cq3, murmur-qjf), from a clean build of the rules 11 head,
+/// Rules 12, live (murmur-cq3, murmur-qjf), from a clean build of the rules 12 head,
 /// anchored as they ran, stand-ins at the Gate: the first of these runs (`CRASH_1`) started
 /// after a clean one and recorded it in `run.started` (its head, owing nothing); an operator's
 /// orbit took the USV near the fast boat, two signers sent it to engage, and the bridge was
@@ -1111,12 +1121,12 @@ fn rechain_events(mut events: Vec<audit::Event>) -> Vec<audit::Event> {
 /// (`AFTER`) carried from it, with the USV heard but its downlink cut for 150 s: an orbit for
 /// it waited in the queue for the values carried over (the attempts unanswered), went the
 /// second the restore confirmed, and the run stopped cleanly owing nothing.
-const CRASH_1: (&str, &str) = ("v11-carry-live-crash-1.jsonl", "20261006T151152Z-2228432.jsonl");
-const CRASH_2: (&str, &str) = ("v11-carry-live-crash-2.jsonl", "20261006T151836Z-2261359.jsonl");
-const AFTER: &str = "v11-carry-live-after.jsonl";
+const CRASH_1: (&str, &str) = ("v12-carry-live-crash-1.jsonl", "20261006T151152Z-2228432.jsonl");
+const CRASH_2: (&str, &str) = ("v12-carry-live-crash-2.jsonl", "20261006T151836Z-2261359.jsonl");
+const AFTER: &str = "v12-carry-live-after.jsonl";
 
 #[test]
-fn the_rules_11_live_logs_carry_across_two_crashes_in_one_line_each() {
+fn the_rules_12_live_logs_carry_across_two_crashes_in_one_line_each() {
     let (c1, c2, after) = (fixture(CRASH_1.0), fixture(CRASH_2.0), fixture(AFTER));
     // both crashed: anchored up to their last decision, no shutdown anchor; the last stopped
     // cleanly
@@ -1151,7 +1161,7 @@ fn the_rules_11_live_logs_carry_across_two_crashes_in_one_line_each() {
     assert!(r.ok(), "{:?}", r.mismatches);
     assert!(r.carried_restores[0].checked && r.carried_restores[0].restores == 1, "{:?}", r.carried_restores);
     assert!(c2.contains("\"type\":\"platform.restore\",\"uid\":\"2\"") && c2.contains("\"confirmed\":true"));
-    assert!(!c2.contains("\"carried\":true"), "no carried events under rules 11");
+    assert!(!c2.contains("\"carried\":true"), "no carried events under rules 12");
     let r = replay_str(&c2).unwrap();
     assert!(whats(&r).iter().any(|w| w.contains("not verified")), "{:?}", whats(&r));
     // the last: the orbit held for the carried values, sent only once they were back
@@ -1206,5 +1216,83 @@ fn a_rules_10_log_claiming_rules_9_still_carries_its_passkeys() {
             w.iter().any(|m| m.contains(marker) && m.contains(&format!("only builds of rules {PASSKEY_SINCE}"))),
             "{marker}: {w:?}"
         );
+    }
+}
+
+/// Rules 11, the engine on the element-set fixture (`tests/space.rs`,
+/// `writes_the_rules_11_fixture_when_asked`): an area cover watched to its end, a collect
+/// cancelled before its pass, a collect re-checked on a reloaded segment and missed.
+const SPACE_ENGINE: &str = "v11-space-followups-engine.jsonl";
+/// Rules 11, live: stand-ins at the Gate, the space segment from the real cache.
+const SPACE_LIVE: &str = "v11-space-followups-live.jsonl";
+
+#[test]
+fn the_rules_11_engine_log_cancels_and_rechecks_space_tasks() {
+    let log = fixture(SPACE_ENGINE);
+    let r = with(&log, RulesAccepted::Exactly(SPACE_FOLLOWUPS_SINCE));
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert_eq!(r.rules_version, SPACE_FOLLOWUPS_SINCE);
+    assert_eq!((r.space_cancelled, r.space_rechecked, r.space_missed), (1, 0, 1));
+    assert_eq!(r.space_segments, 2, "the segment reloaded once");
+    // the cover over the area: one answer per sample point, the least covered deciding
+    assert!(log.contains("\"query\":\"cover_links\""));
+    assert!(log.contains("at the least covered of 9 sample points over the area ("));
+    // the cancel: the operator's, the engine's report, the transition naming the operator
+    let ls = lines(&log);
+    let cancel = at(&ls, 0, &["\"action\":\"intent.cancel\""]);
+    let report = at(&ls, cancel, &["\"type\":\"op.state\"", "\"state\":\"cancelled\"", "tasking request withdrawn"]);
+    let aborted = at(&ls, report, &["\"transition\":\"cancel\"", "\"to\":\"aborted\"", "cancelled by op-1: "]);
+    assert_eq!((report, aborted), (cancel + 1, cancel + 2));
+    // the re-check: the new segment, the dispatched-phase check, the missed report with the
+    // fresh options, the failure quoting it
+    let loaded = at(&ls, aborted, &["\"type\":\"space.loaded\""]);
+    let check = at(&ls, loaded, &["\"type\":\"check.result\"", "\"phase\":\"dispatched\"", "\"passed\":false"]);
+    let missed = at(&ls, check, &["\"state\":\"missed\"", "no longer feasible: feasibility: NORAD"]);
+    let failed = at(&ls, missed, &["\"transition\":\"fail\"", "collection missed: no longer feasible: "]);
+    assert_eq!((missed, failed), (check + 1, check + 2));
+}
+
+#[test]
+fn the_rules_11_live_log_covers_the_area_and_cancels_a_tasked_collect() {
+    let log = fixture(SPACE_LIVE);
+    let a = anchor::verify(&log, &anchors_of(SPACE_LIVE));
+    assert!(a.ok(), "{:?}", a.problems);
+    assert!(a.shutdown, "a clean stop anchored the head");
+    let r = with(&log, RulesAccepted::Exactly(SPACE_FOLLOWUPS_SINCE));
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert_eq!(r.rules_version, SPACE_FOLLOWUPS_SINCE);
+    assert_eq!(r.build.as_ref().map(|b| b.dirty), Some(Some(false)));
+    assert!(r.space_queries >= 2);
+    assert_eq!(r.space_cancelled, 1);
+    let ls = lines(&log);
+    // the cover, evaluated over the area's sample points and watched
+    let cover = at(&ls, 0, &["\"type\":\"check.result\"", "\"rule\":\"coverage\"", "sample points over the area ("]);
+    at(&ls, cover, &["\"type\":\"op.state\"", "\"state\":\"watching\""]);
+    // the collect: chosen, dispatched, tasked, cancelled before its pass by the operator
+    let tasked = at(&ls, 0, &["\"type\":\"op.state\"", "\"state\":\"tasked\""]);
+    let cancel = at(&ls, tasked, &["\"action\":\"intent.cancel\""]);
+    let report = at(&ls, cancel, &["\"state\":\"cancelled\"", "tasking request withdrawn"]);
+    let aborted = at(&ls, report, &["\"transition\":\"cancel\"", "\"to\":\"aborted\""]);
+    assert_eq!((report, aborted), (cancel + 1, cancel + 2));
+}
+
+#[test]
+fn a_rules_11_log_claiming_rules_10_still_carries_its_follow_ups() {
+    let v11 = SPACE_FOLLOWUPS_SINCE;
+    for (name, markers) in [
+        (SPACE_ENGINE, &["a SATCOM cover evaluated over the area's sample points", "a space task cancelled after dispatch", "a space task's cancelled report", "a space task re-checked after dispatch"][..]),
+        (SPACE_LIVE, &["a SATCOM cover evaluated over the area's sample points", "a space task cancelled after dispatch", "a space task's cancelled report"][..]),
+    ] {
+        let mut ls = lines(&fixture(name));
+        assert!(ls[0].contains(&format!("\"rules_version\":{v11},")), "{name}");
+        ls[0] = ls[0].replacen(&format!("\"rules_version\":{v11},"), &format!("\"rules_version\":{PASSKEY_SINCE},"), 1);
+        let r = with(&rechain(&ls), RulesAccepted::Exactly(PASSKEY_SINCE));
+        let w = whats(&r);
+        for marker in markers {
+            assert!(
+                w.iter().any(|m| m.contains(marker) && m.contains(&format!("only builds of rules {v11}"))),
+                "{name} {marker}: {w:?}"
+            );
+        }
     }
 }

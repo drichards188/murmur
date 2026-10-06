@@ -339,7 +339,7 @@ export function SpacePanel({ catalog, catalogError, mapBounds, box, drawing, onD
             <span className="tl-caret"> </span>
             <span className="tl-swatch" style={{ background: classColor(cv.service.class) }} />
             i{r.intent_id} {name}
-            <span className="tl-count">{r.outcome ? 'ended' : r.state}</span>
+            <span className="tl-count">{r.outcome === 'cancelled' ? 'cancelled' : r.outcome ? 'ended' : r.state}</span>
           </div>
           <div className="tl-track">
             <span className="tl-watch" style={span(cv.window.from, cv.window.to)} />
@@ -1002,7 +1002,7 @@ function CoverageForm({
       {space && scen != null && watches.length > 0 && (
         <div className="sr-watches">
           {watches.map((r) => (
-            <SpaceRunCard key={r.intent_id} run={r} map={space.clock} scen={scen} onOpen={onIntent} />
+            <SpaceRunCard key={r.intent_id} run={r} map={space.clock} scen={scen} onOpen={onIntent} cancellable={space.cancellable ?? false} />
           ))}
         </div>
       )}

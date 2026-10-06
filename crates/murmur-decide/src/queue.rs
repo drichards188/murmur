@@ -336,8 +336,8 @@ pub fn reach(
 /// on a timer of a few seconds), so a mission is not sent to it: [`reach`] holds the order in
 /// the queue until a restore confirms (a hold or rtl is never held). A decision's fact the
 /// engine fills from its ledger (`restore_owed`) and replay recomputes from the log's.
-/// Before rules 11, values carried over from an earlier run's log held no order (the log could
-/// not tell which vehicle has the uid now); from rules 11 they do, unless the vehicle with the
+/// Before rules 12, values carried over from an earlier run's log held no order (the log could
+/// not tell which vehicle has the uid now); from rules 12 they do, unless the vehicle with the
 /// uid now is known to be another one than they were preloaded on ([`CarriedHold`]: the
 /// bridge's identity of it is logged with the fact, and replay recomputes the judgement).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -346,14 +346,14 @@ pub struct RestoreOwed {
     pub values: BTreeMap<String, f64>,
     /// The engagements that preloaded them (none: carried over from an earlier run's log).
     pub by: Vec<IntentId>,
-    /// Rules 11: values carried over from an earlier run's log (no engagement of this run
+    /// Rules 12: values carried over from an earlier run's log (no engagement of this run
     /// preloaded the platform since): where from, and whether the vehicle with the uid now is
     /// the one they were preloaded on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carried: Option<Box<CarriedHold>>,
 }
 
-/// Rules 11 (murmur-qjf): values carried over from an earlier run's log, owed to a vehicle of
+/// Rules 12 (murmur-qjf): values carried over from an earlier run's log, owed to a vehicle of
 /// this run's: the log, the vehicle they were preloaded on (that log's write-ahead) and the
 /// one with the uid now as the bridge identifies it (its platform, callsign, system id, home;
 /// absent: not known). They hold a mission, as an engagement's of this run do, unless `now`
@@ -389,7 +389,7 @@ impl RestoreOwed {
         }
     }
 
-    /// The values as a reason quotes them; rules 11, none known (an armed platform a failed
+    /// The values as a reason quotes them; rules 12, none known (an armed platform a failed
     /// carry's fleet named): says so.
     pub fn values_text(&self) -> String {
         match (&self.carried, self.values.is_empty()) {

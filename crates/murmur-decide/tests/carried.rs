@@ -17,8 +17,8 @@ use murmur_decide::audit::EventBody;
 use murmur_decide::replay::{ReplayOptions, ReplayReport, RulesAccepted, owed_restores, replay_str_with};
 use murmur_decide::*;
 
-/// These logs are of rules 10 (`PASSKEY_SINCE`), the last to carry values over with
-/// `platform.restore` events; rules 11 carry them in `run.started` (tests/rules11.rs).
+/// These logs are of rules 10 (`PASSKEY_SINCE`), which carry values over with
+/// `platform.restore` events; rules 12 carry them in `run.started` (tests/rules12.rs).
 fn engine10(clock: &ManualClock) -> (Engine, MemorySink) {
     let log = MemorySink::new();
     let mut p = policy();

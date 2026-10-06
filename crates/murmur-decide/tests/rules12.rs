@@ -1,4 +1,4 @@
-//! Decision rules 11 (`REVIEW_FOLLOWUPS_SINCE`): the follow-ups of the reviews of rules 6 to
+//! Decision rules 12 (`REVIEW_FOLLOWUPS_SINCE`): the follow-ups of the reviews of rules 6 to
 //! 10. Here, what a start carries over from earlier runs' logs (murmur-cq3: recorded in
 //! `run.started` in one line, checked against the logs it names, a failed carry kept owed
 //! until read or written off), values carried over holding a mission for the vehicle they were
@@ -95,7 +95,7 @@ fn carry_of(name: &str, text: &str) -> CarriedFrom {
     }
 }
 
-/// Run A, rules 11: it carried sky-1's own values over from an earlier `a0.jsonl` (not at
+/// Run A, rules 12: it carried sky-1's own values over from an earlier `a0.jsonl` (not at
 /// hand: trusted) and boat-1's too, and the vehicles never confirmed them back: it still owes
 /// them both.
 fn owing_run() -> String {
@@ -182,7 +182,7 @@ fn a_start_records_what_it_carried_in_one_line_and_replay_checks_it_against_that
     let first = b.lines().next().unwrap();
     let (head, seq) = log_head(&a).unwrap();
     assert!(first.contains(&format!("\"carried_from\":[{{\"log\":\"a.jsonl\",\"head\":\"{head}\",\"last_seq\":{seq},\"owed\":[")), "{first}");
-    assert!(!b.contains("\"type\":\"platform.restore\",\"uid\":\"sky-1\",\"values\":{\"FS_GCS_ENABLE\":1.0,\"FS_GCS_TIMEOUT\":5.0,\"FS_OPTIONS\":0.0},\"carried\":true"), "no carried events under rules 11");
+    assert!(!b.contains("\"type\":\"platform.restore\",\"uid\":\"sky-1\",\"values\":{\"FS_GCS_ENABLE\":1.0,\"FS_GCS_TIMEOUT\":5.0,\"FS_OPTIONS\":0.0},\"carried\":true"), "no carried events under rules 12");
     // checked against a.jsonl: it replays, it is the log read, and it owed exactly that
     let logs = [("a.jsonl", a.as_str())];
     let r = replay_str_with(&b, &with(&logs, false)).unwrap();
@@ -231,10 +231,11 @@ fn a_start_records_what_it_carried_in_one_line_and_replay_checks_it_against_that
         }
     });
     assert!(has(&whats(&replay_str(&gone).unwrap()), "restore of values not owed back"), "its restores now put back values never owed");
-    // a log claiming rules 10 can't carry the record (a marker)
+    // a log claiming rules 11 (the space follow-ups, the version before) can't carry the
+    // record (a marker)
     let claimed = forge(&b, |ev| {
         if let EventBody::RunStarted { rules_version, .. } = &mut ev[0].body {
-            *rules_version = Some(PASSKEY_SINCE);
+            *rules_version = Some(SPACE_FOLLOWUPS_SINCE);
         }
     });
     let r = replay_str_with(
@@ -277,7 +278,7 @@ fn rules_10_could_not_tell_a_carry_was_due() {
     )
     .unwrap();
     assert!(r.ok() && r.carried_restores.is_empty() && r.unrestored.is_empty(), "{:?}", r.mismatches);
-    // under rules 11 a carried event is refused: the carry is in run.started
+    // under rules 12 a carried event is refused: the carry is in run.started
     let (mut e, _) = start(RULES_VERSION, Vec::new(), &clock);
     let carried = PlatformRestoreReport {
         uid: uid("sky-1"),
@@ -575,7 +576,7 @@ fn another_vehicle_with_the_uid_is_not_held_and_an_unknown_one_is() {
     assert!(r.ok(), "rules 10 found nothing wrong with it: {:?}", r.mismatches);
 }
 
-// ---- the review of rules 11: torn logs, failed carries, the refusal, unknown debts ---------
+// ---- the review of rules 12: torn logs, failed carries, the refusal, unknown debts ---------
 
 /// Review L4: a crash can tear the last line of the log the start reads; the start records the
 /// head and last seq of its last complete event, and replay checks the predecessor up to

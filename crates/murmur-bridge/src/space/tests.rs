@@ -121,7 +121,7 @@ fn pinned_shift_keeps_every_window_on_one_day() {
 #[tokio::test]
 async fn unloaded_space_answers_503_with_a_hint() {
     let api = api("2026-06-14T17:00Z", false);
-    let _ = api.space.set(Err(format!(
+    *api.space.write().expect("space lock") = Some(Err(format!(
         "space segment unavailable: no element sets; {FETCH_HINT}"
     )));
     let (status, body) = get_json(&api, "/api/space/catalog").await;
@@ -266,4 +266,24 @@ fn polygon_contains() {
     };
     assert!(contains(&a, [0.5, 0.5]));
     assert!(!contains(&a, [1.5, 0.5]));
+}
+
+/// Rules 11: the session's time shift is pinned at the first load and kept on every reload,
+/// so the same elements loaded again later are the same segment to the decision layer.
+#[test]
+fn a_reload_keeps_the_sessions_pin() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    // a scenario clock running 200,000 times faster: days of scenario time in a second
+    let clock = ScenarioClock::new(Some(parse_time("2026-06-14T17:00Z").expect("time")), 200_000.0);
+    let api = Arc::new(SpaceApi::new(world(), root.clone(), clock));
+    api.install(fixture_space());
+    let first = api.space().ok().expect("loaded").pinned_shift_days;
+    assert!(first.is_some(), "the June scenario pins a shift onto October elements");
+    std::thread::sleep(std::time::Duration::from_millis(1_500));
+    // the clock moved days: a fresh session would pin otherwise, this one keeps its pin
+    let fresh = Arc::new(SpaceApi::new(world(), root, ScenarioClock::new(Some(api.clock.now()), 1.0)));
+    fresh.install(fixture_space());
+    assert_ne!(fresh.space().ok().expect("loaded").pinned_shift_days, first);
+    api.install(fixture_space());
+    assert_eq!(api.space().ok().expect("loaded").pinned_shift_days, first);
 }

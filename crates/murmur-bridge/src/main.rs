@@ -157,7 +157,7 @@ fn who_acts(
     );
     settings.operators = ops;
     settings.engage_operators = engage;
-    // rules 11: the harness-held credentials, fixed for the run on its roster
+    // rules 12: the harness-held credentials, fixed for the run on its roster
     settings.scripted = auth::scripted_from(&file);
     // rules 10: the relying party and every person's passkeys (public keys and counters), when
     // a console origin is on the relying party's host (an IP address can't be one)

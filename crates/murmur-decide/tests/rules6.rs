@@ -331,7 +331,7 @@ fn values_owed_back_are_reported_carried_and_never_taken_off_a_preloaded_platfor
     assert!(r.ok() && r.unrestored.is_empty(), "{:?} {:?}", r.mismatches, r.unrestored);
     // a log that carries them over from an earlier run owes them from its start; a preload
     // that then reads the preloaded values as the platform's own is caught (rules 10, the
-    // last to carry them with platform.restore events: rules 11 carry in run.started)
+    // last to carry them with platform.restore events: rules 12 carry in run.started)
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();
     let mut e = Engine::with_areas(policy10(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
@@ -353,7 +353,7 @@ fn values_owed_back_are_reported_carried_and_never_taken_off_a_preloaded_platfor
 }
 
 /// The rules of the tests that carry values over with `platform.restore` events: 10, the last
-/// to (rules 11 carry them in `run.started`: tests/rules11.rs).
+/// to (rules 12 carry them in `run.started`: tests/rules12.rs).
 fn policy10() -> Policy {
     let mut p = policy();
     p.rules.rules_version = PASSKEY_SINCE;
@@ -1294,9 +1294,9 @@ fn the_policy_can_make_accepting_a_lost_vehicle_step_up() {
     assert!(w3.iter().any(|m| m.contains("an acceptance of a lost vehicle quoting a step-up that is not the actor's own, fresh and unused")), "{w3:?}");
 }
 
-// ---- rules 11: the ledger's guards with write-offs and values carried in run.started ------
+// ---- rules 12: the ledger's guards with write-offs and values carried in run.started ------
 
-/// Rules 11 (review L11): an operator's write-off is refused while an engagement is under way
+/// Rules 12 (review L11): an operator's write-off is refused while an engagement is under way
 /// on the platform (its own restore is still to come), nothing logged; once it ended, taken.
 #[test]
 fn a_write_off_is_refused_while_an_engagement_holds_the_platform() {
@@ -1345,11 +1345,11 @@ fn carried_own() -> replay::CarriedFrom {
     }
 }
 
-/// Rules 11 (review L11): values carried over in `run.started` are owed from the first line,
+/// Rules 12 (review L11): values carried over in `run.started` are owed from the first line,
 /// so a preload that then reads the still-preloaded values as the platform's own is caught,
 /// as it is for values carried event by event under rules 6 to 10; its own values are fine.
 #[test]
-fn under_rules_11_a_preload_reading_carried_values_as_its_own_is_caught() {
+fn under_rules_12_a_preload_reading_carried_values_as_its_own_is_caught() {
     for (before, caught) in [(SET, true), (OWN, false)] {
         let clock = ManualClock::new(T0);
         let log = MemorySink::new();

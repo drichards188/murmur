@@ -142,7 +142,7 @@ use crate::rules::{
     self, CheckResult, OPERATOR_AUTH_SINCE, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE,
     STEP_UP_SCHEMA_SINCE,
 };
-use crate::space::{ScenarioMap, SpaceAnswer, SpaceOracle, SpaceOrder};
+use crate::space::{self, ScenarioMap, SpaceAnswer, SpaceOracle, SpaceOrder};
 use crate::time::Time;
 use crate::world::{LoggedInputs, LoggedSpace, WorldSnapshot};
 
@@ -203,7 +203,7 @@ pub struct ReplayReport {
     /// owed back when the log ended (no confirmed restore): the next run carries them over
     /// (`platform.restore`), but the operator should know. Not decision mismatches.
     pub unrestored: Vec<String>,
-    /// Rules 11: debts of the ledger closed without a restore (`restore.closed`): a platform
+    /// Rules 12: debts of the ledger closed without a restore (`restore.closed`): a platform
     /// expended by its own effect, a platform's values or an earlier log's carry written off by
     /// an operator, each saying which and why.
     pub restores_closed: Vec<String>,
@@ -220,6 +220,11 @@ pub struct ReplayReport {
     pub reboots: usize,
     /// Rules 5: dispatched intents sent back to the queue (their link lost before the start).
     pub requeued: usize,
+    /// Rules 11: space tasks cancelled after dispatch, re-checked against a later answer and
+    /// found to hold, and found no longer feasible (failed).
+    pub space_cancelled: usize,
+    pub space_rechecked: usize,
+    pub space_missed: usize,
     /// Rules 6: the carried `platform.restore` events, by the earlier log they name: how
     /// many, and whether they were checked against what that log still owed (it was given,
     /// [`ReplayOptions::restores_from`]) or not (it was absent).
@@ -333,7 +338,7 @@ pub struct CarriedRestores {
     pub checked: bool,
     /// The head of that log as given (compare it with that log's anchors).
     pub head: Option<String>,
-    /// Rules 11: why its carry failed at the start (it could not be read): what it owed is
+    /// Rules 12: why its carry failed at the start (it could not be read): what it owed is
     /// unknown, and it stays owed until read or written off.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failed: Option<String>,
@@ -347,16 +352,16 @@ pub struct CarriedRestores {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Restores {
     owed: BTreeMap<Uid, Owed>,
-    /// Rules 11: earlier logs whose carry failed (they could not be read) and nobody wrote off,
+    /// Rules 12: earlier logs whose carry failed (they could not be read) and nobody wrote off,
     /// with why and the armed platforms their fleet named (that may be owed values, unknown):
     /// they stay owed until a later start reads them or an operator writes them off.
     pending: BTreeMap<String, PendingCarry>,
-    /// Rules 11: the platforms spent by their own effect (`restore.closed`, expended), by the
+    /// Rules 12: the platforms spent by their own effect (`restore.closed`, expended), by the
     /// engagement that released it: no order or nomination for them is taken any more.
     expended: BTreeMap<Uid, IntentId>,
 }
 
-/// Rules 11: an earlier log whose carry failed: why, and the armed platforms its run's fleet
+/// Rules 12: an earlier log whose carry failed: why, and the armed platforms its run's fleet
 /// named (from the fleet identity beside it, when that could be read), which may be owed values
 /// nobody knows: a mission for one of them waits until the log is read or written off.
 #[derive(Clone, Debug, Default)]
@@ -370,7 +375,7 @@ struct Owed {
     values: BTreeMap<String, f64>,
     by: Vec<IntentId>,
     vehicle: Option<engage::VehicleIdentity>,
-    /// Rules 11: the earlier log they were carried over from (none: preloaded in this run).
+    /// Rules 12: the earlier log they were carried over from (none: preloaded in this run).
     from: Option<String>,
 }
 
@@ -383,11 +388,11 @@ impl Restores {
             .collect()
     }
 
-    /// Rules 7: what `spec`'s vehicles are owed back from engagements of this log. Rules 11:
+    /// Rules 7: what `spec`'s vehicles are owed back from engagements of this log. Rules 12:
     /// values carried over from an earlier log too, with the vehicle they were preloaded on and
     /// the one with the uid now (`now`, the bridge's identities as the decision read them):
     /// they hold an order unless that is known to be another vehicle
-    /// ([`crate::queue::CarriedHold`]); before rules 11 they hold nothing. Empty before rules 7
+    /// ([`crate::queue::CarriedHold`]); before rules 12 they hold nothing. Empty before rules 7
     /// and for anything but a vehicle task the queue can hold.
     pub(crate) fn owed_for(
         &self,
@@ -402,7 +407,7 @@ impl Restores {
             .iter()
             .filter_map(|u| {
                 let Some(o) = self.owed.get(u) else {
-                    // rules 11: an armed platform a failed carry's fleet named: its values unknown
+                    // rules 12: an armed platform a failed carry's fleet named: its values unknown
                     if !rules.followups() {
                         return None;
                     }
@@ -470,7 +475,7 @@ impl Restores {
         self.owed_for(spec, rules, now).values().any(crate::queue::RestoreOwed::holds)
     }
 
-    /// Rules 11: seed the ledger with what the bridge carried over at start (`run.started`'s
+    /// Rules 12: seed the ledger with what the bridge carried over at start (`run.started`'s
     /// `carried_from`, newest log first): each log's platforms' values, merged oldest first (a
     /// later run may have read a preload an older one left as the platform's own, so for a
     /// value both name the older log's stands), and the logs whose carry failed, pending (as
@@ -511,7 +516,7 @@ impl Restores {
         }
     }
 
-    /// Rules 11: a debt closed without a restore (`restore.closed`): a platform's values (and,
+    /// Rules 12: a debt closed without a restore (`restore.closed`): a platform's values (and,
     /// `expended`, the platform spent by that engagement's effect), or a pending log.
     pub(crate) fn close(&mut self, uid: Option<&Uid>, log: Option<&str>, expended: Option<IntentId>) {
         if let Some(u) = uid {
@@ -525,13 +530,13 @@ impl Restores {
         }
     }
 
-    /// Rules 11: the engagement whose effect spent `uid`, if one did.
+    /// Rules 12: the engagement whose effect spent `uid`, if one did.
     pub(crate) fn expended_by(&self, uid: &Uid) -> Option<IntentId> {
         self.expended.get(uid).copied()
     }
 
-    /// Rules 11: `spec`'s vehicles spent by their own effect, by the engagement that released
-    /// it (a decision's fact, `expended`; empty before rules 11).
+    /// Rules 12: `spec`'s vehicles spent by their own effect, by the engagement that released
+    /// it (a decision's fact, `expended`; empty before rules 12).
     pub(crate) fn expended_for(&self, spec: &IntentSpec, rules: &crate::rules::RulesConfig) -> BTreeMap<Uid, IntentId> {
         if !rules.followups() {
             return BTreeMap::new();
@@ -542,17 +547,17 @@ impl Restores {
             .collect()
     }
 
-    /// Rules 11: the values owed back to `uid`, if any.
+    /// Rules 12: the values owed back to `uid`, if any.
     pub(crate) fn values_owed(&self, uid: &Uid) -> Option<&BTreeMap<String, f64>> {
         self.owed.get(uid).map(|o| &o.values)
     }
 
-    /// Rules 11: whether `log`'s carry failed and nobody wrote it off.
+    /// Rules 12: whether `log`'s carry failed and nobody wrote it off.
     pub(crate) fn is_pending(&self, log: &str) -> bool {
         self.pending.contains_key(log)
     }
 
-    /// Rules 11: the earlier logs pending (their carry failed), with why and the armed platforms
+    /// Rules 12: the earlier logs pending (their carry failed), with why and the armed platforms
     /// they may owe values to.
     pub(crate) fn pending(&self) -> Vec<(String, String, Vec<Uid>)> {
         self.pending
@@ -561,7 +566,7 @@ impl Restores {
             .collect()
     }
 
-    /// Rules 11: the values owed back that no engagement of this run preloaded (carried
+    /// Rules 12: the values owed back that no engagement of this run preloaded (carried
     /// over), with the vehicle they were preloaded on.
     pub(crate) fn carried(&self) -> Vec<OwedRestore> {
         self.owed
@@ -699,7 +704,7 @@ impl Restores {
 /// Rules 6: the platforms' own lost-link values a log still owed back when it ended (a
 /// preload set, or values carried over into it, never confirmed back), and the engagements
 /// that preloaded them. The bridge carries them over into its next run's log at start
-/// (rules 6 to 10: `platform.restore` carried; rules 11: in `run.started`, `carried_from`)
+/// (rules 6 to 10: `platform.restore` carried; rules 12: in `run.started`, `carried_from`)
 /// and puts them back. Lines that do not parse (a torn last line) are skipped: this is a
 /// ledger, not a replay.
 #[derive(Clone, Debug, PartialEq, Serialize, serde::Deserialize)]
@@ -714,7 +719,7 @@ pub struct OwedRestore {
     pub vehicle: Option<engage::VehicleIdentity>,
 }
 
-/// Rules 11: one earlier log the bridge carried over from at start, as `run.started` records
+/// Rules 12: one earlier log the bridge carried over from at start, as `run.started` records
 /// it (`carried_from`): the log `.last-run-<port>` named, or one whose carry had failed and
 /// that nobody wrote off (named `pending` by a log carried before it in the list).
 #[derive(Clone, Debug, PartialEq, Serialize, serde::Deserialize)]
@@ -746,7 +751,7 @@ pub struct CarriedFrom {
     pub error: Option<String>,
 }
 
-/// Rules 11: what a log still owes when it ends: the platforms' own lost-link values never
+/// Rules 12: what a log still owes when it ends: the platforms' own lost-link values never
 /// confirmed back, and the earlier logs whose carry failed that nobody wrote off.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Debts {
@@ -764,7 +769,7 @@ pub fn owed_restores(text: &str) -> Vec<OwedRestore> {
     owed_debts(text).owed
 }
 
-/// Rules 11: [`owed_restores`], and the earlier logs `text` still owed for (pending).
+/// Rules 12: [`owed_restores`], and the earlier logs `text` still owed for (pending).
 pub fn owed_debts(text: &str) -> Debts {
     let mut restores = Restores::default();
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
@@ -787,7 +792,7 @@ pub fn owed_debts(text: &str) -> Debts {
     }
 }
 
-/// Rules 11: the head of a log's text as the bridge records it in `carried_from`: the SHA-256
+/// Rules 12: the head of a log's text as the bridge records it in `carried_from`: the SHA-256
 /// of its last line that parses as an event, and that event's seq (a torn last line, from a
 /// crash mid-write, is not part of it). None for a log with no event.
 pub fn log_head(text: &str) -> Option<(String, u64)> {
@@ -873,7 +878,7 @@ fn platform_restore(
     e: &Event,
     restores: &mut Restores,
     intents: &BTreeMap<IntentId, Tracked>,
-    rules11: bool,
+    followups: bool,
 ) {
     let EventBody::PlatformRestore {
         uid,
@@ -889,8 +894,8 @@ fn platform_restore(
     };
     let owed = restores.owed.get(uid).map(|o| &o.values);
     if *carried {
-        // rules 11: what an earlier run owed is carried in run.started, never event by event
-        if rules11 {
+        // rules 12: what an earlier run owed is carried in run.started, never event by event
+        if followups {
             bad(
                 r,
                 e,
@@ -1024,6 +1029,21 @@ struct Tracked {
     preload_stop_due: Option<(u64, &'static str)>,
     /// Engage, rules 6: our vehicles operators accepted as lost for it (`engage.accepted`).
     accepted: BTreeMap<Uid, engage::AcceptedUnknown>,
+    /// Collect and cover: the order it was dispatched with (what a cancel's and a re-check's
+    /// reports are recomputed against).
+    space_order: Option<SpaceOrder>,
+    /// Rules 11: an operator's cancel of this dispatched space task (who, seq) waiting for
+    /// the engine's cancelled report and the cancel transition; the report came.
+    cancel_due: Option<(OperatorId, u64)>,
+    cancel_reported: bool,
+    /// Rules 11: a dispatched-phase check (passed, the report it calls for) waiting for its
+    /// `rechecked` or `missed` report; a `missed` report (its detail) waiting for the failure.
+    recheck_due: Option<(bool, String)>,
+    recheck_lost: Option<String>,
+    /// Rules 11: the answer a space task was dispatched on (its request time, its segment):
+    /// a re-check keeps the request time and comes from another segment.
+    dispatch_now: Option<Time>,
+    last_segment: Option<crate::space::SegmentId>,
     /// The last check's recomputed results, its phase and seq.
     last_results: Vec<CheckResult>,
     last_phase: Option<CheckPhase>,
@@ -1142,6 +1162,13 @@ impl Tracked {
             preload_read: None,
             preload_stop_due: None,
             accepted: BTreeMap::new(),
+            space_order: None,
+            cancel_due: None,
+            cancel_reported: false,
+            recheck_due: None,
+            recheck_lost: None,
+            dispatch_now: None,
+            last_segment: None,
         }
     }
 
@@ -1209,7 +1236,7 @@ pub struct ReplayOptions<'a> {
     /// generation). Carried values from a log not given are a mismatch unless
     /// [`Self::trust_resumed`] ([`ReplayReport::carried_restores`] says which were checked).
     pub restores_from: Option<(&'a str, &'a str)>,
-    /// Rules 11: the earlier logs this run's `run.started` says it carried over from
+    /// Rules 12: the earlier logs this run's `run.started` says it carried over from
     /// (`carried_from`), as (their file name, their text): each must replay, be the one read
     /// (its head) and still have owed exactly what was carried. [`Self::restores_from`] is
     /// looked at too. A log not given is a mismatch when it carried anything, unless
@@ -1351,11 +1378,19 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (PASSKEY_SINCE, "\"type\":\"passkey.removed\"", "a passkey removed"),
     (PASSKEY_SINCE, "\"step_up_factor\":", "a policy's step-up factor"),
     (PASSKEY_SINCE, "\"login_factor\":", "a policy's login factor"),
+    (rules::SPACE_FOLLOWUPS_SINCE, "\"query\":\"cover_links\"", "a SATCOM cover evaluated over the area's sample points"),
+    (rules::SPACE_FOLLOWUPS_SINCE, "\"query\":\"cover_gnss\"", "a GNSS cover evaluated over the area's sample points"),
+    (rules::SPACE_FOLLOWUPS_SINCE, "\"transition\":\"cancel\"", "a space task cancelled after dispatch"),
+    (rules::SPACE_FOLLOWUPS_SINCE, "\"state\":\"cancelled\"", "a space task's cancelled report"),
+    (rules::SPACE_FOLLOWUPS_SINCE, "\"phase\":\"dispatched\"", "a space task re-checked after dispatch"),
+    (rules::SPACE_FOLLOWUPS_SINCE, "\"state\":\"rechecked\"", "a space task's re-check report"),
     (rules::REVIEW_FOLLOWUPS_SINCE, "\"carried_from\":[", "what a start carried over from earlier runs, in run.started"),
     (rules::REVIEW_FOLLOWUPS_SINCE, "\"type\":\"restore.closed\"", "a restore closed without a restore (expended, written off)"),
     (rules::REVIEW_FOLLOWUPS_SINCE, "\"scripted\":[", "the run's scripted operators on the roster"),
     (rules::REVIEW_FOLLOWUPS_SINCE, "\"first_seen_t\":", "when the tracker started a track (keep-out reach)"),
     (rules::REVIEW_FOLLOWUPS_SINCE, "\"carried\":{", "values carried over holding a vehicle (a decision's fact)"),
+    (rules::REVIEW_FOLLOWUPS_SINCE, "\"expended\":{", "a platform spent by its own effect (a decision's fact, a closure)"),
+    (rules::REVIEW_FOLLOWUPS_SINCE, "\"may_owe\":[", "the platforms a failed carry may owe values to"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.
@@ -1441,7 +1476,7 @@ fn check_claims<S: AsRef<str>>(r: &mut ReplayReport, events: &[Event], lines: &[
         ),
         None => {}
     }
-    // rules 11: a credentials run fixes its scripted operators at the start, always (an empty
+    // rules 12: a credentials run fixes its scripted operators at the start, always (an empty
     // list when none), so replay can check every session's method against them
     if version >= rules::REVIEW_FOLLOWUPS_SINCE
         && let Some(listed) = roster
@@ -1630,6 +1665,8 @@ fn replay_inner<S: AsRef<str>>(
     let mut prev: Option<&Event> = None;
     // from the last `space.loaded`
     let mut scenario_map = ScenarioMap::IDENTITY;
+    // rules 11: the segment in force (the last `space.loaded`), which a re-check must be on
+    let mut current_segment: Option<crate::space::SegmentId> = None;
     let mut pinned: Option<i64> = None;
     // operator sessions as opened: who, with what grants
     let mut sessions: BTreeMap<SessionId, (OperatorId, Grants)> = BTreeMap::new();
@@ -1766,7 +1803,7 @@ fn replay_inner<S: AsRef<str>>(
                 ..
             } => {
                 roster = listed.clone();
-                // rules 11: what earlier runs still owed, owed back from here on (checked
+                // rules 12: what earlier runs still owed, owed back from here on (checked
                 // against those logs after the loop)
                 restores.carry(carried_from);
                 if i > 0 {
@@ -1833,9 +1870,9 @@ fn replay_inner<S: AsRef<str>>(
                 areas = Some(load_areas(&mut r, e, sha256, set));
             }
             EventBody::SpaceLoaded {
+                segment,
                 scenario,
                 pinned_shift_days,
-                ..
             } => {
                 r.space_segments += 1;
                 let map = scenario.unwrap_or(ScenarioMap::IDENTITY);
@@ -1844,6 +1881,7 @@ fn replay_inner<S: AsRef<str>>(
                 }
                 scenario_map = map;
                 pinned = *pinned_shift_days;
+                current_segment = Some(segment.clone());
             }
             EventBody::SpaceQuery { sha256, answer } => {
                 r.space_queries += 1;
@@ -1997,6 +2035,40 @@ fn replay_inner<S: AsRef<str>>(
                     }
                 }
                 tr.last_check_passed = Some(again_passed);
+                // rules 11: a dispatched-phase check is a running space task's, re-checked
+                // against a later answer; its report (rechecked or missed) follows at once
+                if tr.cancel_due.is_some() {
+                    bad(&mut r, e, Some(*intent), "a check between an operator's cancel of a dispatched space task and its cancelled report", json(phase), String::new());
+                }
+                if tr.recheck_due.is_some() || tr.recheck_lost.is_some() {
+                    bad(&mut r, e, Some(*intent), "a check between a space task's re-check and its report or failure", json(phase), String::new());
+                }
+                if *phase == CheckPhase::Dispatched {
+                    if !(pol.rules.space_followups() && tr.spec.task.is_space() && tr.state == State::Dispatched) {
+                        bad(&mut r, e, Some(*intent), "a dispatched-phase check on something but a running space task under rules 11", json(&(tr.spec.kind(), tr.state, pol.rules.rules_version)), String::new());
+                    }
+                    // a collect whose pass has come was collected: never re-checked
+                    if let Some(SpaceOrder::Collect(c)) = &tr.space_order
+                        && scenario_map.scenario(e.t) >= c.collect_time
+                    {
+                        bad(&mut r, e, Some(*intent), "a collect re-checked after its pass had come (it was collected; a later answer can't miss it)", json(&scenario_map.scenario(e.t)), json(&c.collect_time));
+                    }
+                    if let Some(a) = inputs.space.answer() {
+                        // at the request time it was tasked at, on the segment the engine
+                        // holds, which is not the one its last answer came from
+                        if a.now().is_some() && a.now() != tr.dispatch_now {
+                            bad(&mut r, e, Some(*intent), "a re-check at another request time than the task was tasked at", json(&a.now()), json(&tr.dispatch_now));
+                        }
+                        if current_segment.as_ref() != Some(&a.segment) {
+                            bad(&mut r, e, Some(*intent), "a re-check on a segment other than the one loaded (space.loaded) at that point", a.segment.short(), current_segment.as_ref().map_or(String::new(), |s| s.short()));
+                        }
+                        if tr.last_segment.as_ref() == Some(&a.segment) {
+                            bad(&mut r, e, Some(*intent), "a re-check on the segment the task already runs on (the engine re-checks only a reloaded segment)", a.segment.short(), String::new());
+                        }
+                    }
+                    tr.recheck_due = Some((again_passed, space::recheck_detail(&again, again_passed, inputs.space.answer(), scenario_map.scenario(e.t))));
+                }
+                tr.last_segment = inputs.space.answer().map(|a| a.segment.clone());
                 // which platform each of its vehicles was (a next run carries it only onto the
                 // same ones)
                 for u in &tr.spec.uids {
@@ -2491,10 +2563,10 @@ fn replay_inner<S: AsRef<str>>(
                 to,
                 reason,
             } => {
-                // rules 11 (murmur-54l): a mission refused for its platform's own lost-link
+                // rules 12 (murmur-54l): a mission refused for its platform's own lost-link
                 // values (its kind never queued) says exactly why, the orders still queued on
                 // its vehicles included
-                // rules 11: a void of an approved order for a spent platform says so, and only
+                // rules 12: a void of an approved order for a spent platform says so, and only
                 // for a spent one
                 if *transition == Transition::Void
                     && policy.as_ref().is_some_and(|p| p.rules.followups())
@@ -2511,7 +2583,7 @@ fn replay_inner<S: AsRef<str>>(
                         json(&tr.spec.uids),
                     );
                 }
-                // rules 11 (murmur-54l): a mission of a kind never queued, voided while its
+                // rules 12 (murmur-54l): a mission of a kind never queued, voided while its
                 // platform's own values hold it, is the refusal and says exactly why (the
                 // restore owed, the engagements it stops, the orders still queued, whether it may
                 // be running); a refusal without those facts is no refusal
@@ -2552,7 +2624,7 @@ fn replay_inner<S: AsRef<str>>(
                         &mut r,
                         e,
                         Some(*intent),
-                        "a refusal's reason differs from the one its facts give (rules 11: the restore owed, the engagements it stops, the orders still queued)",
+                        "a refusal's reason differs from the one its facts give (rules 12: the restore owed, the engagements it stops, the orders still queued)",
                         reason.clone(),
                         want.clone(),
                     );
@@ -2578,6 +2650,36 @@ fn replay_inner<S: AsRef<str>>(
                         json(from),
                         json(&tr.state),
                     );
+                }
+                // rules 11: a cancel after dispatch follows the operator's cancel and the
+                // engine's report at once, naming the operator; a missed report is followed by
+                // the failure for it; nothing of the intent comes between
+                let space11 = policy.as_ref().is_some_and(|p| p.rules.space_followups()) && tr.spec.task.is_space();
+                if let Some((op, _)) = tr.cancel_due.take() {
+                    if *transition != Transition::Cancel {
+                        bad(&mut r, e, Some(*intent), "an operator's cancel of a dispatched space task not carried out by the next transition", json(transition), json(&Transition::Cancel));
+                    } else if !tr.cancel_reported {
+                        bad(&mut r, e, Some(*intent), "cancelled after dispatch without the engine's cancelled report", String::new(), space::CANCELLED_OP.into());
+                    } else if !reason.starts_with(&format!("cancelled by {op}: ")) {
+                        bad(&mut r, e, Some(*intent), "a cancel after dispatch that does not name the operator who cancelled", reason.clone(), format!("cancelled by {op}: ..."));
+                    }
+                } else if *transition == Transition::Cancel {
+                    bad(&mut r, e, Some(*intent), "cancelled after dispatch without an operator's cancel right before it", reason.clone(), "operator.action intent.cancel".into());
+                }
+                if *transition == Transition::Cancel && !space11 {
+                    bad(&mut r, e, Some(*intent), "a cancel after dispatch on something but a space task under rules 11", json(&tr.spec.kind()), String::new());
+                }
+                if tr.recheck_due.is_some() {
+                    bad(&mut r, e, Some(*intent), "a transition between a space task's re-check and its report", json(transition), "op.state rechecked or missed".into());
+                    tr.recheck_due = None;
+                }
+                if let Some(want) = tr.recheck_lost.take() {
+                    let reason_want = space::missed_reason(&tr.spec.task, &want);
+                    if *transition != Transition::Fail || *reason != reason_want {
+                        bad(&mut r, e, Some(*intent), "a space task's missed report not followed by its failure for it", json(&(transition, reason)), reason_want);
+                    }
+                } else if *transition == Transition::Fail && space11 && reason.contains(space::NO_LONGER_FEASIBLE) {
+                    bad(&mut r, e, Some(*intent), "a space task failed as no longer feasible without the re-check and report that found it", reason.clone(), "check.result phase dispatched, op.state missed".into());
                 }
                 match next_state(tr.state, *transition) {
                     Ok(s) if s == *to => {}
@@ -2700,6 +2802,10 @@ fn replay_inner<S: AsRef<str>>(
                         step = Some((*intent, e.seq));
                     }
                     Transition::Void => tr.stopped = false,
+                    Transition::Cancel => {
+                        tr.cancel_reported = false;
+                        r.space_cancelled += 1;
+                    }
                     Transition::Queue => {
                         tr.queued_logged = None;
                         r.queued += 1;
@@ -2762,7 +2868,7 @@ fn replay_inner<S: AsRef<str>>(
                 }
                 // rules 7: never a mission to a vehicle still owed its own lost-link values,
                 // whether its kind is queued or not (a queued one's reach says so too); rules
-                // 11: values carried over hold unless the reach it went on showed another vehicle
+                // 12: values carried over hold unless the reach it went on showed another vehicle
                 // (a kind never queued logs no reach: they hold it whatever vehicle has the uid)
                 let ids = match (reach_inputs, intents.get(intent)) {
                     (Some(i), _) => carried_identities(&i.restore_owed),
@@ -2774,7 +2880,7 @@ fn replay_inner<S: AsRef<str>>(
                         .unwrap_or_default(),
                     _ => BTreeMap::new(),
                 };
-                // rules 11: never an order to a platform spent by its own effect
+                // rules 12: never an order to a platform spent by its own effect
                 if let (Some(pol), Some(tr)) = (&policy, intents.get(intent))
                     && pol.rules.followups()
                     && let Some(u) = tr.spec.uids.iter().find(|u| restores.expended_by(u).is_some())
@@ -2783,7 +2889,7 @@ fn replay_inner<S: AsRef<str>>(
                         &mut r,
                         e,
                         Some(*intent),
-                        "an order dispatched to a platform spent by its own effect (rules 11)",
+                        "an order dispatched to a platform spent by its own effect (rules 12)",
                         u.to_string(),
                         format!("spent by engagement {}", restores.expended_by(u).map(|i| i.to_string()).unwrap_or_default()),
                     );
@@ -2812,6 +2918,10 @@ fn replay_inner<S: AsRef<str>>(
                     );
                     continue;
                 };
+                tr.space_order = order.clone();
+                if let Some(a) = tr.last_inputs.as_deref().and_then(|w| w.space.answer()) {
+                    tr.dispatch_now = a.now();
+                }
                 if let Some(seq) = tr.dispatch_logged {
                     bad(
                         &mut r,
@@ -3005,6 +3115,20 @@ fn replay_inner<S: AsRef<str>>(
                 let run_auth = r.auth;
                 // rules 10: an assertion goes with a passkey login or step-up, and only there
                 let passkey_act = matches!(action.as_str(), "session.opened" | "step_up") && *auth == Some(AuthMethod::Passkey);
+                // rules 11: an operator's cancel of a dispatched collect or cover: the engine's
+                // cancelled report and the cancel transition must follow at once
+                if action == "intent.cancel"
+                    && policy.as_ref().is_some_and(|p| p.rules.space_followups())
+                    && let Some(id) = cancelled_intent(detail)
+                    && let Some(tr) = intents.get_mut(&id)
+                    && tr.state == State::Dispatched
+                    && tr.spec.task.is_space()
+                {
+                    if tr.recheck_due.is_some() || tr.recheck_lost.is_some() {
+                        bad(&mut r, e, Some(id), "a cancel between a space task's re-check and its report", String::new(), String::new());
+                    }
+                    tr.cancel_due = Some((operator.clone(), e.seq));
+                }
                 if proof.is_some() != passkey_act {
                     bad(
                         &mut r,
@@ -3058,7 +3182,7 @@ fn replay_inner<S: AsRef<str>>(
                     // rules 8: opened the way the run authenticates (a checked credential in a
                     // credentials run: a person's password, or a harness-held scripted one; an
                     // asserted name in a dev run)
-                    // rules 11: a session opens by the method the roster's scripted list gives
+                    // rules 12: a session opens by the method the roster's scripted list gives
                     // its operator (a harness's credential scripted, a person's not)
                     if policy.as_ref().is_some_and(|p| p.rules.followups())
                         && let (Some(method), Some(why)) = (
@@ -3830,8 +3954,8 @@ fn replay_inner<S: AsRef<str>>(
                 }
             }
             EventBody::PlatformRestore { .. } => {
-                let rules11 = policy.as_ref().is_some_and(|p| p.rules.followups());
-                platform_restore(&mut r, e, &mut restores, &intents, rules11);
+                let followups = policy.as_ref().is_some_and(|p| p.rules.followups());
+                platform_restore(&mut r, e, &mut restores, &intents, followups);
             }
             EventBody::RestoreClosed {
                 uid,
@@ -4456,6 +4580,52 @@ fn replay_inner<S: AsRef<str>>(
                 if *ahead {
                     tr.started_ahead.insert(uid.clone());
                 }
+                // rules 11: the engine's own reports on a space task (a cancel's, a re-check's)
+                // are bound to the cancel or check right before them, their details recomputed
+                if policy.as_ref().is_some_and(|p| p.rules.space_followups()) && tr.spec.task.is_space() {
+                    if tr.cancel_due.is_some() && state != space::CANCELLED_OP {
+                        bad(&mut r, e, Some(*intent), "an op state between an operator's cancel of a dispatched space task and its cancelled report", json(&(uid, state)), space::CANCELLED_OP.into());
+                    }
+                    let recheck_report = state == space::RECHECKED_OP
+                        || (state == space::MISSED_OP && detail.starts_with(space::NO_LONGER_FEASIBLE));
+                    if tr.recheck_due.is_some() && !recheck_report {
+                        bad(&mut r, e, Some(*intent), "an op state between a space task's re-check and its report", json(&(uid, state)), "rechecked or missed".into());
+                    }
+                    if tr.recheck_lost.is_some() {
+                        bad(&mut r, e, Some(*intent), "an op state between a space task's missed report and its failure", json(&(uid, state)), "intent.state fail".into());
+                    }
+                    if state == space::CANCELLED_OP {
+                        match (&tr.cancel_due, &tr.space_order) {
+                            (Some(_), Some(order)) => {
+                                let want = space::cancel_detail(order, scenario_map.scenario(e.t));
+                                if *detail != want {
+                                    bad(&mut r, e, Some(*intent), "cancelled report differs from what the cancel means for the dispatched order at that time", detail.clone(), want);
+                                }
+                                tr.cancel_reported = true;
+                            }
+                            _ => bad(&mut r, e, Some(*intent), "a cancelled report without an operator's cancel of the dispatched space task right before it", json(&(uid, detail)), "operator.action intent.cancel".into()),
+                        }
+                    }
+                    if recheck_report {
+                        match tr.recheck_due.take() {
+                            Some((passed, want)) => {
+                                if (state == space::RECHECKED_OP) != passed {
+                                    bad(&mut r, e, Some(*intent), "a re-check report that contradicts its check", state.clone(), if passed { space::RECHECKED_OP.into() } else { space::MISSED_OP.into() });
+                                }
+                                if *detail != want {
+                                    bad(&mut r, e, Some(*intent), "re-check report differs from the recomputed check", detail.clone(), want.clone());
+                                }
+                                if passed {
+                                    r.space_rechecked += 1;
+                                } else {
+                                    r.space_missed += 1;
+                                    tr.recheck_lost = Some(want);
+                                }
+                            }
+                            None => bad(&mut r, e, Some(*intent), "a re-check report without its dispatched-phase check right before it", json(&(uid, state, detail)), "check.result phase dispatched".into()),
+                        }
+                    }
+                }
                 tr.ops.insert(uid.clone(), state.clone());
             }
             EventBody::VehicleEvent { uid, kind, text } => {
@@ -4869,6 +5039,34 @@ fn replay_inner<S: AsRef<str>>(
                 recomputed: "engage.stopped".into(),
             });
         }
+        // rules 11: a cancel, a re-check and a missed report each call for what follows them
+        if let Some((_, seq)) = &tr.cancel_due {
+            r.mismatches.push(Mismatch {
+                seq: *seq,
+                intent: Some(*id),
+                what: "an operator's cancel of a dispatched space task never carried out".into(),
+                logged: String::new(),
+                recomputed: "op.state cancelled, intent.state cancel".into(),
+            });
+        }
+        if tr.recheck_due.is_some() {
+            r.mismatches.push(Mismatch {
+                seq: tr.last_check_seq,
+                intent: Some(*id),
+                what: "a space task's re-check never reported".into(),
+                logged: String::new(),
+                recomputed: "op.state rechecked or missed".into(),
+            });
+        }
+        if tr.recheck_lost.is_some() {
+            r.mismatches.push(Mismatch {
+                seq: last_seq,
+                intent: Some(*id),
+                what: "a space task reported missed but never failed".into(),
+                logged: String::new(),
+                recomputed: "intent.state fail".into(),
+            });
+        }
     }
     // rules 9: an act's verdict or a revocation's stops the log ends before
     if let Some((seq, due)) = &ident_due {
@@ -4932,7 +5130,7 @@ fn replay_inner<S: AsRef<str>>(
     r
 }
 
-/// Rules 11: a decision's logged `expended` fact (the intent's vehicles spent by their own
+/// Rules 12: a decision's logged `expended` fact (the intent's vehicles spent by their own
 /// effect) against the ledger replay keeps.
 fn check_expended(
     r: &mut ReplayReport,
@@ -4950,7 +5148,7 @@ fn check_expended(
     }
 }
 
-/// Rules 11: the identities of the vehicles a decision's `restore_owed` fact names for values
+/// Rules 12: the identities of the vehicles a decision's `restore_owed` fact names for values
 /// carried over (the bridge's input; replay recomputes the hold from them and the ledger).
 fn carried_identities(owed: &BTreeMap<Uid, queue::RestoreOwed>) -> BTreeMap<Uid, engage::VehicleIdentity> {
     owed.iter()
@@ -4958,7 +5156,7 @@ fn carried_identities(owed: &BTreeMap<Uid, queue::RestoreOwed>) -> BTreeMap<Uid,
         .collect()
 }
 
-/// Rules 11: a `restore.closed`: under these rules only; one platform's values, exactly what
+/// Rules 12: a `restore.closed`: under these rules only; one platform's values, exactly what
 /// the ledger owed it, or one earlier log whose carry failed; `expended` right after the
 /// release of an engagement on that platform whose release picture shows the platform spent
 /// by its effect (`expended_by_effect`), never for a log; `written_off` by an operator under
@@ -4976,7 +5174,7 @@ fn restore_closed(
     before: Option<&Event>,
 ) {
     if !policy.is_some_and(|p| p.rules.followups()) {
-        bad(r, e, None, "a restore closed under rules that close none (rules 11)", String::new(), String::new());
+        bad(r, e, None, "a restore closed under rules that close none (rules 12)", String::new(), String::new());
     }
     let what = match (uid, log) {
         (Some(u), _) => format!("vehicle {u}: its own lost-link values {}", json(values)),
@@ -5066,7 +5264,7 @@ fn restore_closed(
     }
 }
 
-/// Rules 11: the bare file names of the logs a log's `run.started` says it carried over from
+/// Rules 12: the bare file names of the logs a log's `run.started` says it carried over from
 /// (`carried_from`), those it read and those it could not (checked when at hand): what
 /// `murmur-replay` looks for, beside the log or given with `--prev`. Empty when the first line
 /// is not `run.started` or carried nothing.
@@ -5087,7 +5285,7 @@ pub fn carried_from_logs(text: &str) -> Vec<String> {
     }
 }
 
-/// Rules 11 (review L6): whether `reason` voids an approved order of a kind never queued for
+/// Rules 12 (review L6): whether `reason` voids an approved order of a kind never queued for
 /// one of the other things that can end it before its dispatch while its platform's own
 /// values hold it, as the bridge gives them: its task layer can't take the order, one of its
 /// vehicles is lost, a newer order supersedes it. Any other reason there must be the refusal
@@ -5103,13 +5301,13 @@ fn other_void(reason: &str, spec: &IntentSpec) -> bool {
             .any(|u| reason.starts_with(&format!("system: vehicle {u} lost: ")) || reason == format!("system: vehicle {u} lost"))
 }
 
-/// Rules 11: whether a carried-over entry names a `.last-run` pointer that could not be read
+/// Rules 12: whether a carried-over entry names a `.last-run` pointer that could not be read
 /// (empty, torn, garbled): the log it named is unknown, so there is no log to look for.
 pub fn is_pointer_name(name: &str) -> bool {
     name.starts_with(".last-run")
 }
 
-/// Rules 11: `run.started`'s `carried_from` against the logs it names (each found in
+/// Rules 12: `run.started`'s `carried_from` against the logs it names (each found in
 /// [`ReplayOptions::carried_logs`], or [`ReplayOptions::restores_from`] by its name): the first
 /// is the log the pointer named, every later one a log an earlier one named pending, each
 /// named once, and every pending log has its own entry (read again, or failed again); each
@@ -5117,7 +5315,7 @@ pub fn is_pointer_name(name: &str) -> bool {
 /// head and last seq) and still owed exactly what the entry carries (the platforms' values,
 /// the vehicles, the engagements, and the logs it named pending). A log not given is a
 /// mismatch for an entry that carries anything, unless trusted; one that carries nothing is
-/// reported unchecked. Before rules 11 `carried_from` is a marker (a mismatch elsewhere).
+/// reported unchecked. Before rules 12 `carried_from` is a marker (a mismatch elsewhere).
 fn check_carried_from(r: &mut ReplayReport, events: &[Event], opts: &ReplayOptions<'_>) {
     let Some(first) = events.first() else { return };
     let EventBody::RunStarted { carried_from, .. } = &first.body else {
@@ -5293,7 +5491,7 @@ fn check_carried_from(r: &mut ReplayReport, events: &[Event], opts: &ReplayOptio
     }
 }
 
-/// Rules 11: a log's text up to and including its event of seq `last` (the head a start
+/// Rules 12: a log's text up to and including its event of seq `last` (the head a start
 /// recorded; a crash may have torn a line after it); the whole text when there is no such
 /// event, and nothing when `last` is none (a log with no event).
 fn up_to_seq(text: &str, last: Option<u64>) -> String {
@@ -6169,7 +6367,7 @@ fn recompute_space(
     }
     r.space_recomputed += 1;
     match oracle.answer(&logged.query) {
-        Ok(again) if again == *logged => {}
+        Ok(again) if again.same_answer(logged) => {}
         Ok(again) => bad(
             r,
             e,
@@ -6516,6 +6714,9 @@ fn unbacked(tr: &Tracked, t: Transition) -> Option<&'static str> {
         }
         Transition::Release if !tr.effect_logged => Some("released without an engage.effect"),
         Transition::Abort if !tr.stopped => Some("aborted without an engage.stopped"),
+        Transition::Cancel if !tr.cancel_reported => {
+            Some("cancelled after dispatch without the operator's cancel and the engine's cancelled report")
+        }
         Transition::Complete if tr.spec.kind() == TaskKind::Engage && !tr.assessed => {
             Some("engagement completed without an assessment")
         }
@@ -6526,6 +6727,12 @@ fn unbacked(tr: &Tracked, t: Transition) -> Option<&'static str> {
         Transition::Expire if !tr.expired => Some("expired without an approval.expired"),
         _ => None,
     }
+}
+
+/// The intent an `operator.action intent.cancel` names (`"i12: note"`).
+fn cancelled_intent(detail: &str) -> Option<IntentId> {
+    let (id, _) = detail.split_once(':')?;
+    id.strip_prefix('i')?.parse().ok().map(IntentId)
 }
 
 fn json<T: Serialize>(v: &T) -> String {
@@ -6579,7 +6786,7 @@ fn check_restore_owed(
     policy: Option<&Policy>,
 ) {
     let (Some(tr), Some(pol)) = (intents.get(&id), policy) else { return };
-    // rules 11: a carried entry's identity of the vehicle now is the bridge's input; whether it
+    // rules 12: a carried entry's identity of the vehicle now is the bridge's input; whether it
     // holds is recomputed from it and the ledger
     let want = restores.owed_for(&tr.spec, &pol.rules, &carried_identities(logged));
     if *logged != want {

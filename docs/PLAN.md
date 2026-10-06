@@ -260,7 +260,14 @@ in the console (`sim/fleets/contacts-demo.toml` shows coverage gaps at the Gate)
   human picks, through the Phase C intent pipeline (intent kinds `collect`, `cover`). SATCOM
   passes drive the emulator's satcom class; GNSS availability feeds navigation. UI: footprints,
   swaths and link lines on the theater map; an access-window **timeline** as the main space
-  view; a linked globe inset for orbits.
+  view; a linked globe inset for orbits. Rules 11 (murmur-0nv.1.7, `SPACE_FOLLOWUPS_SINCE`):
+  a dispatched collect or cover can be cancelled by an operator (the engine states what the
+  cancel means for the pass: withdrawn before it, or a pass under way that cannot be
+  recalled), every running one is re-checked when the element sets are reloaded (`missed`
+  with the fresh options for a human when its pass is gone), a cover is evaluated at sample
+  points over its area (the centroid and the boundary, the least covered point deciding),
+  and the space query runs outside the decision lock on the segment the engine holds
+  (`crates/murmur-decide/README.md`, "After dispatch").
 
 Exit: the 30%-loss write-up (murmur-t7d), with numbers.
 
@@ -473,7 +480,7 @@ lost vehicle to the acts that step up (off by default). Passkeys come before a s
 real participants. Live log with anchors:
 `crates/murmur-decide/tests/data/audit/v8-auth-live.jsonl`.
 
-Rules 11, the reviews' follow-ups (murmur-q05, -9m0, -jfi, -cq3, -qjf, -54l;
+Rules 12, the reviews' follow-ups (murmur-q05, -9m0, -jfi, -cq3, -qjf, -54l;
 `REVIEW_FOLLOWUPS_SINCE`, policy schema 7 unchanged; DECISIONS.md, the entries of 10-06): a
 platform spent by its own effect is owed nothing back after the release, and an operator may
 write off lost-link values that will never be confirmed back (or an earlier log whose carry

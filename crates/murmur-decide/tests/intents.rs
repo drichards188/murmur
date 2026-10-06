@@ -45,6 +45,8 @@ fn every_transition_legal_and_illegal() {
         (S::Queued, T::Void, S::Voided),
         (S::Queued, T::Expire, S::Expired),
         (S::Dispatched, T::Requeue, S::Queued),
+        // rules 11: a dispatched collect or cover cancelled by an operator
+        (S::Dispatched, T::Cancel, S::Aborted),
     ];
     let mut checked = 0;
     for from in State::ALL {
@@ -61,7 +63,7 @@ fn every_transition_legal_and_illegal() {
             checked += 1;
         }
     }
-    assert_eq!(checked, 14 * 16);
+    assert_eq!(checked, 14 * 17);
     for s in State::ALL {
         if s.is_terminal() {
             assert!(

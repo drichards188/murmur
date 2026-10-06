@@ -258,7 +258,7 @@ pub fn roster_from(file: &CredentialFile) -> (Vec<OperatorId>, Vec<OperatorId>) 
     (ops, engage)
 }
 
-/// Rules 11 (murmur-jfi): the operators whose credential is harness-held (`scripted`) in
+/// Rules 12 (murmur-jfi): the operators whose credential is harness-held (`scripted`) in
 /// `file` when the run starts: fixed on the run's roster, so a credential re-marked mid-run
 /// (`murmur-auth scripted <op> on|off`) can't move its operator between people and scripts in
 /// the log; its next login is refused until the bridge restarts.
@@ -1218,7 +1218,7 @@ fn signed_in(
     let session = match open(engage) {
         Ok(s) => s,
         Err(e) => {
-            // a login the engine refuses after the credential checked (rules 11: a credential
+            // a login the engine refuses after the credential checked (rules 12: a credential
             // re-marked scripted or not since the start; a factor the policy does not admit)
             // is a refused login like a wrong password, on the record, and the browser's own
             // session stays

@@ -10,6 +10,7 @@
 .sr-first { grid-column: 2; }
 .sr-sim { margin: 4px 0 0; font-size: 11px; }
 .sr-badge { margin-left: auto; font: 600 10px var(--mono); letter-spacing: 0.08em; padding: 2px 6px; border-radius: 3px; background: #1c2733; color: var(--muted); }
+.sr-cancel { font: 11px var(--mono); padding: 0 6px; margin-left: 4px; }
 .sr-badge.ok { background: #23402f; color: var(--ok); }
 .sr-badge.bad { background: var(--bad); color: #1a0606; }
 

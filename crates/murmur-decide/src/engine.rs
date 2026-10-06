@@ -27,10 +27,10 @@ use crate::queue::{
 use crate::rules::{self, CheckResult, OPERATOR_AUTH_SINCE, Outcome};
 use serde::Serialize;
 use crate::space::{
-    ChosenCollect, CollectOrder, CoverOrder, ScenarioMap, SegmentId, SpaceOracle, SpaceOrder,
-    from_utc, matched_option, query_for,
+    self, ChosenCollect, CollectOrder, CoverOrder, ScenarioMap, SegmentId, SpaceAnswer,
+    SpaceOracle, SpaceOrder, from_utc, matched_option, query_for,
 };
-use crate::terrain::TerrainOracle;
+use crate::terrain::{NoTerrain, TerrainOracle};
 use crate::time::{Clock, Time};
 use crate::world::{LoggedInputs, SpaceInputs, WorldSnapshot};
 
@@ -113,17 +113,17 @@ pub enum EngineError {
     /// nothing was logged.
     #[error("identification: {0}")]
     Identification(String),
-    /// Rules 11: a write-off of a restore the engine can't take (nothing owed, no note, an
-    /// engagement under way on the platform, rules before 11): nothing was logged.
+    /// Rules 12: a write-off of a restore the engine can't take (nothing owed, no note, an
+    /// engagement under way on the platform, rules before 12): nothing was logged.
     #[error("write-off: {0}")]
     NotWrittenOff(String),
-    /// Rules 11: what a start carried over can't go into `run.started` (a log not named by its
-    /// bare file name, rules before 11): the engine did not start.
+    /// Rules 12: what a start carried over can't go into `run.started` (a log not named by its
+    /// bare file name, rules before 12): the engine did not start.
     #[error("carry-over: {0}")]
     Carry(String),
 }
 
-/// Rules 11: what an operator writes off ([`Engine::write_off_restore`]): the lost-link values
+/// Rules 12: what an operator writes off ([`Engine::write_off_restore`]): the lost-link values
 /// owed back to one platform, or an earlier log whose carry failed (by its file name).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WriteOff {
@@ -181,13 +181,39 @@ pub fn prepare_space(
     })
 }
 
+/// [`prepare_space`] with the query's request time given (scenario time) instead of taken
+/// from `t`: a dispatched collect is re-checked at the request time of the answer it was
+/// tasked on ([`Engine::recheck_space`]), so a later answer differs only where the segment
+/// does, not by the lead time spent since.
+pub fn prepare_space_at(
+    oracle: &dyn SpaceOracle,
+    task: &Task,
+    t: Time,
+    now: Time,
+    rules: &crate::rules::RulesConfig,
+) -> Result<PreparedSpace, EngineError> {
+    Ok(PreparedSpace {
+        task: task.clone(),
+        t,
+        inputs: space_inputs_at(oracle, task, now, rules)?,
+    })
+}
+
 fn space_inputs(
     oracle: &dyn SpaceOracle,
     task: &Task,
     t: Time,
     rules: &crate::rules::RulesConfig,
 ) -> Result<SpaceInputs, EngineError> {
-    let now = oracle.scenario_time(t);
+    space_inputs_at(oracle, task, oracle.scenario_time(t), rules)
+}
+
+fn space_inputs_at(
+    oracle: &dyn SpaceOracle,
+    task: &Task,
+    now: Time,
+    rules: &crate::rules::RulesConfig,
+) -> Result<SpaceInputs, EngineError> {
     let query = match query_for(task, now, &rules.space_rules()) {
         Some(Ok(q)) => q,
         Some(Err(reason)) => return Ok(SpaceInputs::Unavailable { reason }),
@@ -200,6 +226,34 @@ fn space_inputs(
         },
         Err(reason) => SpaceInputs::Unavailable { reason },
     })
+}
+
+/// Rules 11: what [`Engine::recheck_space`] found a dispatched collect or cover to be
+/// against a later space answer.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SpaceRecheck {
+    /// The later answer is the one the task runs on: nothing logged.
+    Unchanged,
+    /// A new answer, and the task can still be met: `check.result` (phase `dispatched`) and
+    /// `op.state rechecked`; a cover's watch takes the new answer's outages.
+    Holds { detail: String },
+    /// A new answer, and the task can no longer be met: `check.result`, `op.state missed`
+    /// (`no longer feasible: ...`, a collect's with the fresh options a human may choose
+    /// from) and the intent failed.
+    Lost { detail: String },
+    /// The later answer could not be computed (the query failed on the segment): nothing is
+    /// known and nothing is logged; the task runs on, and the operator should hear of it.
+    Unknown { reason: String },
+}
+
+/// Who reports an op state: the bridge (the task layer, the space executor), the bridge
+/// ahead of a vehicle start (rules 7), or the engine itself (rules 11: a space task's cancel
+/// and re-check).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OpReport {
+    Bridge,
+    Ahead,
+    Engine,
 }
 
 /// What [`Engine::step_engagements`] did: what the bridge must act on, and the engagements
@@ -261,7 +315,7 @@ pub(crate) fn waiting_vehicles<'a>(
     out
 }
 
-/// Rules 11: the orders queued on `spec`'s vehicles, other than `spec` itself, by id, with
+/// Rules 12: the orders queued on `spec`'s vehicles, other than `spec` itself, by id, with
 /// their kind and the vehicles they share with it: they still stand (each goes when its
 /// vehicles can be reached, unless voided or cancelled). Replay recomputes it from its own
 /// intents.
@@ -282,7 +336,7 @@ pub(crate) fn queued_on<'a>(
 /// instead of sent while a vehicle of its is owed its own lost-link values that hold it
 /// (`owed`, the ledger's on no identity: values carried over hold whatever vehicle has the
 /// uid), if it is: whether the engagements in play on its vehicles (`engaged`) are stopped by
-/// it or the restore is pending, and that a hold or rtl goes at once. Rules 11 (murmur-54l):
+/// it or the restore is pending, and that a hold or rtl goes at once. Rules 12 (murmur-54l):
 /// it also names the orders still queued on its vehicles (`standing`, [`queued_on`]): the
 /// refusal leaves them in place, and an operator who meant this order to replace one cancels
 /// it. Replay recomputes it. None for a hold or rtl, or with nothing owed that holds.
@@ -325,7 +379,7 @@ pub(crate) fn refusal_reason(
             engaged.join(", ")
         ),
     };
-    // rules 11: the refusal replaces nothing: an older order queued on its vehicles still goes
+    // rules 12: the refusal replaces nothing: an older order queued on its vehicles still goes
     if rules.followups() && !standing.is_empty() {
         let list: Vec<String> = standing
             .iter()
@@ -502,10 +556,10 @@ impl Engine {
     }
 
     /// [`Engine::with_areas`] for a bridge that carried over what earlier runs' logs still owed
-    /// (rules 11, [`crate::rules::REVIEW_FOLLOWUPS_SINCE`]): `carried_from` goes into
+    /// (rules 12, [`crate::rules::REVIEW_FOLLOWUPS_SINCE`]): `carried_from` goes into
     /// `run.started` (the log `.last-run-<port>` named first, then any log whose carry had
     /// failed, each with its head and what it owed), in that one line, and seeds the ledger of
-    /// the platforms' own lost-link values owed back. Refused before rules 11 (those carry with
+    /// the platforms' own lost-link values owed back. Refused before rules 12 (those carry with
     /// `platform.restore` events, [`Engine::record_platform_restore`]) and for an entry that
     /// does not name a log by its bare file name.
     pub fn start(
@@ -544,8 +598,8 @@ impl Engine {
             roster.passkeys = None;
             roster.study = None;
         }
-        // rules 11: a credentials run fixes its scripted (harness-held) operators at the start,
-        // an empty list when none is; never before rules 11, never in a dev run
+        // rules 12: a credentials run fixes its scripted (harness-held) operators at the start,
+        // an empty list when none is; never before rules 12, never in a dev run
         if policy.rules.followups() && roster.auth == Some(AuthMode::Credentials) {
             roster.scripted.get_or_insert_with(Vec::new);
         } else {
@@ -613,7 +667,7 @@ impl Engine {
             areas: areas.clone(),
             carried_from: carried_from.clone(),
         })?;
-        // rules 11: what earlier runs still owed, owed back from here on
+        // rules 12: what earlier runs still owed, owed back from here on
         e.restores.carry(&carried_from);
         e.areas = areas;
         e.run_hash = e.head.clone();
@@ -813,7 +867,7 @@ impl Engine {
                 why: "these decision rules have no passkeys".into(),
             });
         }
-        // rules 11: a scripted credential opens scripted sessions, a person's a person's, as
+        // rules 12: a scripted credential opens scripted sessions, a person's a person's, as
         // the roster fixed them at the run's start
         if self.policy.rules.followups()
             && let Some(why) = self.roster.method_refused(&operator, method)
@@ -1690,7 +1744,7 @@ impl Engine {
     /// attempt confirmed (the read-back shows every value back, no error; replay recomputes
     /// it, and reports a platform whose values were still owed when the log ended).
     pub fn record_platform_restore(&mut self, report: PlatformRestoreReport) -> Result<bool, EngineError> {
-        // rules 11: what an earlier run owed is carried in run.started, in one line
+        // rules 12: what an earlier run owed is carried in run.started, in one line
         // (Engine::start), never event by event
         if report.carried && self.policy.rules.followups() {
             return Err(EngineError::NotItsOrder {
@@ -1727,14 +1781,14 @@ impl Engine {
         Ok(confirmed)
     }
 
-    /// Rules 11 (murmur-q05, murmur-cq3): an operator writes off a debt of the ledger, under
+    /// Rules 12 (murmur-q05, murmur-cq3): an operator writes off a debt of the ledger, under
     /// their own session, saying why: the platform's own lost-link values owed back to `uid`
     /// (the vehicle is lost or destroyed, spent, or another vehicle has the uid now), or an
     /// earlier log whose carry failed (`log`: gone for good). Logged as `restore.closed`
     /// (`written_off`, with the values closed); nothing is owed back for it from then on, in
     /// this run or a later one, and the bridge stops trying. Any operator may (it records a
     /// judgement about the fleet, it authorizes nothing); an agent can't ([`AgentPort`] has no
-    /// such method). Refused before rules 11, without a note, for nothing owed, and while an
+    /// such method). Refused before rules 12, without a note, for nothing owed, and while an
     /// engagement is under way on the platform (its own restore is still to come).
     pub fn write_off_restore(
         &mut self,
@@ -1784,32 +1838,32 @@ impl Engine {
         Ok(())
     }
 
-    /// Rules 11: the earlier logs whose carry failed, as the ledger has them, with why and the
+    /// Rules 12: the earlier logs whose carry failed, as the ledger has them, with why and the
     /// armed platforms their fleet named (a mission for one waits until the log is read or
     /// written off): for the inbox, what an operator could write off.
     pub fn pending_carries(&self) -> Vec<(String, String, Vec<Uid>)> {
         self.restores.pending()
     }
 
-    /// Rules 11: the engagement whose effect spent `uid`, if one did: no order or nomination
+    /// Rules 12: the engagement whose effect spent `uid`, if one did: no order or nomination
     /// for it is taken any more.
     pub fn expended_by(&self, uid: &Uid) -> Option<IntentId> {
         self.restores.expended_by(uid)
     }
 
-    /// Rules 11: whether the ledger still owes `uid` its own lost-link values.
+    /// Rules 12: whether the ledger still owes `uid` its own lost-link values.
     pub fn restore_owed_to(&self, uid: &Uid) -> bool {
         self.restores.values_owed(uid).is_some()
     }
 
-    /// Rules 11: the values the ledger owes back that no engagement of this run preloaded
+    /// Rules 12: the values the ledger owes back that no engagement of this run preloaded
     /// (carried over at the start), with the vehicle they were preloaded on: what the bridge
     /// puts back once a vehicle that matches answers.
     pub fn carried_owed(&self) -> Vec<crate::replay::OwedRestore> {
         self.restores.carried()
     }
 
-    /// Rules 11 (murmur-q05): right after an engagement's release, when its platform is spent
+    /// Rules 12 (murmur-q05): right after an engagement's release, when its platform is spent
     /// by its own effect (its catalog's `expended_by_effect`, as the release picture `world`
     /// has it), close what is owed back to it (possibly nothing) and mark it spent:
     /// `restore.closed`, `expended`. From then on it takes no order and no nomination (the
@@ -2523,15 +2577,38 @@ impl Engine {
         self.get(new_id)
     }
 
-    /// An operator withdraws an intent before dispatch (pending or approved).
+    /// An operator withdraws an intent before dispatch (pending, approved or queued:
+    /// `voided`), or, rules 11 ([`rules::SPACE_FOLLOWUPS_SINCE`]), a dispatched collect or
+    /// cover: the engine then reports what the cancel means for the order under its
+    /// resource (`op.state cancelled`, [`space::cancel_detail`]: a tasking request
+    /// withdrawn before its pass; a pass already under way, which cannot be recalled, its
+    /// product no longer awaited; a watch ended) and the intent is `aborted` (transition
+    /// `cancel`). A dispatched vehicle task or engagement is refused as before (a newer
+    /// order supersedes the one, an abort stops the other), and an agent withdraws nothing
+    /// after dispatch.
     pub fn cancel(
         &mut self,
         id: IntentId,
         by: &HumanAuthority,
         note: &str,
     ) -> Result<&Intent, EngineError> {
-        next_state(self.get(id)?.state(), Transition::Void)
-            .map_err(|err| EngineError::Illegal { id, err })?;
+        let intent = self.get(id)?;
+        let after_dispatch = intent.state() == State::Dispatched
+            && intent.spec().task.is_space()
+            && self.policy.rules.space_followups();
+        let transition = if after_dispatch {
+            Transition::Cancel
+        } else {
+            Transition::Void
+        };
+        next_state(intent.state(), transition).map_err(|err| EngineError::Illegal { id, err })?;
+        let order = intent.space_order().cloned();
+        if after_dispatch && order.is_none() {
+            return Err(EngineError::NotDispatchable {
+                id,
+                why: "no space order recorded for its dispatch".into(),
+            });
+        }
         self.emit(EventBody::OperatorAction {
             operator: by.operator().clone(),
             session: by.session(),
@@ -2542,12 +2619,113 @@ impl Engine {
             step_up: None,
             passkey: None,
         })?;
+        if let (true, Some(order)) = (after_dispatch, order) {
+            // one clock read: the report is logged at the instant its detail was computed for
+            let t = self.now();
+            let scen = self.scenario_map().scenario(t);
+            let detail = space::cancel_detail(&order, scen);
+            self.op_state(id, order.resource(), space::CANCELLED_OP, &detail, OpReport::Engine, Some(t))?;
+        }
         self.transition(
             id,
-            Transition::Void,
+            transition,
             format!("cancelled by {}: {note}", by.operator()),
         )?;
         self.get(id)
+    }
+
+    /// Rules 11 ([`rules::SPACE_FOLLOWUPS_SINCE`]): a dispatched collect or cover checked
+    /// again against a later space answer (`prepared`: the bridge's, computed outside its
+    /// lock on the segment it reloaded, at the request time of the answer the task was
+    /// tasked on, [`prepare_space_at`]). An answer with the hash the task already runs on
+    /// changes nothing and logs nothing ([`SpaceRecheck::Unchanged`]). A new answer is
+    /// checked as a submission is (`check.result`, phase `dispatched`, the rules reading
+    /// only the logged answer): the task still holds (`op.state rechecked`,
+    /// [`SpaceRecheck::Holds`]: a collect keeps its approved pass, a fresh pass within the
+    /// tolerance being the same opportunity; a cover's watch takes the new outages), or it
+    /// can no longer be met (`op.state missed`, `no longer feasible: ...`, with a collect's
+    /// fresh options for a human to choose from, and the intent failed,
+    /// [`SpaceRecheck::Lost`]). Refused for anything but a dispatched space task, a
+    /// `prepared` for another task, request time or segment than the engine's, and under
+    /// older rules; nothing is logged then.
+    pub fn recheck_space(
+        &mut self,
+        id: IntentId,
+        prepared: PreparedSpace,
+    ) -> Result<SpaceRecheck, EngineError> {
+        let refuse = |why: &str| EngineError::NotDispatchable {
+            id,
+            why: why.to_string(),
+        };
+        if !self.policy.rules.space_followups() {
+            return Err(refuse("these decision rules re-check no space task after dispatch"));
+        }
+        let intent = self.get(id)?;
+        let spec = intent.spec().clone();
+        if !spec.task.is_space() {
+            return Err(refuse("not a collect or cover"));
+        }
+        if intent.state() != State::Dispatched {
+            return Err(refuse("not dispatched: a space task is re-checked only while it runs"));
+        }
+        if prepared.task != spec.task {
+            return Err(refuse("the prepared answer is for another task"));
+        }
+        let current = intent.space_answer();
+        let fresh = prepared.inputs.answer();
+        if let (Some(a), Some(b)) = (current.and_then(SpaceAnswer::now), fresh.and_then(SpaceAnswer::now))
+            && a != b
+        {
+            return Err(refuse(
+                "the prepared answer is for another request time than the answer the task runs on",
+            ));
+        }
+        match (self.space.as_ref().map(|o| o.segment()), fresh) {
+            (Some(seg), Some(a)) if a.segment != *seg => {
+                return Err(refuse("the prepared answer is from another space segment (or pin) than the engine's"));
+            }
+            (None, Some(_)) => return Err(refuse("no space segment loaded")),
+            _ => {}
+        }
+        let order = intent
+            .space_order()
+            .cloned()
+            .ok_or_else(|| refuse("no space order recorded for its dispatch"))?;
+        // a collect whose pass has come was collected (simulated): nothing to re-check, and
+        // a later answer must not fail it
+        if let SpaceOrder::Collect(c) = &order
+            && self.scenario_map().scenario(self.now()) >= c.collect_time
+        {
+            return Err(refuse("its pass has come: the scene was collected, there is nothing to re-check"));
+        }
+        // a query that failed on the segment is not a later answer: nothing is known
+        if let SpaceInputs::Unavailable { reason } = &prepared.inputs {
+            return Ok(SpaceRecheck::Unknown {
+                reason: reason.clone(),
+            });
+        }
+        let old_hash = current.map(SpaceAnswer::content_hash).transpose()?;
+        if let SpaceInputs::Answered { sha256, .. } = &prepared.inputs
+            && Some(sha256) == old_hash.as_ref()
+        {
+            return Ok(SpaceRecheck::Unchanged);
+        }
+        let t = prepared.t;
+        self.prepared_space = Some(prepared);
+        let world = WorldSnapshot::new(t);
+        let (inputs, _, results, passed) =
+            self.run_checks(&spec, CheckPhase::Dispatched, &world, &NoTerrain)?;
+        // the fresh options are ranked from the check's own scenario time
+        let checked_at = self.scenario_map().scenario(self.last_t);
+        let detail = space::recheck_detail(&results, passed, inputs.space.answer(), checked_at);
+        if passed {
+            self.op_state(id, order.resource(), space::RECHECKED_OP, &detail, OpReport::Engine, None)?;
+            Ok(SpaceRecheck::Holds { detail })
+        } else {
+            self.op_state(id, order.resource(), space::MISSED_OP, &detail, OpReport::Engine, None)?;
+            self.transition(id, Transition::Fail, space::missed_reason(&spec.task, &detail))?;
+            Ok(SpaceRecheck::Lost { detail })
+        }
     }
 
     /// Log something an operator did that isn't an intent decision (acknowledge, snooze).
@@ -2956,7 +3134,7 @@ impl Engine {
                 p.effect_point.lon, p.effect_point.lat, p.effect_radius_m
             ),
         )?;
-        // rules 11: a platform spent by its own effect is owed nothing back from now on
+        // rules 12: a platform spent by its own effect is owed nothing back from now on
         self.close_expended(id, &uid, &inputs)?;
         Ok(Some(EngagementEvent::Effect(EffectOrder {
             intent: id,
@@ -3017,7 +3195,7 @@ impl Engine {
     }
 
     /// Rules 7: why `spec` (a vehicle task other than a hold or rtl) can't go now: a vehicle
-    /// still owed its own lost-link values by an engagement of this run (rules 11: or carried
+    /// still owed its own lost-link values by an engagement of this run (rules 12: or carried
     /// over from an earlier run's, unless `owed` shows the vehicle is another). `owed`: the
     /// fact its reach was judged on; none (a kind the policy never queues, no reach logged):
     /// the ledger's, carried values holding whatever vehicle has the uid. None otherwise.
@@ -3046,7 +3224,7 @@ impl Engine {
     /// such a kind, so values carried over from an earlier run hold whatever vehicle has the
     /// uid). Says whether an engagement in play there is stopped by this order (the bridge
     /// supersedes it in the same step; its restore then goes) or the restore is pending, that a
-    /// hold or rtl goes, and (rules 11) the orders still queued on its vehicles.
+    /// hold or rtl goes, and (rules 12) the orders still queued on its vehicles.
     fn refusal(&self, spec: &IntentSpec) -> Option<String> {
         let owed = self.restore_owed_for(spec, &BTreeMap::new());
         let engaged: BTreeSet<IntentId> = self.engaged_for(spec).into_values().collect();
@@ -3058,7 +3236,7 @@ impl Engine {
     }
 
     /// What [`queue::reach`] reads for `spec`: its part of `world`, and (rules 7) its
-    /// vehicles' lost-link values still owed back (rules 11: with the bridge's identity of a
+    /// vehicles' lost-link values still owed back (rules 12: with the bridge's identity of a
     /// vehicle owed values carried over).
     fn reach_inputs(&self, spec: &IntentSpec, world: &WorldSnapshot) -> WorldSnapshot {
         let mut inputs = world.subset_for(spec);
@@ -3149,7 +3327,7 @@ impl Engine {
         self.drop_later_facts(w);
     }
 
-    /// Rules 11: when the tracker started a track (`first_seen_t`) is a fact only rules 11
+    /// Rules 12: when the tracker started a track (`first_seen_t`) is a fact only rules 12
     /// read: an engine of older rules never logs it (a log claiming them can't carry it).
     fn drop_later_facts(&self, w: &mut WorldSnapshot) {
         if !self.policy.rules.followups() {
@@ -3162,7 +3340,7 @@ impl Engine {
     /// The world as decisions read it (rules 9: its identification filled from the ledger),
     /// for readers outside the engine (the console, agents) and the engine's own checks.
     pub fn identified<'w>(&self, world: &'w WorldSnapshot) -> std::borrow::Cow<'w, WorldSnapshot> {
-        // always a copy: rules 9 fill the identification, and older rules drop rules 11's facts
+        // always a copy: rules 9 fill the identification, and older rules drop rules 12's facts
         let mut w = world.clone();
         self.identify(&mut w);
         std::borrow::Cow::Owned(w)
@@ -3760,7 +3938,7 @@ impl Engine {
 
     /// The dispatch itself: `intent.dispatched` (with the reach that allowed it, when one was
     /// judged), then the transition. `rechecked`: the lost-link values owed back as a dequeue's
-    /// re-check read them (rules 11: with the identity of a vehicle owed carried values).
+    /// re-check read them (rules 12: with the identity of a vehicle owed carried values).
     fn dispatch_inner(
         &mut self,
         id: IntentId,
@@ -3772,8 +3950,8 @@ impl Engine {
             .map_err(|err| EngineError::Illegal { id, err })?;
         // rules 7: whatever the path (and whether the kind is queued or not), never a mission
         // to a vehicle still owed its own lost-link values (replay checks every dispatch); rules
-        // 11: the reach it was judged on says whether carried values hold its vehicle
-        // rules 11: never an order to a platform spent by its own effect
+        // 12: the reach it was judged on says whether carried values hold its vehicle
+        // rules 12: never an order to a platform spent by its own effect
         if let Some((uid, by)) = intent
             .spec()
             .uids
@@ -3824,6 +4002,11 @@ impl Engine {
         self.emit(event)?;
         self.transition(id, Transition::Dispatch, reason.into())?;
         self.get_mut(id)?.mark_dispatched();
+        match &order {
+            Order::Collect(c) => self.get_mut(id)?.set_space_order(SpaceOrder::Collect(c.clone())),
+            Order::Cover(c) => self.get_mut(id)?.set_space_order(SpaceOrder::Cover(c.clone())),
+            Order::Vehicles(_) | Order::Engage(_) => {}
+        }
         self.last_dispatched = Some(id);
         self.step = Some((id, self.seq));
         for u in uids {
@@ -3854,7 +4037,7 @@ impl Engine {
             return Err(EngineError::Illegal { id, err });
         }
         let spec = intent.spec().clone();
-        // rules 11: approved before its platform was spent by its own effect: voided, saying why
+        // rules 12: approved before its platform was spent by its own effect: voided, saying why
         // (it takes no order)
         if self.policy.rules.followups()
             && let Some((uid, by)) = spec
@@ -4414,7 +4597,7 @@ impl Engine {
         state: &str,
         detail: &str,
     ) -> Result<(), EngineError> {
-        self.op_state(id, uid, state, detail, false)
+        self.op_state(id, uid, state, detail, OpReport::Bridge, None)
     }
 
     /// Rules 7 ([`rules::QUEUE_FOLLOWUPS_SINCE`]): a vehicle task's start, logged ahead of
@@ -4431,18 +4614,34 @@ impl Engine {
                 why: "these decision rules log no start ahead of sending it".into(),
             });
         }
-        self.op_state(id, uid, queue::STARTING_OP, detail, true)
+        self.op_state(id, uid, queue::STARTING_OP, detail, OpReport::Ahead, None)
     }
 
+    /// An op state, from `by`; logged at `at` when given (a report whose detail was
+    /// computed for that instant), else now.
     fn op_state(
         &mut self,
         id: IntentId,
         uid: &Uid,
         state: &str,
         detail: &str,
-        ahead: bool,
+        by: OpReport,
+        at: Option<Time>,
     ) -> Result<(), EngineError> {
+        let ahead = by == OpReport::Ahead;
         let intent = self.get(id)?;
+        // rules 11: a space task's cancel and re-check are reported by the engine itself,
+        // bound to the operator's cancel or the check before them; the bridge is refused them
+        if by != OpReport::Engine
+            && self.policy.rules.space_followups()
+            && intent.spec().task.is_space()
+            && space::engine_reported(state, detail)
+        {
+            return Err(EngineError::NotItsOrder {
+                id,
+                why: format!("op state {state} on a space task is the engine's own report (cancel, recheck_space)"),
+            });
+        }
         let dispatched = intent.history().iter().any(|h| h.state == State::Dispatched);
         let fallback = intent
             .engagement()
@@ -4475,13 +4674,17 @@ impl Engine {
                 why: "op requeued after its start went out (it may be running: it ends unconfirmed)".into(),
             });
         }
-        self.emit(EventBody::OpState {
-            intent: id,
-            uid: uid.clone(),
-            state: state.into(),
-            detail: detail.into(),
-            ahead,
-        })?;
+        let at = at.unwrap_or_else(|| self.now());
+        self.emit_at(
+            at,
+            EventBody::OpState {
+                intent: id,
+                uid: uid.clone(),
+                state: state.into(),
+                detail: detail.into(),
+                ahead,
+            },
+        )?;
         self.get_mut(id)?
             .record_op(uid, state, detail, queue::committed_op(state), ahead);
         Ok(())
@@ -4696,12 +4899,22 @@ impl Engine {
 
     /// Ask the space segment this task's question at snapshot time `t`. Failures become
     /// `Unavailable` (the space rule then fails, saying why); only a hashing error is an
-    /// engine error.
+    /// engine error. An answer prepared outside the lock ([`prepare_space`]) is used when
+    /// nothing it depended on changed: the same task, answered by the segment (and pin) the
+    /// engine holds now (one reloaded in between answers again:
+    /// [`Engine::prepared_space_fits`]), and, for a collect, computed within
+    /// [`PREPARED_SPACE_MAX_AGE_MS`] of `t` (its query carries the request time; a cover's
+    /// does not depend on when it was asked, so its age is no concern). Without one, a
+    /// collect's tasking query (milliseconds) is asked here, under whatever lock the caller
+    /// holds; a cover's (seconds of SGP4 over nine points) never is: it is `Unavailable`
+    /// (the check fails closed, saying the bridge prepares it outside the lock).
     fn ask_space(&mut self, task: &Task, t: Time) -> Result<SpaceInputs, EngineError> {
-        // computed outside the lock for this very question, a moment ago
+        let cover = matches!(task, Task::Cover { .. });
+        // computed outside the lock for this very question
         if let Some(p) = self.prepared_space.take()
             && p.task == *task
-            && (t.ms_since(p.t)).abs() <= PREPARED_SPACE_MAX_AGE_MS
+            && (cover || (t.ms_since(p.t)).abs() <= PREPARED_SPACE_MAX_AGE_MS)
+            && self.prepared_space_fits(&p)
         {
             return Ok(p.inputs);
         }
@@ -4710,6 +4923,11 @@ impl Engine {
                 reason: "no space segment loaded".into(),
             });
         };
+        if cover {
+            return Ok(SpaceInputs::Unavailable {
+                reason: "no cover answer prepared on the segment the engine holds (a cover is computed outside the decision lock, prepare_space)".into(),
+            });
+        }
         space_inputs(oracle.as_ref(), task, t, &self.policy.rules)
     }
 
@@ -4717,6 +4935,18 @@ impl Engine {
     /// of the same task, if it is still fresh then; otherwise the engine asks again.
     pub fn use_prepared_space(&mut self, prepared: PreparedSpace) {
         self.prepared_space = Some(prepared);
+    }
+
+    /// Whether a prepared answer was given by the segment (and pin) the engine holds now: an
+    /// answer prepared on a segment since replaced is not what the engine would answer. The
+    /// bridge asks this under its lock before deciding on it and prepares again outside the
+    /// lock if not.
+    pub fn prepared_space_fits(&self, p: &PreparedSpace) -> bool {
+        match (self.space.as_ref(), p.inputs.answer()) {
+            (Some(o), Some(a)) => a.segment == *o.segment(),
+            (None, Some(_)) => false,
+            (_, None) => true,
+        }
     }
 
     /// An engagement without a window gets the default one, written into its spec (so the

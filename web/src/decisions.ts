@@ -157,16 +157,20 @@ export interface IntentSpace {
   exclusions_total?: number
   chosen?: TaskOption
   tasking_lead_s?: number
-  /** cover */
+  /** cover: the centroid's figures (rules 10 and before), or from rules 11 the least covered
+   *  of the area's sample points (the one the check decided on) */
   links?: { class_id: string; coverage_fraction: number; outages: { start: string; end: string }[]; longest_outage_s: number }
   gnss?: { class_id: string; visible_min: number; visible_max: number; pdop_max: number | null }
+  /** rules 11: the area's sample points (the centroid and the boundary), the worst one as
+   *  [lon, lat], and for SATCOM the least and mean coverage and the outages merged over the area */
+  cover?: { points: number; worst: LngLat; coverage_fraction_min?: number; coverage_fraction_mean?: number; outages?: { start: string; end: string }[] }
 }
 
 export type Severity = 'high' | 'medium'
 
 export interface Alert {
   id: string // link:<uid>, op:<op id> or restore:<uid>; stable while the condition lasts
-  kind: 'lost_link' | 'not_moving' | 'left_task' | 'task_failed' | 'ack_timeout' | 'restore_pending'
+  kind: 'lost_link' | 'not_moving' | 'left_task' | 'task_failed' | 'ack_timeout' | 'restore_pending' | 'space_missed' | 'space_recheck_unknown'
   severity: Severity
   uid: number
   callsign: string | null
@@ -241,13 +245,15 @@ export interface CoverRunInfo {
 }
 
 /** A dispatched collect (tasked, collected, product_ready, or missed) or cover (watching,
- *  outage, restored, fewest_in_view, ended). Simulated: no satellite operator behind it. */
+ *  outage, restored, fewest_in_view, ended). Rules 11: either may be `cancelled` by an
+ *  operator after dispatch, or `rechecked` against a later space answer (and `missed` when
+ *  it can no longer be met). Simulated: no satellite operator behind it. */
 export interface SpaceRun {
   intent_id: number
   kind: 'collect' | 'cover'
   resource: string
   state: string | null
-  outcome: 'done' | 'failed' | null
+  outcome: 'done' | 'failed' | 'cancelled' | null
   outcome_detail: string | null
   events: SpaceRunEvent[]
   collect?: CollectRunInfo
@@ -257,6 +263,8 @@ export interface SpaceRun {
 export interface SpaceRuns {
   clock: ScenarioMap
   loaded: boolean
+  /** rules 11: a running collect or cover may be cancelled (older rules refuse it) */
+  cancellable?: boolean
   runs: SpaceRun[] // newest first
 }
 
@@ -285,7 +293,7 @@ export async function submitIntent(body: Record<string, unknown>): Promise<{ int
   return b
 }
 
-/** Rules 11: what a restore alert lets an operator write off: a vehicle's own lost-link
+/** Rules 12: what a restore alert lets an operator write off: a vehicle's own lost-link
  *  values owed back (`restore:<uid>`) or an earlier log whose carry failed
  *  (`restore:carry:<log>`); none for other alerts. */
 export function writeOffTarget(a: Alert): { uid: number } | { log: string } | null {
@@ -295,7 +303,7 @@ export function writeOffTarget(a: Alert): { uid: number } | { log: string } | nu
   return null
 }
 
-/** Rules 11: POST /api/restores/write_off as the console's operator, saying why (logged as
+/** Rules 12: POST /api/restores/write_off as the console's operator, saying why (logged as
  *  `restore.closed` under their session). Throws an Error with the bridge's reason. */
 export async function writeOffRestore(target: { uid: number } | { log: string }, note: string): Promise<void> {
   const res = await operatorFetch('/api/restores/write_off', {
@@ -314,6 +322,8 @@ export const ALERT_LABEL: Record<Alert['kind'], string> = {
   task_failed: 'TASK FAILED',
   ack_timeout: 'NO ACK',
   restore_pending: 'FAILSAFE NOT RESTORED',
+  space_missed: 'SATELLITE TASK LOST',
+  space_recheck_unknown: 'SATELLITE RE-CHECK UNKNOWN',
 }
 
 // ---- operator ------------------------------------------------------------------------------

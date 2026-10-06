@@ -401,7 +401,7 @@ function AlertCard({
   onFocus: () => void
 }) {
   const [snoozing, setSnoozing] = useState(false)
-  // rules 11: a restore that will never be confirmed (the vehicle lost or spent, another one
+  // rules 12: a restore that will never be confirmed (the vehicle lost or spent, another one
   // under its uid, an earlier log gone) is written off by an operator, saying why
   const target = writeOffTarget(a)
   const [writing, setWriting] = useState(false)

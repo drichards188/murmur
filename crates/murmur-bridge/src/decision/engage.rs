@@ -212,7 +212,7 @@ pub(super) const RESTORE_ALERT_S: f64 = 30.0;
 
 /// Rules 6: a fleet vehicle as a preload's write-ahead names it: its platform and callsign
 /// (the manifest), its system id, and its home (from its telemetry, else the manifest's).
-/// Rules 11: the same identity of every vehicle goes into each world snapshot
+/// Rules 12: the same identity of every vehicle goes into each world snapshot
 /// (`WorldSnapshot::identities`), so values carried over from an earlier run hold a mission
 /// only for the vehicle they were preloaded on.
 pub(super) fn identity_of(cell: &crate::vehicle::VehicleCell) -> murmur_decide::VehicleIdentity {
@@ -231,7 +231,7 @@ pub(super) fn identity_of(cell: &crate::vehicle::VehicleCell) -> murmur_decide::
     })
 }
 
-/// Rules 11 (murmur-cq3), before the engine starts: what earlier runs' logs still owe, as
+/// Rules 12 (murmur-cq3), before the engine starts: what earlier runs' logs still owe, as
 /// `run.started` records it (`carried_from`), in that one line: the log `pointer`
 /// (`.last-run-<port>`) names, then each log it still owed for because its carry had failed
 /// (named pending, looked for beside it), tried again, and theirs in turn. A log that can't be
@@ -309,7 +309,7 @@ pub(super) fn read_carry(pointer: &std::path::Path, catalog: &Catalog) -> Vec<mu
     out
 }
 
-/// Rules 11: what a pending carry's alert says of the vehicles it may owe values to.
+/// Rules 12: what a pending carry's alert says of the vehicles it may owe values to.
 fn may_owe_text(may_owe: &[murmur_decide::Uid]) -> String {
     if may_owe.is_empty() {
         return "which vehicles it may owe is unknown (its fleet can't be read either), so no mission is held for it".into();
@@ -321,7 +321,7 @@ fn may_owe_text(may_owe: &[murmur_decide::Uid]) -> String {
     )
 }
 
-/// Rules 11 (review M2): `pointer` names `log`, written whole or not at all: to a temporary
+/// Rules 12 (review M2): `pointer` names `log`, written whole or not at all: to a temporary
 /// file beside it, synced, then renamed over it, so a crash mid-write leaves the old pointer
 /// or the new one, never a torn one.
 pub(super) fn write_pointer(pointer: &std::path::Path, log: &std::path::Path) -> std::io::Result<()> {
@@ -338,7 +338,7 @@ pub(super) fn write_pointer(pointer: &std::path::Path, log: &std::path::Path) ->
     })
 }
 
-/// Rules 11: the log a `.last-run` pointer's content names: one line, a path whose file name
+/// Rules 12: the log a `.last-run` pointer's content names: one line, a path whose file name
 /// is a log's (`*.jsonl`, a bare file name). Err says why not (empty, torn, garbled).
 fn pointer_target(bytes: &[u8]) -> Result<std::path::PathBuf, String> {
     let Ok(text) = std::str::from_utf8(bytes) else {
@@ -357,7 +357,7 @@ fn pointer_target(bytes: &[u8]) -> Result<std::path::PathBuf, String> {
     Ok(path)
 }
 
-/// Rules 11: the armed platforms the fleet beside an unreadable log named (its run's
+/// Rules 12: the armed platforms the fleet beside an unreadable log named (its run's
 /// `<log stem>.fleet.json`), as the vehicles they were: values it may owe them are unknown. Only an
 /// armed platform is ever preloaded (engagements are on armed platforms). Empty when the fleet
 /// can't be read either.
@@ -862,7 +862,7 @@ impl Decision {
             let Some(owed) = lane.owed.as_mut() else { continue };
             owed.due_since.get_or_insert(now_mono);
             // values carried over from an earlier run go back only to the vehicle they were
-            // preloaded on (the uid may name another one now); rules 11: another vehicle is
+            // preloaded on (the uid may name another one now); rules 12: another vehicle is
             // one whose platform, callsign or system id differs, never its home alone (set
             // again at every arming), as the engine's hold judges it
             let mismatch = match (&cell, owed.owner, &owed.vehicle) {
@@ -900,7 +900,7 @@ impl Decision {
         }
     }
 
-    /// Rules 11: a platform the ledger no longer owes anything (spent by its own effect, or
+    /// Rules 12: a platform the ledger no longer owes anything (spent by its own effect, or
     /// written off by an operator: `restore.closed`) is not restored: its lane forgets it.
     pub(super) fn drop_closed_restores(&self, core: &mut Core) {
         if !self.rules.followups() {
@@ -914,7 +914,7 @@ impl Decision {
         }
     }
 
-    /// Rules 11, right after the engine started with what earlier logs still owed (in
+    /// Rules 12, right after the engine started with what earlier logs still owed (in
     /// `run.started`): the values carried over are owed back on their platforms' lanes (put
     /// back once a vehicle that matches the one they were preloaded on answers), a log that
     /// could not be read (or a pointer that could not) is said in the inbox, and `pointer`
@@ -949,7 +949,7 @@ impl Decision {
         }
     }
 
-    /// Rules 11 (murmur-q05, murmur-cq3): `POST /api/restores/write_off`: an operator writes
+    /// Rules 12 (murmur-q05, murmur-cq3): `POST /api/restores/write_off`: an operator writes
     /// off, under their own session and saying why, the lost-link values owed back to a
     /// vehicle (`uid`: lost, spent, another vehicle under the uid) or an earlier log whose
     /// carry failed (`log`: gone for good). Logged as `restore.closed`; the vehicle's restore
@@ -987,7 +987,7 @@ impl Decision {
     /// owed back when it ended (derived from its audit log, which `pointer` names), logged as
     /// carried (`platform.restore`) and put back like any other once the platform answers.
     /// Then `pointer` names this run's log. A missing pointer or log is a first start. Rules
-    /// before 11 only: from rules 11 the carry is in `run.started` ([`read_carry`]).
+    /// before 12 only: from rules 12 the carry is in `run.started` ([`read_carry`]).
     pub(super) fn carry_restores(&self, pointer: &std::path::Path) {
         let fail = |why: String| {
             eprintln!("decision: {why}");
@@ -1070,7 +1070,7 @@ impl Decision {
     }
 
     /// Rules 6: an alert of the bridge's start (the last run's log could not be read, so what
-    /// it owed could not be carried over; from rules 11, that this run's pointer could not be
+    /// it owed could not be carried over; from rules 12, that this run's pointer could not be
     /// written).
     pub(super) fn carry_alert(&self, core: &Core, now_wall: f64) -> Option<super::alerts::Alert> {
         core.carry_problem.as_ref().map(|(why, t)| super::alerts::Alert {
@@ -1086,7 +1086,7 @@ impl Decision {
         })
     }
 
-    /// Rules 11: an alert for each earlier log whose carry failed and nobody wrote off: what it
+    /// Rules 12: an alert for each earlier log whose carry failed and nobody wrote off: what it
     /// still owed is unknown; it is tried again at every start until read, or written off. It
     /// names the vehicles it may owe values to (the armed platforms of its fleet, whose
     /// missions wait meanwhile), or says no mission is held when they are unknown.

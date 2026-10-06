@@ -241,7 +241,7 @@ pub struct TrackFacts {
     /// ([`crate::engage::track_reach`]). Absent: too young a track (or an older log).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mean_velocity_mps: Option<[f64; 2]>,
-    /// Rules 11: when the tracker started this track (its first detection): the history behind
+    /// Rules 12: when the tracker started this track (its first detection): the history behind
     /// its average velocity and its manoeuvre memory begins then. With it, a track that has a
     /// velocity but no average velocity yet is young (the tracker can't yet say whether it
     /// manoeuvred), and a keep-out counts it as possibly manoeuvring
@@ -430,12 +430,12 @@ pub struct WorldSnapshot {
     /// Absent when none.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub restore_owed: BTreeMap<Uid, crate::queue::RestoreOwed>,
-    /// Engine-filled (rules 11): the intent's vehicles spent by their own effect (a loitering
+    /// Engine-filled (rules 12): the intent's vehicles spent by their own effect (a loitering
     /// munition after its release: `restore.closed`, expended), by the engagement that released
     /// it. No order or nomination is taken for one (`readiness` fails). Absent when none.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub expended: BTreeMap<Uid, IntentId>,
-    /// Rules 11, the bridge's: each fleet vehicle's identity as it knows it now (platform,
+    /// Rules 12, the bridge's: each fleet vehicle's identity as it knows it now (platform,
     /// callsign, system id, home). Never logged as such: the engine copies the identity of a
     /// vehicle still owed values carried over from an earlier run into that fact
     /// (`restore_owed`, [`crate::queue::CarriedHold`]), the only thing that reads it. Empty
@@ -479,7 +479,7 @@ pub struct LoggedInputs {
     /// none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub restore_owed: BTreeMap<Uid, crate::queue::RestoreOwed>,
-    /// The intent's vehicles spent by their own effect (rules 11; absent when none).
+    /// The intent's vehicles spent by their own effect (rules 12; absent when none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub expended: BTreeMap<Uid, IntentId>,
 }
@@ -599,7 +599,7 @@ impl WorldSnapshot {
             unknown_accepted: BTreeMap::new(),
             restore_owed: BTreeMap::new(),
             expended: BTreeMap::new(),
-            // rules 11: the bridge's identities of the intent's vehicles (a carried restore's
+            // rules 12: the bridge's identities of the intent's vehicles (a carried restore's
             // hold reads them)
             identities: spec
                 .uids

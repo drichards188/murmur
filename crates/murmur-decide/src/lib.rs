@@ -56,7 +56,7 @@
 //!   picture token it quotes), the engine verifies it against the public key the run logged
 //!   before logging it, and the act that quotes it must be the act it was made for. The policy
 //!   may require it (`[approval] step_up_factor = "passkey"`); a study always does.
-//! - Rules 11 ([`REVIEW_FOLLOWUPS_SINCE`]): the scripted (harness-held) operators are fixed
+//! - Rules 12 ([`REVIEW_FOLLOWUPS_SINCE`]): the scripted (harness-held) operators are fixed
 //!   on the roster at run start ([`Roster::scripted`]), and a session opens by the method the
 //!   roster gives its operator (a person's password or passkey, or a scripted credential);
 //!   an operator may write off a platform's lost-link values owed back, or an earlier log's
@@ -317,7 +317,7 @@ pub use engage::{
 pub use engine::{
     ActOutcome, AgentPort, Dequeued, DispatchOrder, Engine, EngineError, IdentOutcome, Order,
     PREPARED_SPACE_MAX_AGE_MS, PlatformRestoreReport, PreloadReport, PreparedSpace, Preview,
-    Routed, StepOutcome, TaskOutcome, WriteOff, prepare_space,
+    Routed, SpaceRecheck, StepOutcome, TaskOutcome, WriteOff, prepare_space, prepare_space_at,
 };
 pub use geo::{LonLat, Polygon};
 pub use ident::{
@@ -345,7 +345,7 @@ pub use route::{LegKind, Route, Segment};
 pub use rules::{
     CheckResult, OPERATOR_AUTH_SINCE, Outcome, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, POLICY_SCHEMA,
     QUEUE_FOLLOWUPS_SINCE, REVIEW_FOLLOWUPS_SINCE, RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE, RULES_VERSION,
-    RuleId, RulesConfig, STEP_UP_SCHEMA_SINCE, UnknownEndurance,
+    RuleId, RulesConfig, SPACE_FOLLOWUPS_SINCE, STEP_UP_SCHEMA_SINCE, UnknownEndurance,
 };
 pub use space::{
     ChosenCollect, CollectCapability, CollectOrder, CoverOrder, CoverService, ScenarioMap,

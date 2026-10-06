@@ -140,7 +140,7 @@ pub fn build(
         let orbit = world.tasks.orbit_of(&cell);
         let facts = cell.read(|v| vehicle_facts(v, catalog, now, interval, orbit));
         snap.vehicles.insert(duid(cell.uid), facts);
-        // rules 11: who it is (a carried restore holds a mission only for the vehicle preloaded)
+        // rules 12: who it is (a carried restore holds a mission only for the vehicle preloaded)
         snap.identities.insert(duid(cell.uid), super::engage::identity_of(&cell));
     }
     for (uid, ident) in &world.manifest().identities {

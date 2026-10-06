@@ -140,6 +140,14 @@ meaningful. Decision and command, not weapons.
 - `POST /api/sim/contacts` needs `X-Murmur-Sim-Token` equal to the bridge's
   `MURMUR_SIM_TOKEN`; `up.sh` and eval give it to the bridge and contacts only. To inject
   truth by hand, set it in both.
+- Rules 11 (`SPACE_FOLLOWUPS_SINCE`): a dispatched collect or cover can be cancelled
+  (`POST /api/intents/{id}/cancel`; the engine logs what it meant: a pass under way cannot
+  be recalled). The bridge reloads `sim/space/cache` when it changes (every 30 s, keeping the
+  session's pin) and re-checks every running space task outside the lock (`rechecked`, or
+  `missed` with fresh options and an inbox alert; a collect whose pass has come is never
+  re-checked). A cover is judged at the centroid and boundary samples (the least covered
+  point); the engine never computes a cover itself (`Decision::lock_with_space` prepares it
+  outside the lock), so long covers don't hold the lock.
 - The tracker is a two-model IMM; changes must pass `tracks::tests::calib`. Its held-out seeds
   (66-95) are not for tuning: write a new held-out set if you tune on them.
 - This host's wall clock (WSL) stepped back 0.5 to 0.9 s every ~32 s for the first two hours or

@@ -348,12 +348,12 @@ pub struct Roster {
     /// lets them step up with a password (such a run is never evidence).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub study: Option<Box<crate::passkey::Study>>,
-    /// Rules 11 ([`crate::rules::REVIEW_FOLLOWUPS_SINCE`]), a credentials run: the operators
+    /// Rules 12 ([`crate::rules::REVIEW_FOLLOWUPS_SINCE`]), a credentials run: the operators
     /// whose credential was harness-held (`scripted`) when the run started, fixed for the run
     /// (an empty list when none was). Their sessions open as `scripted`, everyone else's as a
     /// person's (`password`, `passkey`): the engine refuses, and replay flags, a session opened
     /// otherwise, so a credential re-marked mid-run can't move an operator between people and
-    /// scripts in the log. Absent in a dev run and before rules 11.
+    /// scripts in the log. Absent in a dev run and before rules 12.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scripted: Option<Vec<OperatorId>>,
 }
@@ -396,7 +396,7 @@ impl Roster {
         self
     }
 
-    /// Rules 11: the same roster with the operators whose credential is harness-held
+    /// Rules 12: the same roster with the operators whose credential is harness-held
     /// (`scripted`) at the run's start (a credentials run's; the engine logs an empty list
     /// when it is given none).
     #[must_use]
@@ -405,14 +405,14 @@ impl Roster {
         self
     }
 
-    /// Rules 11: how `operator` opens a session in this run, if the roster fixes it: `true`
+    /// Rules 12: how `operator` opens a session in this run, if the roster fixes it: `true`
     /// for a scripted (harness-held) credential, `false` for a person's. None without a
     /// scripted list (a dev run, older rules).
     pub fn is_scripted(&self, operator: &OperatorId) -> Option<bool> {
         self.scripted.as_ref().map(|s| s.contains(operator))
     }
 
-    /// Rules 11: why a session of `operator` opened by `method` is not the one the roster's
+    /// Rules 12: why a session of `operator` opened by `method` is not the one the roster's
     /// scripted list gives it, if it is not (a scripted credential opens `scripted` sessions,
     /// a person's `password` or `passkey` ones). None without a scripted list, and for an
     /// asserted session (a dev run's, refused elsewhere in a credentials run).
@@ -462,7 +462,7 @@ impl Roster {
             if !self.operators.contains(&s.participant) {
                 return Err(format!("the study's participant {} is not on the roster", s.participant));
             }
-            // rules 11: a study's participant is a person, never a harness's credential
+            // rules 12: a study's participant is a person, never a harness's credential
             if self.is_scripted(&s.participant) == Some(true) {
                 return Err(format!(
                     "the study's participant {} is marked scripted (a harness's credential): a participant is a person",
@@ -511,7 +511,7 @@ impl Roster {
                 return Err(format!("the roster lists engagement operator {o} twice"));
             }
         }
-        // rules 11: the scripted operators are on the roster, once each, in a credentials run
+        // rules 12: the scripted operators are on the roster, once each, in a credentials run
         if let Some(list) = &self.scripted {
             if self.auth != Some(AuthMode::Credentials) {
                 return Err("scripted operators on the roster of a run that does not authenticate with credentials".into());

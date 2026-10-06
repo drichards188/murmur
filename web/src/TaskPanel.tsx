@@ -214,7 +214,7 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings, pendi
         {taskings.length === 0 && runs.length === 0 && <p className="empty">Commands you send show up here and track each vehicle through to completion.</p>}
         {space &&
           scen != null &&
-          runs.map((r) => <SpaceRunCard key={`s${r.intent_id}`} run={r} map={space.clock} scen={scen} onOpen={onInbox} />)}
+          runs.map((r) => <SpaceRunCard key={`s${r.intent_id}`} run={r} map={space.clock} scen={scen} onOpen={onInbox} cancellable={space.cancellable ?? false} />)}
         {taskings.map((t) => (
           <section key={t.id} className="tcard">
             <div className="tcard-head">

@@ -295,6 +295,49 @@ group. Dates are 2026.
   a glitching fix (a spoofed one is fused afterwards), the receiver's own fix
   (GPS_RAW_INT, 3D) and the filter's EKF_GPS_GLITCHING flag (HIGH_LATENCY2: its GPS
   failure flag) are logged facts of the vehicle and both must hold; unknown fails.
+- **A tasked satellite is followed after dispatch; a cover is judged over its area** (10-06,
+  murmur-0nv.1.7, rules 11 `SPACE_FOLLOWUPS_SINCE`; from the collections review). Before,
+  a dispatched collect or cover could not be cancelled, the only "missed" was the clock's
+  (a pass over at dispatch or jumped past), and a cover was read at the area's centroid.
+  Decided: (1) an operator cancels a dispatched collect or cover like any waiting intent,
+  and the engine itself states what the cancel means for the pass (`op.state cancelled`,
+  recomputed by replay): a request withdrawn before its pass collects nothing; a pass that
+  has come cannot be recalled (nothing here or in a real tasking system takes an exposure
+  back), so the scene counts as collected and only its product is dropped; a cover's watch
+  ends. The intent ends `aborted` (transition `cancel`, kept apart from an engagement's
+  `abort`), and an agent withdraws nothing after dispatch, as under the existing policy (an
+  agent may withdraw its own proposal while it waits; after dispatch only an operator
+  stops anything). (2) A later space answer re-checks every running task, and the only
+  later answer this system has is a reloaded segment (new element sets on disk: the bridge
+  watches the cache and reloads), because the answer is deterministic in the segment and
+  the query; a collect is re-queried at the request time it was tasked at, since a fresh
+  "now" would only show the lead time spent and call every tasked pass too soon. A pass
+  still there within the match tolerance is the same opportunity (the approval stands); a
+  pass gone is `missed` and the intent failed, with the fresh options still taskable at the
+  check's own time in the report for a human: the engine never re-chooses, as agents
+  nominate and humans authorize. A collect whose pass has come is never re-checked: it was
+  collected, and a later answer cannot un-collect it. An answer that could not be computed
+  is no answer: the task runs on and the operator hears of it. The session's time shift
+  stays pinned across a reload, and the pin is part of the segment's identity (a re-pin is
+  a new segment). (3) A cover is evaluated at the centroid and the boundary (eight bearings
+  around a circle; a polygon's vertices, thinned to eight by geometry when there are more:
+  the farthest from the centroid first, then each time the one farthest from those chosen,
+  so the far tips are kept; a closed ring's first vertex counts once) and holds only where
+  it holds at every point: SATCOM and GNSS coverage vary on the scale of a footprint
+  (hundreds of km), so for an area of at most 200 km radius the extremes of a convex area lie
+  on its boundary, which assumes the field is near linear across the area. Every satellite is
+  propagated once for all the points (one window search driven by the centroid's cone
+  widened by the area, one propagation per sample), so nine points cost about one; a grid
+  fine enough to add anything would cost more and tell no more. The logged answer holds each
+  point's figures and no aggregate, so replay recomputes the verdict; a query whose points
+  are not the area's is not the intent's question, and an answer whose result points are not
+  the query's (one dropped, moved or copied over) is not the answer. (4) The space query
+  stays outside the decision lock (the 10-03 decision above): a cover is never computed by
+  the engine (a week of Starlink over nine points held the lock 13 to 14 s in the review,
+  which an agent's dry run could repeat; the check fails closed without a prepared answer),
+  a prepared answer is used only if the segment and pin that answered it are the engine's
+  (its age is no concern for a cover, whose query does not depend on when it was asked), and
+  the bridge prepares again outside the lock when the segment moved in between.
 - **Space as taskable infrastructure** (10-02, user direction): request coverage and
   capabilities from satellites when needed; don't fly or command satellite buses (no CCSDS).
   One theater map for earthbound nodes, plus a space timeline and a globe inset; one camera
@@ -676,14 +719,14 @@ group. Dates are 2026.
 ## Engineering
 
 - **The reviews' follow-ups are one rules version, gated on a named constant** (10-06,
-  rules 11, `REVIEW_FOLLOWUPS_SINCE`). The six follow-ups below change what is logged or
+  rules 12, `REVIEW_FOLLOWUPS_SINCE`). The six follow-ups below change what is logged or
   decided, so they share one version; every gate reads the constant (and `RULES_VERSION` is
   defined from it), never a literal: if another branch (space tasks) takes 11 first, the
   branch that merges second renumbers in one line and has its fixtures written again by the
   merged build. No policy key changes (schema 7 stays). Logs of rules 1 to 10 replay
   unchanged with their own rules; the tests of the rules 6 to 10 carry are pinned to rules 10.
 - **A platform spent by its own effect is owed nothing back; an operator may write off what
-  never comes back** (10-06, murmur-q05; rules 11). A loitering munition's own lost-link
+  never comes back** (10-06, murmur-q05; rules 12). A loitering munition's own lost-link
   values were owed back for good after its effect (the passkeys live run: the switchblade
   never answered, replay said UNRESTORED, the inbox alerted for the rest of the run, and the
   next run carried it over), since only a confirmed restore closed the debt. Decided, both:
@@ -701,7 +744,7 @@ group. Dates are 2026.
   bridge stops trying to restore it. A write-off records a judgement about the fleet and
   authorizes nothing, so it needs no step-up.
 - **A young track counts as possibly manoeuvring until the tracker has the facts** (10-06,
-  murmur-9m0; rules 11). Rules 9 read a track's average velocity (after about 45 s of history)
+  murmur-9m0; rules 12). Rules 9 read a track's average velocity (after about 45 s of history)
   and its manoeuvre memory; a track too young for either fell back to the single region along
   its velocity: fail open. Now the tracker reports when it started the track (`first_seen_t`)
   and a track with a velocity but no average velocity yet also counts anywhere it reaches at
@@ -714,7 +757,7 @@ group. Dates are 2026.
   2 km from an effect 80 s out blocks the nomination, and one detected near an engagement
   under way aborts it, until the tracker has followed it about 45 s. A scenario or caller that
   gives no `first_seen_t` is judged as before.
-- **The scripted operators are fixed at the run's start** (10-06, murmur-jfi; rules 11).
+- **The scripted operators are fixed at the run's start** (10-06, murmur-jfi; rules 12).
   Whether a credential is harness-held was read from the file at each login and not logged,
   so turning it off mid-run logged the next login as a person's (the operator joined the
   people in replay), and a session's `password` relabelled `scripted` or back passed replay
@@ -725,7 +768,7 @@ group. Dates are 2026.
   bridge restarts: the roster is fixed for the run, as for operators added or removed. The
   step-up 429 now says the limit is the session's.
 - **What a start carries over is one line of `run.started`, and a failed carry stays owed**
-  (10-06, murmur-cq3; rules 11). Replay could not tell a successor log with every carried
+  (10-06, murmur-cq3; rules 12). Replay could not tell a successor log with every carried
   `platform.restore` removed (forgery C3: nothing in the log said a carry was due), a crash
   between two carried events left half a carry, and `.last-run` was rewritten even when the
   log it named could not be read, dropping that log's debt from the chain with only an inbox
@@ -734,7 +777,7 @@ group. Dates are 2026.
   named and, tried again, every log it still owed for whose carry had failed, each with its
   head and last seq as read and what it still owed, or why it could not be read). One line, so
   atomic, and covered by the start anchor; the ledger is seeded from it (carried
-  `platform.restore` events are refused from rules 11). Replay checks each named log: it
+  `platform.restore` events are refused from rules 12). Replay checks each named log: it
   replays, it is the one read (its head), it still owed exactly that, and every pending log
   was tried again. The pointer always names the newest log; the chain lives in the logs: a log
   whose carry failed is pending in the log that recorded it, so the next start reads it again,
@@ -743,7 +786,7 @@ group. Dates are 2026.
   could not check that a debt was kept. Residual, stated: removing the record from the first
   line reads as a first start, caught only by the start anchor (like the roster).
 - **Values carried over hold a mission for the vehicle they were preloaded on** (10-06,
-  murmur-qjf; rules 11). Rules 7 held a mission only for values an engagement of this run
+  murmur-qjf; rules 12). Rules 7 held a mission only for values an engagement of this run
   preloaded, because the log could not tell which vehicle has the uid after a restart; so in
   exactly the crash case a carried mission could fly over the preloaded fallback. Now each
   snapshot carries the bridge's identity of every vehicle (platform, callsign, system id,
@@ -754,7 +797,7 @@ group. Dates are 2026.
   values refuse it whatever vehicle has the uid (an operator writes them off if it is another).
   The identity is the bridge's report, as any fact is: replay proves the hold follows from it,
   not that it was true.
-- **A refused mission says which older orders still stand** (10-06, murmur-54l; rules 11). A
+- **A refused mission says which older orders still stand** (10-06, murmur-54l; rules 12). A
   mission refused for its platform's own values (its kind never queued) replaces nothing, so
   an older queued hold or rtl still goes when the link allows (safer: a safety command), but
   the refusal did not say so. Its reason now names every order still queued on its vehicles,
@@ -1046,7 +1089,7 @@ group. Dates are 2026.
   limitation): the bridge writes those back only onto the vehicle they were preloaded on,
   which the log alone can't tell, and another vehicle under the uid would otherwise be held
   for the whole run; they still go back at once when heard, alerted until they do. (Lifted
-  by rules 11: they hold for the vehicle they were preloaded on, judged on the identity logged
+  by rules 12: they hold for the vehicle they were preloaded on, judged on the identity logged
   with the fact; see "Values carried over hold a mission" above.)
 - **An order queued for an engagement's platform supersedes it, as a dispatched one does**
   (10-04, murmur-636; rules 7). A newer order queued for the platform abandoned the

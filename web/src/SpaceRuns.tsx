@@ -1,9 +1,11 @@
 // Satellite collect and cover runs as the console shows them: the command log card, the
 // products list and the coverage watches. Runs come from the bridge's decisions message
 // (`space`), times are scenario time (ms), and the scenario clock is a map from the
-// bridge's clock (`MURMUR_RATE` scenario seconds per second).
+// bridge's clock (`MURMUR_RATE` scenario seconds per second). A running one can be
+// cancelled from its card (rules 11): the bridge says what the cancel meant for the pass.
+import { useState } from 'react'
 import type { ScenarioMap, SpaceRun } from './decisions'
-import { fmtDuration, fmtZ, hasProduct } from './decisions'
+import { fmtDuration, fmtZ, hasProduct, intentAction } from './decisions'
 import { classColor } from './space'
 import './spaceTasking.css'
 
@@ -19,21 +21,59 @@ const COLLECT_STEPS = ['tasked', 'collected', 'product_ready'] as const
 const STEP_LABEL: Record<string, string> = { tasked: 'tasked', collected: 'collected', product_ready: 'product' }
 
 function Steps({ run }: { run: SpaceRun }) {
-  const missed = run.state === 'missed'
-  const seen = new Set(run.events.map((e) => e.state))
+  const ended = run.state === 'missed' || run.state === 'cancelled'
+  const seen = new Set(run.events.filter((e) => e.state !== 'rechecked').map((e) => e.state))
+  const cur = run.state === 'rechecked' ? [...run.events].reverse().find((e) => e.state !== 'rechecked')?.state : run.state
   return (
-    <span className={`steps ${missed ? 'failed' : ''}`}>
+    <span className={`steps ${ended ? 'failed' : ''}`}>
       {COLLECT_STEPS.map((s) => (
-        <span key={s} className={`step ${!missed && seen.has(s) ? 'on' : ''} ${!missed && run.state === s ? 'cur' : ''}`}>
-          {missed && s === 'collected' ? 'missed' : STEP_LABEL[s]}
+        <span key={s} className={`step ${!ended && seen.has(s) ? 'on' : ''} ${!ended && cur === s ? 'cur' : ''}`}>
+          {ended && s === 'collected' ? run.state : STEP_LABEL[s]}
         </span>
       ))}
     </span>
   )
 }
 
+/** Cancel a running collect or cover (rules 11): a collect's tasking request is withdrawn
+ *  before its pass, a pass already under way cannot be recalled (its product is no longer
+ *  awaited); a cover's watch ends. The bridge logs what the cancel meant. */
+function CancelButton({ run, enabled }: { run: SpaceRun; enabled: boolean }) {
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  if (run.outcome || !enabled) return null
+  const cancel = async () => {
+    setBusy(true)
+    setErr(null)
+    try {
+      await intentAction(run.intent_id, 'cancel', run.kind === 'collect' ? 'cancelled from the command log' : 'watch ended from the command log')
+    } catch (e) {
+      setErr((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <>
+      <button
+        className="ghost mini sr-cancel"
+        disabled={busy}
+        onClick={() => void cancel()}
+        title={run.kind === 'collect' ? 'Withdraw the tasking request. A pass already under way cannot be recalled; its product is then no longer awaited.' : 'End the coverage watch.'}
+      >
+        {busy ? 'Cancelling…' : 'Cancel'}
+      </button>
+      {err && <span className="sr-bad">{err}</span>}
+    </>
+  )
+}
+
+function outcomeLabel(run: SpaceRun) {
+  return run.outcome === 'cancelled' ? 'cancelled' : run.outcome === 'failed' ? 'failed' : 'ended'
+}
+
 /** One collect or cover in the command log. */
-export function SpaceRunCard({ run, map, scen, onOpen }: { run: SpaceRun; map: ScenarioMap; scen: number; onOpen?: (intentId: number) => void }) {
+export function SpaceRunCard({ run, map, scen, onOpen, cancellable = false }: { run: SpaceRun; map: ScenarioMap; scen: number; onOpen?: (intentId: number) => void; cancellable?: boolean }) {
   const last = run.events[run.events.length - 1]
   const age = last ? fmtDuration(Math.max(0, (scen - run.events[0].scenario_t) / 1000)) : null
   if (run.kind === 'collect' && run.collect) {
@@ -50,6 +90,7 @@ export function SpaceRunCard({ run, map, scen, onOpen }: { run: SpaceRun; map: S
           <span className="tl-swatch" style={{ background: classColor(c.class_id) }} />
           <span className="sr-sat">{c.satellite}</span>
           <span className="muted right">{age} scen.</span>
+          <CancelButton run={run} enabled={cancellable} />
         </div>
         <div className="op">
           <span className="op-name" title={`${run.resource} (${c.class_id}, ${c.capability})`}>
@@ -60,7 +101,7 @@ export function SpaceRunCard({ run, map, scen, onOpen }: { run: SpaceRun; map: S
             collect {fmtZ(c.collect_time)}
             {toCollect ? <b className="sr-count"> {toCollect}</b> : null}
             {' · '}product {c.product_time != null ? fmtZ(c.product_time) : 'time unknown'}
-            {toProduct && run.state !== 'missed' ? <b className="sr-count"> {toProduct}</b> : null}
+            {toProduct && !run.outcome ? <b className="sr-count"> {toProduct}</b> : null}
             {c.resolution_m != null ? ` · ${c.resolution_m.toFixed(2)} m` : ''}
           </span>
           {last && <span className={`op-detail ${run.outcome === 'failed' ? 'sr-bad' : ''}`}>{last.detail}</span>}
@@ -84,7 +125,8 @@ export function SpaceRunCard({ run, map, scen, onOpen }: { run: SpaceRun; map: S
         </button>
         <span className="tl-swatch" style={{ background: classColor(cv.service.class) }} />
         <span className="sr-sat">{label}</span>
-        <span className={`sr-badge ${inOutage ? 'bad' : run.outcome ? '' : 'ok'}`}>{run.outcome ? 'ended' : inOutage ? 'OUTAGE' : scen < cv.window.from ? 'waiting' : 'covered'}</span>
+        <span className={`sr-badge ${inOutage && !run.outcome ? 'bad' : run.outcome ? '' : 'ok'}`}>{run.outcome ? outcomeLabel(run) : inOutage ? 'OUTAGE' : scen < cv.window.from ? 'waiting' : 'covered'}</span>
+        <CancelButton run={run} enabled={cancellable} />
       </div>
       <div className="op">
         <span className="op-name">watch</span>
@@ -96,9 +138,9 @@ export function SpaceRunCard({ run, map, scen, onOpen }: { run: SpaceRun; map: S
           {cv.service.type === 'gnss'
             ? cv.summary
             : cv.outages.length === 0
-              ? 'no outage predicted in the window'
-              : `${seen} of ${cv.outages.length} predicted outage${cv.outages.length === 1 ? '' : 's'} so far`}
-          {inOutage ? ` · back at ${fmtZ(inOutage[1])}` : ''}
+              ? 'no outage predicted anywhere over the area in the window'
+              : `${seen} of ${cv.outages.length} predicted outage${cv.outages.length === 1 ? '' : 's'} over the area so far`}
+          {inOutage && !run.outcome ? ` · back at ${fmtZ(inOutage[1])}` : ''}
         </span>
         {last && <span className="op-detail">{last.detail}</span>}
       </div>

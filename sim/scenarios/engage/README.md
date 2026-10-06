@@ -94,7 +94,7 @@ tamper = "suppress_void"         # optional log attack replay must catch: propos
                                  # and rules 9: drop_act, declare_flagged_act,
                                  # declaration_by_another_operator, drop_revocation_stop,
                                  # confirm_in_inputs,
-                                 # and rules 11: drop_first_seen, drop_expended_fact,
+                                 # and rules 12: drop_first_seen, drop_expended_fact,
                                  # drop_standing_clause, write_off_by_another
                                  # (one with nothing to edit in a run's log reports "not
                                  # applicable")
@@ -116,9 +116,9 @@ expect_ident = ["declared T-0001 hostile by rule:hostile_act"]   # rules 9, opti
 expect_no_ident = ["declared T-0002"]   # rules 9, optional: substrings no report may contain
 restore_after_s = 60             # rules 6: the platform answers the restore of its own
                                  # lost-link values only from this second on (default: at once)
-expect_closed = ["expended by its own effect"]   # rules 11, optional: debts closed without a
+expect_closed = ["expended by its own effect"]   # rules 12, optional: debts closed without a
                                  # restore that replay lists (`restores_closed`), in order
-expect_nothing_owed = true       # rules 11, optional: nothing owed back when the log ends
+expect_nothing_owed = true       # rules 12, optional: nothing owed back when the log ends
 # policy, catalog, areas = "path"  # optional, relative to the repo (defaults: sim/...)
 
 [[operator]]                     # an operator session; engage = engagement authority
@@ -162,7 +162,7 @@ no_velocity_estimate = false     # rules 6: the tracker has no velocity for it y
 alt_age_s = 0                    # rules 6: its altitude was last ranged this long before the
                                  # start and never again (the radar lost it; the others keep
                                  # its position fresh); sources radar and ais are the ranging ones
-tracked_s = 600                  # rules 11, optional: the tracker started it this long before
+tracked_s = 600                  # rules 12, optional: the tracker started it this long before
                                  # the start (`first_seen_t`); it has an average velocity once
                                  # tracked 45 s with a velocity, and until then it is young
                                  # (absent: the tracker does not say, judged as rules 10 did)
@@ -197,8 +197,8 @@ Actions (each `[[step]]` has `at_s` and `action`):
 | `reject` | `by` | an operator rejects it |
 | `abort` | `by` | any operator stops it; the fallback is commanded |
 | `agent_approve` | `agent` | an agent "tries" to approve: there is no such method on its port, so it is recorded and the intent must not move |
-| `track` | `id` and any of `at`, `velocity`, `affiliation`, `declared_by`, `undeclare`, `identity`, `identity_confidence`, `sigma_m`, `domain`, `silent`, `velocity_error`, `alt_m`, `tracked_s` | a track changes (or appears); `velocity` is how the contact really moves, `velocity_error` how far the tracker's estimate is off it; `tracked_s` (rules 11) when one this step makes was started (0: a new track) |
-| `write_off` | `by`, `uid`, `note` | rules 11: an operator writes off the lost-link values owed back to one of our vehicles, saying why (`restore.closed`) |
+| `track` | `id` and any of `at`, `velocity`, `affiliation`, `declared_by`, `undeclare`, `identity`, `identity_confidence`, `sigma_m`, `domain`, `silent`, `velocity_error`, `alt_m`, `tracked_s` | a track changes (or appears); `velocity` is how the contact really moves, `velocity_error` how far the tracker's estimate is off it; `tracked_s` (rules 12) when one this step makes was started (0: a new track) |
+| `write_off` | `by`, `uid`, `note` | rules 12: an operator writes off the lost-link values owed back to one of our vehicles, saying why (`restore.closed`) |
 | `vehicle` | `uid` and any of `at`, `velocity`, `silent`, `report_interval_ms`, `nav` (`gnss`, `dead_reckoning`), `gps_fix` (3: a 3D fix), `gps_glitch`, `circling`, `reported_circle`, `alt_m` | one of ours changes; `silent` cuts its link (both ways: it hears no GCS either) |
 | `expect` | `state`, `rule`, `concurrences`, `task_state`, `task_reason` | check the last nomination now (`task_state`: the last `task` step's intent; `task_reason`: a substring of why it is in that state) |
 
@@ -287,7 +287,7 @@ calls `Engine::step_engagements` (hold the picture, release, observe, assess).
 | 77-revoked-bystander-stops-engagement | keep_out_tracks | rules 9 (review): a confirmed rule declaration exempts a bystander from an engagement's keep-out; op-3 revokes it mid-engagement; the stop cut from the log | aborted in the revocation's step, cause revoked (keep_out_tracks), fallback; tamper caught |
 | 78-revoked-bystander-before-first-picture | keep_out_tracks | rules 9 (second review): as 77, but op-3 revokes the bystander's declaration in the second the engagement is approved, before its first picture; the stop cut from the log | voided in the revocation's step, cause revoked (keep_out_tracks), not a later picture failure; tamper caught |
 | 71-refused-mission-supersedes-engagement | engagement_in_play | rules 7: 70's policy, the orbit ordered while the engagement is still under way, link up; the fact stripped from the log | the orbit is voided and in the same step the engagement is aborted, superseded by it, no fallback, its reason saying so; given again before the restore it is refused saying the restore is pending; after it, it goes at once; tamper caught |
-| 79-young-track-blocks-until-tracked | keep_out_tracks | rules 11: a ferry first detected a second before the nomination, 1.2 km north of the effect point and heading away (no average velocity yet); its first detection dropped from the log | rejected (keep_out_tracks: anywhere it reaches at 25 m/s), then, tracked 59 s, the same nomination waits for its signers; tamper caught |
-| 80-expended-munition-owes-nothing | restore_owed | rules 11: a switchblade's engagement released (the munition spent by its effect); the catalog fact dropped from every picture in the log | done (ceased); its values closed right after the release (`restore.closed`, expended), nothing owed at the end; tamper caught |
-| 81-refusal-names-the-order-still-queued | restore_owed | rules 11: 67 under 70's policy: the hold queued for the cut-off USV, then an orbit refused for its own values; the clause cut from the refusal in the log | the orbit voided, its reason naming the hold still queued (`i2 (hold, vehicle viper-1)`); the hold goes when the link returns; tamper caught |
-| 82-restore-written-off | restore_owed | rules 11: 69, the USV never confirming its values back; op-1 writes them off; the write-off credited to another operator in the log | the waiting orbit goes at once after the write-off, nothing owed at the end; tamper caught |
+| 79-young-track-blocks-until-tracked | keep_out_tracks | rules 12: a ferry first detected a second before the nomination, 1.2 km north of the effect point and heading away (no average velocity yet); its first detection dropped from the log | rejected (keep_out_tracks: anywhere it reaches at 25 m/s), then, tracked 59 s, the same nomination waits for its signers; tamper caught |
+| 80-expended-munition-owes-nothing | restore_owed | rules 12: a switchblade's engagement released (the munition spent by its effect); the catalog fact dropped from every picture in the log | done (ceased); its values closed right after the release (`restore.closed`, expended), nothing owed at the end; tamper caught |
+| 81-refusal-names-the-order-still-queued | restore_owed | rules 12: 67 under 70's policy: the hold queued for the cut-off USV, then an orbit refused for its own values; the clause cut from the refusal in the log | the orbit voided, its reason naming the hold still queued (`i2 (hold, vehicle viper-1)`); the hold goes when the link returns; tamper caught |
+| 82-restore-written-off | restore_owed | rules 12: 69, the USV never confirming its values back; op-1 writes them off; the write-off credited to another operator in the log | the waiting orbit goes at once after the write-off, nothing owed at the end; tamper caught |

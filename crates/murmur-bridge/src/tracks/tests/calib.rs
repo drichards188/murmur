@@ -933,7 +933,7 @@ fn a_track_that_manoeuvred_says_so_in_its_facts() {
     assert!(f.manoeuvre.is_none(), "{:?}", f.manoeuvre);
     let [e, n] = f.mean_velocity_mps.unwrap_or([0.0, 0.0]);
     assert!(e.hypot(n) < 1.0, "{e:.2}, {n:.2}");
-    // rules 11 (murmur-9m0): the facts say when the tracker started the track; young (a
+    // rules 12 (murmur-9m0): the facts say when the tracker started the track; young (a
     // velocity, no average velocity yet: its history too short to show a manoeuvre) for its
     // first 45 s or so, so a keep-out counts it as possibly manoeuvring until then
     let first = facts_at(holding, 0).position.t;

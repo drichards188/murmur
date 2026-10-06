@@ -90,7 +90,7 @@ pub(super) fn engage_rig_clocked(
 }
 
 /// The engagement rig: passkeys and a study (rules 10), the engine on `engine_clock`, the
-/// operators whose credential is harness-held (rules 11, a credentials run's roster).
+/// operators whose credential is harness-held (rules 12, a credentials run's roster).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn engage_rig_full(
     on: Option<(Arc<World>, Arc<Tracks>)>,
@@ -381,7 +381,7 @@ async fn an_engagement_through_the_bridge_releases_an_abstract_effect() {
     assert_eq!(mine["engage"]["signed"], json!(["op-2", "op-3"]));
     assert!(!mine["engagement"]["effect"].is_null(), "{mine}");
     assert_eq!(msg["operators"]["engage"], json!(["op-2", "op-3"]));
-    // rules 11 (murmur-q05): the FPV strike drone is spent by its effect: what was owed back
+    // rules 12 (murmur-q05): the FPV strike drone is spent by its effect: what was owed back
     // to it is closed right after the release, no restore is tried, the inbox stays quiet,
     // nothing is owed at the end (before, the restore went unanswered for good, alerted, and
     // was carried into the next run)
@@ -745,7 +745,7 @@ async fn an_agent_cannot_accept_a_lost_vehicle() {
 }
 
 /// The `platform.restore` events of the log, as (carried, values, confirmed).
-/// Rules 11: the rig started as `Decision::load` starts a bridge whose `.last-run` is
+/// Rules 12: the rig started as `Decision::load` starts a bridge whose `.last-run` is
 /// `pointer`: what the earlier logs still owe read first and given to the engine
 /// (`run.started`'s `carried_from`), then the lanes and the pointer.
 fn carrying_rig(on: Option<(Arc<World>, Arc<Tracks>)>, audit_path: PathBuf, pointer: &std::path::Path) -> Erig {
@@ -776,7 +776,7 @@ fn carrying_rig_policy(
     e
 }
 
-/// A run's log of rules 11 that still owes `uid`'s own lost-link values `values`, carried
+/// A run's log of rules 12 that still owes `uid`'s own lost-link values `values`, carried
 /// into it from an earlier `run-x.jsonl` (not at hand), as preloaded on `vehicle`.
 fn owing(uid: u64, values: &[(&str, f64)], vehicle: Option<murmur_decide::VehicleIdentity>) -> String {
     let prev = MemorySink::new();
@@ -904,7 +904,7 @@ async fn values_still_owed_when_the_bridge_stopped_are_carried_over_and_put_back
     let pointer = dir.join(".last-run-0");
     std::fs::write(&pointer, log.display().to_string()).expect("pointer");
     // the next run beside the same vehicle: carried over from the first run's log at start,
-    // in its run.started (rules 11: one line, with that log's head), then put back once the
+    // in its run.started (rules 12: one line, with that log's head), then put back once the
     // platform answers
     let e2 = carrying_rig(Some((e.r.world.clone(), e.tracks.clone())), PathBuf::from("memory"), &pointer);
     assert_eq!(std::fs::read_to_string(&pointer).expect("pointer"), "memory", "now names this run's log");
@@ -917,7 +917,7 @@ async fn values_still_owed_when_the_bridge_stopped_are_carried_over_and_put_back
         sleep(Duration::from_secs(1)).await;
     }
     let all = platform_restores(&e2.r.log);
-    assert_eq!(all.len(), 1, "no carried event under rules 11: {all:?}");
+    assert_eq!(all.len(), 1, "no carried event under rules 12: {all:?}");
     assert!(!all[0].0 && all[0].2, "put back and confirmed: {all:?}");
     assert_eq!(all[0].1["FS_GCS_ENABLE"], 1.0, "{all:?}");
     // replayed against what the first run's log still owed (murmur-aca, murmur-cq3): exactly
@@ -976,7 +976,7 @@ async fn a_restore_that_does_not_confirm_is_retried_logged_and_alerted() {
     assert_eq!(alert["id"], "restore:1");
     let detail = alert["detail"].as_str().unwrap_or_default();
     assert!(detail.contains("FS_NO_SUCH 3"), "{alert}");
-    // rules 11: and that an operator may write them off
+    // rules 12: and that an operator may write them off
     assert!(detail.contains("an operator writes them off"), "{alert}");
     // checked against the earlier log it names (whose own carry, one generation back, is
     // trusted)
@@ -1134,11 +1134,11 @@ async fn a_carried_restore_is_not_written_to_another_vehicle_with_the_uid() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Rules 11 (murmur-qjf): after a crash, values carried over from the earlier run's log hold
+/// Rules 12 (murmur-qjf): after a crash, values carried over from the earlier run's log hold
 /// an orbit for the vehicle they were preloaded on (the bridge's identity of it is logged with
 /// the decision), as an engagement's of this run do: it goes once they are confirmed back.
 /// Another vehicle under the uid is not held (they are not its own, and are never written to
-/// it). Before rules 11 carried values held nothing, so in exactly this case an orbit could fly
+/// it). Before rules 12 carried values held nothing, so in exactly this case an orbit could fly
 /// over the preloaded fallback.
 #[tokio::test(start_paused = true)]
 async fn values_carried_over_hold_an_orbit_for_the_vehicle_they_were_preloaded_on() {
@@ -1199,7 +1199,7 @@ async fn values_carried_over_hold_an_orbit_for_the_vehicle_they_were_preloaded_o
     }
 }
 
-/// Rules 11 (review L9): what a failed carry owed is unknown, but its fleet (`<log stem>.fleet.json`
+/// Rules 12 (review L9): what a failed carry owed is unknown, but its fleet (`<log stem>.fleet.json`
 /// beside it, when that reads) names the armed platforms it may owe values to (only an armed
 /// platform is ever preloaded): their missions wait in the Queue until the log is read or
 /// written off, fail closed, and the alert names them. A vehicle it did not name, or one it
@@ -1251,7 +1251,7 @@ async fn a_failed_carry_holds_missions_for_the_armed_platforms_its_fleet_named()
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Rules 11 (review M2, L7): a `.last-run` pointer that is empty, garbled, torn (a crash
+/// Rules 12 (review M2, L7): a `.last-run` pointer that is empty, garbled, torn (a crash
 /// mid-write) or unreadable does not stop the bridge, through `Decision::load` as the bridge
 /// starts: the start records it in `run.started` as a failed carry under the pointer's own
 /// name (the log it named is unknown), alerts, and rewrites the pointer to this run's log,
@@ -1354,7 +1354,7 @@ async fn a_start_that_cannot_read_the_last_runs_log_says_so() {
     std::fs::create_dir_all(&dir).expect("dir");
     let pointer = dir.join(".last-run-0");
     std::fs::write(&pointer, dir.join("gone.jsonl").display().to_string()).expect("pointer");
-    // rules 11 (murmur-cq3): recorded in run.started with why, and owed (unknown) from then on
+    // rules 12 (murmur-cq3): recorded in run.started with why, and owed (unknown) from then on
     let this = dir.join("run-1.jsonl");
     let e = carrying_rig(None, this.clone(), &pointer);
     let first = e.r.log.lines()[0].clone();
@@ -1404,7 +1404,7 @@ async fn a_reused_run_id_carries_from_the_same_file() {
     std::fs::write(&file, &earlier).expect("log");
     let pointer = dir.join(".last-run-0");
     std::fs::write(&pointer, file.display().to_string()).expect("pointer");
-    // rules 11: the carry is read before this run's first line goes into the file
+    // rules 12: the carry is read before this run's first line goes into the file
     let e = carrying_rig(None, file.clone(), &pointer);
     assert!(e.r.log.lines()[0].contains("\"carried_from\":[{\"log\":\"run.jsonl\""), "carried from the earlier run's part of the file");
     assert_eq!(e.r.d.lock().engine.carried_owed().len(), 1);

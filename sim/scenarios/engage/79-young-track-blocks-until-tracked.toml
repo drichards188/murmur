@@ -1,8 +1,8 @@
-# Rules 11 (murmur-9m0), fail closed on missing facts: a protected track the tracker started
+# Rules 12 (murmur-9m0), fail closed on missing facts: a protected track the tracker started
 # a second ago has a velocity but no average velocity yet, and no manoeuvre seen, because its
 # history is too short to show either: the tracker can't yet say it does not manoeuvre. Until
-# rules 11 the keep-out then fell back to the one region along its velocity (a ferry 1.2 km
-# north and heading away, clear). From rules 11 a young track also counts anywhere it reaches
+# rules 12 the keep-out then fell back to the one region along its velocity (a ferry 1.2 km
+# north and heading away, clear). From rules 12 a young track also counts anywhere it reaches
 # at its domain's plausible top speed (25 m/s on the surface) by the effect time, so the first
 # nomination is rejected; once the track has been followed 45 s its average velocity exists,
 # the young region goes, and the same nomination waits for its signers. The cost: larger

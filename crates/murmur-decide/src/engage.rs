@@ -327,9 +327,9 @@ impl EngageRules {
         self.rules_version >= crate::rules::RULE_ID_SINCE
     }
 
-    /// The decisions of rules 11 on ([`crate::rules::REVIEW_FOLLOWUPS_SINCE`]): a young track
+    /// The decisions of rules 12 on ([`crate::rules::REVIEW_FOLLOWUPS_SINCE`]): a young track
     /// counts as possibly manoeuvring in a keep-out ([`track_reach`]).
-    pub fn v11(&self) -> bool {
+    pub fn followups(&self) -> bool {
         self.rules_version >= crate::rules::REVIEW_FOLLOWUPS_SINCE
     }
 
@@ -888,7 +888,7 @@ impl VehicleIdentity {
         }
     }
 
-    /// Rules 11: why `now` is known to be another vehicle than this one, if it is: its
+    /// Rules 12: why `now` is known to be another vehicle than this one, if it is: its
     /// platform, callsign or system id, where both know it, differs. The home is never enough:
     /// ArduPilot (and the stand-ins) set home again at every arming, so the very vehicle a
     /// preload was set on reports another home after a restart once it armed elsewhere (a live
@@ -2472,7 +2472,7 @@ pub struct TrackReach {
 /// saw manoeuvre within its memory ([`TrackFacts::manoeuvre`]) anywhere it reaches at the
 /// fastest it went, whichever way it turns: a minute ahead, a contact that zigzags, weaves or
 /// sprints and stops is not where its velocity of the moment says (the tracker of rules 9
-/// follows a manoeuvre within seconds, so its velocity is the current leg's). Rules 11
+/// follows a manoeuvre within seconds, so its velocity is the current leg's). Rules 12
 /// (murmur-9m0): a young track, one the tracker started ([`TrackFacts::first_seen_t`]) too
 /// recently to have an average velocity, can't yet be said not to manoeuvre (the facts above
 /// do not exist yet: before, it fell back to the one region along its velocity), so it also
@@ -2531,8 +2531,8 @@ pub fn track_reach(t: &TrackFacts, effect_t: Time, ec: &EngageRules) -> Vec<Trac
             ),
         });
     }
-    // rules 11: young, so a manoeuvre is not ruled out yet
-    if ec.v11()
+    // rules 12: young, so a manoeuvre is not ruled out yet
+    if ec.followups()
         && t.mean_velocity_mps.is_none()
         && let Some(first) = t.first_seen_t
     {
