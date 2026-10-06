@@ -339,7 +339,7 @@ export function SpacePanel({ catalog, catalogError, mapBounds, box, drawing, onD
             <span className="tl-caret"> </span>
             <span className="tl-swatch" style={{ background: classColor(cv.service.class) }} />
             i{r.intent_id} {name}
-            <span className="tl-count">{r.outcome ? 'ended' : r.state}</span>
+            <span className="tl-count">{r.outcome === 'cancelled' ? 'cancelled' : r.outcome ? 'ended' : r.state}</span>
           </div>
           <div className="tl-track">
             <span className="tl-watch" style={span(cv.window.from, cv.window.to)} />

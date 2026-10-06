@@ -331,3 +331,127 @@ async fn a_cover_below_its_level_is_refused_with_the_outages() {
     );
     r.replays_with_space();
 }
+
+// ---- rules 11: cancel after dispatch, re-check on a reloaded segment, covers over the area
+
+/// The fixture with satellite `norad` left out: what a reload of the element sets can do.
+fn space_without(norad: u64) -> Arc<murmur_space::Space> {
+    let raw: Vec<Value> = serde_json::from_str(GP_FIXTURE).expect("fixture");
+    let kept: Vec<Value> = raw
+        .into_iter()
+        .filter(|r| r["NORAD_CAT_ID"].as_u64() != Some(norad))
+        .collect();
+    let text = serde_json::to_string(&kept).expect("json");
+    let catalog =
+        murmur_space::Catalog::parse(include_str!("../../../../../sim/space/constellations.toml"))
+            .expect("catalog");
+    let sources: Vec<(String, String)> = catalog
+        .queries()
+        .into_iter()
+        .map(|q| (q, text.clone()))
+        .collect();
+    Arc::new(murmur_space::Space::from_sources(catalog, &sources).expect("space"))
+}
+
+fn cover_req(class: &str, hours: i64) -> IntentRequest {
+    space_req(json!({
+        "task": "cover", "area": area(),
+        "window": { "from": t0().0, "to": t0().0 + hours * 3600 * 1000 },
+        "service": { "type": "satcom", "class": class },
+    }))
+}
+
+#[tokio::test]
+async fn an_operator_cancels_a_dispatched_collect_from_the_console() {
+    let (r, map) = space_rig(60.0);
+    let p = r.first_option().await;
+    let out =
+        r.d.submit(&op1(), collect_req(Some(&p.chosen)))
+            .await
+            .expect("collect");
+    assert_eq!(out.state, State::Dispatched);
+    r.clock.advance_ms(5_000);
+    let out =
+        r.d.cancel(&op1(), out.id.0, Some("weather closed in".into()))
+            .expect("cancel");
+    assert_eq!(out.state, State::Aborted);
+    let run = out.space.clone().expect("run");
+    assert_eq!(run["outcome"], "cancelled");
+    assert_eq!(run["state"], "cancelled");
+    assert_eq!(r.op_states(), ["tasked", "cancelled"]);
+    assert!(r.reason(out.id).starts_with("cancelled by op-1: weather closed in"), "{}", r.reason(out.id));
+    let detail = run["events"][1]["detail"].as_str().unwrap_or("");
+    assert!(detail.starts_with("tasking request withdrawn"), "{detail}");
+    // the pass comes and goes: the executor reports nothing more
+    r.clock.set(map.engine(p.chosen.collect_time).plus_ms(1_000));
+    r.d.tick();
+    assert_eq!(r.op_states(), ["tasked", "cancelled"]);
+    assert_eq!(r.state(out.id), State::Aborted);
+    assert_eq!(r.d.space_runs_json()["runs"][0]["outcome"], "cancelled");
+    // cancelling again, or an ended one, is refused
+    assert!(r.d.cancel(&op1(), out.id.0, None).is_err());
+    r.replays_with_space();
+}
+
+#[tokio::test]
+async fn a_reloaded_segment_rechecks_every_running_space_task() {
+    let (r, map) = space_rig(60.0);
+    let p = r.first_option().await;
+    let collect =
+        r.d.submit(&op1(), collect_req(Some(&p.chosen)))
+            .await
+            .expect("collect");
+    assert_eq!(collect.state, State::Dispatched);
+    let cover = r.d.submit(&op1(), cover_req("wgs", 2)).await.expect("cover");
+    assert_eq!(cover.state, State::Dispatched, "{}", cover.intent);
+    assert!(
+        cover.space.clone().expect("run")["cover"]["summary"]
+            .as_str()
+            .unwrap_or("")
+            .contains("sample points over the area"),
+        "the watch is over the area's sample points"
+    );
+    r.clock.advance_ms(5_000);
+    // the same element sets again: the segment is logged again, every answer is unchanged
+    let before = r.log.lines().len();
+    r.d.install_space(fixture_space(), map);
+    assert_eq!(r.events("space.loaded"), 2);
+    assert_eq!(r.log.lines().len(), before + 1, "nothing but the segment logged");
+    assert_eq!(r.op_states(), ["tasked", "watching"]);
+    // the element sets without the chosen satellite: the collect's pass is gone, the cover
+    // (WGS, untouched) holds on the new segment
+    r.d.install_space(space_without(p.chosen.norad_id), map);
+    assert_eq!(r.state(collect.id), State::Failed);
+    assert!(
+        r.reason(collect.id).starts_with("collection missed: no longer feasible: feasibility: NORAD"),
+        "{}",
+        r.reason(collect.id)
+    );
+    assert_eq!(r.state(cover.id), State::Dispatched);
+    assert_eq!(r.op_states(), ["tasked", "watching", "missed", "rechecked"]);
+    let runs = r.d.space_runs_json();
+    let by_id = |id: IntentId| {
+        runs["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["intent_id"] == id.0)
+            .cloned()
+            .expect("run")
+    };
+    assert_eq!(by_id(collect.id)["outcome"], "failed");
+    assert_eq!(by_id(cover.id)["outcome"], Value::Null);
+    // the collect's pass comes and goes without a word; the cover's watch runs to its end
+    let end = map.engine(Time(t0().0 + 2 * 3600 * 1000));
+    while r.clock.now() < end {
+        r.clock.advance_ms(60_000);
+        r.d.tick();
+    }
+    assert_eq!(r.state(collect.id), State::Failed);
+    assert_eq!(r.state(cover.id), State::Done);
+    let states = r.op_states();
+    assert_eq!(states.iter().filter(|s| *s == "missed").count(), 1);
+    assert_eq!(states.last().map(String::as_str), Some("ended"));
+    // two segments in the log: re-decided from the logged answers alone
+    r.replays();
+}

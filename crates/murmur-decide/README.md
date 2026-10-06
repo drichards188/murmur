@@ -16,7 +16,8 @@ proposed -> checked -> auto_approved | pending_approval
          -> approved | rejected | expired | voided -> dispatched -> done | failed
 checked -> approved   (authorize_at_submission: a human's own intent in a human tier)
 dispatched -> effected -> done | failed       (engage: release, then the assessment)
-dispatched -> aborted                         (engage: stopped before the effect)
+dispatched -> aborted                         (engage: stopped before the effect; rules 11: a
+                                               collect or cover cancelled after dispatch)
 auto_approved | approved -> queued            (rules 5: a vehicle can't be reached now)
 queued -> dispatched | pending_approval | voided | expired   (its re-check, or its deadline)
 dispatched -> queued                          (rules 5: the link lost before any vehicle started it)
@@ -502,7 +503,18 @@ them.
   or circle, `[lon, lat]`) in a window (times are scenario time, integer ms).
 - **cover** `{area, window, service: {type: satcom, class} | {type: gnss, class}, min_level?}`:
   is SATCOM coverage (fraction of the window, default 0.99) or GNSS visibility (satellites in
-  view at every sample, default 4) good enough over the area's centroid.
+  view at every sample, default 4) good enough over the area. From rules 11
+  (`SPACE_FOLLOWUPS_SINCE`) "over the area" means at every one of its sample points
+  (`space::cover_points`: the centroid, then the boundary: eight bearings around a circle,
+  a polygon's vertices thinned to eight): the query is one link or GNSS query per point
+  (`SpaceQuery::CoverLinks`, `CoverGnss`, one time map for all), the logged answer holds each
+  point's figures and nothing aggregated, and the `coverage` rule decides on the least
+  covered point (the fewest in view for GNSS) and names it, with the mean and the outages
+  merged over the area in its detail. The boundary and the centroid bound a convex area for
+  a field that varies on the scale of a satellite footprint (hundreds of km, against an
+  area of at most 200 km radius); the interior of a concave polygon is not sampled. Before
+  rules 11 the service was read at the centroid alone (`Links`, `Gnss`), which older logs
+  still replay with.
 
 The flow for a collect:
 
@@ -526,6 +538,47 @@ The flow for a collect:
 A cover runs on its own (`coverage-query` tier) unless a check is unverified, and dispatches
 an `Order::Cover`.
 
+**After dispatch** (rules 11, every gate on `SPACE_FOLLOWUPS_SINCE`):
+
+- **Cancel.** An operator may cancel a dispatched collect or cover (`Engine::cancel`, the
+  same call as before dispatch; `POST /api/intents/{id}/cancel`, the Cancel button on the
+  run's card). The engine logs the operator's `intent.cancel`, then its own `op.state
+  cancelled` under the order's resource saying what the cancel means
+  (`space::cancel_detail`, recomputed by replay from the dispatched order and the event's
+  scenario time), then the transition `cancel` to `aborted`: a collect before its pass has
+  its simulated tasking request withdrawn and collects nothing; a collect whose pass has
+  come cannot be recalled (a pass under way is a pass under way): the scene counts as
+  collected and its product is no longer awaited, none is delivered; a cover's watch ends
+  where it is, nothing having been commanded. The bridge is refused the `cancelled` report
+  (it is the engine's), a dispatched vehicle task or engagement is refused the cancel as
+  before (a newer order supersedes the one, an abort stops the other), and an agent
+  withdraws nothing after dispatch, as before.
+- **Re-check.** A dispatched collect or cover is checked again when a later space answer
+  exists (`Engine::recheck_space`, with an answer the bridge prepares outside its lock): the
+  bridge's space loader watches `sim/space/cache` (every 30 s) and reloads the segment when
+  the element sets change on disk (a `murmur-space fetch` while the bridge runs); the engine
+  logs the new segment (`space.loaded`) and every running space task is re-checked against
+  it. A collect is re-queried at the request time of the answer it was tasked on
+  (`prepare_space_at`), so only the segment can change the answer, not the lead time spent
+  since. An answer with the hash the task already runs on changes nothing and logs nothing;
+  a new one is checked as a submission is (`check.result` with phase `dispatched`, the
+  rules reading only the logged answer), then the engine reports under the order's
+  resource: `rechecked` (`still feasible: ...`) when the task holds (a collect keeps its
+  approved pass, a fresh pass within `collect_match_tolerance_s` being the same
+  opportunity; a cover's watch takes the new answer's outages), or `missed` (`no longer
+  feasible: <every failing check>; <a collect's fresh ranked options>`) and the intent
+  failed (`collection missed: ...`, `coverage missed: ...`) when it cannot be met. The
+  engine never re-chooses a pass: the fresh options go to a human, who may propose a new
+  collect. The bridge's clock-based `missed` (a pass over at dispatch, a jump past it) is
+  unchanged and never starts with `no longer feasible`.
+- **The lock.** The space query (milliseconds for a collect, seconds for a long cover over
+  nine points) runs before the decision lock is taken, on the shared segment
+  (`prepare_space`, `prepare_space_at`); the engine uses the prepared answer under the lock
+  only if nothing it depended on changed: the same task, prepared within 5 s
+  (`PREPARED_SPACE_MAX_AGE_MS`) of the check, and answered by the segment the engine holds
+  now (one reloaded in between answers again); otherwise it asks its own segment under the
+  lock. The logged answer is the one the decision used, whichever way it came.
+
 **Replay.** Each space query is logged once as `space.query`: the query, the answer
 (`compute_ms` zeroed, the one non-deterministic field), its `time_map`, and the segment
 identity (`SegmentId`: SHA-256 over the catalog and every satellite's identity, epoch, mean
@@ -534,7 +587,17 @@ content hash, like the area set. Rules read only the logged answer, so `murmur-r
 re-decides every collect and cover without a cache. With `--space <constellations.toml>
 <cache-dir>` it also re-runs every query: same segment, the answer must be identical
 (else a mismatch, exit 1); a different segment is a **cache mismatch**, listed separately
-(exit 3; the decisions still reproduced).
+(exit 3; the decisions still reproduced). A log whose segment was reloaded carries two
+`space.loaded` events, and the queries of the segment not given are cache mismatches.
+Rules 11 bindings: a cover's verdict is recomputed from the logged per-point answers, and
+the query is rebuilt from the intent (an answer with a point dropped is not this intent's
+question); the engine's reports are bound to what they follow: `cancelled` to an
+`operator.action intent.cancel` of that dispatched space task right before it, its detail
+recomputed from the dispatched order at the event's time, and followed at once by the
+`cancel` transition naming that operator; `rechecked` or `missed` (`no longer feasible`) to a
+`dispatched`-phase check right before it, the report recomputed from the recomputed results,
+a `missed` followed at once by the failure quoting it, and a failed check never left
+unreported; nothing of the intent between any of these.
 
 ## The hash chain: tamper-evident, not tamper-proof
 
@@ -749,6 +812,13 @@ roster and the loiter radius from rules 4 (older logs don't carry them):
 - Lost-link values owed back (rules 7): every decision's `restore_owed` is the ledger's (the
   values an engagement of the log preloaded and no confirmed restore put back), so a forged log
   can't strip it to justify a mission's dispatch, and the reach recomputed from it holds.
+- Space tasks after dispatch (rules 11): a `cancelled` report follows an operator's cancel of
+  that dispatched collect or cover and says what the cancel meant for the dispatched order at
+  that time (recomputed), the `cancel` transition follows it at once naming the operator; a
+  `rechecked` or `missed` (`no longer feasible`) report follows a `dispatched`-phase check
+  of that running space task, says what the recomputed results say, and a `missed` is
+  followed at once by the failure quoting it; a cancel, a re-check or a missed report that
+  nothing carries out is flagged; a cover's verdict is the one its logged sample points give.
 
 The engine refuses the op states, supersedes and sessions these checks reject
 (`EngineError::NotItsOrder`, `EngineError::NotOnRoster`, nothing logged), so an honest engine
@@ -1046,6 +1116,31 @@ Rules versions:
   and a live run with its anchors (`v9-identification-live.jsonl`,
   `tests/data/anchors/v9-identification-live.anchors`; see `tests/versions.rs`).
 
+- **11** (murmur-0nv.1.7; every gate reads `SPACE_FOLLOWUPS_SINCE`, so another change taking
+  the number first renumbers it in one line; no policy schema change): satellite tasks
+  followed up after dispatch, and covers over the area (see "After dispatch" and "cover"
+  under "Satellite tasking"). An operator may cancel a dispatched collect or cover
+  (`operator.action intent.cancel`, the engine's own `op.state cancelled` saying what the
+  cancel means for the pass, transition `cancel` to `aborted`); a later space answer (the
+  element sets reloaded) re-checks every running space task (`check.result` phase
+  `dispatched`, then the engine's `op.state rechecked`, or `missed` with `no longer
+  feasible: ...` and the intent failed; a collect re-queried at the request time it was
+  tasked at, `prepare_space_at`); a cover is evaluated at sample points over its area (the
+  centroid and the boundary, `space::cover_points`; `SpaceQuery::CoverLinks`, `CoverGnss`;
+  the coverage rule deciding on the least covered point); and a prepared space answer is
+  used under the lock only if the segment that answered it is the one the engine holds.
+  Gated in `SpaceRules::area_cover` (`query_for`), `Engine::cancel`,
+  `Engine::recheck_space`, the engine's refusal of its own reports from the bridge
+  (`op_state`), the bridge's `recheck_space_runs` and its cancel of a run. Markers (a log
+  claiming rules 10 or older can't carry them): a `cover_links` or `cover_gnss` query, a
+  `cancel` transition, a `cancelled` or `rechecked` op state, a `dispatched` check phase.
+  Fixtures: `tests/data/audit/v11-engagement-scenario-01.jsonl` (the scenario runner),
+  `v11-space-followups-engine.jsonl` (the engine on the element-set fixture, written by
+  `tests/space.rs` with `MURMUR_WRITE_FIXTURE`: an area cover, a collect cancelled before
+  its pass, one re-checked on a reloaded segment and missed), and a live run with its
+  anchors (`v11-space-followups-live.jsonl`, `tests/data/anchors/v11-space-followups-live.anchors`;
+  see `tests/versions.rs`).
+
 - **10** (murmur-437, passkeys; every gate reads `PASSKEY_SINCE`, policy schema 7
   `PASSKEY_SCHEMA_SINCE`, so another change taking the number first renumbers it in one line):
   a login or a step-up may be a passkey's (`crate::passkey`). A credentials run's
@@ -1196,7 +1291,16 @@ The full contract is in the crate docs (`src/lib.rs`). In short:
      product ready or `finish(Failed)` if missed. Show `scene` (a `[lon, lat]` ring) on the
      map.
    - `Order::Cover(CoverOrder)`: report outages from the answer as op states under
-     `satcom:<class>` or `gnss:<class>`, and `finish` at the window end.
+     `satcom:<class>` or `gnss:<class>` (rules 11: merged over the area's sample points), and
+     `finish` at the window end.
+   - Rules 11: `cancel` works on a dispatched collect or cover too (the engine reports
+     `cancelled` itself and aborts it: stop following the run); when the segment is
+     reloaded, `set_space` it again and re-check every running space task with
+     `recheck_space` on an answer prepared outside the lock (`prepare_space_at` with the
+     task's answer's `now` for a collect): `Unchanged` (nothing to do), `Holds` (a cover's
+     watch takes the intent's new answer), `Lost` (the engine reported `missed` and failed
+     it: stop following the run). Never report `cancelled`, `rechecked` or a `missed` that
+     starts with `no longer feasible` yourself: the engine refuses them.
 
 The bridge does all of this (`crates/murmur-bridge/src/decision/space.rs`): collects and
 covers come in through `POST /api/intents`, and a simulated executor reports their op states
@@ -1236,6 +1340,9 @@ on the scenario clock.
   vehicle only, see the lost-link preload above), but the engagement itself is not resumed.
 - Satellite tasking: no cloud model (optical options note it), no sensitive-area or
   cost/priority tiers yet (every collect needs a human), no competing demand or agility
-  model, one collect per intent. Cover reads the area's centroid only. The segment identity
-  is computed here from public `Satellite` fields and propagated states; a content hash of
-  the raw cached files in murmur-space would be stronger.
+  model, one collect per intent. A cover samples the centroid and the boundary (the interior
+  of a concave polygon is not sampled). A re-check after dispatch comes only from a reloaded
+  segment (the one later answer this system has), and a lost pass is never re-planned by the
+  engine: the fresh options go to a human. The segment identity is computed here from public
+  `Satellite` fields and propagated states; a content hash of the raw cached files in
+  murmur-space would be stronger.

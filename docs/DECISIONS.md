@@ -295,6 +295,36 @@ group. Dates are 2026.
   a glitching fix (a spoofed one is fused afterwards), the receiver's own fix
   (GPS_RAW_INT, 3D) and the filter's EKF_GPS_GLITCHING flag (HIGH_LATENCY2: its GPS
   failure flag) are logged facts of the vehicle and both must hold; unknown fails.
+- **A tasked satellite is followed after dispatch; a cover is judged over its area** (10-06,
+  murmur-0nv.1.7, rules 11 `SPACE_FOLLOWUPS_SINCE`; from the collections review). Before,
+  a dispatched collect or cover could not be cancelled, the only "missed" was the clock's
+  (a pass over at dispatch or jumped past), and a cover was read at the area's centroid.
+  Decided: (1) an operator cancels a dispatched collect or cover like any waiting intent,
+  and the engine itself states what the cancel means for the pass (`op.state cancelled`,
+  recomputed by replay): a request withdrawn before its pass collects nothing; a pass that
+  has come cannot be recalled (nothing here or in a real tasking system takes an exposure
+  back), so the scene counts as collected and only its product is dropped; a cover's watch
+  ends. The intent ends `aborted` (transition `cancel`, kept apart from an engagement's
+  `abort`), and an agent withdraws nothing after dispatch, as under the existing policy (an
+  agent may withdraw its own proposal while it waits; after dispatch only an operator
+  stops anything). (2) A later space answer re-checks every running task, and the only
+  later answer this system has is a reloaded segment (new element sets on disk: the bridge
+  watches the cache and reloads), because the answer is deterministic in the segment and
+  the query; a collect is re-queried at the request time it was tasked at, since a fresh
+  "now" would only show the lead time spent and call every tasked pass too soon. A pass
+  still there within the match tolerance is the same opportunity (the approval stands); a
+  pass gone is `missed` and the intent failed, with the fresh options in the report for a
+  human: the engine never re-chooses, as agents nominate and humans authorize. (3) A cover
+  is evaluated at the centroid and the boundary (eight bearings around a circle, a
+  polygon's vertices thinned to eight) and holds only where it holds at every point: SATCOM
+  and GNSS coverage vary on the scale of a footprint (hundreds of km), so for an area of at
+  most 200 km radius the extremes of a convex area lie on its boundary, and nine points
+  cost nine SGP4 runs (about a second each for a week of Starlink), which a grid fine
+  enough to add anything would multiply. The logged answer holds each point's figures and
+  no aggregate, so replay recomputes the verdict and a dropped point is not the intent's
+  question. (4) The space query stays outside the decision lock (the 10-03 decision above),
+  and a prepared answer is used only if the segment that answered it is the one the engine
+  holds; a stale one is asked again under the lock rather than logged.
 - **Space as taskable infrastructure** (10-02, user direction): request coverage and
   capabilities from satellites when needed; don't fly or command satellite buses (no CCSDS).
   One theater map for earthbound nodes, plus a space timeline and a globe inset; one camera

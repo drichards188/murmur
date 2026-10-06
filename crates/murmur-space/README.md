@@ -340,7 +340,10 @@ Times passed in and returned are **scenario time**. Each report carries `time_ma
 `cloud_free_probability`, `scene` ring, `covers_area`, `element_age_days`, `notes`) and
 `exclusions[]` (`reason` enum and a human `detail`) plus `exclusion_summary`. The intent should
 carry the chosen option's `norad_id` + `collect_time`; a policy rule can re-run the query at
-approval time and void the approval if that option is gone. Example option:
+approval time and void the approval if that option is gone. A cover (SATCOM or GNSS service
+over an area) runs `links_with_time_map` or `gnss` once per sample point of the area (the
+centroid and the boundary, one time map for all) and decides on the least covered point.
+Example option:
 
 ```json
 {"rank": 1, "class_id": "capella", "capability": "sar", "satellite": "CAPELLA-11 (ACADIA-1)",

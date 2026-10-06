@@ -1175,3 +1175,651 @@ fn a_space_answer_computed_outside_the_engine_is_used_while_fresh() {
     assert_eq!(calls.load(SeqCst), 3);
     assert_replays(&run.log);
 }
+
+// ---- rules 11: covers over the area, and the follow-ups after dispatch ------------------
+
+use murmur_decide::audit::CheckPhase;
+use murmur_decide::replay::{ReplayOptions, RulesAccepted, replay_str_with};
+use murmur_decide::space::{
+    CANCELLED_OP, COVER_BOUNDARY_SAMPLES, MISSED_OP, NO_LONGER_FEASIBLE, RECHECKED_OP,
+    STILL_FEASIBLE, SpaceResult, cover_points,
+};
+
+/// The fixture with satellite `norad` left out: a later segment on which its passes are
+/// gone (what a reload of the element sets can do).
+fn space_without(norad: u64) -> Arc<Space> {
+    let raw: Vec<serde_json::Value> = serde_json::from_str(FIXTURE).unwrap();
+    let kept: Vec<serde_json::Value> = raw
+        .into_iter()
+        .filter(|r| r["NORAD_CAT_ID"].as_u64() != Some(norad))
+        .collect();
+    Arc::new(build_space(
+        &serde_json::to_string(&kept).unwrap(),
+        CONSTELLATIONS,
+    ))
+}
+
+fn wgs() -> CoverService {
+    CoverService::Satcom {
+        class: "wgs".into(),
+    }
+}
+
+/// An operator's chosen collect under the sim policy (approved at submission), dispatched
+/// and reported tasked.
+fn dispatched_collect(run: &mut Run, session: &OperatorSession) -> (IntentId, ChosenCollect, CollectOrder) {
+    let (query, chosen) = first_option(run);
+    let world = run.world();
+    let id = run
+        .engine
+        .amend_collect(session.authority(), query, chosen, &world, &NoTerrain)
+        .unwrap()
+        .id();
+    assert_eq!(run.engine.intent(id).unwrap().state(), State::Approved);
+    let Order::Collect(order) = run.engine.dispatch_order(id).unwrap() else {
+        panic!("not a collect order");
+    };
+    run.engine
+        .record_op_state(id, &order.resource, "tasked", "simulated tasking request accepted")
+        .unwrap();
+    (id, chosen, order)
+}
+
+fn whats(r: &murmur_decide::replay::ReplayReport) -> Vec<String> {
+    r.mismatches.iter().map(|m| m.what.clone()).collect()
+}
+
+/// Rewrite every reference to a logged space answer after `edit` changed it (a forger who
+/// keeps the log consistent with itself).
+fn edit_answer(ev: &mut [Event], edit: impl Fn(&mut SpaceAnswer)) {
+    let mut rehash: Vec<(String, String)> = Vec::new();
+    for e in ev.iter_mut() {
+        if let audit::EventBody::SpaceQuery { sha256, answer } = &mut e.body {
+            edit(answer);
+            let new = answer.content_hash().unwrap();
+            rehash.push((sha256.clone(), new.clone()));
+            *sha256 = new;
+        }
+    }
+    for e in ev.iter_mut() {
+        if let audit::EventBody::CheckResult { inputs, .. } | audit::EventBody::PolicyDecision { inputs, .. } = &mut e.body
+            && let LoggedSpace::Answered { sha256 } = &mut inputs.space
+            && let Some((_, new)) = rehash.iter().find(|(old, _)| old == sha256)
+        {
+            *sha256 = new.clone();
+        }
+    }
+}
+
+#[test]
+fn a_cover_is_evaluated_at_sample_points_over_its_area() {
+    let mut run = run(policy(), true);
+    let session = run
+        .engine
+        .open_operator_session(OperatorId::new("op-1"))
+        .unwrap();
+    let world = run.world();
+    let i = run
+        .engine
+        .submit(session.authority(), cover(wgs(), None), &world, &NoTerrain)
+        .unwrap();
+    assert_eq!(i.state(), State::AutoApproved, "{:#?}", i.checks());
+    // a circle: the centroid and eight points around it, each answered on its own
+    let a = i.space_answer().unwrap();
+    let SpaceQuery::CoverLinks(q) = &a.query else {
+        panic!("not an area query: {:?}", a.query);
+    };
+    assert_eq!(q.points.len(), 1 + COVER_BOUNDARY_SAMPLES);
+    assert_eq!(q.points, cover_points(&area()));
+    assert_eq!((q.points[0].lat_deg, q.points[0].lon_deg), (GOLDEN_GATE.lat, GOLDEN_GATE.lon));
+    let SpaceResult::CoverLinks(r) = &a.result else {
+        panic!("not an area answer");
+    };
+    assert_eq!(r.points.len(), q.points.len());
+    assert!(r.points.iter().all(|p| p.links.class_id == "wgs"));
+    let c = check(i, RuleId::Coverage);
+    assert_eq!(c.outcome, Outcome::Pass);
+    assert!(
+        c.detail.contains("at the least covered of 9 sample points over the area ("),
+        "{}",
+        c.detail
+    );
+    assert!(c.detail.contains("needs 99.0% at every point"), "{}", c.detail);
+    let id = i.id();
+    // a polygon: the centroid and its vertices
+    let ring = vec![
+        LonLat::new(-122.55, 37.78),
+        LonLat::new(-122.40, 37.78),
+        LonLat::new(-122.40, 37.88),
+        LonLat::new(-122.55, 37.88),
+    ];
+    let polygon = SpaceArea::Polygon { ring: ring.clone() };
+    let points = cover_points(&polygon);
+    assert_eq!(points.len(), 5);
+    assert_eq!((points[1].lon_deg, points[1].lat_deg), (ring[0].lon, ring[0].lat));
+    let many = SpaceArea::Polygon {
+        ring: (0..24).map(|k| LonLat::new(-122.5 + 0.004 * f64::from(k), 37.8 + 0.001 * f64::from(k % 3))).collect(),
+    };
+    assert_eq!(cover_points(&many).len(), 1 + COVER_BOUNDARY_SAMPLES, "thinned to the sample count");
+    let p = run
+        .engine
+        .submit(
+            session.authority(),
+            Proposal::space(Task::Cover {
+                area: polygon,
+                window: Window {
+                    from: t0(),
+                    to: t0().plus_ms(3_600_000),
+                },
+                service: wgs(),
+                min_level: None,
+            }),
+            &world,
+            &NoTerrain,
+        )
+        .unwrap();
+    assert!(check(p, RuleId::Coverage).detail.contains("of 5 sample points"), "{}", check(p, RuleId::Coverage).detail);
+    // the watch handed on carries the area; its answer the points
+    let Order::Cover(order) = run.engine.dispatch_order(id).unwrap() else {
+        panic!("not a cover order");
+    };
+    assert_eq!(order.resource, Uid::new("satcom:wgs"));
+    run.engine.finish(id, TaskOutcome::Done).unwrap();
+    assert!(run.log.text().contains("\"query\":\"cover_links\""));
+    assert_replays(&run.log);
+}
+
+#[test]
+fn before_rules_11_a_cover_is_evaluated_at_the_centroid() {
+    let mut p = policy();
+    p.rules.rules_version = PASSKEY_SINCE;
+    let mut run = run(p, true);
+    let session = run
+        .engine
+        .open_operator_session(OperatorId::new("op-1"))
+        .unwrap();
+    let world = run.world();
+    let i = run
+        .engine
+        .submit(session.authority(), cover(wgs(), None), &world, &NoTerrain)
+        .unwrap();
+    assert_eq!(i.state(), State::AutoApproved, "{:#?}", i.checks());
+    assert!(matches!(i.space_answer().unwrap().query, SpaceQuery::Links(_)));
+    let c = check(i, RuleId::Coverage);
+    assert!(c.detail.starts_with("wgs: covered 100.0% of the window (needs 99.0%)"), "{}", c.detail);
+    let text = run.log.text();
+    assert!(!text.contains("cover_links"));
+    let r = replay_str_with(
+        &text,
+        &ReplayOptions {
+            rules: RulesAccepted::Exactly(PASSKEY_SINCE),
+            ..ReplayOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(r.ok(), "{:#?}", r.mismatches);
+    assert_eq!(r.rules_version, PASSKEY_SINCE);
+}
+
+#[test]
+fn a_cover_verdict_that_does_not_match_the_area_evaluation_is_caught() {
+    let mut run = run(policy(), true);
+    let session = run
+        .engine
+        .open_operator_session(OperatorId::new("op-1"))
+        .unwrap();
+    let world = run.world();
+    let gps = CoverService::Gnss {
+        class: "gps".into(),
+    };
+    // the fewest satellites in view at the worst sample point decide: ask for more than that
+    let i = run
+        .engine
+        .submit(session.authority(), cover(gps, Some(40.0)), &world, &NoTerrain)
+        .unwrap();
+    assert_eq!(i.state(), State::Rejected);
+    let c = check(i, RuleId::Coverage);
+    assert!(c.detail.contains("at the worst of 9 sample points over the area ("), "{}", c.detail);
+    let SpaceResult::CoverGnss(g) = &i.space_answer().unwrap().result else {
+        panic!("not an area answer");
+    };
+    let worst = g.worst().unwrap().point;
+    assert_eq!(g.points.len(), 9);
+    assert_replays(&run.log);
+    let honest = run.log.text();
+    // the verdict edited to pass: the check is recomputed from the logged points
+    let w = forged_whats(&honest, |ev| {
+        for e in ev {
+            if let audit::EventBody::CheckResult { results, passed, .. } = &mut e.body {
+                for r in results.iter_mut().filter(|r| r.rule == RuleId::Coverage) {
+                    r.outcome = Outcome::Pass;
+                }
+                *passed = true;
+            }
+        }
+    });
+    assert!(w.iter().any(|m| m == "check results differ"), "{w:?}");
+    // the worst point dropped from the logged answer, every hash recomputed: the answer no
+    // longer answers this intent's question (the point set is the area's)
+    let forged = forge(&honest, |ev| {
+        edit_answer(ev, |a| {
+            if let SpaceQuery::CoverGnss(q) = &mut a.query {
+                q.points.retain(|p| *p != worst);
+            }
+            if let SpaceResult::CoverGnss(c) = &mut a.result {
+                c.points.retain(|p| p.point != worst);
+            }
+        });
+    });
+    let r = replay_str(&forged).unwrap();
+    assert!(whats(&r).iter().any(|m| m == "check results differ"), "{:?}", whats(&r));
+    assert!(
+        r.mismatches
+            .iter()
+            .any(|m| m.recomputed.contains("the space answer is not for this intent's query")),
+        "{:#?}",
+        r.mismatches
+    );
+    // the worst point's own figure raised: the recomputed verdict passes where the logged
+    // one failed
+    let w = forged_whats(&honest, |ev| {
+        edit_answer(ev, |a| {
+            if let SpaceResult::CoverGnss(c) = &mut a.result {
+                for p in &mut c.points {
+                    p.gnss.visible_min = 40;
+                }
+            }
+        });
+    });
+    assert!(w.iter().any(|m| m == "check results differ"), "{w:?}");
+}
+
+#[test]
+fn an_operator_cancels_a_dispatched_collect_before_its_pass() {
+    let mut run = run(policy(), true);
+    let session = run
+        .engine
+        .open_operator_session(OperatorId::new("op-2"))
+        .unwrap();
+    let (id, chosen, order) = dispatched_collect(&mut run, &session);
+    // the cancel's report is the engine's: the bridge can't write it
+    let err = run
+        .engine
+        .record_op_state(id, &order.resource, CANCELLED_OP, "x")
+        .unwrap_err();
+    assert!(matches!(err, EngineError::NotItsOrder { .. }), "{err}");
+    run.clock.advance_ms(30_000);
+    let before = chosen.collect_time.ms_since(run.clock.now()) / 1000;
+    let i = run
+        .engine
+        .cancel(id, session.authority(), "weather closed in")
+        .unwrap();
+    assert_eq!(i.state(), State::Aborted);
+    assert_eq!(
+        i.history().last().unwrap().reason,
+        "cancelled by op-2: weather closed in"
+    );
+    assert_eq!(i.ops()[&order.resource], CANCELLED_OP);
+    let detail = i.op_details()[&order.resource].clone();
+    assert!(
+        detail.starts_with(&format!("tasking request withdrawn {before} s before the pass: ")),
+        "{detail}"
+    );
+    assert!(detail.contains("nothing was collected"), "{detail}");
+    // nothing more is taken for it
+    assert!(matches!(
+        run.engine.record_op_state(id, &order.resource, "collected", "x"),
+        Err(EngineError::NotItsOrder { .. })
+    ));
+    assert!(matches!(
+        run.engine.finish(id, TaskOutcome::Done),
+        Err(EngineError::Illegal { .. })
+    ));
+    assert_replays(&run.log);
+    let r = replay_str(&run.log.text()).unwrap();
+    assert_eq!(r.space_cancelled, 1);
+    let honest = run.log.text();
+    // forged: the operator's cancel dropped (the report and the abort stand)
+    let w = forged_whats(&honest, |ev| {
+        ev.retain(|e| !matches!(&e.body, audit::EventBody::OperatorAction { action, .. } if action == "intent.cancel"));
+    });
+    assert!(
+        w.iter().any(|m| m.starts_with("a cancelled report without an operator's cancel")),
+        "{w:?}"
+    );
+    // forged: the cancel moved past the pass (its events re-timed), the report left saying
+    // the request was withdrawn before it
+    let after = chosen.collect_time.plus_ms(120_000);
+    let w = forged_whats(&honest, |ev| {
+        let mut moving = false;
+        for e in ev {
+            if matches!(&e.body, audit::EventBody::OperatorAction { action, .. } if action == "intent.cancel") {
+                moving = true;
+            }
+            if moving {
+                e.t = after;
+            }
+        }
+    });
+    assert!(
+        w.iter().any(|m| m == "cancelled report differs from what the cancel means for the dispatched order at that time"),
+        "{w:?}"
+    );
+    // forged: the report dropped
+    let w = forged_whats(&honest, |ev| {
+        ev.retain(|e| !matches!(&e.body, audit::EventBody::OpState { state, .. } if state == CANCELLED_OP));
+    });
+    assert!(
+        w.iter().any(|m| m == "cancelled after dispatch without the engine's cancelled report"),
+        "{w:?}"
+    );
+    // forged: the cancel claimed for another operator
+    let w = forged_whats(&honest, |ev| {
+        for e in ev {
+            if let audit::EventBody::IntentState { reason, .. } = &mut e.body
+                && reason.starts_with("cancelled by op-2")
+            {
+                *reason = reason.replace("op-2", "op-1");
+            }
+        }
+    });
+    assert!(
+        w.iter().any(|m| m == "a cancel after dispatch that does not name the operator who cancelled"),
+        "{w:?}"
+    );
+}
+
+#[test]
+fn a_collect_cancelled_after_its_pass_keeps_the_collection_and_drops_the_product() {
+    let mut run = run(policy(), true);
+    let session = run
+        .engine
+        .open_operator_session(OperatorId::new("op-1"))
+        .unwrap();
+    let (id, chosen, order) = dispatched_collect(&mut run, &session);
+    assert!(order.product_time.is_some(), "the fixture's first option has product timing");
+    run.advance_to(chosen.collect_time.plus_ms(90_000));
+    run.engine
+        .record_op_state(id, &order.resource, "collected", "simulated")
+        .unwrap();
+    let i = run
+        .engine
+        .cancel(id, session.authority(), "no longer needed")
+        .unwrap();
+    assert_eq!(i.state(), State::Aborted);
+    let detail = i.op_details()[&order.resource].clone();
+    assert!(detail.starts_with("cancelled 90 s after the pass: "), "{detail}");
+    assert!(
+        detail.contains("a pass under way cannot be recalled") && detail.contains("no longer awaited"),
+        "{detail}"
+    );
+    assert!(detail.contains(&format!(", due {}", murmur_decide::space::fmt_time(order.product_time.unwrap()))), "{detail}");
+    assert_replays(&run.log);
+}
+
+#[test]
+fn a_watching_cover_is_cancelled_but_an_agent_withdraws_nothing_after_dispatch() {
+    let mut run = run(policy(), true);
+    let session = run
+        .engine
+        .open_operator_session(OperatorId::new("op-1"))
+        .unwrap();
+    let world = run.world();
+    let id = run
+        .engine
+        .submit(session.authority(), cover(wgs(), None), &world, &NoTerrain)
+        .unwrap()
+        .id();
+    let Order::Cover(order) = run.engine.dispatch_order(id).unwrap() else {
+        panic!("not a cover order");
+    };
+    run.engine
+        .record_op_state(id, &order.resource, "watching", "wgs SATCOM over the area")
+        .unwrap();
+    run.clock.advance_ms(600_000);
+    let i = run.engine.cancel(id, session.authority(), "enough").unwrap();
+    assert_eq!(i.state(), State::Aborted);
+    let detail = i.op_details()[&order.resource].clone();
+    assert!(detail.starts_with("coverage watch ended by the cancel at "), "{detail}");
+    assert!(
+        detail.contains("before the window ended at") && detail.ends_with("nothing was commanded"),
+        "{detail}"
+    );
+    // an agent's own cover, dispatched: the agent withdraws nothing after dispatch
+    let aid = run
+        .engine
+        .agent_port(AgentId::new("planner"))
+        .propose(cover(wgs(), None), rationale("relay for the USV"), &world, &NoTerrain)
+        .unwrap()
+        .id();
+    run.engine.dispatch_order(aid).unwrap();
+    let err = run
+        .engine
+        .agent_port(AgentId::new("planner"))
+        .withdraw(aid, "changed my mind")
+        .unwrap_err();
+    assert!(matches!(err, EngineError::Illegal { .. }), "{err}");
+    assert_eq!(run.engine.intent(aid).unwrap().state(), State::Dispatched);
+    assert_replays(&run.log);
+}
+
+#[test]
+fn a_dispatched_vehicle_task_is_still_not_cancellable() {
+    let clock = ManualClock::new(T0);
+    let (mut engine, log) = engine(&clock);
+    let session = engine
+        .open_operator_session(OperatorId::new("op-1"))
+        .unwrap();
+    let id = engine
+        .submit(
+            session.authority(),
+            orbit(NEAR_CRISSY, 150.0, &["sky-1"]),
+            &world(),
+            &terrain(),
+        )
+        .unwrap()
+        .id();
+    engine.dispatch(id, &world()).unwrap();
+    let err = engine.cancel(id, session.authority(), "x").unwrap_err();
+    assert!(matches!(err, EngineError::Illegal { .. }), "{err}");
+    assert_eq!(engine.intent(id).unwrap().state(), State::Dispatched);
+    assert!(!log.text().contains("intent.cancel"));
+}
+
+#[test]
+fn a_dispatched_collect_is_rechecked_against_a_later_segment() {
+    let mut run = run(policy(), true);
+    let session = run
+        .engine
+        .open_operator_session(OperatorId::new("op-1"))
+        .unwrap();
+    let (id, chosen, order) = dispatched_collect(&mut run, &session);
+    let (task, now) = {
+        let i = run.engine.intent(id).unwrap();
+        (i.spec().task.clone(), i.space_answer().unwrap().now().unwrap())
+    };
+    let rules = policy().rules;
+    run.clock.advance_ms(120_000);
+    // the same segment: the same answer, nothing to decide, nothing logged
+    let before = run.log.lines().len();
+    let p = prepare_space_at(&segment(), &task, run.clock.now(), now, &rules).unwrap();
+    assert_eq!(run.engine.recheck_space(id, p).unwrap(), SpaceRecheck::Unchanged);
+    assert_eq!(run.log.lines().len(), before);
+    // an answer at a fresh request time is refused: the lead time spent since is not news
+    let p = prepare_space(&segment(), &task, run.clock.now(), &rules).unwrap();
+    assert!(matches!(run.engine.recheck_space(id, p), Err(EngineError::NotDispatchable { .. })));
+    // the element sets reloaded without the chosen satellite: its pass is gone
+    let later = space_without(chosen.norad_id);
+    let seg2 = SpaceSegment::new(later.clone()).unwrap();
+    // prepared on a segment the engine does not hold: refused
+    let p = prepare_space_at(&seg2, &task, run.clock.now(), now, &rules).unwrap();
+    assert!(matches!(run.engine.recheck_space(id, p), Err(EngineError::NotDispatchable { .. })));
+    assert_eq!(run.log.lines().len(), before);
+    run.engine
+        .set_space(Box::new(SpaceSegment::new(later).unwrap()))
+        .unwrap();
+    let p = prepare_space_at(&seg2, &task, run.clock.now(), now, &rules).unwrap();
+    let SpaceRecheck::Lost { detail } = run.engine.recheck_space(id, p).unwrap() else {
+        panic!("the pass should be gone");
+    };
+    assert!(detail.starts_with(&format!("{NO_LONGER_FEASIBLE}feasibility: NORAD {}", chosen.norad_id)), "{detail}");
+    assert!(detail.contains("no pass of that satellite in the window"), "{detail}");
+    assert!(
+        detail.contains("feasible options now; a new collect may choose one:") || detail.contains("no feasible option left"),
+        "{detail}"
+    );
+    let i = run.engine.intent(id).unwrap();
+    assert_eq!(i.state(), State::Failed);
+    assert_eq!(i.ops()[&order.resource], MISSED_OP);
+    assert_eq!(i.history().last().unwrap().reason, format!("collection missed: {detail}"));
+    assert_eq!(check(i, RuleId::Feasibility).outcome, Outcome::Fail);
+    let text = run.log.text();
+    assert!(text.contains("\"phase\":\"dispatched\""));
+    assert_eq!(text.matches("\"type\":\"space.loaded\"").count(), 2);
+    // re-decided from the log alone; given the first segment, the later query is a cache
+    // mismatch, not a decision mismatch
+    let r = replay_str(&text).unwrap();
+    assert!(r.ok(), "{:#?}", r.mismatches);
+    assert_eq!((r.space_missed, r.space_rechecked), (1, 0));
+    let r = replay_str_with_space(&text, Some(&segment())).unwrap();
+    assert!(r.ok(), "{:#?}", r.mismatches);
+    assert!(!r.cache_mismatches.is_empty());
+    // forged: the dispatched-phase check dropped
+    let w = forged_whats(&text, |ev| {
+        ev.retain(|e| !matches!(&e.body, audit::EventBody::CheckResult { phase: CheckPhase::Dispatched, .. }));
+    });
+    assert!(
+        w.iter().any(|m| m == "a re-check report without its dispatched-phase check right before it"),
+        "{w:?}"
+    );
+    // forged: the missed report reworded
+    let w = forged_whats(&text, |ev| {
+        for e in ev {
+            if let audit::EventBody::OpState { state, detail, .. } = &mut e.body
+                && state == MISSED_OP
+            {
+                *detail = format!("{NO_LONGER_FEASIBLE}the pass was lost to weather");
+            }
+        }
+    });
+    assert!(w.iter().any(|m| m == "re-check report differs from the recomputed check"), "{w:?}");
+    // forged: the missed report dropped
+    let w = forged_whats(&text, |ev| {
+        ev.retain(|e| !matches!(&e.body, audit::EventBody::OpState { state, .. } if state == MISSED_OP));
+    });
+    assert!(
+        w.iter().any(|m| m == "a transition between a space task's re-check and its report"),
+        "{w:?}"
+    );
+    // forged: failed for another reason than the report
+    let w = forged_whats(&text, |ev| {
+        for e in ev {
+            if let audit::EventBody::IntentState { transition: Transition::Fail, reason, .. } = &mut e.body {
+                *reason = "collection missed: the bridge stalled".into();
+            }
+        }
+    });
+    assert!(
+        w.iter().any(|m| m == "a space task's missed report not followed by its failure for it"),
+        "{w:?}"
+    );
+    // forged: a missed mark with no re-check behind it (the check and the failure's reason
+    // both gone)
+    let w = forged_whats(&text, |ev| {
+        ev.retain(|e| !matches!(&e.body, audit::EventBody::CheckResult { phase: CheckPhase::Dispatched, .. }));
+        for e in ev {
+            if let audit::EventBody::IntentState { transition: Transition::Fail, reason, .. } = &mut e.body {
+                *reason = "collection missed: the bridge stalled".into();
+            }
+        }
+    });
+    assert!(w.iter().any(|m| m.contains("without its dispatched-phase check")), "{w:?}");
+}
+
+#[test]
+fn a_rechecked_collect_that_still_holds_runs_on() {
+    let mut run = run(policy(), true);
+    let session = run
+        .engine
+        .open_operator_session(OperatorId::new("op-1"))
+        .unwrap();
+    let (id, chosen, order) = dispatched_collect(&mut run, &session);
+    let (task, now, other) = {
+        let i = run.engine.intent(id).unwrap();
+        let a = i.space_answer().unwrap();
+        let other = a
+            .tasking()
+            .unwrap()
+            .options
+            .iter()
+            .find(|o| o.norad_id != chosen.norad_id)
+            .expect("another option")
+            .norad_id;
+        (i.spec().task.clone(), a.now().unwrap(), other)
+    };
+    // another satellite's passes gone: a new answer, the chosen pass still in it
+    let later = space_without(other);
+    let seg2 = SpaceSegment::new(later.clone()).unwrap();
+    run.engine
+        .set_space(Box::new(SpaceSegment::new(later).unwrap()))
+        .unwrap();
+    run.clock.advance_ms(60_000);
+    let p = prepare_space_at(&seg2, &task, run.clock.now(), now, &policy().rules).unwrap();
+    let SpaceRecheck::Holds { detail } = run.engine.recheck_space(id, p).unwrap() else {
+        panic!("the chosen pass should still hold");
+    };
+    assert!(detail.starts_with(STILL_FEASIBLE), "{detail}");
+    assert!(detail.contains(&chosen.norad_id.to_string()), "{detail}");
+    let i = run.engine.intent(id).unwrap();
+    assert_eq!(i.state(), State::Dispatched);
+    assert_eq!(i.ops()[&order.resource], RECHECKED_OP);
+    assert_eq!(i.space_answer().unwrap().segment.sha256, seg2.segment().sha256);
+    // the bridge can't write that report either
+    assert!(matches!(
+        run.engine.record_op_state(id, &order.resource, RECHECKED_OP, "x"),
+        Err(EngineError::NotItsOrder { .. })
+    ));
+    // the collection goes on as approved
+    run.advance_to(chosen.collect_time);
+    run.engine
+        .record_op_state(id, &order.resource, "collected", "simulated")
+        .unwrap();
+    run.engine.finish(id, TaskOutcome::Done).unwrap();
+    let r = replay_str(&run.log.text()).unwrap();
+    assert!(r.ok(), "{:#?}", r.mismatches);
+    assert_eq!((r.space_rechecked, r.space_missed), (1, 0));
+    // forged: a rechecked report with no check behind it
+    let w = forged_whats(&run.log.text(), |ev| {
+        ev.retain(|e| !matches!(&e.body, audit::EventBody::CheckResult { phase: CheckPhase::Dispatched, .. }));
+    });
+    assert!(w.iter().any(|m| m.contains("without its dispatched-phase check")), "{w:?}");
+}
+
+#[test]
+fn a_prepared_answer_from_another_segment_is_not_used() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut run = run(policy(), false);
+    run.engine
+        .set_space(Box::new(Counting(segment(), calls.clone())))
+        .unwrap();
+    // the ISS left out: another segment than the engine's
+    let other = SpaceSegment::new(space_without(25544)).unwrap();
+    assert_ne!(other.segment().sha256, segment().segment().sha256);
+    let session = run
+        .engine
+        .open_operator_session(OperatorId::new("op-1"))
+        .unwrap();
+    let task = collect(None).task;
+    let prepared = prepare_space(&other, &task, t0(), &policy().rules).unwrap();
+    run.engine.use_prepared_space(prepared);
+    let world = run.world();
+    let i = run
+        .engine
+        .submit(session.authority(), collect(None), &world, &NoTerrain)
+        .unwrap();
+    // the engine asked its own segment instead: the logged answer is its
+    assert_eq!(calls.load(SeqCst), 1);
+    assert_eq!(i.space_answer().unwrap().segment.sha256, segment().segment().sha256);
+    assert_replays(&run.log);
+}
