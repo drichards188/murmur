@@ -313,18 +313,31 @@ group. Dates are 2026.
   the query; a collect is re-queried at the request time it was tasked at, since a fresh
   "now" would only show the lead time spent and call every tasked pass too soon. A pass
   still there within the match tolerance is the same opportunity (the approval stands); a
-  pass gone is `missed` and the intent failed, with the fresh options in the report for a
-  human: the engine never re-chooses, as agents nominate and humans authorize. (3) A cover
-  is evaluated at the centroid and the boundary (eight bearings around a circle, a
-  polygon's vertices thinned to eight) and holds only where it holds at every point: SATCOM
-  and GNSS coverage vary on the scale of a footprint (hundreds of km), so for an area of at
-  most 200 km radius the extremes of a convex area lie on its boundary, and nine points
-  cost nine SGP4 runs (about a second each for a week of Starlink), which a grid fine
-  enough to add anything would multiply. The logged answer holds each point's figures and
-  no aggregate, so replay recomputes the verdict and a dropped point is not the intent's
-  question. (4) The space query stays outside the decision lock (the 10-03 decision above),
-  and a prepared answer is used only if the segment that answered it is the one the engine
-  holds; a stale one is asked again under the lock rather than logged.
+  pass gone is `missed` and the intent failed, with the fresh options still taskable at the
+  check's own time in the report for a human: the engine never re-chooses, as agents
+  nominate and humans authorize. A collect whose pass has come is never re-checked: it was
+  collected, and a later answer cannot un-collect it. An answer that could not be computed
+  is no answer: the task runs on and the operator hears of it. The session's time shift
+  stays pinned across a reload, and the pin is part of the segment's identity (a re-pin is
+  a new segment). (3) A cover is evaluated at the centroid and the boundary (eight bearings
+  around a circle; a polygon's vertices, thinned to eight by geometry when there are more:
+  the farthest from the centroid first, then each time the one farthest from those chosen,
+  so the far tips are kept; a closed ring's first vertex counts once) and holds only where
+  it holds at every point: SATCOM and GNSS coverage vary on the scale of a footprint
+  (hundreds of km), so for an area of at most 200 km radius the extremes of a convex area lie
+  on its boundary, which assumes the field is near linear across the area. Every satellite is
+  propagated once for all the points (one window search driven by the centroid's cone
+  widened by the area, one propagation per sample), so nine points cost about one; a grid
+  fine enough to add anything would cost more and tell no more. The logged answer holds each
+  point's figures and no aggregate, so replay recomputes the verdict; a query whose points
+  are not the area's is not the intent's question, and an answer whose result points are not
+  the query's (one dropped, moved or copied over) is not the answer. (4) The space query
+  stays outside the decision lock (the 10-03 decision above): a cover is never computed by
+  the engine (a week of Starlink over nine points held the lock 13 to 14 s in the review,
+  which an agent's dry run could repeat; the check fails closed without a prepared answer),
+  a prepared answer is used only if the segment and pin that answered it are the engine's
+  (its age is no concern for a cover, whose query does not depend on when it was asked), and
+  the bridge prepares again outside the lock when the segment moved in between.
 - **Space as taskable infrastructure** (10-02, user direction): request coverage and
   capabilities from satellites when needed; don't fly or command satellite buses (no CCSDS).
   One theater map for earthbound nodes, plus a space timeline and a globe inset; one camera
