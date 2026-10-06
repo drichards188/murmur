@@ -1296,3 +1296,33 @@ fn a_rules_11_log_claiming_rules_10_still_carries_its_follow_ups() {
         }
     }
 }
+
+/// Rules 12 after master's rules 11: a log of the reviews' follow-ups claiming the version
+/// before (the space follow-ups, 11) is caught by what only builds of 12 write.
+#[test]
+fn a_rules_12_log_claiming_rules_11_still_carries_its_follow_ups() {
+    let (now, before) = (REVIEW_FOLLOWUPS_SINCE, SPACE_FOLLOWUPS_SINCE);
+    assert_eq!(before + 1, now, "the version just before");
+    for (name, markers) in [
+        (
+            "v12-engagement-scenario-01.jsonl",
+            &["a restore closed without a restore", "a platform spent by its own effect", "when the tracker started a track"][..],
+        ),
+        ("v12-young-track-blocks-scenario-79.jsonl", &["when the tracker started a track"][..]),
+        ("v12-restore-written-off-scenario-82.jsonl", &["a restore closed without a restore"][..]),
+        (CRASH_2.0, &["what a start carried over from earlier runs", "when the tracker started a track"][..]),
+        (AFTER, &["what a start carried over from earlier runs", "values carried over holding a vehicle"][..]),
+    ] {
+        let mut ls = lines(&fixture(name));
+        assert!(ls[0].contains(&format!("\"rules_version\":{now},")), "{name}");
+        ls[0] = ls[0].replacen(&format!("\"rules_version\":{now},"), &format!("\"rules_version\":{before},"), 1);
+        let r = with(&rechain(&ls), RulesAccepted::Exactly(before));
+        let w = whats(&r);
+        for marker in markers {
+            assert!(
+                w.iter().any(|m| m.contains(marker) && m.contains(&format!("only builds of rules {now}"))),
+                "{name} {marker}: {w:?}"
+            );
+        }
+    }
+}
