@@ -774,7 +774,11 @@ group. Dates are 2026.
   every decoy would shift at once while real answers did not. The key is kept beside the
   credential file (`<file>.decoy-key`, made once, 0600, not a credential), because a key per
   run would change every decoy at a restart and leave real ids alone, which tells them apart
-  to anyone comparing before and after. (2) Issuance is limited per id by what is live, not
+  to anyone comparing before and after. For the same reason (the review of 10-07) the file is
+  made whole before it has its name (written beside it, synced, hard-linked into place, read
+  back: a crash or a second bridge can't leave an empty or partial key), and a key file that
+  can't be read or made stops the bridge at start, saying to remove it (the decoys then change
+  once), rather than falling back to a per-run key. (2) Issuance is limited per id by what is live, not
   by a rate: at most four challenges live per id (120 s each); a request past that is served
   the newest live one again, which costs nothing (no new challenge, no decision lock, no
   state), and nothing live is pushed out. Not a refusal past a rate: a stranger could keep an

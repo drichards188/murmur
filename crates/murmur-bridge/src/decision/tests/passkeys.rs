@@ -79,7 +79,7 @@ fn harness(with_keys: &[&str], edit: impl FnOnce(&mut Policy), study: Option<mur
         passkey_origins: origins(),
         study,
     };
-    let auth = Auth::new(settings, e.r.d.clone(), c);
+    let auth = Auth::new(settings, e.r.d.clone(), c).expect("auth");
     let app = app(&e, auth.clone());
     (H { e, app, auth, file, key }, keys)
 }
@@ -538,10 +538,44 @@ async fn login_options_are_limited_per_id_and_a_flood_cannot_turn_the_operator_a
     h.replays_authenticated();
 }
 
+/// The review of murmur-i58: the decoys' key is made whole beside the credential file and read
+/// after, so decoys survive a restart; a file there that is not a key (an empty one, as a
+/// crash between creating and writing it left before) stops the bridge saying what to do,
+/// instead of a per-run key that would change every decoy at each restart.
+#[tokio::test]
+async fn an_unusable_decoy_key_stops_the_bridge_instead_of_changing_the_decoys() {
+    let dir = scratch();
+    let file = dir.join("credentials.json");
+    let a = crate::auth::decoy_secret(Some(&file)).expect("made");
+    assert_eq!(crate::auth::decoy_secret(Some(&file)).expect("read"), a, "the same key after");
+    std::fs::write(dir.join("credentials.json.decoy-key"), "").expect("emptied");
+    let err = crate::auth::decoy_secret(Some(&file)).expect_err("refused");
+    assert!(err.contains("not a key") && err.contains("remove") && err.contains("credentials.json.decoy-key"), "{err}");
+    assert!(crate::auth::decoy_secret(None).is_err(), "no file to keep it beside");
+    // through the bridge's start: a credentials run with passkeys does not come up
+    let (h, _) = harness(&["op-2"], |_| {}, None);
+    std::fs::write(h.file.with_file_name("credentials.json.decoy-key"), "").expect("emptied");
+    let c = CredentialFile::load(&h.file).expect("file");
+    let settings = AuthSettings {
+        mode: AuthMode::Credentials,
+        file: Some(h.file.clone()),
+        cookie: "murmur_session_test".into(),
+        secure_cookie: false,
+        idle: Duration::from_secs(1800),
+        max: Duration::from_secs(8 * 3600),
+        origins: default_origins(5173, 8765),
+        passkey_rp: "localhost".into(),
+        passkey_origins: origins(),
+        study: None,
+    };
+    let err = Auth::new(settings, h.e.r.d.clone(), c).err().expect("refused");
+    assert!(err.starts_with("passkey decoys: "), "{err}");
+}
+
 #[tokio::test]
 async fn a_dev_run_is_unchanged() {
     let e = super::engagement::engage_rig_auth(None, PathBuf::from("memory"), AuthMode::Dev);
-    let auth = Auth::new(AuthSettings::dev(), e.r.d.clone(), CredentialFile::default());
+    let auth = Auth::new(AuthSettings::dev(), e.r.d.clone(), CredentialFile::default()).expect("auth");
     let app = app(&e, auth.clone());
     let h = H { e, app, auth, file: PathBuf::new(), key: String::new() };
     let (s, _, v) = h

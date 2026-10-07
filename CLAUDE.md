@@ -42,8 +42,9 @@ meaningful. Decision and command, not weapons.
   `MURMUR_STUDY_PASSWORD_STEP_UP=<why>` overrides, logged, and the run is not evidence. Each
   passkey challenge is derived from its act, single use, 120 s; replay re-verifies every
   assertion from the log. A login's options are the same shape for every id (decoys drawn like
-  real credentials under `<credential file>.decoy-key`, made once beside the file), at most
-  four live per id, a request past that served the newest again (murmur-i58).
+  real credentials under `<credential file>.decoy-key`, made once beside the file; a key file
+  that can't be read stops the bridge: remove it to make a new one), at most four live per id,
+  a request past that served the newest again (murmur-i58).
 - Live path is Rust: `crates/murmur-bridge`, `crates/murmur-standins`. `scripts/up.sh` builds
   their release binaries (`make build` does too) and, with a scenario, starts `tidewater serve`
   (reused if one answers) and `tidewater drive`, and stops them with the stack. It writes

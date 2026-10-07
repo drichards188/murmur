@@ -117,7 +117,8 @@ fn rig() -> Rig {
             crate::auth::Settings::dev(),
             d.clone(),
             murmur_auth::CredentialFile::default(),
-        ),
+        )
+        .expect("auth"),
     });
     let mcp = Mcp::new(
         Settings {

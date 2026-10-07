@@ -459,34 +459,25 @@ fn stat(path: &PathBuf) -> Option<String> {
 }
 
 /// The secret passkey decoys are drawn under (murmur-i58): kept beside the credential file
-/// (`<file>.decoy-key`, made once, mode 0600), so an id without a passkey is answered the same
-/// across restarts, as an operator's real credentials are. Not a credential (it only makes the
-/// decoys unpredictable). Without a file to keep it beside, or if it can't be read or made, a
-/// random one for this run (said: the decoys then change at a restart, which tells an observer
-/// comparing before and after which ids are decoys).
-fn decoy_secret(file: Option<&std::path::Path>) -> [u8; 32] {
-    let kept = file.map(|f| {
-        let mut name = f.file_name().unwrap_or_default().to_os_string();
-        name.push(".decoy-key");
-        let p = f.with_file_name(name);
-        murmur_auth::keys::secret_file(&p).map_err(|e| format!("{}: {e}", p.display()))
-    });
-    match kept {
-        Some(Ok(s)) => s,
-        other => {
-            let why = match other {
-                Some(Err(e)) => e,
-                _ => "no credential file to keep it beside".into(),
-            };
-            eprintln!("auth: passkey decoys under a secret for this run only ({why}): they change at a restart");
-            let mut s = [0u8; 32];
-            // (without the OS's random source no session token can be issued either)
-            if let Err(e) = murmur_auth::keys::fill(&mut s) {
-                eprintln!("auth: {e}");
-            }
-            s
-        }
-    }
+/// (`<file>.decoy-key`, made once and whole, mode 0600: [`murmur_auth::keys::secret_file`]),
+/// so an id without a passkey is answered the same across restarts, as an operator's real
+/// credentials are. Not a credential (it only makes the decoys unpredictable). One that can't
+/// be read or made stops the bridge (the review of murmur-i58): a key for this run only would
+/// change every decoy at each restart, which tells an observer comparing before and after
+/// which ids are decoys.
+pub(crate) fn decoy_secret(file: Option<&std::path::Path>) -> Result<[u8; 32], String> {
+    let Some(f) = file else {
+        return Err("passkey decoys: no credential file to keep their key beside".into());
+    };
+    let mut name = f.file_name().unwrap_or_default().to_os_string();
+    name.push(".decoy-key");
+    let p = f.with_file_name(name);
+    murmur_auth::keys::secret_file(&p).map_err(|e| {
+        format!(
+            "passkey decoys: {e}: the key ids without a passkey are answered under (not a credential); remove {} to make a new one (the decoys then change once), or restore it",
+            p.display()
+        )
+    })
 }
 
 fn refusal(status: StatusCode, detail: &str) -> Response {
@@ -522,7 +513,7 @@ fn locked_for(retry: Duration, whose: &str) -> Response {
 impl Auth {
     /// The bridge's authentication: for a credentials run, `file` is the credential file as
     /// read at start (the roster came from it).
-    pub fn new(settings: Settings, decision: Arc<Decision>, file: CredentialFile) -> Arc<Auth> {
+    pub fn new(settings: Settings, decision: Arc<Decision>, file: CredentialFile) -> Result<Arc<Auth>, String> {
         let seen = settings.file.as_ref().and_then(stat);
         let sessions = SessionTable::new(settings.idle, settings.max);
         // rules 10: passkeys when the run logged a relying party (a credentials run of rules
@@ -536,8 +527,8 @@ impl Auth {
                     None
                 }
             });
-        let decoy = if rp.is_some() { decoy_secret(settings.file.as_deref()) } else { [0u8; 32] };
-        Arc::new(Auth {
+        let decoy = if rp.is_some() { decoy_secret(settings.file.as_deref())? } else { [0u8; 32] };
+        Ok(Arc::new(Auth {
             settings,
             decision,
             store: RwLock::new(Store { file, seen }),
@@ -551,7 +542,7 @@ impl Auth {
             registering: Mutex::new(HashMap::new()),
             decoy,
             passkey_io: tokio::sync::Mutex::new(()),
-        })
+        }))
     }
 
     pub fn mode(&self) -> AuthMode {

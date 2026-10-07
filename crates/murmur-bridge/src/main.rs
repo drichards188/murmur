@@ -237,6 +237,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut settings = Settings::from_env(&cfg.root, &cfg.platforms);
     let auth_settings = auth::Settings::from_env(http_port).map_err(|e| format!("auth: {e}"))?;
     let credentials = who_acts(&auth_settings, &mut settings).map_err(|e| format!("auth: {e}"))?;
+    // the passkey decoys' key, made or read before the run starts: one that can't be is a
+    // refusal, not a per-run key (murmur-i58)
+    if settings.passkeys.is_some() {
+        auth::decoy_secret(auth_settings.file.as_deref()).map_err(|e| format!("auth: {e}"))?;
+    }
     let world = World::new(cfg);
     // this run's fleet manifest, before the decision layer checks a previous run's open
     // orders against it (scripts/up.sh writes it before starting the bridge, in both link
@@ -298,7 +303,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     // who is acting: logins, step-ups and agent keys (or a dev run's headers)
     let origins = Arc::new(auth_settings.origins.clone());
-    let auth = auth::Auth::new(auth_settings, decision.clone(), credentials);
+    let auth = auth::Auth::new(auth_settings, decision.clone(), credentials).map_err(|e| format!("auth: {e}"))?;
     tokio::spawn(auth.clone().run());
     match auth.mode() {
         murmur_decide::AuthMode::Credentials => println!(

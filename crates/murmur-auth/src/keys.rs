@@ -102,46 +102,63 @@ pub fn hmac_sha256(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
     outer.finalize().into()
 }
 
-/// A 256-bit secret kept in `path` (64 hex characters, created with mode 0600 the first time,
-/// read after): the server's own key for what must stay the same across restarts but can't
-/// be guessed (the passkey decoys). Not a credential: losing it changes the decoys, no more.
+/// A 256-bit secret kept in `path` (64 hex characters, mode 0600), made the first time and
+/// read after: the server's own key for what must stay the same across restarts but can't be
+/// guessed (the passkey decoys). Not a credential: losing it changes the decoys, no more.
+///
+/// Made whole before it has its name: written to a temporary file beside it, synced, then
+/// hard-linked into place (which fails if the name exists: a second process making one at the
+/// same time keeps the first's) and read back. So the name never holds an empty or partial
+/// key, whatever crashes when. A file there that is not a key is an error, never replaced:
+/// the caller says so (the bridge refuses to start), since a new key changes every decoy.
 pub fn secret_file(path: &std::path::Path) -> Result<[u8; 32], AuthError> {
-    let read = || -> Result<[u8; 32], AuthError> {
-        let text = std::fs::read_to_string(path).map_err(|e| AuthError::Io(path.display().to_string(), e))?;
-        let t = text.trim();
-        let mut out = [0u8; 32];
-        if t.len() != 64 || !t.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err(AuthError::Format(format!("{}: not 64 hex characters", path.display())));
+    let io = |e| AuthError::Io(path.display().to_string(), e);
+    if std::fs::symlink_metadata(path).is_err() {
+        let mut b = [0u8; 32];
+        fill(&mut b)?;
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let tmp = path.with_file_name(format!(".{name}.{}.{}.tmp", std::process::id(), stamp()?));
+        let mut o = std::fs::OpenOptions::new();
+        o.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            o.mode(0o600).custom_flags(libc::O_NOFOLLOW);
         }
-        for (i, o) in out.iter_mut().enumerate() {
-            *o = u8::from_str_radix(&t[2 * i..2 * i + 2], 16).map_err(|e| AuthError::Format(e.to_string()))?;
-        }
-        Ok(out)
-    };
-    if path.exists() {
-        return read();
-    }
-    let mut b = [0u8; 32];
-    fill(&mut b)?;
-    let mut o = std::fs::OpenOptions::new();
-    o.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        o.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
-    match o.open(path) {
-        Ok(mut f) => {
+        let written = o.open(&tmp).and_then(|mut f| {
             use std::io::Write as _;
-            f.write_all(format!("{}\n", hex(&b)).as_bytes())
-                .and_then(|()| f.sync_all())
-                .map_err(|e| AuthError::Io(path.display().to_string(), e))?;
-            Ok(b)
+            f.write_all(format!("{}\n", hex(&b)).as_bytes())?;
+            f.sync_all()
+        });
+        let linked = written.and_then(|()| std::fs::hard_link(&tmp, path));
+        let _ = std::fs::remove_file(&tmp);
+        match linked {
+            Ok(()) => {
+                // the new name itself, durable
+                #[cfg(unix)]
+                if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+                    let _ = std::fs::File::open(dir).and_then(|d| d.sync_all());
+                }
+            }
+            // made by another process in between: its key is the one
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(io(e)),
         }
-        // made by another process in between: its secret is the one
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => read(),
-        Err(e) => Err(AuthError::Io(path.display().to_string(), e)),
     }
+    let text = std::fs::read_to_string(path).map_err(io)?;
+    let t = text.trim();
+    if t.len() != 64 || !t.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(AuthError::Format(format!(
+            "{}: not a key (64 hex characters; {} bytes there)",
+            path.display(),
+            text.len()
+        )));
+    }
+    let mut out = [0u8; 32];
+    for (i, o) in out.iter_mut().enumerate() {
+        *o = u8::from_str_radix(&t[2 * i..2 * i + 2], 16).map_err(|e| AuthError::Format(e.to_string()))?;
+    }
+    Ok(out)
 }
 
 /// The key id an agent key names, if it has the agent key's shape.
@@ -193,8 +210,23 @@ mod tests {
             use std::os::unix::fs::PermissionsExt as _;
             assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
         }
+        // nothing left beside it
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        // a file there that is not a key (empty, as a crash mid-write left one before the
+        // review) is an error, never replaced
+        std::fs::write(&p, "").unwrap();
+        assert!(secret_file(&p).unwrap_err().to_string().contains("not a key"));
         std::fs::write(&p, "not hex").unwrap();
         assert!(secret_file(&p).is_err());
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "not hex");
+        // two processes making one at once: both read the one that won
+        let q = dir.join("raced.key");
+        let keys: Vec<[u8; 32]> = std::thread::scope(|s| {
+            let hs: Vec<_> = (0..8).map(|_| s.spawn(|| secret_file(&q).unwrap())).collect();
+            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        assert!(keys.iter().all(|k| *k == keys[0]));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2, "no temporary file left");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
