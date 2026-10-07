@@ -407,7 +407,10 @@ estimate, friendlies and an aircraft track above the effect with their altitudes
 not, ranged or passive, recent or stale, a ground target, a lost friendly with and without
 an operator's acceptance, an acceptance without engagement authority, a token from before
 an acceptance, a reset that clears one, a revoked one, an acceptor who signs, an agent
-trying to accept one, an accepted one reporting again).
+trying to accept one, an accepted one reporting again); from rules 13, 83 to 87: a protected
+contact dropped by the tracker near the target, then a nomination; an acceptance of it; an
+acceptance then the contact seen again under a new track id; an acceptance by an operator
+without engagement authority; a forged acceptance.
 Each ends in reject, void or abort as designed and replays; the tampered logs (including a
 loosened logged policy) are caught. Seeded noise turns each into a batch (Phase G): position
 noise independent around the truth each step (`--noise`), and a velocity-estimate error
@@ -499,6 +502,30 @@ same vehicle); a refused mission names the older orders still queued on its vehi
 Scenarios 79 to 82; live logs across two crashes with anchors in
 `crates/murmur-decide/tests/data/audit/`.
 
+Rules 13, lost contacts (murmur-533; `LOST_CONTACT_SINCE`, policy schema 7 unchanged;
+`crates/murmur-decide/src/lost.rs`, bridge `tracks/mod.rs` and `decision/engage.rs`, console
+`trackLayers.ts`, `KeepOutExplain.tsx`; DECISIONS.md "A dropped protected contact stays in the
+keep-out until accepted"): the tracker drops a track after 180 s without a detection, and the
+keep-out used to stop counting it then, so a civilian boat that went out of view near a target
+stopped protecting anything. Now the drop is a logged fact (`track.dropped`, the tracker's facts
+at the drop; the bridge keeps the track in the decision facts until the engine has it) and the
+engine holds the contact as lost: every engagement's keep-out on tracks counts it anywhere it
+could have reached since its last fix, by the reach model a live track gets from those facts,
+with no cap, exempt only where a live track would be. An operator with engagement authority may
+accept one for one engagement, as a lost vehicle of ours (`engage.accepted` naming the contact:
+at the nomination or before a first signature, under their session, every signer shown it,
+cleared by a reset, revocable by any operator, never an agent's). A track the tracker starts
+again for it retires it only when its AIS identity matches unambiguously (`track.reacquired`,
+with the picture judged); without AIS it stays lost beside its new track. Replay rebuilds the
+lost contacts from the log, checks every engagement decision's against them, recomputes each
+retirement, and flags a track that leaves a decision's picture without a drop. Shown: on the map
+(a faded, anticipated symbol at the last fix, the region counted now, "T-0002 LOST 4 min"), in
+the tracks drawer, in the nomination form's keep-out explanation (which lost contact blocks,
+since when, and an Accept for this engagement), on the engagement card; agents read them
+(`get_tracks`, `get_nomination_options`) and cannot accept. The cost, measured on generated
+situations (`eval/METRICS.md` "Out of view"): see there; the explanation's effect-time windows
+also count a grid point clear only by a margin that covers the dip between points (murmur-dr6).
+
 Rules 10, passkeys (murmur-437; `PASSKEY_SINCE`, policy schema 7; `crates/murmur-decide/src/
 passkey.rs`, `crates/murmur-auth/src/passkeys.rs` on webauthn-rs, bridge `auth.rs`, console
 `passkey.ts`; DECISIONS.md "Passkeys bind a step-up to its act"): an operator registers
@@ -556,7 +583,10 @@ areas but the platform's own path only against no-go areas, the assessment trust
 model's coverage figures, the signers authenticate with a password only (no second factor;
 rules 8, below), ground targets have no terrain-referenced altitude (2D), an engagement
 does not survive a bridge restart (only the platform's own failsafe values are put back),
-and another declared
+nor do the lost contacts (rules 13: a new run starts a new tracker), a lost contact's region is
+the statistical prediction a live track gets from its last facts, not a bound (a contact last
+seen steady that turned while out of view can be outside it), only an AIS identity retires a
+lost contact, and another declared
 hostile inside the keep-out is exempt like the target (an open design question,
 DECISIONS.md).
 

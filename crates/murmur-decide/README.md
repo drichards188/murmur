@@ -496,6 +496,34 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
     engagement authority). Every engagement decision logs the acceptances it read
     (`unknown_accepted`), which replay checks against the `engage.accepted` and
     `engage.acceptance_revoked` events.
+  - *Lost contacts* (rules 13, `lost.rs`, murmur-533): a contact the bridge's tracker drops
+    (180 s without a detection) is not forgotten. The bridge hands the engine each drop with
+    the track's facts then (`Engine::record_track_drops`, logged `track.dropped`; the tracker
+    keeps the track in the decision facts until the engine has it), and every engagement's
+    keep-out on tracks counts it as a lost contact (`WorldSnapshot::lost_contacts`, filled by
+    the engine and logged with the decision): anywhere it could have reached since its last
+    fix by the regions a live track gets from those facts (`engage::track_reach`: along its
+    velocity with its predicted uncertainty, along its average velocity, the fastest it went if
+    it manoeuvred, its domain's top speed without a velocity or an average velocity), growing
+    with no cap; exempt where a live track would be (a declared hostile, from the
+    identification ledger). The check names it, since when and that it may be accepted
+    (`lost contact T-0002 (neutral, fishing_vessel) could be 400 m ...: T-0002 out of view
+    since t=... (184 s), dropped by the tracker at t=...; an operator with engagement authority
+    may accept it for this engagement`). An operator with engagement authority may accept one
+    for one engagement exactly as a lost vehicle of ours (`Engine::submit_accepting_lost` at
+    the nomination, `Engine::accept_lost_contact` while it waits with no signature, logged as
+    `engage.accepted` naming the `contact` and its last fix `since`, with the contact as the
+    engine held it, `lost`; `Engine::revoke_lost_contact` withdraws it): picture tokens carry
+    them (`lost_accepted`), a reset clears them, every decision logs them, the signer who
+    accepted one is `self_accepted`. It covers that loss only. A new track with the same AIS
+    identity retires a lost contact, only when the match is unambiguous
+    (`Engine::step_lost`, `lost::match_one`, logged `track.reacquired` with the picture it
+    judged): the only live track carrying its MMSI and no other lost contact carrying it, that
+    track undeclared and not suspect (what our sensors see fits its AIS), in the same domain,
+    first seen after the lost contact's last fix, and where the lost contact could have
+    reached. A contact without AIS is never matched (the tracker's association across a drop
+    is by identity, and nothing else names one contact). A track's AIS identity is a fact
+    (`TrackFacts::ais`).
 - **Keep-out explanation** (`keepout.rs`, murmur-12e; read-only, no rules change). The
   checks judge each track and vehicle of ours through `engage::track_standing` and
   `engage::friendly_standing` (the region the check reads, its kind, centre and radius,
@@ -534,7 +562,16 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
   earlier fails; the platform placed within the stated distance passes and one step farther
   fails; placed so the effect lands exactly at times inside a window (a moving target's
   effect time set by placing the platform ahead of it on its course) it passes, at grid
-  times outside every window it fails; and the explanation's checks are the dry run's.
+  times outside every window it fails with the clearance raised by the grid's margin; and the
+  explanation's checks are the dry run's. murmur-dr6: a stretch of passing grid points claims
+  every effect time between them, so a grid point counts as clear only by a margin that bounds
+  how far a region's edge can dip between two points (`keepout::grid_margin_m`: 0.3 m at the
+  default 275 m clearance, `v^2 h^2 / (8 c)` for anything up to 100 m/s), and "no effect time
+  passes" says "on a 0.25 s grid". Rules 13: a lost contact is an item (`Subject::LostContact`,
+  with `lost`: what to accept, since when, when dropped), never given a wait (its reach only
+  grows), with what would clear it: an acceptance for this engagement, or the contact seen
+  again with its AIS identity; a track out of view is said to stay in the keep-out after its
+  drop.
 - **Scenarios** (`scenario.rs`, `murmur-scenarios`, `sim/scenarios/engage/`): the
   adversarial set, one or more per invariant, with log tampering; see that directory's
   README for the format.
@@ -1357,6 +1394,31 @@ Rules versions:
   sent the second the restore confirmed, then a clean stop owing nothing (see
   `tests/versions.rs`).
 
+- **13** (murmur-533, lost contacts; every gate reads `LOST_CONTACT_SINCE`, so another
+  change taking the number first renumbers it in one line; no policy key changes, schema 7):
+  a contact the tracker drops stays in every engagement's keep-out as a lost contact until an
+  operator with engagement authority accepts it for one engagement or a track is
+  unambiguously it again by its AIS identity (`lost.rs`, *Lost contacts* above). New events
+  `track.dropped` (the tracker's facts at the drop: never an identification) and
+  `track.reacquired` (the lost contact, the live track, the picture judged, the evidence);
+  `engage.accepted` and `engage.acceptance_revoked` may name a `contact` instead of a `uid`
+  (with `lost`, the contact as the engine held it, instead of `vehicle`); an engagement
+  decision's inputs carry `lost_contacts` and `lost_accepted`, a picture token
+  `lost_accepted`; a track's facts its `ais`. Replay rebuilds the ledger from the drops and
+  retirements and checks every engagement decision's lost contacts (and accepted ones)
+  against it, every other decision's empty; each acceptance of a contact (rules 13 only, the
+  operator's own session with engagement authority, at the nomination or before a first
+  signature, the contact lost since exactly that fix, its facts the ledger's); each
+  retirement, recomputed from its own picture; and that no track leaves a decision's picture
+  without a `track.dropped` (a track that vanished would have stopped protecting with nothing
+  in the log). The keep-out explanation's grid margin and words (murmur-dr6) change no
+  decision. Markers (a log claiming rules 12 or older can't carry them): `track.dropped`,
+  `track.reacquired`, `lost_contacts`, `lost_accepted`, an acceptance's `contact`, a track's
+  `ais`. Fixtures (a clean build): `tests/data/audit/v13-engagement-scenario-01.jsonl` and
+  scenarios 83 to 85 and 87 (`v13-lost-contact-*`); the rules 12 live logs are pinned to rules
+  12 in `tests/versions.rs`. The measurement of what it costs is in `eval/METRICS.md`
+  ("Out of view").
+
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
 `seen_max_age_s`, an unreleased build's name for it, is still read; **3** adds `[queue]`
@@ -1520,6 +1582,12 @@ on the scenario clock.
   engagement does not survive a bridge restart: the next run puts the platform's own
   lost-link values back (carried over from the last run's log, onto the same
   vehicle only, see the lost-link preload above), but the engagement itself is not resumed.
+- Lost contacts (rules 13): the ledger is a run's: a bridge restart starts a new tracker and
+  a new log, and the contacts lost before it are not carried (nor is anything else of the
+  picture). A lost contact's region is the reach model a live track gets from its facts at
+  the drop: a statistical prediction for a contact last seen steady, not a bound on where it
+  could be (`eval/METRICS.md` "Out of view" measures what that misses). Only an AIS identity
+  retires one; a contact the tracker sees again without one stays lost beside its new track.
 - Satellite tasking: no cloud model (optical options note it), no sensitive-area or
   cost/priority tiers yet (every collect needs a human), no competing demand or agility
   model, one collect per intent. A cover samples the centroid and the boundary (the interior
