@@ -32,6 +32,12 @@
 //!     in view), stated as what happens, with what else would (a report, an operator's logged
 //!     acceptance).
 //!
+//! Rules 13: a contact the tracker dropped is an item too ([`Subject::LostContact`]: the
+//! keep-out still counts it, [`crate::lost`]), with since when it is out of view, what the
+//! check reads (its reach from its last fix) and what would clear it: an operator with
+//! engagement authority accepting it for this engagement ([`Item::lost`] names what to accept),
+//! or the contact seen again with its own AIS identity. Waiting never does.
+//!
 //! and, for the platform, [`MoveWithin`]: every stretch of effect times at which every
 //! keep-out holds, as distances from the target when it holds where it is ("within X m",
 //! "between X and Y m"); and [`Explanation::wait`]: the first nomination time at which every
@@ -66,6 +72,24 @@ pub const WAIT_HORIZON_S: i64 = 600;
 pub const WAIT_STEP_MS: i64 = 1_000;
 /// The grid of effect times the windows are scanned on, ms.
 pub const SPAN_STEP_MS: i64 = 250;
+/// How far clear of the keep-out a region must be at a grid point of the effect-time scan for
+/// that point to count as clear, m (murmur-dr6). Between two grid points a region's edge can
+/// dip below the line through them: for a relative motion at `v` passing the keep-out's edge
+/// at the clearance `c`, by at most `v^2 h^2 / (8 c)`, `h` the grid's step; at 100 m/s and the
+/// default 275 m clearance that is 0.28 m. So a stretch of passing grid points says every
+/// effect time between them passes for anything moving up to 100 m/s; a smaller clearance
+/// needs more ([`grid_margin_m`]). The explanation's windows read it; the checks never do.
+pub const GRID_MARGIN_M: f64 = 0.3;
+/// The relative speed [`grid_margin_m`] bounds the dip for, m/s.
+pub const GRID_MARGIN_SPEED_MPS: f64 = 100.0;
+
+/// The margin a grid point of the effect-time scan needs for a clearance of `clearance_m`
+/// ([`GRID_MARGIN_M`], more for a clearance under the default's).
+pub fn grid_margin_m(clearance_m: f64) -> f64 {
+    let h = SPAN_STEP_MS as f64 / 1000.0;
+    let dip = GRID_MARGIN_SPEED_MPS.powi(2) * h * h / (8.0 * clearance_m.max(1.0));
+    GRID_MARGIN_M.max(dip)
+}
 /// A manoeuvre seen this recently before a track's estimate means it is manoeuvring now, s.
 pub const MANOEUVRING_NOW_S: f64 = 30.0;
 
@@ -164,6 +188,21 @@ pub struct Vertical {
 pub enum Subject {
     Track,
     Vehicle,
+    /// Rules 13: a contact the tracker dropped, still counted ([`crate::lost`]).
+    LostContact,
+}
+
+/// Rules 13: what an operator with engagement authority would accept for a lost contact, as
+/// the check names it (the track id it was dropped under and its last fix), and when the
+/// tracker dropped it.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct LostInfo {
+    pub track: String,
+    pub since: Time,
+    pub dropped_t: Time,
+    /// Its AIS identity, when it broadcast one (seen again with it, unambiguously, it is
+    /// retired).
+    pub ais: Option<String>,
 }
 
 /// One track or vehicle of ours against the keep-out. See the module.
@@ -215,6 +254,8 @@ pub struct Item {
     pub not_by_waiting: Option<String>,
     /// Something else that would clear it (never an override).
     pub other: Option<String>,
+    /// Rules 13: a lost contact's facts for an acceptance (none for anything else).
+    pub lost: Option<LostInfo>,
 }
 
 /// One region of an item at the effect time.
@@ -478,6 +519,8 @@ impl Ctx<'_> {
 enum Probe<'a> {
     Track(&'a str, &'a TrackFacts),
     Vehicle(&'a Uid, &'a VehicleFacts),
+    /// Rules 13: a lost contact the check judges (not live, exempt or accepted).
+    Lost(&'a str, &'a TrackFacts),
 }
 
 impl Probe<'_> {
@@ -486,8 +529,27 @@ impl Probe<'_> {
         match self {
             Probe::Track(id, t) => track_label(id, t),
             Probe::Vehicle(u, _) => format!("{} (ours)", opts.name(u)),
+            Probe::Lost(id, t) => format!("lost contact {}", track_label(id, t)),
         }
     }
+}
+
+/// Rules 13: the lost contacts of `world` the keep-out on tracks judges by their regions (not
+/// live again, exempt or accepted for this engagement), as [`engage::lost_standing`] decides.
+fn judged_lost<'w>(world: &'w WorldSnapshot, target: &str, ec: &EngageRules) -> Vec<(&'w str, &'w crate::lost::LostContact)> {
+    if !ec.lost() {
+        return Vec::new();
+    }
+    world
+        .lost_contacts
+        .iter()
+        .filter(|(id, l)| {
+            !world.tracks.contains_key(id.as_str())
+                && !engage::track_exempt(id, &l.facts, target, ec)
+                && !world.lost_accepted.get(id.as_str()).is_some_and(|a| a.since == Some(l.since()))
+        })
+        .map(|(id, l)| (id.as_str(), l))
+        .collect()
 }
 
 /// Whether a track is clear of the keep-out at (`point`, `t`), its altitude read at `now`:
@@ -614,6 +676,15 @@ pub fn explain(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig, opts
             items.push((track_item(&ctx, id, t, &s, alt), Probe::Track(id, t)));
         }
     }
+    // rules 13: the lost contacts it judges
+    for (id, l) in judged_lost(world, track_id, &ec) {
+        let Some(s) = engage::track_standing(&l.facts, point, effect_t, clearance, world.t, &ec, alt, true) else {
+            continue;
+        };
+        if s.blocks(clearance) || s.edge < NEAR_FACTOR * clearance {
+            items.push((lost_item(&ctx, id, l, &s, alt), Probe::Lost(id, &l.facts)));
+        }
+    }
     for (uid, v) in &world.vehicles {
         if Some(uid) == ctx.platform {
             continue;
@@ -662,7 +733,7 @@ pub fn explain(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig, opts
         wait,
         wait_none,
         assumptions: format!(
-            "Closer and farther are on the picture now (effect times every {} s from the earliest to the latest a nomination allows). Wait hints carry the picture forward: every track in view holds its course and speed and stays in view (no new manoeuvre; a young track's first minute as now), our vehicles keep doing what they do, the platform holds where it is; each is the first nomination time on a {} s grid within {} min.",
+            "Closer and farther are on the picture now (effect times on a {} s grid from the earliest to the latest a nomination allows, each grid point clear by a margin that covers what moves between them). Wait hints carry the picture forward: every track in view holds its course and speed and stays in view (no new manoeuvre; a young track's first minute as now), our vehicles keep doing what they do, the platform holds where it is; each is the first nomination time on a {} s grid within {} min.",
             SPAN_STEP_MS as f64 / 1000.0,
             WAIT_STEP_MS / 1000,
             WAIT_HORIZON_S / 60
@@ -702,9 +773,24 @@ fn agrees(ctx: &Ctx, checks: &[CheckResult], items: &[(Item, Probe)], alt: Optio
             return disagree();
         }
     }
+    // rules 13: each lost contact judged alone (the live tracks and the acceptances as they are)
+    for (id, l) in &world.lost_contacts {
+        if world.tracks.contains_key(id) || !ec.lost() {
+            continue;
+        }
+        let mut alone = WorldSnapshot::new(world.t);
+        alone.lost_accepted = world.lost_accepted.clone();
+        alone.lost_contacts.insert(id.clone(), l.clone());
+        let fails = engage::keep_out_tracks(point, effect_t, clearance, ctx.track_id, &alone, ec, alt).outcome != Outcome::Pass;
+        if fails != listed(Subject::LostContact, id) {
+            return disagree();
+        }
+    }
     let fails = |r: RuleId| checks.iter().any(|c| c.rule == r && c.outcome != Outcome::Pass);
     let blocks = |s: Subject| items.iter().any(|(i, _)| i.blocks && i.subject == s);
-    if blocks(Subject::Track) != fails(RuleId::KeepOutTracks) || blocks(Subject::Vehicle) != fails(RuleId::KeepOutFriendly) {
+    if (blocks(Subject::Track) || blocks(Subject::LostContact)) != fails(RuleId::KeepOutTracks)
+        || blocks(Subject::Vehicle) != fails(RuleId::KeepOutFriendly)
+    {
         return disagree();
     }
     Ok(())
@@ -845,6 +931,55 @@ fn track_item(ctx: &Ctx, id: &str, t: &TrackFacts, s: &TrackStanding, alt: Optio
         other: (blocks && near.kind == ReachKind::NoVelocity).then(|| {
             "When the tracker has a velocity estimate for it (it gives none while its velocity is uncertain, as in a turn), this reach becomes a prediction along its course.".to_string()
         }),
+        lost: None,
+    }
+}
+
+/// Rules 13: a lost contact as an item: its regions (as a track's, from its facts at the drop),
+/// since when it is out of view, and what would clear it.
+fn lost_item(ctx: &Ctx, id: &str, l: &crate::lost::LostContact, s: &TrackStanding, alt: Option<EffectAlt>) -> Item {
+    let mut item = track_item(ctx, id, &l.facts, s, alt);
+    let now = ctx.world.t;
+    let unseen = secs(now.ms_since(l.since())).max(0.0);
+    let dropped = secs(now.ms_since(l.dropped_t)).max(0.0);
+    item.rule = RuleId::KeepOutTracks;
+    item.subject = Subject::LostContact;
+    item.label = format!("lost contact {}", track_label(id, &l.facts));
+    // where it was last seen: nothing places it now
+    item.now = Some(l.facts.position.value);
+    item.reason = format!(
+        "Out of view since {} ago; the tracker dropped it {} ago. It still counts, from its last fix: {}",
+        after_s(unseen),
+        after_s(dropped),
+        item.reason
+    );
+    item.manoeuvring_now = None;
+    item.lost = Some(LostInfo {
+        track: id.to_string(),
+        since: l.since(),
+        dropped_t: l.dropped_t,
+        ais: l.facts.ais.as_ref().map(|a| format!("{} ({})", a.mmsi, a.name)),
+    });
+    if item.blocks {
+        item.not_by_waiting = Some("Waiting does not clear it: while it is out of view its reach only grows.".to_string());
+        item.other = Some(match &l.facts.ais {
+            Some(a) => format!(
+                "An operator with engagement authority accepting it for this engagement would (logged, at the nomination or before the first signature); so would the tracker seeing it again with its AIS identity ({}), unambiguously.",
+                a.mmsi
+            ),
+            None => "An operator with engagement authority accepting it for this engagement would (logged, at the nomination or before the first signature). It broadcast no AIS identity, so a track seen later is never taken for it.".to_string(),
+        });
+    }
+    item
+}
+
+/// "95 s", "3 min 36 s".
+fn after_s(s: f64) -> String {
+    let s = s.round() as i64;
+    if s.abs() < 120 {
+        format!("{s} s")
+    } else {
+        format!("{} min {:02} s", s / 60, s.abs() % 60)
     }
 }
 
@@ -881,6 +1016,7 @@ fn vehicle_item(ctx: &Ctx, uid: &Uid, v: &VehicleFacts, st: FriendlyStanding, al
         wait: None,
         not_by_waiting: None,
         other: None,
+        lost: None,
     };
     match st {
         FriendlyStanding::Accepted { .. } => None,
@@ -1000,10 +1136,14 @@ fn same_picture(ctx: &Ctx, items: &mut [(Item, Probe)], more_blocking: bool) -> 
                 .filter(|(u, _)| Some(*u) != ctx.platform)
                 .map(|(u, v)| Probe::Vehicle(u, v)),
         )
+        .chain(judged_lost(world, ctx.track_id, ec).into_iter().map(|(id, l)| Probe::Lost(id, &l.facts)))
         .collect();
+    // murmur-dr6: a grid point counts as clear only by a margin that covers how far a region's
+    // edge can dip between grid points (the windows below claim every effect time between)
+    let scan = ctx.clearance + grid_margin_m(ctx.clearance);
     let clear_at = |p: &Probe, point: LonLat, at: Time, alt: Option<EffectAlt>| match p {
-        Probe::Track(_, t) => track_clear(t, point, at, ctx.clearance, world.t, ec, alt),
-        Probe::Vehicle(u, v) => vehicle_clear(u, v, point, at, ctx.clearance, world, cfg, alt),
+        Probe::Track(_, t) | Probe::Lost(_, t) => track_clear(t, point, at, scan, world.t, ec, alt),
+        Probe::Vehicle(u, v) => vehicle_clear(u, v, point, at, scan, world, cfg, alt),
     };
     let start = ctx.pv.start_t;
     // L1: an effect never comes before the window opens (the preview waits for it)
@@ -1098,7 +1238,8 @@ fn same_picture(ctx: &Ctx, items: &mut [(Item, Probe)], more_blocking: bool) -> 
     match first {
         None => {
             mw.why = format!(
-                "No position of {name} clears it on this picture: no effect time {range} passes every keep-out{unlisted}; the earliest is blocked{blocker}."
+                "No position of {name} clears it on this picture: no effect time on a {} s grid {range} passes every keep-out{unlisted}; the earliest is blocked{blocker}.",
+                SPAN_STEP_MS as f64 / 1000.0
             );
         }
         Some((a, b)) if a == earliest => {
@@ -1201,14 +1342,23 @@ fn carried_forward(ctx: &Ctx, items: &mut [(Item, Probe)], shown: usize) -> (Opt
     for (item, probe) in items.iter_mut().filter(|(i, _)| i.blocks) {
         let out_of_view = match probe {
             Probe::Track(_, t) => (!in_view(t, now, mem)).then(|| secs(now.ms_since(t.last_seen_t))),
-            Probe::Vehicle(..) => None,
+            Probe::Vehicle(..) | Probe::Lost(..) => None,
         };
         if let Some(unseen) = out_of_view {
-            item.not_by_waiting = Some(format!(
-                "Not seen for {unseen:.0} s: its region grows while it is unseen. The tracker drops a track unseen for {:.0} s, after which it no longer counts in the keep-out (about {:.0} s from now, unless it is seen again).",
-                mem.drop_after_s,
-                (mem.drop_after_s - unseen).max(0.0)
-            ));
+            item.not_by_waiting = Some(if ec.lost() {
+                // rules 13: dropped, it stays in the keep-out as a lost contact
+                format!(
+                    "Not seen for {unseen:.0} s: its region grows while it is unseen. The tracker drops a track unseen for {:.0} s (about {:.0} s from now, unless it is seen again); it then stays in the keep-out as a lost contact, its region still growing, until an operator with engagement authority accepts it for an engagement.",
+                    mem.drop_after_s,
+                    (mem.drop_after_s - unseen).max(0.0)
+                )
+            } else {
+                format!(
+                    "Not seen for {unseen:.0} s: its region grows while it is unseen. The tracker drops a track unseen for {:.0} s, after which it no longer counts in the keep-out (about {:.0} s from now, unless it is seen again).",
+                    mem.drop_after_s,
+                    (mem.drop_after_s - unseen).max(0.0)
+                )
+            });
         }
         if item.not_by_waiting.is_some() {
             stuck.push(item.label.clone());
@@ -1260,6 +1410,8 @@ fn carried_forward(ctx: &Ctx, items: &mut [(Item, Probe)], shown: usize) -> (Opt
             }
         })
         .collect();
+    // rules 13: the lost contacts the keep-out judges
+    let lost = judged_lost(world, ctx.track_id, ec);
     // the target and the platform, for the preview a nomination then would get
     let mut lean = WorldSnapshot::new(now);
     lean.unknown_accepted = world.unknown_accepted.clone();
@@ -1307,6 +1459,8 @@ fn carried_forward(ctx: &Ctx, items: &mut [(Item, Probe)], shown: usize) -> (Opt
             }
         }
         let track_ok = |t: &T| track_clear(&t.then, point, at, ctx.clearance, w, ec, alt);
+        // rules 13: a lost contact stays as it is (its reach grows with the span by itself)
+        let lost_ok = |l: &&crate::lost::LostContact| track_clear(&l.facts, point, at, ctx.clearance, w, ec, alt);
         let vehicle_ok = |v: &V| vehicle_clear(v.uid, &v.then, point, at, ctx.clearance, &lean, cfg, alt);
         pending.retain(|&i| {
             let (item, _) = &items[i];
@@ -1322,6 +1476,8 @@ fn carried_forward(ctx: &Ctx, items: &mut [(Item, Probe)], shown: usize) -> (Opt
                     Some(v) if vehicle_ok(v) => (true, "by then it has moved on along its course".to_string()),
                     _ => (false, String::new()),
                 },
+                // rules 13: never pending (it is stuck: waiting only grows its reach)
+                Subject::LostContact => (false, String::new()),
             };
             if ok {
                 let cond = match item.manoeuvring_now {
@@ -1336,7 +1492,7 @@ fn carried_forward(ctx: &Ctx, items: &mut [(Item, Probe)], shown: usize) -> (Opt
             }
             !ok
         });
-        if want_all && tracks.iter().all(track_ok) && vehicles.iter().all(vehicle_ok) {
+        if want_all && tracks.iter().all(track_ok) && vehicles.iter().all(vehicle_ok) && lost.iter().map(|(_, l)| l).all(lost_ok) {
             let manoeuvring: Vec<&str> = items
                 .iter()
                 .filter(|(i, _)| i.blocks && i.manoeuvring_now == Some(true))

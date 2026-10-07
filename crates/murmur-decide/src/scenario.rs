@@ -101,12 +101,22 @@ pub struct Scenario {
     /// Rules 12: nothing may still be owed back when the log ends (replay's `unrestored`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub expect_nothing_owed: bool,
+    /// Rules 13: lost contacts retired as seen again, in order (substrings of
+    /// `t=<s> T-0002 is T-0005 again`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expect_reacquired: Vec<String>,
+    /// Rules 13: none may be retired (an ambiguous or missing match keeps a lost contact).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub expect_none_reacquired: bool,
     /// After the run, attack the log and require replay to catch it:
     /// `proposer_approval`, `agent_approval`, `suppress_void`, `edit_snapshot`,
     /// `drop_signature`, `edit_effect`, `strip_approvers`, `drop_reset`, `agent_order_auto`,
     /// `drop_ack`, `loosen_policy`, and for rules 6 `drop_preload`, `forge_preload`,
     /// `drop_verify`, `drop_acceptance`, `acceptance_by_agent`, `acceptance_without_authority`,
-    /// `hide_self_accepted`, and for rules 7 `drop_restore_owed`.
+    /// `hide_self_accepted`, and for rules 7 `drop_restore_owed`, and for rules 13
+    /// `hide_lost_contact` (every decision's lost contacts cut), `drop_track_dropped` (the
+    /// tracker's drops cut), `forge_lost_acceptance` (an acceptance of a lost contact re-dated
+    /// to a later fix everywhere it appears).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tamper: Option<String>,
     /// Seconds to run (default: the last step plus 10).
@@ -269,6 +279,10 @@ pub struct TrackDef {
     /// appears then: young for its first [`SCENARIO_MEAN_MIN_S`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tracked_s: Option<f64>,
+    /// Rules 13: the AIS identity its contact broadcasts, as our receivers hear it
+    /// ([`TrackFacts::ais`]): what a lost contact is matched again by.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ais: Option<crate::world::AisIdentity>,
 }
 
 /// Rules 12, scenarios: how long a track is tracked with a velocity estimate before it has an
@@ -330,20 +344,38 @@ pub enum Action {
         /// report, as the check shows it). Only an operator's nomination can carry them.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         accept: Vec<String>,
+        /// Rules 13: the lost contacts (track ids the tracker dropped) the nominating operator
+        /// accepts, each since its last fix as the check shows it.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        accept_lost: Vec<String>,
     },
     /// Rules 6: an operator with engagement authority accepts, for the last nomination while
     /// it waits with no signature, that one of our vehicles is lost since its last report
     /// (or since `since_s`, scenario seconds, to name another report: the engine refuses
     /// it). Without engagement authority it is refused.
+    ///
+    /// Rules 13: or a lost contact, `track` instead of `uid` (since its last fix, or `since_s`).
     Accept {
         by: String,
-        uid: String,
+        #[serde(default)]
+        uid: Option<String>,
+        #[serde(default)]
+        track: Option<String>,
         #[serde(default)]
         since_s: Option<f64>,
     },
-    /// Rules 6: an operator withdraws an acceptance of a lost vehicle for the last
-    /// nomination (pending or under way).
-    Revoke { by: String, uid: String },
+    /// Rules 6: an operator withdraws an acceptance of a lost vehicle (rules 13: or of a lost
+    /// contact, `track`) for the last nomination (pending or under way).
+    Revoke {
+        by: String,
+        #[serde(default)]
+        uid: Option<String>,
+        #[serde(default)]
+        track: Option<String>,
+    },
+    /// Rules 13: the tracker drops `track` (as the bridge's does after 180 s without a
+    /// detection), handing the engine its facts now; the runner stops carrying it.
+    DropTrack { track: String },
     /// An agent "tries" to accept a lost vehicle: there is no such method on its port, so it
     /// is recorded and nothing may change.
     AgentAccept { agent: String, uid: String },
@@ -425,6 +457,9 @@ pub enum Action {
         /// ([`TrackDef::tracked_s`]: 0, a new track).
         #[serde(default)]
         tracked_s: Option<f64>,
+        /// Rules 13: the AIS identity its contact broadcasts.
+        #[serde(default)]
+        ais: Option<crate::world::AisIdentity>,
     },
     /// One of our vehicles changes: position, velocity, link (silent: no reports; a report
     /// interval: the link class changed), navigation source (`gnss`, `dead_reckoning`).
@@ -839,6 +874,9 @@ pub struct ScenarioResult {
     pub tamper_mismatches: Vec<String>,
     /// How many times the signatures were dropped (`approval.reset`).
     pub resets: usize,
+    /// Rules 13: the lost contacts retired as seen again (`t=<s> T-0002 is T-0005 again`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reacquired: Vec<String>,
     /// Rules 9: the identification events, in order (`t=<s> declared T-0001 by
     /// rule:hostile_act ...`), and the same with the truth behind each (evaluation labels).
     pub ident_reports: Vec<String>,
@@ -1301,6 +1339,15 @@ pub fn run(
                 Err(e) => failures.push(format!("t={s}: step_identification: {e}")),
             }
         }
+        // rules 13: lost contacts seen again, unambiguously, are retired (as the bridge's loop)
+        match engine.step_lost(&world) {
+            Ok(found) => {
+                for (lost, by) in found {
+                    extra.reacquired.push(format!("t={s} {lost} is {by} again"));
+                }
+            }
+            Err(e) => failures.push(format!("t={s}: step_lost: {e}")),
+        }
         let outcome = if s < extra.stall_until {
             crate::engine::StepOutcome::default()
         } else {
@@ -1486,6 +1533,20 @@ pub fn run(
     if sc.expect_reset && resets == 0 {
         failures.push("expected the signatures to be dropped (approval.reset), they never were".into());
     }
+    // rules 13: lost contacts retired as seen again
+    let mut retired = extra.reacquired.iter();
+    for want in &sc.expect_reacquired {
+        if !retired.any(|r| r.contains(want.as_str())) {
+            failures.push(format!(
+                "expected lost contacts retired {:?} in order, got {:?}",
+                sc.expect_reacquired, extra.reacquired
+            ));
+            break;
+        }
+    }
+    if sc.expect_none_reacquired && !extra.reacquired.is_empty() {
+        failures.push(format!("expected no lost contact retired, got {:?}", extra.reacquired));
+    }
     // replayed with the rules it was decided under (the current ones unless asked otherwise)
     let replay_opts = replay::ReplayOptions {
         rules: opts.rules_version.map_or_else(replay::RulesAccepted::default, replay::RulesAccepted::Exactly),
@@ -1564,6 +1625,7 @@ pub fn run(
         tamper_not_applicable,
         tamper_mismatches,
         resets,
+        reacquired: extra.reacquired.clone(),
         ident_reports,
         ident,
         proxy: extra.proxy.is_some().then_some(extra.proxy_stats),
@@ -1793,6 +1855,7 @@ fn track_sim(t: &TrackDef) -> TrackSim {
                 .filter(|s| *s >= SCENARIO_MEAN_MIN_S && !t.no_velocity_estimate)
                 .map(|_| t.velocity),
             first_seen_t: Some(T0.plus_ms(-((t.tracked_s.unwrap_or(SCENARIO_TRACKED_S) * 1000.0).round() as i64))),
+            ais: t.ais.clone(),
         },
         silent: t.silent,
         no_velocity: t.no_velocity_estimate,
@@ -2082,6 +2145,7 @@ fn act(
             fallback,
             window_s,
             accept,
+            accept_lost,
         } => {
             let task = Task::Engage {
                 track: track.clone(),
@@ -2102,19 +2166,29 @@ fn act(
                     (Uid::new(u), since)
                 })
                 .collect();
+            // rules 13: each accepted lost contact since its last fix, as the check shows it
+            let lost_now = engine.lost_contacts();
+            let contacts: Vec<(String, Time)> = accept_lost
+                .iter()
+                .map(|t| (t.clone(), lost_now.get(t).map_or(now, crate::lost::LostContact::since)))
+                .collect();
             let out = match (by, agent) {
                 (Some(by), _) => match session(by) {
                     Some(sess) => {
                         proposal.rationale = rationale.as_deref().map(Rationale::new).transpose().ok().flatten();
-                        match (accepted.is_empty(), sess.engagement_authority()) {
+                        match (accepted.is_empty() && contacts.is_empty(), sess.engagement_authority()) {
                             (true, _) => engine.submit(sess.authority(), proposal, &w, terrain).map(|i| i.id()),
-                            (false, Some(auth)) => engine
+                            (false, Some(auth)) if contacts.is_empty() => engine
                                 .submit_accepting(auth, proposal, &accepted, &w, terrain)
+                                .map(|i| i.id()),
+                            (false, Some(auth)) => engine
+                                .submit_accepting_lost(auth, None, proposal, &accepted, &contacts, &w, terrain)
                                 .map(|i| i.id()),
                             // the bridge refuses the whole nomination (403): so does the runner
                             (false, None) => {
                                 return refusals.push(format!(
-                                    "{by}: accepting a lost vehicle needs engagement authority (nomination refused)"
+                                    "{by}: accepting a lost {} needs engagement authority (nomination refused)",
+                                    if contacts.is_empty() { "vehicle" } else { "contact" }
                                 ));
                             }
                         }
@@ -2123,7 +2197,7 @@ fn act(
                 },
                 (None, Some(agent)) => {
                     // an agent's port takes no acceptance: there is nothing to pass it to
-                    if !accept.is_empty() {
+                    if !accept.is_empty() || !accept_lost.is_empty() {
                         refusals.push(format!(
                             "agent {agent}: no acceptance of a lost vehicle on an agent's proposal (its port has no such parameter)"
                         ));
@@ -2275,29 +2349,59 @@ fn act(
                 Err(e) => refusals.push(e.to_string()),
             }
         }
-        Action::Accept { by, uid, since_s } => {
+        Action::Accept { by, uid, track, since_s } => {
             let (Some(id), Some(sess)) = (*last, session(by)) else {
                 return failures.push(format!("t={s}: accept: no nomination or unknown operator {by}"));
             };
             let w = world(tracks, vehicles);
-            let since = match since_s {
-                Some(x) => Some(stepped((x * 1000.0).round() as i64, extra.clock_step)),
-                None => w.vehicles.get(&Uid::new(uid)).and_then(|v| v.position.as_ref()).map(|p| p.t),
-            };
             // only engagement authority accepts (the bridge answers 403 otherwise)
             let Some(auth) = sess.engagement_authority() else {
-                return refusals.push(format!("{by}: accepting a lost vehicle needs engagement authority"));
+                return refusals.push(format!(
+                    "{by}: accepting a lost {} needs engagement authority",
+                    if track.is_some() { "contact" } else { "vehicle" }
+                ));
             };
-            if let Err(e) = engine.accept_unknown_friendly(id, auth, Uid::new(uid), since, &w) {
+            let scripted = since_s.map(|x| stepped((x * 1000.0).round() as i64, extra.clock_step));
+            let r = match (uid, track) {
+                (Some(uid), None) => {
+                    let since = scripted.or_else(|| w.vehicles.get(&Uid::new(uid)).and_then(|v| v.position.as_ref()).map(|p| p.t));
+                    engine.accept_unknown_friendly(id, auth, Uid::new(uid), since, &w).map(|_| ())
+                }
+                // rules 13: a lost contact, since its last fix as the check shows it
+                (None, Some(t)) => {
+                    let since = scripted
+                        .or_else(|| engine.lost_contacts().get(t).map(crate::lost::LostContact::since))
+                        .unwrap_or(now);
+                    engine.accept_lost_contact(id, auth, None, t, since, &w).map(|_| ())
+                }
+                _ => return failures.push(format!("t={s}: accept: uid or track, one of them")),
+            };
+            if let Err(e) = r {
                 refusals.push(e.to_string());
             }
         }
-        Action::Revoke { by, uid } => {
+        Action::Revoke { by, uid, track } => {
             let (Some(id), Some(sess)) = (*last, session(by)) else {
                 return failures.push(format!("t={s}: revoke: no nomination or unknown operator {by}"));
             };
-            if let Err(e) = engine.revoke_unknown_friendly(id, sess.authority(), Uid::new(uid)) {
+            let r = match (uid, track) {
+                (Some(uid), None) => engine.revoke_unknown_friendly(id, sess.authority(), Uid::new(uid)).map(|_| ()),
+                (None, Some(t)) => engine.revoke_lost_contact(id, sess.authority(), t).map(|_| ()),
+                _ => return failures.push(format!("t={s}: revoke: uid or track, one of them")),
+            };
+            if let Err(e) = r {
                 refusals.push(e.to_string());
+            }
+        }
+        Action::DropTrack { track } => {
+            // the tracker's drop: its facts now, as the bridge hands them (the estimate only)
+            let w = world(tracks, vehicles);
+            let Some(facts) = w.tracks.get(track).cloned() else {
+                return failures.push(format!("t={s}: drop_track: unknown track {track}"));
+            };
+            tracks.remove(track);
+            if let Err(e) = engine.record_track_drops(vec![(track.clone(), facts)]) {
+                failures.push(format!("t={s}: drop_track {track}: {e}"));
             }
         }
         Action::AgentAccept { agent, uid } => {
@@ -2351,6 +2455,7 @@ fn act(
             velocity_error,
             alt_m,
             tracked_s,
+            ais,
         } => {
             let new = !tracks.contains_key(id);
             let t = tracks.entry(id.clone()).or_insert_with(|| {
@@ -2375,8 +2480,12 @@ fn act(
                     truth: None,
                     manoeuvre_speed_mps: None,
                     tracked_s: None,
+                    ais: None,
                 })
             });
+            if let Some(a) = ais {
+                t.facts.ais = Some(a.clone());
+            }
             // rules 12: a track a step makes appears now (or `tracked_s` ago): young, its
             // average velocity comes once tracked long enough
             if new && engine.policy().rules.followups() {
@@ -2618,6 +2727,8 @@ struct Extra {
     sign_due: Vec<(u32, IntentId, String)>,
     /// murmur-dup: the run's clock steps ([`RunOptions::clock_step`]).
     clock_step: Option<ClockStep>,
+    /// Rules 13: the lost contacts retired, as `t=<s> <lost> is <track> again`.
+    reacquired: Vec<String>,
 }
 
 impl Extra {
@@ -2904,6 +3015,7 @@ fn proxies(
                 fallback: Fallback::Return,
                 window_s: Some(600),
                 accept: Vec::new(),
+                accept_lost: Vec::new(),
             },
             engine, sessions, tracks, vehicles, catalog, areas, now, terrain, last, refusals, fallback_seen, failures,
             engaging, extra, s,
@@ -3424,6 +3536,20 @@ fn follow_queue(
 
 // ---- log attacks ------------------------------------------------------------------------
 
+/// Rules 13: every decision's inputs an event logs.
+fn decision_inputs(body: &mut EventBody) -> Vec<&mut crate::world::LoggedInputs> {
+    match body {
+        EventBody::CheckResult { inputs, .. }
+        | EventBody::PolicyDecision { inputs, .. }
+        | EventBody::PictureIssued { inputs, .. }
+        | EventBody::EngagePicture { inputs, .. }
+        | EventBody::EngageObserve { inputs, .. }
+        | EventBody::IntentQueued { inputs, .. } => vec![inputs],
+        EventBody::ApprovalReset { inputs: Some(i), .. } | EventBody::IntentDispatched { inputs: Some(i), .. } => vec![i],
+        _ => Vec::new(),
+    }
+}
+
 /// Rules 9: every track picture an event logs (a decision's inputs, an act's or a flag's).
 fn picture_tracks(body: &mut EventBody) -> Vec<&mut BTreeMap<String, TrackFacts>> {
     match body {
@@ -3814,6 +3940,75 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             }
             if !done {
                 return Err("no engage.accepted to forge".into());
+            }
+        }
+        "hide_lost_contact" => {
+            // rules 13: every decision on it shown without the lost contacts it read
+            let mut done = false;
+            for e in &mut events {
+                for i in decision_inputs(&mut e.body) {
+                    if !i.lost_contacts.is_empty() {
+                        i.lost_contacts.clear();
+                        done = true;
+                    }
+                }
+            }
+            if !done {
+                return Err("no decision read a lost contact".into());
+            }
+        }
+        "drop_track_dropped" => {
+            // rules 13: the tracker's drops cut from the log (the contacts vanish from the
+            // picture as if they had never been dropped)
+            let before = events.len();
+            events.retain(|e| !matches!(&e.body, EventBody::TrackDropped { .. }));
+            if events.len() == before {
+                return Err("no track.dropped to cut".into());
+            }
+        }
+        "forge_lost_acceptance" => {
+            // rules 13: the acceptance of a lost contact re-dated, as if the contact had been seen
+            // a minute later than it was (a smaller region it accepted), everywhere it appears:
+            // the acceptance, every decision's inputs and every picture token
+            let mut forged: BTreeMap<String, Time> = BTreeMap::new();
+            for e in &mut events {
+                if let EventBody::EngageAccepted {
+                    intent,
+                    contact: Some(c),
+                    since: Some(t),
+                    ..
+                } = &mut e.body
+                    && *intent == spec.id
+                {
+                    *t = t.plus_ms(60_000);
+                    forged.insert(c.clone(), *t);
+                }
+            }
+            if forged.is_empty() {
+                return Err("no acceptance of a lost contact to forge".into());
+            }
+            for e in &mut events {
+                for i in decision_inputs(&mut e.body) {
+                    for (c, a) in i.lost_accepted.iter_mut() {
+                        if let Some(t) = forged.get(c) {
+                            a.since = Some(*t);
+                        }
+                    }
+                }
+                let tokens: Vec<&mut engage::PictureToken> = match &mut e.body {
+                    EventBody::PictureIssued { token, .. } => vec![&mut **token],
+                    EventBody::ApprovalConcurred { token: Some(t), .. } | EventBody::ApprovalGranted { token: Some(t), .. } => {
+                        vec![&mut **t]
+                    }
+                    _ => Vec::new(),
+                };
+                for tok in tokens {
+                    for (c, a) in tok.lost_accepted.iter_mut() {
+                        if let Some(t) = forged.get(c) {
+                            a.since = Some(*t);
+                        }
+                    }
+                }
             }
         }
         "drop_act" => {

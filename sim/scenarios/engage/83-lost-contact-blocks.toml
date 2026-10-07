@@ -1,0 +1,74 @@
+# Rules 13 (murmur-533): a fishing boat 400 m north of the target goes out of sensor view;
+# 180 s later the tracker drops its track. Under rules 12 it then stopped counting in the
+# keep-out (`--rules 12`: this nomination waits for its signers); from rules 13 the engine
+# keeps it as a lost contact (`track.dropped`, with its last fix), counted anywhere it could
+# have reached since, and the nomination is rejected (keep_out_tracks: the detail names the
+# lost contact, since when, and that an operator with engagement authority may accept it).
+# Afterwards the lost contact is cut from every decision in the log; replay finds each one
+# reading less than the drops the log holds, and its checks no longer follow.
+title = "A protected contact dropped near the target still blocks"
+invariant = "keep_out_tracks"
+attack = "a fishing boat by the target goes out of view and is dropped before the nomination; the lost contact cut from every decision in the log"
+expect = "rejected"
+expect_rule = "keep_out_tracks"
+tamper = "hide_lost_contact"
+end_s = 200
+
+[[operator]]
+id = "op-1"
+engage = true
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, 28 m/s: the effect about 100 s after the nomination
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[track]]
+id = "T-0002"
+at = [-122.4950, 37.8156]   # 400 m north of the target, drifting
+affiliation = "neutral"
+identity = "fishing_vessel"
+identity_confidence = 0.8
+sources = ["3:radar"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "track"            # out of sensor view: no more detections
+id = "T-0002"
+silent = true
+
+[[step]]
+at_s = 181
+action = "drop_track"       # the tracker drops it, 180 s unseen
+track = "T-0002"
+
+[[step]]
+at_s = 185
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600

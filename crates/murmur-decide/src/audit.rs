@@ -564,10 +564,18 @@ pub enum EventBody {
     /// signature; never automatic, never an agent's (replay checks the session is the
     /// operator's, with grants.engage). Every signer's picture token carries the acceptances;
     /// a reset of the signatures clears them.
+    ///
+    /// Rules 13: or a lost contact (`contact`, the track id it was dropped under, instead of
+    /// `uid`; `since` its last fix; `lost` the contact as the engine's ledger held it, instead
+    /// of `vehicle`): its keep-out on tracks leaves that contact out while it is lost since
+    /// exactly then. Everything else as for a vehicle.
     #[serde(rename = "engage.accepted")]
     EngageAccepted {
         intent: IntentId,
-        uid: Uid,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        uid: Option<Uid>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        contact: Option<String>,
         #[serde(default)]
         since: Option<Time>,
         by: OperatorId,
@@ -575,7 +583,12 @@ pub enum EventBody {
         /// The world it was accepted on: the vehicle's facts then and the world's time (replay
         /// checks it was lost since exactly `since`, by the link-aware freshness rule).
         world_t: Time,
-        vehicle: Box<crate::world::VehicleFacts>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        vehicle: Option<Box<crate::world::VehicleFacts>>,
+        /// Rules 13: the lost contact as the engine held it (replay checks it against its own
+        /// ledger: in force, lost since exactly `since`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lost: Option<Box<crate::lost::LostContact>>,
         /// Rules 8: the step-up the acceptance quoted (`[approval] step_up_acts` lists
         /// `accept_unknown`); every acceptance of one nomination may quote the same one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -584,12 +597,42 @@ pub enum EventBody {
 
     /// Engage, rules 6: an operator withdrew an acceptance of a lost vehicle for this
     /// engagement (any operator may: it only restricts). Its checks count the vehicle again.
+    /// Rules 13: or of a lost contact (`contact` instead of `uid`).
     #[serde(rename = "engage.acceptance_revoked")]
     EngageAcceptanceRevoked {
         intent: IntentId,
-        uid: Uid,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        uid: Option<Uid>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        contact: Option<String>,
         by: OperatorId,
         session: SessionId,
+    },
+
+    /// Rules 13 ([`crate::lost`]): the bridge's tracker dropped `track` (no detection for its
+    /// drop time); its facts then, as the tracker handed them (the estimate, never a
+    /// declaration). From here on the engine holds it as a lost contact, which every
+    /// engagement's keep-out on tracks counts anywhere it could have reached since its last
+    /// fix, until a track is unambiguously it again (`track.reacquired`). Replay rebuilds the
+    /// ledger from these and checks every decision's `lost_contacts` against it, and that no
+    /// track left a decision's picture without one.
+    #[serde(rename = "track.dropped")]
+    TrackDropped {
+        track: String,
+        facts: Box<crate::world::TrackFacts>,
+    },
+
+    /// Rules 13: lost contact `track` is live track `by_track` again (an unambiguous AIS
+    /// identity, [`crate::lost::match_one`]), on the picture logged here (`tracks`, at
+    /// `world_t`, its identification filled): it is retired, and the live track counts in its
+    /// place. Replay recomputes the match from this picture and its own ledger.
+    #[serde(rename = "track.reacquired")]
+    TrackReacquired {
+        track: String,
+        by_track: String,
+        world_t: Time,
+        tracks: BTreeMap<String, crate::world::TrackFacts>,
+        evidence: String,
     },
 
     /// Rules 6: a platform's own lost-link values owed back outside an engagement's own

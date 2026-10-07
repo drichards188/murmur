@@ -1,0 +1,89 @@
+# Rules 13: 83's fishing boat, dropped by the tracker near the target, but the nominating
+# operator (engagement authority) accepts the lost contact for this engagement, explicitly
+# ("T-0002 out of view since t: accept"), logged as `engage.accepted` naming the contact,
+# before the checks, with its facts as the engine holds them. The keep-out leaves it out and
+# says so; two signers are shown the acceptance on their picture tokens and sign; the effect is
+# released. Afterwards the tracker's drop is cut from the log: replay finds decisions reading a
+# lost contact nobody dropped, and a track that left the picture without a drop.
+title = "An operator accepts a lost contact for one engagement"
+invariant = "keep_out_tracks"
+attack = "the tracker's drop is cut from the log"
+expect = "done"
+expect_assessment = "ceased"
+tamper = "drop_track_dropped"
+end_s = 400
+
+[[operator]]
+id = "op-1"                 # nominates and accepts: engagement authority, never a signer
+engage = true
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km: it also covers the point for the assessment
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[track]]
+id = "T-0002"
+at = [-122.4950, 37.8156]   # 400 m north of the target
+affiliation = "neutral"
+identity = "fishing_vessel"
+identity_confidence = 0.8
+sources = ["3:radar"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "track"
+id = "T-0002"
+silent = true
+
+[[step]]
+at_s = 181
+action = "drop_track"
+track = "T-0002"
+
+[[step]]
+at_s = 185
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+accept_lost = ["T-0002"]    # "T-0002 out of view since its last fix: accept"
+
+[[step]]
+at_s = 189
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 192
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 193
+action = "expect"
+state = "dispatched"

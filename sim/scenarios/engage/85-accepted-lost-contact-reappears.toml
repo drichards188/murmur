@@ -1,0 +1,102 @@
+# Rules 13: an acceptance covers one loss, not the contact. A tour boat broadcasting AIS goes
+# out of view 400 m north of the target and is dropped; the nominating operator accepts it as
+# a lost contact; the engagement is approved and dispatched. Then the boat is seen again, 150 m
+# from the effect point, under a new track id (the tracker starts a new track after a drop) with
+# the same AIS identity: the engine retires the lost contact (`track.reacquired`: the only track
+# carrying its MMSI, undeclared, consistent, first seen after its last fix, where it could have
+# reached), and the live track counts like any other: the engagement aborts (keep_out_tracks)
+# with its fallback. Afterwards the log is forged to credit the acceptance to an agent; replay
+# catches it (not an operator, not its session).
+title = "An accepted lost contact is seen again inside the keep-out"
+invariant = "keep_out_tracks"
+attack = "an accepted lost contact reappears by the effect point under a new track id; the acceptance credited to an agent in the log"
+expect = "aborted"
+expect_rule = "keep_out_tracks"
+expect_reacquired = ["T-0002 is T-0005 again"]
+tamper = "acceptance_by_agent"
+end_s = 260
+
+[[operator]]
+id = "op-1"
+engage = true
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[track]]
+id = "T-0002"
+at = [-122.4950, 37.8156]   # 400 m north of the target
+affiliation = "neutral"
+identity = "ferry"
+identity_confidence = 0.9
+sources = ["3:radar", "3:ais"]
+ais = { mmsi = "366999501", name = "MV BAY TOUR", ship_type = "passenger" }
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "track"
+id = "T-0002"
+silent = true
+
+[[step]]
+at_s = 181
+action = "drop_track"
+track = "T-0002"
+
+[[step]]
+at_s = 185
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+accept_lost = ["T-0002"]
+
+[[step]]
+at_s = 189
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 192
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 193
+action = "expect"
+state = "dispatched"
+
+[[step]]
+at_s = 230
+action = "track"            # seen again: the tracker starts a new track
+id = "T-0005"
+at = [-122.4950, 37.8133]   # 150 m north of the target
+affiliation = "neutral"
+identity = "ferry"
+ais = { mmsi = "366999501", name = "MV BAY TOUR", ship_type = "passenger" }

@@ -249,6 +249,21 @@ pub struct TrackFacts {
     /// older log), judged as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_seen_t: Option<Time>,
+    /// Rules 13: the contact's own AIS identity as our receivers last heard it (what it says it
+    /// is: never verified, a contact may broadcast another's). The engine retires a lost
+    /// contact only on an unambiguous match of it ([`crate::lost`]). Absent: no AIS heard (or a
+    /// log written before rules 13).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ais: Option<AisIdentity>,
+}
+
+/// Rules 13: an AIS identity as received (see [`TrackFacts::ais`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AisIdentity {
+    pub mmsi: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ship_type: String,
 }
 
 /// Rules 9: a manoeuvre the tracker saw (see [`TrackFacts::manoeuvre`]).
@@ -442,6 +457,18 @@ pub struct WorldSnapshot {
     /// where the caller gives none (scenarios, tests): carried values then hold.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub identities: BTreeMap<Uid, crate::engage::VehicleIdentity>,
+    /// Engine-filled for an engagement's checks (rules 13, [`crate::lost`]): the contacts the
+    /// tracker dropped that the engine still holds as lost (`track.dropped`, not retired by
+    /// `track.reacquired`), by the track id they were dropped under, each with its facts at the
+    /// drop (its identification filled from the ledger as a live track's). The keep-out on
+    /// tracks counts each anywhere it could have reached since its last fix. Absent when none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lost_contacts: BTreeMap<String, crate::lost::LostContact>,
+    /// Engine-filled for an engagement's checks (rules 13): the lost contacts an operator
+    /// accepted for it (`engage.accepted` naming a contact), each since the last fix it names.
+    /// The keep-out leaves out a contact lost since exactly then. Absent when none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lost_accepted: BTreeMap<String, crate::engage::AcceptedUnknown>,
 }
 
 /// A decision's inputs as logged: the [`WorldSnapshot`] with the area set replaced by its
@@ -482,6 +509,12 @@ pub struct LoggedInputs {
     /// The intent's vehicles spent by their own effect (rules 12; absent when none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub expended: BTreeMap<Uid, IntentId>,
+    /// An engagement's lost contacts (rules 13; absent when none).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lost_contacts: BTreeMap<String, crate::lost::LostContact>,
+    /// The lost contacts accepted for this engagement (rules 13; absent when none).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lost_accepted: BTreeMap<String, crate::engage::AcceptedUnknown>,
 }
 
 impl LoggedInputs {
@@ -508,6 +541,8 @@ impl LoggedInputs {
             unknown_accepted: world.unknown_accepted.clone(),
             restore_owed: world.restore_owed.clone(),
             expended: world.expended.clone(),
+            lost_contacts: world.lost_contacts.clone(),
+            lost_accepted: world.lost_accepted.clone(),
         }
     }
 
@@ -553,6 +588,8 @@ impl LoggedInputs {
             restore_owed: self.restore_owed.clone(),
             expended: self.expended.clone(),
             identities: BTreeMap::new(),
+            lost_contacts: self.lost_contacts.clone(),
+            lost_accepted: self.lost_accepted.clone(),
         }
     }
 }
@@ -606,6 +643,9 @@ impl WorldSnapshot {
                 .iter()
                 .filter_map(|u| self.identities.get(u).map(|i| (u.clone(), i.clone())))
                 .collect(),
+            // engine-owned (rules 13): filled from its ledger of lost contacts
+            lost_contacts: BTreeMap::new(),
+            lost_accepted: BTreeMap::new(),
         }
     }
 

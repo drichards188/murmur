@@ -284,6 +284,7 @@ pub mod ident;
 pub mod ids;
 pub mod intent;
 pub mod keepout;
+pub mod lost;
 pub mod passkey;
 pub mod policy;
 pub mod queue;
@@ -326,6 +327,7 @@ pub use ident::{
     FlagKind, FlagResolution, FlagStatus, IdentConfig, IdentInputs, RuleEvidence,
 };
 pub use ids::{AgentId, IntentId, OperatorId, SessionId, Uid};
+pub use lost::{LostContact, LostLedger, Reacquired};
 pub use intent::{
     Constraints, IllegalTransition, Intent, IntentSpec, Proposal, ProposalError, Rationale, Source,
     State, Targets, Task, TaskKind, Transition, next_state,
@@ -345,7 +347,7 @@ pub use queue::{
 pub use route::{LegKind, Route, Segment};
 pub use rules::{
     CheckResult, OPERATOR_AUTH_SINCE, Outcome, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, POLICY_SCHEMA,
-    QUEUE_FOLLOWUPS_SINCE, REVIEW_FOLLOWUPS_SINCE, RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE, RULES_VERSION,
+    LOST_CONTACT_SINCE, QUEUE_FOLLOWUPS_SINCE, REVIEW_FOLLOWUPS_SINCE, RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE, RULES_VERSION,
     RuleId, RulesConfig, SPACE_FOLLOWUPS_SINCE, STEP_UP_SCHEMA_SINCE, UnknownEndurance,
 };
 pub use space::{
@@ -356,6 +358,6 @@ pub use space::{
 pub use terrain::{NearSample, NoTerrain, PolygonTerrain, Surface, TerrainOracle};
 pub use time::{Clock, ManualClock, SystemClock, Time};
 pub use world::{
-    Affiliation, Circle, CircleSource, Fact, GpsFixFrom, LoggedInputs, Manoeuvre, LoggedSpace, SpaceInputs, TerrainInputs, TrackFacts,
+    AisIdentity, Affiliation, Circle, CircleSource, Fact, GpsFixFrom, LoggedInputs, Manoeuvre, LoggedSpace, SpaceInputs, TerrainInputs, TrackFacts,
     VehicleFacts, WorldSnapshot,
 };

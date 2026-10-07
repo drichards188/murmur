@@ -1103,6 +1103,13 @@ impl Track {
             // rules 12: when this track started (with no average velocity yet, it is young: the
             // engine of older rules drops it)
             first_seen_t: Some(ms(self.first_seen_t)),
+            // rules 13: the AIS identity it broadcasts, as heard (a lost contact is matched again
+            // by it; the engine of older rules drops it)
+            ais: self.ais.as_ref().map(|a| murmur_decide::AisIdentity {
+                mmsi: a.mmsi.clone(),
+                name: a.name.clone(),
+                ship_type: a.ship_type.clone(),
+            }),
         }
     }
 }

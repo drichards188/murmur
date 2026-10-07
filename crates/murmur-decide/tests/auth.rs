@@ -57,6 +57,7 @@ fn engage_world(t: Time) -> WorldSnapshot {
             manoeuvre: None,
             mean_velocity_mps: None,
             first_seen_t: None,
+            ais: None,
         },
     );
     w

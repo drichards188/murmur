@@ -333,6 +333,12 @@ impl EngageRules {
         self.rules_version >= crate::rules::REVIEW_FOLLOWUPS_SINCE
     }
 
+    /// The decisions of rules 13 on ([`crate::rules::LOST_CONTACT_SINCE`]): a contact the
+    /// tracker dropped counts in the keep-out as a lost contact ([`crate::lost`]).
+    pub fn lost(&self) -> bool {
+        self.rules_version >= crate::rules::LOST_CONTACT_SINCE
+    }
+
     /// The optional keys this section sets, each with the policy schema that introduced it
     /// (or, for an old name, the first schema whose builds read it): a log claiming an
     /// older schema can't carry them (replay checks).
@@ -668,6 +674,11 @@ pub struct PictureToken {
     /// refused.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unknown_accepted: BTreeMap<Uid, AcceptedUnknown>,
+    /// Rules 13: the lost contacts accepted for it when it was shown, by track id (every signer
+    /// sees them; a signature quoting a token whose set differs from the engagement's now is
+    /// refused).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lost_accepted: BTreeMap<String, AcceptedUnknown>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -793,6 +804,10 @@ pub struct Engagement {
     /// Rules 6: our vehicles an operator accepted as lost for this engagement.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub accepted: BTreeMap<Uid, AcceptedUnknown>,
+    /// Rules 13: the lost contacts an operator accepted for this engagement, by the track id
+    /// each was dropped under (`since`: its last fix).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub accepted_lost: BTreeMap<String, AcceptedUnknown>,
 }
 
 /// Rules 6: an operator's explicit acceptance that one of our vehicles is lost (its
@@ -834,6 +849,23 @@ pub fn lost_since_report(
         return Err(format!(
             "lost since {}, not {}: accept what the check shows",
             last.map_or("none".to_string(), |t| t.0.to_string()),
+            since.map_or("none".to_string(), |t| t.0.to_string())
+        ));
+    }
+    Ok(())
+}
+
+/// Rules 13: whether lost contact `id` is in force (`lost`, the engine's ledger's) since
+/// exactly its last fix at `since`. The engine refuses an acceptance otherwise; replay checks it
+/// against its own ledger and the contact's facts logged with `engage.accepted`.
+pub fn contact_lost_since(id: &str, lost: Option<&crate::lost::LostContact>, since: Option<Time>) -> Result<(), String> {
+    let Some(l) = lost else {
+        return Err(format!("{id} is not a lost contact (the tracker has not dropped it, or it was seen again)"));
+    };
+    if since != Some(l.since()) {
+        return Err(format!(
+            "{id} is out of view since {}, not {}: accept what the check shows",
+            l.since().0,
             since.map_or("none".to_string(), |t| t.0.to_string())
         ));
     }
@@ -3018,18 +3050,135 @@ pub fn keep_out_tracks(
             nearest = Some((edge, id));
         }
     }
+    // rules 13: the contacts the tracker dropped, anywhere they could have reached since their
+    // last fix, unless an operator accepted exactly that loss for this engagement
+    let mut lost_count = 0;
+    let mut accepted: Vec<String> = Vec::new();
+    if ec.lost() {
+        for (id, l) in &world.lost_contacts {
+            match lost_standing(id, l, point, effect_t, keep_out_m, target, world, ec, alt, true) {
+                LostStanding::Live | LostStanding::Exempt => {}
+                LostStanding::Accepted { note } => accepted.push(note),
+                LostStanding::Judged(s) => {
+                    lost_count += 1;
+                    if s.edge < keep_out_m {
+                        if let Some((a, c, m)) = s.by_alt {
+                            by_alt.push(format!(
+                                "{id} at {a:.0} m ({c:.0} m outside the vertical keep-out with {m:.0} m of altitude uncertainty)"
+                            ));
+                            continue;
+                        }
+                        let (d, how) = (s.d, &s.regions[s.nearest].how);
+                        return check(
+                            r,
+                            None,
+                            Outcome::Fail,
+                            format!(
+                                "lost contact {} could be {d:.0} m from the effect point at the effect time ({how}); keep-out {keep_out_m:.0} m{}: {}",
+                                describe_track(id, &l.facts),
+                                vertical_note(alt, s.alt_known),
+                                lost_note(id, l, world.t)
+                            ),
+                        );
+                    }
+                    if nearest.is_none_or(|(n, _)| s.edge < n) {
+                        nearest = Some((s.edge, id));
+                    }
+                }
+            }
+        }
+    }
     let near = nearest.map_or(String::new(), |(d, id)| format!("; nearest {id} at {d:.0} m"));
     let by_alt = if by_alt.is_empty() {
         String::new()
     } else {
         format!("; clear by altitude: {}", by_alt.join(", "))
     };
+    let lost = if lost_count > 0 {
+        format!(" and {lost_count} lost contact(s)")
+    } else {
+        String::new()
+    };
+    let accepted = if accepted.is_empty() {
+        String::new()
+    } else {
+        format!("; lost contacts accepted for it: {}", accepted.join(", "))
+    };
     check(
         r,
         None,
         Outcome::Pass,
-        format!("{count} protected track(s) clear of the {keep_out_m:.0} m keep-out at the effect time{near}{by_alt}"),
+        format!("{count} protected track(s){lost} clear of the {keep_out_m:.0} m keep-out at the effect time{near}{by_alt}{accepted}"),
     )
+}
+
+/// Rules 13: how a lost contact is out of view, for a check's detail and an operator to accept:
+/// "T-0003 out of view since t=1781000010000 (300 s), dropped by the tracker at
+/// t=1781000190000; an operator with engagement authority may accept it for this engagement".
+pub fn lost_note(id: &str, l: &crate::lost::LostContact, now: Time) -> String {
+    format!(
+        "{id} out of view since t={} ({:.0} s), dropped by the tracker at t={}; an operator with engagement authority may accept it for this engagement",
+        l.since().0,
+        secs(now.ms_since(l.since())).max(0.0),
+        l.dropped_t.0
+    )
+}
+
+/// Rules 13: how one lost contact stands against a keep-out (see [`lost_standing`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum LostStanding {
+    /// Its id is in the picture again (the live track counts, not this).
+    Live,
+    /// Exempt as a live track with its identification would be (the target, a declared
+    /// hostile).
+    Exempt,
+    /// Lost since exactly the fix an operator accepted for this engagement: left out.
+    Accepted { note: String },
+    /// Judged by its regions as a track ([`track_standing`] on its facts at the drop).
+    Judged(TrackStanding),
+}
+
+/// Rules 13: lost contact `id` (`l`) against a keep-out reaching `keep_out_m` from `point` at
+/// `effect_t`, as [`keep_out_tracks`] reads it: left out when its id is a live track again, it
+/// is exempt (the target, a declared hostile) or an operator accepted exactly this loss for the
+/// engagement (`world.lost_accepted`); else its regions from its facts at the drop, growing
+/// from its last fix ([`track_reach`]: no cap).
+#[allow(clippy::too_many_arguments)]
+pub fn lost_standing(
+    id: &str,
+    l: &crate::lost::LostContact,
+    point: LonLat,
+    effect_t: Time,
+    keep_out_m: f64,
+    target: &str,
+    world: &WorldSnapshot,
+    ec: &EngageRules,
+    alt: Option<EffectAlt>,
+    words: bool,
+) -> LostStanding {
+    if world.tracks.contains_key(id) {
+        return LostStanding::Live;
+    }
+    if track_exempt(id, &l.facts, target, ec) {
+        return LostStanding::Exempt;
+    }
+    if let Some(a) = world.lost_accepted.get(id)
+        && a.since == Some(l.since())
+    {
+        return LostStanding::Accepted {
+            note: format!(
+                "{id}: out of view since t={} ({:.0} s), accepted by {}",
+                l.since().0,
+                secs(world.t.ms_since(l.since())).max(0.0),
+                a.by
+            ),
+        };
+    }
+    match track_standing(&l.facts, point, effect_t, keep_out_m, world.t, ec, alt, words) {
+        Some(s) => LostStanding::Judged(s),
+        // never: every track has a region
+        None => LostStanding::Exempt,
+    }
 }
 
 fn armed_check(uid: Option<&Uid>, world: &WorldSnapshot) -> CheckResult {
@@ -3513,6 +3662,7 @@ pub fn check_token(
     track_now: Option<&TrackFacts>,
     plan: Option<&FrozenPlan>,
     accepted: &BTreeMap<Uid, AcceptedUnknown>,
+    lost_accepted: &BTreeMap<String, AcceptedUnknown>,
 ) -> Result<(), String> {
     if token.intent != intent || token.by != *by || token.session != session {
         return Err(format!(
@@ -3544,6 +3694,10 @@ pub fn check_token(
         return Err(
             "the lost vehicles accepted for it changed since you looked: look again".into(),
         );
+    }
+    // rules 13: and the lost contacts
+    if token.lost_accepted != *lost_accepted {
+        return Err("the lost contacts accepted for it changed since you looked: look again".into());
     }
     let Some(t) = track_now else {
         return Err(format!("{} is no longer in the picture", token.track.id));

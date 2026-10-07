@@ -218,8 +218,21 @@ pub enum UnknownEndurance {
 /// ([`crate::passkey`]). Version 11 ([`SPACE_FOLLOWUPS_SINCE`]): satellite tasks cancelled
 /// after dispatch, re-checked against a later space answer, and covers evaluated over the
 /// area ([`crate::space`]). Version 12 ([`REVIEW_FOLLOWUPS_SINCE`]): the follow-ups of the
-/// reviews of rules 6 to 10.
-pub const RULES_VERSION: u32 = REVIEW_FOLLOWUPS_SINCE;
+/// reviews of rules 6 to 10. Version 13 ([`LOST_CONTACT_SINCE`]): a protected contact the
+/// tracker drops stays in the keep-out as a lost contact ([`crate::lost`]).
+pub const RULES_VERSION: u32 = LOST_CONTACT_SINCE;
+
+/// The rules version from which a contact the tracker drops is not forgotten (murmur-533,
+/// [`crate::lost`]): the bridge hands the engine each track it drops with its last facts
+/// (`track.dropped`); the engine keeps it as a lost contact, which every engagement keep-out
+/// counts anywhere it could have reached since its last fix ([`crate::engage::track_reach`],
+/// no cap) unless it is exempt as a live track would be; an operator with engagement authority
+/// may accept one for one engagement (`engage.accepted` naming the contact), every signer is
+/// shown it and replay checks it; a new track with the same AIS identity, unambiguously,
+/// retires it (`track.reacquired`); a track's AIS identity is a fact (`ais`). Every gate of
+/// that change reads this constant, never a literal: another change taking 13 first
+/// renumbers it in this one line.
+pub const LOST_CONTACT_SINCE: u32 = 13;
 
 /// The rules version from which the follow-ups of the reviews of rules 6 to 10 decide: an
 /// expended platform's lost-link values are closed with the reason and the platform is spent
@@ -396,6 +409,11 @@ impl RulesConfig {
     /// Rules 12 ([`REVIEW_FOLLOWUPS_SINCE`]): the follow-ups of the reviews of rules 6 to 10.
     pub fn followups(&self) -> bool {
         self.rules_version >= REVIEW_FOLLOWUPS_SINCE
+    }
+
+    /// Rules 13 ([`LOST_CONTACT_SINCE`]): a dropped track stays a lost contact.
+    pub fn lost_contacts(&self) -> bool {
+        self.rules_version >= LOST_CONTACT_SINCE
     }
 
     /// `[rules.engage]`, or its defaults.
