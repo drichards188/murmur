@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 38] = [
+const LOGS: [(&str, u32); 41] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -124,13 +124,21 @@ const LOGS: [(&str, u32); 38] = [
     ("v12-young-track-blocks-scenario-79.jsonl", REVIEW_FOLLOWUPS_SINCE),
     ("v12-refusal-names-queued-order-scenario-81.jsonl", REVIEW_FOLLOWUPS_SINCE),
     ("v12-restore-written-off-scenario-82.jsonl", REVIEW_FOLLOWUPS_SINCE),
+    // rules 13 (the carries' follow-ups; the table names the constant): the same scenario;
+    // scenario 83, the switchblade spent by its effect, un-spent by op-2 (engagement authority),
+    // its own values owed again and restored before an orbit went; 84, a nomination refused
+    // while a failed carry may owe its USV values, then taken once the log was written off. The
+    // live logs, across a crash, are checked against each other below
+    ("v13-engagement-scenario-01.jsonl", CARRY_FOLLOWUPS_SINCE),
+    ("v13-spent-munition-unspent-scenario-83.jsonl", CARRY_FOLLOWUPS_SINCE),
+    ("v13-nomination-refused-while-a-carry-may-owe-scenario-84.jsonl", CARRY_FOLLOWUPS_SINCE),
 ];
 
 /// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
 const V6_AIRSHIP: &str = "v6-airship-nomination-scenario-66.jsonl";
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v12-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v13-engagement-scenario-01.jsonl";
 
 /// The committed scenario log of rules 6 (the lost-link preload).
 const V6_SCENARIO: &str = "v6-engagement-scenario-01.jsonl";
