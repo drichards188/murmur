@@ -356,7 +356,7 @@ fn uncertainty_and_staleness_grow_with_age_and_tracks_drop() {
         .on_truth_with(truth(400.0, vec![]), std::slice::from_ref(&o), T0 + 400.0)
         .expect("ok");
     assert!(tracks.tracks_json(T0 + 400.0).is_empty());
-    // rules 13: the decision facts keep it, as it was at the drop, until the engine takes it
+    // rules 16: the decision facts keep it, as it was at the drop, until the engine takes it
     let facts = tracks.facts(T0 + 400.0);
     assert!(facts.contains_key("T-0001"), "{facts:?}");
     let drops = tracks.take_drops();

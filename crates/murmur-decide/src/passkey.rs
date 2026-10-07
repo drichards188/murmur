@@ -95,7 +95,7 @@ pub struct AcceptedVehicle {
     pub since: Option<Time>,
 }
 
-/// Rules 13: a lost contact an acceptance names (as `engage.accepted` does): the track id it
+/// Rules 16: a lost contact an acceptance names (as `engage.accepted` does): the track id it
 /// was dropped under and its last fix.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -127,7 +127,7 @@ pub enum StepUpFor {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         intent: Option<IntentId>,
         vehicles: Vec<AcceptedVehicle>,
-        /// Rules 13: and lost contacts (absent when none).
+        /// Rules 16: and lost contacts (absent when none).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         contacts: Vec<AcceptedContact>,
     },
@@ -144,7 +144,7 @@ impl StepUpFor {
         Self::accepting_lost(intent, vehicles, &[])
     }
 
-    /// Rules 13: an acceptance of lost vehicles and lost contacts (`(track, since)`), each in
+    /// Rules 16: an acceptance of lost vehicles and lost contacts (`(track, since)`), each in
     /// order.
     pub fn accepting_lost(intent: Option<IntentId>, vehicles: &[(Uid, Option<Time>)], contacts: &[(String, Time)]) -> StepUpFor {
         let mut v: Vec<AcceptedVehicle> = vehicles
@@ -168,7 +168,7 @@ impl StepUpFor {
             StepUpFor::Login => "a login".into(),
             StepUpFor::Sign { intent, token: Some(t), .. } => format!("a signature on {intent} (picture token {t})"),
             StepUpFor::Sign { intent, .. } => format!("a signature on {intent}"),
-            // rules 13: naming the lost contacts and the fix each is accepted since (two such
+            // rules 16: naming the lost contacts and the fix each is accepted since (two such
             // acceptances differ only there)
             StepUpFor::AcceptUnknown { intent, vehicles, contacts } if !contacts.is_empty() => {
                 let names: Vec<String> = contacts.iter().map(|c| format!("{} since t={}", c.track, c.since.0)).collect();

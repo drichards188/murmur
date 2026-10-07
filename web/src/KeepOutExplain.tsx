@@ -11,7 +11,7 @@ interface Props {
   /** the platform's name as the form shows it */
   name: string
   now: () => number
-  /** rules 13: the lost contacts the operator accepts with the nomination, by track id, and a
+  /** rules 16: the lost contacts the operator accepts with the nomination, by track id, and a
    *  toggle (absent: the explanation is read-only here) */
   acceptLost?: Record<string, KeepOutLost>
   onAcceptLost?: (l: KeepOutLost, on: boolean) => void
@@ -35,7 +35,7 @@ function clearsText(i: KeepOutItem, ex: KeepOutExplanation) {
   return 'No effect time a nomination allows, on a 0.25 s grid, clears it, on the picture now.'
 }
 
-/** Rules 13: accept a lost contact for this engagement (an engagement decision: logged under
+/** Rules 16: accept a lost contact for this engagement (an engagement decision: logged under
  *  the operator's session with the nomination; the bridge refuses it without engagement
  *  authority). It covers this loss only. */
 function AcceptLost({ l, on, onToggle }: { l: KeepOutLost; on: boolean; onToggle: (l: KeepOutLost, on: boolean) => void }) {

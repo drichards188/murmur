@@ -18,7 +18,7 @@ import { isTrackStale, kindShort, lostSidc, sidcFrameIcon, trackConfidence, trac
  *
  *  Symbols fade with age and with falling existence confidence.
  *
- *  Rules 13 (murmur-533), the lost contacts (tracks the tracker dropped that every engagement
+ *  Rules 16 (murmur-533), the lost contacts (tracks the tracker dropped that every engagement
  *  keep-out still counts):
  *
  *   lost-regions        where the keep-out counts each now, growing from its last fix (faint)
@@ -27,7 +27,7 @@ import { isTrackStale, kindShort, lostSidc, sidcFrameIcon, trackConfidence, trac
 
 export interface TrackLayerInput {
   tracks: Track[]
-  /** rules 13: the engine's lost contacts */
+  /** rules 16: the engine's lost contacts */
   lost?: LostContact[]
   /** bridge clock, ms (useBridgeClock) */
   nowMs: number
@@ -82,7 +82,7 @@ export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfte
     if (info.object && onClick) onClick(info.object.id)
     return !!info.object
   }
-  // rules 13: each lost contact's regions now, flattened (they come from the bridge each second)
+  // rules 16: each lost contact's regions now, flattened (they come from the bridge each second)
   type LostRegion = { aff: Track['affiliation']; center: [number, number]; radius_m: number }
   const lostRegions: LostRegion[] = lost.flatMap((l) => l.regions.map((r) => ({ aff: l.affiliation, center: r.center, radius_m: r.radius_m })))
   const lostIcon = (l: LostContact) => sidcFrameIcon(lostSidc(l))

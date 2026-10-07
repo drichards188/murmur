@@ -434,7 +434,7 @@ pub async fn tracks(
                  the regions counted now; only an operator with engagement authority may \
                  accept one for an engagement.",
         "tracks": tracks,
-        // rules 13: read-only, as the console shows them
+        // rules 16: read-only, as the console shows them
         "lost": v["lost"].clone(),
     }))
 }

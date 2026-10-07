@@ -191,7 +191,7 @@ impl H {
         assert_eq!(s, StatusCode::OK, "{v}");
     }
 
-    /// Rules 13: [`H::picture`] with a fishing boat 400 m north of the target seen for its first
+    /// Rules 16: [`H::picture`] with a fishing boat 400 m north of the target seen for its first
     /// 100 s of 400, then out of view: the tracker drops it 180 s later, the decision tick hands
     /// the drop to the engine (`track.dropped`). Its last fix (engine ms), as an acceptance
     /// names it.
@@ -869,7 +869,7 @@ async fn a_listed_act_steps_up_through_the_api() {
     h.no_secret_logged(&[&op1]);
 }
 
-/// Rules 13 with rules 8's step-up: with `accept_unknown` in `[approval] step_up_acts`,
+/// Rules 16 with rules 8's step-up: with `accept_unknown` in `[approval] step_up_acts`,
 /// accepting a lost contact takes the same step-up as accepting a lost vehicle of ours, through
 /// the API whatever the console does: a nomination accepting one without the password, or with
 /// a wrong one, is refused (401, the console asked for it) and nothing is accepted or

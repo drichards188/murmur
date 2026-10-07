@@ -32,7 +32,7 @@
 //!     in view), stated as what happens, with what else would (a report, an operator's logged
 //!     acceptance).
 //!
-//! Rules 13: a contact the tracker dropped is an item too ([`Subject::LostContact`]: the
+//! Rules 16: a contact the tracker dropped is an item too ([`Subject::LostContact`]: the
 //! keep-out still counts it, [`crate::lost`]), with since when it is out of view, what the
 //! check reads (its reach from its last fix) and what would clear it: an operator with
 //! engagement authority accepting it for this engagement ([`Item::lost`] names what to accept),
@@ -188,11 +188,11 @@ pub struct Vertical {
 pub enum Subject {
     Track,
     Vehicle,
-    /// Rules 13: a contact the tracker dropped, still counted ([`crate::lost`]).
+    /// Rules 16: a contact the tracker dropped, still counted ([`crate::lost`]).
     LostContact,
 }
 
-/// Rules 13: what an operator with engagement authority would accept for a lost contact, as
+/// Rules 16: what an operator with engagement authority would accept for a lost contact, as
 /// the check names it (the track id it was dropped under and its last fix), and when the
 /// tracker dropped it.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -254,7 +254,7 @@ pub struct Item {
     pub not_by_waiting: Option<String>,
     /// Something else that would clear it (never an override).
     pub other: Option<String>,
-    /// Rules 13: a lost contact's facts for an acceptance (none for anything else).
+    /// Rules 16: a lost contact's facts for an acceptance (none for anything else).
     pub lost: Option<LostInfo>,
 }
 
@@ -519,7 +519,7 @@ impl Ctx<'_> {
 enum Probe<'a> {
     Track(&'a str, &'a TrackFacts),
     Vehicle(&'a Uid, &'a VehicleFacts),
-    /// Rules 13: a lost contact the check judges (not live, exempt or accepted).
+    /// Rules 16: a lost contact the check judges (not live, exempt or accepted).
     Lost(&'a str, &'a TrackFacts),
 }
 
@@ -534,7 +534,7 @@ impl Probe<'_> {
     }
 }
 
-/// Rules 13: the lost contacts of `world` the keep-out on tracks judges by their regions (not
+/// Rules 16: the lost contacts of `world` the keep-out on tracks judges by their regions (not
 /// live again, exempt or accepted for this engagement), as [`engage::lost_standing`] decides.
 fn judged_lost<'w>(world: &'w WorldSnapshot, target: &str, ec: &EngageRules) -> Vec<(&'w str, &'w crate::lost::LostContact)> {
     if !ec.lost() {
@@ -559,7 +559,7 @@ fn track_clear(t: &TrackFacts, point: LonLat, at: Time, clearance: f64, now: Tim
     engage::track_standing(t, point, at, clearance, now, ec, alt, false).is_none_or(|s| !s.blocks(clearance))
 }
 
-/// Rules 13: [`track_clear`] for a lost contact (its facts at the drop): by its regions as one
+/// Rules 16: [`track_clear`] for a lost contact (its facts at the drop): by its regions as one
 /// ([`engage::lost_track_standing`]), as [`engage::lost_standing`] judges it.
 #[allow(clippy::too_many_arguments)]
 fn lost_clear(t: &TrackFacts, point: LonLat, at: Time, clearance: f64, now: Time, ec: &EngageRules, alt: Option<EffectAlt>) -> bool {
@@ -683,7 +683,7 @@ pub fn explain(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig, opts
             items.push((track_item(&ctx, id, t, &s, alt), Probe::Track(id, t)));
         }
     }
-    // rules 13: the lost contacts it judges
+    // rules 16: the lost contacts it judges
     for (id, l) in judged_lost(world, track_id, &ec) {
         let Some(s) = engage::lost_track_standing(&l.facts, point, effect_t, clearance, world.t, &ec, alt, true) else {
             continue;
@@ -780,7 +780,7 @@ fn agrees(ctx: &Ctx, checks: &[CheckResult], items: &[(Item, Probe)], alt: Optio
             return disagree();
         }
     }
-    // rules 13: each lost contact judged alone (the live tracks and the acceptances as they are)
+    // rules 16: each lost contact judged alone (the live tracks and the acceptances as they are)
     for (id, l) in &world.lost_contacts {
         if world.tracks.contains_key(id) || !ec.lost() {
             continue;
@@ -1391,7 +1391,7 @@ fn carried_forward(ctx: &Ctx, items: &mut [(Item, Probe)], shown: usize) -> (Opt
         };
         if let Some(unseen) = out_of_view {
             item.not_by_waiting = Some(if ec.lost() {
-                // rules 13: dropped, it stays in the keep-out as a lost contact
+                // rules 16: dropped, it stays in the keep-out as a lost contact
                 format!(
                     "Not seen for {unseen:.0} s: its region grows while it is unseen. The tracker drops a track unseen for {:.0} s (about {:.0} s from now, unless it is seen again); it then stays in the keep-out as a lost contact, its region still growing, until an operator with engagement authority accepts it for an engagement.",
                     mem.drop_after_s,
@@ -1455,7 +1455,7 @@ fn carried_forward(ctx: &Ctx, items: &mut [(Item, Probe)], shown: usize) -> (Opt
             }
         })
         .collect();
-    // rules 13: the lost contacts the keep-out judges
+    // rules 16: the lost contacts the keep-out judges
     let lost = judged_lost(world, ctx.track_id, ec);
     // the target and the platform, for the preview a nomination then would get
     let mut lean = WorldSnapshot::new(now);
@@ -1504,7 +1504,7 @@ fn carried_forward(ctx: &Ctx, items: &mut [(Item, Probe)], shown: usize) -> (Opt
             }
         }
         let track_ok = |t: &T| track_clear(&t.then, point, at, ctx.clearance, w, ec, alt);
-        // rules 13: a lost contact stays as it is (its reach grows with the span by itself)
+        // rules 16: a lost contact stays as it is (its reach grows with the span by itself)
         let lost_ok = |l: &&crate::lost::LostContact| lost_clear(&l.facts, point, at, ctx.clearance, w, ec, alt);
         let vehicle_ok = |v: &V| vehicle_clear(v.uid, &v.then, point, at, ctx.clearance, &lean, cfg, alt);
         pending.retain(|&i| {
@@ -1521,7 +1521,7 @@ fn carried_forward(ctx: &Ctx, items: &mut [(Item, Probe)], shown: usize) -> (Opt
                     Some(v) if vehicle_ok(v) => (true, "by then it has moved on along its course".to_string()),
                     _ => (false, String::new()),
                 },
-                // rules 13: never pending (it is stuck: waiting only grows its reach)
+                // rules 16: never pending (it is stuck: waiting only grows its reach)
                 Subject::LostContact => (false, String::new()),
             };
             if ok {

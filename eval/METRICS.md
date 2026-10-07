@@ -599,10 +599,10 @@ Not measured either: how often such situations arise, more than one observing ve
 and channels, air traffic beyond one aircraft. Out-of-view contacts and dropped tracks are
 measured next.
 
-### Out of view (rules 13, murmur-533; 10-07, unreviewed)
+### Out of view (rules 16, murmur-533; 10-07, unreviewed)
 
-The question: the tracker drops a track unseen for 180 s, and until rules 13 the keep-out
-stopped counting it then; rules 13 keeps it as a lost contact (counted from its last fix, no cap,
+The question: the tracker drops a track unseen for 180 s, and before rules 16 the keep-out
+stopped counting it then; rules 16 keeps it as a lost contact (counted from its last fix, no cap,
 until an operator with engagement authority accepts it for an engagement or its AIS matches a new
 track unambiguously). What does each choice miss, and what does holding it cost?
 
@@ -612,15 +612,15 @@ uniform time 30 to 900 s before the nomination, whatever the range, as in a rada
 or a dark small boat; each was tracked 60 to 600 s before that), while they keep moving as their
 behaviour says; the bridge's own tracker (eval/keepout_probe) drops each track at the first
 second it has been unseen 180 s, and hands the facts then to the engine as its lost contact
-under rules 13 (rules 12: gone). `oov-near` is the review's case: the traffic in view and one
+under rules 16 (rules 12, before the merge with rules 13 and 14: gone). `oov-near` is the review's case: the traffic in view and one
 contact within 1 km of the target going out of view the same way. Densities 0.03, 0.1, 0.3 (near:
 0.03, 0.1) per km^2, the times to effect of the grid, seeds 1 to 10, 300 situations per cell:
 72,000 evaluations each for `oov` and `oov-all`, 48,000 for `oov-near`, every one decided by the
-engine under rules 12 and 13; 0 mismatches, 0 errors. The policies, all on the same evaluations:
-`today` (rules 12), `held` (rules 13 as shipped: a lost contact counts by the regions a live track
+engine under rules 12 and 16 (as numbered now; the run predates the merge); 0 mismatches, 0 errors. The policies, all on the same evaluations:
+`today` (rules 12), `held` (rules 16 as first shipped: a lost contact counts by the regions a live track
 gets from its last facts and also anywhere it could have reached at its own plausible speed, its
 speed and 2-sigma of its velocity error or the fastest it went, `engage::lost_reach`), `heading`
-(the same by a live track's regions alone, along its course: the first version of rules 13, before
+(the same by a live track's regions alone, along its course: the first version of the lost contacts, before
 the finding below), `held600` (held, but only until 600 s after its drop), `near3km` (held, but
 only with its last fix within 3 km of the effect point), `accepted` (every lost contact accepted,
 or cleared by any rule: every one here is within the observer's nominal sensor coverage, 40 km of
@@ -690,7 +690,7 @@ and `oov-near` (one contact within 1 km out of view) at 0.03 per km^2: 17 / 98 a
   evidence of where the contact is: seen again (a new track with its AIS retires it; one without
   AIS stays lost beside its new track), another sensor that sees it, or an operator who knows.
 - A live track's regions alone are a prediction, not a bound, for a contact nobody sees: the first
-  version of rules 13 (`heading`) gave a contact last seen steady only the regions along its
+  version of the lost contacts (`heading`) gave a contact last seen steady only the regions along its
   velocity, with the acceleration-noise uncertainty, and in `oov-near` let 3 of 716 passes through
   with the out-of-view contact inside the keep-out line (none inside the effect circle at the
   effect time; 1 inside it within the release window). Counting it also anywhere it could have

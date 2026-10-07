@@ -504,7 +504,7 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
     engagement authority). Every engagement decision logs the acceptances it read
     (`unknown_accepted`), which replay checks against the `engage.accepted` and
     `engage.acceptance_revoked` events.
-  - *Lost contacts* (rules 13, `lost.rs`, murmur-533): a contact the bridge's tracker drops
+  - *Lost contacts* (rules 16, `lost.rs`, murmur-533): a contact the bridge's tracker drops
     (180 s without a detection) is not forgotten. The bridge hands the engine each drop with
     the track's facts then (`Engine::record_track_drops`, logged `track.dropped`; the tracker
     keeps the track in the decision facts until the engine has it), and every engagement's
@@ -581,7 +581,7 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
   every effect time between them, so a grid point counts as clear only by a margin that bounds
   how far a region's edge can dip between two points (`keepout::grid_margin_m`: 0.3 m at the
   default 275 m clearance, `v^2 h^2 / (8 c)` for anything up to 100 m/s), and "no effect time
-  passes" says "on a 0.25 s grid". Rules 13: a lost contact is an item (`Subject::LostContact`,
+  passes" says "on a 0.25 s grid". Rules 16: a lost contact is an item (`Subject::LostContact`,
   with `lost`: what to accept, since when, when dropped), never given a wait (its reach only
   grows), with what would clear it: an acceptance for this engagement, or the contact seen
   again with its AIS identity; a track out of view is said to stay in the keep-out after its
@@ -1513,7 +1513,7 @@ Rules versions:
   operator with engagement authority accepts it for one engagement or a track is
   unambiguously it again by its AIS identity (`lost.rs`, *Lost contacts* above), counted by a
   live track's regions and anywhere at its own plausible speed (`engage::lost_reach`, region
-  kind `plausible_speed`; added before rules 13 merged, after murmur-533's measurement found the
+  kind `plausible_speed`; added before the lost contacts merged, after murmur-533's measurement found the
   course regions alone a prediction, not a bound). New events
   `track.dropped` (the tracker's facts at the drop: never an identification) and
   `track.reacquired` (the lost contact, the live track, the picture judged, the evidence);
@@ -1522,7 +1522,7 @@ Rules versions:
   decision's inputs carry `lost_contacts` and `lost_accepted`, a picture token
   `lost_accepted`; a track's facts its `ais`. Replay rebuilds the ledger from the drops and
   retirements and checks every engagement decision's lost contacts (and accepted ones)
-  against it, every other decision's empty; each acceptance of a contact (rules 13 only, the
+  against it, every other decision's empty; each acceptance of a contact (rules 16 only, the
   operator's own session with engagement authority, at the nomination or before a first
   signature, the contact lost since exactly that fix, its facts the ledger's); each
   retirement, recomputed from its own picture; and that no track leaves a decision's picture
@@ -1532,9 +1532,9 @@ Rules versions:
   `track.reacquired`, `lost_contacts`, `lost_accepted`, an acceptance's `contact`, a track's
   `ais`. Fixtures (clean builds, of the course regions alone; they replay unchanged with the
   plausible-speed region, which changes no decision in them):
-  `tests/data/audit/v13-engagement-scenario-01.jsonl` and scenarios 83 to 85 and 87
-  (`v13-lost-contact-*`), and a live log with its anchors
-  (`v13-lost-contacts-live.jsonl`, stand-ins at the Gate on `sim/scenarios/golden-gate-lost.toml`:
+  `tests/data/audit/v16-engagement-scenario-01.jsonl` and scenarios 84 to 86 and 88
+  (`v16-lost-contact-*`), and a live log with its anchors
+  (`v16-lost-contacts-live.jsonl`, stand-ins at the Gate on `sim/scenarios/golden-gate-lost.toml`:
   two contacts dropped, a nomination rejected on one, nominated again accepting both, signed
   and dispatched, the tour boat back in view under its AIS and retired, its live track aborting
   the engagement; a clean stop); the rules 12 live logs are pinned to rules 12 in
@@ -1704,7 +1704,7 @@ on the scenario clock.
   engagement does not survive a bridge restart: the next run puts the platform's own
   lost-link values back (carried over from the last run's log, onto the same
   vehicle only, see the lost-link preload above), but the engagement itself is not resumed.
-- Lost contacts (rules 13): the ledger is a run's: a bridge restart starts a new tracker and
+- Lost contacts (rules 16): the ledger is a run's: a bridge restart starts a new tracker and
   a new log, and the contacts lost before it are not carried (nor is anything else of the
   picture). A lost contact's plausible speed is its own (its speed and 2-sigma of its velocity
   error, or the fastest it went): one that goes faster after its last fix than it showed is

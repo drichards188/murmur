@@ -179,7 +179,7 @@ async fn two_people_sign_an_engagement_with_their_passkeys() {
     assert!(f.operators["op-2"].passkeys[0].last_used_unix.is_some());
 }
 
-/// Rules 13 with rules 10: where the policy steps up `accept_unknown` and asks for a passkey,
+/// Rules 16 with rules 10: where the policy steps up `accept_unknown` and asks for a passkey,
 /// accepting a lost contact with a nomination takes the operator's passkey, its challenge
 /// derived from exactly those contacts (each since its last fix): the password is refused, an
 /// assertion made for another fix is refused, and the right one accepts it (`engage.accepted`

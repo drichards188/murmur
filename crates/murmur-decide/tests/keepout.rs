@@ -18,7 +18,7 @@
 //!   the grid's margin (murmur-dr6: a grid point counts as clear only by that margin);
 //!   "no position clears it" fails so at every time tried. A moving target's effect time is set
 //!   exactly by placing the platform ahead of it on its course.
-//! - rules 13: a lost contact (a track the tracker dropped) is listed when the check fails on
+//! - rules 16: a lost contact (a track the tracker dropped) is listed when the check fails on
 //!   it, never with a wait, and an acceptance of it for the engagement takes it out.
 #![allow(clippy::unwrap_used)]
 
@@ -236,7 +236,7 @@ fn random_world(rng: &mut Rng) -> (WorldSnapshot, IntentSpec) {
         }
         w.tracks.insert(id, t);
     }
-    // rules 13: now and then a contact the tracker dropped, out of view 3 to 6 min
+    // rules 16: now and then a contact the tracker dropped, out of view 3 to 6 min
     if rng.chance(0.3) {
         let at = toward(TARGET_AT, rng.range(0.0, 360.0), rng.range(300.0, 5000.0));
         let seen = Time(T0.0 - secs(rng.range(181.0, 360.0)));
@@ -488,7 +488,7 @@ fn check_claims(spec: &IntentSpec, w: &WorldSnapshot, ex: &Explanation, rng: &mu
         b.first().copied()
     };
     if ex.omitted == 0 {
-        // the check names the first live track in id order, then (rules 13) the first lost
+        // the check names the first live track in id order, then (rules 16) the first lost
         // contact
         match (first(Subject::Track), first(Subject::LostContact)) {
             (Some(i), _) => assert!(kt.detail.starts_with(&format!("track {} ", i.label)), "{} / {}", kt.detail, i.label),
@@ -940,7 +940,7 @@ fn a_window_opening_later_starts_the_windows_at_its_opening() {
 }
 
 /// L2: a track out of view: no wait hint; what happens is said plainly (the tracker drops a
-/// track unseen for 180 s; from rules 13 it then stays in the keep-out as a lost contact). A
+/// track unseen for 180 s; from rules 16 it then stays in the keep-out as a lost contact). A
 /// track that flickered (unseen for 7 s, under the tracker's 10 s stale limit) is still carried
 /// forward.
 #[test]
@@ -1005,7 +1005,7 @@ fn a_vehicle_is_carried_forward_as_the_check_predicts_it() {
     assert!(moved("on-1") < 1.0, "{}", moved("on-1"));
 }
 
-// ---- rules 13: lost contacts (murmur-533) ----------------------------------------------------
+// ---- rules 16: lost contacts (murmur-533) ----------------------------------------------------
 
 /// The engagement picture with a fishing boat the tracker dropped 400 m north of the target:
 /// out of view since 190 s before now, dropped 10 s ago.

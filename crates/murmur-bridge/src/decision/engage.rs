@@ -83,13 +83,13 @@ pub struct EngageParams {
     /// An operator's only.
     #[serde(default)]
     pub accept_unknown: Vec<AcceptUnknown>,
-    /// Rules 13: the lost contacts (tracks the tracker dropped) the nominating operator
+    /// Rules 16: the lost contacts (tracks the tracker dropped) the nominating operator
     /// accepts, each since the last fix the check names. An operator's only.
     #[serde(default)]
     pub accept_lost: Vec<AcceptLost>,
 }
 
-/// Rules 13: "lost contact `track`, out of view since `since`: accept".
+/// Rules 16: "lost contact `track`, out of view since `since`: accept".
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AcceptLost {
@@ -1521,7 +1521,7 @@ impl Decision {
         out
     }
 
-    /// `POST /api/intents/{id}/accept_unknown` with `{"track", "since"}` (rules 13): an
+    /// `POST /api/intents/{id}/accept_unknown` with `{"track", "since"}` (rules 16): an
     /// operator with engagement authority accepts, for a nomination waiting with no signature
     /// yet, a lost contact (a track the tracker dropped) out of view since the last fix the
     /// check names. Logged as `engage.accepted` naming the contact; as for a lost vehicle
@@ -1556,7 +1556,7 @@ impl Decision {
         out
     }
 
-    /// `POST /api/intents/{id}/revoke_unknown` with `{"track"}` (rules 13): any operator
+    /// `POST /api/intents/{id}/revoke_unknown` with `{"track"}` (rules 16): any operator
     /// withdraws an acceptance of a lost contact.
     pub fn revoke_lost(&self, by: &super::Actor, id: u64, track: &str) -> Result<super::Outcome, DecisionError> {
         let id = IntentId(id);
@@ -1573,7 +1573,7 @@ impl Decision {
         out
     }
 
-    /// Rules 13: the tracks the tracker dropped since the last tick go to the engine (logged as
+    /// Rules 16: the tracks the tracker dropped since the last tick go to the engine (logged as
     /// `track.dropped`; until now they stayed in the decision facts), then lost contacts seen
     /// again, unambiguously, are retired, and the console is shown those left. The tick does
     /// this first, under the decision lock, before anything decides.
@@ -1602,7 +1602,7 @@ impl Decision {
         tracks.mirror_lost(self.lost_json(core));
     }
 
-    /// Rules 13: the engine's lost contacts for the console: where each was last seen, since
+    /// Rules 16: the engine's lost contacts for the console: where each was last seen, since
     /// when, its identity, and the regions the keep-out counts it in now (as
     /// `engage::lost_regions` gives them at the engine's time now).
     pub(super) fn lost_json(&self, core: &Core) -> Vec<Value> {
@@ -1725,7 +1725,7 @@ impl Decision {
                     .collect()
             })
             .unwrap_or_default();
-        // rules 13: the lost contacts accepted for it, shown to every signer
+        // rules 16: the lost contacts accepted for it, shown to every signer
         let accepted_lost: Vec<Value> = record
             .map(|e| {
                 e.accepted_lost

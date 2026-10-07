@@ -659,7 +659,7 @@ def situation(seed: int, density: float, index: int, behaviour: str, params: dic
             truth[cid]["masked_from_s"] = masked
 
     def out_of_view() -> float | None:
-        """Rules 13: when this contact goes out of view (s, negative), in the oov variants."""
+        """Rules 16: when this contact goes out of view (s, negative), in the oov variants."""
         if oov_share > 0.0 and move.random() < oov_share:
             return -move.uniform(*OOV_FROM_S)
         return None
@@ -1459,7 +1459,7 @@ def summarize(records: Iterable[dict[str, Any]], meta: dict[str, Any] | None = N
 
 
 def lost_policy_blocks(r: dict[str, Any]) -> dict[str, int] | None:
-    """Rules 13: whether each of `LOST_POLICIES` blocks this evaluation on tracks (`today`: the
+    """Rules 16: whether each of `LOST_POLICIES` blocks this evaluation on tracks (`today`: the
     rules 14 verdict; `held`: rules 16's; the rest the probe's `lost_variants` under rules 16,
     rules 16's own verdict where no contact was lost). None without both versions."""
     a, b = (r.get("rules") or {}).get(str(OOV_BEFORE)), (r.get("rules") or {}).get(str(OOV_LOST))
@@ -1473,7 +1473,7 @@ def lost_policy_blocks(r: dict[str, Any]) -> dict[str, int] | None:
 
 
 def lost_summary(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
-    """Rules 13, the out-of-view variants: for each policy of `LOST_POLICIES` (on the same
+    """Rules 16, the out-of-view variants: for each policy of `LOST_POLICIES` (on the same
     evaluations): how often the keep-out on tracks blocks a nomination, how often only an
     acceptance of its lost contacts would let it pass (`needs_acceptance`: it blocks and passes
     with them all accepted), and its misses against the truth (a pass with a protected contact

@@ -103,7 +103,7 @@ export interface EngageView {
    *  since `since`, engine ms; null: never reported): its friendly keep-out leaves them out
    *  while they stay lost since then. Every signer's picture carries them. */
   accepted?: { uid: number | null; engine_uid: string; since: number | null; by: string }[]
-  /** rules 13: the lost contacts (tracks the tracker dropped) an operator accepted for this
+  /** rules 16: the lost contacts (tracks the tracker dropped) an operator accepted for this
    *  engagement, each out of view since `since` (engine ms): its keep-out on tracks leaves
    *  them out while they stay lost since then. Every signer's picture carries them. */
   accepted_lost?: { track: string; since: number | null; by: string }[]
@@ -160,7 +160,7 @@ export interface PictureToken {
   /** rules 6: the lost vehicles accepted for it when it was shown (engine uid -> who, since
    *  which report): the signature covers them; a token from before a change is refused */
   unknown_accepted?: Record<string, { since: number | null; by: string }>
-  /** rules 13: the lost contacts accepted for it when it was shown (track id -> who, since
+  /** rules 16: the lost contacts accepted for it when it was shown (track id -> who, since
    *  which fix) */
   lost_accepted?: Record<string, { since: number | null; by: string }>
 }
@@ -275,7 +275,7 @@ export interface KeepOutWait {
   why: string
 }
 
-/** Rules 13: a lost contact as an acceptance names it: the track id it was dropped under,
+/** Rules 16: a lost contact as an acceptance names it: the track id it was dropped under,
  *  its last fix (engine ms), when the tracker dropped it, its AIS identity if it had one. */
 export interface KeepOutLost {
   track: string
@@ -286,7 +286,7 @@ export interface KeepOutLost {
 
 export interface KeepOutItem {
   rule: string
-  /** rules 13: `lost_contact`, a track the tracker dropped that the keep-out still counts */
+  /** rules 16: `lost_contact`, a track the tracker dropped that the keep-out still counts */
   subject: 'track' | 'vehicle' | 'lost_contact'
   id: string
   label: string
@@ -311,7 +311,7 @@ export interface KeepOutItem {
   wait: KeepOutWait | null
   not_by_waiting: string | null
   other: string | null
-  /** rules 13: a lost contact's facts for an acceptance */
+  /** rules 16: a lost contact's facts for an acceptance */
   lost?: KeepOutLost | null
 }
 
@@ -364,7 +364,7 @@ export async function engageOptions(track: string, radius: number, windowS: numb
   return b.options ?? []
 }
 
-/** Nominate an engagement as the console's operator: it waits in the inbox. Rules 13:
+/** Nominate an engagement as the console's operator: it waits in the inbox. Rules 16:
  *  `acceptLost`, the lost contacts the operator accepts for it (each since the last fix the
  *  check names), logged as `engage.accepted` under the operator's session; it takes
  *  engagement authority (the bridge answers 403 otherwise). `proof`: the operator's step-up,
@@ -393,13 +393,13 @@ export async function nominate(req: {
   return b.intent as Intent
 }
 
-/** Rules 13: the lost contacts an acceptance names, as the request and its step-up's passkey
+/** Rules 16: the lost contacts an acceptance names, as the request and its step-up's passkey
  *  challenge both carry them (`{track, since}`, since its last fix in engine ms). */
 export function acceptLostBody(list: KeepOutLost[]): { track: string; since: number }[] {
   return list.map((l) => ({ track: l.track, since: l.since }))
 }
 
-/** Rules 13: any operator withdraws an acceptance of a lost contact (pending or under way):
+/** Rules 16: any operator withdraws an acceptance of a lost contact (pending or under way):
  *  the keep-out counts it again, which stops an engagement it now blocks. */
 export async function revokeLost(id: number, track: string): Promise<Intent> {
   const b = await post(`/api/intents/${id}/revoke_unknown`, { track })

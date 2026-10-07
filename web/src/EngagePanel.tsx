@@ -74,7 +74,7 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
   // refresh clears only its own error)
   const [refused, setRefused] = useState<string | null>(null)
   const [tick, setTick] = useState(0)
-  // rules 13: the lost contacts the operator accepts with the nomination (by track id)
+  // rules 16: the lost contacts the operator accepts with the nomination (by track id)
   const [acceptLost, setAcceptLost] = useState<Record<string, KeepOutLost>>({})
   const onAcceptLost = (l: KeepOutLost, on: boolean) =>
     setAcceptLost((cur) => {

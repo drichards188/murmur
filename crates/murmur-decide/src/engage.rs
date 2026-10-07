@@ -680,7 +680,7 @@ pub struct PictureToken {
     /// refused.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unknown_accepted: BTreeMap<Uid, AcceptedUnknown>,
-    /// Rules 13: the lost contacts accepted for it when it was shown, by track id (every signer
+    /// Rules 16: the lost contacts accepted for it when it was shown, by track id (every signer
     /// sees them; a signature quoting a token whose set differs from the engagement's now is
     /// refused).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -810,7 +810,7 @@ pub struct Engagement {
     /// Rules 6: our vehicles an operator accepted as lost for this engagement.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub accepted: BTreeMap<Uid, AcceptedUnknown>,
-    /// Rules 13: the lost contacts an operator accepted for this engagement, by the track id
+    /// Rules 16: the lost contacts an operator accepted for this engagement, by the track id
     /// each was dropped under (`since`: its last fix).
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub accepted_lost: BTreeMap<String, AcceptedUnknown>,
@@ -861,7 +861,7 @@ pub fn lost_since_report(
     Ok(())
 }
 
-/// Rules 13: whether lost contact `id` is in force (`lost`, the engine's ledger's) since
+/// Rules 16: whether lost contact `id` is in force (`lost`, the engine's ledger's) since
 /// exactly its last fix at `since`. The engine refuses an acceptance otherwise; replay checks it
 /// against its own ledger and the contact's facts logged with `engage.accepted`.
 pub fn contact_lost_since(id: &str, lost: Option<&crate::lost::LostContact>, since: Option<Time>) -> Result<(), String> {
@@ -2722,7 +2722,7 @@ pub fn track_regions(t: &TrackFacts, effect_t: Time, ec: &EngageRules) -> Vec<Tr
     reach(t, effect_t, ec, false)
 }
 
-/// Rules 13: where a lost contact may be at `effect_t`, from its facts at the drop: the regions
+/// Rules 16: where a lost contact may be at `effect_t`, from its facts at the drop: the regions
 /// a live track gets from them ([`track_reach`]) and, with a velocity estimate, also anywhere it
 /// reaches at its own plausible speed since its last fix, whichever way it turned: its speed and
 /// `keep_out_sigma` of its velocity error, or the fastest it went when the tracker saw it
@@ -3053,7 +3053,7 @@ pub fn track_standing(
     standing(t, reach(t, effect_t, ec, words), point, effect_t, keep_out_m, now, ec, alt)
 }
 
-/// Rules 13: [`track_standing`] for a lost contact, by its regions as one ([`lost_reach`]).
+/// Rules 16: [`track_standing`] for a lost contact, by its regions as one ([`lost_reach`]).
 #[allow(clippy::too_many_arguments)]
 pub fn lost_track_standing(
     t: &TrackFacts,
@@ -3220,7 +3220,7 @@ pub fn keep_out_tracks(
             nearest = Some((edge, id));
         }
     }
-    // rules 13: the contacts the tracker dropped, anywhere they could have reached since their
+    // rules 16: the contacts the tracker dropped, anywhere they could have reached since their
     // last fix, unless an operator accepted exactly that loss for this engagement
     let mut lost_count = 0;
     let mut accepted: Vec<String> = Vec::new();
@@ -3282,7 +3282,7 @@ pub fn keep_out_tracks(
     )
 }
 
-/// Rules 13: how a lost contact is out of view, for a check's detail and an operator to accept:
+/// Rules 16: how a lost contact is out of view, for a check's detail and an operator to accept:
 /// "T-0003 out of view since t=1781000010000 (300 s), dropped by the tracker at
 /// t=1781000190000; an operator with engagement authority may accept it for this engagement".
 pub fn lost_note(id: &str, l: &crate::lost::LostContact, now: Time) -> String {
@@ -3294,7 +3294,7 @@ pub fn lost_note(id: &str, l: &crate::lost::LostContact, now: Time) -> String {
     )
 }
 
-/// Rules 13: how one lost contact stands against a keep-out (see [`lost_standing`]).
+/// Rules 16: how one lost contact stands against a keep-out (see [`lost_standing`]).
 #[derive(Clone, Debug, PartialEq)]
 pub enum LostStanding {
     /// Its id is in the picture again (the live track counts, not this).
@@ -3308,7 +3308,7 @@ pub enum LostStanding {
     Judged(TrackStanding),
 }
 
-/// Rules 13: lost contact `id` (`l`) against a keep-out reaching `keep_out_m` from `point` at
+/// Rules 16: lost contact `id` (`l`) against a keep-out reaching `keep_out_m` from `point` at
 /// `effect_t`, as [`keep_out_tracks`] reads it: left out when its id is a live track again, it
 /// is exempt (the target, a declared hostile) or an operator accepted exactly this loss for the
 /// engagement (`world.lost_accepted`); else its regions from its facts at the drop, growing
@@ -3865,7 +3865,7 @@ pub fn check_token(
             "the lost vehicles accepted for it changed since you looked: look again".into(),
         );
     }
-    // rules 13: and the lost contacts
+    // rules 16: and the lost contacts
     if token.lost_accepted != *lost_accepted {
         return Err("the lost contacts accepted for it changed since you looked: look again".into());
     }

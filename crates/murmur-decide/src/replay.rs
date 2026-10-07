@@ -242,7 +242,7 @@ pub struct ReplayReport {
     pub revocations: usize,
     pub flags: usize,
     pub flags_resolved: usize,
-    /// Rules 13: tracks the tracker dropped (lost contacts recorded).
+    /// Rules 16: tracks the tracker dropped (lost contacts recorded).
     pub lost_contacts: usize,
     /// One past the highest intent id the log holds (a restarted bridge numbers on from it).
     pub next_intent: u64,
@@ -1031,7 +1031,7 @@ struct Tracked {
     preload_stop_due: Option<(u64, &'static str)>,
     /// Engage, rules 6: our vehicles operators accepted as lost for it (`engage.accepted`).
     accepted: BTreeMap<Uid, engage::AcceptedUnknown>,
-    /// Engage, rules 13: the lost contacts operators accepted for it.
+    /// Engage, rules 16: the lost contacts operators accepted for it.
     accepted_lost: BTreeMap<String, engage::AcceptedUnknown>,
     /// Collect and cover: the order it was dispatched with (what a cancel's and a re-check's
     /// reports are recomputed against).
@@ -1718,7 +1718,7 @@ fn replay_inner<S: AsRef<str>>(
         run_hash: hashes.first().cloned().unwrap_or_default(),
         ..PasskeysSeen::default()
     };
-    // rules 13: the lost contacts as the log builds them, and the track ids decisions have read
+    // rules 16: the lost contacts as the log builds them, and the track ids decisions have read
     // and the tracker has dropped (a track leaves the picture only by a drop)
     let mut lost = crate::lost::LostLedger::default();
     let mut pictured = Pictured::default();
@@ -2381,7 +2381,7 @@ fn replay_inner<S: AsRef<str>>(
                 tr.signers.clear();
                 tr.plan = None;
                 // rules 6: the acceptances go with the plan (given again, on the new picture);
-                // rules 13: of lost contacts too
+                // rules 16: of lost contacts too
                 tr.accepted.clear();
                 tr.accepted_lost.clear();
             }
@@ -3908,7 +3908,7 @@ fn replay_inner<S: AsRef<str>>(
                 lost: lost_logged,
                 step_up,
             } => {
-                // a vehicle of ours (rules 6) or a lost contact (rules 13), exactly one, with its
+                // a vehicle of ours (rules 6) or a lost contact (rules 16), exactly one, with its
                 // facts
                 let subject = match (uid, contact, vehicle, lost_logged) {
                     (Some(u), None, Some(v), None) => Some(Accepting::Vehicle(u, v)),
@@ -3959,7 +3959,7 @@ fn replay_inner<S: AsRef<str>>(
                     bad(&mut r, e, Some(*intent), "acceptance for an unknown intent", String::new(), String::new());
                     continue;
                 };
-                // what it accepts, for the words (rules 13: a lost contact)
+                // what it accepts, for the words (rules 16: a lost contact)
                 let what = match &subject {
                     Accepting::Vehicle(..) => "vehicle",
                     Accepting::Contact(..) => "contact",
@@ -4010,11 +4010,11 @@ fn replay_inner<S: AsRef<str>>(
                             );
                         }
                     }
-                    // rules 13: a contact the log holds as lost, since exactly that fix, with the
+                    // rules 16: a contact the log holds as lost, since exactly that fix, with the
                     // facts the ledger holds
                     Accepting::Contact(c, logged_facts) => {
                         if !policy.as_ref().is_some_and(|p| p.rules.lost_contacts()) {
-                            bad(&mut r, e, Some(*intent), "an acceptance of a lost contact before rules 13", (*c).clone(), String::new());
+                            bad(&mut r, e, Some(*intent), "an acceptance of a lost contact before rules 16", (*c).clone(), String::new());
                         }
                         if let Err(why) = engage::contact_lost_since(c, lost.get(c), *since) {
                             bad(
@@ -6094,7 +6094,7 @@ enum Expected {
         intent: IntentId,
         vehicle: crate::passkey::AcceptedVehicle,
     },
-    /// Rules 13: an acceptance of lost contact `contact` for `intent`, as for a vehicle.
+    /// Rules 16: an acceptance of lost contact `contact` for `intent`, as for a vehicle.
     ContactAcceptance {
         intent: IntentId,
         contact: crate::passkey::AcceptedContact,
@@ -7111,13 +7111,13 @@ fn check_accepted(
     }
 }
 
-/// Rules 13: what an `engage.accepted` names.
+/// Rules 16: what an `engage.accepted` names.
 enum Accepting<'a> {
     Vehicle(&'a Uid, &'a crate::world::VehicleFacts),
     Contact(&'a String, Option<&'a crate::lost::LostContact>),
 }
 
-/// Rules 13: the track ids decisions have read in their pictures, and those the tracker
+/// Rules 16: the track ids decisions have read in their pictures, and those the tracker
 /// dropped (`track.dropped`): a track leaves the picture only by a drop.
 #[derive(Default)]
 struct Pictured {
@@ -7125,7 +7125,7 @@ struct Pictured {
     dropped: BTreeSet<String>,
 }
 
-/// Rules 13: a decision's lost contacts and the acceptances of them against the log: an
+/// Rules 16: a decision's lost contacts and the acceptances of them against the log: an
 /// engagement's are exactly the contacts the log holds as lost (`track.dropped`, less
 /// `track.reacquired`, their identification filled from the ledger) and the acceptances logged
 /// for it; any other decision reads none. And no track the decisions read before is missing
@@ -7282,7 +7282,7 @@ fn check_signed(
             json(&tr.accepted),
         );
     }
-    // rules 13: and of lost contacts
+    // rules 16: and of lost contacts
     if tok.lost_accepted != tr.accepted_lost {
         bad(
             r,
@@ -7477,7 +7477,7 @@ fn check_issued(
             json(&tr.accepted),
         );
     }
-    // rules 13: and the lost contacts
+    // rules 16: and the lost contacts
     if tok.lost_accepted != tr.accepted_lost {
         bad(
             r,

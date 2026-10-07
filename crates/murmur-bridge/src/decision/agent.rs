@@ -234,7 +234,7 @@ impl Decision {
                     "an agent can't accept a lost vehicle's unknown position: only an operator can (engage.accepted)",
                 ));
             }
-            // rules 13: nor a lost contact
+            // rules 16: nor a lost contact
             if !req.engage.accept_lost.is_empty() {
                 return Err(DecisionError::new(
                     403,

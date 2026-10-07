@@ -1,8 +1,8 @@
-//! Lost contacts (rules 13, [`crate::rules::LOST_CONTACT_SINCE`], murmur-533): a contact the
+//! Lost contacts (rules 16, [`crate::rules::LOST_CONTACT_SINCE`], murmur-533): a contact the
 //! tracker drops is not forgotten by the decision core.
 //!
 //! The bridge's tracker drops a track it has not detected for `MURMUR_TRACK_DROP_S` (180 s).
-//! Before rules 13 the keep-out stopped counting it from then on, so a civilian boat that went
+//! Before rules 16 the keep-out stopped counting it from then on, so a civilian boat that went
 //! out of sensor view near a target stopped protecting anything once its track aged out, and
 //! an effect could be released where it might still be. Now:
 //!

@@ -17,7 +17,7 @@
 //! was dropped (no detection for `MURMUR_TRACK_DROP_S`, default 180 s) and whose contact is
 //! seen again starts a new track with a new id, as a real tracker would.
 //!
-//! **Drops** (rules 13, murmur-533): a dropped track is handed to the decision engine with
+//! **Drops** (rules 16, murmur-533): a dropped track is handed to the decision engine with
 //! its facts at the drop ([`Tracks::take_drops`], logged there as `track.dropped`; the engine
 //! keeps it as a lost contact that every engagement's keep-out still counts). Until the engine
 //! has taken it, it stays in the decision facts ([`Tracks::facts`]), so no decision falls
@@ -130,10 +130,10 @@ struct Inner {
     acts: Vec<murmur_decide::ActReport>,
     acts_seen: std::collections::BTreeSet<String>,
     act_records: Vec<Value>,
-    /// rules 13: tracks dropped and not yet taken by the decision engine, each with its facts
+    /// rules 16: tracks dropped and not yet taken by the decision engine, each with its facts
     /// at the drop (still in the decision facts until taken)
     dropped: BTreeMap<String, (TrackFacts, Option<AisIdentity>)>,
-    /// rules 13: the engine's lost contacts, for display ([`Tracks::mirror_lost`])
+    /// rules 16: the engine's lost contacts, for display ([`Tracks::mirror_lost`])
     lost: Vec<Value>,
 }
 
@@ -438,7 +438,7 @@ impl Tracks {
             .map(|t| t.id.clone())
             .collect();
         for id in gone {
-            // rules 13: its facts at the drop, for the decision engine (the estimate only: the
+            // rules 16: its facts at the drop, for the decision engine (the estimate only: the
             // engine fills the identification from its ledger)
             if let Some(t) = inner.tracks.remove(&id) {
                 inner.dropped.insert(id.clone(), (t.facts(now), t.ais_identity()));
@@ -447,7 +447,7 @@ impl Tracks {
         }
     }
 
-    /// Rules 13: the tracks dropped since the last call, each with its facts at the drop, for
+    /// Rules 16: the tracks dropped since the last call, each with its facts at the drop, for
     /// the decision engine (`Engine::record_track_drops`); from now on they are the engine's
     /// lost contacts and leave the decision facts. The caller holds the decision lock across
     /// this and the record, so no decision reads a picture without them in either.
@@ -458,7 +458,7 @@ impl Tracks {
             .collect()
     }
 
-    /// Rules 13: show the engine's lost contacts (the console's map and tracks list); each
+    /// Rules 16: show the engine's lost contacts (the console's map and tracks list); each
     /// entry as [`crate::decision::Decision::lost_json`] builds it. Republishes if they
     /// changed.
     pub fn mirror_lost(&self, lost: Vec<Value>) {
@@ -502,7 +502,7 @@ impl Tracks {
             .collect()
     }
 
-    /// Rules 13: the engine's lost contacts as last mirrored.
+    /// Rules 16: the engine's lost contacts as last mirrored.
     pub fn lost_json(&self) -> Vec<Value> {
         lock(&self.inner).lost.clone()
     }
@@ -516,7 +516,7 @@ impl Tracks {
             "stale_after_s": model::STALE_S,
             "drop_after_s": self.settings.drop_s,
             "tracks": tracks,
-            // rules 13: contacts the tracker dropped that the keep-outs still count
+            // rules 16: contacts the tracker dropped that the keep-outs still count
             "lost": self.lost_json(),
         })
     }
@@ -563,7 +563,7 @@ impl Tracks {
             .collect()
     }
 
-    /// The decision layer's track facts at wall time `now`: every track, and (rules 13) every
+    /// The decision layer's track facts at wall time `now`: every track, and (rules 16) every
     /// track dropped that the engine has not taken yet, as it was at its drop.
     pub fn facts(&self, now: f64) -> BTreeMap<String, TrackFacts> {
         let inner = lock(&self.inner);

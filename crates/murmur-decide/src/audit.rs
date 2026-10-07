@@ -565,7 +565,7 @@ pub enum EventBody {
     /// operator's, with grants.engage). Every signer's picture token carries the acceptances;
     /// a reset of the signatures clears them.
     ///
-    /// Rules 13: or a lost contact (`contact`, the track id it was dropped under, instead of
+    /// Rules 16: or a lost contact (`contact`, the track id it was dropped under, instead of
     /// `uid`; `since` its last fix; `lost` the contact as the engine's ledger held it, instead
     /// of `vehicle`): its keep-out on tracks leaves that contact out while it is lost since
     /// exactly then. Everything else as for a vehicle.
@@ -585,7 +585,7 @@ pub enum EventBody {
         world_t: Time,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         vehicle: Option<Box<crate::world::VehicleFacts>>,
-        /// Rules 13: the lost contact as the engine held it (replay checks it against its own
+        /// Rules 16: the lost contact as the engine held it (replay checks it against its own
         /// ledger: in force, lost since exactly `since`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lost: Option<Box<crate::lost::LostContact>>,
@@ -597,7 +597,7 @@ pub enum EventBody {
 
     /// Engage, rules 6: an operator withdrew an acceptance of a lost vehicle for this
     /// engagement (any operator may: it only restricts). Its checks count the vehicle again.
-    /// Rules 13: or of a lost contact (`contact` instead of `uid`).
+    /// Rules 16: or of a lost contact (`contact` instead of `uid`).
     #[serde(rename = "engage.acceptance_revoked")]
     EngageAcceptanceRevoked {
         intent: IntentId,
@@ -609,7 +609,7 @@ pub enum EventBody {
         session: SessionId,
     },
 
-    /// Rules 13 ([`crate::lost`]): the bridge's tracker dropped `track` (no detection for its
+    /// Rules 16 ([`crate::lost`]): the bridge's tracker dropped `track` (no detection for its
     /// drop time); its facts then, as the tracker handed them (the estimate, never a
     /// declaration). From here on the engine holds it as a lost contact, which every
     /// engagement's keep-out on tracks counts anywhere it could have reached since its last
@@ -625,7 +625,7 @@ pub enum EventBody {
         ais: Option<crate::world::AisIdentity>,
     },
 
-    /// Rules 13: lost contact `track` is live track `by_track` again (an unambiguous AIS
+    /// Rules 16: lost contact `track` is live track `by_track` again (an unambiguous AIS
     /// identity, [`crate::lost::match_one`]), on the picture logged here (`tracks`, at
     /// `world_t`, its identification filled): it is retired, and the live track counts in its
     /// place. Replay recomputes the match from this picture and its own ledger.

@@ -1,6 +1,6 @@
 # Rules 16 (murmur-533): a fishing boat 400 m north of the target goes out of sensor view;
-# 180 s later the tracker drops its track. Under rules 12 it then stopped counting in the
-# keep-out (`--rules 12`: this nomination waits for its signers); from rules 13 the engine
+# 180 s later the tracker drops its track. Under rules 14 and earlier it then stopped counting in the
+# keep-out (`--rules 14`: this nomination waits for its signers); from rules 16 the engine
 # keeps it as a lost contact (`track.dropped`, with its last fix), counted anywhere it could
 # have reached since, and the nomination is rejected (keep_out_tracks: the detail names the
 # lost contact, since when, and that an operator with engagement authority may accept it).

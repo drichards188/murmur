@@ -72,7 +72,7 @@ export interface TrackDeclared {
   basis?: string
 }
 
-/** Rules 13 (murmur-533): a contact the tracker dropped (no detection for 180 s) that every
+/** Rules 16 (murmur-533): a contact the tracker dropped (no detection for 180 s) that every
  *  engagement's keep-out still counts, from its last fix (`position` at `since_t`), until a
  *  track is unambiguously it again (its AIS) or an operator with engagement authority
  *  accepts it for one engagement. `regions`: where the keep-out counts it now (refreshed every
@@ -97,11 +97,11 @@ export interface TracksMessage {
   t: number
   stale_after_s: number
   tracks: Track[]
-  /** rules 13: the engine's lost contacts */
+  /** rules 16: the engine's lost contacts */
   lost?: LostContact[]
 }
 
-/** Rules 13: a lost contact's map symbol: its affiliation and domain, anticipated (dashed),
+/** Rules 16: a lost contact's map symbol: its affiliation and domain, anticipated (dashed),
  *  no function (what it is, it was). */
 export function lostSidc(l: LostContact): string {
   const aff = { unknown: 'U', suspect: 'S', hostile: 'H', neutral: 'N', assumed_friend: 'A' }[l.affiliation] ?? 'U'

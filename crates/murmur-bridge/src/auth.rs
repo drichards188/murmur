@@ -1460,7 +1460,7 @@ async fn step_up_options(State(auth): State<Arc<Auth>>, headers: HeaderMap, body
         track: Option<String>,
         #[serde(default)]
         accept_unknown: Vec<crate::decision::engage::AcceptUnknown>,
-        /// rules 13: lost contacts accepted with it
+        /// rules 16: lost contacts accepted with it
         #[serde(default)]
         accept_lost: Vec<crate::decision::engage::AcceptLost>,
     }

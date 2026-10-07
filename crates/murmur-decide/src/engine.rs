@@ -99,7 +99,7 @@ pub enum EngineError {
     /// nothing was logged.
     #[error("vehicle {uid}: {why}")]
     NotAccepted { uid: Uid, why: String },
-    /// Rules 13: an acceptance of a lost contact the engine does not take (not lost since that
+    /// Rules 16: an acceptance of a lost contact the engine does not take (not lost since that
     /// fix, not an engagement, after a signature): nothing was logged.
     #[error("lost contact {track}: {why}")]
     NotAcceptedContact { track: String, why: String },
@@ -522,7 +522,7 @@ pub struct Engine {
     passkeys: BTreeMap<String, KeySeen>,
     /// Rules 10: the nonce of every passkey use logged: each challenge is answered once.
     used_nonces: BTreeSet<String>,
-    /// Rules 13: the contacts the tracker dropped that the engine holds as lost
+    /// Rules 16: the contacts the tracker dropped that the engine holds as lost
     /// (`track.dropped`, less `track.reacquired`): every engagement's keep-out counts them.
     lost: crate::lost::LostLedger,
 }
@@ -1536,7 +1536,7 @@ impl Engine {
         self.submit_accepting_lost_inner(by, step, proposal, accept, &[], world, terrain)
     }
 
-    /// Rules 13: [`Engine::submit_accepting`] that also accepts lost contacts, each `(track,
+    /// Rules 16: [`Engine::submit_accepting`] that also accepts lost contacts, each `(track,
     /// since)` naming a contact the tracker dropped and the last fix it is out of view since,
     /// as the keep-out check names it (see [`Engine::accept_lost_contact`]). Logged as
     /// `engage.accepted` naming the contact, before the checks. Refused, nothing logged, for a
@@ -1731,7 +1731,7 @@ impl Engine {
         self.get(id)
     }
 
-    /// Rules 13: an operator with engagement authority accepts, for engagement `id` while it
+    /// Rules 16: an operator with engagement authority accepts, for engagement `id` while it
     /// waits with no signature yet, that lost contact `track` (a track the tracker dropped,
     /// [`crate::lost`]) is out of view since its last fix at `since`, as the keep-out check
     /// names it: the keep-out on tracks of this engagement then leaves that contact out while it
@@ -1739,7 +1739,7 @@ impl Engine {
     /// `engage.accepted` naming the contact, with its facts and the world's time; every check of
     /// the engagement reads it, every signer's picture token carries it (a token from before is
     /// refused), a reset of the signatures clears it, any operator may revoke it. Refused,
-    /// nothing logged, after a signature, before rules 13, or for a contact that is not lost since
+    /// nothing logged, after a signature, before rules 16, or for a contact that is not lost since
     /// exactly that fix (seen again, or another loss).
     pub fn accept_lost_contact(
         &mut self,
@@ -1794,7 +1794,7 @@ impl Engine {
         self.get(id)
     }
 
-    /// Rules 13: any operator withdraws an acceptance of a lost contact for engagement `id`
+    /// Rules 16: any operator withdraws an acceptance of a lost contact for engagement `id`
     /// (pending, approved or under way: it only restricts). Logged as
     /// `engage.acceptance_revoked` naming the contact; the keep-out counts it again (which stops
     /// an engagement it now blocks).
@@ -1829,7 +1829,7 @@ impl Engine {
         self.get(id)
     }
 
-    /// Rules 13: whether `track` is a lost contact since exactly `since`.
+    /// Rules 16: whether `track` is a lost contact since exactly `since`.
     fn acceptable_contact(&self, track: &str, since: Time) -> Result<(), EngineError> {
         let no = |why: String| EngineError::NotAcceptedContact {
             track: track.to_string(),
@@ -1841,15 +1841,15 @@ impl Engine {
         engage::contact_lost_since(track, self.lost.get(track), Some(since)).map_err(no)
     }
 
-    // ---- lost contacts (rules 13) -----------------------------------------------------
+    // ---- lost contacts (rules 16) -----------------------------------------------------
 
-    /// Rules 13: the bridge's tracker dropped these tracks (each with its facts at the drop, as
+    /// Rules 16: the bridge's tracker dropped these tracks (each with its facts at the drop, as
     /// it hands them to decisions: the estimate, never a declaration). Each is logged as
     /// `track.dropped` and held from here on as a lost contact ([`crate::lost`]), which every
     /// engagement's keep-out on tracks counts anywhere it could have reached since its last fix,
     /// until a track is unambiguously it again ([`Engine::step_lost`]). The bridge keeps a
     /// dropped track in its picture until this returns, so no decision falls between the two.
-    /// Before rules 13 nothing is logged (a dropped track is simply gone, as then). Returns how
+    /// Before rules 16 nothing is logged (a dropped track is simply gone, as then). Returns how
     /// many were recorded.
     pub fn record_track_drops(
         &mut self,
@@ -1875,7 +1875,7 @@ impl Engine {
         Ok(n)
     }
 
-    /// Rules 13: retire every lost contact that a live track of `world` is again, unambiguously
+    /// Rules 16: retire every lost contact that a live track of `world` is again, unambiguously
     /// ([`crate::lost::reacquisitions`] on the picture with its identification filled): each
     /// logged as `track.reacquired` with that picture. The bridge's loop calls it every second;
     /// anything short of an unambiguous match leaves the lost contact in force. Returns `(lost
@@ -1906,7 +1906,7 @@ impl Engine {
         Ok(out)
     }
 
-    /// Rules 13: the lost contacts in force, as decisions read them (identification filled).
+    /// Rules 16: the lost contacts in force, as decisions read them (identification filled).
     pub fn lost_contacts(&self) -> BTreeMap<String, crate::lost::LostContact> {
         self.lost_filled()
     }
@@ -1915,8 +1915,8 @@ impl Engine {
         self.lost.filled(&self.ident, self.policy.rules.rule_id())
     }
 
-    /// Rules 13: an engagement decision's lost contacts and the acceptances of them for it,
-    /// filled into its inputs (nothing for another kind, or before rules 13).
+    /// Rules 16: an engagement decision's lost contacts and the acceptances of them for it,
+    /// filled into its inputs (nothing for another kind, or before rules 16).
     fn fill_lost(&self, spec: &IntentSpec, w: &mut WorldSnapshot) {
         if spec.kind() != TaskKind::Engage || !self.policy.rules.lost_contacts() {
             return;
@@ -1925,7 +1925,7 @@ impl Engine {
         w.lost_accepted = self.accepted_lost_for(spec.id);
     }
 
-    /// Rules 13: the lost contacts an operator accepted for engagement `id`.
+    /// Rules 16: the lost contacts an operator accepted for engagement `id`.
     fn accepted_lost_for(&self, id: IntentId) -> BTreeMap<String, engage::AcceptedUnknown> {
         self.intents
             .get(&id)
@@ -2820,7 +2820,7 @@ impl Engine {
         e.signed.clear();
         e.plan = None;
         // rules 6: the acceptances go with the plan they were given for (given again, on the
-        // new picture); rules 13: of lost contacts too
+        // new picture); rules 16: of lost contacts too
         e.accepted.clear();
         e.accepted_lost.clear();
         e.reset = Some(engage::ResetRecord { t, dropped, reason });
@@ -3692,7 +3692,7 @@ impl Engine {
         inputs.waiting = self.waiting_for(spec);
         inputs.restore_owed = self.restore_owed_for(spec, &inputs.identities);
         inputs.expended = self.restores.expended_for(spec, &self.policy.rules);
-        // rules 13: the lost contacts (a new nomination has no acceptances yet)
+        // rules 16: the lost contacts (a new nomination has no acceptances yet)
         self.fill_lost(spec, &mut inputs);
         inputs
     }
@@ -5459,7 +5459,7 @@ impl Engine {
                     },
                 );
             }
-            // rules 13: and the lost contacts it accepts
+            // rules 16: and the lost contacts it accepts
             let filled = if a.contacts.is_empty() { BTreeMap::new() } else { self.lost_filled() };
             for (track, since) in a.contacts {
                 self.emit(EventBody::EngageAccepted {
@@ -5787,7 +5787,7 @@ struct Acceptor<'a> {
     by: &'a OperatorId,
     session: SessionId,
     list: &'a [(Uid, Option<Time>)],
-    /// Rules 13: the lost contacts accepted, each since its last fix.
+    /// Rules 16: the lost contacts accepted, each since its last fix.
     contacts: &'a [(String, Time)],
     /// Rules 8: the step-up the acceptances quote (`[approval] step_up_acts`).
     step_up: Option<StepUpRef>,

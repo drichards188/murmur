@@ -61,7 +61,7 @@
 .tk-revoke { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 0; padding-top: 6px; border-top: 1px dashed var(--line); }
 .tk-plain { color: inherit; }
 
-/* rules 13: contacts the tracker dropped, still counted in keep-outs */
+/* rules 16: contacts the tracker dropped, still counted in keep-outs */
 .tk-lost {
   margin-top: 10px;
   border-top: 1px solid #263240;

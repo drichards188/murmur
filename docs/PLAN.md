@@ -409,7 +409,7 @@ estimate, friendlies and an aircraft track above the effect with their altitudes
 not, ranged or passive, recent or stale, a ground target, a lost friendly with and without
 an operator's acceptance, an acceptance without engagement authority, a token from before
 an acceptance, a reset that clears one, a revoked one, an acceptor who signs, an agent
-trying to accept one, an accepted one reporting again); from rules 13, 83 to 88: a protected
+trying to accept one, an accepted one reporting again); from rules 16, 84 to 89: a protected
 contact dropped by the tracker near the target, then a nomination; an acceptance of it; an
 acceptance then the contact seen again under a new track id; an acceptance by an operator
 without engagement authority; a forged acceptance; a contact last seen steaming away (its
@@ -420,8 +420,8 @@ noise independent around the truth each step (`--noise`), and a velocity-estimat
 correlated over about 10 s (`--vnoise`). Seeds 1 to 10 and 42 pass every scenario at 0, 3,
 10 and 20 m with 0, 0.3 and 0.5 m/s (4,320 runs); at 1 m/s per axis some long-lead releases
 on moving targets abort late (the plan's point is off by the velocity error times the
-lead): the chain fails safe, never releasing off the plan. Rules 13's scenarios 83 to 88 pass
-the same batch (792 runs) but six: 84 and 87 at seed 7 with 0.5 m/s (3, 10 and 20 m), where
+lead): the chain fails safe, never releasing off the plan. Rules 16's scenarios 84 to 89 pass
+the same batch (792 runs) but six: 85 and 88 (then 84 and 87) at seed 7 with 0.5 m/s (3, 10 and 20 m), where
 the velocity estimate crossed the 1.5 m/s holding speed at the first signature, so the plan
 put the holding target about 170 m on and the release, never aligned, aborted late (fail
 safe; the same effect, not the lost contacts).
@@ -532,7 +532,7 @@ same vehicle); a refused mission names the older orders still queued on its vehi
 Scenarios 79 to 82; live logs across two crashes with anchors in
 `crates/murmur-decide/tests/data/audit/`.
 
-Rules 13, lost contacts (murmur-533; `LOST_CONTACT_SINCE`, policy schema 7 unchanged;
+Rules 16, lost contacts (murmur-533; `LOST_CONTACT_SINCE`, 15 being the restart follow-ups', policy schema 7 unchanged;
 `crates/murmur-decide/src/lost.rs`, bridge `tracks/mod.rs` and `decision/engage.rs`, console
 `trackLayers.ts`, `KeepOutExplain.tsx`; DECISIONS.md "A dropped protected contact stays in the
 keep-out until accepted"): the tracker drops a track after 180 s without a detection, and the
@@ -561,7 +561,7 @@ situations (`eval/METRICS.md` "Out of view"): see there; the explanation's effec
 also count a grid point clear only by a margin that covers the dip between points (murmur-dr6).
 Live demo: `MURMUR_CONTACTS=sim/scenarios/golden-gate-lost.toml make up FLEET=engage-demo` (with
 `MURMUR_OPERATORS` and `MURMUR_ENGAGE_OPERATORS`); live log with anchors:
-`crates/murmur-decide/tests/data/audit/v13-lost-contacts-live.jsonl`.
+`crates/murmur-decide/tests/data/audit/v16-lost-contacts-live.jsonl`.
 
 Rules 10, passkeys (murmur-437; `PASSKEY_SINCE`, policy schema 7; `crates/murmur-decide/src/
 passkey.rs`, `crates/murmur-auth/src/passkeys.rs` on webauthn-rs, bridge `auth.rs`, console
@@ -624,7 +624,7 @@ areas but the platform's own path only against no-go areas, the assessment trust
 model's coverage figures, the signers authenticate with a password only (no second factor;
 rules 8, below), ground targets have no terrain-referenced altitude (2D), an engagement
 does not survive a bridge restart (only the platform's own failsafe values are put back),
-nor do the lost contacts (rules 13: a new run starts a new tracker), a lost contact's
+nor do the lost contacts (rules 16: a new run starts a new tracker), a lost contact's
 plausible speed is its own (one that goes faster after its last fix than it showed is outside
 its region), only an AIS identity retires a lost contact, and another declared
 hostile inside the keep-out is exempt like the target (an open design question,

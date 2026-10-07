@@ -358,7 +358,7 @@
 .ko-at {
   color: #7d8b9a;
 }
-/* rules 13: accept a lost contact with the nomination */
+/* rules 16: accept a lost contact with the nomination */
 .ko-accept {
   display: flex;
   gap: 6px;

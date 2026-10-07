@@ -232,7 +232,7 @@ group. Dates are 2026.
   records it (`self_accepted`), the card shows it and the evaluation counts it. Regressions:
   53 to 60, 65.
 - **A dropped protected contact stays in the keep-out until an operator accepts it** (10-07,
-  murmur-533; rules 13, `LOST_CONTACT_SINCE`). The bridge's tracker drops a track unseen for
+  murmur-533; rules 16, `LOST_CONTACT_SINCE`). The bridge's tracker drops a track unseen for
   180 s, and from then on the keep-out stopped counting it: a civilian boat that went out of
   sensor view near a target stopped protecting anything once its track aged out, and an effect
   could be released where it might still be (review of 2f4f46a). Decided, mirroring the lost
@@ -283,7 +283,7 @@ group. Dates are 2026.
   coverage only when the sensors stopped seeing a contact that was there). So none is shipped;
   the acceptance is the way through, and its frequency is the stated cost of failing closed.
   The plausible-speed region came from the measurement (10-07, the main thread's call, the same
-  rules version since rules 13 had not merged): the first version counted a lost contact by a
+  rules version since the lost contacts had not merged): the first version counted a lost contact by a
   live track's regions alone, a prediction rather than a bound for a contact nobody sees (one
   last seen steady got only the regions along its velocity, with the acceleration-noise
   uncertainty), and 3 of 716 passes near the target had it inside the keep-out line (none in the
@@ -292,7 +292,7 @@ group. Dates are 2026.
   as before: the tracker sees them turn. The plausible speed is the contact's own, so one that
   goes faster after its last fix than it showed is outside it. Not carried over a bridge restart
   (a new run starts a new tracker; scheduled after the rules 12 carry follow-ups merge).
-  Regressions: scenarios 83 to 88.
+  Regressions: scenarios 84 to 89.
 - **A HIGH_LATENCY2 report without its GPS failure flag is a 3D fix** (10-04, fourth
   review). HIGH_LATENCY2 carries no fix type, so a platform on that link alone never had a
   fresh fix and could never release. The bridge now counts each one without
@@ -1018,7 +1018,7 @@ group. Dates are 2026.
   2.1 km out was told "within 693 m of the target"; ordered closer, the dry run still
   failed at 836 m (the hint then 816 m, moving with the aircraft) and passed every check at
   810 m, and the nomination went to the inbox with both keep-outs passing; the dry runs
-  (about 40) logged nothing, and the log replays with its anchors. Since rules 13 (murmur-533,
+  (about 40) logged nothing, and the log replays with its anchors. Since rules 16 (murmur-533,
   under Direction) a dropped track stays in the keep-out as a lost contact: the explanation lists
   one as an item (since when, what to accept), and says a track out of view stays after its drop.
 - **The explanation's effect-time windows hold between grid points** (10-07, murmur-dr6; no

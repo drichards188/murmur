@@ -101,11 +101,11 @@ pub struct Scenario {
     /// Rules 12: nothing may still be owed back when the log ends (replay's `unrestored`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub expect_nothing_owed: bool,
-    /// Rules 13: lost contacts retired as seen again, in order (substrings of
+    /// Rules 16: lost contacts retired as seen again, in order (substrings of
     /// `t=<s> T-0002 is T-0005 again`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expect_reacquired: Vec<String>,
-    /// Rules 13: none may be retired (an ambiguous or missing match keeps a lost contact).
+    /// Rules 16: none may be retired (an ambiguous or missing match keeps a lost contact).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub expect_none_reacquired: bool,
     /// After the run, attack the log and require replay to catch it:
@@ -113,7 +113,7 @@ pub struct Scenario {
     /// `drop_signature`, `edit_effect`, `strip_approvers`, `drop_reset`, `agent_order_auto`,
     /// `drop_ack`, `loosen_policy`, and for rules 6 `drop_preload`, `forge_preload`,
     /// `drop_verify`, `drop_acceptance`, `acceptance_by_agent`, `acceptance_without_authority`,
-    /// `hide_self_accepted`, and for rules 7 `drop_restore_owed`, and for rules 13
+    /// `hide_self_accepted`, and for rules 7 `drop_restore_owed`, and for rules 16
     /// `hide_lost_contact` (every decision's lost contacts cut), `drop_track_dropped` (the
     /// tracker's drops cut), `forge_lost_acceptance` (an acceptance of a lost contact re-dated
     /// to a later fix everywhere it appears).
@@ -344,7 +344,7 @@ pub enum Action {
         /// report, as the check shows it). Only an operator's nomination can carry them.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         accept: Vec<String>,
-        /// Rules 13: the lost contacts (track ids the tracker dropped) the nominating operator
+        /// Rules 16: the lost contacts (track ids the tracker dropped) the nominating operator
         /// accepts, each since its last fix as the check shows it.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         accept_lost: Vec<String>,
@@ -354,7 +354,7 @@ pub enum Action {
     /// (or since `since_s`, scenario seconds, to name another report: the engine refuses
     /// it). Without engagement authority it is refused.
     ///
-    /// Rules 13: or a lost contact, `track` instead of `uid` (since its last fix, or `since_s`).
+    /// Rules 16: or a lost contact, `track` instead of `uid` (since its last fix, or `since_s`).
     Accept {
         by: String,
         #[serde(default)]
@@ -364,7 +364,7 @@ pub enum Action {
         #[serde(default)]
         since_s: Option<f64>,
     },
-    /// Rules 6: an operator withdraws an acceptance of a lost vehicle (rules 13: or of a lost
+    /// Rules 6: an operator withdraws an acceptance of a lost vehicle (rules 16: or of a lost
     /// contact, `track`) for the last nomination (pending or under way).
     Revoke {
         by: String,
@@ -373,7 +373,7 @@ pub enum Action {
         #[serde(default)]
         track: Option<String>,
     },
-    /// Rules 13: the tracker drops `track` (as the bridge's does after 180 s without a
+    /// Rules 16: the tracker drops `track` (as the bridge's does after 180 s without a
     /// detection), handing the engine its facts now; the runner stops carrying it.
     DropTrack { track: String },
     /// An agent "tries" to accept a lost vehicle: there is no such method on its port, so it
@@ -874,7 +874,7 @@ pub struct ScenarioResult {
     pub tamper_mismatches: Vec<String>,
     /// How many times the signatures were dropped (`approval.reset`).
     pub resets: usize,
-    /// Rules 13: the lost contacts retired as seen again (`t=<s> T-0002 is T-0005 again`).
+    /// Rules 16: the lost contacts retired as seen again (`t=<s> T-0002 is T-0005 again`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub reacquired: Vec<String>,
     /// Rules 9: the identification events, in order (`t=<s> declared T-0001 by
@@ -1341,7 +1341,7 @@ pub fn run(
                 Err(e) => failures.push(format!("t={s}: step_identification: {e}")),
             }
         }
-        // rules 13: lost contacts seen again, unambiguously, are retired (as the bridge's loop)
+        // rules 16: lost contacts seen again, unambiguously, are retired (as the bridge's loop)
         match engine.step_lost(&world) {
             Ok(found) => {
                 for (lost, by) in found {
@@ -1535,7 +1535,7 @@ pub fn run(
     if sc.expect_reset && resets == 0 {
         failures.push("expected the signatures to be dropped (approval.reset), they never were".into());
     }
-    // rules 13: lost contacts retired as seen again
+    // rules 16: lost contacts retired as seen again
     let mut retired = extra.reacquired.iter();
     for want in &sc.expect_reacquired {
         if !retired.any(|r| r.contains(want.as_str())) {
@@ -2172,7 +2172,7 @@ fn act(
                     (Uid::new(u), since)
                 })
                 .collect();
-            // rules 13: each accepted lost contact since its last fix, as the check shows it
+            // rules 16: each accepted lost contact since its last fix, as the check shows it
             let lost_now = engine.lost_contacts();
             let contacts: Vec<(String, Time)> = accept_lost
                 .iter()
@@ -2373,7 +2373,7 @@ fn act(
                     let since = scripted.or_else(|| w.vehicles.get(&Uid::new(uid)).and_then(|v| v.position.as_ref()).map(|p| p.t));
                     engine.accept_unknown_friendly(id, auth, Uid::new(uid), since, &w).map(|_| ())
                 }
-                // rules 13: a lost contact, since its last fix as the check shows it
+                // rules 16: a lost contact, since its last fix as the check shows it
                 (None, Some(t)) => {
                     let since = scripted
                         .or_else(|| engine.lost_contacts().get(t).map(crate::lost::LostContact::since))
@@ -2734,7 +2734,7 @@ struct Extra {
     sign_due: Vec<(u32, IntentId, String)>,
     /// murmur-dup: the run's clock steps ([`RunOptions::clock_step`]).
     clock_step: Option<ClockStep>,
-    /// Rules 13: the lost contacts retired, as `t=<s> <lost> is <track> again`.
+    /// Rules 16: the lost contacts retired, as `t=<s> <lost> is <track> again`.
     reacquired: Vec<String>,
 }
 
@@ -3543,7 +3543,7 @@ fn follow_queue(
 
 // ---- log attacks ------------------------------------------------------------------------
 
-/// Rules 13: every decision's inputs an event logs.
+/// Rules 16: every decision's inputs an event logs.
 fn decision_inputs(body: &mut EventBody) -> Vec<&mut crate::world::LoggedInputs> {
     match body {
         EventBody::CheckResult { inputs, .. }
@@ -3950,7 +3950,7 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             }
         }
         "hide_lost_contact" => {
-            // rules 13: every decision on it shown without the lost contacts it read
+            // rules 16: every decision on it shown without the lost contacts it read
             let mut done = false;
             for e in &mut events {
                 for i in decision_inputs(&mut e.body) {
@@ -3965,7 +3965,7 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             }
         }
         "drop_track_dropped" => {
-            // rules 13: the tracker's drops cut from the log (the contacts vanish from the
+            // rules 16: the tracker's drops cut from the log (the contacts vanish from the
             // picture as if they had never been dropped)
             let before = events.len();
             events.retain(|e| !matches!(&e.body, EventBody::TrackDropped { .. }));
@@ -3974,7 +3974,7 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             }
         }
         "forge_lost_acceptance" => {
-            // rules 13: the acceptance of a lost contact re-dated, as if the contact had been seen
+            // rules 16: the acceptance of a lost contact re-dated, as if the contact had been seen
             // a minute later than it was (a smaller region it accepted), everywhere it appears:
             // the acceptance, every decision's inputs and every picture token
             let mut forged: BTreeMap<String, Time> = BTreeMap::new();

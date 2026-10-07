@@ -345,7 +345,7 @@ async fn intent_action(
         "reject" => app.decision.reject(&op, id, note),
         "cancel" => app.decision.cancel(&op, id, note),
         "abort" => app.decision.abort(&op, id, note),
-        // rules 13: {"track": id, "since": engine ms}, a lost contact as the check names it
+        // rules 16: {"track": id, "since": engine ms}, a lost contact as the check names it
         "accept_unknown" if lost_contact(&body) => match serde_json::from_slice::<crate::decision::engage::AcceptLost>(&body) {
             Ok(a) => {
                 let needed = app.decision.steps_up(murmur_decide::StepUpAct::AcceptUnknown);
@@ -380,7 +380,7 @@ async fn intent_action(
                 );
             }
         },
-        // rules 13: {"track": id}
+        // rules 16: {"track": id}
         "revoke_unknown" if lost_contact(&body) => match serde_json::from_slice::<Value>(&body) {
             Ok(v) => app.decision.revoke_lost(&op, id, v["track"].as_str().unwrap_or_default()),
             Err(e) => {
@@ -415,7 +415,7 @@ async fn intent_action(
     }
 }
 
-/// Rules 13: an acceptance (or its revocation) names a lost contact (`track`), not a vehicle.
+/// Rules 16: an acceptance (or its revocation) names a lost contact (`track`), not a vehicle.
 fn lost_contact(body: &[u8]) -> bool {
     serde_json::from_slice::<Value>(body).is_ok_and(|v| v.get("track").is_some_and(|t| !t.is_null()))
 }

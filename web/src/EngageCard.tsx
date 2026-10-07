@@ -69,7 +69,7 @@ function nameOf(vehicles: Vehicle[], uid: string | number) {
 function Acceptances({ intent: i, vehicles, now, onDone, signing }: Pick<CardProps, 'intent' | 'vehicles' | 'now' | 'onDone'> & { signing?: boolean }) {
   const [error, setError] = useState<string | null>(null)
   const accepted = i.engage?.accepted ?? []
-  // rules 13: lost contacts accepted for it
+  // rules 16: lost contacts accepted for it
   const lost = i.engage?.accepted_lost ?? []
   if (!accepted.length && !lost.length) return null
   const withdrawLost = async (track: string) => {

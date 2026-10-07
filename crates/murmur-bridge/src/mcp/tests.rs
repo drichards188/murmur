@@ -1253,7 +1253,7 @@ fn neutral_alongside(r: &Rig) {
     .expect("declared");
 }
 
-/// Rules 13: [`neutral_alongside`]'s fishing boat seen for the first 100 s of 400 and then out
+/// Rules 16: [`neutral_alongside`]'s fishing boat seen for the first 100 s of 400 and then out
 /// of view: the tracker drops it 180 s later, and the decision tick hands the drop to the
 /// engine (`track.dropped`), which holds it as a lost contact. The hostile boat declared.
 fn lost_alongside(r: &Rig) {
@@ -1319,7 +1319,7 @@ fn lost_alongside(r: &Rig) {
     .expect("declared");
 }
 
-/// Rules 13: agents see the contacts the tracker dropped, read-only, and cannot accept one.
+/// Rules 16: agents see the contacts the tracker dropped, read-only, and cannot accept one.
 /// `get_tracks` lists the lost contact under `lost` (since its last fix, the regions counted
 /// now), not among the tracks; `get_nomination_options` shows it blocking, as an item of
 /// subject `lost_contact` (since when, what an operator's acceptance would do); reading logs

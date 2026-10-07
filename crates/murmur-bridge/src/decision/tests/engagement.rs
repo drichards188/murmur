@@ -1817,7 +1817,7 @@ async fn a_platform_left_on_a_superseded_intercept_says_so_in_its_restore_alert(
     assert!(rep.ok(), "{:?}", rep.mismatches);
 }
 
-/// Rules 13 (murmur-533): a contact the tracker drops goes to the engine at the next tick
+/// Rules 16 (murmur-533): a contact the tracker drops goes to the engine at the next tick
 /// (`track.dropped`; until then it stays in the decision facts) and still counts in the
 /// keep-out; the console is shown it; an operator with engagement authority accepts it for a
 /// nomination as the check names it (its last fix), and the log replays.
