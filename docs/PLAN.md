@@ -417,7 +417,11 @@ noise independent around the truth each step (`--noise`), and a velocity-estimat
 correlated over about 10 s (`--vnoise`). Seeds 1 to 10 and 42 pass every scenario at 0, 3,
 10 and 20 m with 0, 0.3 and 0.5 m/s (4,320 runs); at 1 m/s per axis some long-lead releases
 on moving targets abort late (the plan's point is off by the velocity error times the
-lead): the chain fails safe, never releasing off the plan.
+lead): the chain fails safe, never releasing off the plan. Rules 13's scenarios 83 to 87 pass
+the same batch (660 runs) but six: 84 and 87 at seed 7 with 0.5 m/s (3, 10 and 20 m), where
+the velocity estimate crossed the 1.5 m/s holding speed at the first signature, so the plan
+put the holding target about 170 m on and the release, never aligned, aborted late (fail
+safe; the same effect, not the lost contacts).
 
 Live demo: `sim/fleets/engage-demo.toml` (stand-in switchblade, magura, ugv_armed, corsair,
 x10) with `sim/scenarios/golden-gate-engage.toml` (the fast boat holding west of the bridge,
