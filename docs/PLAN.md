@@ -482,6 +482,17 @@ lost vehicle to the acts that step up (off by default). Passkeys come before a s
 real participants. Live log with anchors:
 `crates/murmur-decide/tests/data/audit/v8-auth-live.jsonl`.
 
+Rules 13, the air tracker calibrated against truth (murmur-oho; `AIRCRAFT_REACH_SINCE`, policy
+schema 7 unchanged; DECISIONS.md "The air tracker is calibrated against truth" and "An aircraft
+counts anywhere it could turn or speed up to"): the bridge's IMM keeps the full covariance; a 2D
+radar's fix of an aircraft (slant range and bearing, no height) is the bearing line it is on,
+no farther out, so one radar alone does not range an aircraft (no velocity, a 1-sigma along the
+segment) and no track invents an altitude; the air constants are calibrated on aircraft motions
+and sensor mixes with disjoint tuning and held-out seeds (`tracks::tests::calib_air`); and an
+aircraft with a velocity counts in a keep-out anywhere it reaches from its own speed, speeding up
+to the top speed, whether or not it was seen to turn. Scenario 83; the keep-out measurement's
+air variants and the live engagement demo before and after in eval/METRICS.md.
+
 Rules 12, the reviews' follow-ups (murmur-q05, -9m0, -jfi, -cq3, -qjf, -54l;
 `REVIEW_FOLLOWUPS_SINCE`, after the space follow-ups took 11; policy schema 7 unchanged;
 DECISIONS.md, the entries of 10-06 and their review): a platform spent by its own effect is

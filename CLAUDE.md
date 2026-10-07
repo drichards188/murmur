@@ -177,7 +177,12 @@ meaningful. Decision and command, not weapons.
   engagements" before quoting (radar alone is the pessimistic sensor case; the air tracker's
   constants are unvalidated).
 - The tracker is a two-model IMM; changes must pass `tracks::tests::calib`. Its held-out seeds
-  (66-95) are not for tuning: write a new held-out set if you tune on them.
+  (66-95) are not for tuning: write a new held-out set if you tune on them. Aircraft have their
+  own calibration (`tracks::tests::calib_air`: held-out seeds 161-190, not for tuning; tuning
+  aids `air_calib_table` and `air_tune_grid`, ignored tests), compared with verbatim copies of
+  the tracker before it (`tracks/tests/before_oho/`: never edit them). A 2D radar plots an
+  aircraft at its slant range (`Detection::slant_from`): a test that reads such a fix's
+  `lat`/`lon` as the aircraft's position is wrong by its height's share.
 - This host's wall clock (WSL) stepped back 0.5 to 0.9 s every ~32 s for the first two hours or
   so after boot (monotonic up to 2 % fast against Windows), then stopped. The bridge times
   everything on `clock::wall` (the monotonic rate, steered within ~2 s of the wall clock at

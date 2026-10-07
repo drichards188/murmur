@@ -1378,7 +1378,7 @@ Rules versions:
   giving one a velocity, had held as anywhere within 100 m/s (the bridge's
   `tracks::tests::calib_air`: with this region every class holds as often or more). Cost: an
   aircraft blocks a keep-out about as far as one without a velocity at nominations a minute or
-  more ahead (from 55 m/s it reaches 100 m/s in 22 s), less at shorter spans (at 30 s, 2.6 km
+  more ahead (from 55 m/s it reaches 100 m/s in 22 s), less at shorter spans (at 30 s, 2.5 km
   instead of 3 km). Surface, ground and subsurface tracks are judged as before. No new logged
   fact: a rules 13 log claiming rules 12 differs only where an aircraft's region decided, and
   replay recomputes those decisions. Scenario 83 (an aircraft flying away 2 km from the effect

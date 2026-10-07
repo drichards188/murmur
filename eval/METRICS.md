@@ -524,7 +524,8 @@ uncertainty above the 3 m/s it reports at, straight or turning, so the keep-out 
 aircraft anywhere within 100 m/s of where it was; EO/IR helps a straight one, not a loitering
 one. The air tracker's constants (initial velocity uncertainty, process noise) were scaled from
 the surface ones and never checked against truth, so these rows say what the bridge does today,
-not what a validated air tracker would.
+not what a validated air tracker would. (10-07: the air tracker was calibrated, a 2D radar's fix
+of an aircraft made honest, and rules 13 added; below, "The air tracker against truth".)
 
 Sensitivity, mixed traffic at 0.1 per km^2 (other densities in the report):
 
@@ -596,6 +597,106 @@ no-velocity region at 100 m/s four times that). The 8 km field holds every regio
 
 Not measured either: how often such situations arise, more than one observing vehicle, land
 and channels, air traffic beyond one aircraft, out-of-view contacts and dropped tracks.
+
+### The air tracker against truth (10-07, murmur-oho; model results, unreviewed)
+
+Model results from the simulation, never field data. What changed (DECISIONS.md, "The air
+tracker is calibrated against truth" and "An aircraft counts anywhere it could turn or speed up
+to"): a 2D radar plots an aircraft at its slant range and the tracker reads the plot as the
+bearing line, no farther out (before, the sensing model centred the fix on the aircraft's true
+ground range, which needs its height); the filter keeps the full covariance; the air
+constants are calibrated (steady and manoeuvring 0.2 and 20 m^2/s^3, were 0.4 and 80; the 3 m/s
+velocity gate judged and kept); and rules 13 counts an aircraft with a velocity anywhere it
+reaches from its own speed, speeding up at 2 m/s^2 to 100 m/s.
+
+**Calibration** (`tracks::tests::calib_air`, the held-out set: seeds 161-190, 12 motions, 30
+seeds each, 300 s, scored from 30 s; before: verbatim copies of the sensing model and tracker at
+efd332f on the same truth and draws, its keep-out under rules 12; after: rules 13). Per class
+and sensor mix, before to after: the truth within two sigmas when updated (mean normalized
+error, 2 expected); the share of samples with a velocity (its mean normalized error when
+given); a keep-out 60 / 100 s ahead holding the aircraft; the share of effect points within 5 km
+of the aircraft a keep-out 60 s ahead blocks (a proxy of the nominations it denies):
+
+| class | sensors | within 2 sigma (NEES) | velocity (its normalized error) | keep-out 60 / 100 s | blocked 60 s |
+| --- | --- | --- | --- | --- | --- |
+| straight | radar + EO/IR | 96.4 (1.14) to 97.4 (1.01) | 26% (0.22) to 62% (0.23) | 100 / 100 to 100 / 100 | 76 to 87 |
+| straight | all sensors | 96.4 (1.15) to 97.1 (1.06) | 54% (0.24) to 70% (0.25) | 100 / 100 to 100 / 100 | 62 to 86 |
+| one turn | radar + EO/IR | 94.8 (1.29) to 94.8 (1.27) | 32% (0.50) to 62% (0.85) | 95 / 92 to 100 / 100 | 80 to 92 |
+| one turn | all sensors | 95.3 (1.24) to 93.4 (1.50) | 74% (0.47) to 65% (0.64) | 87 / 81 to 100 / 100 | 56 to 91 |
+| speed change | radar + EO/IR | 94.4 (1.31) to 95.9 (1.18) | 9% (1.09) to 30% (1.48) | 99 / 100 to 100 / 100 | 89 to 90 |
+| speed change | all sensors | 94.6 (1.30) to 95.8 (1.19) | 32% (0.85) to 44% (1.20) | 98 / 99 to 100 / 100 | 82 to 89 |
+| hover and go (helicopter) | radar + EO/IR | 94.7 (1.30) to 94.5 (1.29) | 35% (0.69) to 60% (1.12) | 97 / 98 to 100 / 100 | 83 to 93 |
+| hover and go (helicopter) | all sensors | 93.8 (1.38) to 90.1 (1.72) | 81% (0.69) to 64% (1.09) | 93 / 93 to 100 / 100 | 62 to 92 |
+| route (pentagon, 5 deg/s turns) | radar + EO/IR | 93.4 (1.43) to 93.7 (1.40) | 26% (1.54) to 46% (3.05) | 95 / 95 to 100 / 100 | 83 to 91 |
+| route | all sensors | 93.5 (1.39) to 93.1 (1.50) | 55% (1.22) to 57% (2.03) | 94 / 94 to 100 / 100 | 75 to 90 |
+| orbit then dash | radar + EO/IR | 92.0 (1.51) to 94.0 (1.34) | 2% (0.21) to 26% (0.29) | 100 / 100 to 100 / 100 | 89 to 89 |
+| orbit then dash | all sensors | 91.5 (1.56) to 93.0 (1.44) | 31% (0.65) to 38% (0.72) | 100 / 100 to 100 / 100 | 83 to 89 |
+| loitering | radar + EO/IR | 87.1 (1.92) to 89.1 (1.76) | 1% (6.8) to 2% (8.0) | 100 / 100 to 100 / 100 | 98 to 99 |
+| loitering | all sensors | 86.7 (1.96) to 88.6 (1.81) | 7% (5.7) to 6% (7.4) | 100 / 100 to 100 / 100 | 96 to 98 |
+| random turns | radar + EO/IR | 90.4 (1.66) to 91.0 (1.60) | 8% (2.9) to 15% (4.9) | 99 / 99 to 100 / 100 | 94 to 96 |
+| random turns | all sensors | 90.8 (1.66) to 90.4 (1.64) | 24% (2.6) to 23% (4.0) | 97 / 98 to 100 / 100 | 88 to 96 |
+| weave | radar + EO/IR | 91.0 (1.65) to 87.7 (1.88) | 0% to 0% (1 sample, 97) | 100 / 100 to 100 / 100 | 91 to 91 |
+| weave | all sensors | 90.5 (1.67) to 88.3 (1.86) | 0% (26) to 0% (40) | 100 / 100 to 100 / 100 | 91 to 91 |
+
+One USV's 2D radar alone: before, the fix sat on the aircraft's true ground range (information
+the radar does not have) and the track looked like a surface one (1-sigma 35 to 60 m, 88 to 97%
+within two sigmas); after, the track is the bearing segment within the slant range, 1-sigma 1.2
+to 2.3 km, every sample within two sigmas (the truth at most 1.5 sigmas out, NEES 1.70 to 1.95),
+no velocity either way, the keep-out holding it 100%, blocking 98 to 100% of the effect points
+within 5 km (was 89 to 98). The calibrated tracker under rules 12 (no aircraft region; `AIR_RULES=12`
+on the table) held a first turn 78 to 92% of the time over every air set, a route 86 to 92%, a
+helicopter that hovers and goes 88 to 94%, a speed change 87 to 99%: the reason for rules 13.
+The surface calibration (`tracks::tests::calib`) passes unchanged: its held-out classes 86.7 to
+97.5% within two sigmas (were 85.2 to 97.3), NEES 1.03 to 1.90 (1.05 to 2.02).
+
+**The keep-out measurement's air variants** (`python -m eval.run keepout --variants air
+air-straight air-all air-all-straight --seeds 1 2 3 4 5 6 7 8 9 10 --situations 100 --workers
+6`, 4,000 situations each, 64,000 evaluations each under rules 6, 9, 12 and 13, 0 mismatches, 0
+errors; before at efd332f, after at 83c0e3d), mixed surface traffic plus one light aircraft
+within 4 km, 120 sampled aircraft each:
+
+| variant | aircraft with a velocity | its 1-sigma (median) | blocked at 30 / 60 / 120 s, 0.03 per km^2: before (rules 12) | after, rules 12 | after, rules 13 | missed at the keep-out line, before r12 / after r12 / after r13 |
+| --- | --- | --- | --- | --- | --- | --- |
+| radar, loitering | 0 to 0 | 46 m to 1.3 km | 67 / 100 / 100 | 100 / 100 / 100 | 100 / 100 / 100 | 0 of 1,042 / no pass / no pass |
+| radar, straight | 1 to 0 | 31 m to 1.2 km | 73 / 100 / 100 | 100 / 100 / 100 | 100 / 100 / 100 | 0 of 909 / no pass / no pass |
+| radar and EO/IR, loitering | 2 to 0 | 24 m to 25 m | 65 / 100 / 100 | 65 / 100 / 100 | 65 / 100 / 100 | 0 of 1,171 / 0 of 1,150 / 0 of 1,141 |
+| radar and EO/IR, straight | 50 to 95 | 16 m to 17 m | 41 / 64 / 70 | 15 / 32 / 43 | 46 / 100 / 100 | 0 of 6,143 / 2 of 10,230 / 0 of 1,806 |
+
+At 0.1 contacts per km^2 the last row reads 40 / 67 / 77 before, 20 / 39 / 62 under rules 12
+after, 50 / 100 / 100 under rules 13. The regions of an aircraft at 50 m/s followed ten minutes
+(15 m 1-sigma), at 30 / 60 / 120 s: along its course 385 / 1,080 / 3,045 m around the predicted
+point (rules 12 and 13); rules 13's aircraft region 2,454 / 5,454 / 11,454 m around where it is;
+without a velocity 3,030 / 6,030 / 12,030 m. The straight aircraft's conservative blocks under rules
+13 are the aircraft region's (deepest in 83%; without it 30% would have passed). The variants'
+straight aircraft never turns, so these labels cannot show the turns the calibration does. The
+2 misses under rules 12 with the calibrated tracker were one situation's circling boat inside
+the keep-out line (not the circle) at 180 and 240 s, which the aircraft's wider region had
+blocked by chance before and blocks under rules 13.
+
+**Live** (the engagement demo, stand-ins, `make goldengate GG_FLEET=engage-demo
+CONTACTS=sim/scenarios/golden-gate-engage.toml` with `MURMUR_EVAL_TRUTH=1` on this agent's own
+ports; `scripts/track_truth.py --settle 60 --seconds 600 --domain air`, one sample a second
+against the truth: the sightseeing light aircraft, 55 m/s at 450 m, a 29 km loop with turns at
+6 deg/s, seen by the Corsair-class and Magura-class radars, both 2D, and EO/IR at the edge of
+its range): before (efd332f) a velocity in 88 of 600 samples (15%; 12% of the distinct truth
+messages), NEES 1.18, 95.9% within two sigmas, 1-sigma 34 m (median); after (83c0e3d) in 109 of
+600 (18%), NEES 1.38, 92.9%, 1-sigma 50 m. After, 188 of the 600 samples had the aircraft ranged
+by the 2D radars alone (the bearing segment, 1-sigma 0.3 to 3.3 km, no velocity, as the radars
+cannot tell its range); of the other 412, 26% had a velocity (the turns, and EO/IR beyond 5 km
+detecting a 0.6-signature aircraft about half the time). The issue's live figures (24 to 25%,
+and 16% over 192 s in murmur-533) came from other runs; how they were sampled is not recorded.
+
+**What these numbers can support** (model results, unreviewed): one 2D radar does not locate an
+aircraft whose height it does not measure beyond its bearing and the slant range, so a keep-out
+cannot do better than count it anywhere on that segment and give it no velocity; with EO/IR the
+calibrated tracker gives a straight-flying aircraft a velocity 60 to 70% of the time, honest;
+under rules 12 that velocity would have let a keep-out miss an aircraft that turns or speeds up
+up to a fifth of the time a minute ahead, which rules 13 closes, at the cost of an aircraft
+with a velocity blocking about as far as one without at a minute or more. **What they cannot
+support**: that velocity is the lever for aircraft (altitude is: an aircraft above the
+keep-out's ceiling clears it, which needs a height-finding radar or a transponder), any figure
+for a real radar or aircraft, or anything about a turning aircraft's displayed velocity (it lags
+the turn; the constant-velocity models have no turn model).
 
 ## Provenance and exclusions
 
