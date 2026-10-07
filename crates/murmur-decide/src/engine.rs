@@ -722,9 +722,10 @@ impl Engine {
     /// Give the engine a space segment for collect and cover intents (logged as
     /// `space.loaded` with its identity). Without one, their space check fails closed. Rules
     /// 13: a segment given again keeps the time shift pinned on the first
-    /// ([`SpaceOracle::pinned_shift_days`]): one pinned otherwise is refused, nothing logged
-    /// (the bridge pins once per session; replay flags a pin change between two
-    /// `space.loaded`).
+    /// ([`SpaceOracle::pinned_shift_days`]) and its scenario map: one pinned or mapped
+    /// otherwise is refused, nothing logged (the bridge pins once per session and its map is
+    /// fixed at its start; replay flags either changing between two `space.loaded`), as is one
+    /// whose identity names another pin than it is pinned to.
     pub fn set_space(&mut self, oracle: Box<dyn SpaceOracle + Send>) -> Result<(), EngineError> {
         let days = |d: Option<i64>| d.map_or("none".to_string(), |d| format!("{d:+} d"));
         if self.policy.rules.space_replay() && oracle.segment().pinned_shift_days != oracle.pinned_shift_days() {
@@ -742,6 +743,17 @@ impl Engine {
                 "its pinned time shift can't change within a run (pinned {} at the first load, {} given)",
                 days(held.pinned_shift_days()),
                 days(oracle.pinned_shift_days())
+            )));
+        }
+        // nor its scenario clock (the bridge's map is fixed at its start)
+        if self.policy.rules.space_replay()
+            && let Some(held) = &self.space
+            && held.scenario_map() != oracle.scenario_map()
+        {
+            return Err(EngineError::SpaceSegment(format!(
+                "its scenario clock can't change within a run ({:?} at the first load, {:?} given)",
+                held.scenario_map(),
+                oracle.scenario_map()
             )));
         }
         let map = oracle.scenario_map();

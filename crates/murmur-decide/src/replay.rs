@@ -1894,6 +1894,17 @@ fn replay_inner<S: AsRef<str>>(
                             json(pinned_shift_days),
                         );
                     }
+                    // and the scenario clock is the run's (the bridge's map never changes)
+                    if current_segment.is_some() && map != scenario_map {
+                        bad(
+                            &mut r,
+                            e,
+                            None,
+                            "a mid-log scenario clock change: a space segment loaded with another scenario map than the one loaded first",
+                            json(&map),
+                            json(&scenario_map),
+                        );
+                    }
                     if let Some(prev) = &current_segment
                         && (*pinned_shift_days != pinned || segment.pinned_shift_days != prev.pinned_shift_days)
                     {

@@ -909,8 +909,8 @@ roster and the loiter radius from rules 4 (older logs don't carry them):
 - Space answers' times (rules 13): every answered space input says when its answer was
   computed (`computed_t`); a collect's answer outside a re-check was asked at the scenario
   time of that computation (the last `space.loaded` map), and the `space_query` rule,
-  recomputed, holds it within 5 s of its check; the pinned time shift is the same in every
-  `space.loaded` of the log.
+  recomputed, holds it within 5 s of its check; the pinned time shift (both where a load
+  states it) and the scenario map are the same in every `space.loaded` of the log.
 
 The engine refuses the op states, supersedes and sessions these checks reject
 (`EngineError::NotItsOrder`, `EngineError::NotOnRoster`, nothing logged), so an honest engine
@@ -1400,7 +1400,9 @@ Rules versions:
     the same pin is taken) and replay flags a pin change between two `space.loaded`. A load
     says its pin twice (`pinned_shift_days`, and the segment identity's): both must agree, at
     every load (the review of 10-07 forged the identity's alone and it replayed), and the
-    engine takes no segment whose two disagree.
+    engine takes no segment whose two disagree. The scenario clock is held the same way (the
+    review): the engine refuses a segment whose scenario map is not the first load's (the
+    bridge's is fixed at its start) and replay flags a map change between two `space.loaded`.
   - Stated, not changed: since the review of rules 11 the engine never computes a cover itself
     (a cover's check fails closed without an answer prepared outside the lock), under every
     rules version, 10 and earlier included; replay reads only logged answers and can't tell

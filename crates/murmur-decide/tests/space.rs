@@ -2569,6 +2569,56 @@ fn a_recheck_a_millisecond_before_the_pass_replays_under_a_moving_clock() {
     );
 }
 
+/// The review of rules 13: the scenario clock is the run's, as the pin is: the engine refuses
+/// a segment mapped otherwise than the first (nothing logged), replay flags a mid-log change;
+/// under rules 12 as before.
+#[test]
+fn a_mid_log_scenario_clock_change_is_refused_and_flagged() {
+    let mut run = run(policy(), true);
+    let before = run.log.lines().len();
+    let err = run
+        .engine
+        .set_space(Box::new(segment().with_scenario_offset_ms(60_000)))
+        .unwrap_err();
+    assert!(matches!(err, EngineError::SpaceSegment(_)), "{err}");
+    assert!(err.to_string().contains("its scenario clock can't change within a run"), "{err}");
+    assert_eq!(run.log.lines().len(), before, "nothing logged");
+    assert!(run.engine.scenario_map().is_identity());
+    // a reload on the same clock is taken
+    run.engine
+        .set_space(Box::new(SpaceSegment::new(space_without(25544)).unwrap()))
+        .unwrap();
+    let honest = run.log.text();
+    assert!(replay_str(&honest).unwrap().ok());
+    // forged: the reload on another clock
+    let w = forged_whats(&honest, |ev| {
+        let last = ev
+            .iter()
+            .rposition(|e| matches!(e.body, audit::EventBody::SpaceLoaded { .. }))
+            .unwrap();
+        if let audit::EventBody::SpaceLoaded { scenario, .. } = &mut ev[last].body {
+            *scenario = Some(ScenarioMap::offset(60_000));
+        }
+    });
+    assert!(w.iter().any(|m| m.starts_with("a mid-log scenario clock change")), "{w:?}");
+    // rules 12: taken, and replayed as before
+    let mut p = policy();
+    p.rules.rules_version = REVIEW_FOLLOWUPS_SINCE;
+    let mut old = self::run(p, true);
+    old.engine
+        .set_space(Box::new(segment().with_scenario_offset_ms(60_000)))
+        .unwrap();
+    let r = replay_str_with(
+        &old.log.text(),
+        &ReplayOptions {
+            rules: RulesAccepted::Exactly(REVIEW_FOLLOWUPS_SINCE),
+            ..ReplayOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(r.ok(), "{:#?}", r.mismatches);
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Which {
     First,
