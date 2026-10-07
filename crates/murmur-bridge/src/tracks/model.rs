@@ -134,8 +134,13 @@ const SLANT_CLAMP_SIGMAS: f64 = 3.0;
 /// kept small by the steady model's noise let an unranged track slide kilometres along the
 /// line).
 const RANGE_FRESH_S: f64 = 10.0;
-/// Two radars' bearings range an aircraft when they cross by this much or more, degrees.
-const CROSSING_DEG: f64 = 15.0;
+/// Two radars' bearings range an aircraft when they cross by this much or more, degrees. Where
+/// they cross, the error along them is their errors across them over the crossing's sine: 3.9
+/// times at 15 degrees, 2 at 30. At 15 (the first choice) two radars 12 km out, each 140 to 160
+/// m across, put an aircraft 3 km off its truth at 3.8 of its sigmas, and a keep-out 3 s ahead
+/// missed it by up to 1,235 m (`tracks::tests::calib_air`, round three); at 30 and above none
+/// did, and the classes' honesty and velocity shares were the same.
+const CROSSING_DEG: f64 = 30.0;
 /// A 2D radar's bearings cannot see an aircraft manoeuvre along the line, which only a
 /// position fix measures: once no position fix has come for this long, s, each bearing's
 /// update first widens both models along the line to [`ALONG_Q`] (the models' own noise covers

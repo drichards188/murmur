@@ -487,6 +487,9 @@ pub struct ActFix {
     pub sigma_m: f64,
 }
 
+/// One observer's best fix of an act (lat, lon, its 1-sigma, m) and its sensors that saw it.
+type ObserverFix = ((f64, f64, f64), Vec<String>);
+
 /// Rules 9: what our sensors make of an abstract hostile act by contact `actor` (no weapon is
 /// modelled: the act is an event at the actor's position, now). A sensor that could detect the
 /// actor at this moment observes it with the same range, horizon, domain and probability as a
@@ -502,7 +505,7 @@ pub fn observe_act(p: Params, observers: &[Observer], actor: &ContactTruth, act_
     let key = format!("{act_id}/{}", actor.id);
     let mut sensors = Vec::new();
     // each observer's best fix (lat, lon, its error), and its sensors that saw it
-    let mut per_observer: std::collections::BTreeMap<u64, ((f64, f64, f64), Vec<String>)> = std::collections::BTreeMap::new();
+    let mut per_observer: std::collections::BTreeMap<u64, ObserverFix> = std::collections::BTreeMap::new();
     for o in observers {
         for (si, s) in o.sensors.iter().enumerate() {
             if !matches!(s.kind, SensorType::Radar | SensorType::EoIr | SensorType::Sonar) {

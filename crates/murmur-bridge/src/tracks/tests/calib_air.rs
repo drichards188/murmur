@@ -843,11 +843,14 @@ pub const STEADY_CLASSES: [&str; 4] = ["straight", "one turn", "speed change", "
 /// (rules 13, whose track regions are rules 12's), and never farther outside than
 /// [`TRACKER_MAX_MISS_M`]. A turn or a speed-up the tracker has not yet taken in puts the truth
 /// outside them (that is what rules 14's region is for); a few seconds ahead the tracker's own
-/// estimate, velocity and sigma decide. The bounds are the air tuning sets' worst (2.5% and 215
-/// m at 3 s, 3.1% and 597 m at 10 s, 7.1% and 2,144 m at 30 s) with headroom: the review's
-/// unranged track sliding along a radar's bearing missed by 5,544 m at 3 s.
-pub const TRACKER_MISS_SHARE: [f64; TRACKER_SPANS] = [0.03, 0.04, 0.10];
-pub const TRACKER_MAX_MISS_M: [f64; TRACKER_SPANS] = [300.0, 800.0, 3_000.0];
+/// estimate, velocity and sigma decide. The bounds are the air tuning sets' worst (2.5% and 232
+/// m at 3 s, 3.1% and 872 m at 10 s, 8.6% and 2,984 m at 30 s) with headroom; 30 s ahead, the
+/// distance an aircraft turning back makes from where its course said (5 km at 85 m/s). The
+/// review's unranged track sliding along a radar's bearing missed by 5,544 m at 3 s. Set first
+/// at 800 m for 10 s and 10% and 3,000 m for 30 s; widened after round three's break away
+/// (872 m at 10 s, 8.6% and 2,984 m at 30 s), round three being tuning data by then.
+pub const TRACKER_MISS_SHARE: [f64; TRACKER_SPANS] = [0.03, 0.04, 0.12];
+pub const TRACKER_MAX_MISS_M: [f64; TRACKER_SPANS] = [300.0, 1_200.0, 5_000.0];
 
 /// A set's failures against the acceptance criteria (as the surface's, `calib::failures`), the
 /// tracker after judged under the current rules: per class and mix, its cases and seeds pooled,

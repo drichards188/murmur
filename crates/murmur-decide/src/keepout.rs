@@ -791,14 +791,22 @@ fn track_item(ctx: &Ctx, id: &str, t: &TrackFacts, s: &TrackStanding, alt: Optio
                 "Tracked for only {tracked:.0} s, too short to rule out a manoeuvre, so it could be anywhere within {r} of where it is: up to {speed:.1} m/s for {span:.0} s."
             )
         }
-        ReachKind::NoVelocity => format!(
-            "No velocity estimate yet, so it could be anywhere within {r} of where it is: up to {:.0} m/s for {span:.0} s.",
-            engage::top_speed_mps(t.domain)
-        ),
+        ReachKind::NoVelocity => {
+            let lag = if t.domain == Domain::Air && ec.aircraft_reach() {
+                format!(", and {:.0} m more for the tracker's lag behind an aircraft", engage::AIRCRAFT_LAG_M)
+            } else {
+                String::new()
+            };
+            format!(
+                "No velocity estimate yet, so it could be anywhere within {r} of where it is: up to {:.0} m/s for {span:.0} s{lag}.",
+                engage::top_speed_mps(t.domain)
+            )
+        }
         ReachKind::Aircraft => {
             let (from, to, _) = engage::aircraft_reach_m(engage::aircraft_speed_bound(t, ec), span);
             format!(
-                "An aircraft may turn or speed up at any moment, so it could be anywhere within {r} of where it is: from {from:.1} m/s, up to {to:.1} m/s by the effect time ({span:.0} s)."
+                "An aircraft may turn or speed up at any moment, so it could be anywhere within {r} of where it is: from {from:.1} m/s, up to {to:.1} m/s by the effect time ({span:.0} s), and {:.0} m more for the tracker's lag behind it.",
+                engage::AIRCRAFT_LAG_M
             )
         }
     };

@@ -1,7 +1,8 @@
 //! Decision rules 14 (`AIRCRAFT_REACH_SINCE`, murmur-oho): an aircraft with a velocity also
 //! counts in a keep-out anywhere it reaches from its speed bound (its speed, `keep_out_sigma` of
 //! its velocity's error, and the tracker's lag behind a speed-up), speeding up at a stated bound
-//! to the domain's top speed, whether or not the tracker saw it turn. The scenario is 83
+//! to the domain's top speed, whether or not the tracker saw it turn; every region of an
+//! aircraft adds how far the tracker may lag behind it. The scenario is 83
 //! (`sim/scenarios/engage/83-aircraft-may-turn-back.toml`).
 #![allow(clippy::unwrap_used)]
 
@@ -12,8 +13,8 @@ use std::collections::BTreeMap;
 use common::*;
 use murmur_decide::catalog::Domain;
 use murmur_decide::engage::{
-    AIRCRAFT_LAG_S, AIRCRAFT_SPEEDUP_MPS2, ReachKind, aircraft_reach_m, aircraft_speed_bound, keep_out_tracks, top_speed_mps,
-    track_reach,
+    AIRCRAFT_LAG_M, AIRCRAFT_LAG_S, AIRCRAFT_SPEEDUP_MPS2, ReachKind, aircraft_reach_m, aircraft_speed_bound, keep_out_tracks,
+    top_speed_mps, track_reach,
 };
 use murmur_decide::geo::haversine_m;
 use murmur_decide::*;
@@ -88,22 +89,33 @@ fn an_aircraft_counts_anywhere_it_could_turn_or_speed_up_to() {
     let mut plain = t.clone();
     plain.velocity_sigma_mps = None;
     assert!((aircraft_speed_bound(&plain, &ec) - (50.0 + 2.0 + AIRCRAFT_LAG_S * AIRCRAFT_SPEEDUP_MPS2)).abs() < 1e-9);
-    // the region: its 2-sigma, plus speeding up from the bound at the stated rate to 100 m/s
+    // the region: its 2-sigma, the tracker's lag behind it, plus speeding up from the bound at
+    // the stated rate to 100 m/s
     let r = track_reach(&t, effect_t, &ec).into_iter().find(|r| r.kind == ReachKind::Aircraft).unwrap();
     let (from, to, reach) = aircraft_reach_m(bound, 60.0);
     let t1 = (100.0 - bound) / AIRCRAFT_SPEEDUP_MPS2;
     assert_eq!((from, to), (bound, 100.0));
     assert!((reach - (bound * t1 + 0.5 * AIRCRAFT_SPEEDUP_MPS2 * t1 * t1 + 100.0 * (60.0 - t1))).abs() < 1e-6, "{reach}");
-    assert!((r.radius_m - (40.0 + reach)).abs() < 1e-9, "{}", r.radius_m);
+    assert!((AIRCRAFT_LAG_M - 0.5 * AIRCRAFT_SPEEDUP_MPS2 * AIRCRAFT_LAG_S * AIRCRAFT_LAG_S).abs() < 1e-9);
+    assert!((r.radius_m - (40.0 + AIRCRAFT_LAG_M + reach)).abs() < 1e-9, "{}", r.radius_m);
     assert_eq!(r.center, AT);
-    // never beyond the top speed's reach, which a track without a velocity counts
+    // never beyond the top speed's reach, which a track without a velocity counts (an aircraft
+    // with the tracker's lag too; a boat without)
     let mut lost = t.clone();
     lost.velocity_mps = None;
     let top = track_reach(&lost, effect_t, &ec);
     assert_eq!(top.len(), 1);
     assert_eq!(top[0].kind, ReachKind::NoVelocity);
     assert!(r.radius_m < top[0].radius_m);
-    assert!((top[0].radius_m - (40.0 + top_speed_mps(Domain::Air) * 60.0)).abs() < 1e-9);
+    assert!((top[0].radius_m - (40.0 + AIRCRAFT_LAG_M + top_speed_mps(Domain::Air) * 60.0)).abs() < 1e-9);
+    let top13 = track_reach(&lost, effect_t, &before);
+    assert!((top13[0].radius_m - (40.0 + top_speed_mps(Domain::Air) * 60.0)).abs() < 1e-9, "rules 13: no lag");
+    // the lag never makes it faster than the top speed; its own speed and error may
+    let mut fast = t.clone();
+    fast.velocity_mps = Some([90.0, 0.0]);
+    assert!((aircraft_speed_bound(&fast, &ec) - 100.0).abs() < 1e-9);
+    fast.velocity_mps = Some([120.0, 0.0]);
+    assert!((aircraft_speed_bound(&fast, &ec) - 124.0).abs() < 1e-9);
     // a short span: a few seconds of speeding up
     let (_, to, reach) = aircraft_reach_m(bound, 3.0);
     assert!((to - (bound + 3.0 * AIRCRAFT_SPEEDUP_MPS2)).abs() < 1e-9);

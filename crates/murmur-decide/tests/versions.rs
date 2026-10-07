@@ -1403,7 +1403,7 @@ const SPACE_REPLAY_ENGINE: &str = "v13-space-replay-engine.jsonl";
 #[test]
 fn the_rules_13_engine_log_says_when_every_answer_was_computed() {
     let log = fixture(SPACE_REPLAY_ENGINE);
-    let r = replay_str(&log).unwrap();
+    let r = with(&log, RulesAccepted::Exactly(SPACE_REPLAY_SINCE));
     assert!(r.ok(), "{:?}", r.mismatches);
     assert_eq!(r.rules_version, SPACE_REPLAY_SINCE);
     assert_eq!(r.build.as_ref().map(|b| b.dirty), Some(Some(false)));

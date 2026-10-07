@@ -569,10 +569,11 @@ fn ex_item() -> Item {
 #[test]
 fn every_claim_of_the_explanation_holds_in_a_dry_run() {
     let mut n = Counts::default();
-    // MURMUR_KO_SEED and MURMUR_KO_WORLDS run it longer or on other pictures
+    // MURMUR_KO_SEED and MURMUR_KO_WORLDS run it longer or on other pictures (400: under rules
+    // 14 an aircraft's lag closed the one later-only window the first 240 had)
     let env = |k: &str| std::env::var(k).ok().and_then(|s| s.parse::<u64>().ok());
     let mut rng = Rng(env("MURMUR_KO_SEED").unwrap_or(0x6b6f_2d31_3265));
-    for _ in 0..env("MURMUR_KO_WORLDS").unwrap_or(240) {
+    for _ in 0..env("MURMUR_KO_WORLDS").unwrap_or(400) {
         n.worlds += 1;
         let (w, spec) = random_world(&mut rng);
         let before = w.clone();
