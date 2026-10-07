@@ -2,7 +2,7 @@
 //! situations through murmur-decide's own nomination checks, read-only. Nothing here is part
 //! of the C2 or decides anything for it; the engine's rules are called, never restated.
 //!
-//! `murmur-keepout-probe [--root DIR] [--rules 6,9,12] [--keep-out-m M]` reads one situation per line on
+//! `murmur-keepout-probe [--root DIR] [--rules 6,9,12,14] [--keep-out-m M]` reads one situation per line on
 //! stdin and writes one result per line on stdout for each of its evaluations.
 //!
 //! **A situation** (JSON): `id`, `t_ms` (engine time now), `target` (a track id), `radius_m`,
@@ -24,19 +24,21 @@
 //! flagged (`mismatch`), never silently fixed. Components: `current` (along the velocity,
 //! rules 6), `mean` (along the average velocity, rules 9), `manoeuvre` (anywhere at the
 //! fastest it went, rules 9), `young` (anywhere at its domain's top speed, rules 12),
-//! `no_velocity` (no velocity estimate: anywhere at its domain's top speed, rules 6).
+//! `aircraft` (an aircraft: anywhere it reaches from its own speed, speeding up to the top
+//! speed, rules 14), `no_velocity` (no velocity estimate: anywhere at its domain's top speed,
+//! rules 6).
 //!
-//! Rules 13 (murmur-533): the contacts the tracker dropped (`lost`, from the real tracker's
-//! drops) are the engine's lost contacts under rules 13 and absent before (as the bridge's
+//! Rules 16 (murmur-533): the contacts the tracker dropped (`lost`, from the real tracker's
+//! drops) are the engine's lost contacts under rules 16 and absent before (as the bridge's
 //! picture had them): their regions ([`engage::lost_reach`]: a live track's, and anywhere at
-//! its own plausible speed) are component `lost`. Under rules 13 each evaluation with lost
+//! its own plausible speed) are component `lost`. Under rules 16 each evaluation with lost
 //! contacts also says how the keep-out on tracks would have gone with them all accepted
 //! (`accepted`: what an acceptance, or any rule clearing them all, gives), held only until
 //! 600 s after their drop (`held600`), or counted only with their last fix within 3 km of the
 //! effect point (`near3km`), or counted by the regions along their course alone, as a live
-//! track's (`heading`: the first version of rules 13, before murmur-533's finding; given to the
-//! engine as live tracks with their facts at the drop): `lost_variants`, the engine's own check
-//! on those pictures.
+//! track's (`heading`: the first version of the lost contacts, before murmur-533's finding;
+//! given to the engine as live tracks with their facts at the drop): `lost_variants`, the
+//! engine's own check on those pictures.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufWriter, Write};
@@ -114,7 +116,7 @@ pub struct Situation {
     /// bridge's tracker on their motion instead of `tracks` (the target's stay as given).
     #[serde(default)]
     pub tracker: Option<realtrack::TrackerIn>,
-    /// Rules 13: the contacts the tracker dropped, as the engine keeps them (from the real
+    /// Rules 16: the contacts the tracker dropped, as the engine keeps them (from the real
     /// tracker's drops).
     #[serde(default)]
     pub lost: BTreeMap<String, LostContact>,
@@ -258,6 +260,9 @@ pub fn components(t: &TrackFacts, ec: &EngageRules) -> Vec<&'static str> {
     if ec.followups() && t.mean_velocity_mps.is_none() && t.first_seen_t.is_some() {
         out.push("young");
     }
+    if ec.aircraft_reach() && t.domain == murmur_decide::catalog::Domain::Air {
+        out.push("aircraft");
+    }
     out
 }
 
@@ -311,7 +316,7 @@ fn as_live_tracks(w: &WorldSnapshot) -> WorldSnapshot {
     w
 }
 
-/// Rules 13: the keep-out on tracks of `spec` on `w` with the lost contacts `keep` keeps.
+/// Rules 16: the keep-out on tracks of `spec` on `w` with the lost contacts `keep` keeps.
 fn kot_with(spec: &IntentSpec, w: &WorldSnapshot, cfg: &RulesConfig, keep: impl Fn(&LostContact) -> bool) -> &'static str {
     let mut w = w.clone();
     w.lost_contacts.retain(|_, l| keep(l));
@@ -325,7 +330,7 @@ pub fn evaluate(env: &Env, s: &Situation, base: &WorldSnapshot, version: u32) ->
     let cfg = env.cfgs.get(&version).ok_or_else(|| format!("rules {version} not loaded"))?;
     let spec = nomination(s, base.t);
     let mut w = base.for_intent_with(&spec, &env.terrain, cfg);
-    // rules 13: the engine fills its lost contacts into an engagement's inputs (subset_for
+    // rules 16: the engine fills its lost contacts into an engagement's inputs (subset_for
     // leaves them to it); before, a dropped track was simply not in the picture
     if cfg.lost_contacts() {
         w.lost_contacts = base.lost_contacts.clone();
@@ -394,7 +399,7 @@ pub fn evaluate(env: &Env, s: &Situation, base: &WorldSnapshot, version: u32) ->
             fails = true;
         }
     }
-    // rules 13: the lost contacts' regions (component `lost`), as the keep-out reads them
+    // rules 16: the lost contacts' regions (component `lost`), as the keep-out reads them
     let mut lost_in = 0;
     for (id, l) in &w.lost_contacts {
         if w.tracks.contains_key(id) {
@@ -527,13 +532,13 @@ pub fn with_tracker(env: &Env, mut s: Situation) -> Result<(Situation, Option<Va
     if let Some(t) = target {
         s.tracks.insert(s.target.clone(), t);
     }
-    // rules 13: what the engine keeps of the tracks the bridge dropped
+    // rules 16: what the engine keeps of the tracks the bridge dropped
     s.lost = sim
         .lost
         .into_iter()
         .map(|(id, (facts, at))| {
             let dropped_t = Time((at * 1000.0).round() as i64);
-            (id, LostContact { dropped_t, facts })
+            (id, LostContact { dropped_t, facts, ais: None })
         })
         .collect();
     Ok((s, Some(sim.stats)))
@@ -596,7 +601,7 @@ pub fn region_sizes(env: &Env, q: &RegionQuery) -> Value {
 fn main() -> std::process::ExitCode {
     let mut args = std::env::args().skip(1);
     let mut root = PathBuf::from(".");
-    let mut versions = vec![6, 9, 12, 13];
+    let mut versions = vec![6, 9, 12, 14, 16];
     let mut keep_out_m: Option<f64> = None;
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -612,7 +617,7 @@ fn main() -> std::process::ExitCode {
             // a copy of the policy with another keep-out buffer, metres
             "--keep-out-m" => keep_out_m = args.next().and_then(|v| v.parse().ok()),
             _ => {
-                eprintln!("usage: murmur-keepout-probe [--root DIR] [--rules 6,9,12,13] [--keep-out-m M] < situations.jsonl");
+                eprintln!("usage: murmur-keepout-probe [--root DIR] [--rules 6,9,12,14,16] [--keep-out-m M] < situations.jsonl");
                 return std::process::ExitCode::from(2);
             }
         }
@@ -720,7 +725,7 @@ mod tests {
             manoeuvre: None,
             mean_velocity_mps: vel,
             first_seen_t: Some(now.plus_ms(-600_000)),
-            ais: None,
+            velocity_sigma_mps: None,
         }
     }
 
@@ -823,10 +828,10 @@ mod tests {
         }
     }
 
-    /// Rules 13: a contact the tracker dropped 400 m from the target counts from rules 13 only
+    /// Rules 16: a contact the tracker dropped 400 m from the target counts from rules 16 only
     /// (component `lost`), and with it accepted the keep-out holds again.
     #[test]
-    fn a_dropped_contact_blocks_from_rules_13_until_accepted() {
+    fn a_dropped_contact_blocks_from_rules_16_until_accepted() {
         let now = T0;
         let mut s = situation(Vec::new(), 1200.0);
         let mut f = track(east(400.0), Some([0.0, 0.0]), Time(now.0 - 300_000));
@@ -836,29 +841,30 @@ mod tests {
             LostContact {
                 dropped_t: Time(now.0 - 119_000),
                 facts: f,
+                ais: None,
             },
         );
-        let env = Env::load(&root(), &[12, 13]).expect("env");
+        let env = Env::load(&root(), &[14, 16]).expect("env");
         let lines = run_situation(&env, &s);
         let r = &lines[0]["rules"];
-        assert_eq!(r["12"]["kot"], "pass", "{r}");
-        assert_eq!(r["13"]["kot"], "fail", "{r}");
-        assert!(r["13"].get("mismatch").is_none(), "{r}");
-        assert_eq!(r["13"]["intr"][0][1], "lost");
-        assert_eq!(r["13"]["n_lost_intr"], 1);
-        assert_eq!(r["13"]["lost_variants"]["accepted"], "pass");
-        assert_eq!(r["13"]["lost_variants"]["held600"], "fail");
-        assert_eq!(r["13"]["lost_variants"]["near3km"], "fail");
-        assert_eq!(r["13"]["lost_variants"]["heading"], "fail");
+        assert_eq!(r["14"]["kot"], "pass", "{r}");
+        assert_eq!(r["16"]["kot"], "fail", "{r}");
+        assert!(r["16"].get("mismatch").is_none(), "{r}");
+        assert_eq!(r["16"]["intr"][0][1], "lost");
+        assert_eq!(r["16"]["n_lost_intr"], 1);
+        assert_eq!(r["16"]["lost_variants"]["accepted"], "pass");
+        assert_eq!(r["16"]["lost_variants"]["held600"], "fail");
+        assert_eq!(r["16"]["lost_variants"]["near3km"], "fail");
+        assert_eq!(r["16"]["lost_variants"]["heading"], "fail");
     }
 
     /// murmur-533's finding: a contact last seen steaming away, its course regions clear of the
-    /// keep-out, blocks by its plausible-speed region from rules 13; read as a live track (the
+    /// keep-out, blocks by its plausible-speed region from rules 16; read as a live track (the
     /// `heading` variant) it would pass.
     #[test]
     fn a_lost_contact_last_seen_leaving_blocks_by_its_plausible_speed() {
         let now = T0;
-        let env = Env::load(&root(), &[13]).expect("env");
+        let env = Env::load(&root(), &[16]).expect("env");
         let mut s = situation(Vec::new(), 1200.0);
         // 700 m east of the target, leaving east at 6 m/s, last seen 300 s ago
         let mut f = track(east(700.0), Some([6.0, 0.0]), Time(now.0 - 300_000));
@@ -869,10 +875,11 @@ mod tests {
             LostContact {
                 dropped_t: Time(now.0 - 120_000),
                 facts: f,
+                ais: None,
             },
         );
         let lines = run_situation(&env, &s);
-        let r = &lines[0]["rules"]["13"];
+        let r = &lines[0]["rules"]["16"];
         assert_eq!(r["kot"], "fail", "{r}");
         assert!(r.get("mismatch").is_none(), "{r}");
         assert_eq!(r["lost_variants"]["heading"], "pass", "{r}");

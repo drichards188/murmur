@@ -608,10 +608,47 @@ async fn a_reload_after_the_pass_does_not_miss_a_collected_collect() {
     r.replays();
 }
 
-/// The same elements pinned otherwise are another segment: a running cover is re-checked
-/// on them (and holds); the same pin is the same segment.
+/// Rules 13 on the bridge's own clock (`clock::test_clock`: pinned to the rig's start, its
+/// wall clock stepping back as this host's did, the engine on `clock::wall`): a collect
+/// chosen and dispatched (its answers prepared outside the lock), then re-checked on a
+/// reloaded segment without its satellite and missed. Every decision on an answer says when
+/// it was computed, each collect's request time is that time's scenario time, and the log
+/// replays.
+#[tokio::test(start_paused = true)]
+async fn space_answers_on_the_bridges_own_clock_carry_their_times_and_replay() {
+    let r = rig_clocked(Policy::load(&root().join("sim/policy.toml")).expect("policy"), murmur_decide::AuthMode::Dev, EngineClock::Bridge);
+    let map = ScenarioMap {
+        engine_origin: snapshot::ms(clock::wall()),
+        scenario_origin: t0(),
+        rate: 1.0,
+    };
+    r.d.install_space(fixture_space(), map);
+    let p = r.first_option().await;
+    sleep(Duration::from_secs(3)).await;
+    clock::test_clock::step_utc(-0.7);
+    let out = r.d.submit(&op1(), collect_req(Some(&p.chosen))).await.expect("collect");
+    assert_eq!(out.state, State::Dispatched, "{}", out.intent);
+    for _ in 0..3 {
+        sleep(Duration::from_secs(16)).await;
+        clock::test_clock::step_utc(-0.7);
+        r.d.tick();
+    }
+    r.d.install_space(space_without(p.chosen.norad_id), map);
+    assert_eq!(r.state(out.id), State::Failed);
+    let text = r.log.text();
+    let answered = text.matches("\"status\":\"answered\"").count();
+    assert!(answered >= 4, "{text}");
+    assert_eq!(text.matches("\"computed_t\":").count(), answered);
+    assert!(text.contains("\"phase\":\"dispatched\""));
+    r.replays();
+}
+
+/// The same elements on the same pin are the same segment (only `space.loaded`); pinned
+/// otherwise they would be another, which rules 13 refuses mid-run (`SPACE_REPLAY_SINCE`:
+/// the bridge pins once per session): nothing logged, the cover not re-checked, the segment
+/// the engine and the bridge hold unchanged.
 #[tokio::test]
-async fn another_pin_is_another_segment() {
+async fn another_pin_is_refused_mid_run() {
     let (r, map) = space_rig(60.0);
     let cover = r.d.submit(&op1(), cover_req("wgs", 2)).await.expect("cover");
     assert_eq!(cover.state, State::Dispatched, "{}", cover.intent);
@@ -620,8 +657,11 @@ async fn another_pin_is_another_segment() {
     assert_eq!(r.log.lines().len(), before + 1, "the same segment and pin: only space.loaded");
     assert_eq!(r.op_states(), ["watching"]);
     r.d.install_space(pinned_space(Some(-3)), map);
-    assert_eq!(r.op_states(), ["watching", "rechecked"]);
-    assert!(r.log.text().contains("pinned -3 d"));
+    assert_eq!(r.log.lines().len(), before + 1, "a re-pinned segment refused: nothing logged");
+    assert_eq!(r.op_states(), ["watching"]);
+    assert!(!r.log.text().contains("pinned -3 d"));
+    let held = r.d.space.read().unwrap_or_else(|e| e.into_inner()).clone().expect("a segment");
+    assert_eq!(murmur_decide::SpaceOracle::pinned_shift_days(held.as_ref()), None);
     assert_eq!(r.state(cover.id), State::Dispatched);
     r.replays();
 }

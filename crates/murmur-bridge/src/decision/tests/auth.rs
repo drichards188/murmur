@@ -85,7 +85,7 @@ fn harness_with(idle: Duration, scripted: &[&str], edit: impl FnOnce(&mut Policy
         passkey_origins: crate::auth::passkey_origins("localhost", &default_origins(5173, 8765)),
         study: None,
     };
-    let auth = Auth::new(settings, e.r.d.clone(), c);
+    let auth = Auth::new(settings, e.r.d.clone(), c).expect("auth");
     let app = app(&e, auth.clone());
     H { e, app, auth, file, key }
 }
@@ -635,7 +635,7 @@ async fn removing_or_changing_a_credential_ends_its_sessions() {
 #[tokio::test]
 async fn a_dev_run_says_so_in_run_started_and_has_no_login() {
     let e = engage_rig_auth(None, PathBuf::from("memory"), AuthMode::Dev);
-    let auth = Auth::new(AuthSettings::dev(), e.r.d.clone(), CredentialFile::default());
+    let auth = Auth::new(AuthSettings::dev(), e.r.d.clone(), CredentialFile::default()).expect("auth");
     let h = H {
         app: app(&e, auth.clone()),
         e,

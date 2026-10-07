@@ -1,10 +1,10 @@
-//! Decision rules 13 (`LOST_CONTACT_SINCE`, murmur-533): a contact the tracker drops is not
+//! Decision rules 16 (`LOST_CONTACT_SINCE`, murmur-533): a contact the tracker drops is not
 //! forgotten. The engine logs each drop (`track.dropped`) and holds the contact as lost; every
 //! engagement's keep-out counts it anywhere it could have reached since its last fix; an
 //! operator with engagement authority may accept it for one engagement (`engage.accepted`
 //! naming the contact); a new track with the same AIS identity, unambiguously, retires it
 //! (`track.reacquired`); replay rebuilds all of it from the log, and flags a track that left
-//! the picture without a drop. The scenarios (83 to 88) play the same end to end.
+//! the picture without a drop. The scenarios (84 to 89) play the same end to end.
 #![allow(clippy::unwrap_used)]
 
 mod common;
@@ -46,7 +46,7 @@ fn contact(t: Time, at: LonLat, aff: Affiliation) -> TrackFacts {
         manoeuvre: None,
         mean_velocity_mps: Some([0.0, 0.0]),
         first_seen_t: Some(Time(t.0 - 600_000)),
-        ais: None,
+        velocity_sigma_mps: None,
     }
 }
 
@@ -128,10 +128,9 @@ fn keep_out_tracks(i: &Intent) -> CheckResult {
 /// tracker had then.
 fn drop_ferry(e: &mut Engine, clock: &ManualClock, seen: Time, drop: Time, mmsi: Option<&str>) -> TrackFacts {
     let mut f = contact(seen, toward(TARGET_AT, 0.0, 400.0), Affiliation::Neutral);
-    f.ais = mmsi.and_then(ais);
     f.pos_sigma_m = 190.0;
     clock.set(drop);
-    assert_eq!(e.record_track_drops(vec![("T-0002".into(), f.clone())]).unwrap(), 1);
+    assert_eq!(e.record_track_drops(vec![("T-0002".into(), f.clone(), mmsi.and_then(ais))]).unwrap(), 1);
     f
 }
 
@@ -182,20 +181,20 @@ fn a_dropped_contact_blocks_until_accepted_and_replay_rebuilds_it() {
 }
 
 #[test]
-fn before_rules_13_a_drop_is_not_logged_and_the_contact_is_gone() {
+fn before_rules_16_a_drop_is_not_logged_and_the_contact_is_gone() {
     let clock = ManualClock::new(T0);
-    let (mut e, log) = engine_on(&clock, Some(REVIEW_FOLLOWUPS_SINCE));
+    let (mut e, log) = engine_on(&clock, Some(AIRCRAFT_REACH_SINCE));
     let op1 = e.open_operator_session_with(OperatorId::new("op-1"), Grants { engage: true }).unwrap();
     let f = contact(T0, toward(TARGET_AT, 0.0, 400.0), Affiliation::Neutral);
     clock.set(T0.plus_ms(180_000));
-    assert_eq!(e.record_track_drops(vec![("T-0002".into(), f)]).unwrap(), 0);
+    assert_eq!(e.record_track_drops(vec![("T-0002".into(), f, None)]).unwrap(), 0);
     let now = T0.plus_ms(185_000);
     clock.set(now);
     let id = e.submit(op1.authority(), nomination(), &world(now, &[]), &terrain()).unwrap().id();
     assert_eq!(e.intent(id).unwrap().state(), State::PendingApproval);
     let text = log.text();
     assert!(!text.contains("track.dropped") && !text.contains("lost_contacts"));
-    let r = replay_str_with(&text, &replay::ReplayOptions { rules: RulesAccepted::Exactly(REVIEW_FOLLOWUPS_SINCE), ..Default::default() }).unwrap();
+    let r = replay_str_with(&text, &replay::ReplayOptions { rules: RulesAccepted::Exactly(AIRCRAFT_REACH_SINCE), ..Default::default() }).unwrap();
     assert!(r.ok(), "{:?}", r.mismatches);
 }
 
@@ -204,20 +203,24 @@ fn a_contact_seen_again_is_retired_only_on_an_unambiguous_ais_match() {
     let seen = T0;
     let back = T0.plus_ms(240_000);
     let near = toward(TARGET_AT, 0.0, 300.0);
+    // each other track with the MMSI it carries (all of them here)
     let try_with = |mmsi: Option<&str>, others: Vec<(&str, TrackFacts)>| {
         let clock = ManualClock::new(T0);
         let (mut e, log) = engine_on(&clock, None);
         drop_ferry(&mut e, &clock, seen, T0.plus_ms(180_000), mmsi);
         clock.set(back);
-        let w = world(back, &others.iter().map(|(i, f)| (*i, f.clone())).collect::<Vec<_>>());
+        let mut w = world(back, &others.iter().map(|(i, f)| (*i, f.clone())).collect::<Vec<_>>());
+        for (i, _) in &others {
+            w.track_ais.insert((*i).to_string(), ais("366999501").unwrap());
+        }
         let out = e.step_lost(&w).unwrap();
         let r = replay_str(&log.text()).unwrap();
         assert!(r.ok(), "{:?}", r.mismatches);
         (out, e.lost_contacts().len())
     };
     let again = |mmsi: &str, at: LonLat| {
+        assert_eq!(mmsi, "366999501", "try_with gives every other track this MMSI");
         let mut f = contact(back, at, Affiliation::Neutral);
-        f.ais = ais(mmsi);
         f.first_seen_t = Some(back);
         f.mean_velocity_mps = None;
         f
@@ -264,17 +267,17 @@ fn a_track_that_leaves_the_picture_without_a_drop_is_flagged() {
 }
 
 #[test]
-fn a_rules_13_log_claiming_rules_12_is_caught_by_its_markers() {
+fn a_rules_16_log_claiming_rules_14_is_caught_by_its_markers() {
     let clock = ManualClock::new(T0);
     let (mut e, log) = engine_on(&clock, None);
     drop_ferry(&mut e, &clock, T0, T0.plus_ms(180_000), Some("366999501"));
     let text = log.text().replacen(
         &format!("\"rules_version\":{LOST_CONTACT_SINCE},"),
-        &format!("\"rules_version\":{REVIEW_FOLLOWUPS_SINCE},"),
+        &format!("\"rules_version\":{AIRCRAFT_REACH_SINCE},"),
         1,
     );
     let out = rechain(&text);
-    let r = replay_str_with(&out, &replay::ReplayOptions { rules: RulesAccepted::Exactly(REVIEW_FOLLOWUPS_SINCE), ..Default::default() }).unwrap();
+    let r = replay_str_with(&out, &replay::ReplayOptions { rules: RulesAccepted::Exactly(AIRCRAFT_REACH_SINCE), ..Default::default() }).unwrap();
     assert!(r.mismatches.iter().any(|m| m.what.contains("a track the tracker dropped")), "{:?}", r.mismatches);
 }
 
@@ -291,7 +294,7 @@ fn only_engagement_authority_accepts_a_lost_contact_and_any_operator_revokes_it(
     let id = e.submit(op1.authority(), nomination(), &world(T0.plus_ms(2_000), &[("T-0002", f.clone())]), &terrain()).unwrap().id();
     assert_eq!(e.intent(id).unwrap().state(), State::PendingApproval);
     clock.set(T0.plus_ms(180_000));
-    e.record_track_drops(vec![("T-0002".into(), f.clone())]).unwrap();
+    e.record_track_drops(vec![("T-0002".into(), f.clone(), None)]).unwrap();
     let now = T0.plus_ms(185_000);
     clock.set(now);
     let w = world(now, &[]);
@@ -332,7 +335,7 @@ fn only_engagement_authority_accepts_a_lost_contact_and_any_operator_revokes_it(
 /// on (clear of the keep-out), but it could have turned back and be at the target. It also counts
 /// anywhere it reaches at its own plausible speed (its speed and 2-sigma of its 1 m/s velocity
 /// error, 7 m/s), so the nomination is rejected on that region. A live track with the same facts
-/// keeps the course regions alone (the tracker would see it turn). Scenario 88 plays it.
+/// keeps the course regions alone (the tracker would see it turn). Scenario 89 plays it.
 #[test]
 fn a_lost_contact_counts_anywhere_at_its_own_plausible_speed() {
     let clock = ManualClock::new(T0);
@@ -343,7 +346,7 @@ fn a_lost_contact_counts_anywhere_at_its_own_plausible_speed() {
     f.velocity_mps = Some(away);
     f.mean_velocity_mps = Some(away);
     clock.set(T0.plus_ms(181_000));
-    assert_eq!(e.record_track_drops(vec![("T-0002".into(), f.clone())]).unwrap(), 1);
+    assert_eq!(e.record_track_drops(vec![("T-0002".into(), f.clone(), None)]).unwrap(), 1);
     let now = T0.plus_ms(185_000);
     clock.set(now);
     let w = world(now, &[]);

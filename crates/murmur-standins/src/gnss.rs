@@ -748,18 +748,16 @@ impl Env {
         let root = var("MURMUR_ROOT").map_or_else(|| PathBuf::from("."), PathBuf::from);
         let path =
             |k: &str, default: &str| var(k).map_or_else(|| root.join(default), PathBuf::from);
-        let at = var("MURMUR_AT");
-        let t0_unix = match at.as_deref().map(crate::conditions::parse_time) {
-            Some(Ok(t)) => t,
-            Some(Err(e)) => {
-                println!("gnss: {e}; scenario clock = wall clock");
-                wall_unix()
-            }
-            None => wall_unix(),
-        };
-        let rate = var("MURMUR_RATE")
-            .and_then(|r| r.parse().ok())
-            .unwrap_or(1.0);
+        // the scenario clock as every process reads it (murmur_space::scenario_clock; the
+        // stand-ins refused anything else at startup, so the wall clock here is a library
+        // caller's)
+        let clock = murmur_space::scenario_clock::from_env().unwrap_or_else(|e| {
+            println!("gnss: {e}; scenario clock = wall clock, at 1x");
+            murmur_space::scenario_clock::ScenarioStart { at: None, rate: 1.0 }
+        });
+        let at = clock.at;
+        let t0_unix = clock.at_unix().unwrap_or_else(wall_unix);
+        let rate = clock.rate;
         let mut events = Vec::new();
         let links = path("MURMUR_LINKS", "sim/links.toml");
         let mut files = vec![links];

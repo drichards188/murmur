@@ -45,7 +45,7 @@ use serde::{Deserialize, Serialize};
 use crate::engage::{self, EngageRules};
 use crate::geo::haversine_m;
 use crate::time::Time;
-use crate::world::{Affiliation, TrackFacts};
+use crate::world::{Affiliation, AisIdentity, TrackFacts};
 
 /// A contact the tracker dropped (`track.dropped`), as the keep-out counts it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -56,6 +56,9 @@ pub struct LostContact {
     /// `facts.position.t`), its velocity, uncertainty, identity and affiliation estimate then.
     /// In a decision's inputs its identification is filled from the ledger, as a live track's.
     pub facts: TrackFacts,
+    /// The AIS identity its track carried at the drop (the world's `track_ais`), if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ais: Option<AisIdentity>,
 }
 
 impl LostContact {
@@ -74,8 +77,8 @@ pub struct LostLedger {
 impl LostLedger {
     /// Track `id` dropped at `t` with `facts`. A second drop of the same id (never on the
     /// bridge, whose ids are not reused) replaces the first: it is a newer loss.
-    pub fn record(&mut self, id: &str, facts: TrackFacts, t: Time) {
-        self.contacts.insert(id.to_string(), LostContact { dropped_t: t, facts });
+    pub fn record(&mut self, id: &str, facts: TrackFacts, ais: Option<AisIdentity>, t: Time) {
+        self.contacts.insert(id.to_string(), LostContact { dropped_t: t, facts, ais });
     }
 
     /// Retire lost contact `id` (seen again): what it was.
@@ -112,7 +115,7 @@ impl LostLedger {
             .iter()
             .map(|(id, l)| {
                 let f = facts.remove(id).unwrap_or_else(|| l.facts.clone());
-                (id.clone(), LostContact { dropped_t: l.dropped_t, facts: f })
+                (id.clone(), LostContact { dropped_t: l.dropped_t, facts: f, ais: l.ais.clone() })
             })
             .collect()
     }
@@ -128,14 +131,20 @@ pub struct Reacquired {
 }
 
 /// Every lost contact of `ledger` that a live track of `tracks` (the picture, its
-/// identification filled) is, unambiguously (see the module), in id order. A live track
-/// matches at most one (its MMSI is unique among the lost contacts by the rule itself).
-pub fn reacquisitions(ledger: &LostLedger, tracks: &BTreeMap<String, TrackFacts>, ec: &EngageRules) -> Vec<Reacquired> {
+/// identification filled, with the AIS identities heard for it, `track_ais`) is, unambiguously
+/// (see the module), in id order. A live track matches at most one (its MMSI is unique among
+/// the lost contacts by the rule itself).
+pub fn reacquisitions(
+    ledger: &LostLedger,
+    tracks: &BTreeMap<String, TrackFacts>,
+    track_ais: &BTreeMap<String, AisIdentity>,
+    ec: &EngageRules,
+) -> Vec<Reacquired> {
     ledger
         .contacts
         .iter()
         .filter_map(|(id, lost)| {
-            match_one(id, lost, ledger, tracks, ec).ok().map(|(by_track, evidence)| Reacquired {
+            match_one(id, lost, ledger, tracks, track_ais, ec).ok().map(|(by_track, evidence)| Reacquired {
                 track: id.clone(),
                 by_track,
                 evidence,
@@ -151,22 +160,23 @@ pub fn match_one(
     lost: &LostContact,
     ledger: &LostLedger,
     tracks: &BTreeMap<String, TrackFacts>,
+    track_ais: &BTreeMap<String, AisIdentity>,
     ec: &EngageRules,
 ) -> Result<(String, String), String> {
-    let Some(ais) = &lost.facts.ais else {
+    let Some(ais) = &lost.ais else {
         return Err("it had no AIS identity: nothing names it uniquely".into());
     };
     let others_lost = ledger
         .contacts
         .iter()
-        .filter(|(k, l)| k.as_str() != id && l.facts.ais.as_ref().is_some_and(|a| a.mmsi == ais.mmsi))
+        .filter(|(k, l)| k.as_str() != id && l.ais.as_ref().is_some_and(|a| a.mmsi == ais.mmsi))
         .count();
     if others_lost > 0 {
         return Err(format!("another lost contact also carried MMSI {}", ais.mmsi));
     }
     let claimants: Vec<(&String, &TrackFacts)> = tracks
         .iter()
-        .filter(|(k, t)| k.as_str() != id && t.ais.as_ref().is_some_and(|a| a.mmsi == ais.mmsi))
+        .filter(|(k, _)| k.as_str() != id && track_ais.get(k.as_str()).is_some_and(|a| a.mmsi == ais.mmsi))
         .collect();
     let (tid, t) = match claimants.as_slice() {
         [] => return Err(format!("no track carries MMSI {}", ais.mmsi)),

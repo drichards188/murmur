@@ -249,15 +249,15 @@ pub struct TrackFacts {
     /// older log), judged as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_seen_t: Option<Time>,
-    /// Rules 13: the contact's own AIS identity as our receivers last heard it (what it says it
-    /// is: never verified, a contact may broadcast another's). The engine retires a lost
-    /// contact only on an unambiguous match of it ([`crate::lost`]). Absent: no AIS heard (or a
-    /// log written before rules 13).
+    /// Rules 14: the 1-sigma error of `velocity_mps` in its least certain direction, m/s, as the
+    /// tracker reports it: how much faster than its velocity says an aircraft may be going
+    /// ([`crate::engage::aircraft_reach_m`]). Absent: no velocity, a caller that does not say
+    /// (a scenario: the policy's `track_velocity_sigma_mps` stands in), or an older log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ais: Option<AisIdentity>,
+    pub velocity_sigma_mps: Option<f64>,
 }
 
-/// Rules 13: an AIS identity as received (see [`TrackFacts::ais`]).
+/// Rules 16: an AIS identity as received (see [`WorldSnapshot::track_ais`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AisIdentity {
     pub mmsi: String,
@@ -363,6 +363,11 @@ pub enum SpaceInputs {
     Answered {
         sha256: String,
         answer: Box<SpaceAnswer>,
+        /// Rules 13 ([`crate::rules::SPACE_REPLAY_SINCE`]): the engine time the answer was
+        /// computed at (outside the engine's lock, or by the engine at the check). Absent
+        /// under older rules.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        computed_t: Option<Time>,
     },
 }
 
@@ -391,6 +396,9 @@ pub enum LoggedSpace {
     },
     Answered {
         sha256: String,
+        /// Rules 13: when the answer was computed (engine time); absent in older logs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        computed_t: Option<Time>,
     },
 }
 
@@ -418,6 +426,13 @@ pub struct WorldSnapshot {
     /// only. Empty (and absent in the log) when there are none or in logs from before.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tracks: BTreeMap<String, TrackFacts>,
+    /// Rules 16: the AIS identity each track's contact broadcasts, as our receivers last heard
+    /// it, by track id (what it says it is: never verified, a contact may broadcast another's).
+    /// A track that carries a lost contact's AIS is matched to it ([`crate::lost`]). Kept apart
+    /// from [`TrackFacts`], whose shape the tracker's comparison copies fix. Absent when none
+    /// (and in logs before rules 16).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub track_ais: BTreeMap<String, AisIdentity>,
     /// Engine-filled: the intent's vehicles that have an engagement in play (pending,
     /// approved or dispatched), by the engagement's id. An agent's order on one of them
     /// always goes to a human. Absent when empty.
@@ -457,14 +472,14 @@ pub struct WorldSnapshot {
     /// where the caller gives none (scenarios, tests): carried values then hold.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub identities: BTreeMap<Uid, crate::engage::VehicleIdentity>,
-    /// Engine-filled for an engagement's checks (rules 13, [`crate::lost`]): the contacts the
+    /// Engine-filled for an engagement's checks (rules 16, [`crate::lost`]): the contacts the
     /// tracker dropped that the engine still holds as lost (`track.dropped`, not retired by
     /// `track.reacquired`), by the track id they were dropped under, each with its facts at the
     /// drop (its identification filled from the ledger as a live track's). The keep-out on
     /// tracks counts each anywhere it could have reached since its last fix. Absent when none.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub lost_contacts: BTreeMap<String, crate::lost::LostContact>,
-    /// Engine-filled for an engagement's checks (rules 13): the lost contacts an operator
+    /// Engine-filled for an engagement's checks (rules 16): the lost contacts an operator
     /// accepted for it (`engage.accepted` naming a contact), each since the last fix it names.
     /// The keep-out leaves out a contact lost since exactly then. Absent when none.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -488,6 +503,9 @@ pub struct LoggedInputs {
     /// The track picture the decision was taken against (absent when empty).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tracks: BTreeMap<String, TrackFacts>,
+    /// The AIS identities heard for its tracks (rules 16; absent when none).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub track_ais: BTreeMap<String, AisIdentity>,
     /// The intent's vehicles with an engagement in play (absent when none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub engaged: BTreeMap<Uid, IntentId>,
@@ -509,10 +527,10 @@ pub struct LoggedInputs {
     /// The intent's vehicles spent by their own effect (rules 12; absent when none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub expended: BTreeMap<Uid, IntentId>,
-    /// An engagement's lost contacts (rules 13; absent when none).
+    /// An engagement's lost contacts (rules 16; absent when none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub lost_contacts: BTreeMap<String, crate::lost::LostContact>,
-    /// The lost contacts accepted for this engagement (rules 13; absent when none).
+    /// The lost contacts accepted for this engagement (rules 16; absent when none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub lost_accepted: BTreeMap<String, crate::engage::AcceptedUnknown>,
 }
@@ -530,11 +548,15 @@ impl LoggedInputs {
                 SpaceInputs::Unavailable { reason } => LoggedSpace::Unavailable {
                     reason: reason.clone(),
                 },
-                SpaceInputs::Answered { sha256, .. } => LoggedSpace::Answered {
+                SpaceInputs::Answered {
+                    sha256, computed_t, ..
+                } => LoggedSpace::Answered {
                     sha256: sha256.clone(),
+                    computed_t: *computed_t,
                 },
             },
             tracks: world.tracks.clone(),
+            track_ais: world.track_ais.clone(),
             engaged: world.engaged.clone(),
             waiting: world.waiting.clone(),
             plan: world.plan.clone(),
@@ -564,10 +586,11 @@ impl LoggedInputs {
             LoggedSpace::Unavailable { reason } => SpaceInputs::Unavailable {
                 reason: reason.clone(),
             },
-            LoggedSpace::Answered { sha256 } => match answer(sha256) {
+            LoggedSpace::Answered { sha256, computed_t } => match answer(sha256) {
                 Some(a) => SpaceInputs::Answered {
                     sha256: sha256.clone(),
                     answer: Box::new(a.clone()),
+                    computed_t: *computed_t,
                 },
                 None => SpaceInputs::Unavailable {
                     reason: format!("space answer {sha256} not resolved"),
@@ -581,6 +604,7 @@ impl LoggedInputs {
             terrain: self.terrain.clone(),
             space,
             tracks: self.tracks.clone(),
+            track_ais: self.track_ais.clone(),
             engaged: self.engaged.clone(),
             waiting: self.waiting.clone(),
             plan: self.plan.clone(),
@@ -629,6 +653,7 @@ impl WorldSnapshot {
             // The whole track picture: few tracks, and an engagement decision (Phase E)
             // must be replayable against exactly the picture it saw.
             tracks: self.tracks.clone(),
+            track_ais: self.track_ais.clone(),
             // engine-owned: filled from its own intents
             engaged: BTreeMap::new(),
             waiting: BTreeMap::new(),
@@ -643,7 +668,7 @@ impl WorldSnapshot {
                 .iter()
                 .filter_map(|u| self.identities.get(u).map(|i| (u.clone(), i.clone())))
                 .collect(),
-            // engine-owned (rules 13): filled from its ledger of lost contacts
+            // engine-owned (rules 16): filled from its ledger of lost contacts
             lost_contacts: BTreeMap::new(),
             lost_accepted: BTreeMap::new(),
         }

@@ -12,6 +12,7 @@ pub mod catalog;
 pub mod geo;
 pub mod gnss;
 pub mod orbit;
+pub mod scenario_clock;
 pub mod space;
 pub mod tasking;
 pub mod timemap;

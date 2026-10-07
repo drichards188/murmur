@@ -35,7 +35,7 @@ vehicle gets a callsign (HAWK 1, VIPER 2...) and the console shows callsign, mod
 
 ```bash
 make up FLEET=canaveral
-make goldengate GG_FLEET=full-spectrum AT=2026-06-14T10:00Z   # with real tide/current/wind
+make goldengate GG_FLEET=full-spectrum AT=2026-06-14T10:00:00Z   # with real tide/current/wind
 ```
 
 ## Run it
@@ -61,7 +61,7 @@ MURMUR_AUTH=credentials make up                # open the console and sign in
 An engagement then needs two of them with engagement authority, each re-entering their
 password at the moment they sign; the evaluation's study mode always runs this way.
 
-**Real conditions:** `make goldengate AT=2026-06-14T10:00Z` starts the swarm at the Golden
+**Real conditions:** `make goldengate AT=2026-06-14T10:00:00Z` starts the swarm at the Golden
 Gate from the [tidewater](../tidewater) sibling repo's scenario. `scripts/up.sh` starts
 `tidewater serve` on :8770 (or reuses one already there) for the bridge and the stand-ins, and
 `tidewater drive` so each SITL vehicle gets the real tide current and wind at its position for

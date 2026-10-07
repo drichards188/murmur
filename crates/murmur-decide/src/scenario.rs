@@ -279,8 +279,8 @@ pub struct TrackDef {
     /// appears then: young for its first [`SCENARIO_MEAN_MIN_S`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tracked_s: Option<f64>,
-    /// Rules 13: the AIS identity its contact broadcasts, as our receivers hear it
-    /// ([`TrackFacts::ais`]): what a lost contact is matched again by.
+    /// Rules 16: the AIS identity its contact broadcasts, as our receivers hear it
+    /// ([`WorldSnapshot::track_ais`]): what a lost contact is matched again by.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ais: Option<crate::world::AisIdentity>,
 }
@@ -457,7 +457,7 @@ pub enum Action {
         /// ([`TrackDef::tracked_s`]: 0, a new track).
         #[serde(default)]
         tracked_s: Option<f64>,
-        /// Rules 13: the AIS identity its contact broadcasts.
+        /// Rules 16: the AIS identity its contact broadcasts.
         #[serde(default)]
         ais: Option<crate::world::AisIdentity>,
     },
@@ -958,6 +958,8 @@ struct VehicleSim {
 
 struct TrackSim {
     facts: TrackFacts,
+    /// rules 16: the AIS identity its contact broadcasts (the world's `track_ais`)
+    ais: Option<crate::world::AisIdentity>,
     /// Where the contact really is and how it moves (the estimates are these plus the
     /// run's noise and any scripted velocity error).
     truth: LonLat,
@@ -1855,8 +1857,9 @@ fn track_sim(t: &TrackDef) -> TrackSim {
                 .filter(|s| *s >= SCENARIO_MEAN_MIN_S && !t.no_velocity_estimate)
                 .map(|_| t.velocity),
             first_seen_t: Some(T0.plus_ms(-((t.tracked_s.unwrap_or(SCENARIO_TRACKED_S) * 1000.0).round() as i64))),
-            ais: t.ais.clone(),
+            velocity_sigma_mps: None,
         },
+        ais: t.ais.clone(),
         silent: t.silent,
         no_velocity: t.no_velocity_estimate,
         alt_frozen: t.alt_age_s > 0.0,
@@ -1922,6 +1925,9 @@ fn snapshot(
         f.pos_sigma_m += engage::sigma_growth(&f) * age.max(0.0);
         f.confidence *= (-age.max(0.0) / 60.0).exp();
         w.tracks.insert(id.clone(), f);
+        if let Some(a) = &tr.ais {
+            w.track_ais.insert(id.clone(), a.clone());
+        }
     }
     w
 }
@@ -2399,8 +2405,9 @@ fn act(
             let Some(facts) = w.tracks.get(track).cloned() else {
                 return failures.push(format!("t={s}: drop_track: unknown track {track}"));
             };
+            let ais = w.track_ais.get(track).cloned();
             tracks.remove(track);
-            if let Err(e) = engine.record_track_drops(vec![(track.clone(), facts)]) {
+            if let Err(e) = engine.record_track_drops(vec![(track.clone(), facts, ais)]) {
                 failures.push(format!("t={s}: drop_track {track}: {e}"));
             }
         }
@@ -2484,7 +2491,7 @@ fn act(
                 })
             });
             if let Some(a) = ais {
-                t.facts.ais = Some(a.clone());
+                t.ais = Some(a.clone());
             }
             // rules 12: a track a step makes appears now (or `tracked_s` ago): young, its
             // average velocity comes once tracked long enough

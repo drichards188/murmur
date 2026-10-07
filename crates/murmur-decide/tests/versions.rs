@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 44] = [
+const LOGS: [(&str, u32); 47] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -124,25 +124,33 @@ const LOGS: [(&str, u32); 44] = [
     ("v12-young-track-blocks-scenario-79.jsonl", REVIEW_FOLLOWUPS_SINCE),
     ("v12-refusal-names-queued-order-scenario-81.jsonl", REVIEW_FOLLOWUPS_SINCE),
     ("v12-restore-written-off-scenario-82.jsonl", REVIEW_FOLLOWUPS_SINCE),
-    // rules 13 (lost contacts, murmur-533; the table names the constant; a clean build of
-    // 87ad498): the same scenario; scenario 83, a fishing boat dropped by the tracker by the
-    // target, still blocking; 84, accepted at the nomination; 85, an accepted tour boat seen
-    // again by its AIS under a new track id, retired, the live track aborting the engagement;
-    // 87, accepted while the nomination waits
-    ("v13-engagement-scenario-01.jsonl", LOST_CONTACT_SINCE),
-    ("v13-lost-contact-blocks-scenario-83.jsonl", LOST_CONTACT_SINCE),
-    ("v13-lost-contact-accepted-scenario-84.jsonl", LOST_CONTACT_SINCE),
-    ("v13-lost-contact-reappears-scenario-85.jsonl", LOST_CONTACT_SINCE),
-    ("v13-lost-contact-accepted-waiting-scenario-87.jsonl", LOST_CONTACT_SINCE),
-    // and a live run with its anchors (see the test below)
-    ("v13-lost-contacts-live.jsonl", LOST_CONTACT_SINCE),
+    // rules 13 (space answers held to their time; the table names the constant): the same
+    // scenario, and the engine on the element-set fixture as for rules 11, every answer with
+    // when it was computed (see the test below)
+    ("v13-engagement-scenario-01.jsonl", SPACE_REPLAY_SINCE),
+    ("v13-space-replay-engine.jsonl", SPACE_REPLAY_SINCE),
+    // rules 14 (an aircraft counts anywhere it could turn or speed up to, murmur-oho; the table
+    // names the constant): the same scenario, and scenario 83, an aircraft flying away 2 km from
+    // the effect point rejected by its reach, the same nomination pending once it is 12 km out
+    ("v14-engagement-scenario-01.jsonl", AIRCRAFT_REACH_SINCE),
+    ("v14-aircraft-may-turn-back-scenario-83.jsonl", AIRCRAFT_REACH_SINCE),
+    // rules 16 (lost contacts, murmur-533; 15 is the restart follow-ups', on another branch;
+    // the table names the constant): the same scenario; scenario 84, a fishing boat dropped by
+    // the tracker by the target, still blocking; 85, accepted at the nomination; 86, an
+    // accepted tour boat seen again by its AIS under a new track id, retired, the live track
+    // aborting the engagement; 88, accepted while the nomination waits
+    ("v16-engagement-scenario-01.jsonl", LOST_CONTACT_SINCE),
+    ("v16-lost-contact-blocks-scenario-84.jsonl", LOST_CONTACT_SINCE),
+    ("v16-lost-contact-accepted-scenario-85.jsonl", LOST_CONTACT_SINCE),
+    ("v16-lost-contact-reappears-scenario-86.jsonl", LOST_CONTACT_SINCE),
+    ("v16-lost-contact-accepted-waiting-scenario-88.jsonl", LOST_CONTACT_SINCE),
 ];
 
 /// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
 const V6_AIRSHIP: &str = "v6-airship-nomination-scenario-66.jsonl";
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v13-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v16-engagement-scenario-01.jsonl";
 
 /// The committed scenario log of rules 6 (the lost-link preload).
 const V6_SCENARIO: &str = "v6-engagement-scenario-01.jsonl";
@@ -1122,8 +1130,8 @@ fn rechain_events(mut events: Vec<audit::Event>) -> Vec<audit::Event> {
     events
 }
 
-/// Rules 12, live (murmur-cq3, murmur-qjf and their review), from a clean build of the rules
-/// 12 head, anchored as they ran, stand-ins at the Gate on their own ports. The first of these
+/// Rules 12, live (murmur-cq3, murmur-qjf and their review; replayed with rules 12 accepted),
+/// from a clean build of the rules 12 head, anchored as they ran, stand-ins at the Gate on their own ports. The first of these
 /// runs (`CRASH_1`) started on a `.last-run` pointer left empty (as a crash mid-write leaves
 /// it): it started all the same, recording the pointer as a failed carry (owed, unknown) in
 /// `run.started` and alerting; an operator's orbit took the USV near the fast boat, two
@@ -1272,8 +1280,25 @@ fn a_rules_10_log_claiming_rules_9_still_carries_its_passkeys() {
     }
 }
 
+/// Rules 14 logs nothing new, so a rules 14 log can claim rules 13 without a marker giving it
+/// away; but replay recomputes every decision with the rules claimed, and scenario 83's first
+/// nomination, rejected by the aircraft's reach under rules 14, would have waited for its
+/// signers under rules 13: the claim is caught on the decision itself.
+#[test]
+fn a_rules_14_log_claiming_rules_13_is_caught_where_an_aircraft_decided() {
+    let (now, before) = (AIRCRAFT_REACH_SINCE, AIRCRAFT_REACH_SINCE - 1);
+    let mut ls = lines(&fixture("v14-aircraft-may-turn-back-scenario-83.jsonl"));
+    assert!(ls[0].contains(&format!("\"rules_version\":{now},")));
+    ls[0] = ls[0].replacen(&format!("\"rules_version\":{now},"), &format!("\"rules_version\":{before},"), 1);
+    let r = with(&rechain(&ls), RulesAccepted::Exactly(before));
+    assert!(!r.ok(), "rules 13 would have passed the first nomination");
+    assert!(r.mismatches.iter().any(|m| m.what.contains("keep_out_tracks") || m.what.contains("rejected")), "{:?}", whats(&r));
+    // under its own rules it replays
+    assert!(with(&fixture("v14-aircraft-may-turn-back-scenario-83.jsonl"), RulesAccepted::Exactly(now)).ok());
+}
+
 /// Rules 11, the engine on the element-set fixture (`tests/space.rs`,
-/// `writes_the_rules_11_fixture_when_asked`): an area cover watched to its end, a collect
+/// `writes_the_space_engine_fixture_when_asked`): an area cover watched to its end, a collect
 /// cancelled before its pass, a collect re-checked on a reloaded segment and missed.
 const SPACE_ENGINE: &str = "v11-space-followups-engine.jsonl";
 /// Rules 11, live: stand-ins at the Gate, the space segment from the real cache.
@@ -1380,61 +1405,81 @@ fn a_rules_12_log_claiming_rules_11_still_carries_its_follow_ups() {
     }
 }
 
-/// Rules 13: the committed logs carry the lost contacts as the engine kept them: a drop, an
-/// acceptance naming the contact, a retirement on its AIS; and claimed as rules 12, a log with
-/// any of them is caught by its markers.
+/// Rules 13, the engine on the element-set fixture (`tests/space.rs`,
+/// `writes_the_space_engine_fixture_when_asked`, a clean build): the rules 11 sequence, every
+/// decision on a space answer saying when it was computed.
+const SPACE_REPLAY_ENGINE: &str = "v13-space-replay-engine.jsonl";
+
 #[test]
-fn the_rules_13_logs_carry_lost_contacts_and_cannot_claim_rules_12() {
-    let blocks = fixture("v13-lost-contact-blocks-scenario-83.jsonl");
+fn the_rules_13_engine_log_says_when_every_answer_was_computed() {
+    let log = fixture(SPACE_REPLAY_ENGINE);
+    let r = with(&log, RulesAccepted::Exactly(SPACE_REPLAY_SINCE));
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert_eq!(r.rules_version, SPACE_REPLAY_SINCE);
+    assert_eq!(r.build.as_ref().map(|b| b.dirty), Some(Some(false)));
+    assert_eq!((r.space_cancelled, r.space_rechecked, r.space_missed), (1, 0, 1));
+    assert_eq!(r.space_segments, 2, "the segment reloaded once, on the same pin");
+    let events = parse_log(&log).unwrap();
+    let mut answered = 0;
+    for e in &events {
+        if let EventBody::CheckResult { inputs, .. } | EventBody::PolicyDecision { inputs, .. } = &e.body
+            && let LoggedSpace::Answered { computed_t, .. } = &inputs.space
+        {
+            answered += 1;
+            let c = computed_t.expect("computed_t");
+            assert!(inputs.t.ms_since(c).abs() <= PREPARED_SPACE_MAX_AGE_MS, "{e:?}");
+        }
+    }
+    assert!(answered >= 6, "{answered}");
+    // the re-check on the reloaded segment, its time logged with it
+    let ls = lines(&log);
+    let check = at(&ls, 0, &["\"type\":\"check.result\"", "\"phase\":\"dispatched\"", "\"computed_t\":"]);
+    at(&ls, check, &["\"state\":\"missed\"", "no longer feasible: feasibility: NORAD"]);
+}
+
+/// Rules 13 after rules 12: a log of it claiming 12 is caught by the computation times only
+/// builds of 13 write.
+#[test]
+fn a_rules_13_log_claiming_rules_12_still_carries_its_answers_times() {
+    let (now, before) = (SPACE_REPLAY_SINCE, REVIEW_FOLLOWUPS_SINCE);
+    assert_eq!(before + 1, now, "the version just before");
+    let mut ls = lines(&fixture(SPACE_REPLAY_ENGINE));
+    assert!(ls[0].contains(&format!("\"rules_version\":{now},")));
+    ls[0] = ls[0].replacen(&format!("\"rules_version\":{now},"), &format!("\"rules_version\":{before},"), 1);
+    let r = with(&rechain(&ls), RulesAccepted::Exactly(before));
+    let w = whats(&r);
+    assert!(
+        w.iter().any(|m| m.contains("when a space answer was computed") && m.contains(&format!("only builds of rules {now}"))),
+        "{w:?}"
+    );
+}
+
+/// Rules 16: the committed logs carry the lost contacts as the engine kept them: a drop, an
+/// acceptance naming the contact, a retirement on its AIS; and claimed as rules 14 (the version
+/// before on this branch), a log with any of them is caught by its markers.
+#[test]
+fn the_rules_16_logs_carry_lost_contacts_and_cannot_claim_rules_14() {
+    let blocks = fixture("v16-lost-contact-blocks-scenario-84.jsonl");
     assert!(blocks.contains("\"type\":\"track.dropped\",\"track\":\"T-0002\""));
     assert!(blocks.contains("lost contact T-0002 (neutral, fishing_vessel) could be"), "the check names it");
     let r = replay_str(&blocks).unwrap();
     assert!(r.ok(), "{:?}", r.mismatches);
     assert_eq!(r.lost_contacts, 1);
-    let accepted = fixture("v13-lost-contact-accepted-scenario-84.jsonl");
+    let accepted = fixture("v16-lost-contact-accepted-scenario-85.jsonl");
     assert!(accepted.contains("\"type\":\"engage.accepted\",\"intent\":1,\"contact\":\"T-0002\""));
     assert!(accepted.contains("\"lost_accepted\":{\"T-0002\""));
-    let back = fixture("v13-lost-contact-reappears-scenario-85.jsonl");
+    let back = fixture("v16-lost-contact-reappears-scenario-86.jsonl");
     assert!(back.contains("\"type\":\"track.reacquired\",\"track\":\"T-0002\",\"by_track\":\"T-0005\""));
-    for (name, text) in [("83", &blocks), ("84", &accepted), ("85", &back)] {
+    for (name, text) in [("84", &blocks), ("85", &accepted), ("86", &back)] {
         let mut ls = lines(text);
         let now = format!("\"rules_version\":{LOST_CONTACT_SINCE},");
         assert!(ls[0].contains(&now), "{name}");
-        ls[0] = ls[0].replacen(&now, &format!("\"rules_version\":{REVIEW_FOLLOWUPS_SINCE},"), 1);
-        let r = with(&rechain(&ls), RulesAccepted::Exactly(REVIEW_FOLLOWUPS_SINCE));
+        ls[0] = ls[0].replacen(&now, &format!("\"rules_version\":{AIRCRAFT_REACH_SINCE},"), 1);
+        let r = with(&rechain(&ls), RulesAccepted::Exactly(AIRCRAFT_REACH_SINCE));
         assert!(
             whats(&r).iter().any(|w| w.contains("a track the tracker dropped") || w.contains("lost contacts in decision inputs")),
             "{name}: {:?}",
             whats(&r)
         );
     }
-}
-
-/// Rules 13, live (a clean build of 1a77f8f; stand-ins of the engage demo at the Gate,
-/// `sim/scenarios/golden-gate-lost.toml`, a dev run), anchored as it ran: a fishing boat 400 m
-/// north of where the fast boat holds and a tour boat on AIS go out of view at 4 minutes; the
-/// tracker drops both 180 s later (`track.dropped`); op-1's nomination is rejected on the lost
-/// tour boat, then nominated again accepting both lost contacts (`engage.accepted` naming
-/// each), shown to op-2 and op-3 on their picture tokens, signed and dispatched; the tour boat
-/// comes back into view under its AIS 300 m on, as T-0004, and the lost contact is retired
-/// (`track.reacquired`); the live track, young, counts in the keep-out and the engagement is
-/// aborted before its effect. A clean stop.
-#[test]
-fn the_rules_13_live_log_holds_lost_contacts_until_accepted_or_seen_again() {
-    let name = "v13-lost-contacts-live.jsonl";
-    let text = fixture(name);
-    let a = anchor::verify(&text, &anchors_of(name));
-    assert!(a.ok() && a.shutdown, "{:?}", a.problems);
-    let r = replay_str(&text).unwrap();
-    assert!(r.ok(), "{:?}", r.mismatches);
-    assert_eq!(r.build.as_ref().map(|b| b.dirty), Some(Some(false)));
-    assert_eq!(r.lost_contacts, 2);
-    assert!(text.contains("\"type\":\"track.dropped\",\"track\":\"T-0001\""));
-    assert!(text.contains("\"type\":\"track.dropped\",\"track\":\"T-0002\""));
-    assert!(text.contains("could be 989 m from the effect point"), "rejected on the lost tour boat");
-    for t in ["T-0001", "T-0002"] {
-        assert!(text.contains(&format!("\"type\":\"engage.accepted\",\"intent\":2,\"contact\":\"{t}\"")), "{t}");
-    }
-    assert!(text.contains("\"type\":\"track.reacquired\",\"track\":\"T-0001\",\"by_track\":\"T-0004\""));
-    assert!(text.contains("picture changed: keep_out_tracks: track T-0004 (neutral, ferry)"), "aborted on the live track");
 }

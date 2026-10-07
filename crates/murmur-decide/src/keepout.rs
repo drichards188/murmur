@@ -261,8 +261,8 @@ pub struct Item {
 /// One region of an item at the effect time.
 #[derive(Clone, Debug, Serialize)]
 pub struct Region {
-    /// velocity, mean_velocity, manoeuvre, young, no_velocity (a track); velocity, circling,
-    /// cruise_reach, lost (one of ours).
+    /// velocity, mean_velocity, manoeuvre, young, aircraft, no_velocity (a track); velocity,
+    /// circling, cruise_reach, lost (one of ours).
     pub kind: &'static str,
     pub center: LonLat,
     pub radius_m: f64,
@@ -884,10 +884,24 @@ fn track_item(ctx: &Ctx, id: &str, t: &TrackFacts, s: &TrackStanding, alt: Optio
                 "Tracked for only {tracked:.0} s, too short to rule out a manoeuvre, so it could be anywhere within {r} of where it is: up to {speed:.1} m/s for {span:.0} s."
             )
         }
-        ReachKind::NoVelocity => format!(
-            "No velocity estimate yet, so it could be anywhere within {r} of where it is: up to {:.0} m/s for {span:.0} s.",
-            engage::top_speed_mps(t.domain)
-        ),
+        ReachKind::NoVelocity => {
+            let lag = if t.domain == Domain::Air && ec.aircraft_reach() {
+                format!(", and {:.0} m more for the tracker's lag behind an aircraft", engage::AIRCRAFT_LAG_M)
+            } else {
+                String::new()
+            };
+            format!(
+                "No velocity estimate yet, so it could be anywhere within {r} of where it is: up to {:.0} m/s for {span:.0} s{lag}.",
+                engage::top_speed_mps(t.domain)
+            )
+        }
+        ReachKind::Aircraft => {
+            let (from, to, _) = engage::aircraft_reach_m(engage::aircraft_speed_bound(t, ec), span);
+            format!(
+                "An aircraft may turn or speed up at any moment, so it could be anywhere within {r} of where it is: from {from:.1} m/s, up to {to:.1} m/s by the effect time ({span:.0} s), and {:.0} m more for the tracker's lag behind it.",
+                engage::AIRCRAFT_LAG_M
+            )
+        }
         ReachKind::PlausibleSpeed => {
             let speed = (near.radius_m - k * t.pos_sigma_m) / span.max(1e-9);
             format!(
@@ -941,14 +955,12 @@ fn track_item(ctx: &Ctx, id: &str, t: &TrackFacts, s: &TrackStanding, alt: Optio
         clear_windows: Vec::new(),
         wait: None,
         not_by_waiting: None,
-        other: (blocks && near.kind == ReachKind::NoVelocity).then(|| {
-            "When the tracker has a velocity estimate for it (it gives none while its velocity is uncertain, as in a turn), this reach becomes a prediction along its course.".to_string()
-        }),
+        other: other_remedy(blocks, near.kind, t, ec),
         lost: None,
     }
 }
 
-/// Rules 13: a lost contact as an item: its regions (as a track's, from its facts at the drop),
+/// Rules 16: a lost contact as an item: its regions (as a track's, from its facts at the drop),
 /// since when it is out of view, and what would clear it.
 fn lost_item(ctx: &Ctx, id: &str, l: &crate::lost::LostContact, s: &TrackStanding, alt: Option<EffectAlt>) -> Item {
     let mut item = track_item(ctx, id, &l.facts, s, alt);
@@ -971,11 +983,11 @@ fn lost_item(ctx: &Ctx, id: &str, l: &crate::lost::LostContact, s: &TrackStandin
         track: id.to_string(),
         since: l.since(),
         dropped_t: l.dropped_t,
-        ais: l.facts.ais.as_ref().map(|a| format!("{} ({})", a.mmsi, a.name)),
+        ais: l.ais.as_ref().map(|a| format!("{} ({})", a.mmsi, a.name)),
     });
     if item.blocks {
         item.not_by_waiting = Some("Waiting does not clear it: while it is out of view its reach only grows.".to_string());
-        item.other = Some(match &l.facts.ais {
+        item.other = Some(match &l.ais {
             Some(a) => format!(
                 "An operator with engagement authority accepting it for this engagement would (logged, at the nomination or before the first signature); so would the tracker seeing it again with its AIS identity ({}), unambiguously.",
                 a.mmsi
@@ -993,6 +1005,25 @@ fn after_s(s: f64) -> String {
         format!("{s} s")
     } else {
         format!("{} min {:02} s", s / 60, s.abs() % 60)
+    }
+}
+
+/// What else would clear a track whose reach blocks. A velocity estimate turns a surface or
+/// ground track's reach into a prediction along its course; an aircraft's (rules 14) it does
+/// not: an aircraft counts anywhere it could turn or speed up to, with a velocity or without.
+fn other_remedy(blocks: bool, kind: ReachKind, t: &TrackFacts, ec: &EngageRules) -> Option<String> {
+    if !blocks {
+        return None;
+    }
+    let aircraft = t.domain == Domain::Air && ec.aircraft_reach();
+    match kind {
+        ReachKind::NoVelocity | ReachKind::Aircraft if aircraft => Some(
+            "A velocity estimate would not clear it: an aircraft counts anywhere it could turn or speed up to, with a velocity or without. What would: its altitude, ranged, above the keep-out's ceiling (a radar that measures height), the effect sooner (the platform closer), or the aircraft farther from the point than it could fly by then.".to_string(),
+        ),
+        ReachKind::NoVelocity => Some(
+            "When the tracker has a velocity estimate for it (it gives none while its velocity is uncertain, as in a turn), this reach becomes a prediction along its course.".to_string(),
+        ),
+        _ => None,
     }
 }
 
@@ -1321,7 +1352,7 @@ fn track_why(
     mem: &TrackerMemory,
 ) -> String {
     let then_kinds: Vec<ReachKind> = engage::track_regions(then, w_effect, ec).iter().map(|r| r.kind).collect();
-    let reach = now_kinds.iter().any(|k| ["young", "manoeuvre", "no_velocity"].contains(k));
+    let reach = now_kinds.iter().any(|k| ["young", "manoeuvre", "no_velocity", "aircraft"].contains(k));
     if now_kinds.contains(&"young") && !then_kinds.contains(&ReachKind::Young) {
         format!(
             "by then it has been tracked {:.0} s, long enough for an average velocity: a manoeuvre is no longer assumed",

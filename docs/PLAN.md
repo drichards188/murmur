@@ -269,7 +269,9 @@ in the console (`sim/fleets/contacts-demo.toml` shows coverage gaps at the Gate)
   with the fresh options for a human when its pass is gone), a cover is evaluated at sample
   points over its area (the centroid and the boundary, the least covered point deciding),
   and the space query runs outside the decision lock on the segment the engine holds
-  (`crates/murmur-decide/README.md`, "After dispatch").
+  (`crates/murmur-decide/README.md`, "After dispatch"). Rules 13 (`SPACE_REPLAY_SINCE`): each
+  answer's computation time is logged and bound, re-checks are logged at their guard's
+  instant, the pin is the run's.
 
 Exit: the 30%-loss write-up (murmur-t7d), with numbers.
 
@@ -490,6 +492,29 @@ lost vehicle to the acts that step up (off by default). Passkeys come before a s
 real participants. Live log with anchors:
 `crates/murmur-decide/tests/data/audit/v8-auth-live.jsonl`.
 
+Rules 14, the air tracker calibrated against truth (murmur-oho; `AIRCRAFT_REACH_SINCE`, policy
+schema 7 unchanged; DECISIONS.md "The air tracker is calibrated against truth" and "An aircraft
+counts anywhere it could turn or speed up to"): the bridge's IMM keeps the full covariance; a 2D
+radar's fix of an aircraft (slant range and bearing, no height) is the bearing line it is on,
+no farther out, so one radar alone does not range an aircraft (no velocity, a 1-sigma along the
+segment; ranged only while a position fix, or another radar's bearing across this one, came
+within 10 s) and no track invents an altitude; the air constants are calibrated on aircraft
+motions and sensor mixes with disjoint tuning and held-out seeds (`tracks::tests::calib_air`);
+and an aircraft counts in a keep-out anywhere it reaches from its speed bound (its own velocity
+error and the tracker's measured lag in it, a new logged fact `velocity_sigma_mps`), speeding
+up at a stated bound to the top speed, whether or not it was seen to turn, 3 to 100 s ahead.
+Scenario 83; the keep-out measurement's air variants and the live engagement demo before and
+after in eval/METRICS.md.
+
+Rules 13, space answers held to their time (murmur-der.4, murmur-lsj; `SPACE_REPLAY_SINCE`,
+policy schema 7 unchanged; DECISIONS.md, 10-07): every decision on a space answer logs when
+the answer was computed (`computed_t`), a collect decides only on one computed within 5 s of
+its check and asked at that time (the `space_query` rule, so replay recomputes the bound), a
+re-check is logged at the instant its "has the pass come" guard read the clock, and the
+segment's pinned time shift can't change within a run (the engine refuses, replay flags it).
+This closes Phase E's last open item (murmur-der.4). Fixtures in
+`crates/murmur-decide/tests/data/audit/v13-*`.
+
 Rules 12, the reviews' follow-ups (murmur-q05, -9m0, -jfi, -cq3, -qjf, -54l;
 `REVIEW_FOLLOWUPS_SINCE`, after the space follow-ups took 11; policy schema 7 unchanged;
 DECISIONS.md, the entries of 10-06 and their review): a platform spent by its own effect is
@@ -551,7 +576,11 @@ step_up_factor = "passkey"` requires it (default `password`, which takes either)
 explicit, logged override allows a password (never evidence); the evaluation counts a study
 run only with the participant's passkey at every step-up. The relying party is `localhost`
 (WebAuthn takes no IP address): passkeys work at the console's localhost origin. Live log with
-anchors: `crates/murmur-decide/tests/data/audit/v10-passkeys-live.jsonl`.
+anchors: `crates/murmur-decide/tests/data/audit/v10-passkeys-live.jsonl`. After the security
+review (murmur-i58, 10-07): a login's options don't say which ids exist or hold a passkey
+(decoys drawn like real credentials under a key kept beside the credential file; a wrong
+answer refused in the same words), and their issuance is limited per id without letting a
+stranger turn an operator away (four live per id, the newest served again past that).
 
 Rules 9, rule-based identification with human review (user direction 10-05: minimize
 manual approvals; `RULE_ID_SINCE`, policy schema 6; `crates/murmur-decide/src/ident.rs`,

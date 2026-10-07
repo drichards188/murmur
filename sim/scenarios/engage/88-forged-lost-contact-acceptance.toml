@@ -1,4 +1,4 @@
-# Rules 13: op-1 nominates while a fishing boat 1.5 km north of the target is out of view but
+# Rules 16: op-1 nominates while a fishing boat 1.5 km north of the target is out of view but
 # not yet dropped; once the tracker drops it, op-1 (engagement authority) accepts the lost
 # contact while the nomination waits with no signature (`engage.accepted` naming it, since its
 # last fix); op-2 and op-3 are shown the acceptance and sign; the effect is released.

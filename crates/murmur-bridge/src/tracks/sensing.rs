@@ -218,6 +218,10 @@ pub struct Detection {
     /// When the fix was taken, by the clock of the truth it was drawn from (the message's
     /// `t`); None: unknown (the tracker then dates it by its arrival).
     pub measured_t: Option<f64>,
+    /// A 2D radar's plot of an aircraft: where the radar was (lat, lon). The radar measured
+    /// the slant range and the bearing, not the height, so the plot (`lat`, `lon`) is at the
+    /// slant range on the bearing: the aircraft is on that bearing, no farther out.
+    pub slant_from: Option<(f64, f64)>,
 }
 
 /// The AIS message as received: identity only, nothing about its truthfulness.
@@ -400,8 +404,20 @@ pub fn detect(
                     normal(p.seed, p.tick, o.uid, &c.id, salt | 0x1_0000),
                     normal(p.seed, p.tick, o.uid, &c.id, salt | 0x2_0000),
                 );
-                let lat = c.lat + sigma * nn / 111_320.0;
-                let lon = c.lon + sigma * ne / (111_320.0 * c.lat.to_radians().cos());
+                // a 2D radar measures an aircraft's slant range and bearing, not its height: it
+                // plots it at the slant range on the bearing, farther out than it is by the
+                // height's share (its error along the range and across it the same as for a
+                // contact on the water, whose plot is where it is)
+                let slant = s.kind == SensorType::Radar && c.domain == Domain::Air && !s.height;
+                let (lat, lon) = if slant {
+                    let m_per_lon = 111_320.0 * o.lat.to_radians().cos();
+                    let (de, dn) = ((c.lon - o.lon) * m_per_lon, (c.lat - o.lat) * 111_320.0);
+                    let bearing = de.atan2(dn) + sigma * ne / r.max(1.0);
+                    let range = (r + sigma * nn).max(0.0);
+                    (o.lat + range * bearing.cos() / 111_320.0, o.lon + range * bearing.sin() / m_per_lon)
+                } else {
+                    (c.lat + sigma * nn / 111_320.0, c.lon + sigma * ne / (111_320.0 * c.lat.to_radians().cos()))
+                };
                 let wrong = s.kind.classifier().is_some() && misclassified(&c.id, s.kind);
                 // no range, no altitude: a contact on the water ranged by a radar (or
                 // reporting itself over AIS) is at sea level; an aircraft's height comes
@@ -441,6 +457,7 @@ pub fn detect(
                     },
                     domain: c.domain,
                     measured_t: None,
+                    slant_from: slant.then_some((o.lat, o.lon)),
                 });
             }
         }
@@ -470,19 +487,25 @@ pub struct ActFix {
     pub sigma_m: f64,
 }
 
+/// One observer's best fix of an act (lat, lon, its 1-sigma, m) and its sensors that saw it.
+type ObserverFix = ((f64, f64, f64), Vec<String>);
+
 /// Rules 9: what our sensors make of an abstract hostile act by contact `actor` (no weapon is
 /// modelled: the act is an event at the actor's position, now). A sensor that could detect the
 /// actor at this moment observes it with the same range, horizon, domain and probability as a
 /// detection (one seeded draw per act and sensor, so a run replays): radar, EO/IR, and sonar
 /// for a contact on or under the water; not AIS (a broadcast, not an observation) nor ESM (a
-/// bearing). The observer with the smallest position error places the act's author, with that
-/// error drawn as for a detection. None: nobody saw it (the C2 never learns of it).
+/// bearing). Each places the author as its detection would, with that error drawn: a 2D radar
+/// observing an aircraft measured only its slant range and bearing, so it places the author at
+/// the middle of the bearing segment the slant range bounds, its error the segment's spread, as
+/// the tracker reads such a fix (murmur-oho). The observer with the smallest error places the
+/// act's author; every other observer gives its own fix. None: nobody saw it (the C2 never
+/// learns of it).
 pub fn observe_act(p: Params, observers: &[Observer], actor: &ContactTruth, act_id: &str) -> Option<ActObservation> {
     let key = format!("{act_id}/{}", actor.id);
     let mut sensors = Vec::new();
-    let mut best: Option<(f64, f64, f64, u64, u64)> = None;
-    // each observer's best sensor (its sigma and draw), and its sensors that saw it
-    let mut per_observer: std::collections::BTreeMap<u64, (f64, u64, Vec<String>)> = std::collections::BTreeMap::new();
+    // each observer's best fix (lat, lon, its error), and its sensors that saw it
+    let mut per_observer: std::collections::BTreeMap<u64, ObserverFix> = std::collections::BTreeMap::new();
     for o in observers {
         for (si, s) in o.sensors.iter().enumerate() {
             if !matches!(s.kind, SensorType::Radar | SensorType::EoIr | SensorType::Sonar) {
@@ -510,42 +533,40 @@ pub fn observe_act(p: Params, observers: &[Observer], actor: &ContactTruth, act_
             }
             sensors.push(format!("{}:{}", o.uid, s.kind.as_str()));
             let sigma = s.kind.sigma_m(r);
-            if best.is_none_or(|b| sigma < b.0) {
-                best = Some((sigma, r, horiz, o.uid, salt));
+            let (ne, nn) = (
+                normal(p.seed, p.tick, o.uid, &key, salt | 0x1_0000),
+                normal(p.seed, p.tick, o.uid, &key, salt | 0x2_0000),
+            );
+            let fix = if s.kind == SensorType::Radar && actor.domain == Domain::Air && !s.height {
+                // the plot at the measured slant range and bearing, read as the middle of the
+                // segment it bounds, give or take its spread (`model::SEGMENT_SIGMAS`, 3)
+                let m_per_lon = 111_320.0 * o.lat.to_radians().cos();
+                let (de, dn) = ((actor.lon - o.lon) * m_per_lon, (actor.lat - o.lat) * 111_320.0);
+                let bearing = de.atan2(dn) + sigma * ne / r.max(1.0);
+                let hi = (r + sigma * nn).max(0.0) + 2.0 * sigma;
+                (o.lat + 0.5 * hi * bearing.cos() / 111_320.0, o.lon + 0.5 * hi * bearing.sin() / m_per_lon, (hi / 3.0).max(sigma))
+            } else {
+                (actor.lat + sigma * nn / 111_320.0, actor.lon + sigma * ne / (111_320.0 * actor.lat.to_radians().cos()), sigma)
+            };
+            let e = per_observer.entry(o.uid).or_insert((fix, Vec::new()));
+            if fix.2 < e.0.2 {
+                e.0 = fix;
             }
-            let e = per_observer.entry(o.uid).or_insert((sigma, salt, Vec::new()));
-            if sigma < e.0 {
-                e.0 = sigma;
-                e.1 = salt;
-            }
-            e.2.push(format!("{}:{}", o.uid, s.kind.as_str()));
+            e.1.push(format!("{}:{}", o.uid, s.kind.as_str()));
         }
     }
-    let (sigma, _, _, uid, salt) = best?;
-    let place = |sigma: f64, uid: u64, salt: u64| {
-        let (ne, nn) = (
-            normal(p.seed, p.tick, uid, &key, salt | 0x1_0000),
-            normal(p.seed, p.tick, uid, &key, salt | 0x2_0000),
-        );
-        (
-            actor.lat + sigma * nn / 111_320.0,
-            actor.lon + sigma * ne / (111_320.0 * actor.lat.to_radians().cos()),
-        )
-    };
-    let (lat, lon) = place(sigma, uid, salt);
+    // the observer with the smallest error places the author (the first of equals)
+    let (&uid, &((lat, lon, sigma), _)) = per_observer.iter().min_by(|a, b| a.1.0.2.total_cmp(&b.1.0.2))?;
     // every other observer's own fix (its best sensor), each drawn on its own
     let fixes: Vec<ActFix> = per_observer
         .into_iter()
         .filter(|(o, _)| *o != uid)
-        .map(|(o, (sig, salt, ss))| {
-            let (lat, lon) = place(sig, o, salt);
-            ActFix {
-                observer: o,
-                sensors: ss,
-                lat,
-                lon,
-                sigma_m: (sig * 10.0).round() / 10.0,
-            }
+        .map(|(o, ((lat, lon, sig), ss))| ActFix {
+            observer: o,
+            sensors: ss,
+            lat,
+            lon,
+            sigma_m: (sig * 10.0).round() / 10.0,
         })
         .collect();
     Some(ActObservation {

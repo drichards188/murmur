@@ -15,7 +15,7 @@ events, a policy variant, the clock, and a storyline of injected situations.
                                                     # bridge re-sends a lost telemetry request
                                                     # after 30 s: 45 s covers one loss)
     ready_timeout_s = 120
-    at = "2026-06-14T10:00Z"                        # scenario clock at start
+    at = "2026-06-14T10:00:00Z"                        # scenario clock at start
     rate = 1                                        # scenario seconds per wall second
     tidewater = "shared"                            # shared (one `tidewater serve` for the batch) | none
     sense_misclass = 0.05                           # optional: MURMUR_SENSE_MISCLASS override
@@ -225,7 +225,7 @@ def load_spec(path: str | Path) -> Spec:
         duration_s=float(raw.get("duration_s", 240)),
         ready_timeout_s=float(raw.get("ready_timeout_s", 120)),
         origin_s=float(raw.get("origin_s", 45)),
-        at=str(raw.get("at", "2026-06-14T10:00Z")),
+        at=str(raw.get("at", "2026-06-14T10:00:00Z")),
         rate=rate,
         tidewater=tidewater,
         sense_misclass=(float(raw["sense_misclass"]) if "sense_misclass" in raw else None),

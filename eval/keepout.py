@@ -1,4 +1,4 @@
-"""Keep-outs against engagements, on generated situations (rules 6, 9 and 12): how often a
+"""Keep-outs against engagements, on generated situations (rules 6, 9, 12 and 14): how often a
 keep-out blocks the nomination of an engagement on a hostile target, as a function of traffic
 density and behaviour, time to effect (the platform's speed and distance), how the tracks are
 made and the rules version; whether a block protected someone; and which keep-out component
@@ -29,7 +29,7 @@ engine reads about it comes from one of two trackers:
 
 `murmur-keepout-probe` (read-only use of murmur-decide) runs every evaluation through the
 engine's own nomination checks (`rules::evaluate` on the engine's view of the world) under
-rules 6, 9 and 12, and lists each protected track's keep-out regions (`engage::track_reach`)
+rules 6, 9, 12 and 14, and lists each protected track's keep-out regions (`engage::track_reach`)
 with how far each reaches into the keep-out.
 
 **Labels (truth).** From the effect point and time the engine predicted, each contact's true
@@ -51,13 +51,13 @@ decides anything here.
 
     python -m eval.run keepout --seeds 1 2 3 4 5 6 7 8 9 10 --situations 50
 
-**Out of view (rules 13, murmur-533).** The `oov` variants send a share of the contacts out of
+**Out of view (rules 16, murmur-533).** The `oov` variants send a share of the contacts out of
 sensor view (`masked_from_s`: from a uniform time before the nomination nothing detects them,
 whatever the range: a radar shadow, clutter, a dark small boat) while they keep moving as their
 behaviour says; the bridge's tracker drops a track unseen for 180 s. They compare, on the same
 evaluations, what each policy for a dropped contact would decide (`LOST_POLICIES`: today's drop,
-rules 13's lost contact held until accepted, the same by a live track's regions alone (along
-its course: the first version of rules 13), held only 600 s after its drop, counted only near
+rules 16's lost contact held until accepted, the same by a live track's regions alone (along
+its course: the first version of the lost contacts), held only 600 s after its drop, counted only near
 the effect point, and every lost contact accepted or cleared), how often a nomination is blocked
 and how often only an acceptance would let it pass, and the misses against the truth, those
 caused by a dropped contact apart.
@@ -128,7 +128,7 @@ TTE_S = (30, 45, 60, 90, 120, 180, 240, 300)
 #: distances (m) for the platform table: each armed platform at each
 DIST_M = (500, 1000, 2000, 3000)
 PLATFORMS = ("magura", "switchblade")
-RULES = (6, 9, 12)
+RULES = (6, 9, 12, 14)
 RADIUS_M = 75.0
 #: the policy's dispatch_delay_s, for placing the platform only (the engine uses the policy's own)
 DISPATCH_S = 20.0
@@ -169,7 +169,12 @@ M_PER_DEG = 111_320.0
 #: how far into the future and past the motions are laid out (s)
 HORIZON_S = 900.0
 
-#: rules 13 (murmur-533): in the out-of-view variants each contact goes out of sensor view with
+#: the rules versions the out-of-view variants compare: the newest before lost contacts (a
+#: dropped track no longer counts) and the lost contacts' (`LOST_CONTACT_SINCE`; 15 is another
+#: branch's, so 14 is the one before on this one)
+OOV_BEFORE = 14
+OOV_LOST = 16
+#: rules 16 (murmur-533): in the out-of-view variants each contact goes out of sensor view with
 #: this chance (`oov_share`), from a uniform time this long before the nomination (s); the
 #: bridge drops a track unseen 180 s, so most are dropped by the nomination, the rest are stale
 OOV_SHARE = 0.3
@@ -178,11 +183,11 @@ OOV_FROM_S = (30.0, 900.0)
 #: before the nomination has been dropped
 DROP_S = 180.0
 #: what each out-of-view policy does with a contact the tracker dropped (the probe's
-#: `lost_variants` under rules 13; `today` is rules 12)
+#: `lost_variants` under rules 16; `today` is rules 14)
 LOST_POLICIES = {
-    "today": "rules 12: a dropped track no longer counts in the keep-out",
-    "held": "rules 13 as shipped: a lost contact counts from its last fix, no cap, until an operator accepts it: by a live track's regions and also anywhere at its own plausible speed (its speed and 2-sigma of its velocity error, or the fastest it went; without a velocity, its domain's top speed)",
-    "heading": "held by a live track's regions alone (along its course and average course; anywhere only if it manoeuvred, was young or had no velocity): the first version of rules 13",
+    "today": "rules 14: a dropped track no longer counts in the keep-out",
+    "held": "rules 16 as shipped: a lost contact counts from its last fix, no cap, until an operator accepts it: by a live track's regions and also anywhere at its own plausible speed (its speed and 2-sigma of its velocity error, or the fastest it went; without a velocity, its domain's top speed)",
+    "heading": "held by a live track's regions alone (along its course and average course; anywhere only if it manoeuvred, was young or had no velocity): the first version of the lost contacts",
     "held600": "a lost contact counts only until 600 s after its drop",
     "near3km": "a lost contact counts only with its last fix within 3 km of the effect point",
     "accepted": "every lost contact accepted (or cleared by any rule: every one here is within the observer's nominal sensor coverage, so clearing covered water clears them all)",
@@ -236,13 +241,13 @@ VARIANTS: dict[str, dict[str, Any]] = {
     "live2-all": _live("all", 2.0, "as live2, all-sensors tracker"),
     "live2-ais": _live("ais", 2.0, "as live2, every contact on AIS"),
     "live2-model": _live("model", 2.0, "as live2, the stated tracker model"),
-    # rules 13 (murmur-533): contacts that go out of sensor view
+    # rules 16 (murmur-533): contacts that go out of sensor view
     "oov": {
         "tracker": "radar",
         "behaviours": ["mixed"],
         "densities": [0.03, 0.1, 0.3],
         "oov_share": OOV_SHARE,
-        "rules": [12, 13],
+        "rules": [OOV_BEFORE, OOV_LOST],
         "max_history_s": 1500.0,
         "about": "radar tracker, mixed traffic; 30% of the contacts go out of sensor view 30 to 900 s before the nomination (most dropped by then)",
     },
@@ -251,7 +256,7 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "behaviours": ["mixed"],
         "densities": [0.03, 0.1, 0.3],
         "oov_share": OOV_SHARE,
-        "rules": [12, 13],
+        "rules": [OOV_BEFORE, OOV_LOST],
         "max_history_s": 1500.0,
         "about": "as oov, the all-sensors tracker",
     },
@@ -260,7 +265,7 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "behaviours": ["mixed"],
         "densities": [0.03, 0.1],
         "near_oov_km": 1.0,
-        "rules": [12, 13],
+        "rules": [OOV_BEFORE, OOV_LOST],
         "max_history_s": 1500.0,
         "about": "the review's case: one contact within 1 km of the target (mixed behaviour) goes out of sensor view 30 to 900 s before the nomination; mixed traffic around, all in view; radar tracker",
     },
@@ -636,7 +641,7 @@ def situation(seed: int, density: float, index: int, behaviour: str, params: dic
     def add(cid: str, kind: str, m: Any, tracked: float, sigma: float, aff: str, aff_c: float, alt_m: float | None = None, masked: float | None = None) -> None:
         kinds[kind] += 1
         if masked is not None:
-            # rules 13: tracked a while before it went out of view
+            # rules 16: tracked a while before it went out of view
             tracked = max(tracked, -masked + move.uniform(60.0, 600.0))
         f = facts(m, tracked, sigma, vel_sigma, move, origin, aff, aff_c, "air" if alt_m is not None else "surface")
         if tracker == "model":
@@ -677,7 +682,7 @@ def situation(seed: int, density: float, index: int, behaviour: str, params: dic
         m, _ = motion("circling", p, move)
         add("C-9999", "circling (near)", m, move.uniform(*TRACKED_S), move.uniform(*sigma_p), "neutral", 0.8)
     if params.get("near_oov_km"):
-        # rules 13, the review's case: a contact near the target goes out of view
+        # rules 16, the review's case: a contact near the target goes out of view
         p = _disc(move, float(params["near_oov_km"]) * 1000.0)
         kind = move.choices([b for b in mix_names if b != "new"], [w for b, w in mix if b != "new"])[0]
         m, tracked = motion(kind, p, move)
@@ -854,6 +859,7 @@ REFERENCE = (
     ("zigzagging at 10 m/s, manoeuvre seen", (10.0, 0.0), (7.0, 0.0), 600.0, 11.0),
     ("young: tracked 20 s, holding", (0.0, 0.0), None, 20.0, None),
     ("new: tracked 3 s, no velocity yet", None, None, 3.0, None),
+    ("an aircraft at 50 m/s, tracked 10 min", (50.0, 0.0), (50.0, 0.0), 600.0, None, "air"),
 )
 REFERENCE_SPANS_S = (30, 60, 90, 120, 180, 240, 300)
 
@@ -862,7 +868,7 @@ def region_sizes(rules: Iterable[int] = RULES, probe: Path = PROBE) -> list[dict
     """How large the engine makes each keep-out region of the reference tracks, by span and
     rules version (`engage::track_reach` through the probe)."""
     lines = []
-    for name, vel, mean, tracked, man in REFERENCE:
+    for name, vel, mean, tracked, man, *domain in REFERENCE:
         t: dict[str, Any] = {
             "position": {"value": [CENTRE_BOX[0][0], CENTRE_BOX[1][0]], "t": T0_MS},
             "pos_sigma_m": 15.0,
@@ -871,7 +877,7 @@ def region_sizes(rules: Iterable[int] = RULES, probe: Path = PROBE) -> list[dict
             "affiliation_confidence": 0.5,
             "identity_confidence": 0.2,
             "sources": ["usv-1:radar"],
-            "domain": "surface",
+            "domain": domain[0] if domain else "surface",
             "last_seen_t": T0_MS,
             "first_seen_t": T0_MS - int(tracked * 1000),
         }
@@ -934,7 +940,7 @@ def record(sit: dict[str, Any], res: dict[str, Any], params: dict[str, Any]) -> 
     out["near_late"] = len(truth["near_late"])
     out["ours_danger"] = len(truth["ours_danger"])
     out["near_kinds"] = sorted({sit["truth"][c]["behaviour"] for c in truth["near"]})
-    # rules 13: of those, contacts out of view and dropped by the nomination (and still stale)
+    # rules 16: of those, contacts out of view and dropped by the nomination (and still stale)
     def dropped(c: str) -> bool:
         m = sit["truth"][c].get("masked_from_s")
         return m is not None and m <= -(DROP_S + 1.0)
@@ -967,7 +973,7 @@ def record(sit: dict[str, Any], res: dict[str, Any], params: dict[str, Any]) -> 
             rec["kof_margin"] = _kof_margin(r.get("kof_detail"), keep_out)
         if r.get("mismatch"):
             rec["mismatch"] = r["mismatch"]
-        # rules 13: the lost contacts, and the other policies' verdicts on the same evaluation
+        # rules 16: the lost contacts, and the other policies' verdicts on the same evaluation
         if r.get("lost_variants"):
             rec["lost"] = r["lost_variants"]
             rec["n_lost"] = r.get("n_lost", 0)
@@ -1066,8 +1072,8 @@ def run(out: Path, seeds: list[int], situations: int, params: dict[str, Any] | N
     }
     summary = summarize(read_records(path), meta)
     summary["regions"] = region_sizes(params["rules"], probe)
-    # rules 13: the out-of-view comparison, where the variant has both versions
-    if {12, 13} <= set(params["rules"]):
+    # rules 16: the out-of-view comparison, where the variant has both versions
+    if {OOV_BEFORE, OOV_LOST} <= set(params["rules"]):
         summary["lost"] = lost_summary(read_records(path))
     (out / "summary.json").write_text(json.dumps(summary, indent=1, default=str))
     return summary
@@ -1109,7 +1115,7 @@ def read_records(path: Path) -> Iterator[dict[str, Any]]:
 
 # ---- summaries ---------------------------------------------------------------------------------------
 
-COMPONENTS = ("current", "mean", "manoeuvre", "young", "no_velocity")
+COMPONENTS = ("current", "mean", "manoeuvre", "young", "aircraft", "no_velocity")
 
 
 def would_pass_without(comp: dict[str, float], drop: str | Iterable[str]) -> bool:
@@ -1454,9 +1460,9 @@ def summarize(records: Iterable[dict[str, Any]], meta: dict[str, Any] | None = N
 
 def lost_policy_blocks(r: dict[str, Any]) -> dict[str, int] | None:
     """Rules 13: whether each of `LOST_POLICIES` blocks this evaluation on tracks (`today`: the
-    rules 12 verdict; `held`: rules 13's; the rest the probe's `lost_variants` under rules 13,
-    rules 13's own verdict where no contact was lost). None without both versions."""
-    a, b = (r.get("rules") or {}).get("12"), (r.get("rules") or {}).get("13")
+    rules 14 verdict; `held`: rules 16's; the rest the probe's `lost_variants` under rules 16,
+    rules 16's own verdict where no contact was lost). None without both versions."""
+    a, b = (r.get("rules") or {}).get(str(OOV_BEFORE)), (r.get("rules") or {}).get(str(OOV_LOST))
     if not a or not b:
         return None
     lv = b.get("lost") or {}
@@ -1486,7 +1492,7 @@ def lost_summary(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
         if pol is None:
             continue
         lost_counts["evaluations"] += 1
-        n_lost = (r["rules"]["13"].get("n_lost") or 0)
+        n_lost = (r["rules"][str(OOV_LOST)].get("n_lost") or 0)
         lost_counts["with_lost"] += int(n_lost > 0)
         lost_counts["lost_contacts"] += n_lost
         truth = {
@@ -1531,7 +1537,7 @@ def lost_summary(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
 
 def table_lost(s: dict[str, Any]) -> str:
     """The out-of-view comparison as plain text."""
-    lines = ["Out of view (rules 13): each policy on the same evaluations; blocked on tracks %, needs an acceptance %, misses (passes with someone truly inside):"]
+    lines = ["Out of view (rules 16): each policy on the same evaluations; blocked on tracks %, needs an acceptance %, misses (passes with someone truly inside):"]
     c = s["counts"]
     lines.append(f"  {c['evaluations']} evaluations, {c['with_lost']} with a lost contact ({c['lost_contacts']} lost contacts counted)")
     lines.append(f"  {'policy':<10}{'blocked':>14}{'needs acc.':>14}{'passes':>8}{'missed line':>13}{'circle':>8}{'win. circle':>12}{'line, dropped':>15}{'circle, dropped':>17}{'win., dropped':>15}")
@@ -1571,18 +1577,21 @@ def sensitivity(summaries: dict[str, dict[str, Any]], behaviour: str = "mixed") 
         dens = sorted({d for d, _, _ in cells})
         if not dens:
             continue
+        # the newest rules version measured (the needed share, misses and thresholds are its)
+        latest = max(v for _, _, v in cells)
         row: dict[str, Any] = {"variant": name, "about": (s.get("params") or {}).get("about"), "by_density": {}}
         for d in dens:
             row["by_density"][f"{d:g}"] = {
-                "blocked": {f"{t}|{v}": (cells.get((d, t, v)) or {}).get("tracks") for t in SENS_TTE for v in (6, 9, 12)},
-                "perfect": {f"{t}": (cells.get((d, t, 12)) or {}).get("perfect") for t in SENS_TTE},
-                "t50": {f"{v}": (thr.get((d, v)) or {}).get("t50") for v in (6, 9, 12)},
-                "t90": {f"{v}": (thr.get((d, v)) or {}).get("t90") for v in (6, 9, 12)},
+                "blocked": {f"{t}|{v}": (cells.get((d, t, v)) or {}).get("tracks") for t in SENS_TTE for v in RULES},
+                "perfect": {f"{t}": (cells.get((d, t, latest)) or {}).get("perfect") for t in SENS_TTE},
+                "t50": {f"{v}": (thr.get((d, v)) or {}).get("t50") for v in RULES},
+                "t90": {f"{v}": (thr.get((d, v)) or {}).get("t90") for v in RULES},
             }
-        row["needed"] = {f"{v}": (blocks.get(v) or {}).get("needed") for v in (6, 9, 12)}
-        row["missed"] = {f"{v}": (blocks.get(v) or {}).get("missed") for v in (6, 9, 12)}
-        row["missed_severe"] = {f"{v}": (blocks.get(v) or {}).get("missed_severe") for v in (6, 9, 12)}
-        row["missed_late"] = {f"{v}": (blocks.get(v) or {}).get("missed_late") for v in (6, 9, 12)}
+        row["latest"] = latest
+        row["needed"] = {f"{v}": (blocks.get(v) or {}).get("needed") for v in RULES}
+        row["missed"] = {f"{v}": (blocks.get(v) or {}).get("missed") for v in RULES}
+        row["missed_severe"] = {f"{v}": (blocks.get(v) or {}).get("missed_severe") for v in RULES}
+        row["missed_late"] = {f"{v}": (blocks.get(v) or {}).get("missed_late") for v in RULES}
         out.append(row)
     return out
 
@@ -1725,19 +1734,24 @@ def table(s: dict[str, Any]) -> str:
     prim = s["variants"].get(s["primary"])
     if prim:
         lines.append(table_variant(prim))
-    lines.append("Sensitivity, mixed traffic: blocked at 30 / 60 / 120 / 180 s, rules 6 | 9 | 12 (perfect knowledge at the same times); needed share of blocks and missed passes, rules 6 / 12:")
+    lines.append(
+        "Sensitivity, mixed traffic: blocked at 30 / 60 / 120 / 180 s, rules 6 | 9 | 12 | 14 where measured (perfect knowledge at the same times); "
+        "needed share of blocks and missed passes, rules 6 / the newest measured (r):"
+    )
     for row in s.get("sensitivity", []):
+        lv = str(row.get("latest", 12))
         for d, x in row["by_density"].items():
             b = x["blocked"]
-            blocked = " | ".join("/".join(_pct(b.get(f"{t}|{v}"), False) for t in SENS_TTE) for v in (6, 9, 12))
+            versions = [v for v in RULES if any(b.get(f"{t}|{v}") for t in SENS_TTE)]
+            blocked = " | ".join("/".join(_pct(b.get(f"{t}|{v}"), False) for t in SENS_TTE) for v in versions)
             perfect = "/".join(_pct(x["perfect"].get(f"{t}"), False) for t in SENS_TTE)
             lines.append(
-                f"  {row['variant']:<16} {d:>5}/km2  {blocked}  (perfect {perfect})  t50 r12 {_t((x['t50'].get('12') or [None])[0])}  t90 r12 {_t((x['t90'].get('12') or [None])[0])}"
+                f"  {row['variant']:<16} {d:>5}/km2  {blocked}  (perfect {perfect})  t50 r{lv} {_t((x['t50'].get(lv) or [None])[0])}  t90 r{lv} {_t((x['t90'].get(lv) or [None])[0])}"
             )
         lines.append(
-            f"  {'':<16} needed {_pct(row['needed'].get('6'), False)} / {_pct(row['needed'].get('12'), False)}%  missed {_miss(row['missed'].get('6'))} / {_miss(row['missed'].get('12'))}"
-            f"  in the circle {_miss(row['missed_severe'].get('6'))} / {_miss(row['missed_severe'].get('12'))}"
-            f"  missed over the release window {_miss(row['missed_late'].get('6'))} / {_miss(row['missed_late'].get('12'))}"
+            f"  {'':<16} needed {_pct(row['needed'].get('6'), False)} / {_pct(row['needed'].get(lv), False)}%  missed {_miss(row['missed'].get('6'))} / {_miss(row['missed'].get(lv))}"
+            f"  in the circle {_miss(row['missed_severe'].get('6'))} / {_miss(row['missed_severe'].get(lv))}"
+            f"  missed over the release window {_miss(row['missed_late'].get('6'))} / {_miss(row['missed_late'].get(lv))}"
         )
     lines.append("")
     for name, v in s["variants"].items():

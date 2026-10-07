@@ -550,7 +550,7 @@ def main():
     ap.add_argument("--tidewater", action="store_true",
                     help="instead: stand-ins in the Golden Gate with tidewater (shoreline, tacking, wind drift)")
     ap.add_argument("--tidewater-url", default="http://127.0.0.1:8876", help="a running `tidewater serve`")
-    ap.add_argument("--at", default="2026-06-14T10:00Z", help="scenario time for --tidewater")
+    ap.add_argument("--at", default="2026-06-14T10:00:00Z", help="scenario time for --tidewater")
     args = ap.parse_args()
     kinds = args.kind or sorted(KINDS)
     workdir = Path(args.workdir)

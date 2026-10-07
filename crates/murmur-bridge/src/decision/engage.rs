@@ -1581,7 +1581,7 @@ impl Decision {
         let Some(tracks) = self.tracks() else { return };
         let drops = tracks.take_drops();
         if !drops.is_empty() {
-            let ids: Vec<String> = drops.iter().map(|(i, _)| i.clone()).collect();
+            let ids: Vec<String> = drops.iter().map(|(i, _, _)| i.clone()).collect();
             match core.engine.record_track_drops(drops) {
                 Ok(n) if n > 0 => println!("tracks: dropped {} (still counted as lost contacts)", ids.join(", ")),
                 Ok(_) => {}
@@ -1634,7 +1634,7 @@ impl Decision {
                     "affiliation": f.affiliation.value,
                     "declared_by": f.declared_by,
                     "velocity_mps": f.velocity_mps,
-                    "ais": f.ais,
+                    "ais": l.ais,
                     "regions": regions,
                 })
             })

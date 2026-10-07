@@ -152,6 +152,7 @@ pub fn build(
     snap.areas = Some(areas.clone());
     if let Some(tracks) = tracks {
         snap.tracks = tracks.facts(t.0 as f64 / 1000.0);
+        snap.track_ais = tracks.ais();
     }
     snap
 }

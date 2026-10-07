@@ -1,4 +1,4 @@
-# Rules 13: 83's fishing boat, dropped by the tracker near the target, but the nominating
+# Rules 16: 84's fishing boat, dropped by the tracker near the target, but the nominating
 # operator (engagement authority) accepts the lost contact for this engagement, explicitly
 # ("T-0002 out of view since t: accept"), logged as `engage.accepted` naming the contact,
 # before the checks, with its facts as the engine holds them. The keep-out leaves it out and

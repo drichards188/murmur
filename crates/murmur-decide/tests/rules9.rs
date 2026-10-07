@@ -58,7 +58,7 @@ fn track(at: LonLat, aff: Affiliation, sigma: f64) -> TrackFacts {
         manoeuvre: None,
         mean_velocity_mps: None,
         first_seen_t: None,
-        ais: None,
+        velocity_sigma_mps: None,
     }
 }
 
@@ -233,13 +233,14 @@ fn rule_declaration_off_decides_as_rules_8_did() {
     let mut n = 0;
     for f in scenario::files(&dir).unwrap() {
         // (and none of rules 12's: young tracks counted as possibly manoeuvring, a platform
-        // spent by its effect taking no order; nor of rules 13's: a dropped contact still counted;
-        // by design)
+        // spent by its effect taking no order, by design; nor rules 14's: an aircraft counted
+        // anywhere it could turn or speed up to; nor rules 16's: a dropped contact still counted)
         let text = std::fs::read_to_string(&f).unwrap();
         if text.contains("action = \"act\"")
             || text.contains("tracked_s")
             || text.starts_with("# Rules 12")
-            || text.starts_with("# Rules 13")
+            || text.starts_with("# Rules 14")
+            || text.starts_with("# Rules 16")
         {
             continue;
         }

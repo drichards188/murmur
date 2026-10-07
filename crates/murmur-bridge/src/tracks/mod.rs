@@ -60,7 +60,7 @@ use axum::extract::{Path as AxPath, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use murmur_decide::{Affiliation, LonLat, Time, TrackFacts};
+use murmur_decide::{Affiliation, AisIdentity, LonLat, Time, TrackFacts};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::watch;
@@ -132,7 +132,7 @@ struct Inner {
     act_records: Vec<Value>,
     /// rules 13: tracks dropped and not yet taken by the decision engine, each with its facts
     /// at the drop (still in the decision facts until taken)
-    dropped: BTreeMap<String, TrackFacts>,
+    dropped: BTreeMap<String, (TrackFacts, Option<AisIdentity>)>,
     /// rules 13: the engine's lost contacts, for display ([`Tracks::mirror_lost`])
     lost: Vec<Value>,
 }
@@ -441,7 +441,7 @@ impl Tracks {
             // rules 13: its facts at the drop, for the decision engine (the estimate only: the
             // engine fills the identification from its ledger)
             if let Some(t) = inner.tracks.remove(&id) {
-                inner.dropped.insert(id.clone(), t.facts(now));
+                inner.dropped.insert(id.clone(), (t.facts(now), t.ais_identity()));
             }
             inner.by_contact.retain(|_, v| *v != id);
         }
@@ -451,8 +451,11 @@ impl Tracks {
     /// the decision engine (`Engine::record_track_drops`); from now on they are the engine's
     /// lost contacts and leave the decision facts. The caller holds the decision lock across
     /// this and the record, so no decision reads a picture without them in either.
-    pub fn take_drops(&self) -> Vec<(String, TrackFacts)> {
-        std::mem::take(&mut lock(&self.inner).dropped).into_iter().collect()
+    pub fn take_drops(&self) -> Vec<(String, TrackFacts, Option<AisIdentity>)> {
+        std::mem::take(&mut lock(&self.inner).dropped)
+            .into_iter()
+            .map(|(id, (f, ais))| (id, f, ais))
+            .collect()
     }
 
     /// Rules 13: show the engine's lost contacts (the console's map and tracks list); each
@@ -568,7 +571,19 @@ impl Tracks {
             .tracks
             .values()
             .map(|t| (t.id.clone(), t.facts(now)))
-            .chain(inner.dropped.iter().map(|(id, f)| (id.clone(), f.clone())))
+            .chain(inner.dropped.iter().map(|(id, (f, _))| (id.clone(), f.clone())))
+            .collect()
+    }
+
+    /// Rules 16: the AIS identity heard for each track of [`Self::facts`] (a dropped one's as
+    /// at its drop), for `WorldSnapshot::track_ais`.
+    pub fn ais(&self) -> BTreeMap<String, AisIdentity> {
+        let inner = lock(&self.inner);
+        inner
+            .tracks
+            .values()
+            .filter_map(|t| t.ais_identity().map(|a| (t.id.clone(), a)))
+            .chain(inner.dropped.iter().filter_map(|(id, (_, a))| a.clone().map(|a| (id.clone(), a))))
             .collect()
     }
 

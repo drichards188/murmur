@@ -620,6 +620,9 @@ pub enum EventBody {
     TrackDropped {
         track: String,
         facts: Box<crate::world::TrackFacts>,
+        /// The AIS identity its track carried then, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ais: Option<crate::world::AisIdentity>,
     },
 
     /// Rules 13: lost contact `track` is live track `by_track` again (an unambiguous AIS
@@ -632,6 +635,9 @@ pub enum EventBody {
         by_track: String,
         world_t: Time,
         tracks: BTreeMap<String, crate::world::TrackFacts>,
+        /// The AIS identities heard for that picture's tracks.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        track_ais: BTreeMap<String, crate::world::AisIdentity>,
         evidence: String,
     },
 

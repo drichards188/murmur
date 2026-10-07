@@ -10,7 +10,7 @@
 //! every contact broadcasting AIS: the tracker's best case). A contact no
 //! sensor detected has no track, so the keep-out does not protect it, as on the bridge.
 //!
-//! Rules 13 (murmur-533): a contact may go out of view (`masked_from_s`: no detection from
+//! Rules 16 (murmur-533): a contact may go out of view (`masked_from_s`: no detection from
 //! then on, whatever the sensors' range: a radar shadow, clutter, a dark small boat), and a
 //! track unseen for the bridge's drop time is dropped as the bridge drops it, at the first
 //! second it has been unseen longer; its facts then are what the engine keeps as a lost
@@ -118,7 +118,7 @@ pub struct ContactIn {
     /// what it is (`light_aircraft`; default a fishing vessel)
     #[serde(default)]
     pub kind: Option<String>,
-    /// rules 13: out of view from this second on (relative to the nomination; no detection by
+    /// rules 16: out of view from this second on (relative to the nomination; no detection by
     /// any sensor from then), absent: in view throughout
     #[serde(default)]
     pub masked_from_s: Option<f64>,
@@ -180,7 +180,7 @@ pub fn observers(cat: &SensorCatalog, input: &TrackerIn) -> Result<Vec<Observer>
 }
 
 /// What [`simulate`] gives: the facts at `now_s` of the contacts with a track, those the
-/// tracker dropped (rules 13: each with its facts at the drop and when, wall s), and the
+/// tracker dropped (rules 16: each with its facts at the drop and when, wall s), and the
 /// tracker's account.
 pub struct Simulated {
     pub facts: BTreeMap<String, TrackFacts>,
@@ -245,7 +245,7 @@ pub fn simulate(cat: &SensorCatalog, input: &TrackerIn, now_s: f64) -> Result<Si
                 misclassification_rate: 0.0,
             };
             let mut dets = sensing::detect(p, &obs, std::slice::from_ref(&truth), &|_, _| false);
-            // rules 13: out of view: nothing detects it
+            // rules 16: out of view: nothing detects it
             if c.masked_from_s.is_some_and(|m| t >= m) {
                 dets.clear();
             }
