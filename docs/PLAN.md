@@ -523,7 +523,11 @@ step_up_factor = "passkey"` requires it (default `password`, which takes either)
 explicit, logged override allows a password (never evidence); the evaluation counts a study
 run only with the participant's passkey at every step-up. The relying party is `localhost`
 (WebAuthn takes no IP address): passkeys work at the console's localhost origin. Live log with
-anchors: `crates/murmur-decide/tests/data/audit/v10-passkeys-live.jsonl`.
+anchors: `crates/murmur-decide/tests/data/audit/v10-passkeys-live.jsonl`. After the security
+review (murmur-i58, 10-07): a login's options don't say which ids exist or hold a passkey
+(decoys drawn like real credentials under a key kept beside the credential file; a wrong
+answer refused in the same words), and their issuance is limited per id without letting a
+stranger turn an operator away (four live per id, the newest served again past that).
 
 Rules 9, rule-based identification with human review (user direction 10-05: minimize
 manual approvals; `RULE_ID_SINCE`, policy schema 6; `crates/murmur-decide/src/ident.rs`,

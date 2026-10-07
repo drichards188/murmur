@@ -52,8 +52,10 @@
 //!   one-time invitation (`murmur-auth passkey-invite`: `/api/auth/passkeys/enroll/options`,
 //!   `/enroll`); logged as `passkey.registered`, kept in the credential file (public key,
 //!   counter). A login by passkey: `/api/auth/login/passkey` gives the options (alike for an id
-//!   without one), `/api/auth/login {"operator", "passkey"}` takes the assertion (`session.opened`,
-//!   `auth: passkey`). A step-up by passkey: `/api/auth/step_up {"act", ...}` gives the options
+//!   without one: decoys drawn like real credentials, the same at every request; at most four
+//!   live per id, a request past that served the newest again, murmur-i58),
+//!   `/api/auth/login {"operator", "passkey"}` takes the assertion (`session.opened`,
+//!   `auth: passkey`; a wrong one refused in the same words whoever the id is). A step-up by passkey: `/api/auth/step_up {"act", ...}` gives the options
 //!   for that act, its challenge derived by the engine from the run, the session and the act
 //!   (an engagement signature: the intent and the picture token); the act's request carries
 //!   `"passkey"`. Each assertion answers its challenge once, within two minutes, from one of the
@@ -346,14 +348,31 @@ struct PendingReg {
     until: Instant,
 }
 
+/// Rules 10, murmur-i58: a passkey login waiting for its answer, by operator id claimed: an
+/// operator's challenge (its options, served again past the bound, and the ceremony), or a
+/// decoy's (its options are drawn again from the id and the challenge).
+enum LoginWait {
+    Real { options: Value, pending: Box<PendingUse> },
+    Decoy,
+}
+
 /// How long a registration may take (finding the authenticator, a PIN, a touch).
 const REGISTRATION_TTL: Duration = Duration::from_secs(300);
 /// At most this many registrations wait at once (a flood can't grow memory).
 const PENDING_CAP: usize = 256;
-/// Passkey logins waiting per operator on the roster, and step-ups per session (the oldest
-/// gives way): bounded by the roster and the sessions, so no stranger can fill a shared cap.
-const PENDING_PER_OPERATOR: usize = 4;
+/// Step-ups waiting per session (the oldest gives way): bounded by the sessions, so no
+/// stranger can fill a shared cap.
 const PENDING_PER_SESSION: usize = 8;
+/// Passkey logins live per id claimed (murmur-i58, [`murmur_auth::Ceremonies`]): a request
+/// past them is served the newest again; and the ids kept (a flood of made-up ones pushes out
+/// the id issued to longest ago, whose next request is a fresh one).
+const LOGINS_PER_ID: usize = 4;
+const LOGIN_IDS_CAP: usize = 10_000;
+
+/// A passkey challenge's lifetime, as the engine checks it.
+fn challenge_ttl() -> Duration {
+    Duration::from_millis(u64::try_from(murmur_decide::CHALLENGE_TTL_MS).unwrap_or(120_000))
+}
 
 /// The credential file as last read, and the digest that tells it changed.
 struct Store {
@@ -383,10 +402,13 @@ pub struct Auth {
     step_limiter: Arc<Mutex<Limiter>>,
     verify: Arc<tokio::sync::Semaphore>,
     /// Rules 10: the WebAuthn relying party (a credentials run with a console origin on the
-    /// relying party's host), its ceremonies in progress, and the secret decoy options for an
-    /// id without a passkey derive from.
+    /// relying party's host), its ceremonies in progress (step-ups by challenge, logins by id
+    /// claimed), and the secret decoy options for an id without a passkey derive from (kept
+    /// beside the credential file, so the decoys stay the same across restarts as real
+    /// operators' credentials do: [`decoy_secret`]).
     rp: Option<murmur_auth::RelyingParty>,
     pending: Mutex<HashMap<String, PendingUse>>,
+    logins: Mutex<murmur_auth::Ceremonies<LoginWait>>,
     registering: Mutex<HashMap<String, PendingReg>>,
     decoy: [u8; 32],
     /// One passkey check-and-store at a time (a counter is compared and written as one step).
@@ -430,6 +452,37 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// size or a time can stay the same across a quick edit, the content can't.
 fn stat(path: &PathBuf) -> Option<String> {
     std::fs::read(path).ok().map(|b| murmur_decide::hash::sha256_hex(&b))
+}
+
+/// The secret passkey decoys are drawn under (murmur-i58): kept beside the credential file
+/// (`<file>.decoy-key`, made once, mode 0600), so an id without a passkey is answered the same
+/// across restarts, as an operator's real credentials are. Not a credential (it only makes the
+/// decoys unpredictable). Without a file to keep it beside, or if it can't be read or made, a
+/// random one for this run (said: the decoys then change at a restart, which tells an observer
+/// comparing before and after which ids are decoys).
+fn decoy_secret(file: Option<&std::path::Path>) -> [u8; 32] {
+    let kept = file.map(|f| {
+        let mut name = f.file_name().unwrap_or_default().to_os_string();
+        name.push(".decoy-key");
+        let p = f.with_file_name(name);
+        murmur_auth::keys::secret_file(&p).map_err(|e| format!("{}: {e}", p.display()))
+    });
+    match kept {
+        Some(Ok(s)) => s,
+        other => {
+            let why = match other {
+                Some(Err(e)) => e,
+                _ => "no credential file to keep it beside".into(),
+            };
+            eprintln!("auth: passkey decoys under a secret for this run only ({why}): they change at a restart");
+            let mut s = [0u8; 32];
+            // (without the OS's random source no session token can be issued either)
+            if let Err(e) = murmur_auth::keys::fill(&mut s) {
+                eprintln!("auth: {e}");
+            }
+            s
+        }
+    }
 }
 
 fn refusal(status: StatusCode, detail: &str) -> Response {
@@ -479,11 +532,7 @@ impl Auth {
                     None
                 }
             });
-        // (without the OS's random source no session token can be issued either)
-        let mut decoy = [0u8; 32];
-        if let Err(e) = murmur_auth::keys::fill(&mut decoy) {
-            eprintln!("auth: {e}");
-        }
+        let decoy = if rp.is_some() { decoy_secret(settings.file.as_deref()) } else { [0u8; 32] };
         Arc::new(Auth {
             settings,
             decision,
@@ -494,6 +543,7 @@ impl Auth {
             verify: Arc::new(tokio::sync::Semaphore::new(VERIFY_AT_ONCE)),
             rp,
             pending: Mutex::new(HashMap::new()),
+            logins: Mutex::new(murmur_auth::Ceremonies::new(LOGINS_PER_ID, challenge_ttl(), LOGIN_IDS_CAP)),
             registering: Mutex::new(HashMap::new()),
             decoy,
             passkey_io: tokio::sync::Mutex::new(()),
@@ -787,56 +837,91 @@ impl Auth {
 
     /// The options for `navigator.credentials.get`: a challenge the engine derives for
     /// `purpose` by `op` (in `session`; none for a login), over `op`'s passkeys, kept until it
-    /// is answered or [`murmur_decide::CHALLENGE_TTL_MS`] passes. For a login by an id with no
-    /// usable passkey (or no such operator), options shaped alike that no authenticator answers.
+    /// is answered or [`murmur_decide::CHALLENGE_TTL_MS`] passes. A login's go through
+    /// [`Self::issue_login`].
     fn issue(&self, op: &OperatorId, session: Option<SessionId>, purpose: murmur_decide::StepUpFor) -> Result<Value, DecisionError> {
         let Some(rp) = &self.rp else {
             return Err(DecisionError::new(409, "this run takes no passkey (a credentials run with a console on localhost does)"));
         };
+        let Some(session) = session else {
+            return self.issue_login(rp, op);
+        };
         self.sweep_pending();
         let entries = self.usable_passkeys(op);
-        let login = session.is_none();
-        let listed = self.decision.roster_entry(op).is_some();
-        if entries.is_empty() || !listed {
-            if login {
-                let mut c = [0u8; 32];
-                murmur_auth::keys::fill(&mut c).map_err(|e| DecisionError::new(500, e.to_string()))?;
-                return Ok(rp.decoy_options(op.as_str(), &self.decoy, c));
-            }
+        if entries.is_empty() || self.decision.roster_entry(op).is_none() {
             return Err(DecisionError::new(
                 409,
                 "you have no passkey this run can use: register one from your operator menu (one registered elsewhere since this run started is usable after a restart)",
             ));
         }
-        let issued = self.decision.passkey_challenge(op, session, purpose, Self::nonce()?)?;
+        let issued = self.decision.passkey_challenge(op, Some(session), purpose, Self::nonce()?)?;
         let (options, pending) = rp
             .start_assertion(&entries, issued.challenge)
             .map_err(|e| DecisionError::new(500, e.to_string()))?;
-        let ttl = Duration::from_millis(u64::try_from(murmur_decide::CHALLENGE_TTL_MS).unwrap_or(120_000));
         let mut waiting = lock(&self.pending);
-        // bounded without a global cap anyone could fill: a few logins waiting per operator on
-        // the roster (an unknown id gets a decoy, nothing kept), a few step-ups per session;
-        // the oldest gives way
-        let cap = if login { PENDING_PER_OPERATOR } else { PENDING_PER_SESSION };
+        // bounded without a global cap anyone could fill: a few step-ups per session (a
+        // session is a login's); the oldest gives way
         let mut mine: Vec<(String, Instant)> = waiting
             .iter()
-            .filter(|(_, p)| p.session == session && (!login || &p.operator == op))
+            .filter(|(_, p)| p.session == Some(session))
             .map(|(k, p)| (k.clone(), p.until))
             .collect();
         mine.sort_by_key(|m| m.1);
-        for (k, _) in mine.iter().take((mine.len() + 1).saturating_sub(cap)) {
+        for (k, _) in mine.iter().take((mine.len() + 1).saturating_sub(PENDING_PER_SESSION)) {
             waiting.remove(k);
         }
         waiting.insert(
             murmur_decide::passkey::b64(&issued.challenge),
             PendingUse {
                 operator: op.clone(),
-                session,
+                session: Some(session),
                 issued,
                 pending,
-                until: now() + ttl,
+                until: now() + challenge_ttl(),
             },
         );
+        Ok(options)
+    }
+
+    /// A login's options (murmur-i58), asked for before anyone is signed in: an operator on
+    /// the roster with a usable passkey gets a challenge over their passkeys, any other id
+    /// (no passkey, no such operator) options alike naming decoys
+    /// ([`murmur_auth::RelyingParty::decoy_options`]: drawn like real credentials, the same at
+    /// every request, keyed by the bridge's secret). Both through one table
+    /// ([`murmur_auth::Ceremonies`]): at most [`LOGINS_PER_ID`] live per id, a request past that
+    /// served the newest again, never refused and nothing pushed out, so a stranger's flood
+    /// can't turn an operator away or take the bridge's decision lock more than that.
+    fn issue_login(&self, rp: &murmur_auth::RelyingParty, op: &OperatorId) -> Result<Value, DecisionError> {
+        let t = now();
+        let mut logins = lock(&self.logins);
+        if let Some(l) = logins.full(op.as_str(), t) {
+            return Ok(match &l.item {
+                LoginWait::Real { options, .. } => options.clone(),
+                LoginWait::Decoy => rp.decoy_options(op.as_str(), &self.decoy, l.challenge),
+            });
+        }
+        let entries = self.usable_passkeys(op);
+        let real = !entries.is_empty() && self.decision.roster_entry(op).is_some();
+        let (challenge, options, item) = if real {
+            let issued = self.decision.passkey_challenge(op, None, murmur_decide::StepUpFor::Login, Self::nonce()?)?;
+            let (options, pending) = rp
+                .start_assertion(&entries, issued.challenge)
+                .map_err(|e| DecisionError::new(500, e.to_string()))?;
+            let challenge = issued.challenge;
+            let wait = PendingUse {
+                operator: op.clone(),
+                session: None,
+                issued,
+                pending,
+                until: t + challenge_ttl(),
+            };
+            (challenge, options.clone(), LoginWait::Real { options, pending: Box::new(wait) })
+        } else {
+            let mut c = [0u8; 32];
+            murmur_auth::keys::fill(&mut c).map_err(|e| DecisionError::new(500, e.to_string()))?;
+            (c, rp.decoy_options(op.as_str(), &self.decoy, c), LoginWait::Decoy)
+        };
+        logins.add(op.as_str(), t, challenge, item);
         Ok(options)
     }
 
@@ -848,8 +933,25 @@ impl Auth {
         Some(v.get("challenge")?.as_str()?.trim_end_matches('=').to_string())
     }
 
-    /// The ceremony `assertion` answers, taken (it is answered once): it must have been issued
-    /// to `op` in `session`.
+    /// The login ceremony of `op` that `assertion` answers, taken (answered once, right or
+    /// wrong): Some for an operator's challenge, None for a decoy's (no authenticator holds
+    /// one of its credentials). Err when `op` has no such challenge waiting.
+    fn take_login(&self, assertion: &Value, op: &OperatorId) -> Result<Option<PendingUse>, String> {
+        let waiting = "no such challenge is waiting (answered already, expired, or another run's): ask again";
+        let c = Self::challenge_of(assertion).ok_or("not a passkey assertion")?;
+        let c: [u8; 32] = murmur_decide::passkey::unb64(&c)
+            .ok()
+            .and_then(|b| b.try_into().ok())
+            .ok_or(waiting)?;
+        match lock(&self.logins).take(op.as_str(), &c, now()) {
+            Some(LoginWait::Real { pending, .. }) => Ok(Some(*pending)),
+            Some(LoginWait::Decoy) => Ok(None),
+            None => Err(waiting.into()),
+        }
+    }
+
+    /// The step-up ceremony `assertion` answers, taken (it is answered once): it must have been
+    /// issued to `op` in `session`.
     fn take_pending(&self, assertion: &Value, op: &OperatorId, session: Option<SessionId>) -> Result<PendingUse, String> {
         self.sweep_pending();
         let c = Self::challenge_of(assertion).ok_or("not a passkey assertion")?;
@@ -1167,11 +1269,11 @@ async fn login_by_passkey(auth: &Arc<Auth>, headers: &HeaderMap, op: OperatorId,
         return locked(d);
     }
     let entry = auth.store.read().unwrap_or_else(|e| e.into_inner()).file.operators.get(&id).cloned();
-    let outcome = match (&entry, auth.take_pending(assertion, &op, None)) {
-        (Some(e), Ok(_)) if e.scripted => Err((false, "a scripted credential holds no passkey".to_string())),
-        (Some(_), Ok(p)) => auth.check_passkey(p, assertion).await,
-        (None, _) => Err((false, "unknown operator".to_string())),
-        (_, Err(why)) => Err((false, why)),
+    // the challenge it answers, taken, an operator's or a decoy's alike (murmur-i58)
+    let outcome = match auth.take_login(assertion, &op) {
+        Ok(Some(p)) => auth.check_passkey(p, assertion).await,
+        Ok(None) => Err((false, "not one of your passkeys (a decoy's challenge: no passkey, or no such operator)".to_string())),
+        Err(why) => Err((false, why)),
     };
     let proof = match outcome {
         Ok(proof) => {
@@ -1188,7 +1290,15 @@ async fn login_by_passkey(auth: &Arc<Auth>, headers: &HeaderMap, op: OperatorId,
             if let Some(d) = lock_now {
                 return locked(d);
             }
-            return refusal(StatusCode::UNAUTHORIZED, &format!("passkey refused: {why}"));
+            // the refusal says no more than that, short of a counter only a valid signature
+            // shows: whether the id exists or holds a passkey is not said (murmur-i58; the
+            // bridge's own log above says why)
+            let detail = if clone {
+                "passkey refused: its counter did not count up (a cloned authenticator?)"
+            } else {
+                "passkey refused: not an answer from one of this operator's passkeys to a challenge waiting for them (ask again)"
+            };
+            return refusal(StatusCode::UNAUTHORIZED, detail);
         }
     };
     let Some(entry) = entry else {

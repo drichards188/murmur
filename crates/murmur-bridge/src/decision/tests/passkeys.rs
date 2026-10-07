@@ -359,52 +359,129 @@ async fn a_passkey_removed_is_logged_and_ends_the_operators_sessions() {
     assert_eq!(r.passkeys_removed, 1);
 }
 
+/// The credential ids a login's options name, decoded.
+fn credential_ids(options: &Value) -> Vec<Vec<u8>> {
+    options["publicKey"]["allowCredentials"]
+        .as_array()
+        .expect("allowCredentials")
+        .iter()
+        .map(|c| murmur_decide::passkey::unb64(c["id"].as_str().expect("an id")).expect("b64"))
+        .collect()
+}
+
+/// murmur-i58: a login's options do not say which ids exist or hold a passkey. One shape for
+/// all; a decoy names as many credentials, as long, as real authenticators make (it named one
+/// of 16 bytes, while real ones are what the authenticator chose: 32 for the virtual one, 64
+/// for a security key), the same at every request; and a wrong answer is refused in the same
+/// words for an id with a passkey and one without.
 #[tokio::test]
 async fn login_options_do_not_say_who_has_a_passkey() {
-    let (h, _) = harness(&["op-2"], |_| {}, None);
+    let (h, mut keys) = harness(&["op-2"], |_| {}, None);
     let (s1, a) = h.local(None, "/api/auth/login/passkey", json!({ "operator": "nobody" })).await;
     let (s2, b) = h.local(None, "/api/auth/login/passkey", json!({ "operator": "op-1" })).await;
     let (s3, c) = h.local(None, "/api/auth/login/passkey", json!({ "operator": "op-2" })).await;
     assert_eq!((s1, s2, s3), (StatusCode::OK, StatusCode::OK, StatusCode::OK));
-    // one shape for all three: the same keys, one credential id each, the same values but the
-    // challenge and the id
+    // one shape for all three: the same keys and values but the challenge and the ids
     let shape = |v: &Value| {
         let mut v = v.clone();
         v["publicKey"]["challenge"] = json!("");
-        v["publicKey"]["allowCredentials"][0]["id"] = json!("");
+        v["publicKey"]["allowCredentials"] = json!([]);
         v
     };
+    let lengths: Vec<usize> = murmur_auth::passkeys::DECOY_ID_LENGTHS.iter().map(|(n, _)| *n).collect();
     for v in [&a, &b, &c] {
-        assert_eq!(v["publicKey"]["allowCredentials"].as_array().map(Vec::len), Some(1), "{v}");
         assert_eq!(v["publicKey"]["userVerification"], "required");
         assert_eq!(shape(v), shape(&c), "{v} against op-2's real options {c}");
+        for e in v["publicKey"]["allowCredentials"].as_array().expect("ids") {
+            assert_eq!(e.as_object().map(|o| o.len()), Some(2), "type and id only: {e}");
+            assert_eq!(e["type"], "public-key");
+        }
     }
+    for v in [&a, &b] {
+        let ids = credential_ids(v);
+        assert!((1..=3).contains(&ids.len()), "{v}");
+        assert!(ids.iter().all(|i| lengths.contains(&i.len())), "{v}");
+    }
+    // the same ids at every request (as a real operator's), and across ids drawn like real
+    // ones: several lengths, sometimes more than one credential
+    let (_, a2) = h.local(None, "/api/auth/login/passkey", json!({ "operator": "nobody" })).await;
+    assert_eq!(credential_ids(&a2), credential_ids(&a));
+    let mut seen_lengths = std::collections::BTreeSet::new();
+    let mut seen_counts = std::collections::BTreeSet::new();
+    for i in 0..60 {
+        let (_, o) = h.local(None, "/api/auth/login/passkey", json!({ "operator": format!("someone-{i}") })).await;
+        let ids = credential_ids(&o);
+        seen_counts.insert(ids.len());
+        seen_lengths.extend(ids.iter().map(Vec::len));
+    }
+    assert!(seen_lengths.len() >= 3 && seen_counts.len() >= 2, "{seen_lengths:?} {seen_counts:?}");
     // nothing logged for any of them (a challenge is not an act)
     assert_eq!(h.log().lines().count(), 1, "{}", h.log());
+    // a wrong answer, refused alike: a decoy's challenge answered by an authenticator that
+    // does not hold the decoy, and op-2's own challenge answered with op-2's credential id but
+    // a signature that is not op-2's (both what a stranger can make)
+    let mut stranger = SoftAuthenticator::new("stranger");
+    let decoy_answer = stranger.assertion_json("localhost", LOCAL, &challenge(&a2));
+    let mut forged = keys.remove("op-2").expect("op-2's").assertion_json("localhost", LOCAL, &challenge(&c));
+    let sig = murmur_decide::passkey::unb64(forged["response"]["signature"].as_str().expect("sig")).expect("b64");
+    let mut bad = sig.clone();
+    if let Some(last) = bad.last_mut() {
+        *last ^= 1;
+    }
+    forged["response"]["signature"] = json!(murmur_decide::passkey::b64(&bad));
+    let (sa, _, va) = h.call("POST", "/api/auth/login", Some(json!({ "operator": "nobody", "passkey": decoy_answer })), &[("origin", LOCAL)]).await;
+    let (sc, _, vc) = h.call("POST", "/api/auth/login", Some(json!({ "operator": "op-2", "passkey": forged })), &[("origin", LOCAL)]).await;
+    assert_eq!((sa, sc), (StatusCode::UNAUTHORIZED, StatusCode::UNAUTHORIZED));
+    assert_eq!(va, vc, "the same refusal for an id without a passkey and one with");
+    // and a made-up challenge alike
+    let (_, _, vm) = h
+        .call("POST", "/api/auth/login", Some(json!({ "operator": "op-1", "passkey": stranger.assertion_json("localhost", LOCAL, &[9u8; 32]) })), &[("origin", LOCAL)])
+        .await;
+    assert_eq!(vm, vc);
 }
 
-/// Ceremonies waiting are bounded per operator (logins) and per session (step-ups), not by a
-/// shared cap a stranger could fill: past the bound the oldest gives way.
+/// murmur-i58: a login's options are limited per id without turning its operator away: at
+/// most four live per id, a request past them served the newest again (never refused, and the
+/// operator's own challenge never pushed out), ids without a passkey alike; step-ups stay
+/// bounded per session.
 #[tokio::test]
-async fn waiting_ceremonies_are_bounded_per_operator_the_oldest_giving_way() {
+async fn login_options_are_limited_per_id_and_a_flood_cannot_turn_the_operator_away() {
     let (h, mut keys) = harness(&["op-2"], |_| {}, None);
     let mut k2 = keys.remove("op-2").expect("op-2's");
-    let mut options = Vec::new();
-    for _ in 0..5 {
-        let (s, o) = h.local(None, "/api/auth/login/passkey", json!({ "operator": "op-2" })).await;
-        assert_eq!(s, StatusCode::OK);
-        options.push(o);
+    let ask = |op: String| {
+        let h = &h;
+        async move {
+            let (s, o) = h.local(None, "/api/auth/login/passkey", json!({ "operator": op })).await;
+            assert_eq!(s, StatusCode::OK, "{o}");
+            o
+        }
+    };
+    // the operator's own first, then a stranger's flood for the same id
+    let own = ask("op-2".into()).await;
+    let mut flood = Vec::new();
+    for _ in 0..200 {
+        flood.push(challenge(&ask("op-2".into()).await));
     }
-    // a stranger's requests for ids without passkeys keep nothing: no effect on op-2's
-    for i in 0..50 {
-        let (s, _) = h.local(None, "/api/auth/login/passkey", json!({ "operator": format!("x{i}") })).await;
-        assert_eq!(s, StatusCode::OK);
+    let distinct: std::collections::BTreeSet<&Vec<u8>> = flood.iter().collect();
+    assert_eq!(distinct.len(), 3, "three more issued, then the newest served again");
+    assert!(flood[3..].iter().all(|c| c == &flood[2]), "past the bound: the newest again");
+    // ids without a passkey are limited alike (their options are decoys)
+    let mut decoys = std::collections::BTreeSet::new();
+    for _ in 0..50 {
+        decoys.insert(challenge(&ask("nobody".into()).await));
     }
-    let answer = |o: &Value, k: &mut SoftAuthenticator| json!({ "operator": "op-2", "passkey": k.assertion_json("localhost", LOCAL, &challenge(o)) });
-    let (s, _, v) = h.call("POST", "/api/auth/login", Some(answer(&options[0], &mut k2)), &[("origin", LOCAL)]).await;
-    assert_eq!(s, StatusCode::UNAUTHORIZED, "the oldest gave way: {v}");
-    let (s, _, v) = h.call("POST", "/api/auth/login", Some(answer(&options[4], &mut k2)), &[("origin", LOCAL)]).await;
+    assert_eq!(decoys.len(), 4);
+    // the operator's own challenge still answers: signed in
+    let answer = json!({ "operator": "op-2", "passkey": k2.assertion_json("localhost", LOCAL, &challenge(&own)) });
+    let (s, _, v) = h.call("POST", "/api/auth/login", Some(answer), &[("origin", LOCAL)]).await;
     assert_eq!(s, StatusCode::OK, "{v}");
+    // so does the one the flood was served again (an operator asking then was given it)
+    let answer = json!({ "operator": "op-2", "passkey": k2.assertion_json("localhost", LOCAL, &flood[2]) });
+    let (s, _, v) = h.call("POST", "/api/auth/login", Some(answer), &[("origin", LOCAL)]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // a slot freed: the next request is a fresh challenge, not one already served
+    let next = challenge(&ask("op-2".into()).await);
+    assert!(!distinct.contains(&next) && next != challenge(&own));
     h.replays_authenticated();
 }
 

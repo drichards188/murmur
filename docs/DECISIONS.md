@@ -759,6 +759,41 @@ group. Dates are 2026.
   clock, as it already does for every process (`make goldengate` and the evaluation always
   set it); without it every clock is the wall clock, which runs at 1x by definition. The cost
   is one more variable for a fast run without a scenario, which was never consistent.
+- **A login's options say nothing of who has a passkey, and a flood can't turn an operator
+  away** (10-07, murmur-i58, security review of rules 10; no rules change). The decoy for an
+  id without a passkey named one 16-byte credential id, while real ids are what the
+  authenticator chose (32 bytes for the virtual authenticator, 64 for a security key), so the
+  unauthenticated `POST /api/auth/login/passkey` told by length which ids exist and hold a
+  passkey; and its issuance was not limited. Decided: (1) a decoy names as many credentials,
+  as long, as real authenticators make, drawn from a fixed table (lengths: 16 bytes for Google
+  Password Manager and the password managers, 20 for iCloud Keychain, 32 for Windows Hello and
+  virtual authenticators, 64 for a YubiKey 5, 65 for an Android phone as a security key;
+  counts: one 70 %, two 25 %, three 5 %), deterministic per id under an HMAC key: repeat
+  queries see the same answer, as for a real operator, and nobody without the key predicts
+  it. Not drawn from the site's own registrations: those change when someone registers, and
+  every decoy would shift at once while real answers did not. The key is kept beside the
+  credential file (`<file>.decoy-key`, made once, 0600, not a credential), because a key per
+  run would change every decoy at a restart and leave real ids alone, which tells them apart
+  to anyone comparing before and after. (2) Issuance is limited per id by what is live, not
+  by a rate: at most four challenges live per id (120 s each); a request past that is served
+  the newest live one again, which costs nothing (no new challenge, no decision lock, no
+  state), and nothing live is pushed out. Not a refusal past a rate: a stranger could keep an
+  id at its limit for free and so lock its operator out. Not "the oldest gives way", as
+  before: four requests then pushed the operator's own challenge out. An id without a passkey
+  goes through the same table with the same bounds (its decoy redrawn from the challenge), so
+  the limit is no oracle either. The bound on what a stranger can still do: they can be
+  served a challenge the operator was also served and answer it wrongly (it is answered
+  once), each such answer a failure on the id's login limit, which they could do with
+  made-up answers anyway; so the one way to keep an operator from signing in by passkey
+  stays the failure lock stated on 10-05 (five failures in 15 minutes: 30 s, doubling to 15
+  minutes). A served-again challenge may have less of its 120 s left; once it lapses the next
+  request is fresh. The table holds 10,000 ids; past that ids with nothing live go first, then
+  the one issued to longest ago (a flood of that size can make an operator mid-ceremony ask
+  again). (3) A wrong answer to a login challenge is refused in the same words whether the id
+  has a passkey, has none, or does not exist (the bridge's own log keeps the reason); only a
+  counter that did not count up, which takes a valid signature, is named. Left as it is,
+  stated: timing (an operator's challenge takes the engine's lock and webauthn-rs's work, a
+  decoy an HMAC; served again, both cost the same).
 - **A keep-out that blocks is explained, read-only; nothing here relaxes one** (10-06,
   murmur-12e; no rules change). Measured live: with manoeuvring civilian traffic near the
   target, keep-outs blocked 77 of 77 nominations while the platform was 1 to 2 km out (a
@@ -1426,7 +1461,9 @@ group. Dates are 2026.
   no authenticator answers), except that an operator with several passkeys gets several ids,
   stated. Challenges waiting for an answer are bounded per operator on the roster (logins,
   four) and per session (step-ups, eight), the oldest giving way, so no stranger can fill a
-  shared cap; an unanswered challenge leaves nothing in the log.
+  shared cap; an unanswered challenge leaves nothing in the log. (Logins revised 10-07,
+  murmur-i58: decoys drawn like real credentials, and a login's options limited per id
+  without the oldest giving way; see "A login's options say nothing of who has a passkey".)
 - **What a step-up must be is policy; a study requires a passkey** (10-05, user decision;
   policy schema 7, `PASSKEY_SCHEMA_SINCE`). `[approval] step_up_factor = "password"` (shipped,
   the default for normal credentials runs) takes the password again or a passkey (at least as

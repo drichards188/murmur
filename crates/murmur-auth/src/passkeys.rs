@@ -96,6 +96,56 @@ impl std::fmt::Display for Refused {
     }
 }
 
+/// The credential id lengths (bytes) a decoy draws from, with weights (percent): what the
+/// authenticators people sign in with make for an ES256 passkey. 16: Google Password Manager
+/// and the password managers (a UUID); 20: iCloud Keychain; 32: Windows Hello, and browsers'
+/// virtual authenticators; 64: a YubiKey 5; 65: an Android phone as a security key. A real
+/// operator's ids are whatever their authenticator chose, so a decoy is told from them by
+/// neither its length nor its count, short of knowing which authenticators a site's people
+/// use.
+pub const DECOY_ID_LENGTHS: [(usize, u32); 5] = [(16, 25), (20, 25), (32, 25), (64, 15), (65, 10)];
+
+/// How many passkeys a decoy names, with weights (percent): most people register one device,
+/// some a second, few a third.
+pub const DECOY_COUNTS: [(usize, u32); 3] = [(1, 70), (2, 25), (3, 5)];
+
+/// The entry of a weighted table (weights summing to 100) that `x` falls on.
+fn weighted(table: &[(usize, u32)], x: [u8; 32]) -> usize {
+    let mut r = u32::from_le_bytes([x[0], x[1], x[2], x[3]]) % 100;
+    for &(v, w) in table {
+        if r < w {
+            return v;
+        }
+        r -= w;
+    }
+    table.last().map_or(1, |&(v, _)| v)
+}
+
+/// The made-up credential ids a decoy names for `operator` (murmur-i58): deterministic in
+/// `secret` and the id (the same answer at every request, and across restarts with the same
+/// secret, as a real operator's), unpredictable without the secret (HMAC-SHA-256 under it), as
+/// many as [`DECOY_COUNTS`] draws and each as long as [`DECOY_ID_LENGTHS`] draws.
+pub fn decoy_credential_ids(secret: &[u8], operator: &str) -> Vec<Vec<u8>> {
+    let op = operator.as_bytes();
+    let len = u32::try_from(op.len()).unwrap_or(u32::MAX).to_le_bytes();
+    let mac = |label: &[u8], i: u8, block: u8| crate::keys::hmac_sha256(secret, &[label, &len, op, &[i, block]]);
+    let count = weighted(&DECOY_COUNTS, mac(b"murmur decoy count\0", 0, 0));
+    (0..count)
+        .map(|i| {
+            let i = u8::try_from(i).unwrap_or(u8::MAX);
+            let n = weighted(&DECOY_ID_LENGTHS, mac(b"murmur decoy length\0", i, 0));
+            let mut id = Vec::with_capacity(n + 32);
+            let mut block = 0u8;
+            while id.len() < n {
+                id.extend_from_slice(&mac(b"murmur decoy id\0", i, block));
+                block = block.wrapping_add(1);
+            }
+            id.truncate(n);
+            id
+        })
+        .collect()
+}
+
 /// A stable WebAuthn user handle for an operator id (the authenticator stores it with a
 /// resident key; it names no person).
 pub fn user_handle(operator: &str) -> Uuid {
@@ -219,20 +269,20 @@ impl RelyingParty {
     }
 
     /// Options shaped as [`RelyingParty::start_assertion`]'s for an operator who has no passkey
-    /// (or no such operator): one made-up credential id derived from `secret` and the id, so
-    /// the answer does not say which ids exist or have a passkey (the browser finds none). An
-    /// operator with several passkeys gets as many ids: the count is the one thing that tells.
+    /// (or no such operator), naming made-up credentials ([`decoy_credential_ids`]: as many,
+    /// and as long, as real authenticators make, the same for an id at every request) that no
+    /// authenticator holds, so the answer does not say which ids exist or have a passkey.
     pub fn decoy_options(&self, operator: &str, secret: &[u8], challenge: [u8; 32]) -> Value {
-        let mut h = Sha256::new();
-        h.update(secret);
-        h.update(operator.as_bytes());
-        let id: [u8; 32] = h.finalize().into();
+        let ids: Vec<Value> = decoy_credential_ids(secret, operator)
+            .iter()
+            .map(|id| json!({ "type": "public-key", "id": b64(id) }))
+            .collect();
         json!({
             "publicKey": {
                 "challenge": b64(&challenge),
                 "timeout": 300_000,
                 "rpId": self.rp_id,
-                "allowCredentials": [{ "type": "public-key", "id": b64(&id[..16]) }],
+                "allowCredentials": ids,
                 "userVerification": "required",
             },
             "mediation": null,
@@ -312,6 +362,8 @@ impl PasskeyEntry {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
+    use std::collections::BTreeMap;
+
     use super::*;
     use murmur_decide::passkey::soft::SoftAuthenticator;
 
@@ -409,5 +461,56 @@ mod tests {
         assert_eq!(a["publicKey"]["challenge"], b["publicKey"]["challenge"]);
         assert_ne!(a["publicKey"]["allowCredentials"], b["publicKey"]["allowCredentials"]);
         assert_eq!(a, rp.decoy_options("nobody", b"secret", [1u8; 32]), "stable per id");
+    }
+
+    /// murmur-i58: a decoy names as many credentials, as long, as real authenticators make
+    /// (it named one id of 16 bytes, while the virtual authenticator's are 32 and a security
+    /// key's 64: the length told who had a passkey), the same for an id at every request,
+    /// another under another secret.
+    #[test]
+    fn decoys_are_drawn_like_real_credentials_stable_per_id_and_keyed() {
+        let secret = [7u8; 32];
+        let n = 20_000;
+        let mut lengths: BTreeMap<usize, usize> = BTreeMap::new();
+        let mut counts: BTreeMap<usize, usize> = BTreeMap::new();
+        for k in 0..n {
+            let op = format!("op-{k}");
+            let ids = decoy_credential_ids(&secret, &op);
+            assert_eq!(ids, decoy_credential_ids(&secret, &op), "stable per id");
+            *counts.entry(ids.len()).or_default() += 1;
+            for id in &ids {
+                *lengths.entry(id.len()).or_default() += 1;
+            }
+        }
+        // every entry of the tables, near its weight (within 1.5 points of 100)
+        let near = |seen: &BTreeMap<usize, usize>, table: &[(usize, u32)]| {
+            let total: usize = seen.values().sum();
+            assert_eq!(seen.len(), table.len(), "{seen:?}");
+            for &(v, w) in table {
+                let pct = 100.0 * seen[&v] as f64 / total as f64;
+                assert!((pct - f64::from(w)).abs() < 1.5, "{v}: {pct:.1}% for {w}% ({seen:?})");
+            }
+        };
+        near(&lengths, &DECOY_ID_LENGTHS);
+        near(&counts, &DECOY_COUNTS);
+        // keyed: another secret, other ids; and no two ids of one decoy alike
+        assert_ne!(decoy_credential_ids(&secret, "op-2"), decoy_credential_ids(&[8u8; 32], "op-2"));
+        for k in 0..200 {
+            let ids = decoy_credential_ids(&secret, &format!("x{k}"));
+            for (i, a) in ids.iter().enumerate() {
+                assert!(ids[i + 1..].iter().all(|b| b != a));
+            }
+        }
+        // the options carry them all, as a real operator's carry theirs
+        let rp = rp();
+        let o = rp.decoy_options("op-9", &secret, [1u8; 32]);
+        let want: Vec<String> = decoy_credential_ids(&secret, "op-9").iter().map(|i| b64(i)).collect();
+        let got: Vec<&str> = o["publicKey"]["allowCredentials"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(got, want);
     }
 }

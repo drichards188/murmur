@@ -80,6 +80,70 @@ pub fn new_agent_key() -> Result<(String, String, String), AuthError> {
     Ok((key, key_id, sha))
 }
 
+/// HMAC-SHA-256 (RFC 2104) of the concatenated `parts` under `key`: a keyed function whose
+/// outputs say nothing of the key or of each other (the passkey decoys are drawn from it).
+pub fn hmac_sha256(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
+    const BLOCK: usize = 64;
+    let mut k = [0u8; BLOCK];
+    if key.len() > BLOCK {
+        k[..32].copy_from_slice(&Sha256::digest(key));
+    } else {
+        k[..key.len()].copy_from_slice(key);
+    }
+    let pad = |x: u8| k.map(|b| b ^ x);
+    let mut inner = Sha256::new();
+    inner.update(pad(0x36));
+    for p in parts {
+        inner.update(p);
+    }
+    let mut outer = Sha256::new();
+    outer.update(pad(0x5c));
+    outer.update(inner.finalize());
+    outer.finalize().into()
+}
+
+/// A 256-bit secret kept in `path` (64 hex characters, created with mode 0600 the first time,
+/// read after): the server's own key for what must stay the same across restarts but can't
+/// be guessed (the passkey decoys). Not a credential: losing it changes the decoys, no more.
+pub fn secret_file(path: &std::path::Path) -> Result<[u8; 32], AuthError> {
+    let read = || -> Result<[u8; 32], AuthError> {
+        let text = std::fs::read_to_string(path).map_err(|e| AuthError::Io(path.display().to_string(), e))?;
+        let t = text.trim();
+        let mut out = [0u8; 32];
+        if t.len() != 64 || !t.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(AuthError::Format(format!("{}: not 64 hex characters", path.display())));
+        }
+        for (i, o) in out.iter_mut().enumerate() {
+            *o = u8::from_str_radix(&t[2 * i..2 * i + 2], 16).map_err(|e| AuthError::Format(e.to_string()))?;
+        }
+        Ok(out)
+    };
+    if path.exists() {
+        return read();
+    }
+    let mut b = [0u8; 32];
+    fill(&mut b)?;
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        o.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    match o.open(path) {
+        Ok(mut f) => {
+            use std::io::Write as _;
+            f.write_all(format!("{}\n", hex(&b)).as_bytes())
+                .and_then(|()| f.sync_all())
+                .map_err(|e| AuthError::Io(path.display().to_string(), e))?;
+            Ok(b)
+        }
+        // made by another process in between: its secret is the one
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => read(),
+        Err(e) => Err(AuthError::Io(path.display().to_string(), e)),
+    }
+}
+
 /// The key id an agent key names, if it has the agent key's shape.
 pub fn agent_key_id(key: &str) -> Option<&str> {
     let rest = key.strip_prefix(AGENT_KEY_PREFIX)?;
@@ -106,5 +170,31 @@ mod tests {
         assert!(ct_eq(&digest(&t), &digest(&t)));
         assert!(!ct_eq(&digest(&t), &digest(&token().unwrap())));
         assert!(!ct_eq(b"ab", b"abc"));
+    }
+
+    /// RFC 4231 test cases 1 and 6 (a short key, a key longer than the block).
+    #[test]
+    fn hmac_sha256_matches_rfc_4231() {
+        let mac = hmac_sha256(&[0x0b; 20], &[b"Hi There"]);
+        assert_eq!(hex(&mac), "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7");
+        let mac = hmac_sha256(&[0xaa; 131], &[b"Test Using Larger Than Block-Size Key", b" - Hash Key First"]);
+        assert_eq!(hex(&mac), "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54");
+    }
+
+    #[test]
+    fn a_secret_file_is_made_once_and_read_after() {
+        let dir = std::env::temp_dir().join(format!("murmur-auth-secret-{}-{}", std::process::id(), stamp().unwrap()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("decoy.key");
+        let a = secret_file(&p).unwrap();
+        assert_eq!(secret_file(&p).unwrap(), a);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        std::fs::write(&p, "not hex").unwrap();
+        assert!(secret_file(&p).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
