@@ -74,27 +74,17 @@ impl Clock {
     }
 }
 
-/// A scenario rate needs a scenario start (murmur-drd): `MURMUR_RATE` other than 1 without
-/// `MURMUR_AT` is refused at startup. The stand-ins' GNSS clock would run at the rate from
-/// their own start while the bridge's (its decisions, the space segment) runs at 1x from
-/// its own: the bridge, the contacts process and the link emulator refuse the same.
-pub fn check_scenario_env() -> Result<(), String> {
-    scenario_env(
-        std::env::var("MURMUR_AT").ok().as_deref(),
-        std::env::var("MURMUR_RATE").ok().as_deref(),
-    )
-}
+/// The scenario clock as every process reads it (murmur-drd): `MURMUR_AT` an RFC 3339
+/// date-time and nothing else, a positive rate, one other than 1 only with a start.
+pub use murmur_space::scenario_clock::{ScenarioStart, from_env as scenario_from_env, scenario_env};
 
-/// [`check_scenario_env`] on given values (an empty one is unset).
-pub fn scenario_env(at: Option<&str>, rate: Option<&str>) -> Result<(), String> {
-    let at = at.filter(|s| !s.trim().is_empty());
-    let rate = rate.filter(|s| !s.trim().is_empty());
-    match (at, rate) {
-        (None, Some(r)) if r.trim().parse::<f64>().is_ok_and(|x| x != 1.0) => Err(format!(
-            "MURMUR_RATE={r} needs MURMUR_AT: a scenario clock runs at a rate from a start (MURMUR_AT, e.g. 2026-06-14T10:00Z); without MURMUR_AT the scenario clock is the wall clock, at 1x. Set MURMUR_AT, or unset MURMUR_RATE"
-        )),
-        _ => Ok(()),
-    }
+/// The scenario clock's environment, refused at startup when it is not one every process
+/// reads alike (`murmur_space::scenario_clock`): a start that is not RFC 3339 (the review of
+/// murmur-drd: the bridge ignored one it couldn't read while the GNSS clock here ran the rate
+/// from the stand-ins' own start), a rate that is not a positive number, a rate other than 1
+/// without a start. The bridge, the contacts process and the link emulator refuse the same.
+pub fn check_scenario_env() -> Result<(), String> {
+    murmur_space::scenario_clock::from_env().map(|_| ())
 }
 
 /// tidewater's parse_time: ISO 8601, `Z` or an offset, naive means UTC, seconds optional.
@@ -122,21 +112,19 @@ impl Config {
         let url = std::env::var("MURMUR_TIDEWATER_URL")
             .ok()
             .filter(|u| !u.is_empty())?;
-        let Some(at) = std::env::var("MURMUR_AT").ok().filter(|a| !a.is_empty()) else {
-            println!("MURMUR_TIDEWATER_URL set but no MURMUR_AT; stand-ins run without currents");
-            return None;
-        };
-        let t0_unix = match parse_time(&at) {
-            Ok(t) => t,
+        let (t0_unix, rate) = match murmur_space::scenario_clock::from_env() {
+            Ok(s) => match s.at_unix() {
+                Some(t) => (t, s.rate),
+                None => {
+                    println!("MURMUR_TIDEWATER_URL set but no MURMUR_AT; stand-ins run without currents");
+                    return None;
+                }
+            },
             Err(e) => {
                 println!("{e}; stand-ins run without currents");
                 return None;
             }
         };
-        let rate = std::env::var("MURMUR_RATE")
-            .ok()
-            .and_then(|r| r.parse().ok())
-            .unwrap_or(1.0);
         Some(Config {
             url: url.trim_end_matches('/').to_string(),
             clock: Clock {
@@ -279,7 +267,14 @@ mod tests {
         assert!(scenario_env(Some(" "), Some("2")).is_err());
         assert!(scenario_env(None, Some("1")).is_ok());
         assert!(scenario_env(None, None).is_ok());
-        assert!(scenario_env(Some("2026-06-14T10:00Z"), Some("10")).is_ok());
+        let s = scenario_env(Some("2026-06-14T10:00:00Z"), Some("10")).expect("taken");
+        assert_eq!((s.at_unix(), s.rate), (Some(1_781_431_200.0), 10.0));
+        // the review: a start the stand-ins can't read as RFC 3339 is refused too (their GNSS
+        // clock ran the rate from their own start while the bridge ignored it), including the
+        // short form tidewater's parse_time takes, so every process takes the same starts
+        assert!(scenario_env(Some("garbage"), Some("10")).is_err());
+        assert!(scenario_env(Some("2026-06-14T10:00Z"), Some("10")).is_err());
+        assert!(parse_time("2026-06-14T10:00Z").is_ok(), "event times stay tidewater's");
     }
 
     #[test]

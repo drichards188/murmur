@@ -13,7 +13,7 @@ up:      ## swarm + link emulator + bridge + web (MURMUR_LINKEMU=0 bypasses the 
 	./scripts/up.sh --fleet $(FLEET) $(ARGS)
 
 goldengate: ## Golden Gate with real tide/current/wind and traffic: tidewater serve + drive (AT= start time, EVENTS= scripted events file (comms and GNSS), CONTACTS= contacts scenario, "" for none)
-	MURMUR_SCENARIO=$(HOME)/tidewater/scenarios/golden-gate-2026-06.toml MURMUR_AT=$(or $(AT),2026-06-14T10:00Z) \
+	MURMUR_SCENARIO=$(HOME)/tidewater/scenarios/golden-gate-2026-06.toml MURMUR_AT=$(or $(AT),2026-06-14T10:00:00Z) \
 	  MURMUR_CONTACTS=$(if $(filter undefined,$(origin CONTACTS)),sim/scenarios/golden-gate.toml,$(CONTACTS)) \
 	  $(if $(EVENTS),MURMUR_LINK_EVENTS=$(EVENTS)) ./scripts/up.sh --fleet $(or $(GG_FLEET),full-spectrum) $(ARGS)
 

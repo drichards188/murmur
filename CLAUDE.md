@@ -22,8 +22,9 @@ meaningful. Decision and command, not weapons.
   `/api/platforms`, `/api/stats`; MCP server for agents at `/mcp`, header `X-Murmur-Agent`,
   ids in `MURMUR_AGENTS`, or `Authorization: Bearer <key>` in a credentials run;
   `agents/README.md`). Vehicles ready in ~30-60 s. The scenario clock is `MURMUR_AT` plus
-  elapsed x `MURMUR_RATE`; a rate other than 1 without `MURMUR_AT` is refused by every process
-  (murmur-drd: there is no shared start).
+  elapsed x `MURMUR_RATE`, read by `murmur_space::scenario_clock` in every process:
+  `MURMUR_AT` is RFC 3339 only (`2026-06-14T10:00:00Z`; the short `10:00Z` is refused), and a
+  rate other than 1 without `MURMUR_AT` is refused (murmur-drd: there is no shared start).
 - A run is **dev** by default: header ids, the console's "Acting as" switcher, a red DEV pill,
   logged `auth: dev`, never evidence about people, no credential file needed.
   `MURMUR_AUTH=credentials`: operators sign in with their own password (create once with

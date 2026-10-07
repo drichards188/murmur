@@ -41,8 +41,9 @@ the vehicle-facing ports and fight the emulator. `--manifest-out` writes a copy 
 replaced by the bridge-side port (the original is kept as `vehicle_port`).
 
 Terrain and scenario time: `--tidewater URL` (or `MURMUR_TIDEWATER_URL`) turns on terrain line of
-sight; `--at ISO` / `--rate X` (or `MURMUR_AT` / `MURMUR_RATE`) set the scenario clock (a rate
-other than 1 needs a start: without one it is refused, as by the bridge and the stand-ins). Other
+sight; `--at ISO` / `--rate X` (or `MURMUR_AT` / `MURMUR_RATE`) set the scenario clock, read as
+every process reads them (`murmur_space::scenario_clock`: the start an RFC 3339 date-time such
+as `2026-06-14T10:00:00Z`, a rate other than 1 only with a start; anything else refused). Other
 options: `--scenario FILE` (extra `[[event]]`s), `--seed N`, `--http ADDR` (default
 `127.0.0.1:8766`, `off` disables), `--log-interval SEC`, `--threads N` (default 1; one thread used less CPU than two at these rates),
 `--bridge-host`, `--listen-host`.

@@ -61,15 +61,13 @@ async fn run() -> Result<(), String> {
         return Err(format!("{}: no contacts", path.display()));
     }
 
-    // scenario clock: MURMUR_AT at MURMUR_RATE, as the stand-ins; else the wall clock, at 1x
-    // (a rate without a start is refused, as the bridge and the stand-ins do: murmur-drd)
-    conditions::scenario_env(env("MURMUR_AT").as_deref(), env("MURMUR_RATE").as_deref())?;
-    let rate: f64 = env("MURMUR_RATE")
-        .and_then(|r| r.parse().ok())
-        .filter(|r: &f64| r.is_finite() && *r > 0.0)
-        .unwrap_or(1.0);
-    let t0 = match env("MURMUR_AT") {
-        Some(at) => conditions::parse_time(&at)?,
+    // scenario clock: MURMUR_AT at MURMUR_RATE, read as every process reads them (an RFC 3339
+    // start, a positive rate, one other than 1 only with a start; anything else refused, as
+    // the bridge and the stand-ins do: murmur-drd); else the wall clock, at 1x
+    let clock = conditions::scenario_from_env()?;
+    let rate = clock.rate;
+    let t0 = match clock.at_unix() {
+        Some(t) => t,
         None => SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0.0, |d| d.as_secs_f64()),

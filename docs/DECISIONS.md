@@ -758,7 +758,17 @@ group. Dates are 2026.
   chose and the others can't know. With `MURMUR_AT`, one stated start names the scenario
   clock, as it already does for every process (`make goldengate` and the evaluation always
   set it); without it every clock is the wall clock, which runs at 1x by definition. The cost
-  is one more variable for a fast run without a scenario, which was never consistent.
+  is one more variable for a fast run without a scenario, which was never consistent. After
+  the review (10-07): the check tested whether `MURMUR_AT` was set, not whether it parsed,
+  and each process parsed it its own way (chrono, jiff, a hand parser that read an offset as
+  UTC): with `MURMUR_AT=garbage MURMUR_RATE=10` the bridge ran 1x while the stand-ins' GNSS
+  clock ran 10x. Now one reader in `murmur_space::scenario_clock` (the crate every process
+  already depends on) takes `MURMUR_AT` as an RFC 3339 date-time and nothing else, and a rate
+  as a positive number; every process refuses anything else at start, and `scripts/up.sh`
+  checks the same shape first, so a start one process accepts every process accepts, and
+  reads as the same instant. The short form `2026-06-14T10:00Z` is not RFC 3339 and is
+  refused; the defaults (`make goldengate`, the evaluation, the test scripts) moved to
+  `2026-06-14T10:00:00Z`. Times inside event files keep their own, looser reading.
 - **A login's options say nothing of who has a passkey, and a flood can't turn an operator
   away** (10-07, murmur-i58, security review of rules 10; no rules change). The decoy for an
   id without a passkey named one 16-byte credential id, while real ids are what the

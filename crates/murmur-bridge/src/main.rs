@@ -9,7 +9,8 @@
 //! MURMUR_RUN_ID (audit log logs/audit/<run-id>.jsonl; default the UTC start time and pid),
 //! MURMUR_TIDEWATER_URL (tidewater serve, for the domain rule; unset: "not
 //! evaluated"), MURMUR_AT and MURMUR_RATE (scenario time for tidewater and the space segment,
-//! as `make goldengate`; a rate other than 1 without MURMUR_AT stops the bridge at start).
+//! as `make goldengate`; an MURMUR_AT that is not RFC 3339, or a rate other than 1 without
+//! one, stops the bridge at start: `murmur_space::scenario_clock`).
 //! Who acts (rules 8, `auth`): MURMUR_AUTH (`dev`, the default: ids asserted by header, said
 //! loudly at start and logged as such, never evidence about people, no credential file needed:
 //! MURMUR_OPERATORS (ids accepted in X-Murmur-Operator, comma-separated; default op-1),

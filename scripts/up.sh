@@ -48,14 +48,21 @@ if [ -n "${MURMUR_LINK_EVENTS:-}" ] && [ ! -f "$MURMUR_LINK_EVENTS" ]; then
   echo "MURMUR_LINK_EVENTS: no file $MURMUR_LINK_EVENTS" >&2
   exit 1
 fi
-# a scenario rate needs a scenario start (murmur-drd): without MURMUR_AT every clock is the
-# wall clock, at 1x; the bridge, the stand-ins, the contacts process and the emulator refuse
-# a rate without one too
+# the scenario clock (murmur-drd), as every process reads it (murmur_space::scenario_clock):
+# MURMUR_AT is an RFC 3339 date-time and nothing else, so a start one process accepts every
+# process accepts; a scenario rate needs a scenario start (without MURMUR_AT every clock is the
+# wall clock, at 1x). The bridge, the stand-ins, the contacts process and the emulator refuse
+# the same.
+rfc3339='^[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?([Zz]|[+-][0-9]{2}:[0-9]{2})$'
+if [ -n "${MURMUR_AT:-}" ] && ! [[ "$MURMUR_AT" =~ $rfc3339 ]]; then
+  echo "MURMUR_AT=$MURMUR_AT is not an RFC 3339 date-time (e.g. 2026-06-14T10:00:00Z, or with an offset, 2026-06-14T03:00:00-07:00): every process reads the scenario start in that one format." >&2
+  exit 1
+fi
 if [ -n "${MURMUR_RATE:-}" ] && [ -z "${MURMUR_AT:-}" ]; then
   case "$MURMUR_RATE" in
     1|1.0|1.00) ;;
     *)
-      echo "MURMUR_RATE=$MURMUR_RATE needs MURMUR_AT (e.g. MURMUR_AT=2026-06-14T10:00Z): without a start the scenario clock is the wall clock, at 1x. Set MURMUR_AT, or unset MURMUR_RATE." >&2
+      echo "MURMUR_RATE=$MURMUR_RATE needs MURMUR_AT (e.g. MURMUR_AT=2026-06-14T10:00:00Z): without a start the scenario clock is the wall clock, at 1x. Set MURMUR_AT, or unset MURMUR_RATE." >&2
       exit 1
       ;;
   esac
@@ -117,7 +124,7 @@ trap 'cleanup; exit 0' INT TERM  # a requested stop (Ctrl-C, make down) is a cle
 # real-world conditions from a tidewater scenario (sibling repo), if one is set
 TIDEWATER="${TIDEWATER_HOME:-$HOME/tidewater}/.venv/bin/tidewater"
 if [ -n "${MURMUR_SCENARIO:-}" ]; then
-  : "${MURMUR_AT:?set MURMUR_AT, e.g. 2026-06-14T10:00Z}"
+  : "${MURMUR_AT:?set MURMUR_AT, e.g. 2026-06-14T10:00:00Z}"
   tw_port="${MURMUR_TIDEWATER_PORT:-8770}"
   export MURMUR_TIDEWATER_URL="${MURMUR_TIDEWATER_URL:-http://127.0.0.1:$tw_port}"
   if curl -sf -m 2 "$MURMUR_TIDEWATER_URL/v1/info" > /dev/null; then

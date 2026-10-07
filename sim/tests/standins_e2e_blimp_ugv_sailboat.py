@@ -101,7 +101,7 @@ def main():
     for k in ("MURMUR_SCENARIO", "MURMUR_AT", "MURMUR_TIDEWATER_URL"):
         env.pop(k, None)
     if TW:
-        env.update({"MURMUR_TIDEWATER_URL": "http://127.0.0.1:8876", "MURMUR_AT": "2026-06-14T10:00Z"})
+        env.update({"MURMUR_TIDEWATER_URL": "http://127.0.0.1:8876", "MURMUR_AT": "2026-06-14T10:00:00Z"})
     # this run's manifest before the bridge starts (as scripts/up.sh): started beside
     # swarm.py the bridge could read the previous run's sim/run/fleet.json
     subprocess.run([PY, str(ROOT / "sim" / "swarm.py"), "--fleet", str(fleet), "--base-port", str(BASE_PORT),
