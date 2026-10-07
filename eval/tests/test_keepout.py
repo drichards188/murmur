@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from eval import keepout as K
+from eval import keepout_report as R
 
 ORIGIN = (-122.5, 37.81)
 
@@ -510,3 +511,8 @@ def test_out_of_view_contacts_are_tracked_first_then_dropped_and_held(probe):
     s = K.lost_summary([K.record(by_id[r["id"]], r, params) for r in res if "eval" in r])
     assert s["counts"]["with_lost"] > 0 and set(s["pooled"]) == set(K.LOST_POLICIES)
     assert "Out of view" in K.table_lost(s)
+    # the HTML report's table: every policy, in the text's order, and its grid
+    html = R.lost_table({"oov": {"lost": s}})
+    order = [html.find(f">{p}</td>") for p in K.LOST_POLICIES]
+    assert all(i > 0 for i in order) and order == sorted(order), order
+    assert "<th>60 s</th>" in R.lost_grid({"lost": s})

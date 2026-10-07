@@ -7,7 +7,7 @@ from __future__ import annotations
 import html
 from typing import Any
 
-from .keepout import BEHAVIOURS, COMPONENTS, SENS_TTE
+from .keepout import BEHAVIOURS, COMPONENTS, LOST_POLICIES, SENS_TTE
 
 
 def esc(x: Any) -> str:
@@ -306,6 +306,57 @@ def air_table(variants: dict[str, Any]) -> str:
     return table(head, trs)
 
 
+def lost_table(variants: dict[str, Any]) -> str:
+    """Rules 13, the out-of-view variants: each policy for a dropped contact on the same
+    evaluations, pooled over densities and times to effect (as METRICS.md "Out of view")."""
+    rows = [(n, s["lost"]) for n, s in variants.items() if s.get("lost")]
+    if not rows:
+        return ""
+    head = (
+        "<tr><th>variant</th><th>policy</th><th>blocked</th><th>needs an acceptance</th><th>passes</th>"
+        "<th>missed at the line</th><th>in the circle</th><th>in the circle over the window</th></tr>"
+    )
+
+    def k(r: dict[str, Any], key: str) -> str:
+        n = r["missed_" + key]["k"]
+        d = (r.get("missed_" + key + "_dropped") or {}).get("k")
+        return f"{n:,}" + (f" <span class='muted'>({d:,})</span>" if n and d is not None else "")
+
+    trs = []
+    for name, lost in rows:
+        first = True
+        for pol in LOST_POLICIES:
+            r = (lost.get("pooled") or {}).get(pol)
+            if not r:
+                continue
+            trs.append(
+                f"<tr><td>{esc(name) if first else ''}</td><td title='{esc(LOST_POLICIES[pol])}'>{esc(pol)}</td>"
+                f"{heat(r['blocked'])}<td class='n'>{pct(r['needs_acceptance'])}</td><td class='n'>{r['passes']:,}</td>"
+                f"<td class='n'>{k(r, 'near')}</td><td class='n'>{k(r, 'danger')}</td><td class='n'>{k(r, 'danger_late')}</td></tr>"
+            )
+            first = False
+    return table(head, trs)
+
+
+def lost_grid(s: dict[str, Any], policies: tuple[str, ...] = ("today", "held", "heading")) -> str:
+    """Rules 13: blocked on tracks by density and time to effect, for `policies`."""
+    lost = s.get("lost") or {}
+    cells = {(c["density"], c["tte_s"], c["policy"]): c for c in lost.get("cells") or []}
+    if not cells:
+        return ""
+    tte = sorted({t for _, t, _ in cells})
+    dens = sorted({d for d, _, _ in cells})
+    head = "<tr><th>per km<sup>2</sup></th>" + "".join(f"<th>{t} s</th>" for t in tte) + "</tr>"
+    trs = []
+    for d in dens:
+        vals = []
+        for t in tte:
+            v = [cells.get((d, t, p)) for p in policies]
+            vals.append("<td class='n'>" + " / ".join(pct(x["blocked"], False) if x else "n/a" for x in v) + "</td>")
+        trs.append(f"<tr><td class='n'>{d:g}</td>{''.join(vals)}</tr>")
+    return table(head, trs)
+
+
 def variant_block(s: dict[str, Any], title: str) -> str:
     """Every table of one variant."""
     out = [f"<h3>{esc(title)}</h3>"]
@@ -406,6 +457,23 @@ def keepout_section(c: dict[str, Any]) -> str:
             "keep-out counts it anywhere within 100 m/s of where it was; EO/IR helps a straight one, not a loitering one. The air tracker's constants were "
             "scaled from the surface ones and never checked against truth.</p>" + at
         )
+    lt = lost_table(variants)
+    if lt:
+        with_lost = [(n, s) for n, s in variants.items() if s.get("lost")]
+        oov_name, oov = next(((n, s) for n, s in with_lost if n == "oov"), with_lost[0])
+        out.append(
+            "<h3>Out of view (rules 13)</h3><p>A share of the contacts goes out of sensor view (from a uniform time 30 to 900 s before the "
+            "nomination nothing detects them, whatever the range) while they keep moving; the bridge's tracker drops a track unseen for 180 s. "
+            "Each policy for a dropped contact on the same evaluations: <strong>today</strong>, rules 12 (a dropped track no longer counts); "
+            "<strong>held</strong>, rules 13 as shipped (a lost contact counts from its last fix, no cap, by a live track's regions and anywhere "
+            "at its own plausible speed, until an operator accepts it); <strong>heading</strong>, the same by a live track's regions alone (along "
+            "its course: the first version of rules 13); <strong>held600</strong>, counted only until 600 s after its drop; <strong>near3km</strong>, "
+            "only with its last fix within 3 km of the effect point; <strong>accepted</strong>, every lost contact accepted, or cleared by any rule "
+            "(every one here is within the observer's nominal coverage). Blocked and needing an acceptance: percent of nominations (Wilson 95%); "
+            "misses: passes with a protected contact truly inside the keep-out line or the effect circle at the effect time, then in the circle "
+            "within the 60 s release window; in brackets, those by a contact out of view and dropped.</p>" + lt
+            + f"<p>Blocked on tracks by density and time to effect, {esc(oov_name)}: today / held / heading.</p>" + lost_grid(oov)
+        )
     out.append(variant_block(prim, f"{prim_name}: the pessimistic sensor case"))
     for name, s in variants.items():
         if name == prim_name:
@@ -425,8 +493,9 @@ def keepout_section(c: dict[str, Any]) -> str:
         "assumptions; the live stack's several observers gave better tracks than one USV's radar.</li>"
         "<li>Truth labels use the generated motion; real traffic turns, stops and gets retasked. An aircraft counts in 3D for the labels (above the "
         "keep-out's height it is outside it), while the engine, with no altitude from our 2D radar, counts it in plan.</li>"
-        "<li>Out-of-view contacts: every contact stays within our sensors, so the bridge's drop of a track unseen for 180 s never fires here (a dropped "
-        "track stops counting in keep-outs: murmur-533); a contact never detected (a new one in its first second) has no track and is not protected.</li>"
+        "<li>Out-of-view contacts: outside the out-of-view variants every contact stays within our sensors, so the bridge's drop of a track unseen "
+        "for 180 s never fires; in those variants masking is all-or-nothing and permanent, and no contact comes back into view (the AIS retirement is "
+        "not measured). A contact never detected (a new one in its first second) has no track and is not protected.</li>"
         "<li>Only the nomination's checks run: the plan's re-checks while signatures wait (every second) would block more, and the release's own check is "
         "what stops an effect with someone inside it then.</li>"
         "<li>No person decides anything here: what operators do when blocked (wait, reposition, accept a lost vehicle, give up) is not modelled.</li>"
