@@ -1,9 +1,9 @@
-# Rules 13 (murmur-oho), fail closed on what an aircraft can do: a light aircraft flying north,
+# Rules 14 (murmur-oho), fail closed on what an aircraft can do: a light aircraft flying north,
 # away from the effect point, followed for ten minutes on a steady course (an average velocity,
-# no manoeuvre seen), its height not ranged (the keep-out stays 2D). Until rules 13 the keep-out
+# no manoeuvre seen), its height not ranged (the keep-out stays 2D). Until rules 14 the keep-out
 # counted it along its course and its average course, both away from the point: clear. An
 # aircraft turns through a right angle in 15 to 30 s and speeds up whenever it likes, so from
-# rules 13 it also counts anywhere it reaches from its own speed, speeding up at the policy's
+# rules 14 it also counts anywhere it reaches from its own speed, speeding up at the policy's
 # air manoeuvre acceleration to the domain's top speed: the first nomination, its effect about
 # a minute and a half out with the aircraft 2 km away, is rejected; once the aircraft has flown
 # out of that reach (12 km north) the same nomination waits for its signers.

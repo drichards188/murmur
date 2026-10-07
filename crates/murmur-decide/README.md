@@ -439,7 +439,7 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
     where it matters: the keep-outs are read again every second while the plan waits and
     after approval, and at the release over a span of seconds, where the model is the
     tracker's own uncertainty; a track that turns toward the point shows in its next
-    estimate. From rules 13 an aircraft with a velocity also counts anywhere it reaches from
+    estimate. From rules 14 an aircraft with a velocity also counts anywhere it reaches from
     its own speed, speeding up at the air's `track_accel_mps2` to the top speed
     (`engage::aircraft_reach_m`): an aircraft turns through a right angle in 15 to 30 s,
     whenever it likes, and the white-noise model does not hold a turned one a minute ahead.
@@ -510,7 +510,7 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
   every track or vehicle that blocks the keep-out, or nearly does (its nearest region's edge
   within twice the clearance; at most 12 listed, blocking first, the rest counted), an
   `Item`: the region that blocks (along its velocity or average velocity, a manoeuvre's, a
-  young track's or (rules 13) an aircraft's reach, no velocity; for ours a course, a circle, a
+  young track's or (rules 14) an aircraft's reach, no velocity; for ours a course, a circle, a
   cruise reach, lost), that
   region at the effect time, the clearance (effect radius plus `keep_out_m`), the shortfall,
   how altitude counted (for aircraft), and what would clear it: `clear_windows` (same
@@ -619,10 +619,14 @@ an `Order::Cover`.
   bridge's space loader watches `sim/space/cache` (every 30 s) and reloads the segment when
   the element sets change on disk (a `murmur-space fetch` while the bridge runs), keeping
   the time shift pinned at the first load (the same elements pinned a day apart are another
-  segment: `SegmentId` carries the pin, and a re-pin re-checks every running task); the
-  engine logs the new segment (`space.loaded`) and every running space task is re-checked
-  against it, but never a collect whose pass has come: it was collected (simulated), a later
-  answer has nothing to say about it, and replay refuses a re-check written after its pass.
+  segment: `SegmentId` carries the pin; from rules 13 the engine refuses a segment pinned
+  otherwise than the first, nothing logged, and replay flags a pin change between two
+  `space.loaded`); the engine logs the new segment (`space.loaded`) and every running space
+  task is re-checked against it, but never a collect whose pass has come: it was collected
+  (simulated), a later answer has nothing to say about it, and replay refuses a re-check
+  written after its pass (judged on the check's time: the engine logs the re-check at the
+  instant its guard read the clock, so a clock moving between reads can't put an honest one
+  past the pass).
   A collect is re-queried at the request time of the answer it was tasked on
   (`prepare_space_at`), so only the segment can change the answer, not the lead time spent
   since. An answer with the hash the task already runs on changes nothing and logs nothing;
@@ -654,7 +658,12 @@ an `Order::Cover`.
   decision on the answer and its audit write; `tests/space_tasking.rs` measures the longest
   wait for the lock while a week of Starlink over a 50 km circle is submitted and previewed
   (bounded at half a second, a tenth of the picture-gap limit; tens of milliseconds on the
-  fixture, under 25 ms live). The logged answer is the one the decision used.
+  fixture, under 25 ms live). The logged answer is the one the decision used. From rules 13
+  (`SPACE_REPLAY_SINCE`) the decision also logs when its answer was computed (`computed_t`,
+  engine time, beside the answer's hash in its inputs), the 5 s bound is the `space_query`
+  rule's (a collect's answer computed farther from its check fails it, so replay recomputes
+  the bound), and the engine takes a prepared collect only if it was asked at the scenario
+  time of that computation, which replay checks too.
 
 **Replay.** Each space query is logged once as `space.query`: the query, the answer
 (`compute_ms` zeroed, the one non-deterministic field), its `time_map`, and the segment
@@ -903,6 +912,11 @@ roster and the loiter radius from rules 4 (older logs don't carry them):
   nothing carries out is flagged; a cover's verdict is the one its logged sample points give,
   which are its query's points; a re-check keeps the task's request time, follows a reload
   and never comes after a collect's pass.
+- Space answers' times (rules 13): every answered space input says when its answer was
+  computed (`computed_t`); a collect's answer outside a re-check was asked at the scenario
+  time of that computation (the last `space.loaded` map), and the `space_query` rule,
+  recomputed, holds it within 5 s of its check; the pinned time shift (both where a load
+  states it) and the scenario map are the same in every `space.loaded` of the log.
 
 The engine refuses the op states, supersedes and sessions these checks reject
 (`EngineError::NotItsOrder`, `EngineError::NotOnRoster`, nothing logged), so an honest engine
@@ -1363,7 +1377,57 @@ Rules versions:
   sent the second the restore confirmed, then a clean stop owing nothing (see
   `tests/versions.rs`).
 
-- **13** (murmur-oho, the air tracker calibrated against truth; every gate reads
+- **13** (murmur-der.4, murmur-lsj; every gate reads `SPACE_REPLAY_SINCE`, so another change
+  taking the number first renumbers it in one line; no policy key changes, schema 7): replay
+  holds a space answer to when it was computed, and a re-check to the instant it judged.
+  - *When an answer was computed* (murmur-der.4): the engine took a collect's answer prepared
+    outside its lock only within 5 s of the check (`PREPARED_SPACE_MAX_AGE_MS`), and replay
+    accepted any. Now every answered space input logs the engine time its answer was
+    computed at (`computed_t`, beside its hash in the decision's inputs: the bridge's
+    preparation, or the engine's own query at the check), and the `space_query` rule fails a
+    collect whose answer was computed more than 5 s from its check (`cannot evaluate: the
+    space answer was computed 12.000 s before the check, more than 5 s`) or does not say when,
+    so replay recomputes the bound with the check. Replay binds the time to the answer: outside
+    a re-check (which keeps the tasking's request time) a collect's request time is the
+    scenario time of `computed_t` under the last `space.loaded` map, and every answered input
+    carries one; the engine takes a prepared collect only if it was asked at that time. A
+    cover's answer carries its time and no bound (its question does not depend on when it was
+    asked). Neither the answer's computation nor the decision's snapshot may be later than the
+    event that logs the decision (the review of 10-07 moved both 4 s past it, within the
+    bound, and it replayed): the engine logs such a check no earlier than either (in the
+    bridge both are read before it), and refuses a re-check whose answer was computed after
+    its guard's instant.
+  - *A re-check at its guard's instant* (murmur-lsj): `Engine::recheck_space` judged "has the
+    pass come" on one clock read and logged its check on a later one, while replay judges on
+    the check's time: a clock moving a millisecond per read flagged an honest re-check one or
+    two milliseconds before the pass. The re-check (its answer and its check) is now logged at
+    the guard's instant, as a cancel's report is; an engine fix in every rules version (no
+    decision changes, only the timestamps).
+  - *The pin is the run's* (murmur-lsj): the same elements pinned otherwise are another
+    segment (`SegmentId` carries the pin), and the engine took one as a reload. The bridge pins
+    once per session, so the engine now refuses a segment pinned to another shift than the
+    one loaded first (`EngineError::SpaceSegment`, nothing logged; a reload of the elements on
+    the same pin is taken) and replay flags a pin change between two `space.loaded`. A load
+    says its pin twice (`pinned_shift_days`, and the segment identity's): both must agree, at
+    every load (the review of 10-07 forged the identity's alone and it replayed), and the
+    engine takes no segment whose two disagree. The scenario clock is held the same way (the
+    review): the engine refuses a segment whose scenario map is not the first load's (the
+    bridge's is fixed at its start) and replay flags a map change between two `space.loaded`.
+  - Stated, not changed: since the review of rules 11 the engine never computes a cover itself
+    (a cover's check fails closed without an answer prepared outside the lock), under every
+    rules version, 10 and earlier included; replay reads only logged answers and can't tell
+    who computed one, so their logs replay as before.
+
+  Gated in `rules::checked_answer` (the bound), `Engine::ask_space` (the request time of a
+  prepared collect) and `Engine::set_space` (the pin); the answer's time is logged from the
+  same constant. Markers (a log claiming rules 12 or older can't carry them): `computed_t`.
+  Fixtures (a clean build of `caaa210`, the review's fixes in): `tests/data/audit/v13-engagement-scenario-01.jsonl`
+  (the scenario runner) and
+  `v13-space-replay-engine.jsonl` (the engine on the element-set fixture, written by
+  `tests/space.rs` with `MURMUR_WRITE_FIXTURE`: an area cover, a collect cancelled before its
+  pass, one re-checked on a reloaded segment and missed, every answer with its time).
+
+- **14** (murmur-oho, the air tracker calibrated against truth; every gate reads
   `AIRCRAFT_REACH_SINCE`, so another change taking the number first renumbers it in one line;
   no policy key changes, schema 7): *an aircraft counts anywhere it could turn or speed up to*.
   A protected aircraft with a velocity also counts in a keep-out anywhere it reaches from its
@@ -1380,11 +1444,11 @@ Rules versions:
   aircraft blocks a keep-out about as far as one without a velocity at nominations a minute or
   more ahead (from 55 m/s it reaches 100 m/s in 22 s), less at shorter spans (at 30 s, 2.5 km
   instead of 3 km). Surface, ground and subsurface tracks are judged as before. No new logged
-  fact: a rules 13 log claiming rules 12 differs only where an aircraft's region decided, and
+  fact: a rules 14 log claiming rules 13 differs only where an aircraft's region decided, and
   replay recomputes those decisions. Scenario 83 (an aircraft flying away 2 km from the effect
   point: rejected; 12 km out, pending); `tests/aircraft_reach.rs`. Fixtures (a clean build):
-  `tests/data/audit/v13-engagement-scenario-01.jsonl` and
-  `v13-aircraft-may-turn-back-scenario-83.jsonl` (see `tests/versions.rs`).
+  `tests/data/audit/v14-engagement-scenario-01.jsonl` and
+  `v14-aircraft-may-turn-back-scenario-83.jsonl` (see `tests/versions.rs`).
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that

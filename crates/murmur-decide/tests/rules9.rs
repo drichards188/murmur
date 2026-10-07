@@ -232,10 +232,10 @@ fn rule_declaration_off_decides_as_rules_8_did() {
     let mut n = 0;
     for f in scenario::files(&dir).unwrap() {
         // (and none of rules 12's: young tracks counted as possibly manoeuvring, a platform
-        // spent by its effect taking no order, by design; nor rules 13's: an aircraft counted
+        // spent by its effect taking no order, by design; nor rules 14's: an aircraft counted
         // anywhere it could turn or speed up to)
         let text = std::fs::read_to_string(&f).unwrap();
-        if text.contains("action = \"act\"") || text.contains("tracked_s") || text.starts_with("# Rules 12") || text.starts_with("# Rules 13") {
+        if text.contains("action = \"act\"") || text.contains("tracked_s") || text.starts_with("# Rules 12") || text.starts_with("# Rules 14") {
             continue;
         }
         let off = RunOptions {

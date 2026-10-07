@@ -21,7 +21,10 @@ meaningful. Decision and command, not weapons.
   Console http://127.0.0.1:5173, bridge http://127.0.0.1:8765 (`/api/state`, `/api/tasks`,
   `/api/platforms`, `/api/stats`; MCP server for agents at `/mcp`, header `X-Murmur-Agent`,
   ids in `MURMUR_AGENTS`, or `Authorization: Bearer <key>` in a credentials run;
-  `agents/README.md`). Vehicles ready in ~30-60 s.
+  `agents/README.md`). Vehicles ready in ~30-60 s. The scenario clock is `MURMUR_AT` plus
+  elapsed x `MURMUR_RATE`, read by `murmur_space::scenario_clock` in every process:
+  `MURMUR_AT` is RFC 3339 only (`2026-06-14T10:00:00Z`; the short `10:00Z` is refused), and a
+  rate other than 1 without `MURMUR_AT` is refused (murmur-drd: there is no shared start).
 - A run is **dev** by default: header ids, the console's "Acting as" switcher, a red DEV pill,
   logged `auth: dev`, never evidence about people, no credential file needed.
   `MURMUR_AUTH=credentials`: operators sign in with their own password (create once with
@@ -39,7 +42,10 @@ meaningful. Decision and command, not weapons.
   `eval.run study --credentials`) refuses to start without the participant's passkey;
   `MURMUR_STUDY_PASSWORD_STEP_UP=<why>` overrides, logged, and the run is not evidence. Each
   passkey challenge is derived from its act, single use, 120 s; replay re-verifies every
-  assertion from the log.
+  assertion from the log. A login's options are the same shape for every id (decoys drawn like
+  real credentials under `<credential file>.decoy-key`, made once beside the file; a key file
+  that can't be read stops the bridge: remove it to make a new one), at most four live per id,
+  a request past that served the newest again (murmur-i58).
 - Live path is Rust: `crates/murmur-bridge`, `crates/murmur-standins`. `scripts/up.sh` builds
   their release binaries (`make build` does too) and, with a scenario, starts `tidewater serve`
   (reused if one answers) and `tidewater drive`, and stops them with the stack. It writes
@@ -162,6 +168,12 @@ meaningful. Decision and command, not weapons.
   counts at its domain's top speed in keep-outs. A credentials run fixes scripted operators
   at start. To crash a bridge for a carry test: `kill -9` the PID that is the run id's
   suffix in `logs/audit/<run-id>.jsonl`, never `pkill -f`.
+- Rules 13 (`SPACE_REPLAY_SINCE`): every decision on a space answer logs when it was computed
+  (`computed_t`, engine time); a collect's answer must be within 5 s of its check and asked at
+  that time (the `space_query` rule, so replay recomputes it; `PREPARED_SPACE_MAX_AGE_MS`); a
+  re-check is logged at the clock read its "has the pass come" guard made; the engine refuses
+  a segment pinned to another time shift or on another scenario map mid-run
+  (`EngineError::SpaceSegment`) and replay flags either changing between two `space.loaded`.
 - Keep-out explanation (murmur-12e; read-only, not logged, no rules change): the nomination
   form and `POST /api/engage/options` (`keep_outs`) say which track or vehicle blocks, which
   region, the shortfall, and what would clear it ("within X m", "between X and Y m", or a wait

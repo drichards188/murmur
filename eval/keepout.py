@@ -1,4 +1,4 @@
-"""Keep-outs against engagements, on generated situations (rules 6, 9, 12 and 13): how often a
+"""Keep-outs against engagements, on generated situations (rules 6, 9, 12 and 14): how often a
 keep-out blocks the nomination of an engagement on a hostile target, as a function of traffic
 density and behaviour, time to effect (the platform's speed and distance), how the tracks are
 made and the rules version; whether a block protected someone; and which keep-out component
@@ -29,7 +29,7 @@ engine reads about it comes from one of two trackers:
 
 `murmur-keepout-probe` (read-only use of murmur-decide) runs every evaluation through the
 engine's own nomination checks (`rules::evaluate` on the engine's view of the world) under
-rules 6, 9, 12 and 13, and lists each protected track's keep-out regions (`engage::track_reach`)
+rules 6, 9, 12 and 14, and lists each protected track's keep-out regions (`engage::track_reach`)
 with how far each reaches into the keep-out.
 
 **Labels (truth).** From the effect point and time the engine predicted, each contact's true
@@ -116,7 +116,7 @@ TTE_S = (30, 45, 60, 90, 120, 180, 240, 300)
 #: distances (m) for the platform table: each armed platform at each
 DIST_M = (500, 1000, 2000, 3000)
 PLATFORMS = ("magura", "switchblade")
-RULES = (6, 9, 12, 13)
+RULES = (6, 9, 12, 14)
 RADIUS_M = 75.0
 #: the policy's dispatch_delay_s, for placing the platform only (the engine uses the policy's own)
 DISPATCH_S = 20.0
@@ -1529,7 +1529,7 @@ def table(s: dict[str, Any]) -> str:
     if prim:
         lines.append(table_variant(prim))
     lines.append(
-        "Sensitivity, mixed traffic: blocked at 30 / 60 / 120 / 180 s, rules 6 | 9 | 12 | 13 where measured (perfect knowledge at the same times); "
+        "Sensitivity, mixed traffic: blocked at 30 / 60 / 120 / 180 s, rules 6 | 9 | 12 | 14 where measured (perfect knowledge at the same times); "
         "needed share of blocks and missed passes, rules 6 / the newest measured (r):"
     )
     for row in s.get("sensitivity", []):

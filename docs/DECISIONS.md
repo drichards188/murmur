@@ -769,6 +769,112 @@ group. Dates are 2026.
 
 ## Engineering
 
+- **A space answer is held to when it was computed; a re-check to the instant it judged; the
+  pin to the run** (10-07, murmur-der.4, murmur-lsj; rules 13 `SPACE_REPLAY_SINCE`). The
+  engine took a collect's answer prepared outside its lock only within 5 s of the check, but
+  nothing in the log said when an answer was computed, so replay accepted one of any age.
+  Decided: (1) each decision logs when its answer was computed (`computed_t`, beside the
+  answer's hash in its inputs), not the `space.query` event, since one answer (by content) can
+  be read by several decisions computed at different times; (2) the bound is the `space_query`
+  rule's, so replay recomputes it with the check (a decision mismatch, not a separate
+  binding), measured against the decision's snapshot time as the engine always measured it;
+  (3) the time is bound to the answer itself, because a time alone is a number anyone can
+  write: a collect's request time is the scenario time of its computation under the run's
+  logged map (a re-check keeps the tasking's request time, so there the time is only logged),
+  and the engine takes a prepared collect only if that holds. What stays unbound: the
+  snapshot time, which is the bridge's for every decision (replay proves decisions follow from
+  the logged inputs, not that the inputs were true). A cover carries its time and no bound,
+  its question being independent of when it is asked. A re-check judged "has the pass come"
+  on one clock read and logged its check on another, so a clock moving between the two put an
+  honest re-check a millisecond past the pass for replay (which judges on the check's time):
+  the re-check is now logged at its guard's instant, as a cancel's report already was (one
+  clock read per judgement, the 10-06 rule for cancels, applied to every engine whatever its
+  rules). The session's time shift is pinned once (the bridge has kept its pin across reloads
+  since rules 11), so the engine refuses a segment pinned otherwise instead of taking it as a
+  new segment, and replay flags a pin change mid-log; older logs replay as before. Stated, not
+  changed: the engine never computing a cover itself (rules 11's review) holds for an engine
+  of every rules version, and replay can't see who computed an answer.
+- **A scenario rate needs a scenario start** (10-07, murmur-drd; no rules change). With
+  `MURMUR_RATE=10` and no `MURMUR_AT`, the space API reported rate 10 on the wall clock while
+  the engine's scenario map was the identity (its decisions at 1x, as the space API's answers),
+  the console's clock ran at 10x between refreshes (a pass shown come or gone when it was
+  not), and the stand-ins' GNSS clock ran at 10x from their own start. Two fixes were on the
+  table: apply the rate from a start each process takes, or refuse a rate without a start.
+  Refused: every process that reads `MURMUR_RATE` (the bridge, the stand-ins, the contacts
+  process, the link emulator; `scripts/up.sh` before any of them starts) stops with a message
+  naming `MURMUR_AT`, and without a start the bridge's scenario clock is reported at 1x. Why:
+  without `MURMUR_AT` there is no shared origin; each process would start the fast clock at
+  its own start (processes started seconds apart disagree by tens of scenario seconds at 10x,
+  and a browser's start is anyone's guess), and the engine's map would need an origin nobody
+  chose and the others can't know. With `MURMUR_AT`, one stated start names the scenario
+  clock, as it already does for every process (`make goldengate` and the evaluation always
+  set it); without it every clock is the wall clock, which runs at 1x by definition. The cost
+  is one more variable for a fast run without a scenario, which was never consistent. After
+  the review (10-07): the check tested whether `MURMUR_AT` was set, not whether it parsed,
+  and each process parsed it its own way (chrono, jiff, a hand parser that read an offset as
+  UTC): with `MURMUR_AT=garbage MURMUR_RATE=10` the bridge ran 1x while the stand-ins' GNSS
+  clock ran 10x. Now one reader in `murmur_space::scenario_clock` (the crate every process
+  already depends on) takes `MURMUR_AT` as an RFC 3339 date-time and nothing else, and a rate
+  as a positive number; every process refuses anything else at start, and `scripts/up.sh`
+  checks the same shape first, so a start one process accepts every process accepts, and
+  reads as the same instant. The short form `2026-06-14T10:00Z` is not RFC 3339 and is
+  refused; the defaults (`make goldengate`, the evaluation, the test scripts) moved to
+  `2026-06-14T10:00:00Z`. Times inside event files keep their own, looser reading.
+- **A login's options say nothing of who has a passkey, and a flood can't turn an operator
+  away** (10-07, murmur-i58, security review of rules 10; no rules change). The decoy for an
+  id without a passkey named one 16-byte credential id, while real ids are what the
+  authenticator chose (32 bytes for the virtual authenticator, 64 for a security key), so the
+  unauthenticated `POST /api/auth/login/passkey` told by length which ids exist and hold a
+  passkey; and its issuance was not limited. Decided: (1) a decoy names as many credentials,
+  as long, as real authenticators make, drawn from a fixed table (16 bytes: a version 4 UUID,
+  its version and variant bits set, as from the password managers that make one, 15 %, or 16
+  random bytes, 10 %, a split the review asked for and a judgment; 20 for iCloud Keychain, 32
+  for Windows Hello and virtual authenticators, 64 for a YubiKey 5, 65 for an Android phone as
+  a security key; counts: one 70 %, two 25 %, three 5 %; the structure inside a security key's
+  longer ids is not imitated), deterministic per id under an HMAC key: repeat
+  queries see the same answer, as for a real operator, and nobody without the key predicts
+  it. Not drawn from the site's own registrations: those change when someone registers, and
+  every decoy would shift at once while real answers did not. The key is kept beside the
+  credential file (`<file>.decoy-key`, made once, 0600, not a credential), because a key per
+  run would change every decoy at a restart and leave real ids alone, which tells them apart
+  to anyone comparing before and after. For the same reason (the review of 10-07) the file is
+  made whole before it has its name (written beside it, synced, hard-linked into place, read
+  back: a crash or a second bridge can't leave an empty or partial key), and a key file that
+  can't be read or made stops the bridge at start, saying to remove it (the decoys then change
+  once), rather than falling back to a per-run key. (2) Issuance is limited per id by what is live, not
+  by a rate: at most four challenges live per id (120 s each); a request past that is served
+  the newest live one again, which costs nothing (no new challenge, no decision lock, no
+  state), and nothing live is pushed out. Not a refusal past a rate: a stranger could keep an
+  id at its limit for free and so lock its operator out. Not "the oldest gives way", as
+  before: four requests then pushed the operator's own challenge out. An id without a passkey
+  goes through the same table with the same bounds (its decoy redrawn from the challenge), so
+  the limit is no oracle either. The bound on what a stranger can still do: they can be
+  served a challenge the operator was also served and answer it wrongly (it is answered
+  once), each such answer a failure on the id's login limit, which they could do with
+  made-up answers anyway; so the one way to keep an operator from signing in by passkey
+  stays the failure lock stated on 10-05 (five failures in 15 minutes: 30 s, doubling to 15
+  minutes). A served-again challenge may have less of its 120 s left; once it lapses the next
+  request is fresh. The table holds 10,000 ids; past that the id issued to longest ago goes,
+  in constant time (ids are kept in the order they were last issued to), whoever it is:
+  sparing roster ids would show, by how they are served after a flood, which ids are on the
+  roster. So, stated: a sustained flood (10,000 made-up ids within a challenge's lifetime) can
+  push out the challenge an operator is answering, and the operator asks again. It no longer
+  pushes them toward the failure lock (the review of 10-07 found it did: an operator's
+  genuine answer to a challenge pushed out failed and counted, the fifth round locked them
+  out): an answer to a challenge that is not live (never issued, answered, lapsed, pushed out)
+  can't succeed, so it is no guess, and it is refused in the same words without counting or
+  logging it; only an answer to a live challenge that fails counts. (3) A wrong answer to a
+  login challenge is refused in the same words whether the id has a passkey, has none, or
+  does not exist (the bridge's own log keeps the reason); only a counter that did not count
+  up, which takes a valid signature, is named. What still tells, stated (the review): an
+  id's options flip from decoy to real when its operator registers a passkey (and back when
+  the last is removed), so someone polling ids learns who registered one and when; that is
+  inherent in naming the operator's credentials at all, and only sign-in without naming them
+  (discoverable credentials, an empty allow list) would remove it. Timing: an operator's
+  challenge takes the engine's lock and webauthn-rs's work where a decoy takes an HMAC
+  (served again, both cost the same), and a wrong answer to a live challenge of an id on the
+  roster writes an `auth.refused` audit event that an id off it does not, so its refusal
+  takes measurably longer.
 - **A keep-out that blocks is explained, read-only; nothing here relaxes one** (10-06,
   murmur-12e; no rules change). Measured live: with manoeuvring civilian traffic near the
   target, keep-outs blocked 77 of 77 nominations while the platform was 1 to 2 km out (a
@@ -1471,7 +1577,9 @@ group. Dates are 2026.
   no authenticator answers), except that an operator with several passkeys gets several ids,
   stated. Challenges waiting for an answer are bounded per operator on the roster (logins,
   four) and per session (step-ups, eight), the oldest giving way, so no stranger can fill a
-  shared cap; an unanswered challenge leaves nothing in the log.
+  shared cap; an unanswered challenge leaves nothing in the log. (Logins revised 10-07,
+  murmur-i58: decoys drawn like real credentials, and a login's options limited per id
+  without the oldest giving way; see "A login's options say nothing of who has a passkey".)
 - **What a step-up must be is policy; a study requires a passkey** (10-05, user decision;
   policy schema 7, `PASSKEY_SCHEMA_SINCE`). `[approval] step_up_factor = "password"` (shipped,
   the default for normal credentials runs) takes the password again or a passkey (at least as

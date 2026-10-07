@@ -348,6 +348,11 @@ pub enum SpaceInputs {
     Answered {
         sha256: String,
         answer: Box<SpaceAnswer>,
+        /// Rules 13 ([`crate::rules::SPACE_REPLAY_SINCE`]): the engine time the answer was
+        /// computed at (outside the engine's lock, or by the engine at the check). Absent
+        /// under older rules.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        computed_t: Option<Time>,
     },
 }
 
@@ -376,6 +381,9 @@ pub enum LoggedSpace {
     },
     Answered {
         sha256: String,
+        /// Rules 13: when the answer was computed (engine time); absent in older logs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        computed_t: Option<Time>,
     },
 }
 
@@ -497,8 +505,11 @@ impl LoggedInputs {
                 SpaceInputs::Unavailable { reason } => LoggedSpace::Unavailable {
                     reason: reason.clone(),
                 },
-                SpaceInputs::Answered { sha256, .. } => LoggedSpace::Answered {
+                SpaceInputs::Answered {
+                    sha256, computed_t, ..
+                } => LoggedSpace::Answered {
                     sha256: sha256.clone(),
+                    computed_t: *computed_t,
                 },
             },
             tracks: world.tracks.clone(),
@@ -529,10 +540,11 @@ impl LoggedInputs {
             LoggedSpace::Unavailable { reason } => SpaceInputs::Unavailable {
                 reason: reason.clone(),
             },
-            LoggedSpace::Answered { sha256 } => match answer(sha256) {
+            LoggedSpace::Answered { sha256, computed_t } => match answer(sha256) {
                 Some(a) => SpaceInputs::Answered {
                     sha256: sha256.clone(),
                     answer: Box::new(a.clone()),
+                    computed_t: *computed_t,
                 },
                 None => SpaceInputs::Unavailable {
                     reason: format!("space answer {sha256} not resolved"),

@@ -218,18 +218,39 @@ pub enum UnknownEndurance {
 /// ([`crate::passkey`]). Version 11 ([`SPACE_FOLLOWUPS_SINCE`]): satellite tasks cancelled
 /// after dispatch, re-checked against a later space answer, and covers evaluated over the
 /// area ([`crate::space`]). Version 12 ([`REVIEW_FOLLOWUPS_SINCE`]): the follow-ups of the
-/// reviews of rules 6 to 10. Version 13 ([`AIRCRAFT_REACH_SINCE`]): an aircraft counts in a
-/// keep-out anywhere it reaches at its own speed.
+/// reviews of rules 6 to 10. Version 13 ([`SPACE_REPLAY_SINCE`]): when a space answer was
+/// computed is logged and bound, a re-check is stamped at its guard's instant, and the pin
+/// never changes mid-log. Version 14 ([`AIRCRAFT_REACH_SINCE`]): an aircraft counts in a
+/// keep-out anywhere it could turn or speed up to.
 pub const RULES_VERSION: u32 = AIRCRAFT_REACH_SINCE;
 
 /// The rules version from which an aircraft with a velocity also counts in a keep-out anywhere
-/// it reaches at its own speed bound, whether or not the tracker saw it turn (murmur-oho:
-/// calibrated against the truth, the air tracker gives a straight-flying aircraft a velocity,
-/// and an aircraft turns through a right angle in 15 to 30 s, so a keep-out along its course
-/// alone would no longer hold one that turns; [`crate::engage::track_reach`]). Every gate of
-/// that change reads this constant, never a literal: another change taking 13 first
-/// renumbers it in this one line.
-pub const AIRCRAFT_REACH_SINCE: u32 = 13;
+/// it reaches from its own speed bound, speeding up to its domain's top speed, whether or not the
+/// tracker saw it turn (murmur-oho: calibrated against the truth, the air tracker gives a
+/// straight-flying aircraft a velocity, and an aircraft turns through a right angle in 15 to
+/// 30 s, so a keep-out along its course alone would no longer hold one that turns or speeds
+/// up; [`crate::engage::track_reach`]). Every gate of that change reads this constant, never a
+/// literal: another change taking 14 first renumbers it in this one line.
+pub const AIRCRAFT_REACH_SINCE: u32 = 14;
+
+/// The rules version from which replay holds a space answer to when it was computed and a
+/// re-check to the instant it was judged at (murmur-der.4, murmur-lsj): every answered space
+/// input logs the engine time its answer was computed at (`computed_t`, beside its hash), a
+/// collect decides only on an answer computed within [`PREPARED_SPACE_MAX_AGE_MS`] of the
+/// check (the `space_query` rule, so replay recomputes it) and asked at the scenario time of
+/// that computation (outside a re-check, which keeps the tasking's request time); a re-check's
+/// events are logged at the instant its "has the pass come" guard read; and the segment's
+/// pinned time shift never changes between two `space.loaded` (the engine refuses a re-pinned
+/// segment, replay flags one). Every gate of that change reads this constant, never a
+/// literal: another change taking 13 first renumbers it in this one line.
+pub const SPACE_REPLAY_SINCE: u32 = 13;
+
+/// How far a collect's space answer may have been computed from the check that decides on
+/// it, ms: the engine takes an answer prepared outside its lock only within this, and from
+/// rules 13 ([`SPACE_REPLAY_SINCE`]) the `space_query` rule fails a collect whose logged answer
+/// was computed farther from its check (a cover's question does not depend on when it was
+/// asked, so its age is no concern).
+pub const PREPARED_SPACE_MAX_AGE_MS: i64 = 5_000;
 
 /// The rules version from which the follow-ups of the reviews of rules 6 to 10 decide: an
 /// expended platform's lost-link values are closed with the reason and the platform is spent
@@ -406,6 +427,12 @@ impl RulesConfig {
     /// Rules 12 ([`REVIEW_FOLLOWUPS_SINCE`]): the follow-ups of the reviews of rules 6 to 10.
     pub fn followups(&self) -> bool {
         self.rules_version >= REVIEW_FOLLOWUPS_SINCE
+    }
+
+    /// Rules 13 ([`SPACE_REPLAY_SINCE`]): a space answer's computation time logged and bound,
+    /// a re-check stamped at its guard's instant, no pin change mid-log.
+    pub fn space_replay(&self) -> bool {
+        self.rules_version >= SPACE_REPLAY_SINCE
     }
 
     /// `[rules.engage]`, or its defaults.
@@ -996,13 +1023,31 @@ fn checked_answer<'a>(
     world: &'a WorldSnapshot,
     cfg: &RulesConfig,
 ) -> Result<&'a SpaceAnswer, String> {
-    let answer = match &world.space {
+    let (answer, computed_t) = match &world.space {
         SpaceInputs::NotQueried => {
             return Err("cannot evaluate: the space segment was not queried".into());
         }
         SpaceInputs::Unavailable { reason } => return Err(format!("cannot evaluate: {reason}")),
-        SpaceInputs::Answered { answer, .. } => answer,
+        SpaceInputs::Answered {
+            answer, computed_t, ..
+        } => (answer, *computed_t),
     };
+    // rules 13: a collect decides only on an answer computed within the bound of its check
+    // (its request time is when it was asked); a cover's question does not depend on it
+    if cfg.space_replay() && matches!(answer.query, crate::space::SpaceQuery::Tasking(_)) {
+        let Some(c) = computed_t else {
+            return Err("cannot evaluate: the space answer does not say when it was computed".into());
+        };
+        let off = world.t.ms_since(c);
+        if off.abs() > PREPARED_SPACE_MAX_AGE_MS {
+            return Err(format!(
+                "cannot evaluate: the space answer was computed {:.3} s {} the check, more than {:.0} s",
+                off.unsigned_abs() as f64 / 1000.0,
+                if off > 0 { "before" } else { "after" },
+                PREPARED_SPACE_MAX_AGE_MS as f64 / 1000.0
+            ));
+        }
+    }
     let now = answer.now().unwrap_or(world.t);
     let want = match query_for(&spec.task, now, &cfg.space_rules()) {
         Some(Ok(q)) => q,

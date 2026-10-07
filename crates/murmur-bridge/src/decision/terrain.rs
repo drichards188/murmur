@@ -28,7 +28,6 @@ use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use super::civil;
 use crate::clock;
 
 /// A cached answer is used this long; the tide moves the shoreline.
@@ -291,17 +290,11 @@ impl Tidewater {
         } else {
             format!("{host}:80")
         };
-        let at = std::env::var("MURMUR_AT")
+        // the scenario clock as every process reads it (murmur_space::scenario_clock; the
+        // bridge refused anything else at startup)
+        let at = murmur_space::scenario_clock::from_env()
             .ok()
-            .and_then(|s| civil::parse_utc(&s))
-            .map(|at| {
-                let rate = std::env::var("MURMUR_RATE")
-                    .ok()
-                    .and_then(|r| r.parse::<f64>().ok())
-                    .filter(|r| r.is_finite() && *r > 0.0)
-                    .unwrap_or(1.0);
-                (at as f64, clock::wall(), rate)
-            });
+            .and_then(|s| Some((s.at_unix()?, clock::wall(), s.rate)));
         Ok(Tidewater {
             addr,
             at,

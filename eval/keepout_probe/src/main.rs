@@ -2,7 +2,7 @@
 //! situations through murmur-decide's own nomination checks, read-only. Nothing here is part
 //! of the C2 or decides anything for it; the engine's rules are called, never restated.
 //!
-//! `murmur-keepout-probe [--root DIR] [--rules 6,9,12,13] [--keep-out-m M]` reads one situation per line on
+//! `murmur-keepout-probe [--root DIR] [--rules 6,9,12,14] [--keep-out-m M]` reads one situation per line on
 //! stdin and writes one result per line on stdout for each of its evaluations.
 //!
 //! **A situation** (JSON): `id`, `t_ms` (engine time now), `target` (a track id), `radius_m`,
@@ -25,7 +25,7 @@
 //! rules 6), `mean` (along the average velocity, rules 9), `manoeuvre` (anywhere at the
 //! fastest it went, rules 9), `young` (anywhere at its domain's top speed, rules 12),
 //! `aircraft` (an aircraft: anywhere it reaches from its own speed, speeding up to the top
-//! speed, rules 13), `no_velocity` (no velocity estimate: anywhere at its domain's top speed,
+//! speed, rules 14), `no_velocity` (no velocity estimate: anywhere at its domain's top speed,
 //! rules 6).
 
 use std::collections::BTreeMap;
@@ -508,7 +508,7 @@ pub fn region_sizes(env: &Env, q: &RegionQuery) -> Value {
 fn main() -> std::process::ExitCode {
     let mut args = std::env::args().skip(1);
     let mut root = PathBuf::from(".");
-    let mut versions = vec![6, 9, 12, 13];
+    let mut versions = vec![6, 9, 12, 14];
     let mut keep_out_m: Option<f64> = None;
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -524,7 +524,7 @@ fn main() -> std::process::ExitCode {
             // a copy of the policy with another keep-out buffer, metres
             "--keep-out-m" => keep_out_m = args.next().and_then(|v| v.parse().ok()),
             _ => {
-                eprintln!("usage: murmur-keepout-probe [--root DIR] [--rules 6,9,12,13] [--keep-out-m M] < situations.jsonl");
+                eprintln!("usage: murmur-keepout-probe [--root DIR] [--rules 6,9,12,14] [--keep-out-m M] < situations.jsonl");
                 return std::process::ExitCode::from(2);
             }
         }

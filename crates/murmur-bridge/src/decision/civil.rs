@@ -1,6 +1,9 @@
-//! UTC calendar arithmetic for the run id and for `MURMUR_AT` (no date crate needed).
+//! UTC calendar arithmetic for the run id (no date crate needed; `MURMUR_AT` is read by
+//! `murmur_space::scenario_clock`, as in every process).
 
-/// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's algorithm).
+/// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's algorithm; the
+/// inverse of [`civil_from_days`], which the tests check it against).
+#[cfg(test)]
 pub fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = y.div_euclid(400);
@@ -37,27 +40,6 @@ pub fn compact_utc(unix_s: i64) -> String {
     )
 }
 
-/// Parse `2026-06-14T10:00Z`, `2026-06-14T10:00:30Z` or `2026-06-14T10:00:30+00:00` (UTC only)
-/// into Unix seconds.
-pub fn parse_utc(s: &str) -> Option<i64> {
-    let s = s.trim();
-    let s = s
-        .strip_suffix('Z')
-        .or_else(|| s.strip_suffix("+00:00"))
-        .unwrap_or(s);
-    let (date, time) = s.split_once('T')?;
-    let mut dp = date.split('-').map(|x| x.parse::<i64>().ok());
-    let (y, m, d) = (dp.next()??, dp.next()??, dp.next()??);
-    let mut tp = time.split(':').map(|x| x.parse::<i64>().ok());
-    let h = tp.next()??;
-    let mi = tp.next()??;
-    let sec = tp.next().flatten().unwrap_or(0);
-    if !(1..=12).contains(&m) || !(1..=31).contains(&d) || h > 23 || mi > 59 || sec > 60 {
-        return None;
-    }
-    Some(days_from_civil(y, m, d) * 86_400 + h * 3600 + mi * 60 + sec)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -66,9 +48,6 @@ mod tests {
     fn round_trips() {
         assert_eq!(days_from_civil(1970, 1, 1), 0);
         assert_eq!(civil_from_days(days_from_civil(2026, 6, 14)), (2026, 6, 14));
-        assert_eq!(parse_utc("2026-06-14T10:00Z"), Some(1_781_431_200));
-        assert_eq!(parse_utc("2026-06-14T10:00:00+00:00"), Some(1_781_431_200));
         assert_eq!(compact_utc(1_781_431_200), "20260614T100000Z");
-        assert_eq!(parse_utc("June"), None);
     }
 }
