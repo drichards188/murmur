@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 38] = [
+const LOGS: [(&str, u32); 40] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -124,13 +124,18 @@ const LOGS: [(&str, u32); 38] = [
     ("v12-young-track-blocks-scenario-79.jsonl", REVIEW_FOLLOWUPS_SINCE),
     ("v12-refusal-names-queued-order-scenario-81.jsonl", REVIEW_FOLLOWUPS_SINCE),
     ("v12-restore-written-off-scenario-82.jsonl", REVIEW_FOLLOWUPS_SINCE),
+    // rules 13 (an aircraft counts anywhere it could turn or speed up to, murmur-oho; the table
+    // names the constant): the same scenario, and scenario 83, an aircraft flying away 2 km from
+    // the effect point rejected by its reach, the same nomination pending once it is 12 km out
+    ("v13-engagement-scenario-01.jsonl", AIRCRAFT_REACH_SINCE),
+    ("v13-aircraft-may-turn-back-scenario-83.jsonl", AIRCRAFT_REACH_SINCE),
 ];
 
 /// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
 const V6_AIRSHIP: &str = "v6-airship-nomination-scenario-66.jsonl";
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v12-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v13-engagement-scenario-01.jsonl";
 
 /// The committed scenario log of rules 6 (the lost-link preload).
 const V6_SCENARIO: &str = "v6-engagement-scenario-01.jsonl";
@@ -1256,6 +1261,23 @@ fn a_rules_10_log_claiming_rules_9_still_carries_its_passkeys() {
             "{marker}: {w:?}"
         );
     }
+}
+
+/// Rules 13 logs nothing new, so a rules 13 log can claim rules 12 without a marker giving it
+/// away; but replay recomputes every decision with the rules claimed, and scenario 83's first
+/// nomination, rejected by the aircraft's reach under rules 13, would have waited for its
+/// signers under rules 12: the claim is caught on the decision itself.
+#[test]
+fn a_rules_13_log_claiming_rules_12_is_caught_where_an_aircraft_decided() {
+    let (now, before) = (AIRCRAFT_REACH_SINCE, AIRCRAFT_REACH_SINCE - 1);
+    let mut ls = lines(&fixture("v13-aircraft-may-turn-back-scenario-83.jsonl"));
+    assert!(ls[0].contains(&format!("\"rules_version\":{now},")));
+    ls[0] = ls[0].replacen(&format!("\"rules_version\":{now},"), &format!("\"rules_version\":{before},"), 1);
+    let r = with(&rechain(&ls), RulesAccepted::Exactly(before));
+    assert!(!r.ok(), "rules 12 would have passed the first nomination");
+    assert!(r.mismatches.iter().any(|m| m.what.contains("keep_out_tracks") || m.what.contains("rejected")), "{:?}", whats(&r));
+    // under its own rules it replays
+    assert!(with(&fixture("v13-aircraft-may-turn-back-scenario-83.jsonl"), RulesAccepted::Exactly(now)).ok());
 }
 
 /// Rules 11, the engine on the element-set fixture (`tests/space.rs`,
