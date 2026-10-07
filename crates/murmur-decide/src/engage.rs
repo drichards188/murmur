@@ -333,6 +333,12 @@ impl EngageRules {
         self.rules_version >= crate::rules::REVIEW_FOLLOWUPS_SINCE
     }
 
+    /// The decisions of rules 13 on ([`crate::rules::AIRCRAFT_REACH_SINCE`]): an aircraft with a
+    /// velocity also counts anywhere it reaches at its own speed ([`track_reach`]).
+    pub fn aircraft_reach(&self) -> bool {
+        self.rules_version >= crate::rules::AIRCRAFT_REACH_SINCE
+    }
+
     /// The optional keys this section sets, each with the policy schema that introduced it
     /// (or, for an old name, the first schema whose builds read it): a log claiming an
     /// older schema can't carry them (replay checks).
@@ -2633,6 +2639,8 @@ pub enum ReachKind {
     /// Rules 12: too young for an average velocity: anywhere it reaches at its domain's
     /// plausible top speed.
     Young,
+    /// Rules 13: an aircraft: anywhere it reaches at its own speed.
+    Aircraft,
 }
 
 impl ReachKind {
@@ -2643,6 +2651,7 @@ impl ReachKind {
             ReachKind::MeanVelocity => "mean_velocity",
             ReachKind::Manoeuvre => "manoeuvre",
             ReachKind::Young => "young",
+            ReachKind::Aircraft => "aircraft",
         }
     }
 }
@@ -2661,8 +2670,11 @@ impl ReachKind {
 /// do not exist yet: before, it fell back to the one region along its velocity), so it also
 /// counts anywhere it reaches at its domain's plausible top speed ([`top_speed_mps`]), or at
 /// its own speed bound (its speed and `keep_out_sigma` of its velocity error) when that is
-/// faster: fail closed, at the cost of larger keep-outs for its first minute or so. The
-/// keep-out holds only if every region clears it.
+/// faster: fail closed, at the cost of larger keep-outs for its first minute or so. Rules 13
+/// (murmur-oho): an aircraft turns through a right angle in 15 to 30 s whenever it likes, so a
+/// minute ahead its course says little of where it will be; with a velocity it also counts
+/// anywhere it reaches at its own speed bound (as a young track's), whether or not the tracker
+/// has seen it turn. The keep-out holds only if every region clears it.
 pub fn track_reach(t: &TrackFacts, effect_t: Time, ec: &EngageRules) -> Vec<TrackReach> {
     reach(t, effect_t, ec, true)
 }
@@ -2768,7 +2780,36 @@ fn reach(t: &TrackFacts, effect_t: Time, ec: &EngageRules, words: bool) -> Vec<T
             kind: ReachKind::Young,
         });
     }
+    // rules 13: an aircraft may turn or speed up at any moment
+    if ec.aircraft_reach() && t.domain == Domain::Air {
+        let (from, to, reach) = aircraft_reach_m(ve.hypot(vn) + k * ec.track_velocity_sigma(), span, ec);
+        let radius_m = k * t.pos_sigma_m + reach;
+        out.push(TrackReach {
+            center: t.position.value,
+            radius_m,
+            how: if words {
+                format!(
+                    "an aircraft, which may turn or speed up at any moment: anywhere it reaches from {from:.1} m/s, up to {to:.1} m/s, in {span:.0} s, {radius_m:.0} m with its {k:.0}-sigma"
+                )
+            } else {
+                String::new()
+            },
+            kind: ReachKind::Aircraft,
+        });
+    }
     out
+}
+
+/// Rules 13: how far an aircraft flying at `speed` (m/s, its velocity error included) may get in
+/// `span` s, whichever way it turns: speeding up at the domain's manoeuvre acceleration
+/// (`track_accel_mps2` for the air) up to its domain's top speed ([`top_speed_mps`]). Returns the
+/// speed it starts from, the speed it may reach by then, and the distance.
+pub fn aircraft_reach_m(speed: f64, span: f64, ec: &EngageRules) -> (f64, f64, f64) {
+    let top = top_speed_mps(Domain::Air).max(speed);
+    let a = ec.track_accel(Domain::Air);
+    let t1 = if a > 0.0 { ((top - speed) / a).clamp(0.0, span) } else { span };
+    let reached = if a > 0.0 { speed + a * t1 } else { speed };
+    (speed, reached, speed * t1 + 0.5 * a * t1 * t1 + reached * (span - t1))
 }
 
 /// Rules 6: the effect's altitude for a 3D keep-out: the target's estimate (MSL) with its

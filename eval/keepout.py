@@ -1,4 +1,4 @@
-"""Keep-outs against engagements, on generated situations (rules 6, 9 and 12): how often a
+"""Keep-outs against engagements, on generated situations (rules 6, 9, 12 and 13): how often a
 keep-out blocks the nomination of an engagement on a hostile target, as a function of traffic
 density and behaviour, time to effect (the platform's speed and distance), how the tracks are
 made and the rules version; whether a block protected someone; and which keep-out component
@@ -29,7 +29,7 @@ engine reads about it comes from one of two trackers:
 
 `murmur-keepout-probe` (read-only use of murmur-decide) runs every evaluation through the
 engine's own nomination checks (`rules::evaluate` on the engine's view of the world) under
-rules 6, 9 and 12, and lists each protected track's keep-out regions (`engage::track_reach`)
+rules 6, 9, 12 and 13, and lists each protected track's keep-out regions (`engage::track_reach`)
 with how far each reaches into the keep-out.
 
 **Labels (truth).** From the effect point and time the engine predicted, each contact's true
@@ -116,7 +116,7 @@ TTE_S = (30, 45, 60, 90, 120, 180, 240, 300)
 #: distances (m) for the platform table: each armed platform at each
 DIST_M = (500, 1000, 2000, 3000)
 PLATFORMS = ("magura", "switchblade")
-RULES = (6, 9, 12)
+RULES = (6, 9, 12, 13)
 RADIUS_M = 75.0
 #: the policy's dispatch_delay_s, for placing the platform only (the engine uses the policy's own)
 DISPATCH_S = 20.0
@@ -774,6 +774,7 @@ REFERENCE = (
     ("zigzagging at 10 m/s, manoeuvre seen", (10.0, 0.0), (7.0, 0.0), 600.0, 11.0),
     ("young: tracked 20 s, holding", (0.0, 0.0), None, 20.0, None),
     ("new: tracked 3 s, no velocity yet", None, None, 3.0, None),
+    ("an aircraft at 50 m/s, tracked 10 min", (50.0, 0.0), (50.0, 0.0), 600.0, None, "air"),
 )
 REFERENCE_SPANS_S = (30, 60, 90, 120, 180, 240, 300)
 
@@ -782,7 +783,7 @@ def region_sizes(rules: Iterable[int] = RULES, probe: Path = PROBE) -> list[dict
     """How large the engine makes each keep-out region of the reference tracks, by span and
     rules version (`engage::track_reach` through the probe)."""
     lines = []
-    for name, vel, mean, tracked, man in REFERENCE:
+    for name, vel, mean, tracked, man, *domain in REFERENCE:
         t: dict[str, Any] = {
             "position": {"value": [CENTRE_BOX[0][0], CENTRE_BOX[1][0]], "t": T0_MS},
             "pos_sigma_m": 15.0,
@@ -791,7 +792,7 @@ def region_sizes(rules: Iterable[int] = RULES, probe: Path = PROBE) -> list[dict
             "affiliation_confidence": 0.5,
             "identity_confidence": 0.2,
             "sources": ["usv-1:radar"],
-            "domain": "surface",
+            "domain": domain[0] if domain else "surface",
             "last_seen_t": T0_MS,
             "first_seen_t": T0_MS - int(tracked * 1000),
         }
@@ -1013,7 +1014,7 @@ def read_records(path: Path) -> Iterator[dict[str, Any]]:
 
 # ---- summaries ---------------------------------------------------------------------------------------
 
-COMPONENTS = ("current", "mean", "manoeuvre", "young", "no_velocity")
+COMPONENTS = ("current", "mean", "manoeuvre", "young", "aircraft", "no_velocity")
 
 
 def would_pass_without(comp: dict[str, float], drop: str | Iterable[str]) -> bool:
@@ -1373,18 +1374,21 @@ def sensitivity(summaries: dict[str, dict[str, Any]], behaviour: str = "mixed") 
         dens = sorted({d for d, _, _ in cells})
         if not dens:
             continue
+        # the newest rules version measured (the needed share, misses and thresholds are its)
+        latest = max(v for _, _, v in cells)
         row: dict[str, Any] = {"variant": name, "about": (s.get("params") or {}).get("about"), "by_density": {}}
         for d in dens:
             row["by_density"][f"{d:g}"] = {
-                "blocked": {f"{t}|{v}": (cells.get((d, t, v)) or {}).get("tracks") for t in SENS_TTE for v in (6, 9, 12)},
-                "perfect": {f"{t}": (cells.get((d, t, 12)) or {}).get("perfect") for t in SENS_TTE},
-                "t50": {f"{v}": (thr.get((d, v)) or {}).get("t50") for v in (6, 9, 12)},
-                "t90": {f"{v}": (thr.get((d, v)) or {}).get("t90") for v in (6, 9, 12)},
+                "blocked": {f"{t}|{v}": (cells.get((d, t, v)) or {}).get("tracks") for t in SENS_TTE for v in RULES},
+                "perfect": {f"{t}": (cells.get((d, t, latest)) or {}).get("perfect") for t in SENS_TTE},
+                "t50": {f"{v}": (thr.get((d, v)) or {}).get("t50") for v in RULES},
+                "t90": {f"{v}": (thr.get((d, v)) or {}).get("t90") for v in RULES},
             }
-        row["needed"] = {f"{v}": (blocks.get(v) or {}).get("needed") for v in (6, 9, 12)}
-        row["missed"] = {f"{v}": (blocks.get(v) or {}).get("missed") for v in (6, 9, 12)}
-        row["missed_severe"] = {f"{v}": (blocks.get(v) or {}).get("missed_severe") for v in (6, 9, 12)}
-        row["missed_late"] = {f"{v}": (blocks.get(v) or {}).get("missed_late") for v in (6, 9, 12)}
+        row["latest"] = latest
+        row["needed"] = {f"{v}": (blocks.get(v) or {}).get("needed") for v in RULES}
+        row["missed"] = {f"{v}": (blocks.get(v) or {}).get("missed") for v in RULES}
+        row["missed_severe"] = {f"{v}": (blocks.get(v) or {}).get("missed_severe") for v in RULES}
+        row["missed_late"] = {f"{v}": (blocks.get(v) or {}).get("missed_late") for v in RULES}
         out.append(row)
     return out
 
@@ -1524,19 +1528,24 @@ def table(s: dict[str, Any]) -> str:
     prim = s["variants"].get(s["primary"])
     if prim:
         lines.append(table_variant(prim))
-    lines.append("Sensitivity, mixed traffic: blocked at 30 / 60 / 120 / 180 s, rules 6 | 9 | 12 (perfect knowledge at the same times); needed share of blocks and missed passes, rules 6 / 12:")
+    lines.append(
+        "Sensitivity, mixed traffic: blocked at 30 / 60 / 120 / 180 s, rules 6 | 9 | 12 | 13 where measured (perfect knowledge at the same times); "
+        "needed share of blocks and missed passes, rules 6 / the newest measured (r):"
+    )
     for row in s.get("sensitivity", []):
+        lv = str(row.get("latest", 12))
         for d, x in row["by_density"].items():
             b = x["blocked"]
-            blocked = " | ".join("/".join(_pct(b.get(f"{t}|{v}"), False) for t in SENS_TTE) for v in (6, 9, 12))
+            versions = [v for v in RULES if any(b.get(f"{t}|{v}") for t in SENS_TTE)]
+            blocked = " | ".join("/".join(_pct(b.get(f"{t}|{v}"), False) for t in SENS_TTE) for v in versions)
             perfect = "/".join(_pct(x["perfect"].get(f"{t}"), False) for t in SENS_TTE)
             lines.append(
-                f"  {row['variant']:<16} {d:>5}/km2  {blocked}  (perfect {perfect})  t50 r12 {_t((x['t50'].get('12') or [None])[0])}  t90 r12 {_t((x['t90'].get('12') or [None])[0])}"
+                f"  {row['variant']:<16} {d:>5}/km2  {blocked}  (perfect {perfect})  t50 r{lv} {_t((x['t50'].get(lv) or [None])[0])}  t90 r{lv} {_t((x['t90'].get(lv) or [None])[0])}"
             )
         lines.append(
-            f"  {'':<16} needed {_pct(row['needed'].get('6'), False)} / {_pct(row['needed'].get('12'), False)}%  missed {_miss(row['missed'].get('6'))} / {_miss(row['missed'].get('12'))}"
-            f"  in the circle {_miss(row['missed_severe'].get('6'))} / {_miss(row['missed_severe'].get('12'))}"
-            f"  missed over the release window {_miss(row['missed_late'].get('6'))} / {_miss(row['missed_late'].get('12'))}"
+            f"  {'':<16} needed {_pct(row['needed'].get('6'), False)} / {_pct(row['needed'].get(lv), False)}%  missed {_miss(row['missed'].get('6'))} / {_miss(row['missed'].get(lv))}"
+            f"  in the circle {_miss(row['missed_severe'].get('6'))} / {_miss(row['missed_severe'].get(lv))}"
+            f"  missed over the release window {_miss(row['missed_late'].get('6'))} / {_miss(row['missed_late'].get(lv))}"
         )
     lines.append("")
     for name, v in s["variants"].items():

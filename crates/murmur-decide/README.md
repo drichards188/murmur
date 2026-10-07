@@ -439,7 +439,10 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
     where it matters: the keep-outs are read again every second while the plan waits and
     after approval, and at the release over a span of seconds, where the model is the
     tracker's own uncertainty; a track that turns toward the point shows in its next
-    estimate.
+    estimate. From rules 13 an aircraft with a velocity also counts anywhere it reaches from
+    its own speed, speeding up at the air's `track_accel_mps2` to the top speed
+    (`engage::aircraft_reach_m`): an aircraft turns through a right angle in 15 to 30 s,
+    whenever it likes, and the white-noise model does not hold a turned one a minute ahead.
   - *Altitude*: where the target's altitude (the effect's) and the other's are both known,
     and a track's is a recent ranged measurement (`engage::track_altitude`: its own time,
     `alt_t`, at most `track_alt_max_age_s`, 10 s, old, and a ranging sensor that hit the
@@ -464,7 +467,9 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
     The bridge's sensing model gives an altitude only where the sensor ranges the contact in
     height: a radar or AIS for a contact on the water (sea level), and for an aircraft only a
     radar that measures elevation (`height = true` in the catalog: the CCA's fire-control
-    radar; the USVs' navigation radars and the MALE aircraft's surface-search radars are 2D);
+    radar; the USVs' navigation radars and the MALE aircraft's surface-search radars are 2D:
+    such a radar plots an aircraft at its slant range, and the tracker reads the plot as the
+    bearing line it is on, no farther out, never as a height or a position, murmur-oho);
     none from EO/IR, ESM or sonar, none for a ground contact. The tracker carries the
     altitude's time and each source's last hit into the decision facts (`alt_t`,
     `source_t`).
@@ -504,8 +509,9 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
   snapshot (`options`: the tracker's memories, our vehicles' callsigns for its words). For
   every track or vehicle that blocks the keep-out, or nearly does (its nearest region's edge
   within twice the clearance; at most 12 listed, blocking first, the rest counted), an
-  `Item`: the region that blocks (along its velocity or average velocity, a manoeuvre's or a
-  young track's reach, no velocity; for ours a course, a circle, a cruise reach, lost), that
+  `Item`: the region that blocks (along its velocity or average velocity, a manoeuvre's, a
+  young track's or (rules 13) an aircraft's reach, no velocity; for ours a course, a circle, a
+  cruise reach, lost), that
   region at the effect time, the clearance (effect radius plus `keep_out_m`), the shortfall,
   how altitude counted (for aircraft), and what would clear it: `clear_windows` (same
   picture: the stretches of effect times, scanned every 0.25 s from the earliest any
@@ -1356,6 +1362,29 @@ Rules versions:
   downlink cut for 150 s, an orbit for it held in the queue for the values carried over and
   sent the second the restore confirmed, then a clean stop owing nothing (see
   `tests/versions.rs`).
+
+- **13** (murmur-oho, the air tracker calibrated against truth; every gate reads
+  `AIRCRAFT_REACH_SINCE`, so another change taking the number first renumbers it in one line;
+  no policy key changes, schema 7): *an aircraft counts anywhere it could turn or speed up to*.
+  A protected aircraft with a velocity also counts in a keep-out anywhere it reaches from its
+  own speed (and `keep_out_sigma` of the policy's velocity error), speeding up at the policy's
+  air manoeuvre acceleration (`track_accel_mps2`, 2 m/s^2) to the domain's top speed (100
+  m/s), whether or not the tracker saw it manoeuvre (`engage::aircraft_reach_m`, region
+  `aircraft`; the keep-out explanation names it: "An aircraft may turn or speed up at any
+  moment"). Before, a straight-flying aircraft with a velocity counted only along its course
+  and its average course: calibrated against the truth, the bridge's air tracker gives one a
+  velocity most of the time, and a keep-out a minute ahead then missed an aircraft that turned
+  (a right angle takes 15 to 30 s) or sped up, which the tracker before the calibration, seldom
+  giving one a velocity, had held as anywhere within 100 m/s (the bridge's
+  `tracks::tests::calib_air`: with this region every class holds as often or more). Cost: an
+  aircraft blocks a keep-out about as far as one without a velocity at nominations a minute or
+  more ahead (from 55 m/s it reaches 100 m/s in 22 s), less at shorter spans (at 30 s, 2.6 km
+  instead of 3 km). Surface, ground and subsurface tracks are judged as before. No new logged
+  fact: a rules 13 log claiming rules 12 differs only where an aircraft's region decided, and
+  replay recomputes those decisions. Scenario 83 (an aircraft flying away 2 km from the effect
+  point: rejected; 12 km out, pending); `tests/aircraft_reach.rs`. Fixtures (a clean build):
+  `tests/data/audit/v13-engagement-scenario-01.jsonl` and
+  `v13-aircraft-may-turn-back-scenario-83.jsonl` (see `tests/versions.rs`).
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that

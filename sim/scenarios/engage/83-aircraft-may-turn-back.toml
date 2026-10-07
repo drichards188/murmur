@@ -1,0 +1,84 @@
+# Rules 13 (murmur-oho), fail closed on what an aircraft can do: a light aircraft flying north,
+# away from the effect point, followed for ten minutes on a steady course (an average velocity,
+# no manoeuvre seen), its height not ranged (the keep-out stays 2D). Until rules 13 the keep-out
+# counted it along its course and its average course, both away from the point: clear. An
+# aircraft turns through a right angle in 15 to 30 s and speeds up whenever it likes, so from
+# rules 13 it also counts anywhere it reaches from its own speed, speeding up at the policy's
+# air manoeuvre acceleration to the domain's top speed: the first nomination, its effect about
+# a minute and a half out with the aircraft 2 km away, is rejected; once the aircraft has flown
+# out of that reach (12 km north) the same nomination waits for its signers.
+title = "An aircraft counts anywhere it could turn or speed up to"
+invariant = "keep_out_tracks"
+attack = "a light aircraft 2 km from the effect point, flying away on a steady course"
+expect = "pending_approval"
+end_s = 220
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[track]]
+id = "T-0002"
+at = [-122.4950, 37.8300]   # 2 km north of the target, flying north at 50 m/s
+velocity = [0.0, 50.0]
+affiliation = "neutral"
+identity = "light_aircraft"
+identity_confidence = 0.9
+domain = "air"
+sources = ["3:radar", "3:eo_ir"]   # a 2D radar and EO/IR: no height
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 2
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 3
+action = "expect"
+state = "rejected"
+rule = "keep_out_tracks"
+
+[[step]]
+at_s = 200                  # 12 km north now, beyond what it could reach by the effect
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 201
+action = "expect"
+state = "pending_approval"

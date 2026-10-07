@@ -244,7 +244,7 @@ export interface KeepOutExplanation {
   note: string
 }
 
-export type KeepOutKind = 'velocity' | 'mean_velocity' | 'manoeuvre' | 'young' | 'no_velocity' | 'circling' | 'cruise_reach' | 'lost'
+export type KeepOutKind = 'velocity' | 'mean_velocity' | 'manoeuvre' | 'young' | 'no_velocity' | 'aircraft' | 'circling' | 'cruise_reach' | 'lost'
 
 export interface KeepOutRegion {
   kind: KeepOutKind
@@ -323,6 +323,7 @@ export const KEEP_OUT_KIND_LABEL: Record<KeepOutKind, string> = {
   manoeuvre: 'manoeuvre reach',
   young: 'young track reach',
   no_velocity: 'no velocity yet',
+  aircraft: 'aircraft reach',
   circling: 'circling',
   cruise_reach: 'cruise reach',
   lost: 'lost: cruise reach',

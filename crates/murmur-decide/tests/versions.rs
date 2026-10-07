@@ -1110,8 +1110,8 @@ fn rechain_events(mut events: Vec<audit::Event>) -> Vec<audit::Event> {
     events
 }
 
-/// Rules 12, live (murmur-cq3, murmur-qjf and their review), from a clean build of the rules
-/// 12 head, anchored as they ran, stand-ins at the Gate on their own ports. The first of these
+/// Rules 12, live (murmur-cq3, murmur-qjf and their review; replayed with rules 12 accepted),
+/// from a clean build of the rules 12 head, anchored as they ran, stand-ins at the Gate on their own ports. The first of these
 /// runs (`CRASH_1`) started on a `.last-run` pointer left empty (as a crash mid-write leaves
 /// it): it started all the same, recording the pointer as a failed carry (owed, unknown) in
 /// `run.started` and alerting; an operator's orbit took the USV near the fast boat, two
@@ -1149,7 +1149,7 @@ fn the_rules_12_live_logs_carry_across_two_crashes_in_one_line_each() {
         first.contains("\"carried_from\":[{\"log\":\".last-run-27765\",\"error\":\"the pointer is empty"),
         "{first}"
     );
-    let r = replay_str(&c1).unwrap();
+    let r = with(&c1, RulesAccepted::Exactly(REVIEW_FOLLOWUPS_SINCE));
     assert!(r.ok(), "{:?}", r.mismatches);
     assert_eq!(r.build.as_ref().map(|b| b.dirty), Some(Some(false)));
     assert_eq!(r.carried_restores.len(), 1);
@@ -1169,7 +1169,7 @@ fn the_rules_12_live_logs_carry_across_two_crashes_in_one_line_each() {
     let logs = [(CRASH_1.1, c1.as_str())];
     let opts = ReplayOptions {
         carried_logs: &logs,
-        ..ReplayOptions::default()
+        ..accepting(RulesAccepted::Exactly(REVIEW_FOLLOWUPS_SINCE))
     };
     let r = replay_str_with(&c2, &opts).unwrap();
     assert!(r.ok(), "{:?}", r.mismatches);
@@ -1179,14 +1179,14 @@ fn the_rules_12_live_logs_carry_across_two_crashes_in_one_line_each() {
     assert_eq!(r.unrestored.len(), 1, "only the second engagement's values: {:?}", r.unrestored);
     assert!(c2.contains("\"type\":\"platform.restore\",\"uid\":\"2\"") && c2.contains("\"confirmed\":true"));
     assert!(!c2.contains("\"carried\":true"), "no carried events under rules 12");
-    let r = replay_str(&c2).unwrap();
+    let r = with(&c2, RulesAccepted::Exactly(REVIEW_FOLLOWUPS_SINCE));
     assert!(whats(&r).iter().any(|w| w.contains("not verified")), "{:?}", whats(&r));
     // the last: the orbit held for the carried values on the same vehicle, its home moved
     // (no other_vehicle), sent only once they were back
     let logs = [(CRASH_2.1, c2.as_str())];
     let opts = ReplayOptions {
         carried_logs: &logs,
-        ..ReplayOptions::default()
+        ..accepting(RulesAccepted::Exactly(REVIEW_FOLLOWUPS_SINCE))
     };
     let r = replay_str_with(&after, &opts).unwrap();
     assert!(r.ok() && r.unrestored.is_empty(), "{:?} {:?}", r.mismatches, r.unrestored);

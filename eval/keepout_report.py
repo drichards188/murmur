@@ -226,10 +226,10 @@ def sensitivity_table(c: dict[str, Any]) -> str:
     times = SENS_TTE
     tl = " / ".join(f"{t}" for t in times)
     head = (
-        f"<tr><th>variant</th><th>per km<sup>2</sup></th><th class='n'>blocked at {tl} s: rules 6</th><th class='n'>rules 9</th><th class='n'>rules 12</th>"
-        "<th class='n'>perfect knowledge</th><th class='n'>50% / 90% pass, rules 12</th><th class='n'>needed share of blocks, rules 6 / 12</th>"
-        "<th class='n'>missed at the keep-out line, rules 6 / 12</th><th class='n'>missed in the effect circle, rules 6 / 12</th>"
-        "<th class='n'>missed over the release window, rules 6 / 12</th></tr>"
+        f"<tr><th>variant</th><th>per km<sup>2</sup></th><th class='n'>blocked at {tl} s: rules 6</th><th class='n'>rules 9</th><th class='n'>rules 12</th><th class='n'>rules 13</th>"
+        "<th class='n'>perfect knowledge</th><th class='n'>50% / 90% pass, newest rules</th><th class='n'>needed share of blocks, rules 6 / newest</th>"
+        "<th class='n'>missed at the keep-out line, rules 6 / newest</th><th class='n'>missed in the effect circle, rules 6 / newest</th>"
+        "<th class='n'>missed over the release window, rules 6 / newest</th></tr>"
     )
 
     def tt(x: Any) -> str:
@@ -238,21 +238,22 @@ def sensitivity_table(c: dict[str, Any]) -> str:
     trs = []
     for row in rows:
         dens = list(row["by_density"].items())
+        lv = str(row.get("latest", 12))
         for i, (d, x) in enumerate(dens):
             b = x["blocked"]
-            cells = "".join("<td class='n'>" + " / ".join(pct(b.get(f"{t}|{v}"), False) for t in times) + "</td>" for v in (6, 9, 12))
+            cells = "".join("<td class='n'>" + " / ".join(pct(b.get(f"{t}|{v}"), False) for t in times) + "</td>" for v in (6, 9, 12, 13))
             perf = " / ".join(pct(x["perfect"].get(f"{t}"), False) for t in times)
-            t50 = (x["t50"].get("12") or [None])[0]
-            t90 = ((x.get("t90") or {}).get("12") or [None])[0]
+            t50 = (x["t50"].get(lv) or [None])[0]
+            t90 = ((x.get("t90") or {}).get(lv) or [None])[0]
             tail = ""
             if i == 0:
                 n = len(dens)
                 ms = row.get("missed_severe") or {}
                 tail = (
-                    f"<td class='n' rowspan='{n}'>{pct(row['needed'].get('6'), False)} / {pct(row['needed'].get('12'), False)}</td>"
-                    f"<td class='n' rowspan='{n}'>{miss(row['missed'].get('6'))} / {miss(row['missed'].get('12'))}</td>"
-                    f"<td class='n' rowspan='{n}'>{miss(ms.get('6'))} / {miss(ms.get('12'))}</td>"
-                    f"<td class='n' rowspan='{n}'>{miss(row['missed_late'].get('6'))} / {miss(row['missed_late'].get('12'))}</td>"
+                    f"<td class='n' rowspan='{n}'>{pct(row['needed'].get('6'), False)} / {pct(row['needed'].get(lv), False)}</td>"
+                    f"<td class='n' rowspan='{n}'>{miss(row['missed'].get('6'))} / {miss(row['missed'].get(lv))}</td>"
+                    f"<td class='n' rowspan='{n}'>{miss(ms.get('6'))} / {miss(ms.get(lv))}</td>"
+                    f"<td class='n' rowspan='{n}'>{miss(row['missed_late'].get('6'))} / {miss(row['missed_late'].get(lv))}</td>"
                 )
             name = f"<td rowspan='{len(dens)}'><strong>{esc(row['variant'])}</strong><br><span class='muted'>{esc(row.get('about'))}</span></td>" if i == 0 else ""
             trs.append(f"<tr>{name}<td class='n'>{esc(d)}</td>{cells}<td class='n'>{perf}</td><td class='n'>{tt(t50)} / {tt(t90)}</td>{tail}</tr>")
@@ -267,7 +268,7 @@ def live_table(variants: dict[str, Any]) -> str:
         return ""
     dists = sorted({r["dist_m"] for _, s in live for r in s["dist"]})
     head = "<tr><th>variant</th><th>tracker</th><th class='n'>circling boat within</th><th class='n'>per km<sup>2</sup></th>" + "".join(
-        f"<th class='n'>magura {d / 1000:g} km: rules 6 / 9 / 12 (perfect)</th>" for d in dists
+        f"<th class='n'>magura {d / 1000:g} km: rules 6 / 9 / 12 / 13 (perfect)</th>" for d in dists
     ) + "</tr>"
     trs = []
     for n, s in live:
@@ -276,7 +277,7 @@ def live_table(variants: dict[str, Any]) -> str:
         for d in sorted({r["density"] for r in s["dist"]}):
             tds = []
             for dist in dists:
-                vals = [cells.get((d, dist, v)) for v in (6, 9, 12)]
+                vals = [cells.get((d, dist, v)) for v in (6, 9, 12, 13)]
                 pf = (vals[-1] or {}).get("perfect")
                 tds.append("<td class='n'>" + " / ".join(pct(x["tracks"], False) if x else "n/a" for x in vals) + f" <span class='muted'>({pct(pf, False)})</span></td>")
             trs.append(f"<tr><td>{esc(n)}</td><td>{esc(p.get('tracker'))}</td><td class='n'>{esc(p.get('near_circler_km'))} km</td><td class='n'>{d:g}</td>{''.join(tds)}</tr>")
@@ -290,14 +291,17 @@ def air_table(variants: dict[str, Any]) -> str:
         return ""
     head = (
         "<tr><th>variant</th><th>tracker</th><th>aircraft</th><th class='n'>aircraft with a velocity (sampled)</th><th class='n'>its reported 1-sigma</th>"
-        "<th class='n'>blocked, rules 12, at 30 / 60 / 120 s, 0.03 per km<sup>2</sup></th><th class='n'>0.1 per km<sup>2</sup></th></tr>"
+        "<th class='n'>blocked, rules 12 / 13, at 30 / 60 / 120 s, 0.03 per km<sup>2</sup></th><th class='n'>0.1 per km<sup>2</sup></th></tr>"
     )
     trs = []
     for n, s in rows:
         p = s.get("params") or {}
         q = next((x for x in s.get("tracker_quality") or [] if x["behaviour"] == "air"), None)
         cells = {(r["density"], r["tte_s"], r["rules"]): r for r in s.get("tte", []) if r["behaviour"] == "mixed"}
-        bl = ["<td class='n'>" + " / ".join(pct((cells.get((d, t, 12)) or {}).get("tracks"), False) for t in (30, 60, 120)) + "</td>" for d in (0.03, 0.1)]
+        bl = [
+            "<td class='n'>" + "; ".join(" / ".join(pct((cells.get((d, t, v)) or {}).get("tracks"), False) for t in (30, 60, 120)) for v in (12, 13)) + "</td>"
+            for d in (0.03, 0.1)
+        ]
         vel = f"{q['with_velocity']} of {q['tracked']}" if q else "n/a"
         trs.append(
             f"<tr><td>{esc(n)}</td><td>{esc(p.get('tracker'))}</td><td>{esc(p.get('air_motion', 'loiter'))}</td><td class='n'>{vel}</td>"

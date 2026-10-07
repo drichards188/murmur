@@ -218,8 +218,18 @@ pub enum UnknownEndurance {
 /// ([`crate::passkey`]). Version 11 ([`SPACE_FOLLOWUPS_SINCE`]): satellite tasks cancelled
 /// after dispatch, re-checked against a later space answer, and covers evaluated over the
 /// area ([`crate::space`]). Version 12 ([`REVIEW_FOLLOWUPS_SINCE`]): the follow-ups of the
-/// reviews of rules 6 to 10.
-pub const RULES_VERSION: u32 = REVIEW_FOLLOWUPS_SINCE;
+/// reviews of rules 6 to 10. Version 13 ([`AIRCRAFT_REACH_SINCE`]): an aircraft counts in a
+/// keep-out anywhere it reaches at its own speed.
+pub const RULES_VERSION: u32 = AIRCRAFT_REACH_SINCE;
+
+/// The rules version from which an aircraft with a velocity also counts in a keep-out anywhere
+/// it reaches at its own speed bound, whether or not the tracker saw it turn (murmur-oho:
+/// calibrated against the truth, the air tracker gives a straight-flying aircraft a velocity,
+/// and an aircraft turns through a right angle in 15 to 30 s, so a keep-out along its course
+/// alone would no longer hold one that turns; [`crate::engage::track_reach`]). Every gate of
+/// that change reads this constant, never a literal: another change taking 13 first
+/// renumbers it in this one line.
+pub const AIRCRAFT_REACH_SINCE: u32 = 13;
 
 /// The rules version from which the follow-ups of the reviews of rules 6 to 10 decide: an
 /// expended platform's lost-link values are closed with the reason and the platform is spent

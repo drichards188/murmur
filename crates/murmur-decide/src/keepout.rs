@@ -795,6 +795,13 @@ fn track_item(ctx: &Ctx, id: &str, t: &TrackFacts, s: &TrackStanding, alt: Optio
             "No velocity estimate yet, so it could be anywhere within {r} of where it is: up to {:.0} m/s for {span:.0} s.",
             engage::top_speed_mps(t.domain)
         ),
+        ReachKind::Aircraft => {
+            let v = t.velocity_mps.map_or(0.0, |[e, n]| e.hypot(n));
+            let (from, to, _) = engage::aircraft_reach_m(v + k * ec.track_velocity_sigma(), span, ec);
+            format!(
+                "An aircraft may turn or speed up at any moment, so it could be anywhere within {r} of where it is: from {from:.1} m/s, up to {to:.1} m/s by the effect time ({span:.0} s)."
+            )
+        }
     };
     let edge = s.edge;
     // altitude matters for an aircraft (a vessel is at sea level either way)
@@ -1166,7 +1173,7 @@ fn track_why(
     mem: &TrackerMemory,
 ) -> String {
     let then_kinds: Vec<ReachKind> = engage::track_regions(then, w_effect, ec).iter().map(|r| r.kind).collect();
-    let reach = now_kinds.iter().any(|k| ["young", "manoeuvre", "no_velocity"].contains(k));
+    let reach = now_kinds.iter().any(|k| ["young", "manoeuvre", "no_velocity", "aircraft"].contains(k));
     if now_kinds.contains(&"young") && !then_kinds.contains(&ReachKind::Young) {
         format!(
             "by then it has been tracked {:.0} s, long enough for an average velocity: a manoeuvre is no longer assumed",
