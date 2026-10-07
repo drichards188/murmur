@@ -146,10 +146,10 @@ const CROSSING_DEG: f64 = 30.0;
 /// update first widens both models along the line to [`ALONG_Q`] (the models' own noise covers
 /// a fix or two missed: 2, 3 and 4 s gave the same holds on the air tuning sets).
 const ALONG_GRACE_S: f64 = 3.0;
-/// The white-noise acceleration along a 2D radar's bearing line while only bearings come, m^2/s^3:
-/// its 2-sigma covers an aircraft turning at 8 m/s^2 (the air sets' hardest turn is 7.7: 8
-/// deg/s at 55 m/s; the contacts process turns a light aircraft at 6 deg/s) for the 7 s from
-/// [`ALONG_GRACE_S`] to [`RANGE_FRESH_S`], `3 a^2 t / 16`, rounded. Measured on the air tuning
+/// The white-noise acceleration along a 2D radar's bearing line while only bearings come,
+/// m^2/s^3: its 2-sigma covers an aircraft turning at 8 m/s^2 (the air sets' hardest turn is
+/// 7.7: 8 deg/s at 55 m/s; the contacts process turns a light aircraft at 6 deg/s) for the 7 s
+/// from [`ALONG_GRACE_S`] to [`RANGE_FRESH_S`], `3 a^2 t / 16`, rounded. Measured on the air tuning
 /// sets (`tracks::tests::calib_air`): at the manoeuvring model's 20 a keep-out 3 s ahead missed
 /// an aircraft in random turns at 8 deg/s by up to 55 m; at 80 and 200 none.
 const ALONG_Q: f64 = 80.0;
@@ -429,8 +429,7 @@ impl Model {
     /// `vel_sigma` each way, nothing correlated): a velocity from bearings at a range it does
     /// not know would be wrong by as much as the range is (found while fixing the review of
     /// 10-07: one kept from such bearings, 100 m/s off, carried a small UAS's track 1.9 km in
-    /// 10 s once EO/IR ranged it again). The
-    /// across-line estimate (the bearing's) is kept.
+    /// 10 s once EO/IR ranged it again). The across-line estimate (the bearing's) is kept.
     fn reset_to_segment(&mut self, o: [f64; 2], w: [f64; 2], hi: f64, vel_sigma: f64) {
         let mu = self.x[0] * w[0] + self.x[1] * w[1] - (w[0] * o[0] + w[1] * o[1]);
         let spread = hi / SEGMENT_SIGMAS;

@@ -186,12 +186,13 @@ meaningful. Decision and command, not weapons.
   --situations 100` (every variant, ~16 min; `--variants radar all` for less). `eval/keepout_probe`
   is a workspace member that compiles the bridge's `tracks/{model,sensing,truth}.rs` by path, so
   `make check` lints and tests it with them. Model results: read METRICS.md "Keep-outs against
-  engagements" before quoting (radar alone is the pessimistic sensor case; the air tracker's
-  constants are unvalidated).
+  engagements" before quoting (radar alone is the pessimistic sensor case; the air tracker is
+  calibrated on simulated motions only, "The air tracker against truth").
 - The tracker is a two-model IMM; changes must pass `tracks::tests::calib`. Its held-out seeds
   (66-95) are not for tuning: write a new held-out set if you tune on them. Aircraft have their
-  own calibration (`tracks::tests::calib_air`: held-out seeds 161-190, not for tuning; tuning
-  aids `air_calib_table` and `air_tune_grid`, ignored tests), compared with verbatim copies of
+  own calibration (`tracks::tests::calib_air`: held-out seeds 221-250, run once, its two misses
+  pinned as found, not for tuning; tuning sets 101-220; tuning aids `air_calib_table` and
+  `air_tune_grid`, ignored tests), compared with verbatim copies of
   the tracker before it (`tracks/tests/before_oho/`: never edit them). A 2D radar plots an
   aircraft at its slant range (`Detection::slant_from`): a test that reads such a fix's
   `lat`/`lon` as the aircraft's position is wrong by its height's share.

@@ -933,8 +933,10 @@ fn on_held_out_air_motions_the_tracker_is_honest_and_a_keep_out_holds() {
 
 /// The held-out set's one run (seeds 221-250, the constants frozen) failed the strictest
 /// criterion twice: a keep-out 3 s ahead missed an aircraft without a velocity in 2 of some
-/// 300,000 samples, by 20 m (two radars triangulating one 10 km out, its estimate 3.5 of its
-/// sigmas off) and by 6 m (a route's turn with EO/IR lost, 7 sigmas off): the tracker's tail,
+/// 300,000 samples, by 20 m (10 km out, one EO/IR fix ranged it after a stretch on the bearing
+/// segment, and the next 10 s of two nearly parallel radars' bearings drew a velocity of 140
+/// m/s from it, the truth 75: its estimate 3.5 of its sigmas off) and by 6 m (a route's turn
+/// the tracker had not taken in, EO/IR losing it mid-turn: 7 sigmas off): the tracker's tail,
 /// not the aircraft region's (every sample with a velocity held at every span). Pinned here as
 /// found, not allowed for: any other failure, or these changed, fails the test.
 const HELD_OUT_FOUND: [&str; 2] = [

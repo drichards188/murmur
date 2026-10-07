@@ -440,9 +440,12 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
     after approval, and at the release over a span of seconds, where the model is the
     tracker's own uncertainty; a track that turns toward the point shows in its next
     estimate. From rules 14 an aircraft with a velocity also counts anywhere it reaches from
-    its own speed, speeding up at the air's `track_accel_mps2` to the top speed
-    (`engage::aircraft_reach_m`): an aircraft turns through a right angle in 15 to 30 s,
-    whenever it likes, and the white-noise model does not hold a turned one a minute ahead.
+    its speed bound (its speed, `keep_out_sigma` of its velocity's error, and the tracker's
+    lag behind a speed-up), speeding up at a stated bound to the top speed, and every region
+    of an aircraft adds how far the tracker may lag behind it (`engage::aircraft_reach_m`,
+    `aircraft_speed_bound`, `AIRCRAFT_LAG_M`): an aircraft turns through a right angle in 15
+    to 30 s, whenever it likes, and the white-noise model does not hold a turned one even
+    seconds ahead.
   - *Altitude*: where the target's altitude (the effect's) and the other's are both known,
     and a track's is a recent ranged measurement (`engage::track_altitude`: its own time,
     `alt_t`, at most `track_alt_max_age_s`, 10 s, old, and a ranging sensor that hit the
@@ -1431,22 +1434,33 @@ Rules versions:
   `AIRCRAFT_REACH_SINCE`, so another change taking the number first renumbers it in one line;
   no policy key changes, schema 7): *an aircraft counts anywhere it could turn or speed up to*.
   A protected aircraft with a velocity also counts in a keep-out anywhere it reaches from its
-  own speed (and `keep_out_sigma` of the policy's velocity error), speeding up at the policy's
-  air manoeuvre acceleration (`track_accel_mps2`, 2 m/s^2) to the domain's top speed (100
-  m/s), whether or not the tracker saw it manoeuvre (`engage::aircraft_reach_m`, region
-  `aircraft`; the keep-out explanation names it: "An aircraft may turn or speed up at any
-  moment"). Before, a straight-flying aircraft with a velocity counted only along its course
-  and its average course: calibrated against the truth, the bridge's air tracker gives one a
-  velocity most of the time, and a keep-out a minute ahead then missed an aircraft that turned
-  (a right angle takes 15 to 30 s) or sped up, which the tracker before the calibration, seldom
-  giving one a velocity, had held as anywhere within 100 m/s (the bridge's
-  `tracks::tests::calib_air`: with this region every class holds as often or more). Cost: an
-  aircraft blocks a keep-out about as far as one without a velocity at nominations a minute or
-  more ahead (from 55 m/s it reaches 100 m/s in 22 s), less at shorter spans (at 30 s, 2.5 km
-  instead of 3 km). Surface, ground and subsurface tracks are judged as before. No new logged
-  fact: a rules 14 log claiming rules 13 differs only where an aircraft's region decided, and
-  replay recomputes those decisions. Scenario 83 (an aircraft flying away 2 km from the effect
-  point: rejected; 12 km out, pending); `tests/aircraft_reach.rs`. Fixtures (a clean build):
+  speed bound, speeding up to the domain's top speed (100 m/s), whether or not the tracker saw
+  it manoeuvre (`engage::aircraft_reach_m`, region `aircraft`). The bound
+  (`aircraft_speed_bound`) is its speed, `keep_out_sigma` of its velocity's error in its least
+  certain direction (the tracker's own, `TrackFacts::velocity_sigma_mps`, or the policy's
+  `track_velocity_sigma_mps` when larger or not given), and the tracker's lag: as if the
+  aircraft had been speeding up for `AIRCRAFT_LAG_S` (7 s) unseen at `AIRCRAFT_SPEEDUP_MPS2`
+  (4.5 m/s^2, a bound over every source of aircraft motion here: the contacts process's 0.5,
+  the catalog's stand-ins' 2.5 to 4.2, the air calibration's 3; not the policy's air
+  `track_accel_mps2`, a sigma), no faster than the top speed for the lag. Every region of an
+  aircraft, with a velocity or without, adds where the lag may have taken it,
+  `AIRCRAFT_LAG_M` (110 m). The keep-out explanation names the region ("An aircraft may turn
+  or speed up at any moment") and, for an aircraft, does not offer a velocity estimate as the
+  remedy (what clears it: a ranged altitude above the ceiling, the effect sooner, the aircraft
+  farther than it could fly by then). Before, a straight-flying aircraft with a velocity
+  counted only along its course and its average course: calibrated against the truth, the
+  bridge's air tracker gives one a velocity most of the time, and a keep-out then missed an
+  aircraft that turned or sped up, even seconds ahead (the bridge's `tracks::tests::calib_air`:
+  with this region a keep-out 3 to 100 s ahead held every aircraft of the tuning sets every
+  time, and the held-out set's but twice, by 20 m and 6 m, both without a velocity). Cost: an
+  aircraft with a velocity blocks a keep-out about as far as one without at every span (an
+  aircraft at 50 m/s, 15 m 1-sigma: 411 m at 3 s and 3.1 km at 30 s, where one without a
+  velocity counts 440 m and 3.1 km). Surface, ground and subsurface tracks are judged as
+  before. New logged fact: a track's velocity error (`velocity_sigma_mps`), which a log
+  claiming rules 13 or older can't carry (an engine on older rules leaves it out); a rules
+  14 log claiming rules 13 differs too where an aircraft's region decided, and replay
+  recomputes those decisions. Scenario 83 (an aircraft flying away 2 km from the effect point: rejected; 12 km
+  out, pending); `tests/aircraft_reach.rs`. Fixtures (a clean build of `f097a0a`):
   `tests/data/audit/v14-engagement-scenario-01.jsonl` and
   `v14-aircraft-may-turn-back-scenario-83.jsonl` (see `tests/versions.rs`).
 

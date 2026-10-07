@@ -246,7 +246,7 @@ These are model results from scripted proxies on generated situations, dev runs 
 ids, never human data; the live bridge's act sensing is exercised by
 `sim/scenarios/golden-gate-ident.toml` (a live run, not a batch arm).
 
-### Keep-outs against engagements (rules 6, 9, 12, 13)
+### Keep-outs against engagements (rules 6, 9, 12, 14)
 
 How often the keep-outs block the nomination of an engagement on a genuinely hostile target,
 by traffic density and behaviour (stationary, transiting, circling, manoeuvring, new, mixed),

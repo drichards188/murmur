@@ -489,11 +489,14 @@ schema 7 unchanged; DECISIONS.md "The air tracker is calibrated against truth" a
 counts anywhere it could turn or speed up to"): the bridge's IMM keeps the full covariance; a 2D
 radar's fix of an aircraft (slant range and bearing, no height) is the bearing line it is on,
 no farther out, so one radar alone does not range an aircraft (no velocity, a 1-sigma along the
-segment) and no track invents an altitude; the air constants are calibrated on aircraft motions
-and sensor mixes with disjoint tuning and held-out seeds (`tracks::tests::calib_air`); and an
-aircraft with a velocity counts in a keep-out anywhere it reaches from its own speed, speeding up
-to the top speed, whether or not it was seen to turn. Scenario 83; the keep-out measurement's
-air variants and the live engagement demo before and after in eval/METRICS.md.
+segment; ranged only while a position fix, or another radar's bearing across this one, came
+within 10 s) and no track invents an altitude; the air constants are calibrated on aircraft
+motions and sensor mixes with disjoint tuning and held-out seeds (`tracks::tests::calib_air`);
+and an aircraft counts in a keep-out anywhere it reaches from its speed bound (its own velocity
+error and the tracker's measured lag in it, a new logged fact `velocity_sigma_mps`), speeding
+up at a stated bound to the top speed, whether or not it was seen to turn, 3 to 100 s ahead.
+Scenario 83; the keep-out measurement's air variants and the live engagement demo before and
+after in eval/METRICS.md.
 
 Rules 13, space answers held to their time (murmur-der.4, murmur-lsj; `SPACE_REPLAY_SINCE`,
 policy schema 7 unchanged; DECISIONS.md, 10-07): every decision on a space answer logs when
