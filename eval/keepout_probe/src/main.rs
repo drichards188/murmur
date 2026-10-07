@@ -28,15 +28,15 @@
 //!
 //! Rules 13 (murmur-533): the contacts the tracker dropped (`lost`, from the real tracker's
 //! drops) are the engine's lost contacts under rules 13 and absent before (as the bridge's
-//! picture had them): their regions are component `lost`. Under rules 13 each evaluation with
-//! lost contacts also says how the keep-out on tracks would have gone with them all accepted
+//! picture had them): their regions ([`engage::lost_reach`]: a live track's, and anywhere at
+//! its own plausible speed) are component `lost`. Under rules 13 each evaluation with lost
+//! contacts also says how the keep-out on tracks would have gone with them all accepted
 //! (`accepted`: what an acceptance, or any rule clearing them all, gives), held only until
 //! 600 s after their drop (`held600`), or counted only with their last fix within 3 km of the
-//! effect point (`near3km`), or also anywhere each could have reached at its own plausible
-//! speed (`reach`: its speed and `keep_out_sigma` of the velocity error, or the fastest it went,
-//! or, without a velocity, its domain's top speed, as the engine's manoeuvre and young regions
-//! count a track; given to the engine as a manoeuvre at its last fix): `lost_variants`, the
-//! engine's own check on those pictures.
+//! effect point (`near3km`), or counted by the regions along their course alone, as a live
+//! track's (`heading`: the first version of rules 13, before murmur-533's finding; given to the
+//! engine as live tracks with their facts at the drop): `lost_variants`, the engine's own check
+//! on those pictures.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufWriter, Write};
@@ -300,20 +300,15 @@ pub const NEAR_LOST_M: f64 = 3000.0;
 /// How long after its drop the `held600` variant still counts a lost contact, ms.
 pub const HELD_MS: i64 = 600_000;
 
-/// The `reach` variant: `l` also counted anywhere it could have reached at its own plausible
-/// speed from its last fix (a manoeuvre the engine reads as such: [`engage::track_reach`]).
-fn with_reach(l: &LostContact, ec: &EngageRules) -> LostContact {
-    let mut l = l.clone();
-    if let Some([e, n]) = l.facts.velocity_mps {
-        let bound = e.hypot(n) + ec.keep_out_sigma * ec.track_velocity_sigma();
-        let speed = l.facts.manoeuvre.map_or(bound, |m| m.speed_mps.max(bound));
-        l.facts.manoeuvre = Some(murmur_decide::world::Manoeuvre {
-            t: l.facts.position.t,
-            change_mps: l.facts.manoeuvre.map_or(0.0, |m| m.change_mps),
-            speed_mps: speed,
-        });
+/// The `heading` variant: the lost contacts counted by the regions a live track gets from the
+/// same facts ([`engage::track_reach`], along its course; not anywhere at its own plausible
+/// speed): the engine reads each as a live track, under its id, with its facts at the drop.
+fn as_live_tracks(w: &WorldSnapshot) -> WorldSnapshot {
+    let mut w = w.clone();
+    for (id, l) in std::mem::take(&mut w.lost_contacts) {
+        w.tracks.entry(id).or_insert(l.facts);
     }
-    l
+    w
 }
 
 /// Rules 13: the keep-out on tracks of `spec` on `w` with the lost contacts `keep` keeps.
@@ -405,7 +400,7 @@ pub fn evaluate(env: &Env, s: &Situation, base: &WorldSnapshot, version: u32) ->
         if w.tracks.contains_key(id) {
             continue;
         }
-        for r in engage::track_reach(&l.facts, p.effect_t, &ec) {
+        for r in engage::lost_reach(&l.facts, p.effect_t, &ec) {
             let edge = haversine_m(r.center, p.effect_point) - r.radius_m;
             let margin = edge - p.keep_out_m;
             let e = comp.entry("lost").or_insert(f64::INFINITY);
@@ -427,18 +422,12 @@ pub fn evaluate(env: &Env, s: &Situation, base: &WorldSnapshot, version: u32) ->
         out["n_lost_intr"] = json!(lost_in);
         let point = p.effect_point;
         let now = w.t;
-        let reach = {
-            let mut r = w.clone();
-            for l in r.lost_contacts.values_mut() {
-                *l = with_reach(l, &ec);
-            }
-            kot_with(&spec, &r, cfg, |_| true)
-        };
+        let heading = kot_with(&spec, &as_live_tracks(&w), cfg, |_| true);
         out["lost_variants"] = json!({
             "accepted": kot_with(&spec, &w, cfg, |_| false),
             "held600": kot_with(&spec, &w, cfg, |l| now.ms_since(l.dropped_t) <= HELD_MS),
             "near3km": kot_with(&spec, &w, cfg, |l| haversine_m(l.facts.position.value, point) <= NEAR_LOST_M),
-            "reach": reach,
+            "heading": heading,
         });
     }
     // the regions together give the engine's verdict (2D: the generated tracks carry no
@@ -860,6 +849,33 @@ mod tests {
         assert_eq!(r["13"]["lost_variants"]["accepted"], "pass");
         assert_eq!(r["13"]["lost_variants"]["held600"], "fail");
         assert_eq!(r["13"]["lost_variants"]["near3km"], "fail");
+        assert_eq!(r["13"]["lost_variants"]["heading"], "fail");
+    }
+
+    /// murmur-533's finding: a contact last seen steaming away, its course regions clear of the
+    /// keep-out, blocks by its plausible-speed region from rules 13; read as a live track (the
+    /// `heading` variant) it would pass.
+    #[test]
+    fn a_lost_contact_last_seen_leaving_blocks_by_its_plausible_speed() {
+        let now = T0;
+        let env = Env::load(&root(), &[13]).expect("env");
+        let mut s = situation(Vec::new(), 1200.0);
+        // 700 m east of the target, leaving east at 6 m/s, last seen 300 s ago
+        let mut f = track(east(700.0), Some([6.0, 0.0]), Time(now.0 - 300_000));
+        f.position.t = Time(now.0 - 300_000);
+        f.mean_velocity_mps = Some([6.0, 0.0]);
+        s.lost.insert(
+            "C-0001".into(),
+            LostContact {
+                dropped_t: Time(now.0 - 120_000),
+                facts: f,
+            },
+        );
+        let lines = run_situation(&env, &s);
+        let r = &lines[0]["rules"]["13"];
+        assert_eq!(r["kot"], "fail", "{r}");
+        assert!(r.get("mismatch").is_none(), "{r}");
+        assert_eq!(r["lost_variants"]["heading"], "pass", "{r}");
     }
 
     #[test]

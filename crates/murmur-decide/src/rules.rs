@@ -225,8 +225,8 @@ pub const RULES_VERSION: u32 = LOST_CONTACT_SINCE;
 /// The rules version from which a contact the tracker drops is not forgotten (murmur-533,
 /// [`crate::lost`]): the bridge hands the engine each track it drops with its last facts
 /// (`track.dropped`); the engine keeps it as a lost contact, which every engagement keep-out
-/// counts anywhere it could have reached since its last fix ([`crate::engage::track_reach`],
-/// no cap) unless it is exempt as a live track would be; an operator with engagement authority
+/// counts anywhere it could have reached since its last fix ([`crate::engage::lost_reach`]: a
+/// live track's regions and anywhere at its own plausible speed; no cap) unless it is exempt as a live track would be; an operator with engagement authority
 /// may accept one for one engagement (`engage.accepted` naming the contact), every signer is
 /// shown it and replay checks it; a new track with the same AIS identity, unambiguously,
 /// retires it (`track.reacquired`); a track's AIS identity is a fact (`ais`). Every gate of

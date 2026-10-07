@@ -12,11 +12,13 @@
 //!   engine holds each as a [`LostContact`] in its ledger ([`LostLedger`]), as replay does from
 //!   the log.
 //! - **It still protects.** Every engagement's keep-out on tracks counts a lost contact
-//!   anywhere it could have reached since its last fix, by the reach model the keep-out reads
-//!   for a live track ([`crate::engage::track_reach`] on its facts at the drop: along its
+//!   anywhere it could have reached since its last fix ([`crate::engage::lost_reach`] on its
+//!   facts at the drop): by the reach model the keep-out reads for a live track (along its
 //!   velocity with its predicted uncertainty, along its average velocity, anywhere at the
 //!   fastest it went if it manoeuvred, anywhere at its domain's top speed without a velocity
-//!   or an average velocity), growing without a cap: fail closed, as a lost vehicle of ours. It
+//!   or an average velocity) and, since nothing sees it turn, also anywhere at its own
+//!   plausible speed (its speed and `keep_out_sigma` of its velocity error, or the fastest it
+//!   went), growing without a cap: fail closed, as a lost vehicle of ours. It
 //!   is exempt where a live track would be (a declared hostile, by the identification ledger),
 //!   and never the target (a target out of the picture fails its own checks).
 //! - **An operator may accept it, for one engagement.** As a lost vehicle of ours (DECISIONS.md
@@ -195,7 +197,7 @@ pub fn match_one(
     }
     // where it is, against where the lost contact could have got to by then
     let at = t.position.t;
-    let regions = engage::track_reach(&lost.facts, at, ec);
+    let regions = engage::lost_reach(&lost.facts, at, ec);
     let slack = ec.keep_out_sigma * t.pos_sigma_m;
     let (gap, _) = regions
         .iter()

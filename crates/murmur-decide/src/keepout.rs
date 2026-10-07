@@ -559,6 +559,13 @@ fn track_clear(t: &TrackFacts, point: LonLat, at: Time, clearance: f64, now: Tim
     engage::track_standing(t, point, at, clearance, now, ec, alt, false).is_none_or(|s| !s.blocks(clearance))
 }
 
+/// Rules 13: [`track_clear`] for a lost contact (its facts at the drop): by its regions as one
+/// ([`engage::lost_track_standing`]), as [`engage::lost_standing`] judges it.
+#[allow(clippy::too_many_arguments)]
+fn lost_clear(t: &TrackFacts, point: LonLat, at: Time, clearance: f64, now: Time, ec: &EngageRules, alt: Option<EffectAlt>) -> bool {
+    engage::lost_track_standing(t, point, at, clearance, now, ec, alt, false).is_none_or(|s| !s.blocks(clearance))
+}
+
 /// Whether one of our vehicles is clear of the keep-out: [`engage::friendly_standing`], as
 /// [`engage::keep_out_friendly`] reads it (`world` gives the time and the acceptances).
 #[allow(clippy::too_many_arguments)]
@@ -678,7 +685,7 @@ pub fn explain(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig, opts
     }
     // rules 13: the lost contacts it judges
     for (id, l) in judged_lost(world, track_id, &ec) {
-        let Some(s) = engage::track_standing(&l.facts, point, effect_t, clearance, world.t, &ec, alt, true) else {
+        let Some(s) = engage::lost_track_standing(&l.facts, point, effect_t, clearance, world.t, &ec, alt, true) else {
             continue;
         };
         if s.blocks(clearance) || s.edge < NEAR_FACTOR * clearance {
@@ -881,6 +888,12 @@ fn track_item(ctx: &Ctx, id: &str, t: &TrackFacts, s: &TrackStanding, alt: Optio
             "No velocity estimate yet, so it could be anywhere within {r} of where it is: up to {:.0} m/s for {span:.0} s.",
             engage::top_speed_mps(t.domain)
         ),
+        ReachKind::PlausibleSpeed => {
+            let speed = (near.radius_m - k * t.pos_sigma_m) / span.max(1e-9);
+            format!(
+                "Out of view, it may have turned any way since its last fix, so it could be anywhere within {r} of where it was: up to {speed:.1} m/s, its own speed and {k:.0}-sigma of its velocity error (or the fastest it went), for {span:.0} s."
+            )
+        }
     };
     let edge = s.edge;
     // altitude matters for an aircraft (a vessel is at sea level either way)
@@ -1142,7 +1155,8 @@ fn same_picture(ctx: &Ctx, items: &mut [(Item, Probe)], more_blocking: bool) -> 
     // edge can dip between grid points (the windows below claim every effect time between)
     let scan = ctx.clearance + grid_margin_m(ctx.clearance);
     let clear_at = |p: &Probe, point: LonLat, at: Time, alt: Option<EffectAlt>| match p {
-        Probe::Track(_, t) | Probe::Lost(_, t) => track_clear(t, point, at, scan, world.t, ec, alt),
+        Probe::Track(_, t) => track_clear(t, point, at, scan, world.t, ec, alt),
+        Probe::Lost(_, t) => lost_clear(t, point, at, scan, world.t, ec, alt),
         Probe::Vehicle(u, v) => vehicle_clear(u, v, point, at, scan, world, cfg, alt),
     };
     let start = ctx.pv.start_t;
@@ -1460,7 +1474,7 @@ fn carried_forward(ctx: &Ctx, items: &mut [(Item, Probe)], shown: usize) -> (Opt
         }
         let track_ok = |t: &T| track_clear(&t.then, point, at, ctx.clearance, w, ec, alt);
         // rules 13: a lost contact stays as it is (its reach grows with the span by itself)
-        let lost_ok = |l: &&crate::lost::LostContact| track_clear(&l.facts, point, at, ctx.clearance, w, ec, alt);
+        let lost_ok = |l: &&crate::lost::LostContact| lost_clear(&l.facts, point, at, ctx.clearance, w, ec, alt);
         let vehicle_ok = |v: &V| vehicle_clear(v.uid, &v.then, point, at, ctx.clearance, &lean, cfg, alt);
         pending.retain(|&i| {
             let (item, _) = &items[i];

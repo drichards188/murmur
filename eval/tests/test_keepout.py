@@ -484,8 +484,8 @@ def test_out_of_view_contacts_are_tracked_first_then_dropped_and_held(probe):
     """The oov variants send some contacts out of view (from a time 30 to 900 s before the
     nomination, tracked a while before), the others' draws as in a variant without; the bridge's
     tracker drops those unseen 180 s, rules 12 forgets them and rules 13 keeps them; every
-    policy's verdict comes with the evaluation, held blocks at least as often as today, and
-    accepting every lost contact gives back today's verdicts."""
+    policy's verdict comes with the evaluation, held blocks at least as often as today and as
+    the course regions alone, and accepting every lost contact gives back today's verdicts."""
     cruise = K.cruise_speeds()
     params = K.variant_params("oov", {"tte_s": [60, 180], "dist_m": []})
     sits = [K.situation(2, 0.3, i, "mixed", params, cruise) for i in range(4)]
@@ -505,6 +505,7 @@ def test_out_of_view_contacts_are_tracked_first_then_dropped_and_held(probe):
         pol = K.lost_policy_blocks(rec)
         assert pol is not None and not any(x.get("mismatch") for x in rec["rules"].values()), rec
         assert pol["held"] >= pol["today"] and pol["held"] >= pol["held600"] >= pol["accepted"]
+        assert pol["held"] >= pol["heading"] >= pol["accepted"]
         assert pol["accepted"] == pol["today"], rec
     s = K.lost_summary([K.record(by_id[r["id"]], r, params) for r in res if "eval" in r])
     assert s["counts"]["with_lost"] > 0 and set(s["pooled"]) == set(K.LOST_POLICIES)

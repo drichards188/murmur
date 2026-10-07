@@ -1604,7 +1604,7 @@ impl Decision {
 
     /// Rules 13: the engine's lost contacts for the console: where each was last seen, since
     /// when, its identity, and the regions the keep-out counts it in now (as
-    /// `engage::track_regions` gives them at the engine's time now).
+    /// `engage::lost_regions` gives them at the engine's time now).
     pub(super) fn lost_json(&self, core: &Core) -> Vec<Value> {
         let now = self.clock.now();
         let ec = self.rules.engage_rules();
@@ -1613,7 +1613,7 @@ impl Decision {
             .into_iter()
             .map(|(id, l)| {
                 let f = &l.facts;
-                let regions: Vec<Value> = engage::track_regions(f, now, &ec)
+                let regions: Vec<Value> = engage::lost_regions(f, now, &ec)
                     .iter()
                     .map(|r| {
                         json!({

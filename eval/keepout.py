@@ -56,7 +56,8 @@ sensor view (`masked_from_s`: from a uniform time before the nomination nothing 
 whatever the range: a radar shadow, clutter, a dark small boat) while they keep moving as their
 behaviour says; the bridge's tracker drops a track unseen for 180 s. They compare, on the same
 evaluations, what each policy for a dropped contact would decide (`LOST_POLICIES`: today's drop,
-rules 13's lost contact held until accepted, held only 600 s after its drop, counted only near
+rules 13's lost contact held until accepted, the same by a live track's regions alone (along
+its course: the first version of rules 13), held only 600 s after its drop, counted only near
 the effect point, and every lost contact accepted or cleared), how often a nomination is blocked
 and how often only an acceptance would let it pass, and the misses against the truth, those
 caused by a dropped contact apart.
@@ -180,10 +181,10 @@ DROP_S = 180.0
 #: `lost_variants` under rules 13; `today` is rules 12)
 LOST_POLICIES = {
     "today": "rules 12: a dropped track no longer counts in the keep-out",
-    "held": "rules 13 as shipped: a lost contact counts from its last fix, no cap, until an operator accepts it",
+    "held": "rules 13 as shipped: a lost contact counts from its last fix, no cap, until an operator accepts it: by a live track's regions and also anywhere at its own plausible speed (its speed and 2-sigma of its velocity error, or the fastest it went; without a velocity, its domain's top speed)",
+    "heading": "held by a live track's regions alone (along its course and average course; anywhere only if it manoeuvred, was young or had no velocity): the first version of rules 13",
     "held600": "a lost contact counts only until 600 s after its drop",
     "near3km": "a lost contact counts only with its last fix within 3 km of the effect point",
-    "reach": "held, and also anywhere it could have reached at its own plausible speed (its speed and 2-sigma of its velocity error, or the fastest it went; without a velocity, its domain's top speed), from its last fix",
     "accepted": "every lost contact accepted (or cleared by any rule: every one here is within the observer's nominal sensor coverage, so clearing covered water clears them all)",
 }
 
@@ -1460,7 +1461,7 @@ def lost_policy_blocks(r: dict[str, Any]) -> dict[str, int] | None:
         return None
     lv = b.get("lost") or {}
     out = {"today": a["kot"], "held": b["kot"]}
-    for k in ("held600", "near3km", "reach", "accepted"):
+    for k in ("heading", "held600", "near3km", "accepted"):
         out[k] = int(lv[k] != "pass") if k in lv else b["kot"]
     return out
 
@@ -1501,7 +1502,7 @@ def lost_summary(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
             for c in (cells[(r["density"], r["nominal"], p)], pooled[p]):
                 c["n"] += 1
                 c["blocked"] += blocked
-                c["needs_acceptance"] += int(bool(blocked) and p in ("held", "held600", "near3km", "reach") and not pol["accepted"])
+                c["needs_acceptance"] += int(bool(blocked) and p in ("held", "heading", "held600", "near3km") and not pol["accepted"])
                 c["perfect"] += int(truth["near"])
                 if not blocked:
                     c["passes"] += 1

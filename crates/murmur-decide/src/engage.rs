@@ -2665,6 +2665,9 @@ pub enum ReachKind {
     /// Rules 12: too young for an average velocity: anywhere it reaches at its domain's
     /// plausible top speed.
     Young,
+    /// Rules 13: a lost contact (a track the tracker dropped): anywhere it reaches at its own
+    /// plausible speed since its last fix ([`lost_reach`]).
+    PlausibleSpeed,
 }
 
 impl ReachKind {
@@ -2675,6 +2678,7 @@ impl ReachKind {
             ReachKind::MeanVelocity => "mean_velocity",
             ReachKind::Manoeuvre => "manoeuvre",
             ReachKind::Young => "young",
+            ReachKind::PlausibleSpeed => "plausible_speed",
         }
     }
 }
@@ -2703,6 +2707,58 @@ pub fn track_reach(t: &TrackFacts, effect_t: Time, ec: &EngageRules) -> Vec<Trac
 /// many effect times ([`crate::keepout`]).
 pub fn track_regions(t: &TrackFacts, effect_t: Time, ec: &EngageRules) -> Vec<TrackReach> {
     reach(t, effect_t, ec, false)
+}
+
+/// Rules 13: where a lost contact may be at `effect_t`, from its facts at the drop: the regions
+/// a live track gets from them ([`track_reach`]) and, with a velocity estimate, also anywhere it
+/// reaches at its own plausible speed since its last fix, whichever way it turned: its speed and
+/// `keep_out_sigma` of its velocity error, or the fastest it went when the tracker saw it
+/// manoeuvre, whichever is faster (a region already counted at the last fix at least that far,
+/// young or manoeuvring, stands for it). The regions along its velocity are a prediction for a
+/// contact that keeps its course; nothing checks that a contact out of view does, so they alone
+/// are not a bound: a contact last seen steady that turned after its last fix could be inside a
+/// keep-out they clear (murmur-533's measurement, `eval/METRICS.md` "Out of view"). Without a
+/// velocity estimate it already counts anywhere at its domain's top speed. No cap: fail closed.
+/// Live tracks are not counted this way (the tracker sees them turn).
+pub fn lost_reach(t: &TrackFacts, effect_t: Time, ec: &EngageRules) -> Vec<TrackReach> {
+    lost_regions_with(t, effect_t, ec, true)
+}
+
+/// [`lost_reach`] without the words (each `how` empty).
+pub fn lost_regions(t: &TrackFacts, effect_t: Time, ec: &EngageRules) -> Vec<TrackReach> {
+    lost_regions_with(t, effect_t, ec, false)
+}
+
+fn lost_regions_with(t: &TrackFacts, effect_t: Time, ec: &EngageRules, words: bool) -> Vec<TrackReach> {
+    let mut out = reach(t, effect_t, ec, words);
+    let Some([ve, vn]) = t.velocity_mps else {
+        return out;
+    };
+    let span = secs(effect_t.ms_since(t.position.t)).max(0.0);
+    let k = ec.keep_out_sigma;
+    let bound = ve.hypot(vn) + k * ec.track_velocity_sigma();
+    let speed = t.manoeuvre.filter(|_| ec.v9()).map_or(bound, |m| m.speed_mps.max(bound));
+    let radius_m = k * t.pos_sigma_m + speed * span;
+    let covered = out.iter().any(|r| {
+        matches!(r.kind, ReachKind::Manoeuvre | ReachKind::Young | ReachKind::NoVelocity)
+            && r.center == t.position.value
+            && r.radius_m >= radius_m
+    });
+    if !covered {
+        out.push(TrackReach {
+            center: t.position.value,
+            radius_m,
+            how: if words {
+                format!(
+                    "lost, so whichever way it turned since its last fix: anywhere it reaches at its own plausible speed, {speed:.1} m/s, in {span:.0} s, {radius_m:.0} m with its {k:.0}-sigma"
+                )
+            } else {
+                String::new()
+            },
+            kind: ReachKind::PlausibleSpeed,
+        });
+    }
+    out
 }
 
 /// The regions of [`track_reach`]; `words`: with each region's `how`.
@@ -2909,7 +2965,36 @@ pub fn track_standing(
     alt: Option<EffectAlt>,
     words: bool,
 ) -> Option<TrackStanding> {
-    let regions = reach(t, effect_t, ec, words);
+    standing(t, reach(t, effect_t, ec, words), point, effect_t, keep_out_m, now, ec, alt)
+}
+
+/// Rules 13: [`track_standing`] for a lost contact, by its regions as one ([`lost_reach`]).
+#[allow(clippy::too_many_arguments)]
+pub fn lost_track_standing(
+    t: &TrackFacts,
+    point: LonLat,
+    effect_t: Time,
+    keep_out_m: f64,
+    now: Time,
+    ec: &EngageRules,
+    alt: Option<EffectAlt>,
+    words: bool,
+) -> Option<TrackStanding> {
+    standing(t, lost_regions_with(t, effect_t, ec, words), point, effect_t, keep_out_m, now, ec, alt)
+}
+
+/// How a track stands by `regions` (see [`track_standing`]).
+#[allow(clippy::too_many_arguments)]
+fn standing(
+    t: &TrackFacts,
+    regions: Vec<TrackReach>,
+    point: LonLat,
+    effect_t: Time,
+    keep_out_m: f64,
+    now: Time,
+    ec: &EngageRules,
+    alt: Option<EffectAlt>,
+) -> Option<TrackStanding> {
     let (nearest, edge, d) = regions
         .iter()
         .enumerate()
@@ -3142,7 +3227,7 @@ pub enum LostStanding {
 /// `effect_t`, as [`keep_out_tracks`] reads it: left out when its id is a live track again, it
 /// is exempt (the target, a declared hostile) or an operator accepted exactly this loss for the
 /// engagement (`world.lost_accepted`); else its regions from its facts at the drop, growing
-/// from its last fix ([`track_reach`]: no cap).
+/// from its last fix ([`lost_reach`]: also anywhere at its own plausible speed; no cap).
 #[allow(clippy::too_many_arguments)]
 pub fn lost_standing(
     id: &str,
@@ -3174,7 +3259,7 @@ pub fn lost_standing(
             ),
         };
     }
-    match track_standing(&l.facts, point, effect_t, keep_out_m, world.t, ec, alt, words) {
+    match lost_track_standing(&l.facts, point, effect_t, keep_out_m, world.t, ec, alt, words) {
         Some(s) => LostStanding::Judged(s),
         // never: every track has a region
         None => LostStanding::Exempt,

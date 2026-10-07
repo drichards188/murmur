@@ -4,7 +4,7 @@
 //! operator with engagement authority may accept it for one engagement (`engage.accepted`
 //! naming the contact); a new track with the same AIS identity, unambiguously, retires it
 //! (`track.reacquired`); replay rebuilds all of it from the log, and flags a track that left
-//! the picture without a drop. The scenarios (83 to 87) play the same end to end.
+//! the picture without a drop. The scenarios (83 to 88) play the same end to end.
 #![allow(clippy::unwrap_used)]
 
 mod common;
@@ -323,4 +323,64 @@ fn only_engagement_authority_accepts_a_lost_contact_and_any_operator_revokes_it(
     }).collect::<Vec<_>>().join("\n");
     let r = replay_str(&rechain(&forged)).unwrap();
     assert!(r.mismatches.iter().any(|m| m.what.contains("carry an identification")), "{:?}", r.mismatches);
+}
+
+/// murmur-533's measurement found the regions along a lost contact's course alone a prediction,
+/// not a bound: a contact last seen steady that turns after its last fix can be inside a keep-out
+/// they clear. A ferry 600 m north-west of the target, last seen steaming away at 5 m/s, dropped
+/// 180 s later: by the effect, about 280 s after its last fix, its course puts it 1.4 km further
+/// on (clear of the keep-out), but it could have turned back and be at the target. It also counts
+/// anywhere it reaches at its own plausible speed (its speed and 2-sigma of its 1 m/s velocity
+/// error, 7 m/s), so the nomination is rejected on that region. A live track with the same facts
+/// keeps the course regions alone (the tracker would see it turn). Scenario 88 plays it.
+#[test]
+fn a_lost_contact_counts_anywhere_at_its_own_plausible_speed() {
+    let clock = ManualClock::new(T0);
+    let (mut e, log) = engine_on(&clock, None);
+    let op1 = e.open_operator_session_with(OperatorId::new("op-1"), Grants { engage: true }).unwrap();
+    let mut f = contact(T0, toward(TARGET_AT, 315.0, 600.0), Affiliation::Neutral);
+    let away = [-5.0 * std::f64::consts::FRAC_1_SQRT_2, 5.0 * std::f64::consts::FRAC_1_SQRT_2];
+    f.velocity_mps = Some(away);
+    f.mean_velocity_mps = Some(away);
+    clock.set(T0.plus_ms(181_000));
+    assert_eq!(e.record_track_drops(vec![("T-0002".into(), f.clone())]).unwrap(), 1);
+    let now = T0.plus_ms(185_000);
+    clock.set(now);
+    let w = world(now, &[]);
+    let id = e.submit(op1.authority(), nomination(), &w, &terrain()).unwrap().id();
+    let i = e.intent(id).unwrap();
+    assert_eq!(i.state(), State::Rejected);
+    let k = keep_out_tracks(i);
+    assert!(k.detail.starts_with("lost contact T-0002 (neutral, ferry)"), "{}", k.detail);
+    assert!(k.detail.contains("its own plausible speed, 7.0 m/s"), "{}", k.detail);
+    // the course regions alone clear it; the plausible-speed region does not
+    let pv = engage::preview(i.spec(), &w, &policy().rules).unwrap();
+    let ec = policy().rules.engage_rules();
+    let course = engage::track_standing(&f, pv.effect_point, pv.effect_t, pv.keep_out_m, now, &ec, None, false).unwrap();
+    assert!(course.edge > pv.keep_out_m + 200.0, "course regions: edge {:.0} m", course.edge);
+    let lost = engage::lost_track_standing(&f, pv.effect_point, pv.effect_t, pv.keep_out_m, now, &ec, None, false).unwrap();
+    assert!(lost.blocks(pv.keep_out_m));
+    assert_eq!(lost.regions[lost.nearest].kind, engage::ReachKind::PlausibleSpeed);
+    // a live track keeps its course regions alone
+    let kinds: Vec<_> = engage::track_reach(&f, pv.effect_t, &ec).iter().map(|r| r.kind).collect();
+    assert!(!kinds.contains(&engage::ReachKind::PlausibleSpeed), "{kinds:?}");
+    let r = replay_str(&log.text()).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+}
+
+/// The plausible-speed region stands aside where a region at the last fix already reaches at
+/// least as far: a lost contact the tracker saw manoeuvre faster than its speed bound, or one
+/// without a velocity estimate (its domain's top speed).
+#[test]
+fn the_plausible_speed_region_is_not_doubled() {
+    let ec = policy().rules.engage_rules();
+    let mut f = contact(T0, TARGET_AT, Affiliation::Neutral);
+    let at = T0.plus_ms(300_000);
+    let kinds = |f: &TrackFacts| engage::lost_reach(f, at, &ec).iter().map(|r| r.kind).collect::<Vec<_>>();
+    assert!(kinds(&f).contains(&engage::ReachKind::PlausibleSpeed));
+    f.manoeuvre = Some(Manoeuvre { t: T0, change_mps: 4.0, speed_mps: 9.0 });
+    assert!(!kinds(&f).contains(&engage::ReachKind::PlausibleSpeed), "{:?}", kinds(&f));
+    f.manoeuvre = None;
+    f.velocity_mps = None;
+    assert_eq!(kinds(&f), [engage::ReachKind::NoVelocity]);
 }
