@@ -1,5 +1,5 @@
 import { fmtZ } from './decisions'
-import { fmtDist, KEEP_OUT_KIND_LABEL, type EffectWindow, type KeepOutExplanation, type KeepOutItem, type MoveWithin } from './engage'
+import { fmtDist, KEEP_OUT_KIND_LABEL, type EffectWindow, type KeepOutExplanation, type KeepOutItem, type KeepOutLost, type MoveWithin } from './engage'
 
 /** Why a keep-out blocks the chosen option of the nomination form, and what would clear it
  *  (murmur-12e): the bridge's read-only explanation, from the functions the checks read on
@@ -11,6 +11,10 @@ interface Props {
   /** the platform's name as the form shows it */
   name: string
   now: () => number
+  /** rules 13: the lost contacts the operator accepts with the nomination, by track id, and a
+   *  toggle (absent: the explanation is read-only here) */
+  acceptLost?: Record<string, KeepOutLost>
+  onAcceptLost?: (l: KeepOutLost, on: boolean) => void
 }
 
 /** "56 s", "3 min 36 s". */
@@ -28,11 +32,24 @@ function windowText(w: EffectWindow, t: number) {
 function clearsText(i: KeepOutItem, ex: KeepOutExplanation) {
   if (i.fits_until_t != null) return `Its reach fits an effect up to ${span(i.fits_until_t - ex.t)} from now (a closer platform), on the picture now.`
   if (i.clear_windows.length) return `Clear for a later effect, on the picture now: ${i.clear_windows.map((w) => windowText(w, ex.t)).join('; or ')}.`
-  return 'No effect time a nomination allows clears it, on the picture now.'
+  return 'No effect time a nomination allows, on a 0.25 s grid, clears it, on the picture now.'
 }
 
-function Item({ i, ex }: { i: KeepOutItem; ex: KeepOutExplanation }) {
-  const kind = i.region ? KEEP_OUT_KIND_LABEL[i.region.kind] : 'cannot be placed'
+/** Rules 13: accept a lost contact for this engagement (an engagement decision: logged under
+ *  the operator's session with the nomination; the bridge refuses it without engagement
+ *  authority). It covers this loss only. */
+function AcceptLost({ l, on, onToggle }: { l: KeepOutLost; on: boolean; onToggle: (l: KeepOutLost, on: boolean) => void }) {
+  return (
+    <label className="ko-accept">
+      <input type="checkbox" checked={on} onChange={(e) => onToggle(l, e.target.checked)} />
+      Accept {l.track} as lost for this engagement, out of view since its last fix at {fmtZ(l.since)} (engagement authority; logged under your session with the
+      nomination; it covers this loss only)
+    </label>
+  )
+}
+
+function Item({ i, ex, acceptLost, onAcceptLost }: { i: KeepOutItem; ex: KeepOutExplanation } & Pick<Props, 'acceptLost' | 'onAcceptLost'>) {
+  const kind = i.subject === 'lost_contact' ? `lost: ${i.region ? KEEP_OUT_KIND_LABEL[i.region.kind] : 'its reach'}` : i.region ? KEEP_OUT_KIND_LABEL[i.region.kind] : 'cannot be placed'
   return (
     <div className={`ko-item ${i.blocks ? 'blocks' : 'near'}`}>
       <div className="ko-head">
@@ -56,6 +73,7 @@ function Item({ i, ex }: { i: KeepOutItem; ex: KeepOutExplanation }) {
           {i.other && <li>{i.other}</li>}
         </ul>
       )}
+      {i.blocks && i.lost && onAcceptLost && <AcceptLost l={i.lost} on={!!acceptLost?.[i.lost.track]} onToggle={onAcceptLost} />}
     </div>
   )
 }
@@ -103,7 +121,7 @@ function Placement({ mw, name, t }: { mw: MoveWithin; name: string; t: number })
   )
 }
 
-export function KeepOutExplain({ ex, name, now }: Props) {
+export function KeepOutExplain({ ex, name, now, acceptLost, onAcceptLost }: Props) {
   if (!ex.items.length) return null
   const blocking = ex.items.filter((i) => i.blocks)
   const near = ex.items.filter((i) => !i.blocks)
@@ -119,7 +137,7 @@ export function KeepOutExplain({ ex, name, now }: Props) {
         vehicle of ours at the effect time.
       </p>
       {blocking.map((i) => (
-        <Item key={`${i.subject}${i.id}`} i={i} ex={ex} />
+        <Item key={`${i.subject}${i.id}`} i={i} ex={ex} acceptLost={acceptLost} onAcceptLost={onAcceptLost} />
       ))}
       {near.length > 0 && (
         <details className="ko-near" open={!ex.blocked}>

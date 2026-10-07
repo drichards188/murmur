@@ -242,7 +242,7 @@ async fn create_intent(
         Ok(op) => op,
         Err(e) => return decision_error(e),
     };
-    let accepting = !req.engage.accept_unknown.is_empty();
+    let accepting = !req.engage.accept_unknown.is_empty() || !req.engage.accept_lost.is_empty();
     if proof.is_some() && !accepting {
         return error(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -345,6 +345,23 @@ async fn intent_action(
         "reject" => app.decision.reject(&op, id, note),
         "cancel" => app.decision.cancel(&op, id, note),
         "abort" => app.decision.abort(&op, id, note),
+        // rules 13: {"track": id, "since": engine ms}, a lost contact as the check names it
+        "accept_unknown" if lost_contact(&body) => match serde_json::from_slice::<crate::decision::engage::AcceptLost>(&body) {
+            Ok(a) => {
+                let needed = app.decision.steps_up(murmur_decide::StepUpAct::AcceptUnknown);
+                let step = match app.auth.step_up(&op, &format!("i{id} accept_unknown"), proof, needed).await {
+                    Ok(s) => s,
+                    Err(r) => return *r,
+                };
+                app.decision.accept_lost(&op, id, &a, step)
+            }
+            Err(e) => {
+                return error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    format!("accept_unknown wants {{\"track\": id, \"since\": engine ms}} for a lost contact: {e}"),
+                );
+            }
+        },
         // rules 6: {"uid": n, "since": engine ms or null}, as the keep-out check names it
         "accept_unknown" => match serde_json::from_slice::<crate::decision::engage::AcceptUnknown>(&body) {
             Ok(a) => {
@@ -361,6 +378,13 @@ async fn intent_action(
                     StatusCode::UNPROCESSABLE_ENTITY,
                     format!("accept_unknown wants {{\"uid\": n, \"since\": engine ms or null}}: {e}"),
                 );
+            }
+        },
+        // rules 13: {"track": id}
+        "revoke_unknown" if lost_contact(&body) => match serde_json::from_slice::<Value>(&body) {
+            Ok(v) => app.decision.revoke_lost(&op, id, v["track"].as_str().unwrap_or_default()),
+            Err(e) => {
+                return error(StatusCode::UNPROCESSABLE_ENTITY, format!("revoke_unknown wants {{\"track\": id}}: {e}"));
             }
         },
         // rules 6: {"uid": n}
@@ -389,6 +413,11 @@ async fn intent_action(
         .into_response(),
         Err(e) => decision_error(e),
     }
+}
+
+/// Rules 13: an acceptance (or its revocation) names a lost contact (`track`), not a vehicle.
+fn lost_contact(body: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(body).is_ok_and(|v| v.get("track").is_some_and(|t| !t.is_null()))
 }
 
 async fn inbox(State(app): State<App>) -> Response {

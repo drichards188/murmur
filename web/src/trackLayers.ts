@@ -2,8 +2,8 @@ import { IconLayer, LineLayer, ScatterplotLayer, TextLayer } from '@deck.gl/laye
 import type { PickingInfo } from '@deck.gl/core'
 import { HEIGHT_EXAGGERATION } from './map3d'
 import type { ViewMode } from './MapView'
-import type { Track } from './tracks'
-import { isTrackStale, kindShort, trackConfidence, trackFrameIcon, trackOpacity, trackPredicted, trackSigma } from './tracks'
+import type { LostContact, Track } from './tracks'
+import { isTrackStale, kindShort, lostSidc, sidcFrameIcon, trackConfidence, trackFrameIcon, trackOpacity, trackPredicted, trackSigma } from './tracks'
 
 /** Tracks on the map (Phase C2), as deck.gl layers through MapView's `layers` prop, in 2D at
  *  ground level and in 3D at the estimated height. Like vehicleLayers.ts: one shared atlas
@@ -16,10 +16,19 @@ import { isTrackStale, kindShort, trackConfidence, trackFrameIcon, trackOpacity,
  *   tracks              the 2525 frame with the estimated affiliation (pickable: onClick)
  *   tracks-ids          T-0001 right of the frame, tracks-kinds the estimated kind left of it
  *
- *  Symbols fade with age and with falling existence confidence. */
+ *  Symbols fade with age and with falling existence confidence.
+ *
+ *  Rules 13 (murmur-533), the lost contacts (tracks the tracker dropped that every engagement
+ *  keep-out still counts):
+ *
+ *   lost-regions        where the keep-out counts each now, growing from its last fix (faint)
+ *   lost                its last-known symbol, anticipated and faded, at its last fix
+ *   lost-labels         "T-0002 LOST 4 min": out of view since its last fix */
 
 export interface TrackLayerInput {
   tracks: Track[]
+  /** rules 13: the engine's lost contacts */
+  lost?: LostContact[]
   /** bridge clock, ms (useBridgeClock) */
   nowMs: number
   selected: string | null
@@ -47,7 +56,12 @@ function rgba(c: RGBA, alpha: number): RGBA {
   return [c[0], c[1], c[2], Math.round(c[3] * alpha)]
 }
 
-export function buildTrackLayers({ tracks, nowMs, selected, staleAfterS, onClick }: TrackLayerInput, view: ViewMode) {
+/** "4 min", "56 s": how long out of view. */
+function outOfView(s: number) {
+  return s < 120 ? `${Math.round(s)} s` : `${Math.floor(s / 60)} min`
+}
+
+export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfterS, onClick }: TrackLayerInput, view: ViewMode) {
   const is3d = view === '3d'
   const z = (t: Track) => (is3d && t.alt_m != null ? t.alt_m * HEIGHT_EXAGGERATION : 0)
   const at = (t: Track): XYZ => {
@@ -68,7 +82,53 @@ export function buildTrackLayers({ tracks, nowMs, selected, staleAfterS, onClick
     if (info.object && onClick) onClick(info.object.id)
     return !!info.object
   }
+  // rules 13: each lost contact's regions now, flattened (they come from the bridge each second)
+  type LostRegion = { aff: Track['affiliation']; center: [number, number]; radius_m: number }
+  const lostRegions: LostRegion[] = lost.flatMap((l) => l.regions.map((r) => ({ aff: l.affiliation, center: r.center, radius_m: r.radius_m })))
+  const lostIcon = (l: LostContact) => sidcFrameIcon(lostSidc(l))
   return [
+    new ScatterplotLayer<LostRegion>({
+      id: 'lost-regions',
+      data: lostRegions,
+      getPosition: (r) => [r.center[0], r.center[1], 0],
+      getRadius: (r) => r.radius_m,
+      radiusUnits: 'meters',
+      stroked: true,
+      filled: true,
+      getFillColor: (r) => rgba(RING[r.aff], 0.035),
+      getLineColor: (r) => rgba(RING[r.aff], 0.35),
+      getLineWidth: 1,
+      lineWidthUnits: 'pixels',
+      parameters: onTop,
+    }),
+    new IconLayer<LostContact>({
+      id: 'lost',
+      data: lost,
+      billboard: true,
+      getPosition: (l) => [l.position[0], l.position[1], 0],
+      getIcon: lostIcon,
+      getSize: (l) => lostIcon(l).size,
+      sizeUnits: 'pixels',
+      getColor: [255, 255, 255, 110],
+      parameters: onTop,
+    }),
+    new TextLayer<LostContact>({
+      id: 'lost-labels',
+      data: lost,
+      getPosition: (l) => [l.position[0], l.position[1], 0],
+      getText: (l) => `${l.id} LOST ${outOfView(l.out_of_view_s)}`,
+      getSize: 10,
+      getColor: rgba(TEXT, 0.6),
+      getTextAnchor: 'start',
+      getAlignmentBaseline: 'center',
+      getPixelOffset: (l) => [lostIcon(l).halfW + 4, 0],
+      fontFamily: FONT,
+      outlineWidth: 3,
+      outlineColor: OUTLINE,
+      fontSettings: FONT_SETTINGS,
+      characterSet: 'auto',
+      parameters: onTop,
+    }),
     new ScatterplotLayer<Track>({
       id: 'tracks-uncertainty',
       data: tracks,

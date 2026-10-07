@@ -1121,10 +1121,17 @@ impl Decision {
         self.lock().engine.confirm_purpose(track).map_err(engine_err)
     }
 
-    /// What a passkey acceptance of lost vehicles is for (`intent` None: with a nomination).
-    pub fn accept_purpose(&self, intent: Option<u64>, list: &[engage::AcceptUnknown]) -> murmur_decide::StepUpFor {
+    /// What a passkey acceptance of lost vehicles (rules 13: and lost contacts) is for
+    /// (`intent` None: with a nomination).
+    pub fn accept_purpose(
+        &self,
+        intent: Option<u64>,
+        list: &[engage::AcceptUnknown],
+        lost: &[engage::AcceptLost],
+    ) -> murmur_decide::StepUpFor {
         let v: Vec<(DUid, Option<Time>)> = list.iter().map(engage::AcceptUnknown::engine).collect();
-        murmur_decide::StepUpFor::accepting(intent.map(IntentId), &v)
+        let c: Vec<(String, Time)> = lost.iter().map(engage::AcceptLost::engine).collect();
+        murmur_decide::StepUpFor::accepting_lost(intent.map(IntentId), &v, &c)
     }
 
     /// Credentials run, rules 10: open the engine session for a login whose passkey
@@ -1359,32 +1366,33 @@ impl Decision {
             let session =
                 Self::session(&mut core.engine, &mut core.sessions, &core.logins, by, &self.engage_operators, self.auth)?;
             // rules 6: the operator's acceptances of lost vehicles, as the check showed them
-            // (only with engagement authority: 403 otherwise)
+            // (only with engagement authority: 403 otherwise); rules 13: and of lost contacts
             let accept: Vec<(DUid, Option<Time>)> =
                 req.engage.accept_unknown.iter().map(engage::AcceptUnknown::engine).collect();
-            let submitted = if accept.is_empty() {
+            let contacts: Vec<(String, Time)> = req.engage.accept_lost.iter().map(engage::AcceptLost::engine).collect();
+            let submitted = if accept.is_empty() && contacts.is_empty() {
                 core.engine
                     .submit(session.authority(), proposal, &world, &self.terrain.oracle())
             } else {
                 let Some(auth) = session.engagement_authority() else {
                     return Err(DecisionError::new(
                         403,
-                        format!("{by} has no engagement authority: only an operator with it accepts a lost vehicle"),
+                        format!(
+                            "{by} has no engagement authority: only an operator with it accepts a lost {}",
+                            if contacts.is_empty() { "vehicle" } else { "vehicle or contact" }
+                        ),
                     ));
                 };
-                match Self::mint_step(&mut core.engine, session, by, step)? {
-                    Some(s) => core.engine.submit_accepting_stepped(
-                        auth,
-                        s,
-                        proposal,
-                        &accept,
-                        &world,
-                        &self.terrain.oracle(),
-                    ),
-                    None => core
-                        .engine
-                        .submit_accepting(auth, proposal, &accept, &world, &self.terrain.oracle()),
-                }
+                let step = Self::mint_step(&mut core.engine, session, by, step)?;
+                core.engine.submit_accepting_lost(
+                    auth,
+                    step,
+                    proposal,
+                    &accept,
+                    &contacts,
+                    &world,
+                    &self.terrain.oracle(),
+                )
             };
             let id = submitted.map_err(engine_err)?.id();
             self.after_decision(core, id)
@@ -2046,6 +2054,9 @@ impl Decision {
         {
             let mut guard = self.lock();
             let core = &mut *guard;
+            // rules 13: the tracker's drops first: no decision of this tick reads a picture
+            // without them
+            self.step_lost(core);
             if let Err(e) = core.engine.expire_due() {
                 eprintln!("decision: expire: {e}");
             }

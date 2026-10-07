@@ -151,7 +151,7 @@ export default function App() {
   // tracks of contacts that are not ours (Phase C2), drawn through MapView's layers prop;
   // ages advance with the bridge clock (useBridgeClock re-renders twice a second), so the
   // callback's identity changes every tick while there are tracks: rings grow, symbols fade
-  const trackTick = tracks?.tracks.length ? Math.floor(now() / 500) : 0
+  const trackTick = tracks?.tracks.length || tracks?.lost?.length ? Math.floor(now() / 500) : 0
   const onTrackClick = useCallback((id: string) => {
     setSelectedTrack((cur) => (cur === id ? null : id))
     setShowTracks(true)
@@ -159,7 +159,7 @@ export default function App() {
   const trackLayers = useCallback<MapLayers>(
     (view) =>
       buildTrackLayers(
-        { tracks: tracks?.tracks ?? [], nowMs: now(), selected: selectedTrack, staleAfterS: tracks?.stale_after_s ?? 10, onClick: onTrackClick },
+        { tracks: tracks?.tracks ?? [], lost: tracks?.lost ?? [], nowMs: now(), selected: selectedTrack, staleAfterS: tracks?.stale_after_s ?? 10, onClick: onTrackClick },
         view,
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps

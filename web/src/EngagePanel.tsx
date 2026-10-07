@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { Check } from './decisions'
 import { useOperator } from './decisions'
-import { engageOptions, FALLBACK_LABEL, fmtDist, fmtRel, KEEP_OUT_KIND_LABEL, nominate, type EngageOption, type EngagePreview, type Fallback, type KeepOutExplanation } from './engage'
+import { engageOptions, FALLBACK_LABEL, fmtDist, fmtRel, KEEP_OUT_KIND_LABEL, nominate, type EngageOption, type EngagePreview, type Fallback, type KeepOutExplanation, type KeepOutLost } from './engage'
 import './engage.css'
 import { KeepOutExplain } from './KeepOutExplain'
 import type { TracksMessage } from './tracks'
@@ -68,6 +68,15 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [tick, setTick] = useState(0)
+  // rules 13: the lost contacts the operator accepts with the nomination (by track id)
+  const [acceptLost, setAcceptLost] = useState<Record<string, KeepOutLost>>({})
+  const onAcceptLost = (l: KeepOutLost, on: boolean) =>
+    setAcceptLost((cur) => {
+      const next = { ...cur }
+      if (on) next[l.track] = l
+      else delete next[l.track]
+      return next
+    })
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
@@ -122,7 +131,7 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
     setBusy(true)
     setError(null)
     try {
-      const i = await nominate({ track, uid, radius, windowS, fallback, rationale })
+      const i = await nominate({ track, uid, radius, windowS, fallback, rationale, acceptLost: Object.values(acceptLost) })
       onNominated(i.id)
     } catch (e) {
       setError((e as Error).message)
@@ -224,7 +233,15 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
           </div>
         </section>
       )}
-      {chosen?.keep_outs && <KeepOutExplain ex={chosen.keep_outs} name={nameOf(chosen.uid)} now={now} />}
+      {chosen?.keep_outs && (
+        <KeepOutExplain ex={chosen.keep_outs} name={nameOf(chosen.uid)} now={now} acceptLost={acceptLost} onAcceptLost={onAcceptLost} />
+      )}
+      {Object.keys(acceptLost).length > 0 && (
+        <p className="eg-alarm" role="status">
+          You accept {Object.keys(acceptLost).join(', ')} as lost for this engagement: logged under your session with the nomination, shown to every signer, and
+          the checks leave {Object.keys(acceptLost).length > 1 ? 'them' : 'it'} out while out of view since that fix (the dry run above does not).
+        </p>
+      )}
 
       <label className="eg-rationale">
         Rationale (optional for an operator; shown to the approvers)

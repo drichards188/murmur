@@ -1341,6 +1341,9 @@ async fn step_up_options(State(auth): State<Arc<Auth>>, headers: HeaderMap, body
         track: Option<String>,
         #[serde(default)]
         accept_unknown: Vec<crate::decision::engage::AcceptUnknown>,
+        /// rules 13: lost contacts accepted with it
+        #[serde(default)]
+        accept_lost: Vec<crate::decision::engage::AcceptLost>,
     }
     let actor = match auth.actor(&headers, false) {
         Ok(a) => a,
@@ -1361,7 +1364,9 @@ async fn step_up_options(State(auth): State<Arc<Auth>>, headers: HeaderMap, body
         },
         "declare_hostile" => track().map(|track| murmur_decide::StepUpFor::DeclareHostile { track }),
         "confirm_declaration" => track().and_then(|t| auth.decision.confirm_purpose(&t)),
-        "accept_unknown" if !b.accept_unknown.is_empty() => Ok(auth.decision.accept_purpose(b.intent, &b.accept_unknown)),
+        "accept_unknown" if !b.accept_unknown.is_empty() || !b.accept_lost.is_empty() => {
+            Ok(auth.decision.accept_purpose(b.intent, &b.accept_unknown, &b.accept_lost))
+        }
         other => Err(DecisionError::new(
             422,
             format!("act {other:?}: sign, declare_hostile, confirm_declaration or accept_unknown (with its vehicles)"),

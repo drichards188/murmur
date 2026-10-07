@@ -188,6 +188,11 @@ impl Erig {
     }
 
     pub(super) fn sense_at(&self, now_s: f64, with_target: bool) {
+        self.sense_at_with(now_s, with_target, &[]);
+    }
+
+    /// [`Erig::sense_at`] with other contacts in the truth too.
+    pub(super) fn sense_at_with(&self, now_s: f64, with_target: bool, others: &[ContactTruth]) {
         let observer = Observer {
             uid: 9,
             lat: TARGET.0,
@@ -200,7 +205,7 @@ impl Erig {
                 SensorSpec { kind: SensorType::EoIr, range_m: 5_000.0, guess: true, height: false },
             ],
         };
-        let contacts = if with_target {
+        let mut contacts = if with_target {
             vec![ContactTruth {
                 id: "fastboat".into(),
                 name: "fast boat".into(),
@@ -219,6 +224,7 @@ impl Erig {
         } else {
             Vec::new()
         };
+        contacts.extend(others.iter().cloned());
         let msg = TruthMessage {
             t: now_s,
             s: now_s,
@@ -266,6 +272,7 @@ impl Erig {
                 window_s: Some(300),
                 fallback: Some(fallback.into()),
                 accept_unknown: Vec::new(),
+                accept_lost: Vec::new(),
             },
             constraints: Constraints::default(),
             rationale: None,
@@ -1808,4 +1815,72 @@ async fn a_platform_left_on_a_superseded_intercept_says_so_in_its_restore_alert(
     assert!(e.tracks.take_effects().is_empty(), "nothing released");
     let rep = replay::replay_str(&e.r.log.text()).expect("parses");
     assert!(rep.ok(), "{:?}", rep.mismatches);
+}
+
+/// Rules 13 (murmur-533): a contact the tracker drops goes to the engine at the next tick
+/// (`track.dropped`; until then it stays in the decision facts) and still counts in the
+/// keep-out; the console is shown it; an operator with engagement authority accepts it for a
+/// nomination as the check names it (its last fix), and the log replays.
+#[tokio::test(start_paused = true)]
+async fn a_dropped_contact_still_blocks_until_an_operator_accepts_it() {
+    let e = engage_rig();
+    e.r.vehicle(1, Firmware::Copter, "fpv", TARGET);
+    sleep(Duration::from_millis(500)).await;
+    e.picture().await;
+    // a fishing boat 400 m north of the target, seen for 20 s, then out of view
+    let boat = ContactTruth {
+        id: "fisher".into(),
+        name: "fishing boat".into(),
+        affiliation: TruthAffiliation::Neutral,
+        domain: TDomain::Surface,
+        kind: "fishing_vessel".into(),
+        lat: TARGET.0 + 400.0 / 111_320.0,
+        lon: TARGET.1,
+        alt_m: 0.0,
+        speed_mps: 0.0,
+        course_deg: 0.0,
+        emits: false,
+        signature: 1.0,
+        ais: None,
+    };
+    for _ in 0..20 {
+        e.r.clock.advance_ms(1000);
+        e.sense_at_with(e.now_s(), true, std::slice::from_ref(&boat));
+        e.r.d.tick();
+        sleep(Duration::from_secs(1)).await;
+    }
+    assert!(e.tracks.tracks_json(e.now_s()).iter().any(|t| t["id"] == "T-0002"));
+    for _ in 0..185 {
+        e.tick(true).await;
+    }
+    assert_eq!(e.r.events("track.dropped"), 1);
+    assert!(e.tracks.tracks_json(e.now_s()).iter().all(|t| t["id"] != "T-0002"));
+    // the console sees it, out of view since its last fix, with the regions counted now
+    let lost = e.tracks.lost_json();
+    assert_eq!(lost.len(), 1, "{lost:?}");
+    assert_eq!(lost[0]["id"], "T-0002");
+    assert!(lost[0]["out_of_view_s"].as_f64().expect("s") > 180.0, "{lost:?}");
+    assert!(!lost[0]["regions"].as_array().expect("regions").is_empty(), "{lost:?}");
+    let since = lost[0]["since_t"].as_i64().expect("since");
+    // nominated without an acceptance: rejected on the lost contact
+    let out = e.r.d.submit(&op("op-2"), e.nomination("return")).await.expect("nominated");
+    assert_eq!(out.state, State::Rejected, "{}", out.intent);
+    assert!(out.intent.to_string().contains("lost contact T-0002"), "{}", out.intent);
+    // an agent can't accept it; op-1 (no engagement authority) neither
+    let mut req = e.nomination("return");
+    req.engage.accept_lost = vec![engage::AcceptLost { track: "T-0002".into(), since }];
+    req.rationale = Some("the declared fast boat west of the bridge".into());
+    let err = e.r.d.agent_propose(&AgentId::new("agent-planner"), req.clone()).await.expect_err("agent");
+    assert_eq!(err.status, 403, "{}", err.detail);
+    let err = e.r.d.submit(&op("op-1"), req.clone()).await.expect_err("no authority");
+    assert_eq!(err.status, 403, "{}", err.detail);
+    // op-2 accepts it with the nomination: it waits for its signers, the card shows it
+    let out = e.r.d.submit(&op("op-2"), req).await.expect("nominated");
+    assert_eq!(out.state, State::PendingApproval, "{}", out.intent);
+    let msg: Value = serde_json::from_str(&e.r.d.message()).expect("json");
+    let mine = msg["inbox"]["pending"].as_array().expect("pending").iter().find(|i| i["id"] == out.id.0).cloned().expect("intent");
+    assert_eq!(mine["engage"]["accepted_lost"][0]["track"], "T-0002", "{mine}");
+    let rep = replay::replay_str(&e.r.log.text()).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+    assert_eq!(rep.lost_contacts, 1);
 }

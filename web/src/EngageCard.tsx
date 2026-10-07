@@ -12,6 +12,7 @@ import {
   isEngage,
   previewOf,
   requestPicture,
+  revokeLost,
   revokeUnknown,
   RUNNING,
   STATE_LABEL,
@@ -68,7 +69,18 @@ function nameOf(vehicles: Vehicle[], uid: string | number) {
 function Acceptances({ intent: i, vehicles, now, onDone, signing }: Pick<CardProps, 'intent' | 'vehicles' | 'now' | 'onDone'> & { signing?: boolean }) {
   const [error, setError] = useState<string | null>(null)
   const accepted = i.engage?.accepted ?? []
-  if (!accepted.length) return null
+  // rules 13: lost contacts accepted for it
+  const lost = i.engage?.accepted_lost ?? []
+  if (!accepted.length && !lost.length) return null
+  const withdrawLost = async (track: string) => {
+    setError(null)
+    try {
+      await revokeLost(i.id, track)
+      onDone(`i${i.id}: acceptance of lost contact ${track} withdrawn by ${getOperator()}`, 'ok')
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
   const withdraw = async (uid: number) => {
     setError(null)
     try {
@@ -90,6 +102,16 @@ function Acceptances({ intent: i, vehicles, now, onDone, signing }: Pick<CardPro
               Withdraw
             </button>
           )}
+        </p>
+      ))}
+      {lost.map((a) => (
+        <p key={`lost-${a.track}`} className="eg-alarm" role="status">
+          Accepted as a lost contact by {a.by}: {a.track}, dropped by the tracker, out of view {a.since == null ? '' : `since ${fmtRel(a.since - now())}`}. The keep-out
+          on tracks leaves it out while it stays lost since then (seen again, it counts as any track)
+          {signing ? '; your signature covers this acceptance.' : '.'}{' '}
+          <button type="button" className="ghost mini" onClick={(ev) => { ev.stopPropagation(); void withdrawLost(a.track) }}>
+            Withdraw
+          </button>
         </p>
       ))}
       {error && <p className="error ix-error">{error}</p>}
@@ -436,6 +458,12 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
               <span key={uid} className="eg-alarm">
                 It covers {nameOf(vehicles, uid)} accepted as lost by {a.by}
                 {a.since == null ? ' (it never reported a position)' : ` (position unknown since ${fmtRel(a.since - now())})`}.{' '}
+              </span>
+            ))}
+            {Object.entries(shown.lost_accepted ?? {}).map(([track, a]) => (
+              <span key={`lost-${track}`} className="eg-alarm">
+                It covers lost contact {track} accepted by {a.by}
+                {a.since == null ? '' : ` (out of view since ${fmtRel(a.since - now())})`}.{' '}
               </span>
             ))}
             {shownLeft > 0 ? `Valid ${Math.ceil(shownLeft)} s.` : 'Expired: look again.'}{' '}

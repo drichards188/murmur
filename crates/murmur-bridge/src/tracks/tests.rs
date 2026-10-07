@@ -250,6 +250,9 @@ fn ais_gives_identity_and_only_for_cooperative_ships() {
     // AIS carries course and speed over ground: the track has them at once (5 m/s east)
     let (e, n) = t.vel.expect("velocity from AIS");
     assert!((e - 5.0).abs() < 0.8 && n.abs() < 0.8, "{e} {n}");
+    // rules 13: the decision facts carry the AIS identity it broadcasts
+    let ais = t.facts(T0).ais.expect("ais in the facts");
+    assert_eq!((ais.mmsi.as_str(), ais.name.as_str()), (heard.mmsi.as_str(), "MV TEST"));
 }
 
 #[test]
@@ -350,6 +353,15 @@ fn uncertainty_and_staleness_grow_with_age_and_tracks_drop() {
         .on_truth_with(truth(400.0, vec![]), std::slice::from_ref(&o), T0 + 400.0)
         .expect("ok");
     assert!(tracks.tracks_json(T0 + 400.0).is_empty());
+    // rules 13: the decision facts keep it, as it was at the drop, until the engine takes it
+    let facts = tracks.facts(T0 + 400.0);
+    assert!(facts.contains_key("T-0001"), "{facts:?}");
+    let drops = tracks.take_drops();
+    assert_eq!(drops.len(), 1);
+    assert_eq!(drops[0].0, "T-0001");
+    assert_eq!(drops[0].1.last_seen_t, facts["T-0001"].last_seen_t);
+    assert!(drops[0].1.declaration.is_none() && drops[0].1.declared_by.is_none());
+    assert!(tracks.facts(T0 + 400.0).is_empty() && tracks.take_drops().is_empty());
     tracks
         .on_truth_with(truth(401.0, vec![ferry]), &[o], T0 + 401.0)
         .expect("ok");

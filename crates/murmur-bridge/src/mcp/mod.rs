@@ -92,7 +92,9 @@ tool exists. A track only near or moving with a declared hostile is weak evidenc
 a neutral): it is flagged for review, never declared. get_nominations shows where each \
 stands; get_nomination_options shows, before a nomination, which armed platforms pass every \
 check now and, where a keep-out blocks, which track or vehicle of ours blocks it, why and \
-what would clear it (read-only: no keep-out is relaxed). While \
+what would clear it (read-only: no keep-out is relaxed). A contact the tracker dropped still \
+counts as a lost contact (get_tracks lists them under lost): you cannot accept one, only an \
+operator with engagement authority can, for one engagement. While \
 an engagement is in play on a vehicle, anything you propose for that vehicle waits for a \
 human.";
 

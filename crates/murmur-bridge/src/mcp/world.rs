@@ -428,8 +428,14 @@ pub async fn tracks(
                  suspect for review, never declared on that). \
                  identity.kind is the best classification with its confidence, the sensors \
                  that support it and any conflict (an AIS identity that does not fit what \
-                 was seen). sources lists which of our vehicles and sensors hold the track.",
+                 was seen). sources lists which of our vehicles and sensors hold the track. \
+                 lost lists the contacts the tracker dropped (no detection for 180 s) that \
+                 every engagement keep-out still counts, from their last fix (since_t), with \
+                 the regions counted now; only an operator with engagement authority may \
+                 accept one for an engagement.",
         "tracks": tracks,
+        // rules 13: read-only, as the console shows them
+        "lost": v["lost"].clone(),
     }))
 }
 

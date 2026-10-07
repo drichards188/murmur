@@ -416,6 +416,21 @@ export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus
             {selected === t.id && <Detail t={t} nowMs={nowMs} vehicles={vehicles} onFocus={() => onFocus(t)} onEngage={onEngage ? () => onEngage(t.id) : undefined} />}
           </div>
         ))}
+        {(tracks?.lost ?? []).length > 0 && (
+          <section className="tk-lost" aria-label="Lost contacts">
+            <p className="tk-note">
+              Lost contacts: tracks the tracker dropped (no detection for 180 s). Every engagement keep-out still counts each, anywhere it could have reached since its
+              last fix, until a track is unambiguously it again (its AIS) or an operator with engagement authority accepts it for one engagement.
+            </p>
+            {(tracks?.lost ?? []).map((l) => (
+              <p key={l.id} className="tk-lost-row">
+                <b>{l.id}</b> {kindLabel(l.identity)}, {l.affiliation.replace(/_/g, " ")}
+                {l.ais ? ` (AIS ${l.ais.name})` : ""}: out of view {fmtAge(l.out_of_view_s)}, counted within{" "}
+                {Math.round(Math.max(0, ...l.regions.map((r) => r.radius_m)))} m of where it could be now
+              </p>
+            ))}
+          </section>
+        )}
       </div>
     </aside>
   )
