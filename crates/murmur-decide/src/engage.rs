@@ -1283,7 +1283,7 @@ fn preload_check(uid: Option<&Uid>, fallback: Fallback, world: &WorldSnapshot, e
     let Some(v) = uid.and_then(|u| world.vehicles.get(u)) else {
         return check(r, uid, Outcome::Fail, "cannot evaluate: platform not in the world model");
     };
-    // rules 13 (murmur-imu): an earlier log whose carry failed may owe this platform its own
+    // rules 15 (murmur-imu): an earlier log whose carry failed may owe this platform its own
     // lost-link values (it was an armed platform of that run's fleet): it may still carry an
     // earlier engagement's lost-link action, which this engagement's preload would read as its
     // own and later put back as such. Refused until that log is read or written off.

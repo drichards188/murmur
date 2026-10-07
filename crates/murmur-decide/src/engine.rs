@@ -117,8 +117,8 @@ pub enum EngineError {
     /// engagement under way on the platform, rules before 12): nothing was logged.
     #[error("write-off: {0}")]
     NotWrittenOff(String),
-    /// Rules 13: an un-spend the engine can't take (no note, a platform not spent, one not heard
-    /// since its effect, rules before 13): nothing was logged.
+    /// Rules 15: an un-spend the engine can't take (no note, a platform not spent, one not heard
+    /// since its effect, rules before 15): nothing was logged.
     #[error("un-spend: {0}")]
     NotUnspent(String),
     /// Rules 12: what a start carried over can't go into `run.started` (a log not named by its
@@ -132,7 +132,7 @@ pub enum EngineError {
 }
 
 /// Rules 12: what a start carries over from earlier runs' logs ([`Engine::start`]): the entries of
-/// `run.started`'s `carried_from`, and (rules 13) the station's `.last-run` pointer, by its file
+/// `run.started`'s `carried_from`, and (rules 15) the station's `.last-run` pointer, by its file
 /// name, logged as `run.started`'s `pointer`. A list of entries alone is a carry without a
 /// pointer (a test).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -376,7 +376,7 @@ pub(crate) fn refusal_reason(
     standing: &[(IntentId, TaskKind, Vec<Uid>)],
     rules: &rules::RulesConfig,
 ) -> Option<String> {
-    // rules 13: an engagement's own fact (a failed carry that may owe its platform values) is
+    // rules 15: an engagement's own fact (a failed carry that may owe its platform values) is
     // its fallback_preload check's, never a mission's refusal
     if matches!(spec.kind(), TaskKind::Hold | TaskKind::Rtl | TaskKind::Engage) {
         return None;
@@ -605,7 +605,7 @@ impl Engine {
             pointer,
             from: mut carried_from,
         } = carry.into();
-        // rules 13: the station's pointer, the spent platforms carried, a failed carry's fleet
+        // rules 15: the station's pointer, the spent platforms carried, a failed carry's fleet
         // file and a fallback from a pointer that could not be read (no build of older rules
         // logged them)
         let pointer = pointer.filter(|_| policy.rules.carry_followups());
@@ -719,7 +719,7 @@ impl Engine {
             carried_from: carried_from.clone(),
             pointer,
         })?;
-        // rules 12: what earlier runs still owed, owed back from here on (rules 13: and the
+        // rules 12: what earlier runs still owed, owed back from here on (rules 15: and the
         // platforms they had spent stay spent)
         e.restores.carry_at(started, &carried_from);
         e.areas = areas;
@@ -1938,7 +1938,7 @@ impl Engine {
         self.restores.expended_by(uid)
     }
 
-    /// Rules 13: what the ledger owes back to `uid` (its own lost-link values and the vehicle they
+    /// Rules 15: what the ledger owes back to `uid` (its own lost-link values and the vehicle they
     /// were preloaded on), if anything: after an un-spend, what the bridge puts back.
     pub fn owed_to(&self, uid: &Uid) -> Option<crate::replay::OwedRestore> {
         self.restores.owed_restore(uid)
@@ -1987,14 +1987,14 @@ impl Engine {
         Ok(())
     }
 
-    /// Rules 13 (murmur-imu): an operator with engagement authority un-spends a platform spent by
+    /// Rules 15 (murmur-imu): an operator with engagement authority un-spends a platform spent by
     /// its own effect (this run's mark, or one carried over from an earlier run) that they
     /// believe survived (a miss), under their own session, saying why. Only once the platform was
     /// heard after the effect (its facts on `world`: after the mark of this run; in this run for a
     /// carried one). Logged as `platform.unspent` with the vehicle's facts and the values the spent
     /// mark closed: they are owed back again from here on (the engagement's fallback is still the
     /// platform's lost-link action), so a mission waits for the restore as under rules 7, and the
-    /// bridge puts them back when it is heard. Refused, nothing logged, before rules 13, without a
+    /// bridge puts them back when it is heard. Refused, nothing logged, before rules 15, without a
     /// note, for a platform that is not spent, and for one not heard since its effect. An agent
     /// can't ([`AgentPort`] has no such method); it needs no step-up (it authorizes nothing: the
     /// platform's orders and nominations are decided as any other's).
@@ -2039,14 +2039,14 @@ impl Engine {
         Ok(())
     }
 
-    /// Rules 13: whether a platform spent by its own effect was heard since (last heard at
+    /// Rules 15: whether a platform spent by its own effect was heard since (last heard at
     /// `heard`, engine time), as [`Engine::unspend_platform`] judges it: after this run's mark,
     /// or in this run for a carried one. False for a platform not spent.
     pub fn spent_heard_since(&self, uid: &Uid, heard: Option<Time>) -> bool {
         self.restores.spent_mark(uid).is_some_and(|m| m.heard_after(heard))
     }
 
-    /// Rules 12 and 13: the platforms spent by their own effect, this run's (`from` none) and
+    /// Rules 12 and 15: the platforms spent by their own effect, this run's (`from` none) and
     /// those carried over from earlier runs: for the bridge's inbox.
     pub fn spent_platforms(&self) -> Vec<crate::replay::SpentPlatform> {
         self.restores.spent()
@@ -3375,7 +3375,7 @@ impl Engine {
         spec: &IntentSpec,
         owed: Option<&BTreeMap<Uid, queue::RestoreOwed>>,
     ) -> Option<String> {
-        // rules 13: an engagement's (a failed carry that may owe its platform values) is refused
+        // rules 15: an engagement's (a failed carry that may owe its platform values) is refused
         // at nomination, by its fallback_preload check
         if matches!(spec.kind(), TaskKind::Hold | TaskKind::Rtl | TaskKind::Engage) {
             return None;
@@ -4235,7 +4235,7 @@ impl Engine {
         }
         let spec = intent.spec().clone();
         // rules 12: approved before its platform was spent by its own effect: voided, saying why
-        // (it takes no order); rules 13: or spent in an earlier run, the same vehicle unless the
+        // (it takes no order); rules 15: or spent in an earlier run, the same vehicle unless the
         // world shows another under the uid
         if let Some((_, why)) = self.restores.spent_hold(&spec, &self.policy.rules, &world.identities) {
             let reason = format!("spent platform: {why} and takes no order");

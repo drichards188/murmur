@@ -524,7 +524,7 @@ same vehicle); a refused mission names the older orders still queued on its vehi
 Scenarios 79 to 82; live logs across two crashes with anchors in
 `crates/murmur-decide/tests/data/audit/`.
 
-Rules 13, the follow-ups of rules 12's carries (murmur-zq3, murmur-imu;
+Rules 15, the follow-ups of rules 12's carries (murmur-zq3, murmur-imu;
 `CARRY_FOLLOWUPS_SINCE`; policy schema 7 unchanged; DECISIONS.md, the entries of 10-07): a
 platform spent by its own effect stays spent across a restart (`carried_from`'s `spent`, the
 vehicle that was spent only, checked against the log it came from); an operator with engagement

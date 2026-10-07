@@ -404,7 +404,7 @@ function AlertCard({
 }) {
   const [snoozing, setSnoozing] = useState(false)
   // rules 12: a restore that will never be confirmed (the vehicle lost or spent, another one
-  // under its uid, an earlier log gone) is written off by an operator, saying why; rules 13: a
+  // under its uid, an earlier log gone) is written off by an operator, saying why; rules 15: a
   // platform spent by its own effect that survived is un-spent by one with engagement authority
   const target = writeOffTarget(a)
   const spent = unspendTarget(a)

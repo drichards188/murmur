@@ -648,7 +648,7 @@ fn a_log_recorded_as_a_failed_carry_that_reads_is_checked() {
 /// the unreadable log's fleet named (`may_owe`): a mission for one of them waits in the Queue,
 /// saying why, until the log is read or written off (fail closed); a hold goes at once, another
 /// vehicle under the uid is not held, and replay holds the engine to it. Pinned to rules 12
-/// (rules 13 also records the fleet file read, `fleet_read`: `tests/rules13.rs`).
+/// (rules 15 also records the fleet file read, `fleet_read`: `tests/rules15.rs`).
 #[test]
 fn a_failed_carry_holds_missions_for_the_platforms_it_may_owe() {
     let replay_str = |text: &str| {

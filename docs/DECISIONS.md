@@ -996,7 +996,7 @@ group. Dates are 2026.
   commands (a hold or an rtl): a platform spent by its own effect has nothing left to hold or
   return, and a command to it would only look as if it did. An operator who believes the
   platform survived has no override in this version (proposed follow-up: an un-spend with a
-  note, under the operator's own session, logged and bound like a write-off; rules 13 adds it,
+  note, under the operator's own session, logged and bound like a write-off; rules 15 adds it,
   and carries the mark across a restart, below).
 - **A young track counts as possibly manoeuvring until the tracker has the facts** (10-06,
   murmur-9m0; rules 12). Rules 9 read a track's average velocity (after about 45 s of history)
@@ -1133,7 +1133,7 @@ group. Dates are 2026.
   pending carry's alert says so; it names the vehicles otherwise. `may_owe` comes from a file
   outside the hash chain: replay checks it is only on a failed carry, not that it is complete,
   and only the start anchor binds it. Not covered, stated: a nomination for such a platform is
-  not refused (its preload reads what the platform holds now); proposed follow-up (rules 13
+  not refused (its preload reads what the platform holds now); proposed follow-up (rules 15
   refuses it, and records and compares the fleet file, below).
 - **A refused mission says which older orders still stand** (10-06, murmur-54l; rules 12). A
   mission refused for its platform's own values (its kind never queued) replaces nothing, so
@@ -1148,13 +1148,14 @@ group. Dates are 2026.
   that the reason is one of them.
 
 - **The carries' follow-ups are one rules version, gated on a named constant** (10-07, rules
-  13, `CARRY_FOLLOWUPS_SINCE`, murmur-zq3 and murmur-imu). The entries below change what is
+  15, `CARRY_FOLLOWUPS_SINCE`, murmur-zq3 and murmur-imu). The entries below change what is
   logged, decided or checked, so they share one version; every gate reads the constant and
-  `RULES_VERSION` is defined from it (another branch taking 13 first renumbers it in one line).
-  No policy key changes (schema 7 stays). Logs of rules 1 to 12 replay unchanged with their own
-  rules; the rules 12 carry tests that depend on rules 12's checks are pinned to it.
+  `RULES_VERSION` is defined from it (first numbered 13; renumbered 15 in one line when the
+  space replay and the aircraft reach took 13 and 14). No policy key changes (schema 7 stays).
+  Logs of rules 1 to 14 replay unchanged with their own rules; the rules 12 carry tests that
+  depend on rules 12's checks are pinned to it.
 - **A platform spent by its own effect stays spent across a restart, for the vehicle that was
-  spent** (10-07, murmur-zq3 (1); rules 13). The expended closure removed the debt, and nothing
+  spent** (10-07, murmur-zq3 (1); rules 15). The expended closure removed the debt, and nothing
   else carried the mark, so after a bridge-only restart (or with real vehicles) a spent
   platform took orders and nominations again while still carrying the engagement's lost-link
   action, which the next preload would read as its own values. Now a log's debts include the
@@ -1169,7 +1170,7 @@ group. Dates are 2026.
   persist), a spent munition stays spent until an operator un-spends it; the evaluation starts
   each run fresh (it removes `.last-run`), so it is not affected.
 - **An operator with engagement authority may un-spend a platform heard since its effect**
-  (10-07, murmur-imu (2); rules 13; decided by the main thread on the user's behalf). A platform
+  (10-07, murmur-imu (2); rules 15; decided by the main thread on the user's behalf). A platform
   marked spent that an operator believes survived (a miss) had no way back. Now an operator with
   engagement authority un-spends it, under their own session, with a note, only once the
   platform was heard after the effect (its heartbeat, position or navigation status reported
@@ -1187,7 +1188,7 @@ group. Dates are 2026.
   the platform's own values verified before the un-spend; that verification is the restore the
   un-spend makes due, and a mission waits for it.
 - **A nomination on a platform a failed carry may owe is refused until that log is read or
-  written off** (10-07, murmur-imu (1); rules 13). Rules 12 held a mission for an armed platform
+  written off** (10-07, murmur-imu (1); rules 15). Rules 12 held a mission for an armed platform
   of a failed carry's fleet but took a nomination, whose preload would read what the platform
   holds now (possibly an earlier engagement's fallback) as its own values and put that back
   afterwards. Now an engagement decision's `restore_owed` fact names the hold (values unknown,
@@ -1202,7 +1203,7 @@ group. Dates are 2026.
   platform fact the log's decisions read (murmur-zq3 (6)). Residual, stated: without the file at
   hand, `may_owe` is bound by the start anchor only.
 - **A pointer that can't be read falls back to the station's newest log that checks** (10-07,
-  murmur-zq3 (2), (3), (4); rules 13). A corrupted pointer was recorded unknown and dropped the
+  murmur-zq3 (2), (3), (4); rules 15). A corrupted pointer was recorded unknown and dropped the
   chain behind it (nothing held until written off). Decided: fall back only to a log whose hash
   chain and anchors check (every problem but the shutdown anchor a crash never wrote), record
   that it was used (`pointer_failed`, the first entry of `carried_from`), and stay fail closed
@@ -1218,7 +1219,7 @@ group. Dates are 2026.
   the same line twice names that log (two different lines: unknown, as before). The pointer's
   directory is synced after the rename, so the rename itself survives a power loss.
 - **A void that says it was superseded names an order the log has** (10-07, murmur-zq3 (5);
-  rules 13). Rules 12 accepted any void reason beginning "superseded" in place of a refusal.
+  rules 15). Rules 12 accepted any void reason beginning "superseded" in place of a refusal.
   Replay now reads the order and vehicle the engine's and the bridge's reasons name: the order
   must be in the log, newer than the voided one, on that vehicle (an amend's, of the same kind);
   an engagement's stop is checked by its cause, as before. Found doing it: the scenario runner

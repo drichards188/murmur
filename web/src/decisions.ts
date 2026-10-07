@@ -315,13 +315,13 @@ export async function writeOffRestore(target: { uid: number } | { log: string },
   if (!res.ok) throw new Error(b.detail ?? `bridge returned ${res.status}`)
 }
 
-/** Rules 13: the platform a spent alert (`spent:<uid>`: spent by its own effect, still heard)
+/** Rules 15: the platform a spent alert (`spent:<uid>`: spent by its own effect, still heard)
  *  lets an operator with engagement authority un-spend; none for other alerts. */
 export function unspendTarget(a: Alert): { uid: number } | null {
   return a.kind === 'spent' && a.uid > 0 ? { uid: a.uid } : null
 }
 
-/** Rules 13: POST /api/restores/unspend as the console's operator, saying why (logged as
+/** Rules 15: POST /api/restores/unspend as the console's operator, saying why (logged as
  *  `platform.unspent` under their session; 403 without engagement authority). Throws an Error
  *  with the bridge's reason. */
 export async function unspendPlatform(uid: number, note: string): Promise<void> {

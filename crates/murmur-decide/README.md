@@ -1474,7 +1474,7 @@ Rules versions:
     the vehicle now) fails `readiness` unless the vehicle is known to be another (platform,
     callsign or system id; never the home). Every dispatch path's void of an approved order
     for a spent platform covers them (`Restores::spent_hold`). Replay checks the marks against
-    the log carried from (`Debts::spent`, compared from rules 13 only), the fact against the
+    the log carried from (`Debts::spent`, compared from rules 15 only), the fact against the
     ledger with the identity it logs, and flags an order sent to a platform a carried mark holds.
   - *An un-spend* (imu (2)): `Engine::unspend_platform` (an `EngagementAuthority`, a note, the
     world): only for a platform spent (this run's mark or a carried one) and heard since its

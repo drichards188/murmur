@@ -430,7 +430,7 @@ async fn write_off(State(app): State<App>, headers: HeaderMap, body: Bytes) -> R
     }
 }
 
-/// `POST /api/restores/unspend` (rules 13): an operator with engagement authority un-spends a
+/// `POST /api/restores/unspend` (rules 15): an operator with engagement authority un-spends a
 /// platform spent by its own effect that they believe survived (`{"uid": n, "note": "..."}`),
 /// once it was heard after the effect. Logged as `platform.unspent` under the operator's own
 /// session; the note is required. Its own lost-link values are owed back again (a mission waits

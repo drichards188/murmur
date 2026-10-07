@@ -651,7 +651,7 @@ pub fn readiness(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) ->
                 format!("spent by its own effect (engagement {id}): a spent platform takes no order"),
             );
         }
-        // rules 13: spent in an earlier run (carried over at start), the same vehicle unless it
+        // rules 15: spent in an earlier run (carried over at start), the same vehicle unless it
         // is known to be another
         if cfg.carry_followups()
             && let Some(s) = world.spent_carried.get(uid).filter(|s| s.holds())

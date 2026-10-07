@@ -62,7 +62,7 @@
 //!   an operator may write off a platform's lost-link values owed back, or an earlier log's
 //!   carry that failed ([`Engine::write_off_restore`]), under their own session, and an
 //!   agent can't.
-//! - Rules 13 ([`CARRY_FOLLOWUPS_SINCE`]): an operator with engagement authority may un-spend
+//! - Rules 15 ([`CARRY_FOLLOWUPS_SINCE`]): an operator with engagement authority may un-spend
 //!   a platform spent by its own effect that was heard since ([`Engine::unspend_platform`]),
 //!   under their own session, saying why; it owes its own lost-link values back again. An
 //!   agent can't ([`AgentPort`] has no such method).

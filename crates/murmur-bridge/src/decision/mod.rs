@@ -498,7 +498,7 @@ pub struct Parts {
     /// Rules 12: what earlier runs' logs still owed, as the start read them
     /// (`engage::read_carry`): logged in `run.started` and owed back from there.
     pub carried_from: Vec<murmur_decide::replay::CarriedFrom>,
-    /// Rules 13: the station's `.last-run` pointer, by its file name (`run.started`'s `pointer`):
+    /// Rules 15: the station's `.last-run` pointer, by its file name (`run.started`'s `pointer`):
     /// a later start whose pointer can't be read falls back to this station's newest log.
     pub pointer: Option<String>,
 }
@@ -552,13 +552,13 @@ impl Decision {
         let reading = engage::CarryReading {
             catalog: &catalog,
             anchors_dir: s.anchors.as_ref().and_then(|a| a.path.parent()),
-            rules13: policy.rules.carry_followups(),
+            rules15: policy.rules.carry_followups(),
         };
         let carried_from = match (&s.last_run, followups) {
             (Some(pointer), true) => engage::read_carry(pointer, &reading),
             _ => Vec::new(),
         };
-        // rules 13: the station's pointer, named in run.started
+        // rules 15: the station's pointer, named in run.started
         let pointer = s
             .last_run
             .as_ref()

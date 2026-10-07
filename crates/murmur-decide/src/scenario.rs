@@ -148,18 +148,18 @@ pub struct Scenario {
     pub tracks: Vec<TrackDef>,
     #[serde(default, rename = "step")]
     pub steps: Vec<Step>,
-    /// Rules 13: earlier logs whose carry failed at the start (`run.started`'s `carried_from`,
+    /// Rules 15: earlier logs whose carry failed at the start (`run.started`'s `carried_from`,
     /// as the bridge records a log it could not read): each may owe the vehicles it names their
     /// own lost-link values (values unknown), as the armed platforms of that run's fleet.
     #[serde(default, rename = "carried", skip_serializing_if = "Vec::is_empty")]
     pub carried: Vec<CarriedDef>,
-    /// Rules 13: platforms an operator un-spent that replay must list, in order (substrings of
+    /// Rules 15: platforms an operator un-spent that replay must list, in order (substrings of
     /// its `unspent`: `un-spent by op-2`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expect_unspent: Vec<String>,
 }
 
-/// Rules 13: an earlier log whose carry failed at the start: its file name, why it could not be
+/// Rules 15: an earlier log whose carry failed at the start: its file name, why it could not be
 /// read, and the vehicles (of the file's) it may owe values to, each as the vehicle it is now.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -523,7 +523,7 @@ pub enum Action {
     /// port, so it is recorded and nothing may change.
     AgentDeclare { agent: String, track: String },
     /// Rules 12: an operator writes off the lost-link values owed back to one of our vehicles
-    /// (it is lost, spent, or not the vehicle they were preloaded on), saying why; rules 13: or
+    /// (it is lost, spent, or not the vehicle they were preloaded on), saying why; rules 15: or
     /// an earlier log whose carry failed (`log`).
     WriteOff {
         by: String,
@@ -533,7 +533,7 @@ pub enum Action {
         log: Option<String>,
         note: String,
     },
-    /// Rules 13: an operator with engagement authority un-spends a platform spent by its own
+    /// Rules 15: an operator with engagement authority un-spends a platform spent by its own
     /// effect, saying why (it survived); without engagement authority it is refused.
     Unspend { by: String, uid: String, note: String },
     /// Check the last nomination now.
@@ -1062,7 +1062,7 @@ pub fn run(
             .collect(),
     )
     .map_err(setup)?;
-    // rules 13: earlier logs whose carry failed, as the bridge records them at its start (rules
+    // rules 15: earlier logs whose carry failed, as the bridge records them at its start (rules
     // before 12 record none: their bridge only said so in the inbox)
     let carried: Vec<crate::replay::CarriedFrom> = sc
         .carried
@@ -1591,7 +1591,7 @@ pub fn run(
     if sc.expect_nothing_owed && !report.unrestored.is_empty() {
         failures.push(format!("expected nothing owed back at the end, replay reports {:?}", report.unrestored));
     }
-    // rules 13: platforms an operator un-spent
+    // rules 15: platforms an operator un-spent
     let mut unspent = report.unspent.iter();
     for want in &sc.expect_unspent {
         if !unspent.any(|u| u.contains(want.as_str())) {
@@ -4094,7 +4094,7 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             }
         }
         "unspend_without_authority" => {
-            // rules 13: an un-spend credited to the session of an operator without engagement
+            // rules 15: an un-spend credited to the session of an operator without engagement
             // authority (the nominator's)
             let plain = events
                 .iter()
@@ -4120,7 +4120,7 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             }
         }
         "drop_may_owe_fact" => {
-            // rules 13: a nomination's fact that a failed carry may owe its platform values taken
+            // rules 15: a nomination's fact that a failed carry may owe its platform values taken
             // out (as if nothing could be owed: its fallback_preload check would pass)
             let mut done = false;
             for e in &mut events {

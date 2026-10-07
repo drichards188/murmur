@@ -92,7 +92,7 @@ pub struct VehicleFacts {
 }
 
 impl VehicleFacts {
-    /// Rules 13: when the vehicle was last heard, as its facts show: the newest of its
+    /// Rules 15: when the vehicle was last heard, as its facts show: the newest of its
     /// heartbeat (`autopilot`), position and navigation status reports. None: never heard.
     pub fn heard_t(&self) -> Option<Time> {
         [
@@ -464,7 +464,7 @@ pub struct WorldSnapshot {
     /// it. No order or nomination is taken for one (`readiness` fails). Absent when none.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub expended: BTreeMap<Uid, IntentId>,
-    /// Engine-filled (rules 13): the intent's vehicles spent by their own effect in an earlier
+    /// Engine-filled (rules 15): the intent's vehicles spent by their own effect in an earlier
     /// run (carried over at start), with the vehicle under the uid now: one that is not known to
     /// be another takes no order or nomination (`readiness` fails). Absent when none.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -516,7 +516,7 @@ pub struct LoggedInputs {
     /// The intent's vehicles spent by their own effect (rules 12; absent when none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub expended: BTreeMap<Uid, IntentId>,
-    /// The intent's vehicles spent by their own effect in an earlier run (rules 13; absent when
+    /// The intent's vehicles spent by their own effect in an earlier run (rules 15; absent when
     /// none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub spent_carried: BTreeMap<Uid, crate::queue::CarriedSpent>,

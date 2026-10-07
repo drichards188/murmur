@@ -231,14 +231,14 @@ pub(super) fn identity_of(cell: &crate::vehicle::VehicleCell) -> murmur_decide::
     })
 }
 
-/// Rules 13: what a start's carry reads besides the pointer: the catalog (which platforms are
+/// Rules 15: what a start's carry reads besides the pointer: the catalog (which platforms are
 /// armed), where the station's anchors are (a log it falls back on must check against its own),
-/// and whether the rules record what rules 13 adds (the spent platforms, a failed carry's fleet
+/// and whether the rules record what rules 15 adds (the spent platforms, a failed carry's fleet
 /// file, a fallback from a pointer that can't be read).
 pub(super) struct CarryReading<'a> {
     pub catalog: &'a Catalog,
     pub anchors_dir: Option<&'a std::path::Path>,
-    pub rules13: bool,
+    pub rules15: bool,
 }
 
 /// Rules 12 (murmur-cq3), before the engine starts: what earlier runs' logs still owe, as
@@ -246,12 +246,12 @@ pub(super) struct CarryReading<'a> {
 /// (`.last-run-<port>`) names, then each log it still owed for because its carry had failed
 /// (named pending, looked for beside it), tried again, and theirs in turn. A log that can't be
 /// read is recorded with why, and with the armed platforms its fleet named (`may_owe`, from the
-/// fleet identity beside it when that reads; rules 13: with the file's hash and the armed
+/// fleet identity beside it when that reads; rules 15: with the file's hash and the armed
 /// platforms, `fleet_read`): the log that records it owes for it (pending) until a later start
-/// reads it or an operator writes it off, so the chain never drops it. Rules 13: a log read
+/// reads it or an operator writes it off, so the chain never drops it. Rules 15: a log read
 /// also carries the platforms it had spent (`spent`). A pointer that can't be read, is empty or
 /// names no log (a crash mid-write, a stray edit) is a failed carry too, named by the pointer's
-/// own file name (the log it named is unknown: it stays owed until written off); rules 13: unless
+/// own file name (the log it named is unknown: it stays owed until written off); rules 15: unless
 /// the newest log of this station (its `run.started` names this pointer) checks, chain and
 /// anchors, and is carried from in its place, saying so (`pointer_failed`). A pointer of two
 /// identical lines names that log. Empty: no pointer (a first start). Never an error: a start
@@ -261,8 +261,8 @@ pub(super) fn read_carry(pointer: &std::path::Path, r: &CarryReading<'_>) -> Vec
         .file_name()
         .map_or_else(|| ".last-run".to_string(), |f| f.to_string_lossy().into_owned());
     let unknown = |why: String| {
-        // rules 13: the newest log of this station that checks, in the pointer's place
-        let why = if r.rules13 {
+        // rules 15: the newest log of this station that checks, in the pointer's place
+        let why = if r.rules15 {
             let dir = pointer.parent().unwrap_or_else(|| std::path::Path::new("."));
             match fallback_log(dir, &pointer_name, r.anchors_dir) {
                 Ok(path) => return carry_chain(path, Some(why), r),
@@ -288,7 +288,7 @@ pub(super) fn read_carry(pointer: &std::path::Path, r: &CarryReading<'_>) -> Vec
     carry_chain(named, None, r)
 }
 
-/// Rules 12: the carry from `named` (the log the pointer named, or rules 13 the one found in its
+/// Rules 12: the carry from `named` (the log the pointer named, or rules 15 the one found in its
 /// place, `fallback` saying why) and every log it still owed for, as [`read_carry`] records them.
 fn carry_chain(
     named: std::path::PathBuf,
@@ -336,8 +336,8 @@ fn carry_chain(
                 }
                 entry.owed = debts.owed;
                 entry.pending = debts.pending;
-                // rules 13: the platforms it had spent stay spent
-                if r.rules13 {
+                // rules 15: the platforms it had spent stay spent
+                if r.rules15 {
                     entry.spent = debts.spent;
                 }
             }
@@ -347,7 +347,7 @@ fn carry_chain(
     out
 }
 
-/// Rules 13 (murmur-zq3): the log a start carries from when its pointer can't be read: the newest
+/// Rules 15 (murmur-zq3): the log a start carries from when its pointer can't be read: the newest
 /// log in the pointer's directory (by its start) whose `run.started` names this pointer (a log of
 /// this station), only if its hash chain holds and it checks against its own anchors (every
 /// problem but the shutdown anchor a crashed run never wrote). Err says why there is none: then
@@ -432,7 +432,7 @@ fn may_owe_text(may_owe: &[murmur_decide::Uid]) -> String {
 
 /// Rules 12 (review M2): `pointer` names `log`, written whole or not at all: to a temporary
 /// file beside it, synced, then renamed over it, so a crash mid-write leaves the old pointer
-/// or the new one, never a torn one. Rules 13 (murmur-zq3): then the directory is synced too, so
+/// or the new one, never a torn one. Rules 15 (murmur-zq3): then the directory is synced too, so
 /// the rename itself survives a power loss (without it the directory entry may still name the
 /// old pointer, or none).
 pub(super) fn write_pointer(pointer: &std::path::Path, log: &std::path::Path) -> std::io::Result<()> {
@@ -464,7 +464,7 @@ fn pointer_target(bytes: &[u8]) -> Result<std::path::PathBuf, String> {
     let Some(line) = lines.next() else {
         return Err("the pointer is empty (a write cut short?): the log it named is unknown".into());
     };
-    // rules 13 (murmur-zq3): the same line twice (an editor's or a tool's doing) names that log
+    // rules 15 (murmur-zq3): the same line twice (an editor's or a tool's doing) names that log
     // all the same; two different ones name none
     let line = if lines.all(|l| l == line) { line } else { text.trim() };
     let path = std::path::PathBuf::from(line);
@@ -479,7 +479,7 @@ fn pointer_target(bytes: &[u8]) -> Result<std::path::PathBuf, String> {
 /// Rules 12: the armed platforms the fleet beside an unreadable log named (its run's
 /// `<log stem>.fleet.json`), as the vehicles they were: values it may owe them are unknown. Only an
 /// armed platform is ever preloaded (engagements are on armed platforms). Empty when the fleet
-/// can't be read either. Rules 13: with the file as read (its SHA-256 and the catalog's armed
+/// can't be read either. Rules 15: with the file as read (its SHA-256 and the catalog's armed
 /// platforms it was judged by, `fleet_read`), so replay can compare it when it is at hand.
 fn armed_of(
     log: &std::path::Path,
@@ -498,7 +498,7 @@ fn armed_of(
     let Some(may_owe) = murmur_decide::replay::fleet_may_owe(&bytes, &armed) else {
         return (Vec::new(), None);
     };
-    let read = r.rules13.then(|| murmur_decide::replay::FleetRead {
+    let read = r.rules15.then(|| murmur_decide::replay::FleetRead {
         sha256: murmur_decide::hash::sha256_hex(&bytes),
         armed,
     });
@@ -1050,7 +1050,7 @@ impl Decision {
                 println!("lost-link values of vehicle {uid} owed back from an earlier run (run.started): restoring");
                 core.params.insert(uid, ParamLane::carrying(o.values, o.vehicle));
             }
-            // rules 13: platforms an earlier run spent stay spent (the same vehicle only)
+            // rules 15: platforms an earlier run spent stay spent (the same vehicle only)
             for sp in core.engine.spent_platforms().into_iter().filter(|s| s.from.is_some()) {
                 println!(
                     "vehicle {} was spent by its own effect in {} (run.started): it takes no order or nomination until an operator with engagement authority un-spends it",
@@ -1112,7 +1112,7 @@ impl Decision {
         Ok(out)
     }
 
-    /// Rules 13 (murmur-imu): `POST /api/restores/unspend`: an operator with engagement authority
+    /// Rules 15 (murmur-imu): `POST /api/restores/unspend`: an operator with engagement authority
     /// un-spends a platform spent by its own effect that they believe survived (a miss), under
     /// their own session, saying why; only once it was heard after the effect. Logged as
     /// `platform.unspent`; it takes orders and nominations again, and its own lost-link values are
@@ -1149,7 +1149,7 @@ impl Decision {
         Ok(out)
     }
 
-    /// Rules 12 and 13: an alert for each platform spent by its own effect that is still heard
+    /// Rules 12 and 15: an alert for each platform spent by its own effect that is still heard
     /// (this run's mark, or one carried over for the same vehicle): it takes no order and no
     /// nomination while spent, and still carries the engagement's lost-link action. If it
     /// survived (a miss), an operator with engagement authority un-spends it, saying why.

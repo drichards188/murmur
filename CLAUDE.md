@@ -174,7 +174,7 @@ meaningful. Decision and command, not weapons.
   re-check is logged at the clock read its "has the pass come" guard made; the engine refuses
   a segment pinned to another time shift or on another scenario map mid-run
   (`EngineError::SpaceSegment`) and replay flags either changing between two `space.loaded`.
-- Rules 13 (`CARRY_FOLLOWUPS_SINCE`): a spent platform stays spent across restarts, a full
+- Rules 15 (`CARRY_FOLLOWUPS_SINCE`): a spent platform stays spent across restarts, a full
   restack with the same fleet included (`carried_from`'s `spent`; same vehicle only): an
   engagement-authority operator un-spends it with a note once it is heard since the effect
   (`POST /api/restores/unspend`, the console's Un-spend on its SPENT alert), and its own values

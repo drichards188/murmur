@@ -1,4 +1,4 @@
-//! Decision rules 13 (`CARRY_FOLLOWUPS_SINCE`): the follow-ups of rules 12's carries
+//! Decision rules 15 (`CARRY_FOLLOWUPS_SINCE`): the follow-ups of rules 12's carries
 //! (murmur-zq3, murmur-imu). A platform spent by its own effect stays spent across a restart
 //! (`run.started`'s `carried_from` carries each log's spent platforms, `spent`, checked against
 //! that log), for the vehicle that was spent; an operator with engagement authority un-spends a
@@ -86,7 +86,7 @@ fn start(version: u32, carried: Vec<CarriedFrom>, clock: &ManualClock) -> (Engin
     (e, log)
 }
 
-/// What the bridge records in `run.started` for the log `name` it read (`text`), rules 13: its
+/// What the bridge records in `run.started` for the log `name` it read (`text`), rules 15: its
 /// spent platforms too.
 fn carry_of(name: &str, text: &str) -> CarriedFrom {
     let (head, seq) = log_head(text).unwrap();

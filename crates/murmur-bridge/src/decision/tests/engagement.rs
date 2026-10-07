@@ -838,7 +838,7 @@ fn carrying_rig_policy(
     carrying_rig_anchored(on, audit_path, pointer, None, tweak)
 }
 
-/// [`carrying_rig_policy`], the station keeping its anchors in `anchors_dir` (rules 13: a start
+/// [`carrying_rig_policy`], the station keeping its anchors in `anchors_dir` (rules 15: a start
 /// that can't read its pointer falls back on the newest log that checks against its own).
 fn carrying_rig_anchored(
     on: Option<(Arc<World>, Arc<Tracks>)>,
@@ -851,11 +851,11 @@ fn carrying_rig_anchored(
     // the policy as the rig will start with it, to read with its rules
     let mut policy = Policy::load(&root().join("sim/policy.toml")).expect("policy");
     tweak(&mut policy);
-    let rules13 = policy.rules.carry_followups();
+    let rules15 = policy.rules.carry_followups();
     let reading = engage::CarryReading {
         catalog: &catalog,
         anchors_dir,
-        rules13,
+        rules15,
     };
     let from = engage::read_carry(pointer, &reading);
     let name = pointer.file_name().map(|f| f.to_string_lossy().into_owned());
@@ -869,7 +869,7 @@ fn carrying_rig_anchored(
         EngineClock::Manual,
         Vec::new(),
         murmur_decide::StartCarry {
-            pointer: name.filter(|_| rules13),
+            pointer: name.filter(|_| rules15),
             from,
         },
     );
@@ -1837,7 +1837,7 @@ async fn a_platform_left_on_a_superseded_intercept_says_so_in_its_restore_alert(
     assert!(rep.ok(), "{:?}", rep.mismatches);
 }
 
-// ---- rules 13 ---------------------------------------------------------------------------
+// ---- rules 15 ---------------------------------------------------------------------------
 
 /// The console's API on a rig, as the bridge serves it.
 fn api_of(e: &Erig) -> axum::Router {
@@ -1870,7 +1870,7 @@ async fn post_as(api: &axum::Router, who: &str, path: &str, body: Value) -> (u16
     (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
 }
 
-/// Rules 13 (murmur-zq3 (1), murmur-imu (2)): an FPV drone spent by its own effect stays spent
+/// Rules 15 (murmur-zq3 (1), murmur-imu (2)): an FPV drone spent by its own effect stays spent
 /// after a bridge-only restart (the next start carries the mark in `run.started`: before, it was
 /// taskable again, still flying the engagement's lost-link action, which a new preload would
 /// have read as its own values); the inbox says it is spent and still heard; an operator without
@@ -1956,7 +1956,7 @@ async fn a_platform_spent_by_its_effect_stays_spent_after_a_restart_until_an_ope
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Rules 13 (murmur-zq3 (2), (4)): a `.last-run` pointer that can't be read no longer drops the
+/// Rules 15 (murmur-zq3 (2), (4)): a `.last-run` pointer that can't be read no longer drops the
 /// chain behind it when the station's newest log checks: the start carries from that log in its
 /// place (`pointer_failed` says why), and from what it still owed (here a log whose carry had
 /// failed, pending). Another station's newer log in the same directory is never taken; a newest

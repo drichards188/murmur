@@ -207,7 +207,7 @@ pub struct ReplayReport {
     /// expended by its own effect, a platform's values or an earlier log's carry written off by
     /// an operator, each saying which and why.
     pub restores_closed: Vec<String>,
-    /// Rules 13: platforms an operator un-spent (`platform.unspent`), each saying who and why.
+    /// Rules 15: platforms an operator un-spent (`platform.unspent`), each saying who and why.
     pub unspent: Vec<String>,
     /// Rules 5: intents queued for unreachable vehicles, queue re-checks recomputed (and
     /// how many dispatched, went back to the inbox, voided), queue expiries, intents carried
@@ -344,11 +344,11 @@ pub struct CarriedRestores {
     /// unknown, and it stays owed until read or written off.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failed: Option<String>,
-    /// Rules 13: the `.last-run` pointer could not be read (why), and this log, the newest of the
+    /// Rules 15: the `.last-run` pointer could not be read (why), and this log, the newest of the
     /// station whose chain and anchors checked, was carried from in its place.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pointer_failed: Option<String>,
-    /// Rules 13: a failed carry's fleet file (`<log stem>.fleet.json`): compared with what the
+    /// Rules 15: a failed carry's fleet file (`<log stem>.fleet.json`): compared with what the
     /// start recorded (true), or not at hand (false); none when it recorded none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fleet_checked: Option<bool>,
@@ -368,9 +368,9 @@ pub(crate) struct Restores {
     pending: BTreeMap<String, PendingCarry>,
     /// Rules 12: the platforms spent by their own effect in this run (`restore.closed`,
     /// expended), by the engagement that released it: no order or nomination for them is taken
-    /// any more. Rules 13: with what the closure closed, the vehicle and when, for an un-spend.
+    /// any more. Rules 15: with what the closure closed, the vehicle and when, for an un-spend.
     expended: BTreeMap<Uid, Spent>,
-    /// Rules 13: the platforms spent by their own effect in an earlier run, carried over at start
+    /// Rules 15: the platforms spent by their own effect in an earlier run, carried over at start
     /// (`run.started`'s `carried_from`, `spent`; `from`: the log whose engagement spent it).
     spent_carried: BTreeMap<Uid, SpentPlatform>,
     /// When the run started (`run.started`): a platform spent in an earlier run and heard since
@@ -379,7 +379,7 @@ pub(crate) struct Restores {
 }
 
 /// Rules 12: a platform spent by its own effect in this run: the engagement whose release spent
-/// it, the values its closure closed (rules 13: owed back again if it is un-spent), the vehicle
+/// it, the values its closure closed (rules 15: owed back again if it is un-spent), the vehicle
 /// they were preloaded on, and when it was marked (right after the release).
 #[derive(Clone, Debug)]
 struct Spent {
@@ -431,7 +431,7 @@ impl Restores {
         if rules.rules_version < crate::rules::QUEUE_FOLLOWUPS_SINCE {
             return BTreeMap::new();
         }
-        // rules 13: an engagement's platform a failed carry may owe values to (refused by its
+        // rules 15: an engagement's platform a failed carry may owe values to (refused by its
         // fallback_preload check until that log is read or written off)
         if spec.kind() == TaskKind::Engage && rules.carry_followups() {
             return self.may_owe_for(spec, now);
@@ -500,7 +500,7 @@ impl Restores {
             .collect()
     }
 
-    /// Rules 13: `spec`'s vehicles that an earlier log whose carry failed may owe values to (an
+    /// Rules 15: `spec`'s vehicles that an earlier log whose carry failed may owe values to (an
     /// armed platform its fleet named; values unknown), with the vehicle it was and the one with
     /// the uid now: they hold unless that is known to be another vehicle.
     fn may_owe_for(
@@ -554,7 +554,7 @@ impl Restores {
     /// value both name the older log's stands), and the logs whose carry failed, pending (as
     /// is a log one of them names as pending without an entry of its own).
     pub(crate) fn carry(&mut self, from: &[CarriedFrom]) {
-        // rules 13: the platforms each log read had spent (its own, or carried into it), the
+        // rules 15: the platforms each log read had spent (its own, or carried into it), the
         // newest log's standing
         for c in from.iter().rev().filter(|c| c.error.is_none()) {
             for sp in &c.spent {
@@ -635,7 +635,7 @@ impl Restores {
         self.expended.get(uid).map(|s| s.by)
     }
 
-    /// Rules 13: the spent mark on `uid` an un-spend lifts, this run's or carried over: the
+    /// Rules 15: the spent mark on `uid` an un-spend lifts, this run's or carried over: the
     /// engagement, the earlier log (carried), the values it closed, and since when the platform
     /// counts as heard after its effect (this run's mark: after it was set; a carried one: from
     /// the run's start). None: not spent.
@@ -658,7 +658,7 @@ impl Restores {
         })
     }
 
-    /// Rules 13: an operator un-spent `uid`: no longer spent, and the values its spent mark closed
+    /// Rules 15: an operator un-spent `uid`: no longer spent, and the values its spent mark closed
     /// are owed back again (this run's: as the engagement's that preloaded them; carried: as
     /// carried over from the log it came from, for the vehicle they were preloaded on).
     pub(crate) fn unspend(&mut self, uid: &Uid) {
@@ -682,9 +682,9 @@ impl Restores {
         }
     }
 
-    /// Rules 13: `spec`'s vehicles spent in an earlier run (carried over), with the vehicle with
+    /// Rules 15: `spec`'s vehicles spent in an earlier run (carried over), with the vehicle with
     /// the uid now (`now`, the bridge's identities as the decision read them): held unless it is
-    /// known to be another (a decision's fact, `spent_carried`; empty before rules 13).
+    /// known to be another (a decision's fact, `spent_carried`; empty before rules 15).
     pub(crate) fn spent_carried_for(
         &self,
         spec: &IntentSpec,
@@ -717,7 +717,7 @@ impl Restores {
             .collect()
     }
 
-    /// Rules 12 and 13: why an order for `spec` is refused as for a spent platform, if it is: a
+    /// Rules 12 and 15: why an order for `spec` is refused as for a spent platform, if it is: a
     /// vehicle spent in this run, or one spent in an earlier run that `now` does not show is
     /// another vehicle (none known: held).
     pub(crate) fn spent_hold(
@@ -744,12 +744,12 @@ impl Restores {
             })
     }
 
-    /// Rules 13: whether `uid` carries a spent mark of an earlier run (whatever vehicle has it).
+    /// Rules 15: whether `uid` carries a spent mark of an earlier run (whatever vehicle has it).
     pub(crate) fn spent_carried_on(&self, uid: &Uid) -> bool {
         self.spent_carried.contains_key(uid)
     }
 
-    /// Rules 12 and 13: the platforms spent by their own effect, this run's (`from` none) and
+    /// Rules 12 and 15: the platforms spent by their own effect, this run's (`from` none) and
     /// those carried over.
     pub(crate) fn spent(&self) -> Vec<SpentPlatform> {
         self.expended
@@ -777,7 +777,7 @@ impl Restores {
             .collect()
     }
 
-    /// Rules 13: what is owed back to `uid`, with the vehicle it was preloaded on, if anything.
+    /// Rules 15: what is owed back to `uid`, with the vehicle it was preloaded on, if anything.
     pub(crate) fn owed_restore(&self, uid: &Uid) -> Option<OwedRestore> {
         self.owed.get(uid).map(|o| OwedRestore {
             uid: uid.clone(),
@@ -1005,15 +1005,15 @@ pub struct CarriedFrom {
     /// later start reads it or an operator writes it off. Nothing else is set then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// Rules 13: the platforms it had spent by their own effect and nobody un-spent (its own,
+    /// Rules 15: the platforms it had spent by their own effect and nobody un-spent (its own,
     /// and those carried into it): they stay spent in this run.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub spent: Vec<SpentPlatform>,
-    /// Rules 13: a failed carry's fleet file as read (its hash and the armed platforms that
+    /// Rules 15: a failed carry's fleet file as read (its hash and the armed platforms that
     /// made `may_owe`); absent when it could not be read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fleet_read: Option<FleetRead>,
-    /// Rules 13: the `.last-run` pointer could not be read (why), and this log (the newest of the
+    /// Rules 15: the `.last-run` pointer could not be read (why), and this log (the newest of the
     /// station whose chain and anchors checked) was carried from in its place. Only the first
     /// entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1021,7 +1021,7 @@ pub struct CarriedFrom {
 }
 
 /// Rules 12: what a log still owes when it ends: the platforms' own lost-link values never
-/// confirmed back, and the earlier logs whose carry failed that nobody wrote off. Rules 13: and
+/// confirmed back, and the earlier logs whose carry failed that nobody wrote off. Rules 15: and
 /// the platforms spent by their own effect that nobody un-spent (its own, `from` none, and those
 /// carried into it).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1031,7 +1031,7 @@ pub struct Debts {
     pub spent: Vec<SpentPlatform>,
 }
 
-/// Rules 13 ([`crate::rules::CARRY_FOLLOWUPS_SINCE`], murmur-zq3): a platform spent by its own
+/// Rules 15 ([`crate::rules::CARRY_FOLLOWUPS_SINCE`], murmur-zq3): a platform spent by its own
 /// effect, as a log's debts and `run.started`'s `carried_from` (`spent`) carry it: the engagement
 /// whose release spent it, the log it is in (none: the log that names it), the values its
 /// closure closed (its own lost-link values: owed back again if an operator un-spends it), and
@@ -1048,7 +1048,7 @@ pub struct SpentPlatform {
     pub vehicle: Option<engage::VehicleIdentity>,
 }
 
-/// Rules 13: a spent mark as an un-spend reads it ([`Restores::spent_mark`]).
+/// Rules 15: a spent mark as an un-spend reads it ([`Restores::spent_mark`]).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SpentMark {
     pub by: IntentId,
@@ -1071,7 +1071,7 @@ impl SpentMark {
     }
 }
 
-/// Rules 13 (murmur-zq3): a failed carry's fleet file as the start read it (`<log stem>.fleet.json`,
+/// Rules 15 (murmur-zq3): a failed carry's fleet file as the start read it (`<log stem>.fleet.json`,
 /// beside the log): the SHA-256 of its bytes, and the catalog's armed platforms the start judged
 /// it by. `may_owe` is that fleet's vehicles of those platforms ([`fleet_may_owe`]); replay
 /// compares both with the file when it is at hand.
@@ -1082,7 +1082,7 @@ pub struct FleetRead {
     pub armed: Vec<String>,
 }
 
-/// Rules 13: the vehicles of a run's fleet file (`<log stem>.fleet.json` as the bridge writes it:
+/// Rules 15: the vehicles of a run's fleet file (`<log stem>.fleet.json` as the bridge writes it:
 /// by uid, each vehicle's platform, callsign and home `[lat, lon]`) whose platform is one of
 /// `armed`, in uid order, as a failed carry records them (`may_owe`: values unknown). None: the
 /// file does not parse.
@@ -1116,7 +1116,7 @@ pub fn fleet_may_owe(bytes: &[u8], armed: &[String]) -> Option<Vec<OwedRestore>>
     )
 }
 
-/// Rules 13: the fleet file beside a log (`<log stem>.fleet.json`), by its bare file name.
+/// Rules 15: the fleet file beside a log (`<log stem>.fleet.json`), by its bare file name.
 pub fn fleet_file_name(log: &str) -> String {
     match log.strip_suffix(".jsonl") {
         Some(stem) => format!("{stem}.fleet.json"),
@@ -1608,7 +1608,7 @@ pub struct ReplayOptions<'a> {
     /// looked at too. A log not given is a mismatch when it carried anything, unless
     /// [`Self::trust_resumed`].
     pub carried_logs: &'a [(&'a str, &'a str)],
-    /// Rules 13: the fleet files of the logs whose carry failed (`<log stem>.fleet.json`), as
+    /// Rules 15: the fleet files of the logs whose carry failed (`<log stem>.fleet.json`), as
     /// (their file name, their bytes): each must be the one the start read (its SHA-256), and
     /// the platforms the failed carry may owe values to exactly that fleet's armed ones.
     pub fleets: &'a [(&'a str, &'a [u8])],
@@ -2983,7 +2983,7 @@ fn replay_inner<S: AsRef<str>>(
                 to,
                 reason,
             } => {
-                // rules 13 (murmur-zq3): a void that says a newer order superseded it names one
+                // rules 15 (murmur-zq3): a void that says a newer order superseded it names one
                 // the log has, newer, on that vehicle (an engagement's stop is checked by its
                 // cause, `engage.stopped`)
                 if *transition == Transition::Void
@@ -3316,7 +3316,7 @@ fn replay_inner<S: AsRef<str>>(
                         .unwrap_or_default(),
                     _ => BTreeMap::new(),
                 };
-                // rules 13: nor to one spent in an earlier run, unless what the order went on (its
+                // rules 15: nor to one spent in an earlier run, unless what the order went on (its
                 // reach, else its last check) showed another vehicle under the uid (none: held
                 // whatever vehicle has it)
                 let spent_ids = match (reach_inputs, intents.get(intent)) {
@@ -3339,7 +3339,7 @@ fn replay_inner<S: AsRef<str>>(
                         &mut r,
                         e,
                         Some(*intent),
-                        "an order dispatched to a platform spent by its own effect in an earlier run (rules 13)",
+                        "an order dispatched to a platform spent by its own effect in an earlier run (rules 15)",
                         u.to_string(),
                         held.detail(),
                     );
@@ -5635,7 +5635,7 @@ fn check_expended(
     }
 }
 
-/// Rules 13: a decision's logged `spent_carried` fact (the intent's vehicles spent in an earlier
+/// Rules 15: a decision's logged `spent_carried` fact (the intent's vehicles spent in an earlier
 /// run) against the ledger replay keeps, with the identity of the vehicle now it logs (the
 /// bridge's input; whether it holds is recomputed from it).
 fn check_spent_carried(
@@ -5654,7 +5654,7 @@ fn check_spent_carried(
     }
 }
 
-/// Rules 13: the identities of the vehicles now a decision's `spent_carried` fact names.
+/// Rules 15: the identities of the vehicles now a decision's `spent_carried` fact names.
 fn spent_identities(spent: &BTreeMap<Uid, queue::CarriedSpent>) -> BTreeMap<Uid, engage::VehicleIdentity> {
     spent
         .iter()
@@ -5662,7 +5662,7 @@ fn spent_identities(spent: &BTreeMap<Uid, queue::CarriedSpent>) -> BTreeMap<Uid,
         .collect()
 }
 
-/// Rules 13: a `platform.unspent`: under these rules only; under the operator's own session,
+/// Rules 15: a `platform.unspent`: under these rules only; under the operator's own session,
 /// with engagement authority; with a note; for a platform the ledger has spent, naming exactly
 /// its mark (the engagement, the log of a carried one, the values it closed: owed back again);
 /// heard after the effect on the vehicle facts it logs (after the mark of this run, at or after
@@ -5678,7 +5678,7 @@ fn platform_unspent(
     policy: Option<&Policy>,
 ) {
     if !policy.is_some_and(|p| p.rules.carry_followups()) {
-        bad(r, e, None, "a platform un-spent under rules that have no un-spend (rules 13)", uid.to_string(), String::new());
+        bad(r, e, None, "a platform un-spent under rules that have no un-spend (rules 15)", uid.to_string(), String::new());
     }
     match sessions.get(&session) {
         Some((op, g)) if op == operator && g.engage => {}
@@ -5873,7 +5873,7 @@ pub fn carried_from_logs(text: &str) -> Vec<String> {
     }
 }
 
-/// Rules 13 (murmur-zq3): the order a void's reason says superseded it, and the vehicle it names,
+/// Rules 15 (murmur-zq3): the order a void's reason says superseded it, and the vehicle it names,
 /// as the engine and the bridge word it: `system: superseded: iN is a newer order for vehicle U`
 /// (a dequeue), `system: superseded: iN was dispatched to vehicle U` and `... was queued for
 /// vehicle U` (the bridge), `superseded by iN` and `superseded by iN (agent A)` (an amend). None:
@@ -5899,7 +5899,7 @@ fn superseded_by(reason: &str) -> Option<(Option<IntentId>, Option<Uid>)> {
     Some((id(rest), None))
 }
 
-/// Rules 13: why a void's superseded reason does not hold against the log, if it does not: it
+/// Rules 15: why a void's superseded reason does not hold against the log, if it does not: it
 /// names no order, one the log does not have, one not newer than the voided, or (naming a
 /// vehicle) one not on that vehicle, or (an amend) another kind of task.
 fn superseded_mismatch(
@@ -5910,19 +5910,19 @@ fn superseded_mismatch(
 ) -> Option<&'static str> {
     let (named, vehicle) = superseded_by(reason)?;
     let Some(by) = named else {
-        return Some("a void as superseded that names no order (rules 13)");
+        return Some("a void as superseded that names no order (rules 15)");
     };
     let Some(other) = intents.get(&by) else {
-        return Some("a void as superseded by an order the log does not have (rules 13)");
+        return Some("a void as superseded by an order the log does not have (rules 15)");
     };
     if by <= id {
-        return Some("a void as superseded by an order that is not newer (rules 13)");
+        return Some("a void as superseded by an order that is not newer (rules 15)");
     }
     match vehicle {
         Some(u) if !(spec.uids.contains(&u) && other.spec.uids.contains(&u)) => {
-            Some("a void as superseded by an order not on that vehicle (rules 13)")
+            Some("a void as superseded by an order not on that vehicle (rules 15)")
         }
-        None if other.spec.kind() != spec.kind() => Some("a void as superseded by an amend of another kind of task (rules 13)"),
+        None if other.spec.kind() != spec.kind() => Some("a void as superseded by an amend of another kind of task (rules 15)"),
         _ => None,
     }
 }
@@ -5969,9 +5969,9 @@ fn check_carried_from(r: &mut ReplayReport, events: &[Event], opts: &ReplayOptio
     else {
         return;
     };
-    // rules 13: what a start carries also says what each log had spent, the fleet file a failed
+    // rules 15: what a start carries also says what each log had spent, the fleet file a failed
     // carry read, and a fallback from a pointer that could not be read
-    let rules13 = rules_version.unwrap_or(1) >= rules::CARRY_FOLLOWUPS_SINCE;
+    let rules15 = rules_version.unwrap_or(1) >= rules::CARRY_FOLLOWUPS_SINCE;
     let mut named: Vec<&str> = Vec::new();
     for (i, c) in carried_from.iter().enumerate() {
         if !is_log_file_name(&c.log) {
@@ -6000,20 +6000,20 @@ fn check_carried_from(r: &mut ReplayReport, events: &[Event], opts: &ReplayOptio
         if c.error.is_none() && (!c.may_owe.is_empty() || c.fleet_read.is_some() || is_pointer_name(&c.log)) {
             bad(r, first, None, "a carried-over log that was read carries what a failed carry may owe, or is a pointer", c.log.clone(), String::new());
         }
-        // rules 13: a fallback stands for the pointer (the first entry) of a station that names
+        // rules 15: a fallback stands for the pointer (the first entry) of a station that names
         // its pointer; the platforms a failed carry may owe come from the fleet file it read
-        if c.pointer_failed.is_some() && (i > 0 || pointer.is_none() || !rules13) {
+        if c.pointer_failed.is_some() && (i > 0 || pointer.is_none() || !rules15) {
             bad(
                 r,
                 first,
                 None,
-                "a carry from a log found in place of a pointer that could not be read, other than the first, or by a run that names no pointer (rules 13)",
+                "a carry from a log found in place of a pointer that could not be read, other than the first, or by a run that names no pointer (rules 15)",
                 c.log.clone(),
                 json(pointer),
             );
         }
-        if rules13 && c.error.is_some() && !c.may_owe.is_empty() && c.fleet_read.is_none() {
-            bad(r, first, None, "a failed carry that may owe values without the fleet file it read (rules 13)", c.log.clone(), json(&c.may_owe));
+        if rules15 && c.error.is_some() && !c.may_owe.is_empty() && c.fleet_read.is_none() {
+            bad(r, first, None, "a failed carry that may owe values without the fleet file it read (rules 15)", c.log.clone(), json(&c.may_owe));
         }
         for p in &c.pending {
             if !carried_from.iter().any(|x| &x.log == p) {
@@ -6037,7 +6037,7 @@ fn check_carried_from(r: &mut ReplayReport, events: &[Event], opts: &ReplayOptio
             .or_else(|| opts.restores_from.as_ref().filter(|(n, _)| *n == c.log))
             .map(|(_, t)| *t);
         if let Some(why) = &c.error {
-            // rules 13: the fleet file the start read, when it is at hand: that one, and the
+            // rules 15: the fleet file the start read, when it is at hand: that one, and the
             // platforms it may owe values to exactly its armed ones
             let fleet_checked = c.fleet_read.as_ref().map(|f| check_fleet_read(r, first, events, c, f, opts));
             // recorded failed, yet the log is at hand: what it owed was not carried; a log that
@@ -6045,7 +6045,7 @@ fn check_carried_from(r: &mut ReplayReport, events: &[Event], opts: &ReplayOptio
             // trusted
             let readable = text
                 .and_then(|t| parse_log(t).ok().filter(|ev| !ev.is_empty()).map(|_| owed_debts(t)))
-                .filter(|d| !d.is_empty() || (rules13 && !d.spent.is_empty()));
+                .filter(|d| !d.is_empty() || (rules15 && !d.spent.is_empty()));
             if let Some(d) = readable
                 && !opts.trust_resumed
             {
@@ -6156,18 +6156,18 @@ fn check_carried_from(r: &mut ReplayReport, events: &[Event], opts: &ReplayOptio
                 json(&debts.pending),
             );
         }
-        // rules 13: the platforms it had spent and nobody un-spent, every one of them
-        if rules13 && debts.spent != c.spent {
+        // rules 15: the platforms it had spent and nobody un-spent, every one of them
+        if rules15 && debts.spent != c.spent {
             bad(
                 r,
                 first,
                 None,
-                "the platforms carried as spent differ from the ones the log had spent (rules 13)",
+                "the platforms carried as spent differ from the ones the log had spent (rules 15)",
                 json(&c.spent),
                 json(&debts.spent),
             );
         }
-        // rules 13: a log carried from in place of a pointer is the station's own
+        // rules 15: a log carried from in place of a pointer is the station's own
         if c.pointer_failed.is_some() && station_pointer(text) != *pointer {
             bad(
                 r,
@@ -6190,7 +6190,7 @@ fn check_carried_from(r: &mut ReplayReport, events: &[Event], opts: &ReplayOptio
     }
 }
 
-/// Rules 13: why a log's hash chain does not hold, if it does not: a line that does not parse as
+/// Rules 15: why a log's hash chain does not hold, if it does not: a line that does not parse as
 /// an event (but a torn last one, a crash mid-write), a seq that is not contiguous from 1, or a
 /// `prev` that is not the SHA-256 of the line before. What a start that falls back from a pointer
 /// it can't read checks before carrying from a log (with its anchors).
@@ -6218,7 +6218,7 @@ pub fn chain_problem(text: &str) -> Option<String> {
     None
 }
 
-/// Rules 13: the `.last-run` pointer a log's `run.started` names (its station), if any.
+/// Rules 15: the `.last-run` pointer a log's `run.started` names (its station), if any.
 pub fn station_pointer(text: &str) -> Option<String> {
     let first = text.lines().find(|l| !l.trim().is_empty())?;
     match serde_json::from_str::<Event>(first) {
@@ -6230,7 +6230,7 @@ pub fn station_pointer(text: &str) -> Option<String> {
     }
 }
 
-/// Rules 13: a failed carry's fleet file against what the start recorded (`fleet_read`): when
+/// Rules 15: a failed carry's fleet file against what the start recorded (`fleet_read`): when
 /// the file is at hand ([`ReplayOptions::fleets`]), its SHA-256 must be the one read and the
 /// platforms the carry may owe values to exactly its vehicles of the armed platforms recorded;
 /// and every platform this log's decisions read must agree with that list (an armed platform

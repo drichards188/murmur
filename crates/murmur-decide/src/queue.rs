@@ -370,7 +370,7 @@ pub struct CarriedHold {
     pub other_vehicle: Option<String>,
 }
 
-/// Rules 13 ([`crate::rules::CARRY_FOLLOWUPS_SINCE`], murmur-zq3): a platform spent by its own
+/// Rules 15 ([`crate::rules::CARRY_FOLLOWUPS_SINCE`], murmur-zq3): a platform spent by its own
 /// effect in an earlier run, carried over at start (`run.started`'s `carried_from`, `spent`): the
 /// log whose engagement spent it, that engagement, the vehicle it was (the engagement's
 /// write-ahead) and the one with the uid now as the bridge identifies it. It takes no order and
