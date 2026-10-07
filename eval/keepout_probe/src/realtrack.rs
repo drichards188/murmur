@@ -9,6 +9,12 @@
 //! case), `all` (every sensor the observers carry, contacts without AIS) and `ais` (every sensor,
 //! every contact broadcasting AIS: the tracker's best case). A contact no
 //! sensor detected has no track, so the keep-out does not protect it, as on the bridge.
+//!
+//! Rules 13 (murmur-533): a contact may go out of view (`masked_from_s`: no detection from
+//! then on, whatever the sensors' range: a radar shadow, clutter, a dark small boat), and a
+//! track unseen for the bridge's drop time is dropped as the bridge drops it, at the first
+//! second it has been unseen longer; its facts then are what the engine keeps as a lost
+//! contact (`Simulated::lost`).
 
 use std::collections::BTreeMap;
 
@@ -112,6 +118,10 @@ pub struct ContactIn {
     /// what it is (`light_aircraft`; default a fishing vessel)
     #[serde(default)]
     pub kind: Option<String>,
+    /// rules 13: out of view from this second on (relative to the nomination; no detection by
+    /// any sensor from then), absent: in view throughout
+    #[serde(default)]
+    pub masked_from_s: Option<f64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -169,14 +179,31 @@ pub fn observers(cat: &SensorCatalog, input: &TrackerIn) -> Result<Vec<Observer>
         .collect()
 }
 
+/// What [`simulate`] gives: the facts at `now_s` of the contacts with a track, those the
+/// tracker dropped (rules 13: each with its facts at the drop and when, wall s), and the
+/// tracker's account.
+pub struct Simulated {
+    pub facts: BTreeMap<String, TrackFacts>,
+    pub lost: BTreeMap<String, (TrackFacts, f64)>,
+    pub stats: Value,
+}
+
+/// The facts of `tr` as the bridge hands them over when it drops it: at the first whole second
+/// it has been unseen longer than the drop time.
+fn dropped(tr: &Track) -> (TrackFacts, f64) {
+    let at = (tr.last_seen_t + DROP_S).floor() + 1.0;
+    (tr.facts(at), at)
+}
+
 /// Every contact's history through the sensing model and the tracker; the facts at `now_s`
 /// of those with a track, and (with `stats`) each contact's facts against its truth.
-pub fn simulate(cat: &SensorCatalog, input: &TrackerIn, now_s: f64) -> Result<(BTreeMap<String, TrackFacts>, Value), String> {
+pub fn simulate(cat: &SensorCatalog, input: &TrackerIn, now_s: f64) -> Result<Simulated, String> {
     if !matches!(input.mode.as_str(), "radar" | "all" | "ais") {
         return Err(format!("tracker mode {:?}: radar, all or ais", input.mode));
     }
     let obs = observers(cat, input)?;
     let mut facts = BTreeMap::new();
+    let mut lost: BTreeMap<String, (TrackFacts, f64)> = BTreeMap::new();
     let mut stats = Vec::new();
     let mut tracked = 0usize;
     for (n, (cid, c)) in input.contacts.iter().enumerate() {
@@ -218,8 +245,15 @@ pub fn simulate(cat: &SensorCatalog, input: &TrackerIn, now_s: f64) -> Result<(B
                 misclassification_rate: 0.0,
             };
             let mut dets = sensing::detect(p, &obs, std::slice::from_ref(&truth), &|_, _| false);
+            // rules 13: out of view: nothing detects it
+            if c.masked_from_s.is_some_and(|m| t >= m) {
+                dets.clear();
+            }
             let wall = now_s + t;
-            if track.as_ref().is_some_and(|tr| tr.age_s(wall) > DROP_S) {
+            if let Some(tr) = track.as_ref().filter(|tr| tr.age_s(wall) > DROP_S) {
+                // dropped (seen again later: a new track, as on the bridge; the drop stays lost)
+                let k = lost.keys().filter(|k| k.starts_with(cid.as_str())).count();
+                lost.insert(if k == 0 { cid.clone() } else { format!("{cid}#{k}") }, dropped(tr));
                 track = None;
             }
             for d in &mut dets {
@@ -231,6 +265,10 @@ pub fn simulate(cat: &SensorCatalog, input: &TrackerIn, now_s: f64) -> Result<(B
             }
         }
         let f = track.as_ref().filter(|tr| tr.age_s(now_s) <= DROP_S).map(|tr| tr.facts(now_s));
+        if let Some(tr) = track.as_ref().filter(|tr| tr.age_s(now_s) > DROP_S) {
+            let k = lost.keys().filter(|k| k.starts_with(cid.as_str())).count();
+            lost.insert(if k == 0 { cid.clone() } else { format!("{cid}#{k}") }, dropped(tr));
+        }
         if input.stats {
             let v = c.motion.vel(0.0);
             stats.push(match &f {
@@ -257,11 +295,11 @@ pub fn simulate(cat: &SensorCatalog, input: &TrackerIn, now_s: f64) -> Result<(B
             facts.insert(cid.clone(), f);
         }
     }
-    let mut out = json!({"contacts": input.contacts.len(), "tracked": tracked});
+    let mut out = json!({"contacts": input.contacts.len(), "tracked": tracked, "lost": lost.keys().collect::<Vec<_>>()});
     if input.stats {
         out["per_contact"] = Value::Array(stats);
     }
-    Ok((facts, out))
+    Ok(Simulated { facts, lost, stats: out })
 }
 
 #[cfg(test)]
