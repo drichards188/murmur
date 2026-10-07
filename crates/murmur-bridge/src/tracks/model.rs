@@ -4,19 +4,26 @@
 //! seen for a minute is visibly loose and an engagement check (Phase E) can refuse it.
 //!
 //! Estimation: an interacting multiple model filter (IMM, Blom and Bar-Shalom) of two
-//! constant-velocity Kalman filters per horizontal axis, one for a contact keeping its course
-//! and speed (little process noise) and one for a manoeuvring contact (much more), switching
-//! as a Markov chain ([`process_noise`], [`SOJOURN_S`]). Every detection is a position
-//! measurement with its sensor's 1-sigma and an AIS report's course and speed a velocity
-//! measurement; each fix weighs the two models by how well each predicted it, and the
-//! estimate is their mixture, whose covariance widens while they disagree (a turn, a sprint,
-//! a stop). The reported covariance is that widened by the recent fixes' consistency
-//! ([`REPORT_NIS`]): fixes farther off than predicted mean the filter has not yet taken in a
-//! manoeuvre. The 1-sigma is checked against the simulation's truth on seeds and motions it
-//! was not tuned on (`tracks::tests::calib`). Until rules 9's review the filter was a scalar
-//! update with a velocity smoothed from fixes (too loose holding, too tight after a
-//! manoeuvre); the first Kalman filter of that review had one model, honest on the motions it
-//! was tuned to and overconfident on a zigzag or a sprint and stop.
+//! constant-velocity Kalman filters of the horizontal state (position and velocity, east and
+//! north, with their full covariance), one for a contact keeping its course and speed (little
+//! process noise) and one for a manoeuvring contact (much more), switching as a Markov chain
+//! ([`process_noise`], [`SOJOURN_S`]). Every detection is a position measurement with its
+//! sensor's 1-sigma, an AIS report's course and speed a velocity measurement, and a 2D radar's
+//! fix of an aircraft (it measured the slant range and bearing, not the height) the bearing
+//! line it lies on, no farther out than the slant range ([`Model::bound_on_line`]): one radar
+//! alone does not range an aircraft, and the track never invents its height. Each fix weighs
+//! the two models by how well each predicted it, and the estimate is their mixture, whose
+//! covariance widens while they disagree (a turn, a sprint, a stop). The reported covariance is
+//! that widened by the recent fixes' consistency ([`REPORT_NIS`]): fixes farther off than
+//! predicted mean the filter has not yet taken in a manoeuvre; the reported 1-sigma is its
+//! least certain direction's. The 1-sigma is checked against the simulation's truth on seeds
+//! and motions it was not tuned on (`tracks::tests::calib`, and for aircraft
+//! `tracks::tests::calib_air`). Until rules 9's review the filter was a scalar update with a
+//! velocity smoothed from fixes (too loose holding, too tight after a manoeuvre); the first
+//! Kalman filter of that review had one model, honest on the motions it was tuned to and
+//! overconfident on a zigzag or a sprint and stop; until murmur-oho each axis had its own
+//! covariance and an aircraft's 2D radar fix was a position (the sensing model placed it at
+//! the aircraft's true ground range).
 //!
 //! Each fix is dated by the clock of the truth it was drawn from (`Detection::measured_t`),
 //! not by its arrival: on this host the bridge's wall clock steps back about a second every
@@ -56,7 +63,9 @@ pub const STALE_S: f64 = 10.0;
 const AIS_CONF: f64 = 0.85;
 /// Dwell credited per detection is capped at this (a 1 Hz sensor gives 1 s a hit).
 const MAX_DWELL_PER_HIT_S: f64 = 2.0;
-/// A velocity estimate is shown (and given to decisions) once its 1-sigma is below this.
+/// A velocity estimate is shown (and given to decisions) once its 1-sigma, in its least
+/// certain direction, is below this. Judged for aircraft too against the truth
+/// (`tracks::tests::calib_air`): at 3.5 a route's velocities came with a normalized error over 2.
 const VEL_KNOWN_SIGMA_MPS: f64 = 3.0;
 /// An AIS report's course and speed over ground, 1-sigma per axis, m/s.
 const AIS_VEL_SIGMA_MPS: f64 = 0.3;
@@ -64,12 +73,19 @@ const AIS_VEL_SIGMA_MPS: f64 = 0.3;
 /// The two models' white-noise acceleration by domain (spectral density, m^2/s^3): steady
 /// (what a contact keeping its course and speed still does that the constant-velocity model
 /// does not know) and manoeuvring (a turn, a sprint, a stop). Surface values tuned on the
-/// calibration test's tuning sets (`tracks::tests::calib`); air, ground and subsurface scaled
-/// from the single-model values by the same factors (a fifth, and forty times), not checked
-/// against truth.
+/// calibration test's tuning sets (`tracks::tests::calib`); air values on the air tuning set
+/// (`tracks::tests::calib_air`: they were 0.4 and 80, scaled from the surface's, and gave a
+/// straight-flying aircraft seen by radar and EO/IR a velocity 15% of the time; the most
+/// velocity with every class honest and a velocity on a route within a normalized error of 2);
+/// ground and subsurface scaled from the single-model values by the same factors (a fifth,
+/// and forty times), not checked against truth.
 pub fn process_noise(domain: Domain) -> [f64; 2] {
+    #[cfg(test)]
+    if let (Domain::Air, Some(t)) = (domain, AIR_TUNE.get()) {
+        return [t[0], t[1]];
+    }
     match domain {
-        Domain::Air => [0.4, 80.0],
+        Domain::Air => [0.2, 20.0],
         Domain::Surface => [0.01, 2.0],
         Domain::Subsurface => [0.002, 0.4],
         Domain::Ground => [0.06, 12.0],
@@ -80,6 +96,14 @@ pub fn process_noise(domain: Domain) -> [f64; 2] {
 /// Markov chain between them (a manoeuvre every two minutes or so, lasting half a minute).
 pub const SOJOURN_S: [f64; 2] = [120.0, 30.0];
 
+#[cfg(test)]
+thread_local! {
+    /// The air calibration's tuning grid (`tests::calib_air`): the air constants overridden on
+    /// this thread (steady and manoeuvring white-noise acceleration, the velocity gate, the
+    /// initial velocity sigma).
+    pub static AIR_TUNE: std::cell::Cell<Option<[f64; 4]>> = const { std::cell::Cell::new(None) };
+}
+
 /// A fix this far from the manoeuvring model's prediction (its innovation's normalized
 /// square, chi-square with 2 degrees of freedom, 99%) widens that model's prior by the
 /// innovation's own size before the update: the contact did something neither model
@@ -87,6 +111,17 @@ pub const SOJOURN_S: [f64; 2] = [120.0, 30.0];
 /// model's weight is judged on its prediction as it was; the steady model keeps its own (an
 /// outlier fix does not drag the estimate).
 const NIS_JUMP: f64 = 9.21;
+/// The same for a measurement of one dimension (a 2D radar's bearing line): chi-square with 1
+/// degree of freedom, 99%.
+const NIS_JUMP_1: f64 = 6.63;
+/// A 2D radar's slant range bounds an aircraft's ground range from above, give or take this
+/// many of the radar's own sigmas.
+const SLANT_SIGMAS: f64 = 2.0;
+/// A track that knows an aircraft's range only from a 2D radar is at the middle of the bearing
+/// segment the slant range bounds, with a 1-sigma of the segment's length over this: its ends
+/// are 1.5 sigmas out (a uniform spread's own sigma would put them at 1.73, where a low
+/// aircraft, whose slant range is about its ground range, always is).
+const SEGMENT_SIGMAS: f64 = 3.0;
 
 /// The reported covariance is the filter's widened by the recent fixes' consistency: their
 /// normalized distance from the mixture's prediction (expected 2), averaged with this weight
@@ -140,6 +175,10 @@ const MAX_FIX_INTERVAL_S: f64 = 120.0;
 /// A new track's velocity is unknown within this, 1-sigma per axis (about half the domain's
 /// top speed).
 fn initial_vel_sigma(domain: Domain) -> f64 {
+    #[cfg(test)]
+    if let (Domain::Air, Some(t)) = (domain, AIR_TUNE.get()) {
+        return t[3];
+    }
     match domain {
         Domain::Air => 60.0,
         Domain::Surface => 10.0,
@@ -148,50 +187,147 @@ fn initial_vel_sigma(domain: Domain) -> f64 {
     }
 }
 
-/// The filter's covariance for one horizontal axis (the same for both: they are updated
-/// alike): position variance, position-velocity covariance, velocity variance.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct AxisCov {
-    pub pp: f64,
-    pub pv: f64,
-    pub vv: f64,
+/// A velocity estimate is shown (and given to decisions) once its 1-sigma, in its least
+/// certain direction, is below this, m/s.
+fn vel_known_sigma(domain: Domain) -> f64 {
+    #[cfg(test)]
+    if let (Domain::Air, Some(t)) = (domain, AIR_TUNE.get()) {
+        return t[2];
+    }
+    let _ = domain;
+    VEL_KNOWN_SIGMA_MPS
 }
 
-impl AxisCov {
-    /// Carried `dt` seconds forward with white-noise acceleration `q`.
-    pub fn predict(self, dt: f64, q: f64) -> AxisCov {
-        AxisCov {
-            pp: self.pp + 2.0 * dt * self.pv + dt * dt * self.vv + q * dt.powi(3) / 3.0,
-            pv: self.pv + dt * self.vv + q * dt * dt / 2.0,
-            vv: self.vv + q * dt,
+/// The state of one model: east and north of the track's estimate (m), velocity east and
+/// north (m/s).
+type V4 = [f64; 4];
+/// Its covariance. Full, not per axis: a 2D radar's fix of an aircraft measures one direction
+/// only (its bearing line), which couples east and north.
+type M4 = [[f64; 4]; 4];
+
+fn dot(a: V4, b: V4) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
+}
+
+fn mat_vec(m: &M4, v: V4) -> V4 {
+    [dot(m[0], v), dot(m[1], v), dot(m[2], v), dot(m[3], v)]
+}
+
+/// The larger eigenvalue of the symmetric 2x2 [[a, b], [b, c]]: a covariance's variance in its
+/// least certain direction (for one that is the same every way, `a`).
+fn var_max(a: f64, b: f64, c: f64) -> f64 {
+    0.5 * (a + c) + (0.25 * (a - c) * (a - c) + b * b).sqrt()
+}
+
+/// A position block's and a velocity block's variance in their least certain direction.
+fn pos_var(c: &M4) -> f64 {
+    var_max(c[0][0], c[0][1], c[1][1])
+}
+
+fn vel_var(c: &M4) -> f64 {
+    var_max(c[2][2], c[2][3], c[3][3])
+}
+
+/// The covariance carried `dt` seconds forward with white-noise acceleration `q` on each axis
+/// (constant velocity: `F P F' + Q`).
+fn predict_cov(c: &M4, dt: f64, q: f64) -> M4 {
+    let mut fp = *c;
+    for i in 0..2 {
+        for j in 0..4 {
+            fp[i][j] = c[i][j] + dt * c[i + 2][j];
         }
     }
-
-    fn scaled(self, k: f64) -> AxisCov {
-        AxisCov {
-            pp: self.pp * k,
-            pv: self.pv * k,
-            vv: self.vv * k,
+    let mut out = fp;
+    for row in &mut out {
+        for j in 0..2 {
+            row[j] += dt * row[j + 2];
         }
     }
+    let (q3, q2, q1) = (q * dt.powi(3) / 3.0, q * dt * dt / 2.0, q * dt);
+    for a in 0..2 {
+        out[a][a] += q3;
+        out[a][a + 2] += q2;
+        out[a + 2][a] += q2;
+        out[a + 2][a + 2] += q1;
+    }
+    out
+}
 
-    /// Plus the outer product of a (position, velocity) difference: a mixture's spread.
-    fn spread(self, w: f64, dp: f64, dv: f64) -> AxisCov {
-        AxisCov {
-            pp: self.pp + w * dp * dp,
-            pv: self.pv + w * dp * dv,
-            vv: self.vv + w * dv * dv,
-        }
+/// One linear measurement of the state: one or two rows of `H` (`m`), each with its value and
+/// its variance (independent).
+#[derive(Debug, Clone, Copy)]
+struct Meas {
+    h: [V4; 2],
+    z: [f64; 2],
+    r: [f64; 2],
+    m: usize,
+}
+
+impl Meas {
+    /// A position fix (east, north m) with variance `r` each way.
+    fn position(z: [f64; 2], r: f64) -> Meas {
+        Meas { h: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]], z, r: [r, r], m: 2 }
+    }
+
+    /// A velocity (an AIS report's course and speed over ground) with variance `r` each way.
+    fn velocity(z: [f64; 2], r: f64) -> Meas {
+        Meas { h: [[0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]], z, r: [r, r], m: 2 }
+    }
+
+    /// The contact is on a line: its offset across it (along the unit `u`) is `z`, give or take
+    /// `r` (a 2D radar's bearing to an aircraft whose height it did not measure).
+    fn line(u: [f64; 2], z: f64, r: f64) -> Meas {
+        Meas { h: [[u[0], u[1], 0.0, 0.0], [0.0; 4]], z: [z, 0.0], r: [r, 0.0], m: 1 }
     }
 }
 
-/// One of the filter's two models: position east and north of the track's estimate (m),
-/// velocity east and north (m/s), the covariance per axis, and the model's probability.
+/// A measurement against a prediction: its innovation `y`, `S^-1`, `P H'` (by column), the
+/// normalized square (NIS) and `ln det S`.
+struct Innovation {
+    y: [f64; 2],
+    sinv: [[f64; 2]; 2],
+    ph: [V4; 2],
+    nis: f64,
+    logdet: f64,
+}
+
+fn innovate(x: &V4, c: &M4, me: &Meas) -> Option<Innovation> {
+    let m = me.m;
+    let (mut y, mut ph, mut s) = ([0.0; 2], [[0.0; 4]; 2], [[0.0; 2]; 2]);
+    for (i, h) in me.h.iter().enumerate().take(m) {
+        y[i] = me.z[i] - dot(*h, *x);
+        ph[i] = mat_vec(c, *h);
+    }
+    for (i, row) in s.iter_mut().enumerate().take(m) {
+        for (j, v) in row.iter_mut().enumerate().take(m) {
+            *v = dot(me.h[i], ph[j]);
+        }
+        row[i] += me.r[i];
+    }
+    let (sinv, det) = if m == 1 {
+        ([[1.0 / s[0][0], 0.0], [0.0, 0.0]], s[0][0])
+    } else {
+        let det = s[0][0] * s[1][1] - s[0][1] * s[1][0];
+        ([[s[1][1] / det, -s[0][1] / det], [-s[1][0] / det, s[0][0] / det]], det)
+    };
+    if !(det > 0.0 && det.is_finite()) {
+        return None;
+    }
+    let mut nis = 0.0;
+    for i in 0..m {
+        for j in 0..m {
+            nis += y[i] * sinv[i][j] * y[j];
+        }
+    }
+    Some(Innovation { y, sinv, ph, nis, logdet: det.ln() })
+}
+
+/// One of the filter's two models: its state (east and north of the track's estimate, m;
+/// velocity, m/s), the state's covariance, and the model's probability.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Model {
-    x: [f64; 4],
-    ce: AxisCov,
-    cn: AxisCov,
+    x: V4,
+    c: M4,
     p: f64,
 }
 
@@ -200,95 +336,112 @@ impl Model {
     fn predicted(&self, dt: f64, q: f64) -> Model {
         Model {
             x: [self.x[0] + self.x[2] * dt, self.x[1] + self.x[3] * dt, self.x[2], self.x[3]],
-            ce: self.ce.predict(dt, q),
-            cn: self.cn.predict(dt, q),
+            c: predict_cov(&self.c, dt, q),
             p: self.p,
         }
     }
 
-    /// A position measurement `z` (east, north m) with variance `r` per axis: the update, and
-    /// the measurement's log-likelihood under this model's prediction as it was.
-    fn update_position(&mut self, z: [f64; 2], r: f64, jump: bool) -> f64 {
-        let (ie, inn) = (z[0] - self.x[0], z[1] - self.x[1]);
-        let (se, sn) = (self.ce.pp + r, self.cn.pp + r);
-        let nis = ie * ie / se + inn * inn / sn;
-        let loglik = -0.5 * nis - (2.0 * std::f64::consts::PI).ln() - 0.5 * (se * sn).ln();
-        if jump && nis > NIS_JUMP {
-            let k = nis / 2.0;
-            self.ce = self.ce.scaled(k);
-            self.cn = self.cn.scaled(k);
+    /// The Kalman update with `me`, and the measurement's log-likelihood under this model's
+    /// prediction as it was. `jump`: a measurement outside the model's 99% widens its prior by
+    /// the innovation's own size first ([`NIS_JUMP`]).
+    fn update(&mut self, me: &Meas, jump: bool) -> f64 {
+        let Some(mut inn) = innovate(&self.x, &self.c, me) else {
+            return 0.0;
+        };
+        let m = me.m as f64;
+        let loglik = -0.5 * inn.nis - 0.5 * m * (std::f64::consts::TAU).ln() - 0.5 * inn.logdet;
+        let limit = if me.m == 1 { NIS_JUMP_1 } else { NIS_JUMP };
+        if jump && inn.nis > limit {
+            let k = inn.nis / m;
+            for row in &mut self.c {
+                for v in row.iter_mut() {
+                    *v *= k;
+                }
+            }
+            match innovate(&self.x, &self.c, me) {
+                Some(again) => inn = again,
+                None => return loglik,
+            }
         }
-        let (pe, ve) = kalman_position(&mut self.ce, ie, r);
-        let (pn, vn) = kalman_position(&mut self.cn, inn, r);
-        self.x = [self.x[0] + pe, self.x[1] + pn, self.x[2] + ve, self.x[3] + vn];
+        // K = P H' S^-1; x += K y; P -= K H P
+        let mut k = [[0.0; 2]; 4];
+        for (a, ka) in k.iter_mut().enumerate() {
+            for (j, kaj) in ka.iter_mut().enumerate().take(me.m) {
+                *kaj = (0..me.m).map(|i| inn.ph[i][a] * inn.sinv[i][j]).sum();
+            }
+        }
+        for ((xa, ca), ka) in self.x.iter_mut().zip(self.c.iter_mut()).zip(k) {
+            *xa += (0..me.m).map(|j| ka[j] * inn.y[j]).sum::<f64>();
+            for (b, cab) in ca.iter_mut().enumerate() {
+                *cab -= (0..me.m).map(|j| ka[j] * inn.ph[j][b]).sum::<f64>();
+            }
+        }
+        for a in 0..4 {
+            for b in a + 1..4 {
+                let v = 0.5 * (self.c[a][b] + self.c[b][a]);
+                self.c[a][b] = v;
+                self.c[b][a] = v;
+            }
+        }
         loglik
     }
 
-    /// A velocity measurement (an AIS report's course and speed over ground): the update and
-    /// its log-likelihood.
-    fn update_velocity(&mut self, z: [f64; 2], r: f64) -> f64 {
-        let (ie, inn) = (z[0] - self.x[2], z[1] - self.x[3]);
-        let (se, sn) = (self.ce.vv + r, self.cn.vv + r);
-        let loglik = -0.5 * (ie * ie / se + inn * inn / sn)
-            - (2.0 * std::f64::consts::PI).ln()
-            - 0.5 * (se * sn).ln();
-        let (pe, ve) = kalman_velocity(&mut self.ce, ie, r);
-        let (pn, vn) = kalman_velocity(&mut self.cn, inn, r);
-        self.x = [self.x[0] + pe, self.x[1] + pn, self.x[2] + ve, self.x[3] + vn];
-        loglik
+    /// What a 2D radar's slant range says besides the bearing: the contact is on the bearing
+    /// line from the radar at `o` (unit direction `w`), at most `hi` metres out (its ground
+    /// range is no more than its slant range, whatever its height). Unless something else
+    /// ranged it (this model's spread along the line under half the segment's,
+    /// [`SEGMENT_SIGMAS`]: another sensor's fixes, or another radar's bearing across this one),
+    /// it is on the segment, at its middle give or take the segment's spread, and its velocity
+    /// is unknown again (`vel_sigma` each way, nothing correlated): a bearing from one radar
+    /// does not range it, and a velocity from bearings at a range it does not know would be
+    /// wrong by as much as the range is. Otherwise its estimate is only kept on the segment.
+    fn bound_on_line(&mut self, o: [f64; 2], w: [f64; 2], hi: f64, vel_sigma: f64) {
+        let h = [w[0], w[1], 0.0, 0.0];
+        let ph = mat_vec(&self.c, h);
+        let var = dot(h, ph);
+        let mu = dot(h, self.x) - (w[0] * o[0] + w[1] * o[1]);
+        let spread = hi / SEGMENT_SIGMAS;
+        if var > 0.25 * spread * spread {
+            let dx = 0.5 * hi - mu;
+            self.x[0] += w[0] * dx;
+            self.x[1] += w[1] * dx;
+            let u = [w[1], -w[0]];
+            let across = u[0] * u[0] * self.c[0][0] + 2.0 * u[0] * u[1] * self.c[0][1] + u[1] * u[1] * self.c[1][1];
+            let along = spread * spread;
+            let vv = vel_sigma * vel_sigma;
+            self.c = [
+                [along * w[0] * w[0] + across * u[0] * u[0], along * w[0] * w[1] + across * u[0] * u[1], 0.0, 0.0],
+                [along * w[0] * w[1] + across * u[0] * u[1], along * w[1] * w[1] + across * u[1] * u[1], 0.0, 0.0],
+                [0.0, 0.0, vv, 0.0],
+                [0.0, 0.0, 0.0, vv],
+            ];
+        } else if var > 0.0 && !(0.0..=hi).contains(&mu) {
+            let shift = (mu.clamp(0.0, hi) - mu) / var;
+            for (xa, pa) in self.x.iter_mut().zip(ph) {
+                *xa += pa * shift;
+            }
+        }
     }
 }
 
-/// One axis's Kalman update with a position innovation `i` of variance `r`: the corrections
-/// to position and velocity; the covariance updated in place.
-fn kalman_position(c: &mut AxisCov, i: f64, r: f64) -> (f64, f64) {
-    let s = c.pp + r;
-    let (kp, kv) = (c.pp / s, c.pv / s);
-    *c = AxisCov {
-        pp: c.pp - c.pp * c.pp / s,
-        pv: c.pv - c.pp * c.pv / s,
-        vv: c.vv - c.pv * c.pv / s,
-    };
-    (kp * i, kv * i)
-}
-
-/// One axis's Kalman update with a velocity innovation `i` of variance `r`.
-fn kalman_velocity(c: &mut AxisCov, i: f64, r: f64) -> (f64, f64) {
-    let s = c.vv + r;
-    let (kp, kv) = (c.pv / s, c.vv / s);
-    *c = AxisCov {
-        pp: c.pp - c.pv * c.pv / s,
-        pv: c.pv - c.pv * c.vv / s,
-        vv: c.vv - c.vv * c.vv / s,
-    };
-    (kp * i, kv * i)
-}
-
-/// The models' mixture: mean state and covariance per axis (with the spread of their means).
-fn mixture(models: &[Model; 2]) -> ([f64; 4], AxisCov, AxisCov) {
+/// The models' mixture: mean state and covariance (with the spread of their means).
+fn mixture(models: &[Model; 2]) -> (V4, M4) {
     let mut x = [0.0; 4];
     for m in models {
         for (xk, mk) in x.iter_mut().zip(m.x) {
             *xk += m.p * mk;
         }
     }
-    let zero = AxisCov { pp: 0.0, pv: 0.0, vv: 0.0 };
-    let (mut ce, mut cn) = (zero, zero);
+    let mut c = [[0.0; 4]; 4];
     for m in models {
-        ce = AxisCov {
-            pp: ce.pp + m.p * m.ce.pp,
-            pv: ce.pv + m.p * m.ce.pv,
-            vv: ce.vv + m.p * m.ce.vv,
+        let d = [m.x[0] - x[0], m.x[1] - x[1], m.x[2] - x[2], m.x[3] - x[3]];
+        for a in 0..4 {
+            for b in 0..4 {
+                c[a][b] += m.p * (m.c[a][b] + d[a] * d[b]);
+            }
         }
-        .spread(m.p, m.x[0] - x[0], m.x[2] - x[2]);
-        cn = AxisCov {
-            pp: cn.pp + m.p * m.cn.pp,
-            pv: cn.pv + m.p * m.cn.pv,
-            vv: cn.vv + m.p * m.cn.vv,
-        }
-        .spread(m.p, m.x[1] - x[1], m.x[3] - x[3]);
     }
-    (x, ce, cn)
+    (x, c)
 }
 
 /// The IMM's interaction over `dt` seconds: each model's prior is the mixture of both,
@@ -305,18 +458,38 @@ fn interact(models: &[Model; 2], dt: f64) -> [Model; 2] {
             continue;
         }
         let w = [trans[0][j] * models[0].p / cbar, trans[1][j] * models[1].p / cbar];
-        let mixed = mixture(&[
-            Model { p: w[0], ..models[0] },
-            Model { p: w[1], ..models[1] },
-        ]);
-        out[j] = Model {
-            x: mixed.0,
-            ce: mixed.1,
-            cn: mixed.2,
-            p: cbar,
-        };
+        let (x, c) = mixture(&[Model { p: w[0], ..models[0] }, Model { p: w[1], ..models[1] }]);
+        out[j] = Model { x, c, p: cbar };
     }
     out
+}
+
+/// A 2D radar's fix of an aircraft, in metres east and north of the track's estimate: the
+/// radar at `o`, the unit direction `w` of its bearing, its plot `rho` metres out (the slant
+/// range).
+#[derive(Debug, Clone, Copy)]
+struct Slant {
+    o: [f64; 2],
+    w: [f64; 2],
+    rho: f64,
+}
+
+impl Slant {
+    /// From the fix at `z` (east, north m) and the radar at `o`.
+    fn new(o: [f64; 2], z: [f64; 2]) -> Slant {
+        let (we, wn) = (z[0] - o[0], z[1] - o[1]);
+        let rho = we.hypot(wn);
+        let w = if rho > 1e-6 { [we / rho, wn / rho] } else { [0.0, 1.0] };
+        Slant { o, w, rho }
+    }
+
+    /// The bearing as a measurement: the contact on the line through the radar along `w`, its
+    /// offset across it the radar's own error at its plot (at the contact's ground range,
+    /// which is shorter, it is smaller).
+    fn line(&self, r: f64) -> Meas {
+        let u = [self.w[1], -self.w[0]];
+        Meas::line(u, u[0] * self.o[0] + u[1] * self.o[1], r)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -408,8 +581,8 @@ pub struct Track {
     /// the filter's two models at `last_seen_t`, relative to `lat`, `lon` (their mixture)
     models: [Model; 2],
     /// the velocity every `VEL_SAMPLE_S` over `MANOEUVRE_MEMORY_S`, while known: (wall s,
-    /// east, north, its variance per axis)
-    vel_hist: VecDeque<(f64, f64, f64, f64)>,
+    /// east, north, its covariance: east, east-north, north)
+    vel_hist: VecDeque<(f64, f64, f64, [f64; 3])>,
     /// the estimate's position every `VEL_SAMPLE_S`: (wall s, lat, lon), for the average
     /// velocity over `MEAN_WINDOW_S`
     pos_hist: VecDeque<(f64, f64, f64)>,
@@ -492,27 +665,47 @@ pub struct Identity {
 
 impl Track {
     pub fn new(id: String, no: u64, d: &Detection, now: f64) -> Track {
+        let r = d.sigma_m * d.sigma_m;
+        // a 2D radar's fix of an aircraft says only that it is on the bearing line within the
+        // slant range: the track starts in the middle of that segment, with its spread
+        // (`Model::bound_on_line`)
+        let (lat, lon, pos) = match d.slant_from {
+            Some((olat, olon)) => {
+                let m_per_lon = 111_320.0 * olat.to_radians().cos();
+                let s = Slant::new([0.0, 0.0], [(d.lon - olon) * m_per_lon, (d.lat - olat) * 111_320.0]);
+                let hi = s.rho + SLANT_SIGMAS * d.sigma_m;
+                let a = (hi / SEGMENT_SIGMAS).powi(2);
+                let (u, w) = ([s.w[1], -s.w[0]], s.w);
+                (
+                    olat + 0.5 * hi * w[1] / 111_320.0,
+                    olon + 0.5 * hi * w[0] / m_per_lon,
+                    [
+                        [a * w[0] * w[0] + r * u[0] * u[0], a * w[0] * w[1] + r * u[0] * u[1]],
+                        [a * w[0] * w[1] + r * u[0] * u[1], a * w[1] * w[1] + r * u[1] * u[1]],
+                    ],
+                )
+            }
+            None => (d.lat, d.lon, [[r, 0.0], [0.0, r]]),
+        };
+        let vv = initial_vel_sigma(d.domain).powi(2);
         let mut t = Track {
             id,
             no,
             domain: d.domain,
-            lat: d.lat,
-            lon: d.lon,
+            lat,
+            lon,
             alt_m: d.alt_m,
             alt_t: None,
             vel: None,
-            models: [0, 1].map(|j| {
-                let c = AxisCov {
-                    pp: d.sigma_m * d.sigma_m,
-                    pv: 0.0,
-                    vv: initial_vel_sigma(d.domain).powi(2),
-                };
-                Model {
-                    x: [0.0; 4],
-                    ce: c,
-                    cn: c,
-                    p: SOJOURN_S[j] / (SOJOURN_S[0] + SOJOURN_S[1]),
-                }
+            models: [0, 1].map(|j| Model {
+                x: [0.0; 4],
+                c: [
+                    [pos[0][0], pos[0][1], 0.0, 0.0],
+                    [pos[1][0], pos[1][1], 0.0, 0.0],
+                    [0.0, 0.0, vv, 0.0],
+                    [0.0, 0.0, 0.0, vv],
+                ],
+                p: SOJOURN_S[j] / (SOJOURN_S[0] + SOJOURN_S[1]),
             }),
             vel_hist: VecDeque::new(),
             pos_hist: VecDeque::new(),
@@ -520,7 +713,13 @@ impl Track {
             nis_avg: 2.0,
             inflate: 1.0,
             fix_t: d.measured_t,
-            sigma_m: d.sigma_m,
+            sigma_m: pos_var(&[
+                [pos[0][0], pos[0][1], 0.0, 0.0],
+                [pos[1][0], pos[1][1], 0.0, 0.0],
+                [0.0; 4],
+                [0.0; 4],
+            ])
+            .sqrt(),
             confidence: 0.0,
             first_seen_t: now,
             last_seen_t: now,
@@ -544,8 +743,8 @@ impl Track {
             for m in &mut self.models {
                 m.x[2] = e;
                 m.x[3] = n;
-                m.ce.vv = AIS_VEL_SIGMA_MPS * AIS_VEL_SIGMA_MPS;
-                m.cn.vv = AIS_VEL_SIGMA_MPS * AIS_VEL_SIGMA_MPS;
+                m.c[2][2] = AIS_VEL_SIGMA_MPS * AIS_VEL_SIGMA_MPS;
+                m.c[3][3] = AIS_VEL_SIGMA_MPS * AIS_VEL_SIGMA_MPS;
             }
         }
         self.after_update(d, now);
@@ -566,21 +765,23 @@ impl Track {
             .map(|(e, n)| e.atan2(n).to_degrees().rem_euclid(360.0))
     }
 
-    /// 1-sigma horizontal uncertainty (per axis) at `now`: the filter's, each model carried
-    /// forward with its own process noise, and their mixture.
+    /// 1-sigma horizontal uncertainty at `now`, in its least certain direction (the same every
+    /// way unless a 2D radar's bearing line made it longer one way than another): the
+    /// filter's, each model carried forward with its own process noise, and their mixture.
     pub fn sigma_at(&self, now: f64) -> f64 {
         let dt = self.age_s(now);
         let q = process_noise(self.domain);
         let m = [self.models[0].predicted(dt, q[0]), self.models[1].predicted(dt, q[1])];
-        let (_, ce, cn) = mixture(&m);
-        (0.5 * (ce.pp + cn.pp) * self.inflate).sqrt()
+        let (_, c) = mixture(&m);
+        (pos_var(&c) * self.inflate).sqrt()
     }
 
-    /// The 1-sigma error of the velocity estimate per axis, m/s (the calibration test's).
+    /// The 1-sigma error of the velocity estimate in its least certain direction, m/s (the
+    /// calibration test's).
     #[cfg(test)]
     pub fn vel_sigma_mps(&self) -> f64 {
-        let (_, ce, cn) = mixture(&self.models);
-        (0.5 * (ce.vv + cn.vv) * self.inflate).sqrt()
+        let (_, c) = mixture(&self.models);
+        (vel_var(&c) * self.inflate).sqrt()
     }
 
     /// The manoeuvring model's probability now (0..1), for the calibration test.
@@ -633,18 +834,34 @@ impl Track {
             *m = m.predicted(dt, q[j]);
         }
         let r = d.sigma_m * d.sigma_m;
-        let prior_pp: f64 = models.iter().map(|m| m.p * 0.5 * (m.ce.pp + m.cn.pp)).sum();
+        // a position, or, from a 2D radar's fix of an aircraft, its bearing line (the plot is at
+        // the slant range, which the unmeasured height lengthens: only the bearing locates it,
+        // and the slant range bounds how far out along it)
+        let slant = d
+            .slant_from
+            .map(|(olat, olon)| Slant::new([(olon - self.lon) * m_per_lon, (olat - self.lat) * 111_320.0], z));
+        let me = match &slant {
+            Some(s) => s.line(r),
+            None => Meas::position(z, r),
+        };
+        let prior_pp: f64 = models.iter().map(|m| m.p * 0.5 * (m.c[0][0] + m.c[1][1])).sum();
         // the fix against the mixture's prediction: the reported covariance's widening
-        let (x, ce, cn) = mixture(&models);
-        let nis = (z[0] - x[0]).powi(2) / (ce.pp + r) + (z[1] - x[1]).powi(2) / (cn.pp + r);
-        self.nis_avg = (1.0 - REPORT_ALPHA) * self.nis_avg + REPORT_ALPHA * nis;
-        self.inflate = (self.nis_avg / REPORT_NIS).max(1.0);
+        // (expected 2 a fix: a bearing line, of one dimension, counts double)
+        let (x, c) = mixture(&models);
+        if let Some(inn) = innovate(&x, &c, &me) {
+            let nis = inn.nis * 2.0 / me.m as f64;
+            self.nis_avg = (1.0 - REPORT_ALPHA) * self.nis_avg + REPORT_ALPHA * nis;
+            self.inflate = (self.nis_avg / REPORT_NIS).max(1.0);
+        }
         let mut loglik = [0.0; 2];
         for (j, m) in models.iter_mut().enumerate() {
-            loglik[j] = m.update_position(z, r, j == 1);
+            loglik[j] = m.update(&me, j == 1);
             // AIS: the contact's own course and speed over ground, a velocity measurement
             if let Some((ae, an)) = d.velocity_mps {
-                loglik[j] += m.update_velocity([ae, an], AIS_VEL_SIGMA_MPS * AIS_VEL_SIGMA_MPS);
+                loglik[j] += m.update(&Meas::velocity([ae, an], AIS_VEL_SIGMA_MPS * AIS_VEL_SIGMA_MPS), false);
+            }
+            if let Some(s) = &slant {
+                m.bound_on_line(s.o, s.w, s.rho + SLANT_SIGMAS * d.sigma_m, initial_vel_sigma(self.domain));
             }
         }
         // each model's probability by how well it predicted the fix
@@ -657,7 +874,7 @@ impl Track {
             }
         }
         // the mixture is the estimate; the models re-centred on it
-        let (x, _, _) = mixture(&models);
+        let (x, _) = mixture(&models);
         for m in &mut models {
             m.x[0] -= x[0];
             m.x[1] -= x[1];
@@ -686,21 +903,26 @@ impl Track {
         while self.pos_hist.front().is_some_and(|s| now - s.0 > MEAN_WINDOW_S + VEL_SAMPLE_S) {
             self.pos_hist.pop_front();
         }
-        let (x, ce, cn) = mixture(&self.models);
-        self.sigma_m = (0.5 * (ce.pp + cn.pp) * self.inflate).sqrt();
-        let vv = 0.5 * (ce.vv + cn.vv);
-        let known = vv.sqrt() < VEL_KNOWN_SIGMA_MPS;
+        let (x, c) = mixture(&self.models);
+        self.sigma_m = (pos_var(&c) * self.inflate).sqrt();
+        let known = vel_var(&c).sqrt() < vel_known_sigma(self.domain);
         self.vel = known.then_some((x[2], x[3]));
         if !known {
             return;
         }
+        let v = [c[2][2], c[2][3], c[3][3]];
         self.vel_hist.retain(|s| now - s.0 <= MANOEUVRE_MEMORY_S);
         let change = self
             .vel_hist
             .iter()
-            .filter_map(|&(_, ve, vn, svv)| {
-                let dv = (x[2] - ve).hypot(x[3] - vn);
-                (dv > MANOEUVRE_MIN_MPS && dv * dv > MANOEUVRE_CHI2 * (vv + svv)).then_some(dv)
+            .filter_map(|&(_, ve, vn, sv)| {
+                let (de, dn) = (x[2] - ve, x[3] - vn);
+                let dv = de.hypot(dn);
+                // the change against both estimates' errors (chi-square, two dimensions)
+                let (a, b, cc) = (v[0] + sv[0], v[1] + sv[1], v[2] + sv[2]);
+                let det = a * cc - b * b;
+                let d2 = if det > 0.0 { (cc * de * de - 2.0 * b * de * dn + a * dn * dn) / det } else { 0.0 };
+                (dv > MANOEUVRE_MIN_MPS && d2 > MANOEUVRE_CHI2).then_some(dv)
             })
             .fold(None, |a: Option<f64>, dv| Some(a.map_or(dv, |a| a.max(dv))));
         // or the manoeuvring model all but certain: the largest change it made, whatever it is
@@ -720,7 +942,7 @@ impl Track {
             self.manoeuvre = Some((now, dv.max(before)));
         }
         if self.vel_hist.back().is_none_or(|s| now - s.0 >= VEL_SAMPLE_S) {
-            self.vel_hist.push_back((now, x[2], x[3], vv));
+            self.vel_hist.push_back((now, x[2], x[3], v));
         }
     }
 
@@ -746,8 +968,8 @@ impl Track {
     /// of its velocity error.
     pub fn manoeuvre_at(&self, t: f64) -> Option<(f64, f64, f64)> {
         let (mt, change) = self.manoeuvre.filter(|(mt, _)| t - mt <= MANOEUVRE_MEMORY_S)?;
-        let (x, ce, cn) = mixture(&self.models);
-        let sv = (0.5 * (ce.vv + cn.vv)).sqrt();
+        let (x, c) = mixture(&self.models);
+        let sv = vel_var(&c).sqrt();
         let fastest = self
             .vel_hist
             .iter()

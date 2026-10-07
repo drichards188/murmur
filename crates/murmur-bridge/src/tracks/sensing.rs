@@ -218,6 +218,10 @@ pub struct Detection {
     /// When the fix was taken, by the clock of the truth it was drawn from (the message's
     /// `t`); None: unknown (the tracker then dates it by its arrival).
     pub measured_t: Option<f64>,
+    /// A 2D radar's plot of an aircraft: where the radar was (lat, lon). The radar measured
+    /// the slant range and the bearing, not the height, so the plot (`lat`, `lon`) is at the
+    /// slant range on the bearing: the aircraft is on that bearing, no farther out.
+    pub slant_from: Option<(f64, f64)>,
 }
 
 /// The AIS message as received: identity only, nothing about its truthfulness.
@@ -400,8 +404,20 @@ pub fn detect(
                     normal(p.seed, p.tick, o.uid, &c.id, salt | 0x1_0000),
                     normal(p.seed, p.tick, o.uid, &c.id, salt | 0x2_0000),
                 );
-                let lat = c.lat + sigma * nn / 111_320.0;
-                let lon = c.lon + sigma * ne / (111_320.0 * c.lat.to_radians().cos());
+                // a 2D radar measures an aircraft's slant range and bearing, not its height: it
+                // plots it at the slant range on the bearing, farther out than it is by the
+                // height's share (its error along the range and across it the same as for a
+                // contact on the water, whose plot is where it is)
+                let slant = s.kind == SensorType::Radar && c.domain == Domain::Air && !s.height;
+                let (lat, lon) = if slant {
+                    let m_per_lon = 111_320.0 * o.lat.to_radians().cos();
+                    let (de, dn) = ((c.lon - o.lon) * m_per_lon, (c.lat - o.lat) * 111_320.0);
+                    let bearing = de.atan2(dn) + sigma * ne / r.max(1.0);
+                    let range = (r + sigma * nn).max(0.0);
+                    (o.lat + range * bearing.cos() / 111_320.0, o.lon + range * bearing.sin() / m_per_lon)
+                } else {
+                    (c.lat + sigma * nn / 111_320.0, c.lon + sigma * ne / (111_320.0 * c.lat.to_radians().cos()))
+                };
                 let wrong = s.kind.classifier().is_some() && misclassified(&c.id, s.kind);
                 // no range, no altitude: a contact on the water ranged by a radar (or
                 // reporting itself over AIS) is at sea level; an aircraft's height comes
@@ -441,6 +457,7 @@ pub fn detect(
                     },
                     domain: c.domain,
                     measured_t: None,
+                    slant_from: slant.then_some((o.lat, o.lon)),
                 });
             }
         }
