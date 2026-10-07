@@ -220,8 +220,8 @@ pub struct Item {
 /// One region of an item at the effect time.
 #[derive(Clone, Debug, Serialize)]
 pub struct Region {
-    /// velocity, mean_velocity, manoeuvre, young, no_velocity (a track); velocity, circling,
-    /// cruise_reach, lost (one of ours).
+    /// velocity, mean_velocity, manoeuvre, young, aircraft, no_velocity (a track); velocity,
+    /// circling, cruise_reach, lost (one of ours).
     pub kind: &'static str,
     pub center: LonLat,
     pub radius_m: f64,
@@ -796,8 +796,7 @@ fn track_item(ctx: &Ctx, id: &str, t: &TrackFacts, s: &TrackStanding, alt: Optio
             engage::top_speed_mps(t.domain)
         ),
         ReachKind::Aircraft => {
-            let v = t.velocity_mps.map_or(0.0, |[e, n]| e.hypot(n));
-            let (from, to, _) = engage::aircraft_reach_m(v + k * ec.track_velocity_sigma(), span, ec);
+            let (from, to, _) = engage::aircraft_reach_m(engage::aircraft_speed_bound(t, ec), span);
             format!(
                 "An aircraft may turn or speed up at any moment, so it could be anywhere within {r} of where it is: from {from:.1} m/s, up to {to:.1} m/s by the effect time ({span:.0} s)."
             )
@@ -849,9 +848,26 @@ fn track_item(ctx: &Ctx, id: &str, t: &TrackFacts, s: &TrackStanding, alt: Optio
         clear_windows: Vec::new(),
         wait: None,
         not_by_waiting: None,
-        other: (blocks && near.kind == ReachKind::NoVelocity).then(|| {
-            "When the tracker has a velocity estimate for it (it gives none while its velocity is uncertain, as in a turn), this reach becomes a prediction along its course.".to_string()
-        }),
+        other: other_remedy(blocks, near.kind, t, ec),
+    }
+}
+
+/// What else would clear a track whose reach blocks. A velocity estimate turns a surface or
+/// ground track's reach into a prediction along its course; an aircraft's (rules 14) it does
+/// not: an aircraft counts anywhere it could turn or speed up to, with a velocity or without.
+fn other_remedy(blocks: bool, kind: ReachKind, t: &TrackFacts, ec: &EngageRules) -> Option<String> {
+    if !blocks {
+        return None;
+    }
+    let aircraft = t.domain == Domain::Air && ec.aircraft_reach();
+    match kind {
+        ReachKind::NoVelocity | ReachKind::Aircraft if aircraft => Some(
+            "A velocity estimate would not clear it: an aircraft counts anywhere it could turn or speed up to, with a velocity or without. What would: its altitude, ranged, above the keep-out's ceiling (a radar that measures height), the effect sooner (the platform closer), or the aircraft farther from the point than it could fly by then.".to_string(),
+        ),
+        ReachKind::NoVelocity => Some(
+            "When the tracker has a velocity estimate for it (it gives none while its velocity is uncertain, as in a turn), this reach becomes a prediction along its course.".to_string(),
+        ),
+        _ => None,
     }
 }
 

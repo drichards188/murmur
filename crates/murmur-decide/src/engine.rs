@@ -3384,11 +3384,17 @@ impl Engine {
     }
 
     /// Rules 12: when the tracker started a track (`first_seen_t`) is a fact only rules 12
-    /// read: an engine of older rules never logs it (a log claiming them can't carry it).
+    /// read; rules 14: its velocity's 1-sigma (`velocity_sigma_mps`) one only rules 14 read: an
+    /// engine of older rules never logs them (a log claiming them can't carry them).
     fn drop_later_facts(&self, w: &mut WorldSnapshot) {
         if !self.policy.rules.followups() {
             for t in w.tracks.values_mut() {
                 t.first_seen_t = None;
+            }
+        }
+        if self.policy.rules.rules_version < crate::rules::AIRCRAFT_REACH_SINCE {
+            for t in w.tracks.values_mut() {
+                t.velocity_sigma_mps = None;
             }
         }
     }

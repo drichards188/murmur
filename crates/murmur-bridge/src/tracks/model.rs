@@ -10,8 +10,11 @@
 //! ([`process_noise`], [`SOJOURN_S`]). Every detection is a position measurement with its
 //! sensor's 1-sigma, an AIS report's course and speed a velocity measurement, and a 2D radar's
 //! fix of an aircraft (it measured the slant range and bearing, not the height) the bearing
-//! line it lies on, no farther out than the slant range ([`Model::bound_on_line`]): one radar
-//! alone does not range an aircraft, and the track never invents its height. Each fix weighs
+//! line it lies on, no farther out than the slant range: one radar alone does not range an
+//! aircraft, so a track no other fix has ranged within [`RANGE_FRESH_S`] is the middle of that
+//! segment with its spread and no velocity ([`Model::reset_to_segment`]), and a ranged one
+//! loses its along-line knowledge as an aircraft turning hard would ([`ALONG_Q`]) once only
+//! bearings come; the track never invents its height. Each fix weighs
 //! the two models by how well each predicted it, and the estimate is their mixture, whose
 //! covariance widens while they disagree (a turn, a sprint, a stop). The reported covariance is
 //! that widened by the recent fixes' consistency ([`REPORT_NIS`]): fixes farther off than
@@ -115,8 +118,36 @@ const NIS_JUMP: f64 = 9.21;
 /// degree of freedom, 99%.
 const NIS_JUMP_1: f64 = 6.63;
 /// A 2D radar's slant range bounds an aircraft's ground range from above, give or take this
-/// many of the radar's own sigmas.
+/// many of the radar's own sigmas (the segment an unranged track is on).
 const SLANT_SIGMAS: f64 = 2.0;
+/// A ranged track's estimate is moved back to the slant range only beyond this many of the
+/// radar's own sigmas (about one fix in 700 of a low aircraft, whose slant range is its ground
+/// range, crosses 3 sigmas by noise: within it, the bound says nothing a Gaussian would not).
+const SLANT_CLAMP_SIGMAS: f64 = 3.0;
+/// A track is ranged (its position along a 2D radar's bearing measured) while a ranging fix
+/// came within this, s: another sensor's position (EO/IR, a radar that measures elevation,
+/// AIS), or another radar's bearing across this one by [`CROSSING_DEG`] or more (the pair
+/// ranged it when the earlier of the two came). The engine's own limit for a ranged altitude
+/// (`track_alt_max_age_s`, 10 s) and the track's stale limit ([`STALE_S`]); a ranging sensor at
+/// the edge of its reach (half its fixes) misses ten in a row once in a thousand. After it the
+/// track is the segment again, whatever its covariance says (the review of 10-07: a covariance
+/// kept small by the steady model's noise let an unranged track slide kilometres along the
+/// line).
+const RANGE_FRESH_S: f64 = 10.0;
+/// Two radars' bearings range an aircraft when they cross by this much or more, degrees.
+const CROSSING_DEG: f64 = 15.0;
+/// A 2D radar's bearings cannot see an aircraft manoeuvre along the line, which only a
+/// position fix measures: once no position fix has come for this long, s, each bearing's
+/// update first widens both models along the line to [`ALONG_Q`] (the models' own noise covers
+/// a fix or two missed: 2, 3 and 4 s gave the same holds on the air tuning sets).
+const ALONG_GRACE_S: f64 = 3.0;
+/// The white-noise acceleration along a 2D radar's bearing line while only bearings come, m^2/s^3:
+/// its 2-sigma covers an aircraft turning at 8 m/s^2 (the air sets' hardest turn is 7.7: 8
+/// deg/s at 55 m/s; the contacts process turns a light aircraft at 6 deg/s) for the 7 s from
+/// [`ALONG_GRACE_S`] to [`RANGE_FRESH_S`], `3 a^2 t / 16`, rounded. Measured on the air tuning
+/// sets (`tracks::tests::calib_air`): at the manoeuvring model's 20 a keep-out 3 s ahead missed
+/// an aircraft in random turns at 8 deg/s by up to 55 m; at 80 and 200 none.
+const ALONG_Q: f64 = 80.0;
 /// A track that knows an aircraft's range only from a 2D radar is at the middle of the bearing
 /// segment the slant range bounds, with a 1-sigma of the segment's length over this: its ends
 /// are 1.5 sigmas out (a uniform spread's own sigma would put them at 1.73, where a low
@@ -386,39 +417,70 @@ impl Model {
         loglik
     }
 
-    /// What a 2D radar's slant range says besides the bearing: the contact is on the bearing
-    /// line from the radar at `o` (unit direction `w`), at most `hi` metres out (its ground
-    /// range is no more than its slant range, whatever its height). Unless something else
-    /// ranged it (this model's spread along the line under half the segment's,
-    /// [`SEGMENT_SIGMAS`]: another sensor's fixes, or another radar's bearing across this one),
-    /// it is on the segment, at its middle give or take the segment's spread, and its velocity
-    /// is unknown again (`vel_sigma` each way, nothing correlated): a bearing from one radar
-    /// does not range it, and a velocity from bearings at a range it does not know would be
-    /// wrong by as much as the range is. Otherwise its estimate is only kept on the segment.
-    fn bound_on_line(&mut self, o: [f64; 2], w: [f64; 2], hi: f64, vel_sigma: f64) {
-        let h = [w[0], w[1], 0.0, 0.0];
-        let ph = mat_vec(&self.c, h);
-        let var = dot(h, ph);
-        let mu = dot(h, self.x) - (w[0] * o[0] + w[1] * o[1]);
+    /// One radar's bearing alone does not range an aircraft: the track is on the bearing line
+    /// from the radar at `o` (unit direction `w`), at most `hi` metres out (its ground range is
+    /// no more than its slant range, whatever its height), at the segment's middle give or take
+    /// its spread ([`SEGMENT_SIGMAS`]), and its velocity is unknown again (none, give or take
+    /// `vel_sigma` each way, nothing correlated): a velocity from bearings at a range it does
+    /// not know would be wrong by as much as the range is (found while fixing the review of
+    /// 10-07: one kept from such bearings, 100 m/s off, carried a small UAS's track 1.9 km in
+    /// 10 s once EO/IR ranged it again). The
+    /// across-line estimate (the bearing's) is kept.
+    fn reset_to_segment(&mut self, o: [f64; 2], w: [f64; 2], hi: f64, vel_sigma: f64) {
+        let mu = self.x[0] * w[0] + self.x[1] * w[1] - (w[0] * o[0] + w[1] * o[1]);
         let spread = hi / SEGMENT_SIGMAS;
-        if var > 0.25 * spread * spread {
-            let dx = 0.5 * hi - mu;
-            self.x[0] += w[0] * dx;
-            self.x[1] += w[1] * dx;
-            let u = [w[1], -w[0]];
-            let across = u[0] * u[0] * self.c[0][0] + 2.0 * u[0] * u[1] * self.c[0][1] + u[1] * u[1] * self.c[1][1];
-            let along = spread * spread;
-            let vv = vel_sigma * vel_sigma;
-            self.c = [
-                [along * w[0] * w[0] + across * u[0] * u[0], along * w[0] * w[1] + across * u[0] * u[1], 0.0, 0.0],
-                [along * w[0] * w[1] + across * u[0] * u[1], along * w[1] * w[1] + across * u[1] * u[1], 0.0, 0.0],
-                [0.0, 0.0, vv, 0.0],
-                [0.0, 0.0, 0.0, vv],
-            ];
-        } else if var > 0.0 && !(0.0..=hi).contains(&mu) {
-            let shift = (mu.clamp(0.0, hi) - mu) / var;
-            for (xa, pa) in self.x.iter_mut().zip(ph) {
-                *xa += pa * shift;
+        let dx = 0.5 * hi - mu;
+        self.x[0] += w[0] * dx;
+        self.x[1] += w[1] * dx;
+        let u = [w[1], -w[0]];
+        let across = u[0] * u[0] * self.c[0][0] + 2.0 * u[0] * u[1] * self.c[0][1] + u[1] * u[1] * self.c[1][1];
+        let along = spread * spread;
+        let vv = vel_sigma * vel_sigma;
+        self.x[2] = 0.0;
+        self.x[3] = 0.0;
+        self.c = [
+            [along * w[0] * w[0] + across * u[0] * u[0], along * w[0] * w[1] + across * u[0] * u[1], 0.0, 0.0],
+            [along * w[0] * w[1] + across * u[0] * u[1], along * w[1] * w[1] + across * u[1] * u[1], 0.0, 0.0],
+            [0.0, 0.0, vv, 0.0],
+            [0.0, 0.0, 0.0, vv],
+        ];
+    }
+
+    /// A ranged track (another sensor's fix, or another radar's bearing across this one, within
+    /// [`RANGE_FRESH_S`]) kept on the segment the slant range bounds: an estimate more than
+    /// [`SLANT_CLAMP_SIGMAS`] of the radar's own error beyond the slant range (or behind the
+    /// radar) is moved to that bound and its spread along the line widened by the move, its
+    /// velocity untouched (a constraint, not a measurement: it says where the aircraft is not).
+    fn keep_on_segment(&mut self, o: [f64; 2], w: [f64; 2], rho: f64, sigma_r: f64) {
+        let mu = self.x[0] * w[0] + self.x[1] * w[1] - (w[0] * o[0] + w[1] * o[1]);
+        let (lo, hi) = (-SLANT_CLAMP_SIGMAS * sigma_r, rho + SLANT_CLAMP_SIGMAS * sigma_r);
+        if (lo..=hi).contains(&mu) {
+            return;
+        }
+        let dx = mu.clamp(lo, hi) - mu;
+        self.x[0] += w[0] * dx;
+        self.x[1] += w[1] * dx;
+        let a = dx * dx;
+        self.c[0][0] += a * w[0] * w[0];
+        self.c[0][1] += a * w[0] * w[1];
+        self.c[1][0] += a * w[0] * w[1];
+        self.c[1][1] += a * w[1] * w[1];
+    }
+
+    /// `q` more white-noise acceleration along the unit `w` over `dt` seconds: what bearings
+    /// cannot see (an aircraft speeding up, slowing or turning toward or away from the radar).
+    fn widen_along(&mut self, w: [f64; 2], q: f64, dt: f64) {
+        if q <= 0.0 || dt <= 0.0 {
+            return;
+        }
+        let (q3, q2, q1) = (q * dt.powi(3) / 3.0, q * dt * dt / 2.0, q * dt);
+        for a in 0..2 {
+            for b in 0..2 {
+                let ww = w[a] * w[b];
+                self.c[a][b] += q3 * ww;
+                self.c[a][b + 2] += q2 * ww;
+                self.c[a + 2][b] += q2 * ww;
+                self.c[a + 2][b + 2] += q1 * ww;
             }
         }
     }
@@ -595,8 +657,15 @@ pub struct Track {
     fix_t: Option<f64>,
     /// the reported covariance's factor over the filter's (1 or more, `REPORT_NIS`)
     inflate: f64,
+    /// when a fix last ranged it (a position, or another radar's bearing across a 2D radar's),
+    /// by the fixes' clock
+    ranged_t: Option<f64>,
+    /// when a position fix last came (not a 2D radar's bearing), by the fixes' clock
+    fixed_t: Option<f64>,
+    /// each observer's last 2D radar bearing of it: (uid, when, unit direction east, north)
+    bearings: Vec<(u64, f64, [f64; 2])>,
 
-    /// 1 sigma at `last_seen_t` (per axis, the root mean of the two axes' variances)
+    /// 1 sigma at `last_seen_t`, in its least certain direction
     pub sigma_m: f64,
     pub confidence: f64,
     pub first_seen_t: f64,
@@ -668,7 +737,7 @@ impl Track {
         let r = d.sigma_m * d.sigma_m;
         // a 2D radar's fix of an aircraft says only that it is on the bearing line within the
         // slant range: the track starts in the middle of that segment, with its spread
-        // (`Model::bound_on_line`)
+        // (`Model::reset_to_segment`)
         let (lat, lon, pos) = match d.slant_from {
             Some((olat, olon)) => {
                 let m_per_lon = 111_320.0 * olat.to_radians().cos();
@@ -713,6 +782,9 @@ impl Track {
             nis_avg: 2.0,
             inflate: 1.0,
             fix_t: d.measured_t,
+            ranged_t: None,
+            fixed_t: None,
+            bearings: Vec::new(),
             sigma_m: pos_var(&[
                 [pos[0][0], pos[0][1], 0.0, 0.0],
                 [pos[1][0], pos[1][1], 0.0, 0.0],
@@ -739,6 +811,18 @@ impl Track {
 
     /// The first detection: position as measured, velocity unknown (AIS gives one).
     fn first_fix(&mut self, d: &Detection, now: f64) {
+        let t_fix = d.measured_t.unwrap_or(now);
+        match d.slant_from {
+            Some((olat, olon)) => {
+                let m_per_lon = 111_320.0 * olat.to_radians().cos();
+                let s = Slant::new([0.0, 0.0], [(d.lon - olon) * m_per_lon, (d.lat - olat) * 111_320.0]);
+                self.bearings.push((d.uid, t_fix, s.w));
+            }
+            None => {
+                self.ranged_t = Some(t_fix);
+                self.fixed_t = Some(t_fix);
+            }
+        }
         if let Some((e, n)) = d.velocity_mps {
             for m in &mut self.models {
                 m.x[2] = e;
@@ -776,9 +860,8 @@ impl Track {
         (pos_var(&c) * self.inflate).sqrt()
     }
 
-    /// The 1-sigma error of the velocity estimate in its least certain direction, m/s (the
-    /// calibration test's).
-    #[cfg(test)]
+    /// The 1-sigma error of the velocity estimate in its least certain direction, m/s, as
+    /// reported (widened by the fixes' consistency, as the position's is).
     pub fn vel_sigma_mps(&self) -> f64 {
         let (_, c) = mixture(&self.models);
         (vel_var(&c) * self.inflate).sqrt()
@@ -844,6 +927,42 @@ impl Track {
             Some(s) => s.line(r),
             None => Meas::position(z, r),
         };
+        // ranged: a position fix now or within RANGE_FRESH_S, or another radar's bearing across
+        // this one within it (the two lines cross: the filter's own update triangulates)
+        let t_fix = d.measured_t.unwrap_or(now);
+        let fresh = |t: f64| (0.0..=RANGE_FRESH_S).contains(&(t_fix - t));
+        let ranged = match &slant {
+            None => {
+                self.ranged_t = Some(t_fix);
+                self.fixed_t = Some(t_fix);
+                true
+            }
+            Some(s) => {
+                // another radar's bearing across this one ranged it when it came (the filter
+                // folded it in then): the pair triangulates
+                let crossing = CROSSING_DEG.to_radians().sin();
+                let crossed = self
+                    .bearings
+                    .iter()
+                    .filter(|&&(uid, t, w)| uid != d.uid && fresh(t) && (w[0] * s.w[1] - w[1] * s.w[0]).abs() >= crossing)
+                    .map(|b| b.1)
+                    .fold(None, |a: Option<f64>, t| Some(a.map_or(t, |a| a.max(t))));
+                if let Some(t) = crossed {
+                    self.ranged_t = Some(self.ranged_t.map_or(t, |r| r.max(t)));
+                }
+                self.bearings.retain(|b| b.0 != d.uid && fresh(b.1));
+                self.bearings.push((d.uid, t_fix, s.w));
+                self.ranged_t.is_some_and(fresh)
+            }
+        };
+        // bearings cannot see a manoeuvre along the line: once no position fix has come for
+        // ALONG_GRACE_S, both models grow along it as an aircraft turning hard would
+        if let (Some(s), true) = (&slant, ranged) {
+            let from = (t_fix - dt).max(self.fixed_t.unwrap_or(f64::NEG_INFINITY) + ALONG_GRACE_S);
+            for (j, m) in models.iter_mut().enumerate() {
+                m.widen_along(s.w, (ALONG_Q - q[j]).max(0.0), t_fix - from);
+            }
+        }
         let prior_pp: f64 = models.iter().map(|m| m.p * 0.5 * (m.c[0][0] + m.c[1][1])).sum();
         // the fix against the mixture's prediction: the reported covariance's widening
         // (expected 2 a fix: a bearing line, of one dimension, counts double)
@@ -861,7 +980,11 @@ impl Track {
                 loglik[j] += m.update(&Meas::velocity([ae, an], AIS_VEL_SIGMA_MPS * AIS_VEL_SIGMA_MPS), false);
             }
             if let Some(s) = &slant {
-                m.bound_on_line(s.o, s.w, s.rho + SLANT_SIGMAS * d.sigma_m, initial_vel_sigma(self.domain));
+                if ranged {
+                    m.keep_on_segment(s.o, s.w, s.rho, d.sigma_m);
+                } else {
+                    m.reset_to_segment(s.o, s.w, s.rho + SLANT_SIGMAS * d.sigma_m, initial_vel_sigma(self.domain));
+                }
             }
         }
         // each model's probability by how well it predicted the fix
@@ -1325,6 +1448,8 @@ impl Track {
             // rules 12: when this track started (with no average velocity yet, it is young: the
             // engine of older rules drops it)
             first_seen_t: Some(ms(self.first_seen_t)),
+            // rules 14: how far off the velocity may be, for an aircraft's reach
+            velocity_sigma_mps: self.vel.map(|_| (self.vel_sigma_mps() * 100.0).round() / 100.0),
         }
     }
 }

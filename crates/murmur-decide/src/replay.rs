@@ -1392,6 +1392,7 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (rules::REVIEW_FOLLOWUPS_SINCE, "\"expended\":{", "a platform spent by its own effect (a decision's fact)"),
     (rules::REVIEW_FOLLOWUPS_SINCE, "\"may_owe\":[", "the platforms a failed carry may owe values to"),
     (rules::SPACE_REPLAY_SINCE, "\"computed_t\":", "when a space answer was computed (a decision's fact)"),
+    (rules::AIRCRAFT_REACH_SINCE, "\"velocity_sigma_mps\":", "a track's velocity error (an aircraft's reach)"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.

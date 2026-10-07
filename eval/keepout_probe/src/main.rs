@@ -632,6 +632,7 @@ mod tests {
             manoeuvre: None,
             mean_velocity_mps: vel,
             first_seen_t: Some(now.plus_ms(-600_000)),
+            velocity_sigma_mps: None,
         }
     }
 

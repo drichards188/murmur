@@ -1103,6 +1103,8 @@ impl Track {
             // rules 12: when this track started (with no average velocity yet, it is young: the
             // engine of older rules drops it)
             first_seen_t: Some(ms(self.first_seen_t)),
+            // (not in efd332f: the decision facts gained it since; the tracker before gave none)
+            velocity_sigma_mps: None,
         }
     }
 }

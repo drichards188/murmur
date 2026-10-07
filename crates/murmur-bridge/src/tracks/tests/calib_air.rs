@@ -1,52 +1,78 @@
 //! The air tracker against the simulation's truth (murmur-oho): is its 1-sigma honest per
-//! motion class and sensor mix, how often does it give a velocity, and does a keep-out built
-//! from it 60 and 100 s ahead still hold the aircraft at least as often as one built from the
-//! tracker before this calibration ([`before_oho`], verbatim copies of the sensing model and
-//! tracker at efd332f, run on the same truth and draws)?
+//! motion class and sensor mix, how often does it give a velocity, does the tracker alone hold
+//! the aircraft a few seconds ahead, and does a keep-out built from it 3 to 100 s ahead hold the
+//! aircraft every time? The tracker before this calibration ([`before_oho`], verbatim copies of
+//! the sensing model and tracker at efd332f, run on the same truth and draws) is scored beside
+//! it, its keep-out under rules 12.
 //!
 //! Aircraft only (light aircraft, a helicopter, a small UAS), three sensor mixes ([`Mix`]): a
 //! USV's 2D navigation radar alone, the same USV's radar and EO/IR, and every sensor of the
 //! engagement demo's fleet (two more radars, four EO/IR). No mix has a radar that measures
 //! height, so no track may give an altitude.
 //!
-//! Three sets, disjoint in seeds from each other and from the surface sets (`calib`):
+//! Five sets, disjoint in seeds from each other and from the surface sets (`calib`). The order
+//! of events, as it happened:
 //!
-//! 1. [`tuning_cases`] on [`AIR_TUNING_SEEDS`]: what the air constants were chosen on.
-//! 2. [`round_one_cases`] on [`AIR_ROUND_ONE_SEEDS`]: the first held-out set, written with the
-//!    tuning set before any constant was tuned (every class in other variants, and a figure
-//!    eight), run once the constants were chosen. Everything held but one criterion, then
-//!    asked of the route class too: on its square route a velocity given was off by 3 to 4
-//!    times its sigma (in and just after each turn the constant-velocity models lag, and the
-//!    gate let the lagging velocity through). Widening the velocity's error by how fast it was
-//!    changing (a lag of 1 to 6 s) cut that little and cost straight flight a fifth of its
-//!    velocities: the lag is at a turn's entry and exit, before the velocity has changed much,
-//!    and only a model of the turn would follow it (a coordinated-turn model, a follow-up). So
-//!    the criterion is asked of the classes flown straight with one manoeuvre at most
-//!    ([`STEADY_CLASSES`]), as of the turning ones it never was, and keep-outs count an
-//!    aircraft wherever it could turn (rules 13). This set became tuning data.
-//! 3. [`held_out_cases`] on [`AIR_HELD_OUT_SEEDS`]: written after that run, every class in yet
-//!    other variants and one class neither earlier set has (an orbit, then a dash); run once,
-//!    the constants unchanged. The test asserts on it.
+//! 1. [`tuning_cases`] on [`AIR_TUNING_SEEDS`] and [`round_one_cases`] on
+//!    [`AIR_ROUND_ONE_SEEDS`] were written together, before any constant was tuned (round one
+//!    has every class in other variants, and a figure eight). The air constants were chosen on
+//!    the tuning set.
+//! 2. Round one was run. Every criterion held but one, then asked of routes too: on its square
+//!    route a velocity given was off by 3 to 4 times its sigma (in and just after each turn the
+//!    constant-velocity models lag, and the gate let the lagging velocity through).
+//! 3. [`round_two_cases`] on [`AIR_ROUND_TWO_SEEDS`] was written then, as the next held-out
+//!    set (every class in yet other variants, and an orbit then a dash).
+//! 4. On the tuning set and round one, a widening of the velocity's error by how fast it was
+//!    changing (a lag of 1 to 6 s) cut the route's error little and cost straight flight a fifth
+//!    of its velocities (the lag is at a turn's entry and exit, before the velocity has changed
+//!    much: only a model of the turn follows it, a coordinated-turn model, a follow-up). It was
+//!    removed, and the velocity criterion narrowed, having seen round one fail it, to the classes
+//!    flown straight between a manoeuvre or two ([`STEADY_CLASSES`]).
+//! 5. Round two was run on that code (committed as f0c7026; once more after a lint fix, the
+//!    same table), the constants unchanged, and passed every criterion then asserted (a keep-out
+//!    60 and 100 s ahead only). Its table was read again under rules 12 (`AIR_RULES=12`), for
+//!    rules 14's region.
+//! 6. A review found the tracker sliding an unranged aircraft along a radar's bearing, and a
+//!    keep-out a few seconds ahead missing (round one, seeds 131 and 153). [`round_three_cases`]
+//!    on [`AIR_ROUND_THREE_SEEDS`] was written before any fix was run (every class in yet other
+//!    variants, and an approach and a break away). The fixes (a ranging fix's age, a crossing
+//!    radar as a ranging fix, the bearing line's process noise, an unranged velocity reset to
+//!    none, the slant constraint's uncertainty, the aircraft region's speed bound and lag) were
+//!    measured on the tuning set and rounds one and two, and the criteria widened to 3, 10 and 30
+//!    s and to the tracker alone.
+//! 7. Round three was run once, the constants frozen, and failed: two radars whose bearings
+//!    crossed at about 15 degrees 12 km out ranged an aircraft kilometres off its truth, which
+//!    a keep-out 3 s ahead missed by up to 1,235 m (the tracker alone by up to 1,346 m), and an
+//!    aircraft's break away was missed by the tracker alone 10 s ahead by up to 872 m (its
+//!    keep-out held). It is tuning data since.
+//! 8. [`held_out_cases`] on [`AIR_HELD_OUT_SEEDS`]: written after round three's run, before
+//!    anything its failure led to was run, every class in yet other variants and one class no
+//!    earlier set has (a far transit, 14 km out); run once at the end, the constants frozen.
+//!    The test asserts on it.
 
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
 
 use super::before_oho;
-use super::calib::{self, Hold, Kinematics, SETTLE_S, SPANS_S, Tally, hold, integrate};
+use super::calib::{self, Kinematics, SETTLE_S, Tally, integrate};
 use super::{BASE, T0, at, contact};
 use crate::tracks::model::Track;
 use crate::tracks::sensing::{Observer, Params, SensorSpec, SensorType, detect};
 use crate::tracks::truth::{ContactTruth, Domain};
 use murmur_decide::engage::track_reach;
 use murmur_decide::geo::haversine_m;
-use murmur_decide::{EngageRules, LonLat, TrackFacts};
+use murmur_decide::{AIRCRAFT_REACH_SINCE, EngageRules, LonLat, TrackFacts};
 
 /// The air tuning set's seeds.
 pub const AIR_TUNING_SEEDS: RangeInclusive<u64> = 101..=130;
 /// The first air held-out set's seeds, tuning data since.
 pub const AIR_ROUND_ONE_SEEDS: RangeInclusive<u64> = 131..=160;
+/// The second air held-out set's seeds, tuning data since.
+pub const AIR_ROUND_TWO_SEEDS: RangeInclusive<u64> = 161..=190;
+/// The third air held-out set's seeds, tuning data since.
+pub const AIR_ROUND_THREE_SEEDS: RangeInclusive<u64> = 191..=220;
 /// The air held-out set's seeds: used nowhere in tuning.
-pub const AIR_HELD_OUT_SEEDS: RangeInclusive<u64> = 161..=190;
+pub const AIR_HELD_OUT_SEEDS: RangeInclusive<u64> = 221..=250;
 /// The rules the tracker before this calibration was judged under (the keep-out's regions).
 const BEFORE_RULES: u32 = 12;
 
@@ -320,9 +346,9 @@ pub fn tuning_cases() -> Vec<AirCase> {
     ]
 }
 
-/// The held-out set (see the module doc): written after the first held-out set's run, before
-/// the velocity's lag was tuned; run once with it chosen.
-pub fn held_out_cases() -> Vec<AirCase> {
+/// The second held-out set (see the module doc): written after round one's run, run once on
+/// f0c7026; tuning data since.
+pub fn round_two_cases() -> Vec<AirCase> {
     vec![
         air("straight 45 m/s south, 3 km east of the USV, 700 m", "straight", "light_aircraft", 700.0, straight(3000.0, 6000.0, 180.0, 45.0)),
         air("straight 65 m/s north-west, 1200 m", "straight", "light_aircraft", 1200.0, straight(5000.0, -4000.0, 300.0, 65.0)),
@@ -365,6 +391,91 @@ pub fn held_out_cases() -> Vec<AirCase> {
                 if t < 150.0 { (c + 90.0, v) } else { (c.round(), 65.0) }
             })
         }),
+    ]
+}
+
+/// The held-out set (see the module doc): written after round three's run, before anything
+/// its failure led to was run; run once at the end with the constants frozen.
+pub fn held_out_cases() -> Vec<AirCase> {
+    vec![
+        air("straight 50 m/s north-east, 1200 m", "straight", "light_aircraft", 1200.0, straight(-9000.0, -6000.0, 60.0, 50.0)),
+        air("straight 75 m/s west, 10 km north of the USV, 1500 m", "straight", "light_aircraft", 1500.0, straight(9000.0, 7000.0, 270.0, 75.0)),
+        air("loitering 1100 m at 40 m/s, 700 m", "loitering", "light_aircraft", 700.0, circle(-3500.0, 3500.0, 1100.0, 40.0, true)),
+        air("loitering 450 m at 50 m/s anticlockwise, 1800 m", "loitering", "light_aircraft", 1800.0, circle(1500.0, 4000.0, 450.0, 50.0, false)),
+        air("small UAS circling 180 m at 14 m/s anticlockwise, 60 m", "loitering", "unknown_uas", 60.0, circle(2200.0, -1200.0, 180.0, 14.0, false)),
+        air(
+            "a quadrilateral route at 60 m/s, turns at 4 deg/s, 1000 m",
+            "route",
+            "light_aircraft",
+            1000.0,
+            route(vec![(-5000.0, 2000.0), (3000.0, 6000.0), (6000.0, 0.0), (-1000.0, -2000.0)], 60.0, 4.0),
+        ),
+        air("90 s straight at 45 m/s, then 100 degrees right at 4 deg/s, 900 m", "one turn", "light_aircraft", 900.0, one_turn(-4000.0, -6000.0, 20.0, 45.0, 90.0, 100.0, 4.0)),
+        air("weave 60 m/s, 20 degrees either way over 25 s, 1000 m", "weave", "light_aircraft", 1000.0, weave(-7000.0, 1000.0, 80.0, 60.0, 20.0, 25.0)),
+        air(
+            "random turns at 35 m/s, 60 to 160 degrees at 5 deg/s every 30 to 80 s, 400 m",
+            "random turns",
+            "light_aircraft",
+            400.0,
+            random_turns(-1500.0, 2500.0, 35.0, (30.0, 80.0), (60.0, 160.0), 5.0, 0xE5),
+        ),
+        air("60 to 40 m/s at 80 s, then to 70 at 180 s, at 2.5 m/s^2, straight, 800 m", "speed change", "light_aircraft", 800.0, |_, len| {
+            fly(len, (6000.0, -2000.0, 300.0, 60.0), 0.0, 2.5, |t, _, _, _| (300.0, if t < 80.0 { 60.0 } else if t < 180.0 { 40.0 } else { 70.0 }))
+        }),
+        air("helicopter at 30 m/s east, hovers 80 s from 3 m/s^2, then 45 m/s north-west, 120 m", "hover and go", "helicopter", 120.0, |_, len| {
+            fly(len, (-3000.0, -500.0, 90.0, 30.0), 20.0, 3.0, |t, _, _, _| {
+                if t < 70.0 { (90.0, 30.0) } else if t < 150.0 { (90.0, 0.0) } else { (315.0, 45.0) }
+            })
+        }),
+        air(
+            "an approach west at 70 m/s, then a break 150 degrees left at 8 deg/s to 85 m/s at 3 m/s^2, 600 m",
+            "approach and break",
+            "light_aircraft",
+            600.0,
+            |_, len| fly(len, (9000.0, 1000.0, 270.0, 70.0), 8.0, 3.0, |t, _, _, _| if t < 110.0 { (270.0, 70.0) } else { (120.0, 85.0) }),
+        ),
+        air("a far transit at 80 m/s, 14 km out, 2500 m", "far transit", "light_aircraft", 2500.0, straight(12000.0, 14000.0, 200.0, 80.0)),
+    ]
+}
+
+/// The third held-out set (see the module doc): written before the review's fixes were run, run
+/// once with the constants frozen; tuning data since.
+pub fn round_three_cases() -> Vec<AirCase> {
+    vec![
+        air("straight 60 m/s east, 4 km north of the USV, 1000 m", "straight", "light_aircraft", 1000.0, straight(-8000.0, 1000.0, 90.0, 60.0)),
+        air("straight 30 m/s north-north-east, 2000 m", "straight", "light_aircraft", 2000.0, straight(-3000.0, -6000.0, 30.0, 30.0)),
+        air("loitering 900 m at 45 m/s anticlockwise, 1000 m", "loitering", "light_aircraft", 1000.0, circle(2500.0, 0.0, 900.0, 45.0, false)),
+        air("loitering 600 m at 35 m/s near the USV, 250 m", "loitering", "light_aircraft", 250.0, circle(800.0, -2500.0, 600.0, 35.0, true)),
+        air("small UAS circling 250 m at 18 m/s, 80 m", "loitering", "unknown_uas", 80.0, circle(-800.0, -1800.0, 250.0, 18.0, true)),
+        air(
+            "a long triangle route at 45 m/s, turns at 3 deg/s, 800 m",
+            "route",
+            "light_aircraft",
+            800.0,
+            route(vec![(-4000.0, -1000.0), (4000.0, -1000.0), (0.0, 5000.0)], 45.0, 3.0),
+        ),
+        air("120 s straight at 55 m/s, then 60 degrees left at 6 deg/s, 700 m", "one turn", "light_aircraft", 700.0, one_turn(-6000.0, 2500.0, 100.0, 55.0, 120.0, -60.0, 6.0)),
+        air("weave 45 m/s, 25 degrees either way over 50 s, 500 m", "weave", "light_aircraft", 500.0, weave(-5000.0, 3500.0, 120.0, 45.0, 25.0, 50.0)),
+        air(
+            "random turns at 50 m/s, 30 to 90 degrees at 6 deg/s every 20 to 50 s, 1100 m",
+            "random turns",
+            "light_aircraft",
+            1100.0,
+            random_turns(500.0, 500.0, 50.0, (20.0, 50.0), (30.0, 90.0), 6.0, 0xD4),
+        ),
+        air("35 m/s, then up to 55 at 2 m/s^2 at 90 s, straight, 600 m", "speed change", "light_aircraft", 600.0, |_, len| {
+            fly(len, (-5000.0, -500.0, 80.0, 35.0), 0.0, 2.0, |t, _, _, _| (80.0, if t < 90.0 { 35.0 } else { 55.0 }))
+        }),
+        air("helicopter hovering 120 s, then 40 m/s east at 2.5 m/s^2, 150 m", "hover and go", "helicopter", 150.0, |_, len| {
+            fly(len, (-500.0, -1500.0, 90.0, 0.0), 30.0, 2.5, |t, _, _, _| (90.0, if t < 120.0 { 0.0 } else { 40.0 }))
+        }),
+        air(
+            "an approach south at 60 m/s, then a break 135 degrees right at 10 deg/s to 75 m/s at 2 m/s^2, 500 m",
+            "approach and break",
+            "light_aircraft",
+            500.0,
+            |_, len| fly(len, (0.0, 6000.0, 180.0, 60.0), 10.0, 2.0, |t, _, _, _| if t < 100.0 { (180.0, 60.0) } else { (315.0, 75.0) }),
+        ),
     ]
 }
 
@@ -436,12 +547,70 @@ fn effect_points() -> Vec<(f64, f64)> {
     out
 }
 
+/// How far ahead a keep-out is checked against the truth, s: the release reads the keep-outs
+/// at the world's time, seconds before the effect, and a nomination a minute or more ahead.
+pub const AIR_SPANS_S: [f64; 5] = [3.0, 10.0, 30.0, 60.0, 100.0];
+/// The tracker alone (no aircraft region) is checked at the first of these, the spans where its
+/// own estimate and velocity, not an aircraft's reach, decide.
+pub const TRACKER_SPANS: usize = 3;
+
+/// A keep-out's hold on the truth some span ahead: how often the truth was inside a region,
+/// how large the largest region was, and by how far the truth was outside them all when it was.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct AirHold {
+    pub n: f64,
+    pub covered: f64,
+    pub reach: f64,
+    /// the farthest the truth was outside every region, m
+    pub max_miss: f64,
+}
+
+impl AirHold {
+    fn sample(&mut self, f: &TrackFacts, now: f64, span: f64, truth: (f64, f64), ec: &EngageRules) {
+        let regions = track_reach(f, calib::ms(now + span), ec);
+        let p = LonLat::new(truth.1, truth.0);
+        let miss = regions.iter().map(|r| haversine_m(r.center, p) - r.radius_m).fold(f64::INFINITY, f64::min);
+        self.n += 1.0;
+        if miss <= 0.0 {
+            self.covered += 1.0;
+        } else {
+            self.max_miss = self.max_miss.max(miss);
+        }
+        self.reach += regions.iter().map(|r| r.radius_m).fold(0.0, f64::max);
+    }
+
+    fn add(&mut self, o: &AirHold) {
+        self.n += o.n;
+        self.covered += o.covered;
+        self.reach += o.reach;
+        self.max_miss = self.max_miss.max(o.max_miss);
+    }
+
+    pub fn coverage(&self) -> f64 {
+        self.covered / self.n.max(1.0)
+    }
+
+    pub fn misses(&self) -> f64 {
+        self.n - self.covered
+    }
+
+    pub fn mean_reach(&self) -> f64 {
+        self.reach / self.n.max(1.0)
+    }
+}
+
 /// One tracker's sums over the scored seconds.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Side {
     pub tally: Tally,
-    pub hold: [Hold; 2],
-    /// samples, and of those blocked effect points over the grid (per span)
+    /// the keep-out (the rules it is judged under) at each of [`AIR_SPANS_S`]
+    pub hold: [AirHold; 5],
+    /// the tracker alone: the regions of the rules before the aircraft region, at the first
+    /// [`TRACKER_SPANS`] spans
+    pub track_hold: [AirHold; TRACKER_SPANS],
+    /// the farthest the truth was from the estimate when updated, in its reported sigmas
+    pub tail: f64,
+    /// samples, and of those blocked effect points over the grid, 60 and 100 s ahead
     pub block: [(f64, f64); 2],
     /// scored samples with a velocity
     pub with_v: f64,
@@ -460,13 +629,17 @@ impl Side {
         t.vn += o.tally.vn;
         t.man_p += o.tally.man_p;
         t.unknown_v += o.tally.unknown_v;
-        for k in 0..2 {
-            self.hold[k].n += o.hold[k].n;
-            self.hold[k].covered += o.hold[k].covered;
-            self.hold[k].reach += o.hold[k].reach;
-            self.block[k].0 += o.block[k].0;
-            self.block[k].1 += o.block[k].1;
+        for (a, b) in self.hold.iter_mut().zip(&o.hold) {
+            a.add(b);
         }
+        for (a, b) in self.track_hold.iter_mut().zip(&o.track_hold) {
+            a.add(b);
+        }
+        for (a, b) in self.block.iter_mut().zip(&o.block) {
+            a.0 += b.0;
+            a.1 += b.1;
+        }
+        self.tail = self.tail.max(o.tail);
         self.with_v += o.with_v;
         self.with_alt += o.with_alt;
     }
@@ -478,6 +651,46 @@ impl Side {
     pub fn block_share(&self, k: usize) -> f64 {
         self.block[k].1 / self.block[k].0.max(1.0)
     }
+
+    /// One tracker's scored second: its estimate against the truth `(lat, lon)` with velocity
+    /// `(ve, vn)`, and its keep-outs against the truth at each span ahead.
+    #[allow(clippy::too_many_arguments)]
+    fn score(&mut self, f: &TrackFacts, est: Est, now: f64, truth: (f64, f64, f64, f64), ahead: &[(f64, f64); 5], ec: &EngageRules, ec_tracker: &EngageRules, pts: &[(f64, f64)]) {
+        let (lat, lon, ve, vn) = truth;
+        let de = (est.lon - lon) * 111_320.0 * lat.to_radians().cos();
+        let dn = (est.lat - lat) * 111_320.0;
+        let d2 = de * de + dn * dn;
+        self.tally.add(d2, est.sigma);
+        self.tail = self.tail.max(d2.sqrt() / est.sigma);
+        self.tally.man_p += est.man_p;
+        if let Some((ve2, vn2)) = est.vel {
+            self.tally.vnees += ((ve2 - ve).powi(2) + (vn2 - vn).powi(2)) / (est.vel_sigma * est.vel_sigma);
+            self.tally.vn += 1.0;
+        }
+        self.with_v += f64::from(u8::from(f.velocity_mps.is_some()));
+        self.with_alt += f64::from(u8::from(f.alt_m.is_some()));
+        for (k, span) in AIR_SPANS_S.iter().enumerate() {
+            self.hold[k].sample(f, now, *span, ahead[k], ec);
+            if k < TRACKER_SPANS {
+                self.track_hold[k].sample(f, now, *span, ahead[k], ec_tracker);
+            }
+        }
+        for (k, idx) in [3usize, 4].into_iter().enumerate() {
+            self.block[k].0 += pts.len() as f64;
+            self.block[k].1 += blocked(f, now, AIR_SPANS_S[idx], ahead[idx], ec, pts);
+        }
+    }
+}
+
+/// What a tracker says of itself at a scored second (both trackers' tracks give these).
+#[derive(Debug, Clone, Copy)]
+struct Est {
+    lat: f64,
+    lon: f64,
+    sigma: f64,
+    vel: Option<(f64, f64)>,
+    vel_sigma: f64,
+    man_p: f64,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -505,19 +718,20 @@ fn blocked(f: &TrackFacts, now: f64, span: f64, truth: (f64, f64), ec: &EngageRu
         .count() as f64
 }
 
-/// Both trackers on `case`, seen by `mix`, at `seed`.
-pub fn run(case: &AirCase, mix: Mix, seed: u64) -> AirScores {
-    // the rules the tracker after is judged under (the table's `AIR_RULES=12`: what the
-    // calibrated tracker would do without rules 13's aircraft region)
-    let ec = EngageRules {
-        rules_version: std::env::var("AIR_RULES").ok().and_then(|v| v.parse().ok()).unwrap_or(murmur_decide::RULES_VERSION),
+fn rules(version: u32) -> EngageRules {
+    EngageRules {
+        rules_version: version,
         ..EngageRules::default()
-    };
-    let ec_old = EngageRules {
-        rules_version: BEFORE_RULES,
-        ..EngageRules::default()
-    };
-    let table = (case.motion)(seed, case.n as usize + SPANS_S[1] as usize + 1);
+    }
+}
+
+/// Both trackers on `case`, seen by `mix`, at `seed`: the tracker after judged under `rules_after`
+/// (the current rules in every asserting test), the tracker alone under the rules before the
+/// aircraft region, the tracker before under rules 12.
+pub fn run(case: &AirCase, mix: Mix, seed: u64, rules_after: u32) -> AirScores {
+    let (ec, ec_tracker, ec_old) = (rules(rules_after), rules(AIRCRAFT_REACH_SINCE - 1), rules(BEFORE_RULES));
+    let longest = AIR_SPANS_S[AIR_SPANS_S.len() - 1] as usize;
+    let table = (case.motion)(seed, case.n as usize + longest + 1);
     let obs = mix.observers();
     let (now_obs, old_obs): (Vec<Observer>, Vec<before_oho::sensing::Observer>) = (obs.iter().map(Obs::now).collect(), obs.iter().map(Obs::before).collect());
     let pts = effect_points();
@@ -557,76 +771,55 @@ pub fn run(case: &AirCase, mix: Mix, seed: u64) -> AirScores {
         if s < SETTLE_S {
             continue;
         }
-        let err2 = |tlat: f64, tlon: f64| {
-            let de = (tlon - lon) * 111_320.0 * lat.to_radians().cos();
-            let dn = (tlat - lat) * 111_320.0;
-            de * de + dn * dn
-        };
-        let ahead: [(f64, f64); 2] = SPANS_S.map(|span| {
+        let ahead: [(f64, f64); 5] = AIR_SPANS_S.map(|span| {
             let ((e2, n2), _) = table[s as usize + span as usize];
             at(BASE.0, BASE.1, e2, n2)
         });
+        let truth = (lat, lon, ve, vn);
         if let Some(t) = new.as_ref().filter(|_| !dets.is_empty()) {
-            let side = &mut sc.new;
-            side.tally.add(err2(t.lat, t.lon), t.sigma_m);
-            side.tally.man_p += t.manoeuvring_p();
-            if let Some((ve2, vn2)) = t.vel {
-                let sv = t.vel_sigma_mps();
-                side.tally.vnees += ((ve2 - ve).powi(2) + (vn2 - vn).powi(2)) / (sv * sv);
-                side.tally.vn += 1.0;
-            }
-            let f = t.facts(now);
-            side.with_v += f64::from(u8::from(f.velocity_mps.is_some()));
-            side.with_alt += f64::from(u8::from(f.alt_m.is_some()));
-            for (k, span) in SPANS_S.iter().enumerate() {
-                hold(&f, now, *span, ahead[k], &ec, &mut side.hold[k]);
-                side.block[k].0 += pts.len() as f64;
-                side.block[k].1 += blocked(&f, now, *span, ahead[k], &ec, &pts);
-            }
+            let est = Est { lat: t.lat, lon: t.lon, sigma: t.sigma_m, vel: t.vel, vel_sigma: t.vel_sigma_mps(), man_p: t.manoeuvring_p() };
+            sc.new.score(&t.facts(now), est, now, truth, &ahead, &ec, &ec_tracker, &pts);
         }
         if let Some(t) = old.as_ref().filter(|_| !old_dets.is_empty()) {
-            let side = &mut sc.old;
-            side.tally.add(err2(t.lat, t.lon), t.sigma_m);
-            side.tally.man_p += t.manoeuvring_p();
-            if let Some((ve2, vn2)) = t.vel {
-                let sv = t.vel_sigma_mps();
-                side.tally.vnees += ((ve2 - ve).powi(2) + (vn2 - vn).powi(2)) / (sv * sv);
-                side.tally.vn += 1.0;
-            }
-            let f = t.facts(now);
-            side.with_v += f64::from(u8::from(f.velocity_mps.is_some()));
-            side.with_alt += f64::from(u8::from(f.alt_m.is_some()));
-            for (k, span) in SPANS_S.iter().enumerate() {
-                hold(&f, now, *span, ahead[k], &ec_old, &mut side.hold[k]);
-                side.block[k].0 += pts.len() as f64;
-                side.block[k].1 += blocked(&f, now, *span, ahead[k], &ec_old, &pts);
-            }
+            let est = Est { lat: t.lat, lon: t.lon, sigma: t.sigma_m, vel: t.vel, vel_sigma: t.vel_sigma_mps(), man_p: t.manoeuvring_p() };
+            sc.old.score(&t.facts(now), est, now, truth, &ahead, &ec_old, &ec_old, &pts);
         }
     }
     sc
 }
 
 /// A case's scores on a mix, summed over `seeds`.
-pub fn over_seeds(case: &AirCase, mix: Mix, seeds: RangeInclusive<u64>) -> AirScores {
+pub fn over_seeds(case: &AirCase, mix: Mix, seeds: RangeInclusive<u64>, rules_after: u32) -> AirScores {
     let mut total = AirScores::default();
     for seed in seeds {
-        total.add(&run(case, mix, seed));
+        total.add(&run(case, mix, seed, rules_after));
     }
     total
 }
 
 fn side_line(s: &Side) -> String {
+    let holds: Vec<String> = s
+        .hold
+        .iter()
+        .zip(AIR_SPANS_S)
+        .map(|(h, span)| format!("{span:.0}s {:5.1}%/{:4.0}m r{:5.0}", 100.0 * h.coverage(), h.max_miss, h.mean_reach()))
+        .collect();
+    let tracker: Vec<String> = s
+        .track_hold
+        .iter()
+        .zip(AIR_SPANS_S)
+        .map(|(h, span)| format!("{span:.0}s {:5.2}%/{:4.0}m", 100.0 * (1.0 - h.coverage()), h.max_miss))
+        .collect();
     format!(
-        "NEES {:5.2} in 2 sigma {:5.1}% sigma {:5.0} m vel {:5.1}% vNEES {:5.2} | ko60 {:5.1}% ({:5.0} m) ko100 {:5.1}% ({:5.0} m) | blocks {:4.1}% {:4.1}%",
+        "NEES {:5.2} in 2 sigma {:5.1}% tail {:4.1} sigma {:5.0} m vel {:5.1}% vNEES {:5.2} | keep-out held/max miss {} | tracker alone missed/max {} | blocks 60s {:4.1}% 100s {:4.1}%",
         s.tally.mean_nees(),
         100.0 * s.tally.coverage(),
+        s.tail,
         s.tally.sigma / s.tally.n.max(1.0),
         100.0 * s.velocity_share(),
         s.tally.vnees / s.tally.vn.max(1.0),
-        100.0 * s.hold[0].coverage(),
-        s.hold[0].mean_reach(),
-        100.0 * s.hold[1].coverage(),
-        s.hold[1].mean_reach(),
+        holds.join(" "),
+        tracker.join(" "),
         100.0 * s.block_share(0),
         100.0 * s.block_share(1),
     )
@@ -637,36 +830,53 @@ pub fn line(name: &str, mix: Mix, s: &AirScores) -> String {
     format!("{name:<62} {:<14} new {}\n{:<77} old {}", mix.name(), side_line(&s.new), "", side_line(&s.old))
 }
 
-/// The classes flown straight with one manoeuvre at most, in which a velocity given must be
-/// honest: the gate's own question. In and just after a turn the constant-velocity models lag
-/// and a velocity given is off by more than its sigma says (a route's turns, a loiter, a weave:
-/// reported, not asserted); the keep-out counts an aircraft wherever it could turn (rules 13).
+/// The classes flown straight between a manoeuvre or two (a turn, a change of speed, a stop and
+/// a go), in which a velocity given must be honest: the gate's own question. In and just after
+/// a turn the constant-velocity models lag and a velocity given is off by more than its sigma
+/// says, so the classes that turn again and again (a route, a loiter, a weave, random turns, a
+/// figure eight, an orbit) are reported, not asserted; the keep-out counts an aircraft wherever
+/// it could turn or speed up to (rules 14).
 pub const STEADY_CLASSES: [&str; 4] = ["straight", "one turn", "speed change", "hover and go"];
 
-/// A set's failures against the acceptance criteria (as the surface's, `calib::failures`):
-/// per class and mix, its cases and seeds pooled, the truth within two sigmas at least 83% of
-/// the time and the mean normalized error between 0.5 and 2.6 when updated; in the classes
-/// flown mostly straight ([`STEADY_CLASSES`]), a velocity given within a mean normalized error
-/// of 2.6; per case and mix, a keep-out 60 and 100 s ahead holding the aircraft at least as
-/// often as the tracker before this calibration's did (under rules 12); and never an altitude
-/// (no mix has a radar that measures height).
+/// The tracker alone, at [`AIR_SPANS_S`]`[..TRACKER_SPANS]` (3, 10 and 30 s), per class and mix:
+/// at most this share of samples outside every region of the rules before the aircraft region
+/// (rules 13, whose track regions are rules 12's), and never farther outside than
+/// [`TRACKER_MAX_MISS_M`]. A turn or a speed-up the tracker has not yet taken in puts the truth
+/// outside them (that is what rules 14's region is for); a few seconds ahead the tracker's own
+/// estimate, velocity and sigma decide. The bounds are the air tuning sets' worst (2.5% and 215
+/// m at 3 s, 3.1% and 597 m at 10 s, 7.1% and 2,144 m at 30 s) with headroom: the review's
+/// unranged track sliding along a radar's bearing missed by 5,544 m at 3 s.
+pub const TRACKER_MISS_SHARE: [f64; TRACKER_SPANS] = [0.03, 0.04, 0.10];
+pub const TRACKER_MAX_MISS_M: [f64; TRACKER_SPANS] = [300.0, 800.0, 3_000.0];
+
+/// A set's failures against the acceptance criteria (as the surface's, `calib::failures`), the
+/// tracker after judged under the current rules: per class and mix, its cases and seeds pooled,
+/// the truth within two sigmas at least 83% of the time and the mean normalized error between
+/// 0.5 and 2.6 when updated; in the classes flown straight between a manoeuvre or two
+/// ([`STEADY_CLASSES`]), a velocity given within a mean normalized error of 2.6; the tracker
+/// alone within [`TRACKER_MISS_SHARE`] and [`TRACKER_MAX_MISS_M`] a few seconds ahead; per case
+/// and mix, a keep-out 3, 10, 30, 60 and 100 s ahead holding the aircraft every time (and so at
+/// least as often as the tracker before this calibration's did, under rules 12); and never an
+/// altitude (no mix has a radar that measures height).
 pub fn failures(cases: &[AirCase], seeds: RangeInclusive<u64>, table: &mut Vec<String>) -> Vec<String> {
     let mut bad = Vec::new();
     let mut by_class: BTreeMap<(&str, Mix), AirScores> = BTreeMap::new();
     for c in cases {
         for mix in MIXES {
-            let s = over_seeds(c, mix, seeds.clone());
+            let s = over_seeds(c, mix, seeds.clone(), murmur_decide::RULES_VERSION);
             table.push(line(c.name, mix, &s));
             by_class.entry((c.class, mix)).or_default().add(&s);
-            for (k, span) in SPANS_S.iter().enumerate() {
-                let (new, old) = (s.new.hold[k].coverage(), s.old.hold[k].coverage());
-                if new < old {
+            for (k, span) in AIR_SPANS_S.iter().enumerate() {
+                let h = &s.new.hold[k];
+                if h.misses() > 0.0 {
                     bad.push(format!(
-                        "{} ({}): a keep-out {span:.0} s ahead holds it {:.1}% of the time, the tracker before {:.1}%",
+                        "{} ({}): a keep-out {span:.0} s ahead missed it {} times of {}, by up to {:.0} m (the tracker before: {:.1}% held)",
                         c.name,
                         mix.name(),
-                        100.0 * new,
-                        100.0 * old
+                        h.misses(),
+                        h.n,
+                        h.max_miss,
+                        100.0 * s.old.hold[k].coverage()
                     ));
                 }
             }
@@ -685,17 +895,29 @@ pub fn failures(cases: &[AirCase], seeds: RangeInclusive<u64>, table: &mut Vec<S
         if STEADY_CLASSES.contains(class) && vnees > 2.6 {
             bad.push(format!("{class} ({}): a velocity given with a mean normalized error of {vnees:.2}", mix.name()));
         }
+        for (k, h) in s.new.track_hold.iter().enumerate() {
+            let share = 1.0 - h.coverage();
+            if share > TRACKER_MISS_SHARE[k] || h.max_miss > TRACKER_MAX_MISS_M[k] {
+                bad.push(format!(
+                    "{class} ({}): the tracker alone {:.0} s ahead missed {:.2}% of samples, by up to {:.0} m",
+                    mix.name(),
+                    AIR_SPANS_S[k],
+                    100.0 * share,
+                    h.max_miss
+                ));
+            }
+        }
     }
     bad
 }
 
 /// The acceptance test (murmur-oho): on the held-out set, never tuned on, the air tracker is
 /// honest when updated in every motion class and sensor mix, its velocity honest where an
-/// aircraft flies mostly straight, it never gives an altitude its sensors did not measure, and a
-/// keep-out 60 and 100 s ahead holds every motion at least as often as one built from the
-/// tracker before (under rules 12).
+/// aircraft flies straight between manoeuvres, the tracker alone holds a few seconds ahead,
+/// it never gives an altitude its sensors did not measure, and a keep-out 3 to 100 s ahead
+/// holds every motion every time.
 #[test]
-fn on_held_out_air_motions_the_tracker_is_honest_and_a_keep_out_holds_at_least_as_often() {
+fn on_held_out_air_motions_the_tracker_is_honest_and_a_keep_out_holds() {
     let mut table = Vec::new();
     let bad = failures(&held_out_cases(), AIR_HELD_OUT_SEEDS, &mut table);
     assert!(bad.is_empty(), "{}\n\nall:\n{}", bad.join("\n"), table.join("\n"));
@@ -703,11 +925,36 @@ fn on_held_out_air_motions_the_tracker_is_honest_and_a_keep_out_holds_at_least_a
 
 /// The same criteria on the tuning sets (what the air constants were chosen on).
 #[test]
-fn on_the_air_tuning_sets_the_tracker_is_honest_and_a_keep_out_holds_at_least_as_often() {
+fn on_the_air_tuning_sets_the_tracker_is_honest_and_a_keep_out_holds() {
     let mut table = Vec::new();
     let mut bad = failures(&tuning_cases(), AIR_TUNING_SEEDS, &mut table);
     bad.extend(failures(&round_one_cases(), AIR_ROUND_ONE_SEEDS, &mut table));
+    bad.extend(failures(&round_two_cases(), AIR_ROUND_TWO_SEEDS, &mut table));
+    bad.extend(failures(&round_three_cases(), AIR_ROUND_THREE_SEEDS, &mut table));
     assert!(bad.is_empty(), "{}\n\nall:\n{}", bad.join("\n"), table.join("\n"));
+}
+
+/// The review of 10-07's two cases (round one, radar and EO/IR, the EO/IR losing the aircraft
+/// for long stretches): random turns at 55 m/s on seed 153 and the small UAS circling 350 m on
+/// seed 131. Before the fix the unranged track slid along the radar's bearing on a stale
+/// velocity, 5,415 m and 2,102 m off while it said 1,762 m and 719 m, and a keep-out 3 s ahead
+/// missed by up to 5,544 m and 1,208 m. Now the tracker alone stays within its bounds, a
+/// keep-out 3 to 100 s ahead holds it every time, and the estimate is never farther from the
+/// truth than a few of its sigmas.
+#[test]
+fn an_aircraft_the_eo_ir_loses_is_not_slid_along_the_radar_bearing() {
+    let cases = round_one_cases();
+    for (name, seed) in [("random turns at 55 m/s", 153u64), ("small UAS circling 350 m", 131)] {
+        let case = cases.iter().find(|c| c.name.starts_with(name)).expect("the case");
+        let s = run(case, Mix::RadarEoIr, seed, murmur_decide::RULES_VERSION);
+        for (k, h) in s.new.track_hold.iter().enumerate() {
+            assert!(h.max_miss <= TRACKER_MAX_MISS_M[k], "{name} seed {seed}: the tracker alone {} s ahead missed by {:.0} m", AIR_SPANS_S[k], h.max_miss);
+        }
+        for (k, h) in s.new.hold.iter().enumerate() {
+            assert_eq!(h.misses(), 0.0, "{name} seed {seed}: a keep-out {} s ahead missed by up to {:.0} m", AIR_SPANS_S[k], h.max_miss);
+        }
+        assert!(s.new.tail < 5.0, "{name} seed {seed}: the truth {:.1} sigmas from the estimate", s.new.tail);
+    }
 }
 
 /// A 2D radar measures an aircraft's slant range and bearing, not its height: its plot is out
@@ -761,11 +1008,11 @@ fn a_2d_radar_fix_of_an_aircraft_gives_no_altitude_and_one_radar_does_not_range_
     // bearing segment (kilometres), the truth within it
     let (f, err) = follow(Mix::Radar, false, 1500.0);
     assert!(f.alt_m.is_none() && murmur_decide::engage::track_altitude(&f, f.last_seen_t, &ec).is_none(), "{f:?}");
-    assert!(f.velocity_mps.is_none(), "{f:?}");
+    assert!(f.velocity_mps.is_none() && f.velocity_sigma_mps.is_none(), "{f:?}");
     assert!(f.pos_sigma_m > 500.0 && err < 2.0 * f.pos_sigma_m, "sigma {} error {err}", f.pos_sigma_m);
-    // with EO/IR too: ranged, a velocity, still no altitude
+    // with EO/IR too: ranged, a velocity with its error, still no altitude
     let (f, err) = follow(Mix::RadarEoIr, false, 1500.0);
-    assert!(f.alt_m.is_none() && f.velocity_mps.is_some(), "{f:?}");
+    assert!(f.alt_m.is_none() && f.velocity_mps.is_some() && f.velocity_sigma_mps.is_some_and(|s| s < 3.0), "{f:?}");
     assert!(f.pos_sigma_m < 60.0 && err < 2.0 * f.pos_sigma_m, "sigma {} error {err}", f.pos_sigma_m);
     // a radar that measures elevation: the altitude, ranged
     let (f, _) = follow(Mix::RadarEoIr, true, 1500.0);
@@ -775,29 +1022,43 @@ fn a_2d_radar_fix_of_an_aircraft_gives_no_altitude_and_one_radar_does_not_range_
 
 /// Print every case of the tuning sets on every mix (a tuning aid: `cargo test -p
 /// murmur-bridge --release air_calib_table -- --ignored --nocapture`; `CALIB=held_out` for the
-/// held-out set).
+/// held-out set; `AIR_RULES=13` judges the tracker after under the rules before the aircraft
+/// region).
 #[test]
 #[ignore]
 fn air_calib_table() {
     let held = std::env::var("CALIB").is_ok_and(|v| v == "held_out");
+    let rules_after = std::env::var("AIR_RULES").ok().and_then(|v| v.parse().ok()).unwrap_or(murmur_decide::RULES_VERSION);
     let sets = if held {
         vec![(held_out_cases(), AIR_HELD_OUT_SEEDS)]
     } else {
-        vec![(tuning_cases(), AIR_TUNING_SEEDS), (round_one_cases(), AIR_ROUND_ONE_SEEDS)]
+        vec![
+            (tuning_cases(), AIR_TUNING_SEEDS),
+            (round_one_cases(), AIR_ROUND_ONE_SEEDS),
+            (round_two_cases(), AIR_ROUND_TWO_SEEDS),
+            (round_three_cases(), AIR_ROUND_THREE_SEEDS),
+        ]
     };
     let mut table = Vec::new();
     let mut bad = Vec::new();
     for (cases, seeds) in sets {
-        bad.extend(failures(&cases, seeds, &mut table));
+        if rules_after == murmur_decide::RULES_VERSION {
+            bad.extend(failures(&cases, seeds, &mut table));
+        } else {
+            for c in &cases {
+                for mix in MIXES {
+                    table.push(line(c.name, mix, &over_seeds(c, mix, seeds.clone(), rules_after)));
+                }
+            }
+        }
     }
     eprintln!("{}", table.join("\n"));
     eprintln!("--- failures\n{}", bad.join("\n"));
 }
 
 /// The tuning grid (a tuning aid, the tuning sets only: `AIR_GRID="q steady,q manoeuvring,gate,
-/// initial velocity sigma,lag;..." cargo test -p murmur-bridge --release air_tune_grid --
-/// --ignored --nocapture`): each candidate of the air constants on every tuning case and mix,
-/// summarized.
+/// initial velocity sigma;..." cargo test -p murmur-bridge --release air_tune_grid -- --ignored
+/// --nocapture`): each candidate of the air constants on every tuning case and mix, summarized.
 #[test]
 #[ignore]
 fn air_tune_grid() {
@@ -816,54 +1077,39 @@ fn air_tune_grid() {
         .into_iter()
         .map(|c| (c, AIR_TUNING_SEEDS))
         .chain(round_one_cases().into_iter().map(|c| (c, AIR_ROUND_ONE_SEEDS)))
+        .chain(round_two_cases().into_iter().map(|c| (c, AIR_ROUND_TWO_SEEDS)))
+        .chain(round_three_cases().into_iter().map(|c| (c, AIR_ROUND_THREE_SEEDS)))
         .collect();
     for t in grid {
         crate::tracks::model::AIR_TUNE.set(Some(t));
-        let mut worst_cover: f64 = 1.0;
-        let mut worst_nees: f64 = 0.0;
-        let mut by_mix: BTreeMap<Mix, AirScores> = BTreeMap::new();
         let mut by_class: BTreeMap<(&str, Mix), AirScores> = BTreeMap::new();
-        let mut ko_bad = Vec::new();
+        let mut misses = Vec::new();
         for (c, seeds) in &cases {
-            for mix in [Mix::RadarEoIr, Mix::All] {
-                let s = over_seeds(c, mix, seeds.clone());
-                by_mix.entry(mix).or_default().add(&s);
+            for mix in MIXES {
+                let s = over_seeds(c, mix, seeds.clone(), murmur_decide::RULES_VERSION);
                 by_class.entry((c.class, mix)).or_default().add(&s);
-                for (k, span) in SPANS_S.iter().enumerate() {
-                    let d = s.new.hold[k].coverage() - s.old.hold[k].coverage();
-                    if d < 0.0 {
-                        ko_bad.push(format!("{}/{}/{span}: {:+.1}", c.class, if mix == Mix::All { "all" } else { "eo" }, 100.0 * d));
+                for (k, h) in s.new.hold.iter().enumerate() {
+                    if h.misses() > 0.0 {
+                        misses.push(format!("{}/{}/{}s: {} by {:.0} m", c.class, mix.name(), AIR_SPANS_S[k], h.misses(), h.max_miss));
                     }
                 }
             }
         }
-        let mut vel_classes = Vec::new();
+        eprintln!("q {t:?}: keep-out misses: {}", misses.join("; "));
         for ((class, mix), s) in &by_class {
-            worst_cover = worst_cover.min(s.new.tally.coverage());
-            worst_nees = worst_nees.max(s.new.tally.mean_nees());
-            vel_classes.push(format!(
-                "{}/{} v{:.0}% vN{:.1} ko{:.1}",
-                &class[..class.len().min(6)],
-                if *mix == Mix::All { "a" } else { "e" },
+            let th: Vec<String> = s.new.track_hold.iter().map(|h| format!("{:.2}%/{:.0}m", 100.0 * (1.0 - h.coverage()), h.max_miss)).collect();
+            eprintln!(
+                "    {class:<16} {:<14} NEES {:4.2} in2s {:5.1}% tail {:4.1} vel {:5.1}% vNEES {:5.2} tracker {} blocks60 {:4.1}%",
+                mix.name(),
+                s.new.tally.mean_nees(),
+                100.0 * s.new.tally.coverage(),
+                s.new.tail,
                 100.0 * s.new.velocity_share(),
                 s.new.tally.vnees / s.new.tally.vn.max(1.0),
-                100.0 * s.new.hold[0].coverage()
-            ));
+                th.join(" "),
+                100.0 * s.new.block_share(0)
+            );
         }
-        eprintln!(
-            "q {:?}: cover min {:.1}% NEES max {:.2} | vel eo {:.1}% all {:.1}% | vNEES eo {:.2} all {:.2} | blocks60 eo {:.1}% all {:.1}% | ko below before: {}",
-            t,
-            100.0 * worst_cover,
-            worst_nees,
-            100.0 * by_mix[&Mix::RadarEoIr].new.velocity_share(),
-            100.0 * by_mix[&Mix::All].new.velocity_share(),
-            by_mix[&Mix::RadarEoIr].new.tally.vnees / by_mix[&Mix::RadarEoIr].new.tally.vn.max(1.0),
-            by_mix[&Mix::All].new.tally.vnees / by_mix[&Mix::All].new.tally.vn.max(1.0),
-            100.0 * by_mix[&Mix::RadarEoIr].new.block_share(0),
-            100.0 * by_mix[&Mix::All].new.block_share(0),
-            ko_bad.join(" ")
-        );
-        eprintln!("    {}", vel_classes.join(" | "));
     }
     crate::tracks::model::AIR_TUNE.set(None);
 }
@@ -877,6 +1123,8 @@ fn the_air_seed_sets_are_disjoint_from_each_other_and_the_surface_sets() {
         calib::HELD_OUT_SEEDS,
         AIR_TUNING_SEEDS,
         AIR_ROUND_ONE_SEEDS,
+        AIR_ROUND_TWO_SEEDS,
+        AIR_ROUND_THREE_SEEDS,
         AIR_HELD_OUT_SEEDS,
     ];
     for (i, a) in sets.iter().enumerate() {

@@ -157,6 +157,7 @@ fn target(t: Time, at: LonLat, vel: [f64; 2], declared: bool) -> TrackFacts {
         manoeuvre: None,
         mean_velocity_mps: None,
         first_seen_t: None,
+        velocity_sigma_mps: None,
     }
 }
 

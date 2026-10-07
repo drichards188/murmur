@@ -47,6 +47,7 @@ fn track(t: Time, at: LonLat, vel: Option<[f64; 2]>, aff: Affiliation, domain: D
         manoeuvre: None,
         mean_velocity_mps: None,
         first_seen_t: None,
+        velocity_sigma_mps: None,
     }
 }
 
