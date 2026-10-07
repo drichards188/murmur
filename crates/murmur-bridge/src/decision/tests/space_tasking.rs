@@ -608,10 +608,12 @@ async fn a_reload_after_the_pass_does_not_miss_a_collected_collect() {
     r.replays();
 }
 
-/// The same elements pinned otherwise are another segment: a running cover is re-checked
-/// on them (and holds); the same pin is the same segment.
+/// The same elements on the same pin are the same segment (only `space.loaded`); pinned
+/// otherwise they would be another, which rules 13 refuses mid-run (`SPACE_REPLAY_SINCE`:
+/// the bridge pins once per session): nothing logged, the cover not re-checked, the segment
+/// the engine and the bridge hold unchanged.
 #[tokio::test]
-async fn another_pin_is_another_segment() {
+async fn another_pin_is_refused_mid_run() {
     let (r, map) = space_rig(60.0);
     let cover = r.d.submit(&op1(), cover_req("wgs", 2)).await.expect("cover");
     assert_eq!(cover.state, State::Dispatched, "{}", cover.intent);
@@ -620,8 +622,11 @@ async fn another_pin_is_another_segment() {
     assert_eq!(r.log.lines().len(), before + 1, "the same segment and pin: only space.loaded");
     assert_eq!(r.op_states(), ["watching"]);
     r.d.install_space(pinned_space(Some(-3)), map);
-    assert_eq!(r.op_states(), ["watching", "rechecked"]);
-    assert!(r.log.text().contains("pinned -3 d"));
+    assert_eq!(r.log.lines().len(), before + 1, "a re-pinned segment refused: nothing logged");
+    assert_eq!(r.op_states(), ["watching"]);
+    assert!(!r.log.text().contains("pinned -3 d"));
+    let held = r.d.space.read().unwrap_or_else(|e| e.into_inner()).clone().expect("a segment");
+    assert_eq!(murmur_decide::SpaceOracle::pinned_shift_days(held.as_ref()), None);
     assert_eq!(r.state(cover.id), State::Dispatched);
     r.replays();
 }

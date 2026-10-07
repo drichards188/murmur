@@ -718,6 +718,31 @@ group. Dates are 2026.
 
 ## Engineering
 
+- **A space answer is held to when it was computed; a re-check to the instant it judged; the
+  pin to the run** (10-07, murmur-der.4, murmur-lsj; rules 13 `SPACE_REPLAY_SINCE`). The
+  engine took a collect's answer prepared outside its lock only within 5 s of the check, but
+  nothing in the log said when an answer was computed, so replay accepted one of any age.
+  Decided: (1) each decision logs when its answer was computed (`computed_t`, beside the
+  answer's hash in its inputs), not the `space.query` event, since one answer (by content) can
+  be read by several decisions computed at different times; (2) the bound is the `space_query`
+  rule's, so replay recomputes it with the check (a decision mismatch, not a separate
+  binding), measured against the decision's snapshot time as the engine always measured it;
+  (3) the time is bound to the answer itself, because a time alone is a number anyone can
+  write: a collect's request time is the scenario time of its computation under the run's
+  logged map (a re-check keeps the tasking's request time, so there the time is only logged),
+  and the engine takes a prepared collect only if that holds. What stays unbound: the
+  snapshot time, which is the bridge's for every decision (replay proves decisions follow from
+  the logged inputs, not that the inputs were true). A cover carries its time and no bound,
+  its question being independent of when it is asked. A re-check judged "has the pass come"
+  on one clock read and logged its check on another, so a clock moving between the two put an
+  honest re-check a millisecond past the pass for replay (which judges on the check's time):
+  the re-check is now logged at its guard's instant, as a cancel's report already was (one
+  clock read per judgement, the 10-06 rule for cancels, applied to every engine whatever its
+  rules). The session's time shift is pinned once (the bridge has kept its pin across reloads
+  since rules 11), so the engine refuses a segment pinned otherwise instead of taking it as a
+  new segment, and replay flags a pin change mid-log; older logs replay as before. Stated, not
+  changed: the engine never computing a cover itself (rules 11's review) holds for an engine
+  of every rules version, and replay can't see who computed an answer.
 - **A keep-out that blocks is explained, read-only; nothing here relaxes one** (10-06,
   murmur-12e; no rules change). Measured live: with manoeuvring civilian traffic near the
   target, keep-outs blocked 77 of 77 nominations while the platform was 1 to 2 km out (a

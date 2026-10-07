@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 38] = [
+const LOGS: [(&str, u32); 40] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -124,13 +124,18 @@ const LOGS: [(&str, u32); 38] = [
     ("v12-young-track-blocks-scenario-79.jsonl", REVIEW_FOLLOWUPS_SINCE),
     ("v12-refusal-names-queued-order-scenario-81.jsonl", REVIEW_FOLLOWUPS_SINCE),
     ("v12-restore-written-off-scenario-82.jsonl", REVIEW_FOLLOWUPS_SINCE),
+    // rules 13 (space answers held to their time; the table names the constant): the same
+    // scenario, and the engine on the element-set fixture as for rules 11, every answer with
+    // when it was computed (see the test below)
+    ("v13-engagement-scenario-01.jsonl", SPACE_REPLAY_SINCE),
+    ("v13-space-replay-engine.jsonl", SPACE_REPLAY_SINCE),
 ];
 
 /// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
 const V6_AIRSHIP: &str = "v6-airship-nomination-scenario-66.jsonl";
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v12-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v13-engagement-scenario-01.jsonl";
 
 /// The committed scenario log of rules 6 (the lost-link preload).
 const V6_SCENARIO: &str = "v6-engagement-scenario-01.jsonl";
@@ -1149,7 +1154,7 @@ fn the_rules_12_live_logs_carry_across_two_crashes_in_one_line_each() {
         first.contains("\"carried_from\":[{\"log\":\".last-run-27765\",\"error\":\"the pointer is empty"),
         "{first}"
     );
-    let r = replay_str(&c1).unwrap();
+    let r = with(&c1, RulesAccepted::Exactly(REVIEW_FOLLOWUPS_SINCE));
     assert!(r.ok(), "{:?}", r.mismatches);
     assert_eq!(r.build.as_ref().map(|b| b.dirty), Some(Some(false)));
     assert_eq!(r.carried_restores.len(), 1);
@@ -1169,6 +1174,7 @@ fn the_rules_12_live_logs_carry_across_two_crashes_in_one_line_each() {
     let logs = [(CRASH_1.1, c1.as_str())];
     let opts = ReplayOptions {
         carried_logs: &logs,
+        rules: RulesAccepted::Exactly(REVIEW_FOLLOWUPS_SINCE),
         ..ReplayOptions::default()
     };
     let r = replay_str_with(&c2, &opts).unwrap();
@@ -1179,13 +1185,14 @@ fn the_rules_12_live_logs_carry_across_two_crashes_in_one_line_each() {
     assert_eq!(r.unrestored.len(), 1, "only the second engagement's values: {:?}", r.unrestored);
     assert!(c2.contains("\"type\":\"platform.restore\",\"uid\":\"2\"") && c2.contains("\"confirmed\":true"));
     assert!(!c2.contains("\"carried\":true"), "no carried events under rules 12");
-    let r = replay_str(&c2).unwrap();
+    let r = with(&c2, RulesAccepted::Exactly(REVIEW_FOLLOWUPS_SINCE));
     assert!(whats(&r).iter().any(|w| w.contains("not verified")), "{:?}", whats(&r));
     // the last: the orbit held for the carried values on the same vehicle, its home moved
     // (no other_vehicle), sent only once they were back
     let logs = [(CRASH_2.1, c2.as_str())];
     let opts = ReplayOptions {
         carried_logs: &logs,
+        rules: RulesAccepted::Exactly(REVIEW_FOLLOWUPS_SINCE),
         ..ReplayOptions::default()
     };
     let r = replay_str_with(&after, &opts).unwrap();
@@ -1259,7 +1266,7 @@ fn a_rules_10_log_claiming_rules_9_still_carries_its_passkeys() {
 }
 
 /// Rules 11, the engine on the element-set fixture (`tests/space.rs`,
-/// `writes_the_rules_11_fixture_when_asked`): an area cover watched to its end, a collect
+/// `writes_the_space_engine_fixture_when_asked`): an area cover watched to its end, a collect
 /// cancelled before its pass, a collect re-checked on a reloaded segment and missed.
 const SPACE_ENGINE: &str = "v11-space-followups-engine.jsonl";
 /// Rules 11, live: stand-ins at the Gate, the space segment from the real cache.
@@ -1364,4 +1371,53 @@ fn a_rules_12_log_claiming_rules_11_still_carries_its_follow_ups() {
             );
         }
     }
+}
+
+/// Rules 13, the engine on the element-set fixture (`tests/space.rs`,
+/// `writes_the_space_engine_fixture_when_asked`, a clean build): the rules 11 sequence, every
+/// decision on a space answer saying when it was computed.
+const SPACE_REPLAY_ENGINE: &str = "v13-space-replay-engine.jsonl";
+
+#[test]
+fn the_rules_13_engine_log_says_when_every_answer_was_computed() {
+    let log = fixture(SPACE_REPLAY_ENGINE);
+    let r = replay_str(&log).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert_eq!(r.rules_version, SPACE_REPLAY_SINCE);
+    assert_eq!(r.build.as_ref().map(|b| b.dirty), Some(Some(false)));
+    assert_eq!((r.space_cancelled, r.space_rechecked, r.space_missed), (1, 0, 1));
+    assert_eq!(r.space_segments, 2, "the segment reloaded once, on the same pin");
+    let events = parse_log(&log).unwrap();
+    let mut answered = 0;
+    for e in &events {
+        if let EventBody::CheckResult { inputs, .. } | EventBody::PolicyDecision { inputs, .. } = &e.body
+            && let LoggedSpace::Answered { computed_t, .. } = &inputs.space
+        {
+            answered += 1;
+            let c = computed_t.expect("computed_t");
+            assert!(inputs.t.ms_since(c).abs() <= PREPARED_SPACE_MAX_AGE_MS, "{e:?}");
+        }
+    }
+    assert!(answered >= 6, "{answered}");
+    // the re-check on the reloaded segment, its time logged with it
+    let ls = lines(&log);
+    let check = at(&ls, 0, &["\"type\":\"check.result\"", "\"phase\":\"dispatched\"", "\"computed_t\":"]);
+    at(&ls, check, &["\"state\":\"missed\"", "no longer feasible: feasibility: NORAD"]);
+}
+
+/// Rules 13 after rules 12: a log of it claiming 12 is caught by the computation times only
+/// builds of 13 write.
+#[test]
+fn a_rules_13_log_claiming_rules_12_still_carries_its_answers_times() {
+    let (now, before) = (SPACE_REPLAY_SINCE, REVIEW_FOLLOWUPS_SINCE);
+    assert_eq!(before + 1, now, "the version just before");
+    let mut ls = lines(&fixture(SPACE_REPLAY_ENGINE));
+    assert!(ls[0].contains(&format!("\"rules_version\":{now},")));
+    ls[0] = ls[0].replacen(&format!("\"rules_version\":{now},"), &format!("\"rules_version\":{before},"), 1);
+    let r = with(&rechain(&ls), RulesAccepted::Exactly(before));
+    let w = whats(&r);
+    assert!(
+        w.iter().any(|m| m.contains("when a space answer was computed") && m.contains(&format!("only builds of rules {now}"))),
+        "{w:?}"
+    );
 }

@@ -144,7 +144,7 @@ use crate::rules::{
 };
 use crate::space::{self, ScenarioMap, SpaceAnswer, SpaceOracle, SpaceOrder};
 use crate::time::Time;
-use crate::world::{LoggedInputs, LoggedSpace, WorldSnapshot};
+use crate::world::{LoggedInputs, LoggedSpace, SpaceInputs, WorldSnapshot};
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Mismatch {
@@ -1391,6 +1391,7 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (rules::REVIEW_FOLLOWUPS_SINCE, "\"carried\":{", "values carried over holding a vehicle (a decision's fact)"),
     (rules::REVIEW_FOLLOWUPS_SINCE, "\"expended\":{", "a platform spent by its own effect (a decision's fact)"),
     (rules::REVIEW_FOLLOWUPS_SINCE, "\"may_owe\":[", "the platforms a failed carry may owe values to"),
+    (rules::SPACE_REPLAY_SINCE, "\"computed_t\":", "when a space answer was computed (a decision's fact)"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.
@@ -1879,6 +1880,21 @@ fn replay_inner<S: AsRef<str>>(
                 if let Err(why) = map.validate() {
                     bad(&mut r, e, None, "invalid scenario map", why, String::new());
                 }
+                // rules 13: the time shift is pinned once per run (the engine refuses a segment
+                // pinned otherwise): the same elements pinned a day apart answer differently
+                if policy.as_ref().is_some_and(|p| p.rules.space_replay())
+                    && current_segment.is_some()
+                    && *pinned_shift_days != pinned
+                {
+                    bad(
+                        &mut r,
+                        e,
+                        None,
+                        "a mid-log pin change: a space segment pinned to another time shift than the one loaded first",
+                        json(pinned_shift_days),
+                        json(&pinned),
+                    );
+                }
                 scenario_map = map;
                 pinned = *pinned_shift_days;
                 current_segment = Some(segment.clone());
@@ -1996,6 +2012,7 @@ fn replay_inner<S: AsRef<str>>(
                     }
                 };
                 check_terrain(&mut r, e, *intent, &inputs);
+                check_space_computed(&mut r, e, *intent, &inputs, *phase == CheckPhase::Dispatched, &scenario_map, pol);
                 if tr.plan.is_some() && inputs.plan.as_deref() != tr.plan.as_ref() {
                     bad(
                         &mut r,
@@ -2129,6 +2146,7 @@ fn replay_inner<S: AsRef<str>>(
                         continue;
                     }
                 };
+                check_space_computed(&mut r, e, *intent, &inputs, false, &scenario_map, pol);
                 let again = policy::decide(&tr.spec, &inputs, pol);
                 r.policy_recomputed += 1;
                 if &again != decision {
@@ -6599,6 +6617,47 @@ fn quoted_vehicle_event(reason: &str) -> Option<(&'static str, &str)> {
     None
 }
 
+/// Rules 13 ([`crate::rules::SPACE_REPLAY_SINCE`]): when a decision's space answer was
+/// computed. Every answered space input says it (`computed_t`); a collect's answer was asked
+/// at the scenario time of that computation (the map of the last `space.loaded`), but in a
+/// re-check (`rechecked`), which keeps the request time the task was tasked at. So the time
+/// logged is the answer's own, and the `space_query` rule's bound on it (recomputed with the
+/// check: a collect's answer within [`crate::rules::PREPARED_SPACE_MAX_AGE_MS`] of its
+/// check) holds for the answer the decision read.
+fn check_space_computed(
+    r: &mut ReplayReport,
+    e: &Event,
+    intent: IntentId,
+    world: &WorldSnapshot,
+    rechecked: bool,
+    map: &ScenarioMap,
+    pol: &Policy,
+) {
+    if !pol.rules.space_replay() {
+        return;
+    }
+    let SpaceInputs::Answered { sha256, answer, computed_t } = &world.space else {
+        return;
+    };
+    let Some(c) = computed_t else {
+        bad(r, e, Some(intent), "a space answer without when it was computed (computed_t)", sha256.clone(), "computed_t".into());
+        return;
+    };
+    if !rechecked
+        && let Some(now) = answer.now()
+        && now != map.scenario(*c)
+    {
+        bad(
+            r,
+            e,
+            Some(intent),
+            "a space answer asked at another time than it was computed at (its request time is not the scenario time of its computed_t)",
+            json(&now),
+            json(&map.scenario(*c)),
+        );
+    }
+}
+
 /// Decision inputs with the area reference resolved to the set in force and any space
 /// answer reference to its logged answer.
 fn resolve(
@@ -6606,7 +6665,7 @@ fn resolve(
     in_force: &InForce,
     answers: &Answers,
 ) -> Result<WorldSnapshot, &'static str> {
-    if let LoggedSpace::Answered { sha256 } = &inputs.space
+    if let LoggedSpace::Answered { sha256, .. } = &inputs.space
         && !answers.contains_key(sha256)
     {
         return Err("decision references a space answer that was not logged or did not verify");

@@ -1265,7 +1265,7 @@ fn edit_answer(ev: &mut [Event], edit: impl Fn(&mut SpaceAnswer)) {
     }
     for e in ev.iter_mut() {
         if let audit::EventBody::CheckResult { inputs, .. } | audit::EventBody::PolicyDecision { inputs, .. } = &mut e.body
-            && let LoggedSpace::Answered { sha256 } = &mut inputs.space
+            && let LoggedSpace::Answered { sha256, .. } = &mut inputs.space
             && let Some((_, new)) = rehash.iter().find(|(old, _)| old == sha256)
         {
             *sha256 = new.clone();
@@ -1849,14 +1849,15 @@ fn a_prepared_answer_from_another_segment_is_not_used() {
     assert_replays(&run.log);
 }
 
-/// The committed rules 11 fixture of the engine on the element-set fixture
-/// (`tests/data/audit/v11-space-followups-engine.jsonl`, replayed by `tests/versions.rs`):
-/// an area cover watched to its end, a collect cancelled before its pass, a collect
-/// re-checked on a reloaded segment (the chosen satellite gone) and missed. Written to
-/// `MURMUR_WRITE_FIXTURE` when that is set (from a clean build of the head the fixture
-/// names), checked here either way.
+/// The committed fixtures of the engine on the element-set fixture, replayed by
+/// `tests/versions.rs` (`tests/data/audit/v11-space-followups-engine.jsonl` written by rules
+/// 11's build, `v13-space-replay-engine.jsonl` by rules 13's, each answer with its time): an
+/// area cover watched to its end, a collect cancelled before its pass, a collect re-checked on
+/// a reloaded segment (the chosen satellite gone) and missed. Written to
+/// `MURMUR_WRITE_FIXTURE` when that is set (from a clean build of the head the fixture names),
+/// checked here either way.
 #[test]
-fn writes_the_rules_11_fixture_when_asked() {
+fn writes_the_space_engine_fixture_when_asked() {
     let mut run = run(policy(), true);
     let session = run
         .engine
@@ -1909,6 +1910,10 @@ fn writes_the_rules_11_fixture_when_asked() {
     let r = replay_str(&text).unwrap();
     assert!(r.ok(), "{:#?}", r.mismatches);
     assert_eq!((r.space_cancelled, r.space_rechecked, r.space_missed), (1, 0, 1));
+    // rules 13: every decision on a space answer says when it was computed
+    let answered = text.matches("\"status\":\"answered\"").count();
+    assert!(answered > 0);
+    assert_eq!(text.matches("\"computed_t\":").count(), answered, "{text}");
     if let Ok(path) = std::env::var("MURMUR_WRITE_FIXTURE") {
         std::fs::write(&path, &text).unwrap_or_else(|e| panic!("{path}: {e}"));
     }
@@ -1963,7 +1968,7 @@ fn edit_last_answer(ev: &mut [Event], edit: impl Fn(&mut SpaceAnswer)) {
     };
     for e in ev.iter_mut() {
         if let audit::EventBody::CheckResult { inputs, .. } | audit::EventBody::PolicyDecision { inputs, .. } = &mut e.body
-            && let LoggedSpace::Answered { sha256 } = &mut inputs.space
+            && let LoggedSpace::Answered { sha256, .. } = &mut inputs.space
             && *sha256 == old
         {
             *sha256 = new.clone();
@@ -2370,5 +2375,249 @@ fn fresh_options_after_a_lost_pass_are_those_still_taskable_now() {
         }
     }
     let r = replay_str(&run.log.text()).unwrap();
+    assert!(r.ok(), "{:#?}", r.mismatches);
+}
+
+// ---- rules 13: when a space answer was computed, the re-check's instant, the pin ----------
+
+/// Every decision input's `computed_t` rewritten by `f` (a forger editing the time alone).
+fn edit_computed(ev: &mut [Event], f: impl Fn(&mut Option<Time>)) {
+    for e in ev.iter_mut() {
+        if let audit::EventBody::CheckResult { inputs, .. } | audit::EventBody::PolicyDecision { inputs, .. } = &mut e.body
+            && let LoggedSpace::Answered { computed_t, .. } = &mut inputs.space
+        {
+            f(computed_t);
+        }
+    }
+}
+
+/// A tasking answer's request time moved by `ms` (the question asked at another time).
+fn shift_request(a: &mut SpaceAnswer, ms: i64) {
+    if let SpaceQuery::Tasking(q) = &mut a.query {
+        q.now += chrono::Duration::milliseconds(ms);
+    }
+    if let SpaceResult::Tasking(t) = &mut a.result {
+        t.request.now += chrono::Duration::milliseconds(ms);
+    }
+}
+
+/// der.4: a check logs when its space answer was computed (`computed_t`); a collect decides
+/// only on an answer computed within 5 s of its check and asked at that time, which replay
+/// recomputes: an answer older than the bound (asked earlier, re-hashed, its time moved with
+/// it, so the log agrees with itself), a time stripped, a time moved apart from the answer,
+/// are each caught.
+#[test]
+fn a_space_answer_logs_when_it_was_computed_and_replay_holds_the_bound() {
+    let mut run = run(policy(), true);
+    let session = run
+        .engine
+        .open_operator_session(OperatorId::new("op-1"))
+        .unwrap();
+    // computed outside the lock, used by the check 2 s later (the bridge's way)
+    let prepared = prepare_space(&segment(), &collect(None).task, t0(), &policy().rules).unwrap();
+    run.engine.use_prepared_space(prepared);
+    run.advance_to(t0().plus_ms(2_000));
+    let world = run.world();
+    let i = run
+        .engine
+        .submit(session.authority(), collect(None), &world, &NoTerrain)
+        .unwrap();
+    assert_eq!(check(i, RuleId::SpaceQuery).outcome, Outcome::Pass);
+    let honest = run.log.text();
+    assert!(honest.contains(&format!("\"computed_t\":{}", t0().0)), "{honest}");
+    assert_replays(&run.log);
+    // forged: the answer asked 10 s earlier, consistent with itself: 12 s before its check
+    let forged = forge(&honest, |ev| {
+        edit_answer(ev, |a| shift_request(a, -10_000));
+        edit_computed(ev, |c| *c = c.map(|t| t.plus_ms(-10_000)));
+    });
+    let r = replay_str(&forged).unwrap();
+    let w = whats(&r);
+    assert!(w.iter().any(|m| m == "check results differ"), "{w:?}");
+    assert!(
+        r.mismatches.iter().any(|m| m.recomputed.contains("the space answer was computed 12.000 s before the check, more than 5 s")),
+        "{:#?}",
+        r.mismatches
+    );
+    assert!(!w.iter().any(|m| m.starts_with("a space answer asked at another time")), "{w:?}");
+    // the same answer 4 s old is within the bound: replays
+    let fine = forge(&honest, |ev| {
+        edit_answer(ev, |a| shift_request(a, -2_000));
+        edit_computed(ev, |c| *c = c.map(|t| t.plus_ms(-2_000)));
+    });
+    let r = replay_str(&fine).unwrap();
+    assert!(r.ok(), "{:#?}", r.mismatches);
+    // forged: the time stripped
+    let w = forged_whats(&honest, |ev| edit_computed(ev, |c| *c = None));
+    assert!(w.iter().any(|m| m == "a space answer without when it was computed (computed_t)"), "{w:?}");
+    assert!(w.iter().any(|m| m == "check results differ"), "{w:?}");
+    // forged: the time moved, the answer left as asked
+    let w = forged_whats(&honest, |ev| edit_computed(ev, |c| *c = c.map(|t| t.plus_ms(1_500))));
+    assert!(
+        w.iter().any(|m| m.starts_with("a space answer asked at another time than it was computed at")),
+        "{w:?}"
+    );
+}
+
+/// der.4: the engine takes a prepared collect only if it was asked at the scenario time of
+/// its computation (what replay holds the log to); otherwise it asks itself.
+#[test]
+fn a_prepared_collect_asked_at_another_time_than_computed_is_not_used() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut run = run(policy(), false);
+    run.engine
+        .set_space(Box::new(Counting(segment(), calls.clone())))
+        .unwrap();
+    let session = run
+        .engine
+        .open_operator_session(OperatorId::new("op-1"))
+        .unwrap();
+    let task = collect(None).task;
+    // computed now, but asked as of an hour before
+    let outside = Counting(segment(), calls.clone());
+    let p = prepare_space_at(&outside, &task, t0(), t0().plus_ms(-3_600_000), &policy().rules).unwrap();
+    run.engine.use_prepared_space(p);
+    run.advance_to(t0().plus_ms(1_000));
+    let world = run.world();
+    let i = run
+        .engine
+        .submit(session.authority(), collect(None), &world, &NoTerrain)
+        .unwrap();
+    assert_eq!(calls.load(SeqCst), 2, "the engine asked again");
+    assert_eq!(i.space_answer().unwrap().now(), Some(t0().plus_ms(1_000)));
+    assert!(run.log.text().contains(&format!("\"computed_t\":{}", t0().plus_ms(1_000).0)));
+    assert_replays(&run.log);
+}
+
+/// A clock that moves a millisecond at every read (no two reads in a step are the same
+/// instant), settable.
+#[derive(Clone)]
+struct Creeping(Arc<std::sync::atomic::AtomicI64>);
+
+impl Clock for Creeping {
+    fn now(&self) -> Time {
+        Time(self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
+    }
+}
+
+/// lsj: a re-check judges "has the pass come" on one clock read and its check is logged at
+/// that instant (replay judges on the check's time): under a clock that moves a millisecond
+/// at every read, an honest re-check a millisecond before the pass replays. The same check
+/// logged a millisecond later would be one after the pass, which replay refuses.
+#[test]
+fn a_recheck_a_millisecond_before_the_pass_replays_under_a_moving_clock() {
+    let clock = Creeping(Arc::new(std::sync::atomic::AtomicI64::new(t0().0)));
+    let log = MemorySink::new();
+    let mut engine = Engine::new(policy(), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    engine.set_space(Box::new(segment())).unwrap();
+    let session = engine
+        .open_operator_session(OperatorId::new("op-1"))
+        .unwrap();
+    let world = WorldSnapshot::new(clock.now());
+    let q = engine
+        .submit(session.authority(), collect(None), &world, &NoTerrain)
+        .unwrap();
+    let chosen = ChosenCollect::from_option(&q.space_answer().unwrap().tasking().unwrap().options[0]);
+    let qid = q.id();
+    let world = WorldSnapshot::new(clock.now());
+    let id = engine
+        .amend_collect(session.authority(), qid, chosen, &world, &NoTerrain)
+        .unwrap()
+        .id();
+    let Order::Collect(order) = engine.dispatch_order(id).unwrap() else {
+        panic!("not a collect order");
+    };
+    engine
+        .record_op_state(id, &order.resource, "tasked", "simulated")
+        .unwrap();
+    let (task, now) = {
+        let i = engine.intent(id).unwrap();
+        (i.spec().task.clone(), i.space_answer().unwrap().now().unwrap())
+    };
+    // the element sets reloaded without the chosen satellite
+    let later = space_without(chosen.norad_id);
+    let seg2 = SpaceSegment::new(later.clone()).unwrap();
+    engine
+        .set_space(Box::new(SpaceSegment::new(later).unwrap()))
+        .unwrap();
+    // the later answer computed just before; the guard reads a millisecond before the pass
+    let p = prepare_space_at(&seg2, &task, chosen.collect_time.plus_ms(-2), now, &policy().rules).unwrap();
+    clock.0.store(chosen.collect_time.0 - 1, std::sync::atomic::Ordering::SeqCst);
+    assert!(matches!(engine.recheck_space(id, p).unwrap(), SpaceRecheck::Lost { .. }));
+    let honest = log.text();
+    let checked: Event = honest
+        .lines()
+        .find(|l| l.contains("\"phase\":\"dispatched\""))
+        .map(|l| serde_json::from_str(l).unwrap())
+        .unwrap();
+    assert_eq!(checked.t, chosen.collect_time.plus_ms(-1), "logged at the guard's instant");
+    let r = replay_str(&honest).unwrap();
+    assert!(r.ok(), "{:#?}", r.mismatches);
+    assert_eq!(r.space_missed, 1);
+    // what a later clock read for the check would have written: after the pass, refused
+    let w = forged_whats(&honest, |ev| {
+        for e in ev.iter_mut() {
+            if e.t == chosen.collect_time.plus_ms(-1) {
+                e.t = chosen.collect_time;
+            }
+        }
+    });
+    assert!(
+        w.iter().any(|m| m.starts_with("a collect re-checked after its pass had come")),
+        "{w:?}"
+    );
+}
+
+/// lsj: the pin is the run's: under rules 13 the engine refuses a segment pinned otherwise
+/// (nothing logged) and takes a reload on the same pin; replay flags a mid-log pin change.
+/// Under rules 12 the engine took a re-pin and replay does not flag it (older logs replay as
+/// before).
+#[test]
+fn a_mid_log_pin_change_is_refused_and_flagged() {
+    let mut run = run(policy(), true);
+    let before = run.log.lines().len();
+    let err = run
+        .engine
+        .set_space(Box::new(SpaceSegment::new(pinned_space(Some(-3))).unwrap()))
+        .unwrap_err();
+    assert!(matches!(err, EngineError::SpaceSegment(_)), "{err}");
+    assert!(err.to_string().contains("pinned none at the first load, -3 d given"), "{err}");
+    assert_eq!(run.log.lines().len(), before, "nothing logged");
+    assert_eq!(run.engine.space_segment().unwrap().pinned_shift_days, None);
+    // a reload of the elements on the same pin is taken
+    run.engine
+        .set_space(Box::new(SpaceSegment::new(space_without(25544)).unwrap()))
+        .unwrap();
+    let honest = run.log.text();
+    assert_eq!(honest.matches("\"type\":\"space.loaded\"").count(), 2);
+    assert!(replay_str(&honest).unwrap().ok());
+    // forged: the reload pinned to another shift
+    let w = forged_whats(&honest, |ev| {
+        let last = ev
+            .iter()
+            .rposition(|e| matches!(e.body, audit::EventBody::SpaceLoaded { .. }))
+            .unwrap();
+        if let audit::EventBody::SpaceLoaded { segment, pinned_shift_days, .. } = &mut ev[last].body {
+            *pinned_shift_days = Some(-3);
+            segment.pinned_shift_days = Some(-3);
+        }
+    });
+    assert!(w.iter().any(|m| m.starts_with("a mid-log pin change")), "{w:?}");
+    // rules 12: a re-pin taken, and replayed as before
+    let mut p = policy();
+    p.rules.rules_version = REVIEW_FOLLOWUPS_SINCE;
+    let mut old = self::run(p, true);
+    old.engine
+        .set_space(Box::new(SpaceSegment::new(pinned_space(Some(-3))).unwrap()))
+        .unwrap();
+    let r = replay_str_with(
+        &old.log.text(),
+        &ReplayOptions {
+            rules: RulesAccepted::Exactly(REVIEW_FOLLOWUPS_SINCE),
+            ..ReplayOptions::default()
+        },
+    )
+    .unwrap();
     assert!(r.ok(), "{:#?}", r.mismatches);
 }

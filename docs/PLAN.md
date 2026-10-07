@@ -269,7 +269,9 @@ in the console (`sim/fleets/contacts-demo.toml` shows coverage gaps at the Gate)
   with the fresh options for a human when its pass is gone), a cover is evaluated at sample
   points over its area (the centroid and the boundary, the least covered point deciding),
   and the space query runs outside the decision lock on the segment the engine holds
-  (`crates/murmur-decide/README.md`, "After dispatch").
+  (`crates/murmur-decide/README.md`, "After dispatch"). Rules 13 (`SPACE_REPLAY_SINCE`): each
+  answer's computation time is logged and bound, re-checks are logged at their guard's
+  instant, the pin is the run's.
 
 Exit: the 30%-loss write-up (murmur-t7d), with numbers.
 
@@ -481,6 +483,15 @@ is refused; `[approval] step_up_acts` can add a hostile declaration and an accep
 lost vehicle to the acts that step up (off by default). Passkeys come before a study with
 real participants. Live log with anchors:
 `crates/murmur-decide/tests/data/audit/v8-auth-live.jsonl`.
+
+Rules 13, space answers held to their time (murmur-der.4, murmur-lsj; `SPACE_REPLAY_SINCE`,
+policy schema 7 unchanged; DECISIONS.md, 10-07): every decision on a space answer logs when
+the answer was computed (`computed_t`), a collect decides only on one computed within 5 s of
+its check and asked at that time (the `space_query` rule, so replay recomputes the bound), a
+re-check is logged at the instant its "has the pass come" guard read the clock, and the
+segment's pinned time shift can't change within a run (the engine refuses, replay flags it).
+This closes Phase E's last open item (murmur-der.4). Fixtures in
+`crates/murmur-decide/tests/data/audit/v13-*`.
 
 Rules 12, the reviews' follow-ups (murmur-q05, -9m0, -jfi, -cq3, -qjf, -54l;
 `REVIEW_FOLLOWUPS_SINCE`, after the space follow-ups took 11; policy schema 7 unchanged;

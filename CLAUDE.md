@@ -162,6 +162,12 @@ meaningful. Decision and command, not weapons.
   counts at its domain's top speed in keep-outs. A credentials run fixes scripted operators
   at start. To crash a bridge for a carry test: `kill -9` the PID that is the run id's
   suffix in `logs/audit/<run-id>.jsonl`, never `pkill -f`.
+- Rules 13 (`SPACE_REPLAY_SINCE`): every decision on a space answer logs when it was computed
+  (`computed_t`, engine time); a collect's answer must be within 5 s of its check and asked at
+  that time (the `space_query` rule, so replay recomputes it; `PREPARED_SPACE_MAX_AGE_MS`); a
+  re-check is logged at the clock read its "has the pass come" guard made; the engine refuses
+  a segment pinned to another time shift mid-run (`EngineError::SpaceSegment`) and replay
+  flags a pin change between two `space.loaded`.
 - Keep-out explanation (murmur-12e; read-only, not logged, no rules change): the nomination
   form and `POST /api/engage/options` (`keep_outs`) say which track or vehicle blocks, which
   region, the shortfall, and what would clear it ("within X m", "between X and Y m", or a wait
