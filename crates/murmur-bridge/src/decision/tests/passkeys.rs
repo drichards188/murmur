@@ -179,6 +179,67 @@ async fn two_people_sign_an_engagement_with_their_passkeys() {
     assert!(f.operators["op-2"].passkeys[0].last_used_unix.is_some());
 }
 
+/// Rules 13 with rules 10: where the policy steps up `accept_unknown` and asks for a passkey,
+/// accepting a lost contact with a nomination takes the operator's passkey, its challenge
+/// derived from exactly those contacts (each since its last fix): the password is refused, an
+/// assertion made for another fix is refused, and the right one accepts it (`engage.accepted`
+/// quoting the passkey step-up, which replay verifies again).
+#[tokio::test]
+async fn accepting_a_lost_contact_takes_a_passkey_made_for_it() {
+    let (h, mut keys) = harness(
+        &["op-2"],
+        |p| {
+            passkey_policy(p);
+            p.approval.step_up_acts = Some(vec![murmur_decide::StepUpAct::AcceptUnknown]);
+        },
+        None,
+    );
+    let op1 = h.login("op-1", PW1).await;
+    let mut k2 = keys.remove("op-2").expect("op-2's");
+    let op2 = h.passkey_login("op-2", &mut k2).await.expect("signed in");
+    let since = h.picture_with_lost(&op1).await;
+    let nomination = |extra: Value| {
+        let mut b = json!({
+            "task": "engage", "uids": [1], "track": "T-0001",
+            "effect_radius_m": 100, "window_s": 300, "fallback": "return",
+            "accept_lost": [{ "track": "T-0002", "since": since }],
+        });
+        for (k, v) in extra.as_object().expect("object") {
+            b[k] = v.clone();
+        }
+        b
+    };
+    // the password, where the policy asks for a passkey: refused
+    let (s, v) = h.local(Some(&op2), "/api/intents", nomination(json!({ "password": PW2 }))).await;
+    assert_eq!((s, v["factor"].clone()), (StatusCode::UNAUTHORIZED, json!("passkey")), "{v}");
+    // a passkey made for an acceptance of another fix: the engine compares the act and refuses
+    let other = json!({ "act": "accept_unknown", "intent": null, "accept_lost": [{ "track": "T-0002", "since": since + 1000 }] });
+    let (s, o) = h.step_options(&op2, other).await;
+    assert_eq!(s, StatusCode::OK, "{o}");
+    let a = k2.assertion_json("localhost", LOCAL, &challenge(&o));
+    let (s, v) = h.local(Some(&op2), "/api/intents", nomination(json!({ "passkey": a }))).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "{v}");
+    let made = format!("was made for an acceptance of lost contacts T-0002 since t={} with a nomination, not for", since + 1000);
+    assert!(v["detail"].as_str().unwrap_or("").contains(&made), "{v}");
+    assert_eq!(h.e.r.events("engage.accepted"), 0, "nothing accepted");
+    // made for these contacts: accepted with the nomination, which waits for its signers
+    let act = json!({ "act": "accept_unknown", "intent": null, "accept_lost": [{ "track": "T-0002", "since": since }] });
+    let (s, o) = h.step_options(&op2, act).await;
+    assert_eq!(s, StatusCode::OK, "{o}");
+    let a = k2.assertion_json("localhost", LOCAL, &challenge(&o));
+    let (s, v) = h.local(Some(&op2), "/api/intents", nomination(json!({ "passkey": a }))).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(v["intent"]["state"], "pending_approval", "{v}");
+    let log = h.log();
+    let accepted = log.lines().find(|l| l.contains("\"type\":\"engage.accepted\"")).expect("accepted").to_string();
+    assert!(accepted.contains("\"contact\":\"T-0002\"") && accepted.contains("\"step_up\":"), "{accepted}");
+    // both assertions are on the record as step-ups (the refused one too: its act refused it),
+    // each verified again by replay
+    let r = h.replays_authenticated();
+    assert_eq!((r.passkey_logins, r.passkey_step_ups, r.lost_contacts), (1, 2, 1));
+    h.no_secret_logged(&[&op1, &op2]);
+}
+
 #[tokio::test]
 async fn an_assertion_is_for_its_act_once_and_from_the_right_authenticator() {
     let (h, mut keys) = harness(&["op-2", "op-3"], |_| {}, None);

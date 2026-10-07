@@ -168,6 +168,20 @@ impl StepUpFor {
             StepUpFor::Login => "a login".into(),
             StepUpFor::Sign { intent, token: Some(t), .. } => format!("a signature on {intent} (picture token {t})"),
             StepUpFor::Sign { intent, .. } => format!("a signature on {intent}"),
+            // rules 13: naming the lost contacts and the fix each is accepted since (two such
+            // acceptances differ only there)
+            StepUpFor::AcceptUnknown { intent, vehicles, contacts } if !contacts.is_empty() => {
+                let names: Vec<String> = contacts.iter().map(|c| format!("{} since t={}", c.track, c.since.0)).collect();
+                let what = if vehicles.is_empty() {
+                    format!("lost contacts {}", names.join(", "))
+                } else {
+                    format!("lost vehicles and lost contacts {}", names.join(", "))
+                };
+                match intent {
+                    Some(i) => format!("an acceptance of {what} for {i}"),
+                    None => format!("an acceptance of {what} with a nomination"),
+                }
+            }
             StepUpFor::AcceptUnknown { intent: Some(i), .. } => format!("an acceptance of lost vehicles for {i}"),
             StepUpFor::AcceptUnknown { .. } => "an acceptance of lost vehicles with a nomination".into(),
             StepUpFor::DeclareHostile { track } => format!("declaring {track} hostile"),

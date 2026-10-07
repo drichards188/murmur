@@ -1,5 +1,5 @@
 import { operatorFetch, operatorHeaders } from './auth'
-import { getOperator, type Check, type Intent } from './decisions'
+import { getOperator, StepUpNeeded, type Check, type Intent } from './decisions'
 import type { Declaration } from './ident'
 import type { LngLat } from './types'
 
@@ -198,7 +198,11 @@ async function post(url: string, body: unknown) {
     body: JSON.stringify(body),
   })
   const b = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(b.detail ?? `bridge returned ${res.status}`)
+  if (!res.ok) {
+    const msg = b.detail ?? `bridge returned ${res.status}`
+    // a step-up the bridge asks for (absent or wrong): the form asks for it
+    throw b.step_up ? new StepUpNeeded(msg) : new Error(msg)
+  }
   return b
 }
 
@@ -374,7 +378,7 @@ export async function nominate(req: {
   acceptLost?: KeepOutLost[]
   proof?: { password?: string; passkey?: Record<string, unknown> }
 }): Promise<Intent> {
-  const accept_lost = (req.acceptLost ?? []).map((l) => ({ track: l.track, since: l.since }))
+  const accept_lost = acceptLostBody(req.acceptLost ?? [])
   const b = await post('/api/intents', {
     task: 'engage',
     uids: [req.uid],
@@ -386,6 +390,12 @@ export async function nominate(req: {
     ...(accept_lost.length ? { accept_lost, ...(req.proof ?? {}) } : {}),
   })
   return b.intent as Intent
+}
+
+/** Rules 13: the lost contacts an acceptance names, as the request and its step-up's passkey
+ *  challenge both carry them (`{track, since}`, since its last fix in engine ms). */
+export function acceptLostBody(list: KeepOutLost[]): { track: string; since: number }[] {
+  return list.map((l) => ({ track: l.track, since: l.since }))
 }
 
 /** Rules 13: any operator withdraws an acceptance of a lost contact (pending or under way):
