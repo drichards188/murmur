@@ -1406,7 +1406,8 @@ Rules versions:
   Gated in `rules::checked_answer` (the bound), `Engine::ask_space` (the request time of a
   prepared collect) and `Engine::set_space` (the pin); the answer's time is logged from the
   same constant. Markers (a log claiming rules 12 or older can't carry them): `computed_t`.
-  Fixtures: `tests/data/audit/v13-engagement-scenario-01.jsonl` (the scenario runner) and
+  Fixtures (a clean build of `87a33d7`): `tests/data/audit/v13-engagement-scenario-01.jsonl`
+  (the scenario runner) and
   `v13-space-replay-engine.jsonl` (the engine on the element-set fixture, written by
   `tests/space.rs` with `MURMUR_WRITE_FIXTURE`: an area cover, a collect cancelled before its
   pass, one re-checked on a reloaded segment and missed, every answer with its time).
