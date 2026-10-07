@@ -1397,7 +1397,10 @@ Rules versions:
     segment (`SegmentId` carries the pin), and the engine took one as a reload. The bridge pins
     once per session, so the engine now refuses a segment pinned to another shift than the
     one loaded first (`EngineError::SpaceSegment`, nothing logged; a reload of the elements on
-    the same pin is taken) and replay flags a pin change between two `space.loaded`.
+    the same pin is taken) and replay flags a pin change between two `space.loaded`. A load
+    says its pin twice (`pinned_shift_days`, and the segment identity's): both must agree, at
+    every load (the review of 10-07 forged the identity's alone and it replayed), and the
+    engine takes no segment whose two disagree.
   - Stated, not changed: since the review of rules 11 the engine never computes a cover itself
     (a cover's check fails closed without an answer prepared outside the lock), under every
     rules version, 10 and earlier included; replay reads only logged answers and can't tell

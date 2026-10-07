@@ -2569,6 +2569,27 @@ fn a_recheck_a_millisecond_before_the_pass_replays_under_a_moving_clock() {
     );
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Which {
+    First,
+    Last,
+}
+
+/// A segment that says it is pinned otherwise than its identity says.
+struct Repinned(SpaceSegment, Option<i64>);
+
+impl SpaceOracle for Repinned {
+    fn segment(&self) -> &SegmentId {
+        self.0.segment()
+    }
+    fn answer(&self, q: &SpaceQuery) -> Result<SpaceAnswer, String> {
+        self.0.answer(q)
+    }
+    fn pinned_shift_days(&self) -> Option<i64> {
+        self.1
+    }
+}
+
 /// lsj: the pin is the run's: under rules 13 the engine refuses a segment pinned otherwise
 /// (nothing logged) and takes a reload on the same pin; replay flags a mid-log pin change.
 /// Under rules 12 the engine took a re-pin and replay does not flag it (older logs replay as
@@ -2604,6 +2625,33 @@ fn a_mid_log_pin_change_is_refused_and_flagged() {
         }
     });
     assert!(w.iter().any(|m| m.starts_with("a mid-log pin change")), "{w:?}");
+    // the review: only the pin inside the segment's identity forged, in the second load or
+    // the first (the top-level pin left as it was)
+    for which in [Which::Last, Which::First] {
+        let w = forged_whats(&honest, |ev| {
+            let loads: Vec<usize> = ev
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| matches!(e.body, audit::EventBody::SpaceLoaded { .. }))
+                .map(|(i, _)| i)
+                .collect();
+            let i = if which == Which::Last { loads[loads.len() - 1] } else { loads[0] };
+            if let audit::EventBody::SpaceLoaded { segment, .. } = &mut ev[i].body {
+                segment.pinned_shift_days = Some(-3);
+            }
+        });
+        assert!(
+            w.iter().any(|m| m == "a space segment whose identity names another pin than it was loaded with"),
+            "{which:?}: {w:?}"
+        );
+        assert!(w.iter().any(|m| m.starts_with("a mid-log pin change")), "{which:?}: {w:?}");
+    }
+    // and the engine takes no segment whose identity and pin disagree
+    let err = run
+        .engine
+        .set_space(Box::new(Repinned(SpaceSegment::new(space()).unwrap(), Some(-3))))
+        .unwrap_err();
+    assert!(err.to_string().contains("its identity names another pin (none) than it is pinned to (-3 d)"), "{err}");
     // rules 12: a re-pin taken, and replayed as before
     let mut p = policy();
     p.rules.rules_version = REVIEW_FOLLOWUPS_SINCE;

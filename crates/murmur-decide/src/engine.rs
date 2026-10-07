@@ -726,11 +726,18 @@ impl Engine {
     /// (the bridge pins once per session; replay flags a pin change between two
     /// `space.loaded`).
     pub fn set_space(&mut self, oracle: Box<dyn SpaceOracle + Send>) -> Result<(), EngineError> {
+        let days = |d: Option<i64>| d.map_or("none".to_string(), |d| format!("{d:+} d"));
+        if self.policy.rules.space_replay() && oracle.segment().pinned_shift_days != oracle.pinned_shift_days() {
+            return Err(EngineError::SpaceSegment(format!(
+                "its identity names another pin ({}) than it is pinned to ({})",
+                days(oracle.segment().pinned_shift_days),
+                days(oracle.pinned_shift_days())
+            )));
+        }
         if self.policy.rules.space_replay()
             && let Some(held) = &self.space
             && held.pinned_shift_days() != oracle.pinned_shift_days()
         {
-            let days = |d: Option<i64>| d.map_or("none".to_string(), |d| format!("{d:+} d"));
             return Err(EngineError::SpaceSegment(format!(
                 "its pinned time shift can't change within a run (pinned {} at the first load, {} given)",
                 days(held.pinned_shift_days()),

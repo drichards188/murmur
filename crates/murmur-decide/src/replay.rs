@@ -1881,19 +1881,31 @@ fn replay_inner<S: AsRef<str>>(
                     bad(&mut r, e, None, "invalid scenario map", why, String::new());
                 }
                 // rules 13: the time shift is pinned once per run (the engine refuses a segment
-                // pinned otherwise): the same elements pinned a day apart answer differently
-                if policy.as_ref().is_some_and(|p| p.rules.space_replay())
-                    && current_segment.is_some()
-                    && *pinned_shift_days != pinned
-                {
-                    bad(
-                        &mut r,
-                        e,
-                        None,
-                        "a mid-log pin change: a space segment pinned to another time shift than the one loaded first",
-                        json(pinned_shift_days),
-                        json(&pinned),
-                    );
+                // pinned otherwise): the same elements pinned a day apart answer differently.
+                // The segment's identity carries the pin too: both say the same, load after load
+                if policy.as_ref().is_some_and(|p| p.rules.space_replay()) {
+                    if segment.pinned_shift_days != *pinned_shift_days {
+                        bad(
+                            &mut r,
+                            e,
+                            None,
+                            "a space segment whose identity names another pin than it was loaded with",
+                            json(&segment.pinned_shift_days),
+                            json(pinned_shift_days),
+                        );
+                    }
+                    if let Some(prev) = &current_segment
+                        && (*pinned_shift_days != pinned || segment.pinned_shift_days != prev.pinned_shift_days)
+                    {
+                        bad(
+                            &mut r,
+                            e,
+                            None,
+                            "a mid-log pin change: a space segment pinned to another time shift than the one loaded first",
+                            json(&(pinned_shift_days, segment.pinned_shift_days)),
+                            json(&(pinned, prev.pinned_shift_days)),
+                        );
+                    }
                 }
                 scenario_map = map;
                 pinned = *pinned_shift_days;
