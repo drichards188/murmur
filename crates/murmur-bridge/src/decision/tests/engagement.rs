@@ -434,7 +434,7 @@ async fn the_dry_run_sees_a_platform_spent_by_its_effect() {
         c["outcome"] == "fail" && c["detail"].as_str().unwrap_or("").contains("spent by its own effect")
     };
     // the console's API, as an operator
-    let auth = crate::auth::Auth::new(crate::auth::Settings::dev(), e.r.d.clone(), murmur_auth::CredentialFile::default());
+    let auth = crate::auth::Auth::new(crate::auth::Settings::dev(), e.r.d.clone(), murmur_auth::CredentialFile::default()).expect("auth");
     let api = crate::api::router(crate::api::App {
         world: e.r.world.clone(),
         frames: Arc::new(tokio::sync::watch::channel(None).0),
@@ -1841,7 +1841,7 @@ async fn a_platform_left_on_a_superseded_intercept_says_so_in_its_restore_alert(
 
 /// The console's API on a rig, as the bridge serves it.
 fn api_of(e: &Erig) -> axum::Router {
-    let auth = crate::auth::Auth::new(crate::auth::Settings::dev(), e.r.d.clone(), murmur_auth::CredentialFile::default());
+    let auth = crate::auth::Auth::new(crate::auth::Settings::dev(), e.r.d.clone(), murmur_auth::CredentialFile::default()).expect("auth");
     crate::api::router(crate::api::App {
         world: e.r.world.clone(),
         frames: Arc::new(tokio::sync::watch::channel(None).0),

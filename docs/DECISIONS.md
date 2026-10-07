@@ -540,6 +540,91 @@ group. Dates are 2026.
   to 99% within two sigmas, NEES 0.84 to 1.55 (the cutter 92.9%, 1.55; the AIS ferry 99.3%).
   Keep-outs and attribution read this 1-sigma. Fusing several observers' fixes of one act,
   and a gating tracker, are later work.
+- **The air tracker is calibrated against truth, and a 2D radar's fix of an aircraft is its
+  bearing line** (10-07, murmur-oho; the review of the keep-out measurement: a light aircraft
+  seen by one USV's radar had a velocity 0 or 1 time in 60, with EO/IR too half the time
+  straight and never loitering, so the keep-out held it anywhere within 100 m/s for minutes;
+  the air constants had been scaled from the surface's and never checked; then a review of
+  this change, the same day). Three changes:
+  (1) *A 2D radar's fix of an aircraft*: the radar measures slant range and bearing, not
+  height; the sensing model had centred the fix on the aircraft's true ground position, which
+  needs the height. Now it plots it at the slant range (out by the height's share: 800 m for
+  an aircraft 1,500 m up 1 km away) and the detection says where the radar was
+  (`Detection::slant_from`); the tracker reads it as the bearing line the aircraft is on, no
+  farther out than the slant range. One radar alone does not range an aircraft (no height
+  bound is assumed: one would be an invented altitude). A track is ranged while a ranging fix
+  came within 10 s (`RANGE_FRESH_S`, the engine's own limit for a ranged altitude): another
+  sensor's position, or another radar's bearing crossing this one by 30 degrees or more (the
+  pair triangulates; at 15 degrees, the first choice, two radars 12 km out put an aircraft
+  3 km off at 3.8 of its sigmas). Unranged, a track sits at the middle of the segment with a
+  1-sigma of a third of its length (its ends 1.5 sigmas out) and no velocity, its velocity
+  reset to none (a velocity from bearings at an unknown range is wrong by as much as the
+  range). While only bearings come, once no position fix has come for 3 s, both models widen
+  along the line as an aircraft turning at 8 m/s^2 would (80 m^2/s^3); a ranged estimate
+  beyond the slant range by more than 3 of the radar's sigmas is moved back and its spread
+  widened by the move. The review found the first version deciding "ranged" by the
+  covariance along the line, which the steady model's small noise kept small once EO/IR lost
+  an aircraft, so a track slid kilometres along the bearing on a stale velocity (5.4 km off
+  while it said 1.8 km; a keep-out 3 s ahead missed by up to 5.5 km): ranging by time, the
+  widening along the line and the 3-sigma constraint answer it, and the velocity reset and
+  the 30 degrees were found after (making them, and round three). The track never gives an altitude its
+  sensors did not measure (unchanged: only a radar that measures elevation, `height`). EO/IR's
+  fix stays a position, as the sensing model has it (a passive sensor without a rangefinder
+  is angles only: a follow-up). An act a radar-only aircraft commits is placed as its
+  detection is, the segment's middle with its spread (`observe_act`).
+  (2) *Full covariance*: a measurement of one direction couples east and north, so the IMM
+  keeps the full covariance of the horizontal state; the reported 1-sigma is the least certain
+  direction's (keep-outs are circles of it), and the velocity gate reads the velocity's least
+  certain direction. On the water nothing else changes: the surface calibration passes
+  unchanged, its classes' NEES 1.03 to 1.90 (was 1.05 to 2.02) and within two sigmas 86.7 to
+  97.5% (85.2 to 97.3), slightly looser because the models' spread now keeps its east-north
+  terms. (3) *Air constants calibrated* as the surface's were (`tracks::tests::calib_air`):
+  truth motions of aircraft (straight, loitering, routes, one turn, weaves, random turns,
+  speed changes, a helicopter that hovers and goes, a small UAS, an approach and a break
+  away), three sensor mixes (one USV's 2D radar; its radar and EO/IR; every sensor of the
+  engagement demo), disjoint seeds, and the tracker before this change run on the same truth
+  and draws (verbatim copies, `tests::before_oho`). Steady and manoeuvring white-noise
+  acceleration 0.2 and 20 m^2/s^3 (were 0.4 and 80): the most velocity with every class
+  honest when updated and the velocity honest where an aircraft flies straight between
+  manoeuvres. The 3 m/s gate was judged and kept: at 3.5 a route's velocities came with a
+  normalized error over 2. *The order of events*, stated because it moved: the tuning set
+  (seeds 101-130) and round one (131-160) were written together before any tuning; round one
+  passed every criterion but one then asked of routes too (a square route's velocity in its
+  turns off by 3 to 4 sigmas); round two (161-190) was written; a widening of the velocity's
+  error by its rate of change was tried on the tuning set and round one and removed (it cost
+  straight flight a fifth of its velocities: only a coordinated-turn model follows a turn, a
+  follow-up), and the velocity criterion narrowed, having seen round one fail it, to the
+  classes flown straight between a manoeuvre or two; round two passed on that code (f0c7026,
+  a keep-out 60 and 100 s ahead the only spans then asserted). After the review, round three
+  (191-220) was written before any fix was run; the fixes were measured on the tuning set and
+  rounds one and two, and the criteria widened to a keep-out 3, 10, 30, 60 and 100 s ahead and
+  to the tracker alone; round three, run once, failed (the 15-degree triangulation: a keep-out
+  3 s ahead missed by up to 1,235 m); the crossing angle went to 30 degrees and the tracker
+  alone's bounds at 10 and 30 s were widened for its break away, round three being tuning
+  data by then. The held-out set (221-250, written before that change was run) was run once,
+  the constants frozen: every class and mix within two sigmas 88.1 to 100% of the time when
+  updated, NEES 1.08 to 1.97; a velocity given in the classes flown straight between
+  manoeuvres at a normalized error of 1.66 at most; never an altitude; the tracker alone
+  within its bounds (a few seconds ahead, missing 0 to 2.1% of samples by up to 236 m, the
+  tracker before 0 to 1.7% by up to 221 m); a keep-out 3 to 100 s ahead holding every case
+  every time but twice in some 300,000 samples 3 s ahead, by 20 m and 6 m, both an aircraft
+  without a velocity whose estimate was 3.5 and 7 sigmas off (one 10 km out ranged by a lone
+  EO/IR fix, then given a velocity of 140 m/s by two nearly parallel radars' bearings, the
+  truth 75; a route's turn the tracker had not taken in when EO/IR lost it), pinned in the
+  test as found (the tracker before, under rules 12: 83.8 to 100%). With radar and EO/IR a
+  straight aircraft has a velocity 61 to 71% of the time in the sets flown near the USV and
+  32 to 38% where it is far or fast (8 to 10 km out, 75 m/s), the tracker before 14 to 30%;
+  with every sensor 69 to 82% (37 to 41%), before 23 to 62%; one radar alone: none (was none,
+  on fixes it could not have had). Limits, stated: in a sustained turn (a loiter, a weave,
+  random turns) a velocity is seldom given (0 to 27% of the time) and then comes with a mean
+  normalized error of 3 to 97 where 2 is expected: the console shows a lagging velocity, and
+  the keep-out counts an aircraft wherever it could turn (rules 14, under Engineering). The
+  tracker lags a speed-up of 1 to 3 m/s^2 by 7 to 13 s (it has said 2 m/s of a helicopter
+  already going 24) and a hard turn with EO/IR lost by up to 300 m, which rules 14's region
+  counts. Between a lone position fix and the next, nearly parallel radars' bearings can draw
+  a velocity no aircraft here flies (140 m/s) into the estimate (never shown: its error is far
+  above the gate), which moves it along the line: bounding the velocity state by the top
+  speed is a follow-up.
 - **Sensing runs in the bridge, association is by contact id** (10-02). One seeded model
   in the bridge (which already loads the catalog and knows our vehicles) rather than in the
   contacts process; detections are associated to tracks by the simulation's contact id
@@ -718,6 +803,112 @@ group. Dates are 2026.
 
 ## Engineering
 
+- **A space answer is held to when it was computed; a re-check to the instant it judged; the
+  pin to the run** (10-07, murmur-der.4, murmur-lsj; rules 13 `SPACE_REPLAY_SINCE`). The
+  engine took a collect's answer prepared outside its lock only within 5 s of the check, but
+  nothing in the log said when an answer was computed, so replay accepted one of any age.
+  Decided: (1) each decision logs when its answer was computed (`computed_t`, beside the
+  answer's hash in its inputs), not the `space.query` event, since one answer (by content) can
+  be read by several decisions computed at different times; (2) the bound is the `space_query`
+  rule's, so replay recomputes it with the check (a decision mismatch, not a separate
+  binding), measured against the decision's snapshot time as the engine always measured it;
+  (3) the time is bound to the answer itself, because a time alone is a number anyone can
+  write: a collect's request time is the scenario time of its computation under the run's
+  logged map (a re-check keeps the tasking's request time, so there the time is only logged),
+  and the engine takes a prepared collect only if that holds. What stays unbound: the
+  snapshot time, which is the bridge's for every decision (replay proves decisions follow from
+  the logged inputs, not that the inputs were true). A cover carries its time and no bound,
+  its question being independent of when it is asked. A re-check judged "has the pass come"
+  on one clock read and logged its check on another, so a clock moving between the two put an
+  honest re-check a millisecond past the pass for replay (which judges on the check's time):
+  the re-check is now logged at its guard's instant, as a cancel's report already was (one
+  clock read per judgement, the 10-06 rule for cancels, applied to every engine whatever its
+  rules). The session's time shift is pinned once (the bridge has kept its pin across reloads
+  since rules 11), so the engine refuses a segment pinned otherwise instead of taking it as a
+  new segment, and replay flags a pin change mid-log; older logs replay as before. Stated, not
+  changed: the engine never computing a cover itself (rules 11's review) holds for an engine
+  of every rules version, and replay can't see who computed an answer.
+- **A scenario rate needs a scenario start** (10-07, murmur-drd; no rules change). With
+  `MURMUR_RATE=10` and no `MURMUR_AT`, the space API reported rate 10 on the wall clock while
+  the engine's scenario map was the identity (its decisions at 1x, as the space API's answers),
+  the console's clock ran at 10x between refreshes (a pass shown come or gone when it was
+  not), and the stand-ins' GNSS clock ran at 10x from their own start. Two fixes were on the
+  table: apply the rate from a start each process takes, or refuse a rate without a start.
+  Refused: every process that reads `MURMUR_RATE` (the bridge, the stand-ins, the contacts
+  process, the link emulator; `scripts/up.sh` before any of them starts) stops with a message
+  naming `MURMUR_AT`, and without a start the bridge's scenario clock is reported at 1x. Why:
+  without `MURMUR_AT` there is no shared origin; each process would start the fast clock at
+  its own start (processes started seconds apart disagree by tens of scenario seconds at 10x,
+  and a browser's start is anyone's guess), and the engine's map would need an origin nobody
+  chose and the others can't know. With `MURMUR_AT`, one stated start names the scenario
+  clock, as it already does for every process (`make goldengate` and the evaluation always
+  set it); without it every clock is the wall clock, which runs at 1x by definition. The cost
+  is one more variable for a fast run without a scenario, which was never consistent. After
+  the review (10-07): the check tested whether `MURMUR_AT` was set, not whether it parsed,
+  and each process parsed it its own way (chrono, jiff, a hand parser that read an offset as
+  UTC): with `MURMUR_AT=garbage MURMUR_RATE=10` the bridge ran 1x while the stand-ins' GNSS
+  clock ran 10x. Now one reader in `murmur_space::scenario_clock` (the crate every process
+  already depends on) takes `MURMUR_AT` as an RFC 3339 date-time and nothing else, and a rate
+  as a positive number; every process refuses anything else at start, and `scripts/up.sh`
+  checks the same shape first, so a start one process accepts every process accepts, and
+  reads as the same instant. The short form `2026-06-14T10:00Z` is not RFC 3339 and is
+  refused; the defaults (`make goldengate`, the evaluation, the test scripts) moved to
+  `2026-06-14T10:00:00Z`. Times inside event files keep their own, looser reading.
+- **A login's options say nothing of who has a passkey, and a flood can't turn an operator
+  away** (10-07, murmur-i58, security review of rules 10; no rules change). The decoy for an
+  id without a passkey named one 16-byte credential id, while real ids are what the
+  authenticator chose (32 bytes for the virtual authenticator, 64 for a security key), so the
+  unauthenticated `POST /api/auth/login/passkey` told by length which ids exist and hold a
+  passkey; and its issuance was not limited. Decided: (1) a decoy names as many credentials,
+  as long, as real authenticators make, drawn from a fixed table (16 bytes: a version 4 UUID,
+  its version and variant bits set, as from the password managers that make one, 15 %, or 16
+  random bytes, 10 %, a split the review asked for and a judgment; 20 for iCloud Keychain, 32
+  for Windows Hello and virtual authenticators, 64 for a YubiKey 5, 65 for an Android phone as
+  a security key; counts: one 70 %, two 25 %, three 5 %; the structure inside a security key's
+  longer ids is not imitated), deterministic per id under an HMAC key: repeat
+  queries see the same answer, as for a real operator, and nobody without the key predicts
+  it. Not drawn from the site's own registrations: those change when someone registers, and
+  every decoy would shift at once while real answers did not. The key is kept beside the
+  credential file (`<file>.decoy-key`, made once, 0600, not a credential), because a key per
+  run would change every decoy at a restart and leave real ids alone, which tells them apart
+  to anyone comparing before and after. For the same reason (the review of 10-07) the file is
+  made whole before it has its name (written beside it, synced, hard-linked into place, read
+  back: a crash or a second bridge can't leave an empty or partial key), and a key file that
+  can't be read or made stops the bridge at start, saying to remove it (the decoys then change
+  once), rather than falling back to a per-run key. (2) Issuance is limited per id by what is live, not
+  by a rate: at most four challenges live per id (120 s each); a request past that is served
+  the newest live one again, which costs nothing (no new challenge, no decision lock, no
+  state), and nothing live is pushed out. Not a refusal past a rate: a stranger could keep an
+  id at its limit for free and so lock its operator out. Not "the oldest gives way", as
+  before: four requests then pushed the operator's own challenge out. An id without a passkey
+  goes through the same table with the same bounds (its decoy redrawn from the challenge), so
+  the limit is no oracle either. The bound on what a stranger can still do: they can be
+  served a challenge the operator was also served and answer it wrongly (it is answered
+  once), each such answer a failure on the id's login limit, which they could do with
+  made-up answers anyway; so the one way to keep an operator from signing in by passkey
+  stays the failure lock stated on 10-05 (five failures in 15 minutes: 30 s, doubling to 15
+  minutes). A served-again challenge may have less of its 120 s left; once it lapses the next
+  request is fresh. The table holds 10,000 ids; past that the id issued to longest ago goes,
+  in constant time (ids are kept in the order they were last issued to), whoever it is:
+  sparing roster ids would show, by how they are served after a flood, which ids are on the
+  roster. So, stated: a sustained flood (10,000 made-up ids within a challenge's lifetime) can
+  push out the challenge an operator is answering, and the operator asks again. It no longer
+  pushes them toward the failure lock (the review of 10-07 found it did: an operator's
+  genuine answer to a challenge pushed out failed and counted, the fifth round locked them
+  out): an answer to a challenge that is not live (never issued, answered, lapsed, pushed out)
+  can't succeed, so it is no guess, and it is refused in the same words without counting or
+  logging it; only an answer to a live challenge that fails counts. (3) A wrong answer to a
+  login challenge is refused in the same words whether the id has a passkey, has none, or
+  does not exist (the bridge's own log keeps the reason); only a counter that did not count
+  up, which takes a valid signature, is named. What still tells, stated (the review): an
+  id's options flip from decoy to real when its operator registers a passkey (and back when
+  the last is removed), so someone polling ids learns who registered one and when; that is
+  inherent in naming the operator's credentials at all, and only sign-in without naming them
+  (discoverable credentials, an empty allow list) would remove it. Timing: an operator's
+  challenge takes the engine's lock and webauthn-rs's work where a decoy takes an HMAC
+  (served again, both cost the same), and a wrong answer to a live challenge of an id on the
+  roster writes an `auth.refused` audit event that an id off it does not, so its refusal
+  takes measurably longer.
 - **A keep-out that blocks is explained, read-only; nothing here relaxes one** (10-06,
   murmur-12e; no rules change). Measured live: with manoeuvring civilian traffic near the
   target, keep-outs blocked 77 of 77 nominations while the platform was 1 to 2 km out (a
@@ -821,6 +1012,58 @@ group. Dates are 2026.
   2 km from an effect 80 s out blocks the nomination, and one detected near an engagement
   under way aborts it, until the tracker has followed it about 45 s. A scenario or caller that
   gives no `first_seen_t` is judged as before.
+- **An aircraft counts anywhere it could turn or speed up to** (10-07, murmur-oho; rules 14,
+  `AIRCRAFT_REACH_SINCE`; first numbered 13, renumbered when the space replay took 13). A
+  protected aircraft with a velocity also counts in a keep-out anywhere it reaches from its
+  speed bound, speeding up to the domain's top speed (100 m/s), whether or not the tracker saw
+  it manoeuvre (`engage::aircraft_reach_m`, region `aircraft`). The bound
+  (`aircraft_speed_bound`) is its speed, `keep_out_sigma` of its velocity's error in its least
+  certain direction (the tracker's own, a new logged fact `velocity_sigma_mps`, or the
+  policy's `track_velocity_sigma_mps` when larger or not given), and the tracker's lag: the
+  aircraft counts as if it had been speeding up unseen for `AIRCRAFT_LAG_S` (7 s) at
+  `AIRCRAFT_SPEEDUP_MPS2` (4.5 m/s^2), its speed that much faster (no faster than the top
+  speed for it) and every region of an aircraft, with a velocity or without, 110 m wider
+  (`AIRCRAFT_LAG_M`). The speed-up is a bound over every source of aircraft motion here, not
+  a sigma: the contacts process speeds an aircraft up at 0.5 m/s^2, the catalog's stand-ins at
+  2.5 (a copter) to 4.2 (a VTOL leaving its hover), the air calibration's helicopter at 3; the
+  policy's air `track_accel_mps2` (2) is a white-noise sigma. The lag is measured: the
+  calibrated tracker takes in a speed-up of 1 to 3 m/s^2 only after 7 to 13 s and falls up to
+  300 m behind a hard turn when EO/IR loses an aircraft; on the air tuning sets a keep-out 3
+  to 100 s ahead held every aircraft every time from 5 s up (4 s missed one by 2 m), and 7 s is
+  that with margin. Why: calibrated against the truth (the air tracker entry, under Fleet and
+  simulation), the tracker gives a straight-flying aircraft a velocity most of the time, and a
+  keep-out along its course and its average course then missed one that turned (a right angle
+  takes 15 to 30 s) or sped up: against the truth on the air tuning sets, under rules 13 (the
+  calibrated tracker's own regions) a keep-out 60 s ahead held a first turn 86 to 93% of the
+  time, a route 85 to 92%, a helicopter that hovers and goes 89 to 93%, a break away 83 to 86%,
+  and even 3 s ahead only 97.5 to 98.6% of samples in those classes. The first
+  version of this region (the policy's 2 m/s^2 as if a bound, the policy's velocity error, no
+  lag) missed 3 to 20 s ahead (a review of 10-07: a helicopter leaving its hover 1.2 to 2.1% of
+  the time, by up to 199 m; a speed change up to 1.3%, by up to 86 m), so its claim that every
+  class held was true at 60 and 100 s only. Now every class holds at 3, 10, 30, 60 and 100 s on
+  every air tuning set; on the held-out set, run once, every sample with a velocity did, and two
+  without one were missed 3 s ahead, by 20 m and 6 m, in some 300,000 (the tracker's tail: its
+  estimate 3.5 and 7 sigmas off). The keep-out must stay at least as conservative where the
+  truth says so. Options not taken: the white-noise model of rules 6 for aircraft too (it holds
+  a boat's course a minute ahead about as well as the old filter did, the surface calibration's
+  bar; for aircraft the bar is the top-speed reach, and it misses turns and speed changes, as
+  above); the region at the aircraft's own speed alone, or without the lag (missed as above); a
+  top speed by the identified kind (a misidentified fast aircraft would escape it: a loosening
+  on an unconfirmed identity). Cost, stated: an aircraft with a velocity blocks about as far as
+  one without at every span (at 50 m/s with a 15 m 1-sigma: 411 m at 3 s, 3.1 km at 30 s and 6.1
+  km at 60 s, where one without a velocity counts 440 m, 3.1 km and 6.1 km): with this lag a
+  velocity buys an aircraft almost nothing. In the keep-out measurement (one light aircraft
+  within 4 km, no ADS-B, no height-finding radar), an aircraft flying straight past seen by
+  radar and EO/IR blocks at 30 / 60 / 120 s 73 / 100 / 100% of nominations at 0.03 contacts per
+  km^2 (rules 12 and the tracker before: 41 / 64 / 70; rules 12 and the calibrated tracker: 15 /
+  31 / 42, with 2 misses at the keep-out line, a circling boat the aircraft's wider region had
+  blocked by chance, where rules 14 has none). What would lift it is altitude (an aircraft
+  above the keep-out's ceiling clears it), from a height-finding radar or a transponder, not
+  velocity, and the keep-out explanation says so for an aircraft (it no longer offers a
+  velocity estimate as the remedy). Surface, ground and subsurface tracks are judged as before.
+  Replay recomputes the decisions the region changes and reads the velocity error from the
+  logged facts, so a rules 14 log claiming rules 13 is caught on the fact and on the decisions
+  (scenario 83's first nomination). Scenario 83; `tests/aircraft_reach.rs`.
 - **The scripted operators are fixed at the run's start** (10-06, murmur-jfi; rules 12).
   Whether a credential is harness-held was read from the file at each login and not logged,
   so turning it off mid-run logged the next login as a person's (the operator joined the
@@ -1466,7 +1709,9 @@ group. Dates are 2026.
   no authenticator answers), except that an operator with several passkeys gets several ids,
   stated. Challenges waiting for an answer are bounded per operator on the roster (logins,
   four) and per session (step-ups, eight), the oldest giving way, so no stranger can fill a
-  shared cap; an unanswered challenge leaves nothing in the log.
+  shared cap; an unanswered challenge leaves nothing in the log. (Logins revised 10-07,
+  murmur-i58: decoys drawn like real credentials, and a login's options limited per id
+  without the oldest giving way; see "A login's options say nothing of who has a passkey".)
 - **What a step-up must be is policy; a study requires a passkey** (10-05, user decision;
   policy schema 7, `PASSKEY_SCHEMA_SINCE`). `[approval] step_up_factor = "password"` (shipped,
   the default for normal credentials runs) takes the password again or a passkey (at least as

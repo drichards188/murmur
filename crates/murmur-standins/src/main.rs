@@ -38,6 +38,8 @@ fn main() {
 }
 
 async fn run(path: &str) -> Result<(), String> {
+    // a scenario rate needs a scenario start, as in the bridge (murmur-drd)
+    conditions::check_scenario_env()?;
     let fleet = Fleet::load(path)?;
     let tidewater = conditions::Config::from_env();
     let host = fleet.bridge_host.clone();

@@ -113,6 +113,7 @@ fn contact(t: Time, at: LonLat, vel: Option<[f64; 2]>, aff: Affiliation, domain:
         manoeuvre: None,
         mean_velocity_mps: vel,
         first_seen_t: Some(Time(t.0 - 900_000)),
+        velocity_sigma_mps: None,
     }
 }
 
@@ -568,10 +569,11 @@ fn ex_item() -> Item {
 #[test]
 fn every_claim_of_the_explanation_holds_in_a_dry_run() {
     let mut n = Counts::default();
-    // MURMUR_KO_SEED and MURMUR_KO_WORLDS run it longer or on other pictures
+    // MURMUR_KO_SEED and MURMUR_KO_WORLDS run it longer or on other pictures (400: under rules
+    // 14 an aircraft's lag closed the one later-only window the first 240 had)
     let env = |k: &str| std::env::var(k).ok().and_then(|s| s.parse::<u64>().ok());
     let mut rng = Rng(env("MURMUR_KO_SEED").unwrap_or(0x6b6f_2d31_3265));
-    for _ in 0..env("MURMUR_KO_WORLDS").unwrap_or(240) {
+    for _ in 0..env("MURMUR_KO_WORLDS").unwrap_or(400) {
         n.worlds += 1;
         let (w, spec) = random_world(&mut rng);
         let before = w.clone();
@@ -715,11 +717,37 @@ fn an_aircraft_without_a_ranged_altitude_blocks_with_no_ceiling_and_says_so() {
     assert!(item.blocks);
     assert_eq!(item.region.as_ref().unwrap().kind, "no_velocity");
     assert!(item.altitude.as_deref().unwrap().contains("no ceiling"), "{:?}", item.altitude);
-    // L5: a velocity estimate depends on the track settling (none while it turns)
+    // rules 14: a velocity estimate would not clear an aircraft (it counts anywhere it could turn
+    // or speed up to): the explanation says what would
     let other = item.other.as_deref().unwrap();
-    assert!(other.contains("When the tracker has a velocity estimate") && other.contains("as in a turn"), "{other}");
+    assert!(other.contains("A velocity estimate would not clear it") && other.contains("altitude, ranged"), "{other}");
     let mut n = Counts::default();
     check_claims(&spec, &w, &ex, &mut Rng(17), &mut n);
+    // with a velocity, flying away at 50 m/s, it still blocks, by its aircraft reach, and says so
+    let mut w2 = w.clone();
+    let away = velocity(50.0, 45.0);
+    if let Some(p) = w2.tracks.get_mut("T-0006") {
+        p.velocity_mps = Some(away);
+        p.mean_velocity_mps = Some(away);
+        p.velocity_sigma_mps = Some(1.5);
+    }
+    let ex2 = keepout::explain(&spec, &w2, &cfg(), &opts()).unwrap();
+    let item = ex2.items.iter().find(|i| i.id == "T-0006").unwrap();
+    assert!(item.blocks);
+    assert_eq!(item.region.as_ref().unwrap().kind, "aircraft");
+    assert!(item.other.as_deref().unwrap().contains("A velocity estimate would not clear it"), "{:?}", item.other);
+    check_claims(&spec, &w2, &ex2, &mut Rng(18), &mut n);
+    // a surface contact without a velocity: a velocity estimate would make its reach a course
+    let mut w3 = w.clone();
+    if let Some(p) = w3.tracks.get_mut("T-0006") {
+        p.domain = Domain::Surface;
+        p.alt_m = None;
+    }
+    let ex3 = keepout::explain(&spec, &w3, &cfg(), &opts()).unwrap();
+    let item = ex3.items.iter().find(|i| i.id == "T-0006").unwrap();
+    if item.blocks && item.region.as_ref().unwrap().kind == "no_velocity" {
+        assert!(item.other.as_deref().unwrap().contains("When the tracker has a velocity estimate"), "{:?}", item.other);
+    }
 }
 
 #[test]

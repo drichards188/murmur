@@ -367,15 +367,15 @@ def test_the_engine_decides_hand_built_contacts_by_version(probe):
         return {v: (x["kot"], (x.get("intr") or [[None, None]])[0][1]) for v, x in r["rules"].items()}
 
     near = K.facts(K.Hold(at(150.0, 0.0)), 600.0, 10.0, 0.0, rng, origin, "neutral", 0.6)
-    assert verdicts(near) == {"6": ("fail", "current"), "9": ("fail", "current"), "12": ("fail", "current")}
+    assert verdicts(near) == {"6": ("fail", "current"), "9": ("fail", "current"), "12": ("fail", "current"), "14": ("fail", "current")}
     young = K.facts(K.Hold(at(0.0, 2000.0)), 20.0, 10.0, 0.0, rng, origin, "unknown", 0.3)
     v = verdicts(young)
-    assert v["6"][0] == v["9"][0] == "pass" and v["12"] == ("fail", "young")
+    assert v["6"][0] == v["9"][0] == "pass" and v["12"] == v["14"] == ("fail", "young")
     legs = K.Legs(at(-1000.0, 0.0), [(-900.0 + 60.0 * k, *(K._vec(6.0, math.radians(45 if k % 2 else -45)))) for k in range(40)])
     zig = K.facts(legs, 600.0, 10.0, 0.0, rng, origin, "neutral", 0.6)
     assert "manoeuvre" in zig
     v = verdicts(zig)
-    assert v["6"][0] == "pass" and v["9"] == ("fail", "manoeuvre") and v["12"][0] == "fail"
+    assert v["6"][0] == "pass" and v["9"] == ("fail", "manoeuvre") and v["12"][0] == v["14"][0] == "fail"
     # 4 cm inside: a holding boat moved toward the effect point by its margin plus 4 cm
     hold = K.facts(K.Hold(at(900.0, 0.0)), 600.0, 10.0, 0.0, random.Random(1), origin, "neutral", 0.6)
     hold["velocity_mps"], hold["mean_velocity_mps"] = [0.0, 0.0], [0.0, 0.0]
@@ -466,7 +466,7 @@ def test_a_small_run_is_deterministic_and_versions_only_add_regions(probe, tmp_p
         assert s["counts"]["mismatches"] == 0 and s["counts"]["errors"] == 0 and s["counts"]["no_preview"] == 0
         for r in ra:
             k = {x: y["kot"] for x, y in r["rules"].items()}
-            assert k["6"] <= k["9"] <= k["12"], r
+            assert k["6"] <= k["9"] <= k["12"] <= k["14"], r
     assert a["primary"] == "radar" and a["variants"]["radar"]["tracker_quality"]
     assert {q["regions"] for q in a["variants"]["radar"]["regions"]} == {name for name, *_ in K.REFERENCE}
     assert "Not human data" in K.table(a)

@@ -390,7 +390,7 @@ fn an_operator_with_engagement_authority_unspends_a_platform_heard_since_its_eff
 /// Scenario 83's un-spend of a platform spent in the same run: heard strictly after the mark.
 #[test]
 fn an_unspend_in_the_run_that_spent_it_needs_a_report_after_the_effect() {
-    let text = scenario_log("83-spent-munition-unspent.toml");
+    let text = scenario_log("84-spent-munition-unspent.toml");
     let r = replay_str(&text).unwrap();
     assert!(r.ok(), "{:?}", r.mismatches);
     assert_eq!(r.unspent.len(), 1, "{:?}", r.unspent);

@@ -35,24 +35,15 @@ fn wall_unix() -> f64 {
 }
 
 impl Timeline {
+    /// The scenario clock from `--at` / `MURMUR_AT` and `--rate` / `MURMUR_RATE`, read as every
+    /// process reads them (`murmur_space::scenario_clock`, murmur-drd): the start an RFC 3339
+    /// date-time and nothing else, the rate a positive number, one other than 1 only with a
+    /// start (without one this clock is the wall clock, at 1x). Anything else is refused.
     pub fn new(at: Option<&str>, rate: Option<&str>) -> Result<Timeline, String> {
-        let at_unix = match at {
-            Some(s) if !s.trim().is_empty() => Some(parse_iso_utc(s)?),
-            _ => None,
-        };
-        let rate = match rate {
-            Some(s) if !s.trim().is_empty() => s
-                .trim()
-                .parse::<f64>()
-                .map_err(|_| format!("bad rate {s:?}"))?,
-            _ => 1.0,
-        };
-        if !(rate.is_finite() && rate > 0.0) {
-            return Err(format!("rate must be positive, got {rate}"));
-        }
+        let s = murmur_space::scenario_clock::scenario_env(at, rate)?;
         Ok(Timeline {
-            at_unix,
-            rate,
+            at_unix: s.at_unix(),
+            rate: s.rate,
             wall0: wall_unix(),
         })
     }
@@ -180,6 +171,17 @@ mod tests {
         assert_eq!(e, Ok(30.0));
         assert!(Timeline::default().elapsed_for(1.0).is_err());
         assert!(Timeline::new(None, Some("0")).is_err());
+        // murmur-drd: a rate needs a start (it was ignored without one)
+        let err = Timeline::new(None, Some("10")).expect_err("refused");
+        assert!(err.starts_with("MURMUR_RATE=10 needs MURMUR_AT"), "{err}");
+        assert!(Timeline::new(None, Some("1")).is_ok());
+        assert!(Timeline::new(Some(""), None).is_ok());
+        // and (the review) a start every process reads alike: RFC 3339 only, an offset the
+        // same instant
+        assert!(Timeline::new(Some("garbage"), Some("10")).is_err());
+        assert!(Timeline::new(Some("2026-06-14T10:00Z"), None).is_err());
+        let t = Timeline::new(Some("2026-06-14T05:00:00-05:00"), Some("10")).expect("tl");
+        assert_eq!(t.scenario_unix(6.0), 1_781_431_260.0);
     }
 
     /// murmur-dup: without `MURMUR_AT` the scenario clock (satellite geometry, scenario-time

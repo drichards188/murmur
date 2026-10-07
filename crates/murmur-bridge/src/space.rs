@@ -4,7 +4,8 @@
 //! Times in and out are scenario time: the scenario clock reads `MURMUR_AT` when the bridge
 //! starts and runs at `MURMUR_RATE` (the stand-ins' convention); without `MURMUR_AT` it is
 //! the bridge's clock (`clock::wall`: the monotonic rate steered within about 2 s of the wall
-//! clock, as the engine reads). Every response carries the `time_map` and `time_shifted`:
+//! clock, as the engine reads), at 1x: a rate without a start is refused at startup
+//! ([`check_scenario_env`]). Every response carries the `time_map` and `time_shifted`:
 //! element sets are current while scenarios are dated, so orbits are propagated a whole
 //! number of days later (see crates/murmur-space/README.md, "Epoch honesty"). The shift is
 //! pinned for the session so that every view describes the same propagation day.
@@ -72,11 +73,24 @@ fn bridge_ms() -> i64 {
     (crate::clock::wall() * 1000.0).round() as i64
 }
 
+/// The scenario clock's environment, refused at startup when it is not one every process
+/// reads alike (murmur-drd, `murmur_space::scenario_clock`): a `MURMUR_AT` that is not an RFC
+/// 3339 date-time, a rate that is not a positive number, a rate other than 1 without a start.
+/// Without a start the scenario clock is the bridge's own clock, at 1x, and so are the
+/// engine's decisions; a rate would only speed up what the console and the stand-ins show,
+/// each from its own start (docs/DECISIONS.md). The stand-ins, the contacts process and the
+/// link emulator refuse the same, and `scripts/up.sh` before any of them starts.
+pub fn check_scenario_env() -> Result<(), String> {
+    murmur_space::scenario_clock::from_env().map(|_| ())
+}
+
 impl ScenarioClock {
+    /// Without a start (`at`) the clock is the bridge's own, at 1x: a rate given with none is
+    /// not applied, nor reported ([`check_scenario_env`] refuses it at startup).
     pub fn new(at: Option<DateTime<Utc>>, rate: f64) -> ScenarioClock {
         ScenarioClock {
             at,
-            rate: if rate.is_finite() && rate > 0.0 {
+            rate: if at.is_some() && rate.is_finite() && rate > 0.0 {
                 rate
             } else {
                 1.0
@@ -97,21 +111,17 @@ impl ScenarioClock {
         }
     }
 
+    /// From `MURMUR_AT` and `MURMUR_RATE` as every process reads them
+    /// (`murmur_space::scenario_clock`; the bridge refused anything else at startup, so the
+    /// wall clock here is only a library caller's).
     pub fn from_env() -> ScenarioClock {
-        let at = std::env::var("MURMUR_AT")
-            .ok()
-            .and_then(|s| match parse_time(&s) {
-                Ok(t) => Some(t),
-                Err(e) => {
-                    eprintln!("space: ignoring MURMUR_AT: {e}");
-                    None
-                }
-            });
-        let rate = std::env::var("MURMUR_RATE")
-            .ok()
-            .and_then(|s| s.trim().parse().ok())
-            .unwrap_or(1.0);
-        ScenarioClock::new(at, rate)
+        match murmur_space::scenario_clock::from_env() {
+            Ok(s) => ScenarioClock::new(s.at, s.rate),
+            Err(e) => {
+                eprintln!("space: {e}; the scenario clock is the bridge's own, at 1x");
+                ScenarioClock::new(None, 1.0)
+            }
+        }
     }
 
     /// Scenario time now, on the bridge's clock (as the engine reads it: the space API and

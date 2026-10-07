@@ -2,7 +2,7 @@
 //! situations through murmur-decide's own nomination checks, read-only. Nothing here is part
 //! of the C2 or decides anything for it; the engine's rules are called, never restated.
 //!
-//! `murmur-keepout-probe [--root DIR] [--rules 6,9,12] [--keep-out-m M]` reads one situation per line on
+//! `murmur-keepout-probe [--root DIR] [--rules 6,9,12,14] [--keep-out-m M]` reads one situation per line on
 //! stdin and writes one result per line on stdout for each of its evaluations.
 //!
 //! **A situation** (JSON): `id`, `t_ms` (engine time now), `target` (a track id), `radius_m`,
@@ -24,7 +24,9 @@
 //! flagged (`mismatch`), never silently fixed. Components: `current` (along the velocity,
 //! rules 6), `mean` (along the average velocity, rules 9), `manoeuvre` (anywhere at the
 //! fastest it went, rules 9), `young` (anywhere at its domain's top speed, rules 12),
-//! `no_velocity` (no velocity estimate: anywhere at its domain's top speed, rules 6).
+//! `aircraft` (an aircraft: anywhere it reaches from its own speed, speeding up to the top
+//! speed, rules 14), `no_velocity` (no velocity estimate: anywhere at its domain's top speed,
+//! rules 6).
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufWriter, Write};
@@ -240,6 +242,9 @@ pub fn components(t: &TrackFacts, ec: &EngageRules) -> Vec<&'static str> {
     }
     if ec.followups() && t.mean_velocity_mps.is_none() && t.first_seen_t.is_some() {
         out.push("young");
+    }
+    if ec.aircraft_reach() && t.domain == murmur_decide::catalog::Domain::Air {
+        out.push("aircraft");
     }
     out
 }
@@ -503,7 +508,7 @@ pub fn region_sizes(env: &Env, q: &RegionQuery) -> Value {
 fn main() -> std::process::ExitCode {
     let mut args = std::env::args().skip(1);
     let mut root = PathBuf::from(".");
-    let mut versions = vec![6, 9, 12];
+    let mut versions = vec![6, 9, 12, 14];
     let mut keep_out_m: Option<f64> = None;
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -519,7 +524,7 @@ fn main() -> std::process::ExitCode {
             // a copy of the policy with another keep-out buffer, metres
             "--keep-out-m" => keep_out_m = args.next().and_then(|v| v.parse().ok()),
             _ => {
-                eprintln!("usage: murmur-keepout-probe [--root DIR] [--rules 6,9,12] [--keep-out-m M] < situations.jsonl");
+                eprintln!("usage: murmur-keepout-probe [--root DIR] [--rules 6,9,12,14] [--keep-out-m M] < situations.jsonl");
                 return std::process::ExitCode::from(2);
             }
         }
@@ -627,6 +632,7 @@ mod tests {
             manoeuvre: None,
             mean_velocity_mps: vel,
             first_seen_t: Some(now.plus_ms(-600_000)),
+            velocity_sigma_mps: None,
         }
     }
 

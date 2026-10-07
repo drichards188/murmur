@@ -39,12 +39,12 @@ pub const ROUND_TWO_SEEDS: std::ops::RangeInclusive<u64> = 36..=65;
 /// The held-out set's seeds: used nowhere in tuning.
 pub const HELD_OUT_SEEDS: std::ops::RangeInclusive<u64> = 66..=95;
 /// Seconds before anything is scored (a new track settles).
-const SETTLE_S: u32 = 30;
+pub(super) const SETTLE_S: u32 = 30;
 /// How far ahead a keep-out is checked, s.
 pub const SPANS_S: [f64; 2] = [60.0, 100.0];
 
 /// Position (east, north m from BASE) and velocity (east, north m/s) per second.
-type Kinematics = ((f64, f64), (f64, f64));
+pub(super) type Kinematics = ((f64, f64), (f64, f64));
 
 pub struct Case {
     pub name: &'static str,
@@ -174,7 +174,7 @@ fn accelerating(s: f64) -> Kinematics {
 }
 
 /// Integrate a velocity law v(t) from rest at (x0, y0), 0.1 s steps, sampled each second.
-fn integrate(x0: f64, y0: f64, len: usize, v: impl Fn(f64) -> (f64, f64)) -> Vec<Kinematics> {
+pub(super) fn integrate(x0: f64, y0: f64, len: usize, v: impl Fn(f64) -> (f64, f64)) -> Vec<Kinematics> {
     let mut out = Vec::with_capacity(len);
     let (mut e, mut n) = (x0, y0);
     for s in 0..len {
@@ -601,11 +601,12 @@ impl OldTrack {
             manoeuvre: None,
             mean_velocity_mps: None,
             first_seen_t: None,
+            velocity_sigma_mps: None,
         }
     }
 }
 
-fn ms(s: f64) -> Time {
+pub(super) fn ms(s: f64) -> Time {
     Time((s * 1000.0).round() as i64)
 }
 
@@ -628,7 +629,7 @@ pub struct Tally {
 }
 
 impl Tally {
-    fn add(&mut self, d2: f64, sigma: f64) {
+    pub(super) fn add(&mut self, d2: f64, sigma: f64) {
         self.n += 1.0;
         self.nees += d2 / (sigma * sigma);
         self.inside += f64::from(u8::from(d2.sqrt() <= 2.0 * sigma));
@@ -696,7 +697,7 @@ impl Scores {
     }
 }
 
-fn hold(f: &TrackFacts, now: f64, span: f64, truth: (f64, f64), ec: &EngageRules, h: &mut Hold) {
+pub(super) fn hold(f: &TrackFacts, now: f64, span: f64, truth: (f64, f64), ec: &EngageRules, h: &mut Hold) {
     let regions = track_reach(f, ms(now + span), ec);
     let p = LonLat::new(truth.1, truth.0);
     h.n += 1.0;

@@ -8,7 +8,9 @@
 //! Decision layer: MURMUR_POLICY (sim/policy.toml), MURMUR_AREAS (sim/areas),
 //! MURMUR_RUN_ID (audit log logs/audit/<run-id>.jsonl; default the UTC start time and pid),
 //! MURMUR_TIDEWATER_URL (tidewater serve, for the domain rule; unset: "not
-//! evaluated"), MURMUR_AT and MURMUR_RATE (scenario time for tidewater, as `make goldengate`).
+//! evaluated"), MURMUR_AT and MURMUR_RATE (scenario time for tidewater and the space segment,
+//! as `make goldengate`; an MURMUR_AT that is not RFC 3339, or a rate other than 1 without
+//! one, stops the bridge at start: `murmur_space::scenario_clock`).
 //! Who acts (rules 8, `auth`): MURMUR_AUTH (`dev`, the default: ids asserted by header, said
 //! loudly at start and logged as such, never evidence about people, no credential file needed:
 //! MURMUR_OPERATORS (ids accepted in X-Murmur-Operator, comma-separated; default op-1),
@@ -228,11 +230,19 @@ fn who_acts(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // a scenario rate needs a scenario start: the engine, the space API, the console and the
+    // stand-ins would otherwise run different clocks (murmur-drd)
+    space::check_scenario_env()?;
     let cfg = Config::from_env();
     let http_port = cfg.http_port;
     let mut settings = Settings::from_env(&cfg.root, &cfg.platforms);
     let auth_settings = auth::Settings::from_env(http_port).map_err(|e| format!("auth: {e}"))?;
     let credentials = who_acts(&auth_settings, &mut settings).map_err(|e| format!("auth: {e}"))?;
+    // the passkey decoys' key, made or read before the run starts: one that can't be is a
+    // refusal, not a per-run key (murmur-i58)
+    if settings.passkeys.is_some() {
+        auth::decoy_secret(auth_settings.file.as_deref()).map_err(|e| format!("auth: {e}"))?;
+    }
     let world = World::new(cfg);
     // this run's fleet manifest, before the decision layer checks a previous run's open
     // orders against it (scripts/up.sh writes it before starting the bridge, in both link
@@ -294,7 +304,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     // who is acting: logins, step-ups and agent keys (or a dev run's headers)
     let origins = Arc::new(auth_settings.origins.clone());
-    let auth = auth::Auth::new(auth_settings, decision.clone(), credentials);
+    let auth = auth::Auth::new(auth_settings, decision.clone(), credentials).map_err(|e| format!("auth: {e}"))?;
     tokio::spawn(auth.clone().run());
     match auth.mode() {
         murmur_decide::AuthMode::Credentials => println!(

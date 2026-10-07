@@ -13,7 +13,7 @@ started in the Golden Gate with real conditions and must go where the current go
 
     cargo build --release -p murmur-standins
     .venv/bin/python sim/tests/standins_drifter.py
-    .venv/bin/python sim/tests/standins_drifter.py --tidewater http://127.0.0.1:8879 --at 2026-06-14T10:00Z
+    .venv/bin/python sim/tests/standins_drifter.py --tidewater http://127.0.0.1:8879 --at 2026-06-14T10:00:00Z
 
 UDP 18865 (and 18866 with tidewater). Exit 0 = every expectation held.
 """
@@ -200,7 +200,7 @@ def main():
     ap.add_argument("--port", type=int, default=18865)
     ap.add_argument("--workdir", default=str(ROOT / "sim" / "run" / "vs-sitl" / "drifter"))
     ap.add_argument("--tidewater", help="a running `tidewater serve`, e.g. http://127.0.0.1:8879: also check the drift")
-    ap.add_argument("--at", default="2026-06-14T10:00Z", help="scenario time for --tidewater")
+    ap.add_argument("--at", default="2026-06-14T10:00:00Z", help="scenario time for --tidewater")
     ap.add_argument("--drift-s", type=float, default=180.0, help="how long to drift")
     args = ap.parse_args()
     workdir = Path(args.workdir)

@@ -220,8 +220,8 @@ pub struct Item {
 /// One region of an item at the effect time.
 #[derive(Clone, Debug, Serialize)]
 pub struct Region {
-    /// velocity, mean_velocity, manoeuvre, young, no_velocity (a track); velocity, circling,
-    /// cruise_reach, lost (one of ours).
+    /// velocity, mean_velocity, manoeuvre, young, aircraft, no_velocity (a track); velocity,
+    /// circling, cruise_reach, lost (one of ours).
     pub kind: &'static str,
     pub center: LonLat,
     pub radius_m: f64,
@@ -791,10 +791,24 @@ fn track_item(ctx: &Ctx, id: &str, t: &TrackFacts, s: &TrackStanding, alt: Optio
                 "Tracked for only {tracked:.0} s, too short to rule out a manoeuvre, so it could be anywhere within {r} of where it is: up to {speed:.1} m/s for {span:.0} s."
             )
         }
-        ReachKind::NoVelocity => format!(
-            "No velocity estimate yet, so it could be anywhere within {r} of where it is: up to {:.0} m/s for {span:.0} s.",
-            engage::top_speed_mps(t.domain)
-        ),
+        ReachKind::NoVelocity => {
+            let lag = if t.domain == Domain::Air && ec.aircraft_reach() {
+                format!(", and {:.0} m more for the tracker's lag behind an aircraft", engage::AIRCRAFT_LAG_M)
+            } else {
+                String::new()
+            };
+            format!(
+                "No velocity estimate yet, so it could be anywhere within {r} of where it is: up to {:.0} m/s for {span:.0} s{lag}.",
+                engage::top_speed_mps(t.domain)
+            )
+        }
+        ReachKind::Aircraft => {
+            let (from, to, _) = engage::aircraft_reach_m(engage::aircraft_speed_bound(t, ec), span);
+            format!(
+                "An aircraft may turn or speed up at any moment, so it could be anywhere within {r} of where it is: from {from:.1} m/s, up to {to:.1} m/s by the effect time ({span:.0} s), and {:.0} m more for the tracker's lag behind it.",
+                engage::AIRCRAFT_LAG_M
+            )
+        }
     };
     let edge = s.edge;
     // altitude matters for an aircraft (a vessel is at sea level either way)
@@ -842,9 +856,26 @@ fn track_item(ctx: &Ctx, id: &str, t: &TrackFacts, s: &TrackStanding, alt: Optio
         clear_windows: Vec::new(),
         wait: None,
         not_by_waiting: None,
-        other: (blocks && near.kind == ReachKind::NoVelocity).then(|| {
-            "When the tracker has a velocity estimate for it (it gives none while its velocity is uncertain, as in a turn), this reach becomes a prediction along its course.".to_string()
-        }),
+        other: other_remedy(blocks, near.kind, t, ec),
+    }
+}
+
+/// What else would clear a track whose reach blocks. A velocity estimate turns a surface or
+/// ground track's reach into a prediction along its course; an aircraft's (rules 14) it does
+/// not: an aircraft counts anywhere it could turn or speed up to, with a velocity or without.
+fn other_remedy(blocks: bool, kind: ReachKind, t: &TrackFacts, ec: &EngageRules) -> Option<String> {
+    if !blocks {
+        return None;
+    }
+    let aircraft = t.domain == Domain::Air && ec.aircraft_reach();
+    match kind {
+        ReachKind::NoVelocity | ReachKind::Aircraft if aircraft => Some(
+            "A velocity estimate would not clear it: an aircraft counts anywhere it could turn or speed up to, with a velocity or without. What would: its altitude, ranged, above the keep-out's ceiling (a radar that measures height), the effect sooner (the platform closer), or the aircraft farther from the point than it could fly by then.".to_string(),
+        ),
+        ReachKind::NoVelocity => Some(
+            "When the tracker has a velocity estimate for it (it gives none while its velocity is uncertain, as in a turn), this reach becomes a prediction along its course.".to_string(),
+        ),
+        _ => None,
     }
 }
 
@@ -1166,7 +1197,7 @@ fn track_why(
     mem: &TrackerMemory,
 ) -> String {
     let then_kinds: Vec<ReachKind> = engage::track_regions(then, w_effect, ec).iter().map(|r| r.kind).collect();
-    let reach = now_kinds.iter().any(|k| ["young", "manoeuvre", "no_velocity"].contains(k));
+    let reach = now_kinds.iter().any(|k| ["young", "manoeuvre", "no_velocity", "aircraft"].contains(k));
     if now_kinds.contains(&"young") && !then_kinds.contains(&ReachKind::Young) {
         format!(
             "by then it has been tracked {:.0} s, long enough for an average velocity: a manoeuvre is no longer assumed",

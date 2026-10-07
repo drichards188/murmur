@@ -125,6 +125,10 @@ pub enum EngineError {
     /// bare file name, rules before 12): the engine did not start.
     #[error("carry-over: {0}")]
     Carry(String),
+    /// Rules 13: a space segment the engine can't take (pinned to another time shift than
+    /// the one loaded first): nothing was logged.
+    #[error("space segment: {0}")]
+    SpaceSegment(String),
 }
 
 /// Rules 12: what a start carries over from earlier runs' logs ([`Engine::start`]): the entries of
@@ -178,12 +182,13 @@ pub struct IdentOutcome {
 #[derive(Clone, Debug)]
 pub struct PreparedSpace {
     pub task: Task,
+    /// When it was computed (engine time): logged with the answer from rules 13.
     pub t: Time,
     pub inputs: SpaceInputs,
 }
 
 /// How old a prepared space answer may be when the check that uses it runs, ms.
-pub const PREPARED_SPACE_MAX_AGE_MS: i64 = 5_000;
+pub use crate::rules::PREPARED_SPACE_MAX_AGE_MS;
 
 /// Ask `oracle` the task's space question at engine time `t` (what [`Engine`] does inside
 /// its checks; the bridge calls this outside its lock and hands the result to
@@ -215,7 +220,7 @@ pub fn prepare_space_at(
     Ok(PreparedSpace {
         task: task.clone(),
         t,
-        inputs: space_inputs_at(oracle, task, now, rules)?,
+        inputs: space_inputs_at(oracle, task, now, t, rules)?,
     })
 }
 
@@ -225,13 +230,16 @@ fn space_inputs(
     t: Time,
     rules: &crate::rules::RulesConfig,
 ) -> Result<SpaceInputs, EngineError> {
-    space_inputs_at(oracle, task, oracle.scenario_time(t), rules)
+    space_inputs_at(oracle, task, oracle.scenario_time(t), t, rules)
 }
 
+/// The task's space question asked at scenario time `now`, computed at engine time `t`
+/// (logged with the answer from rules 13).
 fn space_inputs_at(
     oracle: &dyn SpaceOracle,
     task: &Task,
     now: Time,
+    t: Time,
     rules: &crate::rules::RulesConfig,
 ) -> Result<SpaceInputs, EngineError> {
     let query = match query_for(task, now, &rules.space_rules()) {
@@ -243,6 +251,7 @@ fn space_inputs_at(
         Ok(answer) => SpaceInputs::Answered {
             sha256: answer.content_hash()?,
             answer: Box::new(answer),
+            computed_t: rules.space_replay().then_some(t),
         },
         Err(reason) => SpaceInputs::Unavailable { reason },
     })
@@ -755,8 +764,42 @@ impl Engine {
     }
 
     /// Give the engine a space segment for collect and cover intents (logged as
-    /// `space.loaded` with its identity). Without one, their space check fails closed.
+    /// `space.loaded` with its identity). Without one, their space check fails closed. Rules
+    /// 13: a segment given again keeps the time shift pinned on the first
+    /// ([`SpaceOracle::pinned_shift_days`]) and its scenario map: one pinned or mapped
+    /// otherwise is refused, nothing logged (the bridge pins once per session and its map is
+    /// fixed at its start; replay flags either changing between two `space.loaded`), as is one
+    /// whose identity names another pin than it is pinned to.
     pub fn set_space(&mut self, oracle: Box<dyn SpaceOracle + Send>) -> Result<(), EngineError> {
+        let days = |d: Option<i64>| d.map_or("none".to_string(), |d| format!("{d:+} d"));
+        if self.policy.rules.space_replay() && oracle.segment().pinned_shift_days != oracle.pinned_shift_days() {
+            return Err(EngineError::SpaceSegment(format!(
+                "its identity names another pin ({}) than it is pinned to ({})",
+                days(oracle.segment().pinned_shift_days),
+                days(oracle.pinned_shift_days())
+            )));
+        }
+        if self.policy.rules.space_replay()
+            && let Some(held) = &self.space
+            && held.pinned_shift_days() != oracle.pinned_shift_days()
+        {
+            return Err(EngineError::SpaceSegment(format!(
+                "its pinned time shift can't change within a run (pinned {} at the first load, {} given)",
+                days(held.pinned_shift_days()),
+                days(oracle.pinned_shift_days())
+            )));
+        }
+        // nor its scenario clock (the bridge's map is fixed at its start)
+        if self.policy.rules.space_replay()
+            && let Some(held) = &self.space
+            && held.scenario_map() != oracle.scenario_map()
+        {
+            return Err(EngineError::SpaceSegment(format!(
+                "its scenario clock can't change within a run ({:?} at the first load, {:?} given)",
+                held.scenario_map(),
+                oracle.scenario_map()
+            )));
+        }
         let map = oracle.scenario_map();
         self.emit(EventBody::SpaceLoaded {
             segment: oracle.segment().clone(),
@@ -2807,11 +2850,18 @@ impl Engine {
             .cloned()
             .ok_or_else(|| refuse("no space order recorded for its dispatch"))?;
         // a collect whose pass has come was collected (simulated): nothing to re-check, and
-        // a later answer must not fail it
+        // a later answer must not fail it. One clock read: the check below is logged at the
+        // instant this judged (replay judges on the check's time)
+        let guard_t = self.now();
         if let SpaceOrder::Collect(c) = &order
-            && self.scenario_map().scenario(self.now()) >= c.collect_time
+            && self.scenario_map().scenario(guard_t) >= c.collect_time
         {
             return Err(refuse("its pass has come: the scene was collected, there is nothing to re-check"));
+        }
+        // rules 13: the re-check is logged at the guard's instant, so its answer was computed
+        // by then
+        if self.policy.rules.space_replay() && prepared.t > guard_t {
+            return Err(refuse("the prepared answer was computed after the re-check's instant"));
         }
         // a query that failed on the segment is not a later answer: nothing is known
         if let SpaceInputs::Unavailable { reason } = &prepared.inputs {
@@ -2828,8 +2878,14 @@ impl Engine {
         let t = prepared.t;
         self.prepared_space = Some(prepared);
         let world = WorldSnapshot::new(t);
-        let (inputs, _, results, passed) =
-            self.run_checks(&spec, CheckPhase::Dispatched, &world, &NoTerrain)?;
+        let (inputs, _, results, passed) = self.run_checks_inner(
+            &spec,
+            CheckPhase::Dispatched,
+            &world,
+            &NoTerrain,
+            None,
+            Some(guard_t),
+        )?;
         // the fresh options are ranked from the check's own scenario time
         let checked_at = self.scenario_map().scenario(self.last_t);
         let detail = space::recheck_detail(&results, passed, inputs.space.answer(), checked_at);
@@ -3446,11 +3502,17 @@ impl Engine {
     }
 
     /// Rules 12: when the tracker started a track (`first_seen_t`) is a fact only rules 12
-    /// read: an engine of older rules never logs it (a log claiming them can't carry it).
+    /// read; rules 14: its velocity's 1-sigma (`velocity_sigma_mps`) one only rules 14 read: an
+    /// engine of older rules never logs them (a log claiming them can't carry them).
     fn drop_later_facts(&self, w: &mut WorldSnapshot) {
         if !self.policy.rules.followups() {
             for t in w.tracks.values_mut() {
                 t.first_seen_t = None;
+            }
+        }
+        if self.policy.rules.rules_version < crate::rules::AIRCRAFT_REACH_SINCE {
+            for t in w.tracks.values_mut() {
+                t.velocity_sigma_mps = None;
             }
         }
     }
@@ -4890,13 +4952,22 @@ impl Engine {
     /// hashes. Logs the answer as `space.query`, and the set as `areas.loaded`, first if
     /// they haven't been logged yet.
     fn log_inputs(&mut self, inputs: &WorldSnapshot) -> Result<LoggedInputs, EngineError> {
-        if let SpaceInputs::Answered { sha256, answer } = &inputs.space
+        self.log_inputs_at(inputs, None)
+    }
+
+    /// [`Self::log_inputs`], its events logged at `at` when given (else at the clock).
+    fn log_inputs_at(&mut self, inputs: &WorldSnapshot, at: Option<Time>) -> Result<LoggedInputs, EngineError> {
+        if let SpaceInputs::Answered { sha256, answer, .. } = &inputs.space
             && !self.logged_space.contains(sha256)
         {
-            self.emit(EventBody::SpaceQuery {
-                sha256: sha256.clone(),
-                answer: answer.clone(),
-            })?;
+            let t = at.unwrap_or_else(|| self.now());
+            self.emit_at(
+                t,
+                EventBody::SpaceQuery {
+                    sha256: sha256.clone(),
+                    answer: answer.clone(),
+                },
+            )?;
             self.logged_space.insert(sha256.clone());
         }
         let Some(set) = &inputs.areas else {
@@ -4908,10 +4979,14 @@ impl Engine {
             return Ok(LoggedInputs::from_world(inputs, Some(cur.sha256.clone())));
         }
         let sha256 = set.content_hash()?;
-        self.emit(EventBody::AreasLoaded {
-            sha256: sha256.clone(),
-            areas: set.clone(),
-        })?;
+        let t = at.unwrap_or_else(|| self.now());
+        self.emit_at(
+            t,
+            EventBody::AreasLoaded {
+                sha256: sha256.clone(),
+                areas: set.clone(),
+            },
+        )?;
         self.areas = Some(LoggedAreas {
             sha256: sha256.clone(),
             areas: set.clone(),
@@ -4985,10 +5060,24 @@ impl Engine {
         terrain: &dyn TerrainOracle,
         plan: Option<&FrozenPlan>,
     ) -> Result<(WorldSnapshot, LoggedInputs, Vec<CheckResult>, bool), EngineError> {
+        self.run_checks_inner(spec, phase, world, terrain, plan, None)
+    }
+
+    /// The checks, logged at `at` when given (an instant read before, which a guard judged
+    /// on: a re-check's), else at the clock.
+    fn run_checks_inner(
+        &mut self,
+        spec: &IntentSpec,
+        phase: CheckPhase,
+        world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
+        plan: Option<&FrozenPlan>,
+        at: Option<Time>,
+    ) -> Result<(WorldSnapshot, LoggedInputs, Vec<CheckResult>, bool), EngineError> {
         let mut inputs = world.for_intent_plan(spec, terrain, &self.policy.rules, plan);
         self.identify(&mut inputs);
         if spec.task.is_space() {
-            inputs.space = self.ask_space(&spec.task, inputs.t)?;
+            inputs.space = self.ask_space(&spec.task, inputs.t, phase)?;
         }
         inputs.engaged = self.engaged_for(spec);
         inputs.waiting = self.waiting_for(spec);
@@ -5007,15 +5096,28 @@ impl Engine {
                 engage::preview(spec, &live, &self.policy.rules).ok()
             })
             .flatten();
-        let logged = self.log_inputs(&inputs)?;
-        self.emit(EventBody::CheckResult {
-            intent: spec.id,
-            phase,
-            inputs: logged.clone(),
-            results: results.clone(),
-            passed,
-            preview: preview.clone().map(Box::new),
-        })?;
+        // rules 13: a check on a space answer is logged no earlier than its snapshot and its
+        // answer's computation (replay holds both to it; in the bridge both are read before)
+        let at = match (&inputs.space, self.policy.rules.space_replay()) {
+            (SpaceInputs::Answered { computed_t, .. }, true) => {
+                let t = at.unwrap_or_else(|| self.now()).max(inputs.t);
+                Some(computed_t.map_or(t, |c| t.max(c)))
+            }
+            _ => at,
+        };
+        let logged = self.log_inputs_at(&inputs, at)?;
+        let t = at.unwrap_or_else(|| self.now());
+        self.emit_at(
+            t,
+            EventBody::CheckResult {
+                intent: spec.id,
+                phase,
+                inputs: logged.clone(),
+                results: results.clone(),
+                passed,
+                preview: preview.clone().map(Box::new),
+            },
+        )?;
         let intent = self.get_mut(spec.id)?;
         intent.set_checks(results.clone());
         if spec.task.is_space() {
@@ -5037,15 +5139,32 @@ impl Engine {
     /// does not depend on when it was asked, so its age is no concern). Without one, a
     /// collect's tasking query (milliseconds) is asked here, under whatever lock the caller
     /// holds; a cover's (seconds of SGP4 over nine points) never is: it is `Unavailable`
-    /// (the check fails closed, saying the bridge prepares it outside the lock).
-    fn ask_space(&mut self, task: &Task, t: Time) -> Result<SpaceInputs, EngineError> {
+    /// (the check fails closed, saying the bridge prepares it outside the lock). Rules 13:
+    /// the answer carries when it was computed (`computed_t`, logged), and a prepared
+    /// collect's (but a re-check's, `phase` dispatched, which keeps the tasking's request
+    /// time) is used only if it was asked at the engine's scenario time of that computation,
+    /// as replay checks.
+    fn ask_space(&mut self, task: &Task, t: Time, phase: CheckPhase) -> Result<SpaceInputs, EngineError> {
         let cover = matches!(task, Task::Cover { .. });
+        let rules13 = self.policy.rules.space_replay();
+        let asked_when_computed = |p: &PreparedSpace, map: ScenarioMap| {
+            cover
+                || phase == CheckPhase::Dispatched
+                || p.inputs
+                    .answer()
+                    .and_then(SpaceAnswer::now)
+                    .is_none_or(|now| now == map.scenario(p.t))
+        };
         // computed outside the lock for this very question
-        if let Some(p) = self.prepared_space.take()
+        if let Some(mut p) = self.prepared_space.take()
             && p.task == *task
             && (cover || (t.ms_since(p.t)).abs() <= PREPARED_SPACE_MAX_AGE_MS)
             && self.prepared_space_fits(&p)
+            && (!rules13 || asked_when_computed(&p, self.scenario_map()))
         {
+            if let SpaceInputs::Answered { computed_t, .. } = &mut p.inputs {
+                *computed_t = rules13.then_some(p.t);
+            }
             return Ok(p.inputs);
         }
         let Some(oracle) = &self.space else {
@@ -5961,7 +6080,7 @@ impl AgentPort<'_> {
         let mut inputs = world.for_intent_with(&spec, terrain, &self.engine.policy.rules);
         self.engine.identify(&mut inputs);
         if spec.task.is_space() {
-            inputs.space = self.engine.ask_space(&spec.task, inputs.t)?;
+            inputs.space = self.engine.ask_space(&spec.task, inputs.t, CheckPhase::Submit)?;
         }
         inputs.engaged = self.engine.engaged_for(&spec);
         inputs.waiting = self.engine.waiting_for(&spec);

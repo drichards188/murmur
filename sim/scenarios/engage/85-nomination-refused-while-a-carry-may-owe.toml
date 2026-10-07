@@ -1,4 +1,4 @@
-# Rules 13 (murmur-imu): the start could not read an earlier log (its carry failed): what it
+# Rules 15 (murmur-imu): the start could not read an earlier log (its carry failed): what it
 # owed is unknown, but its fleet named this armed USV, so it may still carry an earlier
 # engagement's lost-link action. Rules 12 held a mission for it but took a nomination: the new
 # engagement's preload would have read that action as the USV's own values and later put it

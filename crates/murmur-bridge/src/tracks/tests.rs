@@ -13,7 +13,10 @@ use murmur_decide::Affiliation;
 
 const T0: f64 = 1_000_000.0;
 
+#[allow(dead_code)]
+mod before_oho;
 mod calib;
+mod calib_air;
 
 fn catalog() -> SensorCatalog {
     SensorCatalog::from_toml(include_str!("../../../../sim/platforms.toml")).expect("catalog")
@@ -545,6 +548,35 @@ fn a_hostile_act_is_observed_by_the_sensors_that_could_see_its_author() {
     again.acts = vec![act("act-1", "raider", lat, lon)];
     tracks.on_truth_with(again, std::slice::from_ref(&o), T0 + 4.0).expect("ok");
     assert!(tracks.take_acts().is_empty());
+}
+
+/// Rules 9's act sensing for an aircraft (the review of 10-07): a 2D radar measures its slant
+/// range and bearing, not its height, so alone it places the author as the tracker reads such a
+/// fix, at the middle of the bearing segment with a third of its length for its error, not at
+/// its true ground position; an EO/IR fix, smaller, places it when there is one.
+#[test]
+fn an_act_by_an_aircraft_only_a_2d_radar_sees_is_placed_on_its_bearing_segment() {
+    let (lat, lon) = at(BASE.0, BASE.1, 0.0, 3_000.0);
+    let mut plane = contact("raider", "light_aircraft", Domain::Air, lat, lon);
+    plane.alt_m = 1_500.0;
+    let radar = observer(1, BASE.0, BASE.1, 0.0, &[(SensorType::Radar, 40_000.0)]);
+    let both = observer(1, BASE.0, BASE.1, 0.0, &[(SensorType::Radar, 40_000.0), (SensorType::EoIr, 15_000.0)]);
+    let observed = |o: &Observer| {
+        (0..40)
+            .find_map(|tick| super::sensing::observe_act(Params { seed: 3, tick, misclassification_rate: 0.0 }, std::slice::from_ref(o), &plane, "act-1"))
+            .expect("observed within 40 draws")
+    };
+    let a = observed(&radar);
+    let slant = 3_000f64.hypot(1_500.0);
+    let from_radar = murmur_decide::geo::haversine_m(murmur_decide::LonLat::new(BASE.1, BASE.0), murmur_decide::LonLat::new(a.lon, a.lat));
+    // the segment's middle (its length the slant range and two of the radar's sigmas), a third
+    // of its length for its error: two thirds of the distance out, not the radar's 60 m
+    assert!((0.4 * slant..0.6 * slant).contains(&from_radar), "the segment's middle: {from_radar} m out of {slant}");
+    assert!((a.sigma_m - 2.0 * from_radar / 3.0).abs() < 3.0, "sigma {}, {from_radar} m out", a.sigma_m);
+    let off = murmur_decide::geo::haversine_m(murmur_decide::LonLat::new(lon, lat), murmur_decide::LonLat::new(a.lon, a.lat));
+    assert!(off <= 1.5 * a.sigma_m + 100.0, "the truth on the segment, {off} m off, sigma {}", a.sigma_m);
+    let b = observed(&both);
+    assert!(b.sigma_m < 100.0 && b.sensors.iter().any(|s| s == "1:eo_ir"), "{b:?}");
 }
 
 #[test]

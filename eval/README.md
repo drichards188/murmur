@@ -246,7 +246,7 @@ These are model results from scripted proxies on generated situations, dev runs 
 ids, never human data; the live bridge's act sensing is exercised by
 `sim/scenarios/golden-gate-ident.toml` (a live run, not a batch arm).
 
-### Keep-outs against engagements (rules 6, 9, 12)
+### Keep-outs against engagements (rules 6, 9, 12, 14)
 
 How often the keep-outs block the nomination of an engagement on a genuinely hostile target,
 by traffic density and behaviour (stationary, transiting, circling, manoeuvring, new, mixed),
@@ -266,7 +266,9 @@ pessimistic sensor case, with the full tables) and `all` (every sensor it carrie
 `ais` (best case), `lanes`, `lanes-model`, new-track shares `new0`, `new15`, `new25`, `vel1`,
 `sigma60`, the buffer copies of the policy `buffer100`, `buffer50`, `all-buffer100`,
 `all-buffer50` (`--keep-out-m` on the probe), the air worst case `air`, `air-straight`,
-`air-all`, `air-all-straight` (a light aircraft added), and the live run's question under every
+`air-all`, `air-all-straight` (a light aircraft added; seen by our USV's 2D radar, which
+measures no height, it is plotted at its slant range and the tracker reads the bearing line:
+murmur-oho), and the live run's question under every
 tracker (`live`, `live-all`, `live-ais`, `live-model`, and `live2*` with the circling boat
 within 2 km). `eval.run keepout` builds the probe (`cargo build --release
 -p murmur-keepout-probe`, a no-op when current), runs each variant on half the CPUs into

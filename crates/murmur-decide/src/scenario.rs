@@ -1881,6 +1881,7 @@ fn track_sim(t: &TrackDef) -> TrackSim {
                 .filter(|s| *s >= SCENARIO_MEAN_MIN_S && !t.no_velocity_estimate)
                 .map(|_| t.velocity),
             first_seen_t: Some(T0.plus_ms(-((t.tracked_s.unwrap_or(SCENARIO_TRACKED_S) * 1000.0).round() as i64))),
+            velocity_sigma_mps: None,
         },
         silent: t.silent,
         no_velocity: t.no_velocity_estimate,
