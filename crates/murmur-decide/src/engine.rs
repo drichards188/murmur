@@ -2743,6 +2743,11 @@ impl Engine {
         {
             return Err(refuse("its pass has come: the scene was collected, there is nothing to re-check"));
         }
+        // rules 13: the re-check is logged at the guard's instant, so its answer was computed
+        // by then
+        if self.policy.rules.space_replay() && prepared.t > guard_t {
+            return Err(refuse("the prepared answer was computed after the re-check's instant"));
+        }
         // a query that failed on the segment is not a later answer: nothing is known
         if let SpaceInputs::Unavailable { reason } = &prepared.inputs {
             return Ok(SpaceRecheck::Unknown {
@@ -4971,6 +4976,15 @@ impl Engine {
                 engage::preview(spec, &live, &self.policy.rules).ok()
             })
             .flatten();
+        // rules 13: a check on a space answer is logged no earlier than its snapshot and its
+        // answer's computation (replay holds both to it; in the bridge both are read before)
+        let at = match (&inputs.space, self.policy.rules.space_replay()) {
+            (SpaceInputs::Answered { computed_t, .. }, true) => {
+                let t = at.unwrap_or_else(|| self.now()).max(inputs.t);
+                Some(computed_t.map_or(t, |c| t.max(c)))
+            }
+            _ => at,
+        };
         let logged = self.log_inputs_at(&inputs, at)?;
         let t = at.unwrap_or_else(|| self.now());
         self.emit_at(

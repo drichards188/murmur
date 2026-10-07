@@ -1386,7 +1386,11 @@ Rules versions:
     scenario time of `computed_t` under the last `space.loaded` map, and every answered input
     carries one; the engine takes a prepared collect only if it was asked at that time. A
     cover's answer carries its time and no bound (its question does not depend on when it was
-    asked).
+    asked). Neither the answer's computation nor the decision's snapshot may be later than the
+    event that logs the decision (the review of 10-07 moved both 4 s past it, within the
+    bound, and it replayed): the engine logs such a check no earlier than either (in the
+    bridge both are read before it), and refuses a re-check whose answer was computed after
+    its guard's instant.
   - *A re-check at its guard's instant* (murmur-lsj): `Engine::recheck_space` judged "has the
     pass come" on one clock read and logged its check on a later one, while replay judges on
     the check's time: a clock moving a millisecond per read flagged an honest re-check one or

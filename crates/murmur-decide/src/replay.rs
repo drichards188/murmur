@@ -6646,7 +6646,9 @@ fn quoted_vehicle_event(reason: &str) -> Option<(&'static str, &str)> {
 /// re-check (`rechecked`), which keeps the request time the task was tasked at. So the time
 /// logged is the answer's own, and the `space_query` rule's bound on it (recomputed with the
 /// check: a collect's answer within [`crate::rules::PREPARED_SPACE_MAX_AGE_MS`] of its
-/// check) holds for the answer the decision read.
+/// check) holds for the answer the decision read. Neither the answer's computation nor the
+/// decision's snapshot is later than the event that logs the decision (the review of rules
+/// 13 moved both 4 s past it and the bound alone let it through).
 fn check_space_computed(
     r: &mut ReplayReport,
     e: &Event,
@@ -6662,10 +6664,18 @@ fn check_space_computed(
     let SpaceInputs::Answered { sha256, answer, computed_t } = &world.space else {
         return;
     };
+    // the decision is logged no earlier than the snapshot it read (the engine stamps it so)
+    if world.t > e.t {
+        bad(r, e, Some(intent), "a decision on a space answer logged before the snapshot it read was taken", json(&world.t), format!("<= {}", e.t.0));
+    }
     let Some(c) = computed_t else {
         bad(r, e, Some(intent), "a space answer without when it was computed (computed_t)", sha256.clone(), "computed_t".into());
         return;
     };
+    // nor before its answer was computed
+    if *c > e.t {
+        bad(r, e, Some(intent), "a space answer computed after the decision that read it was logged", json(c), format!("<= {}", e.t.0));
+    }
     if !rechecked
         && let Some(now) = answer.now()
         && now != map.scenario(*c)

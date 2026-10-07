@@ -2459,6 +2459,69 @@ fn a_space_answer_logs_when_it_was_computed_and_replay_holds_the_bound() {
     );
 }
 
+/// The review of rules 13: neither a space answer's computation nor the decision's snapshot is
+/// later than the event logging the decision. The review's probe (the answer's request time
+/// and its computation time moved 4 s past the check's event, within the 5 s bound of the
+/// snapshot) and a snapshot moved past its check are caught; an engine given a snapshot ahead
+/// of its clock logs the check at the snapshot's time, and that replays.
+#[test]
+fn a_space_answer_or_snapshot_later_than_its_decision_is_caught() {
+    let mut run = run(policy(), true);
+    let session = run
+        .engine
+        .open_operator_session(OperatorId::new("op-1"))
+        .unwrap();
+    let prepared = prepare_space(&segment(), &collect(None).task, t0(), &policy().rules).unwrap();
+    run.engine.use_prepared_space(prepared);
+    run.advance_to(t0().plus_ms(2_000));
+    let world = run.world();
+    run.engine
+        .submit(session.authority(), collect(None), &world, &NoTerrain)
+        .unwrap();
+    let honest = run.log.text();
+    assert_replays(&run.log);
+    let check_t = parse_log(&honest)
+        .unwrap()
+        .into_iter()
+        .find(|e| matches!(e.body, audit::EventBody::CheckResult { .. }))
+        .unwrap()
+        .t;
+    assert_eq!(check_t, t0().plus_ms(2_000));
+    // the probe: computed 4 s after the check was logged, the answer asked then too
+    let shift = check_t.plus_ms(4_000).ms_since(t0());
+    let w = forged_whats(&honest, |ev| {
+        edit_answer(ev, |a| shift_request(a, shift));
+        edit_computed(ev, |c| *c = c.map(|t| t.plus_ms(shift)));
+    });
+    assert!(w.iter().any(|m| m == "a space answer computed after the decision that read it was logged"), "{w:?}");
+    assert!(!w.iter().any(|m| m == "check results differ"), "within the bound of the snapshot: {w:?}");
+    // a snapshot taken after its check was logged
+    let w = forged_whats(&honest, |ev| {
+        for e in ev.iter_mut() {
+            if let audit::EventBody::CheckResult { inputs, .. } = &mut e.body {
+                inputs.t = inputs.t.plus_ms(2_000);
+            }
+        }
+    });
+    assert!(
+        w.iter().any(|m| m == "a decision on a space answer logged before the snapshot it read was taken"),
+        "{w:?}"
+    );
+    // an engine handed a snapshot ahead of its clock logs the check at the snapshot's time
+    let ahead = WorldSnapshot::new(run.clock.now().plus_ms(3_000));
+    run.engine
+        .submit(session.authority(), collect(None), &ahead, &NoTerrain)
+        .unwrap();
+    let last_check = parse_log(&run.log.text())
+        .unwrap()
+        .into_iter()
+        .rev()
+        .find(|e| matches!(e.body, audit::EventBody::CheckResult { .. }))
+        .unwrap();
+    assert_eq!(last_check.t, ahead.t);
+    assert_replays(&run.log);
+}
+
 /// der.4: the engine takes a prepared collect only if it was asked at the scenario time of
 /// its computation (what replay holds the log to); otherwise it asks itself.
 #[test]
