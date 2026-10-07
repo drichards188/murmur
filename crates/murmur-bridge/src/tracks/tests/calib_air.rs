@@ -507,7 +507,12 @@ fn blocked(f: &TrackFacts, now: f64, span: f64, truth: (f64, f64), ec: &EngageRu
 
 /// Both trackers on `case`, seen by `mix`, at `seed`.
 pub fn run(case: &AirCase, mix: Mix, seed: u64) -> AirScores {
-    let ec = EngageRules::default();
+    // the rules the tracker after is judged under (the table's `AIR_RULES=12`: what the
+    // calibrated tracker would do without rules 13's aircraft region)
+    let ec = EngageRules {
+        rules_version: std::env::var("AIR_RULES").ok().and_then(|v| v.parse().ok()).unwrap_or(murmur_decide::RULES_VERSION),
+        ..EngageRules::default()
+    };
     let ec_old = EngageRules {
         rules_version: BEFORE_RULES,
         ..EngageRules::default()
