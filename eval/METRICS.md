@@ -319,7 +319,7 @@ parameters and slip rate are assumptions; the tracks are the scenario runner's (
 seeded noise), not the bridge's tracker. Scenarios 72-78 illustrate the rule and run in the
 engagement suite; they are not part of this measurement.
 
-## Keep-outs against engagements (rules 6, 9, 12)
+## Keep-outs against engagements (rules 6, 9, 12; out of view, 13)
 
 `eval/keepout.py` (`python -m eval.run keepout`, and a small one in every batch) measures how
 often the keep-outs block the nomination of an engagement on a genuinely hostile target, and
@@ -358,8 +358,8 @@ tracker's reports with the scenario runner's noise (position off by its own 1-si
 off by 0.5 m/s per axis, no velocity in the first 7 s, an average velocity once tracked 45 s, a
 manoeuvre when the true velocity changed beyond the bridge's threshold within its memory).
 Every contact stays within the USV's sensors, so the bridge's drop of a track unseen for 180 s
-never fires (a dropped track stops counting in keep-outs: murmur-533); a contact never detected
-(a new one in its first second) has no track and is not protected.
+never fires, except in the out-of-view variants (below); a contact never detected (a new one in
+its first second) has no track and is not protected.
 
 **What decides.** The probe runs `rules::evaluate` on `WorldSnapshot::for_intent_with` for
 each evaluation and rules version: the checks `Engine::submit` runs at a nomination. For the
@@ -595,7 +595,109 @@ no-velocity region at 100 m/s four times that). The 8 km field holds every regio
   blocked (wait, reposition, accept a lost vehicle, give up).
 
 Not measured either: how often such situations arise, more than one observing vehicle, land
-and channels, air traffic beyond one aircraft, out-of-view contacts and dropped tracks.
+and channels, air traffic beyond one aircraft. Out-of-view contacts and dropped tracks are
+measured next.
+
+### Out of view (rules 13, murmur-533; 10-07, unreviewed)
+
+The question: the tracker drops a track unseen for 180 s, and until rules 13 the keep-out
+stopped counting it then; rules 13 keeps it as a lost contact (counted from its last fix, no cap,
+until an operator with engagement authority accepts it for an engagement or its AIS matches a new
+track unambiguously). What does each choice miss, and what does holding it cost?
+
+**How.** The variants `oov` and `oov-all` take the mixed traffic above (radar alone; every
+sensor) and send 30% of the contacts out of view (`masked_from_s`: no sensor detects them from a
+uniform time 30 to 900 s before the nomination, whatever the range, as in a radar shadow, clutter
+or a dark small boat; each was tracked 60 to 600 s before that), while they keep moving as their
+behaviour says; the bridge's own tracker (eval/keepout_probe) drops each track at the first
+second it has been unseen 180 s, and hands the facts then to the engine as its lost contact
+under rules 13 (rules 12: gone). `oov-near` is the review's case: the traffic in view and one
+contact within 1 km of the target going out of view the same way. Densities 0.03, 0.1, 0.3 (near:
+0.03, 0.1) per km^2, the times to effect of the grid, seeds 1 to 10, 300 situations per cell:
+72,000 evaluations each for `oov` and `oov-all`, 48,000 for `oov-near`, every one decided by the
+engine under rules 12 and 13; 0 mismatches, 0 errors. The policies, all on the same evaluations:
+`today` (rules 12), `held` (rules 13 as shipped), `held600` (a lost contact counted only until
+600 s after its drop), `near3km` (counted only with its last fix within 3 km of the effect point),
+`reach` (held, and anywhere it could have reached at its own plausible speed: its speed and 2-sigma
+of its velocity error, or the fastest it went; the regions a manoeuvre gets), `accepted` (every
+lost contact accepted, or cleared by any rule: every one here is within the observer's nominal
+sensor coverage, 40 km of radar, so "clear the water our sensors covered with no detection"
+clears them all). Commit 87ad498 (the measurement's code as of 84b6363; the tree dirty only in the
+test fixtures added while it ran; byte-identical output to an earlier run of the same code), about
+a minute; `python -m eval.run keepout --variants oov oov-all oov-near --seeds 1 2 3 4 5 6 7 8 9 10
+--situations 300`.
+
+Pooled over densities and times to effect (blocked and needing an acceptance: percent of
+nominations, Wilson 95%; misses: passes with a protected contact truly inside the keep-out line or
+the effect circle at the effect time, then in the circle within the 60 s release window; in
+brackets, those by a contact out of view and dropped):
+
+| variant | policy | blocked | needs an acceptance | passes | missed at the line | in the circle | in the circle over the window |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| oov (radar) | today | 50 (50-51) | 0 | 35,901 | 229 (228) | 21 (21) | 69 (54) |
+| | held | 87 (86-87) | 37 (36-37) | 9,543 | 1 (0) | 0 | 3 (0) |
+| | held600 | 82 | 32 | 12,605 | 3 (2) | 0 | 6 (1) |
+| | near3km | 67 | 17 | 23,984 | 33 (32) | 2 (2) | 17 (8) |
+| | reach | 90 | 40 | 7,436 | 1 (0) | 0 | 1 (0) |
+| | accepted | 50 | 0 | 35,901 | 229 (228) | 21 (21) | 69 (54) |
+| oov-all | today | 48 | 0 | 37,682 | 237 (237) | 20 (20) | 74 (59) |
+| | held | 86 | 39 | 9,826 | 0 | 0 | 2 (0) |
+| | held600 | 82 | 34 | 12,985 | 2 (2) | 0 | 3 (1) |
+| | near3km | 65 | 17 | 25,130 | 32 (32) | 2 (2) | 16 (8) |
+| | reach | 89 | 41 | 7,878 | 0 | 0 | 1 (0) |
+| oov-near | today | 47 (46-47) | 0 | 25,578 | 1,640 (1,629) | 120 (120) | 328 (317) |
+| | held | 99 (98-99) | 52 (51-52) | 716 | 3 (3) | 0 | 1 (1) |
+| | held600 | 91 | 44 | 4,518 | 208 (208) | 19 (19) | 48 (46) |
+| | near3km | 83 | 36 | 8,280 | 493 (493) | 38 (38) | 151 (145) |
+| | reach | 99 | 52 | 647 | 0 | 0 | 0 |
+
+Blocked on tracks by time to effect, `oov` on the radar, today / held (perfect knowledge, someone
+truly inside the keep-out, 1% at 0.03, 2 to 3% at 0.1, 6 to 7% at 0.3 per km^2):
+
+| per km^2 | 30 s | 60 s | 120 s | 180 s | 300 s |
+| --- | --- | --- | --- | --- | --- |
+| 0.03 | 4 / 50 | 8 / 54 | 18 / 63 | 33 / 73 | 63 / 87 |
+| 0.1 | 16 / 90 | 26 / 92 | 50 / 96 | 74 / 98 | 97 / 100 |
+| 0.3 | 38 / 100 | 56 / 100 | 87 / 100 | 98 / 100 | 100 / 100 |
+
+and `oov-near` (one contact within 1 km out of view) at 0.03 per km^2: 17 / 97 at 30 s, 30 / 98 at
+120 s, 74 / 99 at 300 s.
+
+**What these numbers can support** (model results, unreviewed):
+
+- Dropping a contact from the keep-out when its track ages out misses people: with a contact
+  out of view within 1 km of the target, today's rule passed 1,640 of 25,578 nominations (6.4%)
+  with it truly inside the keep-out line at the effect time, 120 (0.5%) with it inside the effect
+  circle; in traffic where 30% of contacts go out of view, 228 of 35,901 at the line and 21 in the
+  circle. Holding it (rules 13) took those to 0 to 3 at the line and none in the circle.
+- Holding costs blocks: from about half of these nominations to 87% in that traffic, and to 99%
+  with a contact out of view within 1 km; about 37 to 52% of all nominations then pass only with
+  an operator's acceptance of a lost contact. With no cap, a lost contact's region keeps growing
+  (at 0.03 per km^2 it lifts blocks at 30 s from 4 to 50%), so in steady traffic with contacts
+  going out of view the acceptance is the common path, not the exception.
+- None of the cheaper policies measured is sound against the truth: forgetting a lost contact
+  600 s after its drop let 208 nominations through with the near contact inside the line and 19
+  inside the effect circle; counting it only near the effect point, 493 and 38; clearing it where
+  our sensors cover the water with no detection clears every one here (each was lost inside the
+  radar's nominal 40 km), and so misses exactly as today's rule does. That last one is not an
+  artefact: a track ages out within coverage only when the sensors stopped seeing a contact that
+  was there, so their coverage is no evidence of its absence. What lowers the burden soundly is
+  evidence of where the contact is: seen again (a new track with its AIS retires it; one without
+  AIS stays lost beside its new track), another sensor that sees it, or an operator who knows.
+- The shipped region is a prediction, not a bound: rules 13 counts a lost contact by the regions a
+  live track gets from its last facts (`engage::track_reach`), and a contact last seen steady gets
+  only the regions along its velocity, with the acceleration-noise uncertainty. In `oov-near` that
+  let 3 of 716 passes through with the out-of-view contact inside the keep-out line (none inside
+  the effect circle at the effect time; 1 inside it within the release window). Counting it also
+  anywhere it could have reached at its own plausible speed (`reach`) took those to 0 of 647, for
+  no measurable rise in blocks there (99% either way) and 3 points in `oov` (87 to 90%). This is a
+  finding against the design as built (DECISIONS.md), not acted on here.
+
+**What they cannot support:** any rate for a real place (the 30% share and the 30 to 900 s are
+stated guesses, masking is all-or-nothing and permanent, one observer, open water), how often
+operators would accept or how carefully, anything about the release's own check (a lost
+contact's region keeps growing to the release, which these do not run), or the AIS retirement
+(no contact here comes back into view).
 
 ## Provenance and exclusions
 

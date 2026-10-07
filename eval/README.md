@@ -268,7 +268,11 @@ pessimistic sensor case, with the full tables) and `all` (every sensor it carrie
 `all-buffer50` (`--keep-out-m` on the probe), the air worst case `air`, `air-straight`,
 `air-all`, `air-all-straight` (a light aircraft added), and the live run's question under every
 tracker (`live`, `live-all`, `live-ais`, `live-model`, and `live2*` with the circling boat
-within 2 km). `eval.run keepout` builds the probe (`cargo build --release
+within 2 km), and (rules 13, murmur-533) contacts going out of sensor view, `oov`, `oov-all`
+and `oov-near` (rules 12 against 13: a contact masked from a time before the nomination, its
+track dropped by the bridge's tracker after 180 s unseen; each evaluation also decided with the
+lost contacts accepted, held 600 s, counted only near the effect point, or counted at their
+plausible speed; `keepout.lost_summary`). `eval.run keepout` builds the probe (`cargo build --release
 -p murmur-keepout-probe`, a no-op when current), runs each variant on half the CPUs into
 `keepout/<variant>/` (`records.jsonl.gz`, one line per evaluation, and `summary.json`), writes
 the combined `keepout/summary.json` with the sensitivity table, and builds the report. Every
@@ -278,6 +282,7 @@ batch runs `radar` and `model` small (`--keepout-seeds`, `--keepout-situations`,
 ```
 .venv/bin/python -m eval.run keepout --seeds 1 2 3 4 5 6 7 8 9 10 --situations 100   # every variant, about 16 minutes
 .venv/bin/python -m eval.run keepout --variants radar model --densities 0.1 --behaviours circling mixed --tte-s 60 120 180
+.venv/bin/python -m eval.run keepout --variants oov oov-all oov-near --situations 300            # out of view, about a minute
 ```
 
 Model results from simulated geometry, never human or field data: the densities, behaviours,

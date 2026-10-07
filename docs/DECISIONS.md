@@ -231,6 +231,59 @@ group. Dates are 2026.
   sign; barring it would need a third operator with authority on duty): the signature
   records it (`self_accepted`), the card shows it and the evaluation counts it. Regressions:
   53 to 60, 65.
+- **A dropped protected contact stays in the keep-out until an operator accepts it** (10-07,
+  murmur-533; rules 13, `LOST_CONTACT_SINCE`). The bridge's tracker drops a track unseen for
+  180 s, and from then on the keep-out stopped counting it: a civilian boat that went out of
+  sensor view near a target stopped protecting anything once its track aged out, and an effect
+  could be released where it might still be (review of 2f4f46a). Decided, mirroring the lost
+  friendly above: the drop is a logged fact (`track.dropped`, the tracker's facts at the drop,
+  its estimate only; the bridge keeps the track in the decision facts until the engine has it,
+  so no decision falls between the two) and the engine holds the contact as lost. Every
+  engagement's keep-out on tracks counts it anywhere it could have reached since its last fix,
+  by the regions a live track gets from those facts (`engage::track_reach`; a track with no
+  velocity or no average velocity at its domain's top speed), with no cap: fail closed. It is
+  exempt only where a live track would be (the target, a declared hostile by the
+  identification ledger). An operator with engagement authority may accept one for one
+  engagement, explicitly and logged under their session with its facts and the world's time,
+  through the lost friendly's own acceptance (`engage.accepted` naming a `contact` instead of a
+  `uid`, rather than a parallel mechanism): at the nomination or before a first signature,
+  every check of that engagement reads it, every signer is shown it (the card, the picture
+  token: a token from before it is refused), a reset clears it, any operator may revoke it,
+  never an agent; it covers that loss only. A new track retires it only on an unambiguous match
+  of its AIS identity (`track.reacquired`, with the picture judged): the only live track
+  carrying its MMSI and no other lost contact carrying it, that track undeclared and not suspect
+  (what our sensors see fits its AIS), in the same domain, first seen after the lost contact's
+  last fix, and where it could have reached. Association across a drop is by identity, and the
+  only identity here that names one contact is its AIS (a kind like "ferry" names many); a
+  spoofed AIS is held off by the rest (a suspect estimate, a declaration, a contact that could
+  not have got there); anything short of that keeps the lost contact beside the new track. The
+  decision core gets all of it from logged facts: replay rebuilds the lost contacts from the
+  drops and retirements, checks every engagement decision's (and its accepted ones) against
+  them and every other decision's empty, recomputes each retirement from its own picture, and
+  flags a track that leaves a decision's picture without a `track.dropped` (else a track could
+  vanish from the record, and from the keep-out, with nothing to show). Shown on the map (a
+  faded, anticipated symbol at the last fix, the region counted now, "T-0002 LOST 4 min"), in the
+  tracks drawer, in the nomination form's keep-out explanation (which lost contact blocks, since
+  when, an Accept for this engagement), on the card; agents read them and cannot accept.
+  Measured (`eval/METRICS.md` "Out of view", model results, unreviewed): with a contact out of
+  view within 1 km of the target, the drop let 1,640 of 25,578 nominations through with it inside
+  the keep-out line at the effect time and 120 with it inside the effect circle; holding it took
+  those to 3 and 0, at the cost of blocking 99% of those nominations (47% before) and needing an
+  acceptance in 52% of them; in traffic where 30% of contacts go out of view, 87% blocked (50%
+  before), 37% needing an acceptance. None of the cheaper policies is sound against the truth:
+  forgetting it 600 s after its drop (208 and 19 such misses near the target), counting it only
+  near the effect point (493 and 38), or clearing the water our sensors cover with no detection
+  (every lost contact there is inside the radar's nominal coverage, so it misses as today does:
+  a track ages out within coverage only when the sensors stopped seeing a contact that was
+  there). So none is shipped; the acceptance is the way through, and its frequency is the stated
+  cost of failing closed. A finding against this design, recorded and not acted on (the main
+  thread decides): the region is a prediction, not a bound (a contact last seen steady gets only
+  the regions along its velocity with the acceleration-noise uncertainty), and 3 of 716 passes
+  near the target had the contact inside the keep-out line (none in the circle); counting it
+  also anywhere at its own plausible speed (its speed and 2-sigma of its velocity error, or the
+  fastest it went) took that to 0 of 647 at no measurable cost there and 3 points of blocks in
+  the general traffic. Not carried over a bridge restart (a new run starts a new tracker).
+  Regressions: scenarios 83 to 87.
 - **A HIGH_LATENCY2 report without its GPS failure flag is a 3D fix** (10-04, fourth
   review). HIGH_LATENCY2 carries no fix type, so a platform on that link alone never had a
   fresh fix and could never release. The bridge now counts each one without
@@ -765,7 +818,24 @@ group. Dates are 2026.
   2.1 km out was told "within 693 m of the target"; ordered closer, the dry run still
   failed at 836 m (the hint then 816 m, moving with the aircraft) and passed every check at
   810 m, and the nomination went to the inbox with both keep-outs passing; the dry runs
-  (about 40) logged nothing, and the log replays with its anchors.
+  (about 40) logged nothing, and the log replays with its anchors. Since rules 13 (murmur-533,
+  under Direction) a dropped track stays in the keep-out as a lost contact: the explanation lists
+  one as an item (since when, what to accept), and says a track out of view stays after its drop.
+- **The explanation's effect-time windows hold between grid points** (10-07, murmur-dr6; no
+  rules change). A re-check of 0472a71 built two cases, neither seen on a realistic picture: a
+  gap narrower than the 0.25 s grid (blocked before +50.05 s and after +50.15 s: the
+  explanation said no effect time passes, and the platform at 360.79 m lands at +50.10 s and
+  passes), and a dip between grid points (an 80 m/s aircraft grazing the clearance only between
+  30.0 and 30.25 s, 274.98 m against 275.05 m at the grid points: "within 300 m", and at 121 m
+  the dry run failed by 2 cm). Never unsafe (the engine checks again at submission), but a
+  claim the checks contradict. Now a grid point counts as clear only by a margin that bounds the
+  dip for anything passing at up to 100 m/s (`keepout::grid_margin_m`: `v^2 h^2 / (8 c)` for the
+  grid's step `h` at the clearance `c`, and at least 0.3 m: the dip itself is 0.28 m at the default 275 m), so a
+  stretch of passing points holds between them; and the sentence where no effect time passes,
+  and the console's line, say "on a 0.25 s grid": a gap narrower than the grid is possible and
+  now stated (finding it would take a continuous search the explanation does not do). The
+  explanation reads the checks' own judgement, unchanged; `tests/keepout.rs` checks every point
+  outside the windows against the clearance raised by the margin.
 - **The reviews' follow-ups are one rules version, gated on a named constant** (10-06,
   rules 12, `REVIEW_FOLLOWUPS_SINCE`). The six follow-ups below change what is logged or
   decided, so they share one version; every gate reads the constant (and `RULES_VERSION` is
