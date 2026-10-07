@@ -367,7 +367,11 @@ const PENDING_PER_SESSION: usize = 8;
 /// past them is served the newest again; and the ids kept (a flood of made-up ones pushes out
 /// the id issued to longest ago, whose next request is a fresh one).
 const LOGINS_PER_ID: usize = 4;
-const LOGIN_IDS_CAP: usize = 10_000;
+pub(crate) const LOGIN_IDS_CAP: usize = 10_000;
+
+/// What a refused passkey login is told, whoever the id is (murmur-i58).
+pub(crate) const LOGIN_PASSKEY_REFUSED: &str =
+    "passkey refused: not an answer from one of this operator's passkeys to a challenge waiting for them (ask again)";
 
 /// A passkey challenge's lifetime, as the engine checks it.
 fn challenge_ttl() -> Duration {
@@ -933,6 +937,12 @@ impl Auth {
         Some(v.get("challenge")?.as_str()?.trim_end_matches('=').to_string())
     }
 
+    /// Tests: the ids the login table keeps (a flood needs `LOGIN_IDS_CAP` otherwise).
+    #[cfg(test)]
+    pub(crate) fn set_login_cap(&self, cap: usize) {
+        lock(&self.logins).cap = cap;
+    }
+
     /// The login ceremony of `op` that `assertion` answers, taken (answered once, right or
     /// wrong): Some for an operator's challenge, None for a decoy's (no authenticator holds
     /// one of its credentials). Err when `op` has no such challenge waiting.
@@ -1261,6 +1271,10 @@ async fn login(State(auth): State<Arc<Auth>>, headers: HeaderMap, body: Bytes) -
 /// Rules 10: a login by passkey: the assertion answers the challenge
 /// `/api/auth/login/passkey` issued for this operator; counted against the operator's login
 /// limit as a password is, a refusal for an operator on the roster logged as `auth.refused`.
+/// An answer to no live challenge of this id (never issued, answered, lapsed, or pushed out of
+/// the table by a flood) can't succeed, so it is no guess: refused in the same words, not
+/// counted and not logged (a stranger's flood must not push an operator's own answers toward
+/// the lock).
 async fn login_by_passkey(auth: &Arc<Auth>, headers: &HeaderMap, op: OperatorId, listed: bool, assertion: &Value) -> Response {
     let id = op.as_str().to_string();
     let t = now();
@@ -1273,7 +1287,11 @@ async fn login_by_passkey(auth: &Arc<Auth>, headers: &HeaderMap, op: OperatorId,
     let outcome = match auth.take_login(assertion, &op) {
         Ok(Some(p)) => auth.check_passkey(p, assertion).await,
         Ok(None) => Err((false, "not one of your passkeys (a decoy's challenge: no passkey, or no such operator)".to_string())),
-        Err(why) => Err((false, why)),
+        Err(why) => {
+            lock(&auth.limiter).release(&id);
+            println!("auth: passkey login for {id} refused, not counted: {why}");
+            return refusal(StatusCode::UNAUTHORIZED, LOGIN_PASSKEY_REFUSED);
+        }
     };
     let proof = match outcome {
         Ok(proof) => {
@@ -1296,7 +1314,7 @@ async fn login_by_passkey(auth: &Arc<Auth>, headers: &HeaderMap, op: OperatorId,
             let detail = if clone {
                 "passkey refused: its counter did not count up (a cloned authenticator?)"
             } else {
-                "passkey refused: not an answer from one of this operator's passkeys to a challenge waiting for them (ask again)"
+                LOGIN_PASSKEY_REFUSED
             };
             return refusal(StatusCode::UNAUTHORIZED, detail);
         }

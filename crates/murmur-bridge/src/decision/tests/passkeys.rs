@@ -440,6 +440,59 @@ async fn login_options_do_not_say_who_has_a_passkey() {
     assert_eq!(vm, vc);
 }
 
+/// The review of murmur-i58: a flood of made-up ids pushed an operator's live challenge out of
+/// the login table, and their genuine answer then failed and counted against their own limit
+/// (the reviewer's probe: four rounds 401, the fifth 429). An answer to a challenge that is not
+/// live is now refused without counting or logging it: after six rounds the operator signs in.
+/// One round at the real cap too (10,000 made-up ids, eviction in constant time).
+#[tokio::test]
+async fn a_flood_of_made_up_ids_does_not_push_an_operator_toward_the_lock() {
+    let (h, mut keys) = harness(&["op-2"], |_| {}, None);
+    let mut k2 = keys.remove("op-2").expect("op-2's");
+    let ask = |op: String| {
+        let h = &h;
+        async move {
+            let (s, o) = h.local(None, "/api/auth/login/passkey", json!({ "operator": op })).await;
+            assert_eq!(s, StatusCode::OK, "{o}");
+            o
+        }
+    };
+    let flood = |round: usize, n: usize| {
+        let h = &h;
+        async move {
+            for i in 0..n {
+                let (s, _) = h.local(None, "/api/auth/login/passkey", json!({ "operator": format!("flood-{round}-{i}") })).await;
+                assert_eq!(s, StatusCode::OK);
+            }
+        }
+    };
+    h.auth.set_login_cap(100);
+    for round in 0..6 {
+        let o = ask("op-2".into()).await;
+        flood(round, 150).await;
+        let answer = json!({ "operator": "op-2", "passkey": k2.assertion_json("localhost", LOCAL, &challenge(&o)) });
+        let (s, _, v) = h.call("POST", "/api/auth/login", Some(answer), &[("origin", LOCAL)]).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "round {round}: {v}");
+        assert_eq!(v["detail"], crate::auth::LOGIN_PASSKEY_REFUSED, "round {round}");
+    }
+    assert!(!h.log().contains("auth.refused"), "not a guess, not on the record: {}", h.log());
+    // the real cap: one round of as many made-up ids
+    h.auth.set_login_cap(crate::auth::LOGIN_IDS_CAP);
+    let o = ask("op-2".into()).await;
+    let started = std::time::Instant::now();
+    flood(6, crate::auth::LOGIN_IDS_CAP).await;
+    eprintln!("{} made-up ids in {:?}", crate::auth::LOGIN_IDS_CAP, started.elapsed());
+    let answer = json!({ "operator": "op-2", "passkey": k2.assertion_json("localhost", LOCAL, &challenge(&o)) });
+    let (s, _, v) = h.call("POST", "/api/auth/login", Some(answer), &[("origin", LOCAL)]).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "{v}");
+    // asked again, signed in
+    let o = ask("op-2".into()).await;
+    let answer = json!({ "operator": "op-2", "passkey": k2.assertion_json("localhost", LOCAL, &challenge(&o)) });
+    let (s, _, v) = h.call("POST", "/api/auth/login", Some(answer), &[("origin", LOCAL)]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    h.replays_authenticated();
+}
+
 /// murmur-i58: a login's options are limited per id without turning its operator away: at
 /// most four live per id, a request past them served the newest again (never refused, and the
 /// operator's own challenge never pushed out), ids without a passkey alike; step-ups stay

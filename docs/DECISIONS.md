@@ -787,9 +787,16 @@ group. Dates are 2026.
   made-up answers anyway; so the one way to keep an operator from signing in by passkey
   stays the failure lock stated on 10-05 (five failures in 15 minutes: 30 s, doubling to 15
   minutes). A served-again challenge may have less of its 120 s left; once it lapses the next
-  request is fresh. The table holds 10,000 ids; past that ids with nothing live go first, then
-  the one issued to longest ago (a flood of that size can make an operator mid-ceremony ask
-  again). (3) A wrong answer to a login challenge is refused in the same words whether the id
+  request is fresh. The table holds 10,000 ids; past that the id issued to longest ago goes,
+  in constant time (ids are kept in the order they were last issued to), whoever it is:
+  sparing roster ids would show, by how they are served after a flood, which ids are on the
+  roster. So, stated: a sustained flood (10,000 made-up ids within a challenge's lifetime) can
+  push out the challenge an operator is answering, and the operator asks again. It no longer
+  pushes them toward the failure lock (the review of 10-07 found it did: an operator's
+  genuine answer to a challenge pushed out failed and counted, the fifth round locked them
+  out): an answer to a challenge that is not live (never issued, answered, lapsed, pushed out)
+  can't succeed, so it is no guess, and it is refused in the same words without counting or
+  logging it; only an answer to a live challenge that fails counts. (3) A wrong answer to a login challenge is refused in the same words whether the id
   has a passkey, has none, or does not exist (the bridge's own log keeps the reason); only a
   counter that did not count up, which takes a valid signature, is named. Left as it is,
   stated: timing (an operator's challenge takes the engine's lock and webauthn-rs's work, a

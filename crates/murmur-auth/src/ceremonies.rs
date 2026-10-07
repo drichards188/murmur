@@ -6,25 +6,19 @@
 //! (issued, unanswered, younger than [`Ceremonies::ttl`]) per id. A request past that gets the
 //! newest live one's options again instead of a new challenge ([`Ceremonies::full`]): no new
 //! state, no work for the bridge (a real operator's challenge takes the decision lock), and
-//! nothing refused or pushed out. So a stranger flooding an id can neither turn its operator
-//! away nor evict the challenge the operator was given: the operator always gets a live
-//! challenge their authenticator can answer (served again, it may have less of its lifetime
-//! left; once it lapses the next request is a fresh one). Ids without a passkey, and ids that
-//! don't exist, go through the same table with the same bounds (their options are decoys), so
-//! the limit says nothing about which is which.
+//! nothing refused or pushed out by requests for the same id. Ids without a passkey, and ids
+//! that don't exist, go through the same table with the same bounds (their options are
+//! decoys), so the limit says nothing about which is which.
 //!
-//! What a stranger can still do: answer a challenge they were served (an answer, right or
-//! wrong, takes it: it is answered once) and so fail the operator's answer to it, each such
-//! answer a failure on the id's login limit ([`crate::Limiter`]); which they could do with
-//! made-up answers anyway. That limit's lock is the one way to keep an operator from signing
-//! in, as before (five failures in fifteen minutes: 30 s, doubling to 15 minutes).
-//!
-//! Bounded: `per_id` ceremonies per id, [`Ceremonies::cap`] ids. When the table is full, ids
-//! with nothing live go first, then the id issued to longest ago: a flood of made-up ids can
-//! push out a whole id, real or decoy alike, whose next request is then a fresh one (a retry,
-//! for an operator mid-ceremony; it takes `cap` requests).
+//! Bounded: `per_id` ceremonies per id, [`Ceremonies::cap`] ids. When the table is full the id
+//! issued to longest ago goes, whoever it is (keeping roster ids would show, by how they are
+//! served after a flood, which ids are on the roster), in constant time: ids are kept in the
+//! order they were last issued to. So a sustained flood of made-up ids (`cap` of them within a
+//! ceremony's lifetime) can push out the challenge an operator is answering; the bridge refuses
+//! an answer to a challenge that is not live without counting it against the operator (it
+//! can't succeed, so it is no guess), and the operator asks again.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 /// One ceremony: its challenge, when it lapses, and what the caller keeps with it.
@@ -39,13 +33,18 @@ pub struct Live<T> {
 struct Waiting<T> {
     /// Oldest first.
     live: Vec<Live<T>>,
-    /// When the id was last issued a new ceremony.
-    last: Instant,
+    /// The number of the id's latest issue (its place in [`Ceremonies::order`]).
+    issue: u64,
 }
 
 #[derive(Debug)]
 pub struct Ceremonies<T> {
     ids: HashMap<String, Waiting<T>>,
+    /// Ids by the issue that put them there, oldest first. An entry whose number is not its
+    /// id's latest issue is stale: skipped when evicting, dropped when the queue is compacted
+    /// (when stale entries outnumber the ids), so every operation is amortized constant time.
+    order: VecDeque<(String, u64)>,
+    next: u64,
     pub per_id: usize,
     pub ttl: Duration,
     pub cap: usize,
@@ -55,6 +54,8 @@ impl<T> Ceremonies<T> {
     pub fn new(per_id: usize, ttl: Duration, cap: usize) -> Self {
         Ceremonies {
             ids: HashMap::new(),
+            order: VecDeque::new(),
+            next: 0,
             per_id: per_id.max(1),
             ttl,
             cap: cap.max(1),
@@ -80,14 +81,13 @@ impl<T> Ceremonies<T> {
     /// which [`Self::full`] tells the caller first).
     pub fn add(&mut self, id: &str, now: Instant, challenge: [u8; 32], item: T) {
         self.sweep(id, now);
-        if !self.ids.contains_key(id) && self.ids.len() >= self.cap {
-            self.evict(now);
+        if !self.ids.contains_key(id) {
+            while self.ids.len() >= self.cap && self.evict_one() {}
         }
+        let issue = self.next;
+        self.next += 1;
         let per_id = self.per_id;
-        let w = self.ids.entry(id.to_string()).or_insert(Waiting {
-            live: Vec::new(),
-            last: now,
-        });
+        let w = self.ids.entry(id.to_string()).or_insert(Waiting { live: Vec::new(), issue });
         while w.live.len() >= per_id {
             w.live.remove(0);
         }
@@ -96,11 +96,27 @@ impl<T> Ceremonies<T> {
             until: now + self.ttl,
             item,
         });
-        w.last = now;
+        w.issue = issue;
+        self.order.push_back((id.to_string(), issue));
+        if self.order.len() > 2 * self.cap.max(self.ids.len()) + 16 {
+            let ids = &self.ids;
+            self.order.retain(|(k, n)| ids.get(k).is_some_and(|w| w.issue == *n));
+        }
+    }
+
+    /// Drop the id issued to longest ago; false if there is none.
+    fn evict_one(&mut self) -> bool {
+        while let Some((k, n)) = self.order.pop_front() {
+            if self.ids.get(&k).is_some_and(|w| w.issue == n) {
+                self.ids.remove(&k);
+                return true;
+            }
+        }
+        false
     }
 
     /// The live ceremony of `id` with `challenge`, taken (answered once, right or wrong);
-    /// None if there is none (another id's, answered already, lapsed, never issued).
+    /// None if there is none (another id's, answered already, lapsed, pushed out, never issued).
     pub fn take(&mut self, id: &str, challenge: &[u8; 32], now: Instant) -> Option<T> {
         self.sweep(id, now);
         let w = self.ids.get_mut(id)?;
@@ -119,17 +135,9 @@ impl<T> Ceremonies<T> {
         self.ids.len()
     }
 
-    /// Room for one more id: every id with nothing live goes; if none, the id issued to
-    /// longest ago.
-    fn evict(&mut self, now: Instant) {
-        self.ids.retain(|_, w| w.live.iter().any(|l| l.until > now));
-        if self.ids.len() < self.cap {
-            return;
-        }
-        let victim = self.ids.iter().min_by_key(|(_, w)| w.last).map(|(k, _)| k.clone());
-        if let Some(k) = victim {
-            self.ids.remove(&k);
-        }
+    /// How many entries the issue order holds (bounded by about twice the ids kept).
+    pub fn order_len(&self) -> usize {
+        self.order.len()
     }
 }
 
@@ -142,8 +150,8 @@ mod tests {
         [n; 32]
     }
 
-    /// Past the bound a request is served the newest live ceremony again: a flood neither
-    /// refuses the operator nor pushes out the challenge they were given.
+    /// Past the bound a request is served the newest live ceremony again: a flood for the id
+    /// neither refuses the operator nor pushes out the challenge they were given.
     #[test]
     fn past_the_bound_the_newest_is_served_again_and_nothing_is_pushed_out() {
         let mut t: Ceremonies<u8> = Ceremonies::new(4, Duration::from_secs(120), 100);
@@ -175,24 +183,46 @@ mod tests {
         assert!(t.full("op-2", t0 + Duration::from_secs(121)).is_none());
     }
 
-    /// The table is bounded: ids with nothing live go first, then the one issued to longest
-    /// ago (its next request is a fresh one).
+    /// The table is bounded: the id issued to longest ago goes, whoever it is; an id issued to
+    /// again moves to the back.
     #[test]
-    fn a_full_table_drops_idle_ids_first_then_the_oldest() {
+    fn a_full_table_drops_the_id_issued_to_longest_ago() {
         let mut t: Ceremonies<()> = Ceremonies::new(4, Duration::from_secs(120), 3);
         let t0 = Instant::now();
         t.add("op-2", t0, c(1), ());
         t.add("x1", t0 + Duration::from_secs(1), c(2), ());
         t.add("x2", t0 + Duration::from_secs(2), c(3), ());
-        // x1's lapses: it goes before op-2, which still has one live
-        t.take("x1", &c(2), t0 + Duration::from_secs(3)).unwrap();
-        t.add("x3", t0 + Duration::from_secs(4), c(4), ());
+        // op-2 issued to again: now x1 is the oldest
+        t.add("op-2", t0 + Duration::from_secs(3), c(4), ());
+        t.add("x3", t0 + Duration::from_secs(4), c(5), ());
         assert_eq!(t.ids(), 3);
-        assert_eq!(t.live("op-2", t0 + Duration::from_secs(5)), 1);
-        // all live: the id issued to longest ago (op-2) goes
-        t.add("x4", t0 + Duration::from_secs(6), c(5), ());
+        assert_eq!(t.live("x1", t0 + Duration::from_secs(5)), 0);
+        assert_eq!(t.live("op-2", t0 + Duration::from_secs(5)), 2);
+        // then x2, then op-2
+        t.add("x4", t0 + Duration::from_secs(6), c(6), ());
+        assert_eq!(t.live("x2", t0 + Duration::from_secs(7)), 0);
+        t.add("x5", t0 + Duration::from_secs(8), c(7), ());
+        assert_eq!(t.live("op-2", t0 + Duration::from_secs(9)), 0);
         assert_eq!(t.ids(), 3);
-        assert_eq!(t.live("op-2", t0 + Duration::from_secs(7)), 0);
-        assert_eq!(t.live("x2", t0 + Duration::from_secs(7)), 1);
+    }
+
+    /// Eviction walks no table: a flood of distinct ids far past the cap keeps the ids and the
+    /// issue order bounded, and repeated issues to a few ids don't grow the order either.
+    #[test]
+    fn a_flood_stays_bounded_without_scanning() {
+        let cap = 1_000;
+        let mut t: Ceremonies<()> = Ceremonies::new(4, Duration::from_secs(120), cap);
+        let t0 = Instant::now();
+        for k in 0..200_000u32 {
+            t.add(&format!("x{k}"), t0, c(1), ());
+            assert!(t.ids() <= cap);
+            assert!(t.order_len() <= 2 * cap + 17, "{}", t.order_len());
+        }
+        for k in 0..200_000u32 {
+            t.add(&format!("y{}", k % 7), t0, c(2), ());
+            assert!(t.order_len() <= 2 * cap + 17, "{}", t.order_len());
+        }
+        assert_eq!(t.live("y3", t0), 4);
+        assert_eq!(t.ids(), cap);
     }
 }
