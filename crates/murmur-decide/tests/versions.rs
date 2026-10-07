@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 38] = [
+const LOGS: [(&str, u32); 43] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -124,13 +124,23 @@ const LOGS: [(&str, u32); 38] = [
     ("v12-young-track-blocks-scenario-79.jsonl", REVIEW_FOLLOWUPS_SINCE),
     ("v12-refusal-names-queued-order-scenario-81.jsonl", REVIEW_FOLLOWUPS_SINCE),
     ("v12-restore-written-off-scenario-82.jsonl", REVIEW_FOLLOWUPS_SINCE),
+    // rules 13 (lost contacts, murmur-533; the table names the constant; a clean build of
+    // 87ad498): the same scenario; scenario 83, a fishing boat dropped by the tracker by the
+    // target, still blocking; 84, accepted at the nomination; 85, an accepted tour boat seen
+    // again by its AIS under a new track id, retired, the live track aborting the engagement;
+    // 87, accepted while the nomination waits
+    ("v13-engagement-scenario-01.jsonl", LOST_CONTACT_SINCE),
+    ("v13-lost-contact-blocks-scenario-83.jsonl", LOST_CONTACT_SINCE),
+    ("v13-lost-contact-accepted-scenario-84.jsonl", LOST_CONTACT_SINCE),
+    ("v13-lost-contact-reappears-scenario-85.jsonl", LOST_CONTACT_SINCE),
+    ("v13-lost-contact-accepted-waiting-scenario-87.jsonl", LOST_CONTACT_SINCE),
 ];
 
 /// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
 const V6_AIRSHIP: &str = "v6-airship-nomination-scenario-66.jsonl";
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v12-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v13-engagement-scenario-01.jsonl";
 
 /// The committed scenario log of rules 6 (the lost-link preload).
 const V6_SCENARIO: &str = "v6-engagement-scenario-01.jsonl";
@@ -1365,5 +1375,35 @@ fn a_rules_12_log_claiming_rules_11_still_carries_its_follow_ups() {
                 "{name} {marker}: {w:?}"
             );
         }
+    }
+}
+
+/// Rules 13: the committed logs carry the lost contacts as the engine kept them: a drop, an
+/// acceptance naming the contact, a retirement on its AIS; and claimed as rules 12, a log with
+/// any of them is caught by its markers.
+#[test]
+fn the_rules_13_logs_carry_lost_contacts_and_cannot_claim_rules_12() {
+    let blocks = fixture("v13-lost-contact-blocks-scenario-83.jsonl");
+    assert!(blocks.contains("\"type\":\"track.dropped\",\"track\":\"T-0002\""));
+    assert!(blocks.contains("lost contact T-0002 (neutral, fishing_vessel) could be"), "the check names it");
+    let r = replay_str(&blocks).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert_eq!(r.lost_contacts, 1);
+    let accepted = fixture("v13-lost-contact-accepted-scenario-84.jsonl");
+    assert!(accepted.contains("\"type\":\"engage.accepted\",\"intent\":1,\"contact\":\"T-0002\""));
+    assert!(accepted.contains("\"lost_accepted\":{\"T-0002\""));
+    let back = fixture("v13-lost-contact-reappears-scenario-85.jsonl");
+    assert!(back.contains("\"type\":\"track.reacquired\",\"track\":\"T-0002\",\"by_track\":\"T-0005\""));
+    for (name, text) in [("83", &blocks), ("84", &accepted), ("85", &back)] {
+        let mut ls = lines(text);
+        let now = format!("\"rules_version\":{LOST_CONTACT_SINCE},");
+        assert!(ls[0].contains(&now), "{name}");
+        ls[0] = ls[0].replacen(&now, &format!("\"rules_version\":{REVIEW_FOLLOWUPS_SINCE},"), 1);
+        let r = with(&rechain(&ls), RulesAccepted::Exactly(REVIEW_FOLLOWUPS_SINCE));
+        assert!(
+            whats(&r).iter().any(|w| w.contains("a track the tracker dropped") || w.contains("lost contacts in decision inputs")),
+            "{name}: {:?}",
+            whats(&r)
+        );
     }
 }
