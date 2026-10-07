@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 43] = [
+const LOGS: [(&str, u32); 44] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -134,6 +134,8 @@ const LOGS: [(&str, u32); 43] = [
     ("v13-lost-contact-accepted-scenario-84.jsonl", LOST_CONTACT_SINCE),
     ("v13-lost-contact-reappears-scenario-85.jsonl", LOST_CONTACT_SINCE),
     ("v13-lost-contact-accepted-waiting-scenario-87.jsonl", LOST_CONTACT_SINCE),
+    // and a live run with its anchors (see the test below)
+    ("v13-lost-contacts-live.jsonl", LOST_CONTACT_SINCE),
 ];
 
 /// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
@@ -1406,4 +1408,33 @@ fn the_rules_13_logs_carry_lost_contacts_and_cannot_claim_rules_12() {
             whats(&r)
         );
     }
+}
+
+/// Rules 13, live (a clean build of 1a77f8f; stand-ins of the engage demo at the Gate,
+/// `sim/scenarios/golden-gate-lost.toml`, a dev run), anchored as it ran: a fishing boat 400 m
+/// north of where the fast boat holds and a tour boat on AIS go out of view at 4 minutes; the
+/// tracker drops both 180 s later (`track.dropped`); op-1's nomination is rejected on the lost
+/// tour boat, then nominated again accepting both lost contacts (`engage.accepted` naming
+/// each), shown to op-2 and op-3 on their picture tokens, signed and dispatched; the tour boat
+/// comes back into view under its AIS 300 m on, as T-0004, and the lost contact is retired
+/// (`track.reacquired`); the live track, young, counts in the keep-out and the engagement is
+/// aborted before its effect. A clean stop.
+#[test]
+fn the_rules_13_live_log_holds_lost_contacts_until_accepted_or_seen_again() {
+    let name = "v13-lost-contacts-live.jsonl";
+    let text = fixture(name);
+    let a = anchor::verify(&text, &anchors_of(name));
+    assert!(a.ok() && a.shutdown, "{:?}", a.problems);
+    let r = replay_str(&text).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert_eq!(r.build.as_ref().map(|b| b.dirty), Some(Some(false)));
+    assert_eq!(r.lost_contacts, 2);
+    assert!(text.contains("\"type\":\"track.dropped\",\"track\":\"T-0001\""));
+    assert!(text.contains("\"type\":\"track.dropped\",\"track\":\"T-0002\""));
+    assert!(text.contains("could be 989 m from the effect point"), "rejected on the lost tour boat");
+    for t in ["T-0001", "T-0002"] {
+        assert!(text.contains(&format!("\"type\":\"engage.accepted\",\"intent\":2,\"contact\":\"{t}\"")), "{t}");
+    }
+    assert!(text.contains("\"type\":\"track.reacquired\",\"track\":\"T-0001\",\"by_track\":\"T-0004\""));
+    assert!(text.contains("picture changed: keep_out_tracks: track T-0004 (neutral, ferry)"), "aborted on the live track");
 }

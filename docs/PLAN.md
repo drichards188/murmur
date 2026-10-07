@@ -525,6 +525,9 @@ since when, and an Accept for this engagement), on the engagement card; agents r
 (`get_tracks`, `get_nomination_options`) and cannot accept. The cost, measured on generated
 situations (`eval/METRICS.md` "Out of view"): see there; the explanation's effect-time windows
 also count a grid point clear only by a margin that covers the dip between points (murmur-dr6).
+Live demo: `MURMUR_CONTACTS=sim/scenarios/golden-gate-lost.toml make up FLEET=engage-demo` (with
+`MURMUR_OPERATORS` and `MURMUR_ENGAGE_OPERATORS`); live log with anchors:
+`crates/murmur-decide/tests/data/audit/v13-lost-contacts-live.jsonl`.
 
 Rules 10, passkeys (murmur-437; `PASSKEY_SINCE`, policy schema 7; `crates/murmur-decide/src/
 passkey.rs`, `crates/murmur-auth/src/passkeys.rs` on webauthn-rs, bridge `auth.rs`, console

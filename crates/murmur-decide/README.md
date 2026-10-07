@@ -1414,9 +1414,13 @@ Rules versions:
   in the log). The keep-out explanation's grid margin and words (murmur-dr6) change no
   decision. Markers (a log claiming rules 12 or older can't carry them): `track.dropped`,
   `track.reacquired`, `lost_contacts`, `lost_accepted`, an acceptance's `contact`, a track's
-  `ais`. Fixtures (a clean build): `tests/data/audit/v13-engagement-scenario-01.jsonl` and
-  scenarios 83 to 85 and 87 (`v13-lost-contact-*`); the rules 12 live logs are pinned to rules
-  12 in `tests/versions.rs`. The measurement of what it costs is in `eval/METRICS.md`
+  `ais`. Fixtures (clean builds): `tests/data/audit/v13-engagement-scenario-01.jsonl` and
+  scenarios 83 to 85 and 87 (`v13-lost-contact-*`), and a live log with its anchors
+  (`v13-lost-contacts-live.jsonl`, stand-ins at the Gate on `sim/scenarios/golden-gate-lost.toml`:
+  two contacts dropped, a nomination rejected on one, nominated again accepting both, signed
+  and dispatched, the tour boat back in view under its AIS and retired, its live track aborting
+  the engagement; a clean stop); the rules 12 live logs are pinned to rules 12 in
+  `tests/versions.rs`. The measurement of what it costs is in `eval/METRICS.md`
   ("Out of view").
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
