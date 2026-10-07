@@ -388,7 +388,7 @@ async fn login_options_do_not_say_who_has_a_passkey() {
         v["publicKey"]["allowCredentials"] = json!([]);
         v
     };
-    let lengths: Vec<usize> = murmur_auth::passkeys::DECOY_ID_LENGTHS.iter().map(|(n, _)| *n).collect();
+    let lengths: Vec<usize> = murmur_auth::passkeys::DECOY_IDS.iter().map(|k| k.len).collect();
     for v in [&a, &b, &c] {
         assert_eq!(v["publicKey"]["userVerification"], "required");
         assert_eq!(shape(v), shape(&c), "{v} against op-2's real options {c}");

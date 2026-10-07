@@ -96,54 +96,83 @@ impl std::fmt::Display for Refused {
     }
 }
 
-/// The credential id lengths (bytes) a decoy draws from, with weights (percent): what the
-/// authenticators people sign in with make for an ES256 passkey. 16: Google Password Manager
-/// and the password managers (a UUID); 20: iCloud Keychain; 32: Windows Hello, and browsers'
-/// virtual authenticators; 64: a YubiKey 5; 65: an Android phone as a security key. A real
-/// operator's ids are whatever their authenticator chose, so a decoy is told from them by
-/// neither its length nor its count, short of knowing which authenticators a site's people
-/// use.
-pub const DECOY_ID_LENGTHS: [(usize, u32); 5] = [(16, 25), (20, 25), (32, 25), (64, 15), (65, 10)];
+/// One kind of credential id a decoy draws from: its length in bytes, whether it is a version
+/// 4 UUID (its version and variant bits set, as a UUID-based password manager's ids are), and
+/// its weight (percent).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DecoyId {
+    pub len: usize,
+    pub uuid: bool,
+    pub weight: u32,
+}
+
+/// The credential ids a decoy draws from: what the authenticators people sign in with make for
+/// an ES256 passkey. 16 bytes: a version 4 UUID from the password managers that make one
+/// (Bitwarden's are), or 16 random bytes from providers that don't (the split of that class,
+/// 15 to 10, is a judgment); 20: iCloud Keychain; 32: Windows Hello, and browsers' virtual
+/// authenticators; 64: a YubiKey 5; 65: an Android phone as a security key. A real operator's
+/// ids are whatever their authenticator chose, so a decoy is told from them by neither its
+/// length nor its count nor a UUID's fixed bits, short of knowing which authenticators a
+/// site's people use (the structure inside a security key's longer ids is not imitated).
+pub const DECOY_IDS: [DecoyId; 6] = [
+    DecoyId { len: 16, uuid: true, weight: 15 },
+    DecoyId { len: 16, uuid: false, weight: 10 },
+    DecoyId { len: 20, uuid: false, weight: 25 },
+    DecoyId { len: 32, uuid: false, weight: 25 },
+    DecoyId { len: 64, uuid: false, weight: 15 },
+    DecoyId { len: 65, uuid: false, weight: 10 },
+];
 
 /// How many passkeys a decoy names, with weights (percent): most people register one device,
 /// some a second, few a third.
 pub const DECOY_COUNTS: [(usize, u32); 3] = [(1, 70), (2, 25), (3, 5)];
 
 /// The entry of a weighted table (weights summing to 100) that `x` falls on.
-fn weighted(table: &[(usize, u32)], x: [u8; 32]) -> usize {
+fn weighted<T: Copy>(table: &[T], weight: impl Fn(&T) -> u32, x: [u8; 32]) -> Option<T> {
     let mut r = u32::from_le_bytes([x[0], x[1], x[2], x[3]]) % 100;
-    for &(v, w) in table {
+    for v in table {
+        let w = weight(v);
         if r < w {
-            return v;
+            return Some(*v);
         }
         r -= w;
     }
-    table.last().map_or(1, |&(v, _)| v)
+    table.last().copied()
 }
 
 /// The made-up credential ids a decoy names for `operator` (murmur-i58): deterministic in
 /// `secret` and the id (the same answer at every request, and across restarts with the same
 /// secret, as a real operator's), unpredictable without the secret (HMAC-SHA-256 under it), as
-/// many as [`DECOY_COUNTS`] draws and each as long as [`DECOY_ID_LENGTHS`] draws.
+/// many as [`DECOY_COUNTS`] draws and each of a kind [`DECOY_IDS`] draws.
 pub fn decoy_credential_ids(secret: &[u8], operator: &str) -> Vec<Vec<u8>> {
     let op = operator.as_bytes();
     let len = u32::try_from(op.len()).unwrap_or(u32::MAX).to_le_bytes();
     let mac = |label: &[u8], i: u8, block: u8| crate::keys::hmac_sha256(secret, &[label, &len, op, &[i, block]]);
-    let count = weighted(&DECOY_COUNTS, mac(b"murmur decoy count\0", 0, 0));
+    let count = weighted(&DECOY_COUNTS, |c| c.1, mac(b"murmur decoy count\0", 0, 0)).map_or(1, |c| c.0);
     (0..count)
         .map(|i| {
             let i = u8::try_from(i).unwrap_or(u8::MAX);
-            let n = weighted(&DECOY_ID_LENGTHS, mac(b"murmur decoy length\0", i, 0));
-            let mut id = Vec::with_capacity(n + 32);
+            let kind = weighted(&DECOY_IDS, |k| k.weight, mac(b"murmur decoy length\0", i, 0)).unwrap_or(DECOY_IDS[2]);
+            let mut id = Vec::with_capacity(kind.len + 32);
             let mut block = 0u8;
-            while id.len() < n {
+            while id.len() < kind.len {
                 id.extend_from_slice(&mac(b"murmur decoy id\0", i, block));
                 block = block.wrapping_add(1);
             }
-            id.truncate(n);
+            id.truncate(kind.len);
+            if kind.uuid {
+                // RFC 9562: version 4 in the high nibble of byte 6, variant 10 in byte 8
+                id[6] = (id[6] & 0x0f) | 0x40;
+                id[8] = (id[8] & 0x3f) | 0x80;
+            }
             id
         })
         .collect()
+}
+
+/// Whether `id` has a version 4 UUID's fixed bits.
+pub fn is_uuid_v4(id: &[u8]) -> bool {
+    id.len() == 16 && id[6] >> 4 == 4 && id[8] >> 6 == 0b10
 }
 
 /// A stable WebAuthn user handle for an operator id (the authenticator stores it with a
@@ -473,6 +502,7 @@ mod tests {
         let n = 20_000;
         let mut lengths: BTreeMap<usize, usize> = BTreeMap::new();
         let mut counts: BTreeMap<usize, usize> = BTreeMap::new();
+        let mut uuids = 0;
         for k in 0..n {
             let op = format!("op-{k}");
             let ids = decoy_credential_ids(&secret, &op);
@@ -480,6 +510,7 @@ mod tests {
             *counts.entry(ids.len()).or_default() += 1;
             for id in &ids {
                 *lengths.entry(id.len()).or_default() += 1;
+                uuids += usize::from(is_uuid_v4(id));
             }
         }
         // every entry of the tables, near its weight (within 1.5 points of 100)
@@ -491,8 +522,19 @@ mod tests {
                 assert!((pct - f64::from(w)).abs() < 1.5, "{v}: {pct:.1}% for {w}% ({seen:?})");
             }
         };
-        near(&lengths, &DECOY_ID_LENGTHS);
+        let mut by_len: BTreeMap<usize, u32> = BTreeMap::new();
+        for k in DECOY_IDS {
+            *by_len.entry(k.len).or_default() += k.weight;
+        }
+        near(&lengths, &by_len.into_iter().collect::<Vec<_>>());
         near(&counts, &DECOY_COUNTS);
+        // the review: a UUID-based manager's 16 bytes carry a version 4 UUID's fixed bits, and
+        // so does the share of 16-byte decoys the table gives those managers (15 of 25, plus
+        // the 1 in 64 of the random ones that happen to)
+        let sixteen = lengths[&16] as f64;
+        let share = 100.0 * uuids as f64 / sixteen;
+        let want = 100.0 * (15.0 + 10.0 / 64.0) / 25.0;
+        assert!((share - want).abs() < 3.0, "{share:.1}% of 16-byte decoys are UUIDs, want {want:.1}%");
         // keyed: another secret, other ids; and no two ids of one decoy alike
         assert_ne!(decoy_credential_ids(&secret, "op-2"), decoy_credential_ids(&[8u8; 32], "op-2"));
         for k in 0..200 {

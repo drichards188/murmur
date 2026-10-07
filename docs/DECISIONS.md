@@ -775,10 +775,12 @@ group. Dates are 2026.
   authenticator chose (32 bytes for the virtual authenticator, 64 for a security key), so the
   unauthenticated `POST /api/auth/login/passkey` told by length which ids exist and hold a
   passkey; and its issuance was not limited. Decided: (1) a decoy names as many credentials,
-  as long, as real authenticators make, drawn from a fixed table (lengths: 16 bytes for Google
-  Password Manager and the password managers, 20 for iCloud Keychain, 32 for Windows Hello and
-  virtual authenticators, 64 for a YubiKey 5, 65 for an Android phone as a security key;
-  counts: one 70 %, two 25 %, three 5 %), deterministic per id under an HMAC key: repeat
+  as long, as real authenticators make, drawn from a fixed table (16 bytes: a version 4 UUID,
+  its version and variant bits set, as from the password managers that make one, 15 %, or 16
+  random bytes, 10 %, a split the review asked for and a judgment; 20 for iCloud Keychain, 32
+  for Windows Hello and virtual authenticators, 64 for a YubiKey 5, 65 for an Android phone as
+  a security key; counts: one 70 %, two 25 %, three 5 %; the structure inside a security key's
+  longer ids is not imitated), deterministic per id under an HMAC key: repeat
   queries see the same answer, as for a real operator, and nobody without the key predicts
   it. Not drawn from the site's own registrations: those change when someone registers, and
   every decoy would shift at once while real answers did not. The key is kept beside the
@@ -810,11 +812,18 @@ group. Dates are 2026.
   genuine answer to a challenge pushed out failed and counted, the fifth round locked them
   out): an answer to a challenge that is not live (never issued, answered, lapsed, pushed out)
   can't succeed, so it is no guess, and it is refused in the same words without counting or
-  logging it; only an answer to a live challenge that fails counts. (3) A wrong answer to a login challenge is refused in the same words whether the id
-  has a passkey, has none, or does not exist (the bridge's own log keeps the reason); only a
-  counter that did not count up, which takes a valid signature, is named. Left as it is,
-  stated: timing (an operator's challenge takes the engine's lock and webauthn-rs's work, a
-  decoy an HMAC; served again, both cost the same).
+  logging it; only an answer to a live challenge that fails counts. (3) A wrong answer to a
+  login challenge is refused in the same words whether the id has a passkey, has none, or
+  does not exist (the bridge's own log keeps the reason); only a counter that did not count
+  up, which takes a valid signature, is named. What still tells, stated (the review): an
+  id's options flip from decoy to real when its operator registers a passkey (and back when
+  the last is removed), so someone polling ids learns who registered one and when; that is
+  inherent in naming the operator's credentials at all, and only sign-in without naming them
+  (discoverable credentials, an empty allow list) would remove it. Timing: an operator's
+  challenge takes the engine's lock and webauthn-rs's work where a decoy takes an HMAC
+  (served again, both cost the same), and a wrong answer to a live challenge of an id on the
+  roster writes an `auth.refused` audit event that an id off it does not, so its refusal
+  takes measurably longer.
 - **A keep-out that blocks is explained, read-only; nothing here relaxes one** (10-06,
   murmur-12e; no rules change). Measured live: with manoeuvring civilian traffic near the
   target, keep-outs blocked 77 of 77 nominations while the platform was 1 to 2 km out (a
