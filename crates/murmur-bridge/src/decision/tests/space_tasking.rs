@@ -608,6 +608,41 @@ async fn a_reload_after_the_pass_does_not_miss_a_collected_collect() {
     r.replays();
 }
 
+/// Rules 13 on the bridge's own clock (`clock::test_clock`: pinned to the rig's start, its
+/// wall clock stepping back as this host's did, the engine on `clock::wall`): a collect
+/// chosen and dispatched (its answers prepared outside the lock), then re-checked on a
+/// reloaded segment without its satellite and missed. Every decision on an answer says when
+/// it was computed, each collect's request time is that time's scenario time, and the log
+/// replays.
+#[tokio::test(start_paused = true)]
+async fn space_answers_on_the_bridges_own_clock_carry_their_times_and_replay() {
+    let r = rig_clocked(Policy::load(&root().join("sim/policy.toml")).expect("policy"), murmur_decide::AuthMode::Dev, EngineClock::Bridge);
+    let map = ScenarioMap {
+        engine_origin: snapshot::ms(clock::wall()),
+        scenario_origin: t0(),
+        rate: 1.0,
+    };
+    r.d.install_space(fixture_space(), map);
+    let p = r.first_option().await;
+    sleep(Duration::from_secs(3)).await;
+    clock::test_clock::step_utc(-0.7);
+    let out = r.d.submit(&op1(), collect_req(Some(&p.chosen))).await.expect("collect");
+    assert_eq!(out.state, State::Dispatched, "{}", out.intent);
+    for _ in 0..3 {
+        sleep(Duration::from_secs(16)).await;
+        clock::test_clock::step_utc(-0.7);
+        r.d.tick();
+    }
+    r.d.install_space(space_without(p.chosen.norad_id), map);
+    assert_eq!(r.state(out.id), State::Failed);
+    let text = r.log.text();
+    let answered = text.matches("\"status\":\"answered\"").count();
+    assert!(answered >= 4, "{text}");
+    assert_eq!(text.matches("\"computed_t\":").count(), answered);
+    assert!(text.contains("\"phase\":\"dispatched\""));
+    r.replays();
+}
+
 /// The same elements on the same pin are the same segment (only `space.loaded`); pinned
 /// otherwise they would be another, which rules 13 refuses mid-run (`SPACE_REPLAY_SINCE`:
 /// the bridge pins once per session): nothing logged, the cover not re-checked, the segment
