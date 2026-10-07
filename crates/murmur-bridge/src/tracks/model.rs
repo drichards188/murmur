@@ -1457,3 +1457,64 @@ impl Track {
         }
     }
 }
+
+#[cfg(test)]
+mod segment_tests {
+    use super::*;
+
+    /// A model 1,000 m north of a radar at the origin, flying north at 50 m/s, 10 m and 2 m/s
+    /// each way.
+    fn model() -> Model {
+        let mut c = [[0.0; 4]; 4];
+        c[0][0] = 100.0;
+        c[1][1] = 100.0;
+        c[2][2] = 4.0;
+        c[3][3] = 4.0;
+        Model { x: [0.0, 1000.0, 0.0, 50.0], c, p: 0.5 }
+    }
+
+    const NORTH: [f64; 2] = [0.0, 1.0];
+
+    /// The slant bound is a constraint with its uncertainty (the review of 10-07): an estimate
+    /// within three of the radar's sigmas beyond the slant range is left alone; one beyond it is
+    /// moved to that bound, its spread along the line widened by the move, its velocity and its
+    /// spread across the line untouched.
+    #[test]
+    fn the_slant_bound_moves_only_an_estimate_beyond_three_sigmas_and_widens_it() {
+        // slant range 920 m, the radar's sigma 30 m: 1,000 m is 80 m beyond, within 90
+        let mut m = model();
+        m.keep_on_segment([0.0, 0.0], NORTH, 920.0, 30.0);
+        assert_eq!(m, model());
+        // slant range 800 m: 200 m beyond, moved back 110 m to 890 m
+        let mut m = model();
+        m.keep_on_segment([0.0, 0.0], NORTH, 800.0, 30.0);
+        assert!((m.x[1] - 890.0).abs() < 1e-9 && m.x[0] == 0.0, "{:?}", m.x);
+        assert!((m.c[1][1] - (100.0 + 110.0 * 110.0)).abs() < 1e-9 && m.c[0][0] == 100.0, "{:?}", m.c);
+        assert_eq!((m.x[2], m.x[3], m.c[2][2], m.c[3][3]), (0.0, 50.0, 4.0, 4.0), "the velocity is not dragged");
+    }
+
+    /// A track no fix has ranged for `RANGE_FRESH_S` is the segment again: its middle, a third of
+    /// its length each way along the line, the across-line estimate kept, and no velocity (none,
+    /// give or take the initial sigma, nothing correlated), whatever it had.
+    #[test]
+    fn a_lapsed_track_is_the_segment_again_with_no_velocity() {
+        let mut m = model();
+        m.x[0] = 12.0;
+        m.reset_to_segment([0.0, 0.0], NORTH, 3_000.0, 60.0);
+        assert!((m.x[1] - 1_500.0).abs() < 1e-9 && (m.x[0] - 12.0).abs() < 1e-9, "{:?}", m.x);
+        assert!((m.c[1][1] - 1_000.0 * 1_000.0).abs() < 1e-6 && (m.c[0][0] - 100.0).abs() < 1e-9, "{:?}", m.c);
+        assert_eq!((m.x[2], m.x[3]), (0.0, 0.0));
+        assert_eq!((m.c[2][2], m.c[3][3], m.c[0][2], m.c[1][3]), (3_600.0, 3_600.0, 0.0, 0.0));
+    }
+
+    /// Bearings alone do not see a manoeuvre along the line: the widening adds white-noise
+    /// acceleration along it only.
+    #[test]
+    fn the_bearing_line_widens_along_itself_only() {
+        let mut m = model();
+        m.widen_along(NORTH, ALONG_Q, 2.0);
+        assert!((m.c[1][1] - (100.0 + ALONG_Q * 8.0 / 3.0)).abs() < 1e-9);
+        assert!((m.c[3][3] - (4.0 + ALONG_Q * 2.0)).abs() < 1e-9 && (m.c[1][3] - ALONG_Q * 2.0).abs() < 1e-9);
+        assert_eq!((m.c[0][0], m.c[2][2], m.c[0][2]), (100.0, 4.0, 0.0));
+    }
+}
