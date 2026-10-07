@@ -24,7 +24,7 @@
 #   MURMUR_SITL_INSTANCE_BASE 0     first SITL instance (TCP 5760 + 10*instance)
 # MURMUR_TIDEWATER_URL overrides the port with any running `tidewater serve`. The scenario
 # clock (MURMUR_AT, MURMUR_RATE) goes to the stand-ins, tidewater drive, the emulator and
-# the contacts process.
+# the contacts process; a MURMUR_RATE other than 1 needs MURMUR_AT (refused otherwise).
 # MURMUR_CONTACTS=sim/scenarios/<name>.toml also runs the contacts process (contacts that
 # are not ours, Phase C2; truth to the bridge's simulation channel and logs/contacts-truth.jsonl).
 set -euo pipefail
@@ -47,6 +47,18 @@ export MURMUR_EVENTS="$MURMUR_LINK_EVENTS"
 if [ -n "${MURMUR_LINK_EVENTS:-}" ] && [ ! -f "$MURMUR_LINK_EVENTS" ]; then
   echo "MURMUR_LINK_EVENTS: no file $MURMUR_LINK_EVENTS" >&2
   exit 1
+fi
+# a scenario rate needs a scenario start (murmur-drd): without MURMUR_AT every clock is the
+# wall clock, at 1x; the bridge, the stand-ins, the contacts process and the emulator refuse
+# a rate without one too
+if [ -n "${MURMUR_RATE:-}" ] && [ -z "${MURMUR_AT:-}" ]; then
+  case "$MURMUR_RATE" in
+    1|1.0|1.00) ;;
+    *)
+      echo "MURMUR_RATE=$MURMUR_RATE needs MURMUR_AT (e.g. MURMUR_AT=2026-06-14T10:00Z): without a start the scenario clock is the wall clock, at 1x. Set MURMUR_AT, or unset MURMUR_RATE." >&2
+      exit 1
+      ;;
+  esac
 fi
 
 # build first (a no-op when fresh), so vehicles don't wait on a bridge that is still compiling

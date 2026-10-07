@@ -74,6 +74,29 @@ impl Clock {
     }
 }
 
+/// A scenario rate needs a scenario start (murmur-drd): `MURMUR_RATE` other than 1 without
+/// `MURMUR_AT` is refused at startup. The stand-ins' GNSS clock would run at the rate from
+/// their own start while the bridge's (its decisions, the space segment) runs at 1x from
+/// its own: the bridge, the contacts process and the link emulator refuse the same.
+pub fn check_scenario_env() -> Result<(), String> {
+    scenario_env(
+        std::env::var("MURMUR_AT").ok().as_deref(),
+        std::env::var("MURMUR_RATE").ok().as_deref(),
+    )
+}
+
+/// [`check_scenario_env`] on given values (an empty one is unset).
+pub fn scenario_env(at: Option<&str>, rate: Option<&str>) -> Result<(), String> {
+    let at = at.filter(|s| !s.trim().is_empty());
+    let rate = rate.filter(|s| !s.trim().is_empty());
+    match (at, rate) {
+        (None, Some(r)) if r.trim().parse::<f64>().is_ok_and(|x| x != 1.0) => Err(format!(
+            "MURMUR_RATE={r} needs MURMUR_AT: a scenario clock runs at a rate from a start (MURMUR_AT, e.g. 2026-06-14T10:00Z); without MURMUR_AT the scenario clock is the wall clock, at 1x. Set MURMUR_AT, or unset MURMUR_RATE"
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// tidewater's parse_time: ISO 8601, `Z` or an offset, naive means UTC, seconds optional.
 pub fn parse_time(s: &str) -> Result<f64, String> {
     let s = s.trim();
@@ -246,6 +269,18 @@ pub async fn sample_once(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// murmur-drd: a rate without a start is refused (the GNSS clock ran at it from the
+    /// stand-ins' own start while the bridge's ran at 1x); with a start, or at 1x, it runs.
+    #[test]
+    fn a_rate_needs_a_start() {
+        let err = scenario_env(None, Some("10")).expect_err("refused");
+        assert!(err.starts_with("MURMUR_RATE=10 needs MURMUR_AT"), "{err}");
+        assert!(scenario_env(Some(" "), Some("2")).is_err());
+        assert!(scenario_env(None, Some("1")).is_ok());
+        assert!(scenario_env(None, None).is_ok());
+        assert!(scenario_env(Some("2026-06-14T10:00Z"), Some("10")).is_ok());
+    }
 
     #[test]
     fn parses_the_times_tidewater_accepts() {

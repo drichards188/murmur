@@ -4,7 +4,8 @@
 //! Times in and out are scenario time: the scenario clock reads `MURMUR_AT` when the bridge
 //! starts and runs at `MURMUR_RATE` (the stand-ins' convention); without `MURMUR_AT` it is
 //! the bridge's clock (`clock::wall`: the monotonic rate steered within about 2 s of the wall
-//! clock, as the engine reads). Every response carries the `time_map` and `time_shifted`:
+//! clock, as the engine reads), at 1x: a rate without a start is refused at startup
+//! ([`check_scenario_env`]). Every response carries the `time_map` and `time_shifted`:
 //! element sets are current while scenarios are dated, so orbits are propagated a whole
 //! number of days later (see crates/murmur-space/README.md, "Epoch honesty"). The shift is
 //! pinned for the session so that every view describes the same propagation day.
@@ -72,11 +73,38 @@ fn bridge_ms() -> i64 {
     (crate::clock::wall() * 1000.0).round() as i64
 }
 
+/// A scenario rate needs a scenario start (murmur-drd): `MURMUR_RATE` other than 1 without
+/// `MURMUR_AT` is refused at startup. Without a start the scenario clock is the bridge's own
+/// clock, at 1x, and so are the engine's decisions; a rate would only speed up what the
+/// console and the stand-ins show, each from its own start (docs/DECISIONS.md). The
+/// stand-ins, the contacts process and the link emulator refuse the same, and
+/// `scripts/up.sh` before any of them starts.
+pub fn check_scenario_env() -> Result<(), String> {
+    scenario_env(
+        std::env::var("MURMUR_AT").ok().as_deref(),
+        std::env::var("MURMUR_RATE").ok().as_deref(),
+    )
+}
+
+/// [`check_scenario_env`] on given values (an empty one is unset).
+pub fn scenario_env(at: Option<&str>, rate: Option<&str>) -> Result<(), String> {
+    let at = at.filter(|s| !s.trim().is_empty());
+    let rate = rate.filter(|s| !s.trim().is_empty());
+    match (at, rate) {
+        (None, Some(r)) if r.trim().parse::<f64>().is_ok_and(|x| x != 1.0) => Err(format!(
+            "MURMUR_RATE={r} needs MURMUR_AT: a scenario clock runs at a rate from a start (MURMUR_AT, e.g. 2026-06-14T10:00Z); without MURMUR_AT the scenario clock is the wall clock, at 1x. Set MURMUR_AT, or unset MURMUR_RATE"
+        )),
+        _ => Ok(()),
+    }
+}
+
 impl ScenarioClock {
+    /// Without a start (`at`) the clock is the bridge's own, at 1x: a rate given with none is
+    /// not applied, nor reported ([`check_scenario_env`] refuses it at startup).
     pub fn new(at: Option<DateTime<Utc>>, rate: f64) -> ScenarioClock {
         ScenarioClock {
             at,
-            rate: if rate.is_finite() && rate > 0.0 {
+            rate: if at.is_some() && rate.is_finite() && rate > 0.0 {
                 rate
             } else {
                 1.0

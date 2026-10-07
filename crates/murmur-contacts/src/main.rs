@@ -61,7 +61,9 @@ async fn run() -> Result<(), String> {
         return Err(format!("{}: no contacts", path.display()));
     }
 
-    // scenario clock: MURMUR_AT at MURMUR_RATE, as the stand-ins; else the wall clock
+    // scenario clock: MURMUR_AT at MURMUR_RATE, as the stand-ins; else the wall clock, at 1x
+    // (a rate without a start is refused, as the bridge and the stand-ins do: murmur-drd)
+    conditions::scenario_env(env("MURMUR_AT").as_deref(), env("MURMUR_RATE").as_deref())?;
     let rate: f64 = env("MURMUR_RATE")
         .and_then(|r| r.parse().ok())
         .filter(|r: &f64| r.is_finite() && *r > 0.0)

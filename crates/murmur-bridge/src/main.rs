@@ -8,7 +8,8 @@
 //! Decision layer: MURMUR_POLICY (sim/policy.toml), MURMUR_AREAS (sim/areas),
 //! MURMUR_RUN_ID (audit log logs/audit/<run-id>.jsonl; default the UTC start time and pid),
 //! MURMUR_TIDEWATER_URL (tidewater serve, for the domain rule; unset: "not
-//! evaluated"), MURMUR_AT and MURMUR_RATE (scenario time for tidewater, as `make goldengate`).
+//! evaluated"), MURMUR_AT and MURMUR_RATE (scenario time for tidewater and the space segment,
+//! as `make goldengate`; a rate other than 1 without MURMUR_AT stops the bridge at start).
 //! Who acts (rules 8, `auth`): MURMUR_AUTH (`dev`, the default: ids asserted by header, said
 //! loudly at start and logged as such, never evidence about people, no credential file needed:
 //! MURMUR_OPERATORS (ids accepted in X-Murmur-Operator, comma-separated; default op-1),
@@ -228,6 +229,9 @@ fn who_acts(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // a scenario rate needs a scenario start: the engine, the space API, the console and the
+    // stand-ins would otherwise run different clocks (murmur-drd)
+    space::check_scenario_env()?;
     let cfg = Config::from_env();
     let http_port = cfg.http_port;
     let mut settings = Settings::from_env(&cfg.root, &cfg.platforms);

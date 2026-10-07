@@ -50,6 +50,13 @@ impl Timeline {
         if !(rate.is_finite() && rate > 0.0) {
             return Err(format!("rate must be positive, got {rate}"));
         }
+        // a rate needs a start (murmur-drd): without one this clock is the wall clock, at 1x,
+        // as the bridge's and the stand-ins' (which refuse the same)
+        if at_unix.is_none() && rate != 1.0 {
+            return Err(format!(
+                "MURMUR_RATE={rate} needs MURMUR_AT: a scenario clock runs at a rate from a start (--at or MURMUR_AT, e.g. 2026-06-14T10:00Z); without one the scenario clock is the wall clock, at 1x. Set MURMUR_AT, or unset MURMUR_RATE"
+            ));
+        }
         Ok(Timeline {
             at_unix,
             rate,
@@ -180,6 +187,11 @@ mod tests {
         assert_eq!(e, Ok(30.0));
         assert!(Timeline::default().elapsed_for(1.0).is_err());
         assert!(Timeline::new(None, Some("0")).is_err());
+        // murmur-drd: a rate needs a start (it was ignored without one)
+        let err = Timeline::new(None, Some("10")).expect_err("refused");
+        assert!(err.starts_with("MURMUR_RATE=10 needs MURMUR_AT"), "{err}");
+        assert!(Timeline::new(None, Some("1")).is_ok());
+        assert!(Timeline::new(Some(""), None).is_ok());
     }
 
     /// murmur-dup: without `MURMUR_AT` the scenario clock (satellite geometry, scenario-time

@@ -21,7 +21,9 @@ meaningful. Decision and command, not weapons.
   Console http://127.0.0.1:5173, bridge http://127.0.0.1:8765 (`/api/state`, `/api/tasks`,
   `/api/platforms`, `/api/stats`; MCP server for agents at `/mcp`, header `X-Murmur-Agent`,
   ids in `MURMUR_AGENTS`, or `Authorization: Bearer <key>` in a credentials run;
-  `agents/README.md`). Vehicles ready in ~30-60 s.
+  `agents/README.md`). Vehicles ready in ~30-60 s. The scenario clock is `MURMUR_AT` plus
+  elapsed x `MURMUR_RATE`; a rate other than 1 without `MURMUR_AT` is refused by every process
+  (murmur-drd: there is no shared start).
 - A run is **dev** by default: header ids, the console's "Acting as" switcher, a red DEV pill,
   logged `auth: dev`, never evidence about people, no credential file needed.
   `MURMUR_AUTH=credentials`: operators sign in with their own password (create once with

@@ -743,6 +743,22 @@ group. Dates are 2026.
   new segment, and replay flags a pin change mid-log; older logs replay as before. Stated, not
   changed: the engine never computing a cover itself (rules 11's review) holds for an engine
   of every rules version, and replay can't see who computed an answer.
+- **A scenario rate needs a scenario start** (10-07, murmur-drd; no rules change). With
+  `MURMUR_RATE=10` and no `MURMUR_AT`, the space API reported rate 10 on the wall clock while
+  the engine's scenario map was the identity (its decisions at 1x, as the space API's answers),
+  the console's clock ran at 10x between refreshes (a pass shown come or gone when it was
+  not), and the stand-ins' GNSS clock ran at 10x from their own start. Two fixes were on the
+  table: apply the rate from a start each process takes, or refuse a rate without a start.
+  Refused: every process that reads `MURMUR_RATE` (the bridge, the stand-ins, the contacts
+  process, the link emulator; `scripts/up.sh` before any of them starts) stops with a message
+  naming `MURMUR_AT`, and without a start the bridge's scenario clock is reported at 1x. Why:
+  without `MURMUR_AT` there is no shared origin; each process would start the fast clock at
+  its own start (processes started seconds apart disagree by tens of scenario seconds at 10x,
+  and a browser's start is anyone's guess), and the engine's map would need an origin nobody
+  chose and the others can't know. With `MURMUR_AT`, one stated start names the scenario
+  clock, as it already does for every process (`make goldengate` and the evaluation always
+  set it); without it every clock is the wall clock, which runs at 1x by definition. The cost
+  is one more variable for a fast run without a scenario, which was never consistent.
 - **A keep-out that blocks is explained, read-only; nothing here relaxes one** (10-06,
   murmur-12e; no rules change). Measured live: with manoeuvring civilian traffic near the
   target, keep-outs blocked 77 of 77 nominations while the platform was 1 to 2 km out (a

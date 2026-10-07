@@ -92,6 +92,31 @@ fn scenario_clock_runs_at_its_rate() {
     assert_eq!(ScenarioClock::new(Some(at), -1.0).rate, 1.0);
 }
 
+/// murmur-drd: a rate needs a start. Without `MURMUR_AT` the scenario clock is the bridge's
+/// own at 1x (the engine's map is the identity), and the catalog says so instead of the rate
+/// it was given; the bridge refuses such a rate at startup, as the stand-ins do.
+#[test]
+fn a_rate_without_a_start_is_refused_and_never_reported() {
+    let c = ScenarioClock::new(None, 10.0);
+    assert_eq!(c.rate, 1.0);
+    assert!(c.map().is_identity());
+    let j = c.json();
+    assert_eq!((j["rate"].as_f64(), j["source"].as_str()), (Some(1.0), Some("wall clock")));
+    let err = scenario_env(None, Some("10")).expect_err("refused");
+    assert!(err.starts_with("MURMUR_RATE=10 needs MURMUR_AT"), "{err}");
+    assert!(scenario_env(Some(""), Some("0.5")).is_err(), "an empty MURMUR_AT is none");
+    for (at, rate) in [
+        (None, None),
+        (None, Some("1")),
+        (None, Some("1.0")),
+        (None, Some("")),
+        (Some("2026-06-14T10:00Z"), Some("10")),
+        (Some("2026-06-14T10:00Z"), None),
+    ] {
+        assert!(scenario_env(at, rate).is_ok(), "{at:?} {rate:?}");
+    }
+}
+
 #[test]
 fn pinned_shift_keeps_every_window_on_one_day() {
     let mut space = fixture_space();
