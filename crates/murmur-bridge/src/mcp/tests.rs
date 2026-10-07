@@ -1252,6 +1252,133 @@ fn neutral_alongside(r: &Rig) {
     .expect("declared");
 }
 
+/// Rules 13: [`neutral_alongside`]'s fishing boat seen for the first 100 s of 400 and then out
+/// of view: the tracker drops it 180 s later, and the decision tick hands the drop to the
+/// engine (`track.dropped`), which holds it as a lost contact. The hostile boat declared.
+fn lost_alongside(r: &Rig) {
+    use crate::tracks::sensing::{Observer, SensorSpec, SensorType};
+    use crate::tracks::truth::{ContactTruth, Domain, Sensing, TruthAffiliation, TruthMessage};
+    let observer = Observer {
+        uid: 9,
+        lat: 37.8120,
+        lon: -122.4780,
+        alt_msl: 0.0,
+        mast_m: 4.0,
+        submerged: false,
+        sensors: vec![
+            SensorSpec { kind: SensorType::Radar, range_m: 8_000.0, guess: true, height: false },
+            SensorSpec { kind: SensorType::EoIr, range_m: 5_000.0, guess: true, height: false },
+        ],
+    };
+    let contact = |id: &str, aff, kind: &str, lat: f64| ContactTruth {
+        id: id.into(),
+        name: id.into(),
+        affiliation: aff,
+        domain: Domain::Surface,
+        kind: kind.into(),
+        lat,
+        lon: -122.4950,
+        alt_m: 0.0,
+        speed_mps: 0.0,
+        course_deg: 0.0,
+        emits: false,
+        signature: 1.0,
+        ais: None,
+    };
+    let now = crate::clock::wall();
+    for s in 0..=400 {
+        let mut contacts = vec![contact("fastboat", TruthAffiliation::Hostile, "small_fast_boat", 37.8120)];
+        if s < 100 {
+            contacts.push(contact("fisher", TruthAffiliation::Neutral, "fishing_vessel", 37.8138));
+        }
+        let msg = TruthMessage {
+            t: now,
+            s: f64::from(s),
+            seq: s as u64,
+            scenario: "test".into(),
+            seed: 1,
+            sensing: Sensing { misclassification_rate: 0.0 },
+            contacts,
+            acts: Vec::new(),
+        };
+        r.tracks
+            .on_truth_with(msg, std::slice::from_ref(&observer), now - 400.0 + f64::from(s))
+            .expect("sensing");
+    }
+    r.d.tick();
+    assert_eq!(r.events("track.dropped"), 1, "the fishing boat dropped");
+    r.d.declare(
+        &crate::decision::Actor::asserted(OperatorId::new("op-1")),
+        None,
+        "T-0001",
+        murmur_decide::Affiliation::Hostile,
+        None,
+        None,
+    )
+    .expect("declared");
+}
+
+/// Rules 13: agents see the contacts the tracker dropped, read-only, and cannot accept one.
+/// `get_tracks` lists the lost contact under `lost` (since its last fix, the regions counted
+/// now), not among the tracks; `get_nomination_options` shows it blocking, as an item of
+/// subject `lost_contact` (since when, what an operator's acceptance would do); reading logs
+/// nothing. No tool accepts one: none is named for it, no tool's arguments carry an
+/// acceptance, and a nomination an agent sends naming one is decided without it (rejected on
+/// the lost contact, nothing accepted).
+#[tokio::test(start_paused = true)]
+async fn agents_read_lost_contacts_and_no_tool_accepts_one() {
+    let r = rig();
+    r.vehicle(2, Firmware::Copter, "fpv", (37.8120, -122.4900)); // armed, 440 m away
+    sleep(Duration::from_millis(500)).await;
+    r.clock.set(snapshot::ms(crate::clock::wall()));
+    lost_alongside(&r);
+    let lines = r.log.lines().len();
+    // get_tracks: under lost, not among the tracks
+    let v = r.ok(&watch(), "get_tracks", json!({ "include_stale": true })).await;
+    let lost = v["lost"].as_array().expect("lost");
+    assert_eq!(lost.len(), 1, "{v}");
+    assert_eq!(lost[0]["id"], "T-0002", "{v}");
+    assert!(lost[0]["out_of_view_s"].as_f64().unwrap_or(0.0) > 180.0, "{v}");
+    assert!(!lost[0]["regions"].as_array().expect("regions").is_empty(), "{v}");
+    let since = lost[0]["since_t"].as_i64().expect("since");
+    assert!(v["tracks"].as_array().expect("tracks").iter().all(|t| t["id"] != "T-0002"), "{v}");
+    // get_nomination_options: it blocks, an item of its own
+    let v = r
+        .ok(&planner(), "get_nomination_options", json!({ "track_id": "T-0001", "effect_radius_m": 75.0 }))
+        .await;
+    let o = &v["options"][0];
+    assert_eq!(o["passed"], false, "{o}");
+    let items = o["keep_outs"]["items"].as_array().expect("items");
+    let item = items.iter().find(|i| i["subject"] == "lost_contact").expect("the lost contact");
+    assert_eq!(item["id"], "T-0002", "{item}");
+    assert_eq!(item["blocks"], true, "{item}");
+    assert_eq!(item["lost"]["track"], "T-0002", "{item}");
+    assert_eq!(item["lost"]["since"], since, "{item}");
+    assert!(item["reason"].as_str().unwrap_or("").starts_with("Out of view since"), "{item}");
+    assert!(item["other"].as_str().unwrap_or("").contains("An operator with engagement authority"), "{item}");
+    assert_eq!(r.log.lines().len(), lines, "reading logs nothing");
+    // no tool accepts one: none is named for it, none takes an acceptance; both reads are
+    // marked read-only
+    for t in tools::tools() {
+        let schema = serde_json::to_string(&t.input_schema).expect("schema");
+        assert!(!t.name.contains("accept"), "{}", t.name);
+        assert!(!schema.contains("accept_lost") && !schema.contains("accept_unknown"), "{}: {schema}", t.name);
+        if t.name == "get_tracks" || t.name == "get_nomination_options" {
+            assert_eq!(t.annotations.as_ref().and_then(|a| a.read_only_hint), Some(true), "{}", t.name);
+        }
+    }
+    // a nomination naming an acceptance: the field is not an agent's (ignored), and the
+    // nomination is decided without it
+    let mut n = nomination(2, Some("T-0001 is declared hostile and holding in ez-gate-west"));
+    n["accept_lost"] = json!([{ "track": "T-0002", "since": since }]);
+    let out = r.ok(&planner(), "propose_intent", n).await;
+    assert_eq!(out["state"], "rejected", "{out}");
+    assert!(out["intent"].to_string().contains("lost contact T-0002"), "{out}");
+    assert_eq!(r.events("engage.accepted"), 0, "nothing accepted");
+    let rep = r.replays();
+    assert_eq!(rep.lost_contacts, 1);
+}
+
 /// Murmur-12e: an agent reads why a keep-out blocks a nomination it might make (the same dry
 /// run as the console's form): which track, why, by how much, what would clear it. Reading
 /// it logs nothing and moves nothing.
