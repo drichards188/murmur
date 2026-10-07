@@ -62,6 +62,10 @@
 //!   an operator may write off a platform's lost-link values owed back, or an earlier log's
 //!   carry that failed ([`Engine::write_off_restore`]), under their own session, and an
 //!   agent can't.
+//! - Rules 13 ([`CARRY_FOLLOWUPS_SINCE`]): an operator with engagement authority may un-spend
+//!   a platform spent by its own effect that was heard since ([`Engine::unspend_platform`]),
+//!   under their own session, saying why; it owes its own lost-link values back again. An
+//!   agent can't ([`AgentPort`] has no such method).
 //!
 //! `compile_fail` doctests on [`HumanAuthority`] (module `authority`) and [`AgentPort`]
 //! prove the forbidden programs don't compile. The replay also checks the property from
@@ -318,7 +322,8 @@ pub use engage::{
 pub use engine::{
     ActOutcome, AgentPort, Dequeued, DispatchOrder, Engine, EngineError, IdentOutcome, Order,
     PREPARED_SPACE_MAX_AGE_MS, PlatformRestoreReport, PreloadReport, PreparedSpace, Preview,
-    Routed, SpaceRecheck, StepOutcome, TaskOutcome, WriteOff, prepare_space, prepare_space_at,
+    Routed, SpaceRecheck, StartCarry, StepOutcome, TaskOutcome, WriteOff, prepare_space,
+    prepare_space_at,
 };
 pub use geo::{LonLat, Polygon};
 pub use ident::{
@@ -339,12 +344,12 @@ pub use policy::{
     Until,
 };
 pub use queue::{
-    Basis, CarriedApproval, CarriedHold, KindQueue, OpenIntent, QueueConfig, QueueState, Reach,
+    Basis, CarriedApproval, CarriedHold, CarriedSpent, KindQueue, OpenIntent, QueueConfig, QueueState, Reach,
     Recheck, RecheckRecord, RestoreOwed, ResumedFrom, Verdict,
 };
 pub use route::{LegKind, Route, Segment};
 pub use rules::{
-    CheckResult, OPERATOR_AUTH_SINCE, Outcome, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, POLICY_SCHEMA,
+    CARRY_FOLLOWUPS_SINCE, CheckResult, OPERATOR_AUTH_SINCE, Outcome, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, POLICY_SCHEMA,
     QUEUE_FOLLOWUPS_SINCE, REVIEW_FOLLOWUPS_SINCE, RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE, RULES_VERSION,
     RuleId, RulesConfig, SPACE_FOLLOWUPS_SINCE, STEP_UP_SCHEMA_SINCE, UnknownEndurance,
 };

@@ -119,6 +119,13 @@ pub enum EventBody {
         /// pointer named a log (a first start), in a scenario and before rules 12.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         carried_from: Vec<crate::replay::CarriedFrom>,
+        /// Rules 13 ([`crate::rules::CARRY_FOLLOWUPS_SINCE`]): the `.last-run` pointer of the
+        /// station this run is (its file name, `.last-run-<http port>`): the pointer it read at
+        /// start and rewrites to name this log. A later start of the station whose pointer can't
+        /// be read falls back to the newest log naming it whose chain and anchors check. Absent
+        /// without a pointer (a scenario, a test) and before rules 13.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pointer: Option<String>,
     },
 
     /// A new area set is in force (the first one, if none was given at start, or a
@@ -633,6 +640,29 @@ pub enum EventBody {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         log: Option<String>,
         closed_by: RestoreClosure,
+    },
+
+    /// Rules 13 ([`crate::rules::CARRY_FOLLOWUPS_SINCE`], murmur-imu): an operator with
+    /// engagement authority un-spends a platform spent by its own effect (`spent_by`, the
+    /// engagement that released it; `from`, the earlier log it is in when the mark was carried
+    /// over), under their own session, saying why (they believe it survived: a miss), once the
+    /// platform was heard after the effect (`vehicle`: its facts as the world read them at
+    /// `world_t`). It takes orders and nominations again, and its own lost-link values (`values`,
+    /// what the spent mark closed) are owed back again from here on: the engagement's fallback
+    /// is still its lost-link action, so a mission waits for the restore.
+    #[serde(rename = "platform.unspent")]
+    PlatformUnspent {
+        uid: Uid,
+        spent_by: IntentId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<String>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        values: BTreeMap<String, f64>,
+        operator: OperatorId,
+        session: SessionId,
+        note: String,
+        world_t: Time,
+        vehicle: Box<crate::world::VehicleFacts>,
     },
 
     /// Engage, rules 6: the platform's own lost-link values read and logged before anything is

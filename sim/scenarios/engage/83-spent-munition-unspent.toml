@@ -1,0 +1,130 @@
+# Rules 13 (murmur-imu): a platform spent by its own effect that an operator believes survived
+# (a miss) had no way back: rules 12 marked it spent for good, so it took no order and no
+# nomination while still flying the engagement's preloaded lost-link action. As 80: the
+# switchblade's engagement is released and its closure marks it spent; an orbit for it is
+# refused. op-1 (no engagement authority) asks to un-spend it: refused. op-2, with engagement
+# authority, un-spends it, saying why, once it has been heard since the effect
+# (`platform.unspent`): its own lost-link values, which the closure had closed, are owed back
+# again, since the engagement's fallback is still its lost-link action. An orbit for it then
+# waits in the queue for the restore and goes the second it confirms. Then the log is forged to
+# credit the un-spend to op-1's session (no engagement authority); replay must catch it.
+title = "A munition spent by its effect is un-spent by an operator with engagement authority"
+invariant = "restore_owed"
+attack = "a platform spent for good that survived; an un-spend by an operator without engagement authority"
+expect = "done"
+expect_preload = ["set confirmed", "restore confirmed"]
+expect_closed = ["expended by its own effect"]
+expect_unspent = ["un-spent by op-2"]
+expect_refusals = ["needs engagement authority"]
+expect_nothing_owed = true
+restore_after_s = 185
+tamper = "unspend_without_authority"
+end_s = 200
+
+[[operator]]
+id = "op-1"                 # nominates, orders the orbits; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # a loitering munition: expended_by_effect in the catalog
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"
+
+[[step]]
+at_s = 150                  # released and assessed: the munition is spent
+action = "expect"
+state = "done"
+
+[[step]]
+at_s = 160                  # an orbit for the spent munition: refused
+action = "task"
+by = "op-1"
+task = "orbit"
+uids = ["blade-1"]
+center = [-122.4700, 37.8160]
+radius_m = 150
+
+[[step]]
+at_s = 161
+action = "expect"
+task_state = "rejected"
+task_reason = "spent by its own effect"
+
+[[step]]
+at_s = 165                  # without engagement authority: refused
+action = "unspend"
+by = "op-1"
+uid = "blade-1"
+note = "it is still reporting: the effect missed"
+
+[[step]]
+at_s = 170                  # with it, the munition heard since the effect
+action = "unspend"
+by = "op-2"
+uid = "blade-1"
+note = "still reporting 60 s after the effect and flying its return: the effect missed and the airframe survived"
+
+[[step]]
+at_s = 175                  # an orbit for it now: waits for its own values to be back
+action = "task"
+by = "op-1"
+task = "orbit"
+uids = ["blade-1"]
+center = [-122.4700, 37.8160]
+radius_m = 150
+
+[[step]]
+at_s = 176
+action = "expect"
+task_state = "queued"
+task_reason = "lost-link failsafe"
+
+[[step]]
+at_s = 187                  # the restore confirmed at 185: the orbit went
+action = "expect"
+task_state = "dispatched"

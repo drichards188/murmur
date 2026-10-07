@@ -104,6 +104,7 @@ fn rig() -> Rig {
             study: None,
             scripted: Vec::new(),
             carried_from: Vec::new(),
+            pointer: None,
         },
     )
     .expect("engine");

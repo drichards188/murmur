@@ -71,7 +71,7 @@ fn harness_with(idle: Duration, scripted: &[&str], edit: impl FnOnce(&mut Policy
         None,
         super::EngineClock::Manual,
         scripted.iter().map(|o| OperatorId::new(*o)).collect(),
-        Vec::new(),
+        Default::default(),
     );
     let settings = AuthSettings {
         mode: AuthMode::Credentials,

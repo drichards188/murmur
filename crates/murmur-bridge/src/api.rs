@@ -75,6 +75,7 @@ pub fn router(app: App) -> Router {
         .route("/api/intents/{id}/{action}", post(intent_action))
         .route("/api/inbox", get(inbox))
         .route("/api/restores/write_off", post(write_off))
+        .route("/api/restores/unspend", post(unspend))
         .route("/api/operator/view", post(operator_view))
         .route("/api/operators", get(operators))
         .route("/api/engage/options", post(engage_options))
@@ -424,6 +425,38 @@ async fn write_off(State(app): State<App>, headers: HeaderMap, body: Bytes) -> R
         Err(e) => return decision_error(e),
     };
     match app.decision.write_off(&op, req.uid, req.log, &req.note) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => decision_error(e),
+    }
+}
+
+/// `POST /api/restores/unspend` (rules 13): an operator with engagement authority un-spends a
+/// platform spent by its own effect that they believe survived (`{"uid": n, "note": "..."}`),
+/// once it was heard after the effect. Logged as `platform.unspent` under the operator's own
+/// session; the note is required. Its own lost-link values are owed back again (a mission waits
+/// for the restore). 403 without engagement authority, 409 for a platform not spent or not heard
+/// since its effect.
+async fn unspend(State(app): State<App>, headers: HeaderMap, body: Bytes) -> Response {
+    #[derive(Deserialize)]
+    struct Unspend {
+        uid: crate::vehicle::Uid,
+        #[serde(default)]
+        note: String,
+    }
+    let req = match serde_json::from_slice::<Unspend>(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("unspend wants {{\"uid\": n, \"note\": \"why\"}}: {e}"),
+            );
+        }
+    };
+    let op = match app.auth.actor(&headers, false) {
+        Ok(op) => op,
+        Err(e) => return decision_error(e),
+    };
+    match app.decision.unspend(&op, req.uid, &req.note) {
         Ok(v) => Json(v).into_response(),
         Err(e) => decision_error(e),
     }

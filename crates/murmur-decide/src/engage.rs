@@ -1277,6 +1277,26 @@ fn preload_check(uid: Option<&Uid>, fallback: Fallback, world: &WorldSnapshot, e
     let Some(v) = uid.and_then(|u| world.vehicles.get(u)) else {
         return check(r, uid, Outcome::Fail, "cannot evaluate: platform not in the world model");
     };
+    // rules 13 (murmur-imu): an earlier log whose carry failed may owe this platform its own
+    // lost-link values (it was an armed platform of that run's fleet): it may still carry an
+    // earlier engagement's lost-link action, which this engagement's preload would read as its
+    // own and later put back as such. Refused until that log is read or written off.
+    if ec.rules_version >= crate::rules::CARRY_FOLLOWUPS_SINCE
+        && let Some(c) = uid
+            .and_then(|u| world.restore_owed.get(u))
+            .filter(|o| o.holds())
+            .and_then(|o| o.carried.as_ref())
+    {
+        return check(
+            r,
+            uid,
+            Outcome::Fail,
+            format!(
+                "{} could not be read at the start and may owe this platform its own lost-link values (an armed platform of that run's fleet): it may still carry an earlier engagement's lost-link action, which a preload now would read as its own; nominate it once that log is read or an operator writes it off",
+                c.from
+            ),
+        );
+    }
     match preload_for(fallback, platform_autopilot(v), link_gap_limit_ms(Some(v), ec)) {
         Ok(p) => check(
             r,

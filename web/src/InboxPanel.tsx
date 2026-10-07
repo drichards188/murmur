@@ -12,6 +12,8 @@ import {
   verdict,
   writeOffRestore,
   writeOffTarget,
+  unspendPlatform,
+  unspendTarget,
 } from './decisions'
 import { EngageCard, EngagementsSection } from './EngageCard'
 import { ReviewSection } from './ReviewSection'
@@ -402,11 +404,18 @@ function AlertCard({
 }) {
   const [snoozing, setSnoozing] = useState(false)
   // rules 12: a restore that will never be confirmed (the vehicle lost or spent, another one
-  // under its uid, an earlier log gone) is written off by an operator, saying why
+  // under its uid, an earlier log gone) is written off by an operator, saying why; rules 13: a
+  // platform spent by its own effect that survived is un-spent by one with engagement authority
   const target = writeOffTarget(a)
-  const [writing, setWriting] = useState(false)
+  const spent = unspendTarget(a)
+  const [noting, setNoting] = useState<null | 'write_off' | 'unspend'>(null)
   const [note, setNote] = useState('')
   const [writeErr, setWriteErr] = useState<string | null>(null)
+  const submitNote = () => {
+    setWriteErr(null)
+    const done = noting === 'unspend' && spent ? unspendPlatform(spent.uid, note.trim()) : target ? writeOffRestore(target, note.trim()) : Promise.resolve()
+    done.then(() => setNoting(null)).catch((e: Error) => setWriteErr(e.message))
+  }
   const age = Math.max(0, now() / 1000 - a.since_t)
   return (
     <article className={`ix-alert ${a.severity} ${selected ? 'sel' : ''} ${muted ? 'muted-card' : ''}`} tabIndex={0} onClick={onFocus} onKeyDown={(e) => e.key === 'Enter' && e.target === e.currentTarget && onFocus()}>
@@ -425,28 +434,19 @@ function AlertCard({
               Restore
             </button>
           </>
-        ) : writing && target ? (
+        ) : (noting === 'write_off' && target) || (noting === 'unspend' && spent) ? (
           <>
             <input
               className="ix-note"
-              placeholder="Why: lost, spent, another vehicle, log gone"
+              placeholder={noting === 'unspend' ? 'Why: what shows it survived' : 'Why: lost, spent, another vehicle, log gone'}
               value={note}
               onChange={(e) => setNote(e.target.value)}
-              aria-label="Why the restore is written off"
+              aria-label={noting === 'unspend' ? 'Why the platform is un-spent' : 'Why the restore is written off'}
             />
-            <button
-              className="ghost"
-              disabled={!note.trim()}
-              onClick={() => {
-                setWriteErr(null)
-                writeOffRestore(target, note.trim())
-                  .then(() => setWriting(false))
-                  .catch((e: Error) => setWriteErr(e.message))
-              }}
-            >
-              Write off
+            <button className="ghost" disabled={!note.trim()} onClick={submitNote}>
+              {noting === 'unspend' ? 'Un-spend' : 'Write off'}
             </button>
-            <button className="ghost" onClick={() => setWriting(false)}>
+            <button className="ghost" onClick={() => setNoting(null)}>
               Back
             </button>
             {writeErr && <span className="muted ix-muted">{writeErr}</span>}
@@ -477,8 +477,13 @@ function AlertCard({
             </button>
             <span className="spacer" />
             {target && (
-              <button className="ghost" onClick={() => setWriting(true)}>
+              <button className="ghost" onClick={() => setNoting('write_off')}>
                 Write off
+              </button>
+            )}
+            {spent && (
+              <button className="ghost" onClick={() => setNoting('unspend')}>
+                Un-spend
               </button>
             )}
             <button className="ghost" onClick={() => setSnoozing(true)}>

@@ -162,6 +162,16 @@ meaningful. Decision and command, not weapons.
   counts at its domain's top speed in keep-outs. A credentials run fixes scripted operators
   at start. To crash a bridge for a carry test: `kill -9` the PID that is the run id's
   suffix in `logs/audit/<run-id>.jsonl`, never `pkill -f`.
+- Rules 13 (`CARRY_FOLLOWUPS_SINCE`): a spent platform stays spent across restarts, a full
+  restack with the same fleet included (`carried_from`'s `spent`; same vehicle only): an
+  engagement-authority operator un-spends it with a note once it is heard since the effect
+  (`POST /api/restores/unspend`, the console's Un-spend on its SPENT alert), and its own values
+  are then owed back (missions wait for the restore). A nomination on an armed platform a
+  failed carry may owe is refused (`fallback_preload`) until that log is read or written off.
+  A pointer that can't be read falls back to this station's newest log (its `run.started`
+  names the pointer) whose chain and anchors check (`pointer_failed`); else a failed carry as
+  before. A failed carry records the fleet file it read (`fleet_read`); `murmur-replay`
+  compares `<log stem>.fleet.json` when at hand.
 - Keep-out explanation (murmur-12e; read-only, not logged, no rules change): the nomination
   form and `POST /api/engage/options` (`keep_outs`) say which track or vehicle blocks, which
   region, the shortfall, and what would clear it ("within X m", "between X and Y m", or a wait

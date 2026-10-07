@@ -1357,6 +1357,57 @@ Rules versions:
   sent the second the restore confirmed, then a clean stop owing nothing (see
   `tests/versions.rs`).
 
+- **13** (the follow-ups of rules 12's carries, murmur-zq3 and murmur-imu; every gate reads
+  `CARRY_FOLLOWUPS_SINCE`, so another change taking the number first renumbers it in one line;
+  no policy key changes, schema 7):
+  - *A spent platform stays spent across a restart* (zq3 (1)): a log's debts include the
+    platforms it spent and nobody un-spent (`Debts::spent`: the engagement, the values its
+    closure closed, the vehicle they were preloaded on, the log it is in when carried into it);
+    the start records them in `run.started` (`carried_from`'s `spent`), the ledger keeps them,
+    and a decision's `spent_carried` fact (`queue::CarriedSpent`, with the bridge's identity of
+    the vehicle now) fails `readiness` unless the vehicle is known to be another (platform,
+    callsign or system id; never the home). Every dispatch path's void of an approved order
+    for a spent platform covers them (`Restores::spent_hold`). Replay checks the marks against
+    the log carried from (`Debts::spent`, compared from rules 13 only), the fact against the
+    ledger with the identity it logs, and flags an order sent to a platform a carried mark holds.
+  - *An un-spend* (imu (2)): `Engine::unspend_platform` (an `EngagementAuthority`, a note, the
+    world): only for a platform spent (this run's mark or a carried one) and heard since its
+    effect (`VehicleFacts::heard_t`: after this run's mark, from the run's start for a carried
+    one); logged as `platform.unspent` with the vehicle facts and the values the mark closed,
+    which are owed back again (this run's as the engagement's, holding missions as rules 7
+    does; a carried one's as carried values, for the vehicle they were preloaded on). No
+    step-up; no `AgentPort` method. Replay checks the session (the operator's own, with
+    engagement authority), the note, the mark named exactly, heard after the effect on the
+    logged facts, the world's time within 5 s; it lists them (`ReplayReport::unspent`,
+    `UNSPENT:`). `Engine::spent_heard_since` and `spent_platforms` for the bridge's inbox.
+  - *A nomination a failed carry may owe is refused* (imu (1)): an engagement decision's
+    `restore_owed` fact names the hold of a pending failed carry's `may_owe` (values unknown,
+    the vehicle it was and the one now; another vehicle: not held) and `fallback_preload`
+    fails on it, at the nomination and on the plan. A mission's refusal and queue hold never
+    read an engagement's fact (`refusal_reason` and `restore_hold` skip engagements).
+  - *A failed carry's fleet file* (zq3 (6)): `carried_from`'s `fleet_read` (the SHA-256 of
+    `<log stem>.fleet.json` as read and the catalog's armed platforms); `replay::fleet_may_owe`
+    computes `may_owe` from such a file. Replay compares both with the file when at hand
+    (`ReplayOptions::fleets`, `murmur-replay` by name or beside the log;
+    `CarriedRestores::fleet_checked`), requires `fleet_read` beside a non-empty `may_owe`, and
+    checks the armed list against every platform fact the log's decisions read.
+  - *A pointer that can't be read* (zq3 (2), (3), (4)): `run.started` names the station's
+    pointer (`pointer`, its `.last-run-<port>` file name); the bridge falls back to the
+    station's newest log whose chain (`replay::chain_problem`) and anchors check, recorded on
+    that entry (`pointer_failed`), else records the pointer as a failed carry as before. Replay
+    checks a fallback is the first entry of a run naming its pointer and that the log given
+    names the same pointer (`replay::station_pointer`). (The bridge also accepts a pointer of
+    the same line twice and syncs the pointer's directory after the rename: no rules change.)
+  - *A superseded void names its order* (zq3 (5)): replay reads the order and vehicle in the
+    engine's and bridge's "superseded" void reasons and checks the order is in the log, newer
+    than the voided one, on that vehicle (an amend: of the same kind).
+
+  Markers (a log claiming rules 12 or older can't carry them): `platform.unspent`,
+  `carried_from`'s `spent`, `fleet_read` and `pointer_failed`, `run.started`'s `pointer`, a
+  decision's `spent_carried`. The rules 12 tests that depend on rules 12's checks are pinned to
+  it. Scenarios 83 (the un-spend) and 84 (the nomination refused); the scenario runner's
+  `unspend` step, `write_off` of a `log`, `[[carried]]` failed carries, `expect_unspent`. FIXTURES.
+
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
 `seen_max_age_s`, an unreleased build's name for it, is still read; **3** adds `[queue]`

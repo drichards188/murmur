@@ -1,0 +1,106 @@
+# Rules 13 (murmur-imu): the start could not read an earlier log (its carry failed): what it
+# owed is unknown, but its fleet named this armed USV, so it may still carry an earlier
+# engagement's lost-link action. Rules 12 held a mission for it but took a nomination: the new
+# engagement's preload would have read that action as the USV's own values and later put it
+# back as such. Now the nomination is refused by its `fallback_preload` check (the decision's
+# `restore_owed` fact names the failed carry), until an operator writes that log off; then a
+# second nomination goes through. Then the log is forged to drop the fact from the refused
+# nomination's decision; replay must catch it.
+title = "A nomination on a platform a failed carry may owe is refused until written off"
+invariant = "fallback_preload"
+attack = "nominate a platform that may still carry an earlier engagement's lost-link action"
+expect = "aborted"
+expect_stop = "operator"
+expect_preload = ["set confirmed", "restore confirmed"]
+expect_closed = ["written off by op-1"]
+expect_nothing_owed = true
+tamper = "drop_may_owe_fact"
+end_s = 60
+
+[[carried]]
+log = "20261006T120000Z-4242.jsonl"
+error = "Permission denied (os error 13)"
+may_owe = ["viper-1"]
+
+[[operator]]
+id = "op-1"                 # nominates, writes the log off, aborts
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "viper-1"
+platform = "magura"         # armed USV (ArduRover), LEO SATCOM: a 30 s lost-link timer
+at = [-122.4700, 37.8160]
+lost_link_s = 30
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1                    # the failed carry may owe the USV its values: refused
+action = "nominate"
+by = "op-1"
+platform = "viper-1"
+track = "T-0001"
+radius_m = 75
+fallback = "loiter"
+window_s = 600
+
+[[step]]
+at_s = 2
+action = "expect"
+state = "rejected"
+rule = "fallback_preload"
+
+[[step]]
+at_s = 5
+action = "write_off"
+by = "op-1"
+log = "20261006T120000Z-4242.jsonl"
+note = "the disk that held that run's log failed; the USV's own failsafe values were read off it on the bench"
+
+[[step]]
+at_s = 6                    # the same nomination again: it goes to the signers
+action = "nominate"
+by = "op-1"
+platform = "viper-1"
+track = "T-0001"
+radius_m = 75
+fallback = "loiter"
+window_s = 600
+
+[[step]]
+at_s = 10
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 13
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 14
+action = "expect"
+state = "dispatched"
+
+[[step]]
+at_s = 30
+action = "abort"
+by = "op-1"

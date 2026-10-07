@@ -95,7 +95,8 @@ tamper = "suppress_void"         # optional log attack replay must catch: propos
                                  # declaration_by_another_operator, drop_revocation_stop,
                                  # confirm_in_inputs,
                                  # and rules 12: drop_first_seen, drop_expended_fact,
-                                 # drop_standing_clause, write_off_by_another
+                                 # drop_standing_clause, write_off_by_another,
+                                 # and rules 13: unspend_without_authority, drop_may_owe_fact
                                  # (one with nothing to edit in a run's log reports "not
                                  # applicable")
 end_s = 120                      # seconds to run (default: the last step + 10)
@@ -119,7 +120,15 @@ restore_after_s = 60             # rules 6: the platform answers the restore of 
 expect_closed = ["expended by its own effect"]   # rules 12, optional: debts closed without a
                                  # restore that replay lists (`restores_closed`), in order
 expect_nothing_owed = true       # rules 12, optional: nothing owed back when the log ends
+expect_unspent = ["un-spent by op-2"]   # rules 13, optional: platforms un-spent that replay
+                                 # lists (`unspent`), in order
 # policy, catalog, areas = "path"  # optional, relative to the repo (defaults: sim/...)
+
+[[carried]]                      # rules 13, optional: an earlier log whose carry failed at
+log = "20261006T120000Z-4242.jsonl"   # the start (run.started's carried_from), with why
+error = "Permission denied (os error 13)"   # and the vehicles (of this file) its fleet named:
+may_owe = ["viper-1"]            # their missions wait and their nominations are refused
+                                 # until it is written off
 
 [[operator]]                     # an operator session; engage = engagement authority
 id = "op-2"
@@ -199,7 +208,8 @@ Actions (each `[[step]]` has `at_s` and `action`):
 | `abort` | `by` | any operator stops it; the fallback is commanded |
 | `agent_approve` | `agent` | an agent "tries" to approve: there is no such method on its port, so it is recorded and the intent must not move |
 | `track` | `id` and any of `at`, `velocity`, `affiliation`, `declared_by`, `undeclare`, `identity`, `identity_confidence`, `sigma_m`, `domain`, `silent`, `velocity_error`, `alt_m`, `tracked_s` | a track changes (or appears); `velocity` is how the contact really moves, `velocity_error` how far the tracker's estimate is off it; `tracked_s` (rules 12) when one this step makes was started (0: a new track) |
-| `write_off` | `by`, `uid`, `note` | rules 12: an operator writes off the lost-link values owed back to one of our vehicles, saying why (`restore.closed`) |
+| `write_off` | `by`, `uid` or `log`, `note` | rules 12: an operator writes off the lost-link values owed back to one of our vehicles, saying why (`restore.closed`); rules 13: or an earlier log whose carry failed (`log`) |
+| `unspend` | `by`, `uid`, `note` | rules 13: an operator with engagement authority un-spends a platform spent by its own effect, heard since, saying why (`platform.unspent`); without engagement authority it is refused |
 | `vehicle` | `uid` and any of `at`, `velocity`, `silent`, `report_interval_ms`, `nav` (`gnss`, `dead_reckoning`), `gps_fix` (3: a 3D fix), `gps_glitch`, `circling`, `reported_circle`, `alt_m` | one of ours changes; `silent` cuts its link (both ways: it hears no GCS either) |
 | `expect` | `state`, `rule`, `concurrences`, `task_state`, `task_reason` | check the last nomination now (`task_state`: the last `task` step's intent; `task_reason`: a substring of why it is in that state) |
 
@@ -292,3 +302,5 @@ calls `Engine::step_engagements` (hold the picture, release, observe, assess).
 | 80-expended-munition-owes-nothing | restore_owed | rules 12: a switchblade's engagement released (the munition spent by its effect); then an orbit and a second nomination for it; the catalog fact dropped from every picture in the log | done (ceased); its values closed right after the release (`restore.closed`, expended), nothing owed at the end; the orbit and the nomination rejected (readiness: spent by its own effect); tamper caught |
 | 81-refusal-names-the-order-still-queued | restore_owed | rules 12: 67 under 70's policy: the hold queued for the cut-off USV, then an orbit refused for its own values; the clause cut from the refusal in the log | the orbit voided, its reason naming the hold still queued (`i2 (hold, vehicle viper-1)`); the hold goes when the link returns; tamper caught |
 | 82-restore-written-off | restore_owed | rules 12: 69, the USV never confirming its values back; op-1 writes them off; the write-off credited to another operator in the log | the waiting orbit goes at once after the write-off, nothing owed at the end; tamper caught |
+| 83-spent-munition-unspent | restore_owed | rules 13: 80, then op-1 (no engagement authority) asks to un-spend the switchblade, op-2 un-spends it saying why; the un-spend credited to op-1's session in the log | done (ceased); the first orbit rejected (spent), op-1's un-spend refused, op-2's taken: its own values owed again, the next orbit queued for the restore and sent when it confirms, nothing owed at the end; tamper caught |
+| 84-nomination-refused-while-a-carry-may-owe | fallback_preload | rules 13: a failed carry at the start whose fleet named the USV; a nomination on it; the fact dropped from the refused decision in the log | rejected (fallback_preload: the log may owe it its values) until op-1 writes the log off, then the same nomination signed, dispatched and aborted, its values restored; tamper caught |

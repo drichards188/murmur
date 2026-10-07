@@ -170,7 +170,7 @@ export type Severity = 'high' | 'medium'
 
 export interface Alert {
   id: string // link:<uid>, op:<op id> or restore:<uid>; stable while the condition lasts
-  kind: 'lost_link' | 'not_moving' | 'left_task' | 'task_failed' | 'ack_timeout' | 'restore_pending' | 'space_missed' | 'space_recheck_unknown'
+  kind: 'lost_link' | 'not_moving' | 'left_task' | 'task_failed' | 'ack_timeout' | 'restore_pending' | 'space_missed' | 'space_recheck_unknown' | 'spent'
   severity: Severity
   uid: number
   callsign: string | null
@@ -315,6 +315,25 @@ export async function writeOffRestore(target: { uid: number } | { log: string },
   if (!res.ok) throw new Error(b.detail ?? `bridge returned ${res.status}`)
 }
 
+/** Rules 13: the platform a spent alert (`spent:<uid>`: spent by its own effect, still heard)
+ *  lets an operator with engagement authority un-spend; none for other alerts. */
+export function unspendTarget(a: Alert): { uid: number } | null {
+  return a.kind === 'spent' && a.uid > 0 ? { uid: a.uid } : null
+}
+
+/** Rules 13: POST /api/restores/unspend as the console's operator, saying why (logged as
+ *  `platform.unspent` under their session; 403 without engagement authority). Throws an Error
+ *  with the bridge's reason. */
+export async function unspendPlatform(uid: number, note: string): Promise<void> {
+  const res = await operatorFetch('/api/restores/unspend', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...operatorHeaders(getOperator()) },
+    body: JSON.stringify({ uid, note }),
+  })
+  const b = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(b.detail ?? `bridge returned ${res.status}`)
+}
+
 export const ALERT_LABEL: Record<Alert['kind'], string> = {
   lost_link: 'LOST LINK',
   not_moving: 'NOT MOVING',
@@ -324,6 +343,7 @@ export const ALERT_LABEL: Record<Alert['kind'], string> = {
   restore_pending: 'FAILSAFE NOT RESTORED',
   space_missed: 'SATELLITE TASK LOST',
   space_recheck_unknown: 'SATELLITE RE-CHECK UNKNOWN',
+  spent: 'SPENT, STILL HEARD',
 }
 
 // ---- operator ------------------------------------------------------------------------------

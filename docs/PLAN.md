@@ -499,6 +499,20 @@ same vehicle); a refused mission names the older orders still queued on its vehi
 Scenarios 79 to 82; live logs across two crashes with anchors in
 `crates/murmur-decide/tests/data/audit/`.
 
+Rules 13, the follow-ups of rules 12's carries (murmur-zq3, murmur-imu;
+`CARRY_FOLLOWUPS_SINCE`; policy schema 7 unchanged; DECISIONS.md, the entries of 10-07): a
+platform spent by its own effect stays spent across a restart (`carried_from`'s `spent`, the
+vehicle that was spent only, checked against the log it came from); an operator with engagement
+authority may un-spend a spent platform heard since its effect, saying why (`platform.unspent`,
+`POST /api/restores/unspend`, the console's Un-spend on a SPENT alert; never an agent): its own
+lost-link values are owed back again; a nomination on a platform a failed carry may owe values
+to is refused (`fallback_preload`) until that log is read or written off; a `.last-run` pointer
+that can't be read falls back to the station's newest log whose chain and anchors check
+(`pointer_failed`; fail closed otherwise), a pointer of the same line twice names it, and the
+pointer's directory is synced after the rename; a failed carry records the fleet file it read
+(`fleet_read`), compared by replay when at hand; a void that says it was superseded names an
+order replay finds, newer, on that vehicle. Scenarios 83 and 84.
+
 Rules 10, passkeys (murmur-437; `PASSKEY_SINCE`, policy schema 7; `crates/murmur-decide/src/
 passkey.rs`, `crates/murmur-auth/src/passkeys.rs` on webauthn-rs, bridge `auth.rs`, console
 `passkey.ts`; DECISIONS.md "Passkeys bind a step-up to its act"): an operator registers

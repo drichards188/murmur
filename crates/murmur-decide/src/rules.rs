@@ -218,8 +218,25 @@ pub enum UnknownEndurance {
 /// ([`crate::passkey`]). Version 11 ([`SPACE_FOLLOWUPS_SINCE`]): satellite tasks cancelled
 /// after dispatch, re-checked against a later space answer, and covers evaluated over the
 /// area ([`crate::space`]). Version 12 ([`REVIEW_FOLLOWUPS_SINCE`]): the follow-ups of the
-/// reviews of rules 6 to 10.
-pub const RULES_VERSION: u32 = REVIEW_FOLLOWUPS_SINCE;
+/// reviews of rules 6 to 10. Version 13 ([`CARRY_FOLLOWUPS_SINCE`]): the follow-ups of rules
+/// 12's carries.
+pub const RULES_VERSION: u32 = CARRY_FOLLOWUPS_SINCE;
+
+/// The rules version from which the follow-ups of rules 12's carries decide (murmur-zq3,
+/// murmur-imu): a platform spent by its own effect stays spent across a restart (`run.started`'s
+/// `carried_from` carries each log's spent platforms, `spent`, and a decision's
+/// `spent_carried` fact holds them for the vehicle that was spent); an operator with engagement
+/// authority may un-spend a platform heard since its effect, saying why (`platform.unspent`),
+/// which owes its own lost-link values back again; a nomination on a platform a failed carry
+/// may owe values to is refused until that log is read or written off (the engagement's
+/// `restore_owed` fact, the `fallback_preload` check); a `.last-run` pointer that can't be read
+/// falls back to the newest log of the station whose chain and anchors check
+/// (`pointer_failed`, the station's `pointer` in `run.started`); a failed carry records the
+/// fleet file it read (`fleet_read`: its hash and the armed platforms), which replay compares
+/// when at hand; and a void that says it was superseded names an order replay finds. Every gate
+/// of that change reads this constant, never a literal: another change taking 13 first
+/// renumbers it in this one line.
+pub const CARRY_FOLLOWUPS_SINCE: u32 = 13;
 
 /// The rules version from which the follow-ups of the reviews of rules 6 to 10 decide: an
 /// expended platform's lost-link values are closed with the reason and the platform is spent
@@ -396,6 +413,11 @@ impl RulesConfig {
     /// Rules 12 ([`REVIEW_FOLLOWUPS_SINCE`]): the follow-ups of the reviews of rules 6 to 10.
     pub fn followups(&self) -> bool {
         self.rules_version >= REVIEW_FOLLOWUPS_SINCE
+    }
+
+    /// Rules 13 ([`CARRY_FOLLOWUPS_SINCE`]): the follow-ups of rules 12's carries.
+    pub fn carry_followups(&self) -> bool {
+        self.rules_version >= CARRY_FOLLOWUPS_SINCE
     }
 
     /// `[rules.engage]`, or its defaults.
@@ -590,6 +612,13 @@ pub fn readiness(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) ->
                 Outcome::Fail,
                 format!("spent by its own effect (engagement {id}): a spent platform takes no order"),
             );
+        }
+        // rules 13: spent in an earlier run (carried over at start), the same vehicle unless it
+        // is known to be another
+        if cfg.carry_followups()
+            && let Some(s) = world.spent_carried.get(uid).filter(|s| s.holds())
+        {
+            return res(Outcome::Fail, s.detail());
         }
         if is_safety_command(kind) {
             return res(Outcome::Pass, format!("not required for {}", kind.as_str()));

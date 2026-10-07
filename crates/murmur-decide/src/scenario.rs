@@ -148,6 +148,26 @@ pub struct Scenario {
     pub tracks: Vec<TrackDef>,
     #[serde(default, rename = "step")]
     pub steps: Vec<Step>,
+    /// Rules 13: earlier logs whose carry failed at the start (`run.started`'s `carried_from`,
+    /// as the bridge records a log it could not read): each may owe the vehicles it names their
+    /// own lost-link values (values unknown), as the armed platforms of that run's fleet.
+    #[serde(default, rename = "carried", skip_serializing_if = "Vec::is_empty")]
+    pub carried: Vec<CarriedDef>,
+    /// Rules 13: platforms an operator un-spent that replay must list, in order (substrings of
+    /// its `unspent`: `un-spent by op-2`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expect_unspent: Vec<String>,
+}
+
+/// Rules 13: an earlier log whose carry failed at the start: its file name, why it could not be
+/// read, and the vehicles (of the file's) it may owe values to, each as the vehicle it is now.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CarriedDef {
+    pub log: String,
+    pub error: String,
+    #[serde(default)]
+    pub may_owe: Vec<String>,
 }
 
 fn out_of_play() -> String {
@@ -503,8 +523,19 @@ pub enum Action {
     /// port, so it is recorded and nothing may change.
     AgentDeclare { agent: String, track: String },
     /// Rules 12: an operator writes off the lost-link values owed back to one of our vehicles
-    /// (it is lost, spent, or not the vehicle they were preloaded on), saying why.
-    WriteOff { by: String, uid: String, note: String },
+    /// (it is lost, spent, or not the vehicle they were preloaded on), saying why; rules 13: or
+    /// an earlier log whose carry failed (`log`).
+    WriteOff {
+        by: String,
+        #[serde(default)]
+        uid: Option<String>,
+        #[serde(default)]
+        log: Option<String>,
+        note: String,
+    },
+    /// Rules 13: an operator with engagement authority un-spends a platform spent by its own
+    /// effect, saying why (it survived); without engagement authority it is refused.
+    Unspend { by: String, uid: String, note: String },
     /// Check the last nomination now.
     Expect {
         #[serde(default)]
@@ -1031,10 +1062,56 @@ pub fn run(
             .collect(),
     )
     .map_err(setup)?;
-    let mut engine = Engine::with_areas(
+    // rules 13: earlier logs whose carry failed, as the bridge records them at its start (rules
+    // before 12 record none: their bridge only said so in the inbox)
+    let carried: Vec<crate::replay::CarriedFrom> = sc
+        .carried
+        .iter()
+        .filter(|_| policy.rules.followups())
+        .map(|c| {
+            let may_owe = c
+                .may_owe
+                .iter()
+                .map(|u| {
+                    let v = sc.vehicles.iter().find(|v| &v.uid == u);
+                    crate::replay::OwedRestore {
+                        uid: Uid::new(u),
+                        values: BTreeMap::new(),
+                        by: Vec::new(),
+                        vehicle: v.map(|v| crate::engage::VehicleIdentity {
+                            platform: Some(v.platform.clone()),
+                            callsign: Some(v.uid.clone()),
+                            sysid: None,
+                            home: Some(LonLat::new(v.at[0], v.at[1])),
+                        }),
+                    }
+                })
+                .collect::<Vec<_>>();
+            // the fleet file it read: these vehicles, judged by the catalog's armed platforms
+            let fleet: BTreeMap<String, serde_json::Value> = sc
+                .vehicles
+                .iter()
+                .filter(|v| c.may_owe.contains(&v.uid))
+                .map(|v| (v.uid.clone(), serde_json::json!({ "platform": v.platform, "callsign": v.uid, "home": [v.at[1], v.at[0]] })))
+                .collect();
+            let armed: Vec<String> = catalog.platforms.iter().filter(|(_, p)| p.armed).map(|(id, _)| id.clone()).collect();
+            crate::replay::CarriedFrom {
+                log: c.log.clone(),
+                may_owe,
+                error: Some(c.error.clone()),
+                fleet_read: Some(crate::replay::FleetRead {
+                    sha256: crate::hash::sha256_hex(&serde_json::to_vec(&fleet).unwrap_or_default()),
+                    armed,
+                }),
+                ..Default::default()
+            }
+        })
+        .collect();
+    let mut engine = Engine::start(
         policy,
         Some(areas.clone()),
         roster,
+        carried,
         Box::new(clock.clone()),
         Box::new(log.clone()),
     )
@@ -1513,6 +1590,17 @@ pub fn run(
     }
     if sc.expect_nothing_owed && !report.unrestored.is_empty() {
         failures.push(format!("expected nothing owed back at the end, replay reports {:?}", report.unrestored));
+    }
+    // rules 13: platforms an operator un-spent
+    let mut unspent = report.unspent.iter();
+    for want in &sc.expect_unspent {
+        if !unspent.any(|u| u.contains(want.as_str())) {
+            failures.push(format!(
+                "expected platforms un-spent {:?} in order, replay lists {:?}",
+                sc.expect_unspent, report.unspent
+            ));
+            break;
+        }
     }
     let mut tamper_not_applicable = None;
     let (tamper_detected, tamper_mismatches) = match &sc.tamper {
@@ -2049,11 +2137,29 @@ fn act(
                 refusals.push(e.to_string());
             }
         }
-        Action::WriteOff { by, uid, note } => {
+        Action::WriteOff { by, uid, log, note } => {
             let Some(sess) = session(by) else {
                 return failures.push(format!("t={s}: unknown operator {by}"));
             };
-            if let Err(e) = engine.write_off_restore(sess.authority(), crate::engine::WriteOff::Platform(Uid::new(uid)), note) {
+            let what = match (uid, log) {
+                (Some(u), None) => crate::engine::WriteOff::Platform(Uid::new(u)),
+                (None, Some(l)) => crate::engine::WriteOff::Log(l.clone()),
+                _ => return failures.push(format!("t={s}: write_off names one vehicle (uid) or one log")),
+            };
+            if let Err(e) = engine.write_off_restore(sess.authority(), what, note) {
+                refusals.push(e.to_string());
+            }
+        }
+        Action::Unspend { by, uid, note } => {
+            let Some(sess) = session(by) else {
+                return failures.push(format!("t={s}: unknown operator {by}"));
+            };
+            // only engagement authority un-spends (the bridge answers 403 otherwise)
+            let Some(auth) = sess.engagement_authority() else {
+                return refusals.push(format!("{by}: un-spending a platform needs engagement authority"));
+            };
+            let w = world(tracks, vehicles);
+            if let Err(e) = engine.unspend_platform(auth, Uid::new(uid), note, &w) {
                 refusals.push(e.to_string());
             }
         }
@@ -3308,11 +3414,12 @@ fn dispatch_approved(
                     }
                     engaging.remove(&other);
                 }
-                // then, as on the bridge, older orders still waiting for this vehicle are void
+                // then, as on the bridge, older orders still waiting for this vehicle are void (a
+                // newer one is never voided by an older one's dispatch)
                 let stale: Vec<IntentId> = engine
                     .intents()
                     .filter(|i| {
-                        i.id() != id
+                        i.id() < id
                             && !matches!(i.spec().task, Task::Engage { .. })
                             && matches!(i.state(), State::PendingApproval | State::Approved)
                             && i.spec().uids.contains(&o.uid)
@@ -3983,6 +4090,48 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             }
             if !done {
                 return Err("no write-off".into());
+            }
+        }
+        "unspend_without_authority" => {
+            // rules 13: an un-spend credited to the session of an operator without engagement
+            // authority (the nominator's)
+            let plain = events
+                .iter()
+                .find_map(|e| match &e.body {
+                    EventBody::OperatorAction { operator, session, action, grants, .. }
+                        if action == "session.opened" && grants.as_ref().is_none_or(|g| !g.engage) =>
+                    {
+                        Some((operator.clone(), *session))
+                    }
+                    _ => None,
+                })
+                .ok_or("no session without engagement authority")?;
+            let mut done = false;
+            for e in &mut events {
+                if let EventBody::PlatformUnspent { operator, session, .. } = &mut e.body {
+                    *operator = plain.0.clone();
+                    *session = plain.1;
+                    done = true;
+                }
+            }
+            if !done {
+                return Err("no un-spend".into());
+            }
+        }
+        "drop_may_owe_fact" => {
+            // rules 13: a nomination's fact that a failed carry may owe its platform values taken
+            // out (as if nothing could be owed: its fallback_preload check would pass)
+            let mut done = false;
+            for e in &mut events {
+                if let EventBody::CheckResult { inputs, .. } = &mut e.body
+                    && inputs.restore_owed.values().any(|o| o.values.is_empty() && o.carried.is_some())
+                {
+                    inputs.restore_owed.clear();
+                    done = true;
+                }
+            }
+            if !done {
+                return Err("no decision with a failed carry's may-owe fact".into());
             }
         }
         "drop_standing_clause" => {
