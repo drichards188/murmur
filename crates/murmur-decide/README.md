@@ -502,10 +502,13 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
     keeps the track in the decision facts until the engine has it), and every engagement's
     keep-out on tracks counts it as a lost contact (`WorldSnapshot::lost_contacts`, filled by
     the engine and logged with the decision): anywhere it could have reached since its last
-    fix by the regions a live track gets from those facts (`engage::track_reach`: along its
-    velocity with its predicted uncertainty, along its average velocity, the fastest it went if
-    it manoeuvred, its domain's top speed without a velocity or an average velocity), growing
-    with no cap; exempt where a live track would be (a declared hostile, from the
+    fix (`engage::lost_reach`): by the regions a live track gets from those facts
+    (`engage::track_reach`: along its velocity with its predicted uncertainty, along its
+    average velocity, the fastest it went if it manoeuvred, its domain's top speed without a
+    velocity or an average velocity) and, since nothing sees it turn, anywhere at its own
+    plausible speed (region `plausible_speed`: its speed and `keep_out_sigma` of its velocity
+    error, or the fastest it went, unless a region at its last fix already reaches as far),
+    growing with no cap; exempt where a live track would be (a declared hostile, from the
     identification ledger). The check names it, since when and that it may be accepted
     (`lost contact T-0002 (neutral, fishing_vessel) could be 400 m ...: T-0002 out of view
     since t=... (184 s), dropped by the tracker at t=...; an operator with engagement authority
@@ -515,7 +518,9 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
     `engage.accepted` naming the `contact` and its last fix `since`, with the contact as the
     engine held it, `lost`; `Engine::revoke_lost_contact` withdraws it): picture tokens carry
     them (`lost_accepted`), a reset clears them, every decision logs them, the signer who
-    accepted one is `self_accepted`. It covers that loss only. A new track with the same AIS
+    accepted one is `self_accepted`. It covers that loss only. It takes the lost vehicle's
+    step-up (`StepUpAct::AcceptUnknown`; a passkey's challenge names the contacts and their
+    fixes, `StepUpFor::AcceptUnknown { contacts }`). A new track with the same AIS
     identity retires a lost contact, only when the match is unambiguous
     (`Engine::step_lost`, `lost::match_one`, logged `track.reacquired` with the picture it
     judged): the only live track carrying its MMSI and no other lost contact carrying it, that
@@ -1398,7 +1403,10 @@ Rules versions:
   change taking the number first renumbers it in one line; no policy key changes, schema 7):
   a contact the tracker drops stays in every engagement's keep-out as a lost contact until an
   operator with engagement authority accepts it for one engagement or a track is
-  unambiguously it again by its AIS identity (`lost.rs`, *Lost contacts* above). New events
+  unambiguously it again by its AIS identity (`lost.rs`, *Lost contacts* above), counted by a
+  live track's regions and anywhere at its own plausible speed (`engage::lost_reach`, region
+  kind `plausible_speed`; added before rules 13 merged, after murmur-533's measurement found the
+  course regions alone a prediction, not a bound). New events
   `track.dropped` (the tracker's facts at the drop: never an identification) and
   `track.reacquired` (the lost contact, the live track, the picture judged, the evidence);
   `engage.accepted` and `engage.acceptance_revoked` may name a `contact` instead of a `uid`
@@ -1414,8 +1422,10 @@ Rules versions:
   in the log). The keep-out explanation's grid margin and words (murmur-dr6) change no
   decision. Markers (a log claiming rules 12 or older can't carry them): `track.dropped`,
   `track.reacquired`, `lost_contacts`, `lost_accepted`, an acceptance's `contact`, a track's
-  `ais`. Fixtures (clean builds): `tests/data/audit/v13-engagement-scenario-01.jsonl` and
-  scenarios 83 to 85 and 87 (`v13-lost-contact-*`), and a live log with its anchors
+  `ais`. Fixtures (clean builds, of the course regions alone; they replay unchanged with the
+  plausible-speed region, which changes no decision in them):
+  `tests/data/audit/v13-engagement-scenario-01.jsonl` and scenarios 83 to 85 and 87
+  (`v13-lost-contact-*`), and a live log with its anchors
   (`v13-lost-contacts-live.jsonl`, stand-ins at the Gate on `sim/scenarios/golden-gate-lost.toml`:
   two contacts dropped, a nomination rejected on one, nominated again accepting both, signed
   and dispatched, the tour boat back in view under its AIS and retired, its live track aborting
@@ -1588,10 +1598,11 @@ on the scenario clock.
   vehicle only, see the lost-link preload above), but the engagement itself is not resumed.
 - Lost contacts (rules 13): the ledger is a run's: a bridge restart starts a new tracker and
   a new log, and the contacts lost before it are not carried (nor is anything else of the
-  picture). A lost contact's region is the reach model a live track gets from its facts at
-  the drop: a statistical prediction for a contact last seen steady, not a bound on where it
-  could be (`eval/METRICS.md` "Out of view" measures what that misses). Only an AIS identity
-  retires one; a contact the tracker sees again without one stays lost beside its new track.
+  picture). A lost contact's plausible speed is its own (its speed and 2-sigma of its velocity
+  error, or the fastest it went): one that goes faster after its last fix than it showed is
+  outside its region (`eval/METRICS.md` "Out of view" measures the generated traffic, not
+  that). Only an AIS identity retires one; a contact the tracker sees again without one stays
+  lost beside its new track.
 - Satellite tasking: no cloud model (optical options note it), no sensitive-area or
   cost/priority tiers yet (every collect needs a human), no competing demand or agility
   model, one collect per intent. A cover samples the centroid and the boundary (the interior

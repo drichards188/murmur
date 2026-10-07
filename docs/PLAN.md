@@ -407,18 +407,19 @@ estimate, friendlies and an aircraft track above the effect with their altitudes
 not, ranged or passive, recent or stale, a ground target, a lost friendly with and without
 an operator's acceptance, an acceptance without engagement authority, a token from before
 an acceptance, a reset that clears one, a revoked one, an acceptor who signs, an agent
-trying to accept one, an accepted one reporting again); from rules 13, 83 to 87: a protected
+trying to accept one, an accepted one reporting again); from rules 13, 83 to 88: a protected
 contact dropped by the tracker near the target, then a nomination; an acceptance of it; an
 acceptance then the contact seen again under a new track id; an acceptance by an operator
-without engagement authority; a forged acceptance.
+without engagement authority; a forged acceptance; a contact last seen steaming away (its
+course clear of the keep-out) that may have turned back.
 Each ends in reject, void or abort as designed and replays; the tampered logs (including a
 loosened logged policy) are caught. Seeded noise turns each into a batch (Phase G): position
 noise independent around the truth each step (`--noise`), and a velocity-estimate error
 correlated over about 10 s (`--vnoise`). Seeds 1 to 10 and 42 pass every scenario at 0, 3,
 10 and 20 m with 0, 0.3 and 0.5 m/s (4,320 runs); at 1 m/s per axis some long-lead releases
 on moving targets abort late (the plan's point is off by the velocity error times the
-lead): the chain fails safe, never releasing off the plan. Rules 13's scenarios 83 to 87 pass
-the same batch (660 runs) but six: 84 and 87 at seed 7 with 0.5 m/s (3, 10 and 20 m), where
+lead): the chain fails safe, never releasing off the plan. Rules 13's scenarios 83 to 88 pass
+the same batch (792 runs) but six: 84 and 87 at seed 7 with 0.5 m/s (3, 10 and 20 m), where
 the velocity estimate crossed the 1.5 m/s holding speed at the first signature, so the plan
 put the holding target about 170 m on and the release, never aligned, aborted late (fail
 safe; the same effect, not the lost contacts).
@@ -514,11 +515,15 @@ keep-out used to stop counting it then, so a civilian boat that went out of view
 stopped protecting anything. Now the drop is a logged fact (`track.dropped`, the tracker's facts
 at the drop; the bridge keeps the track in the decision facts until the engine has it) and the
 engine holds the contact as lost: every engagement's keep-out on tracks counts it anywhere it
-could have reached since its last fix, by the reach model a live track gets from those facts,
-with no cap, exempt only where a live track would be. An operator with engagement authority may
-accept one for one engagement, as a lost vehicle of ours (`engage.accepted` naming the contact:
-at the nomination or before a first signature, under their session, every signer shown it,
-cleared by a reset, revocable by any operator, never an agent's). A track the tracker starts
+could have reached since its last fix, by the reach model a live track gets from those facts
+and, since nothing sees it turn, anywhere at its own plausible speed (its speed and 2-sigma of
+its velocity error, or the fastest it went: `engage::lost_reach`; added after the measurement
+found the course regions alone a prediction, not a bound), with no cap, exempt only where a
+live track would be. An operator with engagement authority may accept one for one engagement,
+as a lost vehicle of ours (`engage.accepted` naming the contact: at the nomination or before a
+first signature, under their session, with the same step-up when the policy lists
+`accept_unknown`, every signer shown it, cleared by a reset, revocable by any operator, never
+an agent's). A track the tracker starts
 again for it retires it only when its AIS identity matches unambiguously (`track.reacquired`,
 with the picture judged); without AIS it stays lost beside its new track. Replay rebuilds the
 lost contacts from the log, checks every engagement decision's against them, recomputes each
@@ -590,10 +595,9 @@ areas but the platform's own path only against no-go areas, the assessment trust
 model's coverage figures, the signers authenticate with a password only (no second factor;
 rules 8, below), ground targets have no terrain-referenced altitude (2D), an engagement
 does not survive a bridge restart (only the platform's own failsafe values are put back),
-nor do the lost contacts (rules 13: a new run starts a new tracker), a lost contact's region is
-the statistical prediction a live track gets from its last facts, not a bound (a contact last
-seen steady that turned while out of view can be outside it), only an AIS identity retires a
-lost contact, and another declared
+nor do the lost contacts (rules 13: a new run starts a new tracker), a lost contact's
+plausible speed is its own (one that goes faster after its last fix than it showed is outside
+its region), only an AIS identity retires a lost contact, and another declared
 hostile inside the keep-out is exempt like the target (an open design question,
 DECISIONS.md).
 

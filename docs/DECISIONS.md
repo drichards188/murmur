@@ -239,9 +239,11 @@ group. Dates are 2026.
   friendly above: the drop is a logged fact (`track.dropped`, the tracker's facts at the drop,
   its estimate only; the bridge keeps the track in the decision facts until the engine has it,
   so no decision falls between the two) and the engine holds the contact as lost. Every
-  engagement's keep-out on tracks counts it anywhere it could have reached since its last fix,
+  engagement's keep-out on tracks counts it anywhere it could have reached since its last fix:
   by the regions a live track gets from those facts (`engage::track_reach`; a track with no
-  velocity or no average velocity at its domain's top speed), with no cap: fail closed. It is
+  velocity or no average velocity at its domain's top speed) and, since nothing sees it turn,
+  also anywhere at its own plausible speed (its speed and 2-sigma of its velocity error, or the
+  fastest it went: `engage::lost_reach`), with no cap: fail closed. It is
   exempt only where a live track would be (the target, a declared hostile by the
   identification ledger). An operator with engagement authority may accept one for one
   engagement, explicitly and logged under their session with its facts and the world's time,
@@ -265,25 +267,32 @@ group. Dates are 2026.
   faded, anticipated symbol at the last fix, the region counted now, "T-0002 LOST 4 min"), in the
   tracks drawer, in the nomination form's keep-out explanation (which lost contact blocks, since
   when, an Accept for this engagement), on the card; agents read them and cannot accept.
-  Measured (`eval/METRICS.md` "Out of view", model results, unreviewed): with a contact out of
-  view within 1 km of the target, the drop let 1,640 of 25,578 nominations through with it inside
-  the keep-out line at the effect time and 120 with it inside the effect circle; holding it took
-  those to 3 and 0, at the cost of blocking 99% of those nominations (47% before) and needing an
-  acceptance in 52% of them; in traffic where 30% of contacts go out of view, 87% blocked (50%
-  before), 37% needing an acceptance. None of the cheaper policies is sound against the truth:
-  forgetting it 600 s after its drop (208 and 19 such misses near the target), counting it only
-  near the effect point (493 and 38), or clearing the water our sensors cover with no detection
-  (every lost contact there is inside the radar's nominal coverage, so it misses as today does:
-  a track ages out within coverage only when the sensors stopped seeing a contact that was
-  there). So none is shipped; the acceptance is the way through, and its frequency is the stated
-  cost of failing closed. A finding against this design, recorded and not acted on (the main
-  thread decides): the region is a prediction, not a bound (a contact last seen steady gets only
-  the regions along its velocity with the acceleration-noise uncertainty), and 3 of 716 passes
-  near the target had the contact inside the keep-out line (none in the circle); counting it
-  also anywhere at its own plausible speed (its speed and 2-sigma of its velocity error, or the
-  fastest it went) took that to 0 of 647 at no measurable cost there and 3 points of blocks in
-  the general traffic. Not carried over a bridge restart (a new run starts a new tracker).
-  Regressions: scenarios 83 to 87.
+  Accepting one takes the same step-up as accepting a lost vehicle of ours (`accept_unknown` in
+  `[approval] step_up_acts`, a credentials run): the password again, or a passkey whose challenge
+  names those contacts and their fixes; the bridge refuses the request without it, whatever
+  the console sends, and the form asks for it. Measured (`eval/METRICS.md` "Out of view", model
+  results, unreviewed): with a contact out of view within 1 km of the target, the drop let 1,640
+  of 25,578 nominations through with it inside the keep-out line at the effect time and 120 with
+  it inside the effect circle; holding it as shipped took those to 0 and 0 (of 647 passes), at the
+  cost of blocking 99% of those nominations (47% before) and needing an acceptance in 52% of
+  them; in traffic where 30% of contacts go out of view, 90% blocked (50% before), 40% needing an
+  acceptance. None of the cheaper policies is sound against the truth: forgetting it 600 s after
+  its drop (206 and 19 such misses near the target), counting it only near the effect point (491
+  and 38), or clearing the water our sensors cover with no detection (every lost contact there
+  is inside the radar's nominal coverage, so it misses as today does: a track ages out within
+  coverage only when the sensors stopped seeing a contact that was there). So none is shipped;
+  the acceptance is the way through, and its frequency is the stated cost of failing closed.
+  The plausible-speed region came from the measurement (10-07, the main thread's call, the same
+  rules version since rules 13 had not merged): the first version counted a lost contact by a
+  live track's regions alone, a prediction rather than a bound for a contact nobody sees (one
+  last seen steady got only the regions along its velocity, with the acceleration-noise
+  uncertainty), and 3 of 716 passes near the target had it inside the keep-out line (none in the
+  circle); the design had said its region grows at its plausible speed, and the disc took that
+  to 0 of 647 for 3 points of blocks in the general traffic (87 to 90%). Live tracks are counted
+  as before: the tracker sees them turn. The plausible speed is the contact's own, so one that
+  goes faster after its last fix than it showed is outside it. Not carried over a bridge restart
+  (a new run starts a new tracker; scheduled after the rules 12 carry follow-ups merge).
+  Regressions: scenarios 83 to 88.
 - **A HIGH_LATENCY2 report without its GPS failure flag is a 3D fix** (10-04, fourth
   review). HIGH_LATENCY2 carries no fix type, so a platform on that link alone never had a
   fresh fix and could never release. The bridge now counts each one without

@@ -271,8 +271,9 @@ tracker (`live`, `live-all`, `live-ais`, `live-model`, and `live2*` with the cir
 within 2 km), and (rules 13, murmur-533) contacts going out of sensor view, `oov`, `oov-all`
 and `oov-near` (rules 12 against 13: a contact masked from a time before the nomination, its
 track dropped by the bridge's tracker after 180 s unseen; each evaluation also decided with the
-lost contacts accepted, held 600 s, counted only near the effect point, or counted at their
-plausible speed; `keepout.lost_summary`). `eval.run keepout` builds the probe (`cargo build --release
+lost contacts accepted, held 600 s, counted only near the effect point, or counted by a live
+track's regions alone (`heading`); `keepout.lost_summary`, the report's "Out of view" tables).
+`eval.run keepout` builds the probe (`cargo build --release
 -p murmur-keepout-probe`, a no-op when current), runs each variant on half the CPUs into
 `keepout/<variant>/` (`records.jsonl.gz`, one line per evaluation, and `summary.json`), writes
 the combined `keepout/summary.json` with the sensitivity table, and builds the report. Every

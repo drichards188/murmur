@@ -180,7 +180,9 @@ meaningful. Decision and command, not weapons.
 - Rules 13 (`LOST_CONTACT_SINCE`): a track the tracker drops (180 s unseen) stays in every
   engagement keep-out as a lost contact (`track.dropped`) until an operator with engagement
   authority accepts it (nomination form, `accept_lost`) or a new track matches its AIS
-  unambiguously (`track.reacquired`); without AIS it never retires within a run. Replay flags a
+  unambiguously (`track.reacquired`); without AIS it never retires within a run. A lost contact's
+  regions are `engage::lost_reach` (a live track's plus anywhere at its own plausible speed),
+  never `track_reach`: anything that judges or draws one uses it. Replay flags a
   track that leaves a decision's picture without a `track.dropped`: a test or driver that
   drops a track hands it to `Engine::record_track_drops` first (scenarios: `drop_track`).
 - The tracker is a two-model IMM; changes must pass `tracks::tests::calib`. Its held-out seeds
