@@ -793,37 +793,38 @@ pub fn drift_growth_mps(current: [f64; 2], wind: [f64; 2]) -> f64 {
     0.3 * norm(current) + WINDAGE * norm(wind) + 0.1
 }
 
-fn water_tracks() -> MutexGuard<'static, HashMap<Uid, WaterTrack>> {
-    static TRACKS: OnceLock<Mutex<HashMap<Uid, WaterTrack>>> = OnceLock::new();
-    TRACKS
-        .get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-}
+/// The drift tracks the water sampler keeps: one store per [`World`] (`World::water`), not a
+/// process global, so a test's world has its own and a test that fails by deadlock leaves only
+/// its own locks held (review of 10-08, round two).
+#[derive(Default)]
+pub struct WaterTracks(Mutex<HashMap<Uid, WaterTrack>>);
 
-/// Every fresh drift track, read at once (a frame reads them before any vehicle's lock).
-fn water_tracks_now(now: f64) -> HashMap<Uid, WaterTrack> {
-    water_tracks()
-        .iter()
-        .filter(|(_, t)| now - t.t <= WATER_FRESH_S)
-        .map(|(u, t)| (*u, *t))
-        .collect()
-}
+impl WaterTracks {
+    fn lock(&self) -> MutexGuard<'_, HashMap<Uid, WaterTrack>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
-/// The drift track of a vehicle, if the sampler keeps one that is fresh (tests: a frame reads
-/// them all at once, [`FrameContext::new`]).
-#[cfg(test)]
-pub fn water_track(uid: Uid, now: f64) -> Option<WaterTrack> {
-    water_tracks()
-        .get(&uid)
-        .copied()
-        .filter(|t| now - t.t <= WATER_FRESH_S)
-}
+    /// Every fresh drift track, read at once (a frame reads them before any vehicle's lock).
+    fn fresh(&self, now: f64) -> HashMap<Uid, WaterTrack> {
+        self.lock()
+            .iter()
+            .filter(|(_, t)| now - t.t <= WATER_FRESH_S)
+            .map(|(u, t)| (*u, *t))
+            .collect()
+    }
 
-/// Tests: a track as the sampler would keep it.
-#[cfg(test)]
-pub fn set_water_track(uid: Uid, track: WaterTrack) {
-    water_tracks().insert(uid, track);
+    /// The drift track of a vehicle, if the sampler keeps one that is fresh (tests: a frame
+    /// reads them all at once, [`FrameContext::new`]).
+    #[cfg(test)]
+    pub fn get(&self, uid: Uid, now: f64) -> Option<WaterTrack> {
+        self.lock().get(&uid).copied().filter(|t| now - t.t <= WATER_FRESH_S)
+    }
+
+    /// Tests: a track as the sampler would keep it.
+    #[cfg(test)]
+    pub fn set(&self, uid: Uid, track: WaterTrack) {
+        self.lock().insert(uid, track);
+    }
 }
 
 /// Where the sampler asks for the water: every surface and subsurface vehicle with a
@@ -857,7 +858,7 @@ fn sampler_rows(world: &World, wall: f64) -> Vec<(Uid, bool, LngLat)> {
         let Some((lat, lon)) = pos else { continue };
         seen.push((cell.uid, stale, lat, lon));
     }
-    let tracks = water_tracks();
+    let tracks = world.water.lock();
     seen.into_iter()
         .map(|(uid, stale, lat, lon)| {
             let at = match (stale, tracks.get(&uid)) {
@@ -904,7 +905,7 @@ pub async fn water_sampler(world: Arc<World>) {
                 continue;
             }
         };
-        let mut tracks = water_tracks();
+        let mut tracks = world.water.lock();
         for ((uid, stale, at), w) in rows.into_iter().zip(samples) {
             let current = w.current_en.unwrap_or([0.0, 0.0]);
             let wind = w.wind_en.unwrap_or([0.0, 0.0]);
@@ -1698,14 +1699,17 @@ fn ordered_now(world: &World) -> HashMap<Uid, Ordered> {
         .collect()
 }
 
-/// One push frame's context: the configuration and, read once on the first silent vehicle,
-/// each vehicle's latest op.
+/// One frame's context (a console frame, an MCP fleet read): the world, the wall time, and
+/// what an estimate reads besides its vehicle, read in [`FrameContext::new`] before any
+/// vehicle's lock.
 pub struct FrameContext<'a> {
     world: &'a World,
     wall: f64,
-    /// What each vehicle was ordered and the fresh drift tracks, read in [`FrameContext::new`]
-    /// before any vehicle's lock is taken (empty when no vehicle is silent): the vehicle lock
-    /// is a leaf, and `estimate`, called under it, takes no other lock (review B4).
+    /// What each vehicle was ordered and the fresh drift tracks (both empty when none of the
+    /// vehicles about to be estimated is silent). `estimate`, called under a vehicle's lock,
+    /// takes none of the state locks (task manager, drift tracks, terrain): among them the
+    /// vehicle lock is a leaf (review B4). A vehicle's lock is still held over the clock's and
+    /// a relay's link locks elsewhere, which are leaves.
     ordered: HashMap<Uid, Ordered>,
     water: HashMap<Uid, WaterTrack>,
 }
@@ -1724,7 +1728,7 @@ impl<'a> FrameContext<'a> {
             .any(|l| l.last_rx_t.is_some_and(|t| wall - t > l.stale_after_s()));
         let (ordered, water) = if silent {
             let _ = config(world);
-            (ordered_now(world), water_tracks_now(wall))
+            (ordered_now(world), world.water.fresh(wall))
         } else {
             (HashMap::new(), HashMap::new())
         };
@@ -1961,10 +1965,11 @@ mod tests {
         assert!((distance_m(track.pos, p) - 150.3).abs() < 1.0, "{}", distance_m(track.pos, p));
         assert!((radius_of(&r) - (track.sigma_m + 65.0)).abs() < 0.01);
         // the sampler's store: a fresh track is served, an old one is not
-        set_water_track(99, track);
-        assert_eq!(water_track(99, 1250.0), Some(track));
-        assert_eq!(water_track(99, 1200.0 + WATER_FRESH_S + 1.0), None);
-        assert_eq!(water_track(98, 1250.0), None);
+        let store = WaterTracks::default();
+        store.set(99, track);
+        assert_eq!(store.get(99, 1250.0), Some(track));
+        assert_eq!(store.get(99, 1200.0 + WATER_FRESH_S + 1.0), None);
+        assert_eq!(store.get(98, 1250.0), None);
     }
 
     fn ordered(kind: TaskKind, state: OpState, params: TaskParams) -> Ordered {
@@ -2509,12 +2514,12 @@ mod tests {
         let (world, cell) = world_with_boat(60.0);
         let (held_tx, held_rx) = channel();
         let reader = {
-            let cell = cell.clone();
+            let (world, cell) = (world.clone(), cell.clone());
             std::thread::spawn(move || {
                 cell.read(|_| {
                     held_tx.send(()).ok();
                     std::thread::sleep(Duration::from_millis(300));
-                    water_track(1, clock::wall())
+                    world.water.get(1, clock::wall())
                 })
             })
         };
@@ -2565,9 +2570,9 @@ mod tests {
         ready_rx.recv().expect("the estimator has its context");
         let (held_tx, held_rx) = channel();
         let holder = {
-            let cell = cell.clone();
+            let (world, cell) = (world.clone(), cell.clone());
             std::thread::spawn(move || {
-                let _tracks = water_tracks();
+                let _tracks = world.water.lock();
                 held_tx.send(()).ok();
                 std::thread::sleep(Duration::from_millis(300));
                 cell.read(|v| v.pos)

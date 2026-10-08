@@ -126,6 +126,8 @@ pub struct World {
     manifest: Mutex<Manifest>,
     wanted_ports: Mutex<BTreeSet<u16>>,
     pub tasks: TaskManager,
+    /// The water sampler's drift tracks (`crate::estimate`).
+    pub water: crate::estimate::WaterTracks,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -144,6 +146,7 @@ impl World {
             manifest: Mutex::default(),
             wanted_ports: Mutex::new(wanted),
             tasks: TaskManager::default(),
+            water: crate::estimate::WaterTracks::default(),
         })
     }
 

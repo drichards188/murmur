@@ -1076,14 +1076,19 @@ group. Dates are 2026.
   under it; the values read are the same.
   `tasks::tests::the_task_manager_never_reads_a_vehicle_under_its_lock` deadlocks on the code
   before (a reader holding the vehicle asks the task manager while `orbit_of` and a dispatch
-  read it) and passes after. Then (10-08 review, B4) the vehicle lock became a leaf, so no order
-  is needed: a frame (`push::build_frame`, MCP `get_fleet`) reads every link first, and when one
-  vehicle is silent builds its `FrameContext` (what each vehicle was ordered, the fresh drift
-  tracks) before any vehicle's lock; the estimate under the vehicle lock takes no other lock, and
-  the estimator's configuration is loaded at startup (`estimate::init`), not first under a
-  vehicle's lock. The same review found the terrain cache taking its error lock under its cache
-  lock in one place and the reverse in another (B1); each is now taken and released alone.
-  Tests on the code before deadlock (bounded, they fail by timeout) and pass after.
+  read it) and passes after. Then (10-08 review, B4) the vehicle lock became a leaf among the
+  state locks (task manager, drift tracks, terrain), so no order among them is needed; it still
+  takes the clock's and a relay's link locks, which are leaves. A frame (`push::build_frame`, MCP
+  `get_fleet`) reads every link first, and when one vehicle is silent builds its `FrameContext`
+  (what each vehicle was ordered, the fresh drift tracks) before any vehicle's lock; the estimate
+  under the vehicle lock takes none of those, and the estimator's configuration is loaded at
+  startup (`estimate::init`), not first under a vehicle's lock. The same review found the terrain
+  cache taking its error lock under its cache lock in one place and the reverse in another (B1);
+  each is now taken and released alone. The tests deadlock on the code before and pass after.
+  They are bounded: each waits 10 s and fails, and the drift tracks are the world's
+  (`World::water`), not a process global, so a failed test's stuck threads hold only its own
+  world's locks and the tests after it run (checked by putting each old order back: one test
+  fails in 10 s, the other 19 in `estimate::tests` pass, serially too).
 
 - **A space answer is held to when it was computed; a re-check to the instant it judged; the
   pin to the run** (10-07, murmur-der.4, murmur-lsj; rules 13 `SPACE_REPLAY_SINCE`). The
