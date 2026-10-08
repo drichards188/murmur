@@ -138,7 +138,9 @@ Its working directory is the repository; its environment is the runner's minus e
 login works as it does in their shell. Its stdout and stderr go to `agent.log` in the run
 directory. What it must hold to: agents propose and never approve (no approve tool exists, and
 the watch policy sends its tasking to the operator); every proposal carries a rationale naming
-the facts and their ages; it reads only the MCP tools (not the bridge's HTTP API: `GET
+the facts and their ages; the MCP server closes a session idle for 300 s (rmcp's default), so a
+watch officer that may sit quiet that long reconnects when it next acts (the runner's own
+storyline agent does); it reads only the MCP tools (not the bridge's HTTP API: `GET
 /api/situation` and the evaluation's truth hook are not for it, and a situation serves no
 truth); it treats stale facts as stale. What it did is in the audit log (`agent.action`, then its
 intents' own events), which the panel reads too.

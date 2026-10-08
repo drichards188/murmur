@@ -99,6 +99,29 @@ def plan_counts(fleet: Path) -> tuple[list[dict[str, Any]], int]:
     return vehicles, sum(1 for v in vehicles if v.get("sim") != "standin")
 
 
+class FreshAgentProposer(AgentProposer):
+    """The storyline's agent (`agent-scripted`), connected for each proposal or withdrawal:
+    a situation's steps can be minutes apart, and the bridge's MCP server (rmcp) closes a
+    session idle for 300 s."""
+
+    async def start(self) -> None:
+        pass
+
+    async def propose(self, req: dict[str, Any], rationale: str) -> dict[str, Any]:
+        await AgentProposer.start(self)
+        try:
+            return await super().propose(req, rationale)
+        finally:
+            await AgentProposer.stop(self)
+
+    async def withdraw(self, id: int, reason: str) -> dict[str, Any] | None:
+        await AgentProposer.start(self)
+        try:
+            return await super().withdraw(id, reason)
+        finally:
+            await AgentProposer.stop(self)
+
+
 class StepLog:
     """The storyline's log (eval/storyline.py writes through `write`): every record into
     situation.jsonl, and each finished step as a timeline entry for the panel."""
@@ -247,7 +270,9 @@ class Runner:
     def refresh(self) -> None:
         """Fold in what happened since the last look: the AI's actions in the audit log, its
         own notes, the autoplay's decisions, the AI process."""
-        new = agent_activity(self.audit_tail.read(), self.modes["agent"])
+        # the AI's own actions only (no AI, none: the storyline's agent is not the AI)
+        events = self.audit_tail.read()
+        new = agent_activity(events, self.modes["agent"]) if self.modes["agent"] else []
         for a in new:
             # on the situation's clock, for the panel
             a["t_s"] = round(a["t"] - self.zero, 1) if self.zero is not None else None
@@ -505,7 +530,7 @@ class Runner:
         if self.sit.storyline_proposer == "operator":
             proposer = HumanProposer(self.bridge, STORYLINE_OPERATOR)
         else:
-            proposer = AgentProposer(f"{self.bridge_url}/mcp", agent=STORYLINE_AGENT)
+            proposer = FreshAgentProposer(f"{self.bridge_url}/mcp", agent=STORYLINE_AGENT)
         story = Storyline(
             self.sit,  # type: ignore[arg-type]  (a Situation has the spec's steps)
             self.bridge,
@@ -663,7 +688,7 @@ class Runner:
             for t in tracks:
                 counts[t.get("affiliation", "?")] = counts.get(t.get("affiliation", "?"), 0) + 1
             lines.append("  tracks now: " + ", ".join(f"{n} {a}" for a, n in sorted(counts.items())))
-        lines.append(f"  intents by source: " + "; ".join(f"{k}: {len(v)}" for k, v in sorted(by_source.items())))
+        lines.append("  intents by source: " + ("; ".join(f"{k}: {len(v)}" for k, v in sorted(by_source.items())) or "none"))
         if self.stack_alive() or self.bridge.alive():
             lines.append(f"the stack is still running: console http://127.0.0.1:{self.ports['web']}; `make down` stops it")
         text = "\n".join(lines)
