@@ -1531,8 +1531,17 @@ Rules versions:
   decision's `spent_carried`. The rules 12 tests that depend on rules 12's checks are pinned to
   it. Scenarios 84 (the un-spend) and 85 (the nomination refused); the scenario runner's
   `unspend` step, `write_off` of a `log`, `[[carried]]` failed carries, `expect_unspent`, and
-  its vehicles' identities as their preloads name them. Fixtures: see `tests/versions.rs` (the
-  scenario logs `v15-*-scenario-01.jsonl`, `-84`, `-85`, and live logs with their anchors).
+  its vehicles' identities as their preloads name them. Fixtures (a clean build of `e10da34`):
+  `tests/data/audit/v15-engagement-scenario-01.jsonl`,
+  `v15-spent-munition-unspent-scenario-84.jsonl`,
+  `v15-nomination-refused-while-a-carry-may-owe-scenario-85.jsonl`; and four live logs with
+  their anchors (stand-ins at the Gate, the fast boat alone): `v15-carry-live-crash-1.jsonl`
+  (the switchblade released and spent; no alert and the un-spend refused while its engagement
+  observed; the bridge killed), `v15-carry-live-crash-2.jsonl` (the mark carried, an orbit
+  refused, op-2's un-spend, an orbit queued for the restore and sent after it, spent again,
+  killed), `v15-carry-live-clean.jsonl` (the new mark carried, an orbit and a nomination
+  refused, a clean stop) and `v15-carry-live-fallback.jsonl` (started on a torn pointer: the
+  clean run's log carried in its place, the mark on); see `tests/versions.rs`.
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that

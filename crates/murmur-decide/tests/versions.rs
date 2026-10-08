@@ -1257,24 +1257,27 @@ fn the_rules_12_live_logs_carry_across_two_crashes_in_one_line_each() {
     assert!(w.iter().any(|m| m.contains("lost-link values owed back differ from the log's ledger")), "{w:?}");
 }
 
-/// Rules 13, live (murmur-zq3, murmur-imu), from a clean build of `85f8108`, anchored as they
-/// ran, stand-ins at the Gate (the engage demo fleet; the fast boat alone as contacts) on their
-/// own ports. `L13_CRASH_1`: the switchblade engaged the fast boat holding west of the bridge,
-/// released, spent by its effect (`restore.closed`, expended); the bridge killed (SIGKILL). The
-/// stack restarted with the same fleet (stand-ins respawned under the same identity).
-/// `L13_CRASH_2`: the start carried the mark in `run.started` (`spent`); an orbit for the
-/// switchblade refused (readiness, carried over); op-1's un-spend refused (no engagement
-/// authority: a 403, nothing logged); op-2's taken (`platform.unspent`): its own values owed back
-/// again, an orbit queued for the restore and sent the moment it confirmed; the switchblade
-/// engaged again (a first nomination aborted when the boat moved, a second released), spent, and
-/// the bridge killed the same way. `L13_CLEAN`: carried the new mark (naming the log that spent
-/// it); an orbit and a nomination refused; a clean stop. `L13_FALLBACK`: started on a pointer of
-/// two different torn lines: it carried from `L13_CLEAN` in its place (`pointer_failed`), the
-/// mark on; an orbit refused; a clean stop.
-const L13_CRASH_1: (&str, &str) = ("v13-carry-live-crash-1.jsonl", "20261007T164434Z-1064324.jsonl");
-const L13_CRASH_2: (&str, &str) = ("v13-carry-live-crash-2.jsonl", "20261007T165340Z-1107528.jsonl");
-const L13_CLEAN: (&str, &str) = ("v13-carry-live-clean.jsonl", "20261007T170127Z-1125338.jsonl");
-const L13_FALLBACK: &str = "v13-carry-live-fallback.jsonl";
+/// Rules 15, live (murmur-zq3, murmur-imu, after the review), from a clean build of `e10da34`,
+/// anchored as they ran, stand-ins at the Gate (the engage demo fleet; the fast boat alone as
+/// contacts) on their own ports. `L15_CRASH_1`: the switchblade engaged the fast boat holding
+/// west of the bridge (a first nomination aborted, a second released), spent by its effect
+/// (`restore.closed`, expended); while that engagement was still observing, no SPENT alert and
+/// op-2's un-spend refused (a 409, nothing logged); once it was done, the alert; the bridge killed
+/// (SIGKILL). The stack restarted with the same fleet (stand-ins respawned under the same
+/// identity). `L15_CRASH_2`: the start carried the mark in `run.started` (`spent`); an orbit for
+/// the switchblade refused (readiness, carried over); op-1's un-spend refused (no engagement
+/// authority: a 403, nothing logged); op-2's taken (`platform.unspent`, with the identity it was
+/// judged on): its own values owed back again, an orbit queued for the restore and sent the
+/// moment it confirmed; the switchblade engaged again, spent, the un-spend refused again while
+/// that engagement observed, and the bridge killed the same way. `L15_CLEAN`: carried the new
+/// mark (naming the log that spent it); an orbit and a nomination refused; a clean stop.
+/// `L15_FALLBACK`: started on a pointer of two different torn lines: it carried from `L15_CLEAN`
+/// in its place (the newest of the station by its carry chain, `pointer_failed`), the mark on;
+/// an orbit and a nomination refused; a clean stop.
+const L15_CRASH_1: (&str, &str) = ("v15-carry-live-crash-1.jsonl", "20261008T001627Z-1865979.jsonl");
+const L15_CRASH_2: (&str, &str) = ("v15-carry-live-crash-2.jsonl", "20261008T002324Z-1882354.jsonl");
+const L15_CLEAN: (&str, &str) = ("v15-carry-live-clean.jsonl", "20261008T003150Z-1916291.jsonl");
+const L15_FALLBACK: &str = "v15-carry-live-fallback.jsonl";
 
 /// Replay options carrying `logs` (each earlier log's name as the start recorded it, its text).
 fn carrying<'a>(logs: &'a [(&'a str, &'a str)]) -> ReplayOptions<'a> {
@@ -1285,15 +1288,15 @@ fn carrying<'a>(logs: &'a [(&'a str, &'a str)]) -> ReplayOptions<'a> {
 }
 
 #[test]
-fn the_rules_13_live_logs_carry_a_spent_mark_an_unspend_and_a_fallback() {
-    let (c1, c2, clean, fb) = (fixture(L13_CRASH_1.0), fixture(L13_CRASH_2.0), fixture(L13_CLEAN.0), fixture(L13_FALLBACK));
+fn the_rules_15_live_logs_carry_a_spent_mark_an_unspend_and_a_fallback() {
+    let (c1, c2, clean, fb) = (fixture(L15_CRASH_1.0), fixture(L15_CRASH_2.0), fixture(L15_CLEAN.0), fixture(L15_FALLBACK));
     // the crashed ones anchored up to their last decision, no shutdown anchor; the others whole
-    for (name, text) in [(L13_CRASH_1.0, &c1), (L13_CRASH_2.0, &c2)] {
+    for (name, text) in [(L15_CRASH_1.0, &c1), (L15_CRASH_2.0, &c2)] {
         let a = anchor::verify(text, &anchors_of(name));
         assert!(!a.shutdown, "{name}");
         assert!(a.problems.iter().all(|p| p.what.starts_with("no shutdown anchor")), "{name}: {:?}", a.problems);
     }
-    for (name, text) in [(L13_CLEAN.0, &clean), (L13_FALLBACK, &fb)] {
+    for (name, text) in [(L15_CLEAN.0, &clean), (L15_FALLBACK, &fb)] {
         let a = anchor::verify(text, &anchors_of(name));
         assert!(a.ok() && a.shutdown, "{name}: {:?}", a.problems);
     }
@@ -1304,16 +1307,16 @@ fn the_rules_13_live_logs_carry_a_spent_mark_an_unspend_and_a_fallback() {
     let spent1 = murmur_decide::replay::owed_debts(&c1).spent;
     assert_eq!(spent1.len(), 1, "{spent1:?}");
     assert_eq!(spent1[0].vehicle.as_ref().and_then(|v| v.callsign.as_deref()), Some("BLADE 1"));
-    let logs1 = [(L13_CRASH_1.1, c1.as_str())];
+    let logs1 = [(L15_CRASH_1.1, c1.as_str())];
     let r2 = replay_str_with(&c2, &carrying(&logs1)).unwrap();
     assert!(r2.ok(), "{:?}", r2.mismatches);
     assert!(r2.carried_restores[0].checked, "{:?}", r2.carried_restores);
     assert_eq!(r2.unspent.len(), 1, "{:?}", r2.unspent);
-    assert!(r2.unspent[0].starts_with(&format!("vehicle 1: un-spent by op-2 (spent by engagement i{} of {})", spent1[0].by.0, L13_CRASH_1.1)), "{:?}", r2.unspent);
-    let logs2 = [(L13_CRASH_2.1, c2.as_str())];
+    assert!(r2.unspent[0].starts_with(&format!("vehicle 1: un-spent by op-2 (spent by engagement i{} of {})", spent1[0].by.0, L15_CRASH_1.1)), "{:?}", r2.unspent);
+    let logs2 = [(L15_CRASH_2.1, c2.as_str())];
     let r3 = replay_str_with(&clean, &carrying(&logs2)).unwrap();
     assert!(r3.ok(), "{:?}", r3.mismatches);
-    let logs3 = [(L13_CLEAN.1, clean.as_str())];
+    let logs3 = [(L15_CLEAN.1, clean.as_str())];
     let r4 = replay_str_with(&fb, &carrying(&logs3)).unwrap();
     assert!(r4.ok(), "{:?}", r4.mismatches);
     for r in [&r2, &r3, &r4] {
@@ -1321,10 +1324,13 @@ fn the_rules_13_live_logs_carry_a_spent_mark_an_unspend_and_a_fallback() {
     }
     // the second run: the mark in its first line; the orbit refused for it; the un-spend; an
     // orbit queued for the restore, sent after it confirmed; spent again by a second effect
+    assert!(!c1.contains("\"type\":\"platform.unspent\""), "the un-spend while its engagement observed was refused");
     let ls = lines(&c2);
     assert!(ls[0].contains("\"spent\":[{\"uid\":\"1\",\"by\":") && ls[0].contains("\"pointer\":\".last-run-8885\""), "{}", ls[0]);
     let refused = at(&ls, 0, &["\"type\":\"intent.state\"", "\"to\":\"rejected\"", "carried over): a spent platform takes no order"]);
     let unspent = at(&ls, refused, &["\"type\":\"platform.unspent\"", "\"operator\":\"op-2\""]);
+    assert!(ls[unspent].contains("\"identity\":{\"platform\":\"switchblade\",\"callsign\":\"BLADE 1\",\"sysid\":1"), "{}", ls[unspent]);
+    assert_eq!(c2.matches("\"type\":\"platform.unspent\"").count(), 1, "the second engagement's refusal logged nothing");
     let queued = at(&ls, unspent, &["\"type\":\"intent.queued\"", "lost-link failsafe"]);
     let restored = at(&ls, queued, &["\"type\":\"platform.restore\"", "\"confirmed\":true"]);
     let sent = at(&ls, queued, &["\"type\":\"intent.dispatched\"", "\"kind\":\"orbit\""]);
@@ -1339,11 +1345,11 @@ fn the_rules_13_live_logs_carry_a_spent_mark_an_unspend_and_a_fallback() {
     // the log that spent it
     let ls = lines(&fb);
     let (head, _) = murmur_decide::replay::log_head(&clean).unwrap();
-    assert!(ls[0].contains(&format!("\"carried_from\":[{{\"log\":\"{}\",\"head\":\"{head}\"", L13_CLEAN.1)), "{}", ls[0]);
+    assert!(ls[0].contains(&format!("\"carried_from\":[{{\"log\":\"{}\",\"head\":\"{head}\"", L15_CLEAN.1)), "{}", ls[0]);
     assert!(ls[0].contains("\"pointer_failed\":\"the pointer names no log"), "{}", ls[0]);
-    assert!(ls[0].contains(&format!("\"from\":\"{}\"", L13_CRASH_2.1)), "{}", ls[0]);
+    assert!(ls[0].contains(&format!("\"from\":\"{}\"", L15_CRASH_2.1)), "{}", ls[0]);
     assert!(r4.carried_restores[0].pointer_failed.is_some(), "{:?}", r4.carried_restores);
-    assert!(fb.contains("carried over): a spent platform takes no order"));
+    assert!(fb.matches("carried over): a spent platform takes no order").count() >= 2, "an orbit and a nomination refused");
     // forgeries, re-chained: the mark dropped from the second run's first line; the un-spend
     // credited to op-1 (no engagement authority); the fallback's log passed off as another
     // station's
@@ -1371,7 +1377,7 @@ fn the_rules_13_live_logs_carry_a_spent_mark_an_unspend_and_a_fallback() {
     let r = replay_str_with(&forged.join("\n"), &carrying(&logs1)).unwrap();
     assert!(whats(&r).iter().any(|m| m.contains("a platform un-spent without engagement authority")), "{:?}", whats(&r));
     let other = clean.replacen("\"pointer\":\".last-run-8885\"", "\"pointer\":\".last-run-8765\"", 1);
-    let logs_other = [(L13_CLEAN.1, other.as_str())];
+    let logs_other = [(L15_CLEAN.1, other.as_str())];
     let r = replay_str_with(
         &fb,
         &ReplayOptions {
@@ -1421,6 +1427,43 @@ fn a_rules_14_log_claiming_rules_13_is_caught_where_an_aircraft_decided() {
     assert!(r.mismatches.iter().any(|m| m.what.contains("keep_out_tracks") || m.what.contains("rejected")), "{:?}", whats(&r));
     // under its own rules it replays
     assert!(with(&fixture("v14-aircraft-may-turn-back-scenario-83.jsonl"), RulesAccepted::Exactly(now)).ok());
+}
+
+/// Rules 15: the live log of the un-spend claiming rules 14 is caught on what only rules 15 logs
+/// (the spent marks carried, the un-spend, the station's pointer), and on the decisions the
+/// carried mark refused; under its own rules it replays.
+#[test]
+fn a_rules_15_log_claiming_rules_14_is_caught_on_its_carries() {
+    let (now, before) = (CARRY_FOLLOWUPS_SINCE, CARRY_FOLLOWUPS_SINCE - 1);
+    let text = fixture(L15_CRASH_2.0);
+    let mut ls = lines(&text);
+    assert!(ls[0].contains(&format!("\"rules_version\":{now},")));
+    ls[0] = ls[0].replacen(&format!("\"rules_version\":{now},"), &format!("\"rules_version\":{before},"), 1);
+    let c1 = fixture(L15_CRASH_1.0);
+    let logs = [(L15_CRASH_1.1, c1.as_str())];
+    let r = replay_str_with(
+        &rechain(&ls),
+        &ReplayOptions {
+            rules: RulesAccepted::Exactly(before),
+            carried_logs: &logs,
+            ..ReplayOptions::default()
+        },
+    )
+    .unwrap();
+    let w = whats(&r);
+    for marker in ["a platform un-spent by an operator", "the platforms an earlier log had spent, carried over", "the station's .last-run pointer"] {
+        assert!(w.iter().any(|m| m.contains(marker)), "{marker}: {w:?}");
+    }
+    let r = replay_str_with(
+        &text,
+        &ReplayOptions {
+            rules: RulesAccepted::Exactly(now),
+            carried_logs: &logs,
+            ..ReplayOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
 }
 
 /// Rules 11, the engine on the element-set fixture (`tests/space.rs`,
