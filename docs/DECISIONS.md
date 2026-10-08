@@ -978,6 +978,34 @@ group. Dates are 2026.
 
 ## Engineering
 
+- **The watch officer runs the user's own model CLI, woken by a table, with the stronger
+  model as a fresh consult** (10-08, `agents/watch_officer.py`, `agents/README.md`). Murmur
+  holds no model credential: it runs `claude -p` (default) or `codex exec` as the user logged
+  them in, with the API-key variables removed from the child's environment. The driver, not
+  the model, decides when to wake it: a deterministic trigger table over the bridge's
+  `get_changes` (and `get_nomination_options` while a track is declared hostile), coalesced,
+  with a slow heartbeat and budgets; a condition that came and went in one batch stays a note
+  (the first live run woke the model twice for an AUV's 2-second link flaps). Escalation
+  (engagement chain, a lost link on an armed platform, a suspected spoof) goes to the
+  stronger model in a fresh short process, not a fork or resume of the routine session:
+  that would send the whole routine conversation again, uncached, on the stronger model at
+  every escalation; the consult reads the picture itself and the routine model is told what
+  it did. Claude is kept to the bridge's tools by `--setting-sources project` in an empty
+  directory, not `--safe-mode`, which also drops the `--mcp-config` server (checked, 2.1.294).
+  The stream-json interrupt ends a turn and keeps the process (SIGINT ends both).
+- **`get_changes` is a digest compared between reads, not an event log** (10-08). The bridge
+  keeps no history of an affiliation estimate or an alert clearing, so a cursor over the
+  timestamps it does keep would miss exactly those; the MCP layer compares a digest of the
+  read views (fleet, tracks, inbox, intents, vehicle events) between reads and numbers the
+  differences in a bounded ring. Shared by all agents, read-only, not logged, never seen by
+  the engine; a condition that came and went between two reads is not reported, and the
+  audit log stays the record. `get_fleet` carries the GPS glitch fact the engagement checks
+  read (`nav.gps_glitch`). The review queue needed no tool: `get_inbox` already carries it.
+- **MCP list results carry `ttlMs` and `cacheScope`** (10-08). Protocol 2026-07-28 requires
+  them; `rmcp` 3.5 leaves them out unless set, and Claude Code 2.1.294 then refused the tool
+  list and showed the model no Murmur tool at all (connected, zero tools). Set to five
+  minutes and private on the tool, resource and template lists, which never change while
+  the bridge runs; older clients ignore the fields.
 - **A space answer is held to when it was computed; a re-check to the instant it judged; the
   pin to the run** (10-07, murmur-der.4, murmur-lsj; rules 13 `SPACE_REPLAY_SINCE`). The
   engine took a collect's answer prepared outside its lock only within 5 s of the check, but

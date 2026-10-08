@@ -34,9 +34,10 @@ eval: build ## evaluation batch on isolated stacks (eval/README.md): SCENARIOS=,
 	.venv/bin/python -m eval.run batch --scenarios $(or $(SCENARIOS),misclassified-neutral spoofed-gnss link-cut approval-flood stale-track plausible-wrong heldout-friend-alongside heldout-early-unknown heldout-dark-ferry) \
 	  --arms $(or $(ARMS),rules-only rules-only-reject human-proxy agent+human-proxy) --seeds $(or $(SEEDS),1 2 3) $(if $(PARALLEL),--parallel $(PARALLEL))
 
-check:   ## typecheck + lint + glide checks (node 22.18+: it runs the .ts directly) + Rust lint and tests + evaluation unit tests
+check:   ## typecheck + lint + glide checks (node 22.18+: it runs the .ts directly) + Rust lint and tests + evaluation and watch officer unit tests (stand-in CLIs, no model)
 	cd web && npx tsc -b && npx oxlint src && node src/glide.check.ts
-	.venv/bin/python -m py_compile sim/swarm.py sim/tests/*.py scripts/*.py agents/*.py eval/*.py eval/tests/*.py
+	.venv/bin/python -m py_compile sim/swarm.py sim/tests/*.py scripts/*.py agents/*.py agents/watch/*.py agents/tests/*.py eval/*.py eval/tests/*.py
 	.venv/bin/python -m pytest -q eval/tests
+	.venv/bin/python -m pytest -q agents/tests
 	$(CARGO) clippy --workspace --all-targets -- -D warnings
 	$(CARGO) test --workspace

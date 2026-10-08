@@ -90,7 +90,10 @@ Any MCP client that speaks streamable HTTP and can set a header works (the key f
 - **Claude Code**: `claude mcp add --transport http murmur http://127.0.0.1:8765/mcp
   --header "Authorization: Bearer $KEY"`, then ask it to read the fleet and propose. The
   server's instructions (sent at `initialize`) tell the model what it can and cannot do and
-  how to treat stale facts.
+  how to treat stale facts. (Claude Code 2.1.294 speaks MCP 2026-07-28, which requires
+  `ttlMs` and `cacheScope` on list results; the bridge sends both since 10-08. Before that
+  this Claude Code connected but offered the model no Murmur tool at all.)
+- **As a watch officer that runs on its own**: `agents/watch_officer.py`, below.
 - **Other clients** (Claude Desktop, claude.ai connectors, the Claude API's MCP connector)
   need a reachable URL and cannot always set custom headers. Options: a local proxy such as
   `mcp-remote` with `--header "Authorization: Bearer $KEY"`, or a reverse proxy that adds
@@ -100,6 +103,172 @@ Any MCP client that speaks streamable HTTP and can set a header works (the key f
 Don't call an external model API from tests; the scripted agent is the test harness. Phase G
 (evaluation, `eval/`) runs agents against seeded scenarios with the same tools.
 
+## The watch officer (an AI teammate)
+
+`agents/watch_officer.py` runs a model as the operator's watch officer: it watches the
+picture through the MCP tools, wakes the model when something worth a look changes, and the
+model reads, proposes (with rationales), withdraws its stale proposals and writes a short
+note for the operator. It is an agent like any other: it cannot approve or sign anything,
+every proposal goes through the rules and the policy, and humans sign every effect. It may
+nominate an engagement; two operators with engagement authority decide it.
+
+**No model credentials in Murmur.** Murmur never stores, reads, proxies or prompts for a
+model credential. The watch officer runs the CLI you installed and logged into yourself,
+with your own Claude or ChatGPT plan, and removes the API-key variables from the CLI's
+environment (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`; `CODEX_API_KEY`, `OPENAI_API_KEY`)
+so that it uses your plan and not an API account. It reads only their names, to log that
+they were removed.
+
+### Setup
+
+**Claude Code** (the default backend):
+
+1. Install Claude Code (https://code.claude.com), version 2.1.294 or later (`claude
+   --version`; `claude update`). Older versions are refused: the flags below were checked
+   with 2.1.294.
+2. Log in once with your Claude subscription: run `claude` and `/login`.
+   `claude auth status` should say `"authMethod": "claude.ai"`; any other login is refused
+   unless you pass `--allow-other-auth` (it may bill an API account).
+
+**Codex CLI**:
+
+1. Install it (`npm install -g @openai/codex`), version 0.161.0 or later (`codex
+   --version`). Older versions are refused: they lack configuration keys the lockdown needs.
+2. Log in once with your ChatGPT account: `codex login`; `codex login status` should say
+   `Logged in using ChatGPT`.
+3. Optional, recommended: a home of its own, so your global `AGENTS.md` and config stay out
+   of the watch: `CODEX_HOME=~/.codex-murmur codex login` once, then
+   `export MURMUR_CODEX_HOME=~/.codex-murmur`. Without it the CLI runs with your normal home
+   (`~/.codex`), and its global `AGENTS.md` is read (`--ignore-user-config` keeps its
+   `config.toml` out either way).
+
+Check either without calling a model: `--preflight` (the CLI, its version and its login),
+`--print-command` (the exact command lines).
+
+### Running it
+
+```
+make goldengate                      # or any stack; a dev run here
+.venv/bin/python agents/watch_officer.py --backend claude --url http://127.0.0.1:8765/mcp \
+    --agent agent-watch --brief brief.md --situation-log logs/situation.jsonl --until <unix time>
+```
+
+`--backend codex` for Codex; `--minutes N` instead of `--until`; `--key` or
+`MURMUR_AGENT_KEY` in a credentials run (the key goes to the CLI in its environment only,
+never in a file or on its command line). It stops at `--until`, on SIGTERM or SIGINT, when a
+budget is spent, or on a usage limit (below). `--shadow-playbook` also logs what the
+deterministic policy agent (`agents/policy_agent.py`'s rule) would have proposed at each
+wake, without proposing it.
+
+### How it runs each backend
+
+- **Claude Code**: one long-lived `claude -p` process with stream-json in and out, one user
+  message per wake, resumed with `--resume <session id>` after a crash or a limit (the
+  session id is in the run directory's `session.json` and the situation log). Locked down:
+  `--mcp-config` (the bridge only) with `--strict-mcp-config`, `--setting-sources project`
+  in an empty run directory outside any repository (your CLAUDE.md, hooks and plugins stay
+  out), `--tools ""` (no built-in tools), `--allowedTools "mcp__murmur__*"`,
+  `--disallowedTools Agent`, `--permission-mode dontAsk --permission-prompts none` (anything
+  else is refused, never asked), `--system-prompt-file` (`agents/watch/prompt.md` and the
+  brief), `--max-turns` per wake, `ENABLE_TOOL_SEARCH=false`, `CLAUDE_CODE_MAX_RETRIES=2`.
+  Never `--bare` (it ignores the subscription login) and never `bypassPermissions`.
+  Routine model `sonnet` at effort `medium`.
+- **Codex**: one `codex exec --json` per wake, then `codex exec resume <thread id>`, the
+  update on stdin. Locked down by `-c` configuration: `--ignore-user-config --ignore-rules
+  --strict-config`, read-only sandbox, the bridge as the only MCP server (required, its
+  tools approved and exposed directly), shell, web search, apps, plugins, sub-agents,
+  browser and computer use, image generation, goals, memories, hooks, tool suggestions,
+  skills and project docs off, the prompt as `developer_instructions`. Routine model
+  `gpt-6-luna` at reasoning effort `high`. Never `ultra` effort (it spawns sub-agents).
+- **The stronger model** (`opus` at `high`; `gpt-6.1-sol` at `high`) takes consequential
+  moments, in a fresh short consult process each time: the system prompt and the update,
+  not the routine conversation. Resuming or forking the routine session on another model
+  would send that whole conversation again, uncached, at every escalation; the consult
+  reads the picture itself (its earlier proposals are in `get_intents` with `mine`), and
+  the routine model is told what it did at its next update.
+
+### When it wakes
+
+The driver polls `get_changes` every 2 s (and, while a track is declared hostile,
+`get_nomination_options` every 15 s). The table is `TRIGGERS` in `agents/watch/wake.py`:
+
+| change | wakes | stronger model |
+|---|---|---|
+| a track declared (by an operator or the hostile-act rule) | yes | when hostile |
+| an armed platform passes every nomination check on a hostile track | yes | yes |
+| a declaration revoked; a review flag raised | yes | |
+| a new track that is suspect, unknown or hostile | yes | |
+| an affiliation estimate moving to (or from) suspicion | yes | |
+| an identity conflict (an AIS identity that does not fit what was seen) | yes | yes |
+| a vehicle's link lost | yes | on an armed platform |
+| a GPS glitch flagged by a vehicle's navigation filter | yes | yes |
+| navigation not ready, or off GNSS on anything but a submarine | yes | |
+| a failsafe; a high-severity alert | yes | |
+| one of its own proposals approved, rejected, voided, expired, failed, queued or dispatched | yes | |
+| the bridge restarted | yes | |
+
+Anything else is a note that rides along with the next update. Bursts are coalesced (3 s
+after the first waking change, at most 10 s), wakes are at least 10 s apart, a condition that
+came and went inside one batch (a 2-second link flap, an alert that cleared itself) stays a
+note, and a heartbeat wakes it every 60 s without a trigger (doubling while nothing at all
+changes, up to 300 s) so it can look for slow developments and stale proposals.
+
+### Budgets and limits
+
+`--max-wakes-per-hour` (60; an escalation is not held back by it), `--max-turns-per-wake`
+(12 tool turns), `--max-escalations` (6 a run), `--max-wakes` (400 a run), and for Claude
+`--max-budget-usd` (the CLI's own cost estimate, summed across restarts; on a subscription it
+is an estimate, not a bill). `--turn-timeout-s` (300) interrupts a turn that runs long.
+
+Neither CLI waits for a usage limit to reset. Claude Code ends the turn with "You've hit
+your session limit · resets 3:45pm" (weekly, Opus and Sonnet variants too) and its stream's
+`rate_limit_event` gives the exact reset; Codex fails the turn with "You’ve hit your usage
+limit. Try again at 3:42 PM." (or a date, or "later"). The driver logs `limit.hit` with the
+parsed reset and, with `--on-limit wait` (the default), sleeps until the reset plus a minute
+when that comes before `--until`, then resumes the session; otherwise it stops. A limit on
+the stronger model only sends later escalations to the routine model until its reset.
+
+### The situation log
+
+One JSON object per line (`--situation-log`, appended; the situation framework may write
+its own lines to the same file, ours have `"source": "watch_officer"`). Every line has `t`,
+`iso`, `run` and `kind`; `agents/watch/situation.py` lists the kinds. The ones to read:
+
+- `wake`: `n`, `reason` (start, changes, heartbeat), `why`, `escalated`, `model`, `text`
+  (exactly what the model was told) and `changes` (the records behind it);
+- `turn`: `n`, `model`, `tool_calls` (name, input, a result excerpt, `is_error`), `text`
+  (its note for the operator), `proposed` (intent ids), `usage`, `cost_usd`, `duration_s`,
+  `stop` (success, max_turns, timeout, limit, budget, error);
+- `shadow`, `limit.hit`, `limit.resume`, `backend.crashed`, `backend.restart`,
+  `budget.deferred`, `budget.exhausted`, `run.start`, `run.stop`.
+
+```
+jq -c 'select(.kind=="turn") | {n, model, stop, proposed, text: .text[:160]}' logs/situation.jsonl
+jq -c 'select(.kind=="wake") | {n, reason, why, escalated}' logs/situation.jsonl
+```
+
+What the model proposed is also in the bridge's audit log as agent-sourced intents
+(`agent.action` `intent.propose` with the rationale, then the intent's own events), and
+replays like everything else.
+
+### What was checked, and how
+
+Against Claude Code 2.1.294 on a live stack (10-08): the stream-json message shape, the
+`system/init` event (session id, MCP status, the tools the model sees: only the 18
+`mcp__murmur__*` tools), `--setting-sources project` keeping the user's CLAUDE.md and hooks
+out, `dontAsk` refusing a tool outside the allow rule, `${VAR}` expansion in the MCP config's
+headers, `--max-turns` per message (an exceeded one ends that turn, the process lives), the
+stream-json interrupt (ends the turn, the process lives; SIGINT ends both), `--max-budget-usd`
+(per process, after each turn), `--resume` (same session, the conversation intact,
+`total_cost_usd` from zero again). `--safe-mode` would keep the user's settings out too,
+but it also drops the `--mcp-config` server, so it is not used. Three live smoke runs: the
+model read the picture and proposed with rationales, a killed CLI was resumed, a SIGTERM
+stopped it cleanly, and an operator's rejection woke it without a re-proposal.
+
+Codex was not run live (the CLI installed here is 0.116.0); its flags follow the 0.161.0
+documentation, and both backends are tested against stand-in CLIs (`agents/tests/`, in
+`make check`) that print the documented events, limits and crashes. No test calls a model.
+
 ## Tools
 
 Reads (every value carries `as_of` and `age_s`; vehicle facts carry `stale` against the
@@ -107,12 +276,13 @@ rules' freshness limit for that vehicle's link):
 
 | tool | what |
 |---|---|
-| `get_fleet`, `get_vehicle` | identity, platform limits and tasks, position, nav readiness and source, battery, home, link health, current task |
+| `get_fleet`, `get_vehicle` | identity, platform limits and tasks, position, nav readiness and source, the GPS glitch flag (`nav.gps_glitch`, with its age: the navigation filter rejects the fix, as a jammed or spoofed receiver looks), battery, home, link health, current task |
 | `get_platforms` | the catalog: limits, link class, `armed`, tasks per kind, fleet members |
 | `get_areas` | approved, no-go, engagement-zone and no-strike areas as `[lon, lat]` polygons |
 | `get_policy` | the risk-tier policy and rules configuration in force |
 | `get_intents` | intents of the run (filter by state, or `mine`) with checks, policy, approval, history |
-| `get_inbox` | pending approvals (why each needs a human, when it expires) and alerts |
+| `get_inbox` | pending approvals (why each needs a human, when it expires), alerts, the queue, and the identification review (`review`: rule declarations to confirm, flags, lost-contact claims; read-only) |
+| `get_changes` | what changed since a cursor, oldest first: tracks new, changed affiliation, declared, confirmed, revoked, in identity conflict, stale, dropped; review flags; vehicles joined, link lost or back, navigation changed, GPS glitch flagged; alerts raised and cleared; intents created or changed state (`mine` marks yours); vehicle events. Read-only, not logged. A digest of the views above compared between reads (any agent's read refreshes the shared feed), so a condition that came and went between two reads is not reported; `reset` after a bridge restart |
 | `get_recent_events` | vehicle events the audit log recorded: mode changes, failsafes, status text |
 | `get_satellite_passes` | imaging access windows over an area (read-only) |
 | `get_satellite_tasking_options` | ranked collection options and exclusions (read-only) |
