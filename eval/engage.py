@@ -20,18 +20,18 @@ velocity estimate: a velocity-noise follow-up is in progress in murmur-decide); 
 reports that as a scenario that did not end as designed, separately from any invariant
 violation.
 
-**Live engagement steps (a placeholder).** A storyline step `kind = "engage"` would nominate
-an armed platform against a track on the live stack through the arm's proposer (the bridge
-takes `task = "engage"` with `track`, `effect_radius_m`, `window_s`, `fallback` on
-`POST /api/intents` and the MCP `propose_intent`). What is missing is the decider: an
-engagement needs two operators with engagement authority (`MURMUR_ENGAGE_OPERATORS`), each
-asking for a picture token (`POST /api/intents/{id}/picture`) and approving with it
-(`{"token": id}`). The proxy operator approves with a plain approve, which the engine
-refuses for an engagement, so live engage steps stay skipped (`available()` is false) and
-the four specs in `eval/scenarios/engagement/` stay placeholders (`requires = ["engage"]`).
-To wire them: a second `ProxyOperator` as `op-2`, both listed in `MURMUR_ENGAGE_OPERATORS`
-(eval/stack.py), signing through the picture token; `request()` below already has the
-bridge's request shape.
+**Live engagement steps.** A storyline step `kind = "engage"` nominates an armed platform
+against a track on the live stack through the run's proposer (the bridge takes `task =
+"engage"` with `track`, `effect_radius_m`, `window_s`, `fallback` on `POST /api/intents`, and
+`track_id` for the track on the MCP `propose_intent`). An engagement needs two operators
+with engagement authority (`MURMUR_ENGAGE_OPERATORS`), each asking for a picture token (`POST
+/api/intents/{id}/picture`) and approving with it (`{"token": id}`). `eval/proxy.py`
+`EngagementSigners` does that as two scripted operators; a situation (`sim/situations/`)
+runs them in autoplay, or a person signs at the console, and its `EngageAdapter` says so
+(`signers_ready`). The evaluation's arms do not sign yet (the proxy's rule book and the
+metrics have no engagement case), so there `available()` stays false, live engage steps are
+skipped, and the four specs in `eval/scenarios/engagement/` stay placeholders (`requires =
+["engage"]`).
 """
 
 from __future__ import annotations
@@ -194,20 +194,24 @@ def load_suite(batch: Path) -> dict[str, Any] | None:
         return None
 
 
-# ---- live engagement steps (placeholder) -----------------------------------------------------
+# ---- live engagement steps -------------------------------------------------------------------
 
 
 class EngageAdapter:
-    """Live `engage` storyline steps. Not wired: see the module docstring."""
+    """Live `engage` storyline steps: the nomination, through the run's proposer. Someone must
+    be able to sign it: `signers_ready` says so (a situation's scripted signers,
+    `eval/proxy.py` `EngagementSigners`, or a person at its console). The evaluation's arms
+    leave it false, so their engage steps stay skipped placeholders (see the module
+    docstring)."""
 
-    def __init__(self, bridge: Bridge):
+    def __init__(self, bridge: Bridge, signers_ready: bool = False):
         self.bridge = bridge
+        self.signers_ready = signers_ready
 
     async def available(self) -> bool:
-        """The bridge takes engagements (Phase E), but no supervisor here can sign one yet
-        (two engagement-authority operators quoting picture tokens), so live steps are
-        skipped and recorded as such."""
-        return False
+        """The bridge takes engagements (Phase E); a nomination is worth making only where two
+        operators with engagement authority can sign it, quoting picture tokens."""
+        return self.signers_ready
 
     @staticmethod
     def request(p: dict[str, Any], uids: list[int], track: dict[str, Any]) -> dict[str, Any]:

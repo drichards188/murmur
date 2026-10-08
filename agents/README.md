@@ -76,7 +76,7 @@ and proposes one sensor orbit per new suspect or unknown track near a point, wit
 naming the facts and their ages:
 
 ```
-.venv/bin/python agents/policy_agent.py --watch 120 --near -122.478,37.818 --radius-km 4
+.venv/bin/python agents/policy_agent.py --watch 120 --near=-122.478,37.818 --radius-km 4
 ```
 
 The evaluation's real-model arm (`eval/model_agent.py`, opt-in and cost-capped; see
@@ -169,6 +169,90 @@ through a symlink is recognised. A `CLAUDE.md` or `AGENTS.md` in your home direc
 makes every run directory under your home refused (the CLI would read it), which is one
 reason the default is a temporary directory: if your `TMPDIR` is under such a home, pass
 `--run-dir` somewhere else.
+
+### In a situation: the launch contract
+
+A situation (`sim/situations/README.md`, `make situation NAME=<name> AI=...`) starts its AI as a
+subprocess once the fleet is on station (at the situation's `ai_start_s`), and stops it at the
+end of the situation (SIGTERM to its process group, SIGKILL 8 s later). The runner survives the
+AI exiting early, crashing, or never doing anything; the panel shows its status.
+
+Before the stack starts, the runner asks the chosen CLI whether it is logged in (`claude auth
+status`, JSON `loggedIn` and `authMethod`; `codex login status` where the installed Codex has
+it, else the check is skipped with a note) and keeps only yes or no and the kind of login; a
+missing or logged-out CLI stops the run there, saying how to fix it (`claude` then `/login`, or
+`codex login`) and that `AI=playbook` is the free option. Nothing falls back silently. The watch
+officer then runs its own preflight (the CLI's version and login, and for Codex the features
+check below) and, if that fails, logs `preflight.failed` with the fix and exits 2; the run goes
+on without an AI and the panel says so.
+
+`AI=claude` or `AI=codex` runs:
+
+```
+.venv/bin/python agents/watch_officer.py --backend claude|codex --url <bridge>/mcp \
+    --agent agent-watch --brief <brief file> --situation-log <path> --until <unix time> \
+    --shadow-playbook --shadow-near=<lon>,<lat> --shadow-radius-km <r> [--shadow-platform <id>] \
+    [--codex-home <dir>]
+```
+
+| argument | what |
+| --- | --- |
+| `--backend` | `claude`: the user's own Claude Code (`claude -p`); `codex`: the user's own Codex CLI (`codex exec`). Shown in the panel as "Claude" or "ChatGPT (Codex)". |
+| `--url` | the bridge's MCP endpoint (`http://127.0.0.1:<MURMUR_HTTP_PORT>/mcp`), streamable HTTP; a dev run, so the agent names itself with `X-Murmur-Agent` |
+| `--agent` | `agent-watch` (listed in the run's `MURMUR_AGENTS`) |
+| `--brief` | a Markdown file with the situation's title and brief: what a watch officer is told (appended to its system prompt). Never the director's notes, the timeline or the watch items |
+| `--situation-log` | the watch officer's own JSON-lines log ("The situation log", below): every line has `t` (unix s), `kind` and `text`, one short line for a person. The runner tails it (read-only) and shows the lines meant for a person in the panel as the AI's notes: the model's note after each turn (`turn`, shown as "note"), why it was woken (`wake`, "woken"), and its errors, waits and stop; the plumbing (`bridge.connected`, `backend.start` and the like) stays in the file, which the runner keeps with the run |
+| `--until` | unix time at which to stop on its own (the situation's end) |
+| `--shadow-*` | log what the deterministic playbook (the situation's `[playbook]` table) would have proposed at each wake, never proposing it (`shadow` lines; not shown in the panel) |
+| `--codex-home` | passed only when the user's environment sets `MURMUR_CODEX_HOME` (Setup, Codex step 3), since the runner strips every `MURMUR_*` variable from the AI's environment |
+
+The runner starts it in an empty directory of its own for this run, outside the repository and
+outside the run directory (`/tmp/murmur-<run id>-ai-*`), holding only `brief.md`;
+`--situation-log` names a file in that directory, and the runner keeps a copy with the run and
+removes the directory at the end. The watch officer's CLI then runs in a run directory of its
+own, another fresh private temporary directory, which passes the check above. Its environment
+is the runner's minus every `MURMUR_*` variable (no simulation token, no agent key from
+elsewhere), so the user's own CLI login works as it does in their shell. Its stdout and stderr
+go to `agent.log` in the run directory.
+
+**MCP only.** A situation hides things from the watch (the director's notes, the timeline to
+come, the runner's logs; with `reveal` off the bridge strips them from `GET /api/situation`
+too), and a model with a shell or file tools could read them from the checkout. So the watch
+officer runs its model with the bridge's MCP tools and nothing else, and does not start when
+it cannot (each in detail under "How it runs each backend"):
+
+- Claude: `claude -p --strict-mcp-config --mcp-config <its own config naming only the bridge's
+  /mcp as server "murmur", with the X-Murmur-Agent header> --tools "" --allowedTools
+  "mcp__murmur__*" --disallowedTools Agent --setting-sources project --permission-mode dontAsk
+  --permission-prompts none`, in its empty run directory (no built-in tools, no other MCP
+  server, no user or repository settings, nothing asked). A tool the CLI refused is logged; a
+  tool that ran stops the run.
+- Codex: `codex exec` with every feature `codex features list` shows whose name says it runs a
+  shell or a command, runs model-written code, reads or writes files, or reaches beyond the
+  bridge disabled with `--disable <name>` on every exec (`shell_tool`, `unified_exec`,
+  `js_repl`, `code_mode` and the rest: 32 of the 52 on 0.116), the list then checked to show
+  each of them off and to list `shell_tool` and `unified_exec` at all, or the backend refuses
+  to start; only the Murmur MCP server configured; an item outside the lockdown, or of a type
+  it does not know, stops the run. The read-only sandbox and the approval policy `never` stay on
+  as a second fence, but they are not MCP-only on their own: with a shell the model could
+  still run commands that read the disk.
+
+What it holds to besides: agents propose and never approve (no approve tool exists, and the
+watch policy sends its tasking to the operator); every proposal carries a rationale naming the
+facts and their ages; it reads only the MCP tools, never the bridge's HTTP API (`GET
+/api/situation` is the runner's display for the console, and the bridge serves truth to no
+agent: its evaluation hook, `MURMUR_EVAL_TRUTH`, is off in a situation). The bridge keeps an
+idle MCP session 15 minutes and Claude Code holds none (below), so a quiet watch keeps its
+tools; the runner's own scripted agents connect per act. With `REVEAL=1` the director's notes
+and the timeline to come are on the bridge for anyone who asks, so a run with `REVEAL=1` and a
+model AI is marked "not evidence about the AI (truth was served on the bridge)" in
+`situation.jsonl`, the panel and the summary. What it did is in the audit log (`agent.action`,
+then its intents' own events), which the panel reads too.
+
+`AI=playbook`: `agents/policy_agent.py --url <bridge>/mcp --agent agent-planner --watch <seconds
+to the end> --near=<lon>,<lat> --radius-km <r> --every <s> [--platform <id>]` from the
+situation's `[playbook]` table (deterministic, no model, no account; shown as "Playbook
+(deterministic)"). `AI=none`: no AI ("None").
 
 ### How it runs each backend
 
@@ -343,10 +427,11 @@ the routine model until its reset.
 
 ### The situation log
 
-One JSON object per line (`--situation-log`, appended; the situation framework may write
-its own lines to the same file, ours have `"source": "watch_officer"`). Every line has `t`,
-`iso`, `run`, `kind` and `text`, one short line for a person (the situation runner shows
-`{t, kind, text}` in the console's Situation panel); `agents/watch/situation.py` lists the
+One JSON object per line (`--situation-log`, appended; every line has `"source":
+"watch_officer"`). Every line has `t`, `iso`, `run`, `kind` and `text`, one short line for a
+person; the situation runner shows the lines meant for a person in the console's Situation
+panel (`PANEL_KINDS` in `eval/situation_run.py`: the model's note after each turn, why it was
+woken, errors, waits, limits, its start and stop). `agents/watch/situation.py` lists the
 kinds. The ones to read:
 
 - `wake`: `n`, `reason` (start, changes, heartbeat), `why`, `escalated`, `model`, `update`

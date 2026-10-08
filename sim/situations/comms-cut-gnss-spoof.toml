@@ -1,0 +1,12 @@
+# TODO: a stub. Only the title and the brief are written; the fleet, contacts, events (a
+# jammer at the Gate, sim/link-events/golden-gate.toml, and a spoofed GNSS on one of our
+# aircraft, sim/events/golden-gate-gnss.toml), opening orders, timeline and watch items come
+# once the AI watch officer lands. The runner refuses a stub (`todo = true`).
+title = "Comms cut and GNSS spoof"
+brief = """
+You have the watch at the Golden Gate. Intelligence reports possible radio jamming and GNSS
+interference in the area this morning. Keep our vehicles safe and on task, judge what the C2
+can and cannot tell you about a vehicle it no longer hears or whose position may be wrong, and
+decide on the AI watch officer's proposals with that in mind.
+"""
+todo = true

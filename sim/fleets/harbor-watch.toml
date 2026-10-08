@@ -1,0 +1,41 @@
+# Harbor watch (sim/situations/harbor-watch.toml): four stand-ins keeping the Golden Gate
+# under watch. Stand-ins only, so the situation starts in seconds and needs no ArduPilot build.
+# Every unit is inside the operator's approved area (sim/areas/golden-gate.geojson) at its
+# station. The Pumas talk over line of sight to the ground station at Crissy Field
+# (sim/links.toml): a Puma at its 80 m behind the Marin Headlands (off Kirby Cove, say) or
+# south of the strait west of the bridge (behind the Presidio bluffs) loses its link in the
+# terrain shadow, and after 5 s its own lost-link failsafe sends it home. HUNTER 1 and REAPER 1
+# talk over SATCOM.
+#
+# Every platform here has an endurance figure in sim/platforms.toml, so the C2 can check
+# reserves and the opening orders open the watch without a decision (a corsair or an fvr90 has
+# none: reserves unverified, and every order for one waits for a person).
+#
+# uids follow the unit order (sim/swarm.py): 1 HUNTER 1, 2 REAPER 1, 3 PUMA 1, 4 PUMA 2. The
+# situation's opening orders select them by callsign: HUNTER 1 patrols the channel east of the
+# bridge, REAPER 1 orbits wide over the bay entrance west of it, PUMA 2 orbits on station off
+# Lime Point, and PUMA 1 stays in reserve west of the bridge (the sensor the playbook AI tasks:
+# its `[playbook] platform = "puma"` takes the first ready Puma, which is this one; from there
+# its way to anything at the entrance stays clear of the south tower's no-go box).
+#   make situation NAME=harbor-watch            (or make up FLEET=harbor-watch, no situation)
+title = "Harbor watch: four stand-ins at the Gate"
+
+[[unit]]
+platform = "seahunter"                 # sensor ship (MUSV): radar 40 km, EO/IR 15 km, AIS 50 km; 1000 h
+sim = "standin"
+spawn = [37.8200, -122.4660, 0, 270]   # east of the bridge, mid-channel
+
+[[unit]]
+platform = "mq9b"                      # MALE ISR: EO/IR 40 km, radar 100 km; the wide eye over the entrance; 35 h
+sim = "standin"
+spawn = [37.8150, -122.4950, 3000, 270] # west of the bridge, airborne at 3000 m
+
+[[unit]]
+platform = "puma"                      # EO/IR 4 km, in reserve (the AI's sensor); 2.5 h
+sim = "standin"
+spawn = [37.8210, -122.4930, 120, 270] # west of the bridge, mid-strait, airborne
+
+[[unit]]
+platform = "puma"                      # EO/IR 4 km, on station north of the Gate; 2.5 h
+sim = "standin"
+spawn = [37.8240, -122.4680, 120, 0]   # east of the bridge, off Lime Point, airborne

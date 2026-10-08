@@ -703,6 +703,59 @@ fn the_simulation_channel_takes_only_its_stacks_token() {
     assert!(closed.sim_token_ok(&with("test-token")).is_err());
 }
 
+/// Review B2: only vehicles heard within their link's stale age are sensors. A link's last
+/// packet is on the wall clock; compared with the monotonic clock every vehicle ever heard
+/// counted as live, and in a comms cut a dead-link vehicle kept detecting from its last
+/// position.
+#[test]
+fn a_vehicle_silent_past_its_stale_age_senses_nothing() {
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    use crate::link::{LinkStats, Transmit};
+    use crate::vehicle::{Identity, VehicleCell};
+    use crate::world::{Config, World};
+
+    struct NoTx;
+    impl Transmit for NoTx {
+        fn send(&self, _: &crate::mav::MavMessage) {}
+        fn send_raw(&self, _: &[u8]) {}
+        fn port(&self) -> u16 {
+            0
+        }
+    }
+    let world = World::new(Config {
+        base_port: 0,
+        http_port: 0,
+        default_ports: 0,
+        manifest: PathBuf::from("/nonexistent/fleet.json"),
+        platforms: PathBuf::from("/nonexistent/platforms.toml"),
+        root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."),
+    });
+    let wall = crate::clock::wall();
+    let mono = crate::clock::mono();
+    // uid 1 heard just now, uid 2 last heard a minute ago (a corsair: radar, EO/IR, AIS)
+    for (uid, heard) in [(1u64, wall), (2, wall - 60.0)] {
+        let mut stats = LinkStats::default();
+        stats.on_packet(0, mono, heard);
+        let mut m = serde_json::Map::new();
+        m.insert("platform".into(), serde_json::json!("corsair"));
+        m.insert("callsign".into(), serde_json::json!(format!("MARLIN {uid}")));
+        let cell = Arc::new(VehicleCell::new(
+            uid,
+            uid as u8,
+            Arc::new(NoTx),
+            Arc::new(Mutex::new(stats)),
+            Some(Arc::new(Identity::from_manifest(&m))),
+        ));
+        cell.write(|v| v.pos = Some((37.82, -122.466)));
+        world.insert_vehicle(cell);
+    }
+    let tracks = Tracks::new(catalog(), settings());
+    let uids: Vec<_> = tracks.observers(&world).iter().map(|o| o.uid).collect();
+    assert_eq!(uids, vec![1], "the silent vehicle is no sensor");
+}
+
 // The tracker's uncertainty against truth, and a keep-out's hold a minute ahead, old filter
 // against new: `tests/calib.rs`.
 

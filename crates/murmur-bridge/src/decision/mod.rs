@@ -1381,6 +1381,49 @@ impl Decision {
         out
     }
 
+    /// `POST /api/intents/preview`: an operator's dry run of a vehicle task, the checks and the
+    /// policy decision it would get now; nothing is created and nothing is logged
+    /// ([`murmur_decide::Engine::dry_run_for_operator`]). `would_reach` is `approved` (and
+    /// `submission_authorizes` true) where the operator's own submission would be the approval:
+    /// a situation's runner asks before a scripted id submits an opening order, and sends such
+    /// an order to a person instead.
+    pub async fn operator_dry_run(&self, by: &Actor, req: IntentRequest) -> Result<Value, DecisionError> {
+        if !matches!(req.task.as_str(), "orbit" | "patrol" | "hold" | "rtl" | "track") {
+            return Err(DecisionError::new(
+                422,
+                "an operator's dry run takes a vehicle task (orbit, patrol, hold, rtl, track)",
+            ));
+        }
+        let fleet = self.fleet();
+        let order = TaskRequest {
+            task: req.task.clone(),
+            uids: req.uids.clone(),
+            params: req.params.clone(),
+        };
+        match TaskOrder::new(order, &fleet) {
+            Ok(_) => {}
+            Err(e @ OrderError::UnknownVehicles(_)) => {
+                return Err(DecisionError::new(404, e.to_string()));
+            }
+            Err(e) => return Err(DecisionError::new(400, e.to_string())),
+        }
+        let proposal = proposal(&req)?;
+        self.prefetch(&proposal.task, &proposal.uids).await;
+        let preview = {
+            let guard = self.lock();
+            let world = self.snapshot();
+            guard
+                .engine
+                .dry_run_for_operator(by.operator(), proposal, &world, &self.terrain.oracle())
+                .map_err(engine_err)?
+        };
+        let mut v = serde_json::to_value(&preview).unwrap_or(Value::Null);
+        v["operator"] = json!(by.operator().as_str());
+        v["submission_authorizes"] = json!(preview.would_reach == State::Approved);
+        v["note"] = json!("a dry run: nothing was created or logged");
+        Ok(v)
+    }
+
     /// A human's engagement nomination: never approved at submission (the engine's floor);
     /// it waits in the inbox for operators with engagement authority.
     async fn submit_engage(

@@ -20,6 +20,7 @@ import { ReviewSection } from './ReviewSection'
 import { isEngage } from './engage'
 import { distanceM } from './geo'
 import { reportView } from './operatorView'
+import { scriptedBadge } from './situationIds'
 import { StepUpField } from './StepUp'
 import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
 import type { LngLat, Vehicle } from './types'
@@ -259,9 +260,15 @@ function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone, eng
       <header className="ix-head">
         <strong className="ix-kind">{i.kind.toUpperCase()}</strong>
         <span className="ix-id">i{i.id}</span>
-        <span className={`ix-src ${i.source.kind}`} title={i.source.kind === 'agent' ? 'proposed by an AI agent' : 'proposed by a human operator'}>
-          {i.source.kind} {i.source.id}
-        </span>
+        {scriptedBadge(i.source.id) ? (
+          <span className="ix-src scripted" title={`${i.source.id}: a situation's script, not a person and not the AI`}>
+            {scriptedBadge(i.source.id)} {i.source.id}
+          </span>
+        ) : (
+          <span className={`ix-src ${i.source.kind}`} title={i.source.kind === 'agent' ? 'proposed by an AI agent' : 'proposed by a human operator'}>
+            {i.source.kind} {i.source.id}
+          </span>
+        )}
         <Countdown intent={i} now={now} />
       </header>
 

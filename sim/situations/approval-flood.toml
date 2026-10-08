@@ -1,0 +1,12 @@
+# TODO: a stub. Only the title and the brief are written; the fleet, contacts, the flood of
+# proposals (a `flood` step, as eval/scenarios/approval-flood.toml) under a stricter policy,
+# and watch items come once the AI watch officer lands. The runner refuses a stub (`todo =
+# true`).
+title = "Approval flood"
+brief = """
+You have the watch at the Golden Gate during a busy hour. Another station and the AI watch
+officer will put many proposals in front of you in a short time, a few of them wrong. Decide
+each on what the C2 shows you; nothing is approved unless you approve it, and a proposal you
+do not reach expires.
+"""
+todo = true

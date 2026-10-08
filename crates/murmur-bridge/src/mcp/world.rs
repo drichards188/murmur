@@ -182,13 +182,17 @@ fn vehicles(mcp: &Mcp, only: Option<&[u64]>) -> (f64, Vec<Value>) {
         .map(|o| (o.uid, o))
         .collect();
     let mut out = Vec::new();
-    // silent vehicles carry the console's estimate too (display only, said so in the view)
-    let estimates = crate::estimate::FrameContext::new(&mcp.world, now_wall);
-    for cell in mcp.world.vehicles() {
-        if only.is_some_and(|u| !u.contains(&cell.uid)) {
-            continue;
-        }
-        let link = cell.link_snapshot(now_mono);
+    // silent vehicles carry the console's estimate too (display only, said so in the view);
+    // what an estimate reads besides its vehicle is read before any vehicle's lock
+    let cells: Vec<_> = mcp
+        .world
+        .vehicles()
+        .into_iter()
+        .filter(|c| only.is_none_or(|u| u.contains(&c.uid)))
+        .collect();
+    let links: Vec<_> = cells.iter().map(|c| c.link_snapshot(now_mono)).collect();
+    let estimates = crate::estimate::FrameContext::new(&mcp.world, now_wall, &links);
+    for (cell, link) in cells.iter().zip(links) {
         let v = cell.read(|v| {
             let mut s = v.snapshot(cell.uid, cell.sysid, link, now_mono);
             s.estimate = estimates.estimate(cell.uid, v, &s.link);

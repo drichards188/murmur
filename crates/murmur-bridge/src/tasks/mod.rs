@@ -259,15 +259,18 @@ impl TaskManager {
     /// decision engine released for an approved intent (see `crate::decision`).
     pub fn dispatch(&self, order: AuthorizedOrder) -> Arc<Tasking> {
         let (intent_id, order) = order.into_parts();
-        let mut inner = self.lock();
-        inner.last_tasking += 1;
-        let tasking_id = inner.last_tasking;
+        // the vehicles are read before this manager's lock is taken, never under it: a reader
+        // holding a vehicle asks this manager (a silent vehicle's estimate, `crate::estimate`),
+        // so a vehicle read under the lock could deadlock against it
         let kinds: Vec<Option<Kind>> = order.vehicles.iter().map(|v| v.read(|s| s.kind)).collect();
         let epochs: Vec<u32> = order
             .vehicles
             .iter()
             .map(|v| v.read(|s| s.boot_epoch))
             .collect();
+        let mut inner = self.lock();
+        inner.last_tasking += 1;
+        let tasking_id = inner.last_tasking;
         let mut counts: HashMap<Option<Kind>, usize> = HashMap::new();
         let mut ops = Vec::new();
         for ((v, kind), epoch) in order.vehicles.iter().zip(&kinds).zip(&epochs) {
@@ -340,18 +343,19 @@ impl TaskManager {
     /// keeps orbiting) and still in the mission's mode: (center [lon, lat], radius m with
     /// the tolerance it counts as on station within). None otherwise.
     pub fn orbit_of(&self, v: &VehicleCell) -> Option<([f64; 2], f64)> {
-        let params = {
+        // this manager's lock is released before the vehicle is read (see `dispatch`)
+        let (boot_epoch, params) = {
             let inner = self.lock();
             let op = inner.active.get(&v.uid)?;
-            if op.task != TaskKind::Orbit
-                || op.state() != OpState::Done
-                || v.read(|s| s.boot_epoch) != op.boot_epoch
-            {
+            if op.task != TaskKind::Orbit || op.state() != OpState::Done {
                 return None;
             }
             let tasking = op.tasking;
-            inner.taskings.iter().find(|t| t.id == tasking)?.params.clone()
+            (op.boot_epoch, inner.taskings.iter().find(|t| t.id == tasking)?.params.clone())
         };
+        if v.read(|s| s.boot_epoch) != boot_epoch {
+            return None;
+        }
         let center = params.center?;
         v.read(|s| {
             let caps = caps::caps(s.kind?)?;

@@ -213,11 +213,12 @@ as designed or broke an invariant (`--keep-logs` keeps all; a run is determinist
 same seed and noise write it again). A designed end that stops holding at high noise is
 reported apart from an invariant violation.
 
-Live engagement steps (`kind = "engage"` in a storyline) are still a placeholder: the bridge
-takes nominations, but no supervisor here signs one yet (two operators with engagement
-authority, each quoting a picture token). The four specs in `scenarios/engagement/` stay
-skipped (`requires = ["engage"]`) until the proxy can sign; `eval/engage.py` says what is
-missing.
+Live engagement steps (`kind = "engage"` in a storyline) are still a placeholder in the
+evaluation's arms: the bridge takes nominations, and `eval/proxy.py` `EngagementSigners` can
+sign one as two scripted operators with engagement authority, each quoting a picture token
+(situations use it, `sim/situations/README.md`), but the proxy's rule book and the metrics have
+no engagement case yet, so no arm signs. The four specs in `scenarios/engagement/` stay skipped
+(`requires = ["engage"]`); `eval/engage.py` says what is missing.
 
 ### Identification: rule against manual (rules 9)
 

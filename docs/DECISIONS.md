@@ -833,6 +833,102 @@ group. Dates are 2026.
 
 ## Evaluation (Phase G)
 
+- **Situation status is display only: outside the decision engine and the audit chain** (10-08,
+  situations v1; `crates/murmur-bridge/src/situation.rs`, `sim/situations/README.md`). A
+  situation (`make situation NAME=<name>`) is a pre-built run to watch: a stack, opening orders,
+  an AI, a timeline. Its runner posts one status document to `POST /api/sim/situation` (the
+  stack's own simulation token, the same guard as `/api/sim/contacts`, checked before the body
+  is read) and the console shows it from `GET /api/situation`. The bridge keeps it in memory and
+  nowhere else: no reference to it from the decision engine, the world snapshot, the tracks or
+  the MCP tools, and nothing of it in the audit log (a test posts one and finds the log, the
+  intents, the state, the tracks and the inbox unchanged). Why: the document may carry truth (the
+  director's notes, the timeline still to come, a step that says what a contact really is), and
+  truth must not leak into a decision: a decision made on what the sensors never gave could not
+  be replayed as the engine's, and an agent that read it would be reading the answer. The audit
+  chain is what the engine decided on; a display aid is not that, so the runner keeps its own
+  record (`logs/situations/<run>/situation.jsonl`). The token, because only the stack's own
+  runner should write what the console presents as the situation. Blinding is the bridge's, not
+  only the runner's (10-08 review, B3): unless the document says `reveal: true` (exactly) the
+  bridge keeps only the top-level keys a blinded panel shows (an allowlist, round two), of the
+  timeline only what is done, and no timeline entry or watch item whose `director` is anything
+  but `false`, whatever the runner sent; `phase_detail` and `problems` stay as strings and carry
+  only the runner's fixed messages. Watch items without that mark appear as they come due, so
+  they say what to look at, never what it is. `GET /api/situation` is open on the
+  local port like every other read, so the AI is kept from it, and from the checkout, by how it
+  runs: MCP tools only (Claude `--strict-mcp-config`, `--tools ""`, `--allowedTools
+  "mcp__murmur__*"`, `--setting-sources project`; Codex a read-only sandbox, approvals never),
+  started in an empty directory of its own outside the repository holding only the brief, with
+  no `MURMUR_*` variable. A revealed run puts truth on the bridge for anyone who asks, so with a
+  model AI it is marked "not evidence about the AI (truth was served on the bridge)" in
+  `situation.jsonl`, the panel and the summary.
+- **A situation's scripted operators sign as the engine requires, and never count** (10-08,
+  situations v1; `eval/proxy.py` `EngagementSigners`). In autoplay the evaluation's proxy model
+  decides as `op-auto` and two scripted operators, `op-2` and `op-3`, sign engagement
+  nominations: each asks for the picture and quotes its token, reads the nomination again (from
+  the inbox, where its engagement view is served) just before it signs, distinct signers, never
+  the proposer, only while the engine's live picture of the nomination passes, never a refusal
+  (a script, not a judgment). Live, the person signs; with `cosigner = "scripted"` a scripted
+  operator adds only a second signature: after a signer who is not one of them, on a plan that
+  signer froze (its picture token says `frozen`; a token on no frozen plan, the signatures reset
+  meanwhile, would make it the first), at most once per nomination. Situations run as dev
+  runs for now (the runner refuses `MURMUR_AUTH=credentials`): a dev run has no `scripted` mark
+  on the roster, so the runner records which ids it drove (`situation.jsonl`) and every note they
+  leave in the audit log says "scripted ... not a person"; a dev run is never evidence about
+  people in any case ("Harness-held credentials are scripted, not people" holds as is). The
+  evaluation's arms do not sign yet (their rule book and metrics have no engagement case), so
+  `eval/scenarios/engagement/` stay placeholders.
+- **In a situation op-1 is only the person, and a script never authorizes a human tier** (10-08
+  review, R-H1, R-H2, R-M5; `eval/situation_run.py`, `POST /api/intents/preview`). Situations v1
+  issued the opening orders as `op-1` and ran the autoplay model as `op-1`, so a log could show
+  the person authorizing what a script did: two Harbor watch orders were approved at submission
+  by "op-1" (`endurance-unknown`, a human tier whose submitter authorizes). Now every scripted
+  act has its own id (`op-setup` for the opening orders, `op-auto` for the autoplay model,
+  `op-2`/`op-3` signing, `op-planner` for the timeline's station, `agent-setup` and
+  `agent-scripted` for MCP proposals), listed in the run's record, and its rationale or note says
+  it is a script's. Within the current rules a human source's submission in a human tier with
+  `submitter_authorizes` is its own approval (replay flags anything else), so the runner asks
+  first: an operator's dry run (`Engine::dry_run_for_operator`; read-only, not logged, vehicle
+  tasks only). A scripted operator id submits only what the dry run says can't be its own
+  approval (`auto_approved`, or `pending_approval` in a tier whose submitter does not
+  authorize); anything else, a `rejected` dry run too (round two: a check failing on a flaky
+  terrain fetch or a fact's age may pass a moment later in a human tier), is proposed by the
+  scripted agent `agent-setup`, and waits for the person (live) or `op-auto` (autoplay). The dry
+  run and the submission are two moments, so every scripted submission's answer is checked: an
+  approval at submission by a scripted id is a loud problem and is cancelled if it has not gone
+  out. An opening order for an armed platform is refused at load. The timeline's operator
+  proposer follows the same rule in both modes, and a `declare` step is refused in live mode (a
+  script's declaration decides; the person declares). Considered: a policy key making a scripted
+  id's submission wait (a rules change for a harness concern; the agent route uses what the
+  engine already guarantees, that an agent's proposal in a human tier waits for a human).
+  Harbor watch opens in a verified state: its fleet is platforms with an endurance figure
+  (`seahunter`, `mq9b`, two `puma`), so its opening orders go out by policy; adding figures for
+  `corsair` and `fvr90` is the user's call, and until then the stand-ins say at start that they
+  simulate 10 h for a platform without one while the C2 treats its reserves as unverified.
+- **Murmur never handles anyone's model credentials; a situation runs the user's own CLI**
+  (10-08, user direction: Murmur is open source and people run it with their own Claude or
+  ChatGPT subscription). A situation's AI is `claude` (the default), `codex`, `playbook` (the
+  deterministic `agents/policy_agent.py`) or `none`. For `claude` and `codex` the runner only
+  invokes the CLI the user installed and logged into (`agents/watch_officer.py --backend
+  claude|codex`): it never stores, reads, proxies or prompts for a credential.
+  Before the stack starts it asks that CLI whether it is logged in (`claude auth status`, its
+  `loggedIn` and `authMethod`; `codex login status` where the installed Codex has it, else
+  skipped with a note) and keeps only yes or no and the kind of login, never an account, an
+  email or a key. A missing or logged-out CLI stops the run there, naming the fix (`claude` then
+  `/login`, or `codex login`) and the free option (`AI=playbook`); nothing falls back silently,
+  so a run never says it had an AI it did not have. The panel names the AI ("Claude", "ChatGPT
+  (Codex)", "Playbook (deterministic)", "None").
+- **One clock for a situation: the stack's start** (10-08, situations v1). Every `at_s` of a
+  situation (steps, watch items), its `duration_s` and `ai_start_s` count from the link
+  emulator's start, which `scripts/up.sh` starts first and the runner reads from its uptime, so
+  the existing events files (`sim/link-events/`, `sim/events/`, whose `at_s` count on the
+  emulator's clock and from the stand-ins' start) work unchanged; the contacts process starts a
+  few seconds later and its `start_s` counts from there. The evaluation instead holds every
+  process to an origin 45 s after the stand-ins start and fails a run not ready by then; a
+  situation goes through `up.sh`, which starts the contacts and the stand-ins itself, and a demo
+  is better started a little late than failed, so the runner waits for readiness, issues the
+  opening orders, runs steps that fell due meanwhile at once, and records when everything
+  happened.
+
 - **Rule against manual identification is measured on generated situations, and what it
   can and cannot say is stated** (10-05, rules 9; rebuilt after the first review found the
   first comparison circular, and its wording corrected after the second). `python -m eval.run
@@ -1087,6 +1183,33 @@ group. Dates are 2026.
   list and showed the model no Murmur tool at all (connected, zero tools). Set to five
   minutes and private on the tool, resource and template lists, which never change while
   the bridge runs; older clients ignore the fields.
+- **Nothing reads a vehicle under the task manager's lock or the water tracks' lock** (10-08,
+  found live by a situation run; no rules change). A silent vehicle's estimate
+  (`crate::estimate`, for the console feed and MCP `get_fleet`) holds that vehicle's lock while
+  it asks the task manager what the vehicle was ordered (`FrameContext::ordered`) and reads its
+  drift track (`water_track`). `TaskManager::orbit_of` (the decision snapshot, every second and
+  every decision) and `TaskManager::dispatch` read vehicles under the task manager's lock, and the
+  water sampler read vehicles under the water tracks' lock: two lock-order inversions. With a
+  drone in a terrain shadow (silent, so estimated four times a second) the bridge deadlocked
+  within two minutes: every HTTP worker blocked, the console and agents frozen, TERM ignored.
+  Now the task manager and the sampler read vehicles before or after their own lock, never
+  under it; the values read are the same.
+  `tasks::tests::the_task_manager_never_reads_a_vehicle_under_its_lock` deadlocks on the code
+  before (a reader holding the vehicle asks the task manager while `orbit_of` and a dispatch
+  read it) and passes after. Then (10-08 review, B4) the vehicle lock became a leaf among the
+  state locks (task manager, drift tracks, terrain), so no order among them is needed; it still
+  takes the clock's and a relay's link locks, which are leaves. A frame (`push::build_frame`, MCP
+  `get_fleet`) reads every link first, and when one vehicle is silent builds its `FrameContext`
+  (what each vehicle was ordered, the fresh drift tracks) before any vehicle's lock; the estimate
+  under the vehicle lock takes none of those, and the estimator's configuration is loaded at
+  startup (`estimate::init`), not first under a vehicle's lock. The same review found the terrain
+  cache taking its error lock under its cache lock in one place and the reverse in another (B1);
+  each is now taken and released alone. The tests deadlock on the code before and pass after.
+  They are bounded: each waits 10 s and fails, and the drift tracks are the world's
+  (`World::water`), not a process global, so a failed test's stuck threads hold only its own
+  world's locks and the tests after it run (checked by putting each old order back: one test
+  fails in 10 s, the other 19 in `estimate::tests` pass, serially too).
+
 - **A space answer is held to when it was computed; a re-check to the instant it judged; the
   pin to the run** (10-07, murmur-der.4, murmur-lsj; rules 13 `SPACE_REPLAY_SINCE`). The
   engine took a collect's answer prepared outside its lock only within 5 s of the check, but

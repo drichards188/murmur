@@ -1,0 +1,120 @@
+# Harbor watch traffic (sim/situations/harbor-watch.toml): ordinary traffic at the Golden Gate
+# and one unknown fast boat. Run by crates/murmur-contacts; format in
+# crates/murmur-contacts/src/scenario.rs. Points are [lon, lat]. Routes and identities as in
+# sim/scenarios/golden-gate.toml (fictional names and MMSIs). Everything here is truth: the
+# console and the AI only ever see what our sensors make of it.
+#
+# Times (`start_s`) count from the contacts process's start, which scripts/up.sh starts with
+# the bridge, a few seconds after the link emulator: a situation's clock (its `at_s`) counts
+# from the emulator's start, so a contact appears a few seconds after the same number on the
+# situation's clock.
+#
+# The ordinary traffic all carries AIS (neutral, named), so the one track without it near the
+# Gate stands out; a sport fishing boat without AIS drifts off Mile Rock, 5 km from the bridge,
+# as a distractor (a small craft not required to carry AIS: shown neutral once classified).
+title = "Harbor watch traffic"
+seed = 11
+
+[sensing]
+misclassification_rate = 0.02
+
+# ---------------------------------------------------------------- ferries (AIS, neutral)
+[[contact]]
+id = "ferry-sausalito"
+name = "Sausalito ferry (Ferry Building to Sausalito)"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 10
+motion = "route"
+route = [[-122.3905, 37.7960], [-122.4120, 37.8130], [-122.4400, 37.8220], [-122.4620, 37.8390], [-122.4770, 37.8560]]
+reverse = true
+dwell_s = 600
+ais = { mmsi = "366999101", name = "MV GOLDEN BEAR", ship_type = "passenger" }
+
+[[contact]]
+id = "ferry-larkspur"
+name = "Larkspur ferry (Ferry Building to Larkspur via Raccoon Strait)"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 12
+motion = "route"
+route = [[-122.3905, 37.7960], [-122.4120, 37.8180], [-122.4170, 37.8380], [-122.4500, 37.8600], [-122.4480, 37.8740], [-122.4700, 37.8880], [-122.4950, 37.9300], [-122.5070, 37.9440]]
+reverse = true
+dwell_s = 600
+ais = { mmsi = "366999102", name = "MV MARIN CREST", ship_type = "passenger" }
+
+# ---------------------------------------------------------------- shipping lane (AIS, neutral)
+[[contact]]
+id = "cargo-inbound"
+name = "Container ship inbound to Oakland"
+affiliation = "neutral"
+domain = "surface"
+kind = "cargo_ship"
+speed_mps = 7
+motion = "transit"
+route = [[-122.5600, 37.7900], [-122.5100, 37.8060], [-122.4790, 37.8180], [-122.4300, 37.8360], [-122.4000, 37.8220], [-122.3830, 37.8030], [-122.3550, 37.8080], [-122.3420, 37.8100]]
+ais = { mmsi = "366999201", name = "MSC AURELIA", ship_type = "cargo" }
+
+[[contact]]
+id = "cargo-outbound"
+name = "Bulk carrier outbound from Richmond"
+affiliation = "neutral"
+domain = "surface"
+kind = "cargo_ship"
+speed_mps = 6
+motion = "transit"
+route = [[-122.4100, 37.9200], [-122.4150, 37.8780], [-122.4200, 37.8450], [-122.4600, 37.8260], [-122.4790, 37.8170], [-122.5500, 37.7950], [-122.6800, 37.7500]]
+ais = { mmsi = "366999202", name = "PACIFIC HARVESTER", ship_type = "cargo" }
+
+# ---------------------------------------------------------------- fishing
+[[contact]]
+id = "fishing-wharf"
+name = "Trawler from Fisherman's Wharf to the grounds (AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+speed_mps = 5
+motion = "route"
+route = [[-122.4150, 37.8120], [-122.4600, 37.8230], [-122.4790, 37.8190], [-122.5500, 37.7800]]
+reverse = true
+dwell_s = 900
+ais = { mmsi = "366999301", name = "F/V ANNA MARIE", ship_type = "fishing" }
+
+[[contact]]
+id = "fishing-milerock"
+name = "Sport fishing boat drifting off Mile Rock (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+motion = "drift"
+at = [-122.5200, 37.7850]
+
+# ---------------------------------------------------------------- not ours but friendly
+[[contact]]
+id = "uscg-cutter"
+name = "Coast guard patrol boat on station in the central bay (AIS)"
+affiliation = "assumed_friend"
+domain = "surface"
+kind = "patrol_boat"
+speed_mps = 6
+motion = "loiter"
+center = [-122.4350, 37.8200]
+radius_m = 1200
+ais = { mmsi = "366999401", name = "CGC TERN", ship_type = "law_enforcement" }
+
+# ---------------------------------------------------------------- the unknown
+# Comes in from the west at about 2:30 on the situation's clock, at 15 m/s (29 kn), no AIS,
+# no lights, and holds 1.5 km west of the bridge from about 6:10. Nothing hostile happens: the
+# situation is the detection, the AI's proposal and who decides on it.
+[[contact]]
+id = "fastboat-west"
+name = "Fast boat without AIS, in from the west, holding west of the bridge"
+affiliation = "unknown"
+domain = "surface"
+kind = "small_fast_boat"
+speed_mps = 15
+motion = "transit"
+route = [[-122.5300, 37.8030], [-122.5100, 37.8090], [-122.4950, 37.8120]]
+start_s = 150

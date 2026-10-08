@@ -18,6 +18,10 @@ meaningful. Decision and command, not weapons.
 
 - `make goldengate` runs the default fleet (one of each of 22 platform types) at the Golden
   Gate with tidewater conditions; `make up FLEET=<name>` for other fleets; `make down` stops.
+  `make situation NAME=harbor-watch [OPERATOR=live|autoplay] [AI=claude|codex|playbook|none]`
+  runs a pre-built situation (`sim/situations/README.md`): fresh station, opening orders, the AI
+  through the user's own CLI (never their credentials), a Situation panel; it refuses ports a
+  stack answers on, and leaves its stack up for `make down`.
   Console http://127.0.0.1:5173, bridge http://127.0.0.1:8765 (`/api/state`, `/api/tasks`,
   `/api/platforms`, `/api/stats`; MCP server for agents at `/mcp`, header `X-Murmur-Agent`,
   ids in `MURMUR_AGENTS`, or `Authorization: Bearer <key>` in a credentials run;
@@ -67,6 +71,8 @@ meaningful. Decision and command, not weapons.
   `MURMUR_LINKEMU_PORT`, `MURMUR_HTTP_PORT`, `MURMUR_WEB_PORT`, `MURMUR_TIDEWATER_PORT`,
   `MURMUR_SITL_INSTANCE_BASE` (header of `scripts/up.sh`). `MURMUR_WEB_PORT` also tells the
   bridge which console origin to accept; the session cookie is named per HTTP port.
+  `make situation` has its own block (UDP 33000+ and 34000+, bridge :9265, linkemu :9266,
+  console :5673, tidewater :9270, SITL from instance 160; each variable overrides one).
 
 ## Gotchas (each cost real time)
 
@@ -104,10 +110,15 @@ meaningful. Decision and command, not weapons.
   ports from its base). A bridge that finds a port taken drops it for good.
 - Keep fixed port bases (vehicle, bridge) below the ephemeral range: stand-ins and clients draw
   from it, and a fixed base inside it collides at random. It can change between boots: check
-  `sysctl net.ipv4.ip_local_port_range` (37795-41890 as of 2026-10-04; was 39160-43255).
+  `sysctl net.ipv4.ip_local_port_range` (39160-43255 as of 2026-10-08; was 37795-41890 on 10-04).
 - Eval stacks own UDP 35000-36999 and HTTP 10600-10699 (`eval/ports.py`, fixed): keep other
   live stacks off them. Each eval run starts as a fresh station (`eval/stack.py` removes the
   bridge's `.last-run-<port>` before and after; `run.json` `restore_carry`, murmur-kvb).
+- Situations (`sim/situations/README.md`): `op-1` is the person, never a script; scripted ids
+  are `op-setup`, `op-auto`, `op-2`, `op-3`, `op-planner`, `agent-setup`, `agent-scripted`.
+  op-setup submits only what its dry run (`POST /api/intents/preview`) says is auto or waits for
+  someone else; the rest goes through agent-setup to the inbox. The AI starts in an empty temp
+  dir, MCP tools only.
 - Rules 5 queue: an order for a vehicle the link can't carry it to now waits in the Queue
   (console button; `GET /api/inbox` `queued`), it is not an error; one whose link drops
   before the vehicle started it comes back there (`intent.requeued`). A human's approval is
