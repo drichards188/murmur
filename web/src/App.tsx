@@ -33,6 +33,7 @@ import { buildOrderLayers } from './orderLayers'
 import { noteFocusedIntent, noteTrackViewed } from './operatorView'
 import { refreshAuth, useAuth } from './auth'
 import { EnrollScreen, LoginScreen, OperatorBadge } from './Login'
+import { SituationPanel } from './SituationPanel'
 
 function useUtcClock() {
   const [now, setNow] = useState(() => new Date())
@@ -431,6 +432,10 @@ export default function App() {
           layers={mapLayers}
           clusters={state?.clusters ?? null}
         />
+        </ErrorBoundary>
+        {/* a situation runner's status (make situation): shown only while one has posted it */}
+        <ErrorBoundary name="Situation" className="floating">
+          <SituationPanel decisions={decisions} />
         </ErrorBoundary>
         {showGlobe && (
           <ErrorBoundary name="Globe" className="floating">
