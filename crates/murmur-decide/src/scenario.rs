@@ -1376,7 +1376,7 @@ pub fn run(
         }
         // the timeline: first the drops that were not yet due (each comes once the tracker's
         // drop age has passed by the run's clock, as the tracker's own would), then the steps
-        let due: Vec<Action> = std::mem::take(&mut extra.drops_due).into_iter().map(|track| Action::DropTrack { track }).collect();
+        let due: Vec<Action> = extra.drops_due.keys().map(|track| Action::DropTrack { track: track.clone() }).collect();
         for action in due.iter().chain(sc.steps.iter().filter(|st| st.at_s == s).map(|st| &st.action)) {
             act(
                 action,
@@ -1525,6 +1525,14 @@ pub fn run(
                 verified: 0,
             });
         }
+    }
+
+    // rules 16: a drop still waiting for the tracker's drop age (a track that never went silent,
+    // or not long enough before the end) never happened: the run did not play as written
+    for (track, at) in &extra.drops_due {
+        failures.push(format!(
+            "t={at}: drop_track {track} never came: by the end of the run the track had not gone {TRACK_DROP_S} s without a detection (the tracker's drop age)"
+        ));
     }
 
     // the outcome
@@ -2573,13 +2581,17 @@ fn act(
             // the tracker's drop: its facts now, as the bridge hands them (the estimate only)
             let w = world(tracks, vehicles);
             let Some(facts) = w.tracks.get(track).cloned() else {
+                extra.drops_due.remove(track);
                 return failures.push(format!("t={s}: drop_track: unknown track {track}"));
             };
             // the tracker drops a track once it has gone its drop age without a detection by its
-            // own clock: a step sooner than that (a clock that steps back) waits until it has
+            // own clock: a step sooner than that (a clock that steps back) waits until it has,
+            // keeping the second of its step (the run fails if it never comes)
             if engine.policy().rules.lost_contacts() && (now.ms_since(facts.last_seen_t) as f64) < TRACK_DROP_S * 1000.0 {
-                return extra.drops_due.push(track.clone());
+                extra.drops_due.entry(track.clone()).or_insert(s);
+                return;
             }
+            extra.drops_due.remove(track);
             let ais = w.track_ais.get(track).cloned();
             tracks.remove(track);
             if let Err(e) = engine.record_track_drops(vec![(track.clone(), facts, ais)]) {
@@ -2938,8 +2950,9 @@ struct Extra {
     claimed: Vec<String>,
     reinstated: Vec<String>,
     /// Rules 16: the tracks a `drop_track` step asked to drop before the tracker's drop age had
-    /// passed by the run's clock (a clock that steps back), dropped once it has.
-    drops_due: Vec<String>,
+    /// passed by the run's clock (a clock that steps back), dropped once it has, each with the
+    /// second of its step; one still waiting at the end of the run fails it.
+    drops_due: BTreeMap<String, u32>,
 }
 
 impl Extra {

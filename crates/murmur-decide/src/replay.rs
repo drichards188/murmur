@@ -4685,6 +4685,20 @@ fn replay_inner<S: AsRef<str>>(
                 if facts.position.t > e.t {
                     bad(&mut r, e, None, "a track dropped with a fix from after the drop", json(&facts.position.t), json(&e.t));
                 }
+                // the tracker dates its last fix when it last saw the track (`last_seen_t`): a fix
+                // after that is no fix the tracker had (the review of the merged branch's second
+                // pass: a fix at 179 s on a track last seen at 0 s passed the drop age, and the
+                // keep-out reads the fix)
+                if facts.position.t > facts.last_seen_t {
+                    bad(
+                        &mut r,
+                        e,
+                        None,
+                        "a track dropped with a fix after it was last seen",
+                        json(&facts.position.t),
+                        json(&facts.last_seen_t),
+                    );
+                }
                 // an id is dropped once (the tracker never reuses one)
                 if lost.holds(track) {
                     bad(&mut r, e, None, "a track dropped twice (the tracker drops an id once)", track.clone(), String::new());
@@ -4725,18 +4739,27 @@ fn replay_inner<S: AsRef<str>>(
                         );
                     }
                 }
-                // rules 16: no sooner than the tracker drops a track (the run's drop age)
-                if let Some(drop_s) = track_drop_s
-                    && (e.t.ms_since(facts.last_seen_t) as f64) < drop_s * 1000.0 - 1.0
-                {
-                    bad(
+                // rules 16: no sooner than the tracker drops a track (the run's drop age), counted
+                // from the later of its last sighting and its fix; a run with drops logs the age
+                let seen = facts.last_seen_t.max(facts.position.t);
+                match track_drop_s {
+                    Some(drop_s) if (e.t.ms_since(seen) as f64) < drop_s * 1000.0 - 1.0 => bad(
                         &mut r,
                         e,
                         None,
                         "a track dropped sooner than the tracker's drop age after it was last seen",
-                        json(&(e.t.ms_since(facts.last_seen_t) as f64 / 1000.0)),
+                        json(&(e.t.ms_since(seen) as f64 / 1000.0)),
                         json(&drop_s),
-                    );
+                    ),
+                    Some(_) => {}
+                    None => bad(
+                        &mut r,
+                        e,
+                        None,
+                        "a track dropped in a run whose run.started does not log the tracker's drop age (track_drop_s)",
+                        track.clone(),
+                        String::new(),
+                    ),
                 }
                 let _ = lost.record(track, (**facts).clone(), ais.clone(), e.t);
                 pictured.dropped.insert(track.clone(), (facts.position.clone(), facts.velocity_mps));
