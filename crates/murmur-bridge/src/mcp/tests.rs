@@ -1368,13 +1368,19 @@ async fn agents_read_lost_contacts_and_no_tool_accepts_one() {
             assert_eq!(t.annotations.as_ref().and_then(|a| a.read_only_hint), Some(true), "{}", t.name);
         }
     }
-    // a nomination naming an acceptance: the field is not an agent's (ignored), and the
-    // nomination is decided without it
+    // a nomination naming an acceptance: not an agent's to give, so refused (403, as the REST
+    // path refuses it), never decided without it; nothing nominated or accepted
+    let created = r.events("intent.created");
     let mut n = nomination(2, Some("T-0001 is declared hostile and holding in ez-gate-west"));
     n["accept_lost"] = json!([{ "track": "T-0002", "since": since }]);
-    let out = r.ok(&planner(), "propose_intent", n).await;
-    assert_eq!(out["state"], "rejected", "{out}");
-    assert!(out["intent"].to_string().contains("lost contact T-0002"), "{out}");
+    let (refused, out) = r.call(&planner(), "propose_intent", n).await;
+    assert!(refused && out["status"] == 403, "{out}");
+    assert!(out["error"].as_str().unwrap_or("").contains("an agent can't accept a lost contact"), "{out}");
+    let mut n = nomination(2, Some("T-0001 is declared hostile and holding in ez-gate-west"));
+    n["accept_unknown"] = json!([{ "uid": 3, "since": null }]);
+    let (refused, out) = r.call(&planner(), "propose_intent", n).await;
+    assert!(refused && out["status"] == 403, "{out}");
+    assert_eq!(r.events("intent.created"), created, "nothing nominated");
     assert_eq!(r.events("engage.accepted"), 0, "nothing accepted");
     let rep = r.replays();
     assert_eq!(rep.lost_contacts, 1);

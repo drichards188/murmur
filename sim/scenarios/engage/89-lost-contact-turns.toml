@@ -2,19 +2,23 @@
 # 5 m/s on a steady course, goes out of sensor view; 180 s later the tracker drops its track.
 # By the effect, about 280 s after its last fix, its course would put it 1.4 km further on,
 # clear of the keep-out: the regions along its course and its average course alone let this
-# nomination through (as the first version of the lost contacts did). But nothing sees a lost contact
-# turn: it may have come back. murmur-533's measurement found exactly this, a contact last seen
-# steady and turning after its last fix, inside the keep-out line in 3 of 716 passes near the
-# target. So a lost contact also counts anywhere it reaches at its own plausible speed since
-# its last fix (its speed and 2-sigma of its velocity error: 7 m/s here), and the nomination is
-# rejected on that region (keep_out_tracks: "its own plausible speed"). A live track is not
-# counted this way (the tracker sees it turn); `--rules 14`: the dropped track is simply gone
-# and the nomination waits for its signers.
+# nomination through (as the first version of the lost contacts did). But nothing sees a lost
+# contact turn or speed up: it may have come back. murmur-533's measurement found a contact
+# last seen steady and turning after its last fix inside the keep-out line in 3 of 716 passes
+# near the target; its review found the second version's bound, the contact's own speed (its
+# speed and 2-sigma of its velocity error, 7 m/s here), a prediction too. So a lost contact
+# counts anywhere it reaches since its last fix at its domain's top speed (25 m/s on the water,
+# what a track without a velocity counts at), and the nomination is rejected on that region
+# (keep_out_tracks: "anywhere it reaches at 25.0 m/s"). A track in view is not counted this way
+# (the tracker sees it turn); `--rules 14`: the dropped track is simply gone and the nomination
+# waits for its signers. Afterwards the drop is logged twice, the second a minute later and
+# 6 km on; replay catches it (an id is dropped once).
 title = "A lost contact last seen steaming away still blocks: it may have turned"
 invariant = "keep_out_tracks"
 attack = "a ferry last seen leaving the target on a steady course goes out of view and is dropped; its course alone clears the keep-out"
 expect = "rejected"
 expect_rule = "keep_out_tracks"
+tamper = "redrop"
 end_s = 200
 
 [[operator]]

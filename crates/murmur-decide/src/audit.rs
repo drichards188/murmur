@@ -613,9 +613,10 @@ pub enum EventBody {
     /// drop time); its facts then, as the tracker handed them (the estimate, never a
     /// declaration). From here on the engine holds it as a lost contact, which every
     /// engagement's keep-out on tracks counts anywhere it could have reached since its last
-    /// fix, until a track is unambiguously it again (`track.reacquired`). Replay rebuilds the
-    /// ledger from these and checks every decision's `lost_contacts` against it, and that no
-    /// track left a decision's picture without one.
+    /// fix, until an operator confirms a track as it again (`track.reacquired`). Replay rebuilds
+    /// the ledger from these and checks every decision's `lost_contacts` against it, that no
+    /// track left a decision's picture without one, that no id is dropped twice and that a drop
+    /// carries no older fix than the decisions had seen.
     #[serde(rename = "track.dropped")]
     TrackDropped {
         track: String,
@@ -625,20 +626,57 @@ pub enum EventBody {
         ais: Option<crate::world::AisIdentity>,
     },
 
-    /// Rules 16: lost contact `track` is live track `by_track` again (an unambiguous AIS
-    /// identity, [`crate::lost::match_one`]), on the picture logged here (`tracks`, at
-    /// `world_t`, its identification filled): it is retired, and the live track counts in its
-    /// place. Replay recomputes the match from this picture and its own ledger.
+    /// Rules 16: live track `by_track` carries lost contact `track`'s AIS identity: a claim to be
+    /// it, raised once for review ([`crate::lost::claims`]), on the picture logged here
+    /// (`tracks`, its identification filled, and `track_ais`, at `world_t`), with the evidence
+    /// and what keeps it from being confirmed now (`blockers`). It changes nothing: the lost
+    /// contact counts until an operator confirms the claim. Replay recomputes it.
+    #[serde(rename = "lost.claimed")]
+    LostClaimed {
+        track: String,
+        by_track: String,
+        world_t: Time,
+        tracks: BTreeMap<String, crate::world::TrackFacts>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        track_ais: BTreeMap<String, crate::world::AisIdentity>,
+        evidence: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        blockers: Vec<String>,
+    },
+
+    /// Rules 16: an operator (`by`, under `session`; never an agent) confirmed that lost contact
+    /// `track` is live track `by_track` again, on the picture logged here (`tracks` at `world_t`,
+    /// its identification filled, and `track_ais`), with the evidence shown
+    /// ([`crate::lost::claim_of`]: nothing may contradict it): it is retired from the keep-outs
+    /// while `by_track` stands, the live track counting in its place. Replay recomputes the claim
+    /// from this picture and its own ledger, and checks the session.
     #[serde(rename = "track.reacquired")]
     TrackReacquired {
         track: String,
         by_track: String,
+        by: OperatorId,
+        session: SessionId,
         world_t: Time,
         tracks: BTreeMap<String, crate::world::TrackFacts>,
         /// The AIS identities heard for that picture's tracks.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         track_ais: BTreeMap<String, crate::world::AisIdentity>,
         evidence: String,
+    },
+
+    /// Rules 16: the confirmation of lost contact `track` as `by_track` is void
+    /// ([`crate::lost::void_reason`]: the claimant left the picture, turned suspect or hostile,
+    /// or was declared), seen at `world_t` with the claimant's facts then (none when it left
+    /// the picture): the lost contact counts again, for good. Every decision on a picture that
+    /// voids it already counted it; replay checks both.
+    #[serde(rename = "lost.reinstated")]
+    LostReinstated {
+        track: String,
+        by_track: String,
+        reason: String,
+        world_t: Time,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        facts: Option<Box<crate::world::TrackFacts>>,
     },
 
     /// Rules 6: a platform's own lost-link values owed back outside an engagement's own

@@ -231,6 +231,53 @@ impl H {
         lost[0]["since_t"].as_i64().expect("since")
     }
 
+    /// Rules 16: a nomination waiting for its signers while a fishing boat 1.5 km north of the
+    /// target is in view, then the boat out of view for 185 s: the tracker drops it and the
+    /// decision tick hands the drop to the engine. The nomination (by `op1`) and the boat's
+    /// last fix (engine ms), as an acceptance names it.
+    pub(super) async fn waiting_then_lost(&self, op1: &str) -> (u64, i64) {
+        self.e.r.vehicle(1, Firmware::Copter, "fpv", TARGET);
+        sleep(Duration::from_millis(500)).await;
+        self.e.r.clock.set(snapshot::ms(clock::wall()));
+        let boat = crate::tracks::truth::ContactTruth {
+            id: "fisher".into(),
+            name: "fishing boat".into(),
+            affiliation: crate::tracks::truth::TruthAffiliation::Neutral,
+            domain: crate::tracks::truth::Domain::Surface,
+            kind: "fishing_vessel".into(),
+            lat: TARGET.0 + 1_500.0 / 111_320.0,
+            lon: TARGET.1,
+            alt_m: 0.0,
+            speed_mps: 0.0,
+            course_deg: 0.0,
+            emits: false,
+            signature: 1.0,
+            ais: None,
+        };
+        let now = self.e.now_s();
+        for s in 0..90 {
+            self.e.sense_at_with(now - 90.0 + f64::from(s), true, std::slice::from_ref(&boat));
+        }
+        self.e.sense_at_with(now, true, std::slice::from_ref(&boat));
+        let (s, v) = self
+            .post(op1, "/api/tracks/T-0001/declare", json!({ "affiliation": "hostile" }))
+            .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        let id = self.nominate(op1).await;
+        // out of view from now on: dropped 180 s later, handed over at the tick
+        for _ in 0..185 {
+            self.e.r.clock.advance_ms(1000);
+            self.e.sense(true);
+        }
+        // the platform's heartbeats at the new time (it has not gone quiet)
+        sleep(Duration::from_millis(500)).await;
+        self.e.r.d.tick();
+        assert_eq!(self.e.r.events("track.dropped"), 1, "the boat dropped");
+        let lost = self.e.tracks.lost_json();
+        assert_eq!(lost.len(), 1, "{lost:?}");
+        (id, lost[0]["since_t"].as_i64().expect("since"))
+    }
+
     /// A nomination on the boat by whoever's cookie this is.
     pub(super) async fn nominate(&self, cookie: &str) -> u64 {
         let body = json!({
@@ -922,6 +969,37 @@ async fn accepting_a_lost_contact_steps_up_through_the_api() {
     let (s, v) = h.post(&op2, &format!("/api/intents/{id}/accept_unknown"), json!({ "track": "T-0002", "since": since })).await;
     assert_eq!((s, v["step_up"].clone()), (StatusCode::UNAUTHORIZED, json!(true)), "{v}");
     assert!(h.log().contains(&format!("\"detail\":\"i{id} accept_unknown: no password given\"")), "{}", h.log());
+    let r = h.replays_authenticated();
+    assert_eq!(r.lost_contacts, 1);
+    h.no_secret_logged(&[&op1, &op2]);
+}
+
+/// Rules 16 with rules 8's step-up, a nomination already waiting: `POST
+/// /api/intents/{id}/accept_unknown` with `{"track", "since", "password"}` takes the password with
+/// the contact (the review found it refused as an unknown field, so the acceptance could never
+/// be made where the policy steps it up): without it 401, with it the acceptance is logged under
+/// the operator's session quoting the step-up.
+#[tokio::test]
+async fn accepting_a_lost_contact_for_a_waiting_nomination_takes_the_password() {
+    let h = harness_with(Duration::from_secs(1800), &[], |p| {
+        p.approval.step_up_acts = Some(vec![murmur_decide::StepUpAct::AcceptUnknown]);
+    });
+    let op1 = h.login("op-1", PW1).await;
+    let op2 = h.login("op-2", PW2).await;
+    let (id, since) = h.waiting_then_lost(&op1).await;
+    let path = format!("/api/intents/{id}/accept_unknown");
+    let (s, v) = h.post(&op2, &path, json!({ "track": "T-0002", "since": since })).await;
+    assert_eq!((s, v["step_up"].clone()), (StatusCode::UNAUTHORIZED, json!(true)), "{v}");
+    // anything else beside the contact and the step-up is still refused
+    let (s, v) = h.post(&op2, &path, json!({ "track": "T-0002", "since": since, "password": PW2, "extra": 1 })).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert_eq!(h.e.r.events("engage.accepted"), 0, "nothing accepted");
+    let (s, v) = h.post(&op2, &path, json!({ "track": "T-0002", "since": since, "password": PW2 })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let log = h.log();
+    let accepted = log.lines().find(|l| l.contains("\"type\":\"engage.accepted\"")).expect("accepted").to_string();
+    assert!(accepted.contains(&format!("\"intent\":{id},\"contact\":\"T-0002\"")), "{accepted}");
+    assert!(accepted.contains("\"by\":\"op-2\",\"session\":") && accepted.contains("\"step_up\":"), "{accepted}");
     let r = h.replays_authenticated();
     assert_eq!(r.lost_contacts, 1);
     h.no_secret_logged(&[&op1, &op2]);

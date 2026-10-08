@@ -176,6 +176,15 @@ pub struct IntentParams {
     /// reads it in the inbox and it goes to the audit log); optional for preview_intent.
     /// Name the facts you relied on and any that were stale.
     pub rationale: Option<String>,
+    /// Not an agent's to give (not in the schema): accepting a lost vehicle or a lost contact
+    /// for an engagement is an operator's decision. Given, the request is refused (403), as
+    /// the REST path refuses it, rather than decided without it (rules 16 review).
+    #[serde(default)]
+    #[schemars(skip)]
+    pub accept_unknown: Option<Value>,
+    #[serde(default)]
+    #[schemars(skip)]
+    pub accept_lost: Option<Value>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -250,6 +259,9 @@ impl IntentParams {
             })),
         );
         put("rationale", self.rationale.map(Value::String));
+        // refused by the agent path (403), never dropped
+        put("accept_unknown", self.accept_unknown);
+        put("accept_lost", self.accept_lost);
         serde_json::from_value(Value::Object(body)).map_err(|e| format!("bad arguments: {e}"))
     }
 }

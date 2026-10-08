@@ -21,7 +21,7 @@
 //!
 //! The format is documented on [`Scenario`] and in `sim/scenarios/engage/README.md`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -101,13 +101,21 @@ pub struct Scenario {
     /// Rules 12: nothing may still be owed back when the log ends (replay's `unrestored`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub expect_nothing_owed: bool,
-    /// Rules 16: lost contacts retired as seen again, in order (substrings of
-    /// `t=<s> T-0002 is T-0005 again`).
+    /// Rules 16: lost contacts an operator confirmed as a live track, in order (substrings of
+    /// `t=<s> T-0002 is T-0005 again, confirmed by op-2`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expect_reacquired: Vec<String>,
-    /// Rules 16: none may be retired (an ambiguous or missing match keeps a lost contact).
+    /// Rules 16: none may be confirmed (a claim something contradicts keeps a lost contact).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub expect_none_reacquired: bool,
+    /// Rules 16: claims raised on lost contacts, in order (substrings of `t=<s> T-0009 claims to
+    /// be T-0002` or `t=<s> T-0009 claims to be T-0002 (blocked: ...)`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expect_claimed: Vec<String>,
+    /// Rules 16: confirmations void, in order (substrings of `t=<s> T-0002 counts again: T-0009
+    /// is suspect: ...`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expect_reinstated: Vec<String>,
     /// After the run, attack the log and require replay to catch it:
     /// `proposer_approval`, `agent_approval`, `suppress_void`, `edit_snapshot`,
     /// `drop_signature`, `edit_effect`, `strip_approvers`, `drop_reset`, `agent_order_auto`,
@@ -116,7 +124,10 @@ pub struct Scenario {
     /// `hide_self_accepted`, and for rules 7 `drop_restore_owed`, and for rules 16
     /// `hide_lost_contact` (every decision's lost contacts cut), `drop_track_dropped` (the
     /// tracker's drops cut), `forge_lost_acceptance` (an acceptance of a lost contact re-dated
-    /// to a later fix everywhere it appears).
+    /// to a later fix everywhere it appears), `hide_reinstatement` (a void confirmation's
+    /// `lost.reinstated` cut and the lost contact cut from every decision after it),
+    /// `confirm_by_agent` (an operator's confirmation of a claim credited to an agent), and
+    /// `move_drop` (a drop's last fix moved 6 km, everywhere the contact appears).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tamper: Option<String>,
     /// Seconds to run (default: the last step plus 10).
@@ -379,6 +390,12 @@ pub enum Action {
     /// An agent "tries" to accept a lost vehicle: there is no such method on its port, so it
     /// is recorded and nothing may change.
     AgentAccept { agent: String, uid: String },
+    /// Rules 16: an operator confirms the claim of live track `by_track` to be lost contact
+    /// `track` (refused while something contradicts it).
+    ConfirmClaim { by: String, track: String, by_track: String },
+    /// Rules 16: an agent "tries" to confirm a claim: its port has no such method; recorded,
+    /// and nothing may change.
+    AgentConfirm { agent: String, track: String },
     /// An operator with engagement authority asks for the picture of the last nomination
     /// (a picture token, as the console does before a signature); the next `approve` by them
     /// quotes it.
@@ -874,9 +891,16 @@ pub struct ScenarioResult {
     pub tamper_mismatches: Vec<String>,
     /// How many times the signatures were dropped (`approval.reset`).
     pub resets: usize,
-    /// Rules 16: the lost contacts retired as seen again (`t=<s> T-0002 is T-0005 again`).
+    /// Rules 16: the lost contacts confirmed as a live track (`t=<s> T-0002 is T-0005 again,
+    /// confirmed by op-2`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub reacquired: Vec<String>,
+    /// Rules 16: the claims raised (`t=<s> T-0005 claims to be T-0002`, and what blocks it).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub claimed: Vec<String>,
+    /// Rules 16: the confirmations void (`t=<s> T-0002 counts again: why`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reinstated: Vec<String>,
     /// Rules 9: the identification events, in order (`t=<s> declared T-0001 by
     /// rule:hostile_act ...`), and the same with the truth behind each (evaluation labels).
     pub ident_reports: Vec<String>,
@@ -1341,11 +1365,15 @@ pub fn run(
                 Err(e) => failures.push(format!("t={s}: step_identification: {e}")),
             }
         }
-        // rules 16: lost contacts seen again, unambiguously, are retired (as the bridge's loop)
+        // rules 16: claims raised, void confirmations reinstated (as the bridge's loop)
         match engine.step_lost(&world) {
-            Ok(found) => {
-                for (lost, by) in found {
-                    extra.reacquired.push(format!("t={s} {lost} is {by} again"));
+            Ok(step) => {
+                for c in step.claimed {
+                    let blocked = if c.blockers.is_empty() { String::new() } else { format!(" (blocked: {})", c.blockers.join("; ")) };
+                    extra.claimed.push(format!("t={s} {} claims to be {}{blocked}", c.track, c.lost));
+                }
+                for (lost, _, why) in step.reinstated {
+                    extra.reinstated.push(format!("t={s} {lost} counts again: {why}"));
                 }
             }
             Err(e) => failures.push(format!("t={s}: step_lost: {e}")),
@@ -1547,7 +1575,19 @@ pub fn run(
         }
     }
     if sc.expect_none_reacquired && !extra.reacquired.is_empty() {
-        failures.push(format!("expected no lost contact retired, got {:?}", extra.reacquired));
+        failures.push(format!("expected no lost contact confirmed, got {:?}", extra.reacquired));
+    }
+    for (want, got, what) in [
+        (&sc.expect_claimed, &extra.claimed, "claims raised"),
+        (&sc.expect_reinstated, &extra.reinstated, "confirmations void"),
+    ] {
+        let mut it = got.iter();
+        for w in want {
+            if !it.any(|g| g.contains(w.as_str())) {
+                failures.push(format!("expected {what} {want:?} in order, got {got:?}"));
+                break;
+            }
+        }
     }
     // replayed with the rules it was decided under (the current ones unless asked otherwise)
     let replay_opts = replay::ReplayOptions {
@@ -1628,6 +1668,8 @@ pub fn run(
         tamper_mismatches,
         resets,
         reacquired: extra.reacquired.clone(),
+        claimed: extra.claimed.clone(),
+        reinstated: extra.reinstated.clone(),
         ident_reports,
         ident,
         proxy: extra.proxy.is_some().then_some(extra.proxy_stats),
@@ -2431,6 +2473,29 @@ fn act(
                 failures.push(format!("t={s}: the intent moved on an agent's attempt to accept"));
             }
         }
+        Action::ConfirmClaim { by, track, by_track } => {
+            let Some(sess) = session(by) else {
+                return failures.push(format!("t={s}: confirm_claim: unknown operator {by}"));
+            };
+            let w = world(tracks, vehicles);
+            match engine.confirm_lost_claim(sess.authority(), track, by_track, &w) {
+                Ok(_) => extra.reacquired.push(format!("t={s} {track} is {by_track} again, confirmed by {by}")),
+                Err(e) => refusals.push(e.to_string()),
+            }
+        }
+        Action::AgentConfirm { agent, track } => {
+            // AgentPort has no method that confirms a claim: the attempt is recorded and the
+            // lost contacts must not move
+            let before = (engine.lost_contacts().len(), engine.lost_confirmed().len());
+            let _ = engine.agent_port(AgentId::new(agent)).record_action(
+                "lost.confirm.attempt",
+                &format!("lost contact {track}: no agent path to confirming a claim exists"),
+            );
+            refusals.push(format!("agent {agent}: no confirm method on AgentPort (confirming a claim on {track} cannot be expressed)"));
+            if before != (engine.lost_contacts().len(), engine.lost_confirmed().len()) {
+                failures.push(format!("t={s}: the lost contacts moved on an agent's attempt to confirm"));
+            }
+        }
         Action::AgentApprove { agent } => {
             // The agent's whole surface is AgentPort: propose, preview, withdraw, record,
             // read. None of them approves; the attempt is recorded and the intent must not
@@ -2734,8 +2799,11 @@ struct Extra {
     sign_due: Vec<(u32, IntentId, String)>,
     /// murmur-dup: the run's clock steps ([`RunOptions::clock_step`]).
     clock_step: Option<ClockStep>,
-    /// Rules 16: the lost contacts retired, as `t=<s> <lost> is <track> again`.
+    /// Rules 16: the lost contacts confirmed, as `t=<s> <lost> is <track> again, confirmed by
+    /// <operator>`; the claims raised; the confirmations void.
     reacquired: Vec<String>,
+    claimed: Vec<String>,
+    reinstated: Vec<String>,
 }
 
 impl Extra {
@@ -4017,6 +4085,88 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
                     }
                 }
             }
+        }
+        "hide_reinstatement" => {
+            // rules 16: a void confirmation kept: its lost.reinstated cut, and the lost contact
+            // cut from every decision after it, as if its claimant still stood
+            let mut hidden: BTreeSet<String> = BTreeSet::new();
+            events.retain(|e| match &e.body {
+                EventBody::LostReinstated { track, .. } => {
+                    hidden.insert(track.clone());
+                    false
+                }
+                _ => true,
+            });
+            if hidden.is_empty() {
+                return Err("no lost.reinstated to hide".into());
+            }
+            let mut after = false;
+            for e in &mut events {
+                if let EventBody::TrackReacquired { track, .. } = &e.body
+                    && hidden.contains(track)
+                {
+                    after = true;
+                    continue;
+                }
+                if !after {
+                    continue;
+                }
+                for i in decision_inputs(&mut e.body) {
+                    i.lost_contacts.retain(|k, _| !hidden.contains(k));
+                }
+            }
+        }
+        "confirm_by_agent" => {
+            // rules 16: an operator's confirmation of a claim credited to an agent
+            let mut done = false;
+            for e in &mut events {
+                if let EventBody::TrackReacquired { by, .. } = &mut e.body {
+                    *by = OperatorId::new("agent-planner");
+                    done = true;
+                }
+            }
+            if !done {
+                return Err("no track.reacquired to credit".into());
+            }
+        }
+        "move_drop" => {
+            // rules 16 (the review's probe): a drop's last fix moved 6 km north, in the drop and
+            // in every decision that read the lost contact, as if it had been seen far away
+            let mut moved: BTreeMap<String, crate::geo::LonLat> = BTreeMap::new();
+            for e in &mut events {
+                if let EventBody::TrackDropped { track, facts, .. } = &mut e.body {
+                    let to = engage::offset(facts.position.value, 0.0, 6_000.0);
+                    facts.position.value = to;
+                    moved.insert(track.clone(), to);
+                }
+            }
+            if moved.is_empty() {
+                return Err("no track.dropped to move".into());
+            }
+            for e in &mut events {
+                for i in decision_inputs(&mut e.body) {
+                    for (k, l) in i.lost_contacts.iter_mut() {
+                        if let Some(to) = moved.get(k) {
+                            l.facts.position.value = *to;
+                        }
+                    }
+                }
+            }
+        }
+        "redrop" => {
+            // rules 16: the first drop logged again right after it, its fix a minute later and
+            // 6 km on (a second loss of the same id, a smaller region from a later fix)
+            let at = events
+                .iter()
+                .position(|e| matches!(&e.body, EventBody::TrackDropped { .. }))
+                .ok_or("no track.dropped to repeat")?;
+            let mut again = events[at].clone();
+            if let EventBody::TrackDropped { facts, .. } = &mut again.body {
+                facts.position.value = engage::offset(facts.position.value, 0.0, 6_000.0);
+                facts.position.t = facts.position.t.plus_ms(60_000).min(again.t);
+                facts.last_seen_t = facts.position.t;
+            }
+            events.insert(at + 1, again);
         }
         "drop_act" => {
             // rules 9: a rule declaration left without the act behind it

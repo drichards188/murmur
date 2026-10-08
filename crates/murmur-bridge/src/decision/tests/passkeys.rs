@@ -240,6 +240,47 @@ async fn accepting_a_lost_contact_takes_a_passkey_made_for_it() {
     h.no_secret_logged(&[&op1, &op2]);
 }
 
+/// Rules 16 with rules 10, a nomination already waiting: the acceptance of a lost contact
+/// through `POST /api/intents/{id}/accept_unknown` carries the passkey with the contact, its
+/// challenge made for exactly that intent and contact (one made for the nomination is refused).
+#[tokio::test]
+async fn accepting_a_lost_contact_for_a_waiting_nomination_takes_a_passkey() {
+    let (h, mut keys) = harness(
+        &["op-2"],
+        |p| {
+            passkey_policy(p);
+            p.approval.step_up_acts = Some(vec![murmur_decide::StepUpAct::AcceptUnknown]);
+        },
+        None,
+    );
+    let op1 = h.login("op-1", PW1).await;
+    let mut k2 = keys.remove("op-2").expect("op-2's");
+    let op2 = h.passkey_login("op-2", &mut k2).await.expect("signed in");
+    let (id, since) = h.waiting_then_lost(&op1).await;
+    let path = format!("/api/intents/{id}/accept_unknown");
+    // made for a nomination, not for this intent: refused by the engine
+    let other = json!({ "act": "accept_unknown", "intent": null, "accept_lost": [{ "track": "T-0002", "since": since }] });
+    let (s, o) = h.step_options(&op2, other).await;
+    assert_eq!(s, StatusCode::OK, "{o}");
+    let a = k2.assertion_json("localhost", LOCAL, &challenge(&o));
+    let (s, v) = h.local(Some(&op2), &path, json!({ "track": "T-0002", "since": since, "passkey": a })).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "{v}");
+    assert_eq!(h.e.r.events("engage.accepted"), 0, "nothing accepted");
+    // made for this intent and contact: accepted
+    let act = json!({ "act": "accept_unknown", "intent": id, "accept_lost": [{ "track": "T-0002", "since": since }] });
+    let (s, o) = h.step_options(&op2, act).await;
+    assert_eq!(s, StatusCode::OK, "{o}");
+    let a = k2.assertion_json("localhost", LOCAL, &challenge(&o));
+    let (s, v) = h.local(Some(&op2), &path, json!({ "track": "T-0002", "since": since, "passkey": a })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let log = h.log();
+    let accepted = log.lines().find(|l| l.contains("\"type\":\"engage.accepted\"")).expect("accepted").to_string();
+    assert!(accepted.contains("\"contact\":\"T-0002\"") && accepted.contains("\"step_up\":"), "{accepted}");
+    let r = h.replays_authenticated();
+    assert_eq!((r.passkey_step_ups, r.lost_contacts), (2, 1));
+    h.no_secret_logged(&[&op1, &op2]);
+}
+
 #[tokio::test]
 async fn an_assertion_is_for_its_act_once_and_from_the_right_authenticator() {
     let (h, mut keys) = harness(&["op-2", "op-3"], |_| {}, None);

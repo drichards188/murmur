@@ -203,6 +203,8 @@ impl Erig {
             sensors: vec![
                 SensorSpec { kind: SensorType::Radar, range_m: 8_000.0, guess: true, height: false },
                 SensorSpec { kind: SensorType::EoIr, range_m: 5_000.0, guess: true, height: false },
+                // hears only contacts that broadcast (none but a test's own AIS contacts)
+                SensorSpec { kind: SensorType::Ais, range_m: 20_000.0, guess: true, height: false },
             ],
         };
         let mut contacts = if with_target {
@@ -1883,4 +1885,85 @@ async fn a_dropped_contact_still_blocks_until_an_operator_accepts_it() {
     let rep = replay::replay_str(&e.r.log.text()).expect("parses");
     assert!(rep.ok(), "{:?}", rep.mismatches);
     assert_eq!(rep.lost_contacts, 1);
+}
+
+/// Rules 16 (the review of murmur-533): a contact seen again carrying a lost contact's AIS is a
+/// claim, never a retirement: the tick raises it (`lost.claimed`), the review list shows it with
+/// its evidence and a confirm action, the lost contact keeps counting until an operator
+/// confirms it (`POST /api/review/lost/{track}/confirm`, any operator, under their session:
+/// `track.reacquired`), and the log replays.
+#[tokio::test(start_paused = true)]
+async fn a_contact_seen_again_by_its_ais_is_a_claim_an_operator_confirms() {
+    let e = engage_rig();
+    e.r.vehicle(1, Firmware::Copter, "fpv", TARGET);
+    sleep(Duration::from_millis(500)).await;
+    e.picture().await;
+    // a tour boat on AIS 1.5 km north of the target, seen 20 s, out of view, then seen again
+    let boat = ContactTruth {
+        id: "tour".into(),
+        name: "tour boat".into(),
+        affiliation: TruthAffiliation::Neutral,
+        domain: TDomain::Surface,
+        kind: "ferry".into(),
+        lat: TARGET.0 + 1_500.0 / 111_320.0,
+        lon: TARGET.1,
+        alt_m: 0.0,
+        speed_mps: 0.0,
+        course_deg: 0.0,
+        emits: false,
+        signature: 1.0,
+        ais: Some(crate::tracks::truth::Ais {
+            mmsi: "366999501".into(),
+            name: "MV BAY TOUR".into(),
+            ship_type: "passenger".into(),
+            spoofed: false,
+        }),
+    };
+    for _ in 0..20 {
+        e.r.clock.advance_ms(1000);
+        e.sense_at_with(e.now_s(), true, std::slice::from_ref(&boat));
+        e.r.d.tick();
+        sleep(Duration::from_secs(1)).await;
+    }
+    for _ in 0..185 {
+        e.tick(true).await;
+    }
+    assert_eq!(e.r.events("track.dropped"), 1);
+    let log = e.r.log.text();
+    let dropped = log.lines().find(|l| l.contains("\"type\":\"track.dropped\"")).expect("dropped");
+    assert!(dropped.contains("\"mmsi\":\"366999501\""), "its AIS with the drop: {dropped}");
+    // seen again: a new track carrying its MMSI, and a claim, not a retirement
+    for _ in 0..5 {
+        e.r.clock.advance_ms(1000);
+        e.sense_at_with(e.now_s(), true, std::slice::from_ref(&boat));
+        e.r.d.tick();
+        sleep(Duration::from_secs(1)).await;
+    }
+    assert_eq!(e.r.events("lost.claimed"), 1);
+    assert_eq!(e.r.events("track.reacquired"), 0, "never retired by the match itself");
+    assert_eq!(e.tracks.lost_json().len(), 1, "still counted");
+    let review = e.r.d.review_json();
+    let claim = &review["lost_claims"][0];
+    assert_eq!((claim["lost"].clone(), claim["track"].clone()), (json!("T-0002"), json!("T-0003")), "{review}");
+    assert!(claim["evidence"].as_str().unwrap_or("").contains("name MV BAY TOUR (the same)"), "{claim}");
+    assert_eq!(claim["actions"], json!(["confirm"]), "{claim}");
+    assert_eq!(review["counts"]["lost_claims"], 1, "{review}");
+    // nominated now: the lost contact still blocks
+    let out = e.r.d.submit(&op("op-2"), e.nomination("return")).await.expect("nominated");
+    assert_eq!(out.state, State::Rejected, "{}", out.intent);
+    assert!(out.intent.to_string().contains("lost contact T-0002"), "{}", out.intent);
+    // any operator confirms it (op-1 has no engagement authority); a wrong claimant is refused
+    let err = e.r.d.confirm_lost_claim(&op("op-1"), "T-0002", "T-0001").expect_err("not a claimant");
+    assert_eq!(err.status, 409, "{}", err.detail);
+    let v = e.r.d.confirm_lost_claim(&op("op-1"), "T-0002", "T-0003").expect("confirmed");
+    assert_eq!(v["confirmed"]["track"], "T-0003", "{v}");
+    assert!(e.tracks.lost_json().is_empty(), "retired while T-0003 stands");
+    let review = e.r.d.review_json();
+    assert_eq!(review["lost_confirmed"][0]["track"], "T-0003", "{review}");
+    let log = e.r.log.text();
+    let confirmed = log.lines().find(|l| l.contains("\"type\":\"track.reacquired\"")).expect("confirmed");
+    assert!(confirmed.contains("\"by\":\"op-1\",\"session\":"), "{confirmed}");
+    let rep = replay::replay_str(&log).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+    assert_eq!((rep.lost_contacts, rep.lost_claims, rep.lost_confirmed), (1, 1, 1));
 }

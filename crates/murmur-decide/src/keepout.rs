@@ -36,7 +36,10 @@
 //! keep-out still counts it, [`crate::lost`]), with since when it is out of view, what the
 //! check reads (its reach from its last fix) and what would clear it: an operator with
 //! engagement authority accepting it for this engagement ([`Item::lost`] names what to accept),
-//! or the contact seen again with its own AIS identity. Waiting never does.
+//! or an operator confirming a track seen again with its AIS identity as it. Waiting never
+//! does. A live track out of view (unseen [`engage::OUT_OF_VIEW_S`]) counts anywhere at its
+//! domain's top speed from its last fix as well ([`engage::track_standing`]): seeing it again
+//! would clear that.
 //!
 //! and, for the platform, [`MoveWithin`]: every stretch of effect times at which every
 //! keep-out holds, as distances from the target when it holds where it is ("within X m",
@@ -84,10 +87,19 @@ pub const GRID_MARGIN_M: f64 = 0.3;
 pub const GRID_MARGIN_SPEED_MPS: f64 = 100.0;
 
 /// The margin a grid point of the effect-time scan needs for a clearance of `clearance_m`
-/// ([`GRID_MARGIN_M`], more for a clearance under the default's).
+/// ([`GRID_MARGIN_M`], more for a clearance under the default's), for anything moving at up
+/// to [`GRID_MARGIN_SPEED_MPS`] relative to the effect point ([`grid_margin_for`]).
 pub fn grid_margin_m(clearance_m: f64) -> f64 {
+    grid_margin_for(clearance_m, GRID_MARGIN_SPEED_MPS)
+}
+
+/// The margin for a clearance of `clearance_m` when a region's edge moves at up to
+/// `speed_mps` relative to the effect point: `v^2 h^2 / (8 c)`, at least [`GRID_MARGIN_M`].
+/// The scan sizes it from the picture ([`scan_speed_mps`]): an aircraft head-on to a moving
+/// target can exceed 100 m/s (the review of murmur-dr6).
+pub fn grid_margin_for(clearance_m: f64, speed_mps: f64) -> f64 {
     let h = SPAN_STEP_MS as f64 / 1000.0;
-    let dip = GRID_MARGIN_SPEED_MPS.powi(2) * h * h / (8.0 * clearance_m.max(1.0));
+    let dip = speed_mps.max(0.0).powi(2) * h * h / (8.0 * clearance_m.max(1.0));
     GRID_MARGIN_M.max(dip)
 }
 /// A manoeuvre seen this recently before a track's estimate means it is manoeuvring now, s.
@@ -315,6 +327,11 @@ pub struct MoveWithin {
     pub now_m: Option<f64>,
     /// The target is predicted where it is (holding): distances alone set the effect time.
     pub holding: bool,
+    /// murmur-dr6 and its review: how far clear of the keep-out a grid point had to be to count
+    /// as clear, m, and the relative speed that margin covers between grid points, m/s (the
+    /// fastest this picture holds, [`grid_margin_for`]).
+    pub grid_margin_m: f64,
+    pub grid_speed_mps: f64,
     pub why: String,
 }
 
@@ -586,6 +603,36 @@ fn vehicle_clear(
     }
 }
 
+/// How fast any region's edge in the scan may move relative to the effect point, m/s (a bound
+/// for [`grid_margin_for`]): the target's speed, plus the fastest of each track's (its
+/// domain's top speed or its own bound, whichever is faster, and how fast its prediction's
+/// uncertainty may grow over the longest transit: `keep_out_sigma` of the policy's velocity
+/// error and of the acceleration noise's growth) and each vehicle's of ours (its speed or its
+/// cruise speed, and its growth).
+fn scan_speed_mps(ctx: &Ctx, probes: &[Probe]) -> f64 {
+    let ec = &ctx.ec;
+    let k = ec.keep_out_sigma;
+    let span = ec.max_transit_s.max(0.0);
+    let target = engage::target_velocity(ctx.target, ec);
+    let track = |t: &TrackFacts| {
+        let (own, _) = engage::out_of_view_speed(t, ec);
+        let growth = k * (ec.track_velocity_sigma() + (ec.track_accel(t.domain).powi(2) * span).sqrt());
+        own + growth
+    };
+    let fastest = probes
+        .iter()
+        .map(|p| match p {
+            Probe::Track(_, t) | Probe::Lost(_, t) => track(t),
+            Probe::Vehicle(_, v) => {
+                let speed = v.velocity_mps.as_ref().map_or(0.0, |f| f.value[0].hypot(f.value[1]));
+                let cruise = v.platform.as_ref().and_then(|p| p.cruise_mps).unwrap_or(0.0);
+                speed.max(cruise) + ec.friendly_growth()
+            }
+        })
+        .fold(0.0, f64::max);
+    target[0].hypot(target[1]) + fastest
+}
+
 /// The effect times `from`, `from + step`, ... up to and including `to`.
 fn grid(from: Time, to: Time, step: i64) -> Vec<Time> {
     let mut out = Vec::new();
@@ -715,6 +762,9 @@ pub fn explain(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig, opts
         move_within = Some(same_picture(&ctx, &mut items[..shown], blocking > shown));
         (wait, wait_none) = carried_forward(&ctx, &mut items, shown);
     }
+    let grid = move_within
+        .as_ref()
+        .map_or(String::new(), |m: &MoveWithin| format!(": {:.2} m, for anything moving up to {:.0} m/s relative to the effect point, the fastest this picture holds", m.grid_margin_m, m.grid_speed_mps));
     let omitted = items.len() - shown;
     let items: Vec<Item> = items.into_iter().take(shown).map(|(i, _)| i).collect();
     Ok(Explanation {
@@ -740,8 +790,9 @@ pub fn explain(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig, opts
         wait,
         wait_none,
         assumptions: format!(
-            "Closer and farther are on the picture now (effect times on a {} s grid from the earliest to the latest a nomination allows, each grid point clear by a margin that covers what moves between them). Wait hints carry the picture forward: every track in view holds its course and speed and stays in view (no new manoeuvre; a young track's first minute as now), our vehicles keep doing what they do, the platform holds where it is; each is the first nomination time on a {} s grid within {} min.",
+            "Closer and farther are on the picture now (effect times on a {} s grid from the earliest to the latest a nomination allows, each grid point clear by a margin that covers what moves between them{}). Wait hints carry the picture forward: every track in view holds its course and speed and stays in view (no new manoeuvre; a young track's first minute as now), our vehicles keep doing what they do, the platform holds where it is; each is the first nomination time on a {} s grid within {} min.",
             SPAN_STEP_MS as f64 / 1000.0,
+            grid,
             WAIT_STEP_MS / 1000,
             WAIT_HORIZON_S / 60
         ),
@@ -902,10 +953,14 @@ fn track_item(ctx: &Ctx, id: &str, t: &TrackFacts, s: &TrackStanding, alt: Optio
                 engage::AIRCRAFT_LAG_M
             )
         }
-        ReachKind::PlausibleSpeed => {
-            let speed = (near.radius_m - k * t.pos_sigma_m) / span.max(1e-9);
+        ReachKind::OutOfView => {
+            let (speed, lag) = engage::out_of_view_speed(t, ec);
+            let lag = if lag > 0.0 { format!(", and {lag:.0} m more for the tracker's lag behind an aircraft") } else { String::new() };
+            let unseen = secs(ctx.world.t.ms_since(t.last_seen_t)).max(0.0);
+            let top = if speed > engage::top_speed_mps(t.domain) { "its own speed bound, above its domain's top speed" } else { "its domain's top speed" };
             format!(
-                "Out of view, it may have turned any way since its last fix, so it could be anywhere within {r} of where it was: up to {speed:.1} m/s, its own speed and {k:.0}-sigma of its velocity error (or the fastest it went), for {span:.0} s."
+                "Out of view (no detection for {}), it may have turned or sped up any way since its last fix, so it could be anywhere within {r} of where it was: up to {speed:.1} m/s ({top}) for {span:.0} s{lag}.",
+                after_s(unseen)
             )
         }
     };
@@ -960,8 +1015,9 @@ fn track_item(ctx: &Ctx, id: &str, t: &TrackFacts, s: &TrackStanding, alt: Optio
     }
 }
 
-/// Rules 16: a lost contact as an item: its regions (as a track's, from its facts at the drop),
-/// since when it is out of view, and what would clear it.
+/// Rules 16: a lost contact as an item: its regions (a live track's from its facts at the drop,
+/// and anywhere at its domain's top speed), since when it is out of view, and what would clear
+/// it.
 fn lost_item(ctx: &Ctx, id: &str, l: &crate::lost::LostContact, s: &TrackStanding, alt: Option<EffectAlt>) -> Item {
     let mut item = track_item(ctx, id, &l.facts, s, alt);
     let now = ctx.world.t;
@@ -989,10 +1045,10 @@ fn lost_item(ctx: &Ctx, id: &str, l: &crate::lost::LostContact, s: &TrackStandin
         item.not_by_waiting = Some("Waiting does not clear it: while it is out of view its reach only grows.".to_string());
         item.other = Some(match &l.ais {
             Some(a) => format!(
-                "An operator with engagement authority accepting it for this engagement would (logged, at the nomination or before the first signature); so would the tracker seeing it again with its AIS identity ({}), unambiguously.",
+                "An operator with engagement authority accepting it for this engagement would (logged, at the nomination or before the first signature); so would an operator confirming that a track seen again carrying its AIS identity ({}) is it (a claim in the review list, confirmed only while nothing contradicts it).",
                 a.mmsi
             ),
-            None => "An operator with engagement authority accepting it for this engagement would (logged, at the nomination or before the first signature). It broadcast no AIS identity, so a track seen later is never taken for it.".to_string(),
+            None => "An operator with engagement authority accepting it for this engagement would (logged, at the nomination or before the first signature). It broadcast no AIS identity, so no track seen later can be confirmed as it.".to_string(),
         });
     }
     item
@@ -1011,12 +1067,17 @@ fn after_s(s: f64) -> String {
 /// What else would clear a track whose reach blocks. A velocity estimate turns a surface or
 /// ground track's reach into a prediction along its course; an aircraft's (rules 14) it does
 /// not: an aircraft counts anywhere it could turn or speed up to, with a velocity or without.
+/// Rules 16: a track out of view counts anywhere at its domain's top speed until it is seen
+/// again.
 fn other_remedy(blocks: bool, kind: ReachKind, t: &TrackFacts, ec: &EngageRules) -> Option<String> {
     if !blocks {
         return None;
     }
     let aircraft = t.domain == Domain::Air && ec.aircraft_reach();
     match kind {
+        ReachKind::OutOfView => Some(
+            "Seeing it again would: a fresh fix puts it back on what the tracker sees (its reach is then the prediction a track in view gets).".to_string(),
+        ),
         ReachKind::NoVelocity | ReachKind::Aircraft if aircraft => Some(
             "A velocity estimate would not clear it: an aircraft counts anywhere it could turn or speed up to, with a velocity or without. What would: its altitude, ranged, above the keep-out's ceiling (a radar that measures height), the effect sooner (the platform closer), or the aircraft farther from the point than it could fly by then.".to_string(),
         ),
@@ -1183,8 +1244,11 @@ fn same_picture(ctx: &Ctx, items: &mut [(Item, Probe)], more_blocking: bool) -> 
         .chain(judged_lost(world, ctx.track_id, ec).into_iter().map(|(id, l)| Probe::Lost(id, &l.facts)))
         .collect();
     // murmur-dr6: a grid point counts as clear only by a margin that covers how far a region's
-    // edge can dip between grid points (the windows below claim every effect time between)
-    let scan = ctx.clearance + grid_margin_m(ctx.clearance);
+    // edge can dip between grid points (the windows below claim every effect time between),
+    // for the fastest relative motion this picture holds
+    let grid_speed = scan_speed_mps(ctx, &all);
+    let grid_margin = grid_margin_for(ctx.clearance, grid_speed);
+    let scan = ctx.clearance + grid_margin;
     let clear_at = |p: &Probe, point: LonLat, at: Time, alt: Option<EffectAlt>| match p {
         Probe::Track(_, t) => track_clear(t, point, at, scan, world.t, ec, alt),
         Probe::Lost(_, t) => lost_clear(t, point, at, scan, world.t, ec, alt),
@@ -1277,6 +1341,8 @@ fn same_picture(ctx: &Ctx, items: &mut [(Item, Probe)], more_blocking: bool) -> 
         within_m: None,
         now_m: holding.then(|| haversine_m(ctx.pv.start, engage::target_at(ctx.target, world.t, ec))),
         holding,
+        grid_margin_m: (grid_margin * 100.0).round() / 100.0,
+        grid_speed_mps: grid_speed.round(),
         why: String::new(),
     };
     let blocker = earliest_blocker.map_or(String::new(), |b| format!(", by {b}"));

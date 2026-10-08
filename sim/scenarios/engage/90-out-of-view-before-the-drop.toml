@@ -1,0 +1,93 @@
+# Rules 16 (the review of murmur-533): 89's harbor ferry, 600 m north-west of the target and
+# last seen steaming away at 5 m/s on a steady course, goes out of sensor view; this time the
+# nomination comes at 170 s, before the tracker drops it (180 s). Under rules 14 the stale track
+# counted by its course alone, as a track in view does: its course puts it 1.4 km on by the
+# effect, and the nomination waited for its signers (`--rules 14`); 12 s later, dropped, the
+# same ferry blocked. Nothing had checked that it kept its course: the tracker sees a turn only
+# in detections. From rules 16 a track unseen 10 s (`engage::OUT_OF_VIEW_S`, the tracker's
+# stale age) counts anywhere it could have got to since its last fix at its domain's top speed
+# (25 m/s on the water), as a lost contact does, and the nomination is rejected
+# (keep_out_tracks: "out of view (no detection for 169 s)"). A nomination while it is still in
+# view (unseen under 10 s) is judged by its course: the first one, at 5 s, waits for its signers
+# (and is rejected by op-2, freeing the platform).
+title = "A track out of view counts at its domain's top speed before it is dropped"
+invariant = "keep_out_tracks"
+attack = "a ferry last seen leaving the target goes out of view; nominate before the tracker drops it, while its course alone clears the keep-out"
+expect = "rejected"
+expect_rule = "keep_out_tracks"
+end_s = 190
+
+[[operator]]
+id = "op-1"
+engage = true
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, 28 m/s: the effect about 100 s after the nomination
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[track]]
+id = "T-0002"
+at = [-122.49983, 37.81581] # 600 m north-west of the target
+velocity = [-3.536, 3.536]  # 5 m/s north-west, away from it, steady
+affiliation = "neutral"
+identity = "ferry"
+identity_confidence = 0.8
+sources = ["3:radar"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "track"            # out of sensor view: no more detections
+id = "T-0002"
+silent = true
+
+[[step]]
+at_s = 5
+action = "nominate"         # unseen 4 s: still in view, judged by its course
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 6
+action = "expect"
+state = "pending_approval"
+
+[[step]]
+at_s = 7
+action = "reject"           # not this one: the platform is free again
+by = "op-2"
+
+[[step]]
+at_s = 170
+action = "nominate"         # unseen 169 s: out of view, not yet dropped
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600

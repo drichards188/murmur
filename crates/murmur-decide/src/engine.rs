@@ -1844,13 +1844,16 @@ impl Engine {
     // ---- lost contacts (rules 16) -----------------------------------------------------
 
     /// Rules 16: the bridge's tracker dropped these tracks (each with its facts at the drop, as
-    /// it hands them to decisions: the estimate, never a declaration). Each is logged as
-    /// `track.dropped` and held from here on as a lost contact ([`crate::lost`]), which every
-    /// engagement's keep-out on tracks counts anywhere it could have reached since its last fix,
-    /// until a track is unambiguously it again ([`Engine::step_lost`]). The bridge keeps a
-    /// dropped track in its picture until this returns, so no decision falls between the two.
-    /// Before rules 16 nothing is logged (a dropped track is simply gone, as then). Returns how
-    /// many were recorded.
+    /// it hands them to decisions: the estimate, never a declaration, and the AIS identity it
+    /// carried). Each is logged as `track.dropped` and held from here on as a lost contact
+    /// ([`crate::lost`]), which every engagement's keep-out on tracks counts anywhere it could
+    /// have reached since its last fix, until an operator confirms a track as it again
+    /// ([`Engine::confirm_lost_claim`]). A drop of a track a confirmed lost contact was
+    /// confirmed as voids that confirmation (`lost.reinstated`). The bridge keeps a dropped track
+    /// in its picture until this returns, so no decision falls between the two. Before rules 16
+    /// nothing is logged (a dropped track is simply gone, as then). A track id the ledger holds
+    /// already is refused (the tracker drops an id once), and so is everything after it: on an
+    /// error, the drops from the first not recorded on were not. Returns how many were recorded.
     pub fn record_track_drops(
         &mut self,
         drops: Vec<(String, TrackFacts, Option<AisIdentity>)>,
@@ -1860,6 +1863,12 @@ impl Engine {
         }
         let mut n = 0;
         for (track, mut facts, ais) in drops {
+            if self.lost.holds(&track) {
+                return Err(EngineError::NotAcceptedContact {
+                    track,
+                    why: "dropped already: the tracker drops a track id once".into(),
+                });
+            }
             // the estimate only: the ledger fills the identification for every decision
             facts.declared_by = None;
             facts.declaration = None;
@@ -1869,41 +1878,149 @@ impl Engine {
                 facts: Box::new(facts.clone()),
                 ais: ais.clone(),
             })?;
-            self.lost.record(&track, facts, ais, t);
+            self.lost
+                .record(&track, facts, ais, t)
+                .map_err(|why| EngineError::NotAcceptedContact { track: track.clone(), why })?;
             n += 1;
+            // a lost contact confirmed as this track counts again
+            let voided: Vec<String> = self
+                .lost
+                .confirmed()
+                .iter()
+                .filter(|(_, c)| c.by_track == track)
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in voided {
+                self.reinstate_lost(&id, format!("{track} is no longer in the picture (dropped)"), t, None)?;
+            }
         }
         Ok(n)
     }
 
-    /// Rules 16: retire every lost contact that a live track of `world` is again, unambiguously
-    /// ([`crate::lost::reacquisitions`] on the picture with its identification filled): each
-    /// logged as `track.reacquired` with that picture. The bridge's loop calls it every second;
-    /// anything short of an unambiguous match leaves the lost contact in force. Returns `(lost
-    /// contact, live track)` for each retired.
-    pub fn step_lost(&mut self, world: &WorldSnapshot) -> Result<Vec<(String, String)>, EngineError> {
+    /// Rules 16, every second (the bridge's loop; the scenario runner's): on `world`, its
+    /// identification filled, void every confirmation the picture no longer bears out (the
+    /// claimant gone, suspect or declared: `lost.reinstated`, the lost contact counting again
+    /// for good), then raise every new claim, a live track carrying a lost contact's AIS
+    /// identity (`lost.claimed`, once per pair, with the picture and the evidence; it changes
+    /// nothing until an operator confirms it). Never retires anything.
+    pub fn step_lost(&mut self, world: &WorldSnapshot) -> Result<LostStep, EngineError> {
+        let mut out = LostStep::default();
         if !self.policy.rules.lost_contacts() || self.lost.is_empty() {
-            return Ok(Vec::new());
+            return Ok(out);
+        }
+        let mut tracks = world.tracks.clone();
+        if self.policy.rules.rule_id() {
+            self.ident.fill(&mut tracks);
+        }
+        for (id, by_track, why) in self.lost.void_in(&tracks) {
+            let facts = tracks.get(&by_track).cloned().map(Box::new);
+            self.reinstate_lost(&id, why.clone(), world.t, facts)?;
+            out.reinstated.push((id, by_track, why));
+        }
+        let ec = self.policy.rules.engage_rules();
+        for c in crate::lost::claims(&self.lost, &tracks, &world.track_ais, &ec) {
+            if self.lost.claimed(&c.lost, &c.track) {
+                continue;
+            }
+            self.emit(EventBody::LostClaimed {
+                track: c.lost.clone(),
+                by_track: c.track.clone(),
+                world_t: world.t,
+                tracks: tracks.clone(),
+                track_ais: world.track_ais.clone(),
+                evidence: c.evidence.clone(),
+                blockers: c.blockers.clone(),
+            })?;
+            self.lost.claim(&c.lost, &c.track);
+            out.claimed.push(c);
+        }
+        Ok(out)
+    }
+
+    fn reinstate_lost(&mut self, id: &str, reason: String, world_t: Time, facts: Option<Box<TrackFacts>>) -> Result<(), EngineError> {
+        let Some(by_track) = self.lost.confirmed().get(id).map(|c| c.by_track.clone()) else {
+            return Ok(());
+        };
+        self.emit(EventBody::LostReinstated {
+            track: id.to_string(),
+            by_track,
+            reason,
+            world_t,
+            facts,
+        })?;
+        self.lost.reinstate(id);
+        Ok(())
+    }
+
+    /// Rules 16: an operator (any, under their own session; an agent's port has no such
+    /// method) confirms the claim of live track `by_track` of `world` to be lost contact `track`
+    /// ([`crate::lost::claim_of`] on the picture with its identification filled): taken only
+    /// while nothing contradicts it (its blockers empty: the only track carrying the MMSI,
+    /// undeclared, not suspect, the same domain, first seen after the lost contact's last fix,
+    /// where it could have reached). Logged as `track.reacquired` with the picture and the
+    /// evidence; the lost contact is retired from the keep-outs while `by_track` stands. Refused,
+    /// nothing logged, otherwise.
+    pub fn confirm_lost_claim(
+        &mut self,
+        by: &HumanAuthority,
+        track: &str,
+        by_track: &str,
+        world: &WorldSnapshot,
+    ) -> Result<crate::lost::Claim, EngineError> {
+        let no = |why: String| EngineError::NotAcceptedContact {
+            track: track.to_string(),
+            why,
+        };
+        if !self.policy.rules.lost_contacts() {
+            return Err(no("these decision rules have no lost contacts".into()));
+        }
+        let Some(lost) = self.lost.get(track).cloned() else {
+            return Err(no(match self.lost.confirmed().get(track) {
+                Some(c) => format!("already confirmed as {} by {}", c.by_track, c.by),
+                None => format!("{track} is not a lost contact"),
+            }));
+        };
+        if lost.ais.is_none() {
+            return Err(no(format!("{track} carried no AIS identity: no track can claim to be it")));
         }
         let mut tracks = world.tracks.clone();
         if self.policy.rules.rule_id() {
             self.ident.fill(&mut tracks);
         }
         let ec = self.policy.rules.engage_rules();
-        let found = crate::lost::reacquisitions(&self.lost, &tracks, &world.track_ais, &ec);
-        let mut out = Vec::new();
-        for r in found {
-            self.emit(EventBody::TrackReacquired {
-                track: r.track.clone(),
-                by_track: r.by_track.clone(),
-                world_t: world.t,
-                tracks: tracks.clone(),
-                track_ais: world.track_ais.clone(),
-                evidence: r.evidence,
-            })?;
-            self.lost.retire(&r.track);
-            out.push((r.track, r.by_track));
+        let Some(claim) = crate::lost::claim_of(track, &lost, &self.lost, by_track, &tracks, &world.track_ais, &ec) else {
+            return Err(no(format!("{by_track} is not in the picture carrying {track}'s MMSI")));
+        };
+        if !claim.confirmable() {
+            return Err(no(format!("{by_track} may not be confirmed as {track}: {}", claim.blockers.join("; "))));
         }
-        Ok(out)
+        let t = self.emit(EventBody::TrackReacquired {
+            track: track.to_string(),
+            by_track: by_track.to_string(),
+            by: by.operator().clone(),
+            session: by.session(),
+            world_t: world.t,
+            tracks,
+            track_ais: world.track_ais.clone(),
+            evidence: claim.evidence.clone(),
+        })?;
+        self.lost.claim(track, by_track);
+        self.lost.confirm(track, by_track, by.operator(), t).map_err(no)?;
+        Ok(claim)
+    }
+
+    /// Rules 16: the claims on the lost contacts in force on `world` now (for review): each live
+    /// track carrying a lost contact's MMSI, with the evidence and what keeps it from being
+    /// confirmed ([`crate::lost::claims`]).
+    pub fn lost_claims(&self, world: &WorldSnapshot) -> Vec<crate::lost::Claim> {
+        if !self.policy.rules.lost_contacts() {
+            return Vec::new();
+        }
+        let mut tracks = world.tracks.clone();
+        if self.policy.rules.rule_id() {
+            self.ident.fill(&mut tracks);
+        }
+        crate::lost::claims(&self.lost, &tracks, &world.track_ais, &self.policy.rules.engage_rules())
     }
 
     /// Rules 16: the lost contacts in force, as decisions read them (identification filled).
@@ -1911,17 +2028,24 @@ impl Engine {
         self.lost_filled()
     }
 
+    /// Rules 16: the lost contacts an operator confirmed as a live track (retired while it
+    /// stands).
+    pub fn lost_confirmed(&self) -> &BTreeMap<String, crate::lost::Confirmed> {
+        self.lost.confirmed()
+    }
+
     fn lost_filled(&self) -> BTreeMap<String, crate::lost::LostContact> {
         self.lost.filled(&self.ident, self.policy.rules.rule_id())
     }
 
     /// Rules 16: an engagement decision's lost contacts and the acceptances of them for it,
-    /// filled into its inputs (nothing for another kind, or before rules 16).
+    /// filled into its inputs (nothing for another kind, or before rules 16): those in force
+    /// and those whose confirmation its picture (`w.tracks`, identification filled) voids.
     fn fill_lost(&self, spec: &IntentSpec, w: &mut WorldSnapshot) {
         if spec.kind() != TaskKind::Engage || !self.policy.rules.lost_contacts() {
             return;
         }
-        w.lost_contacts = self.lost_filled();
+        w.lost_contacts = self.lost.in_force_for(&w.tracks, &self.ident, self.policy.rules.rule_id());
         w.lost_accepted = self.accepted_lost_for(spec.id);
     }
 
@@ -5783,6 +5907,14 @@ pub(crate) fn op_state_owner(spec: &IntentSpec, uid: &Uid) -> Result<(), String>
 }
 
 /// Rules 6: who accepts lost vehicles at a nomination, and which.
+/// Rules 16: what [`Engine::step_lost`] did: the claims it raised and the confirmations it
+/// voided (lost contact, claimant, why).
+#[derive(Clone, Debug, Default)]
+pub struct LostStep {
+    pub claimed: Vec<crate::lost::Claim>,
+    pub reinstated: Vec<(String, String, String)>,
+}
+
 struct Acceptor<'a> {
     by: &'a OperatorId,
     session: SessionId,

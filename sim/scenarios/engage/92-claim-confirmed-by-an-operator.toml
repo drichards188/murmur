@@ -1,0 +1,116 @@
+# Rules 16: a confirmation of a claim on a lost contact is an operator's act. A tour boat
+# broadcasting AIS goes out of view 400 m north of the target and is dropped; ten minutes on a
+# track carrying its MMSI appears 1.9 km north of the target, the tracker sees nothing against
+# its AIS, and the claim (`lost.claimed`) goes to review. An agent tries to confirm it (its port
+# has no such method: recorded, nothing moves); op-3 confirms it under their own session
+# (`track.reacquired`); the nomination is signed, the effect released and assessed. Afterwards
+# the log credits the confirmation to an agent; replay catches it (not an operator's session).
+title = "A claim on a lost contact is confirmed by an operator, never an agent"
+invariant = "keep_out_tracks"
+attack = "an agent tries to confirm a claim on a lost contact; the operator's confirmation credited to an agent in the log"
+expect = "done"
+expect_assessment = "ceased"
+expect_claimed = ["T-0009 claims to be T-0002"]
+expect_reacquired = ["T-0002 is T-0009 again, confirmed by op-3"]
+tamper = "confirm_by_agent"
+end_s = 760
+
+[[operator]]
+id = "op-1"
+engage = true
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, 28 m/s: the effect about 100 s after the nomination
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[track]]
+id = "T-0002"
+at = [-122.4950, 37.8156]   # 400 m north of the target
+affiliation = "neutral"
+identity = "ferry"
+identity_confidence = 0.9
+sources = ["3:radar", "3:ais"]
+ais = { mmsi = "366999501", name = "MV BAY TOUR", ship_type = "passenger" }
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "track"            # out of sensor view
+id = "T-0002"
+silent = true
+
+[[step]]
+at_s = 181
+action = "drop_track"       # 180 s unseen: a lost contact
+track = "T-0002"
+
+[[step]]
+at_s = 600
+action = "track"            # a track carrying its MMSI, 1.9 km north of the target
+id = "T-0009"
+at = [-122.4950, 37.8291]
+affiliation = "neutral"
+identity = "ferry"
+identity_confidence = 0.85
+sources = ["3:radar", "3:ais"]
+tracked_s = 120             # followed for two minutes: it has an average velocity
+ais = { mmsi = "366999501", name = "MV BAY TOUR", ship_type = "passenger" }
+
+[[step]]
+at_s = 603
+action = "agent_confirm"    # no such method on an agent's port
+agent = "agent-planner"
+track = "T-0002"
+
+[[step]]
+at_s = 604
+action = "confirm_claim"
+by = "op-3"
+track = "T-0002"
+by_track = "T-0009"
+
+[[step]]
+at_s = 606
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 608
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 610
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 611
+action = "expect"
+state = "dispatched"

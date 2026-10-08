@@ -433,6 +433,8 @@ struct Core {
     fleet_looked: Option<f64>,
     /// rules 9: the latest observed acts and what the engine made of them (display)
     acts: Vec<Value>,
+    /// rules 16: the claims on lost contacts as of the last tick (the review list)
+    lost_claims: Vec<Value>,
 }
 
 /// `operator.view` events an operator may log: a burst of this many, refilled at
@@ -762,6 +764,7 @@ impl Decision {
                 fleet_written: None,
                 fleet_looked: None,
                 acts: Vec::new(),
+                lost_claims: Vec::new(),
             }),
             updates: watch::channel(Arc::new(String::new())).0,
             recent: agent::RecentEvents::default(),
@@ -2428,10 +2431,17 @@ impl Decision {
         // declaration off: an operator declares)
         let (review, acts) = {
             let core = self.lock();
-            (ident::review_of(core.engine.identification()), self.recorded_acts(&core))
+            let mut review = ident::review_of(core.engine.identification());
+            // rules 16: claims on lost contacts, and those confirmed
+            let (claims, confirmed) = self.lost_review(&core);
+            review["counts"]["lost_claims"] = json!(claims.len());
+            review["lost_claims"] = json!(claims);
+            review["lost_confirmed"] = json!(confirmed);
+            (review, self.recorded_acts(&core))
         };
         let n_review = review["counts"]["declarations"].as_u64().unwrap_or(0)
-            + review["counts"]["flags"].as_u64().unwrap_or(0);
+            + review["counts"]["flags"].as_u64().unwrap_or(0)
+            + review["counts"]["lost_claims"].as_u64().unwrap_or(0);
         json!({
             "pending": pending,
             "alerts": alerts,

@@ -198,58 +198,165 @@ fn before_rules_16_a_drop_is_not_logged_and_the_contact_is_gone() {
     assert!(r.ok(), "{:?}", r.mismatches);
 }
 
+/// A live track carrying a lost contact's MMSI is a claim, raised once for review (never a
+/// retirement); an operator confirms it only while nothing contradicts it.
 #[test]
-fn a_contact_seen_again_is_retired_only_on_an_unambiguous_ais_match() {
+fn a_claim_on_a_lost_contact_is_confirmed_by_an_operator_only_when_nothing_contradicts_it() {
     let seen = T0;
     let back = T0.plus_ms(240_000);
     let near = toward(TARGET_AT, 0.0, 300.0);
-    // each other track with the MMSI it carries (all of them here)
+    // every other track carries this MMSI
     let try_with = |mmsi: Option<&str>, others: Vec<(&str, TrackFacts)>| {
         let clock = ManualClock::new(T0);
         let (mut e, log) = engine_on(&clock, None);
+        let op = e.open_operator_session(OperatorId::new("op-2")).unwrap();
         drop_ferry(&mut e, &clock, seen, T0.plus_ms(180_000), mmsi);
         clock.set(back);
         let mut w = world(back, &others.iter().map(|(i, f)| (*i, f.clone())).collect::<Vec<_>>());
         for (i, _) in &others {
             w.track_ais.insert((*i).to_string(), ais("366999501").unwrap());
         }
-        let out = e.step_lost(&w).unwrap();
+        let step = e.step_lost(&w).unwrap();
+        assert!(step.reinstated.is_empty());
+        // raised once
+        assert!(e.step_lost(&w).unwrap().claimed.is_empty());
+        // nothing retired by the claim itself
+        assert_eq!(e.lost_contacts().len(), 1);
+        let confirmed = e.confirm_lost_claim(op.authority(), "T-0002", "T-0009", &w);
         let r = replay_str(&log.text()).unwrap();
         assert!(r.ok(), "{:?}", r.mismatches);
-        (out, e.lost_contacts().len())
+        (step.claimed, confirmed.is_ok(), e.lost_contacts().len(), log.text())
     };
-    let again = |mmsi: &str, at: LonLat| {
-        assert_eq!(mmsi, "366999501", "try_with gives every other track this MMSI");
+    let again = |at: LonLat| {
         let mut f = contact(back, at, Affiliation::Neutral);
         f.first_seen_t = Some(back);
         f.mean_velocity_mps = None;
         f
     };
     // the one track carrying its MMSI, undeclared, consistent, first seen since, where it could be
-    let (out, left) = try_with(Some("366999501"), vec![("T-0009", again("366999501", near))]);
-    assert_eq!((out, left), (vec![("T-0002".to_string(), "T-0009".to_string())], 0));
-    // a contact without AIS is never matched
-    let (out, left) = try_with(None, vec![("T-0009", again("366999501", near))]);
-    assert!(out.is_empty() && left == 1);
-    // two tracks carrying it: ambiguous
-    let (out, left) = try_with(
+    let (claims, ok, left, text) = try_with(Some("366999501"), vec![("T-0009", again(near))]);
+    assert_eq!(claims.len(), 1);
+    assert!(claims[0].confirmable(), "{:?}", claims[0].blockers);
+    assert!(claims[0].evidence.contains("name MV 366999501 (the same)"), "{}", claims[0].evidence);
+    assert!(claims[0].evidence.contains("the kinds agree"), "{}", claims[0].evidence);
+    assert!(ok && left == 0);
+    assert_eq!(text.matches("\"type\":\"lost.claimed\"").count(), 1);
+    assert!(text.contains("\"type\":\"track.reacquired\",\"track\":\"T-0002\",\"by_track\":\"T-0009\",\"by\":\"op-2\""));
+    // a contact without AIS is never claimed
+    let (claims, ok, left, _) = try_with(None, vec![("T-0009", again(near))]);
+    assert!(claims.is_empty() && !ok && left == 1);
+    // two tracks carrying it: ambiguous, both claims shown, neither confirmed
+    let (claims, ok, left, _) = try_with(
         Some("366999501"),
-        vec![("T-0009", again("366999501", near)), ("T-0010", again("366999501", toward(TARGET_AT, 90.0, 200.0)))],
+        vec![("T-0009", again(near)), ("T-0010", again(toward(TARGET_AT, 90.0, 200.0)))],
     );
-    assert!(out.is_empty() && left == 1);
+    assert_eq!(claims.len(), 2);
+    assert!(claims.iter().all(|c| c.blockers.iter().any(|b| b.contains("ambiguous"))));
+    assert!(!ok && left == 1);
     // what our sensors see does not fit its AIS (the tracker's estimate is suspect)
-    let mut odd = again("366999501", near);
+    let mut odd = again(near);
     odd.affiliation = Fact::new(Affiliation::Suspect, back);
-    let (out, left) = try_with(Some("366999501"), vec![("T-0009", odd)]);
-    assert!(out.is_empty() && left == 1);
+    let (claims, ok, left, _) = try_with(Some("366999501"), vec![("T-0009", odd)]);
+    assert!(claims[0].blockers.iter().any(|b| b.contains("suspect")) && !ok && left == 1);
     // far beyond where it could have got to
-    let (out, left) = try_with(Some("366999501"), vec![("T-0009", again("366999501", toward(TARGET_AT, 0.0, 30_000.0)))]);
-    assert!(out.is_empty() && left == 1);
+    let (claims, ok, left, _) = try_with(Some("366999501"), vec![("T-0009", again(toward(TARGET_AT, 0.0, 30_000.0)))]);
+    assert!(claims[0].blockers.iter().any(|b| b.contains("beyond")) && !ok && left == 1);
     // a track first seen before its last fix is not a new sighting of it
-    let mut old = again("366999501", near);
+    let mut old = again(near);
     old.first_seen_t = Some(Time(seen.0 - 1_000));
-    let (out, left) = try_with(Some("366999501"), vec![("T-0009", old)]);
-    assert!(out.is_empty() && left == 1);
+    let (claims, ok, left, _) = try_with(Some("366999501"), vec![("T-0009", old)]);
+    assert!(claims[0].blockers.iter().any(|b| b.contains("first seen before")) && !ok && left == 1);
+}
+
+/// A confirmation lasts while its claimant stands: once it turns suspect, is declared or is
+/// dropped, every decision counts the lost contact again on its own picture (before the loop
+/// has logged anything), and the loop logs it reinstated for good. Replay checks both.
+#[test]
+fn a_confirmation_is_void_once_its_claimant_turns_suspect_is_declared_or_is_dropped() {
+    let back = T0.plus_ms(240_000);
+    let near = toward(TARGET_AT, 0.0, 1_900.0);
+    for how in ["suspect", "declared", "dropped"] {
+        let clock = ManualClock::new(T0);
+        let (mut e, log) = engine_on(&clock, None);
+        let op1 = e.open_operator_session_with(OperatorId::new("op-1"), Grants { engage: true }).unwrap();
+        drop_ferry(&mut e, &clock, T0, T0.plus_ms(180_000), Some("366999501"));
+        clock.set(back);
+        let mut claimant = contact(back, near, Affiliation::Neutral);
+        claimant.first_seen_t = Some(T0.plus_ms(100_000));
+        let mut w = world(back, &[("T-0009", claimant.clone())]);
+        w.track_ais.insert("T-0009".into(), ais("366999501").unwrap());
+        e.step_lost(&w).unwrap();
+        e.confirm_lost_claim(op1.authority(), "T-0002", "T-0009", &w).unwrap();
+        assert!(e.lost_contacts().is_empty());
+        // the claimant then turns: the next decision reads the lost contact on its own picture
+        let now = back.plus_ms(5_000);
+        clock.set(now);
+        let mut w2 = world(now, &[("T-0009", claimant.clone())]);
+        w2.track_ais.insert("T-0009".into(), ais("366999501").unwrap());
+        match how {
+            "suspect" => w2.tracks.get_mut("T-0009").unwrap().affiliation = Fact::new(Affiliation::Suspect, now),
+            "declared" => {
+                e.declare_track(op1.authority(), None, "T-0009", Affiliation::Hostile, None, None, &w2).unwrap();
+            }
+            _ => {
+                let f = w2.tracks.remove("T-0009").unwrap();
+                let a = w2.track_ais.remove("T-0009");
+                e.record_track_drops(vec![("T-0009".into(), f, a)]).unwrap();
+            }
+        }
+        let id = e.submit(op1.authority(), nomination(), &w2, &terrain()).unwrap().id();
+        let i = e.intent(id).unwrap();
+        assert_eq!(i.state(), State::Rejected, "{how}");
+        assert!(keep_out_tracks(i).detail.contains("T-0002"), "{how}: {}", keep_out_tracks(i).detail);
+        // the loop logs it reinstated (a drop at once)
+        let step = e.step_lost(&w2).unwrap();
+        let text = log.text();
+        assert_eq!(text.matches("\"type\":\"lost.reinstated\"").count(), 1, "{how}");
+        assert_eq!(step.reinstated.len(), usize::from(how != "dropped"), "{how}");
+        assert_eq!(e.lost_contacts().len(), if how == "dropped" { 2 } else { 1 }, "{how}");
+        // for good: the claimant standing again does not retire it
+        e.step_lost(&w).unwrap();
+        assert!(e.lost_contacts().contains_key("T-0002"));
+        let r = replay_str(&text).unwrap();
+        assert!(r.ok(), "{how}: {:?}", r.mismatches);
+        assert_eq!((r.lost_claims, r.lost_confirmed, r.lost_reinstated), (1, 1, 1), "{how}");
+    }
+}
+
+/// The review's replay gap: a confirmation's picture is a picture like a decision's. A
+/// claimant seen only there (no decision read it) that then leaves the picture without a drop
+/// is caught, so a confirmation is judged on a picture replay holds to the rest of the log.
+#[test]
+fn a_track_seen_only_in_a_confirmations_picture_cannot_vanish_without_a_drop() {
+    let clock = ManualClock::new(T0);
+    let (mut e, log) = engine_on(&clock, None);
+    let op1 = e.open_operator_session_with(OperatorId::new("op-1"), Grants { engage: true }).unwrap();
+    drop_ferry(&mut e, &clock, T0, T0.plus_ms(180_000), Some("366999501"));
+    let back = T0.plus_ms(240_000);
+    clock.set(back);
+    let mut claimant = contact(back, toward(TARGET_AT, 0.0, 1_900.0), Affiliation::Neutral);
+    claimant.first_seen_t = Some(T0.plus_ms(100_000));
+    let mut w = world(back, &[("T-0009", claimant)]);
+    w.track_ais.insert("T-0009".into(), ais("366999501").unwrap());
+    e.confirm_lost_claim(op1.authority(), "T-0002", "T-0009", &w).unwrap();
+    // the claimant gone from the next decision's picture, no track.dropped
+    clock.set(back.plus_ms(1_000));
+    e.submit(op1.authority(), nomination(), &world(back.plus_ms(1_000), &[]), &terrain()).unwrap();
+    let r = replay_str(&log.text()).unwrap();
+    assert!(r.mismatches.iter().any(|m| m.what.contains("left the picture without a drop")), "{:?}", r.mismatches);
+}
+
+/// A track id is dropped once: the engine refuses a second drop of one it holds.
+#[test]
+fn a_track_is_dropped_once() {
+    let clock = ManualClock::new(T0);
+    let (mut e, log) = engine_on(&clock, None);
+    let f = drop_ferry(&mut e, &clock, T0, T0.plus_ms(180_000), None);
+    let mut moved = f.clone();
+    moved.position = Fact::new(toward(TARGET_AT, 0.0, 6_000.0), T0.plus_ms(60_000));
+    assert!(e.record_track_drops(vec![("T-0002".into(), moved, None)]).is_err());
+    assert_eq!(log.text().matches("\"type\":\"track.dropped\"").count(), 1);
+    assert_eq!(e.lost_contacts()["T-0002"].facts.position, f.position);
 }
 
 #[test]
@@ -328,16 +435,16 @@ fn only_engagement_authority_accepts_a_lost_contact_and_any_operator_revokes_it(
     assert!(r.mismatches.iter().any(|m| m.what.contains("carry an identification")), "{:?}", r.mismatches);
 }
 
-/// murmur-533's measurement found the regions along a lost contact's course alone a prediction,
-/// not a bound: a contact last seen steady that turns after its last fix can be inside a keep-out
-/// they clear. A ferry 600 m north-west of the target, last seen steaming away at 5 m/s, dropped
-/// 180 s later: by the effect, about 280 s after its last fix, its course puts it 1.4 km further
-/// on (clear of the keep-out), but it could have turned back and be at the target. It also counts
-/// anywhere it reaches at its own plausible speed (its speed and 2-sigma of its 1 m/s velocity
-/// error, 7 m/s), so the nomination is rejected on that region. A live track with the same facts
-/// keeps the course regions alone (the tracker would see it turn). Scenario 89 plays it.
+/// Rules 16, out of view: a lost contact counts anywhere it could have got to at its domain's top
+/// speed since its last fix, not only along its course (murmur-533's measurement: a prediction,
+/// not a bound) nor at its own speed bound (the review: a contact that speeds up after its last
+/// fix is outside that too). A ferry 600 m north-west of the target, last seen steaming away at
+/// 5 m/s, dropped 180 s later: by the effect, about 280 s after its last fix, its course puts it
+/// 1.4 km further on, clear of the keep-out, and its own bound (7 m/s) reaches the target too,
+/// but the check names 25 m/s, the surface top speed. A track in view with the same facts keeps
+/// its course regions alone (the tracker would see it turn). Scenario 89 plays it.
 #[test]
-fn a_lost_contact_counts_anywhere_at_its_own_plausible_speed() {
+fn a_lost_contact_counts_anywhere_at_its_domains_top_speed() {
     let clock = ManualClock::new(T0);
     let (mut e, log) = engine_on(&clock, None);
     let op1 = e.open_operator_session_with(OperatorId::new("op-1"), Grants { engage: true }).unwrap();
@@ -355,35 +462,79 @@ fn a_lost_contact_counts_anywhere_at_its_own_plausible_speed() {
     assert_eq!(i.state(), State::Rejected);
     let k = keep_out_tracks(i);
     assert!(k.detail.starts_with("lost contact T-0002 (neutral, ferry)"), "{}", k.detail);
-    assert!(k.detail.contains("its own plausible speed, 7.0 m/s"), "{}", k.detail);
-    // the course regions alone clear it; the plausible-speed region does not
+    assert!(k.detail.contains("anywhere it reaches at 25.0 m/s"), "{}", k.detail);
+    // the course regions alone clear it; the out-of-view region does not
     let pv = engage::preview(i.spec(), &w, &policy().rules).unwrap();
     let ec = policy().rules.engage_rules();
-    let course = engage::track_standing(&f, pv.effect_point, pv.effect_t, pv.keep_out_m, now, &ec, None, false).unwrap();
-    assert!(course.edge > pv.keep_out_m + 200.0, "course regions: edge {:.0} m", course.edge);
+    let course = engage::track_regions(&f, pv.effect_t, &ec)
+        .iter()
+        .map(|r| murmur_decide::geo::haversine_m(r.center, pv.effect_point) - r.radius_m)
+        .fold(f64::INFINITY, f64::min);
+    assert!(course > pv.keep_out_m + 200.0, "course regions: edge {course:.0} m");
     let lost = engage::lost_track_standing(&f, pv.effect_point, pv.effect_t, pv.keep_out_m, now, &ec, None, false).unwrap();
     assert!(lost.blocks(pv.keep_out_m));
-    assert_eq!(lost.regions[lost.nearest].kind, engage::ReachKind::PlausibleSpeed);
-    // a live track keeps its course regions alone
-    let kinds: Vec<_> = engage::track_reach(&f, pv.effect_t, &ec).iter().map(|r| r.kind).collect();
-    assert!(!kinds.contains(&engage::ReachKind::PlausibleSpeed), "{kinds:?}");
+    assert_eq!(lost.regions[lost.nearest].kind, engage::ReachKind::OutOfView);
+    assert_eq!(engage::out_of_view_speed(&f, &ec), (25.0, 0.0));
     let r = replay_str(&log.text()).unwrap();
     assert!(r.ok(), "{:?}", r.mismatches);
 }
 
-/// The plausible-speed region stands aside where a region at the last fix already reaches at
-/// least as far: a lost contact the tracker saw manoeuvre faster than its speed bound, or one
-/// without a velocity estimate (its domain's top speed).
+/// Rules 16, out of view before the drop (the review: the same ferry unseen 170 s let a
+/// nomination through that unseen 182 s it blocked): a live track with no detection for
+/// [`engage::OUT_OF_VIEW_S`] counts the same disc from its last fix; one seen within that is
+/// judged by its course. Under rules 14 the stale track counted by its course alone.
 #[test]
-fn the_plausible_speed_region_is_not_doubled() {
+fn a_track_out_of_view_counts_at_top_speed_before_it_is_dropped() {
+    let away = [-5.0 * std::f64::consts::FRAC_1_SQRT_2, 5.0 * std::f64::consts::FRAC_1_SQRT_2];
+    let ferry = |seen: Time| {
+        let mut f = contact(seen, toward(TARGET_AT, 315.0, 600.0), Affiliation::Neutral);
+        f.velocity_mps = Some(away);
+        f.mean_velocity_mps = Some(away);
+        f
+    };
+    let now = T0.plus_ms(170_000);
+    for (version, unseen_ms, expect) in [
+        (None, 170_000, State::Rejected),
+        (None, 9_000, State::PendingApproval),
+        (Some(AIRCRAFT_REACH_SINCE), 170_000, State::PendingApproval),
+    ] {
+        let clock = ManualClock::new(now);
+        let (mut e, log) = engine_on(&clock, version);
+        let op1 = e.open_operator_session_with(OperatorId::new("op-1"), Grants { engage: true }).unwrap();
+        let seen = Time(now.0 - unseen_ms);
+        let w = world(now, &[("T-0002", ferry(seen))]);
+        let id = e.submit(op1.authority(), nomination(), &w, &terrain()).unwrap().id();
+        let i = e.intent(id).unwrap();
+        assert_eq!(i.state(), expect, "rules {version:?}, unseen {unseen_ms} ms: {}", keep_out_tracks(i).detail);
+        if expect == State::Rejected {
+            let d = keep_out_tracks(i).detail;
+            assert!(d.starts_with("track T-0002 (neutral, ferry)") && d.contains("out of view"), "{d}");
+            assert!(d.contains("no detection for 170 s"), "{d}");
+        }
+        let opts = replay::ReplayOptions {
+            rules: version.map_or(RulesAccepted::default(), RulesAccepted::Exactly),
+            ..Default::default()
+        };
+        let r = replay_str_with(&log.text(), &opts).unwrap();
+        assert!(r.ok(), "{:?}", r.mismatches);
+    }
+}
+
+/// The out-of-view region stands aside where a region at the last fix already reaches as far
+/// (no velocity: the top speed; young: the top speed or its own bound), and runs at the contact's
+/// own speed when the tracker saw it go faster than the top speed.
+#[test]
+fn the_out_of_view_region_is_not_doubled() {
     let ec = policy().rules.engage_rules();
     let mut f = contact(T0, TARGET_AT, Affiliation::Neutral);
     let at = T0.plus_ms(300_000);
     let kinds = |f: &TrackFacts| engage::lost_reach(f, at, &ec).iter().map(|r| r.kind).collect::<Vec<_>>();
-    assert!(kinds(&f).contains(&engage::ReachKind::PlausibleSpeed));
-    f.manoeuvre = Some(Manoeuvre { t: T0, change_mps: 4.0, speed_mps: 9.0 });
-    assert!(!kinds(&f).contains(&engage::ReachKind::PlausibleSpeed), "{:?}", kinds(&f));
+    assert!(kinds(&f).contains(&engage::ReachKind::OutOfView));
+    f.manoeuvre = Some(Manoeuvre { t: T0, change_mps: 4.0, speed_mps: 31.0 });
+    assert_eq!(engage::out_of_view_speed(&f, &ec).0, 31.0, "the fastest it went, above the top speed");
     f.manoeuvre = None;
+    f.mean_velocity_mps = None; // young
+    assert!(!kinds(&f).contains(&engage::ReachKind::OutOfView), "{:?}", kinds(&f));
     f.velocity_mps = None;
     assert_eq!(kinds(&f), [engage::ReachKind::NoVelocity]);
 }

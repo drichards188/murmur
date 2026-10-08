@@ -317,7 +317,7 @@ pub use engage::{
     StopRecord, TrackIdentity, VehicleIdentity,
 };
 pub use engine::{
-    ActOutcome, AgentPort, Dequeued, DispatchOrder, Engine, EngineError, IdentOutcome, Order,
+    ActOutcome, AgentPort, Dequeued, DispatchOrder, Engine, EngineError, IdentOutcome, LostStep, Order,
     PREPARED_SPACE_MAX_AGE_MS, PlatformRestoreReport, PreloadReport, PreparedSpace, Preview,
     Routed, SpaceRecheck, StepOutcome, TaskOutcome, WriteOff, prepare_space, prepare_space_at,
 };
@@ -327,7 +327,7 @@ pub use ident::{
     FlagKind, FlagResolution, FlagStatus, IdentConfig, IdentInputs, RuleEvidence,
 };
 pub use ids::{AgentId, IntentId, OperatorId, SessionId, Uid};
-pub use lost::{LostContact, LostLedger, Reacquired};
+pub use lost::{Claim, Confirmed, LostContact, LostLedger};
 pub use intent::{
     Constraints, IllegalTransition, Intent, IntentSpec, Proposal, ProposalError, Rationale, Source,
     State, Targets, Task, TaskKind, Transition, next_state,

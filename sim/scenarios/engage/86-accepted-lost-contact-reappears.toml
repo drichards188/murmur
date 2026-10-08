@@ -2,17 +2,19 @@
 # out of view 400 m north of the target and is dropped; the nominating operator accepts it as
 # a lost contact; the engagement is approved and dispatched. Then the boat is seen again, 150 m
 # from the effect point, under a new track id (the tracker starts a new track after a drop) with
-# the same AIS identity: the engine retires the lost contact (`track.reacquired`: the only track
-# carrying its MMSI, undeclared, consistent, first seen after its last fix, where it could have
-# reached), and the live track counts like any other: the engagement aborts (keep_out_tracks)
-# with its fallback. Afterwards the log is forged to credit the acceptance to an agent; replay
+# the same AIS identity. The live track counts like any other, confirmed or not: the engagement
+# aborts (keep_out_tracks) with its fallback. Its AIS match is a claim (`lost.claimed`: the only
+# track carrying the MMSI, undeclared, consistent, first seen after the last fix, where the boat
+# could have reached), which op-2 confirms (`track.reacquired`): the lost contact is retired
+# while T-0005 stands. Afterwards the log is forged to credit the acceptance to an agent; replay
 # catches it (not an operator, not its session).
 title = "An accepted lost contact is seen again inside the keep-out"
 invariant = "keep_out_tracks"
 attack = "an accepted lost contact reappears by the effect point under a new track id; the acceptance credited to an agent in the log"
 expect = "aborted"
 expect_rule = "keep_out_tracks"
-expect_reacquired = ["T-0002 is T-0005 again"]
+expect_claimed = ["T-0005 claims to be T-0002"]
+expect_reacquired = ["T-0002 is T-0005 again, confirmed by op-2"]
 tamper = "acceptance_by_agent"
 end_s = 260
 
@@ -100,3 +102,10 @@ at = [-122.4950, 37.8133]   # 150 m north of the target
 affiliation = "neutral"
 identity = "ferry"
 ais = { mmsi = "366999501", name = "MV BAY TOUR", ship_type = "passenger" }
+
+[[step]]
+at_s = 233
+action = "confirm_claim"
+by = "op-2"
+track = "T-0002"
+by_track = "T-0005"

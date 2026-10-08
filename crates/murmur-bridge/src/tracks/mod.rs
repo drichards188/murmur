@@ -458,6 +458,15 @@ impl Tracks {
             .collect()
     }
 
+    /// Rules 16: drops the decision engine could not log (`Tracks::take_drops` handed them
+    /// over), back for the next tick; they stay in the decision facts meanwhile.
+    pub fn restore_drops(&self, drops: Vec<(String, TrackFacts, Option<AisIdentity>)>) {
+        let mut inner = lock(&self.inner);
+        for (id, f, ais) in drops {
+            inner.dropped.entry(id).or_insert((f, ais));
+        }
+    }
+
     /// Rules 16: show the engine's lost contacts (the console's map and tracks list); each
     /// entry as [`crate::decision::Decision::lost_json`] builds it. Republishes if they
     /// changed.
@@ -734,6 +743,7 @@ pub fn router<S: Clone + Send + Sync + 'static>(
         .route("/api/tracks/{id}/revoke", post(revoke))
         .route("/api/review", get(review))
         .route("/api/review/{flag}/resolve", post(resolve))
+        .route("/api/review/lost/{track}/confirm", post(confirm_lost))
         .route("/api/sim/contacts", post(sim_contacts))
         .route("/api/sim/truth", get(sim_truth))
         .with_state(Api {
@@ -908,6 +918,35 @@ async fn resolve(
         Err(e) => return error(StatusCode::from_u16(e.status).unwrap_or(StatusCode::FORBIDDEN), e.detail),
     };
     match api.decision.resolve_flag(&op, flag, body.resolution, body.note) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => error(StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR), e.detail),
+    }
+}
+
+#[derive(Deserialize)]
+struct ConfirmLostBody {
+    by_track: String,
+}
+
+/// Rules 16: `POST /api/review/lost/{track}/confirm` `{by_track}`: any operator confirms, under
+/// their own session, that live track `by_track` is lost contact `track` again (its claim, an
+/// AIS identity: `track.reacquired`); 409 while anything contradicts it. Agents have no route
+/// here and no MCP tool for it.
+async fn confirm_lost(
+    State(api): State<Api>,
+    AxPath(track): AxPath<String>,
+    headers: HeaderMap,
+    body: Result<Json<ConfirmLostBody>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, e.body_text()),
+    };
+    let op = match api.auth.actor(&headers, true) {
+        Ok(op) => op,
+        Err(e) => return error(StatusCode::from_u16(e.status).unwrap_or(StatusCode::FORBIDDEN), e.detail),
+    };
+    match api.decision.confirm_lost_claim(&op, &track, &body.by_track) {
         Ok(v) => Json(v).into_response(),
         Err(e) => error(StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR), e.detail),
     }

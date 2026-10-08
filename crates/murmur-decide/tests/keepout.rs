@@ -157,11 +157,12 @@ fn cfg() -> RulesConfig {
 }
 
 /// The policy with its keep-out raised by the explanation's grid margin (murmur-dr6): what a
-/// grid point of its scan must clear to count as clear.
-fn strict_cfg() -> RulesConfig {
+/// grid point of its scan must clear to count as clear (`margin`: the one the scan used, sized
+/// for the picture's fastest relative motion; at least the default's).
+fn strict_cfg(margin: f64) -> RulesConfig {
     let mut c = cfg();
     let mut e = c.engage.clone().unwrap_or_default();
-    e.keep_out_m += grid_margin_m(75.0 + e.keep_out_m);
+    e.keep_out_m += margin.max(grid_margin_m(75.0 + e.keep_out_m));
     c.engage = Some(e);
     c
 }
@@ -425,6 +426,7 @@ fn check_windows(
     windows: &[EffectWindow],
     earliest: Time,
     latest: Time,
+    margin: f64,
     rng: &mut Rng,
     n: &mut Counts,
 ) {
@@ -433,7 +435,7 @@ fn check_windows(
         None => both_pass(spec, moved),
     };
     // outside the windows a grid point fails with the clearance raised by the grid's margin
-    let strict = strict_cfg();
+    let strict = strict_cfg(margin);
     let ok_strict = |moved: &WorldSnapshot| match item {
         Some(i) => item_passes_with(spec, moved, i, &strict),
         None => {
@@ -555,13 +557,13 @@ fn check_claims(spec: &IntentSpec, w: &WorldSnapshot, ex: &Explanation, rng: &mu
                     && let Some(moved) = platform_for(spec, w, by.plus_ms(SPAN_STEP_MS), rng.range(0.0, 360.0))
                 {
                     n.vice_versa += 1;
-                    assert!(!item_passes_with(spec, &moved, item, &strict_cfg()), "{}: one step later", item.id);
+                    assert!(!item_passes_with(spec, &moved, item, &strict_cfg(mw.grid_margin_m)), "{}: one step later", item.id);
                 }
             }
             None if item.clear_windows.is_empty() => n.item_no_window += 1,
             None => n.item_later_windows += 1,
         }
-        check_windows(spec, w, Some(item), &item.clear_windows, mw.earliest_t, mw.latest_t, rng, n);
+        check_windows(spec, w, Some(item), &item.clear_windows, mw.earliest_t, mw.latest_t, mw.grid_margin_m, rng, n);
     }
     if !ex.blocked {
         assert!(ex.move_within.is_none() && ex.wait.is_none());
@@ -587,7 +589,7 @@ fn check_claims(spec: &IntentSpec, w: &WorldSnapshot, ex: &Explanation, rng: &mu
         // murmur-dr6: said of the scan's grid, not of every instant
         assert!(mw.why.contains("No position") && mw.why.contains("on a 0.25 s grid"), "{}", mw.why);
     }
-    check_windows(spec, w, None, &mw.windows, mw.earliest_t, mw.latest_t, rng, n);
+    check_windows(spec, w, None, &mw.windows, mw.earliest_t, mw.latest_t, mw.grid_margin_m, rng, n);
     match &ex.wait {
         Some(wait) => {
             n.waits += 1;
@@ -1111,4 +1113,41 @@ fn the_grid_margin_covers_a_dip_between_grid_points() {
     // the review's case: an 80 m/s aircraft grazing a 275 m clearance between grid points
     // (274.98 m against 275.05 m at the grid points): the margin covers it
     assert!((grid_margin_m(275.0) - 0.3).abs() < 1e-12);
+    // faster than 100 m/s (an aircraft's reach growing at its top speed head-on to a moving
+    // target): the margin for the speed covers it, where the 100 m/s one would not
+    let h = SPAN_STEP_MS as f64 / 1000.0;
+    for (c, v) in [(51.0, 150.0), (275.0, 200.0), (275.0, 400.0)] {
+        let dip = (c * c + (v * h / 2.0_f64).powi(2)).sqrt() - c;
+        assert!(dip <= keepout::grid_margin_for(c, v), "{c} m at {v} m/s");
+        assert!(dip > grid_margin_m(c) || v <= 150.0, "{c} m at {v} m/s: the fixed margin would not cover it");
+    }
+}
+
+/// The review of murmur-dr6: the scan sizes its margin from the picture's fastest relative
+/// motion and says so; with an aircraft about, more than 100 m/s.
+#[test]
+fn the_grid_margin_is_sized_for_the_picture() {
+    let mut w = WorldSnapshot::new(T0);
+    w.areas = Some(areas());
+    w.tracks.insert(TARGET.into(), target(TARGET_AT, [0.0, 0.0]));
+    w.vehicles.insert(uid("viper-1"), ours("magura", toward(TARGET_AT, 180.0, 900.0), T0));
+    let spec = nomination("viper-1");
+    // a boat in view near the target: surface speeds only
+    w.tracks.insert(
+        "T-0002".into(),
+        contact(T0, toward(TARGET_AT, 0.0, 300.0), Some([0.0, 0.0]), Affiliation::Neutral, Domain::Surface),
+    );
+    let ex = keepout::explain(&spec, &w, &cfg(), &opts()).unwrap();
+    let mw = ex.move_within.as_ref().expect("blocked");
+    assert!(mw.grid_speed_mps < 100.0 && mw.grid_margin_m >= 0.3, "{} m/s, {} m", mw.grid_speed_mps, mw.grid_margin_m);
+    // and an aircraft: its reach grows at 100 m/s and more
+    w.tracks.insert(
+        "T-0003".into(),
+        contact(T0, toward(TARGET_AT, 90.0, 3_000.0), Some([-50.0, 0.0]), Affiliation::Neutral, Domain::Air),
+    );
+    let ex = keepout::explain(&spec, &w, &cfg(), &opts()).unwrap();
+    let mw = ex.move_within.as_ref().expect("blocked");
+    assert!(mw.grid_speed_mps > 100.0, "{} m/s", mw.grid_speed_mps);
+    assert!((mw.grid_margin_m - keepout::grid_margin_for(ex.clearance_m, mw.grid_speed_mps)).abs() < 0.01);
+    assert!(ex.assumptions.contains(&format!("up to {:.0} m/s relative to the effect point", mw.grid_speed_mps)), "{}", ex.assumptions);
 }

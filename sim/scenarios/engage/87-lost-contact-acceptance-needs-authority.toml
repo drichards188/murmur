@@ -1,16 +1,20 @@
 # Rules 16: accepting a lost contact is an engagement decision. A fishing boat 1.5 km north of
-# the target goes out of view; op-1 nominates while its stale track does not block yet; the
-# tracker drops it. op-4 (no engagement authority, not the proposer) tries to accept the lost
-# contact for the waiting nomination: refused (the engine takes only an EngagementAuthority;
-# the bridge answers 403). op-4's own nomination accepting it is refused whole. op-2 then signs
-# on the picture as it is: the lost contact's reach, grown since its last fix, covers the effect
-# point, and the approval is void (keep_out_tracks).
+# the target goes out of view; op-1 nominates a second later, while it is still in view (unseen
+# under 10 s); the tracker drops it. op-4 (no engagement authority, not the proposer) tries to
+# accept the lost contact for the waiting nomination: refused (the engine takes only an
+# EngagementAuthority; the bridge answers 403). op-4's own nomination accepting it is refused
+# whole. op-2 then signs on the picture as it is: the lost contact's reach, grown since its last
+# fix, covers the effect point, and the approval is void (keep_out_tracks). Afterwards the drop's
+# last fix is moved 6 km north in the log, in the drop and every decision that read the lost
+# contact (the review's probe: a smaller region far off); replay catches it against the fix the
+# nomination had seen.
 title = "An acceptance of a lost contact needs engagement authority"
 invariant = "keep_out_tracks"
 attack = "op-4 (no engagement authority) accepts a lost contact for a waiting nomination, and nominates accepting it"
 expect = "voided"
 expect_rule = "keep_out_tracks"
 expect_refusals = ["op-4: accepting a lost contact needs engagement authority", "op-4: accepting a lost contact needs engagement authority (nomination refused)"]
+tamper = "move_drop"
 end_s = 200
 
 [[operator]]

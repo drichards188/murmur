@@ -345,9 +345,11 @@ async fn intent_action(
         "reject" => app.decision.reject(&op, id, note),
         "cancel" => app.decision.cancel(&op, id, note),
         "abort" => app.decision.abort(&op, id, note),
-        // rules 16: {"track": id, "since": engine ms}, a lost contact as the check names it
-        "accept_unknown" if lost_contact(&body) => match serde_json::from_slice::<crate::decision::engage::AcceptLost>(&body) {
+        // rules 16: {"track": id, "since": engine ms}, a lost contact as the check names it, and
+        // the step-up with it when the policy asks for one (`password` or `passkey`, read above)
+        "accept_unknown" if lost_contact(&body) => match serde_json::from_slice::<AcceptLostAction>(&body) {
             Ok(a) => {
+                let a = crate::decision::engage::AcceptLost { track: a.track, since: a.since };
                 let needed = app.decision.steps_up(murmur_decide::StepUpAct::AcceptUnknown);
                 let step = match app.auth.step_up(&op, &format!("i{id} accept_unknown"), proof, needed).await {
                     Ok(s) => s,
@@ -413,6 +415,19 @@ async fn intent_action(
         .into_response(),
         Err(e) => decision_error(e),
     }
+}
+
+/// Rules 16: `accept_unknown` naming a lost contact: the contact as the check names it, and the
+/// step-up's `password` or `passkey` (taken as the proof before this is read; nothing else).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AcceptLostAction {
+    track: String,
+    since: i64,
+    #[serde(default, rename = "password")]
+    _password: Option<Value>,
+    #[serde(default, rename = "passkey")]
+    _passkey: Option<Value>,
 }
 
 /// Rules 16: an acceptance (or its revocation) names a lost contact (`track`), not a vehicle.
