@@ -1,4 +1,5 @@
-// Checks for glide.ts: there is no test runner in web/, so run them with Node (type stripping):
+// Checks for glide.ts: there is no test runner in web/, so run them with Node 22.18 or later, which
+// strips the types itself (make check does this):
 //   node web/src/glide.check.ts
 // Throws on the first failure, prints "glide: ok" otherwise. Not part of the bundle.
 import { arcDelta, glideMs, Glider, implausibleHop, lerpHeading, MAX_GLIDE_MS, trailHeadPath, type Context, type Pt, type Report } from './glide.ts'
@@ -179,5 +180,31 @@ const out: Pt[] = [
 const back: Pt = [0.001, 0.00001, 0]
 const uturn = trailHeadPath(out, back, [0.0012, 0.00001, 0])
 check(uturn.length === 5 && uturn[3][0] === 0.002, 'the head keeps the turn point (is on the return leg)')
+
+// a slow boat: trail points 2 m apart, the symbol at 5 m: the head must not run on to 6 or 8 m
+const m2 = 2 / 111_320
+const boat: Pt[] = [
+  [0, 0, 0],
+  [m2, 0, 0],
+  [2 * m2, 0, 0],
+  [3 * m2, 0, 0],
+]
+const slow = trailHeadPath(boat, [4 * m2, 0, 0], [2.5 * m2, 0, 0])
+check(slow.length === 4 && slow[slow.length - 1][0] === 2.5 * m2 && slow[slow.length - 2][0] === 2 * m2, 'the slow boat head ends at the symbol, 0 2 4 5')
+// the U-turn keeps its turn at 0.5, 0.9 and 1.5 m between the legs
+for (const gap of [0.5, 0.9, 1.5]) {
+  const dy = gap / 111_320
+  const turn = trailHeadPath(
+    [
+      [0, 0, 0],
+      [0.001, 0, 0],
+      [0.002, 0, 0],
+      [0.002, dy, 0],
+    ],
+    [0.001, dy, 0],
+    [0.0012, dy, 0],
+  )
+  check(turn.length === 5 && turn[3][0] === 0.002, `the U-turn keeps its turn at ${gap} m`)
+}
 
 console.log('glide: ok')
