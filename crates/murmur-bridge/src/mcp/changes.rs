@@ -325,9 +325,41 @@ fn digest(mcp: &Mcp) -> (Digest, Vec<RecentEvent>) {
             },
         );
     }
+    mark_engaging(&mut d);
     let events = mcp.decision.recent_events(None, EVENTS_PER_READ);
     d.events_seq = events.first().map_or(0, |e| e.seq);
     (d, events)
+}
+
+/// States of an engagement in play (nominated, approved or under way).
+const IN_PLAY: [&str; 6] = [
+    "proposed",
+    "checked",
+    "auto_approved",
+    "pending_approval",
+    "approved",
+    "dispatched",
+];
+
+/// Each vehicle says whether an engagement is in play on it (`engaging`), so a watcher can
+/// tell a lost link that is part of the engagement chain from any armed platform's.
+fn mark_engaging(d: &mut Digest) {
+    let engaging: BTreeSet<u64> = d
+        .intents
+        .values()
+        .filter(|i| i.summary["task"] == "engage" && IN_PLAY.contains(&i.state.as_str()))
+        .flat_map(|i| {
+            i.summary["uids"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_u64)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    for (uid, v) in &mut d.vehicles {
+        v.who["engaging"] = json!(engaging.contains(uid));
+    }
 }
 
 /// A vehicle whose latest report carries no GPS glitch flag keeps the last one it reported
@@ -958,6 +990,55 @@ mod tests {
             vec!["vehicle.gps_glitch"],
             "cleared"
         );
+    }
+
+    #[test]
+    fn a_vehicle_says_whether_an_engagement_is_in_play_on_it() {
+        let intent = |task: &str, state: &str, uid: u64| Int {
+            state: state.into(),
+            summary: json!({ "task": task, "uids": [uid] }),
+            agent: None,
+            reason: Value::Null,
+            note: Value::Null,
+        };
+        let mut d = Digest {
+            vehicles: [
+                (2u64, veh(false, None)),
+                (3, veh(false, None)),
+                (4, veh(false, None)),
+            ]
+            .into_iter()
+            .collect(),
+            intents: [
+                (1u64, intent("engage", "pending_approval", 2)),
+                (2, intent("engage", "rejected", 3)),
+                (3, intent("orbit", "dispatched", 4)),
+            ]
+            .into_iter()
+            .collect(),
+            ..Digest::default()
+        };
+        mark_engaging(&mut d);
+        let flags: Vec<bool> = d
+            .vehicles
+            .values()
+            .map(|v| v.who["engaging"].as_bool().expect("engaging"))
+            .collect();
+        assert_eq!(flags, vec![true, false, false]);
+        // and a lost link carries it
+        let a = Digest {
+            vehicles: [(2u64, veh(false, None))].into_iter().collect(),
+            ..Digest::default()
+        };
+        let mut b = d.clone();
+        b.vehicles.retain(|u, _| *u == 2);
+        b.vehicles.get_mut(&2).expect("2").lost = true;
+        let ch = diff(&a, &b, &[]);
+        let lost = ch
+            .iter()
+            .find(|(k, _, _)| *k == "vehicle.link_lost")
+            .expect("link lost");
+        assert_eq!(lost.2["engaging"], true);
     }
 
     #[test]

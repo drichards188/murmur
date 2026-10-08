@@ -554,14 +554,30 @@ impl tower::Service<Request<Body>> for McpService {
                 return inner.call(req).await;
             }
             let (parts, body) = req.into_parts();
-            let bytes = axum::body::to_bytes(body, OPENING_BODY_LIMIT)
-                .await
-                .unwrap_or_default();
-            let agent = shared.claimant(&parts.headers, &bytes);
+            let bytes = match axum::body::to_bytes(body, OPENING_BODY_LIMIT).await {
+                Ok(b) => b,
+                Err(e) => {
+                    let too_large = e
+                        .into_inner()
+                        .downcast_ref::<http_body_util::LengthLimitError>()
+                        .is_some();
+                    return Ok(if too_large {
+                        plain(
+                            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+                            "an opening MCP request is at most 1 MB",
+                        )
+                    } else {
+                        plain(axum::http::StatusCode::BAD_REQUEST, "the request body could not be read")
+                    });
+                }
+            };
+            // an unnamed or unlisted claimant's sessions share one bucket under the cap (its
+            // calls are refused anyway; its sessions must not pile up uncounted)
+            let agent = shared
+                .claimant(&parts.headers, &bytes)
+                .unwrap_or_else(|| AgentId::new(UNLISTED));
             let resp = inner.call(Request::from_parts(parts, Body::from(bytes))).await?;
-            if let Some(agent) = agent
-                && let Some(id) = resp.headers().get("mcp-session-id").and_then(|v| v.to_str().ok())
-            {
+            if let Some(id) = resp.headers().get("mcp-session-id").and_then(|v| v.to_str().ok()) {
                 shared.note_session_id(&agent, id);
             }
             Ok(resp)
@@ -571,6 +587,20 @@ impl tower::Service<Request<Body>> for McpService {
 
 /// The largest opening request read whole (an initialize is a few hundred bytes).
 const OPENING_BODY_LIMIT: usize = 1 << 20;
+
+/// The cap's bucket for sessions opened by a claimant that names no listed agent (or, in a
+/// credentials run, no valid key): not an agent id anyone can be given.
+const UNLISTED: &str = "(unnamed or unlisted)";
+
+/// A plain-text answer of the inner service's type.
+fn plain(status: axum::http::StatusCode, text: &'static str) -> InnerResponse {
+    use http_body_util::BodyExt;
+    let mut resp = axum::http::Response::new(http_body_util::Full::new(axum::body::Bytes::from(text)).boxed());
+    *resp.status_mut() = status;
+    resp.headers_mut()
+        .insert(header::CONTENT_TYPE, axum::http::HeaderValue::from_static("text/plain"));
+    resp
+}
 
 /// The service to mount at `/mcp`. `api` is the bridge's router without `/mcp`.
 pub fn service(settings: Settings, world: Arc<World>, decision: Arc<Decision>, api: Router) -> McpService {

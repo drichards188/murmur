@@ -1478,6 +1478,55 @@ async fn an_agent_session_survives_a_quiet_spell_and_the_idle_limit_is_set_by_th
     }
 }
 
+/// Final review, nits 1 and 2: an opening request over 1 MB was forwarded with an empty body
+/// (now 413), and sessions opened by a claimant naming no listed agent counted against no cap
+/// (now one shared bucket, capped like an agent's).
+#[tokio::test(start_paused = true)]
+async fn an_opening_request_too_large_is_refused_and_unlisted_sessions_are_capped_together() {
+    let r = rig();
+    let svc = service(
+        Settings { agents: vec![planner()], keys: None, idle: IDLE_LIMIT },
+        r.world.clone(),
+        r.d.clone(),
+        r.api.clone(),
+    );
+    let shared = svc.shared.clone();
+    let router = r.api.clone().nest_service("/mcp", svc);
+    let big = format!("{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"pad\":\"{}\"}}", "x".repeat(2 << 20));
+    let req = Request::builder()
+        .method("POST")
+        .uri("/mcp")
+        .header(header::ACCEPT, "application/json, text/event-stream")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::HOST, "127.0.0.1")
+        .body(Body::from(big))
+        .expect("request");
+    let resp = router.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    // nobody listed: each initialize opens a session (its calls are refused), all in one bucket
+    for _ in 0..=SESSIONS_PER_AGENT {
+        let (status, session, init) = rpc(
+            &router,
+            None,
+            None,
+            json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25", "capabilities": {},
+                    "clientInfo": { "name": "nobody", "version": "0.1" },
+                },
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{init}");
+        assert!(session.is_some());
+        sleep(Duration::from_secs(1)).await;
+    }
+    let bucket = AgentId::new(UNLISTED);
+    assert_eq!(shared.sessions_of(&bucket).len(), SESSIONS_PER_AGENT, "capped together");
+    assert!(shared.sessions_of(&AgentId::new("nobody")).is_empty());
+}
+
 /// Third review, item 5: the cap closed the session used least recently even with a request
 /// in flight on it (a long proposal or dry run lost its answer, and a client that retries
 /// may propose twice). A session with a request in flight is never closed: the next idle one
