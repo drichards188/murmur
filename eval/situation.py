@@ -66,12 +66,25 @@ AGENTS = [WATCH_AGENT, PLAYBOOK_AGENT, STORYLINE_AGENT, SETUP_AGENT]
 # how every scripted act announces itself in the audit log (notes, rationales)
 SCRIPTED_SETUP = "situation setup (scripted, not a person)"
 SCRIPTED_TIMELINE = "situation timeline (scripted, not a person)"
+# how the console badges each scripted id (the status document's `scripted`)
+SCRIPTED_BADGE = {
+    SETUP_OPERATOR: "situation setup (scripted)",
+    SETUP_AGENT: "situation setup (scripted)",
+    STORYLINE_OPERATOR: "situation timeline (scripted)",
+    STORYLINE_AGENT: "situation timeline (scripted)",
+    AUTOPLAY_OPERATOR: "autoplay operator (scripted)",
+    **{op: "scripted signer" for op in SCRIPTED_SIGNERS},
+}
 
 # A situation's own port block by default (scripts/up.sh's variables override each): clear of
 # the default stack (14560+, 15560+, 8765, 8766, 5173, 8770), a second stack (24560+, 25560+,
 # 8865, 5273, 8866, 8870), the evaluation's blocks (UDP 35000-36999, HTTP 10600-10699) and the
-# host's ephemeral range (above 37795 here), so its fresh station never touches another
-# station's restore or resume pointer.
+# host's ephemeral range (39160-43255 here as of 2026-10-08; it moves between boots), so its
+# fresh station never touches another station's restore or resume pointer. Its two UDP ranges
+# hold up to 1000 vehicles each (`port_problems` refuses a larger fleet on them).
+# The evaluation's fixed UDP block (eval/ports.py): never a situation's.
+EVAL_UDP = range(35000, 37000)
+
 SITUATION_PORTS = {
     "MURMUR_BASE_PORT": "33000",
     "MURMUR_BRIDGE_BASE_PORT": "34000",
@@ -258,6 +271,13 @@ def _steps(raw: list[Any], sit: Path, duration_s: float) -> list[Step]:
             raise SituationError(f"{sit}: step {sid!r}: at_s {at_s:g} is outside the situation (0 to {duration_s:g} s)")
         if "director" in s and not isinstance(s["director"], bool):
             raise SituationError(f"{sit}: step {sid!r}: director is true or false")
+        if kind == "flood":
+            for k, t in enumerate(s.get("templates") or []):
+                if not isinstance(t, dict):
+                    raise SituationError(f"{sit}: step {sid!r}: template {k + 1} is not a table")
+                extra = set(t) - STEP_KEYS["propose"]
+                if extra:
+                    raise SituationError(f"{sit}: step {sid!r}: template {k + 1} takes no {sorted(extra)} (a proposal's keys)")
         check = dict(s)
         if kind == "propose":
             check.setdefault("reason", "a situation step: no truth label")
@@ -466,6 +486,12 @@ def resolve_modes(sit: Situation, operator: str | None = None, ai: str | None = 
     if co not in COSIGNERS:
         raise SituationError(f"cosigner {co!r}: one of {', '.join(COSIGNERS)}")
     rv = sit.reveal if reveal is None else bool(reveal)
+    if op == "live" and any(s.kind == "declare" for s in sit.steps):
+        raise SituationError(
+            f"{sit.name}: a declare step is a script's declaration, refused in live mode: the person declares (a hostile "
+            "act is the engine's rule declaration from an observed act, rules 9). Run it with OPERATOR=autoplay, or leave the "
+            "declaration out."
+        )
     # who acts as whom: op-1 is never a script; every scripted id the run uses is listed
     scripted: list[str] = []
     if sit.orders:
@@ -476,6 +502,12 @@ def resolve_modes(sit: Situation, operator: str | None = None, ai: str | None = 
         scripted += list(SCRIPTED_SIGNERS)
     if uses_planner(sit):
         scripted.append(STORYLINE_OPERATOR)
+    # every scripted id, operators and agents, as the console badges it
+    ids = list(scripted)
+    if sit.orders:
+        ids.append(SETUP_AGENT)
+    if sit.storyline_proposer == "agent" and {s.kind for s in sit.steps} & {"propose", "flood", "engage"}:
+        ids.append(STORYLINE_AGENT)
     return {
         "operator": op,
         "ai": a,
@@ -485,6 +517,7 @@ def resolve_modes(sit: Situation, operator: str | None = None, ai: str | None = 
         "console_operator": CONSOLE_OPERATOR,
         "autoplay_operator": AUTOPLAY_OPERATOR if op == "autoplay" else None,
         "scripted_operators": scripted,
+        "scripted_badges": {i: SCRIPTED_BADGE[i] for i in ids},
         "agent": {"claude": WATCH_AGENT, "codex": WATCH_AGENT, "playbook": PLAYBOOK_AGENT}.get(a),
         # a model watching with the director's notes served on the bridge: what it did is no
         # evidence about it (it could have read the truth)
@@ -573,7 +606,10 @@ def status_doc(
         "agent": agent,
         "autoplay": autoplay,
         "run": run,
-        # what went wrong in the runner itself (a task that failed, a signer's error)
+        # every scripted id of the run and its badge (the Inbox shows it on their cards)
+        "scripted": dict(modes.get("scripted_badges") or {}),
+        # what went wrong in the runner itself (a task that failed, a signer's error): its own
+        # fixed messages, never a step's or the director's text
         "problems": list(problems or [])[-8:],
     }
     if reveal:
@@ -773,10 +809,30 @@ def pid_alive(pidfile: Path) -> int | None:
     return pid
 
 
-def port_problems(ports: dict[str, int], vehicles: int, sitl: int, root: Path = REPO) -> list[str]:
-    """Why a stack can't start on these ports now: one already answers (or a port is held),
-    or this checkout's stack is up. Never touches what holds them."""
+def range_problems(ports: dict[str, int], vehicles: int) -> list[str]:
+    """Why these UDP ranges can't carry this fleet: the vehicle and bridge ranges overlap (a
+    fleet larger than the gap between their bases), or one reaches into the evaluation's block."""
     out: list[str] = []
+    n = max(1, vehicles)
+    vb, bb = ports["vehicle_base"], ports["bridge_base"]
+    if abs(bb - vb) < n:
+        out.append(
+            f"{vehicles} vehicles do not fit: the vehicle range {vb}-{vb + n - 1} and the bridge range {bb}-{bb + n - 1} "
+            "overlap (MURMUR_BASE_PORT, MURMUR_BRIDGE_BASE_PORT)"
+        )
+    for name, base in (("MURMUR_BASE_PORT", vb), ("MURMUR_BRIDGE_BASE_PORT", bb)):
+        if base < EVAL_UDP.stop and base + n > EVAL_UDP.start:
+            out.append(f"{name} range {base}-{base + n - 1} reaches into the evaluation's UDP {EVAL_UDP.start}-{EVAL_UDP.stop - 1}")
+    return out
+
+
+def port_problems(ports: dict[str, int], vehicles: int, sitl: int, root: Path = REPO) -> list[str]:
+    """Why a stack can't start on these ports now: its UDP ranges can't carry the fleet
+    (`range_problems`), one already answers (or a port is held), or this checkout's stack is
+    up. Never touches what holds them."""
+    out = range_problems(ports, vehicles)
+    if out:
+        return out
     pid = pid_alive(root / "logs" / "up.pid")
     if pid is not None:
         out.append(f"a stack started from this checkout is running (logs/up.pid, pid {pid})")
@@ -796,6 +852,40 @@ def port_problems(ports: dict[str, int], vehicles: int, sitl: int, root: Path = 
         p = 5760 + 10 * (ports["sitl_instance_base"] + k)
         if tcp_answers(p):
             out.append(f"SITL instance port {p} answers (MURMUR_SITL_INSTANCE_BASE={ports['sitl_instance_base']})")
+    return out
+
+
+def pointer_names_situation(p: Path) -> bool | None:
+    """Whether a restore pointer (`.last-run-<port>`: a log's path) or resume pointer
+    (`.resume-<port>.json`: `{"log": ...}`) names a situation's log (`situation-*`); None when
+    it can't be read."""
+    try:
+        text = p.read_text().strip()
+    except (OSError, ValueError):
+        return None
+    if p.name.endswith(".json"):
+        try:
+            text = str((json.loads(text) or {}).get("log") or "")
+        except (ValueError, AttributeError):
+            return None
+    return Path(text).name.startswith("situation-") if text else None
+
+
+def pointer_problems(http_port: int, root: Path = REPO) -> list[str]:
+    """The fresh station deletes this port's restore and resume pointers: only those naming a
+    situation's log. One naming any other log is another station's (an exported
+    `MURMUR_HTTP_PORT` that is another stack's), and the runner refuses rather than delete it."""
+    out = []
+    for name in (f".last-run-{http_port}", f".resume-{http_port}.json"):
+        p = root / "logs" / "audit" / name
+        if not (p.exists() or p.is_symlink()):
+            continue
+        if pointer_names_situation(p) is not True:
+            out.append(
+                f"logs/audit/{name} names a log that is not a situation's (or can't be read): it is another station's "
+                f"pointer on HTTP port {http_port}, which a situation's fresh station would delete. Use another "
+                "MURMUR_HTTP_PORT (or unset it for the situation's own), or remove that file yourself if it is stale"
+            )
     return out
 
 

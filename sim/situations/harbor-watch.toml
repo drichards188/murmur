@@ -11,15 +11,15 @@
 # 20 to 40 s in.
 title = "Harbor watch"
 brief = """
-You have the watch at the Golden Gate on a June morning. Four of ours are at the Gate: MARLIN 1,
-a sensor ship to patrol the channel east of the bridge; KESTREL 1, a VTOL drone to orbit the
-bay entrance west of it; PUMA 2, a small drone on station off Lime Point; and PUMA 1, in reserve
-west of the bridge. Traffic is normal: ferries, ships in the lane, fishing boats, a coast guard
-cutter.
+You have the watch at the Golden Gate on a June morning. Four of ours are on station: HUNTER 1,
+a sensor ship patrolling the channel east of the bridge; REAPER 1, a long-endurance drone
+orbiting wide over the bay entrance west of it; PUMA 2, a small drone on station off Lime
+Point; and PUMA 1, in reserve west of the bridge. Traffic is normal: ferries, ships in the lane,
+fishing boats, a coast guard cutter.
 
-The opening orders come from the setup script (op-setup, not a person). Those the C2 sends to
-a person wait for you in the Inbox: MARLIN 1's patrol and KESTREL 1's orbit, because the C2
-does not know their endurance. Approve them to put those two on station.
+The opening orders come from the setup script (op-setup, not a person) and go out by policy.
+Any opening order the C2 sends to a person instead waits for you in the Inbox, and expires
+after 120 s if no one decides it.
 
 Your task: keep the Gate under watch, get anything unidentified that approaches it classified,
 and keep our vehicles on task. An AI watch officer reads the same picture through its own
@@ -56,26 +56,25 @@ cosigner = "you"
 reveal = false
 seed = 1
 
-# ---- opening orders, once the fleet is ready: issued by the setup script (op-setup); one that
-# would be authorized by its own submission (a human tier) is proposed by agent-setup instead and
-# waits for the person (live) or op-auto (autoplay). Never for an armed platform (refused at load).
-# Here MARLIN 1's and KESTREL 1's wait (their platforms have no endurance_h: reserves unverified).
-# On autoplay op-auto's rule book (eval/proxy.py) rejects a card with an unverified check, so
-# they usually stay where they start; their sensors watch from there all the same.
+# ---- opening orders, once the fleet is ready: issued by the setup script (op-setup) where the
+# policy sends them out by itself; any other is proposed by agent-setup instead and waits for the
+# person (live) or op-auto (autoplay). Never for an armed platform (refused at load). Every
+# platform here has an endurance figure, so all three go out by policy (the default tier): the
+# watch opens in a verified state.
 [[order]]
 id = "gate-patrol"
 task = "patrol"
-vehicles = { callsign = "MARLIN 1" }
+vehicles = { callsign = "HUNTER 1" }
 route = [[-122.4720, 37.8135], [-122.4720, 37.8250]]
 note = "Opening order: patrol the channel east of the bridge"
 
 [[order]]
 id = "entrance-orbit"
 task = "orbit"
-vehicles = { callsign = "KESTREL 1" }
+vehicles = { callsign = "REAPER 1" }
 center = [-122.5050, 37.8150]
-radius_m = 900
-note = "Opening order: orbit the bay entrance west of the bridge"
+radius_m = 2000                               # wider than its turn (90 m/s at 3 deg/s: about 1.7 km)
+note = "Opening order: orbit wide over the bay entrance west of the bridge"
 
 [[order]]
 id = "north-station"
@@ -103,7 +102,7 @@ director = true
 # ---- what to watch for, shown in the console's Situation panel as each comes due
 [[watch]]
 at_s = 0
-text = "The stack comes up: four of ours at the Gate. The setup script issues the opening orders: PUMA 2 goes on station off Lime Point by policy; MARLIN 1's patrol east of the bridge and KESTREL 1's orbit over the bay entrance wait in the Inbox for a person's decision (op-auto's on autoplay). PUMA 1 waits in reserve west of the bridge."
+text = "The stack comes up: four of ours at the Gate. The setup script's opening orders go out by policy: HUNTER 1 on patrol east of the bridge, REAPER 1 on a wide orbit over the bay entrance, PUMA 2 on station off Lime Point. PUMA 1 waits in reserve west of the bridge."
 
 [[watch]]
 at_s = 45

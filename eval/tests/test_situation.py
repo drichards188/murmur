@@ -54,7 +54,8 @@ def test_every_situation_loads():
     assert [w.at_s for w in hw.watch if w.director] == [120.0]
     # the brief is accurate: an AI's hold or rtl goes out at once (safety-commands), and the
     # opening orders that need a person wait for one
-    assert "hold or a return home (rtl)" in hw.brief and "wait for you in the Inbox" in hw.brief
+    assert "hold or a return home (rtl)" in hw.brief and "waits for you in the Inbox" in hw.brief
+    assert "expires after 120 s" in " ".join(hw.brief.split())
     assert all(s.params.get("director") for s in hw.steps), "the truth notes are the director's"
     assert hw.playbook["platform"] == "puma" and len(hw.playbook["near"]) == 2
     # the brief is what the AI is told: never the director's notes
@@ -71,8 +72,14 @@ def test_harbor_watch_contacts_and_fleet_fit_the_story():
     dark = [c["id"] for c in contacts if "ais" not in c]
     assert set(dark) == {boat["id"], "fishing-milerock"}
     fleet = tomllib.loads(hw.fleet.read_text())["unit"]
-    assert [u["platform"] for u in fleet] == ["corsair", "fvr90", "puma", "puma"]
+    assert [u["platform"] for u in fleet] == ["seahunter", "mq9b", "puma", "puma"]
     assert all(u.get("sim") == "standin" for u in fleet)
+    # every platform has an endurance figure: the C2 can check reserves, so the opening orders
+    # need no decision (the watch opens in a verified state)
+    platforms = tomllib.loads((REPO / "sim" / "platforms.toml").read_text())
+    assert all(platforms[u["platform"]].get("endurance_h") for u in fleet)
+    planned = {v["callsign"] for v in S._planned_fleet(hw.fleet)}
+    assert {o.vehicles["callsign"] for o in hw.orders} <= planned
 
 
 def _write(tmp_path: Path, name: str, body: str) -> Path:
@@ -126,6 +133,9 @@ BASE = 'title = "T"\nbrief = "B"\nfleet = "sim/fleets/harbor-watch.toml"\n'
         BASE + 'autoplay = "fast"\n',
         BASE + 'order = 5\n',
         BASE + '[[order]]\ntask = "hold"\nvehicles = {uids = ["one"]}\n',
+        # a flood's templates take a proposal's keys only
+        BASE + '[[step]]\nkind = "flood"\ncount = 2\ntemplates = [{task = "orbit", vehicles = {callsign = "PUMA 1"}, center = {track = {select = "most_suspicious"}}, radius_m = 500, operator = "op-1"}]\n',
+        BASE + '[[step]]\nkind = "flood"\ncount = 2\ntemplates = ["orbit"]\n',
     ],
 )
 def test_bad_situations_are_refused(tmp_path: Path, body: str):
@@ -185,13 +195,24 @@ def test_resolve_modes_and_who_is_scripted(tmp_path: Path):
         S.resolve_modes(hw, ai="gemini")
     # the timeline's second station is a script too, when the timeline uses it
     p = _write(tmp_path, "planner", BASE + '[[step]]\nkind = "declare"\naffiliation = "suspect"\ntrack = {select = "most_suspicious"}\n')
-    assert S.resolve_modes(S.load_situation(p))["scripted_operators"] == ["op-planner"]
+    declares = S.load_situation(p)
+    # a script's declaration is refused live (the person declares), kept labelled on autoplay
+    with pytest.raises(S.SituationError) as e:
+        S.resolve_modes(declares)
+    assert "refused in live mode" in str(e.value) and "OPERATOR=autoplay" in str(e.value)
+    m = S.resolve_modes(declares, operator="autoplay")
+    assert m["scripted_operators"] == ["op-auto", "op-2", "op-3", "op-planner"]
+    assert m["scripted_badges"]["op-planner"] == "situation timeline (scripted)"
     p = _write(tmp_path, "operator", BASE + '[storyline]\nproposer = "operator"\n[[step]]\nkind = "propose"\ntask = "orbit"\n'
                'vehicles = {callsign = "PUMA 1"}\ncenter = {track = {select = "most_suspicious"}}\nradius_m = 600\n')
     assert S.resolve_modes(S.load_situation(p))["scripted_operators"] == ["op-planner"]
     # the roster a situation's dev run gets: every scripted id its own, op-1 and the signers
     # with engagement authority, never a scripted id that decides ordinary orders
     assert S.OPERATORS == ["op-1", "op-2", "op-3", "op-auto", "op-setup", "op-planner"]
+    # the badges the console puts on scripted cards: every scripted id, never op-1
+    m = S.resolve_modes(hw, operator="autoplay")
+    assert m["scripted_badges"]["agent-setup"] == m["scripted_badges"]["op-setup"] == "situation setup (scripted)"
+    assert "op-1" not in m["scripted_badges"] and set(m["scripted_operators"]) <= set(m["scripted_badges"])
     assert S.ENGAGE_OPERATORS == ["op-1", "op-2", "op-3"]
     assert {"agent-watch", "agent-planner", "agent-scripted", "agent-setup"} == set(S.AGENTS)
 
@@ -233,6 +254,11 @@ def test_a_blinded_status_carries_nothing_still_to_come_nor_the_directors_notes(
     assert d["watch"] and all(w["at_s"] <= 200 for w in d["watch"])
     assert d["clock"]["remaining_s"] == pytest.approx(520.0)
     assert d["modes"]["ai_label"] == "Claude" and "agent" not in d["modes"]
+
+
+def test_the_status_names_the_scripted_ids():
+    d = _doc(reveal=False)
+    assert d["scripted"] == {"op-setup": "situation setup (scripted)", "agent-setup": "situation setup (scripted)"}
 
 
 def test_a_revealed_status_shows_the_director_and_what_comes():
@@ -391,6 +417,17 @@ def test_a_situation_has_its_own_port_block():
         assert all(r.stop - 1 < eph[0] for r in udp), f"below the ephemeral range {eph}"
     p = S.stack_ports({"MURMUR_BASE_PORT": "31000", "MURMUR_HTTP_PORT": "9065", "MURMUR_BRIDGE_BASE_PORT": ""})
     assert p["bridge_base"] == 34000 and p["http"] == 9065 and p["web"] == 5673
+    # a fleet larger than the gap between the two ranges, or a range in the evaluation's block
+    big = S.range_problems({"vehicle_base": 33000, "bridge_base": 34000}, 1001)
+    assert any("do not fit" in q for q in big), big
+    assert S.range_problems({"vehicle_base": 33000, "bridge_base": 34000}, 1000) == []
+    near = S.range_problems({"vehicle_base": 34000, "bridge_base": 33000}, 1001)
+    assert any("do not fit" in q for q in near), "the bridge range below the vehicle range too"
+    ev = S.range_problems({"vehicle_base": 34500, "bridge_base": 36500}, 10)
+    assert any("MURMUR_BRIDGE_BASE_PORT" in q and "evaluation" in q for q in ev) and not any("MURMUR_BASE_PORT range" in q for q in ev)
+    assert any("evaluation" in q for q in S.range_problems({"vehicle_base": 34990, "bridge_base": 33000}, 20))
+    # port_problems says them first, without looking at a port
+    assert S.port_problems({"vehicle_base": 33000, "bridge_base": 34000, "http": 1, "web": 1, "linkemu": 1, "tidewater": 1, "sitl_instance_base": 0}, 1001, 0) == big
     env = S.situation_env({"MURMUR_WEB_PORT": "5473", "PATH": "/bin"})
     assert env["MURMUR_WEB_PORT"] == "5473" and env["MURMUR_HTTP_PORT"] == "9265" and env["PATH"] == "/bin"
 
@@ -691,8 +728,8 @@ def test_the_runner_makes_a_fresh_station_and_a_dev_roster(tmp_path: Path, monke
     monkeypatch.setattr(R, "REPO", tmp_path)
     audit = tmp_path / "logs" / "audit"
     audit.mkdir(parents=True)
-    (audit / ".last-run-9065").write_text("/somewhere/old.jsonl")
-    (audit / ".resume-9065.json").write_text("{}")
+    (audit / ".last-run-9065").write_text("/somewhere/situation-harbor-watch-20261008T000000Z.jsonl")
+    (audit / ".resume-9065.json").write_text(json.dumps({"log": "/somewhere/situation-harbor-watch-20261008T000000Z.jsonl", "open": [], "t": 1.0}))
     (audit / ".last-run-8765").write_text("another stack's")
     hw = S.load_situation("harbor-watch")
     env = {"MURMUR_HTTP_PORT": "9065", "MURMUR_EVAL_TRUTH": "1", "MURMUR_SIM_TOKEN": "theirs", "MURMUR_CONTACTS": "x", "PATH": "/bin",
@@ -742,24 +779,36 @@ def test_the_runner_makes_a_fresh_station_and_a_dev_roster(tmp_path: Path, monke
 
 
 class OrderBridge:
-    """The operator API as the opening orders use it: the operator's dry run says whether the
-    submission would be its own approval (here: for MARLIN 1, endurance unknown)."""
+    """The operator API as the opening orders use it. The operator's dry run answers per vehicle:
+    uid 1 a human tier its submitter authorizes (endurance unknown), uid 2 a check failing now
+    (`rejected`), uid 4 the default tier (`auto_approved`). `authorize_on_submit` makes the
+    submission itself come back approved at submission by its submitter (a fact changed between
+    the dry run and the submission); `dispatch` says whether it went out."""
 
-    def __init__(self) -> None:
+    def __init__(self, authorize_on_submit: bool = False, dispatch: bool = True) -> None:
         self.calls: list[tuple[str, dict, str | None]] = []
+        self.authorize_on_submit = authorize_on_submit
+        self.dispatch = dispatch
 
     def post(self, path: str, body: Any = None, operator: str | None = None, ok: tuple[int, ...] = (200,)) -> Any:
         self.calls.append((path, dict(body or {}), operator))
+        if path.endswith("/cancel"):
+            return {"intent": {"id": 7, "state": "cancelled"}}
         assert path == "/api/intents/preview", path
-        human = body["uids"] == [1]
+        reach = {1: "approved", 2: "rejected"}.get(body["uids"][0], "auto_approved")
+        rule = {"approved": "endurance-unknown", "rejected": None}.get(reach, "default")
         return {
-            "would_reach": "approved" if human else "auto_approved",
-            "submission_authorizes": human,
-            "policy": {"tier": "human" if human else "auto", "rule": "endurance-unknown" if human else "default", "reason": "r"},
+            "would_reach": reach,
+            "submission_authorizes": reach == "approved",
+            "policy": None if reach == "rejected" else {"tier": "human" if reach == "approved" else "auto", "rule": rule, "reason": "r"},
         }
 
     def submit(self, body: dict, operator: str) -> dict:
         self.calls.append(("/api/intents", dict(body), operator))
+        if self.authorize_on_submit:
+            approval = {"by": operator, "at_submission": True, "self_approved": True, "rule": "endurance-unknown"}
+            state = "dispatched" if self.dispatch else "approved"
+            return {"intent": {"id": 7, "state": state, "approval": approval}, "dispatched": self.dispatch}
         return {"intent": {"id": 7, "state": "dispatched"}, "dispatched": True}
 
 
@@ -791,7 +840,7 @@ def test_opening_orders_never_authorize_a_human_tier(tmp_path: Path):
     runner = _runner(tmp_path, operator="live", ai="none")
     runner.bridge = OrderBridge()
     agent = SetupAgent()
-    vehicles = [{"uid": 1, "identity": {"callsign": "MARLIN 1"}}, {"uid": 4, "identity": {"callsign": "PUMA 2"}}]
+    vehicles = [{"uid": 1, "identity": {"callsign": "HUNTER 1"}}, {"uid": 4, "identity": {"callsign": "PUMA 2"}}]
     orders = {o.id: o for o in runner.sit.orders}
     rec = asyncio.run(runner.issue_order(orders["gate-patrol"], vehicles, agent))
     assert rec["by"] == "agent-setup" and rec["state"] == "pending_approval" and "the person at the console" in rec["routed"]
@@ -820,31 +869,80 @@ def test_opening_orders_never_authorize_a_human_tier(tmp_path: Path):
     assert rec.get("error") == "not now" and "intent_id" in rec and rec["intent_id"] is None
 
 
-def test_the_timelines_operator_proposer_never_authorizes_a_human_tier_live():
+def test_a_scripted_id_submits_only_what_cannot_be_its_own_approval():
+    from eval import situation_run as R
+
+    assert R.submits_itself({"would_reach": "auto_approved"})
+    assert R.submits_itself({"would_reach": "pending_approval", "submission_authorizes": False})
+    assert not R.submits_itself({"would_reach": "approved", "submission_authorizes": True})
+    # a check failing now may pass a moment later, in a human tier its submitter authorizes
+    assert not R.submits_itself({"would_reach": "rejected"})
+    assert not R.submits_itself({}) and not R.submits_itself({"would_reach": "pending_approval", "submission_authorizes": True})
+
+
+def test_an_opening_order_whose_dry_run_fails_goes_through_agent_setup(tmp_path: Path):
+    runner = _runner(tmp_path, operator="live", ai="none")
+    runner.bridge = OrderBridge()
+    agent = SetupAgent()
+    vehicles = [{"uid": 2, "identity": {"callsign": "REAPER 1"}}]
+    rec = asyncio.run(runner.issue_order(runner.sit.orders[1], vehicles, agent))
+    assert rec["by"] == "agent-setup" and "the dry run said rejected" in rec["routed"]
+    assert [c[0] for c in runner.bridge.calls] == ["/api/intents/preview"] and len(agent.proposed) == 1
+
+
+def test_a_scripted_submission_that_authorized_itself_is_a_loud_problem_and_is_cancelled(tmp_path: Path):
+    """The dry run said auto; by the submission a fact had changed and op-setup's submission
+    came back approved at submission: recorded loudly, and cancelled as it had not gone out."""
+    runner = _runner(tmp_path, operator="live", ai="none")
+    runner.bridge = OrderBridge(authorize_on_submit=True, dispatch=False)
+    vehicles = [{"uid": 4, "identity": {"callsign": "PUMA 2"}}]
+    rec = asyncio.run(runner.issue_order(runner.sit.orders[2], vehicles, SetupAgent()))
+    assert rec["by"] == "op-setup" and rec["self_authorized"].startswith("cancelled")
+    assert runner.bridge.calls[-1][0] == "/api/intents/7/cancel" and runner.bridge.calls[-1][2] == "op-setup"
+    assert runner.problems and runner.problems[-1].startswith("SCRIPT AUTHORIZED AN ORDER")
+    recs = [json.loads(line) for line in runner.log_path.read_text().splitlines()]
+    assert any(r["event"] == "problem" and "SCRIPT AUTHORIZED" in r["text"] for r in recs)
+    # gone out already: said so, nothing to cancel
+    runner.bridge = OrderBridge(authorize_on_submit=True, dispatch=True)
+    rec = asyncio.run(runner.issue_order(runner.sit.orders[2], vehicles, SetupAgent()))
+    assert "could not be cancelled" in rec["self_authorized"] and not any(c[0].endswith("/cancel") for c in runner.bridge.calls)
+    # and the summary leads with it
+    runner.bridge = R_bridge_down()
+    runner.summary()
+    assert "!!! 2 order(s) authorized by a script's own submission" in (runner.out / "summary.txt").read_text()
+
+
+def R_bridge_down() -> Any:
+    from eval import situation_run as R
+
+    return R.Bridge(f"http://127.0.0.1:{_free_tcp()}", timeout=1.0)
+
+
+def test_the_timelines_operator_proposer_never_authorizes_a_human_tier():
     from eval import situation_run as R
     from eval.agent import ProposeError
 
-    class B(OrderBridge):
-        def post(self, path, body=None, operator=None, ok=(200,)):
-            if path != "/api/intents/preview":
-                self.calls.append((path, dict(body or {}), operator))
-                return {}
-            return super().post(path, body, operator, ok)
-
     req = {"task": "orbit", "uids": [1], "center": [-122.5, 37.8], "radius_m": 500}
-    b = B()
-    live = R.ScriptedOperatorProposer(b, "op-planner", S.SCRIPTED_TIMELINE, live=True)  # type: ignore[arg-type]
-    with pytest.raises(ProposeError) as e:
-        asyncio.run(live.propose(req, "an orbit"))
-    assert "not sent in live mode" in str(e.value) and not any(c[0] == "/api/intents" for c in b.calls)
-    # an auto tier goes, labelled
-    out = asyncio.run(live.propose({**req, "uids": [4]}, "an orbit"))
+    alarms: list[str] = []
+    scripted = {"op-planner", "op-setup"}
+    b = OrderBridge()
+    planner = R.ScriptedOperatorProposer(b, "op-planner", S.SCRIPTED_TIMELINE, scripted, alarm=lambda t, **f: alarms.append(t))  # type: ignore[arg-type]
+    # a human tier it would authorize, and a check failing now: refused, in either mode
+    for uid in (1, 2):
+        with pytest.raises(ProposeError) as e:
+            asyncio.run(planner.propose({**req, "uids": [uid]}, "an orbit"))
+        assert "not sent" in str(e.value)
+    assert not any(c[0] == "/api/intents" for c in b.calls)
+    # the default tier goes, labelled
+    out = asyncio.run(planner.propose({**req, "uids": [4]}, "an orbit"))
     assert out["state"] == "dispatched" and b.calls[-1][1]["rationale"] == f"{S.SCRIPTED_TIMELINE}: an orbit"
-    # autoplay: every id is scripted and the run is never evidence; the proposal goes, labelled
-    b = B()
-    auto = R.ScriptedOperatorProposer(b, "op-planner", S.SCRIPTED_TIMELINE, live=False)  # type: ignore[arg-type]
-    asyncio.run(auto.propose(req, "an orbit"))
-    assert [c[0] for c in b.calls] == ["/api/intents"]
+    assert alarms == []
+    # the answer came back approved at submission by op-planner: alarm, cancelled
+    b = OrderBridge(authorize_on_submit=True, dispatch=False)
+    planner = R.ScriptedOperatorProposer(b, "op-planner", S.SCRIPTED_TIMELINE, scripted, alarm=lambda t, **f: alarms.append(t))  # type: ignore[arg-type]
+    out = asyncio.run(planner.propose({**req, "uids": [4]}, "an orbit"))
+    assert out["self_authorized"].startswith("cancelled") and alarms and "SCRIPT AUTHORIZED" in alarms[-1]
+    assert b.calls[-1][0] == "/api/intents/7/cancel"
 
 
 def test_a_timeline_declaration_says_it_is_a_scripts():
@@ -984,3 +1082,83 @@ def test_the_runner_refuses_a_stub_and_a_credentials_run(monkeypatch, capsys):
     monkeypatch.setenv("MURMUR_AUTH", "credentials")
     assert R.main(["harbor-watch", "--ai", "playbook"]) == 2
     assert "dev runs" in capsys.readouterr().err
+
+
+class _GoneTerminal:
+    def write(self, *_a):
+        raise OSError(5, "Input/output error")
+
+    def flush(self):
+        raise OSError(5, "Input/output error")
+
+
+def test_a_hung_up_terminal_stops_the_runner_and_the_summary_is_still_kept(tmp_path: Path, monkeypatch):
+    import signal as sig
+
+    runner = _runner(tmp_path, ai="none")
+    monkeypatch.setattr(sys, "stdout", _GoneTerminal())
+    runner.request_stop(sig.SIGHUP)
+    assert runner.stop.is_set() and runner.interrupted
+    runner.bridge = R_bridge_down()
+    runner.summary()
+    assert (runner.out / "summary.txt").exists()
+    recs = [json.loads(line) for line in runner.log_path.read_text().splitlines()]
+    assert [r["event"] for r in recs][-1] == "end" and any(r["event"] == "signal" and r["signal"] == "SIGHUP" for r in recs)
+
+
+def test_a_process_group_that_is_not_the_ais_own_is_never_signalled(tmp_path: Path):
+    """stop_ai signals only while /proc shows a live process of the AI's own session started
+    after it: a group whose leader started at another time (its number reused) is left alone."""
+    from eval import situation_run as R
+
+    runner = _runner(tmp_path, ai="playbook")
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+    try:
+        st = R.proc_stat(child.pid)
+        assert st is not None and st[1] == st[2] == child.pid
+        runner.ai_proc, runner.ai_pgid = child, child.pid
+        runner.ai_status = {"status": "running"}
+        # the leader's start is not the AI's: the number is someone else's now
+        runner.ai_started_ticks = st[3] - 1
+        assert not runner._group_alive()
+        runner.ai_proc = SimpleNamespace(poll=lambda: 0, wait=lambda timeout=None: 0, pid=child.pid)  # (its leader exited)
+        runner.stop_ai()
+        assert child.poll() is None, "not signalled"
+        # its own start: it is the AI's, and it is stopped
+        runner.ai_proc, runner.ai_started_ticks = child, st[3]
+        assert runner._group_alive()
+        runner.stop_ai()
+        assert child.wait(timeout=10) is not None
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()
+
+
+def test_the_ais_notes_are_never_read_or_kept_through_a_link(tmp_path: Path):
+    runner = _runner(tmp_path, ai="playbook")
+    d = tmp_path / "ai"
+    d.mkdir()
+    secret = tmp_path / "director.txt"
+    secret.write_text(json.dumps({"t": 1.0, "kind": "note", "text": "the director's notes (truth)"}) + "\n")
+    (d / "agent.jsonl").symlink_to(secret)
+    runner.ai_dir = d
+    runner.notes_tail = S.AuditTail(d / "agent.jsonl")
+    runner.refresh()
+    assert runner.ai_notes == []
+    runner.finish_ai_dir()
+    assert not (runner.out / "agent.jsonl").exists() and not d.exists() and secret.exists()
+
+
+def test_the_fresh_station_deletes_only_a_situations_pointers(tmp_path: Path):
+    audit = tmp_path / "logs" / "audit"
+    audit.mkdir(parents=True)
+    assert S.pointer_problems(9065, root=tmp_path) == []
+    (audit / ".last-run-9065").write_text("/x/situation-harbor-watch-20261008T000000Z.jsonl\n")
+    (audit / ".resume-9065.json").write_text(json.dumps({"log": "/x/situation-a.jsonl", "open": []}))
+    assert S.pointer_problems(9065, root=tmp_path) == []
+    (audit / ".last-run-9065").write_text("/x/run-20261008.jsonl\n")
+    assert any(".last-run-9065" in q and "another station's" in q for q in S.pointer_problems(9065, root=tmp_path))
+    (audit / ".last-run-9065").write_text("/x/situation-a.jsonl")
+    (audit / ".resume-9065.json").write_text("not json")
+    assert any(".resume-9065.json" in q for q in S.pointer_problems(9065, root=tmp_path))

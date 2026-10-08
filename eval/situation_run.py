@@ -83,6 +83,8 @@ from .situation import (
     brief_text,
     load_situation,
     merge_events,
+    pointer_names_situation,
+    pointer_problems,
     port_problems,
     resolve_modes,
     situation_env,
@@ -112,7 +114,11 @@ def utc_stamp() -> str:
 
 
 def say(msg: str) -> None:
-    print(f"situation: {msg}", flush=True)
+    """A line on the terminal; nothing when it is gone (a hung-up terminal raises EIO)."""
+    try:
+        print(f"situation: {msg}", flush=True)
+    except OSError:
+        pass
 
 
 def rel(p: Path) -> str:
@@ -157,6 +163,69 @@ async def operator_dry_run(bridge: Bridge, body: dict[str, Any], operator: str) 
     policy decision now, and whether the submission would be its own approval. Nothing is
     created or logged. Raises BridgeError."""
     return await asyncio.to_thread(bridge.post, "/api/intents/preview", body, operator)
+
+
+def submits_itself(preview: dict[str, Any]) -> bool:
+    """Whether a scripted operator id may submit this itself: only where its submission can't
+    be the approval, now or a moment later. The policy sends it out (`auto_approved`), or it
+    waits for someone else (`pending_approval` in a tier whose submitter does not authorize).
+    `approved` (its submission would authorize it) and `rejected` (a check fails now, a terrain
+    fetch or a fact's age, and may pass a moment later in a human tier) are not: an agent
+    proposes those instead, which can never approve."""
+    reach = preview.get("would_reach")
+    return reach == "auto_approved" or (reach == "pending_approval" and not preview.get("submission_authorizes"))
+
+
+def self_authorized(out: dict[str, Any], scripted: set[str]) -> dict[str, Any] | None:
+    """The approval in a submission's answer when it is a scripted id's own, at submission: what
+    the dry run is there to prevent, should a fact have changed between the two."""
+    ap = (out.get("intent") or {}).get("approval") or {}
+    return ap if ap.get("at_submission") and ap.get("by") in scripted else None
+
+
+async def undo_self_authorized(bridge: Bridge, intent_id: Any, operator: str, dispatched: bool) -> str:
+    """Cancel an intent a scripted id authorized by submitting it, unless it went out already."""
+    if dispatched:
+        return "it was dispatched already and could not be cancelled"
+    try:
+        out = await asyncio.to_thread(
+            bridge.post, f"/api/intents/{intent_id}/cancel", {"note": "a script's own submission authorized it: cancelled"}, operator
+        )
+        return f"cancelled ({(out.get('intent') or {}).get('state')})"
+    except (BridgeError, OSError, ValueError) as e:
+        return f"the cancel failed ({type(e).__name__})"
+
+
+def proc_stat(pid: int) -> tuple[str, int, int, int] | None:
+    """(state, process group, session, start time in clock ticks since boot) from /proc."""
+    try:
+        rest = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        return rest[0], int(rest[2]), int(rest[3]), int(rest[19])
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def session_members(pgid: int, started: int | None) -> list[int]:
+    """The live processes of the AI's own session: process group and session both `pgid` (it
+    was started in a session of its own), not zombies, started no earlier than the AI (clock
+    ticks), and only while the group's number is not another's: a live leader `pgid` must be
+    the AI's own (the same start)."""
+    if not os.path.isdir("/proc"):
+        return []
+    leader = proc_stat(pgid)
+    if leader is not None and leader[0] != "Z" and started is not None and leader[3] != started:
+        return []
+    out = []
+    for d in os.listdir("/proc"):
+        if not d.isdigit():
+            continue
+        st = proc_stat(int(d))
+        if st is None or st[0] == "Z" or st[1] != pgid or st[2] != pgid:
+            continue
+        if started is not None and st[3] < started:
+            continue
+        out.append(int(d))
+    return out
 
 
 def ai_env(env: dict[str, str]) -> dict[str, str]:
@@ -230,30 +299,52 @@ class FreshAgentProposer(AgentProposer):
 
 class ScriptedOperatorProposer(HumanProposer):
     """The timeline's operator proposer (`op-planner`, a scripted id): each rationale begins
-    with the scripted label, and in live mode a proposal its own submission would authorize
-    (a human tier the submitter authorizes) is refused before it is sent: a human tier is the
-    person's to decide, never a script's. The operator's dry run says which (nothing logged).
-    An engagement nomination is never approved at submission (the engine's floor)."""
+    with the scripted label, and it submits only what its submission can't authorize
+    (`submits_itself` on the operator's dry run, nothing logged); anything else is refused
+    before it is sent, in either mode: a human tier is a person's to decide, never a script's.
+    An engagement nomination needs no dry run: it is never approved at submission (the engine's
+    floor). Every answer is checked all the same; an approval at submission by a scripted id
+    (a fact changed between the dry run and the submission) is cancelled if it has not gone
+    out, and `alarm` says so."""
 
-    def __init__(self, bridge: Bridge, operator: str, label: str, live: bool):
+    def __init__(self, bridge: Bridge, operator: str, label: str, scripted: set[str], alarm: Any = None):
         super().__init__(bridge, operator)
         self.label = label
-        self.live = live
+        self.scripted = set(scripted)
+        self.alarm = alarm or (lambda text, **fields: None)
 
     async def propose(self, req: dict[str, Any], rationale: str) -> dict[str, Any]:
         text = labelled(self.label, rationale)
-        if self.live and req.get("task") != "engage":
+        body = _rest_body(req, text)
+        if req.get("task") != "engage":
             try:
-                preview = await operator_dry_run(self.bridge, _rest_body(req, text), self.source_id)
+                preview = await operator_dry_run(self.bridge, body, self.source_id)
             except (BridgeError, OSError, ValueError) as e:
-                raise ProposeError(f"not sent in live mode: the dry run could not say whether {self.source_id}'s submission would authorize it ({e})") from e
-            if preview.get("submission_authorizes"):
+                raise ProposeError(f"not sent: the dry run could not say what {self.source_id}'s submission would do ({type(e).__name__})") from e
+            if not submits_itself(preview):
                 d = dry_run_summary(preview)
                 raise ProposeError(
-                    f"not sent in live mode: {self.source_id} (scripted) would authorize it by submitting it "
-                    f"(tier {d['rule']}: {d['reason']}); a human tier is the person's to decide"
+                    f"not sent: {self.source_id} (scripted) submits only what the policy sends out or what waits for "
+                    f"someone else; the dry run said {d['would_reach']} (tier {d['rule']})"
                 )
-        return await super().propose(req, text)
+        try:
+            out = await asyncio.to_thread(self.bridge.submit, body, self.source_id)
+        except BridgeError as e:
+            if isinstance(e.body, dict) and e.body.get("intent_id") is not None:
+                return {"id": e.body["intent_id"], "state": e.body.get("state"), "dispatched": False, "refused": e.body.get("detail")}
+            raise ProposeError(str(e)) from e
+        intent = out.get("intent") or {}
+        rec = {"id": intent.get("id"), "state": intent.get("state"), "dispatched": bool(out.get("dispatched"))}
+        ap = self_authorized(out, self.scripted)
+        if ap is not None:
+            undone = await undo_self_authorized(self.bridge, intent.get("id"), self.source_id, rec["dispatched"])
+            rec["self_authorized"] = undone
+            self.alarm(
+                f"SCRIPT AUTHORIZED AN ORDER: intent {intent.get('id')} was approved at submission by {ap.get('by')} "
+                f"(scripted, tier {ap.get('rule') or '?'}); {undone}",
+                intent_id=intent.get("id"),
+            )
+        return rec
 
     async def withdraw(self, id: int, reason: str) -> dict[str, Any] | None:
         return await super().withdraw(id, labelled(self.label, reason))
@@ -344,6 +435,10 @@ class Runner:
         self.stop = asyncio.Event()
         self.interrupted = False
         self.ready: dict[str, Any] = {}
+        # every scripted operator id of the run: none of them may authorize anything by submitting
+        self.scripted_ids = set(modes["scripted_operators"]) | {SETUP_OPERATOR, STORYLINE_OPERATOR, AUTOPLAY_OPERATOR, *SCRIPTED_SIGNERS}
+        # the AI's start (clock ticks since boot, /proc), to know its process group is its own
+        self.ai_started_ticks: int | None = None
 
     # ---- records -----------------------------------------------------------------------------
 
@@ -386,7 +481,8 @@ class Runner:
             return
         e = t.exception()
         if e is not None:
-            self.problem(f"{name} stopped: {e!r}", task=name)
+            # the panel gets the runner's own words; what the exception said is in situation.jsonl
+            self.problem(f"{name} stopped ({type(e).__name__}); see situation.jsonl", task=name, error=repr(e))
 
     # ---- the status document -----------------------------------------------------------------
 
@@ -454,7 +550,8 @@ class Runner:
             a["t_s"] = round(a["t"] - self.zero, 1) if self.zero is not None else None
             self.record("ai_action", **a)
         self.activity.extend(new)
-        for n in self.notes_tail.read() if self.notes_tail is not None else []:
+        notes_ok = self.notes_tail is not None and not self.notes_tail.path.is_symlink()
+        for n in self.notes_tail.read() if notes_ok and self.notes_tail is not None else []:
             t = n.get("t") if isinstance(n.get("t"), (int, float)) else None
             note = {
                 "t": t,
@@ -472,7 +569,9 @@ class Runner:
             self.record("autoplay", **d)
             failed = str(d.get("result") or "").startswith("error") or d.get("action") in ("error", "sign_failed")
             if failed:
-                self.problem(f"{d.get('by')} (scripted) {d.get('action')} on intent {d.get('intent_id')}: {d.get('result') or d.get('reason')}")
+                # the bridge's status code only; its words and the reason are in situation.jsonl
+                code = str(d.get("result") or "").split(":", 1)[0] if str(d.get("result") or "").startswith("error") else "an error"
+                self.problem(f"{d.get('by')} (scripted): {d.get('action')} on intent {d.get('intent_id')} failed ({code}); see situation.jsonl")
                 continue
             verb = {"approve": "approved", "reject": "rejected", "sign": "signed"}.get(str(d.get("action")))
             if verb:
@@ -505,6 +604,9 @@ class Runner:
         audit_dir = REPO / "logs" / "audit"
         for name in (f".last-run-{self.ports['http']}", f".resume-{self.ports['http']}.json"):
             p = audit_dir / name
+            if (p.exists() or p.is_symlink()) and pointer_names_situation(p) is not True:
+                # another station's (preflight refuses before this): never deleted
+                raise SituationError(f"{rel(p)} is not a situation's pointer: not deleted (see pointer_problems)")
             if p.exists() or p.is_symlink():
                 try:
                     named = p.read_text().strip()[:300]
@@ -606,9 +708,12 @@ class Runner:
         self.record("ready", **self.ready)
 
     async def issue_order(self, o: Any, vehicles: list[dict[str, Any]], setup_agent: FreshAgentProposer) -> dict[str, Any]:
-        """One opening order under the scripted setup id: an operator's dry run first; where
-        op-setup's submission would be its own approval (a human tier), agent-setup proposes it
-        instead and it waits for a decision (the person live, op-auto on autoplay)."""
+        """One opening order under the scripted setup id: an operator's dry run first. op-setup
+        submits it only where its submission can't be the approval (`submits_itself`: the
+        policy sends it out, or it waits for someone else); otherwise agent-setup proposes it
+        and it waits for a decision (the person live, op-auto on autoplay). The answer is
+        checked all the same: an approval at submission by a scripted id is a loud problem, and
+        the intent is cancelled if it has not gone out."""
         rec: dict[str, Any] = {"id": o.id, "task": o.task}
         try:
             chosen = select_vehicles(o.vehicles, vehicles)
@@ -621,9 +726,10 @@ class Runner:
             preview = await operator_dry_run(self.bridge, body, SETUP_OPERATOR)
             dry = dry_run_summary(preview)
             rec["dry_run"] = dry
-            if dry["submission_authorizes"]:
+            if not submits_itself(preview):
                 decider = "the person at the console" if self.modes["operator"] == "live" else f"{AUTOPLAY_OPERATOR} (scripted)"
-                rec["routed"] = f"a human tier ({dry['rule']}): proposed by {SETUP_AGENT} so that {decider} decides it"
+                why = f"a human tier ({dry['rule']})" if dry["would_reach"] == "approved" else f"the dry run said {dry['would_reach']}"
+                rec["routed"] = f"{why}: proposed by {SETUP_AGENT} so that {decider} decides it"
                 out = await setup_agent.propose(req, note)
                 rec.update(by=SETUP_AGENT, intent_id=out.get("id"), state=out.get("state"), dispatched=bool(out.get("dispatched")))
                 if out.get("refused"):
@@ -632,6 +738,15 @@ class Runner:
                 out = await asyncio.to_thread(self.bridge.submit, body, SETUP_OPERATOR)
                 intent = out.get("intent") or {}
                 rec.update(by=SETUP_OPERATOR, intent_id=intent.get("id"), state=intent.get("state"), dispatched=bool(out.get("dispatched")))
+                ap = self_authorized(out, self.scripted_ids)
+                if ap is not None:
+                    undone = await undo_self_authorized(self.bridge, intent.get("id"), SETUP_OPERATOR, rec["dispatched"])
+                    rec["self_authorized"] = undone
+                    self.problem(
+                        f"SCRIPT AUTHORIZED AN ORDER: opening order {o.id} (intent {intent.get('id')}) was approved at "
+                        f"submission by {ap.get('by')} (scripted, tier {ap.get('rule') or '?'}); {undone}",
+                        intent_id=intent.get("id"),
+                    )
         except BridgeError as e:
             body_ = e.body if isinstance(e.body, dict) else {}
             rec.update(intent_id=body_.get("intent_id"), state=body_.get("state"), error=str(body_.get("detail") or e))
@@ -695,8 +810,11 @@ class Runner:
                 stdin=subprocess.DEVNULL,
                 start_new_session=True,
             )
-        # its own session: the group id is its pid, kept to stop the whole group at the end
+        # its own session: the group id is its pid, kept to stop the whole group at the end, with
+        # its start, so a reused group number is never signalled
         self.ai_pgid = self.ai_proc.pid
+        st = proc_stat(self.ai_proc.pid)
+        self.ai_started_ticks = st[3] if st else None
         self.ai_status = {
             "status": "running",
             "pid": self.ai_proc.pid,
@@ -709,37 +827,40 @@ class Runner:
         say(f"AI: {AI_LABEL[ai]} as {self.modes['agent']} (pid {self.ai_proc.pid}, in {self.ai_dir}; output: {rel(self.out / 'agent.log')})")
 
     def _group_alive(self) -> bool:
+        """Whether the AI's own session still has a live process (checked through /proc: a
+        reused group number is not the AI's)."""
         if self.ai_pgid is None:
             return False
-        try:
-            os.killpg(self.ai_pgid, 0)
-            return True
-        except (ProcessLookupError, PermissionError):
-            return False
+        if not os.path.isdir("/proc"):
+            # no /proc: only while the leader the runner started is alive is the group surely its
+            return self.ai_proc is not None and self.ai_proc.poll() is None
+        return bool(session_members(self.ai_pgid, self.ai_started_ticks))
+
+    def _signal_ai(self, sig: int) -> None:
+        if self._group_alive():
+            try:
+                os.killpg(self.ai_pgid, sig)  # type: ignore[arg-type]
+            except (ProcessLookupError, PermissionError):
+                pass
 
     def stop_ai(self) -> None:
         """SIGTERM to the AI's whole process group (even when its leader has exited: a CLI it
-        started lives on in the group), SIGKILL 8 s later."""
+        started lives on in the group), SIGKILL 8 s later; each only while /proc shows a live
+        process of the AI's own session (group and session its number, started after it)."""
         p = self.ai_proc
         if p is None or self.ai_pgid is None:
             return
         was_running = p.poll() is None
         if not was_running and not self._group_alive():
             return
-        try:
-            os.killpg(self.ai_pgid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            pass
+        self._signal_ai(signal.SIGTERM)
         deadline = time.monotonic() + 8
         while time.monotonic() < deadline and (p.poll() is None or self._group_alive()):
             time.sleep(0.2)
         killed = False
         if p.poll() is None or self._group_alive():
             killed = True
-            try:
-                os.killpg(self.ai_pgid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
+            self._signal_ai(signal.SIGKILL)
             try:
                 p.wait(timeout=5)
             except subprocess.TimeoutExpired:
@@ -756,8 +877,9 @@ class Runner:
             return
         notes = d / "agent.jsonl"
         try:
-            if notes.exists():
-                shutil.copyfile(notes, self.out / "agent.jsonl")
+            # a plain file only: a link is not followed
+            if notes.is_file() and not notes.is_symlink():
+                shutil.copyfile(notes, self.out / "agent.jsonl", follow_symlinks=False)
         except OSError as e:
             self.record("warning", text=f"could not keep the AI's notes: {e}")
         shutil.rmtree(d, ignore_errors=True)
@@ -777,7 +899,7 @@ class Runner:
                 log=self.autoplay_log,
                 operator=AUTOPLAY_OPERATOR,
                 signers=signers,
-                note_prefix=label,
+                note_prefix=f"{label}: {AUTOPLAY_OPERATOR} (not a person)",
             )
             self.record("autoplay_start", describe=proxy.describe())
             return proxy
@@ -793,7 +915,7 @@ class Runner:
         kinds = {s.kind for s in self.sit.steps}
         proposer: Any
         if self.sit.storyline_proposer == "operator":
-            proposer = ScriptedOperatorProposer(self.bridge, STORYLINE_OPERATOR, SCRIPTED_TIMELINE, live=self.modes["operator"] == "live")
+            proposer = ScriptedOperatorProposer(self.bridge, STORYLINE_OPERATOR, SCRIPTED_TIMELINE, self.scripted_ids, alarm=self.problem)
         else:
             proposer = FreshAgentProposer(f"{self.bridge_url}/mcp", agent=STORYLINE_AGENT, label=SCRIPTED_TIMELINE)
         story = Storyline(
@@ -883,7 +1005,7 @@ class Runner:
             say(f"{phase}: {e}")
         except Exception as e:  # noqa: BLE001 (recorded and summarized; the stack stays up)
             status = 1
-            self.set_phase("failed", f"the runner failed: {e!r}")
+            self.set_phase("failed", f"the runner failed ({type(e).__name__}); see situation.jsonl")
             self.record("error", error=repr(e))
             say(f"failed: {e!r}")
         finally:
@@ -905,9 +1027,11 @@ class Runner:
 
     def request_stop(self, sig: int = signal.SIGINT) -> None:
         if not self.stop.is_set():
+            # first: a hung-up terminal (SIGHUP) can fail the line below
             self.interrupted = True
-            say(f"stopping the runner ({signal.Signals(sig).name}; the stack keeps running: make down stops it)")
             self.stop.set()
+            self.record("signal", signal=signal.Signals(sig).name)
+            say(f"stopping the runner ({signal.Signals(sig).name}; the stack keeps running: make down stops it)")
 
     # ---- the summary -------------------------------------------------------------------------
 
@@ -977,6 +1101,9 @@ class Runner:
             lines.append(f"  intent {i['id']} {i.get('kind')} for vehicles {','.join(str(u) for u in i.get('uids') or [])} from {src.get('kind')} {src.get('id')}: {i.get('state')}")
         steps = [e for e in self.entries if e["kind"] == "step"]
         lines.append(f"  timeline: {len(steps)} step records, {len(self.done_steps)} of {len(self.sit.steps)} steps run")
+        alarms = [p for p in self.problems if p.startswith("SCRIPT AUTHORIZED")]
+        if alarms:
+            lines.insert(3, f"!!! {len(alarms)} order(s) authorized by a script's own submission: see the problems below and situation.jsonl")
         if self.problems:
             lines.append(f"  problems in the runner: {len(self.problems)}")
             lines += [f"    {p[:200]}" for p in self.problems[-6:]]
@@ -990,9 +1117,13 @@ class Runner:
         if self.stack_alive() or self.bridge.alive():
             lines.append(f"the stack is still running: console http://127.0.0.1:{self.ports['web']}; `make down` stops it")
         text = "\n".join(lines)
-        print(text, flush=True)
+        # kept first: the terminal may be gone (SIGHUP)
         (self.out / "summary.txt").write_text(text + "\n")
         self.record("end", phase=self.phase, summary=lines)
+        try:
+            print(text, flush=True)
+        except OSError:
+            pass
 
 
 def preflight(sit: Situation, modes: dict[str, Any], env: dict[str, str]) -> dict[str, Any]:
@@ -1012,6 +1143,9 @@ def preflight(sit: Situation, modes: dict[str, Any], env: dict[str, str]) -> dic
             "(from the checkout that started it) and try again, or run this one beside it on other ports (the "
             "MURMUR_* port variables, scripts/up.sh's header). The runner never stops another stack."
         )
+    pointers = pointer_problems(ports["http"])
+    if pointers:
+        raise SituationError("refusing to start: " + "; ".join(pointers) + ".")
     eph = ephemeral_range()
     if eph:
         for key in ("vehicle_base", "bridge_base"):
