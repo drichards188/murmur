@@ -6394,7 +6394,7 @@ impl Engine {
     /// order to a person instead. Vehicle tasks only: collects, covers and engagements have
     /// their own dry runs (the tasking query, the nomination form's options).
     pub fn dry_run_for_operator(
-        &mut self,
+        &self,
         operator: &OperatorId,
         proposal: Proposal,
         world: &WorldSnapshot,

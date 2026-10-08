@@ -1407,7 +1407,7 @@ impl Decision {
         let proposal = proposal(&req)?;
         self.prefetch(&proposal.task, &proposal.uids).await;
         let preview = {
-            let mut guard = self.lock();
+            let guard = self.lock();
             let world = self.snapshot();
             guard
                 .engine
