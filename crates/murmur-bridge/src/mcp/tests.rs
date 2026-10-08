@@ -682,6 +682,141 @@ async fn the_other_reads_answer() {
     r.replays();
 }
 
+/// The kinds of a `get_changes` answer, and the first change of `kind`.
+fn change<'a>(v: &'a Value, kind: &str) -> Option<&'a Value> {
+    v["changes"]
+        .as_array()
+        .and_then(|c| c.iter().find(|c| c["kind"] == kind))
+}
+
+fn kinds(v: &Value) -> Vec<String> {
+    v["changes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c["kind"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// `get_changes` is a cursor over what changed between reads. The first read is a baseline;
+/// then an agent's proposal, a track that turns up and is declared hostile, a GPS glitch flag,
+/// a lost link and the proposal's withdrawal each show up once, the intent marked mine for its
+/// proposer only. Reading logs nothing, an empty read keeps the cursor, and a cursor from an
+/// earlier bridge is told to start again. `get_fleet` carries the glitch flag with its age.
+#[tokio::test(start_paused = true)]
+async fn get_changes_reports_what_changed_since_a_cursor() {
+    let r = rig();
+    r.vehicle(2, Firmware::Copter, "switchblade", (LAT, LON)); // armed: human tier
+    // a fake whose link can be cut, so that its own reports stop overwriting what we set
+    let (q, w) = quick().watched();
+    let cell = spawn_fake(3, Firmware::Copter, LAT, LON + 0.002, q);
+    let mut m = serde_json::Map::new();
+    m.insert("platform".into(), json!("x10"));
+    m.insert("callsign".into(), json!("x10 3"));
+    cell.write(|v| v.identity = Some(Arc::new(Identity::from_manifest(&m))));
+    r.world.insert_vehicle(cell.clone());
+    sleep(Duration::from_millis(500)).await;
+    r.clock.set(snapshot::ms(crate::clock::wall()));
+
+    let base = r.ok(&watch(), "get_changes", json!({})).await;
+    assert_eq!(base["count"], 0, "a baseline: {base}");
+    assert_eq!(base["reset"], false);
+    let c0 = base["cursor"].as_u64().expect("cursor");
+    let fleet = r.ok(&watch(), "get_vehicle", json!({ "uid": 3 })).await;
+    assert_eq!(fleet["vehicle"]["nav"]["gps_glitch"]["value"], false, "{fleet}");
+    assert!(fleet["vehicle"]["nav"]["gps_glitch"]["age_s"].as_f64().is_some());
+
+    let id = r
+        .ok(&watch(), "propose_intent", orbit(2, "watch the strait"))
+        .await["id"]
+        .as_u64()
+        .expect("id");
+    hostile_track(&r);
+    let lines = r.log.lines().len();
+    let v = r.ok(&watch(), "get_changes", json!({ "since": c0 })).await;
+    assert_eq!(r.log.lines().len(), lines, "reading logs nothing");
+    let new = change(&v, "intent.new").expect("intent.new");
+    assert_eq!(new["intent"], id);
+    assert_eq!(new["state"], "pending_approval");
+    assert_eq!(new["task"], "orbit");
+    assert_eq!(new["mine"], true);
+    let t = change(&v, "track.new").expect("track.new");
+    assert_eq!(t["track"], "T-0001");
+    assert!(t.get("identity").is_some() && t.get("position").is_some(), "{t}");
+    let d = change(&v, "track.declared").expect("track.declared");
+    assert_eq!((d["track"].as_str(), d["declared"].as_str()), (Some("T-0001"), Some("hostile")));
+    assert_eq!(d["by"], "op-1");
+    let k = kinds(&v);
+    assert!(
+        k.iter().position(|k| k == "intent.new") < k.iter().position(|k| k == "track.new"),
+        "intents first: {k:?}"
+    );
+    let seqs: Vec<u64> = v["changes"]
+        .as_array()
+        .expect("changes")
+        .iter()
+        .filter_map(|c| c["seq"].as_u64())
+        .collect();
+    assert!(seqs.windows(2).all(|w| w[0] < w[1]) && seqs[0] == c0 + 1, "{seqs:?}");
+    let c1 = v["cursor"].as_u64().expect("cursor");
+    assert_eq!(c1, *seqs.last().expect("some"));
+
+    // nothing new: no changes, the same cursor
+    let again = r.ok(&watch(), "get_changes", json!({ "since": c1 })).await;
+    assert_eq!((again["count"].as_u64(), again["cursor"].as_u64()), (Some(0), Some(c1)), "{again}");
+    // another agent reads the same changes; the intent is not its own
+    let theirs = r.ok(&planner(), "get_changes", json!({ "since": c0 })).await;
+    assert_eq!(change(&theirs, "intent.new").expect("intent.new")["mine"], false);
+    // a small page: more, and the cursor of the last change returned
+    let page = r.ok(&planner(), "get_changes", json!({ "since": c0, "limit": 1 })).await;
+    assert_eq!((page["count"].as_u64(), page["more"].as_bool()), (Some(1), Some(true)));
+    assert_eq!(page["cursor"], c0 + 1);
+
+    // the navigation filter flags the GPS as glitching (the link cut keeps the fake's own
+    // reports from overwriting it; the heartbeat is fresh, so the link is not lost yet)
+    w.set_cut(true);
+    let now = crate::clock::wall();
+    cell.write(|v| {
+        v.ekf_flags = Some(
+            crate::mav::apm::EkfStatusFlags::EKF_POS_HORIZ_ABS
+                | crate::mav::apm::EkfStatusFlags::EKF_GPS_GLITCHING,
+        );
+        v.seen.ekf = Some(now);
+        v.seen.heartbeat = Some(now);
+    });
+    let fleet = r.ok(&watch(), "get_vehicle", json!({ "uid": 3 })).await;
+    assert_eq!(fleet["vehicle"]["nav"]["gps_glitch"]["value"], true, "{fleet}");
+    let v = r.ok(&watch(), "get_changes", json!({ "since": c1 })).await;
+    let g = change(&v, "vehicle.gps_glitch").expect("vehicle.gps_glitch");
+    assert_eq!((g["uid"].as_u64(), g["glitch"].as_bool()), (Some(3), Some(true)), "{v}");
+    assert!(change(&v, "vehicle.link_lost").is_none(), "{v}");
+    let c2 = v["cursor"].as_u64().expect("cursor");
+
+    // its link goes silent
+    cell.write(|v| v.seen.heartbeat = Some(crate::clock::wall() - 30.0));
+    let v = r.ok(&watch(), "get_changes", json!({ "since": c2 })).await;
+    let l = change(&v, "vehicle.link_lost").expect("vehicle.link_lost");
+    assert_eq!((l["uid"].as_u64(), l["armed"].as_bool()), (Some(3), Some(false)), "{v}");
+    let c3 = v["cursor"].as_u64().expect("cursor");
+
+    // the agent withdraws its proposal
+    r.ok(&watch(), "withdraw_intent", json!({ "id": id, "reason": "the picture changed" }))
+        .await;
+    let v = r.ok(&watch(), "get_changes", json!({ "since": c3 })).await;
+    let s = change(&v, "intent.state").expect("intent.state");
+    assert_eq!(
+        (s["intent"].as_u64(), s["from"].as_str(), s["to"].as_str(), s["mine"].as_bool()),
+        (Some(id), Some("pending_approval"), Some("voided"), Some(true)),
+        "{v}"
+    );
+
+    // a cursor ahead of the feed (an earlier bridge's): start again, nothing to report
+    let ahead = r.ok(&watch(), "get_changes", json!({ "since": 1_000_000 })).await;
+    assert_eq!((ahead["reset"].as_bool(), ahead["count"].as_u64()), (Some(true), Some(0)));
+    assert!(ahead["cursor"].as_u64().is_some_and(|c| c < 1_000_000));
+    r.replays();
+}
+
 #[tokio::test]
 async fn tracks_are_perception_with_age_and_never_truth() {
     use crate::tracks::sensing::{Observer, SensorSpec, SensorType};
@@ -1014,6 +1149,19 @@ async fn the_endpoint_takes_the_agent_header_over_http() {
         .collect();
     assert!(names.contains(&"propose_intent"), "{names:?}");
     assert!(names.iter().all(|n| !n.contains("approve")), "{names:?}");
+    // protocol 2026-07-28 requires both on list results; Claude Code 2.1.294 refused the
+    // list without them and offered the model no tool at all
+    for method in ["tools/list", "resources/list", "resources/templates/list"] {
+        let (_, _, list) = rpc(
+            &router,
+            Some(&session),
+            None,
+            json!({ "jsonrpc": "2.0", "id": 5, "method": method }),
+        )
+        .await;
+        assert!(list["result"]["ttlMs"].as_u64().is_some(), "{method}: {list}");
+        assert_eq!(list["result"]["cacheScope"], "private", "{method}: {list}");
+    }
 
     // no agent id: refused with a hint; an unlisted one: refused; a listed one: served
     async fn call(router: &Router, session: &str, agent: &str) -> (StatusCode, Option<String>, Value) {

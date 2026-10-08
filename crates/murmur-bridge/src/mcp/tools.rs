@@ -211,6 +211,15 @@ pub struct NominationOptionsParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct ChangesParams {
+    /// The cursor of your last get_changes answer; omit it on the first call (the answer is
+    /// then a cursor to start from and no changes).
+    pub since: Option<u64>,
+    /// At most this many changes, oldest first (default 200, at most 1000).
+    pub limit: Option<usize>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct IdParams {
     /// The intent id (from propose_intent, get_intents or get_inbox).
     pub id: u64,
@@ -350,6 +359,25 @@ pub fn tools() -> Vec<Tool> {
                  vehicles, which sensor, how many detections), and last_seen as as_of. \
                  {STALE_NOTE} A stale or low-confidence track cannot support a consequential \
                  proposal: say so."
+            ),
+            true,
+        ),
+        tool::<ChangesParams>(
+            "get_changes",
+            format!(
+                "Read what changed in the picture since a cursor (read-only, not logged), \
+                 oldest first: tracks that appeared, changed affiliation estimate, went \
+                 stale or active, or were dropped; declarations made, confirmed or revoked; \
+                 identity conflicts (an AIS identity that does not fit what was seen); \
+                 review flags raised or resolved; vehicles that joined, lost or regained \
+                 their link, changed navigation readiness or source, or whose navigation \
+                 filter flags its GPS as glitching (a jammed or spoofed fix looks like \
+                 this); alerts raised and cleared; intents created or changed state (yours \
+                 marked mine); new vehicle events. Pass the cursor of your last answer as \
+                 since; the first call (no since) answers a cursor to start from. Changes \
+                 are seen between reads (any agent's read refreshes the feed), so a \
+                 condition that came and went between two reads is not reported: read the \
+                 picture with the other tools before you rely on it. {STALE_NOTE}"
             ),
             true,
         ),
@@ -596,6 +624,10 @@ pub async fn call(
         "get_recent_events" => {
             let p = params!(EventsParams);
             Ok(world::events(mcp, p.uid, p.limit.unwrap_or(50)))
+        }
+        "get_changes" => {
+            let p = params!(ChangesParams);
+            mcp.changes.read(mcp, agent, p.since, p.limit).await
         }
         "get_tracks" => {
             let p = params!(TracksParams);

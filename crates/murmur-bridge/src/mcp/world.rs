@@ -125,6 +125,9 @@ fn vehicle_json(
                 "source": facts.and_then(|f| f.nav_source.as_ref()).map(|f| f.value.as_str()),
                 "gps_fix": v.gps_fix,
                 "satellites": v.satellites,
+                // the navigation filter flags its GPS as glitching (a jammed or spoofed fix
+                // looks like this): the same fact an engagement's release reads, with its age
+                "gps_glitch": fact(facts.and_then(|f| f.gps_glitch.as_ref()), t, limit_ms),
             }),
         ),
         "battery": with(

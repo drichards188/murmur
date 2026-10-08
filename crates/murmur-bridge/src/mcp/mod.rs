@@ -30,8 +30,10 @@
 //!   `approval.at_submission`, which replay checks).
 //!
 //! Satellite reads go through the bridge's own `/api/space/*` handlers in process (the
-//! answers the console gets), all of them read-only.
+//! answers the console gets), all of them read-only. `get_changes` ([`changes`]) answers
+//! what changed since a cursor, for agents that poll, from the same read-only views.
 
+mod changes;
 pub(crate) mod tools;
 mod world;
 #[cfg(test)]
@@ -47,7 +49,7 @@ use murmur_decide::AgentId;
 use rmcp::ErrorData;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, Implementation, InitializeRequestParams,
+    CacheScope, CallToolRequestParams, CallToolResponse, Implementation, InitializeRequestParams,
     ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
     ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
     ResourceContents, ResourceTemplate, ServerCapabilities, ServerConfig,
@@ -63,6 +65,11 @@ use crate::world::World;
 
 pub const AGENT_HEADER: &str = "x-murmur-agent";
 const JSON: &str = "application/json";
+/// How long a client may treat a tool, resource or template list as fresh. Protocol
+/// 2026-07-28 (SEP-2549) requires `ttlMs` and `cacheScope` on list results, and clients
+/// that speak it refuse a list without them (Claude Code 2.1.294 saw no tools at all).
+/// The lists never change while the bridge runs; private: per client, as a precaution.
+const LIST_TTL_MS: u64 = 300_000;
 /// The most an in-process API answer may be (a satellite pass list with scenes).
 const API_BODY_LIMIT: usize = 16 << 20;
 
@@ -96,7 +103,9 @@ what would clear it (read-only: no keep-out is relaxed). A contact the tracker d
 counts as a lost contact (get_tracks lists them under lost): you cannot accept one, only an \
 operator with engagement authority can, for one engagement. While \
 an engagement is in play on a vehicle, anything you propose for that vehicle waits for a \
-human.";
+human. get_changes answers what changed since a cursor (new tracks, affiliations, \
+declarations, lost links, navigation and GPS glitch flags, alerts, intents' states): read \
+the full picture with the other tools before you act on it.";
 
 /// Who may connect (see `main.rs`): a credentials run checks each agent's key (`keys`); a
 /// dev run believes the ids `MURMUR_AGENTS` lists.
@@ -140,6 +149,8 @@ pub struct Mcp {
     /// When each agent last read the nomination dry run (`get_nomination_options` runs every
     /// armed platform's checks and keep-out explanation): at most one a second each.
     dry_runs: Mutex<std::collections::BTreeMap<AgentId, tokio::time::Instant>>,
+    /// `get_changes`: what changed between reads, numbered for a cursor (read-only).
+    pub(crate) changes: changes::Feed,
 }
 
 /// The least time between two of one agent's nomination dry runs.
@@ -160,6 +171,7 @@ impl Mcp {
             keys: settings.keys,
             seen: Mutex::new(BTreeSet::new()),
             dry_runs: Mutex::new(std::collections::BTreeMap::new()),
+            changes: changes::Feed::default(),
         })
     }
 
@@ -356,7 +368,9 @@ impl ServerHandler for Handler {
         _request: Option<PaginatedRequestParams>,
         _ctx: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        Ok(ListToolsResult::with_all_items(tools::tools()))
+        Ok(ListToolsResult::with_all_items(tools::tools())
+            .with_ttl_ms(LIST_TTL_MS)
+            .with_cache_scope(CacheScope::Private))
     }
 
     async fn call_tool(
@@ -376,7 +390,9 @@ impl ServerHandler for Handler {
         _request: Option<PaginatedRequestParams>,
         _ctx: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
-        Ok(ListResourcesResult::with_all_items(resources()))
+        Ok(ListResourcesResult::with_all_items(resources())
+            .with_ttl_ms(LIST_TTL_MS)
+            .with_cache_scope(CacheScope::Private))
     }
 
     async fn list_resource_templates(
@@ -384,7 +400,9 @@ impl ServerHandler for Handler {
         _request: Option<PaginatedRequestParams>,
         _ctx: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, ErrorData> {
-        Ok(ListResourceTemplatesResult::with_all_items(templates()))
+        Ok(ListResourceTemplatesResult::with_all_items(templates())
+            .with_ttl_ms(LIST_TTL_MS)
+            .with_cache_scope(CacheScope::Private))
     }
 
     async fn read_resource(
