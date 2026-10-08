@@ -370,6 +370,41 @@ pub struct CarriedHold {
     pub other_vehicle: Option<String>,
 }
 
+/// Rules 15 ([`crate::rules::CARRY_FOLLOWUPS_SINCE`], murmur-zq3): a platform spent by its own
+/// effect in an earlier run, carried over at start (`run.started`'s `carried_from`, `spent`): the
+/// log whose engagement spent it, that engagement, the vehicle it was (the engagement's
+/// write-ahead) and the one with the uid now as the bridge identifies it. It takes no order and
+/// no nomination (`readiness` fails), as one spent in this run, unless `now` is known to be
+/// another vehicle (`other_vehicle` says how, by the rule of [`CarriedHold`]); a vehicle not
+/// known yet is held (fail closed). A decision's fact the engine fills from its ledger
+/// (`spent_carried`) and replay recomputes from the log's and the logged identity.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CarriedSpent {
+    pub from: String,
+    pub by: IntentId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spent_on: Option<crate::engage::VehicleIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub now: Option<crate::engage::VehicleIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub other_vehicle: Option<String>,
+}
+
+impl CarriedSpent {
+    /// Whether the vehicle with the uid now is held as spent: unless it is known to be another.
+    pub fn holds(&self) -> bool {
+        self.other_vehicle.is_none()
+    }
+
+    /// Why it takes no order, in words.
+    pub fn detail(&self) -> String {
+        format!(
+            "spent by its own effect (engagement {} of {}, carried over): a spent platform takes no order",
+            self.by, self.from
+        )
+    }
+}
+
 impl RestoreOwed {
     /// Whether they hold a mission for the vehicle: always for values an engagement of this
     /// run preloaded; for carried ones unless the vehicle is known to be another.

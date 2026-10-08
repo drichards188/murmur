@@ -51,6 +51,17 @@ fn harness(idle: Duration) -> H {
 /// [`harness`] with the credentials of `scripted` marked harness-held and the policy changed
 /// by `edit`.
 fn harness_with(idle: Duration, scripted: &[&str], edit: impl FnOnce(&mut Policy)) -> H {
+    harness_on(idle, scripted, edit, None, Default::default())
+}
+
+/// [`harness_with`] beside the vehicles of `on` (a run before it), carrying `carry` at start.
+fn harness_on(
+    idle: Duration,
+    scripted: &[&str],
+    edit: impl FnOnce(&mut Policy),
+    on: Option<(Arc<crate::world::World>, Arc<crate::tracks::Tracks>)>,
+    carry: murmur_decide::StartCarry,
+) -> H {
     let file = scratch().join("credentials.json");
     let mut c = CredentialFile::default();
     c.add_operator("op-1", PW1, false).expect("op-1");
@@ -63,7 +74,7 @@ fn harness_with(idle: Duration, scripted: &[&str], edit: impl FnOnce(&mut Policy
     c.save(&file).expect("saved");
     // rules 12: the harness-held credentials are on the run's roster from its start
     let e = super::engagement::engage_rig_full(
-        None,
+        on,
         PathBuf::from("memory"),
         AuthMode::Credentials,
         edit,
@@ -71,7 +82,7 @@ fn harness_with(idle: Duration, scripted: &[&str], edit: impl FnOnce(&mut Policy
         None,
         super::EngineClock::Manual,
         scripted.iter().map(|o| OperatorId::new(*o)).collect(),
-        Vec::new(),
+        carry,
     );
     let settings = AuthSettings {
         mode: AuthMode::Credentials,
@@ -1092,4 +1103,99 @@ async fn an_injected_act_on_the_simulation_channel_is_refused() {
     assert!(!h.log().contains("ident.act"), "nothing reached the engine");
     let (_, _, review) = h.call("GET", "/api/review", None, &[]).await;
     assert_eq!(review["counts"]["declarations"], 0, "{review}");
+}
+
+/// Rules 15 (decided): an un-spend makes an armed platform taskable again, so in a credentials
+/// run it re-enters the credential, as accepting a lost friendly does. The FPV under uid 1 was
+/// spent by its own effect in an earlier run (the mark carried into `run-1.jsonl`, carried over
+/// at this start) and is heard in this one. In order: op-1 (no engagement authority) is refused
+/// (403) and an un-spend the rules refuse answers 409, both before any credential is asked for;
+/// op-2 without the password and with a wrong one gets a 401 that asks for the step-up, nothing
+/// un-spent; with their own password it is un-spent, the step-up quoted
+/// in the log, which replays authenticated against the log it carried from.
+#[tokio::test]
+async fn an_unspend_steps_up_through_the_api() {
+    // run-1.jsonl: a run that carried the FPV's spent mark on from run-0.jsonl
+    let mark = murmur_decide::replay::SpentPlatform {
+        uid: murmur_decide::Uid::new("1"),
+        by: IntentId(4),
+        from: Some("run-0.jsonl".into()),
+        values: [("FS_GCS_ENABLE".to_string(), 1.0)].into_iter().collect(),
+        vehicle: Some(murmur_decide::VehicleIdentity {
+            platform: Some("fpv".into()),
+            callsign: Some("fpv 1".into()),
+            sysid: None,
+            home: None,
+        }),
+        spent_t: Some(snapshot::ms(super::T0_S).plus_ms(-600_000)),
+        // its engagement ended in run-0 (assessed)
+        ended: true,
+    };
+    let run1 = MemorySink::new();
+    murmur_decide::Engine::start(
+        Policy::load(&super::root().join("sim/policy.toml")).expect("policy"),
+        None,
+        murmur_decide::Roster::new(vec![OperatorId::new("op-1")], vec![]).expect("roster"),
+        vec![murmur_decide::replay::CarriedFrom {
+            log: "run-0.jsonl".into(),
+            head: Some("0".repeat(64)),
+            last_seq: Some(9),
+            spent: vec![mark],
+            ..Default::default()
+        }],
+        Box::new(murmur_decide::ManualClock::new(snapshot::ms(super::T0_S).plus_ms(-60_000))),
+        Box::new(run1.clone()),
+    )
+    .expect("run 1");
+    let first = run1.text();
+    let carry = murmur_decide::StartCarry {
+        pointer: None,
+        from: vec![super::engagement::carry_of("run-1.jsonl", &first)],
+    };
+    let h = harness_on(Duration::from_secs(1800), &[], |_| {}, None, carry);
+    assert!(h.log().lines().next().unwrap_or_default().contains("\"spent\":[{\"uid\":\"1\""), "carried");
+    // heard in this run (the bridge's clock follows the test's: its reports are stamped after
+    // the start)
+    h.e.r.vehicle(1, Firmware::Copter, "fpv", TARGET);
+    for _ in 0..3 {
+        h.e.r.clock.advance_ms(1000);
+        sleep(Duration::from_millis(500)).await;
+    }
+    let op1 = h.login("op-1", PW1).await;
+    let op2 = h.login("op-2", PW2).await;
+    let note = "still reporting after its engagement ended: the effect missed";
+    let (s, v) = h.post(&op1, "/api/restores/unspend", json!({ "uid": 1, "note": note, "password": PW1 })).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    // (second review) the rules' refusal comes before the credential: an un-spend the rules
+    // refuse answers 409 with no password asked for and none checked or counted
+    let (s, v) = h.post(&op2, "/api/restores/unspend", json!({ "uid": 7, "note": note, "password": "not op two's password" })).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["step_up"].is_null(), "{v}");
+    assert!(!h.log().contains("unspend vehicle 7"), "no step-up asked for or refused");
+    let (s, v) = h.post(&op2, "/api/restores/unspend", json!({ "uid": 1, "note": note })).await;
+    assert_eq!((s, v["step_up"].clone()), (StatusCode::UNAUTHORIZED, json!(true)), "{v}");
+    let (s, v) = h.post(&op2, "/api/restores/unspend", json!({ "uid": 1, "note": note, "password": "not op two's password" })).await;
+    assert_eq!((s, v["step_up"].clone()), (StatusCode::UNAUTHORIZED, json!(true)), "{v}");
+    assert!(!h.log().contains("\"type\":\"platform.unspent\""), "refused: nothing un-spent");
+    let (s, v) = h.post(&op2, "/api/restores/unspend", json!({ "uid": 1, "note": note, "password": PW2 })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["unspent"]["uid"], 1, "{v}");
+    let log = h.log();
+    assert!(log.contains("\"action\":\"step_up.refused\",\"detail\":\"unspend vehicle 1: no password given\""), "{log}");
+    assert!(log.contains("\"action\":\"step_up.refused\",\"detail\":\"unspend vehicle 1: wrong password\""), "{log}");
+    let unspent = log.lines().find(|l| l.contains("\"type\":\"platform.unspent\"")).expect("un-spent");
+    assert!(unspent.contains("\"step_up\":{\"seq\":"), "{unspent}");
+    let logs = [("run-1.jsonl", first.as_str())];
+    let r = replay::replay_str_with(
+        &log,
+        &replay::ReplayOptions {
+            carried_logs: &logs,
+            ..replay::ReplayOptions::default()
+        },
+    )
+    .expect("parses");
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert!(r.authenticated());
+    assert_eq!((r.stepped_acts, r.unspent.len()), (1, 1));
+    h.no_secret_logged(&[&op1, &op2]);
 }

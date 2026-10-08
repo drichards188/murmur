@@ -251,7 +251,8 @@ fn engine_err(e: EngineError) -> DecisionError {
         | EngineError::NoPicture { .. }
         | EngineError::SupersedesEngagement { .. }
         | EngineError::NotAccepted { .. }
-        | EngineError::NotWrittenOff(_) => 409,
+        | EngineError::NotWrittenOff(_)
+        | EngineError::NotUnspent(_) => 409,
         EngineError::EngagementNeedsAuthority(_)
         | EngineError::ProposerCannotApprove { .. }
         | EngineError::NotOnRoster { .. } => 403,
@@ -499,6 +500,9 @@ pub struct Parts {
     /// Rules 12: what earlier runs' logs still owed, as the start read them
     /// (`engage::read_carry`): logged in `run.started` and owed back from there.
     pub carried_from: Vec<murmur_decide::replay::CarriedFrom>,
+    /// Rules 15: the station's `.last-run` pointer, by its file name (`run.started`'s `pointer`):
+    /// a later start whose pointer can't be read falls back to this station's newest log.
+    pub pointer: Option<String>,
 }
 
 /// Remove `path` if it is an empty file (a start that failed before writing to it).
@@ -547,10 +551,22 @@ impl Decision {
         // (a reused run id appends to the same file) and recorded in its first line; a
         // pointer or a log that can't be read is a failed carry there, never a failed start
         let followups = policy.rules.followups();
+        let reading = engage::CarryReading {
+            catalog: &catalog,
+            anchors_dir: s.anchors.as_ref().and_then(|a| a.path.parent()),
+            rules15: policy.rules.carry_followups(),
+        };
         let carried_from = match (&s.last_run, followups) {
-            (Some(pointer), true) => engage::read_carry(pointer, &catalog),
+            (Some(pointer), true) => engage::read_carry(pointer, &reading),
             _ => Vec::new(),
         };
+        // rules 15: the station's pointer, named in run.started
+        let pointer = s
+            .last_run
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|f| f.to_string_lossy().into_owned())
+            .filter(|_| policy.rules.carry_followups());
         let file = JsonlFile::open(&s.audit).map_err(|e| format!("{}: {e}", s.audit.display()))?;
         // a start that fails from here on leaves no empty log or anchor file behind (a log
         // reused by its run id, already written, stays)
@@ -594,6 +610,7 @@ impl Decision {
                 passkeys: s.passkeys.clone(),
                 study: s.study.clone(),
                 carried_from,
+                pointer,
             },
         )
         .map_err(undo)?;
@@ -729,7 +746,10 @@ impl Decision {
             p.policy,
             Some(p.areas.clone()),
             roster,
-            p.carried_from,
+            murmur_decide::StartCarry {
+                pointer: p.pointer,
+                from: p.carried_from,
+            },
             Box::new(clock.clone()),
             p.sink,
         )
@@ -2418,6 +2438,7 @@ impl Decision {
             alerts.extend(self.restore_alerts(&core, clock::wall()));
             alerts.extend(self.carry_alert(&core, clock::wall()));
             alerts.extend(self.pending_carry_alerts(&core, clock::wall()));
+            alerts.extend(self.spent_alerts(&core, clock::wall()));
             alerts.extend(self.space_alerts(&core, clock::wall()));
         }
         alerts.sort_by(|a, b| a.severity.cmp(&b.severity).then(a.since_t.total_cmp(&b.since_t)));

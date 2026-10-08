@@ -92,6 +92,7 @@ fn carry_of(name: &str, text: &str) -> CarriedFrom {
         pending: d.pending,
         may_owe: Vec::new(),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -121,6 +122,7 @@ fn owing_run() -> String {
         pending: Vec::new(),
         may_owe: Vec::new(),
         error: None,
+        ..Default::default()
     };
     let (mut e, log) = start(RULES_VERSION, vec![a0], &clock);
     clock.advance_ms(5_000);
@@ -317,6 +319,7 @@ fn a_failed_carry_stays_owed_until_a_later_start_reads_it_or_an_operator_writes_
         pending: Vec::new(),
         may_owe: Vec::new(),
         error: Some("Permission denied (os error 13)".into()),
+        ..Default::default()
     };
     let (_, log) = start(RULES_VERSION, vec![failed.clone()], &clock);
     let b = log.text();
@@ -613,6 +616,7 @@ fn a_log_recorded_as_a_failed_carry_that_reads_is_checked() {
         pending: Vec::new(),
         may_owe: Vec::new(),
         error: Some("No such file or directory (os error 2)".into()),
+        ..Default::default()
     };
     let (_, log) = start(RULES_VERSION, vec![failed], &clock);
     let b = log.text();
@@ -643,9 +647,19 @@ fn a_log_recorded_as_a_failed_carry_that_reads_is_checked() {
 /// Review L9: what a failed carry owed is unknown, but the bridge records the armed platforms
 /// the unreadable log's fleet named (`may_owe`): a mission for one of them waits in the Queue,
 /// saying why, until the log is read or written off (fail closed); a hold goes at once, another
-/// vehicle under the uid is not held, and replay holds the engine to it.
+/// vehicle under the uid is not held, and replay holds the engine to it. Pinned to rules 12
+/// (rules 15 also records the fleet file read, `fleet_read`: `tests/rules15.rs`).
 #[test]
 fn a_failed_carry_holds_missions_for_the_platforms_it_may_owe() {
+    let replay_str = |text: &str| {
+        replay_str_with(
+            text,
+            &ReplayOptions {
+                rules: RulesAccepted::Exactly(REVIEW_FOLLOWUPS_SINCE),
+                ..ReplayOptions::default()
+            },
+        )
+    };
     let failed = |who: VehicleIdentity| CarriedFrom {
         log: "a.jsonl".into(),
         head: None,
@@ -659,9 +673,10 @@ fn a_failed_carry_holds_missions_for_the_platforms_it_may_owe() {
             vehicle: Some(who),
         }],
         error: Some("Permission denied (os error 13)".into()),
+        ..Default::default()
     };
     let clock = ManualClock::new(T0.plus_ms(600_000));
-    let (mut e, log) = start(RULES_VERSION, vec![failed(sky())], &clock);
+    let (mut e, log) = start(REVIEW_FOLLOWUPS_SINCE, vec![failed(sky())], &clock);
     let op = e.open_operator_session(OperatorId::new("op-1")).unwrap();
     let w = world_at(clock.now(), Some(sky()));
     let id = e.submit(op.authority(), orbit(NEAR_CRISSY, 150.0, &["sky-1"]), &w, &terrain()).unwrap().id();
@@ -695,7 +710,7 @@ fn a_failed_carry_holds_missions_for_the_platforms_it_may_owe() {
     // another vehicle under the uid now (its callsign): not held
     let mut nine = sky();
     nine.callsign = Some("SKY 9".into());
-    let (mut e, _) = start(RULES_VERSION, vec![failed(sky())], &clock);
+    let (mut e, _) = start(REVIEW_FOLLOWUPS_SINCE, vec![failed(sky())], &clock);
     let op = e.open_operator_session(OperatorId::new("op-1")).unwrap();
     let w = world_at(clock.now(), Some(nine));
     let id = e.submit(op.authority(), orbit(NEAR_CRISSY, 150.0, &["sky-1"]), &w, &terrain()).unwrap().id();

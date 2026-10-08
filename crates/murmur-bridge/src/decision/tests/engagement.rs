@@ -75,7 +75,7 @@ pub(super) fn engage_rig_passkeys(
     passkeys: Option<murmur_decide::PasskeyRoster>,
     study: Option<murmur_decide::Study>,
 ) -> Erig {
-    engage_rig_full(on, audit_path, auth, tweak, passkeys, study, EngineClock::Manual, Vec::new(), Vec::new())
+    engage_rig_full(on, audit_path, auth, tweak, passkeys, study, EngineClock::Manual, Vec::new(), Default::default())
 }
 
 /// [`engage_rig_auth_policy`] with the engine on `engine_clock` (murmur-dup).
@@ -86,7 +86,7 @@ pub(super) fn engage_rig_clocked(
     tweak: impl FnOnce(&mut Policy),
     engine_clock: EngineClock,
 ) -> Erig {
-    engage_rig_full(on, audit_path, auth, tweak, None, None, engine_clock, Vec::new(), Vec::new())
+    engage_rig_full(on, audit_path, auth, tweak, None, None, engine_clock, Vec::new(), Default::default())
 }
 
 /// The engagement rig: passkeys and a study (rules 10), the engine on `engine_clock`, the
@@ -101,7 +101,7 @@ pub(super) fn engage_rig_full(
     study: Option<murmur_decide::Study>,
     engine_clock: EngineClock,
     scripted: Vec<OperatorId>,
-    carried_from: Vec<murmur_decide::replay::CarriedFrom>,
+    carry: murmur_decide::StartCarry,
 ) -> Erig {
     let root = root();
     let mut policy = Policy::load(&root.join("sim/policy.toml")).expect("policy");
@@ -157,7 +157,8 @@ pub(super) fn engage_rig_full(
             passkeys,
             study,
             scripted,
-            carried_from,
+            carried_from: carry.from,
+            pointer: carry.pointer,
         },
     )
     .expect("engine");
@@ -843,18 +844,43 @@ fn carrying_rig_policy(
     pointer: &std::path::Path,
     tweak: impl FnOnce(&mut Policy),
 ) -> Erig {
+    carrying_rig_anchored(on, audit_path, pointer, None, tweak)
+}
+
+/// [`carrying_rig_policy`], the station keeping its anchors in `anchors_dir` (rules 15: a start
+/// that can't read its pointer falls back on the newest log that checks against its own).
+fn carrying_rig_anchored(
+    on: Option<(Arc<World>, Arc<Tracks>)>,
+    audit_path: PathBuf,
+    pointer: &std::path::Path,
+    anchors_dir: Option<&std::path::Path>,
+    tweak: impl FnOnce(&mut Policy),
+) -> Erig {
     let catalog = murmur_decide::Catalog::load(&root().join("sim/platforms.toml")).expect("catalog");
-    let carried = engage::read_carry(pointer, &catalog);
+    // the policy as the rig will start with it, to read with its rules
+    let mut policy = Policy::load(&root().join("sim/policy.toml")).expect("policy");
+    tweak(&mut policy);
+    let rules15 = policy.rules.carry_followups();
+    let reading = engage::CarryReading {
+        catalog: &catalog,
+        anchors_dir,
+        rules15,
+    };
+    let from = engage::read_carry(pointer, &reading);
+    let name = pointer.file_name().map(|f| f.to_string_lossy().into_owned());
     let e = engage_rig_full(
         on,
         audit_path,
         murmur_decide::AuthMode::Dev,
-        tweak,
+        move |p| *p = policy,
         None,
         None,
         EngineClock::Manual,
         Vec::new(),
-        carried,
+        murmur_decide::StartCarry {
+            pointer: name.filter(|_| rules15),
+            from,
+        },
     );
     e.r.d.seed_carried(Some(pointer));
     e
@@ -877,6 +903,7 @@ fn owing(uid: u64, values: &[(&str, f64)], vehicle: Option<murmur_decide::Vehicl
         pending: Vec::new(),
         may_owe: Vec::new(),
         error: None,
+        ..Default::default()
     };
     murmur_decide::Engine::start(
         Policy::load(&root().join("sim/policy.toml")).expect("policy"),
@@ -1966,4 +1993,594 @@ async fn a_contact_seen_again_by_its_ais_is_a_claim_an_operator_confirms() {
     let rep = replay::replay_str(&log).expect("parses");
     assert!(rep.ok(), "{:?}", rep.mismatches);
     assert_eq!((rep.lost_contacts, rep.lost_claims, rep.lost_confirmed), (1, 1, 1));
+}
+
+// ---- rules 15 ---------------------------------------------------------------------------
+
+/// The console's API on a rig, as the bridge serves it.
+fn api_of(e: &Erig) -> axum::Router {
+    let auth = crate::auth::Auth::new(crate::auth::Settings::dev(), e.r.d.clone(), murmur_auth::CredentialFile::default()).expect("auth");
+    crate::api::router(crate::api::App {
+        world: e.r.world.clone(),
+        frames: Arc::new(tokio::sync::watch::channel(None).0),
+        decision: e.r.d.clone(),
+        tracks: e.tracks.clone(),
+        lod: crate::push::LodSettings::default(),
+        auth,
+    })
+}
+
+/// `POST path` with `body` as operator `who` (a dev run's header): the status and the answer.
+async fn post_as(api: &axum::Router, who: &str, path: &str, body: Value) -> (u16, Value) {
+    use axum::body::Body;
+    use axum::http::{Request, header};
+    use tower::ServiceExt;
+    let req = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("X-Murmur-Operator", who)
+        .body(Body::from(body.to_string()))
+        .expect("request");
+    let resp = api.clone().oneshot(req).await.expect("response");
+    let status = resp.status().as_u16();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 22).await.expect("body");
+    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
+/// Rules 15 (murmur-zq3 (1), murmur-imu (2)): an FPV drone spent by its own effect stays spent
+/// after a bridge-only restart (the next start carries the mark in `run.started`: before, it was
+/// taskable again, still flying the engagement's lost-link action, which a new preload would
+/// have read as its own values); the inbox says it is spent and still heard; an operator without
+/// engagement authority can't un-spend it (403), one with it can, saying why: its own values are
+/// owed back again, put back once it answers, and an orbit goes after the restore. Every log
+/// replays, the second against the first.
+#[tokio::test(start_paused = true)]
+async fn a_platform_spent_by_its_effect_stays_spent_after_a_restart_until_an_operator_unspends_it() {
+    let e = engage_rig();
+    let id = e.approved("return").await;
+    for _ in 0..4 {
+        e.tick(true).await;
+        if e.r.state(id) == State::Effected {
+            break;
+        }
+    }
+    // rules 15 (the review): spent at its release, but while its engagement is under way (the
+    // effect observed, not yet assessed) no SPENT, STILL HEARD alert and no un-spend
+    let spent_alert = |e: &Erig| e.r.d.inbox_json()["alerts"].to_string().contains("spent:1");
+    e.tick(true).await;
+    assert!(e.r.log.text().contains("\"type\":\"restore.closed\",\"uid\":\"1\""), "spent at the release");
+    assert_eq!(e.r.state(id), State::Effected);
+    assert!(!spent_alert(&e), "no alert while its engagement is under way");
+    let api = api_of(&e);
+    let (status, body) = post_as(&api, "op-2", "/api/restores/unspend", json!({ "uid": 1, "note": "it is still reporting" })).await;
+    assert_eq!(status, 409, "{body}");
+    assert!(body["detail"].as_str().unwrap_or_default().contains("has not ended"), "{body}");
+    for _ in 0..60 {
+        e.tick(true).await;
+    }
+    assert!(e.r.state(id).is_terminal(), "{:?}", e.r.state(id));
+    assert!(spent_alert(&e), "ended, and the munition still heard: the alert");
+    let first_text = e.r.log.text();
+    assert!(first_text.contains("\"type\":\"restore.closed\",\"uid\":\"1\""), "spent");
+    let spent = replay::owed_debts(&first_text).spent;
+    assert_eq!(spent.len(), 1, "{spent:?}");
+    assert!(!spent[0].values.is_empty());
+    let dir = std::env::temp_dir().join(format!("murmur-spent-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let log = dir.join("run-1.jsonl");
+    std::fs::write(&log, &first_text).expect("log");
+    let pointer = dir.join(".last-run-0");
+    std::fs::write(&pointer, log.display().to_string()).expect("pointer");
+    // the bridge restarts beside the same vehicles (orbits short enough for an FPV's endurance)
+    let e2 = carrying_rig_policy(Some((e.r.world.clone(), e.tracks.clone())), PathBuf::from("memory"), &pointer, |p| {
+        p.rules.task_duration_s = 60;
+    });
+    let first_line = e2.r.log.lines()[0].clone();
+    assert!(first_line.contains("\"spent\":[{\"uid\":\"1\",\"by\":"), "{first_line}");
+    assert!(first_line.contains("\"pointer\":\".last-run-0\""), "the station's pointer named: {first_line}");
+    let mut req = orbit(1);
+    req.params.center = Some([TARGET.1 + 0.004, TARGET.0]);
+    let o = e2.r.d.submit(&op("op-1"), req.clone()).await.expect("orbit");
+    assert_eq!(o.state, State::Rejected, "{}", o.intent);
+    assert!(o.intent.to_string().contains("carried over"), "{}", o.intent);
+    // the inbox: spent, still heard
+    e2.r.d.tick();
+    let alerts = e2.r.d.inbox_json()["alerts"].clone();
+    let alert = alerts
+        .as_array()
+        .and_then(|a| a.iter().find(|a| a["id"] == "spent:1"))
+        .cloned()
+        .unwrap_or_else(|| panic!("{alerts}"));
+    assert_eq!(alert["kind"], "spent");
+    assert!(alert["detail"].as_str().unwrap_or_default().contains("run-1.jsonl, carried over) but still heard"), "{alert}");
+    // un-spent: not by op-1 (no engagement authority), not without a note, by op-2 saying why
+    let api = api_of(&e2);
+    let (status, body) = post_as(&api, "op-1", "/api/restores/unspend", json!({ "uid": 1, "note": "it survived" })).await;
+    assert_eq!(status, 403, "{body}");
+    let (status, body) = post_as(&api, "op-2", "/api/restores/unspend", json!({ "uid": 1, "note": " " })).await;
+    assert_eq!(status, 409, "{body}");
+    let (status, body) = post_as(&api, "op-2", "/api/restores/unspend", json!({ "uid": 1, "note": "still reporting after the effect: a miss" })).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["unspent"]["uid"], 1, "{body}");
+    assert!(!e2.r.d.inbox_json()["alerts"].to_string().contains("spent:1"), "the alert clears");
+    // its own values go back once it answers, then an orbit goes
+    for _ in 0..6 {
+        e2.r.d.tick();
+        sleep(Duration::from_secs(1)).await;
+    }
+    let restores = platform_restores(&e2.r.log);
+    assert!(restores.iter().any(|r| !r.0 && r.2), "put back and confirmed: {restores:?}");
+    let o = e2.r.d.submit(&op("op-1"), req).await.expect("orbit");
+    assert_eq!(o.state, State::Dispatched, "{}", o.intent);
+    let first_logs = [("run-1.jsonl", first_text.as_str())];
+    let rep = replay::replay_str_with(
+        &e2.r.log.text(),
+        &replay::ReplayOptions {
+            carried_logs: &first_logs,
+            ..replay::ReplayOptions::default()
+        },
+    )
+    .expect("parses");
+    assert!(rep.ok() && rep.unrestored.is_empty(), "{:?} {:?}", rep.mismatches, rep.unrestored);
+    assert_eq!(rep.unspent.len(), 1, "{:?}", rep.unspent);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Rules 15 (murmur-zq3 (2), (4), and the review's fixes): a `.last-run` pointer that can't be read
+/// no longer drops the chain behind it when the station's newest log (by its carry chain)
+/// checks: the start carries from that log in its place (`pointer_failed` says why), and from
+/// what it still owed (here a log whose carry had failed, pending). Another station's newer log
+/// in the same directory is never taken. A newest log whose anchors don't check, one from an
+/// older build that names no pointer, or one behind a newer log that can't be placed (its first
+/// line does not parse) is not carried from but recorded as a failed carry under its own name
+/// (fail closed: its armed platforms held), pending, so the next start reads it and the chain
+/// behind it. A pointer naming the same log on two lines names it.
+#[tokio::test(start_paused = true)]
+async fn a_pointer_that_cannot_be_read_falls_back_to_the_stations_newest_log_that_checks() {
+    let dir = std::env::temp_dir().join(format!("murmur-carry-fallback-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("anchors")).expect("dir");
+    let world = || {
+        World::new(Config {
+            base_port: 0,
+            http_port: 0,
+            default_ports: 0,
+            manifest: root().join("sim/run/no-such-manifest.json"),
+            platforms: root().join("sim/platforms.toml"),
+            root: root(),
+        })
+    };
+    let settings = |run: &str, pointer: &std::path::Path| Settings {
+        policy: root().join("sim/policy.toml"),
+        catalog: root().join("sim/platforms.toml"),
+        areas: root().join("sim/areas"),
+        audit: dir.join(format!("{run}.jsonl")),
+        operators: vec![OperatorId::new("op-1")],
+        engage_operators: Vec::new(),
+        scripted: Vec::new(),
+        auth: murmur_decide::AuthMode::Dev,
+        tidewater: None,
+        anchors: Some(murmur_decide::AnchorConfig {
+            path: dir.join("anchors").join(format!("{run}.anchors")),
+            every: 1,
+            cmd: None,
+        }),
+        last_run: Some(pointer.to_path_buf()),
+        resume: crate::decision::queue::ResumeFrom::Off,
+        pointer: None,
+        passkeys: None,
+        study: None,
+    };
+    let first_line = |run: &str| {
+        std::fs::read_to_string(dir.join(format!("{run}.jsonl")))
+            .expect("log")
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    };
+    let pointer = dir.join(".last-run-0");
+    // run 1: its pointer names a log that is gone (a failed carry it owes for); then it crashes
+    std::fs::write(&pointer, dir.join("gone.jsonl").display().to_string()).expect("pointer");
+    drop(Decision::load(world(), &settings("run-1", &pointer)).expect("run 1"));
+    assert!(first_line("run-1").contains("\"pointer\":\".last-run-0\""), "{}", first_line("run-1"));
+    // the same line twice names that log
+    std::fs::write(&pointer, format!("{0}\n{0}\n", dir.join("run-1.jsonl").display())).expect("pointer");
+    drop(Decision::load(world(), &settings("run-2", &pointer)).expect("run 2"));
+    assert!(first_line("run-2").contains("\"carried_from\":[{\"log\":\"run-1.jsonl\",\"head\":"), "{}", first_line("run-2"));
+    // another station, later, in the same directory
+    drop(Decision::load(world(), &settings("run-9", &dir.join(".last-run-1"))).expect("other station"));
+    // the pointer torn: the newest log of this station (run-2, not run-9) in its place, the
+    // chain behind it kept (gone.jsonl, still owed for, tried again)
+    std::fs::write(&pointer, b"/home/op/murmur/logs/audit/2026").expect("pointer");
+    drop(Decision::load(world(), &settings("run-3", &pointer)).expect("run 3"));
+    let first = first_line("run-3");
+    assert!(first.contains("\"carried_from\":[{\"log\":\"run-2.jsonl\",\"head\":"), "{first}");
+    assert!(first.contains("\"pointer_failed\":\"the pointer names no log"), "{first}");
+    assert!(first.contains("{\"log\":\"gone.jsonl\",\"error\":"), "the chain kept: {first}");
+    assert!(!first.contains("run-9.jsonl"), "{first}");
+    let run2 = std::fs::read_to_string(dir.join("run-2.jsonl")).expect("run 2");
+    let run3 = std::fs::read_to_string(dir.join("run-3.jsonl")).expect("run 3");
+    let logs = [("run-2.jsonl", run2.as_str())];
+    let rep = replay::replay_str_with(
+        &run3,
+        &replay::ReplayOptions {
+            carried_logs: &logs,
+            ..replay::ReplayOptions::default()
+        },
+    )
+    .expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+    assert!(
+        rep.carried_restores[0].pointer_failed.as_deref().is_some_and(|w| w.starts_with("the pointer names no log")),
+        "{:?}",
+        rep.carried_restores
+    );
+    // forged: the log given in its place another station's (its run.started names another
+    // pointer): caught
+    let mut other = run2.lines().map(str::to_string).collect::<Vec<_>>();
+    other[0] = other[0].replacen("\"pointer\":\".last-run-0\"", "\"pointer\":\".last-run-1\"", 1);
+    let other = other.join("\n");
+    let forged_logs = [("run-2.jsonl", other.as_str())];
+    let rep = replay::replay_str_with(
+        &run3,
+        &replay::ReplayOptions {
+            carried_logs: &forged_logs,
+            trust_resumed: true,
+            ..replay::ReplayOptions::default()
+        },
+    )
+    .expect("parses");
+    assert!(rep.mismatches.iter().any(|m| m.what.contains("not this station's")), "{:?}", rep.mismatches);
+    // the newest log's anchors gone: not carried from, but a failed carry under its own name
+    // (fail closed: its armed platforms held), pending, so the chain behind it is kept
+    std::fs::remove_file(dir.join("anchors").join("run-3.anchors")).expect("anchors");
+    std::fs::write(&pointer, b"").expect("pointer");
+    drop(Decision::load(world(), &settings("run-4", &pointer)).expect("run 4"));
+    let first = first_line("run-4");
+    assert!(
+        first.contains("\"carried_from\":[{\"log\":\"run-3.jsonl\",\"error\":\"found in place of the pointer, not carried from: run-3.jsonl has no anchors"),
+        "{first}"
+    );
+    assert!(first.contains("\"pointer_failed\":\"the pointer is empty"), "{first}");
+    let run3 = std::fs::read_to_string(dir.join("run-3.jsonl")).expect("run 3");
+    let run4 = std::fs::read_to_string(dir.join("run-4.jsonl")).expect("run 4");
+    let logs = [("run-3.jsonl", run3.as_str())];
+    let rep = replay::replay_str_with(
+        &run4,
+        &replay::ReplayOptions {
+            carried_logs: &logs,
+            ..replay::ReplayOptions::default()
+        },
+    )
+    .expect("parses");
+    assert!(rep.ok(), "a fallback the start would not trust stays pending: {:?}", rep.mismatches);
+    // the pointer is written whole and leaves nothing behind
+    assert_eq!(std::fs::read_to_string(&pointer).expect("pointer"), dir.join("run-4.jsonl").display().to_string());
+    assert!(!dir.join(".last-run-0.tmp").exists());
+    // the next start reads run-3 again (pending) and with it gone.jsonl, still owed for (the
+    // review: before, run-4 had dropped it)
+    drop(Decision::load(world(), &settings("run-5", &pointer)).expect("run 5"));
+    let first = first_line("run-5");
+    assert!(first.contains("{\"log\":\"run-3.jsonl\",\"head\":"), "{first}");
+    assert!(first.contains("{\"log\":\"gone.jsonl\",\"error\":"), "the chain kept: {first}");
+    // the review's probe: a newer log of this station from an older build (rules 12, no pointer
+    // named), carried from run-5 and still owing vehicle 1's own values, its fleet arming it
+    let run5 = std::fs::read_to_string(dir.join("run-5.jsonl")).expect("run 5");
+    let (head5, seq5) = replay::log_head(&run5).expect("head");
+    let mut p12 = Policy::load(&root().join("sim/policy.toml")).expect("policy");
+    p12.rules.rules_version = murmur_decide::REVIEW_FOLLOWUPS_SINCE;
+    let old = MemorySink::new();
+    murmur_decide::Engine::start(
+        p12,
+        None,
+        murmur_decide::Roster::new(vec![OperatorId::new("op-1")], vec![]).expect("roster"),
+        vec![murmur_decide::replay::CarriedFrom {
+            log: "run-5.jsonl".into(),
+            head: Some(head5),
+            last_seq: Some(seq5),
+            owed: vec![murmur_decide::replay::OwedRestore {
+                uid: duid(1),
+                values: [("FS_GCS_ENABLE".to_string(), 1.0)].into_iter().collect(),
+                by: Vec::new(),
+                vehicle: None,
+            }],
+            ..Default::default()
+        }],
+        Box::new(ManualClock::new(snapshot::ms(clock::wall()).plus_ms(1_000))),
+        Box::new(old.clone()),
+    )
+    .expect("engine");
+    // (no fleet file beside it: its bridge ended before its first tick, as a busy port does)
+    std::fs::write(dir.join("run-6.jsonl"), old.text()).expect("run 6");
+    std::fs::write(&pointer, b"/home/op/murmur/logs/aud").expect("pointer");
+    drop(Decision::load(world(), &settings("run-7", &pointer)).expect("run 7"));
+    let first = first_line("run-7");
+    assert!(first.contains("\"carried_from\":[{\"log\":\"run-6.jsonl\","), "not run-5 in its place: {first}");
+    assert!(
+        first.contains("\"error\":\"found in place of the pointer, not carried from: run-6.jsonl is this station's newest log by its carry chain but names no pointer"),
+        "{first}"
+    );
+    assert!(first.contains("\"may_owe\":[{\"uid\":\"1\""), "what it owed held, no fleet file needed: {first}");
+    assert!(!first.contains("\"fleet_read\""), "{first}");
+    // and the start after reads run-6 (pending), carrying what it owed
+    drop(Decision::load(world(), &settings("run-8", &pointer)).expect("run 8"));
+    let first = first_line("run-8");
+    assert!(first.contains("{\"log\":\"run-6.jsonl\",\"head\":"), "{first}");
+    assert!(first.contains("\"owed\":[{\"uid\":\"1\",\"values\":{\"FS_GCS_ENABLE\":1.0}"), "{first}");
+    // a newer log whose first line does not parse (it may be the one the pointer named): refused
+    std::fs::write(dir.join("run-10.jsonl"), b"{\"seq\":1,\"t\":").expect("garbled");
+    std::fs::write(&pointer, b"").expect("pointer");
+    drop(Decision::load(world(), &settings("run-11", &pointer)).expect("run 11"));
+    let first = first_line("run-11");
+    assert!(first.contains("\"carried_from\":[{\"log\":\"run-8.jsonl\","), "{first}");
+    assert!(
+        first.contains("\"error\":\"found in place of the pointer, not carried from: run-10.jsonl is as new as run-8.jsonl (this station's newest log by its carry chain) or newer and does not start with a run.started that parses, which may be the log the pointer named"),
+        "{first}"
+    );
+    assert!(first.contains("\"may_owe\":[{\"uid\":\"1\""), "run-8 still owed vehicle 1's values: held: {first}");
+    // (second review, item 3) and run-10 itself is recorded, so its debts don't drop at the
+    // next start
+    assert!(
+        first.contains("{\"log\":\"run-10.jsonl\",\"error\":\"found in place of the pointer, not carried from: run-10.jsonl is as new as run-8.jsonl"),
+        "{first}"
+    );
+    let run8 = std::fs::read_to_string(dir.join("run-8.jsonl")).expect("run 8");
+    let run10 = std::fs::read_to_string(dir.join("run-10.jsonl")).expect("run 10");
+    let run11 = std::fs::read_to_string(dir.join("run-11.jsonl")).expect("run 11");
+    let logs = [("run-8.jsonl", run8.as_str()), ("run-10.jsonl", run10.as_str())];
+    let rep = replay::replay_str_with(
+        &run11,
+        &replay::ReplayOptions {
+            carried_logs: &logs,
+            ..replay::ReplayOptions::default()
+        },
+    )
+    .expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Rules 15 (second review, items 3 and 4): when the station's newest log can't be told from
+/// another that may be the one the pointer named, every such log is recorded as a failed carry
+/// (fail closed), not only the newest, so none of their debts drops at the next start: two ends
+/// of the carry chain started within 10 s of each other (a pointer removed by hand twice), and a
+/// newest log deleted while its anchors are left (its predecessor would otherwise be carried from
+/// silently).
+#[tokio::test(start_paused = true)]
+async fn a_refused_fallback_records_every_log_that_may_be_the_one_the_pointer_named() {
+    let dir = std::env::temp_dir().join(format!("murmur-carry-candidates-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("anchors")).expect("dir");
+    let world = || {
+        World::new(Config {
+            base_port: 0,
+            http_port: 0,
+            default_ports: 0,
+            manifest: root().join("sim/run/no-such-manifest.json"),
+            platforms: root().join("sim/platforms.toml"),
+            root: root(),
+        })
+    };
+    let settings = |run: &str, pointer: &std::path::Path| Settings {
+        policy: root().join("sim/policy.toml"),
+        catalog: root().join("sim/platforms.toml"),
+        areas: root().join("sim/areas"),
+        audit: dir.join(format!("{run}.jsonl")),
+        operators: vec![OperatorId::new("op-1")],
+        engage_operators: Vec::new(),
+        scripted: Vec::new(),
+        auth: murmur_decide::AuthMode::Dev,
+        tidewater: None,
+        anchors: Some(murmur_decide::AnchorConfig {
+            path: dir.join("anchors").join(format!("{run}.anchors")),
+            every: 1,
+            cmd: None,
+        }),
+        last_run: Some(pointer.to_path_buf()),
+        resume: crate::decision::queue::ResumeFrom::Off,
+        pointer: None,
+        passkeys: None,
+        study: None,
+    };
+    let first_line = |run: &str| {
+        std::fs::read_to_string(dir.join(format!("{run}.jsonl")))
+            .expect("log")
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    };
+    let pointer = dir.join(".last-run-0");
+    // two first starts a moment apart (the pointer removed by hand before each): two ends of
+    // this station's carry chain no time can order
+    drop(Decision::load(world(), &settings("run-a", &pointer)).expect("run a"));
+    std::fs::remove_file(&pointer).expect("pointer");
+    drop(Decision::load(world(), &settings("run-b", &pointer)).expect("run b"));
+    std::fs::write(&pointer, b"").expect("pointer");
+    drop(Decision::load(world(), &settings("run-c", &pointer)).expect("run c"));
+    let first = first_line("run-c");
+    for run in ["run-a", "run-b"] {
+        assert!(
+            first.contains(&format!("{{\"log\":\"{run}.jsonl\",\"error\":\"found in place of the pointer, not carried from: ")),
+            "{run}: {first}"
+        );
+    }
+    assert!(first.contains("both end this station's carry chain and started too close together"), "{first}");
+    assert_eq!(first.matches("\"pointer_failed\":\"the pointer is empty").count(), 2, "{first}");
+    let (a, b, c) = (
+        std::fs::read_to_string(dir.join("run-a.jsonl")).expect("a"),
+        std::fs::read_to_string(dir.join("run-b.jsonl")).expect("b"),
+        std::fs::read_to_string(dir.join("run-c.jsonl")).expect("c"),
+    );
+    let logs = [("run-a.jsonl", a.as_str()), ("run-b.jsonl", b.as_str())];
+    let rep = replay::replay_str_with(
+        &c,
+        &replay::ReplayOptions {
+            carried_logs: &logs,
+            ..replay::ReplayOptions::default()
+        },
+    )
+    .expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+    // forged: only one of them recorded in its place, the other's entry claimed as named by it:
+    // a log no earlier entry named pending
+    let mut events = murmur_decide::audit::parse_log(&c).expect("events");
+    if let murmur_decide::EventBody::RunStarted { carried_from, .. } = &mut events[0].body {
+        carried_from[1].pointer_failed = None;
+    }
+    let forged = rechain_text(events);
+    let rep = replay::replay_str_with(
+        &forged,
+        &replay::ReplayOptions {
+            carried_logs: &logs,
+            ..replay::ReplayOptions::default()
+        },
+    )
+    .expect("parses");
+    assert!(rep.mismatches.iter().any(|m| m.what.contains("neither the pointer nor an earlier carried log named")), "{:?}", rep.mismatches);
+    // the next start reads both again (pending)
+    drop(Decision::load(world(), &settings("run-d", &pointer)).expect("run d"));
+    let first = first_line("run-d");
+    assert!(first.contains("{\"log\":\"run-a.jsonl\",\"head\":") && first.contains("{\"log\":\"run-b.jsonl\",\"head\":"), "{first}");
+    // the newest log deleted, its anchors left, and the pointer torn: run-c is the chain's end
+    // again, but run-d's anchors say a newer log was here: refused, run-d recorded (missing)
+    std::fs::remove_file(dir.join("run-d.jsonl")).expect("delete");
+    std::fs::write(&pointer, b"").expect("pointer");
+    drop(Decision::load(world(), &settings("run-e", &pointer)).expect("run e"));
+    let first = first_line("run-e");
+    assert!(first.contains("\"carried_from\":[{\"log\":\"run-c.jsonl\",\"error\":\"found in place of the pointer, not carried from: its anchors file is here"), "{first}");
+    assert!(
+        first.contains("{\"log\":\"run-d.jsonl\",\"error\":\"found in place of the pointer, not carried from: its anchors file is here, as new as run-c.jsonl or newer, but the log is not"),
+        "{first}"
+    );
+    // and the start after tries both again: run-c read, run-d still missing (pending)
+    drop(Decision::load(world(), &settings("run-f", &pointer)).expect("run f"));
+    let first = first_line("run-f");
+    assert!(first.contains("{\"log\":\"run-c.jsonl\",\"head\":"), "{first}");
+    assert!(first.contains("{\"log\":\"run-d.jsonl\",\"error\":"), "{first}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A log's events re-chained (seq and prev), as text.
+fn rechain_text(mut events: Vec<murmur_decide::audit::Event>) -> String {
+    let mut prev = murmur_decide::hash::GENESIS.to_string();
+    let mut out = String::new();
+    for (i, e) in events.iter_mut().enumerate() {
+        e.seq = i as u64 + 1;
+        e.prev = prev.clone();
+        let line = serde_json::to_string(&*e).expect("json");
+        prev = murmur_decide::hash::sha256_hex(line.as_bytes());
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out
+}
+
+/// Rules 15 (the review): the SPENT, STILL HEARD alert is offered only when an un-spend would be
+/// taken, as the engine judges it: not while the engagement that spent the platform is under
+/// way, and not once its link is silent. Before, it compared last-seen times, which never clear:
+/// it showed about a second after every release and stayed after the munition went silent.
+#[tokio::test(start_paused = true)]
+async fn the_spent_alert_shows_only_while_an_unspend_would_be_taken() {
+    let e = engage_rig();
+    let (cell, w) = e.r.watched(1, Firmware::Copter, "fpv", TARGET, crate::tasks::tests::quick());
+    sleep(Duration::from_millis(500)).await;
+    e.picture().await;
+    let id = e.r.d.submit(&op("op-1"), e.nomination("return")).await.expect("nominated").id;
+    e.sign("op-2", id).await.expect("signs");
+    assert_eq!(e.sign("op-3", id).await.expect("signs").state, State::Dispatched);
+    e.preloaded(id).await;
+    let spent_alert = |e: &Erig| {
+        e.r.clock.set(snapshot::ms(clock::wall()));
+        e.r.d.inbox_json()["alerts"].to_string().contains("spent:1")
+    };
+    for _ in 0..6 {
+        e.tick(true).await;
+        if e.r.state(id) == State::Effected {
+            break;
+        }
+    }
+    e.tick(true).await;
+    assert_eq!(e.r.state(id), State::Effected, "{}", e.r.reason(id));
+    assert!(e.r.log.text().contains("\"type\":\"restore.closed\",\"uid\":\"1\""), "spent at the release");
+    assert!(!spent_alert(&e), "not while its engagement is under way");
+    for _ in 0..60 {
+        e.tick(true).await;
+        if e.r.state(id).is_terminal() {
+            break;
+        }
+    }
+    assert!(e.r.state(id).is_terminal(), "{:?}", e.r.state(id));
+    e.tick(true).await;
+    assert!(spent_alert(&e), "ended, and heard since: the alert");
+    // the munition goes silent: the alert goes with it (an un-spend would be refused)
+    super::queue::go_silent(&cell, &w, 0.0);
+    for _ in 0..15 {
+        e.tick(true).await;
+    }
+    assert!(!spent_alert(&e), "silent: no alert");
+    let api = api_of(&e);
+    let (status, body) = post_as(&api, "op-2", "/api/restores/unspend", json!({ "uid": 1, "note": "it survived" })).await;
+    assert_eq!(status, 409, "{body}");
+    assert!(body["detail"].as_str().unwrap_or_default().contains("its link is silent"), "{body}");
+    let rep = replay::replay_str(&e.r.log.text()).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+}
+
+/// What a start records in `run.started` for the log `name` it read (`text`).
+pub(super) fn carry_of(name: &str, text: &str) -> murmur_decide::replay::CarriedFrom {
+    let (head, seq) = replay::log_head(text).expect("head");
+    let d = replay::owed_debts(text);
+    murmur_decide::replay::CarriedFrom {
+        log: name.into(),
+        head: Some(head),
+        last_seq: Some(seq),
+        owed: d.owed,
+        pending: d.pending,
+        spent: d.spent,
+        ..Default::default()
+    }
+}
+
+/// Rules 15 (second review, item 1): a restart inside the assessment window does not skip the
+/// wait for the engagement to be over. The FPV is released and spent; the bridge stops before
+/// the engagement is assessed; the next start carries the mark as not ended in its log: no SPENT,
+/// STILL HEARD alert and no un-spend until the latest the engagement would have ended (when it
+/// was spent plus `assess_window_s`), though the platform is heard at once.
+#[tokio::test(start_paused = true)]
+async fn a_restart_inside_the_assessment_window_still_waits_for_it() {
+    let e = engage_rig();
+    let id = e.approved("return").await;
+    for _ in 0..6 {
+        e.tick(true).await;
+        if e.r.state(id) == State::Effected {
+            break;
+        }
+    }
+    e.tick(true).await;
+    assert_eq!(e.r.state(id), State::Effected, "{}", e.r.reason(id));
+    let first_text = e.r.log.text();
+    let spent = replay::owed_debts(&first_text).spent;
+    assert!(spent.len() == 1 && !spent[0].ended && spent[0].spent_t.is_some(), "{spent:?}");
+    let dir = std::env::temp_dir().join(format!("murmur-spent-window-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let log = dir.join("run-1.jsonl");
+    std::fs::write(&log, &first_text).expect("log");
+    let pointer = dir.join(".last-run-0");
+    std::fs::write(&pointer, log.display().to_string()).expect("pointer");
+    let e2 = carrying_rig_policy(Some((e.r.world.clone(), e.tracks.clone())), PathBuf::from("memory"), &pointer, |_| {});
+    assert!(e2.r.log.lines()[0].contains("\"spent\":[{\"uid\":\"1\""), "carried");
+    for _ in 0..4 {
+        e2.r.clock.advance_ms(1000);
+        e2.r.d.tick();
+        sleep(Duration::from_secs(1)).await;
+    }
+    assert!(!e2.r.d.inbox_json()["alerts"].to_string().contains("spent:1"), "no alert inside the window");
+    let api = api_of(&e2);
+    let (status, body) = post_as(&api, "op-2", "/api/restores/unspend", json!({ "uid": 1, "note": "it is still reporting" })).await;
+    assert_eq!(status, 409, "{body}");
+    assert!(body["detail"].as_str().unwrap_or_default().contains("would have ended"), "{body}");
+    let _ = std::fs::remove_dir_all(&dir);
 }

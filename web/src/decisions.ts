@@ -169,8 +169,18 @@ export interface IntentSpace {
 export type Severity = 'high' | 'medium'
 
 export interface Alert {
-  id: string // link:<uid>, op:<op id> or restore:<uid>; stable while the condition lasts
-  kind: 'lost_link' | 'not_moving' | 'left_task' | 'task_failed' | 'ack_timeout' | 'restore_pending' | 'space_missed' | 'space_recheck_unknown'
+  id: string // link:<uid>, op:<op id>, restore:<uid> or spent:<uid>; stable while the condition lasts
+  kind:
+    | 'lost_link'
+    | 'not_moving'
+    | 'left_task'
+    | 'task_failed'
+    | 'ack_timeout'
+    | 'may_be_running'
+    | 'restore_pending'
+    | 'space_missed'
+    | 'space_recheck_unknown'
+    | 'spent'
   severity: Severity
   uid: number
   callsign: string | null
@@ -315,15 +325,41 @@ export async function writeOffRestore(target: { uid: number } | { log: string },
   if (!res.ok) throw new Error(b.detail ?? `bridge returned ${res.status}`)
 }
 
+/** Rules 15: the platform a spent alert (`spent:<uid>`: spent by its own effect, still heard)
+ *  lets an operator with engagement authority un-spend; none for other alerts. */
+export function unspendTarget(a: Alert): { uid: number } | null {
+  return a.kind === 'spent' && a.uid > 0 ? { uid: a.uid } : null
+}
+
+/** Rules 15: POST /api/restores/unspend as the console's operator, saying why (logged as
+ *  `platform.unspent` under their session; 403 without engagement authority). In a credentials
+ *  run `proof` carries the step-up (the password again, or a passkey's assertion made for this
+ *  un-spend). Throws an Error with the bridge's reason ([`StepUpNeeded`] when the step-up is
+ *  missing or wrong). */
+export async function unspendPlatform(uid: number, note: string, proof: { password?: string; passkey?: Record<string, unknown> } = {}): Promise<void> {
+  const res = await operatorFetch('/api/restores/unspend', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...operatorHeaders(getOperator()) },
+    body: JSON.stringify({ uid, note, ...proof }),
+  })
+  const b = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const msg = b.detail ?? `bridge returned ${res.status}`
+    throw b.step_up ? new StepUpNeeded(msg) : new Error(msg)
+  }
+}
+
 export const ALERT_LABEL: Record<Alert['kind'], string> = {
   lost_link: 'LOST LINK',
   not_moving: 'NOT MOVING',
   left_task: 'LEFT TASK',
   task_failed: 'TASK FAILED',
   ack_timeout: 'NO ACK',
+  may_be_running: 'MAY BE RUNNING',
   restore_pending: 'FAILSAFE NOT RESTORED',
   space_missed: 'SATELLITE TASK LOST',
   space_recheck_unknown: 'SATELLITE RE-CHECK UNKNOWN',
+  spent: 'SPENT, STILL HEARD',
 }
 
 // ---- operator ------------------------------------------------------------------------------

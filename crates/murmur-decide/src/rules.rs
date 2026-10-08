@@ -221,22 +221,39 @@ pub enum UnknownEndurance {
 /// reviews of rules 6 to 10. Version 13 ([`SPACE_REPLAY_SINCE`]): when a space answer was
 /// computed is logged and bound, a re-check is stamped at its guard's instant, and the pin
 /// never changes mid-log. Version 14 ([`AIRCRAFT_REACH_SINCE`]): an aircraft counts in a
-/// keep-out anywhere it could turn or speed up to. Version 15 is the restart follow-ups'
-/// (another branch). Version 16 ([`LOST_CONTACT_SINCE`]): a protected contact the tracker
-/// drops stays in the keep-out as a lost contact ([`crate::lost`]).
+/// keep-out anywhere it could turn or speed up to. Version 15 ([`CARRY_FOLLOWUPS_SINCE`]): the
+/// follow-ups of rules 12's carries. Version 16 ([`LOST_CONTACT_SINCE`]): a protected contact
+/// the tracker drops stays in the keep-out as a lost contact ([`crate::lost`]).
 pub const RULES_VERSION: u32 = LOST_CONTACT_SINCE;
+
+/// The rules version from which the follow-ups of rules 12's carries decide (murmur-zq3,
+/// murmur-imu): a platform spent by its own effect stays spent across a restart (`run.started`'s
+/// `carried_from` carries each log's spent platforms, `spent`, and a decision's
+/// `spent_carried` fact holds them for the vehicle that was spent); an operator with engagement
+/// authority may un-spend a platform once the engagement that spent it ended and the platform
+/// was heard since and is heard now, saying why and stepping up in a credentials run
+/// (`platform.unspent`), which owes its own lost-link values back again; a nomination on a
+/// platform a failed carry may owe values to is refused until that log is read or written off
+/// (the engagement's `restore_owed` fact, the `fallback_preload` check); a `.last-run` pointer
+/// that can't be read falls back to the station's newest log by the carry chain whose chain and
+/// anchors check (`pointer_failed`, the station's `pointer` in `run.started`); a failed carry
+/// records the fleet file it read (`fleet_read`: its hash and the armed platforms), which
+/// replay compares when at hand; and a void that says it was superseded names an order replay
+/// finds, in the state the reason says. Every gate of that change reads this constant, never a
+/// literal: another change taking 15 first renumbers it in this one line.
+pub const CARRY_FOLLOWUPS_SINCE: u32 = 15;
 
 /// The rules version from which a contact the tracker drops is not forgotten (murmur-533,
 /// [`crate::lost`]): the bridge hands the engine each track it drops with its last facts
 /// (`track.dropped`); the engine keeps it as a lost contact, which every engagement keep-out
 /// counts anywhere it could have reached since its last fix ([`crate::engage::lost_reach`]: a
-/// live track's regions and anywhere at its own plausible speed; no cap) unless it is exempt
+/// live track's regions and anywhere at its domain's top speed; no cap) unless it is exempt
 /// as a live track would be; an operator with engagement authority may accept one for one
 /// engagement (`engage.accepted` naming the contact), every signer is shown it and replay
-/// checks it; a new track with the same AIS identity, unambiguously, retires it
-/// (`track.reacquired`); a track's AIS identity is a fact (`ais`). Every gate of that change
-/// reads this constant, never a literal: another change taking 16 first renumbers it in this
-/// one line.
+/// checks it; a live track carrying its AIS identity is a claim an operator confirms
+/// (`lost.claimed`, `track.reacquired`), void once the claimant turns suspect, is declared or
+/// drops (`lost.reinstated`). Every gate of that change reads this constant, never a literal:
+/// another change taking 16 first renumbers it in this one line.
 pub const LOST_CONTACT_SINCE: u32 = 16;
 
 /// The rules version from which an aircraft with a velocity also counts in a keep-out anywhere
@@ -450,6 +467,11 @@ impl RulesConfig {
         self.rules_version >= SPACE_REPLAY_SINCE
     }
 
+    /// Rules 15 ([`CARRY_FOLLOWUPS_SINCE`]): the follow-ups of rules 12's carries.
+    pub fn carry_followups(&self) -> bool {
+        self.rules_version >= CARRY_FOLLOWUPS_SINCE
+    }
+
     /// Rules 16 ([`LOST_CONTACT_SINCE`]): a dropped track stays a lost contact.
     pub fn lost_contacts(&self) -> bool {
         self.rules_version >= LOST_CONTACT_SINCE
@@ -647,6 +669,13 @@ pub fn readiness(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) ->
                 Outcome::Fail,
                 format!("spent by its own effect (engagement {id}): a spent platform takes no order"),
             );
+        }
+        // rules 15: spent in an earlier run (carried over at start), the same vehicle unless it
+        // is known to be another
+        if cfg.carry_followups()
+            && let Some(s) = world.spent_carried.get(uid).filter(|s| s.holds())
+        {
+            return res(Outcome::Fail, s.detail());
         }
         if is_safety_command(kind) {
             return res(Outcome::Pass, format!("not required for {}", kind.as_str()));

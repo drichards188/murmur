@@ -135,6 +135,14 @@ pub enum StepUpFor {
     DeclareHostile { track: String },
     /// Confirming the rule declaration in force on a track.
     ConfirmDeclaration { track: String, declaration: u64 },
+    /// Rules 15: un-spending a platform spent by its own effect: the platform, the engagement
+    /// that spent it and, for a mark carried over, the earlier log it is in.
+    Unspend {
+        uid: Uid,
+        spent_by: IntentId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<String>,
+    },
 }
 
 impl StepUpFor {
@@ -188,6 +196,7 @@ impl StepUpFor {
             StepUpFor::ConfirmDeclaration { track, declaration } => {
                 format!("confirming declaration {declaration} of {track}")
             }
+            StepUpFor::Unspend { uid, spent_by, .. } => format!("un-spending vehicle {uid} (spent by {spent_by})"),
         }
     }
 }

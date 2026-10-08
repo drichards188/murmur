@@ -75,6 +75,7 @@ pub fn router(app: App) -> Router {
         .route("/api/intents/{id}/{action}", post(intent_action))
         .route("/api/inbox", get(inbox))
         .route("/api/restores/write_off", post(write_off))
+        .route("/api/restores/unspend", post(unspend))
         .route("/api/operator/view", post(operator_view))
         .route("/api/operators", get(operators))
         .route("/api/engage/options", post(engage_options))
@@ -468,6 +469,59 @@ async fn write_off(State(app): State<App>, headers: HeaderMap, body: Bytes) -> R
         Err(e) => return decision_error(e),
     };
     match app.decision.write_off(&op, req.uid, req.log, &req.note) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => decision_error(e),
+    }
+}
+
+/// `POST /api/restores/unspend` (rules 15): an operator with engagement authority un-spends a
+/// platform spent by its own effect that they believe survived (`{"uid": n, "note": "..."}`),
+/// once the engagement that spent it ended and the platform was heard since and is heard now.
+/// Logged as `platform.unspent` under the operator's own session; the note is required. Its
+/// own lost-link values are owed back again (a mission waits for the restore). In a credentials
+/// run it makes an armed platform taskable again, so it re-enters the credential (`"password"`,
+/// or `"passkey"`: an assertion made for this un-spend, `/api/auth/step_up {"act": "unspend",
+/// "uid": n}`), checked and dropped here, never logged or echoed. In that order: 403 without
+/// engagement authority, 409 for a platform not spent or one the rules refuse now (a dry check:
+/// nothing logged, no credential asked for), then 401 without a valid step-up.
+async fn unspend(State(app): State<App>, headers: HeaderMap, body: Bytes) -> Response {
+    #[derive(Deserialize)]
+    struct Unspend {
+        uid: crate::vehicle::Uid,
+        #[serde(default)]
+        note: String,
+        #[serde(default)]
+        password: Option<String>,
+        #[serde(default)]
+        passkey: Option<Value>,
+    }
+    let req = match serde_json::from_slice::<Unspend>(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("unspend wants {{\"uid\": n, \"note\": \"why\"}}: {e}"),
+            );
+        }
+    };
+    let op = match app.auth.actor(&headers, false) {
+        Ok(op) => op,
+        Err(e) => return decision_error(e),
+    };
+    // only engagement authority un-spends, and only what the rules take now: both said before
+    // any credential is asked for (a refused un-spend never takes, nor counts, a password)
+    if let Err(e) = app.decision.unspend_check(&op, req.uid) {
+        return decision_error(e);
+    }
+    let proof = crate::auth::Proof {
+        password: req.password,
+        passkey: req.passkey.filter(|p| !p.is_null()),
+    };
+    let step = match app.auth.step_up(&op, &format!("unspend vehicle {}", req.uid), proof, true).await {
+        Ok(s) => s,
+        Err(r) => return *r,
+    };
+    match app.decision.unspend(&op, req.uid, &req.note, step) {
         Ok(v) => Json(v).into_response(),
         Err(e) => decision_error(e),
     }

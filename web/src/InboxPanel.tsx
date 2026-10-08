@@ -12,6 +12,8 @@ import {
   verdict,
   writeOffRestore,
   writeOffTarget,
+  unspendPlatform,
+  unspendTarget,
 } from './decisions'
 import { EngageCard, EngagementsSection } from './EngageCard'
 import { ReviewSection } from './ReviewSection'
@@ -402,11 +404,39 @@ function AlertCard({
 }) {
   const [snoozing, setSnoozing] = useState(false)
   // rules 12: a restore that will never be confirmed (the vehicle lost or spent, another one
-  // under its uid, an earlier log gone) is written off by an operator, saying why
+  // under its uid, an earlier log gone) is written off by an operator, saying why; rules 15: a
+  // platform spent by its own effect that survived is un-spent by one with engagement authority
   const target = writeOffTarget(a)
-  const [writing, setWriting] = useState(false)
+  const spent = unspendTarget(a)
+  const [noting, setNoting] = useState<null | 'write_off' | 'unspend'>(null)
   const [note, setNote] = useState('')
   const [writeErr, setWriteErr] = useState<string | null>(null)
+  // rules 15: an un-spend makes an armed platform taskable again: a credentials run re-enters
+  // the credential (the password, or a passkey made for this un-spend)
+  const unspendStepsUp = stepsUp()
+  const [step, setStep] = useStepUp()
+  const [stepUpError, setStepUpError] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const submitNote = async () => {
+    setWriteErr(null)
+    setStepUpError(false)
+    setBusy(true)
+    try {
+      if (noting === 'unspend' && spent) {
+        const proof = unspendStepsUp ? await stepUpProof(step, { act: 'unspend', uid: spent.uid }) : {}
+        setStep({ password: '' })
+        await unspendPlatform(spent.uid, note.trim(), proof)
+      } else if (target) {
+        await writeOffRestore(target, note.trim())
+      }
+      setNoting(null)
+    } catch (e) {
+      setStepUpError(e instanceof StepUpNeeded)
+      setWriteErr((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
   const age = Math.max(0, now() / 1000 - a.since_t)
   return (
     <article className={`ix-alert ${a.severity} ${selected ? 'sel' : ''} ${muted ? 'muted-card' : ''}`} tabIndex={0} onClick={onFocus} onKeyDown={(e) => e.key === 'Enter' && e.target === e.currentTarget && onFocus()}>
@@ -425,30 +455,37 @@ function AlertCard({
               Restore
             </button>
           </>
-        ) : writing && target ? (
+        ) : (noting === 'write_off' && target) || (noting === 'unspend' && spent) ? (
           <>
             <input
               className="ix-note"
-              placeholder="Why: lost, spent, another vehicle, log gone"
+              placeholder={noting === 'unspend' ? 'Why: what shows it survived' : 'Why: lost, spent, another vehicle, log gone'}
               value={note}
               onChange={(e) => setNote(e.target.value)}
-              aria-label="Why the restore is written off"
+              aria-label={noting === 'unspend' ? 'Why the platform is un-spent' : 'Why the restore is written off'}
             />
             <button
               className="ghost"
-              disabled={!note.trim()}
-              onClick={() => {
-                setWriteErr(null)
-                writeOffRestore(target, note.trim())
-                  .then(() => setWriting(false))
-                  .catch((e: Error) => setWriteErr(e.message))
-              }}
+              disabled={busy || !note.trim() || (noting === 'unspend' && unspendStepsUp && !stepUpReady(step))}
+              onClick={() => void submitNote()}
             >
-              Write off
+              {noting === 'unspend' ? 'Un-spend' : 'Write off'}
             </button>
-            <button className="ghost" onClick={() => setWriting(false)}>
+            <button className="ghost" onClick={() => setNoting(null)}>
               Back
             </button>
+            {noting === 'unspend' && unspendStepsUp && (
+              <StepUpField
+                passwordLabel="Consequential: your password to un-spend"
+                purpose="to un-spend this platform"
+                ariaLabel="Your password, to un-spend"
+                value={step}
+                onChange={setStep}
+                busy={busy}
+                bad={stepUpError}
+                onEnter={() => note.trim() && void submitNote()}
+              />
+            )}
             {writeErr && <span className="muted ix-muted">{writeErr}</span>}
           </>
         ) : snoozing ? (
@@ -477,8 +514,13 @@ function AlertCard({
             </button>
             <span className="spacer" />
             {target && (
-              <button className="ghost" onClick={() => setWriting(true)}>
+              <button className="ghost" onClick={() => setNoting('write_off')}>
                 Write off
+              </button>
+            )}
+            {spent && (
+              <button className="ghost" onClick={() => setNoting('unspend')}>
+                Un-spend
               </button>
             )}
             <button className="ghost" onClick={() => setSnoozing(true)}>

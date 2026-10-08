@@ -174,6 +174,22 @@ meaningful. Decision and command, not weapons.
   re-check is logged at the clock read its "has the pass come" guard made; the engine refuses
   a segment pinned to another time shift or on another scenario map mid-run
   (`EngineError::SpaceSegment`) and replay flags either changing between two `space.loaded`.
+- Rules 15 (`CARRY_FOLLOWUPS_SINCE`): a spent platform stays spent across restarts, a full
+  restack with the same fleet included (`carried_from`'s `spent`; same vehicle only): an
+  engagement-authority operator un-spends it with a note once the engagement that spent it is
+  over (a mark carried from a log where it had not ended: once its assessment window from the
+  spend is past), it was heard after that and is heard now, and the vehicle under the uid is the
+  one spent (platform, callsign, sysid; `POST /api/restores/unspend`, the console's Un-spend on
+  its SPENT, STILL HEARD alert, shown only then; a credentials run re-enters the password or
+  passkey, asked for only after the 403 and 409 checks), and its own values are then owed back
+  (missions wait for the restore). A nomination on an armed
+  platform a failed carry may owe is refused (`fallback_preload`) until that log is read or
+  written off. A pointer that can't be read falls back to this station's newest log by the carry
+  chain (`pointer_failed`) when its chain and anchors check and no newer log naming no pointer,
+  or not parsing, and no fleet or anchors file of a deleted log, could be the one named; else
+  that log and every such log is a failed carry under its own name (its fleet's armed platforms
+  and what it owed or had spent held) and the next start reads them. A failed carry records the fleet file
+  it read (`fleet_read`); `murmur-replay` compares `<log stem>.fleet.json` when at hand.
 - Keep-out explanation (murmur-12e; read-only, not logged, no rules change): the nomination
   form and `POST /api/engage/options` (`keep_outs`) say which track or vehicle blocks, which
   region, the shortfall, and what would clear it ("within X m", "between X and Y m", or a wait
@@ -190,13 +206,12 @@ meaningful. Decision and command, not weapons.
   calibrated on simulated motions only, "The air tracker against truth"). `--variants oov
   oov-all oov-near` (rules 14 against 16, a few minutes): contacts going out of sensor view;
   METRICS.md "Out of view".
-- Rules 16 (`LOST_CONTACT_SINCE`; 15 is the restart follow-ups'): a track the tracker drops (180 s
-  unseen) stays in every engagement keep-out as a lost contact (`track.dropped`) until an
-  operator with engagement authority accepts it for one engagement (nomination form or the
-  card, `accept_lost`, the `accept_unknown` step-up) or an operator confirms a claimant carrying
-  its AIS (`lost.claimed`, review list, `POST /api/review/lost/{track}/confirm`,
-  `track.reacquired`; void, `lost.reinstated`, once the claimant turns suspect, is declared or
-  drops). A track out of view (unseen `engage::OUT_OF_VIEW_S`, 10 s, live or lost) counts anywhere
+- Rules 16 (`LOST_CONTACT_SINCE`): a track the tracker drops (180 s unseen) stays in every
+  engagement keep-out as a lost contact (`track.dropped`) until an operator with engagement
+  authority accepts it for one engagement (nomination form or the card, `accept_lost`, the
+  `accept_unknown` step-up) or an operator confirms a claimant carrying its AIS
+  (`lost.claimed`, review list, `POST /api/review/lost/{track}/confirm`, `track.reacquired`;
+  void, `lost.reinstated`, once the claimant turns suspect, is declared or drops). A track out of view (unseen `engage::OUT_OF_VIEW_S`, 10 s, live or lost) counts anywhere
   at its domain's top speed from its last fix: anything that judges or draws one uses
   `engage::lost_reach` / `track_standing` / `track_reach_at` with the decision's time, never
   `track_reach` alone. A track's AIS is `WorldSnapshot::track_ais`, not a `TrackFacts` field: a

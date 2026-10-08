@@ -557,6 +557,9 @@ fn carried_values_are_checked_against_what_the_log_they_name_still_owed() {
             checked,
             head: if checked { a_head.clone() } else { None },
             failed: None,
+            pointer_failed: None,
+            fleet_checked: None,
+            spent: Vec::new(),
         }]
     };
     // the genuine log: checked against a.jsonl (its head reported, to compare with its
@@ -1343,6 +1346,7 @@ fn carried_own() -> replay::CarriedFrom {
         pending: Vec::new(),
         may_owe: Vec::new(),
         error: None,
+        ..Default::default()
     }
 }
 

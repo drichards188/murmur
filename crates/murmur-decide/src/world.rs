@@ -91,6 +91,21 @@ pub struct VehicleFacts {
     pub booted_t: Option<Time>,
 }
 
+impl VehicleFacts {
+    /// Rules 15: when the vehicle was last heard, as its facts show: the newest of its
+    /// heartbeat (`autopilot`), position and navigation status reports. None: never heard.
+    pub fn heard_t(&self) -> Option<Time> {
+        [
+            self.autopilot.as_ref().map(|f| f.t),
+            self.position.as_ref().map(|f| f.t),
+            self.nav_ready.as_ref().map(|f| f.t),
+        ]
+        .into_iter()
+        .flatten()
+        .max()
+    }
+}
+
 /// A circle a vehicle flies: its center and its radius with the tolerance it is flown to
 /// (the vehicle stays within `radius_m` of `center`). The friendly keep-out trusts it only
 /// while the vehicle's position is on it (rules 3).
@@ -465,6 +480,11 @@ pub struct WorldSnapshot {
     /// it. No order or nomination is taken for one (`readiness` fails). Absent when none.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub expended: BTreeMap<Uid, IntentId>,
+    /// Engine-filled (rules 15): the intent's vehicles spent by their own effect in an earlier
+    /// run (carried over at start), with the vehicle under the uid now: one that is not known to
+    /// be another takes no order or nomination (`readiness` fails). Absent when none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub spent_carried: BTreeMap<Uid, crate::queue::CarriedSpent>,
     /// Rules 12, the bridge's: each fleet vehicle's identity as it knows it now (platform,
     /// callsign, system id, home). Never logged as such: the engine copies the identity of a
     /// vehicle still owed values carried over from an earlier run into that fact
@@ -527,6 +547,10 @@ pub struct LoggedInputs {
     /// The intent's vehicles spent by their own effect (rules 12; absent when none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub expended: BTreeMap<Uid, IntentId>,
+    /// The intent's vehicles spent by their own effect in an earlier run (rules 15; absent when
+    /// none).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub spent_carried: BTreeMap<Uid, crate::queue::CarriedSpent>,
     /// An engagement's lost contacts (rules 16; absent when none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub lost_contacts: BTreeMap<String, crate::lost::LostContact>,
@@ -563,6 +587,7 @@ impl LoggedInputs {
             unknown_accepted: world.unknown_accepted.clone(),
             restore_owed: world.restore_owed.clone(),
             expended: world.expended.clone(),
+            spent_carried: world.spent_carried.clone(),
             lost_contacts: world.lost_contacts.clone(),
             lost_accepted: world.lost_accepted.clone(),
         }
@@ -611,6 +636,7 @@ impl LoggedInputs {
             unknown_accepted: self.unknown_accepted.clone(),
             restore_owed: self.restore_owed.clone(),
             expended: self.expended.clone(),
+            spent_carried: self.spent_carried.clone(),
             identities: BTreeMap::new(),
             lost_contacts: self.lost_contacts.clone(),
             lost_accepted: self.lost_accepted.clone(),
@@ -661,6 +687,7 @@ impl WorldSnapshot {
             unknown_accepted: BTreeMap::new(),
             restore_owed: BTreeMap::new(),
             expended: BTreeMap::new(),
+            spent_carried: BTreeMap::new(),
             // rules 12: the bridge's identities of the intent's vehicles (a carried restore's
             // hold reads them)
             identities: spec

@@ -34,6 +34,13 @@
 //!   still owed exactly what was carried. A log whose carry failed is reported, and stays
 //!   owed until a later start reads it or an operator writes it off. Restores closed without a
 //!   restore (a platform expended by its own effect, a write-off) are listed (`CLOSED:`).
+//! - Rules 15: what each log carried from had spent is checked the same way, and the carry line
+//!   names the spent marks it carried; a failed carry's fleet file (`<log stem>.fleet.json`,
+//!   `--prev` by name or beside the log) is compared with what the start recorded (its hash, the
+//!   platforms it may owe values to), or, recorded as unreadable, must not read; a log carried
+//!   from in place of a pointer that could not be read must name this station's pointer, and one
+//!   the start found there but would not carry from is reported as a failed carry; platforms
+//!   un-spent by an operator are listed (`UNSPENT:`).
 //! - Either carry-over whose earlier log is not given or found is a mismatch;
 //!   `--trust-resumed` accepts both without their logs (trusting their origin), and the
 //!   output says so (`UNCHECKED:`). It also says which log each check used, with the head of
@@ -173,7 +180,13 @@ fn main() -> ExitCode {
         .iter()
         .map(|(name, _, t)| (name.as_str(), t.as_str()))
         .collect();
+    let fleets: Vec<(&str, &[u8])> = earlier
+        .fleets
+        .iter()
+        .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+        .collect();
     let opts = ReplayOptions {
+        fleets: &fleets,
         carried_logs: &carried_logs,
         rules: args.rules,
         space: oracle,
@@ -345,6 +358,10 @@ fn main() -> ExitCode {
     for c in &report.restores_closed {
         println!("CLOSED: {c}");
     }
+    // rules 15: platforms an operator un-spent (owed their own values back again)
+    for u in &report.unspent {
+        println!("UNSPENT: {u}");
+    }
     // rules 6: not a decision mismatch, but the operator should know
     for u in &report.unrestored {
         println!("UNRESTORED: {u}");
@@ -403,6 +420,9 @@ struct Earlier {
     /// Rules 12: the logs `run.started` says the start carried over from (`carried_from`), as
     /// found: name, path, text.
     carried: Vec<(String, String, String)>,
+    /// Rules 15: the fleet files beside the logs carried from (`<log stem>.fleet.json`), as
+    /// found: name, bytes.
+    fleets: Vec<(String, Vec<u8>)>,
     /// `--prev` files none is.
     unused: Vec<String>,
 }
@@ -444,10 +464,19 @@ impl Earlier {
             _ => None,
         };
         let mut carried = Vec::new();
+        let mut fleets = Vec::new();
+        let mut fleet_files = Vec::new();
         for n in &carried_named {
             if let Some(f) = named(n).or_else(|| beside(path, n)) {
                 let t = read(&f)?;
                 carried.push((n.clone(), f, t));
+            }
+            // rules 15: a failed carry's fleet file, compared with what the start recorded
+            let fleet = murmur_decide::replay::fleet_file_name(n);
+            if let Some(f) = named(&fleet).or_else(|| beside(path, &fleet)) {
+                let b = std::fs::read(&f).map_err(|e| format!("{f}: {e}"))?;
+                fleets.push((fleet, b));
+                fleet_files.push(f);
             }
         }
         let unused = given
@@ -456,6 +485,7 @@ impl Earlier {
                 Some(*g) != intents_file.as_ref()
                     && Some(*g) != restores_file.as_ref()
                     && !carried.iter().any(|(_, f, _)| f == *g)
+                    && !fleet_files.contains(*g)
             })
             .cloned()
             .collect();
@@ -464,6 +494,7 @@ impl Earlier {
             intents,
             restores,
             carried,
+            fleets,
             unused,
         })
     }
@@ -491,11 +522,33 @@ impl Earlier {
             let from = &c.log;
             // rules 12: a log the start could not read: still owed, what it owed unknown
             if let Some(why) = &c.failed {
+                let fleet = match c.fleet_checked {
+                    Some(true) => "; its fleet file checked against what the start recorded",
+                    Some(false) => "; its fleet file NOT checked (not given with --prev or found beside this log)",
+                    None => "",
+                };
+                // rules 15: a log found in place of the pointer that the start would not carry from
+                let found = c
+                    .pointer_failed
+                    .as_deref()
+                    .map(|p| format!(" (found in place of the station's pointer, which could not be read: {p})"))
+                    .unwrap_or_default();
                 println!(
-                    "carried-over log {from}: its carry FAILED at the start ({why}): what it still owed is unknown, owed until a later start reads it or an operator writes it off"
+                    "carried-over log {from}{found}: its carry FAILED at the start ({why}): what it still owed is unknown, owed until a later start reads it or an operator writes it off{fleet}"
                 );
                 continue;
             }
+            if let Some(why) = &c.pointer_failed {
+                println!(
+                    "carried-over log {from}: found in place of the station's pointer, which could not be read ({why})"
+                );
+            }
+            // rules 15: the platforms it had spent, still spent here
+            let spent = if c.spent.is_empty() {
+                String::new()
+            } else {
+                format!(" and {} spent mark(s) (vehicle {})", c.spent.len(), c.spent.join(", vehicle "))
+            };
             if let Some((_, p, t)) = self.carried.iter().find(|(n, _, _)| n == from).filter(|_| c.checked) {
                 let same = match &self.intents {
                     Some((_, u)) if u == t => ", the carried-over intents' log too",
@@ -503,7 +556,7 @@ impl Earlier {
                 };
                 let head = c.head.as_deref().unwrap_or("none: it can't be read");
                 println!(
-                    "carried over at start (run.started): {} platform(s)' lost-link values from {from}, checked against what {p} still owed{same} (its head {head}, as read at the start: compare with its anchors)",
+                    "carried over at start (run.started): {} platform(s)' lost-link values{spent} from {from}, checked against what {p} still owed{same} (its head {head}, as read at the start: compare with its anchors)",
                     c.restores
                 );
                 continue;
@@ -521,11 +574,11 @@ impl Earlier {
                     );
                 }
                 _ if trusted => println!(
-                    "UNCHECKED: {} platform(s)' carried lost-link values from {from}: trusted (--trust-resumed); that log was not given (--prev) or found beside this one",
+                    "UNCHECKED: {} platform(s)' carried lost-link values{spent} from {from}: trusted (--trust-resumed); that log was not given (--prev) or found beside this one",
                     c.restores
                 ),
                 _ => println!(
-                    "carried lost-link values: {} platform(s) from {from}, NOT checked: that log was not given (--prev) or found beside this one",
+                    "carried lost-link values: {} platform(s){spent} from {from}, NOT checked: that log was not given (--prev) or found beside this one",
                     c.restores
                 ),
             }

@@ -106,6 +106,7 @@ tamper = "suppress_void"         # optional log attack replay must catch: propos
                                  # confirm_in_inputs,
                                  # and rules 12: drop_first_seen, drop_expended_fact,
                                  # drop_standing_clause, write_off_by_another,
+                                 # and rules 15: unspend_without_authority, drop_may_owe_fact,
                                  # and rules 16: hide_lost_contact, drop_track_dropped,
                                  # forge_lost_acceptance, hide_reinstatement,
                                  # confirm_by_agent, move_drop, redrop
@@ -132,12 +133,20 @@ restore_after_s = 60             # rules 6: the platform answers the restore of 
 expect_closed = ["expended by its own effect"]   # rules 12, optional: debts closed without a
                                  # restore that replay lists (`restores_closed`), in order
 expect_nothing_owed = true       # rules 12, optional: nothing owed back when the log ends
+expect_unspent = ["un-spent by op-2"]   # rules 15, optional: platforms un-spent that replay
+                                 # lists (`unspent`), in order
 expect_reacquired = ["T-0002 is T-0005 again"]   # rules 16, optional: lost contacts an
                                  # operator confirmed as a live track, in order
                                  # (expect_none_reacquired = true: none)
 expect_claimed = ["T-0005 claims to be T-0002"]  # rules 16, optional: claims raised, in order
 expect_reinstated = ["T-0002 counts again"]      # rules 16, optional: confirmations void
 # policy, catalog, areas = "path"  # optional, relative to the repo (defaults: sim/...)
+
+[[carried]]                      # rules 15, optional: an earlier log whose carry failed at
+log = "20261006T120000Z-4242.jsonl"   # the start (run.started's carried_from), with why
+error = "Permission denied (os error 13)"   # and the vehicles (of this file) its fleet named:
+may_owe = ["viper-1"]            # their missions wait and their nominations are refused
+                                 # until it is written off
 
 [[operator]]                     # an operator session; engage = engagement authority
 id = "op-2"
@@ -222,7 +231,8 @@ Actions (each `[[step]]` has `at_s` and `action`):
 | `abort` | `by` | any operator stops it; the fallback is commanded |
 | `agent_approve` | `agent` | an agent "tries" to approve: there is no such method on its port, so it is recorded and the intent must not move |
 | `track` | `id` and any of `at`, `velocity`, `affiliation`, `declared_by`, `undeclare`, `identity`, `identity_confidence`, `sigma_m`, `domain`, `silent`, `velocity_error`, `alt_m`, `tracked_s`, `ais` (rules 16) | a track changes (or appears); `velocity` is how the contact really moves, `velocity_error` how far the tracker's estimate is off it; `tracked_s` (rules 12) when one this step makes was started (0: a new track) |
-| `write_off` | `by`, `uid`, `note` | rules 12: an operator writes off the lost-link values owed back to one of our vehicles, saying why (`restore.closed`) |
+| `write_off` | `by`, `uid` or `log`, `note` | rules 12: an operator writes off the lost-link values owed back to one of our vehicles, saying why (`restore.closed`); rules 15: or an earlier log whose carry failed (`log`) |
+| `unspend` | `by`, `uid`, `note` | rules 15: an operator with engagement authority un-spends a platform spent by its own effect, saying why (`platform.unspent`), once the engagement that spent it ended and it was heard after that and is not silent; without engagement authority it is refused (a scenario has no credentials: no step-up) |
 | `vehicle` | `uid` and any of `at`, `velocity`, `silent`, `report_interval_ms`, `nav` (`gnss`, `dead_reckoning`), `gps_fix` (3: a 3D fix), `gps_glitch`, `circling`, `reported_circle`, `alt_m` | one of ours changes; `silent` cuts its link (both ways: it hears no GCS either) |
 | `expect` | `state`, `rule`, `concurrences`, `task_state`, `task_reason` | check the last nomination now (`task_state`: the last `task` step's intent; `task_reason`: a substring of why it is in that state) |
 
@@ -316,6 +326,8 @@ calls `Engine::step_engagements` (hold the picture, release, observe, assess).
 | 81-refusal-names-the-order-still-queued | restore_owed | rules 12: 67 under 70's policy: the hold queued for the cut-off USV, then an orbit refused for its own values; the clause cut from the refusal in the log | the orbit voided, its reason naming the hold still queued (`i2 (hold, vehicle viper-1)`); the hold goes when the link returns; tamper caught |
 | 82-restore-written-off | restore_owed | rules 12: 69, the USV never confirming its values back; op-1 writes them off; the write-off credited to another operator in the log | the waiting orbit goes at once after the write-off, nothing owed at the end; tamper caught |
 | 83-aircraft-may-turn-back | keep_out_tracks | rules 14 (murmur-oho): a light aircraft 2 km north of the effect point, flying north at 50 m/s on a steady course (an average velocity, no manoeuvre seen), its height not ranged | rejected (keep_out_tracks: an aircraft may turn or speed up at any moment), then, 12 km out, the same nomination waits for its signers; rules 13 let the first through (`--rules 13`) |
+| 84-spent-munition-unspent | restore_owed | rules 15: 80, then op-1 (no engagement authority) asks to un-spend the switchblade, op-2 un-spends it saying why, its engagement ended (assessed) and the munition still reporting; the un-spend credited to op-1's session in the log | done (ceased); the first orbit rejected (spent), op-1's un-spend refused, op-2's taken: its own values owed again, the next orbit queued for the restore and sent when it confirms, nothing owed at the end; tamper caught |
+| 85-nomination-refused-while-a-carry-may-owe | fallback_preload | rules 15: a failed carry at the start whose fleet named the USV; a nomination on it; the fact dropped from the refused decision in the log | rejected (fallback_preload: the log may owe it its values) until op-1 writes the log off, then the same nomination signed, dispatched and aborted, its values restored; tamper caught |
 | 84-lost-contact-blocks | keep_out_tracks | rules 16: a fishing boat 400 m from the target goes out of view and is dropped by the tracker before the nomination; the lost contact cut from every decision in the log | rejected (keep_out_tracks: the lost contact, since when, may be accepted; `--rules 14` waits for its signers); tamper caught |
 | 85-lost-contact-accepted | keep_out_tracks | rules 16: the nominating operator accepts 84's lost contact for the engagement; the tracker's drop cut from the log | done (ceased); tamper caught |
 | 86-accepted-lost-contact-reappears | keep_out_tracks | rules 16: an accepted lost tour boat (AIS) is seen again 150 m from the effect point under a new track id; its claim confirmed by op-2; the acceptance credited to an agent in the log | claimed (`T-0005 claims to be T-0002`), confirmed, aborted (keep_out_tracks: the live track, confirmed or not), fallback; tamper caught |

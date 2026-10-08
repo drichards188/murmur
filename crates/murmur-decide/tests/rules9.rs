@@ -234,12 +234,14 @@ fn rule_declaration_off_decides_as_rules_8_did() {
     for f in scenario::files(&dir).unwrap() {
         // (and none of rules 12's: young tracks counted as possibly manoeuvring, a platform
         // spent by its effect taking no order, by design; nor rules 14's: an aircraft counted
-        // anywhere it could turn or speed up to; nor rules 16's: a dropped contact still counted)
+        // anywhere it could turn or speed up to; nor rules 15's: a nomination a failed carry may
+        // owe refused, an un-spend; nor rules 16's: a dropped contact still counted)
         let text = std::fs::read_to_string(&f).unwrap();
         if text.contains("action = \"act\"")
             || text.contains("tracked_s")
             || text.starts_with("# Rules 12")
             || text.starts_with("# Rules 14")
+            || text.starts_with("# Rules 15")
             || text.starts_with("# Rules 16")
         {
             continue;
