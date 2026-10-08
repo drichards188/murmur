@@ -4,7 +4,8 @@
 # 4 minutes (in this truth it leaves the scenario: nothing detects it again), and the bridge's
 # tracker drops its track 180 s later; a harbor tour boat on AIS goes out of view at the same
 # time and comes back into view at 9 minutes, 300 m from where it was last seen, under the same
-# AIS identity (the tracker starts a new track for it; the engine retires its lost contact).
+# AIS identity (the tracker starts a new track for it, a claim to be the lost contact, which an
+# operator confirms from the review list; until then the lost contact counts beside it).
 # Truth only: the C2 sees what our sensors make of it. With the stand-in engage demo fleet:
 #   MURMUR_CONTACTS=sim/scenarios/golden-gate-lost.toml make up FLEET=engage-demo
 #   (MURMUR_OPERATORS=op-1,op-2,op-3 MURMUR_ENGAGE_OPERATORS=op-1,op-2,op-3)
