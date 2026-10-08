@@ -679,7 +679,14 @@ class Runner:
             acts = [d for d in self.autoplay_log if d.get("action") in ("approve", "reject", "sign")]
             lines.append(f"  scripted operators ({', '.join(self.modes['scripted_operators'])}): {len(acts)} decisions")
             for d in acts[-8:]:
-                lines.append(f"    {d.get('by') or CONSOLE_OPERATOR} {d.get('action')} intent {d.get('intent_id')}: {d.get('result')} ({str(d.get('reason') or '')[:120]})")
+                why = f" ({str(d['reason'])[:120]})" if d.get("reason") else ""
+                lines.append(f"    {d.get('by') or CONSOLE_OPERATOR} {d.get('action')} intent {d.get('intent_id')}: {d.get('result')}{why}")
+        # everything else: the storyline's proposals, an operator's own orders at the console
+        known = {o.get("intent_id") for o in self.orders} | {i["id"] for i in mine}
+        others = [i for i in intents.values() if i["id"] not in known]
+        for i in sorted(others, key=lambda i: i["id"]):
+            src = i.get("source") or {}
+            lines.append(f"  intent {i['id']} {i.get('kind')} for vehicles {','.join(i.get('uids') or [])} from {src.get('kind')} {src.get('id')}: {i.get('state')}")
         steps = [e for e in self.entries if e["kind"] == "step"]
         lines.append(f"  timeline: {len(steps)} step records, {len(self.done_steps)} of {len(self.sit.steps)} steps run")
         tracks = (self.bridge.try_get("/api/tracks") or {}).get("tracks", [])
