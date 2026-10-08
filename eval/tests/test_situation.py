@@ -527,3 +527,10 @@ def test_the_runner_makes_a_fresh_station_and_a_dev_roster(tmp_path: Path, monke
     assert doc["autoplay"]["scripted"] and doc["agent"]["label"] == "Playbook (deterministic)"
     recs = [json.loads(line) for line in runner.log_path.read_text().splitlines()]
     assert [r["event"] for r in recs] == ["fresh_station", "step", "step"]
+    # the summary, with no stack to ask (nothing answers on the port)
+    runner.bridge = R.Bridge(f"http://127.0.0.1:{_free_tcp()}", timeout=1.0)
+    runner.orders = [{"id": "gate-patrol", "task": "patrol", "vehicles": ["MARLIN 1"], "intent_id": 1, "state": "dispatched"}]
+    runner.autoplay_log.append({"t": 1.0, "intent_id": 4, "action": "approve", "reason": "nothing speaks against it", "result": "dispatched"})
+    runner.summary()
+    text = (runner.out / "summary.txt").read_text()
+    assert "opening order gate-patrol" in text and "murmur-replay" in text and "op-1 approve intent 4: dispatched" in text
