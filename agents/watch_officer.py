@@ -8,9 +8,11 @@ launch contract in agents/README.md ("Situations: the launch contract"):
     .venv/bin/python agents/watch_officer.py --backend claude|codex --url <bridge>/mcp \\
         --agent agent-watch --brief <brief file> --situation-log <path> --until <unix time>
 
-Until then this placeholder takes the same arguments, says it is not built yet, writes one
-note to the situation log, and exits 0; the situation runner goes on without an AI. It reads
-and stores no credential, and calls no model.
+The runner starts it in an empty directory of its own (only the brief), and the contract
+requires the model to run with the bridge's MCP tools only (no shell, no file tools, no other
+settings): see agents/README.md. Until then this placeholder takes the same arguments, says it
+is not built yet, writes one note to the situation log, and exits 0; the situation runner goes
+on without an AI. It reads and stores no credential, and calls no model.
 """
 
 from __future__ import annotations

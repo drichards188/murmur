@@ -43,20 +43,44 @@ COSIGNERS = ("you", "scripted")
 ORDER_TASKS = ("orbit", "patrol", "hold", "rtl", "track")
 STORYLINE_PROPOSERS = ("agent", "operator")
 
-# Who is who in a situation's dev run. op-1 is the console's operator (a person in live mode,
-# the scripted operator in autoplay); op-2 and op-3 hold engagement authority with op-1 and
-# sign as scripted operators in autoplay (or cosign); op-planner is a second station a
-# storyline may propose from. The AI is agent-watch (Claude or Codex) or agent-planner (the
-# playbook); storyline proposals made through MCP come from agent-scripted.
+# Who is who in a situation's dev run. op-1 is the console's operator: the person, in live
+# mode, and never a script. Every scripted id is its own: op-setup issues the opening orders,
+# op-auto decides in autoplay (the proxy model), op-2 and op-3 sign engagements (autoplay, or
+# cosign live), op-planner is the timeline's second station. op-1, op-2 and op-3 hold
+# engagement authority. The AI is agent-watch (Claude or Codex) or agent-planner (the
+# playbook); the timeline's MCP proposals come from agent-scripted, and an opening order that
+# would be authorized by its own submission is proposed by agent-setup so a person (or op-auto)
+# decides it.
 CONSOLE_OPERATOR = "op-1"
+SETUP_OPERATOR = "op-setup"
+AUTOPLAY_OPERATOR = "op-auto"
 SCRIPTED_SIGNERS = ["op-2", "op-3"]
 STORYLINE_OPERATOR = "op-planner"
-OPERATORS = [CONSOLE_OPERATOR, *SCRIPTED_SIGNERS, STORYLINE_OPERATOR]
+OPERATORS = [CONSOLE_OPERATOR, *SCRIPTED_SIGNERS, AUTOPLAY_OPERATOR, SETUP_OPERATOR, STORYLINE_OPERATOR]
 ENGAGE_OPERATORS = [CONSOLE_OPERATOR, *SCRIPTED_SIGNERS]
 WATCH_AGENT = "agent-watch"
 PLAYBOOK_AGENT = "agent-planner"
 STORYLINE_AGENT = "agent-scripted"
-AGENTS = [WATCH_AGENT, PLAYBOOK_AGENT, STORYLINE_AGENT]
+SETUP_AGENT = "agent-setup"
+AGENTS = [WATCH_AGENT, PLAYBOOK_AGENT, STORYLINE_AGENT, SETUP_AGENT]
+# how every scripted act announces itself in the audit log (notes, rationales)
+SCRIPTED_SETUP = "situation setup (scripted, not a person)"
+SCRIPTED_TIMELINE = "situation timeline (scripted, not a person)"
+
+# A situation's own port block by default (scripts/up.sh's variables override each): clear of
+# the default stack (14560+, 15560+, 8765, 8766, 5173, 8770), a second stack (24560+, 25560+,
+# 8865, 5273, 8866, 8870), the evaluation's blocks (UDP 35000-36999, HTTP 10600-10699) and the
+# host's ephemeral range (above 37795 here), so its fresh station never touches another
+# station's restore or resume pointer.
+SITUATION_PORTS = {
+    "MURMUR_BASE_PORT": "33000",
+    "MURMUR_BRIDGE_BASE_PORT": "34000",
+    "MURMUR_HTTP_PORT": "9265",
+    "MURMUR_LINKEMU_PORT": "9266",
+    "MURMUR_WEB_PORT": "5673",
+    "MURMUR_TIDEWATER_PORT": "9270",
+    "MURMUR_SITL_INSTANCE_BASE": "160",
+}
 
 TOP_KEYS = {
     "title", "brief", "director", "todo", "fleet", "contacts", "events", "policy", "duration_s",
@@ -64,6 +88,18 @@ TOP_KEYS = {
     "order", "step", "watch", "playbook", "storyline", "autoplay",
 }
 ORDER_KEYS = {"id", "task", "vehicles", "center", "radius_m", "route", "target", "reserve_pct", "duration_s", "note"}
+# what each step kind may carry (eval/storyline.py's docstring), besides id, at_s and kind
+STEP_COMMON = {"text", "director"}
+STEP_KEYS = {
+    "note": set(),
+    "propose": {"task", "vehicles", "center", "radius_m", "route", "target", "reserve_pct", "duration_s",
+                "rationale", "label", "reason", "premise", "withdraw_after_s", "retry_s"},
+    "flood": {"count", "interval_s", "templates", "label"},
+    "declare": {"affiliation", "track", "note"},
+    "link": {"vehicles", "cut", "loss", "extra_latency_ms", "duration_s", "delay_s"},
+    "engage": {"track", "vehicles", "effect_radius_m", "window_s", "fallback", "rationale", "label", "reason", "retry_s"},
+}
+WATCH_KEYS = {"at_s", "text", "director"}
 PLAYBOOK_KEYS = {"near", "radius_km", "every_s", "platform"}
 TIDEWATER_HOME = Path(os.environ.get("TIDEWATER_HOME", Path.home() / "tidewater"))
 
@@ -88,6 +124,8 @@ class Order:
 class Watch:
     at_s: float
     text: str
+    # shown only when revealed (the bridge strips it from a blinded status too)
+    director: bool = False
 
 
 @dataclass
@@ -150,7 +188,28 @@ def _lonlat(v: Any) -> bool:
     return isinstance(v, list) and len(v) == 2 and all(isinstance(x, (int, float)) for x in v)
 
 
-def _order(i: int, raw: dict[str, Any], sit: Path) -> Order:
+def _num(v: Any, what: str, sit: Path, kind: type = float) -> Any:
+    """A number from the file, or a SituationError saying which key is wrong."""
+    if isinstance(v, bool):
+        raise SituationError(f"{sit}: {what} must be a number, not {v!r}")
+    try:
+        return kind(v)
+    except (TypeError, ValueError):
+        raise SituationError(f"{sit}: {what} must be a number, not {v!r}") from None
+
+
+def _table(v: Any, what: str, sit: Path) -> dict[str, Any]:
+    """A TOML table from the file, or a SituationError saying which one is not."""
+    if v is None:
+        return {}
+    if not isinstance(v, dict):
+        raise SituationError(f"{sit}: {what} must be a table, not {v!r}")
+    return dict(v)
+
+
+def _order(i: int, raw: Any, sit: Path) -> Order:
+    if not isinstance(raw, dict):
+        raise SituationError(f"{sit}: order {i + 1} is not a table")
     unknown = set(raw) - ORDER_KEYS
     if unknown:
         raise SituationError(f"{sit}: order {i + 1}: unknown keys {sorted(unknown)}")
@@ -173,11 +232,11 @@ def _order(i: int, raw: dict[str, Any], sit: Path) -> Order:
     return Order(id=oid, task=str(task), vehicles=raw["vehicles"], params=params, note=str(raw.get("note", "")))
 
 
-def _steps(raw: list[Any], sit: Path) -> list[Step]:
+def _steps(raw: list[Any], sit: Path, duration_s: float) -> list[Step]:
     """The timeline: the storyline's steps (eval/storyline.py), checked as the evaluation
-    checks them. A situation proposal carries no truth label, so the evaluation's `reason`
-    may be left out; `text` (what the panel says when the step is done) and `director` (shown
-    only when revealed) are the situation's own."""
+    checks them, each kind with its own keys only. A situation proposal carries no truth
+    label, so the evaluation's `reason` may be left out; `text` (what the panel says when the
+    step is done) and `director` (shown only when revealed) are the situation's own."""
     steps: list[Step] = []
     seen: set[str] = set()
     for i, s in enumerate(raw):
@@ -189,7 +248,14 @@ def _steps(raw: list[Any], sit: Path) -> list[Step]:
             raise SituationError(f"{sit}: duplicate step id {sid!r}")
         seen.add(sid)
         kind = str(s.pop("kind", "note"))
-        at_s = float(s.pop("at_s", 0))
+        at_s = _num(s.pop("at_s", 0), f"step {sid!r}: at_s", sit)
+        if kind not in STEP_KEYS:
+            raise SituationError(f"{sit}: step {sid!r}: kind {kind!r} not in {sorted(STEP_KEYS)}")
+        unknown = set(s) - STEP_KEYS[kind] - STEP_COMMON
+        if unknown:
+            raise SituationError(f"{sit}: step {sid!r}: a {kind} step takes no {sorted(unknown)}")
+        if not 0 <= at_s < duration_s:
+            raise SituationError(f"{sit}: step {sid!r}: at_s {at_s:g} is outside the situation (0 to {duration_s:g} s)")
         if "director" in s and not isinstance(s["director"], bool):
             raise SituationError(f"{sit}: step {sid!r}: director is true or false")
         check = dict(s)
@@ -259,10 +325,10 @@ def load_situation(path_or_name: str | Path) -> Situation:
         raise SituationError(f"{path}: events is a file or a list of files")
     sit.events = [_path(e, base, "events", path) for e in events]
     sit.policy = _path(raw.get("policy", "sim/policy.toml"), base, "policy", path)
-    sit.duration_s = float(raw.get("duration_s", 600))
+    sit.duration_s = _num(raw.get("duration_s", 600), "duration_s", path)
     if not sit.duration_s > 0:
         raise SituationError(f"{path}: duration_s must be > 0")
-    sit.rate = float(raw.get("rate", 1))
+    sit.rate = _num(raw.get("rate", 1), "rate", path)
     if not sit.rate > 0:
         raise SituationError(f"{path}: rate must be > 0")
     sit.at = str(raw.get("at", sit.at))
@@ -279,37 +345,113 @@ def load_situation(path_or_name: str | Path) -> Situation:
     if not isinstance(raw.get("reveal", False), bool):
         raise SituationError(f"{path}: reveal is true or false")
     sit.reveal = bool(raw.get("reveal", False))
-    sit.seed = int(raw.get("seed", 1))
-    sit.ready_timeout_s = float(raw.get("ready_timeout_s", 180))
-    sit.ai_start_s = float(raw.get("ai_start_s", 30))
+    sit.seed = _num(raw.get("seed", 1), "seed", path, int)
+    sit.ready_timeout_s = _num(raw.get("ready_timeout_s", 180), "ready_timeout_s", path)
+    sit.ai_start_s = _num(raw.get("ai_start_s", 30), "ai_start_s", path)
     if sit.ai_start_s < 0 or sit.ai_start_s >= sit.duration_s:
         raise SituationError(f"{path}: ai_start_s must be >= 0 and before the end")
     orders = raw.get("order", [])
+    if not isinstance(orders, list):
+        raise SituationError(f"{path}: [[order]] is a list of tables")
     sit.orders = [_order(i, o, path) for i, o in enumerate(orders)]
     ids = [o.id for o in sit.orders]
     if len(set(ids)) != len(ids):
         raise SituationError(f"{path}: duplicate order ids")
-    sit.steps = _steps(raw.get("step", []), path)
-    for i, w in enumerate(raw.get("watch", [])):
-        if not isinstance(w, dict) or not str(w.get("text", "")).strip() or float(w.get("at_s", -1)) < 0:
-            raise SituationError(f"{path}: watch {i + 1} needs at_s >= 0 and text")
-        sit.watch.append(Watch(at_s=float(w["at_s"]), text=str(w["text"]).strip()))
+    _orders_against_fleet(sit)
+    steps = raw.get("step", [])
+    if not isinstance(steps, list):
+        raise SituationError(f"{path}: [[step]] is a list of tables")
+    sit.steps = _steps(steps, path, sit.duration_s)
+    watch = raw.get("watch", [])
+    if not isinstance(watch, list):
+        raise SituationError(f"{path}: [[watch]] is a list of tables")
+    for i, w in enumerate(watch):
+        if not isinstance(w, dict) or set(w) - WATCH_KEYS:
+            raise SituationError(f"{path}: watch {i + 1}: a table of {sorted(WATCH_KEYS)}")
+        at_s = _num(w.get("at_s", -1), f"watch {i + 1}: at_s", path)
+        if not str(w.get("text", "")).strip() or not 0 <= at_s < sit.duration_s:
+            raise SituationError(f"{path}: watch {i + 1} needs text and at_s from 0 to before duration_s")
+        if not isinstance(w.get("director", False), bool):
+            raise SituationError(f"{path}: watch {i + 1}: director is true or false")
+        sit.watch.append(Watch(at_s=at_s, text=str(w["text"]).strip(), director=bool(w.get("director", False))))
     sit.watch.sort(key=lambda w: w.at_s)
-    pb = dict(raw.get("playbook", {}))
+    pb = _table(raw.get("playbook"), "[playbook]", path)
     if set(pb) - PLAYBOOK_KEYS:
         raise SituationError(f"{path}: playbook keys are {sorted(PLAYBOOK_KEYS)}")
     if "near" in pb and not _lonlat(pb["near"]):
         raise SituationError(f"{path}: playbook near is [lon, lat]")
     for k in ("radius_km", "every_s"):
-        if k in pb and not float(pb[k]) > 0:
+        if k in pb and not _num(pb[k], f"playbook {k}", path) > 0:
             raise SituationError(f"{path}: playbook {k} must be > 0")
     sit.playbook = pb
-    story = dict(raw.get("storyline", {}))
+    story = _table(raw.get("storyline"), "[storyline]", path)
     sit.storyline_proposer = str(story.get("proposer", "agent"))
     if sit.storyline_proposer not in STORYLINE_PROPOSERS or set(story) - {"proposer"}:
         raise SituationError(f"{path}: [storyline] proposer is one of {STORYLINE_PROPOSERS}")
-    sit.autoplay = dict(raw.get("autoplay", {}))
+    sit.autoplay = _table(raw.get("autoplay"), "[autoplay]", path)
+    from .proxy import proxy_params
+
+    try:
+        proxy_params(sit.autoplay)
+    except (TypeError, ValueError) as e:
+        raise SituationError(f"{path}: [autoplay]: {e}") from None
     return sit
+
+
+def _planned_fleet(fleet: Path) -> list[dict[str, Any]]:
+    """The fleet as sim/swarm.py plans it: callsign, platform, uid in unit order."""
+    from .stack import _swarm
+
+    swarm = _swarm()
+    vehicles = swarm.plan(swarm.load_fleet(str(fleet)), swarm.load_platforms())
+    for i, v in enumerate(vehicles):
+        v["uid"] = i + 1
+    return vehicles
+
+
+def _select_planned(sel: Any, vehicles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if isinstance(sel, dict) and "uids" in sel:
+        want = {int(u) for u in sel["uids"]}
+        return [v for v in vehicles if v["uid"] in want]
+    if isinstance(sel, dict) and "callsign" in sel:
+        return [v for v in vehicles if v.get("callsign") == sel["callsign"]]
+    if isinstance(sel, dict) and "platform" in sel:
+        out = [v for v in vehicles if v.get("platform") == sel["platform"]]
+        return out if sel.get("all") else out[int(sel.get("index", 0)) : int(sel.get("index", 0)) + 1]
+    return []
+
+
+def _orders_against_fleet(sit: Situation) -> None:
+    """Every opening order names vehicles of the fleet, and none is for an armed platform: a
+    script's order for one would be a human decision it is not (refused at load; engagements are
+    never an order kind)."""
+    if not sit.orders:
+        return
+    assert sit.fleet is not None
+    vehicles = _planned_fleet(sit.fleet)
+    try:
+        platforms = tomllib.loads((REPO / "sim" / "platforms.toml").read_text())
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        raise SituationError(f"sim/platforms.toml: {e}") from None
+    for o in sit.orders:
+        try:
+            chosen = _select_planned(o.vehicles, vehicles)
+        except (TypeError, ValueError, KeyError) as e:
+            raise SituationError(f"{sit.path}: order {o.id!r}: vehicles {o.vehicles!r}: {e}") from None
+        if not chosen:
+            raise SituationError(f"{sit.path}: order {o.id!r}: no vehicle of {sit.fleet.name} matches {o.vehicles!r}")
+        armed = [v["callsign"] for v in chosen if (platforms.get(v.get("platform")) or {}).get("armed")]
+        if armed:
+            raise SituationError(
+                f"{sit.path}: order {o.id!r} is for an armed platform ({', '.join(armed)}): an opening order is a "
+                "script's, and armed platforms always need a person's decision"
+            )
+
+
+def uses_planner(sit: Situation) -> bool:
+    """Whether the timeline acts as op-planner: a declaration, or the operator proposer."""
+    kinds = {s.kind for s in sit.steps}
+    return "declare" in kinds or (sit.storyline_proposer == "operator" and bool(kinds & {"propose", "flood", "engage"}))
 
 
 def resolve_modes(sit: Situation, operator: str | None = None, ai: str | None = None, cosigner: str | None = None, reveal: bool | None = None) -> dict[str, Any]:
@@ -324,9 +466,16 @@ def resolve_modes(sit: Situation, operator: str | None = None, ai: str | None = 
     if co not in COSIGNERS:
         raise SituationError(f"cosigner {co!r}: one of {', '.join(COSIGNERS)}")
     rv = sit.reveal if reveal is None else bool(reveal)
-    # who acts as whom: autoplay scripts op-1 and the two signers; live leaves op-1 to the
-    # person, and the scripted signers only cosign when asked to
-    scripted = [CONSOLE_OPERATOR, *SCRIPTED_SIGNERS] if op == "autoplay" else (list(SCRIPTED_SIGNERS) if co == "scripted" else [])
+    # who acts as whom: op-1 is never a script; every scripted id the run uses is listed
+    scripted: list[str] = []
+    if sit.orders:
+        scripted.append(SETUP_OPERATOR)
+    if op == "autoplay":
+        scripted += [AUTOPLAY_OPERATOR, *SCRIPTED_SIGNERS]
+    elif co == "scripted":
+        scripted += list(SCRIPTED_SIGNERS)
+    if uses_planner(sit):
+        scripted.append(STORYLINE_OPERATOR)
     return {
         "operator": op,
         "ai": a,
@@ -334,8 +483,14 @@ def resolve_modes(sit: Situation, operator: str | None = None, ai: str | None = 
         "cosigner": co,
         "reveal": rv,
         "console_operator": CONSOLE_OPERATOR,
+        "autoplay_operator": AUTOPLAY_OPERATOR if op == "autoplay" else None,
         "scripted_operators": scripted,
         "agent": {"claude": WATCH_AGENT, "codex": WATCH_AGENT, "playbook": PLAYBOOK_AGENT}.get(a),
+        # a model watching with the director's notes served on the bridge: what it did is no
+        # evidence about it (it could have read the truth)
+        "evidence_note": (
+            "not evidence about the AI (truth was served on the bridge)" if rv and a in ("claude", "codex") else None
+        ),
     }
 
 
@@ -384,20 +539,26 @@ def status_doc(
     agent: dict[str, Any],
     autoplay: dict[str, Any] | None,
     run: dict[str, Any],
+    problems: list[str] | None = None,
 ) -> dict[str, Any]:
     """The document the runner posts to `/api/sim/situation` (display only). With `reveal`
-    false it carries no director's notes, no timeline still to come and no entry a step
-    marked `director = true`: nothing a blinded operator should not see."""
+    false it carries no director's notes, no timeline still to come and no step or watch item
+    marked `director = true`: nothing a blinded operator should not see (the bridge strips the
+    same again, whatever it is sent)."""
     reveal = bool(modes.get("reveal"))
     el = None if elapsed_s is None else round(max(0.0, elapsed_s), 1)
     shown = [e for e in entries if reveal or not e.get("director")]
+    watch = [w for w in sit.watch if reveal or not w.director]
     doc: dict[str, Any] = {
         "schema": 1,
         "name": sit.name,
         "title": sit.title,
         "brief": sit.brief,
         "reveal": reveal,
-        "modes": {k: modes[k] for k in ("operator", "ai", "ai_label", "cosigner", "console_operator", "scripted_operators")},
+        "modes": {
+            k: modes.get(k)
+            for k in ("operator", "ai", "ai_label", "cosigner", "console_operator", "autoplay_operator", "scripted_operators", "evidence_note")
+        },
         "phase": phase,
         "phase_detail": phase_detail,
         "clock": {
@@ -408,10 +569,12 @@ def status_doc(
         },
         "orders": orders,
         "timeline": {"done": shown[-40:]},
-        "watch": [{"at_s": w.at_s, "text": w.text} for w in sit.watch if el is not None and w.at_s <= el],
+        "watch": [{"at_s": w.at_s, "text": w.text, "director": w.director} for w in watch if el is not None and w.at_s <= el],
         "agent": agent,
         "autoplay": autoplay,
         "run": run,
+        # what went wrong in the runner itself (a task that failed, a signer's error)
+        "problems": list(problems or [])[-8:],
     }
     if reveal:
         doc["director"] = sit.director
@@ -420,7 +583,7 @@ def status_doc(
             for s in sit.steps
             if s.id not in done_steps
         ]
-        doc["watch_upcoming"] = [{"at_s": w.at_s, "text": w.text} for w in sit.watch if el is None or w.at_s > el]
+        doc["watch_upcoming"] = [{"at_s": w.at_s, "text": w.text, "director": w.director} for w in watch if el is None or w.at_s > el]
     return doc
 
 
@@ -453,8 +616,14 @@ def ai_preflight(ai: str, run: Callable[..., Any] = subprocess.run, which: Calla
         except (OSError, subprocess.SubprocessError) as e:
             raise SituationError(f"AI=claude: `claude auth status` failed ({e}): {FIX_LOGIN['claude']}; {free}.") from None
         try:
-            status = json.loads(r.stdout or "{}")
+            status = json.loads(r.stdout) if (r.stdout or "").strip() else None
         except ValueError:
+            status = None
+        if status is None or not isinstance(status, dict):
+            # no JSON: a CLI too old for `claude auth status`, or something else wrong
+            old = claude_too_old(exe, run)
+            if old:
+                raise SituationError(f"AI=claude: {old}; {free}.")
             status = {}
         method = status.get("authMethod")
         if not status.get("loggedIn") or method in (None, "", "none"):
@@ -472,6 +641,28 @@ def ai_preflight(ai: str, run: Callable[..., Any] = subprocess.run, which: Calla
         raise SituationError(f"AI=codex: the Codex CLI is not logged in: {FIX_LOGIN['codex']}; {free}.")
     method = "chatgpt" if "chatgpt" in out else ("api key" if "api key" in out else "logged in")
     return {"ai": ai, "checked": True, "cli": exe, "logged_in": True, "auth_method": method}
+
+
+CLAUDE_MIN = (2, 1, 294)
+
+
+def claude_too_old(exe: str, run: Callable[..., Any] = subprocess.run) -> str | None:
+    """Why the installed claude can't answer `claude auth status` (too old), or None."""
+    try:
+        r = run([exe, "--version"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    import re
+
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", r.stdout or "")
+    if not m:
+        return None
+    version = tuple(int(x) for x in m.groups())
+    if version < CLAUDE_MIN:
+        want = ".".join(str(x) for x in CLAUDE_MIN)
+        have = ".".join(str(x) for x in version)
+        return f"the claude CLI is too old ({have}; needs {want} or later for `claude auth status`): update Claude Code"
+    return None
 
 
 def ai_command(
@@ -523,17 +714,29 @@ def brief_text(sit: Situation) -> str:
 # ---- the stack's ports -----------------------------------------------------------------------
 
 
+def situation_env(env: dict[str, str]) -> dict[str, str]:
+    """The environment with the situation's port block filled in where a `MURMUR_*` port
+    variable is not set (each one set overrides its port)."""
+    out = dict(env)
+    for k, v in SITUATION_PORTS.items():
+        if not (out.get(k) or "").strip():
+            out[k] = v
+    return out
+
+
 def stack_ports(env: dict[str, str]) -> dict[str, int]:
-    """The ports `scripts/up.sh` will use, from the same variables and defaults."""
-    base = int(env.get("MURMUR_BASE_PORT") or 14560)
+    """The ports `scripts/up.sh` will use, from the same variables (the situation's block
+    where one is not set, `situation_env`)."""
+    env = situation_env(env)
+    base = int(env["MURMUR_BASE_PORT"])
     return {
         "vehicle_base": base,
         "bridge_base": int(env.get("MURMUR_BRIDGE_BASE_PORT") or base + 1000),
-        "http": int(env.get("MURMUR_HTTP_PORT") or 8765),
-        "web": int(env.get("MURMUR_WEB_PORT") or 5173),
-        "linkemu": int(env.get("MURMUR_LINKEMU_PORT") or 8766),
-        "tidewater": int(env.get("MURMUR_TIDEWATER_PORT") or 8770),
-        "sitl_instance_base": int(env.get("MURMUR_SITL_INSTANCE_BASE") or 0),
+        "http": int(env["MURMUR_HTTP_PORT"]),
+        "web": int(env["MURMUR_WEB_PORT"]),
+        "linkemu": int(env["MURMUR_LINKEMU_PORT"]),
+        "tidewater": int(env["MURMUR_TIDEWATER_PORT"]),
+        "sitl_instance_base": int(env["MURMUR_SITL_INSTANCE_BASE"]),
     }
 
 
@@ -577,7 +780,12 @@ def port_problems(ports: dict[str, int], vehicles: int, sitl: int, root: Path = 
     pid = pid_alive(root / "logs" / "up.pid")
     if pid is not None:
         out.append(f"a stack started from this checkout is running (logs/up.pid, pid {pid})")
-    for key, var in (("http", "MURMUR_HTTP_PORT"), ("web", "MURMUR_WEB_PORT"), ("linkemu", "MURMUR_LINKEMU_PORT")):
+    for key, var in (
+        ("http", "MURMUR_HTTP_PORT"),
+        ("web", "MURMUR_WEB_PORT"),
+        ("linkemu", "MURMUR_LINKEMU_PORT"),
+        ("tidewater", "MURMUR_TIDEWATER_PORT"),
+    ):
         if tcp_answers(ports[key]):
             out.append(f"something answers on {var}={ports[key]}")
     for key, var in (("vehicle_base", "MURMUR_BASE_PORT"), ("bridge_base", "MURMUR_BRIDGE_BASE_PORT")):

@@ -389,8 +389,9 @@ class EngagementSigners:
                 if i.get("kind") == "engage":
                     try:
                         await self.consider(i)
-                    except (BridgeError, OSError, ValueError) as e:
-                        self._record({"intent_id": i.get("id"), "action": "error", "reason": str(e)})
+                    except Exception as e:  # noqa: BLE001 (recorded and said; the loop goes on)
+                        self._record({"intent_id": i.get("id"), "action": "error", "reason": f"{e!r}"})
+                        print(f"engagement signers: intent {i.get('id')}: {e!r}", flush=True)
             try:
                 await asyncio.wait_for(stop.wait(), timeout=self.period_s)
             except asyncio.TimeoutError:
@@ -398,13 +399,20 @@ class EngagementSigners:
 
     def next_signer(self, view: dict[str, Any], source: dict[str, Any]) -> tuple[str | None, str]:
         """Who of these operators signs next on this nomination (the engine's `engage` view),
-        or None and why not (pure, for tests)."""
+        or None and why not (pure, for tests). A cosigner signs only on a plan a signer who is
+        not one of them froze, and at most once per nomination."""
         needed = int(view.get("approvers_needed") or 2)
         signed = list(view.get("signed") or [])
         if len(signed) >= needed:
             return None, "every signature it needs is given"
-        if self.mode == "cosign" and not any(s not in self.operators for s in signed):
-            return None, "waiting for a person to sign first (the scripted cosigner never makes the first signature)"
+        if self.mode == "cosign":
+            if not any(s not in self.operators for s in signed):
+                return None, "waiting for a person to sign first (the scripted cosigner never makes the first signature)"
+            frozen_by = (view.get("plan") or {}).get("by")
+            if frozen_by is None or frozen_by in self.operators:
+                return None, "no plan a person froze: the scripted cosigner signs only a plan a person signed first"
+            if any(s in self.operators for s in signed):
+                return None, "the scripted cosigner signs once per nomination"
         proposer = view.get("proposer") or (source.get("id") if source.get("kind") == "human" else None)
         eligible = view.get("eligible") or view.get("engage_operators")
         for op in self.operators:
@@ -415,31 +423,54 @@ class EngagementSigners:
             return op, ""
         return None, "none of the scripted signers may sign it (signed already, the proposer, or no engagement authority)"
 
+    async def view_of(self, iid: int) -> dict[str, Any] | None:
+        """The nomination as the inbox serves it (the engagement's `engage` view travels with
+        the inbox and the decisions feed, not with `GET /api/intents/{id}` or an approval's
+        answer); None once it no longer waits."""
+        inbox = await asyncio.to_thread(self.bridge.try_get, "/api/inbox")
+        return next((i for i in (inbox or {}).get("pending", []) if int(i.get("id", -1)) == iid), None)
+
+    def _blocked(self, iid: int, cur: dict[str, Any] | None) -> tuple[str | None, str]:
+        """Who signs next on `cur` (the inbox's item) and why not, the live picture included."""
+        if cur is None or cur.get("state") != "pending_approval":
+            return None, "no longer waiting"
+        view = cur.get("engage") or {}
+        op, why = self.next_signer(view, cur.get("source") or {})
+        if op is None:
+            return None, why
+        live = view.get("live") or {}
+        if not live.get("passed"):
+            failing = [c.get("rule") for c in live.get("checks", []) if c.get("outcome") != "pass"]
+            return None, "the engine's live picture does not pass" + (f" ({', '.join(failing)})" if failing else ": none yet")
+        return op, ""
+
     async def consider(self, intent: dict[str, Any]) -> list[dict[str, Any]]:
-        """Sign what can be signed on this nomination now; returns the signatures made."""
+        """Sign what can be signed on this nomination now; returns the signatures made. Each
+        signature looks first (a picture token for that signer), reads the nomination again
+        just before it signs (the live picture may have changed while it looked), and quotes
+        the token; a cosigner signs only on a token issued for a frozen plan."""
         iid = int(intent["id"])
         made: list[dict[str, Any]] = []
-        cur = intent
+        cur: dict[str, Any] | None = intent if "engage" in intent else await self.view_of(iid)
         for _ in range(len(self.operators)):
-            view = cur.get("engage")
-            if view is None:
-                full = await asyncio.to_thread(self.bridge.intent, iid)
-                cur = full.get("intent") or full
-                view = cur.get("engage") or {}
-            if cur.get("state") != "pending_approval":
-                return made
-            op, why = self.next_signer(view, cur.get("source") or {})
+            op, why = self._blocked(iid, cur)
             if op is None:
-                self._wait(iid, why)
-                return made
-            live = view.get("live") or {}
-            if not live.get("passed"):
-                failing = [c.get("rule") for c in live.get("checks", []) if c.get("outcome") != "pass"]
-                self._wait(iid, "the engine's live picture does not pass" + (f" ({', '.join(failing)})" if failing else ": none yet"))
+                if why != "no longer waiting":
+                    self._wait(iid, why)
                 return made
             # look first: the engine shows this operator exactly what they would sign
             token = await asyncio.to_thread(self.bridge.post, f"/api/intents/{iid}/picture", {}, op)
+            if self.mode == "cosign" and token.get("frozen") is not True:
+                # the signatures were reset between the inbox and the look: this would be the
+                # first signature, which is never a script's
+                self._wait(iid, "the picture shown is no frozen plan (the signatures were reset): a person signs first")
+                return made
             await asyncio.sleep(self.read_s)
+            fresh = await self.view_of(iid)
+            again, why = self._blocked(iid, fresh)
+            if again != op:
+                self._wait(iid, f"changed while {op} looked: {why or f'{again} would sign now'}")
+                return made
             body: dict[str, Any] = {
                 "token": token.get("id"),
                 "note": f"{self.label} signer {op} (not a person): signed on the engine's picture token {token.get('id')}",
@@ -450,18 +481,18 @@ class EngagementSigners:
                 out = await asyncio.to_thread(self.bridge.post, f"/api/intents/{iid}/approve", body, op)
             except BridgeError as e:
                 detail = e.body.get("detail") if isinstance(e.body, dict) else e.body
-                self._record({"intent_id": iid, "action": "sign", "by": op, "token": token.get("id"), "result": f"error {e.status}: {detail}"})
+                self._record({"intent_id": iid, "action": "sign_failed", "by": op, "token": token.get("id"), "result": f"error {e.status}: {detail}"})
                 return made
-            cur = out.get("intent") or {}
-            rec = {"intent_id": iid, "action": "sign", "by": op, "token": token.get("id"), "result": cur.get("state"), "dispatched": bool(out.get("dispatched"))}
+            state = (out.get("intent") or {}).get("state")
+            rec = {"intent_id": iid, "action": "sign", "by": op, "token": token.get("id"), "result": state, "dispatched": bool(out.get("dispatched"))}
             self._record(rec)
             made.append(rec)
             self._said.pop(iid, None)
-            # the view after a signature (the plan it froze, who signed) comes with the intent;
-            # fetch it whole when the answer does not carry it
-            if "engage" not in cur:
-                full = await asyncio.to_thread(self.bridge.intent, iid)
-                cur = full.get("intent") or full
+            if self.mode == "cosign":
+                return made
+            # the next signer reads the nomination as the inbox serves it now (the plan the
+            # first signature froze, who signed)
+            cur = await self.view_of(iid)
         return made
 
 

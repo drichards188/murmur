@@ -11,16 +11,22 @@
 # 20 to 40 s in.
 title = "Harbor watch"
 brief = """
-You have the watch at the Golden Gate on a June morning. Four of ours are on station: MARLIN 1,
-a sensor ship patrolling the channel east of the bridge; KESTREL 1, a VTOL drone orbiting the
-bay entrance west of it; PUMA 2, a small drone orbiting off Lime Point; and PUMA 1, in reserve
+You have the watch at the Golden Gate on a June morning. Four of ours are at the Gate: MARLIN 1,
+a sensor ship to patrol the channel east of the bridge; KESTREL 1, a VTOL drone to orbit the
+bay entrance west of it; PUMA 2, a small drone on station off Lime Point; and PUMA 1, in reserve
 west of the bridge. Traffic is normal: ferries, ships in the lane, fishing boats, a coast guard
 cutter.
 
+The opening orders come from the setup script (op-setup, not a person). Those the C2 sends to
+a person wait for you in the Inbox: MARLIN 1's patrol and KESTREL 1's orbit, because the C2
+does not know their endurance. Approve them to put those two on station.
+
 Your task: keep the Gate under watch, get anything unidentified that approaches it classified,
 and keep our vehicles on task. An AI watch officer reads the same picture through its own
-tools and may propose tasking; it cannot approve anything, and proposals to move our vehicles
-wait for you in the Inbox. Engagements are not authorized on this watch.
+tools and may propose tasking; it cannot approve anything. Its proposals to move our vehicles
+(an orbit, a patrol, a track) wait for you in the Inbox; a hold or a return home (rtl) it
+proposes goes out at once, as every hold and rtl does under the policy (they reduce risk).
+Engagements are not authorized on this watch.
 """
 director = """
 Truth: at about 2:30 a small fast boat with no AIS (truth affiliation: unknown) comes in from
@@ -50,7 +56,9 @@ cosigner = "you"
 reveal = false
 seed = 1
 
-# ---- opening orders: ordinary orders from op-1 once the fleet is ready
+# ---- opening orders, once the fleet is ready: issued by the setup script (op-setup); one that
+# would be authorized by its own submission (a human tier) is proposed by agent-setup instead and
+# waits for the person (live) or op-auto (autoplay). Never for an armed platform (refused at load).
 [[order]]
 id = "gate-patrol"
 task = "patrol"
@@ -92,7 +100,7 @@ director = true
 # ---- what to watch for, shown in the console's Situation panel as each comes due
 [[watch]]
 at_s = 0
-text = "The stack comes up: four of ours at the Gate. The opening orders put MARLIN 1 on patrol east of the bridge, KESTREL 1 on an orbit over the bay entrance and PUMA 2 on station off Lime Point; PUMA 1 waits in reserve west of the bridge."
+text = "The stack comes up: four of ours at the Gate. The setup script issues the opening orders: PUMA 2 goes on station off Lime Point by policy; MARLIN 1's patrol east of the bridge and KESTREL 1's orbit over the bay entrance wait in the Inbox for a person's decision (op-auto's on autoplay). PUMA 1 waits in reserve west of the bridge."
 
 [[watch]]
 at_s = 45
@@ -101,10 +109,11 @@ text = "Normal traffic: ferries, the shipping lane, a trawler, a coast guard cut
 [[watch]]
 at_s = 120
 text = "A small boat drifting off Mile Rock has no AIS. Small craft need not carry it: once a camera classifies it the C2 shows it neutral, at a lower confidence. Nothing to do."
+director = true                               # it answers a question the watch should ask itself
 
 [[watch]]
 at_s = 240
-text = "Watch the western approach. A small fast craft without AIS is shown suspect once a sensor classifies it, never hostile: hostile takes an operator's declaration or the engine's rule on an observed hostile act."
+text = "How the C2 labels a contact: one broadcasting AIS is neutral (a coast guard cutter assumed friend); one without AIS is unknown until a sensor classifies it, then neutral or suspect by what it is. Never hostile on its own: hostile takes an operator's declaration or the engine's rule on an observed hostile act."
 
 [[watch]]
 at_s = 330
@@ -112,7 +121,7 @@ text = "The AI reads the same picture through its tools. If it proposes a sensor
 
 [[watch]]
 at_s = 450
-text = "After the decision: who approved it (you, or the scripted operator on autoplay), how long it waited, and what the orbiting sensor adds to the track's identity."
+text = "After a decision on an AI's proposal: who approved it (you, or op-auto on autoplay), how long it waited, and what a sensor sent closer adds to a track's identity."
 
 [[watch]]
 at_s = 420

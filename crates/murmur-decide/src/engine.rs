@@ -6453,8 +6453,10 @@ pub struct Preview {
     pub passed: bool,
     /// Absent when the checks fail (policy never runs on a rejected intent).
     pub policy: Option<PolicyDecision>,
-    /// `rejected`, `auto_approved` or `pending_approval`: never `approved`, because an
-    /// agent's proposal in a human tier waits for a human.
+    /// `rejected`, `auto_approved` or `pending_approval`: never `approved` for an agent's
+    /// proposal, because it waits for a human in a human tier. An operator's dry run
+    /// ([`Engine::dry_run_for_operator`]) reaches `approved` where the submission itself
+    /// would be the approval.
     pub would_reach: State,
     /// Collect and cover: the space segment's answer the checks read.
     #[serde(skip_serializing_if = "Option::is_none")]
