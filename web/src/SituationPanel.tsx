@@ -6,7 +6,9 @@ import './situation.css'
 /** The Situation panel: shown only while a situation runner (`make situation`,
  *  `sim/situations/`) has posted its status to the bridge (`GET /api/situation`). Display
  *  only: the status is the runner's, never a decision input and not in the audit log. With
- *  `reveal` off (a blinded run) it carries no director's notes and nothing still to come. */
+ *  `reveal` off (a blinded run) it carries no director's notes and nothing still to come (the
+ *  bridge strips them whatever the runner sends). The clock runs on this console's own clock
+ *  from each post's arrival; a runner that stops posting is shown as not reporting. */
 
 interface Entry {
   t_s: number
@@ -35,15 +37,18 @@ export interface SituationStatus {
     ai_label: string
     cosigner: 'you' | 'scripted'
     console_operator: string
+    autoplay_operator?: string | null
     scripted_operators: string[]
+    /** set when what the AI did is no evidence about it (a revealed run with a model AI) */
+    evidence_note?: string | null
   }
   phase: string
   phase_detail: string
   clock: { t: number; elapsed_s: number | null; duration_s: number; remaining_s: number | null }
-  orders: { id: string; task: string; vehicles?: string[]; intent_id?: number; state?: string; error?: string }[]
+  orders: { id: string; task: string; vehicles?: string[]; by?: string; routed?: string; intent_id?: number; state?: string; error?: string }[]
   timeline: { done: Entry[]; upcoming?: { at_s: number; id: string; kind: string; text: string }[] }
-  watch: { at_s: number; text: string }[]
-  watch_upcoming?: { at_s: number; text: string }[]
+  watch: { at_s: number; text: string; director?: boolean }[]
+  watch_upcoming?: { at_s: number; text: string; director?: boolean }[]
   agent: {
     kind: string
     label: string
@@ -54,15 +59,28 @@ export interface SituationStatus {
   }
   autoplay: null | {
     operators: string[]
-    mode: 'autoplay' | 'cosigner'
+    mode: 'autoplay' | 'cosigner' | 'setup'
     decisions: { t: number; intent_id: number; action: string; by?: string; reason?: string; result?: string }[]
   }
   run: { id: string; audit_log: string; situation_log: string }
+  /** what went wrong in the runner itself */
+  problems?: string[]
 }
 
 interface Envelope {
   situation: SituationStatus | null
   received_t: number | null
+  /** how many statuses the runner has posted (a new one every 2 s while it runs) */
+  posts?: number
+}
+
+/** no new status for this long (s) while the runner starts or runs: it is not reporting */
+const STALE_S = 10
+
+const DECIDES: Record<string, string> = {
+  autoplay: 'autoplay: not people',
+  cosigner: 'cosign only, never first',
+  setup: 'setup and timeline: they never decide',
 }
 
 /** m:ss of situation time */
@@ -94,17 +112,29 @@ export function SituationPanel({ decisions }: { decisions: Decisions | null }) {
   const { data } = usePoll<Envelope>('/api/situation', 2000)
   const [open, setOpen] = useState(true)
   const [showAll, setShowAll] = useState(false)
-  // the wall clock (s), ticking each second: the situation clock is extrapolated from it
+  // this console's clock (s), ticking each second: the situation clock is extrapolated from it
   const [nowS, setNowS] = useState(() => Date.now() / 1000)
   useEffect(() => {
     const id = window.setInterval(() => setNowS(Date.now() / 1000), 1000)
     return () => window.clearInterval(id)
   }, [])
   const s = data?.situation
+  const posts = data?.posts ?? 0
+  const postedElapsed = s?.clock.elapsed_s ?? null
+  // anchored on when this console received each new post (as useScenarioNow does), never on
+  // the runner's host clock against this one's
+  // (state adjusted while rendering when a new post has come: React's pattern for state that
+  // follows a prop)
+  const [anchor, setAnchor] = useState<{ posts: number; elapsed: number | null; at: number } | null>(null)
+  if (s && (anchor == null || anchor.posts !== posts)) {
+    setAnchor({ posts, elapsed: postedElapsed, at: nowS })
+  }
   if (!s) return null
-  const running = s.phase === 'running'
-  const since = Math.max(0, nowS - s.clock.t)
-  const elapsed = s.clock.elapsed_s == null ? null : Math.min(s.clock.duration_s, s.clock.elapsed_s + (running ? since : 0))
+  const sincePost = anchor ? Math.max(0, nowS - anchor.at) : 0
+  const stale = (s.phase === 'running' || s.phase === 'starting') && sincePost > STALE_S
+  const running = s.phase === 'running' && !stale
+  const base = anchor && anchor.posts === posts ? anchor.elapsed : s.clock.elapsed_s
+  const elapsed = base == null ? null : Math.min(s.clock.duration_s, base + (running ? sincePost : 0))
   const left = elapsed == null ? null : Math.max(0, s.clock.duration_s - elapsed)
   const frac = elapsed == null ? 0 : Math.min(1, elapsed / s.clock.duration_s)
   const scripted = new Set(s.modes.scripted_operators)
@@ -139,7 +169,7 @@ export function SituationPanel({ decisions }: { decisions: Decisions | null }) {
           </span>
         ) : (
           <span className="sit-mode scripted" title="A scripted operator model decides: not a person, never evidence">
-            operator: autoplay, scripted
+            operator: autoplay ({s.modes.autoplay_operator ?? 'scripted'}), scripted
           </span>
         )}
         <span className={`sit-mode ai ${s.modes.ai}`}>AI: {s.modes.ai_label}</span>
@@ -153,14 +183,20 @@ export function SituationPanel({ decisions }: { decisions: Decisions | null }) {
       <div className="sit-clock">
         <b>T+{elapsed == null ? '--:--' : clock(elapsed)}</b>
         <span>{left == null ? '' : `${clock(left)} left of ${clock(s.clock.duration_s)}`}</span>
-        <span className={`sit-phase ${s.phase}`} title={s.phase_detail}>
-          {s.phase}
+        <span className={`sit-phase ${stale ? 'failed' : s.phase}`} title={s.phase_detail}>
+          {stale ? 'not reporting' : s.phase}
         </span>
         <span className="sit-bar">
           <span style={{ width: `${(frac * 100).toFixed(1)}%` }} />
         </span>
-        {!running && s.phase_detail && <small>{s.phase_detail}</small>}
+        {!running && !stale && s.phase_detail && <small>{s.phase_detail}</small>}
       </div>
+      {stale && (
+        <p className="sit-warn">
+          Runner not reporting: no status for {Math.round(sincePost)} s. The stack may still be running; this is its last status.
+        </p>
+      )}
+      {s.modes.evidence_note && <p className="sit-warn">{s.modes.evidence_note}</p>}
       <div className="sit-scroll">
         <details className="sit-brief" open>
           <summary>Brief</summary>
@@ -175,9 +211,10 @@ export function SituationPanel({ decisions }: { decisions: Decisions | null }) {
         {watch.length === 0 && <p className="sit-empty">Nothing yet.</p>}
         <ul className="sit-watch">
           {watch.map((w, k) => (
-            <li key={`${w.at_s}-${k}`} className={fresh(w.at_s) ? 'new' : ''}>
+            <li key={`${w.at_s}-${k}`} className={`${fresh(w.at_s) ? 'new' : ''}${w.director ? ' sit-director' : ''}`}>
               <time>{clock(w.at_s)}</time>
               {w.text}
+              {w.director && <small> (director, revealed)</small>}
             </li>
           ))}
         </ul>
@@ -232,7 +269,7 @@ export function SituationPanel({ decisions }: { decisions: Decisions | null }) {
           <>
             <h3 className="sit-h">
               Scripted operators <span>{s.autoplay.operators.join(', ')}</span>
-              <small>{s.autoplay.mode === 'autoplay' ? 'autoplay: not people' : 'cosign only, never first'}</small>
+              <small>{DECIDES[s.autoplay.mode] ?? ''}</small>
             </h3>
             {s.autoplay.decisions.filter((d) => d.action !== 'wait').length === 0 && <p className="sit-empty">No decision yet.</p>}
             <ul className="sit-log">
@@ -242,7 +279,7 @@ export function SituationPanel({ decisions }: { decisions: Decisions | null }) {
                 .slice(0, 5)
                 .map((d, k) => (
                   <li key={k}>
-                    <b>{d.by ?? s.modes.console_operator}</b> {d.action} i{d.intent_id}: {d.result}
+                    <b>{d.by ?? '?'}</b> {d.action} i{d.intent_id}: {d.result}
                     {d.reason && <small> {d.reason}</small>}
                   </li>
                 ))}
@@ -288,6 +325,13 @@ export function SituationPanel({ decisions }: { decisions: Decisions | null }) {
               <p key={k}>{p}</p>
             ))}
           </details>
+        )}
+        {(s.problems?.length ?? 0) > 0 && (
+          <ul className="sit-warn">
+            {s.problems!.map((p, k) => (
+              <li key={k}>{p}</li>
+            ))}
+          </ul>
         )}
         {s.orders.some((o) => o.error) && (
           <p className="sit-warn">
