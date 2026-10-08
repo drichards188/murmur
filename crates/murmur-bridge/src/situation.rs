@@ -13,9 +13,11 @@
 //! tracks, the MCP server's tools or the audit log. Truth and a director's notes must not
 //! leak into decisions; the runner writes its own record (`situation.jsonl`), and the audit
 //! chain stays the engine's alone. The bridge itself enforces a blinded run: unless the
-//! document says `"reveal": true`, it is stored without the director's notes, the timeline
-//! still to come (`timeline.upcoming`, `watch_upcoming`) and every entry marked `"director":
-//! true`, whatever the runner sent (`docs/DECISIONS.md`, "Situation status is display only").
+//! document says `"reveal": true` (exactly), it keeps only the keys a blinded panel shows
+//! ([`BLIND_KEYS`]: so not the director's notes, `watch_upcoming` or any key it does not know),
+//! of the timeline only what is done, and drops every timeline entry and watch item whose
+//! `director` is anything but absent or `false`, whatever the runner sent (`docs/DECISIONS.md`,
+//! "Situation status is display only").
 //! The stored bytes are served as they are (`GET` is open on the local port, like every read).
 
 use std::sync::{Arc, Mutex};
@@ -47,24 +49,53 @@ struct Stored {
 /// The longest title the bridge's log repeats, characters.
 const LOG_TITLE_CHARS: usize = 80;
 
-/// A blinded run's document (`reveal` not `true`): no director's notes, nothing still to come,
-/// no entry marked `"director": true` in the timeline or the watch items.
+/// The top-level keys a blinded run's document keeps (`eval/situation.py` `status_doc`):
+/// everything else, the director's notes and `watch_upcoming` among them, is dropped.
+/// `phase_detail` and `problems` are the runner's own fixed messages (it never puts a step's or
+/// the director's text in them); they are kept only as strings.
+pub const BLIND_KEYS: &[&str] = &[
+    "schema", "name", "title", "brief", "reveal", "modes", "scripted", "phase", "phase_detail", "clock",
+    "orders", "timeline", "watch", "agent", "autoplay", "run", "problems",
+];
+
+/// The longest `phase_detail` or `problems` line a blinded document keeps, characters.
+const BLIND_TEXT_CHARS: usize = 400;
+
+/// A blinded run's document (`reveal` not exactly `true`): only [`BLIND_KEYS`]; of the
+/// timeline only `done`; no timeline entry or watch item whose `director` is anything but
+/// absent or `false` (a `"yes"` or a `1` counts as the director's).
 pub fn blind(doc: &mut Value) {
     if doc.get("reveal") == Some(&Value::Bool(true)) {
         return;
     }
     let Some(o) = doc.as_object_mut() else { return };
-    o.remove("director");
-    o.remove("watch_upcoming");
-    let not_director = |e: &Value| e.get("director") != Some(&Value::Bool(true));
+    o.retain(|k, _| BLIND_KEYS.contains(&k.as_str()));
+    let not_director = |e: &Value| matches!(e.get("director"), None | Some(Value::Bool(false)));
+    let text = |v: &Value| v.as_str().map(|t| Value::String(t.chars().take(BLIND_TEXT_CHARS).collect()));
+    match o.get("phase_detail").and_then(text) {
+        Some(t) => {
+            o.insert("phase_detail".into(), t);
+        }
+        None => {
+            o.remove("phase_detail");
+        }
+    }
+    if let Some(p) = o.get_mut("problems") {
+        let lines: Vec<Value> = p.as_array().map(|a| a.iter().filter_map(text).collect()).unwrap_or_default();
+        *p = Value::Array(lines);
+    }
     if let Some(t) = o.get_mut("timeline").and_then(Value::as_object_mut) {
-        t.remove("upcoming");
+        t.retain(|k, _| k == "done");
         if let Some(done) = t.get_mut("done").and_then(Value::as_array_mut) {
             done.retain(not_director);
         }
+    } else {
+        o.remove("timeline");
     }
     if let Some(w) = o.get_mut("watch").and_then(Value::as_array_mut) {
         w.retain(not_director);
+    } else {
+        o.remove("watch");
     }
 }
 
@@ -264,8 +295,17 @@ mod tests {
                     ],
                     "upcoming": [{ "at_s": 370.0, "text": "the boat holds (truth)" }]
                 },
-                "watch": [{ "at_s": 0.0, "text": "watch" }, { "at_s": 60.0, "text": "the answer", "director": true }],
-                "watch_upcoming": [{ "at_s": 600.0, "text": "later" }]
+                "watch": [
+                    { "at_s": 0.0, "text": "watch", "director": false },
+                    { "at_s": 60.0, "text": "the answer", "director": true },
+                    { "at_s": 61.0, "text": "another answer (truth)", "director": "yes" },
+                    { "at_s": 62.0, "text": "a third answer (truth)", "director": 1 }
+                ],
+                "watch_upcoming": [{ "at_s": 600.0, "text": "later" }],
+                // keys a blinded panel does not show: dropped, whatever they hold
+                "notes": "the boat is unknown (truth)",
+                "phase_detail": { "detail": "an object (truth)" },
+                "problems": ["the timeline stopped (StepError)", { "text": "(truth)" }]
             })
             .to_string()
         };
@@ -279,6 +319,8 @@ mod tests {
             assert!(!text.contains("(truth)") && !text.contains("the answer"), "{reveal}: {text}");
             assert_eq!(doc["timeline"]["done"].as_array().map(Vec::len), Some(1));
             assert_eq!(doc["watch"].as_array().map(Vec::len), Some(1));
+            assert!(doc.get("notes").is_none() && doc.get("phase_detail").is_none(), "{reveal}: {text}");
+            assert_eq!(doc["problems"], json!(["the timeline stopped (StepError)"]));
         }
         call(&s, "POST", Some(TOKEN), Some(full(json!(true)))).await;
         let (_, v) = call(&s, "GET", None, None).await;
@@ -286,8 +328,8 @@ mod tests {
         assert_eq!(doc["director"], "a fast boat comes in at 2:30 (truth)");
         assert_eq!(doc["timeline"]["done"].as_array().map(Vec::len), Some(2));
         assert_eq!(doc["timeline"]["upcoming"].as_array().map(Vec::len), Some(1));
-        assert_eq!(doc["watch"].as_array().map(Vec::len), Some(2));
-        assert!(doc.get("watch_upcoming").is_some());
+        assert_eq!(doc["watch"].as_array().map(Vec::len), Some(4));
+        assert!(doc.get("watch_upcoming").is_some() && doc.get("notes").is_some());
     }
 
     #[tokio::test]
