@@ -365,7 +365,7 @@ def step_text(rec: dict[str, Any], step: Step | None) -> str:
         detail = f"step {rec.get('step')} failed: {rec.get('error')}"
     else:
         detail = json.dumps({k: v for k, v in rec.items() if k not in ("t",)})[:200]
-    if headline and detail:
+    if headline and detail and detail != headline:
         return f"{headline} ({detail})"
     return headline or detail
 

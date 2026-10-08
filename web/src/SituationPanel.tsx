@@ -260,7 +260,7 @@ export function SituationPanel({ decisions }: { decisions: Decisions | null }) {
         </h3>
         <ul className="sit-tl">
           {(showAll ? done : done.slice(0, 6)).map((e, k) => (
-            <li key={k} className={`${e.kind}${e.director ? ' director' : ''}`}>
+            <li key={k} className={`sit-k-${e.kind}${e.director ? ' sit-director' : ''}`}>
               <time>{clock(e.t_s)}</time>
               {e.text}
             </li>

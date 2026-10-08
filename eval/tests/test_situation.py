@@ -192,6 +192,9 @@ def test_step_text():
     rec = {"kind": "propose", "step": "p", "request": {"task": "orbit", "uids": [3]}, "error": "no track"}
     assert "error: no track" in S.step_text(rec, None)
     assert S.step_text({"kind": "note", "text": "hi"}, None) == "hi"
+    # a note's text is its headline too: said once
+    note = S.Step(id="n", kind="note", at_s=1, params={"text": "a boat enters (truth)"})
+    assert S.step_text({"kind": "note", "text": "a boat enters (truth)"}, note) == "a boat enters (truth)"
 
 
 # ---- the AI: the launch contract and the preflight -----------------------------------------------
