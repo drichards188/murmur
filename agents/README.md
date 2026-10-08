@@ -133,17 +133,37 @@ free option. Nothing falls back silently.
 | `--situation-log` | a JSON-lines file the watch officer appends its own notes to, one object per line: `{"t": <unix s>, "kind": "note" \| "tool" \| "proposal" \| "error", "text": "..."}`. The runner tails it (read-only) and shows the latest in the panel as the AI's notes; it is the watch officer's own record, beside the runner's `situation.jsonl` |
 | `--until` | unix time at which to stop on its own (the situation's end) |
 
-Its working directory is the repository; its environment is the runner's minus every
-`MURMUR_*` variable (no simulation token, no agent key from elsewhere), so the user's own CLI
-login works as it does in their shell. Its stdout and stderr go to `agent.log` in the run
-directory. What it must hold to: agents propose and never approve (no approve tool exists, and
-the watch policy sends its tasking to the operator); every proposal carries a rationale naming
-the facts and their ages; the MCP server closes a session idle for 300 s (rmcp's default), so a
-watch officer that may sit quiet that long reconnects when it next acts (the runner's own
-storyline agent does); it reads only the MCP tools (not the bridge's HTTP API: `GET
-/api/situation` and the evaluation's truth hook are not for it, and a situation serves no
-truth); it treats stale facts as stale. What it did is in the audit log (`agent.action`, then its
-intents' own events), which the panel reads too.
+It starts in an empty directory of its own for this run, outside the repository and outside
+the run directory (`/tmp/murmur-<run id>-ai-*`), holding only `brief.md`; `--situation-log`
+names a file in that directory, and the runner keeps a copy with the run and removes the
+directory at the end. Its environment is the runner's minus every `MURMUR_*` variable (no
+simulation token, no agent key from elsewhere), so the user's own CLI login works as it does in
+their shell. Its stdout and stderr go to `agent.log` in the run directory.
+
+**MCP only.** A situation hides things from the watch (the director's notes, the timeline to
+come, the runner's logs; with `reveal` off the bridge strips them from `GET /api/situation`
+too), and a model with a shell or file tools could read them from the checkout. So the watch
+officer runs its model with the bridge's MCP tools and nothing else, from that empty directory:
+
+- Claude: `claude -p --strict-mcp-config --mcp-config <its own config naming only the bridge's
+  /mcp as server "murmur", with the X-Murmur-Agent header> --tools "" --allowedTools
+  "mcp__murmur__*" --setting-sources project`, run with that directory as its working
+  directory (no built-in tools, no other MCP server, no user or repository settings).
+- Codex: `codex exec` with the read-only sandbox (`--sandbox read-only`) and the approval
+  policy `never`, only the bridge's MCP server configured, in that directory.
+
+A watch officer that cannot hold to this does not start. What it must hold to besides: agents
+propose and never approve (no approve tool exists, and the watch policy sends its tasking to the
+operator); every proposal carries a rationale naming the facts and their ages; the MCP server
+closes a session idle for 300 s (rmcp's default), so a watch officer that may sit quiet that
+long reconnects when it next acts (the runner's own scripted agents connect per act); it reads
+only the MCP tools, never the bridge's HTTP API: `GET /api/situation` is the runner's display
+for the console, and the bridge serves truth to no agent (its evaluation hook,
+`MURMUR_EVAL_TRUTH`, is off in a situation). With `REVEAL=1` the director's notes and the
+timeline to come are on the bridge for anyone who asks, so a run with `REVEAL=1` and a model AI
+is marked "not evidence about the AI (truth was served on the bridge)" in `situation.jsonl`, the
+panel and the summary. It treats stale facts as stale. What it did is in the audit log
+(`agent.action`, then its intents' own events), which the panel reads too.
 
 `AI=playbook`: `agents/policy_agent.py --url <bridge>/mcp --agent agent-planner --watch <seconds
 to the end> --near=<lon>,<lat> --radius-km <r> --every <s> [--platform <id>]` from the

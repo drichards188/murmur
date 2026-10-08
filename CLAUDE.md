@@ -71,6 +71,8 @@ meaningful. Decision and command, not weapons.
   `MURMUR_LINKEMU_PORT`, `MURMUR_HTTP_PORT`, `MURMUR_WEB_PORT`, `MURMUR_TIDEWATER_PORT`,
   `MURMUR_SITL_INSTANCE_BASE` (header of `scripts/up.sh`). `MURMUR_WEB_PORT` also tells the
   bridge which console origin to accept; the session cookie is named per HTTP port.
+  `make situation` has its own block (UDP 33000+ and 34000+, bridge :9265, linkemu :9266,
+  console :5673, tidewater :9270, SITL from instance 160; each variable overrides one).
 
 ## Gotchas (each cost real time)
 
@@ -112,6 +114,10 @@ meaningful. Decision and command, not weapons.
 - Eval stacks own UDP 35000-36999 and HTTP 10600-10699 (`eval/ports.py`, fixed): keep other
   live stacks off them. Each eval run starts as a fresh station (`eval/stack.py` removes the
   bridge's `.last-run-<port>` before and after; `run.json` `restore_carry`, murmur-kvb).
+- Situations (`sim/situations/README.md`): `op-1` is the person, never a script; scripted ids
+  are `op-setup`, `op-auto`, `op-2`, `op-3`, `op-planner`, `agent-setup`, `agent-scripted`. An
+  opening order op-setup's submission would authorize (dry run `POST /api/intents/preview`) goes
+  through agent-setup to the inbox; the AI starts in an empty temp dir, MCP tools only.
 - Rules 5 queue: an order for a vehicle the link can't carry it to now waits in the Queue
   (console button; `GET /api/inbox` `queued`), it is not an error; one whose link drops
   before the vehicle started it comes back there (`intent.requeued`). A human's approval is

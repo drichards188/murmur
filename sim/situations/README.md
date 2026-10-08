@@ -13,20 +13,25 @@ make down                                                         # the stack st
 | variable | values | default |
 | --- | --- | --- |
 | `NAME` | a file here, without `.toml` | `harbor-watch` |
-| `OPERATOR` | `live` (you decide at the console, as `op-1`) or `autoplay` (a scripted operator decides) | the file's `operator` |
+| `OPERATOR` | `live` (you decide at the console, as `op-1`) or `autoplay` (a scripted operator, `op-auto`, decides) | the file's `operator` |
 | `AI` | `claude`, `codex`, `playbook` or `none` | the file's `ai` (`claude`) |
 | `COSIGNER` | `you` or `scripted`: who makes an engagement's second signature in live mode | the file's `cosigner` (`you`) |
 | `REVEAL` | `1` shows the director's notes and the timeline still to come in the panel; `0` hides them | the file's `reveal` (`0`) |
 
-The ports are `scripts/up.sh`'s (`MURMUR_BASE_PORT`, `MURMUR_HTTP_PORT` and the rest, default
-ports by default); the console is at `http://127.0.0.1:$MURMUR_WEB_PORT` with a Situation panel
-over the map's top left.
+A situation runs on its own port block, so it never meets the default stack, a second stack
+beside it, the evaluation's blocks (UDP 35000-36999, HTTP 10600-10699) or the host's ephemeral
+range: vehicles UDP 33000+, bridge UDP 34000+, bridge 9265, link emulator 9266, console 5673,
+tidewater 9270, SITL instances from 160 (`SITUATION_PORTS` in `eval/situation.py`). Each
+`scripts/up.sh` port variable (`MURMUR_BASE_PORT`, `MURMUR_HTTP_PORT` and the rest) overrides its
+port; an exported `MURMUR_TIDEWATER_URL` is not passed on (the situation's tidewater runs on its
+own port). The runner prints the console's address (`http://127.0.0.1:5673` by default); the
+Situation panel is over the map's top left.
 
 ## Situations
 
 | file | status | what |
 | --- | --- | --- |
-| `harbor-watch.toml` | runs | Four of ours on station at the Golden Gate, normal traffic, and an unknown fast boat without AIS that comes in from the west and holds near the bridge. The AI should notice it and propose a sensor orbit; the watch policy puts that in front of the operator. 12 minutes at rate 1. |
+| `harbor-watch.toml` | runs | Four of ours on station at the Golden Gate, normal traffic, and an unknown fast boat without AIS that comes in from the west and holds near the bridge. The AI should notice it and propose a sensor orbit; the watch policy puts that in front of the operator. Two opening orders wait for your decision at the start (the C2 does not know those vehicles' endurance). 12 minutes at rate 1. |
 | `comms-cut-gnss-spoof.toml` | stub (TODO) | Title and brief only. |
 | `hostile-act-engagement.toml` | stub (TODO) | Title and brief only. |
 | `approval-flood.toml` | stub (TODO) | Title and brief only. |
@@ -52,22 +57,57 @@ login`), and that `AI=playbook` is the free option. It never falls back silently
 
 The AI gets the situation's title and brief (a file), the bridge's MCP endpoint and its agent id
 (`agent-watch` for Claude and Codex, `agent-planner` for the playbook), and nothing else: not the
-director's notes, not the timeline, not the watch items, no `MURMUR_*` variable. Agents propose;
-they never approve (no approve tool exists). The launch contract is in `agents/README.md`.
+director's notes, not the timeline, not the watch items, no `MURMUR_*` variable. It starts in an
+empty directory of its own outside the repository (only `brief.md` in it), and the watch officer
+runs its model with the bridge's MCP tools only (no shell, no file tools, no other settings), so
+it cannot read what the situation hides from the checkout. Agents propose; they never approve
+(no approve tool exists). The launch contract is in `agents/README.md`. A run with `REVEAL=1`
+serves the director's notes on the bridge, so with Claude or Codex it is marked "not evidence
+about the AI (truth was served on the bridge)" in `situation.jsonl`, the panel and the summary.
 
 ## Operator modes
 
 - **live**: you are `op-1` at the console (a dev run: the "Acting as" switcher names who acts;
-  `op-1`, `op-2` and `op-3` hold engagement authority). An engagement needs two distinct signers,
-  never its proposer: in a dev run you can sign twice through the switcher (`cosigner = "you"`),
-  or let a scripted operator (`op-2` or `op-3`) add the second signature after your first, never
-  the first (`cosigner = "scripted"`).
+  `op-1`, `op-2` and `op-3` hold engagement authority). `op-1` is only ever you: no script acts
+  as `op-1`. An engagement needs two distinct signers, never its proposer: in a dev run you can
+  sign twice through the switcher (`cosigner = "you"`), or let a scripted operator (`op-2` or
+  `op-3`) add the second signature after your first, never the first, and only on the plan your
+  signature froze, once per nomination (`cosigner = "scripted"`).
 - **autoplay**: the evaluation's proxy operator model (`eval/proxy.py` `ProxyOperator`, its
-  `[autoplay]` parameters) decides as `op-1`, and two scripted operators (`op-2`, `op-3`,
+  `[autoplay]` parameters) decides as `op-auto`, and two scripted operators (`op-2`, `op-3`,
   `EngagementSigners`) sign engagement nominations the way the engine requires it: each asks for
-  the picture first and quotes its token, never the proposer, only while the engine's live
-  picture passes; they never refuse. Their notes in the audit log say "scripted"; the panel says
-  "operator: autoplay, scripted". They are scripts, never evidence about people.
+  the picture first and quotes its token, reads the nomination again before it signs, never the
+  proposer, only while the engine's live picture passes; they never refuse. Their notes in the
+  audit log say "scripted"; the panel says "operator: autoplay (op-auto), scripted". They are
+  scripts, never evidence about people.
+
+Who is who in a situation's run:
+
+| id | who |
+| --- | --- |
+| `op-1` | you, at the console (live); never a script |
+| `op-setup` | the setup script: issues the opening orders |
+| `agent-setup` | the setup script as an agent: proposes an opening order that would otherwise be authorized by op-setup's own submission (below) |
+| `op-auto` | the autoplay operator (autoplay only) |
+| `op-2`, `op-3` | the scripted engagement signers (autoplay), or the scripted cosigner (live, `cosigner = "scripted"`) |
+| `op-planner` | the timeline's second station (`declare` steps; proposals with `[storyline] proposer = "operator"`) |
+| `agent-scripted` | the timeline's proposals (MCP) |
+| `agent-watch`, `agent-planner` | the AI: Claude or Codex, or the playbook |
+
+Every scripted act says so in the audit log: an opening order's rationale begins "situation
+setup (scripted, not a person)", a timeline proposal's or declaration's "situation timeline
+(scripted, not a person)", a scripted signature's or decision's note "scripted". The runner
+lists the scripted ids it used in `situation.jsonl`, the panel and the summary.
+
+**A script never authorizes a human tier.** Each opening order is first an operator's dry run as
+`op-setup` (`POST /api/intents/preview`: the checks and the policy decision now, nothing created,
+nothing logged). Where op-setup's submission would be its own approval (a human tier whose
+`submitter_authorizes` is true: an armed platform, leaving the approved area, an endurance the
+C2 does not know), the order is proposed by `agent-setup` instead, and it waits in the Inbox for
+you (live) or `op-auto` (autoplay); otherwise `op-setup` submits it and the policy routes it as
+any order. An opening order for an armed platform is refused when the file is read. In live
+mode the timeline's operator proposer (`op-planner`) refuses, the same way, a proposal its
+submission would authorize.
 
 Situations run as dev runs for now (operator ids asserted by header, logged `auth: dev`,
 excluded from any human-control claim); the runner refuses `MURMUR_AUTH=credentials`. In a dev
@@ -77,35 +117,39 @@ run the bridge has no mark for a scripted operator: which ids the runner drove i
 ## What the runner does
 
 1. Reads the situation and checks, before anything starts: a dev run, the AI's CLI installed
-   and logged in, and no stack answering on the ports (the bridge, console and emulator ports,
-   the vehicle and bridge UDP ranges, this checkout's `logs/up.pid`). If one does, it refuses and
-   tells you to `make down` first; it never stops another stack.
+   and logged in, and no stack answering on its ports (the bridge, console, emulator and
+   tidewater ports, the vehicle and bridge UDP ranges, this checkout's `logs/up.pid`). If one
+   does, it refuses and tells you to `make down` first; it never stops another stack.
 2. A fresh station: removes the bridge's restore pointer `logs/audit/.last-run-<http port>` and
    resume pointer `logs/audit/.resume-<http port>.json` for this port and sets `MURMUR_RESUME=0`,
    and says so (as the evaluation does: nothing of an earlier run carries into this one).
 3. Starts the stack with `scripts/up.sh`, in its own session so it outlives the runner: the
    situation's fleet, contacts, events (merged into one file, `events.toml` in the run directory),
-   policy, tidewater scenario and scenario clock; a roster of `op-1,op-2,op-3,op-planner`
-   (`MURMUR_OPERATORS`), engagement authority for `op-1,op-2,op-3`, agents
-   `agent-watch,agent-planner,agent-scripted`; this run's id (`MURMUR_RUN_ID=situation-<name>-<UTC
-   time>`) and its own simulation-channel token. No truth endpoint (`MURMUR_EVAL_TRUTH` is off).
+   policy, tidewater scenario and scenario clock; a roster of
+   `op-1,op-2,op-3,op-auto,op-setup,op-planner` (`MURMUR_OPERATORS`), engagement authority for
+   `op-1,op-2,op-3`, agents `agent-watch,agent-planner,agent-scripted,agent-setup`; this run's id
+   (`MURMUR_RUN_ID=situation-<name>-<UTC time>`) and its own simulation-channel token. No truth
+   endpoint (`MURMUR_EVAL_TRUTH` is off).
 4. Waits for the stack, takes the situation clock's zero, waits until every vehicle is
    navigation-ready (`ready_timeout_s`; it goes on with the rest after that, saying which were
-   not), then issues the opening orders as `op-1` over the operator API: ordinary operator
-   orders, logged as such.
+   not), then issues the opening orders under `op-setup`, each after its dry run (above).
 5. Starts the autoplay operator or the scripted cosigner, the timeline, and at `ai_start_s` the
-   AI. Every 2 s it posts the status document to the bridge for the panel.
-6. At `duration_s` (or Ctrl-C) it stops its own children (the AI, the autoplay), leaves the stack
+   AI (in its own directory). Every 2 s it posts the status document to the bridge for the panel.
+   A background task that fails, or a scripted signature that fails, is recorded
+   (`problem` in `situation.jsonl`) and shown in the panel; the situation goes on.
+6. At `duration_s` (or Ctrl-C, SIGTERM, SIGHUP) it stops its own children (the AI's whole
+   process group, even after its leader exited; the autoplay), leaves the stack
    running for inspection, and prints a summary: the audit log, the `murmur-replay` command (run
    it after `make down`, when the log is closed and its shutdown anchor written), the opening
    orders, the AI's proposals with their state and who decided, the scripted decisions, the
    tracks. `make down` stops the stack.
 
 Everything it did goes to `logs/situations/<run id>/situation.jsonl` (one JSON object per line:
-`start`, `fresh_station`, `stack`, `zero`, `phase`, `ready`, `order`, `ai_start`, `ai_action`,
-`ai_note`, `autoplay`, `step`, `timeline`, `end`), beside `brief.md` (what the AI was told),
-`events.toml`, `up.log` (the stack's output), `agent.log` (the AI's output), `agent.jsonl` (the
-watch officer's own notes) and `summary.txt`. The audit log is the bridge's, as for any run.
+`start`, `fresh_station`, `stack`, `zero`, `phase`, `ready`, `order` (with its dry run and who
+issued it), `ai_start`, `ai_action`, `ai_note`, `autoplay`, `step`, `timeline`, `problem`,
+`end`), beside `events.toml`, `up.log` (the stack's output), `agent.log` (the AI's output),
+`agent.jsonl` (the watch officer's own notes, copied from its directory at the end) and
+`summary.txt`. The audit log is the bridge's, as for any run.
 
 ## The panel and the status document
 
@@ -114,15 +158,19 @@ same guard as `/api/sim/contacts`); the console reads `GET /api/situation` and s
 only while there is one: title, brief, the modes, the clock (elapsed and left), what to watch for
 as each item comes due, the AI's status and activity (its proposals from the decisions feed with
 their state and who decided; its `agent.action` events from the audit log; the watch officer's
-notes), the scripted operators' decisions, the timeline done so far, and when revealed what is
-still to come and the director's notes.
+notes), the scripted operators' decisions, the timeline done so far, what went wrong in the
+runner, and when revealed what is still to come and the director's notes. Its clock runs on the
+console's own clock from each status's arrival; a runner that stops posting (10 s without a
+status while it starts or runs) is shown as "not reporting".
 
 It is display only (`docs/DECISIONS.md`, "Situation status is display only"): the bridge keeps it
 in memory and nowhere else; it never reaches the decision engine, the world snapshot, the tracks,
 the MCP tools or the audit log. With `reveal = false` (a blinded run) it carries no director's
-notes, nothing of the timeline still to come and no step marked `director = true`. Watch items
-are shown as they come due whatever `reveal` says, so a blinded study should keep them free of
-truth or leave them out.
+notes, nothing of the timeline still to come and no step or watch item marked `director = true`,
+and the bridge strips the same again from whatever it is sent (`reveal` not true: no
+`director`, no `timeline.upcoming`, no `watch_upcoming`, no entry marked `director`). Watch
+items without `director` are shown as they come due whatever `reveal` says, so keep them free of
+answers (what to look at, not what it is) or mark them `director = true`.
 
 ## The format
 
@@ -155,7 +203,8 @@ ai = "claude"                                 # claude | codex | playbook | none
 cosigner = "you"                              # you | scripted (live mode, engagements)
 reveal = false                                # director's notes and what is to come in the panel
 
-[[order]]                                     # opening orders: op-1's, once the fleet is ready
+[[order]]                                     # opening orders, once the fleet is ready: op-setup's
+                                              # (never for an armed platform; see above)
 id = "gate-patrol"
 task = "patrol"                               # orbit | patrol | hold | rtl | track
 vehicles = { callsign = "MARLIN 1" }          # {callsign}, {platform (, index, all)}, {uids = [..]}
@@ -171,7 +220,8 @@ director = true                               # shown only when revealed
 
 [[watch]]                                     # what to watch for, shown as each comes due
 at_s = 240
-text = "Watch the western approach."
+text = "How the C2 labels a contact without AIS."   # what to look at, never the answer
+director = false                              # true: shown only when revealed
 
 [playbook]                                    # AI=playbook: agents/policy_agent.py --watch
 near = [-122.4783, 37.8199]                   # the watch point
@@ -202,7 +252,9 @@ as the C2 shows them (`{track = {id = ...}}` or `{track = {select = ...}}`), nev
 (that needs the evaluation's truth hook, which a situation leaves off); `link` steps append to
 the run's own events file; `engage` steps nominate through the storyline's proposer and are
 signed by the scripted signers in autoplay, or by you live. `text` and `director` are the
-situation's own.
+situation's own. Each kind takes its own keys only (a `declare` step never names its operator:
+it is op-planner's), every `at_s` is before `duration_s`, and a value of the wrong type is
+refused with the key named.
 
 **Policies.** `policies/watch.toml` is `sim/policy.toml` with one tier before the default,
 `agent-tasking`: an AI's orbit, patrol or track waits for the operator, however routine
@@ -210,6 +262,8 @@ situation's own.
 the shipped policy dispatch an agent's routine orbit itself.
 
 Tests: `.venv/bin/python -m pytest eval/tests/test_situation.py` (the format, the status
-document and what a blinded one hides, the launch contract and the preflight, the port check, the
-audit tail, the watch policy, the scripted signers); the bridge's side in `cargo test -p
-murmur-bridge situation`.
+document and what a blinded one hides, the launch contract, the AI's own directory and
+environment, its process group, the preflight, the port block and check, the audit tail, the
+watch policy, who acts as whom and the opening orders' dry run, the scripted signers against the
+bridge's shapes, concurrent timeline proposals); the bridge's side in `cargo test -p
+murmur-bridge situation` (blinding, the operator's dry run, what an agent can read).
