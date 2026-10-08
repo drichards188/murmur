@@ -18,6 +18,10 @@ meaningful. Decision and command, not weapons.
 
 - `make goldengate` runs the default fleet (one of each of 22 platform types) at the Golden
   Gate with tidewater conditions; `make up FLEET=<name>` for other fleets; `make down` stops.
+  `make situation NAME=harbor-watch [OPERATOR=live|autoplay] [AI=claude|codex|playbook|none]`
+  runs a pre-built situation (`sim/situations/README.md`): fresh station, opening orders, the AI
+  through the user's own CLI (never their credentials), a Situation panel; it refuses ports a
+  stack answers on, and leaves its stack up for `make down`.
   Console http://127.0.0.1:5173, bridge http://127.0.0.1:8765 (`/api/state`, `/api/tasks`,
   `/api/platforms`, `/api/stats`; MCP server for agents at `/mcp`, header `X-Murmur-Agent`,
   ids in `MURMUR_AGENTS`, or `Authorization: Bearer <key>` in a credentials run;

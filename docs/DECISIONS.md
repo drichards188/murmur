@@ -855,6 +855,43 @@ group. Dates are 2026.
   open on the local port like every other read, and the launch contract tells the watch officer
   to read only its MCP tools; an AI with a shell could still fetch it, and on a blinded run would
   find the brief, the modes, what has happened and the watch items already due.
+- **A situation's scripted operators sign as the engine requires, and never count** (10-08,
+  situations v1; `eval/proxy.py` `EngagementSigners`). In autoplay the evaluation's proxy model
+  decides as `op-1` and two scripted operators, `op-2` and `op-3`, sign engagement nominations:
+  each asks for the picture and quotes its token, distinct signers, never the proposer, only
+  while the engine's live picture of the nomination passes, never a refusal (a script, not a
+  judgment). Live, the person signs; with `cosigner = "scripted"` a scripted operator adds only a
+  second signature, after a signer who is not one of them, never the first. Situations run as dev
+  runs for now (the runner refuses `MURMUR_AUTH=credentials`): a dev run has no `scripted` mark
+  on the roster, so the runner records which ids it drove (`situation.jsonl`) and every note they
+  leave in the audit log says "scripted ... not a person"; a dev run is never evidence about
+  people in any case ("Harness-held credentials are scripted, not people" holds as is). The
+  evaluation's arms do not sign yet (their rule book and metrics have no engagement case), so
+  `eval/scenarios/engagement/` stay placeholders.
+- **Murmur never handles anyone's model credentials; a situation runs the user's own CLI**
+  (10-08, user direction: Murmur is open source and people run it with their own Claude or
+  ChatGPT subscription). A situation's AI is `claude` (the default), `codex`, `playbook` (the
+  deterministic `agents/policy_agent.py`) or `none`. For `claude` and `codex` the runner only
+  invokes the CLI the user installed and logged into (`agents/watch_officer.py --backend
+  claude|codex`, built separately): it never stores, reads, proxies or prompts for a credential.
+  Before the stack starts it asks that CLI whether it is logged in (`claude auth status`, its
+  `loggedIn` and `authMethod`; `codex login status` where the installed Codex has it, else
+  skipped with a note) and keeps only yes or no and the kind of login, never an account, an
+  email or a key. A missing or logged-out CLI stops the run there, naming the fix (`claude` then
+  `/login`, or `codex login`) and the free option (`AI=playbook`); nothing falls back silently,
+  so a run never says it had an AI it did not have. The panel names the AI ("Claude", "ChatGPT
+  (Codex)", "Playbook (deterministic)", "None").
+- **One clock for a situation: the stack's start** (10-08, situations v1). Every `at_s` of a
+  situation (steps, watch items), its `duration_s` and `ai_start_s` count from the link
+  emulator's start, which `scripts/up.sh` starts first and the runner reads from its uptime, so
+  the existing events files (`sim/link-events/`, `sim/events/`, whose `at_s` count on the
+  emulator's clock and from the stand-ins' start) work unchanged; the contacts process starts a
+  few seconds later and its `start_s` counts from there. The evaluation instead holds every
+  process to an origin 45 s after the stand-ins start and fails a run not ready by then; a
+  situation goes through `up.sh`, which starts the contacts and the stand-ins itself, and a demo
+  is better started a little late than failed, so the runner waits for readiness, issues the
+  opening orders, runs steps that fell due meanwhile at once, and records when everything
+  happened.
 
 - **Rule against manual identification is measured on generated situations, and what it
   can and cannot say is stated** (10-05, rules 9; rebuilt after the first review found the
@@ -1015,6 +1052,7 @@ group. Dates are 2026.
   `tasks::tests::the_task_manager_never_reads_a_vehicle_under_its_lock` deadlocks on the code
   before (a reader holding the vehicle asks the task manager while `orbit_of` and a dispatch
   read it) and passes after.
+
 - **A space answer is held to when it was computed; a re-check to the instant it judged; the
   pin to the run** (10-07, murmur-der.4, murmur-lsj; rules 13 `SPACE_REPLAY_SINCE`). The
   engine took a collect's answer prepared outside its lock only within 5 s of the check, but

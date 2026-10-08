@@ -57,6 +57,9 @@ def _mcp_args(req: dict[str, Any]) -> dict[str, Any]:
         if req.get(k) is not None:
             args[k] = req[k]
     args.update(req.get("extra") or {})  # keys a newer bridge takes (eval/engage.py)
+    # an engagement's track is `track` on the REST API and `track_id` on the MCP tool
+    if args.get("task") == "engage" and "track" in args:
+        args["track_id"] = args.pop("track")
     return args
 
 

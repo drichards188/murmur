@@ -1,0 +1,15 @@
+# TODO: a stub. Only the title and the brief are written; the fleet (armed stand-ins, as
+# sim/fleets/engage-demo.toml), contacts with a scripted hostile act (`[[act]]`, as
+# sim/scenarios/golden-gate-ident.toml), the timeline (an `engage` step) and watch items come
+# once the AI watch officer lands. Autoplay signs as two scripted operators with engagement
+# authority (eval/proxy.py EngagementSigners); live, the operator signs, and `cosigner =
+# "scripted"` adds the second signature. The runner refuses a stub (`todo = true`).
+title = "Hostile act to engagement"
+brief = """
+You have the watch at the Golden Gate. Intelligence warns of a possible attack on our vessels
+by small craft. The rules of engagement authorize an effect against a contact declared hostile,
+inside the engagement zone west of the bridge, clear of every no-strike area and of anyone we
+protect. Any engagement needs two operators with engagement authority, neither of them its
+proposer; the AI watch officer may nominate one and can never sign it.
+"""
+todo = true

@@ -44,6 +44,15 @@ a constant answer.
 
 `Participant` does nothing: a real person decides in the console (study mode) and the
 console posts the view events itself (`web/src/operatorView.ts`).
+
+`EngagementSigners` signs engagement nominations as two (or more) distinct scripted operators
+with engagement authority, the way the engine requires it: each asks for the picture first
+and quotes its token, never the proposer, never twice, only while the engine's live picture
+of the nomination passes its checks. It never refuses: a script, not a judgment, and every
+note it leaves says so. A `ProxyOperator` given signers leaves engagement cards to them (a
+plain approve is refused for an engagement anyway). Situations (`sim/situations/`) run them
+in autoplay, or as the cosigner of a person at the console (`mode = "cosign"`: never the first
+signature); the evaluation's arms do not use them yet (`eval/engage.py`).
 """
 
 from __future__ import annotations
@@ -196,15 +205,36 @@ class ProxyOperator(Supervisor):
     name = "proxy"
     operator = "op-1"
 
-    def __init__(self, bridge: Bridge, params: ProxyParams, seed: int, log: list[dict[str, Any]] | None = None):
+    def __init__(
+        self,
+        bridge: Bridge,
+        params: ProxyParams,
+        seed: int,
+        log: list[dict[str, Any]] | None = None,
+        operator: str | None = None,
+        signers: "EngagementSigners | None" = None,
+        note_prefix: str = "proxy",
+    ):
         self.bridge = bridge
         self.p = params
         self.rng = random.Random(seed * 7919 + 17)
         self.decisions: list[dict[str, Any]] = log if log is not None else []
         self.handled: set[int] = set()
+        if operator:
+            self.operator = operator
+        # engagement nominations go to these scripted signers (two distinct operators with
+        # engagement authority, picture tokens); without them the proxy decides only
+        # ordinary cards, as before
+        self.signers = signers
+        # how its notes begin in the audit log ("proxy" in the evaluation; a situation's
+        # autoplay says "scripted")
+        self.note_prefix = note_prefix
 
     def describe(self) -> dict[str, Any]:
-        return {"name": self.name, "operator": self.operator, "params": self.p.as_dict(), "proxy": True}
+        out = {"name": self.name, "operator": self.operator, "params": self.p.as_dict(), "proxy": True}
+        if self.signers is not None:
+            out["engagement_signers"] = self.signers.describe()
+        return out
 
     def _lognormal(self, median: float, sigma: float) -> float:
         return median * math.exp(self.rng.gauss(0.0, sigma))
@@ -217,11 +247,22 @@ class ProxyOperator(Supervisor):
             return False
 
     async def run(self, stop: asyncio.Event) -> None:
+        signing = asyncio.create_task(self.signers.run(stop)) if self.signers is not None else None
+        try:
+            await self._looks(stop)
+        finally:
+            if signing is not None:
+                await asyncio.gather(signing, return_exceptions=True)
+
+    async def _looks(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
             if await self._sleep(stop, self._lognormal(self.p.attend_s, self.p.attend_sigma)):
                 return
             inbox = await asyncio.to_thread(self.bridge.try_get, "/api/inbox")
             pending = sorted((inbox or {}).get("pending", []), key=lambda i: i.get("expires_t") or 0)
+            if self.signers is not None:
+                # engagement nominations are the signers' (picture tokens, two operators)
+                pending = [i for i in pending if i.get("kind") != "engage"]
             queue = len(pending)
             for i in pending:
                 if stop.is_set():
@@ -266,7 +307,7 @@ class ProxyOperator(Supervisor):
             await asyncio.to_thread(self.bridge.view, iid, "decide", shown, self.operator, j.action, open_ms)
         except (BridgeError, OSError):
             pass
-        note = f"proxy ({p.preset}, {'read' if diligent else 'skimmed'}, queue {queue}): {j.reason}"
+        note = f"{self.note_prefix} ({p.preset}, {'read' if diligent else 'skimmed'}, queue {queue}): {j.reason}"
         try:
             if j.action == "approve":
                 out = await asyncio.to_thread(self.bridge.approve, iid, note, self.operator)
@@ -290,6 +331,138 @@ class ProxyOperator(Supervisor):
                 "result": result,
             }
         )
+
+
+class EngagementSigners:
+    """Scripted engagement signers (see the module docstring). `operators` are distinct ids
+    with engagement authority, tried in order. `mode = "sign"` supplies every signature the
+    tier needs; `mode = "cosign"` signs only after someone who is not one of them signed
+    first, so a person at the console always makes the first signature. On a bridge that
+    authenticates each operator must be logged in on `bridge` and its step-up password given
+    in `passwords`; on a dev bridge the header names it."""
+
+    def __init__(
+        self,
+        bridge: Bridge,
+        operators: list[str],
+        mode: str = "sign",
+        label: str = "scripted",
+        read_s: float = 3.0,
+        period_s: float = 3.0,
+        passwords: dict[str, str] | None = None,
+        log: list[dict[str, Any]] | None = None,
+    ):
+        if mode not in ("sign", "cosign"):
+            raise ValueError("mode must be sign or cosign")
+        if not operators or len(set(operators)) != len(operators):
+            raise ValueError("engagement signers are distinct operators")
+        if mode == "sign" and len(operators) < 2:
+            raise ValueError("signing an engagement alone takes two distinct operators")
+        self.bridge = bridge
+        self.operators = list(operators)
+        self.mode = mode
+        self.label = label
+        self.read_s = read_s
+        self.period_s = period_s
+        self.passwords = dict(passwords or {})
+        self.decisions: list[dict[str, Any]] = log if log is not None else []
+        # intent -> what was said last, so a waiting nomination is recorded once per reason
+        self._said: dict[int, str] = {}
+
+    def describe(self) -> dict[str, Any]:
+        return {"operators": self.operators, "mode": self.mode, "label": self.label, "read_s": self.read_s, "scripted": True}
+
+    def _record(self, rec: dict[str, Any]) -> None:
+        self.decisions.append({"t": time.time(), **rec})
+
+    def _wait(self, iid: int, why: str) -> None:
+        if self._said.get(iid) != why:
+            self._said[iid] = why
+            self._record({"intent_id": iid, "action": "wait", "reason": why})
+
+    async def run(self, stop: asyncio.Event) -> None:
+        while not stop.is_set():
+            inbox = await asyncio.to_thread(self.bridge.try_get, "/api/inbox")
+            for i in (inbox or {}).get("pending", []):
+                if stop.is_set():
+                    return
+                if i.get("kind") == "engage":
+                    try:
+                        await self.consider(i)
+                    except (BridgeError, OSError, ValueError) as e:
+                        self._record({"intent_id": i.get("id"), "action": "error", "reason": str(e)})
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=self.period_s)
+            except asyncio.TimeoutError:
+                pass
+
+    def next_signer(self, view: dict[str, Any], source: dict[str, Any]) -> tuple[str | None, str]:
+        """Who of these operators signs next on this nomination (the engine's `engage` view),
+        or None and why not (pure, for tests)."""
+        needed = int(view.get("approvers_needed") or 2)
+        signed = list(view.get("signed") or [])
+        if len(signed) >= needed:
+            return None, "every signature it needs is given"
+        if self.mode == "cosign" and not any(s not in self.operators for s in signed):
+            return None, "waiting for a person to sign first (the scripted cosigner never makes the first signature)"
+        proposer = view.get("proposer") or (source.get("id") if source.get("kind") == "human" else None)
+        eligible = view.get("eligible") or view.get("engage_operators")
+        for op in self.operators:
+            if op in signed or op == proposer:
+                continue
+            if eligible and op not in eligible:
+                continue
+            return op, ""
+        return None, "none of the scripted signers may sign it (signed already, the proposer, or no engagement authority)"
+
+    async def consider(self, intent: dict[str, Any]) -> list[dict[str, Any]]:
+        """Sign what can be signed on this nomination now; returns the signatures made."""
+        iid = int(intent["id"])
+        made: list[dict[str, Any]] = []
+        cur = intent
+        for _ in range(len(self.operators)):
+            view = cur.get("engage")
+            if view is None:
+                full = await asyncio.to_thread(self.bridge.intent, iid)
+                cur = full.get("intent") or full
+                view = cur.get("engage") or {}
+            if cur.get("state") != "pending_approval":
+                return made
+            op, why = self.next_signer(view, cur.get("source") or {})
+            if op is None:
+                self._wait(iid, why)
+                return made
+            live = view.get("live") or {}
+            if not live.get("passed"):
+                failing = [c.get("rule") for c in live.get("checks", []) if c.get("outcome") != "pass"]
+                self._wait(iid, "the engine's live picture does not pass" + (f" ({', '.join(failing)})" if failing else ": none yet"))
+                return made
+            # look first: the engine shows this operator exactly what they would sign
+            token = await asyncio.to_thread(self.bridge.post, f"/api/intents/{iid}/picture", {}, op)
+            await asyncio.sleep(self.read_s)
+            body: dict[str, Any] = {
+                "token": token.get("id"),
+                "note": f"{self.label} signer {op} (not a person): signed on the engine's picture token {token.get('id')}",
+            }
+            if op in self.passwords:
+                body["password"] = self.passwords[op]
+            try:
+                out = await asyncio.to_thread(self.bridge.post, f"/api/intents/{iid}/approve", body, op)
+            except BridgeError as e:
+                detail = e.body.get("detail") if isinstance(e.body, dict) else e.body
+                self._record({"intent_id": iid, "action": "sign", "by": op, "token": token.get("id"), "result": f"error {e.status}: {detail}"})
+                return made
+            cur = out.get("intent") or {}
+            rec = {"intent_id": iid, "action": "sign", "by": op, "token": token.get("id"), "result": cur.get("state"), "dispatched": bool(out.get("dispatched"))}
+            self._record(rec)
+            made.append(rec)
+            self._said.pop(iid, None)
+            # the view after a signature (the plan it froze, who signed) comes with the intent;
+            # fetch it whole when the answer does not carry it
+            if "engage" not in cur:
+                full = await asyncio.to_thread(self.bridge.intent, iid)
+                cur = full.get("intent") or full
+        return made
 
 
 def make_supervisor(kind: str, bridge: Bridge, params: ProxyParams, seed: int) -> Supervisor:

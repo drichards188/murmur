@@ -863,6 +863,16 @@ Exit: results published, including what went wrong.
 
 ## Alongside
 
+- **Situations** (v1, 10-08; `sim/situations/README.md`): pre-built, pre-tasked runs started with
+  `make situation NAME=<name> [OPERATOR=live|autoplay] [AI=claude|codex|playbook|none]`, to watch
+  the C2 work and an AI respond. The evaluation's spec extended (brief, director's notes shown
+  when revealed, opening orders, watch items; the storyline's steps and executor), a runner
+  (`eval/situation_run.py`) that starts a fresh-station stack through `up.sh`, issues the opening
+  orders, starts the AI through the user's own CLI or the playbook, and the autoplay operator
+  (the proxy model plus scripted engagement signers), and a console Situation panel fed by a
+  display-only status (`/api/situation`, never a decision input). Harbor watch is the working
+  example; Comms cut and GNSS spoof, Hostile act to engagement and Approval flood are stubs until
+  the Claude watch officer (`agents/watch_officer.py`, built separately) lands.
 - TAK/CoT export (murmur-dg2): after C2, when there are tracks worth sharing.
 - Tidewater: SFBOFS currents (tw-ln7), wind bias correction, upstream the ArduPilot patch.
 - Bugs: antenna tracker stall (murmur-9bf), ArduPlane extra streams.

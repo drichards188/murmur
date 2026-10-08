@@ -76,7 +76,7 @@ and proposes one sensor orbit per new suspect or unknown track near a point, wit
 naming the facts and their ages:
 
 ```
-.venv/bin/python agents/policy_agent.py --watch 120 --near -122.478,37.818 --radius-km 4
+.venv/bin/python agents/policy_agent.py --watch 120 --near=-122.478,37.818 --radius-km 4
 ```
 
 The evaluation's real-model arm (`eval/model_agent.py`, opt-in and cost-capped; see
@@ -99,6 +99,53 @@ Any MCP client that speaks streamable HTTP and can set a header works (the key f
 
 Don't call an external model API from tests; the scripted agent is the test harness. Phase G
 (evaluation, `eval/`) runs agents against seeded scenarios with the same tools.
+
+### Situations: the launch contract
+
+A situation (`sim/situations/README.md`, `make situation NAME=<name> AI=...`) starts its AI as a
+subprocess once the fleet is on station (at the situation's `ai_start_s`), and stops it at the
+end of the situation (SIGTERM to its process group, SIGKILL 8 s later). The runner survives the
+AI exiting early, crashing, or never doing anything; the panel shows its status.
+
+**Murmur never stores, reads, proxies or prompts for anyone's model credentials.** For `claude`
+and `codex` it only invokes the CLI the user installed and logged into themselves (their own
+Claude or ChatGPT subscription, or their own key). Before the stack starts, the runner asks
+that CLI whether it is logged in (`claude auth status`, JSON `loggedIn` and `authMethod`;
+`codex login status` where the installed Codex has it, else the check is skipped with a note)
+and keeps only yes or no and the kind of login; a missing or logged-out CLI stops the run there,
+saying how to fix it (`claude` then `/login`, or `codex login`) and that `AI=playbook` is the
+free option. Nothing falls back silently.
+
+`AI=claude` or `AI=codex` (the Claude watch officer, built separately; until then
+`agents/watch_officer.py` is a placeholder that says so, writes one note and exits 0):
+
+```
+.venv/bin/python agents/watch_officer.py --backend claude|codex --url <bridge>/mcp \
+    --agent agent-watch --brief <brief file> --situation-log <path> --until <unix time>
+```
+
+| argument | what |
+| --- | --- |
+| `--backend` | `claude`: drive the user's own Claude Code headless (`claude -p`); `codex`: the user's own Codex CLI (`codex exec`). Shown as "Claude" or "ChatGPT (Codex)". |
+| `--url` | the bridge's MCP endpoint (`http://127.0.0.1:<MURMUR_HTTP_PORT>/mcp`), streamable HTTP; a dev run, so the agent names itself with `X-Murmur-Agent` (or the MCP `clientInfo.name`) |
+| `--agent` | `agent-watch` (listed in the run's `MURMUR_AGENTS`) |
+| `--brief` | a Markdown file with the situation's title and brief: what a watch officer is told. Never the director's notes, the timeline or the watch items |
+| `--situation-log` | a JSON-lines file the watch officer appends its own notes to, one object per line: `{"t": <unix s>, "kind": "note" \| "tool" \| "proposal" \| "error", "text": "..."}`. The runner tails it (read-only) and shows the latest in the panel as the AI's notes; it is the watch officer's own record, beside the runner's `situation.jsonl` |
+| `--until` | unix time at which to stop on its own (the situation's end) |
+
+Its working directory is the repository; its environment is the runner's minus every
+`MURMUR_*` variable (no simulation token, no agent key from elsewhere), so the user's own CLI
+login works as it does in their shell. Its stdout and stderr go to `agent.log` in the run
+directory. What it must hold to: agents propose and never approve (no approve tool exists, and
+the watch policy sends its tasking to the operator); every proposal carries a rationale naming
+the facts and their ages; it reads only the MCP tools (not the bridge's HTTP API: `GET
+/api/situation` and the evaluation's truth hook are not for it, and a situation serves no
+truth); it treats stale facts as stale. What it did is in the audit log (`agent.action`, then its
+intents' own events), which the panel reads too.
+
+`AI=playbook`: `agents/policy_agent.py --url <bridge>/mcp --agent agent-planner --watch <seconds
+to the end> --near=<lon>,<lat> --radius-km <r> --every <s> [--platform <id>]` from the
+situation's `[playbook]` table (deterministic, no model, no account). `AI=none`: no AI.
 
 ## Tools
 

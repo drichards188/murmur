@@ -11,7 +11,7 @@ Two uses:
   track, with a rationale naming the facts and their ages. A proposal in a human tier
   waits in the operator's inbox; the agent cannot approve it (no such tool exists).
 
-    .venv/bin/python agents/policy_agent.py --watch 120 --near -122.478,37.818 --radius-km 4
+    .venv/bin/python agents/policy_agent.py --watch 120 --near=-122.478,37.818 --radius-km 4
     .venv/bin/python agents/policy_agent.py --url http://127.0.0.1:10600/mcp --once
 
 Needs `mcp>=2` (requirements.txt). Nothing here calls an external model API.
@@ -217,7 +217,7 @@ def main() -> None:
     ap.add_argument("--url", default="http://127.0.0.1:8765/mcp")
     ap.add_argument("--agent", default="agent-planner")
     ap.add_argument("--key", help="the agent's API key (murmur-auth agent-add; default MURMUR_AGENT_KEY)")
-    ap.add_argument("--near", default="-122.4780,37.8180", help="watch point, lon,lat (default: the Gate)")
+    ap.add_argument("--near", default="-122.4780,37.8180", help="watch point, --near=lon,lat (one token: a longitude starts with a minus; default: the Gate)")
     ap.add_argument("--radius-km", type=float, default=4.0)
     ap.add_argument("--platform", help="the sensor platform id to task (default: any unarmed aircraft)")
     ap.add_argument("--watch", type=float, default=120.0, help="seconds to keep watching")

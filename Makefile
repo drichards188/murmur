@@ -1,4 +1,4 @@
-.PHONY: setup build up goldengate down sim bridge web eval check
+.PHONY: setup build up goldengate situation down sim bridge web eval check
 
 FLEET ?= sandiego   # any sim/fleets/*.toml: sandiego, canaveral, golden-gate, ...
 CARGO ?= $(shell command -v cargo || echo $(HOME)/.cargo/bin/cargo)
@@ -16,6 +16,9 @@ goldengate: ## Golden Gate with real tide/current/wind and traffic: tidewater se
 	MURMUR_SCENARIO=$(HOME)/tidewater/scenarios/golden-gate-2026-06.toml MURMUR_AT=$(or $(AT),2026-06-14T10:00:00Z) \
 	  MURMUR_CONTACTS=$(if $(filter undefined,$(origin CONTACTS)),sim/scenarios/golden-gate.toml,$(CONTACTS)) \
 	  $(if $(EVENTS),MURMUR_LINK_EVENTS=$(EVENTS)) ./scripts/up.sh --fleet $(or $(GG_FLEET),full-spectrum) $(ARGS)
+
+situation: ## a pre-built situation (sim/situations/README.md): NAME=harbor-watch, OPERATOR=live|autoplay, AI=claude|codex|playbook|none, COSIGNER=you|scripted, REVEAL=0|1; the stack stays up after it: make down
+	.venv/bin/python -m eval.situation_run $(or $(NAME),harbor-watch) $(if $(OPERATOR),--operator $(OPERATOR)) $(if $(AI),--ai $(AI)) $(if $(COSIGNER),--cosigner $(COSIGNER)) $(if $(REVEAL),--reveal $(REVEAL))
 
 down:    ## stop a stack started with make up (e.g. from another terminal)
 	@# TERM, not INT: a shell started in the background ignores SIGINT and can't trap it
