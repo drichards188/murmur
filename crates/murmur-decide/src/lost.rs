@@ -367,12 +367,15 @@ pub fn claim_of(
         blockers.push(format!("{tid} is {} beyond where {id} could have reached since its last fix", km(gap)));
     }
     // what our sensors say of its kind (EO/IR or sonar classify; radar gives a size class)
-    let classified: Vec<&str> = t
+    let mut classified: Vec<&str> = t
         .sources
         .iter()
         .filter_map(|s| s.split(':').nth(1))
         .filter(|s| matches!(*s, "eo_ir" | "sonar"))
         .collect();
+    // one name per kind of sensor, however many of ours carry one
+    classified.sort_unstable();
+    classified.dedup();
     let by = if classified.is_empty() {
         "no classifying sensor of ours (its kind is from its AIS or a radar's size class)".to_string()
     } else {
