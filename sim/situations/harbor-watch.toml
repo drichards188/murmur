@@ -59,6 +59,9 @@ seed = 1
 # ---- opening orders, once the fleet is ready: issued by the setup script (op-setup); one that
 # would be authorized by its own submission (a human tier) is proposed by agent-setup instead and
 # waits for the person (live) or op-auto (autoplay). Never for an armed platform (refused at load).
+# Here MARLIN 1's and KESTREL 1's wait (their platforms have no endurance_h: reserves unverified).
+# On autoplay op-auto's rule book (eval/proxy.py) rejects a card with an unverified check, so
+# they usually stay where they start; their sensors watch from there all the same.
 [[order]]
 id = "gate-patrol"
 task = "patrol"

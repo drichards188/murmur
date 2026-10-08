@@ -40,6 +40,7 @@ import argparse
 import asyncio
 import datetime as dt
 import json
+import logging
 import os
 import secrets
 import shutil
@@ -96,6 +97,14 @@ PUBLISH_S = 2.0
 SIM_TOKEN_HEADER = "X-Murmur-Sim-Token"
 # the audit events that are a person's (or a script's) decision on an intent
 DECISION_EVENTS = ("approval.at_submission", "approval.granted", "approval.concurred", "approval.rejected")
+
+
+class _SessionCloseAccepted(logging.Filter):
+    """The MCP client warns "Session termination failed: 202" when the bridge (rmcp) accepts a
+    session's close with 202: not a failure, so not said at each scripted proposal."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.getMessage() != "Session termination failed: 202"
 
 
 def utc_stamp() -> str:
@@ -863,6 +872,7 @@ class Runner:
                         self.problem(f"the AI did not start: {e}")
                 await asyncio.sleep(1.0)
             if self.interrupted:
+                status = 130
                 self.set_phase("interrupted", "the runner was stopped; the stack is still running: make down stops it")
             else:
                 self.set_phase("ended", "the situation's time is up; the stack is still running for inspection: make down stops it")
@@ -1021,6 +1031,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--cosigner", choices=["you", "scripted"], help="live mode: who makes an engagement's second signature")
     ap.add_argument("--reveal", choices=["0", "1"], help="show the director's notes and the timeline to come (default: the situation's)")
     args = ap.parse_args(argv)
+    logging.getLogger("mcp.client.streamable_http").addFilter(_SessionCloseAccepted())
     try:
         sit = load_situation(args.name)
         if sit.todo:
