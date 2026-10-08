@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { emuCause } from './linkEmu'
+import { type Reveal, scrollSpanIntoView, useFlash } from './reveal'
 import { symbolSvg } from './symbols'
 import type { Vehicle } from './types'
 import { callsign, domainOf, isStale, staleMs } from './types'
@@ -14,6 +15,8 @@ interface Props {
   onDetails: (uid: number) => void
   detailsUid: number | null
   onSelect: (uids: number[]) => void
+  /** vehicles just selected from outside the list: scroll to the first and mark it */
+  reveal?: Reveal | null
 }
 
 function linkClass(v: Vehicle) {
@@ -33,18 +36,19 @@ interface RowProps {
   v: Vehicle
   selected: boolean
   open: boolean
+  flash: boolean
   onToggle: Props['onToggle']
   onDeselect: Props['onDeselect']
   onDetails: Props['onDetails']
 }
 
 /** Two controls: the left strip selects the vehicle for tasking; the rest opens its details. */
-function Row({ v, selected, open, onToggle, onDeselect, onDetails }: RowProps) {
+function Row({ v, selected, open, flash, onToggle, onDeselect, onDetails }: RowProps) {
   const stale = isStale(v)
   const lc = linkClass(v)
   return (
     <div
-      className={`vrow ${selected ? 'sel' : ''} ${stale ? 'stale' : ''} ${open ? 'open' : ''}`}
+      className={`vrow ${selected ? 'sel' : ''} ${stale ? 'stale' : ''} ${open ? 'open' : ''} ${flash ? 'flash' : ''}`}
       onContextMenu={(e) => {
         e.preventDefault()
         onDeselect(v.uid)
@@ -177,13 +181,31 @@ function firstBelow(items: Item[], y: number) {
   return lo
 }
 
-export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails, detailsUid, onSelect }: Props) {
+export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails, detailsUid, onSelect, reveal = null }: Props) {
   const ids = (pred: (v: Vehicle) => boolean) => vehicles.filter(pred).map((v) => v.uid)
   const list = useRef<HTMLDivElement>(null)
   const [scroll, setScroll] = useState({ top: 0, height: 800 })
   const { items, height } = useMemo(() => layout(vehicles), [vehicles])
   // the list element exists only once there are vehicles
   const hasList = vehicles.length > 0
+
+  // the first revealed vehicle in list order; scroll just enough to show it
+  const itemsRef = useRef(items)
+  itemsRef.current = items
+  const firstRevealed = (ids: string[]) => {
+    const want = new Set(ids)
+    const it = itemsRef.current.find((i) => i.kind === 'row' && want.has(String(i.v.uid)))
+    return it && it.kind === 'row' ? String(it.v.uid) : null
+  }
+  const flash = useFlash(reveal, firstRevealed)
+  useEffect(() => {
+    const el = list.current
+    if (!el || !reveal) return
+    const id = firstRevealed(reveal.ids)
+    const it = itemsRef.current.find((i) => i.kind === 'row' && String(i.v.uid) === id)
+    if (it) scrollSpanIntoView(el, it.top, ROW_H)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reveal])
 
   useEffect(() => {
     const el = list.current
@@ -242,6 +264,7 @@ export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails
                     v={it.v}
                     selected={selected.has(it.v.uid)}
                     open={detailsUid === it.v.uid}
+                    flash={flash === String(it.v.uid)}
                     onToggle={onToggle}
                     onDeselect={onDeselect}
                     onDetails={onDetails}
