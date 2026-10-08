@@ -6384,6 +6384,64 @@ fn summarize_failures(results: &[CheckResult]) -> String {
         .join("; ")
 }
 
+impl Engine {
+    /// A dry run for an operator: the checks and the policy decision a vehicle task from
+    /// `operator` would get right now. Nothing is created and nothing is logged: it decides
+    /// nothing, as the nomination form's dry run decides nothing. Its `would_reach` is
+    /// `approved` where the submission itself would be the approval (a human tier the
+    /// submitter authorizes), so a caller that is not a person (a situation's runner placing
+    /// opening orders under a scripted id) sees that before it submits and can send such an
+    /// order to a person instead. Vehicle tasks only: collects, covers and engagements have
+    /// their own dry runs (the tasking query, the nomination form's options).
+    pub fn dry_run_for_operator(
+        &mut self,
+        operator: &OperatorId,
+        proposal: Proposal,
+        world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
+    ) -> Result<Preview, EngineError> {
+        proposal.validate()?;
+        if proposal.task.is_space() || proposal.task.kind() == TaskKind::Engage {
+            return Err(EngineError::Proposal(ProposalError::BadParams(format!(
+                "an operator's dry run takes vehicle tasks only, not {}",
+                proposal.task.kind().as_str()
+            ))));
+        }
+        let created_t = self.now();
+        let spec = IntentSpec {
+            id: IntentId(0),
+            created_t,
+            source: Source::Human { id: operator.clone() },
+            task: self.normalized(proposal.task, created_t),
+            uids: proposal.uids,
+            constraints: proposal.constraints,
+            rationale: proposal.rationale,
+        };
+        let mut inputs = world.for_intent_with(&spec, terrain, &self.policy.rules);
+        self.identify(&mut inputs);
+        self.fill_engine_facts(&spec, &mut inputs);
+        let checks = rules::evaluate(&spec, &inputs, &self.policy.rules);
+        let passed = rules::passed(&checks, spec.kind());
+        let policy = passed.then(|| policy::decide(&spec, &inputs, &self.policy));
+        let would_reach = match &policy {
+            None => State::Rejected,
+            Some(d) if d.tier == Tier::Auto => State::AutoApproved,
+            Some(d) if d.submitter_authorizes => State::Approved,
+            Some(_) => State::PendingApproval,
+        };
+        Ok(Preview {
+            kind: spec.kind(),
+            uids: spec.uids,
+            checks,
+            passed,
+            policy,
+            would_reach,
+            space: None,
+            engage: None,
+        })
+    }
+}
+
 /// What a dry run of a proposal would decide ([`AgentPort::preview`]): the checks, the
 /// policy decision and the state the intent would reach if proposed now. Nothing is
 /// created; the engine logs the preview as `agent.action intent.preview`.

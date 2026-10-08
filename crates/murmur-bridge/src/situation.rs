@@ -12,9 +12,11 @@
 //! the decision engine (this module holds no reference to it), the world snapshot, the
 //! tracks, the MCP server's tools or the audit log. Truth and a director's notes must not
 //! leak into decisions; the runner writes its own record (`situation.jsonl`), and the audit
-//! chain stays the engine's alone. What the document shows a person is the runner's choice:
-//! with `reveal = false` (a blinded run) it carries no director's notes and nothing of the
-//! timeline still to come (`docs/DECISIONS.md`, "Situation status is display only").
+//! chain stays the engine's alone. The bridge itself enforces a blinded run: unless the
+//! document says `"reveal": true`, it is stored without the director's notes, the timeline
+//! still to come (`timeline.upcoming`, `watch_upcoming`) and every entry marked `"director":
+//! true`, whatever the runner sent (`docs/DECISIONS.md`, "Situation status is display only").
+//! The stored bytes are served as they are (`GET` is open on the local port, like every read).
 
 use std::sync::{Arc, Mutex};
 
@@ -33,11 +35,37 @@ use crate::clock;
 pub const BODY_LIMIT: usize = 256 * 1024;
 
 struct Stored {
-    doc: Value,
+    /// The document as stored (blinded unless revealed), serialized once when it arrived.
+    body: Arc<str>,
+    title: String,
     /// When it arrived (the bridge's clock, s).
     received_t: f64,
     /// Documents received so far.
     posts: u64,
+}
+
+/// The longest title the bridge's log repeats, characters.
+const LOG_TITLE_CHARS: usize = 80;
+
+/// A blinded run's document (`reveal` not `true`): no director's notes, nothing still to come,
+/// no entry marked `"director": true` in the timeline or the watch items.
+pub fn blind(doc: &mut Value) {
+    if doc.get("reveal") == Some(&Value::Bool(true)) {
+        return;
+    }
+    let Some(o) = doc.as_object_mut() else { return };
+    o.remove("director");
+    o.remove("watch_upcoming");
+    let not_director = |e: &Value| e.get("director") != Some(&Value::Bool(true));
+    if let Some(t) = o.get_mut("timeline").and_then(Value::as_object_mut) {
+        t.remove("upcoming");
+        if let Some(done) = t.get_mut("done").and_then(Value::as_array_mut) {
+            done.retain(not_director);
+        }
+    }
+    if let Some(w) = o.get_mut("watch").and_then(Value::as_array_mut) {
+        w.retain(not_director);
+    }
 }
 
 /// The one status document, in memory.
@@ -61,26 +89,31 @@ impl Situation {
         self.doc.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// `GET /api/situation`: the document (null when no situation runs) and when it arrived.
-    pub fn json(&self) -> Value {
-        match &*self.lock() {
-            Some(s) => json!({ "situation": s.doc, "received_t": s.received_t, "posts": s.posts }),
-            None => json!({ "situation": null, "received_t": null, "posts": 0 }),
+    /// `GET /api/situation`: the stored document as it is (null when no situation runs), when
+    /// it arrived and how many came. Only an `Arc` is cloned under the lock.
+    pub fn body(&self) -> String {
+        let got = self.lock().as_ref().map(|s| (s.body.clone(), s.received_t, s.posts));
+        match got {
+            Some((body, t, posts)) => format!("{{\"situation\":{body},\"received_t\":{t},\"posts\":{posts}}}"),
+            None => "{\"situation\":null,\"received_t\":null,\"posts\":0}".to_string(),
         }
     }
 
-    /// Store a document; the title is announced on stdout when it changes (the bridge's log,
-    /// not the audit log).
-    fn set(&self, doc: Value) -> f64 {
+    /// Store a document, blinded unless it is revealed; the title is announced on stdout when
+    /// it changes (the bridge's log, not the audit log; truncated).
+    fn set(&self, mut doc: Value) -> f64 {
+        blind(&mut doc);
+        let title: String = doc["title"].as_str().unwrap_or_default().chars().take(LOG_TITLE_CHARS).collect();
+        let body: Arc<str> = Arc::from(doc.to_string());
         let t = clock::wall();
         let mut g = self.lock();
-        let title = doc["title"].as_str().unwrap_or_default().to_string();
-        let was = g.as_ref().and_then(|s| s.doc["title"].as_str().map(str::to_string));
-        if was.as_deref() != Some(title.as_str()) {
+        let changed = g.as_ref().is_none_or(|s| s.title != title);
+        let posts = g.as_ref().map_or(0, |s| s.posts) + 1;
+        *g = Some(Stored { body, title: title.clone(), received_t: t, posts });
+        drop(g);
+        if changed {
             println!("situation: {title:?} (status for display only: not a decision input, not in the audit log)");
         }
-        let posts = g.as_ref().map_or(0, |s| s.posts) + 1;
-        *g = Some(Stored { doc, received_t: t, posts });
         t
     }
 
@@ -102,7 +135,7 @@ pub fn router<S: Clone + Send + Sync + 'static>(situation: Arc<Situation>) -> Ro
 }
 
 async fn read(State(s): State<Arc<Situation>>) -> Response {
-    Json(s.json()).into_response()
+    ([(axum::http::header::CONTENT_TYPE, "application/json")], s.body()).into_response()
 }
 
 /// The refusal when a request does not carry the stack's simulation token, else None.
@@ -213,6 +246,48 @@ mod tests {
         assert_eq!(st, StatusCode::OK);
         assert_eq!(v["cleared"], true);
         assert!(call(&s, "GET", None, None).await.1["situation"].is_null());
+    }
+
+    /// Review B3: the bridge blinds the document itself unless it says `reveal: true`.
+    #[tokio::test]
+    async fn a_document_not_revealed_is_stored_blind() {
+        let s = Situation::new(Some(TOKEN.into()));
+        let full = |reveal: Value| {
+            json!({
+                "title": "Harbor watch",
+                "reveal": reveal,
+                "director": "a fast boat comes in at 2:30 (truth)",
+                "timeline": {
+                    "done": [
+                        { "t_s": 3.0, "text": "fleet ready" },
+                        { "t_s": 150.0, "text": "the boat enters (truth)", "director": true }
+                    ],
+                    "upcoming": [{ "at_s": 370.0, "text": "the boat holds (truth)" }]
+                },
+                "watch": [{ "at_s": 0.0, "text": "watch" }, { "at_s": 60.0, "text": "the answer", "director": true }],
+                "watch_upcoming": [{ "at_s": 600.0, "text": "later" }]
+            })
+            .to_string()
+        };
+        for reveal in [json!(false), json!(null), json!("true"), json!(1)] {
+            call(&s, "POST", Some(TOKEN), Some(full(reveal.clone()))).await;
+            let (_, v) = call(&s, "GET", None, None).await;
+            let doc = &v["situation"];
+            let text = doc.to_string();
+            assert!(doc.get("director").is_none() && doc.get("watch_upcoming").is_none(), "{reveal}: {text}");
+            assert!(doc["timeline"].get("upcoming").is_none(), "{reveal}: {text}");
+            assert!(!text.contains("(truth)") && !text.contains("the answer"), "{reveal}: {text}");
+            assert_eq!(doc["timeline"]["done"].as_array().map(Vec::len), Some(1));
+            assert_eq!(doc["watch"].as_array().map(Vec::len), Some(1));
+        }
+        call(&s, "POST", Some(TOKEN), Some(full(json!(true)))).await;
+        let (_, v) = call(&s, "GET", None, None).await;
+        let doc = &v["situation"];
+        assert_eq!(doc["director"], "a fast boat comes in at 2:30 (truth)");
+        assert_eq!(doc["timeline"]["done"].as_array().map(Vec::len), Some(2));
+        assert_eq!(doc["timeline"]["upcoming"].as_array().map(Vec::len), Some(1));
+        assert_eq!(doc["watch"].as_array().map(Vec::len), Some(2));
+        assert!(doc.get("watch_upcoming").is_some());
     }
 
     #[tokio::test]

@@ -71,6 +71,7 @@ pub fn router(app: App) -> Router {
         .route("/api/state", get(state))
         .route("/api/tasks", post(tasks))
         .route("/api/intents", post(create_intent).get(list_intents))
+        .route("/api/intents/preview", post(preview_intent))
         .route("/api/intents/{id}", get(get_intent))
         .route("/api/intents/{id}/{action}", post(intent_action))
         .route("/api/inbox", get(inbox))
@@ -267,6 +268,28 @@ async fn create_intent(
             })),
         )
             .into_response(),
+        Err(e) => decision_error(e),
+    }
+}
+
+/// `POST /api/intents/preview`: an operator's dry run of a vehicle task (the checks and the
+/// policy decision now, and whether the submission would be its own approval). Nothing is
+/// created or logged, and it does not keep a session alive (it is not an act).
+async fn preview_intent(
+    State(app): State<App>,
+    headers: HeaderMap,
+    body: Result<Json<IntentRequest>, JsonRejection>,
+) -> Response {
+    let req = match body {
+        Ok(Json(req)) => req,
+        Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, e.body_text()),
+    };
+    let op = match app.auth.actor_peek(&headers) {
+        Ok(op) => op,
+        Err(e) => return decision_error(e),
+    };
+    match app.decision.operator_dry_run(&op, req).await {
+        Ok(v) => Json(v).into_response(),
         Err(e) => decision_error(e),
     }
 }
