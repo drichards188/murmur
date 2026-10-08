@@ -105,14 +105,17 @@ async fn read(State(s): State<Arc<Situation>>) -> Response {
     Json(s.json()).into_response()
 }
 
-fn token_ok(s: &Situation, headers: &HeaderMap) -> Result<(), Response> {
-    crate::tracks::sim_token_check(s.token.as_deref(), headers).map_err(|why| error(StatusCode::UNAUTHORIZED, why))
+/// The refusal when a request does not carry the stack's simulation token, else None.
+fn refused(s: &Situation, headers: &HeaderMap) -> Option<Response> {
+    crate::tracks::sim_token_check(s.token.as_deref(), headers)
+        .err()
+        .map(|why| error(StatusCode::UNAUTHORIZED, why))
 }
 
 /// The runner's status document: a JSON object with a non-empty `title`, at most
 /// [`BODY_LIMIT`] bytes. The token is checked on the headers before the body is read.
 async fn post(State(s): State<Arc<Situation>>, request: axum::extract::Request) -> Response {
-    if let Err(r) = token_ok(&s, request.headers()) {
+    if let Some(r) = refused(&s, request.headers()) {
         return r;
     }
     let bytes = match axum::body::to_bytes(request.into_body(), BODY_LIMIT).await {
@@ -134,7 +137,7 @@ async fn post(State(s): State<Arc<Situation>>, request: axum::extract::Request) 
 }
 
 async fn clear(State(s): State<Arc<Situation>>, headers: HeaderMap) -> Response {
-    if let Err(r) = token_ok(&s, &headers) {
+    if let Some(r) = refused(&s, &headers) {
         return r;
     }
     Json(json!({ "ok": true, "cleared": s.clear() })).into_response()
