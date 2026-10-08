@@ -36,7 +36,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from .backend import (FALLBACK_HINT, STREAM_LIMIT, BackendCrashed, LimitReached, PreflightError, StderrTail,
+from .backend import (FALLBACK_HINT, STREAM_LIMIT, BackendCrashed, LimitReached, LockdownBreach, PreflightError, StderrTail,
                       ToolCall, Turn, child_env, end_process, excerpt, run_quick, version_tuple)
 from .limits import from_rate_limit_event, parse_claude
 
@@ -69,6 +69,30 @@ def mcp_config(url: str, agent: str, with_key: bool) -> dict:
     if with_key:
         headers["Authorization"] = "Bearer ${" + KEY_ENV + "}"
     return {"mcpServers": {"murmur": {"type": "http", "url": url, "headers": headers}}}
+
+
+MURMUR_PREFIX = "mcp__murmur__"
+# What the CLI says when it does not run a tool: no such tool (`--tools ""` leaves none), or a
+# permission denied (`dontAsk`). The model asking is the lockdown working; the tool running
+# is a breach.
+REFUSALS = ("No such tool available", "<tool_use_error>", "has been denied", "Permission to use")
+
+
+def refused(block: dict) -> bool:
+    """A tool_result that says the CLI did not run the tool."""
+    return bool(block.get("is_error")) and any(r in _flatten(block.get("content")) for r in REFUSALS)
+
+
+def context_of(usage) -> int | None:
+    """The context one model call read: its input, cache read and cache write tokens."""
+    if not isinstance(usage, dict):
+        return None
+    n = 0
+    for k in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
+        v = usage.get(k)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            n += int(v)
+    return n or None
 
 
 def user_message(text: str) -> dict:
@@ -153,9 +177,11 @@ class ClaudeBackend:
     # ---- setup -----------------------------------------------------------------------------
 
     def env(self) -> dict[str, str]:
-        # the bridge marks its tools' answers as up to 400 000 characters
-        # (`anthropic/maxResultSizeChars`); this lets that many tokens through untruncated
-        extra = {"CLAUDE_CODE_MAX_RETRIES": "2", "MAX_MCP_OUTPUT_TOKENS": "120000"}
+        # the bridge marks its tools' answers as up to 150 000 characters
+        # (`anthropic/maxResultSizeChars`, `mcp::tools::RESULT_MAX_CHARS`); this lets such an
+        # answer through untruncated even at two characters a token (an estimate, not
+        # measured: this JSON usually runs nearer three)
+        extra = {"CLAUDE_CODE_MAX_RETRIES": "2", "MAX_MCP_OUTPUT_TOKENS": "75000"}
         if not self.cfg.tool_search:
             extra["ENABLE_TOOL_SEARCH"] = "false"
         if self.key:
@@ -316,6 +342,7 @@ class ClaudeBackend:
         # text the CLI wrote itself (an API error such as a usage limit comes as an assistant
         # message whose model is "<synthetic>"): the only assistant text read for limits
         cli_text = ""
+        breach: ToolCall | None = None
         await p.write(user_message(text))
         while True:
             wait = (grace_until or deadline) - time.time()
@@ -350,6 +377,9 @@ class ClaudeBackend:
             elif kind == "assistant":
                 msg = ev.get("message") or {}
                 turn.model = msg.get("model") or turn.model
+                ctx = context_of(msg.get("usage"))
+                if ctx is not None:
+                    turn.context_tokens = max(turn.context_tokens or 0, ctx)
                 for block in msg.get("content") or []:
                     if block.get("type") == "tool_use":
                         c = ToolCall(block.get("name", "?"), block.get("input"), block.get("id"))
@@ -368,10 +398,23 @@ class ClaudeBackend:
                             if c is not None:
                                 c.result = excerpt(_flatten(block.get("content")))
                                 c.is_error = bool(block.get("is_error"))
+                                if not c.name.startswith(MURMUR_PREFIX):
+                                    if refused(block):
+                                        turn.refused.append({"name": c.name, "input": excerpt(c.input, 300)})
+                                    elif breach is None:
+                                        # a tool outside the Murmur server ran: stop the turn now
+                                        breach = c
+                                        await p.write(interrupt_request())
             elif kind == "rate_limit_event":
                 turn.rate_limit = ev.get("rate_limit_info")
             elif kind == "result":
-                return self._finish(turn, ev, last_text, cli_text, interrupted, t0, routine)
+                done = self._finish(turn, ev, last_text, cli_text, interrupted, t0, routine)
+                if breach is not None:
+                    done.stop = "lockdown"
+                    done.error = (f"the model used {breach.name}, a tool outside the Murmur server, and "
+                                  f"the CLI ran it: {excerpt(breach.result, 300)}")
+                    raise LockdownBreach(done.error, done)
+                return done
 
     def _finish(self, turn: Turn, ev: dict, last_text: str, cli_text: str, interrupted: str | None,
                 t0: float, routine: bool) -> Turn:

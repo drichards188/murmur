@@ -84,7 +84,9 @@ FORBIDDEN_ABOVE = ("CLAUDE.md", "AGENTS.md", ".claude", ".git")
 
 
 def run_dir_problems(d: Path) -> list[str]:
+    # both resolved: a home or a run directory reached by a symlink is the same directory
     home = Path.home().resolve()
+    d = d.expanduser().resolve()
     found = []
     for p in [d, *d.parents]:
         for name in FORBIDDEN_ABOVE:
@@ -100,7 +102,8 @@ def make_run_dir(given: Path | None) -> Path:
     driver creates is made private (0700); one given that already exists must be empty, and
     is left as it is."""
     if given is None:
-        d = Path(tempfile.mkdtemp(prefix="murmur-watch-"))  # 0700, new, empty
+        # 0700, new, empty; resolved, since TMPDIR (or a home) may be reached by a symlink
+        d = Path(tempfile.mkdtemp(prefix="murmur-watch-")).resolve()
         problems = run_dir_problems(d)
         if problems:
             d.rmdir()
@@ -143,6 +146,9 @@ class Officer:
         self._deferred_logged = False
         self.bridge_restarted = False
         self.limits: list[float] = []  # usage limits hit in the last hour
+        self.fail_streak = 0  # failed turns in a row
+        self.backoff_s = 0.0  # the last wait after one
+        self.backoff_until = 0.0  # no wake before this
 
     def signal(self, name: str) -> None:
         if not self.stop.is_set():
@@ -195,10 +201,11 @@ class Officer:
                 changes = await self.poller.poll()
                 changes += await self.poller.nominations()
                 self.poll_errors = 0
-                if any(c.get("kind") == "feed.reset" for c in changes):
+                if any(isinstance(c, dict) and c.get("kind") == "feed.reset" for c in changes):
                     self.bridge_restarted = True
                 if changes:
                     self.waker.add(changes, time.time())
+                    self.log_dropped()
             except Exception as e:  # noqa: BLE001 (keep polling; reconnect after a few misses)
                 self.poll_errors += 1
                 if self.poll_errors in (1, 5) or self.poll_errors % 30 == 0:
@@ -228,6 +235,8 @@ class Officer:
             return self.stop_reason or "until"
         # bridge_run: the bridge's audit-log run (a line's own run is this driver's)
         self.log.write("bridge.connected", cursor=info["cursor"], bridge_run=info["run"], tools=info["tools"])
+        if hasattr(self.backend, "murmur_tools"):
+            self.backend.murmur_tools = set(info["tools"])
         started = await self.backend.start()
         self.log.write("backend.start", **{k: v for k, v in started.items() if k != "argv"})
         poller = asyncio.ensure_future(self.poll_loop())
@@ -241,7 +250,12 @@ class Officer:
                 if self.waker.exhausted():
                     self.log.write("budget.exhausted", what="wakes per run", max_wakes=self.waker.budgets.max_wakes)
                     return "budget"
+                if now < self.backoff_until:
+                    # after a failed turn: changes keep arriving, the wake waits
+                    await self.sleep(min(self.backoff_until - now, self.args.poll_s))
+                    continue
                 wake = self.waker.due(now)
+                self.log_dropped()
                 if wake is None:
                     if self.waker.deferred and not self._deferred_logged:
                         self._deferred_logged = True
@@ -275,10 +289,30 @@ class Officer:
                 f"hour); you have up to {b.max_turns_per_wake} tool turns for this update; "
                 f"{left} escalations to the senior model left.")
 
-    def failed(self, now: float) -> bool:
-        """Count a failed turn (a crash, an error result); True when there were too many."""
-        self.crashes = [t for t in self.crashes if now - t < 600] + [now]
-        return len(self.crashes) > 3
+    def failed(self, now: float, crashed: bool) -> str | None:
+        """A failed turn (an error result, or a crash): wait before the next wake, doubling with
+        each failure in a row (`--error-backoff-s`, up to `--error-backoff-max-s`), so an API
+        overload of a minute costs a few waits, not the watch. The run stops only on repeated
+        crashes (more than three in ten minutes) or on failures that go on after a wait at
+        the ceiling; the reason says which."""
+        if crashed:
+            self.crashes = [t for t in self.crashes if now - t < 600] + [now]
+            if len(self.crashes) > 3:
+                return "crashes: the CLI died more than three times in ten minutes"
+        ceiling = self.args.error_backoff_max_s
+        if self.fail_streak and self.backoff_s >= ceiling:
+            return (f"errors: turns kept failing after a {ceiling:.0f} s wait "
+                    f"({self.fail_streak + 1} in a row)")
+        self.fail_streak += 1
+        self.backoff_s = min(self.args.error_backoff_s * 2 ** (self.fail_streak - 1), ceiling)
+        self.backoff_until = now + self.backoff_s
+        self.log.write("backoff", wait_s=round(self.backoff_s, 1), failures_in_a_row=self.fail_streak,
+                       crashed=crashed)
+        return None
+
+    def log_dropped(self) -> None:
+        for change, error in self.waker.take_dropped():
+            self.log.write("change.dropped", error=error, change=str(change)[:500])
 
     async def do_wake(self, wake: Wake) -> str | None:
         now = time.time()
@@ -291,8 +325,8 @@ class Officer:
             self.log.write("backend.restart", why="the bridge restarted", resume=info.get("resume"))
         escalate = wake.escalate and now >= self.strong_blocked_until
         if wake.escalate and not escalate:
-            self.waker.escalations -= 1  # the stronger model is limited: the routine one takes it
-            wake.escalate = False
+            # the stronger model is limited: the routine one takes it, and nothing is spent
+            self.waker.unescalate(wake)
         try:
             mine = render_mine(await self.poller.mine(), now)
         except Exception:  # noqa: BLE001 (the update goes out without the list)
@@ -320,30 +354,44 @@ class Officer:
                 self.log.write("turn", n=wake.n, escalated=escalate, **e.turn.as_dict())
             return await self.on_limit(e.hit, escalate, wake)
         except LockdownBreach as e:
+            if e.turn is not None:
+                self.log.write("turn", n=wake.n, escalated=escalate, **e.turn.as_dict())
+            self.log.write("lockdown.breach", n=wake.n, error=str(e))
             self.log.write("error", n=wake.n, error=f"lockdown breach: {e}; the run stops")
-            return "error"
+            return "lockdown"
         except BackendCrashed as e:
+            # a crashed turn reports no cost: what it spent is missing from the budget's
+            # count (the CLI's own estimate comes only with a turn's result)
             self.log.write("backend.crashed", n=wake.n, escalated=escalate, error=str(e), code=e.code,
-                           stderr=e.stderr[-2000:])
-            if self.failed(now):
-                self.log.write("error", error="more than three failed turns in ten minutes")
-                return "error"
+                           stderr=e.stderr[-2000:], cost="unknown: a crashed turn reports none")
+            self.waker.give_back(wake, time.time())  # the next wake tells it again
+            stop = self.failed(now, crashed=True)
+            if stop:
+                self.log.write("error", error=stop)
+                return stop.split(":")[0]
             if not escalate:
                 info = await self.backend.restart()
                 self.log.write("backend.restart", why="crashed", resume=info.get("resume"))
-            self.waker.give_back(wake, time.time())  # the next wake tells it again
             return None
         self.turns += 1
         self.proposed += turn.proposals()
         self.log.write("turn", n=wake.n, escalated=escalate, **turn.as_dict())
+        for r in turn.refused:
+            self.log.write("lockdown.refused", n=wake.n, tool=r.get("name"), input=r.get("input"),
+                           text=f"the model asked for {r.get('name')}, outside the Murmur server; the CLI refused it")
+        for u in turn.unknown_items:
+            self.log.write("lockdown.unknown_item", n=wake.n, item_type=u.get("type"), item=u.get("item"))
         if turn.stop == "error":
             # an error turn (overloaded after the CLI's retries, say): what it was told
             # comes back for the next wake, an escalation it spent is returned
             self.waker.give_back(wake, time.time())
-            if self.failed(now):
-                self.log.write("error", error="more than three failed turns in ten minutes")
-                return "error"
+            stop = self.failed(now, crashed=False)
+            if stop:
+                self.log.write("error", error=stop)
+                return stop.split(":")[0]
             return None
+        self.fail_streak = 0
+        self.backoff_s = 0.0
         if not escalate and not self.init_logged and getattr(self.backend, "init", None):
             self.init_logged = True
             self.log.write("backend.init", **self.backend.init)
@@ -513,7 +561,7 @@ async def main_async(args) -> int:
                                       + getattr(backend, "consult_cost_usd", 0.0), 4) if args.backend == "claude" else None,
               run_dir=str(run_dir))
     log.close()
-    return 1 if reason == "error" else 0
+    return 1 if reason in ("error", "crashes", "errors", "lockdown") else 0
 
 
 def parse_args(argv: list[str] | None = None):
@@ -544,6 +592,10 @@ def parse_args(argv: list[str] | None = None):
     g.add_argument("--limit-margin-s", type=float, default=60.0, help="resume this long after a limit's reset")
     g.add_argument("--limit-floor-s", type=float, default=60.0,
                    help="never retry sooner than this after a limit; doubles with each limit in the last hour")
+    g.add_argument("--error-backoff-s", type=float, default=30.0,
+                   help="wait this long after a failed turn; doubles with each failure in a row")
+    g.add_argument("--error-backoff-max-s", type=float, default=900.0,
+                   help="the longest wait; a failure after a wait this long ends the run")
     m = ap.add_argument_group("models")
     m.add_argument("--model", help="routine model (claude: sonnet; codex: gpt-6-luna)")
     m.add_argument("--effort", help="routine effort (claude: medium; codex: high)")

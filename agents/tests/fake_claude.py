@@ -4,8 +4,11 @@
 
 Behaviour by environment:
     FAKE_STATE          directory: every invocation appends {argv, env flags} to calls.jsonl
-    FAKE_SCENARIO       ok (default) | limit | limit_once | crash_once | slow | max_turns |
-                        error_once | error_prose
+    FAKE_SCENARIO       ok (default) | limit | limit_once | crash_once | crash_always | slow |
+                        max_turns | error_once | error_always | error_prose | refused | breach
+                        (refused replays fixtures/claude_bash_refused.jsonl, a live stream in
+                        which Claude Code refused the model a bash tool, then goes on as ok;
+                        breach: a tool outside the Murmur server that ran)
     FAKE_RESET_IN       a limit's resetsAt, seconds from now (default 90)
     FAKE_LIMIT_AT       limit_once: the message (of a process) that hits the limit (default 1)
     FAKE_ERROR_MODEL    error_once: only a process run with this --model errors
@@ -95,6 +98,9 @@ for line in sys.stdin:
     if "--replay-user-messages" in argv:
         emit(msg)
     text = msg["message"]["content"]
+    if scenario == "crash_always":
+        sys.stderr.write("fake: crashed again\n")
+        sys.exit(3)
     if scenario == "crash_once" and not resume and not crashed_marker.exists():
         crashed_marker.write_text("1")
         sys.stderr.write("fake: crashed\n")
@@ -113,7 +119,8 @@ for line in sys.stdin:
         sys.exit(1)
     errored = state / "errored"
     error_model = os.environ.get("FAKE_ERROR_MODEL")  # error_once: only on this --model
-    if scenario == "error_once" and not errored.exists() and error_model in (None, opt("--model")):
+    if scenario == "error_always" or (scenario == "error_once" and not errored.exists()
+                                      and error_model in (None, opt("--model"))):
         # an API error after the CLI's own retries (overloaded): the turn ends, the process lives
         errored.write_text("1")
         emit({"type": "assistant", "message": {"model": "<synthetic>", "content": [
@@ -126,7 +133,20 @@ for line in sys.stdin:
             {"type": "text", "text": "Tool call limit reached for this update; the battery reserve limit reached 20%."}]}})
         result("error_during_execution", True, None, 2)
         continue
-    emit({"type": "assistant", "message": {"model": model, "content": [
+    if scenario == "refused":
+        # as recorded live (2.1.294): the model asked for bash, the CLI refused it
+        for raw in (Path(__file__).parent / "fixtures" / "claude_bash_refused.jsonl").read_text().splitlines():
+            emit(json.loads(raw))
+    if scenario == "breach":
+        # a tool outside the Murmur server that ran (no refusal): the driver interrupts
+        emit({"type": "assistant", "message": {"model": model, "content": [
+            {"type": "tool_use", "id": f"tu_{n}_0", "name": "Bash", "input": {"command": "ls ~"}}]}})
+        emit({"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": f"tu_{n}_0", "content": "notes.txt\nsecrets"}]}})
+        continue  # the interrupt ends the turn
+    emit({"type": "assistant", "message": {"model": model, "usage": {
+        "input_tokens": 3, "cache_read_input_tokens": 9000, "cache_creation_input_tokens": 400,
+        "output_tokens": 50}, "content": [
         {"type": "tool_use", "id": f"tu_{n}_1", "name": "mcp__murmur__get_fleet", "input": {}}]}})
     if scenario == "slow":
         continue  # no result until an interrupt arrives

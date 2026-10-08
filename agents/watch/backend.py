@@ -33,7 +33,11 @@ FALLBACK_HINT = "or use the rule-based agent (agents/policy_agent.py)"
 
 
 class LockdownBreach(RuntimeError):
-    """The model used a tool other than the bridge's: the run stops."""
+    """The model used a tool other than the bridge's and it ran: the run stops."""
+
+    def __init__(self, message: str, turn: "Turn | None" = None):
+        super().__init__(message)
+        self.turn = turn
 
 
 class PreflightError(RuntimeError):
@@ -90,6 +94,14 @@ class Turn:
     session: str | None = None
     events: int = 0
     rate_limit: dict | None = None
+    # the largest context one model call of the turn read (input, cache read and cache
+    # write tokens), from the stream's per-call usage
+    context_tokens: int | None = None
+    # tools outside the Murmur server the model asked for and the CLI refused (the lockdown
+    # working): {name, input}
+    refused: list[dict] = field(default_factory=list)
+    # Codex items of a type the backend does not know (recorded, not stopped on)
+    unknown_items: list[dict] = field(default_factory=list)
 
     def proposals(self) -> list[int]:
         """Intent ids its propose_intent calls created (read from the tool results)."""
@@ -107,6 +119,7 @@ class Turn:
             "usage": self.usage, "cost_usd": self.cost_usd, "duration_s": round(self.duration_s, 2),
             "num_turns": self.num_turns, "stop": self.stop, "error": self.error, "session": self.session,
             "events": self.events, "rate_limit": self.rate_limit, "proposed": self.proposals(),
+            "context_tokens": self.context_tokens, "refused": self.refused, "unknown_items": self.unknown_items,
         }
 
 

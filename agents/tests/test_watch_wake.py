@@ -96,12 +96,209 @@ def test_a_condition_that_came_and_went_in_the_batch_is_a_note():
     wake = w.due(34)
     assert wake.escalate and wake.why == ["a vehicle lost its link"] and len(wake.changes) == 5
     # uid 6 lost, back, lost again within the window: its second come-and-go is flapping,
-    # and it is in force at the end of the batch
+    # which wakes; the raise in force at the end of the batch is covered by it
     w.add([{"kind": "vehicle.link_lost", "uid": 6}, {"kind": "vehicle.link_restored", "uid": 6},
            {"kind": "vehicle.link_lost", "uid": 6}], 50)
     wake = w.due(54)
-    assert wake.why == ["a vehicle lost its link", "a condition keeps coming and going"], wake.why
+    assert wake.why == ["a condition keeps coming and going"], wake.why
     assert not wake.escalate, "an unarmed vehicle's link"
+
+
+def run_script(script, until, **kw):
+    """The second review's probe harness: changes at given times, a poll every 2 s; the
+    wakes as (t, reason, escalate, why, kinds)."""
+    w = Waker(Budgets(**kw))
+    w.due(0)
+    out = []
+    t = 0.0
+    while t <= until:
+        for at, chs in script:
+            if at == t:
+                w.add(chs, t)
+        x = w.due(t)
+        if x:
+            out.append((t, x.reason, x.escalate, x.why, [c.get("kind") for c in x.changes]))
+        t += 2.0
+    return out
+
+
+def first_wake_after(wakes, t0, kind):
+    return next((x for x in wakes if x[0] >= t0 and kind in x[4]), None)
+
+
+# one change of every kind in the table, waking, plus notes, as the feed and the driver send them
+EVERY_KIND = [
+    {"kind": "track.declared", "track": "T-1", "declared": "hostile", "declaration": "D-1", "from": None},
+    {"kind": "nomination.possible", "track": "T-1", "platforms": [{"uid": 2, "callsign": "FPV 2"}]},
+    {"kind": "track.declaration_revoked", "track": "T-2", "was": "hostile"},
+    {"kind": "track.new", "track": "T-3", "affiliation": "suspect", "position": [-122.4, 37.8],
+     "sources": [{"uid": 7, "sensor": "radar"}], "ais": {"name": "X", "ship_type": "cargo"}},
+    {"kind": "track.affiliation", "track": "T-4", "from": "unknown", "to": "suspect"},
+    {"kind": "track.identity_conflict", "track": "T-5", "conflict": "AIS says cargo (X) but ...", "from": None},
+    {"kind": "review.flag", "flag": "F-1", "tracks": ["T-1"], "evidence": "near T-1"},
+    {"kind": "vehicle.link_lost", "uid": 3, "armed": True},
+    {"kind": "vehicle.gps_glitch", "uid": 4, "glitch": True},
+    {"kind": "vehicle.nav", "uid": 5, "domain": "air", "from": {"ready": True, "source": "gnss"},
+     "to": {"ready": True, "source": "dead_reckoning"}},
+    {"kind": "vehicle.event", "uid": 6, "event_kind": "failsafe", "text": "GCS Failsafe On"},
+    {"kind": "alert.raised", "alert": "link:9", "severity": "high", "uid": 9},
+    {"kind": "alert.changed", "alert": "op:7", "severity": "high", "from": {"severity": "medium"}},
+    {"kind": "condition.flapping", "condition": "link", "uid": 8, "armed": True, "cycles": 2},
+    {"kind": "intent.state", "intent": 12, "mine": True, "from": "pending_approval", "to": "rejected",
+     "operator_note": {"by": "op-1", "note": "not now"}},
+    {"kind": "intent.new", "intent": 13, "mine": True, "state": "rejected"},
+    {"kind": "feed.reset", "run": "run-b"},
+]
+NOTES = [{"kind": "vehicle.joined", "uid": 30}, {"kind": "track.stale", "track": "T-9"},
+         {"kind": "vehicle.events_truncated", "shown": 100}, {"kind": "something.new", "x": {"y": [1, 2]}}]
+
+
+def test_every_kind_in_the_table_goes_through_add_and_due():
+    """N1 (the second review): a waking vehicle.nav change crashed the watch: its subject
+    held a dict, `TypeError: unhashable type`, raised in add() and then in every due()."""
+    assert {c["kind"] for c in EVERY_KIND} == {r.kind for r in TRIGGERS}, "one of each"
+    for c in EVERY_KIND + NOTES:
+        w = Waker(quiet())
+        w.due(0)
+        w.add([c], 20)
+        x = w.due(24)
+        assert w.dropped == [], (c, w.dropped)
+        assert (x is not None) == (c in EVERY_KIND), c
+        if x is not None:
+            assert x.why == [classify(c)[2]], (c, x.why)
+    # all at once, twice (the second time each subject is a repeat)
+    w = Waker(quiet())
+    w.due(0)
+    w.add(EVERY_KIND + NOTES, 20)
+    x = w.due(24)
+    assert len(x.why) == len({r.why for r in TRIGGERS}) and w.dropped == []
+    w.add(EVERY_KIND, 40)
+    assert w.due(60) is None, "repeats inside their interval wait"
+
+
+def test_a_malformed_change_is_dropped_and_never_stops_the_watch():
+    class Odd(dict):
+        def get(self, *a, **k):  # a change whose fields cannot even be read
+            raise RuntimeError("unreadable")
+
+    w = Waker(quiet())
+    w.due(0)
+    w.add(["not a dict", Odd(kind="x"), {"kind": "vehicle.link_lost", "uid": 3, "armed": True}], 20)
+    assert len(w.dropped) == 2 and "not str" in w.dropped[0][1]
+    x = w.due(24)
+    assert x is not None and x.escalate, "the good change still wakes"
+    assert len(w.take_dropped()) == 2 and w.dropped == []
+    # one that fails only later, when judged in due(), is dropped there
+    w.add([{"kind": "vehicle.link_lost", "uid": 4}], 40)
+    w.pending.append(Odd(kind="x"))
+    w.arrived.append(40)
+    x = w.due(50)
+    assert x is not None and len(w.dropped) == 1
+
+
+def test_a_raise_after_a_clear_is_news_with_the_heartbeat_on_and_off():
+    """N2 (the second review's probe): with the subject (kind, item, state) a new occurrence
+    after a clear or a revoke counted as the same subject, and was delivered as heartbeat
+    filler (or, with the heartbeat off, never)."""
+    for hb in (60.0, 0.0):
+        # an armed link lost at 10, back at 70, lost again at 210 and staying lost
+        wakes = run_script([(10, [{"kind": "vehicle.link_lost", "uid": 3, "armed": True}]),
+                            (70, [{"kind": "vehicle.link_restored", "uid": 3, "armed": True}]),
+                            (210, [{"kind": "vehicle.link_lost", "uid": 3, "armed": True}])], 700, heartbeat_s=hb)
+        x = first_wake_after(wakes, 200, "vehicle.link_lost")
+        assert x and x[0] <= 216 and x[1] == "changes" and x[2], (hb, wakes)
+        # declared hostile at 10, revoked at 60, declared hostile again at 120 (no number given)
+        wakes = run_script([(10, [{"kind": "track.declared", "track": "T-1", "declared": "hostile"}]),
+                            (60, [{"kind": "track.declaration_revoked", "track": "T-1", "was": "hostile"}]),
+                            (120, [{"kind": "track.declared", "track": "T-1", "declared": "hostile"}])],
+                           700, heartbeat_s=hb)
+        x = first_wake_after(wakes, 110, "track.declared")
+        assert x and x[0] <= 126 and x[1] == "changes" and x[2], (hb, wakes)
+        # nomination possible, closed, possible again
+        wakes = run_script([(10, [{"kind": "nomination.possible", "track": "T-1"}]),
+                            (60, [{"kind": "nomination.closed", "track": "T-1"}]),
+                            (120, [{"kind": "nomination.possible", "track": "T-1"}])], 700, heartbeat_s=hb)
+        x = first_wake_after(wakes, 110, "nomination.possible")
+        assert x and x[0] <= 126 and x[2], (hb, wakes)
+        # a glitch, cleared, a glitch again (staying)
+        wakes = run_script([(10, [{"kind": "vehicle.gps_glitch", "uid": 4, "glitch": True}]),
+                            (100, [{"kind": "vehicle.gps_glitch", "uid": 4, "glitch": False}]),
+                            (200, [{"kind": "vehicle.gps_glitch", "uid": 4, "glitch": True}])], 700, heartbeat_s=hb)
+        x = first_wake_after(wakes, 190, "vehicle.gps_glitch")
+        assert x and x[0] <= 206 and x[2], (hb, wakes)
+        # a conflict, then a declaration on the same track: each its own subject
+        wakes = run_script([(10, [{"kind": "track.identity_conflict", "track": "T-7", "conflict": "x"}]),
+                            (40, [{"kind": "track.declared", "track": "T-7", "declared": "hostile"}])], 200,
+                           heartbeat_s=hb)
+        x = first_wake_after(wakes, 40, "track.declared")
+        assert x and x[0] <= 46 and x[2], (hb, wakes)
+
+
+def test_a_redeclaration_by_number_is_a_new_subject():
+    w = Waker(quiet())
+    w.due(0)
+    w.add([{"kind": "track.declared", "track": "T-1", "declared": "neutral", "declaration": "D-1"}], 20)
+    assert w.due(24) is not None
+    # replaced by an operator's hostile declaration (no revoke in between: one step)
+    w.add([{"kind": "track.declared", "track": "T-1", "declared": "hostile", "declaration": "D-2",
+            "from": "neutral"}], 40)
+    x = w.due(44)
+    assert x is not None and x.escalate
+
+
+def test_a_new_event_of_an_already_woken_kind_wakes():
+    w = Waker(quiet())
+    w.due(0)
+    w.add([{"kind": "track.new", "track": "T-1", "affiliation": "suspect"}], 20)
+    assert w.due(24) is not None
+    w.add([{"kind": "track.new", "track": "T-2", "affiliation": "suspect"}], 40)
+    assert w.due(44) is not None, "another track"
+    w.add([{"kind": "alert.raised", "alert": "link:3", "severity": "high"}], 60)
+    w.add([{"kind": "alert.raised", "alert": "link:4", "severity": "high"}], 62)
+    x = w.due(66)
+    assert x is not None and len(x.changes) == 2
+
+
+def test_a_repeat_held_back_becomes_a_trigger_of_its_own_and_says_so():
+    """N2: a change held back only by the per-subject limit was taken by the next heartbeat
+    as a plain note (no why, woke not recorded), and never delivered with the heartbeat off."""
+    for hb in (60.0, 0.0):
+        w = Waker(quiet(heartbeat_s=hb, per_subject_s=300))
+        w.due(0)
+        w.add([{"kind": "track.affiliation", "track": "T-1", "from": "unknown", "to": "suspect"}], 20)
+        assert w.due(24) is not None
+        # unknown again, then suspect again: the second rise to suspect is a repeat
+        w.add([{"kind": "track.affiliation", "track": "T-1", "from": "suspect", "to": "unknown"}], 40)
+        w.add([{"kind": "track.affiliation", "track": "T-1", "from": "unknown", "to": "suspect"}], 42)
+        wakes = []
+        for t in range(44, 400, 2):
+            x = w.due(t)
+            if x:
+                wakes.append(x)
+        # anything before 324 does not carry the repeat; at 324 (300 s after 24) it wakes
+        before = [x for x in wakes if x.t < 324]
+        assert all("suspect" not in str([c.get("to") for c in x.changes if c.get("from") == "unknown"])
+                   for x in before), hb
+        assert all(x.held for x in before if x.reason == "heartbeat"), "a heartbeat says what it holds"
+        rep = next(x for x in wakes if any(c.get("to") == "suspect" for c in x.changes))
+        assert 324 <= rep.t <= 330 and rep.reason == "changes", (hb, rep.t, rep.reason)
+        assert rep.why == ["a contact's affiliation estimate changed (held back as a repeat for 282 s)"], rep.why
+
+
+def test_a_downgraded_escalation_gives_its_cooldown_back():
+    """N8: when the stronger model was limited, the driver sent the wake to the routine model
+    but the subject's escalation cooldown stayed spent."""
+    w = Waker(quiet(max_escalations=3))
+    w.due(0)
+    w.add([{"kind": "vehicle.gps_glitch", "uid": 4, "glitch": True}], 20)
+    x = w.due(24)
+    assert x.escalate and w.escalations == 1 and x.escalated_subjects
+    w.unescalate(x)
+    assert not x.escalate and w.escalations == 0 and w.escalated == {}
+    # the same glitch, cleared and raised again later: escalates (nothing was spent)
+    w.add([{"kind": "vehicle.gps_glitch", "uid": 4, "glitch": False}], 100)
+    w.add([{"kind": "vehicle.gps_glitch", "uid": 4, "glitch": True}], 200)
+    assert w.due(204).escalate
 
 
 def test_a_condition_that_keeps_flapping_wakes_and_escalates():

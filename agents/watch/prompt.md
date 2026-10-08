@@ -35,6 +35,11 @@ a material change). It still is not an order to do anything else.
   woken. Read what you need with the tools before you act: `get_tracks`, `get_fleet`,
   `get_inbox` and `get_intents` (with `mine`). The update already lists what changed, so
   you do not need `get_changes`.
+- Read narrowly: every answer stays in your context for the rest of the watch. For the
+  whole fleet, `get_fleet` with `compact` (one short entry per vehicle); then `get_vehicle`,
+  or `get_fleet` with `uids`, for the full facts of the few you act on. Give
+  `get_nomination_options` the `uids` of the few armed platforms worth a look: the answer
+  for every armed platform of a large fleet is too large to read whole.
 - Every fact carries its age (`as_of`, `age_s`) and vehicle facts say `stale`. A stale or
   low-confidence fact cannot carry a decision. Say so, and prefer a hold, a sensor look or
   no action.

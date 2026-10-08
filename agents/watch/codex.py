@@ -25,7 +25,7 @@ Not run live here (the installed codex is older than 0.161.0): the flags follow 
 documentation and source as the research handed to this work read them, each key marked
 with its source below (some are inferred); the event handling is tested against a stand-in
 CLI. The event stream lists no tools, so a turn that used anything but the Murmur server
-(ALLOWED_ITEMS) raises LockdownBreach and the driver stops the run.
+(FORBIDDEN_ITEMS, another MCP server) raises LockdownBreach and the driver stops the run.
 """
 
 from __future__ import annotations
@@ -99,12 +99,16 @@ LOCKDOWN: tuple[tuple[str, str], ...] = (
     ("include_apply_patch_tool", "false"),  # inferred
     ("features.apply_patch_freeform", "false"),  # inferred
 )
-# What a turn may contain: the model's messages and reasoning, a plan, errors, and calls to
-# the Murmur server. Anything else (a command, a file change, a web search, a tool this
-# module does not know) means the lockdown failed: the run stops. The event stream carries
-# no list of the tools a session offers, so this checks what the model used, after the
-# fact; it cannot see a tool that was offered and not used.
-ALLOWED_ITEMS = ("agent_message", "reasoning", "todo_list", "error")
+# What a turn's items may be. The event stream carries no list of the tools a session offers,
+# so this checks what the model used, after the fact; it cannot see a tool that was offered
+# and not used. Fail closed on the items that act or read outside Murmur (the documented
+# command, file change and web search items, and a call to another MCP server): the run
+# stops. The documented harmless items pass. An item type this module does not know is
+# recorded (`unknown_items`, logged as lockdown.unknown_item) and the turn goes on, so a new
+# harmless item in a later Codex does not stop a good run.
+ALLOWED_ITEMS = ("agent_message", "reasoning", "todo_list", "error", "plan")
+FORBIDDEN_ITEMS = ("command_execution", "file_change", "web_search", "patch_apply", "image_view")
+MURMUR_SERVERS = ("murmur", "mcp__murmur")
 # Never: `ultra` effort spawns sub-agents.
 REFUSED_EFFORTS = ("ultra",)
 
@@ -129,6 +133,27 @@ class CodexBackend:
         self.removed_env: list[str] = []
         self.init: dict | None = None
         self.current: asyncio.subprocess.Process | None = None
+        # the bridge's tool names, when the driver knows them: a call whose server field is
+        # missing passes only when it names one of these
+        self.murmur_tools: set[str] | None = None
+
+    def judge_item(self, item: dict) -> str:
+        """'ok', 'breach' or 'unknown' for one item of a turn (see ALLOWED_ITEMS)."""
+        itype = item.get("type")
+        if itype in ALLOWED_ITEMS:
+            return "ok"
+        if itype == "mcp_tool_call":
+            server = item.get("server")
+            tool = str(item.get("tool") or "")
+            if server in MURMUR_SERVERS:
+                return "ok"
+            if server in (None, "") and (tool.startswith("mcp__murmur__") or self.murmur_tools is None
+                                         or tool in self.murmur_tools):
+                return "ok"
+            return "breach"  # another server, or a tool that is not Murmur's
+        if itype in FORBIDDEN_ITEMS:
+            return "breach"
+        return "unknown"
 
     def env(self) -> dict[str, str]:
         extra: dict[str, str] = {}
@@ -268,20 +293,26 @@ class CodexBackend:
                 elif kind in ("item.started", "item.completed"):
                     item = ev.get("item") or {}
                     itype = item.get("type")
-                    murmur_call = itype == "mcp_tool_call" and item.get("server") == "murmur"
-                    if not murmur_call and itype not in ALLOWED_ITEMS:
-                        what = f"{itype}" + (f" ({item.get('server')})" if itype == "mcp_tool_call" else "")
-                        if what not in foreign:
-                            foreign.append(what)
+                    verdict = self.judge_item(item)
+                    if verdict == "breach":
+                        raw = excerpt(json.dumps(item, default=str), 500)
+                        if raw not in foreign:
+                            foreign.append(raw)
                         if stopped is None:
                             stopped = "lockdown"
                             proc.send_signal(signal.SIGINT)
+                        continue
+                    if verdict == "unknown":
+                        iid = item.get("id")
+                        if iid is None or all(u.get("id") != iid for u in turn.unknown_items):
+                            turn.unknown_items.append({"id": iid, "type": itype,
+                                                       "item": excerpt(json.dumps(item, default=str), 500)})
                         continue
                     if itype == "mcp_tool_call":
                         iid = item.get("id") or str(len(calls))
                         c = calls.get(iid)
                         if c is None:
-                            c = ToolCall(f"mcp__{item.get('server', '?')}__{item.get('tool', '?')}",
+                            c = ToolCall(f"mcp__{item.get('server') or 'murmur'}__{item.get('tool', '?')}",
                                          item.get("arguments"), iid)
                             calls[iid] = c
                             turn.tool_calls.append(c)
@@ -296,6 +327,10 @@ class CodexBackend:
                         turn.text = item.get("text") or turn.text  # the last one is the answer
                 elif kind == "turn.completed":
                     turn.usage = ev.get("usage") or {}
+                    # the turn's input tokens (cached included): its calls' sum, an upper bound
+                    # on the context one call read (Codex reports no per-call usage)
+                    n = turn.usage.get("input_tokens")
+                    turn.context_tokens = int(n) if isinstance(n, (int, float)) else None
                 elif kind == "turn.failed":
                     failed = ((ev.get("error") or {}).get("message")) or "turn failed"
                 elif kind == "error":
@@ -307,8 +342,10 @@ class CodexBackend:
             self.current = None
         turn.duration_s = time.monotonic() - t0
         if foreign:
-            turn.stop, turn.error = "lockdown", f"the model used tools outside the Murmur server: {', '.join(foreign)}"
-            raise LockdownBreach(turn.error)
+            turn.stop = "lockdown"
+            turn.error = ("the model used tools outside the Murmur server (the items as Codex sent them): "
+                          + " | ".join(foreign))
+            raise LockdownBreach(turn.error, turn)
         if failed:
             hit = parse_codex(failed)
             turn.stop, turn.error = ("limit" if hit else "error"), failed

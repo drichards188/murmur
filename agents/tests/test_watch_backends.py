@@ -108,6 +108,44 @@ def test_claude_turn_reads_tool_calls_usage_and_session(fake_claude, run_dir, tm
     assert json.loads(cfg)["mcpServers"]["murmur"]["headers"]["X-Murmur-Agent"] == "agent-watch"
 
 
+def one_claude_turn(fake, run_dir):
+    async def go():
+        b = claude(fake, run_dir)
+        await b.start()
+        try:
+            return await b.turn("Watch update 1.", time.time() + 30)
+        finally:
+            await b.stop()
+
+    return run(go())
+
+
+def test_claude_a_tool_the_cli_refused_is_the_lockdown_working(fake_claude, run_dir, monkeypatch):
+    """N11: the stream recorded live (2.1.294, fixtures/claude_bash_refused.jsonl) in which the
+    model asked for bash and Claude Code refused it: recorded as refused, not a breach, and the
+    turn goes on."""
+    monkeypatch.setenv("FAKE_SCENARIO", "refused")
+    t = one_claude_turn(fake_claude, run_dir)
+    assert t.stop == "success" and t.proposals() == [41]
+    assert [r["name"] for r in t.refused] == ["bash"]
+    assert "grep -o" in t.refused[0]["input"]
+    assert [c.name for c in t.tool_calls] == ["bash", "mcp__murmur__get_fleet", "mcp__murmur__propose_intent"]
+    # the largest context one call read: input, cache read and cache write tokens
+    assert t.context_tokens == 3 + 9000 + 400
+    assert t.as_dict()["context_tokens"] == 9403 and t.as_dict()["refused"] == t.refused
+
+
+def test_claude_a_tool_outside_the_server_that_ran_is_a_breach(fake_claude, run_dir, monkeypatch):
+    """N11: a tool outside the Murmur server whose result is not a refusal ran: the turn is
+    interrupted and LockdownBreach carries the turn and what the tool returned."""
+    monkeypatch.setenv("FAKE_SCENARIO", "breach")
+    with pytest.raises(LockdownBreach) as e:
+        one_claude_turn(fake_claude, run_dir)
+    assert "Bash" in str(e.value) and "secrets" in str(e.value)
+    assert e.value.turn is not None and e.value.turn.stop == "lockdown"
+    assert e.value.turn.refused == []
+
+
 def test_claude_limit_is_reported_with_the_exact_reset(fake_claude, run_dir, monkeypatch):
     monkeypatch.setenv("FAKE_SCENARIO", "limit")
 
@@ -322,12 +360,47 @@ def test_codex_turns_start_a_thread_then_resume_it(fake_codex, run_dir, tmp_path
 
 
 def test_codex_a_tool_outside_the_lockdown_stops_the_run(fake_codex, run_dir, monkeypatch):
-    """Finding 13: the event stream lists no tools, so the backend checks what the model used:
-    a command, or a call to another MCP server, is a breach."""
+    """Finding 13 and N9: the event stream lists no tools, so the backend checks what the model
+    used: a command, or a call to another MCP server, is a breach, and the error carries the
+    items as Codex sent them."""
     monkeypatch.setenv("FAKE_SCENARIO", "foreign")
     with pytest.raises(LockdownBreach) as e:
         run(codex(fake_codex, run_dir).turn("Watch update 1.", time.time() + 30))
-    assert "command_execution" in str(e.value) and "mcp_tool_call (other)" in str(e.value)
+    msg = str(e.value)
+    assert '"type": "command_execution"' in msg and '"command": "cat ~/.codex/auth.json"' in msg
+    assert '"type": "mcp_tool_call", "server": "other"' in msg
+    assert e.value.turn is not None and e.value.turn.stop == "lockdown"
+
+
+def test_codex_judges_each_item_fail_closed(fake_codex, run_dir):
+    """N9: items that act or read outside Murmur are a breach, the documented harmless ones
+    pass, a call with no server passes only when it names a Murmur tool, and anything else is
+    unknown (recorded, not stopped on)."""
+    b = codex(fake_codex, run_dir)
+    j = b.judge_item
+    for t in ("command_execution", "file_change", "web_search", "patch_apply", "image_view"):
+        assert j({"type": t}) == "breach", t
+    for t in ("agent_message", "reasoning", "todo_list", "error", "plan"):
+        assert j({"type": t}) == "ok", t
+    assert j({"type": "mcp_tool_call", "server": "murmur", "tool": "get_fleet"}) == "ok"
+    assert j({"type": "mcp_tool_call", "server": "files", "tool": "get_fleet"}) == "breach"
+    assert j({"type": "mcp_tool_call", "tool": "mcp__murmur__get_fleet"}) == "ok"
+    b.murmur_tools = {"get_fleet", "get_tracks"}
+    assert j({"type": "mcp_tool_call", "tool": "get_tracks"}) == "ok"
+    assert j({"type": "mcp_tool_call", "tool": "read_file"}) == "breach", "not one of the bridge's tools"
+    assert j({"type": "collab_note"}) == "unknown"
+
+
+def test_codex_an_unknown_item_is_recorded_and_the_turn_goes_on(fake_codex, run_dir, monkeypatch):
+    monkeypatch.setenv("FAKE_SCENARIO", "unknown")
+    b = codex(fake_codex, run_dir)
+    b.murmur_tools = {"get_fleet", "get_tracks", "propose_intent"}
+    t = run(b.turn("Watch update 1.", time.time() + 30))
+    assert t.stop == "success" and t.proposals() == [51]
+    assert [(u["id"], u["type"]) for u in t.unknown_items] == [("item_9", "collab_note")]
+    assert "thinking aloud" in t.unknown_items[0]["item"], "the raw item"
+    assert "mcp__murmur__get_tracks" in [c.name for c in t.tool_calls], "a call with no server, Murmur's"
+    assert t.context_tokens == 100
 
 
 def test_codex_limit_and_crash(fake_codex, run_dir, monkeypatch):

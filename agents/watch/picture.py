@@ -312,6 +312,10 @@ def compose(wake, mine: list[str], budget_line: str, consult_notes: list[str], n
             parts.append(f"({len(lines) - len(shown)} earlier changes not listed: get_changes has them.)")
     else:
         parts.append("No changes since your last update.")
+    held = getattr(wake, "held", None) or []
+    if held:
+        parts.append("Held back as repeats of something you were told in the last few minutes "
+                     "(each wakes you when its interval ends): " + "; ".join(held) + ".")
     for note in consult_notes:
         parts.append(note)
     parts.append("Your proposals: " + ("; ".join(mine) if mine else "none open."))

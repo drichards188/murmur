@@ -63,17 +63,24 @@ class AgentSession:
 
     async def __aenter__(self) -> "AgentSession":
         http = httpx.AsyncClient(headers=agent_headers(self.agent, self.key), timeout=httpx.Timeout(30, read=300))
-        transport = streamable_http_client(self.url, http_client=http)
-        read, write = await transport.__aenter__()
-        self._stack.append(transport)
-        session = ClientSession(read, write, client_info=types.Implementation(name=self.agent, version="0.1"))
-        await session.__aenter__()
-        self._stack.append(session)
-        await session.initialize()
-        self.session = session
-        self.tools = [t.name for t in (await session.list_tools()).tools]
-        if any("approve" in n for n in self.tools):
-            raise RuntimeError(f"the server offers an approve tool: {self.tools}")
+        try:
+            transport = streamable_http_client(self.url, http_client=http)
+            read, write = await transport.__aenter__()
+            self._stack.append(transport)
+            session = ClientSession(read, write, client_info=types.Implementation(name=self.agent, version="0.1"))
+            await session.__aenter__()
+            self._stack.append(session)
+            await session.initialize()
+            self.session = session
+            self.tools = [t.name for t in (await session.list_tools()).tools]
+            if any("approve" in n for n in self.tools):
+                raise RuntimeError(f"the server offers an approve tool: {self.tools}")
+        except BaseException:
+            # close what was opened (the transport ends the server's session): a caller that
+            # retries every few seconds must not leave a session behind each time
+            await self.__aexit__(None, None, None)
+            await http.aclose()
+            raise
         return self
 
     async def __aexit__(self, *exc) -> None:

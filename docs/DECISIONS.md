@@ -999,7 +999,17 @@ group. Dates are 2026.
   once in 5 minutes and escalates at most once in 30 (one jittering contact spent every
   escalation in the reviewer's probe); free text from outside the driver reaches the model
   quoted and labelled, and the prompt says it is data, since auto-tier proposals run without
-  a human; a failed turn gives its wake back.
+  a human; a failed turn gives its wake back. After the second review (10-08): a subject is
+  the item and its instance (a declaration by number, an affiliation by its new value), a
+  subject that clears is released so its next raise is news at once (unless flapping), and a
+  repeat held back inside the 5 minutes becomes a trigger of its own when they end, never
+  heartbeat filler (a re-raised armed link stayed silent for minutes in the reviewer's
+  probe); a failed turn waits before the next wake, doubling from 30 s to 15 minutes, and
+  the run stops only on failures past that ceiling or more than three crashes in ten
+  minutes (one overloaded minute used to end a run); a tool the CLI refused is the lockdown
+  working (`lockdown.refused`) and one that ran is a breach; Codex fails closed on the items
+  that act or read outside Murmur and logs an item type it does not know rather than
+  stopping on it, so a new harmless item in a later Codex does not end a good run.
 - **`get_changes` is a digest compared between reads, not an event log** (10-08). The bridge
   keeps no history of an affiliation estimate or an alert clearing, so a cursor over the
   timestamps it does keep would miss exactly those; the MCP layer compares a digest of the
@@ -1017,19 +1027,34 @@ group. Dates are 2026.
   affiliations missed it), an identity conflict by its presence (its text quotes the live
   speed), an alert by its kind and severity too; a cursor names its feed, so a cursor of an
   earlier bridge answers `reset` even where the new feed has passed its number. Operators'
-  rejection notes are kept beside the engine (display only, the audit log has them) so an
-  agent can read the reason it was refused.
-- **An agent's MCP session idles an hour; tools say how large an answer may be** (10-08).
-  rmcp drops a session idle for five minutes by default; clients before protocol 2026-07-28
-  hold one (the Python SDK negotiates 2025-11-25), and an agent that connected once and
-  waited lost it (the situation framework's storyline agent, live). The bridge now keeps
-  them an hour (`mcp::IDLE_LIMIT`, `MURMUR_MCP_IDLE_S`): a few sessions linger longer when
-  a client vanishes, which costs little. Claude Code 2.1.294 negotiates 2026-07-28, served
-  without a session (checked live with a 20 s limit and a 35 s gap), so the watch officer's
-  quiet spells never cost it its tools and its heartbeat needs no cap. Each tool carries
-  `_meta["anthropic/maxResultSizeChars"]` (400 000): Claude Code saved larger answers than
-  about 50 000 characters to a file a model with no file tools cannot read (the nomination
-  dry run, 61 KB, live), so the model saw a preview; other clients ignore the key.
+  rejection notes are kept beside the engine (display only, the audit log has them) so the
+  agent that proposed an intent can read why it was refused: only that agent reads the note
+  (an operator's words to one agent are not every agent's), kept to 1000 characters, and
+  looked up per intent. After the second review: a conflict that changes in substance is
+  reported with what it was, and vehicle events are compared by their number in the ring,
+  not their time (events logged together share one).
+- **An agent's MCP session idles 15 minutes, eight to an agent; tools say how large an
+  answer may be** (10-08). rmcp drops a session idle for five minutes by default; clients
+  before protocol 2026-07-28 hold one (the Python SDK negotiates 2025-11-25), and an agent
+  that connected once and waited lost it (the situation framework's storyline agent, live).
+  The bridge keeps them 15 minutes (`mcp::IDLE_LIMIT`, `MURMUR_MCP_IDLE_S`): no known client
+  is quiet longer than the watch's 5-minute heartbeat ceiling between calls, so three times
+  that leaves room while a session a vanished client leaked lives a quarter of an hour (an
+  hour, the first choice, let a client that opens a session per retry pile them up). One
+  agent id holds at most eight (`mcp::SESSIONS_PER_AGENT`; the one used least recently is
+  closed, and sessions their client closed do not count): the watch officer holds one plus
+  one per Codex turn, the storyline one per proposal, so eight leaves room for a few clients
+  sharing an id. `AgentSession` closes what it opened when its start fails. Claude Code
+  2.1.294 negotiates 2026-07-28, served without a session (checked live with a 20 s limit
+  and a 35 s gap), so the watch officer's quiet spells never cost it its tools. Each tool
+  carries `_meta["anthropic/maxResultSizeChars"]` (150 000): Claude Code saved larger
+  answers than about 50 000 characters to a file a model with no file tools cannot read (the
+  nomination dry run, 61 KB, live), so the model saw a preview; other clients ignore the
+  key. The figure comes from full reads on 100 stand-ins (23 armed, 14 tracks): `get_fleet`
+  131 650 characters, so a full fleet read at the scale the testbed is built for comes
+  whole; the dry run over all 23 armed platforms, 213 557, does not, because an answer stays
+  in a model's context for the rest of its session. `get_fleet` gained `compact` (32 494 for
+  the same fleet) and the prompt steers to it and to `uids`, which both reads already took.
 - **MCP list results carry `ttlMs` and `cacheScope`** (10-08). Protocol 2026-07-28 requires
   them; `rmcp` 3.5 leaves them out unless set, and Claude Code 2.1.294 then refused the tool
   list and showed the model no Murmur tool at all (connected, zero tools). Set to five

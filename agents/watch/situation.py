@@ -105,6 +105,16 @@ def panel(rec: dict) -> str:
         return f"watch officer error: {rec.get('error')}"
     if k in ("budget.deferred", "budget.exhausted"):
         return f"{k.replace('.', ' ')}: {rec.get('what')}"
+    if k == "backoff":
+        return (f"a turn failed ({rec.get('failures_in_a_row')} in a row): the next wake waits "
+                f"{rec.get('wait_s')} s")
+    if k == "lockdown.breach":
+        return f"lockdown breach, the run stops: {str(rec.get('error'))[:300]}"
+    if k == "lockdown.unknown_item":
+        return (f"Codex sent an item of a type the driver does not know ({rec.get('item_type')}): "
+                "recorded, the watch goes on")
+    if k == "change.dropped":
+        return f"a change the driver could not judge was set aside: {str(rec.get('error'))[:200]}"
     return summary(rec)
 
 

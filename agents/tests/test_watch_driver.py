@@ -67,7 +67,8 @@ def officer(tmp_path: Path, fake: Path, script, *extra: str, seconds: float = 6.
     bin_flag = "--claude-bin" if backend == "claude" else "--codex-bin"
     args = W.parse_args(["--backend", backend, bin_flag, str(fake), "--poll-s", "0.1", "--coalesce-s", "0.2",
                          "--min-gap-s", "0.3", "--heartbeat-s", "0", "--turn-timeout-s", "20",
-                         "--limit-margin-s", "0.2", "--limit-floor-s", "0.2", *extra])
+                         "--limit-margin-s", "0.2", "--limit-floor-s", "0.2", "--error-backoff-s", "0.2",
+                         "--error-backoff-max-s", "0.8", *extra])
     run_dir = tmp_path / "run"
     run_dir.mkdir(exist_ok=True)
     prompt = run_dir / "system-prompt.md"
@@ -297,3 +298,118 @@ def test_the_codex_backend_runs_the_same_watch(fake_codex, tmp_path):
     assert next(x for x in log if x["kind"] == "backend.init")["thread_id"] == turns[0]["session"]
     with pytest.raises(SystemExit):
         W.parse_args(["--backend", "gemini"])
+
+
+def test_failed_turns_back_off_doubling_and_the_stop_says_why(fake_claude, tmp_path, monkeypatch):
+    """N3: one error stopped the watch's next wakes for nothing and three in ten minutes ended
+    the run. Now each failure in a row doubles a wait (0.2, 0.4, 0.8 s here, as 30 s to 15
+    min by default); the run stops only on failures that go on after a wait at the ceiling,
+    and says so. A failed opening is told again as the opening."""
+    monkeypatch.setenv("FAKE_SCENARIO", "error_always")
+    o = officer(tmp_path, fake_claude, [], seconds=15.0)
+    t0 = time.time()
+    assert asyncio.run(o.run()) == "errors"
+    assert time.time() - t0 >= 1.4, "it waited 0.2 + 0.4 + 0.8 s"
+    log = lines(tmp_path)
+    assert [x["wait_s"] for x in log if x["kind"] == "backoff"] == [0.2, 0.4, 0.8]
+    assert [x["failures_in_a_row"] for x in log if x["kind"] == "backoff"] == [1, 2, 3]
+    wakes = [x for x in log if x["kind"] == "wake"]
+    assert [w["reason"] for w in wakes] == ["start"] * 4, "the opening, told again each time"
+    assert all("Your watch starts now" in w["update"] for w in wakes)
+    err = [x for x in log if x["kind"] == "error"][-1]["error"]
+    assert err.startswith("errors: turns kept failing after a 1 s wait (4 in a row)"), err
+    assert all(isinstance(x.get("text"), str) and x["text"].strip() for x in log)
+
+
+def test_a_success_ends_the_back_off(fake_claude, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_SCENARIO", "error_once")
+    o = officer(tmp_path, fake_claude, [(1.0, {"kind": "review.flag", "flag": "F-1"})], seconds=5.0)
+    assert asyncio.run(o.run()) == "until"
+    log = lines(tmp_path)
+    assert [x["wait_s"] for x in log if x["kind"] == "backoff"] == [0.2]
+    assert [t["stop"] for t in log if t["kind"] == "turn"] == ["error", "success", "success"]
+    assert o.fail_streak == 0 and o.backoff_s == 0.0
+
+
+def test_repeated_crashes_stop_the_run_and_say_so(fake_claude, tmp_path, monkeypatch):
+    """N3: the stop reason says crashes, not errors; a crashed turn's cost is unknown and said."""
+    monkeypatch.setenv("FAKE_SCENARIO", "crash_always")
+    o = officer(tmp_path, fake_claude, [], seconds=15.0)
+    assert asyncio.run(o.run()) == "crashes"
+    log = lines(tmp_path)
+    crashed = [x for x in log if x["kind"] == "backend.crashed"]
+    assert len(crashed) == 4 and all(c["cost"].startswith("unknown") for c in crashed)
+    assert [x["wait_s"] for x in log if x["kind"] == "backoff"] == [0.2, 0.4, 0.8]
+    err = [x for x in log if x["kind"] == "error"][-1]["error"]
+    assert err == "crashes: the CLI died more than three times in ten minutes"
+
+
+def test_a_tool_the_cli_refused_is_logged_and_the_watch_goes_on(fake_claude, tmp_path, monkeypatch):
+    """N11: the live stream in which Claude Code refused the model a bash tool: the lockdown
+    working, logged as lockdown.refused, not a breach."""
+    monkeypatch.setenv("FAKE_SCENARIO", "refused")
+    o = officer(tmp_path, fake_claude, [], seconds=3.0)
+    assert asyncio.run(o.run()) == "until"
+    log = lines(tmp_path)
+    refused = [x for x in log if x["kind"] == "lockdown.refused"]
+    assert refused and refused[0]["tool"] == "bash" and "the CLI refused it" in refused[0]["text"]
+    assert not [x for x in log if x["kind"] == "lockdown.breach"]
+    turn = next(x for x in log if x["kind"] == "turn")
+    assert turn["stop"] == "success" and turn["context_tokens"] == 9403
+
+
+def test_a_tool_that_ran_outside_the_server_stops_the_run(fake_claude, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_SCENARIO", "breach")
+    o = officer(tmp_path, fake_claude, [], seconds=10.0)
+    assert asyncio.run(o.run()) == "lockdown"
+    log = lines(tmp_path)
+    turn = next(x for x in log if x["kind"] == "turn")
+    assert turn["stop"] == "lockdown" and turn["tool_calls"][0]["name"] == "Bash"
+    breach = next(x for x in log if x["kind"] == "lockdown.breach")
+    assert "Bash" in breach["error"] and "secrets" in breach["error"]
+    assert breach["text"].startswith("lockdown breach, the run stops")
+
+
+def test_a_change_with_nested_values_wakes_and_a_malformed_one_never_stops_the_watch(fake_claude, tmp_path):
+    """N1 end to end: a vehicle.nav change (its from and to are objects) raised TypeError in
+    the waker and ended the run; a change that cannot be judged is set aside and logged."""
+    nav = {"kind": "vehicle.nav", "uid": 4, "callsign": "HAWK 4", "domain": "air",
+           "from": {"ready": True, "source": "gnss"}, "to": {"ready": True, "source": "dead_reckoning"}}
+    o = officer(tmp_path, fake_claude, [(1.0, nav)], seconds=4.0)
+    scripted = o.poller.poll
+
+    async def poll():  # the feed also hands over something that is not a change at all
+        out = await scripted()
+        return out + ["not a change"] if out else out
+
+    o.poller.poll = poll
+    assert asyncio.run(o.run()) == "until"
+    log = lines(tmp_path)
+    wakes = [x for x in log if x["kind"] == "wake"]
+    assert [w["reason"] for w in wakes] == ["start", "changes"]
+    assert "HAWK 4" in wakes[1]["update"] and "dead_reckoning" in wakes[1]["update"]
+    dropped = [x for x in log if x["kind"] == "change.dropped"]
+    assert [d["change"] for d in dropped] == ["not a change"] and dropped[0]["error"]
+    assert not [x for x in log if x["kind"] == "error"]
+
+
+def test_the_run_dir_check_resolves_a_symlinked_home_and_temp(tmp_path, monkeypatch):
+    """N10: a home reached by a symlink was not recognised, so its ~/.claude counted as a
+    project's and every run directory under it was refused; mkdtemp's path is resolved."""
+    real = tmp_path / "h" / "real"
+    (real / ".claude").mkdir(parents=True)
+    (real / "work").mkdir()
+    link = tmp_path / "hl"
+    link.symlink_to(real)
+    monkeypatch.setenv("HOME", str(link))
+    assert W.run_dir_problems(link / "work" / "w") == []
+    assert W.run_dir_problems(real / "work" / "w") == []
+    monkeypatch.setenv("TMPDIR", str(link / "work"))
+    import tempfile
+
+    monkeypatch.setattr(tempfile, "tempdir", None)  # read TMPDIR again
+    d = W.make_run_dir(None)
+    assert d == d.resolve() and d.parent == (real / "work") and d.stat().st_mode & 0o777 == 0o700
+    # a project's .claude above the run directory is still refused
+    (real / "work" / "proj" / ".claude").mkdir(parents=True)
+    assert W.run_dir_problems(link / "work" / "proj" / "w") == [str(real / "work" / "proj" / ".claude")]

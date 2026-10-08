@@ -4,7 +4,8 @@
 
 Behaviour by environment:
     FAKE_STATE            directory: every invocation appends {argv, env flags} to calls.jsonl
-    FAKE_SCENARIO         ok (default) | limit | limit_later | crash | foreign
+    FAKE_SCENARIO         ok (default) | limit | limit_later | crash | foreign | unknown
+                          (unknown: an item of a type the backend does not know, then ok)
     FAKE_VERSION          what --version prints (default codex-cli 0.161.0)
     FAKE_LOGGED_OUT       set: `login status` says not logged in
 """
@@ -69,6 +70,12 @@ if scenario == "foreign":
     emit({"type": "item.completed", "item": {"id": "item_2", "type": "agent_message", "text": "Done."}})
     emit({"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 1}})
     sys.exit(0)
+if scenario == "unknown":
+    # a later Codex's new item type: recorded, the turn goes on
+    emit({"type": "item.completed", "item": {"id": "item_9", "type": "collab_note", "text": "thinking aloud"}})
+    # a call whose server field is missing, naming a Murmur tool
+    emit({"type": "item.completed", "item": {"id": "item_8", "type": "mcp_tool_call", "tool": "get_tracks",
+                                             "arguments": {}, "status": "completed"}})
 if scenario in ("limit", "limit_later"):
     emit({"type": "error", "message": "stream disconnected, retrying"})
     when = "later" if scenario == "limit_later" else "at 3:42 PM"
