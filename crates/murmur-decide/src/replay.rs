@@ -384,13 +384,16 @@ pub(crate) struct Restores {
 }
 
 /// Rules 12: a platform spent by its own effect in this run: the engagement whose release spent
-/// it, the values its closure closed (rules 15: owed back again if it is un-spent) and the
-/// vehicle they were preloaded on.
+/// it, the values its closure closed (rules 15: owed back again if it is un-spent), the vehicle
+/// they were preloaded on, when it was marked and whether that engagement has ended.
 #[derive(Clone, Debug)]
 struct Spent {
     by: IntentId,
     values: BTreeMap<String, f64>,
     vehicle: Option<engage::VehicleIdentity>,
+    /// Rules 15: when it was marked (the closure's time) and whether its engagement ended since.
+    t: Option<Time>,
+    ended: bool,
 }
 
 /// Rules 12: an earlier log whose carry failed: why, and the armed platforms its run's fleet
@@ -608,17 +611,23 @@ impl Restores {
         self.carry(from);
     }
 
-    /// Rules 12: a debt closed without a restore (`restore.closed`): a platform's values (and,
-    /// `expended`, the platform spent by that engagement's effect, with what was closed), or a
-    /// pending log.
-    pub(crate) fn close(&mut self, uid: Option<&Uid>, log: Option<&str>, expended: Option<IntentId>) {
+    /// Rules 12: a debt closed without a restore (`restore.closed`) at `t`: a platform's values
+    /// (and, `expended`, the platform spent by that engagement's effect, with what was closed),
+    /// or a pending log.
+    pub(crate) fn close(&mut self, uid: Option<&Uid>, log: Option<&str>, expended: Option<IntentId>, t: Option<Time>) {
         if let Some(u) = uid {
             let was = self.owed.remove(u);
             if let Some(id) = expended {
                 let (values, vehicle) = was.map(|o| (o.values, o.vehicle)).unwrap_or_default();
                 self.expended.insert(
                     u.clone(),
-                    Spent { by: id, values, vehicle },
+                    Spent {
+                        by: id,
+                        values,
+                        vehicle,
+                        t,
+                        ended: false,
+                    },
                 );
                 // spent again in this run: this run's mark stands
                 self.spent_carried.remove(u);
@@ -626,6 +635,14 @@ impl Restores {
         }
         if let Some(l) = log {
             self.pending.remove(l);
+        }
+    }
+
+    /// Rules 15: intent `id` reached a terminal state: a platform its effect spent counts its
+    /// engagement as ended (a later run's un-spend need not wait out its assessment window).
+    pub(crate) fn intent_ended(&mut self, id: IntentId) {
+        for s in self.expended.values_mut().filter(|s| s.by == id) {
+            s.ended = true;
         }
     }
 
@@ -645,6 +662,8 @@ impl Restores {
                 values: s.values.clone(),
                 vehicle: s.vehicle.clone(),
                 started: self.started_t,
+                spent_t: s.t,
+                ended: s.ended,
             });
         }
         self.spent_carried.get(uid).map(|s| SpentMark {
@@ -653,6 +672,8 @@ impl Restores {
             values: s.values.clone(),
             vehicle: s.vehicle.clone(),
             started: self.started_t,
+            spent_t: s.spent_t,
+            ended: s.ended,
         })
     }
 
@@ -758,6 +779,8 @@ impl Restores {
                 from: None,
                 values: s.values.clone(),
                 vehicle: s.vehicle.clone(),
+                spent_t: s.t,
+                ended: s.ended,
             })
             .chain(self.spent_carried.values().cloned())
             .collect()
@@ -911,16 +934,25 @@ impl Restores {
                     crate::audit::RestoreClosure::Expended { intent } => Some(*intent),
                     crate::audit::RestoreClosure::WrittenOff { .. } => None,
                 },
+                None,
             ),
             EventBody::PlatformUnspent { uid, .. } => self.unspend(uid),
+            EventBody::IntentState { intent, to, .. } if to.is_terminal() => self.intent_ended(*intent),
             _ => {}
         }
     }
 
-    /// [`Self::step_body`] for an event logged at `t` (a carry keeps the run's start).
+    /// [`Self::step_body`] for an event logged at `t` (a carry keeps the run's start, a spent
+    /// mark when it was set).
     pub(crate) fn step_at(&mut self, t: Time, body: &EventBody) {
         match body {
             EventBody::RunStarted { carried_from, .. } => self.carry_at(t, carried_from),
+            EventBody::RestoreClosed {
+                uid,
+                log,
+                closed_by: crate::audit::RestoreClosure::Expended { intent },
+                ..
+            } => self.close(uid.as_ref(), log.as_deref(), Some(*intent), Some(t)),
             _ => self.step_body(body),
         }
     }
@@ -1041,11 +1073,21 @@ pub struct SpentPlatform {
     pub values: BTreeMap<String, f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vehicle: Option<engage::VehicleIdentity>,
+    /// When it was marked spent (its engagement's expended `restore.closed`, right after the
+    /// release): the engagement's assessment window counts from no earlier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spent_t: Option<Time>,
+    /// Whether the engagement that spent it ended in the log it was spent in (a crash, or a
+    /// stop, inside its assessment window leaves it unended: a later run's un-spend then waits
+    /// out the window, [`SpentMark::refusal`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ended: bool,
 }
 
 /// Rules 15: a spent mark as an un-spend reads it ([`Restores::spent_mark`]): the engagement
 /// that spent it, the earlier log of a carried mark, the values the mark closed, the vehicle
-/// they were preloaded on (the one spent), and for a carried mark the start of this run.
+/// they were preloaded on (the one spent), this run's start, and when it was marked spent and
+/// whether its engagement ended in the log it was spent in.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SpentMark {
     pub by: IntentId,
@@ -1053,6 +1095,9 @@ pub(crate) struct SpentMark {
     pub values: BTreeMap<String, f64>,
     pub vehicle: Option<engage::VehicleIdentity>,
     pub started: Option<Time>,
+    /// When it was marked spent, and whether its engagement ended in the log it was spent in.
+    pub spent_t: Option<Time>,
+    pub ended: bool,
 }
 
 impl SpentMark {
@@ -1068,13 +1113,15 @@ impl SpentMark {
     /// Rules 15: why the mark can't be lifted on the platform's facts `v` as the world read them
     /// at `t`, and the bridge's identity `now` of the vehicle under the uid, if it can't. The
     /// engagement that spent it must have ended (`ended`: its terminal transition, this run's
-    /// mark; a carried mark's engagement ended with its run, so it counts from this run's
-    /// start), the platform heard after that (its heartbeat, position or navigation status
+    /// mark), the platform heard after that (its heartbeat, position or navigation status
     /// reported later: a munition's own reports in its last seconds, before its assessment, are
     /// not), its link not silent now (heard within the link-aware fact age limit the checks
     /// use), and the vehicle now the one that was spent (platform, callsign and system id, never
-    /// the home). The engine refuses an un-spend on it, replay recomputes it from the logged
-    /// facts, and the bridge's alert offers the un-spend only when it is none.
+    /// the home). A carried mark counts from this run's start when its engagement ended in its
+    /// log; when it did not (a crash or a stop inside the assessment window), from the latest it
+    /// would have ended, as unknown, if later: when it was marked plus `assess_window_s`. The
+    /// engine refuses an un-spend on it, replay recomputes it from the logged facts, and the
+    /// bridge's alert offers the un-spend only when it is none.
     pub(crate) fn refusal(
         &self,
         ended: Option<Time>,
@@ -1083,6 +1130,9 @@ impl SpentMark {
         t: Time,
         cfg: &crate::rules::RulesConfig,
     ) -> Option<String> {
+        // since when it must have been heard: its engagement's end, or the latest it would have
+        // ended (a carried mark whose engagement did not end in its log)
+        let mut since = "engagement {by} ended";
         let ended = match (&self.from, ended, self.started) {
             (None, Some(e), _) => e,
             (None, None, _) => {
@@ -1091,7 +1141,21 @@ impl SpentMark {
                     self.by
                 ));
             }
-            (Some(_), _, Some(s)) => s,
+            (Some(_), _, Some(s)) if self.ended => s,
+            (Some(_), _, Some(s)) => {
+                let Some(marked) = self.spent_t else {
+                    return Some(format!(
+                        "engagement {} that spent it did not end in its log and when it was spent is not known: it can't be told the engagement is over",
+                        self.by
+                    ));
+                };
+                let window = (cfg.engage_rules().assess_window_s * 1000.0).round() as i64;
+                let bound = marked.plus_ms(window);
+                if bound > s {
+                    since = "the latest engagement {by} would have ended (its assessment window from when it spent it: it did not end in its log)";
+                }
+                s.max(bound)
+            }
             (Some(_), _, None) => return Some("this run's start is not known".into()),
         };
         let Some(v) = v else {
@@ -1099,9 +1163,12 @@ impl SpentMark {
         };
         let Some(heard) = v.heard_t().filter(|h| *h > ended) else {
             return Some(format!(
-                "it has not been heard since engagement {} ended (last heard {}): un-spend it once it answers",
-                self.by,
-                v.heard_t().map_or("never".to_string(), |h| format!("{:.1} s before that", ended.ms_since(h) as f64 / 1000.0))
+                "it has not been heard since {} (last heard {}): un-spend it once it answers",
+                since.replace("{by}", &self.by.to_string()),
+                v.heard_t().map_or("never".to_string(), |h| match ended.ms_since(h) {
+                    0 => "then".to_string(),
+                    d => format!("{:.1} s before that", d as f64 / 1000.0),
+                })
             ));
         };
         let (limit, _) = cfg.fact_age_limit_ms(v.report_interval_ms);
@@ -3348,6 +3415,7 @@ fn replay_inner<S: AsRef<str>>(
                 tr.state = *to;
                 if to.is_terminal() {
                     tr.ended_t.get_or_insert(e.t);
+                    restores.intent_ended(*intent);
                 }
             }
             EventBody::IntentDispatched {
@@ -4504,7 +4572,7 @@ fn replay_inner<S: AsRef<str>>(
                     crate::audit::RestoreClosure::Expended { intent } => Some(*intent),
                     crate::audit::RestoreClosure::WrittenOff { .. } => None,
                 };
-                restores.close(uid.as_ref(), log.as_deref(), expended);
+                restores.close(uid.as_ref(), log.as_deref(), expended, Some(e.t));
             }
             EventBody::PlatformUnspent {
                 uid,
@@ -6109,7 +6177,12 @@ fn check_carried_from(r: &mut ReplayReport, events: &[Event], opts: &ReplayOptio
         if named.contains(&c.log.as_str()) {
             bad(r, first, None, "a log carried over from twice in one start", c.log.clone(), String::new());
         }
-        if i > 0 && !carried_from[..i].iter().any(|p| p.pending.contains(&c.log)) {
+        // rules 15: the logs a start found in the pointer's place and would not carry from (each
+        // a failed carry naming why the pointer failed) come first, in place of the pointer
+        let found_in_place = rules15
+            && c.pointer_failed.is_some()
+            && carried_from[..=i].iter().all(|p| p.pointer_failed.is_some() && (i == 0 || p.error.is_some()));
+        if i > 0 && !found_in_place && !carried_from[..i].iter().any(|p| p.pending.contains(&c.log)) {
             bad(
                 r,
                 first,
@@ -6137,12 +6210,12 @@ fn check_carried_from(r: &mut ReplayReport, events: &[Event], opts: &ReplayOptio
         }
         // rules 15: a fallback stands for the pointer (the first entry) of a station that names
         // its pointer; the platforms a failed carry may owe come from the fleet file it read
-        if c.pointer_failed.is_some() && (i > 0 || pointer.is_none() || !rules15) {
+        if c.pointer_failed.is_some() && (!found_in_place || pointer.is_none()) {
             bad(
                 r,
                 first,
                 None,
-                "a carry from a log found in place of a pointer that could not be read, other than the first, or by a run that names no pointer (rules 15)",
+                "a carry from a log found in place of a pointer that could not be read, other than the first (or the failed carries the start found there with it), or by a run that names no pointer (rules 15)",
                 c.log.clone(),
                 json(pointer),
             );
@@ -6150,7 +6223,9 @@ fn check_carried_from(r: &mut ReplayReport, events: &[Event], opts: &ReplayOptio
         // rules 15: a failed carry's may-owe list comes from the fleet file it read, or (a pending
         // log tried again whose fleet file is gone too) from what the log that named it pending
         // recorded for it, compared when that log is at hand
-        if rules15 && c.error.is_some() && !c.may_owe.is_empty() && c.fleet_read.is_none() {
+        // (a log found in place of the pointer and not carried from also holds what it owed or
+        // had spent, read from it: checked against it below)
+        if rules15 && c.error.is_some() && !c.may_owe.is_empty() && c.fleet_read.is_none() && !found_in_place {
             match carried_from[..i].iter().find(|p| p.pending.contains(&c.log)) {
                 None => bad(
                     r,
@@ -6221,10 +6296,35 @@ fn check_carried_from(r: &mut ReplayReport, events: &[Event], opts: &ReplayOptio
             // recorded failed, yet the log is at hand: what it owed was not carried; a log that
             // owed something is a mismatch (its failure can't be told from a forged one), unless
             // trusted. Rules 15: not a log found in place of the pointer that the start would not
-            // carry from (its chain or anchors did not check, or a newer log could not be ruled
-            // out): it was read and not trusted, and it stays pending, its armed platforms held,
-            // so nothing it owed drops unsaid (a broken chain confirms the refusal)
+            // carry from (its chain or anchors did not check, or another log could be the one the
+            // pointer named): it stays pending, and it must hold every platform it owed values
+            // to, had spent or held for a failed carry of its own (`may_owe`), so nothing it owed
+            // drops unsaid for this run
             let refused_fallback = rules15 && c.pointer_failed.is_some();
+            if refused_fallback && let Some(t) = text {
+                let d = owed_debts(t);
+                let unheld: Vec<&Uid> = d
+                    .owed
+                    .iter()
+                    .map(|o| &o.uid)
+                    .chain(d.spent.iter().map(|sp| &sp.uid))
+                    .chain(d.pending_may_owe.values().flatten().map(|m| &m.uid))
+                    .filter(|u| !c.may_owe.iter().any(|m| &m.uid == *u))
+                    .collect();
+                if !unheld.is_empty() {
+                    bad(
+                        r,
+                        first,
+                        None,
+                        &format!(
+                            "{} was found in place of the pointer and not carried from, yet does not hold every platform it owed values to, had spent or held (rules 15)",
+                            c.log
+                        ),
+                        json(&c.may_owe.iter().map(|m| &m.uid).collect::<Vec<_>>()),
+                        json(&unheld),
+                    );
+                }
+            }
             let readable = text
                 .and_then(|t| parse_log(t).ok().filter(|ev| !ev.is_empty()).map(|_| owed_debts(t)))
                 .filter(|d| !d.is_empty() || (rules15 && !d.spent.is_empty()));
@@ -6468,7 +6568,14 @@ fn check_fleet_read(
         bad(r, first, None, "the fleet file given is not the one the failed carry read (its SHA-256 differs)", f.sha256.clone(), hash);
     }
     let want = fleet_may_owe(bytes, &f.armed);
-    if want.as_ref() != Some(&c.may_owe) {
+    // rules 15: a log found in place of the pointer and not carried from holds its fleet's armed
+    // platforms and also what the log itself owed or had spent (checked against the log)
+    let fits = match (&want, c.pointer_failed.is_some()) {
+        (Some(w), true) => w.iter().all(|m| c.may_owe.iter().any(|x| x.uid == m.uid)),
+        (w, false) => w.as_ref() == Some(&c.may_owe),
+        (None, true) => false,
+    };
+    if !fits {
         bad(
             r,
             first,

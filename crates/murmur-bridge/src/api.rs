@@ -437,8 +437,9 @@ async fn write_off(State(app): State<App>, headers: HeaderMap, body: Bytes) -> R
 /// own lost-link values are owed back again (a mission waits for the restore). In a credentials
 /// run it makes an armed platform taskable again, so it re-enters the credential (`"password"`,
 /// or `"passkey"`: an assertion made for this un-spend, `/api/auth/step_up {"act": "unspend",
-/// "uid": n}`), checked and dropped here, never logged or echoed. 401 without a valid step-up,
-/// 403 without engagement authority, 409 for a platform not spent or one the rules refuse now.
+/// "uid": n}`), checked and dropped here, never logged or echoed. In that order: 403 without
+/// engagement authority, 409 for a platform not spent or one the rules refuse now (a dry check:
+/// nothing logged, no credential asked for), then 401 without a valid step-up.
 async fn unspend(State(app): State<App>, headers: HeaderMap, body: Bytes) -> Response {
     #[derive(Deserialize)]
     struct Unspend {
@@ -463,8 +464,9 @@ async fn unspend(State(app): State<App>, headers: HeaderMap, body: Bytes) -> Res
         Ok(op) => op,
         Err(e) => return decision_error(e),
     };
-    // only engagement authority un-spends: said before any credential is asked for
-    if let Err(e) = app.decision.may_unspend(&op) {
+    // only engagement authority un-spends, and only what the rules take now: both said before
+    // any credential is asked for (a refused un-spend never takes, nor counts, a password)
+    if let Err(e) = app.decision.unspend_check(&op, req.uid) {
         return decision_error(e);
     }
     let proof = crate::auth::Proof {

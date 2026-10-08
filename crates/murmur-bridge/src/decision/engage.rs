@@ -255,9 +255,10 @@ pub(super) struct CarryReading<'a> {
 /// own file name (the log it named is unknown: it stays owed until written off); rules 15: unless
 /// this station has a log ([`fallback_log`]): the newest by its carry chain is carried from in the
 /// pointer's place when its chain and anchors check and no newer log could be the one the pointer
-/// named (`pointer_failed` says why the pointer failed), else it is a failed carry under its own
-/// name, its armed platforms held (fail closed) and pending, so the next start reads it and what
-/// it owed for. A pointer of two identical lines names that log. Empty: no pointer (a first
+/// named (`pointer_failed` says why the pointer failed), else it, and every log that could be the
+/// one the pointer named, is a failed carry under its own name, holding the armed platforms of
+/// its fleet and the platforms it owed values to or had spent ([`refused_holds`]: fail closed),
+/// and pending, so the next start reads it and what it owed for. A pointer of two identical lines names that log. Empty: no pointer (a first
 /// start). Never an error: a start is never stopped by what the last one left behind.
 pub(super) fn read_carry(pointer: &std::path::Path, r: &CarryReading<'_>) -> Vec<murmur_decide::replay::CarriedFrom> {
     let pointer_name = pointer
@@ -269,16 +270,21 @@ pub(super) fn read_carry(pointer: &std::path::Path, r: &CarryReading<'_>) -> Vec
             let dir = pointer.parent().unwrap_or_else(|| std::path::Path::new("."));
             match fallback_log(dir, &pointer_name, r.anchors_dir) {
                 PointerFallback::Carry(path) => return carry_chain(path, Some(why), r),
-                PointerFallback::Refused { log, why: refused } => {
-                    let (may_owe, fleet_read) = armed_of(&log, r);
-                    return vec![murmur_decide::replay::CarriedFrom {
-                        log: log.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default(),
-                        error: Some(refused),
-                        pointer_failed: Some(why),
-                        may_owe,
-                        fleet_read,
-                        ..Default::default()
-                    }];
+                PointerFallback::Refused(candidates) => {
+                    return candidates
+                        .into_iter()
+                        .map(|(log, refused)| {
+                            let (may_owe, fleet_read) = refused_holds(&log, r);
+                            murmur_decide::replay::CarriedFrom {
+                                log: log.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default(),
+                                error: Some(refused),
+                                pointer_failed: Some(why.clone()),
+                                may_owe,
+                                fleet_read,
+                                ..Default::default()
+                            }
+                        })
+                        .collect();
                 }
                 PointerFallback::None(none) => format!("{why}; {none}"),
             }
@@ -379,9 +385,10 @@ fn carry_chain(
 enum PointerFallback {
     /// This station's newest log, which checks: carried from in the pointer's place.
     Carry(std::path::PathBuf),
-    /// This station's newest log, which the start won't carry from (`why`): a failed carry
-    /// under its own name, its armed platforms held and pending (fail closed).
-    Refused { log: std::path::PathBuf, why: String },
+    /// This station's newest log, which the start won't carry from, and every log that may be
+    /// the one the pointer named (each with why): failed carries under their own names, their
+    /// platforms held and pending (fail closed).
+    Refused(Vec<(std::path::PathBuf, String)>),
     /// No log of this station: the pointer is a failed carry, as before (why).
     None(String),
 }
@@ -410,10 +417,11 @@ struct LogHead {
 /// names this pointer, its hash chain holds and it checks against its own anchors (every
 /// problem but the shutdown anchor a crashed run never wrote), and no other log in the
 /// directory that names no pointer, or whose first line does not parse, could be newer (started,
-/// or for one that does not parse last written, after it less the margin): such a log may be the
-/// one the pointer named. Otherwise it is refused (a failed carry under its own name: fail
-/// closed). Logs of other stations sharing the directory (naming another pointer) are never
-/// looked at further.
+/// or for one that does not parse last written, after it less the margin), and no fleet or
+/// anchors file as new is left by a log that is gone: such a log may be the one the pointer
+/// named. Otherwise it is refused, and so is every such log (failed carries under their own
+/// names: fail closed). Logs of other stations sharing the directory (naming another pointer)
+/// are never looked at further.
 fn fallback_log(dir: &std::path::Path, pointer_name: &str, anchors_dir: Option<&std::path::Path>) -> PointerFallback {
     use std::io::BufRead as _;
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -483,27 +491,24 @@ fn fallback_log(dir: &std::path::Path, pointer_name: &str, anchors_dir: Option<&
         return PointerFallback::None("no log of this station that no later one carried from".into());
     };
     let t = newest.started.as_ref().map_or(murmur_decide::Time(0), |(t, _, _)| *t);
-    let refuse = |why: String| PointerFallback::Refused {
-        log: newest.path.clone(),
-        why: format!("found in place of the pointer, not carried from: {why}"),
-    };
-    if let Some(next) = tips.get(1)
-        && next.started.as_ref().is_some_and(|(u, _, _)| t.ms_since(*u) <= FALLBACK_CLOCK_MARGIN_MS)
-    {
-        return refuse(format!(
-            "{} and {} both end this station's carry chain and started too close together to tell which is newer",
-            newest.name, next.name
-        ));
-    }
-    if newest.started.as_ref().is_none_or(|(_, p, _)| p.as_deref() != Some(pointer_name)) {
-        return refuse(format!(
-            "{} is this station's newest log by its carry chain but names no pointer (an older build): its anchors are not checked here",
-            newest.name
-        ));
-    }
-    // a log that may be newer and can't be placed: the pointer may have named it
     let since = t.0 - FALLBACK_CLOCK_MARGIN_MS;
-    if let Some(other) = logs.iter().find(|l| {
+    // every log that may be the one the pointer named, besides the newest: another end of the
+    // station's chain started too close to it to tell which is newer, a log that names no
+    // pointer or does not parse and is as new, and (a log deleted) an anchors or fleet file as new
+    // whose log is not there; each is recorded too (fail closed), so its debts don't drop
+    let mut others: Vec<(std::path::PathBuf, String)> = Vec::new();
+    for next in tips.iter().skip(1) {
+        if next.started.as_ref().is_some_and(|(u, _, _)| t.ms_since(*u) <= FALLBACK_CLOCK_MARGIN_MS) {
+            others.push((
+                next.path.clone(),
+                format!(
+                    "found in place of the pointer, not carried from: {} and {} both end this station's carry chain and started too close together to tell which is newer: it may be the log the pointer named",
+                    next.name, newest.name
+                ),
+            ));
+        }
+    }
+    for other in logs.iter().filter(|l| {
         !station.contains(&l.name)
             && match &l.started {
                 Some((u, None, _)) => u.0 >= since,
@@ -512,32 +517,134 @@ fn fallback_log(dir: &std::path::Path, pointer_name: &str, anchors_dir: Option<&
             }
     }) {
         let what = if other.started.is_some() { "names no pointer" } else { "does not start with a run.started that parses" };
-        return refuse(format!(
-            "{} is as new as {} or newer and {what}: it may be the log the pointer named",
-            other.name, newest.name
+        others.push((
+            other.path.clone(),
+            format!(
+                "found in place of the pointer, not carried from: {} is as new as {} (this station's newest log by its carry chain) or newer and {what}: it may be the log the pointer named",
+                other.name, newest.name
+            ),
         ));
     }
+    for (stem, what) in orphans(dir, anchors_dir, &logs, since) {
+        others.push((
+            dir.join(format!("{stem}.jsonl")),
+            format!(
+                "found in place of the pointer, not carried from: its {what} is here, as new as {} or newer, but the log is not: it may be the log the pointer named",
+                newest.name
+            ),
+        ));
+    }
+    let refuse = |why: String, others: Vec<(std::path::PathBuf, String)>| {
+        let mut all = vec![(newest.path.clone(), format!("found in place of the pointer, not carried from: {why}"))];
+        all.extend(others);
+        PointerFallback::Refused(all)
+    };
+    if let Some((_, first)) = others.first() {
+        let why = first
+            .strip_prefix("found in place of the pointer, not carried from: ")
+            .unwrap_or(first)
+            .replace(": it may be the log the pointer named", ", which may be the log the pointer named");
+        return refuse(why, others);
+    }
+    if newest.started.as_ref().is_none_or(|(_, p, _)| p.as_deref() != Some(pointer_name)) {
+        return refuse(
+            format!(
+                "{} is this station's newest log by its carry chain but names no pointer (an older build): its anchors are not checked here",
+                newest.name
+            ),
+            Vec::new(),
+        );
+    }
     let Some(anchors_dir) = anchors_dir else {
-        return refuse("this run keeps no anchors to check it by".into());
+        return refuse("this run keeps no anchors to check it by".into(), Vec::new());
     };
     let text = match std::fs::read_to_string(&newest.path) {
         Ok(t) => t,
-        Err(e) => return refuse(format!("{} can't be read ({e})", newest.name)),
+        Err(e) => return refuse(format!("{} can't be read ({e})", newest.name), Vec::new()),
     };
     // up to its last complete event (a crash may have torn a line after it)
     let text = murmur_decide::replay::up_to_seq(&text, murmur_decide::replay::log_head(&text).map(|(_, s)| s));
     if let Some(why) = murmur_decide::replay::chain_problem(&text) {
-        return refuse(format!("{} does not check: its hash chain ({why})", newest.name));
+        return refuse(format!("{} does not check: its hash chain ({why})", newest.name), Vec::new());
     }
     let stem = newest.name.strip_suffix(".jsonl").unwrap_or(&newest.name);
     let anchors = match std::fs::read_to_string(anchors_dir.join(format!("{stem}.anchors"))) {
         Ok(a) => a,
-        Err(e) => return refuse(format!("{} has no anchors to check it by ({e})", newest.name)),
+        Err(e) => return refuse(format!("{} has no anchors to check it by ({e})", newest.name), Vec::new()),
     };
     if let Some(why) = super::queue::anchors_refuse(&text, &anchors) {
-        return refuse(format!("{} does not check against its anchors ({why})", newest.name));
+        return refuse(format!("{} does not check against its anchors ({why})", newest.name), Vec::new());
     }
     PointerFallback::Carry(newest.path.clone())
+}
+
+/// Rules 15 (review): the stems of logs that are gone though what they left beside them is here
+/// and as new as `since` (ms since the epoch, by modification time): a `<stem>.fleet.json` in
+/// the log directory or a `<stem>.anchors` in the anchors directory whose `<stem>.jsonl` is not
+/// among `logs`. A deleted newest log would otherwise leave its predecessor as the chain's end,
+/// carried from silently. With what was found (its fleet file, its anchors), in stem order.
+fn orphans(
+    dir: &std::path::Path,
+    anchors_dir: Option<&std::path::Path>,
+    logs: &[LogHead],
+    since: i64,
+) -> Vec<(String, &'static str)> {
+    let mut out: BTreeMap<String, &'static str> = BTreeMap::new();
+    let newer = |ent: &std::fs::DirEntry| {
+        ent.metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+            .and_then(|d| i64::try_from(d.as_millis()).ok())
+            .is_none_or(|m| m >= since)
+    };
+    let gone = |stem: &str| murmur_decide::replay::is_log_file_name(&format!("{stem}.jsonl")) && !logs.iter().any(|l| l.name == format!("{stem}.jsonl"));
+    for (d, suffix, what) in [(Some(dir), ".fleet.json", "fleet file"), (anchors_dir, ".anchors", "anchors file")] {
+        let Some(entries) = d.and_then(|d| std::fs::read_dir(d).ok()) else { continue };
+        for ent in entries.flatten() {
+            let name = ent.file_name().to_string_lossy().into_owned();
+            if let Some(stem) = name.strip_suffix(suffix)
+                && gone(stem)
+                && newer(&ent)
+            {
+                out.entry(stem.to_string()).or_insert(what);
+            }
+        }
+    }
+    out.into_iter().collect()
+}
+
+/// Rules 15 (review): what a log the start found in the pointer's place, and would not carry
+/// from, is recorded as possibly owing (`may_owe`, values unknown; held until it is read or
+/// written off): the armed platforms of its fleet file ([`armed_of`], with the file as read),
+/// and, when the log reads, every platform it still owed values to, had spent, or held for a
+/// failed carry of its own, each as the vehicle that log names. Without the fleet file a log
+/// that reads still holds what it owed (fail closed), and replay checks that it does.
+fn refused_holds(
+    log: &std::path::Path,
+    r: &CarryReading<'_>,
+) -> (Vec<murmur_decide::replay::OwedRestore>, Option<murmur_decide::replay::FleetRead>) {
+    let (mut may_owe, fleet_read) = armed_of(log, r);
+    if let Ok(text) = std::fs::read_to_string(log) {
+        let d = murmur_decide::replay::owed_debts(&text);
+        let held = d
+            .owed
+            .into_iter()
+            .map(|o| (o.uid, o.vehicle))
+            .chain(d.spent.into_iter().map(|sp| (sp.uid, sp.vehicle)))
+            .chain(d.pending_may_owe.into_values().flatten().map(|m| (m.uid, m.vehicle)));
+        for (uid, vehicle) in held {
+            if !may_owe.iter().any(|m| m.uid == uid) {
+                may_owe.push(murmur_decide::replay::OwedRestore {
+                    uid,
+                    values: BTreeMap::new(),
+                    by: Vec::new(),
+                    vehicle,
+                });
+            }
+        }
+    }
+    (may_owe, fleet_read)
 }
 
 /// Rules 12: a pending carry as the inbox names it: an earlier log, or a `.last-run` pointer
@@ -1262,9 +1369,12 @@ impl Decision {
         Ok(out)
     }
 
-    /// Rules 15: whether `by` may un-spend a platform at all (engagement authority): the API
-    /// answers 403 before it asks for a credential.
-    pub fn may_unspend(&self, by: &super::Actor) -> Result<(), DecisionError> {
+    /// Rules 15: whether `by` may un-spend `uid` now, as a dry check that logs nothing: 403
+    /// without engagement authority, 409 for a platform not spent or one the rules refuse now
+    /// ([`murmur_decide::Engine::unspend_refusal`]). The API answers these before it asks for a
+    /// credential, so a refused un-spend never takes a password (nor counts a wrong one).
+    pub fn unspend_check(&self, by: &super::Actor, uid: crate::vehicle::Uid) -> Result<(), DecisionError> {
+        let world = self.snapshot();
         let mut guard = self.lock();
         let core = &mut *guard;
         let session = Self::session(&mut core.engine, &mut core.sessions, &core.logins, by, &self.engage_operators, self.auth)?;
@@ -1274,7 +1384,15 @@ impl Decision {
                 format!("{by} has no engagement authority: only an operator with it un-spends a platform"),
             ));
         }
-        Ok(())
+        match core.engine.unspend_refusal(
+            &duid(uid),
+            world.vehicles.get(&duid(uid)),
+            world.identities.get(&duid(uid)),
+            world.t,
+        ) {
+            Some(why) => Err(DecisionError::new(409, format!("un-spend: vehicle {uid}: {why}"))),
+            None => Ok(()),
+        }
     }
 
     /// Rules 15: what a passkey un-spend of `uid` is for (`/api/auth/step_up {"act": "unspend"}`).

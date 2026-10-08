@@ -932,9 +932,10 @@ async fn an_injected_act_on_the_simulation_channel_is_refused() {
 /// Rules 15 (decided): an un-spend makes an armed platform taskable again, so in a credentials
 /// run it re-enters the credential, as accepting a lost friendly does. The FPV under uid 1 was
 /// spent by its own effect in an earlier run (the mark carried into `run-1.jsonl`, carried over
-/// at this start) and is heard in this one: op-1 (no engagement authority) is refused before any
-/// credential is asked for; op-2 without the password and with a wrong one gets a 401 that asks
-/// for the step-up, nothing un-spent; with their own password it is un-spent, the step-up quoted
+/// at this start) and is heard in this one. In order: op-1 (no engagement authority) is refused
+/// (403) and an un-spend the rules refuse answers 409, both before any credential is asked for;
+/// op-2 without the password and with a wrong one gets a 401 that asks for the step-up, nothing
+/// un-spent; with their own password it is un-spent, the step-up quoted
 /// in the log, which replays authenticated against the log it carried from.
 #[tokio::test]
 async fn an_unspend_steps_up_through_the_api() {
@@ -950,6 +951,9 @@ async fn an_unspend_steps_up_through_the_api() {
             sysid: None,
             home: None,
         }),
+        spent_t: Some(snapshot::ms(super::T0_S).plus_ms(-600_000)),
+        // its engagement ended in run-0 (assessed)
+        ended: true,
     };
     let run1 = MemorySink::new();
     murmur_decide::Engine::start(
@@ -986,6 +990,12 @@ async fn an_unspend_steps_up_through_the_api() {
     let note = "still reporting after its engagement ended: the effect missed";
     let (s, v) = h.post(&op1, "/api/restores/unspend", json!({ "uid": 1, "note": note, "password": PW1 })).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    // (second review) the rules' refusal comes before the credential: an un-spend the rules
+    // refuse answers 409 with no password asked for and none checked or counted
+    let (s, v) = h.post(&op2, "/api/restores/unspend", json!({ "uid": 7, "note": note, "password": "not op two's password" })).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["step_up"].is_null(), "{v}");
+    assert!(!h.log().contains("unspend vehicle 7"), "no step-up asked for or refused");
     let (s, v) = h.post(&op2, "/api/restores/unspend", json!({ "uid": 1, "note": note })).await;
     assert_eq!((s, v["step_up"].clone()), (StatusCode::UNAUTHORIZED, json!(true)), "{v}");
     let (s, v) = h.post(&op2, "/api/restores/unspend", json!({ "uid": 1, "note": note, "password": "not op two's password" })).await;

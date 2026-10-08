@@ -5057,6 +5057,11 @@ impl Engine {
             to,
             reason: reason.clone(),
         })?;
+        // rules 15: an engagement that spent a platform has ended (a later run need not wait out
+        // its assessment window before an un-spend)
+        if to.is_terminal() {
+            self.restores.intent_ended(id);
+        }
         self.get_mut(id)?
             .apply(transition, t, reason)
             .map_err(|err| EngineError::Illegal { id, err })
