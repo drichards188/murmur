@@ -48,7 +48,6 @@
 //! An AUV on its acoustic modem reports every 20 s on its own and is out of contact by
 //! design while under water: the estimate says so (`note`).
 
-use std::cell::OnceCell;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -717,6 +716,12 @@ impl Config {
     }
 }
 
+/// Read the estimate's configuration (the catalog's limits, the lost-link timers) once at
+/// startup, so no estimate ever reads a file under a vehicle's lock (review B4).
+pub fn init(world: &World) {
+    let _ = config(world);
+}
+
 fn config(world: &World) -> &'static Config {
     static CONFIG: OnceLock<Config> = OnceLock::new();
     CONFIG.get_or_init(|| {
@@ -796,7 +801,18 @@ fn water_tracks() -> MutexGuard<'static, HashMap<Uid, WaterTrack>> {
         .unwrap_or_else(|e| e.into_inner())
 }
 
-/// The drift track of a vehicle, if the sampler keeps one that is fresh.
+/// Every fresh drift track, read at once (a frame reads them before any vehicle's lock).
+fn water_tracks_now(now: f64) -> HashMap<Uid, WaterTrack> {
+    water_tracks()
+        .iter()
+        .filter(|(_, t)| now - t.t <= WATER_FRESH_S)
+        .map(|(u, t)| (*u, *t))
+        .collect()
+}
+
+/// The drift track of a vehicle, if the sampler keeps one that is fresh (tests: a frame reads
+/// them all at once, [`FrameContext::new`]).
+#[cfg(test)]
 pub fn water_track(uid: Uid, now: f64) -> Option<WaterTrack> {
     water_tracks()
         .get(&uid)
@@ -808,6 +824,49 @@ pub fn water_track(uid: Uid, now: f64) -> Option<WaterTrack> {
 #[cfg(test)]
 pub fn set_water_track(uid: Uid, track: WaterTrack) {
     water_tracks().insert(uid, track);
+}
+
+/// Where the sampler asks for the water: every surface and subsurface vehicle with a
+/// position, whether it is silent, and the point (a silent one's drift track if it has one,
+/// else where it reported). The vehicles are read first and the tracks' lock taken after,
+/// never a vehicle read under it (reviews of 10-08: an estimate used to read a track under its
+/// vehicle's lock).
+fn sampler_rows(world: &World, wall: f64) -> Vec<(Uid, bool, LngLat)> {
+    let cfg = config(world);
+    let mut seen: Vec<(Uid, bool, f64, f64)> = Vec::new();
+    for cell in world.vehicles() {
+        let link = cell.link_snapshot(clock::mono());
+        let stale = link
+            .last_rx_t
+            .is_some_and(|t| wall - t > link.stale_after_s());
+        let (pos, platform, kind) = cell.read(|v| {
+            (
+                v.pos,
+                v.identity.as_ref().and_then(|i| i.str("platform").map(str::to_string)),
+                v.kind,
+            )
+        });
+        let domain = platform
+            .as_deref()
+            .and_then(|p| cfg.limits.platforms.get(p))
+            .map(|l| l.domain.clone())
+            .unwrap_or_else(|| kind_defaults(kind).domain);
+        if domain != "surface" && domain != "subsurface" {
+            continue;
+        }
+        let Some((lat, lon)) = pos else { continue };
+        seen.push((cell.uid, stale, lat, lon));
+    }
+    let tracks = water_tracks();
+    seen.into_iter()
+        .map(|(uid, stale, lat, lon)| {
+            let at = match (stale, tracks.get(&uid)) {
+                (true, Some(t)) => t.pos,
+                _ => [lon, lat],
+            };
+            (uid, stale, at)
+        })
+        .collect()
 }
 
 /// Step every surface (and subsurface: a surfaced AUV drifts too) vehicle's drift track: a
@@ -827,45 +886,7 @@ pub async fn water_sampler(world: Arc<World>) {
     loop {
         interval.tick().await;
         let wall = clock::wall();
-        let cfg = config(&world);
-        // the vehicles first, then the tracks' lock: never a vehicle read under it (a silent
-        // vehicle's estimate holds its vehicle and then reads its track, `water_track`)
-        let mut seen: Vec<(Uid, bool, f64, f64)> = Vec::new();
-        for cell in world.vehicles() {
-            let link = cell.link_snapshot(clock::mono());
-            let stale = link
-                .last_rx_t
-                .is_some_and(|t| wall - t > link.stale_after_s());
-            let (pos, platform, kind) = cell.read(|v| {
-                (
-                    v.pos,
-                    v.identity.as_ref().and_then(|i| i.str("platform").map(str::to_string)),
-                    v.kind,
-                )
-            });
-            let domain = platform
-                .as_deref()
-                .and_then(|p| cfg.limits.platforms.get(p))
-                .map(|l| l.domain.clone())
-                .unwrap_or_else(|| kind_defaults(kind).domain);
-            if domain != "surface" && domain != "subsurface" {
-                continue;
-            }
-            let Some((lat, lon)) = pos else { continue };
-            seen.push((cell.uid, stale, lat, lon));
-        }
-        let rows: Vec<(Uid, bool, LngLat)> = {
-            let tracks = water_tracks();
-            seen.into_iter()
-                .map(|(uid, stale, lat, lon)| {
-                    let at = match (stale, tracks.get(&uid)) {
-                        (true, Some(t)) => t.pos,
-                        _ => [lon, lat],
-                    };
-                    (uid, stale, at)
-                })
-                .collect()
-        };
+        let rows = sampler_rows(&world, wall);
         if rows.is_empty() {
             continue;
         }
@@ -1653,46 +1674,66 @@ fn round_motion(m: Motion) -> Motion {
 
 // ---- per frame -----------------------------------------------------------------------------
 
+/// What each vehicle was ordered (its current op and the tasking's parameters), from the task
+/// manager, which reads no vehicle under its lock.
+fn ordered_now(world: &World) -> HashMap<Uid, Ordered> {
+    let taskings = world.tasks.snapshot();
+    let params: HashMap<u64, TaskParams> = taskings.into_iter().map(|t| (t.id, t.params)).collect();
+    world
+        .tasks
+        .current_ops()
+        .into_iter()
+        .filter_map(|o| {
+            let p = params.get(&o.tasking)?.clone();
+            Some((
+                o.uid,
+                Ordered {
+                    tasking: o.tasking,
+                    kind: o.task,
+                    state: o.state,
+                    params: p,
+                },
+            ))
+        })
+        .collect()
+}
+
 /// One push frame's context: the configuration and, read once on the first silent vehicle,
 /// each vehicle's latest op.
 pub struct FrameContext<'a> {
     world: &'a World,
     wall: f64,
-    ordered: OnceCell<HashMap<Uid, Ordered>>,
+    /// What each vehicle was ordered and the fresh drift tracks, read in [`FrameContext::new`]
+    /// before any vehicle's lock is taken (empty when no vehicle is silent): the vehicle lock
+    /// is a leaf, and `estimate`, called under it, takes no other lock (review B4).
+    ordered: HashMap<Uid, Ordered>,
+    water: HashMap<Uid, WaterTrack>,
 }
 
 impl<'a> FrameContext<'a> {
-    pub fn new(world: &'a World, wall: f64) -> FrameContext<'a> {
+    /// `links`: the links of the vehicles about to be estimated, read before their locks.
+    /// When one is past its stale threshold, what an estimate reads besides its vehicle (the
+    /// orders, the drift tracks, the configuration) is read here, once.
+    pub fn new<'l>(
+        world: &'a World,
+        wall: f64,
+        links: impl IntoIterator<Item = &'l LinkSnapshot>,
+    ) -> FrameContext<'a> {
+        let silent = links
+            .into_iter()
+            .any(|l| l.last_rx_t.is_some_and(|t| wall - t > l.stale_after_s()));
+        let (ordered, water) = if silent {
+            let _ = config(world);
+            (ordered_now(world), water_tracks_now(wall))
+        } else {
+            (HashMap::new(), HashMap::new())
+        };
         FrameContext {
             world,
             wall,
-            ordered: OnceCell::new(),
+            ordered,
+            water,
         }
-    }
-
-    fn ordered(&self) -> &HashMap<Uid, Ordered> {
-        self.ordered.get_or_init(|| {
-            let taskings = self.world.tasks.snapshot();
-            let params: HashMap<u64, TaskParams> =
-                taskings.into_iter().map(|t| (t.id, t.params)).collect();
-            self.world
-                .tasks
-                .current_ops()
-                .into_iter()
-                .filter_map(|o| {
-                    let p = params.get(&o.tasking)?.clone();
-                    Some((
-                        o.uid,
-                        Ordered {
-                            tasking: o.tasking,
-                            kind: o.task,
-                            state: o.state,
-                            params: p,
-                        },
-                    ))
-                })
-                .collect()
-        })
     }
 
     /// The estimate for a vehicle whose link is past its stale threshold; None while it is
@@ -1720,7 +1761,7 @@ impl<'a> FrameContext<'a> {
             .as_ref()
             .map_or(1.0, |p| p.report_s)
             .max(f64::from(link.expected_interval_ms) / 1000.0);
-        let ordered = self.ordered();
+        let ordered = &self.ordered;
         let inp = Inputs {
             position: [lon, lat],
             t0: v.seen.position.unwrap_or(last_rx_t).min(last_rx_t),
@@ -1744,7 +1785,7 @@ impl<'a> FrameContext<'a> {
             min_turn_m: ident.and_then(|i| i.num("min_turn_radius_m")),
             task: ordered.get(&uid),
             lost_link,
-            water: water_track(uid, self.wall),
+            water: self.water.get(&uid).copied(),
         };
         Some(estimate(&inp))
     }
@@ -2383,7 +2424,7 @@ mod tests {
             root: root.clone(),
         });
         let wall = 5000.0;
-        let ctx = FrameContext::new(&world, wall);
+        let ctx = FrameContext::new(&world, wall, []);
         let link = |last_rx: f64, every: u32| LinkSnapshot {
             last_rx_t: Some(last_rx),
             loss_pct: None,
@@ -2415,5 +2456,130 @@ mod tests {
         let e = ctx.estimate(1, &v, &link(wall - 10.0, 1000)).expect("stale");
         assert!((e.reach_mps - 10.4).abs() < 1e-9);
         assert_eq!(e.cap_m, 5_000.0);
+    }
+
+    /// A world with one of our boats (a corsair at the Gate) last heard `silent_s` ago.
+    fn world_with_boat(silent_s: f64) -> (Arc<World>, Arc<crate::vehicle::VehicleCell>) {
+        use crate::link::{LinkStats, Transmit};
+        use crate::vehicle::{Identity, VehicleCell};
+        struct NoTx;
+        impl Transmit for NoTx {
+            fn send(&self, _: &crate::mav::MavMessage) {}
+            fn send_raw(&self, _: &[u8]) {}
+            fn port(&self) -> u16 {
+                0
+            }
+        }
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let world = World::new(crate::world::Config {
+            base_port: 0,
+            http_port: 0,
+            default_ports: 0,
+            manifest: root.join("sim/run/none.json"),
+            platforms: root.join("sim/platforms.toml"),
+            root: root.clone(),
+        });
+        let mut stats = LinkStats::default();
+        stats.on_packet(0, clock::mono(), clock::wall() - silent_s);
+        let mut m = serde_json::Map::new();
+        m.insert("platform".into(), json!("corsair"));
+        m.insert("callsign".into(), json!("MARLIN 1"));
+        let cell = Arc::new(VehicleCell::new(
+            1,
+            1,
+            Arc::new(NoTx),
+            Arc::new(Mutex::new(stats)),
+            Some(Arc::new(Identity::from_manifest(&m))),
+        ));
+        cell.write(|v| {
+            v.kind = Some(Kind::Boat);
+            v.pos = Some((37.82, -122.466));
+            v.seen.position = Some(clock::wall() - silent_s);
+        });
+        world.insert_vehicle(cell.clone());
+        (world, cell)
+    }
+
+    /// Review B5: the water sampler reads our vehicles before it takes the drift tracks'
+    /// lock, never one under it, so it can't deadlock against a reader that holds a vehicle
+    /// and then reads a track (as an estimate once did).
+    #[test]
+    fn the_water_sampler_never_reads_a_vehicle_under_the_tracks_lock() {
+        use std::sync::mpsc::channel;
+        let (world, cell) = world_with_boat(60.0);
+        let (held_tx, held_rx) = channel();
+        let reader = {
+            let cell = cell.clone();
+            std::thread::spawn(move || {
+                cell.read(|_| {
+                    held_tx.send(()).ok();
+                    std::thread::sleep(Duration::from_millis(300));
+                    water_track(1, clock::wall())
+                })
+            })
+        };
+        held_rx.recv().expect("the reader holds the vehicle");
+        let (done_tx, done_rx) = channel();
+        let sampler = {
+            let world = world.clone();
+            std::thread::spawn(move || {
+                done_tx.send(sampler_rows(&world, clock::wall())).ok();
+            })
+        };
+        let rows = done_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("no deadlock: the sampler read a vehicle under the tracks' lock");
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].1, "the boat is silent");
+        reader.join().expect("reader");
+        sampler.join().expect("sampler");
+    }
+
+    /// Review B5: a console frame estimates a silent vehicle, and the estimate, called under the
+    /// vehicle's lock, takes no other lock: what it reads besides the vehicle was read when the
+    /// frame's context was made. Before, it read the drift tracks under the vehicle's lock while
+    /// a holder of the tracks could be waiting for that vehicle.
+    #[test]
+    fn a_frame_estimates_a_silent_vehicle_with_no_lock_under_its_own() {
+        use std::sync::mpsc::channel;
+        let (world, cell) = world_with_boat(60.0);
+        let frame = crate::push::build_frame(&world, &mut crate::push::FrameCache::default());
+        assert_eq!(frame.vehicles.len(), 1);
+        assert!(frame.vehicles[0].body.contains("\"estimate\":{"), "the silent boat is estimated: {}", frame.vehicles[0].body);
+        // the estimator makes its frame context first, then waits until another thread holds
+        // the drift tracks and wants the vehicle, then estimates under the vehicle's lock
+        let (ready_tx, ready_rx) = channel();
+        let (go_tx, go_rx) = channel::<()>();
+        let (done_tx, done_rx) = channel();
+        let estimator = {
+            let (world, cell) = (world.clone(), cell.clone());
+            std::thread::spawn(move || {
+                let link = cell.link_snapshot(clock::mono());
+                let ctx = FrameContext::new(&world, clock::wall(), [&link]);
+                ready_tx.send(()).ok();
+                go_rx.recv().ok();
+                let e = cell.read(|v| ctx.estimate(1, v, &link));
+                done_tx.send(e.is_some()).ok();
+            })
+        };
+        ready_rx.recv().expect("the estimator has its context");
+        let (held_tx, held_rx) = channel();
+        let holder = {
+            let cell = cell.clone();
+            std::thread::spawn(move || {
+                let _tracks = water_tracks();
+                held_tx.send(()).ok();
+                std::thread::sleep(Duration::from_millis(300));
+                cell.read(|v| v.pos)
+            })
+        };
+        held_rx.recv().expect("the holder has the tracks");
+        go_tx.send(()).expect("go");
+        let estimated = done_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("no deadlock: the estimate took a lock under its vehicle's");
+        assert!(estimated);
+        holder.join().expect("holder");
+        estimator.join().expect("estimator");
     }
 }

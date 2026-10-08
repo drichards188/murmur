@@ -197,11 +197,13 @@ fn domain_of(identity: Option<&Identity>, kind: Option<Kind>) -> Domain {
 pub fn build_frame(world: &World, cache: &mut FrameCache) -> PushFrame {
     let now = clock::mono();
     let wall = clock::wall();
-    // silent vehicles get a dead-reckoning estimate (crate::estimate), the rest none
-    let estimates = crate::estimate::FrameContext::new(world, wall);
+    // silent vehicles get a dead-reckoning estimate (crate::estimate), the rest none; what
+    // an estimate reads besides its vehicle is read before any vehicle's lock
+    let cells = world.vehicles();
+    let links: Vec<LinkSnapshot> = cells.iter().map(|c| c.link_snapshot(now)).collect();
+    let estimates = crate::estimate::FrameContext::new(world, wall, &links);
     let mut vehicles = Vec::new();
-    for cell in world.vehicles() {
-        let link = cell.link_snapshot(now);
+    for (cell, link) in cells.iter().zip(links) {
         let (mut snap, trail_count, trail) = cell.read(|v| {
             let trail = match cache.trails.get(&cell.uid) {
                 Some((count, trail)) if *count == v.trail_count => trail.clone(),

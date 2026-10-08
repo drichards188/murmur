@@ -252,6 +252,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // modes); logged with its age, so a previous run's shows
     world.load_manifest();
     report_manifest(&world);
+    // the estimate's configuration, read now rather than under a vehicle's lock later
+    estimate::init(&world);
     // no decision layer, no bridge: nothing may reach a vehicle without it
     let decision =
         Decision::load(world.clone(), &settings).map_err(|e| format!("decision layer: {e}"))?;
