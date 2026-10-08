@@ -25,7 +25,8 @@ Not run live here (the installed codex is older than 0.161.0): the flags follow 
 documentation and source as the research handed to this work read them, each key marked
 with its source below (some are inferred); the event handling is tested against a stand-in
 CLI. The event stream lists no tools, so a turn that used anything but the Murmur server
-(FORBIDDEN_ITEMS, another MCP server) raises LockdownBreach and the driver stops the run.
+(FORBIDDEN_ITEMS, another MCP server, an item type not listed) raises LockdownBreach and the
+driver stops the run.
 """
 
 from __future__ import annotations
@@ -55,6 +56,9 @@ class CodexConfig:
     strong_model: str = "gpt-6.1-sol"
     strong_effort: str = "high"
     home: str | None = None  # MURMUR_CODEX_HOME: the child's CODEX_HOME
+    # item types the user allows besides ALLOWED_ITEMS (`--codex-allow-item`): an escape hatch
+    # while the vocabulary is unconfirmed; never one that acts (FORBIDDEN_ITEMS, a tool call)
+    allow_items: tuple[str, ...] = ()
 
 
 def toml_str(s: str) -> str:
@@ -103,9 +107,12 @@ LOCKDOWN: tuple[tuple[str, str], ...] = (
 # so this checks what the model used, after the fact; it cannot see a tool that was offered
 # and not used. Fail closed on the items that act or read outside Murmur (the documented
 # command, file change and web search items, and a call to another MCP server): the run
-# stops. The documented harmless items pass. An item type this module does not know is
-# recorded (`unknown_items`, logged as lockdown.unknown_item) and the turn goes on, so a new
-# harmless item in a later Codex does not stop a good run.
+# stops. The documented harmless items pass. An item type this module does not know stops the
+# run too, with the raw item in the error: the vocabulary has not been seen live (no 0.161
+# run here) and this is Codex's only check at run time. `--codex-allow-item TYPE` lets a type
+# the user has looked at through (recorded in `unknown_items`, logged as
+# lockdown.unknown_item); once a live run has established the vocabulary, unknown items can
+# be logged and let through instead.
 ALLOWED_ITEMS = ("agent_message", "reasoning", "todo_list", "error", "plan")
 FORBIDDEN_ITEMS = ("command_execution", "file_change", "web_search", "patch_apply", "image_view")
 MURMUR_SERVERS = ("murmur", "mcp__murmur")
@@ -120,6 +127,10 @@ class CodexBackend:
                  instructions: str, max_turns: int = 12):
         if cfg.effort in REFUSED_EFFORTS or cfg.strong_effort in REFUSED_EFFORTS:
             raise ValueError("codex effort 'ultra' spawns sub-agents: not allowed for the watch officer")
+        bad = [t for t in cfg.allow_items if t in FORBIDDEN_ITEMS or t == "mcp_tool_call"]
+        if bad:
+            raise ValueError(f"--codex-allow-item cannot allow {', '.join(bad)}: those act or call tools, "
+                             "and the lockdown stops them")
         self.cfg = cfg
         self.run_dir = run_dir
         self.url = url
@@ -138,7 +149,8 @@ class CodexBackend:
         self.murmur_tools: set[str] | None = None
 
     def judge_item(self, item: dict) -> str:
-        """'ok', 'breach' or 'unknown' for one item of a turn (see ALLOWED_ITEMS)."""
+        """'ok', 'breach', 'unknown' (a type the user let through with --codex-allow-item:
+        recorded) or 'unlisted' (a type nobody listed: a breach) for one item of a turn."""
         itype = item.get("type")
         if itype in ALLOWED_ITEMS:
             return "ok"
@@ -153,7 +165,7 @@ class CodexBackend:
             return "breach"  # another server, or a tool that is not Murmur's
         if itype in FORBIDDEN_ITEMS:
             return "breach"
-        return "unknown"
+        return "unknown" if itype in self.cfg.allow_items else "unlisted"
 
     def env(self) -> dict[str, str]:
         extra: dict[str, str] = {}
@@ -294,8 +306,11 @@ class CodexBackend:
                     item = ev.get("item") or {}
                     itype = item.get("type")
                     verdict = self.judge_item(item)
-                    if verdict == "breach":
+                    if verdict in ("breach", "unlisted"):
                         raw = excerpt(json.dumps(item, default=str), 500)
+                        if verdict == "unlisted":
+                            raw = (f"an item type the backend does not know ({itype}; if it is harmless, "
+                                   f"--codex-allow-item {itype}): {raw}")
                         if raw not in foreign:
                             foreign.append(raw)
                         if stopped is None:
@@ -370,4 +385,5 @@ class CodexBackend:
         return {"provider": PROVIDER, "version": self.version, "model": self.cfg.model, "effort": self.cfg.effort,
                 "strong_model": self.cfg.strong_model, "strong_effort": self.cfg.strong_effort,
                 "codex_home": self.cfg.home or os.environ.get("CODEX_HOME") or "~/.codex (the user's own)",
+                "allow_items": list(self.cfg.allow_items),
                 "max_turns_per_wake": self.max_turns, "argv": redacted}

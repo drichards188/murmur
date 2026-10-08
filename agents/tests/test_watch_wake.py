@@ -282,7 +282,10 @@ def test_a_repeat_held_back_becomes_a_trigger_of_its_own_and_says_so():
         assert all(x.held for x in before if x.reason == "heartbeat"), "a heartbeat says what it holds"
         rep = next(x for x in wakes if any(c.get("to") == "suspect" for c in x.changes))
         assert 324 <= rep.t <= 330 and rep.reason == "changes", (hb, rep.t, rep.reason)
-        assert rep.why == ["a contact's affiliation estimate changed (held back as a repeat for 282 s)"], rep.why
+        assert rep.why == [f"a contact's affiliation estimate changed (1 repeat held back over the last "
+                           f"{rep.t - 42:.0f} s; the latest is shown)"], rep.why
+        held = next(c for c in rep.changes if c.get("to") == "suspect")
+        assert held["held_back"] == {"repeats": 1, "first_t": 42, "latest_t": 42}
 
 
 def test_a_downgraded_escalation_gives_its_cooldown_back():
@@ -567,3 +570,91 @@ def test_free_text_is_quoted_cut_and_labelled_with_its_source():
         q = line[line.index(labels[k]):]
         assert q.count('"') % 2 == 0 and "..." in line and len(line) < 520, (k, len(line))
     assert quote("a\n  b") == '"a b"' and quote("x" * 10, 4) == '"xxxx..."'
+
+
+def test_held_repeats_are_one_per_subject_and_the_newest_is_told():
+    """Third review, item 1 (wake_probe3 to 5): every repeat inside its interval stayed pending,
+    so three tracks whose estimate wobbled every poll piled up 5,328 pending changes in an hour
+    (21,312 in four, due() taking 56 ms), and each later wake told the oldest repeat, labelled
+    as held back for hours. Now one change per subject is held, the newest, with a count; a
+    repeating failsafe (a waking kind with no clear) likewise."""
+    w = Waker(Budgets())
+    w.due(0)
+    told = []
+    worst = 0
+    for i in range(1800):  # an hour of 2 s polls
+        now = 10 + 2 * i
+        w.add([{"kind": "track.affiliation", "track": f"T-{k}", "from": "unknown" if i % 2 == 0 else "suspect",
+                "to": "suspect" if i % 2 == 0 else "unknown", "t": now} for k in (1, 2, 3)]
+              + [{"kind": "vehicle.event", "uid": 6, "event_kind": "failsafe", "text": "GCS Failsafe", "t": now}],
+              now)
+        worst = max(worst, len(w.pending) + len(getattr(w, "holding", {})))
+        x = w.due(now)
+        if x and x.reason == "changes" and x.n > 2:
+            told.append((now, x))
+    assert worst <= 40, worst  # a few polls between wakes, not one per repeat
+    assert len(told) >= 10
+    for now, x in told:
+        ts = [c["t"] for c in x.changes if c.get("kind") in ("track.affiliation", "vehicle.event")]
+        assert ts and min(ts) >= now - 6, (now, sorted(ts)[:3])
+        assert all("held back over the last" in y and "the latest is shown" in y for y in x.why), x.why
+        held = [c["held_back"] for c in x.changes if "held_back" in c]
+        assert held and all(h["repeats"] > 50 for h in held), held
+
+
+def test_a_held_raise_that_clears_is_a_note():
+    w = Waker(quiet())
+    w.due(0)
+    w.add([{"kind": "vehicle.link_lost", "uid": 3, "armed": False}], 20)
+    assert w.due(24) is not None
+    w.add([{"kind": "vehicle.link_lost", "uid": 3, "armed": False}], 40)  # a repeat: held
+    w.add([{"kind": "vehicle.link_restored", "uid": 3}], 50)
+    assert getattr(w, "holding", {}) == {} and len(w.pending) == 2, "back with the notes"
+    assert all(w.due(t) is None for t in range(54, 700, 2)), "it came and went"
+
+
+def test_notes_are_bounded_between_updates():
+    from watch.wake import MAX_PENDING
+
+    w = Waker(quiet())
+    w.due(0)
+    for i in range(3 * MAX_PENDING):
+        w.add([{"kind": "vehicle.event", "uid": 2, "event_kind": "mode", "text": f"mode {i}"}], 10 + i)
+    assert len(w.pending) == MAX_PENDING
+    w.add([{"kind": "review.flag", "flag": "F-1"}], 4000)
+    x = w.due(4004)
+    assert x.notes_dropped == 2 * MAX_PENDING + 1 and x.changes[-1]["kind"] == "review.flag"
+    assert "older notes were not kept" in compose(x, [], "Budget.", [], 4004)
+
+
+def test_a_condition_coming_and_going_slower_than_the_flap_window_keeps_its_cooldown():
+    """Third review, item 2 (wake_probe6): a clear that was not flapping ended the subject's
+    escalation cooldown too, so an AIS conflict or an armed link coming and going every 320 s
+    (just slower than the 300 s flap window) spent all 6 escalations by 1610 s, and a hostile
+    declaration after that went to the routine model. A clear now ends the wake interval, and
+    the escalation cooldown only on the condition's first come-and-go within it."""
+    for raise_, clear, extra in (("track.identity_conflict", "track.identity_cleared",
+                                  {"track": "T-7", "conflict": "x"}),
+                                 ("vehicle.link_lost", "vehicle.link_restored", {"uid": 3, "armed": True})):
+        w = Waker(Budgets())
+        w.due(0)
+        esc, wakes = [], 0
+        hostile = None
+        for i in range(1900):  # an hour of the cycle, then a hostile declaration at 3610 s
+            now = 10 + 2 * i
+            phase = (now - 10) % 320
+            chs = [{"kind": raise_, **extra}] if phase == 0 else [{"kind": clear, **extra}] if phase == 160 else []
+            if now == 3610:
+                chs.append({"kind": "track.declared", "track": "T-99", "declared": "hostile", "declaration": "D-9"})
+            if chs:
+                w.add(chs, now)
+            x = w.due(now)
+            if x and x.reason != "start":
+                wakes += x.reason == "changes"
+                if x.escalate:
+                    esc.append(now)
+                if hostile is None and any(c.get("track") == "T-99" for c in x.changes):
+                    hostile = (now, x.escalate)
+        assert len([t for t in esc if t < 3600]) <= 3, (raise_, esc)
+        assert hostile and hostile[1] and hostile[0] <= 3616, (raise_, hostile, esc)
+        assert wakes >= 11, "each raise after a clear still wakes the model"

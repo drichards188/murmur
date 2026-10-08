@@ -5,13 +5,16 @@
 Behaviour by environment:
     FAKE_STATE          directory: every invocation appends {argv, env flags} to calls.jsonl
     FAKE_SCENARIO       ok (default) | limit | limit_once | crash_once | crash_always | slow |
-                        max_turns | error_once | error_always | error_prose | refused | breach
+                        max_turns | error_once | error_always | error_prose | refused | breach |
+                        breach_failed | denied
                         (refused replays fixtures/claude_bash_refused.jsonl, a live stream in
                         which Claude Code refused the model a bash tool, then goes on as ok;
-                        breach: a tool outside the Murmur server that ran)
+                        breach: a tool outside the Murmur server that ran; breach_failed: one that
+                        ran and failed, its error in the CLI's <tool_use_error> tag; denied: the
+                        dontAsk refusal as recorded live)
     FAKE_RESET_IN       a limit's resetsAt, seconds from now (default 90)
     FAKE_LIMIT_AT       limit_once: the message (of a process) that hits the limit (default 1)
-    FAKE_ERROR_MODEL    error_once: only a process run with this --model errors
+    FAKE_ERROR_MODEL    error_once, error_always: only a process run with this --model errors
     FAKE_AUTH_METHOD    authMethod in `auth status` (default claude.ai)
     FAKE_LOGGED_OUT     set: `auth status` says not logged in
     FAKE_VERSION        what --version prints (default 2.1.294 (Claude Code))
@@ -119,8 +122,8 @@ for line in sys.stdin:
         sys.exit(1)
     errored = state / "errored"
     error_model = os.environ.get("FAKE_ERROR_MODEL")  # error_once: only on this --model
-    if scenario == "error_always" or (scenario == "error_once" and not errored.exists()
-                                      and error_model in (None, opt("--model"))):
+    if error_model in (None, opt("--model")) and (
+            scenario == "error_always" or (scenario == "error_once" and not errored.exists())):
         # an API error after the CLI's own retries (overloaded): the turn ends, the process lives
         errored.write_text("1")
         emit({"type": "assistant", "message": {"model": "<synthetic>", "content": [
@@ -137,12 +140,25 @@ for line in sys.stdin:
         # as recorded live (2.1.294): the model asked for bash, the CLI refused it
         for raw in (Path(__file__).parent / "fixtures" / "claude_bash_refused.jsonl").read_text().splitlines():
             emit(json.loads(raw))
-    if scenario == "breach":
+    if scenario == "denied":
+        # the dontAsk refusal, as Claude Code 2.1.294 wrote it live
+        emit({"type": "assistant", "message": {"model": model, "content": [
+            {"type": "tool_use", "id": f"tu_{n}_0", "name": "Read", "input": {"file_path": "/etc/hosts"}}]}})
+        emit({"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": f"tu_{n}_0", "is_error": True,
+             "content": "Permission to use Read has been denied because Claude Code is running in don't ask "
+                        "mode. IMPORTANT: You *may* attempt to accomplish this action using other tools"}]}})
+    if scenario in ("breach", "breach_failed"):
         # a tool outside the Murmur server that ran (no refusal): the driver interrupts
         emit({"type": "assistant", "message": {"model": model, "content": [
             {"type": "tool_use", "id": f"tu_{n}_0", "name": "Bash", "input": {"command": "ls ~"}}]}})
-        emit({"type": "user", "message": {"role": "user", "content": [
-            {"type": "tool_result", "tool_use_id": f"tu_{n}_0", "content": "notes.txt\nsecrets"}]}})
+        result_block = {"type": "tool_result", "tool_use_id": f"tu_{n}_0", "content": "notes.txt\nsecrets"}
+        if scenario == "breach_failed":
+            # it ran and failed: the CLI wraps the error in the same tag as its refusals
+            result_block = {"type": "tool_result", "tool_use_id": f"tu_{n}_0", "is_error": True,
+                            "content": "<tool_use_error>Error: Exit code 2\nls: cannot access "
+                                       "'/home/user/secrets': Permission denied</tool_use_error>"}
+        emit({"type": "user", "message": {"role": "user", "content": [result_block]}})
         continue  # the interrupt ends the turn
     emit({"type": "assistant", "message": {"model": model, "usage": {
         "input_tokens": 3, "cache_read_input_tokens": 9000, "cache_creation_input_tokens": 400,

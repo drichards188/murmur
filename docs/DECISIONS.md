@@ -1007,9 +1007,18 @@ group. Dates are 2026.
   probe); a failed turn waits before the next wake, doubling from 30 s to 15 minutes, and
   the run stops only on failures past that ceiling or more than three crashes in ten
   minutes (one overloaded minute used to end a run); a tool the CLI refused is the lockdown
-  working (`lockdown.refused`) and one that ran is a breach; Codex fails closed on the items
-  that act or read outside Murmur and logs an item type it does not know rather than
-  stopping on it, so a new harmless item in a later Codex does not end a good run.
+  working (`lockdown.refused`) and one that ran is a breach. After the third review (10-08):
+  a subject holds one repeat, the newest, with a count (every repeat stayed pending: three
+  wobbling estimates piled up 5,328 changes in an hour and each later wake told the oldest);
+  a clear ends a subject's escalation cooldown only on its first come-and-go in the 30
+  minutes, since a condition cycling just slower than the flap window spent all six
+  escalations in 27 minutes and an adversary can choose that period; Codex fails closed on
+  an item type it does not know too, with `--codex-allow-item` as the escape hatch, until a
+  live 0.161 run has seen the vocabulary (then log and let through); only the CLI's two
+  refusal phrasings count as refused (the bare `<tool_use_error>` tag also wraps a tool that
+  ran and failed); the routine model and the consult back off separately, so a failing
+  routine model never holds an escalation back; the driver's own nomination poll asks about
+  the armed platforms within reach only, and only whether each passes.
 - **`get_changes` is a digest compared between reads, not an event log** (10-08). The bridge
   keeps no history of an affiliation estimate or an alert clearing, so a cursor over the
   timestamps it does keep would miss exactly those; the MCP layer compares a digest of the
@@ -1044,7 +1053,11 @@ group. Dates are 2026.
   agent id holds at most eight (`mcp::SESSIONS_PER_AGENT`; the one used least recently is
   closed, and sessions their client closed do not count): the watch officer holds one plus
   one per Codex turn, the storyline one per proposal, so eight leaves room for a few clients
-  sharing an id. `AgentSession` closes what it opened when its start fails. Claude Code
+  sharing an id. A session counts from its initialize (the `/mcp` service records it as rmcp
+  makes it: the handler never sees the new id), and one with a request in flight is never
+  closed (a proposal whose answer is lost may be made again by a client that retries); with
+  every session busy the cap waits. `AgentSession` closes what it opened, its HTTP client
+  included, on a failed start and on a normal exit. Claude Code
   2.1.294 negotiates 2026-07-28, served without a session (checked live with a 20 s limit
   and a 35 s gap), so the watch officer's quiet spells never cost it its tools. Each tool
   carries `_meta["anthropic/maxResultSizeChars"]` (150 000): Claude Code saved larger

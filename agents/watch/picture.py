@@ -3,12 +3,14 @@
 The driver reads as the same agent the model acts as, over MCP (the agent's key in a
 credentials run): `get_changes` every couple of seconds for what changed, and, while a track
 is declared hostile, `get_nomination_options` now and then to see whether a nomination has
-become possible (a `nomination.possible` change). Nothing it reads is logged by the bridge.
+become possible (a `nomination.possible` change), for the armed platforms that could pass
+only and asking only whether each passes. Nothing it reads is logged by the bridge.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import math
 import time
 from typing import Any, Callable
 
@@ -18,6 +20,44 @@ OPEN = ("proposed", "checked", "pending_approval", "approved", "queued", "dispat
 
 class NoChangesTool(RuntimeError):
     pass
+
+
+# Which armed platforms the driver asks about for a hostile track. The checks refuse an
+# intercept longer than the policy's `max_transit_s` (900 s in sim/policy.toml; the rules
+# configuration is not readable over MCP, hence the constant), so a platform farther than its
+# cruise speed plus the track's speed times that is out of reach. A platform with no cruise
+# figure in the catalog is asked about within FALLBACK_REACH_M.
+TRANSIT_S = 900.0
+FALLBACK_REACH_M = 30_000.0
+
+
+def distance_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    a = (math.sin((p2 - p1) / 2) ** 2
+         + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lon2 - lon1) / 2) ** 2)
+    return 2 * 6371000.0 * math.asin(math.sqrt(a))
+
+
+def candidates(vehicles: list[dict], track: dict, cruise: dict) -> list[int]:
+    """The armed platforms that could pass on `track`, nearest first: armed, link up,
+    navigation ready, a position, and within reach (`get_fleet` compact entries; `cruise` maps
+    a platform id to its catalog cruise speed)."""
+    pos = track.get("position")
+    if not (isinstance(pos, (list, tuple)) and len(pos) == 2):
+        return []
+    speed = track.get("speed_mps") if isinstance(track.get("speed_mps"), (int, float)) else 0.0
+    out = []
+    for v in vehicles:
+        if not (v.get("armed") is True and v.get("link_lost") is False and v.get("nav_ready") is True):
+            continue
+        if not all(isinstance(v.get(k), (int, float)) for k in ("lon", "lat")):
+            continue
+        c = cruise.get(v.get("platform"))
+        reach = (c + speed) * TRANSIT_S if isinstance(c, (int, float)) and c > 0 else FALLBACK_REACH_M
+        d = distance_m(v["lon"], v["lat"], pos[0], pos[1])
+        if d <= reach:
+            out.append((d, v["uid"]))
+    return [u for _, u in sorted(out)]
 
 
 class Poller:
@@ -32,6 +72,7 @@ class Poller:
         self.passing: dict[str, list] = {}
         self.checked: dict[str, float] = {}
         self.nomination_every_s = nomination_every_s
+        self.cruise: dict | None = None  # platform id -> catalog cruise speed (read once a session)
 
     async def open(self) -> dict:
         if self.session is not None:
@@ -39,6 +80,7 @@ class Poller:
         s = self.connect()
         await s.__aenter__()
         self.session = s
+        self.cruise = None
         if "get_changes" not in s.tools:
             await self.close()
             raise NoChangesTool(
@@ -90,19 +132,37 @@ class Poller:
         check, `nomination.closed` when it loses the last one. A read-only dry run, which the
         bridge allows an agent once a second (the model shares that allowance): one track per
         call, the one read longest ago, each track at most every `nomination_every_s`, so a
-        poll never waits on it."""
+        poll never waits on it. It asks about the platforms that could pass (`candidates`)
+        and only whether each passes (`passed_only`): every armed platform with the full
+        answer was 213 557 characters at 100 stand-ins."""
         now = time.time() if now is None else now
         due = [t for t in self.hostile if now - self.checked.get(t, 0.0) >= self.nomination_every_s]
         if not due:
             return []
         track = min(due, key=lambda t: (self.checked.get(t, 0.0), t))
         self.checked[track] = now
-        result = await self.session.session.call_tool("get_nomination_options", {"track_id": track})
-        body = _content(result)
-        if getattr(result, "is_error", None) or getattr(result, "isError", None):
-            return []  # rate limited (the model read one this second), or the track is gone
-        passing = [{"uid": o.get("uid"), "callsign": o.get("callsign")}
-                   for o in body.get("options") or [] if o.get("passed")]
+        s = self.session
+        try:
+            if self.cruise is None:
+                catalog = await s.call("get_platforms")
+                self.cruise = {p.get("id"): p.get("cruise_mps") for p in catalog.get("platforms") or []}
+            fleet = await s.call("get_fleet", compact=True)
+            hostile = await s.tracks(affiliation="hostile")
+        except Exception:  # noqa: BLE001 (the next poll tries again)
+            return []
+        t = next((x for x in hostile if x.get("id") == track), None)
+        if t is None:
+            return []  # gone, or no longer estimated hostile: the change feed says which
+        uids = candidates(fleet.get("vehicles") or [], t, self.cruise)
+        passing: list[dict] = []
+        if uids:
+            result = await s.session.call_tool("get_nomination_options",
+                                               {"track_id": track, "uids": uids, "passed_only": True})
+            body = _content(result)
+            if getattr(result, "is_error", None) or getattr(result, "isError", None):
+                return []  # rate limited (the model read one this second), or the track is gone
+            passing = [{"uid": o.get("uid"), "callsign": o.get("callsign")}
+                       for o in body.get("options") or [] if o.get("passed")]
         had = self.passing.get(track) or []
         self.passing[track] = passing
         if passing and not had:
@@ -312,6 +372,9 @@ def compose(wake, mine: list[str], budget_line: str, consult_notes: list[str], n
             parts.append(f"({len(lines) - len(shown)} earlier changes not listed: get_changes has them.)")
     else:
         parts.append("No changes since your last update.")
+    dropped = getattr(wake, "notes_dropped", 0) or 0
+    if dropped:
+        parts.append(f"({dropped} older notes were not kept: too many between updates.)")
     held = getattr(wake, "held", None) or []
     if held:
         parts.append("Held back as repeats of something you were told in the last few minutes "

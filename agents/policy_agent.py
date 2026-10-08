@@ -60,9 +60,11 @@ class AgentSession:
         self.session: ClientSession | None = None
         self.tools: list[str] = []
         self._stack: list = []
+        self._http = None
 
     async def __aenter__(self) -> "AgentSession":
         http = httpx.AsyncClient(headers=agent_headers(self.agent, self.key), timeout=httpx.Timeout(30, read=300))
+        self._http = http
         try:
             transport = streamable_http_client(self.url, http_client=http)
             read, write = await transport.__aenter__()
@@ -79,7 +81,6 @@ class AgentSession:
             # close what was opened (the transport ends the server's session): a caller that
             # retries every few seconds must not leave a session behind each time
             await self.__aexit__(None, None, None)
-            await http.aclose()
             raise
         return self
 
@@ -91,6 +92,13 @@ class AgentSession:
                 pass
         self._stack.clear()
         self.session = None
+        # the HTTP client we made (the transport only borrows it): its connections close too
+        http, self._http = self._http, None
+        if http is not None:
+            try:
+                await http.aclose()
+            except Exception:  # noqa: BLE001
+                pass
 
     async def call(self, name: str, **args):
         if self.session is None:

@@ -33,7 +33,7 @@ import signal
 import sys
 import tempfile
 import time
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -61,6 +61,20 @@ CONSULT_HEAD = (
 
 class Stopped(Exception):
     pass
+
+
+@dataclass
+class Lane:
+    """The back-off of one model: the routine session or the senior consult. Kept apart, so a
+    failing routine model does not hold back an escalation, nor a failing consult a routine
+    wake."""
+
+    streak: int = 0  # failed turns in a row
+    wait_s: float = 0.0  # the last wait after one
+    until: float = 0.0  # no wake on this model before this
+
+    def reset(self) -> None:
+        self.streak, self.wait_s, self.until = 0, 0.0, 0.0
 
 
 def sha256(text: str) -> str:
@@ -146,9 +160,7 @@ class Officer:
         self._deferred_logged = False
         self.bridge_restarted = False
         self.limits: list[float] = []  # usage limits hit in the last hour
-        self.fail_streak = 0  # failed turns in a row
-        self.backoff_s = 0.0  # the last wait after one
-        self.backoff_until = 0.0  # no wake before this
+        self.lanes = {"routine": Lane(), "consult": Lane()}
 
     def signal(self, name: str) -> None:
         if not self.stop.is_set():
@@ -250,11 +262,19 @@ class Officer:
                 if self.waker.exhausted():
                     self.log.write("budget.exhausted", what="wakes per run", max_wakes=self.waker.budgets.max_wakes)
                     return "budget"
-                if now < self.backoff_until:
-                    # after a failed turn: changes keep arriving, the wake waits
-                    await self.sleep(min(self.backoff_until - now, self.args.poll_s))
-                    continue
-                wake = self.waker.due(now)
+                routine = self.lanes["routine"]
+                if now < routine.until:
+                    # the routine model failed and waits; an escalating wake still goes to the
+                    # senior model, unless that one waits too (or is limited)
+                    wake = None
+                    if now >= self.lanes["consult"].until and now >= self.strong_blocked_until:
+                        wake = self.waker.due(now, escalating_only=True)
+                    if wake is None:
+                        self.log_dropped()
+                        await self.sleep(min(routine.until - now, self.args.poll_s))
+                        continue
+                else:
+                    wake = self.waker.due(now)
                 self.log_dropped()
                 if wake is None:
                     if self.waker.deferred and not self._deferred_logged:
@@ -289,24 +309,27 @@ class Officer:
                 f"hour); you have up to {b.max_turns_per_wake} tool turns for this update; "
                 f"{left} escalations to the senior model left.")
 
-    def failed(self, now: float, crashed: bool) -> str | None:
-        """A failed turn (an error result, or a crash): wait before the next wake, doubling with
-        each failure in a row (`--error-backoff-s`, up to `--error-backoff-max-s`), so an API
+    def failed(self, now: float, crashed: bool, lane: str = "routine") -> str | None:
+        """A failed turn (an error result, or a crash) on one model (`lane`: the routine
+        session or the consult): that model waits before its next wake, doubling with each
+        failure in a row (`--error-backoff-s`, up to `--error-backoff-max-s`), so an API
         overload of a minute costs a few waits, not the watch. The run stops only on repeated
-        crashes (more than three in ten minutes) or on failures that go on after a wait at
-        the ceiling; the reason says which."""
+        crashes (more than three in ten minutes, either model) or on routine turns that go on
+        failing after a wait at the ceiling; the reason says which. A consult that keeps
+        failing never stops the run: escalations go to the routine model while it waits."""
         if crashed:
             self.crashes = [t for t in self.crashes if now - t < 600] + [now]
             if len(self.crashes) > 3:
                 return "crashes: the CLI died more than three times in ten minutes"
+        state = self.lanes[lane]
         ceiling = self.args.error_backoff_max_s
-        if self.fail_streak and self.backoff_s >= ceiling:
+        if lane == "routine" and state.streak and state.wait_s >= ceiling:
             return (f"errors: turns kept failing after a {ceiling:.0f} s wait "
-                    f"({self.fail_streak + 1} in a row)")
-        self.fail_streak += 1
-        self.backoff_s = min(self.args.error_backoff_s * 2 ** (self.fail_streak - 1), ceiling)
-        self.backoff_until = now + self.backoff_s
-        self.log.write("backoff", wait_s=round(self.backoff_s, 1), failures_in_a_row=self.fail_streak,
+                    f"({state.streak + 1} in a row)")
+        state.streak += 1
+        state.wait_s = min(self.args.error_backoff_s * 2 ** (state.streak - 1), ceiling)
+        state.until = now + state.wait_s
+        self.log.write("backoff", model=lane, wait_s=round(state.wait_s, 1), failures_in_a_row=state.streak,
                        crashed=crashed)
         return None
 
@@ -323,9 +346,10 @@ class Officer:
             info = await self.backend.restart()
             self.init_logged = False
             self.log.write("backend.restart", why="the bridge restarted", resume=info.get("resume"))
-        escalate = wake.escalate and now >= self.strong_blocked_until
+        escalate = wake.escalate and now >= self.strong_blocked_until and now >= self.lanes["consult"].until
         if wake.escalate and not escalate:
-            # the stronger model is limited: the routine one takes it, and nothing is spent
+            # the stronger model is limited, or waits after failed consults: the routine one
+            # takes it, and nothing is spent
             self.waker.unescalate(wake)
         try:
             mine = render_mine(await self.poller.mine(), now)
@@ -365,7 +389,7 @@ class Officer:
             self.log.write("backend.crashed", n=wake.n, escalated=escalate, error=str(e), code=e.code,
                            stderr=e.stderr[-2000:], cost="unknown: a crashed turn reports none")
             self.waker.give_back(wake, time.time())  # the next wake tells it again
-            stop = self.failed(now, crashed=True)
+            stop = self.failed(now, crashed=True, lane="consult" if escalate else "routine")
             if stop:
                 self.log.write("error", error=stop)
                 return stop.split(":")[0]
@@ -385,13 +409,12 @@ class Officer:
             # an error turn (overloaded after the CLI's retries, say): what it was told
             # comes back for the next wake, an escalation it spent is returned
             self.waker.give_back(wake, time.time())
-            stop = self.failed(now, crashed=False)
+            stop = self.failed(now, crashed=False, lane="consult" if escalate else "routine")
             if stop:
                 self.log.write("error", error=stop)
                 return stop.split(":")[0]
             return None
-        self.fail_streak = 0
-        self.backoff_s = 0.0
+        self.lanes["consult" if escalate else "routine"].reset()
         if not escalate and not self.init_logged and getattr(self.backend, "init", None):
             self.init_logged = True
             self.log.write("backend.init", **self.backend.init)
@@ -442,6 +465,7 @@ class Officer:
         if escalated:
             # the stronger model's limit: the routine one carries on, told what it missed
             self.strong_blocked_until = retry
+            self.lanes["consult"].reset()  # a limit, not a failure: its streak starts again
             self.log.write("limit.hit", **hit.as_dict(), escalated=True, action="routine model only",
                            until=retry)
             self.waker.give_back(wake, now)
@@ -453,6 +477,7 @@ class Officer:
             if self.stop.is_set():
                 return self.stop_reason or "signal"
             info = await self.backend.restart()
+            self.lanes["routine"].reset()  # failures before the limit are not counted after it
             self.log.write("limit.resume", resume=info.get("resume"))
             self.waker.give_back(wake, time.time())
             return None
@@ -484,7 +509,8 @@ def make_backend(args, run_dir: Path, prompt_path: Path, prompt_text: str):
         return ClaudeBackend(cfg, run_dir, args.url, args.agent, key, prompt_path,
                              max_turns=args.max_turns_per_wake)
     cfg = CodexConfig(bin=args.codex_bin, model=model, effort=effort, strong_model=strong_model,
-                      strong_effort=strong_effort, home=args.codex_home)
+                      strong_effort=strong_effort, home=args.codex_home,
+                      allow_items=tuple(args.codex_allow_item or ()))
     return CodexBackend(cfg, run_dir, args.url, args.agent, key, prompt_text, max_turns=args.max_turns_per_wake)
 
 
@@ -607,6 +633,10 @@ def parse_args(argv: list[str] | None = None):
     c.add_argument("--codex-bin", default=os.environ.get("MURMUR_CODEX_BIN", "codex"))
     c.add_argument("--codex-home", default=os.environ.get("MURMUR_CODEX_HOME") or None,
                    help="CODEX_HOME for codex (default MURMUR_CODEX_HOME; unset: your normal home)")
+    c.add_argument("--codex-allow-item", action="append", metavar="TYPE",
+                   help="codex: let an item type the backend does not know through (repeatable; logged at "
+                        "start and at each use). Unknown types stop the run otherwise. Never a command, file "
+                        "change, web search, patch, image view or tool call")
     c.add_argument("--allow-other-auth", action="store_true",
                    help="claude: accept a login other than a Claude subscription (it may bill an API account)")
     c.add_argument("--run-dir", type=Path,

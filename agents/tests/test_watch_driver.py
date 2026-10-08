@@ -328,7 +328,7 @@ def test_a_success_ends_the_back_off(fake_claude, tmp_path, monkeypatch):
     log = lines(tmp_path)
     assert [x["wait_s"] for x in log if x["kind"] == "backoff"] == [0.2]
     assert [t["stop"] for t in log if t["kind"] == "turn"] == ["error", "success", "success"]
-    assert o.fail_streak == 0 and o.backoff_s == 0.0
+    assert o.lanes["routine"].streak == 0 and o.lanes["routine"].wait_s == 0.0
 
 
 def test_repeated_crashes_stop_the_run_and_say_so(fake_claude, tmp_path, monkeypatch):
@@ -413,3 +413,59 @@ def test_the_run_dir_check_resolves_a_symlinked_home_and_temp(tmp_path, monkeypa
     # a project's .claude above the run directory is still refused
     (real / "work" / "proj" / ".claude").mkdir(parents=True)
     assert W.run_dir_problems(link / "work" / "proj" / "w") == [str(real / "work" / "proj" / ".claude")]
+
+
+def test_a_failing_routine_model_does_not_hold_back_an_escalation(fake_claude, tmp_path, monkeypatch):
+    """Third review, item 6: one back-off for both models, so with only the routine model
+    failing a hostile declaration waited for its wait (up to 15 minutes by default)."""
+    monkeypatch.setenv("FAKE_SCENARIO", "error_always")
+    monkeypatch.setenv("FAKE_ERROR_MODEL", "sonnet")
+    script = [(1.0, {"kind": "track.declared", "track": "T-0009", "declared": "hostile", "by": "op-1"})]
+    o = officer(tmp_path, fake_claude, script, "--error-backoff-s", "6", "--error-backoff-max-s", "60",
+                seconds=4.0)
+    assert asyncio.run(o.run()) == "until"
+    log = lines(tmp_path)
+    wakes = [x for x in log if x["kind"] == "wake"]
+    turns = [x for x in log if x["kind"] == "turn"]
+    assert [(w["reason"], w["escalated"]) for w in wakes] == [("start", False), ("changes", True)], wakes
+    assert [t["stop"] for t in turns] == ["error", "success"]
+    assert wakes[1]["t"] - wakes[0]["t"] < 3, "during the routine model's 6 s wait"
+    assert [(b["model"], b["wait_s"]) for b in log if b["kind"] == "backoff"] == [("routine", 6.0)]
+    assert o.lanes["consult"].streak == 0 and o.lanes["routine"].streak == 1
+
+
+def test_a_failing_consult_does_not_hold_back_the_routine_model(fake_claude, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_SCENARIO", "error_always")
+    monkeypatch.setenv("FAKE_ERROR_MODEL", "opus")
+    script = [(0.8, {"kind": "track.declared", "track": "T-0009", "declared": "hostile", "by": "op-1"})]
+    o = officer(tmp_path, fake_claude, script, "--error-backoff-s", "6", "--error-backoff-max-s", "60",
+                seconds=4.0)
+    assert asyncio.run(o.run()) == "until"
+    log = lines(tmp_path)
+    wakes = [x for x in log if x["kind"] == "wake"]
+    turns = [x for x in log if x["kind"] == "turn"]
+    assert [(w["model"], w["escalated"]) for w in wakes] == [("sonnet", False), ("opus", True), ("sonnet", False)]
+    assert [t["stop"] for t in turns] == ["success", "error", "success"]
+    assert wakes[2]["t"] - wakes[1]["t"] < 3, "the routine model takes it during the consult's wait"
+    assert "track T-0009 declared hostile" in wakes[2]["update"]
+    assert o.waker.escalations == 0, "the failed escalation was given back"
+
+
+def test_a_limit_resume_starts_the_failure_streak_again(fake_claude, tmp_path):
+    from watch.limits import LimitHit
+    from watch.wake import Wake
+
+    o = officer(tmp_path, fake_claude, [], "--limit-floor-s", "0.1", "--limit-margin-s", "0.1", seconds=30.0)
+    o.lanes["routine"].streak, o.lanes["routine"].wait_s = 3, 0.8
+    o.lanes["consult"].streak = 2
+
+    async def go():
+        await o.backend.start()
+        hit = LimitHit("claude", "session", "You've hit your session limit", time.time() + 0.2)
+        out = await o.on_limit(hit, False, Wake(1, "changes", [], [], False, [], time.time()))
+        await o.backend.stop()
+        return out
+
+    assert asyncio.run(go()) is None
+    assert o.lanes["routine"].streak == 0 and o.lanes["routine"].wait_s == 0.0
+    assert o.lanes["consult"].streak == 2, "the consult's own streak is its own"

@@ -24,15 +24,22 @@ note: it rides along with the next update.
   intent's new state). One subject wakes the model at most once per `per_subject_s` and
   escalates at most once per `escalate_cooldown_s`, so one contact whose conflict keeps
   reappearing cannot spend the run's escalations or the hour's wakes. A condition that clears
-  ends its subject's interval (unless it is flapping): it raised again is news, and wakes
-  (and escalates) as the first time did. A change held back as a repeat stays pending, is
-  not used as filler by another wake, and becomes a trigger of its own when its interval
-  ends; the wake says it was held back.
+  ends its subject's wake interval (unless it is flapping): it raised again is news and
+  wakes. Its escalation cooldown ends only on its first come-and-go within the cooldown, so
+  a condition that keeps coming and going slower than `flap_window_s` (an armed boat at the
+  edge of radio range, or an adversary choosing the period) escalates at most once per
+  cooldown and cannot spend the run's escalations either.
+- A repeat inside its subject's interval is held back: one per subject, the newest, with a
+  count (`holding`), never used as filler by another wake. When the interval ends it is a
+  trigger of its own, delivered with how many repeats were held back; a newer change of the
+  subject that may wake supersedes it; a clear of its condition turns it into a note. So a
+  contact whose estimate wobbles every poll holds one change, not thousands.
 - The heartbeat backs off (doubling up to `heartbeat_max_s`) while nothing new arrives:
   autopilot chatter, vehicles joining and repeats of a subject just reported are not news.
   Heartbeats never take the last quarter of the hour's wakes: those are kept for triggers.
 - A change that cannot be judged (malformed) is dropped and listed in `dropped`, for the
-  driver to log: one bad change never stops the watch.
+  driver to log: one bad change never stops the watch. Notes kept for the next update are
+  bounded (`MAX_PENDING`; the oldest notes go first, and the update says how many).
 - Budgets (`Budgets`) cap wakes per hour, escalations per run and wakes per run.
 """
 
@@ -45,6 +52,9 @@ from typing import Any, Callable
 
 Change = dict
 NEVER = float("-inf")
+# Changes kept for the next update; past this the oldest notes (never a waking change) are
+# dropped and counted (with the heartbeat off, notes could otherwise pile up for hours).
+MAX_PENDING = 1000
 
 
 def _d(v: Any) -> dict:
@@ -248,11 +258,39 @@ class Wake:
     escalate: bool
     escalate_why: list[str]
     t: float
-    # repeats held back (they stay pending and wake on their own when their interval ends)
+    # repeats held back (each subject's newest is kept and wakes on its own when its interval
+    # ends), as "why (n repeats)"
     held: list[str] = field(default_factory=list)
     # the subjects this wake woke and escalated on (to give them back if the turn fails)
     woke_subjects: list = field(default_factory=list)
     escalated_subjects: list = field(default_factory=list)
+    # older notes not kept since the last update (MAX_PENDING)
+    notes_dropped: int = 0
+
+
+@dataclass
+class HeldRepeat:
+    """One subject's repeats held back inside its interval: the newest, and how many."""
+
+    change: Change
+    count: int
+    first_t: float  # when the first of them arrived
+    last_t: float  # when the newest arrived
+
+
+def _with_held(c: Change, h: HeldRepeat) -> Change:
+    """The change to deliver, saying what was held back of its subject."""
+    return {**c, "held_back": {"repeats": h.count, "first_t": h.first_t, "latest_t": h.last_t}}
+
+
+def _held_text(c: Change, now: float) -> str:
+    hb = c.get("held_back")
+    if not isinstance(hb, dict):
+        return ""
+    n = hb.get("repeats") or 0
+    first = hb.get("first_t")
+    over = f" over the last {now - first:.0f} s" if isinstance(first, (int, float)) else ""
+    return f" ({n} repeat{'s' if n != 1 else ''} held back{over}; the latest is shown)"
 
 
 @dataclass
@@ -284,9 +322,12 @@ class Waker:
     woke: dict = field(default_factory=dict)  # subject -> when it last woke the model
     escalated: dict = field(default_factory=dict)  # subject -> when it last escalated
     raised: dict = field(default_factory=dict)  # come-and-go key -> its open raise
-    cycles: dict = field(default_factory=dict)  # come-and-go key -> times it cleared again
+    cycles: dict = field(default_factory=dict)  # come-and-go key -> its clears in the flap window
+    clears: dict = field(default_factory=dict)  # come-and-go key -> its clears in the cooldown
     flapped: dict = field(default_factory=dict)  # come-and-go key -> when flapping was said
     dropped: list = field(default_factory=list)  # (change, error) that could not be judged
+    holding: dict = field(default_factory=dict)  # subject -> HeldRepeat
+    notes_dropped: int = 0  # notes not kept since the last wake (MAX_PENDING)
 
     # ---- judging one change ---------------------------------------------------------------
 
@@ -342,16 +383,24 @@ class Waker:
         first = self.raised.pop(key, None)
         if first is None:
             return []
+        subj = subject(first)
+        self._unhold(subj)  # a raise held back that has since cleared: a note
         window = self.budgets.flap_window_s
         q = self.cycles.setdefault(key, deque())
         q.append(now)
         while q and q[0] < now - window:
             q.popleft()
+        long = self.clears.setdefault(key, deque())
+        long.append(now)
+        while long and long[0] < now - self.budgets.escalate_cooldown_s:
+            long.popleft()
         if len(q) < 2:
-            # not flapping: the raise's interval ends with it, so a raise again is news
-            subj = subject(first)
+            # not flapping: the raise's wake interval ends with it, so a raise again is news;
+            # its escalation cooldown ends only if this is its first come-and-go in the
+            # cooldown (one coming and going slower than the flap window keeps it)
             self.woke.pop(subj, None)
-            self.escalated.pop(subj, None)
+            if len(long) < 2:
+                self.escalated.pop(subj, None)
             return []
         if now - self.flapped.get(key, NEVER) < window:
             return []
@@ -373,6 +422,41 @@ class Waker:
         except Exception:  # noqa: BLE001
             return False
 
+    def _hold(self, c: Change, at: float) -> None:
+        """Keep a repeat inside its subject's interval: the newest only, counted."""
+        subj = subject(c)
+        h = self.holding.get(subj)
+        if h is None:
+            self.holding[subj] = HeldRepeat(c, 1, at, at)
+            return
+        h.count += 1
+        h.first_t = min(h.first_t, at)
+        if at >= h.last_t:
+            h.change, h.last_t = c, at
+
+    def _unhold(self, subj) -> None:
+        """A held raise whose condition cleared: back with the notes, before the clear (so
+        the two read as came and went)."""
+        h = self.holding.pop(subj, None)
+        if h is not None:
+            self.pending.append(h.change)
+            self.arrived.append(h.last_t)
+
+    def _bound(self, now: float) -> None:
+        """Past MAX_PENDING, the oldest notes go (counted); a waking change is always kept."""
+        excess = len(self.pending) - MAX_PENDING
+        if excess <= 0:
+            return
+        keep_c, keep_t = [], []
+        for c, t in zip(self.pending, self.arrived):
+            if excess > 0 and not self.wakes_now(c, now):
+                excess -= 1
+                self.notes_dropped += 1
+                continue
+            keep_c.append(c)
+            keep_t.append(t)
+        self.pending, self.arrived = keep_c, keep_t
+
     def add(self, changes: list[Change], now: float) -> None:
         if not changes:
             return
@@ -382,16 +466,24 @@ class Waker:
                 if not isinstance(c, dict):
                     raise TypeError(f"a change is a dict, not {type(c).__name__}")
                 extra = self._pairs(c, now)
-                self.judge(c, now)
+                j = self.judge(c, now)
+                subj = subject(c)
             except Exception as e:  # noqa: BLE001 (one bad change never stops the watch)
                 self.dropped.append((c, f"{type(e).__name__}: {e}"))
                 continue
-            accepted.append(c)
+            if j.held:
+                self._hold(c, now)  # not news, and not a change for coalescing
+            else:
+                if j.wakes and subj in self.holding:
+                    # a newer change of a subject with repeats held back supersedes them
+                    c = _with_held(c, self.holding.pop(subj))
+                accepted.append(c)
             accepted.extend(extra)
         if not accepted:
             return
         self.pending.extend(accepted)
         self.arrived.extend([now] * len(accepted))
+        self._bound(now)
         self.last_change_t = now
         if any(self.news(c, now) for c in accepted):
             self.quiet = 0
@@ -416,21 +508,31 @@ class Waker:
         gone = came_and_went(self.pending)
         return {i for i in range(len(self.pending)) if i not in gone}
 
-    def due(self, now: float) -> Wake | None:
-        """The wake to run now, if any (and record it)."""
+    def due(self, now: float, escalating_only: bool = False) -> Wake | None:
+        """The wake to run now, if any (and record it). `escalating_only`: only a wake that
+        goes to the stronger model (the routine model is waiting after failed turns; its
+        opening update, if not yet told, waits with it)."""
         b = self.budgets
         if self.exhausted():
             return None
         self._drop_unjudgeable(now)
-        if not self.started:
+        if not self.started and not escalating_only:
             return self._take(now, "start")
         live_i = self._live_indices()
-        # each waking change from when it may wake (a held-back repeat: when its interval
-        # ended), so a repeat becomes a trigger of its own
-        waking = [(i, j) for i in sorted(live_i) if (j := self.judge(self.pending[i], now)).wakes]
-        eligible = [max(self.arrived[i], j.since) for i, j in waking]
+        # each waking change from when it may wake: a held-back repeat from when its interval
+        # ended, so it becomes a trigger of its own
+        judged = [self.judge(self.pending[i], now) for i in sorted(live_i)]
+        times = [self.arrived[i] for i in sorted(live_i)]
+        held_next = [j.since for j in judged if j.held]
+        for h in self.holding.values():
+            j = self.judge(h.change, now)
+            judged.append(j)
+            times.append(h.last_t)
+            if j.held:
+                held_next.append(j.since)
+        waking = [(t, j) for t, j in zip(times, judged) if j.wakes]
+        eligible = [max(t, j.since) for t, j in waking]
         self.first_wake_t = min(eligible) if eligible else None
-        held_next = [j.since for i in live_i if (j := self.judge(self.pending[i], now)).held]
         if held_next:
             # when the next held-back repeat becomes a trigger (for next_check)
             self.first_wake_t = min([self.first_wake_t or float("inf"), min(held_next)])
@@ -449,6 +551,8 @@ class Waker:
         if reason is None:
             return None
         escalates = self.escalation and self.escalations < b.max_escalations and any(j.escalates for _, j in waking)
+        if escalating_only and not (escalates and reason == "changes"):
+            return None
         if self.hourly_left(now) <= 0 and not escalates:
             self.deferred = True
             return None
@@ -459,34 +563,37 @@ class Waker:
         return self._take(now, reason, escalates)
 
     def _take(self, now: float, reason: str, escalates: bool = False) -> Wake:
-        self.started = True
+        if reason == "start":
+            self.started = True
         live_i = self._live_indices()
         deliver: list[Change] = []
-        keep_c: list[Change] = []
-        keep_t: list[float] = []
         why: list[str] = []
         esc_why: list[str] = []
-        held: list[str] = []
         woke_s: list = []
         esc_s: list = []
+        # every change judged before any is recorded, so changes of one subject in this
+        # update are told together (none held back by another of the same update)
+        items: list[tuple[float, Change, Judged | None]] = []
         for i, (c, at) in enumerate(zip(self.pending, self.arrived)):
-            if i not in live_i:
+            items.append((at, c, self.judge(c, now) if i in live_i else None))
+        for subj, h in list(self.holding.items()):
+            j = self.judge(h.change, now)
+            if j.held:
+                continue  # its interval goes on: it stays held
+            del self.holding[subj]
+            items.append((h.last_t, _with_held(h.change, h), j))
+        items.sort(key=lambda x: x[0])  # oldest first (stable: pending in arrival order)
+        for at, c, j in items:
+            if j is None:
                 deliver.append(c)  # came and went: a note
                 continue
-            j = self.judge(c, now)
             if j.held:
-                # a repeat inside its interval: stays pending, a trigger of its own later
-                keep_c.append(c)
-                keep_t.append(at)
-                if j.why and j.why not in held:
-                    held.append(j.why)
+                self._hold(c, at)  # a repeat inside its interval: held, a trigger later
                 continue
             deliver.append(c)
             if not j.wakes:
                 continue
-            text = j.why or ""
-            if at < j.since:
-                text += f" (held back as a repeat for {j.since - at:.0f} s)"
+            text = (j.why or "") + _held_text(c, now)
             if text and text not in why:
                 why.append(text)
             subj = subject(c)
@@ -497,7 +604,12 @@ class Waker:
                     esc_why.append(j.why)
             self.woke[subj] = now
             woke_s.append(subj)
-        self.pending, self.arrived = keep_c, keep_t
+        counts: dict[str, int] = {}
+        for h in self.holding.values():
+            k = classify(h.change)[2] or str(h.change.get("kind"))
+            counts[k] = counts.get(k, 0) + h.count
+        held = [f"{k} ({n} repeat{'s' if n != 1 else ''})" for k, n in counts.items()]
+        self.pending, self.arrived = [], []
         self.first_wake_t = None
         self.last_wake_t = now
         self.recent.append(now)
@@ -505,7 +617,8 @@ class Waker:
         self.deferred = False
         if escalates:
             self.escalations += 1
-        return Wake(self.wakes, reason, deliver, why, escalates, esc_why, now, held, woke_s, esc_s)
+        dropped, self.notes_dropped = self.notes_dropped, 0
+        return Wake(self.wakes, reason, deliver, why, escalates, esc_why, now, held, woke_s, esc_s, dropped)
 
     def give_back(self, wake: Wake, now: float) -> None:
         """A wake whose turn failed: its changes come back (to be told again), its subjects
@@ -515,6 +628,7 @@ class Waker:
         self.unescalate(wake)
         if wake.reason == "start":
             self.started = False  # the opening update is told again, as the opening
+        self.notes_dropped += wake.notes_dropped
         self.pending = list(wake.changes) + self.pending
         self.arrived = [now] * len(wake.changes) + self.arrived
         self.last_change_t = now

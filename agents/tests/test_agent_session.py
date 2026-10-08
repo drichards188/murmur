@@ -1,5 +1,6 @@
-"""AgentSession (agents/policy_agent.py) on a failed start: what it opened is closed (N5: a
-caller retrying every few seconds left a server session and a connection behind each time)."""
+"""AgentSession (agents/policy_agent.py) closes what it opened: on a failed start (N5: a caller
+retrying every few seconds left a server session and a connection behind each time), and its
+HTTP client on a normal exit too (the third review)."""
 
 from __future__ import annotations
 
@@ -94,4 +95,4 @@ def test_a_good_start_keeps_the_session_open_until_the_block_ends(monkeypatch):
 
     asyncio.run(go())
     assert rec.events[:4] == ["http.open", "transport.open", "session.open", "inside"]
-    assert rec.events[4:] == ["session.close", "transport.close"]
+    assert rec.events[4:] == ["session.close", "transport.close", "http.close"], "third review, item 9"

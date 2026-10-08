@@ -11,13 +11,26 @@ import pytest
 from watch.picture import NoChangesTool, Poller
 
 TOOLS = ["get_fleet", "get_tracks", "get_changes", "get_nomination_options", "propose_intent"]
+NEAR = (-122.4800, 37.8200)
+PLATFORMS = {"platforms": [{"id": "fpv", "cruise_mps": 25}, {"id": "magura", "cruise_mps": 12},
+                           {"id": "x10", "cruise_mps": 12}, {"id": "mystery"}]}
+
+
+def veh(uid, platform, armed=True, dx_km=1.0, link_lost=False, nav_ready=True):
+    """A compact fleet entry dx_km east of NEAR."""
+    return {"uid": uid, "callsign": f"{platform.upper()} {uid}", "platform": platform, "armed": armed,
+            "lon": NEAR[0] + dx_km / 88.0, "lat": NEAR[1], "link_lost": link_lost, "nav_ready": nav_ready}
+
+
+FLEET = [veh(2, "fpv")]
 
 
 class FakeAgentSession:
     """What Poller uses of policy_agent.AgentSession, scripted."""
 
-    def __init__(self, feed: list[dict], run: str = "run-a", tools=TOOLS, options=None):
+    def __init__(self, feed: list[dict], run: str = "run-a", tools=TOOLS, options=None, fleet=None):
         self.feed = feed  # get_changes answers, in order
+        self.fleet = FLEET if fleet is None else fleet
         self.run = run
         self.tools = list(tools)
         self.options = options or []  # get_nomination_options answers, in order
@@ -34,10 +47,16 @@ class FakeAgentSession:
         self.calls.append((name, args))
         if name == "get_changes" and "since" not in args:
             return {"cursor": 10, "run": self.run, "changes": []}
+        if name == "get_platforms":
+            return PLATFORMS
+        if name == "get_fleet":
+            return {"compact": args.get("compact"), "vehicles": self.fleet}
         return self.feed.pop(0)
 
     async def tracks(self, **_):
-        return [{"id": "T-0001", "declared": {"affiliation": "hostile"}}, {"id": "T-0002", "declared": None}]
+        at = {"position": list(NEAR), "speed_mps": 5.0}
+        return [{"id": "T-0001", "declared": {"affiliation": "hostile"}, **at}, {"id": "T-0002", "declared": None, **at},
+                {"id": "T-0003", "declared": None, **at}]
 
     async def intents(self, mine=True):
         return []
@@ -99,7 +118,32 @@ def test_nominations_open_and_close():
     assert run(p.nominations(now=105)) == [], "read at most every 15 s"
     assert run(p.nominations(now=116)) == [], "still possible: nothing new"
     assert run(p.nominations(now=132)) == [{"kind": "nomination.closed", "t": 132, "track": "T-0001"}]
-    assert [a for n, a in s.calls if n == "get_nomination_options"] == [{"track_id": "T-0001"}] * 3
+    assert [a for n, a in s.calls if n == "get_nomination_options"] == [
+        {"track_id": "T-0001", "uids": [2], "passed_only": True}] * 3
+    assert [a for n, a in s.calls if n == "get_platforms"] == [{}], "the catalog read once"
+
+
+def test_the_poll_asks_only_about_platforms_that_could_pass():
+    """Third review, item 4: the driver's own poll asked about every armed platform, the
+    213 557-character dry run at 100 stand-ins, every 15 s per hostile track. Now: armed, link
+    up, navigation ready, within reach (cruise plus the track's speed over 900 s, or 30 km
+    without a cruise figure), nearest first, and only whether each passes."""
+    fleet = [veh(2, "fpv", dx_km=1), veh(3, "magura", dx_km=40),  # 40 km: beyond (12 + 5) x 900 s
+             veh(4, "fpv", link_lost=True), veh(5, "fpv", nav_ready=False), veh(6, "x10", armed=False),
+             veh(7, "mystery", dx_km=20), veh(8, "mystery", dx_km=35), veh(9, "magura", dx_km=0.5)]
+    s = FakeAgentSession([], options=[{"options": [{"uid": 9, "callsign": "MAGURA 9", "passed": True}]}],
+                         fleet=fleet)
+    p = Poller(lambda: s, nomination_every_s=15)
+    run(p.open())
+    got = run(p.nominations(now=100))
+    assert got[0]["kind"] == "nomination.possible" and got[0]["platforms"] == [{"uid": 9, "callsign": "MAGURA 9"}]
+    assert [a for n, a in s.calls if n == "get_nomination_options"] == [
+        {"track_id": "T-0001", "uids": [9, 2, 7], "passed_only": True}]
+    assert ("get_fleet", {"compact": True}) in s.calls
+    # nothing in reach any more: no dry run, and the nomination closes
+    s.fleet = [veh(3, "magura", dx_km=40)]
+    assert run(p.nominations(now=116)) == [{"kind": "nomination.closed", "t": 116, "track": "T-0001"}]
+    assert len([n for n, _ in s.calls if n == "get_nomination_options"]) == 1
 
 
 def test_nomination_dry_runs_are_one_a_poll_and_never_stall_it():

@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -72,15 +73,19 @@ def mcp_config(url: str, agent: str, with_key: bool) -> dict:
 
 
 MURMUR_PREFIX = "mcp__murmur__"
-# What the CLI says when it does not run a tool: no such tool (`--tools ""` leaves none), or a
-# permission denied (`dontAsk`). The model asking is the lockdown working; the tool running
-# is a breach.
-REFUSALS = ("No such tool available", "<tool_use_error>", "has been denied", "Permission to use")
+# What the CLI says when it does not run a tool, at the start of an error result: no such
+# tool (`--tools ""` leaves none: "<tool_use_error>Error: No such tool available: bash
+# </tool_use_error>", live) or a permission denied ("Permission to use X has been denied
+# because Claude Code is running in don't ask mode", live). The model asking is the lockdown
+# working; the tool running is a breach. Not the bare `<tool_use_error>` tag: the CLI wraps
+# the error of a tool that ran and failed in it too.
+REFUSAL = re.compile(r"^\s*(?:<tool_use_error>)?\s*(?:Error:\s*)?"
+                     r"(?:No such tool available\b|Permission to use \S+ has been denied\b)")
 
 
 def refused(block: dict) -> bool:
     """A tool_result that says the CLI did not run the tool."""
-    return bool(block.get("is_error")) and any(r in _flatten(block.get("content")) for r in REFUSALS)
+    return bool(block.get("is_error")) and bool(REFUSAL.match(_flatten(block.get("content"))))
 
 
 def context_of(usage) -> int | None:

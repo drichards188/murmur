@@ -146,6 +146,20 @@ def test_claude_a_tool_outside_the_server_that_ran_is_a_breach(fake_claude, run_
     assert e.value.turn.refused == []
 
 
+def test_claude_a_tool_that_ran_and_failed_is_a_breach_not_a_refusal(fake_claude, run_dir, monkeypatch):
+    """Third review, item 7: the bare <tool_use_error> tag counted as a refusal, but the CLI
+    wraps the error of a tool that ran and failed in it too."""
+    monkeypatch.setenv("FAKE_SCENARIO", "breach_failed")
+    with pytest.raises(LockdownBreach) as e:
+        one_claude_turn(fake_claude, run_dir)
+    assert "Bash" in str(e.value) and "Exit code 2" in str(e.value)
+    assert e.value.turn.refused == []
+    # the dontAsk refusal as recorded live is a refusal
+    monkeypatch.setenv("FAKE_SCENARIO", "denied")
+    t = one_claude_turn(fake_claude, run_dir)
+    assert t.stop == "success" and [r["name"] for r in t.refused] == ["Read"]
+
+
 def test_claude_limit_is_reported_with_the_exact_reset(fake_claude, run_dir, monkeypatch):
     monkeypatch.setenv("FAKE_SCENARIO", "limit")
 
@@ -375,7 +389,8 @@ def test_codex_a_tool_outside_the_lockdown_stops_the_run(fake_codex, run_dir, mo
 def test_codex_judges_each_item_fail_closed(fake_codex, run_dir):
     """N9: items that act or read outside Murmur are a breach, the documented harmless ones
     pass, a call with no server passes only when it names a Murmur tool, and anything else is
-    unknown (recorded, not stopped on)."""
+    a breach too (the third review: fail closed until a live run has seen the vocabulary),
+    unless the user let that type through with --codex-allow-item."""
     b = codex(fake_codex, run_dir)
     j = b.judge_item
     for t in ("command_execution", "file_change", "web_search", "patch_apply", "image_view"):
@@ -388,12 +403,33 @@ def test_codex_judges_each_item_fail_closed(fake_codex, run_dir):
     b.murmur_tools = {"get_fleet", "get_tracks"}
     assert j({"type": "mcp_tool_call", "tool": "get_tracks"}) == "ok"
     assert j({"type": "mcp_tool_call", "tool": "read_file"}) == "breach", "not one of the bridge's tools"
-    assert j({"type": "collab_note"}) == "unknown"
+    assert j({"type": "collab_note"}) == "unlisted"
+    allowed = codex(fake_codex, run_dir, allow_items=("collab_note",))
+    assert allowed.judge_item({"type": "collab_note"}) == "unknown", "let through, and recorded"
+    assert allowed.judge_item({"type": "other_note"}) == "unlisted"
+    for t in ("command_execution", "mcp_tool_call", "web_search"):
+        with pytest.raises(ValueError, match="cannot allow"):
+            codex(fake_codex, run_dir, allow_items=(t,))
 
 
-def test_codex_an_unknown_item_is_recorded_and_the_turn_goes_on(fake_codex, run_dir, monkeypatch):
+def test_codex_an_item_type_nobody_listed_stops_the_run(fake_codex, run_dir, monkeypatch):
+    """Third review, item 3: an unknown item type was recorded and the turn went on (fail
+    open); now it is a breach whose error carries the raw item and the way to allow it."""
     monkeypatch.setenv("FAKE_SCENARIO", "unknown")
     b = codex(fake_codex, run_dir)
+    b.murmur_tools = {"get_fleet", "get_tracks", "propose_intent"}
+    with pytest.raises(LockdownBreach) as e:
+        run(b.turn("Watch update 1.", time.time() + 30))
+    msg = str(e.value)
+    assert "an item type the backend does not know (collab_note; if it is harmless, " \
+           "--codex-allow-item collab_note)" in msg
+    assert '"text": "thinking aloud"' in msg and e.value.turn.stop == "lockdown"
+
+
+def test_codex_an_item_type_the_user_allowed_is_recorded_and_the_turn_goes_on(fake_codex, run_dir, monkeypatch):
+    monkeypatch.setenv("FAKE_SCENARIO", "unknown")
+    b = codex(fake_codex, run_dir, allow_items=("collab_note",))
+    assert b.describe()["allow_items"] == ["collab_note"], "logged at start (run.start's backend)"
     b.murmur_tools = {"get_fleet", "get_tracks", "propose_intent"}
     t = run(b.turn("Watch update 1.", time.time() + 30))
     assert t.stop == "success" and t.proposals() == [51]

@@ -184,11 +184,13 @@ reason the default is a temporary directory: if your `TMPDIR` is under such a ho
   else is refused, never asked), `--system-prompt-file` (`agents/watch/prompt.md` and the
   brief), `--max-turns` per wake, `ENABLE_TOOL_SEARCH=false`, `CLAUDE_CODE_MAX_RETRIES=2`.
   Never `--bare` (it ignores the subscription login) and never `bypassPermissions`.
-  A tool outside the Murmur server that the CLI refused (it answers "No such tool
-  available", or a permission refusal) is the lockdown working: logged as
-  `lockdown.refused` and the turn goes on (seen live: the model asked for `bash` to read a
-  saved answer; `agents/tests/fixtures/claude_bash_refused.jsonl` is that stream). One that
-  ran (any other result) interrupts the turn and stops the run (`lockdown.breach`).
+  A tool outside the Murmur server that the CLI refused is the lockdown working: logged as
+  `lockdown.refused` and the turn goes on. Only the CLI's two refusals, both seen live,
+  count: an error result that starts "No such tool available" (the model asked for `bash`
+  to read a saved answer; `agents/tests/fixtures/claude_bash_refused.jsonl` is that stream)
+  or "Permission to use X has been denied" (`dontAsk`). Any other result, an error from a
+  tool that ran and failed included (the CLI wraps those in the same `<tool_use_error>`
+  tag), interrupts the turn and stops the run (`lockdown.breach`).
   Routine model `sonnet` at effort `medium`.
 - **Codex**: one `codex exec --json` per wake, then `codex exec resume <thread id>`, the
   update on stdin. Locked down by `-c` configuration: `--ignore-user-config --ignore-rules
@@ -204,11 +206,15 @@ reason the default is a temporary directory: if your `TMPDIR` is under such a ho
   to another MCP server stops the run as a lockdown breach, and the error carries the items
   as Codex sent them. A call whose server field is missing passes only when it names one of
   the bridge's tools. The documented harmless items (messages, reasoning, a plan or todo
-  list, an error notice) pass. An item of a type the backend does not know is logged
-  (`lockdown.unknown_item`, with the raw item) and the turn goes on, so a new harmless item
-  in a later Codex does not end a good run; a new item that acts would also pass until it is
-  listed, which is why it is logged. Routine model `gpt-6-luna` at reasoning effort `high`.
-  Never `ultra` effort (it spawns sub-agents).
+  list, an error notice) pass. An item of a type the backend does not know stops the run
+  too, with the raw item and the way to allow it in the error: the vocabulary has not been
+  seen live here, and this is Codex's only check at run time. `--codex-allow-item TYPE`
+  (repeatable, never a command, file change, web search, patch, image view or tool call)
+  lets a type you have looked at through; it is listed in `run.start` and each use is logged
+  (`lockdown.unknown_item`, with the raw item). Once a live 0.161 run has established the
+  vocabulary, unknown types can be switched to logged and let through, so a new harmless
+  item in a later Codex does not end a good run. Routine model `gpt-6-luna` at reasoning
+  effort `high`. Never `ultra` effort (it spawns sub-agents).
 - **The stronger model** (`opus` at `high`; `gpt-6.1-sol` at `high`) takes consequential
   moments, in a fresh short consult process each time: the system prompt and the update,
   not the routine conversation. Resuming or forking the routine session on another model
@@ -230,10 +236,14 @@ area) run without a human.
 
 ### When it wakes
 
-The driver polls `get_changes` every 2 s (and, while a track is declared hostile, reads
-`get_nomination_options` for one track per poll, each track every 15 s; the bridge allows an
-agent one such dry run a second, shared with the model). The table is `TRIGGERS` in
-`agents/watch/wake.py`:
+The driver polls `get_changes` every 2 s. While a track is declared hostile it also reads
+`get_nomination_options` for one track per poll, each track every 15 s (the bridge allows an
+agent one such dry run a second, shared with the model), for the armed platforms that could
+pass only and asking only whether each passes (`passed_only`): armed, link up, navigation
+ready, and within reach, which is the platform's catalog cruise speed plus the track's speed
+over 900 s, the longest transit the shipped policy allows (30 km for a platform with no
+cruise figure). The full answer for all 23 armed platforms of 100 stand-ins was 213 557
+characters. The table is `TRIGGERS` in `agents/watch/wake.py`:
 
 | change | wakes | stronger model |
 |---|---|---|
@@ -260,11 +270,17 @@ jamming and spoofing look like). One subject (a track, a vehicle, an alert, a fl
 its intents in one state) wakes the model at most once in 5 minutes and escalates at most
 once in 30, so one contact cannot spend the run's escalations or the hour's wakes. A subject
 is the item and its instance: a declaration by its number (a re-declaration is new), an
-affiliation by the value it moved to. A repeat inside the 5 minutes is held back, listed in
-the update as held back, and wakes the model by itself when its interval ends; a subject
-that clears (a link back, an alert cleared, a declaration revoked) is released, so its next
-raise is news at once, unless it is flapping. A change the driver cannot judge (malformed)
-is set aside and logged (`change.dropped`); the watch goes on. A
+affiliation by the value it moved to. A repeat inside the 5 minutes is held back: one per
+subject, the newest, with a count, listed in the update as held back. When the interval
+ends it wakes the model by itself, shown as the latest of N repeats; a newer change of the
+subject supersedes it, and a clear of its condition makes it a note. A subject that clears
+(a link back, an alert cleared, a declaration revoked) is released, so its next raise wakes
+at once, unless it is flapping; it escalates again only if that was its first come-and-go
+in the 30 minutes, so a condition coming and going slower than the flap window (an armed
+boat at the edge of radio range) cannot spend the run's escalations either. Notes kept for
+the next update are bounded (1000; the oldest go first and the update says how many). A
+change the driver cannot judge (malformed) is set aside and logged (`change.dropped`); the
+watch goes on. A
 heartbeat wakes it every 60 s without a trigger, doubling up to 300 s while nothing new
 arrives (autopilot chatter, vehicles joining and repeats are not news), and never takes the
 last quarter of the hour's wakes, which stay for triggers; a heartbeat that finds a waking
@@ -278,12 +294,15 @@ change still coalescing wakes for that change, escalated if it escalates.
 is an estimate, not a bill). `--turn-timeout-s` (300) interrupts a turn that runs long. A
 turn that fails (a crash, or an error result such as an overloaded API after the CLI's own
 retries) gives its wake back: the changes are told again at the next wake (a failed opening
-update, as the opening) and an escalation it spent is returned. The next wake then waits:
-30 s after one failure, doubling with each failure in a row up to 15 minutes
-(`--error-backoff-s`, `--error-backoff-max-s`, logged as `backoff`), and a success ends the
-wait. The run stops only on failures that go on after a wait at that ceiling (reason
-`errors`) or on more than three crashes in ten minutes (`crashes`). A crashed turn reports
-no cost, so the budget does not count what it spent (its `backend.crashed` line says so).
+update, as the opening) and an escalation it spent is returned. The model that failed
+then waits: 30 s after one failure, doubling with each failure in a row up to 15 minutes
+(`--error-backoff-s`, `--error-backoff-max-s`, logged as `backoff` with the model), and a
+success or a usage limit ends the wait. The routine model and the senior consult wait
+separately: while the routine model waits, an escalating wake still goes to the consult;
+while the consult waits, escalations go to the routine model. The run stops only on routine
+turns that go on failing after a wait at that ceiling (reason `errors`) or on more than
+three crashes in ten minutes (`crashes`). A crashed turn reports no cost, so the budget does
+not count what it spent (its `backend.crashed` line says so).
 
 Neither CLI waits for a usage limit to reset. Claude Code ends the turn with "You've hit
 your session limit · resets 3:45pm" (weekly, Opus and Sonnet variants too) and its stream's
@@ -346,8 +365,9 @@ through with the bridge's idle limit set to 20 s (`MURMUR_MCP_IDLE_S`), so its q
 between wakes cost nothing. Clients on an older protocol version (the Python SDK negotiates
 2025-11-25) hold a session that the bridge drops after 15 minutes idle (it was five minutes,
 rmcp's default; `MURMUR_MCP_IDLE_S`; the driver's own reads come every 2 s), and one agent
-id holds at most eight (the one used least recently is closed; sessions their client
-closed do not count). Claude Code saved tool answers over about 50 000 characters to a file
+id holds at most eight, counted from each session's initialize (the one used least recently
+with no request in flight is closed; sessions their client closed do not count, and with
+every one busy the cap waits rather than cut a request off). Claude Code saved tool answers over about 50 000 characters to a file
 and gave the model a preview, which a model with no file tools cannot read (the nomination
 dry run on a hostile track, 61 KB): the bridge's tools now declare
 `anthropic/maxResultSizeChars` and the backend sets `MAX_MCP_OUTPUT_TOKENS`, and the whole
@@ -377,7 +397,7 @@ rules' freshness limit for that vehicle's link):
 
 | tool | what |
 |---|---|
-| `get_fleet`, `get_vehicle` | identity, platform limits and tasks, position, nav readiness and source, the GPS glitch flag (`nav.gps_glitch`, with its age: the navigation filter rejects the fix, as a jammed or spoofed receiver looks), battery, home, link health, current task. `get_fleet` takes `uids` (only those) and `compact` (one short entry per vehicle: identity, mode, position and its age, navigation, GPS glitch, battery, link, current task, and which facts are stale; about a quarter of the size, 32 494 characters for 100 vehicles against 131 650) |
+| `get_fleet`, `get_vehicle` | identity, platform limits and tasks, position, nav readiness and source, the GPS glitch flag (`nav.gps_glitch`, with its age: the navigation filter rejects the fix, as a jammed or spoofed receiver looks), battery, home, link health, current task. `get_fleet` takes `uids` (only those) and `compact` (one short entry per vehicle: identity, mode, position and its age, navigation, GPS glitch, battery, link, current task, and which facts are stale, the GPS glitch flag's own included; about a quarter of the size, 32 494 characters for 100 vehicles against 131 650) |
 | `get_platforms` | the catalog: limits, link class, `armed`, tasks per kind, fleet members |
 | `get_areas` | approved, no-go, engagement-zone and no-strike areas as `[lon, lat]` polygons |
 | `get_policy` | the risk-tier policy and rules configuration in force |
@@ -388,7 +408,7 @@ rules' freshness limit for that vehicle's link):
 | `get_satellite_passes` | imaging access windows over an area (read-only) |
 | `get_satellite_tasking_options` | ranked collection options and exclusions (read-only) |
 | `get_nominations` | engagement nominations (Phase E): checks, preview, signatures needed and given, the picture held since approval, the effect, a stop, the assessment |
-| `get_nomination_options` | the nomination form's dry run for a declared-hostile track: each armed platform's checks and preview now, and `keep_outs`: which track or vehicle of ours blocks (or nearly blocks) the keep-out, the region that blocks and by how much, and what would clear it (the effect times, and for a holding target the distances, at which every keep-out holds on the picture now; a later nomination if everything keeps behaving as now). Read-only and not logged, at most one call a second per agent; listed by uid, not ranked; no keep-out is relaxed (murmur-12e). `uids` limits it to a few platforms: for every armed platform of a large fleet the answer is too large for a model to read whole (213 557 characters for 23) |
+| `get_nomination_options` | the nomination form's dry run for a declared-hostile track: each armed platform's checks and preview now, and `keep_outs`: which track or vehicle of ours blocks (or nearly blocks) the keep-out, the region that blocks and by how much, and what would clear it (the effect times, and for a holding target the distances, at which every keep-out holds on the picture now; a later nomination if everything keeps behaving as now). Read-only and not logged, at most one call a second per agent; listed by uid, not ranked; no keep-out is relaxed (murmur-12e). `uids` limits it to a few platforms: for every armed platform of a large fleet the answer is too large for a model to read whole (213 557 characters for 23); `passed_only` answers only whether each passes, without the checks, preview and keep-out explanation |
 
 Proposing:
 
